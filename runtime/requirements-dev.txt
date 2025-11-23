@@ -1,0 +1,14 @@
+# Development requirements
+
+# Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+
+# Linting
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.3.0
+
+# Documentation
+sphinx>=6.0.0
+sphinx-rtd-theme>=1.2.0

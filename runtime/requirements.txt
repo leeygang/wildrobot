@@ -1,0 +1,11 @@
+# Runtime-specific requirements (minimal for deployment)
+
+numpy>=1.24.0
+scipy>=1.10.0
+onnxruntime>=1.15.0  # Or onnxruntime-gpu
+pyyaml>=6.0
+
+# Hardware (uncomment based on your setup)
+# dynamixel-sdk>=3.7.0
+# RPi.GPIO>=0.7.1
+# adafruit-circuitpython-bno08x

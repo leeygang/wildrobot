@@ -1,0 +1,66 @@
+{
+  "robot_name": "wildrobot_v1",
+  "start_paused": false,
+  "control_frequency": 50,
+
+  "imu": {
+    "type": "bno085",
+    "upside_down": false,
+    "i2c_bus": 1,
+    "address": "0x4a",
+    "sample_rate": 100
+  },
+
+  "motors": {
+    "type": "dynamixel",
+    "serial_port": "/dev/ttyUSB0",
+    "baudrate": 1000000,
+    "protocol": 2.0,
+    "model": "XM430-W350",
+    "joint_names": [
+      "hip_yaw_left", "hip_roll_left", "hip_pitch_left",
+      "knee_left", "ankle_left",
+      "hip_yaw_right", "hip_roll_right", "hip_pitch_right",
+      "knee_right", "ankle_right",
+      "waist"
+    ],
+    "pid": {
+      "kp": 30,
+      "ki": 0,
+      "kd": 0
+    }
+  },
+
+  "joints_offsets": {
+    "hip_yaw_left": 0.0,
+    "hip_roll_left": 0.0,
+    "hip_pitch_left": 0.0,
+    "knee_left": 0.0,
+    "ankle_left": 0.0,
+    "hip_yaw_right": 0.0,
+    "hip_roll_right": 0.0,
+    "hip_pitch_right": 0.0,
+    "knee_right": 0.0,
+    "ankle_right": 0.0,
+    "waist": 0.0
+  },
+
+  "control": {
+    "action_scale": 0.25,
+    "max_motor_velocity": 5.24
+  },
+
+  "safety": {
+    "joint_limits_enabled": true,
+    "temperature_monitoring": true,
+    "max_temperature": 70,
+    "emergency_stop_enabled": true
+  },
+
+  "peripherals": {
+    "camera": false,
+    "speaker": false,
+    "leds": false,
+    "gamepad": false
+  }
+}

@@ -1,0 +1,23 @@
+# WildRobot Requirements
+
+# Core
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Runtime (choose one based on deployment)
+# Option A: JAX (for PKL models, heavier)
+# jax[cpu]>=0.4.0
+# jaxlib>=0.4.0
+# flax>=0.7.0
+
+# Option B: ONNX Runtime (for ONNX models, lighter)
+onnxruntime>=1.15.0
+
+# Hardware interfaces
+# dynamixel-sdk>=3.7.0  # If using Dynamixel motors
+# RPi.GPIO>=0.7.1  # For Raspberry Pi GPIO
+# adafruit-circuitpython-bno08x  # For BNO085 IMU
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.65.0
