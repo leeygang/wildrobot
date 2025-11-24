@@ -329,58 +329,60 @@ def main(argv):
     print("\nSaving policy...")
     import pickle
 
-    policy_path = logdir / "policy.pkl"
-    with open(policy_path, "wb") as f:
-        pickle.dump(params, f)
-    print(f"Policy saved to: {policy_path}")
+    final_checkpoint = ckpt_dir / "final_policy.pkl"
+    with open(final_checkpoint, "wb") as f:
+        pickle.dump({"params": params, "config": cfg}, f)
+    print(f"Policy saved to: {final_checkpoint}")
 
-    # Render videos
+    # Render videos (Option 2: Render only at the end, like loco-mujoco)
     if cfg["rendering"]["render_videos"]:
-        print("\nRendering evaluation videos...")
-        inference_fn = make_inference_fn(params, deterministic=True)
-        jit_inference_fn = jax.jit(inference_fn)
+        print("\n" + "=" * 60)
+        print("Rendering final policy video...")
+        print("=" * 60)
 
-        # Run rollout
-        def do_rollout(rng):
-            state = env.reset(rng)
-            states = []
-            for _ in range(ppo_config.episode_length):
-                act_rng, rng = jax.random.split(rng)
-                action = jit_inference_fn(state.obs, act_rng)[0]
-                state = env.step(state, action)
-                states.append(state.data)
-            return states
+        try:
+            from visualize_policy import visualize_policy
 
-        # Generate videos
-        num_videos = cfg["rendering"]["num_videos"]
-        video_paths = []
+            video_path = logdir / "final_policy.mp4"
 
-        for i in range(num_videos):
-            rng = jax.random.PRNGKey(cfg["training"]["seed"] + i)
-            traj = do_rollout(rng)
-
-            # Render frames
-            frames = env.render(
-                traj[::2],
+            # Render a single video of the final policy
+            visualize_policy(
+                checkpoint_path=str(final_checkpoint),
+                config_path=_CONFIG.value or "quick.yaml",
+                output_path=str(video_path),
+                n_steps=ppo_config.episode_length,
+                deterministic=True,
+                seed=cfg["training"]["seed"],
                 height=cfg["rendering"]["render_height"],
                 width=cfg["rendering"]["render_width"],
+                camera="track",
+                fps=50,
             )
-            video_path = logdir / f"rollout_{i}.mp4"
-            media.write_video(str(video_path), frames, fps=25)
-            print(f"Video saved: {video_path}")
-            video_paths.append(video_path)
 
-        # Log videos to W&B
-        if cfg["logging"]["use_wandb"]:
-            print("\nLogging videos to W&B...")
-            for i, video_path in enumerate(video_paths):
+            # Log video to W&B
+            if cfg["logging"]["use_wandb"]:
+                print("\nLogging video to W&B...")
                 wandb.log(
                     {
-                        f"videos/rollout_{i}": wandb.Video(
-                            str(video_path), fps=25, format="mp4"
+                        "videos/final_policy": wandb.Video(
+                            str(video_path), fps=50, format="mp4"
                         )
                     }
                 )
+
+            print(f"\n✓ Video rendering successful: {video_path}")
+
+        except Exception as e:
+            print(
+                f"\nWarning: Video recording failed (likely running on headless server): {e}"
+            )
+            print("Training completed successfully. Video recording skipped.")
+    else:
+        print("\nVideo rendering disabled (render_videos=false in config)")
+        print(f"To render video later, run:")
+        print(
+            f"  python visualize_policy.py --checkpoint {final_checkpoint} --output videos/policy.mp4"
+        )
 
     # Finish W&B run
     if cfg["logging"]["use_wandb"]:
