@@ -40,8 +40,7 @@ import wandb
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from training.wildrobot_playground.wildrobot import locomotion
-from training.wildrobot_playground.wildrobot import config_utils
+from wildrobot import locomotion
 
 # Configuration file
 _CONFIG = flags.DEFINE_string(
