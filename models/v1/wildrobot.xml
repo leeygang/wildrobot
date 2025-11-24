@@ -2,8 +2,6 @@
   <option>
     <flag eulerdamp="disable" />
   </option>
-  <include file="../common/scene.xml" />
-  <include file="../common/mimic_sites.xml" />
   <compiler angle="radian" meshdir="assets" autolimits="true" />
   <default>
     <default class="WildRobotDev">

@@ -34,10 +34,13 @@ from brax.training.agents.ppo import networks as ppo_networks, train as ppo
 from etils import epath
 from ml_collections import config_dict
 
-# Add the project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
+# Add the playground directory to path so we can import wildrobot
+sys.path.insert(0, str(Path(__file__).parent))
 
-from playground.wildrobot import config_utils, locomotion
+from wildrobot import config_utils, locomotion
+
+# Project root for saving logs/checkpoints
+PROJECT_ROOT = Path(__file__).parent.parent
 
 # Configuration file
 _CONFIG = flags.DEFINE_string(

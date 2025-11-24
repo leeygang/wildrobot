@@ -107,7 +107,7 @@ def add_common_includes(xml_file):
 def main() -> None:
     xml_file = "wildrobot.xml"
     print("start post process...")
-    add_common_includes(xml_file)
+    # add_common_includes(xml_file)
     add_collision_names(xml_file)
     ensure_root_body_pose(xml_file)
     add_option(xml_file)

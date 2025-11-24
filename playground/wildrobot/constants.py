@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import List
 
 # Point to the main models directory
-PROJECT_ROOT = epath.Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = epath.Path(__file__).parent.parent.parent
 WILDROBOT_MODEL_XML = PROJECT_ROOT / "models" / "v1" / "wildrobot.xml"
 WILDROBOT_FLAT_TERRAIN_XML = PROJECT_ROOT / "models" / "v1" / "scene_flat_terrain.xml"
 WILDROBOT_ROUGH_TERRAIN_XML = PROJECT_ROOT / "models" / "v1" / "scene_rough_terrain.xml"

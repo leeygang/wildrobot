@@ -22,7 +22,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env, reward
-from playground.wildrobot import base
+from wildrobot import base
 
 
 class WildRobotLocomotion(base.WildRobotEnv):
@@ -72,27 +72,31 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
     def reset(self, rng: jax.Array) -> mjx_env.State:
         """Reset the environment with random velocity command."""
+        # Ensure rng is a proper JAX PRNG key
+        # When vmapped, rng might be a scalar, so we need to fold it into a key
+        rng = jax.random.fold_in(jax.random.PRNGKey(0), rng) if rng.ndim == 0 else rng
         rng, key1, key2 = jax.random.split(rng, 3)
 
         # Sample random velocity command (includes standing at 0.0)
         velocity_cmd = jax.random.uniform(
-            key1, shape=(1,), minval=self._min_velocity, maxval=self._max_velocity
-        )[0]
+            key1, shape=(), minval=self._min_velocity, maxval=self._max_velocity
+        )
 
         # Initialize with default standing pose
         qpos = jp.zeros(self.mj_model.nq)
         qvel = jp.zeros(self.mj_model.nv)
 
-        # Set floating base to standing height
-        qpos = self.set_floating_base_qpos(
-            jp.array([0.0, 0.0, self._target_height, 1.0, 0.0, 0.0, 0.0]), qpos
-        )
+        # Set floating base to standing height (positions 0-6: 3 pos + 4 quat)
+        qpos = qpos.at[0:3].set(jp.array([0.0, 0.0, self._target_height]))
+        qpos = qpos.at[3:7].set(jp.array([1.0, 0.0, 0.0, 0.0]))  # quaternion (w,x,y,z)
 
         # Set joint positions with small random noise
+        # Actuator joints start at position 7 (after floating base: 7 pos)
         joint_noise = jax.random.uniform(
             key2, shape=(len(self._default_qpos),), minval=-0.05, maxval=0.05
         )
-        qpos = self.set_actuator_joints_qpos(self._default_qpos + joint_noise, qpos)
+        joint_positions = self._default_qpos + joint_noise
+        qpos = qpos.at[7 : 7 + len(self._default_qpos)].set(joint_positions)
 
         # Create MJX data
         data = mjx.make_data(self.mjx_model)
@@ -104,8 +108,9 @@ class WildRobotLocomotion(base.WildRobotEnv):
         metrics = {
             "velocity_command": velocity_cmd,
         }
+        info = {}
 
-        return mjx_env.State(data, obs, reward, done, metrics)
+        return mjx_env.State(data, obs, reward, done, metrics, info)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         """Step the environment."""
@@ -156,20 +161,23 @@ class WildRobotLocomotion(base.WildRobotEnv):
             - Previous action (11)
             - Velocity command (1)
         """
-        # Joint state
-        qpos = self.get_actuator_joint_qpos(data.qpos)
-        qvel = self.get_actuator_joints_qvel(data.qvel)
+        # Joint state - flatten to ensure 1D shape
+        qpos = jp.ravel(self.get_actuator_joint_qpos(data.qpos))
+        qvel = jp.ravel(self.get_actuator_joints_qvel(data.qvel))
 
         # Orientation and angular velocity
-        gravity = self.get_gravity(data)
-        angvel = self.get_global_angvel(data)
+        gravity = jp.ravel(self.get_gravity(data))
+        angvel = jp.ravel(self.get_global_angvel(data))
 
         # IMU readings (chest + left knee + right knee)
-        gyro = self.get_gyros(data)
-        accel = self.get_accelerometers(data)
+        gyro = jp.ravel(self.get_gyros(data))
+        accel = jp.ravel(self.get_accelerometers(data))
 
-        # Command
-        cmd = jp.array([velocity_cmd])
+        # Command - ensure it's a 1D array with one element
+        cmd = jp.ravel(jp.array([velocity_cmd]))
+
+        # Ensure action is also flattened
+        action = jp.ravel(action)
 
         obs = jp.concatenate(
             [
