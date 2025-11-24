@@ -15,115 +15,80 @@
 # ==============================================================================
 """Train WildRobot with PPO using mujoco_playground."""
 
-import os
-import sys
 import datetime
 import functools
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
-from absl import app
-from absl import flags
-from absl import logging
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import train as ppo
-from etils import epath
 import jax
 import jax.numpy as jp
 import mediapy as media
-from ml_collections import config_dict
 import mujoco
 import wandb
 
-# Add the project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from absl import app, flags, logging
+from brax.training.agents.ppo import networks as ppo_networks, train as ppo
+from etils import epath
+from ml_collections import config_dict
 
-from wildrobot import locomotion
+# Add the project root to path
+PROJECT_ROOT = Path(__file__).parent.parent
+
+from wildrobot import config_utils, locomotion
 
 # Configuration file
 _CONFIG = flags.DEFINE_string(
-    "config",
-    None,
-    "Path to YAML config file (default: default.yaml)"
+    "config", None, "Path to YAML config file (default: default.yaml)"
 )
 
 # Environment flags (override config)
 _TERRAIN = flags.DEFINE_string(
-    "terrain",
-    None,
-    "Terrain type: 'flat' or 'rough' (overrides config)"
+    "terrain", None, "Terrain type: 'flat' or 'rough' (overrides config)"
 )
 
 # Training flags (override config)
 _NUM_TIMESTEPS = flags.DEFINE_integer(
-    "num_timesteps",
-    None,
-    "Number of timesteps to train (overrides config)"
+    "num_timesteps", None, "Number of timesteps to train (overrides config)"
 )
 _NUM_ENVS = flags.DEFINE_integer(
-    "num_envs",
-    None,
-    "Number of parallel environments (overrides config)"
+    "num_envs", None, "Number of parallel environments (overrides config)"
 )
-_SEED = flags.DEFINE_integer(
-    "seed",
-    None,
-    "Random seed (overrides config)"
-)
+_SEED = flags.DEFINE_integer("seed", None, "Random seed (overrides config)")
 _EPISODE_LENGTH = flags.DEFINE_integer(
-    "episode_length",
-    None,
-    "Episode length (overrides config)"
+    "episode_length", None, "Episode length (overrides config)"
 )
 
 # PPO flags (override config)
-_BATCH_SIZE = flags.DEFINE_integer(
-    "batch_size",
-    None,
-    "Batch size (overrides config)"
-)
+_BATCH_SIZE = flags.DEFINE_integer("batch_size", None, "Batch size (overrides config)")
 _LEARNING_RATE = flags.DEFINE_float(
-    "learning_rate",
-    None,
-    "Learning rate (overrides config)"
+    "learning_rate", None, "Learning rate (overrides config)"
 )
 _ENTROPY_COST = flags.DEFINE_float(
-    "entropy_cost",
-    None,
-    "Entropy cost (overrides config)"
+    "entropy_cost", None, "Entropy cost (overrides config)"
 )
 
 # Checkpointing
 _LOAD_CHECKPOINT = flags.DEFINE_string(
-    "load_checkpoint",
-    None,
-    "Path to checkpoint to load"
+    "load_checkpoint", None, "Path to checkpoint to load"
 )
 
 # Rendering
 _RENDER = flags.DEFINE_boolean(
-    "render",
-    None,
-    "Render videos after training (overrides config)"
+    "render", None, "Render videos after training (overrides config)"
 )
 _NUM_VIDEOS = flags.DEFINE_integer(
-    "num_videos",
-    None,
-    "Number of videos to render (overrides config)"
+    "num_videos", None, "Number of videos to render (overrides config)"
 )
 
 # W&B Logging (override config)
 _USE_WANDB = flags.DEFINE_boolean(
-    "use_wandb",
-    None,
-    "Use Weights & Biases for logging (overrides config)"
+    "use_wandb", None, "Use Weights & Biases for logging (overrides config)"
 )
 _WANDB_PROJECT = flags.DEFINE_string(
-    "wandb_project",
-    None,
-    "W&B project name (overrides config)"
+    "wandb_project", None, "W&B project name (overrides config)"
 )
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -142,35 +107,35 @@ def main(argv):
     # Create override dictionary from command-line flags
     overrides = {}
     if _TERRAIN.value is not None:
-        overrides['env.terrain'] = _TERRAIN.value
+        overrides["env.terrain"] = _TERRAIN.value
     if _NUM_TIMESTEPS.value is not None:
-        overrides['training.num_timesteps'] = _NUM_TIMESTEPS.value
+        overrides["training.num_timesteps"] = _NUM_TIMESTEPS.value
     if _NUM_ENVS.value is not None:
-        overrides['ppo.num_envs'] = _NUM_ENVS.value
+        overrides["ppo.num_envs"] = _NUM_ENVS.value
     if _SEED.value is not None:
-        overrides['training.seed'] = _SEED.value
+        overrides["training.seed"] = _SEED.value
     if _EPISODE_LENGTH.value is not None:
-        overrides['training.episode_length'] = _EPISODE_LENGTH.value
+        overrides["training.episode_length"] = _EPISODE_LENGTH.value
     if _BATCH_SIZE.value is not None:
-        overrides['ppo.batch_size'] = _BATCH_SIZE.value
+        overrides["ppo.batch_size"] = _BATCH_SIZE.value
     if _LEARNING_RATE.value is not None:
-        overrides['ppo.learning_rate'] = _LEARNING_RATE.value
+        overrides["ppo.learning_rate"] = _LEARNING_RATE.value
     if _ENTROPY_COST.value is not None:
-        overrides['ppo.entropy_cost'] = _ENTROPY_COST.value
+        overrides["ppo.entropy_cost"] = _ENTROPY_COST.value
     if _RENDER.value is not None:
-        overrides['rendering.render_videos'] = _RENDER.value
+        overrides["rendering.render_videos"] = _RENDER.value
     if _NUM_VIDEOS.value is not None:
-        overrides['rendering.num_videos'] = _NUM_VIDEOS.value
+        overrides["rendering.num_videos"] = _NUM_VIDEOS.value
     if _USE_WANDB.value is not None:
-        overrides['logging.use_wandb'] = _USE_WANDB.value
+        overrides["logging.use_wandb"] = _USE_WANDB.value
     if _WANDB_PROJECT.value is not None:
-        overrides['logging.wandb_project'] = _WANDB_PROJECT.value
+        overrides["logging.wandb_project"] = _WANDB_PROJECT.value
 
     # Apply overrides
     cfg = config_utils.override_config(cfg, overrides)
 
     # Extract values from config
-    terrain = cfg['env']['terrain']
+    terrain = cfg["env"]["terrain"]
     task_name = f"wildrobot_{terrain}"
 
     print(f"Training WildRobot Locomotion")
@@ -180,8 +145,8 @@ def main(argv):
 
     # Create environment config
     env_config = config_dict.ConfigDict()
-    env_config.ctrl_dt = cfg['env']['ctrl_dt']
-    env_config.sim_dt = cfg['env']['sim_dt']
+    env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
+    env_config.sim_dt = cfg["env"]["sim_dt"]
 
     # Create environment
     env = locomotion.WildRobotLocomotion(task=task_name, config=env_config)
@@ -192,27 +157,27 @@ def main(argv):
 
     # PPO training parameters
     ppo_config = config_dict.ConfigDict()
-    ppo_config.num_timesteps = cfg['training']['num_timesteps']
-    ppo_config.num_evals = cfg['training']['num_evals']
-    ppo_config.reward_scaling = cfg['ppo']['reward_scaling']
-    ppo_config.episode_length = cfg['training']['episode_length']
-    ppo_config.normalize_observations = cfg['ppo']['normalize_observations']
-    ppo_config.action_repeat = cfg['ppo']['action_repeat']
-    ppo_config.unroll_length = cfg['ppo']['unroll_length']
-    ppo_config.num_minibatches = cfg['ppo']['num_minibatches']
-    ppo_config.num_updates_per_batch = cfg['ppo']['num_updates_per_batch']
-    ppo_config.discounting = cfg['ppo']['discounting']
-    ppo_config.learning_rate = cfg['ppo']['learning_rate']
-    ppo_config.entropy_cost = cfg['ppo']['entropy_cost']
-    ppo_config.num_envs = cfg['ppo']['num_envs']
-    ppo_config.batch_size = cfg['ppo']['batch_size']
-    ppo_config.max_grad_norm = cfg['ppo']['max_grad_norm']
-    ppo_config.clipping_epsilon = cfg['ppo']['clipping_epsilon']
+    ppo_config.num_timesteps = cfg["training"]["num_timesteps"]
+    ppo_config.num_evals = cfg["training"]["num_evals"]
+    ppo_config.reward_scaling = cfg["ppo"]["reward_scaling"]
+    ppo_config.episode_length = cfg["training"]["episode_length"]
+    ppo_config.normalize_observations = cfg["ppo"]["normalize_observations"]
+    ppo_config.action_repeat = cfg["ppo"]["action_repeat"]
+    ppo_config.unroll_length = cfg["ppo"]["unroll_length"]
+    ppo_config.num_minibatches = cfg["ppo"]["num_minibatches"]
+    ppo_config.num_updates_per_batch = cfg["ppo"]["num_updates_per_batch"]
+    ppo_config.discounting = cfg["ppo"]["discounting"]
+    ppo_config.learning_rate = cfg["ppo"]["learning_rate"]
+    ppo_config.entropy_cost = cfg["ppo"]["entropy_cost"]
+    ppo_config.num_envs = cfg["ppo"]["num_envs"]
+    ppo_config.batch_size = cfg["ppo"]["batch_size"]
+    ppo_config.max_grad_norm = cfg["ppo"]["max_grad_norm"]
+    ppo_config.clipping_epsilon = cfg["ppo"]["clipping_epsilon"]
 
     # Network parameters
     network_config = config_dict.ConfigDict()
-    network_config.policy_hidden_layer_sizes = cfg['network']['policy_hidden_layers']
-    network_config.value_hidden_layer_sizes = cfg['network']['value_hidden_layers']
+    network_config.policy_hidden_layer_sizes = cfg["network"]["policy_hidden_layers"]
+    network_config.value_hidden_layer_sizes = cfg["network"]["value_hidden_layers"]
 
     print(f"\nTraining Configuration:")
     print(f"  Timesteps: {ppo_config.num_timesteps:,}")
@@ -232,21 +197,21 @@ def main(argv):
     print(f"Logs: {logdir}")
 
     # Initialize W&B if enabled
-    if cfg['logging']['use_wandb']:
+    if cfg["logging"]["use_wandb"]:
         wandb_config = {
-            'terrain': terrain,
-            'num_timesteps': ppo_config.num_timesteps,
-            'num_envs': ppo_config.num_envs,
-            'batch_size': ppo_config.batch_size,
-            'learning_rate': ppo_config.learning_rate,
-            'episode_length': ppo_config.episode_length,
-            'network_policy': network_config.policy_hidden_layer_sizes,
-            'network_value': network_config.value_hidden_layer_sizes,
+            "terrain": terrain,
+            "num_timesteps": ppo_config.num_timesteps,
+            "num_envs": ppo_config.num_envs,
+            "batch_size": ppo_config.batch_size,
+            "learning_rate": ppo_config.learning_rate,
+            "episode_length": ppo_config.episode_length,
+            "network_policy": network_config.policy_hidden_layer_sizes,
+            "network_value": network_config.value_hidden_layer_sizes,
         }
 
         wandb.init(
-            project=cfg['logging']['wandb_project'],
-            entity=cfg['logging']['wandb_entity'],
+            project=cfg["logging"]["wandb_project"],
+            entity=cfg["logging"]["wandb_entity"],
             name=exp_name,
             config=wandb_config,
             dir=str(logdir),
@@ -259,11 +224,15 @@ def main(argv):
 
     # Save both the config file path and overrides
     with open(ckpt_dir / "config.json", "w") as f:
-        json.dump({
-            "config_file": _CONFIG.value or "default.yaml",
-            "overrides": overrides,
-            "final_config": cfg,
-        }, f, indent=2)
+        json.dump(
+            {
+                "config_file": _CONFIG.value or "default.yaml",
+                "overrides": overrides,
+                "final_config": cfg,
+            },
+            f,
+            indent=2,
+        )
 
     # Create network factory
     network_factory = functools.partial(
@@ -280,33 +249,36 @@ def main(argv):
         elapsed = times[-1] - times[1] if len(times) > 1 else 0
 
         # Extract key metrics
-        eval_reward = metrics.get('eval/episode_reward', 0.0)
-        eval_length = metrics.get('eval/episode_length', 0.0)
+        eval_reward = metrics.get("eval/episode_reward", 0.0)
+        eval_length = metrics.get("eval/episode_length", 0.0)
 
-        print(f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, elapsed={elapsed:.1f}s")
+        print(
+            f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, elapsed={elapsed:.1f}s"
+        )
 
         # Log to W&B if enabled
-        if cfg['logging']['use_wandb']:
+        if cfg["logging"]["use_wandb"]:
             log_dict = {
-                'train/step': num_steps,
-                'train/elapsed_time': elapsed,
-                'eval/episode_reward': eval_reward,
-                'eval/episode_length': eval_length,
+                "train/step": num_steps,
+                "train/elapsed_time": elapsed,
+                "eval/episode_reward": eval_reward,
+                "eval/episode_length": eval_length,
             }
 
             # Log additional training metrics if available
             for key, value in metrics.items():
-                if key.startswith('training/') or key.startswith('losses/'):
+                if key.startswith("training/") or key.startswith("losses/"):
                     log_dict[key] = value
 
             # Log learning rate and other optimizer metrics
-            if 'learning_rate' in metrics:
-                log_dict['train/learning_rate'] = metrics['learning_rate']
+            if "learning_rate" in metrics:
+                log_dict["train/learning_rate"] = metrics["learning_rate"]
 
             wandb.log(log_dict, step=num_steps)
 
     # Wrap environment for training
     from mujoco_playground import wrapper
+
     wrapped_env = wrapper.wrap_for_brax_training(
         env,
         episode_length=ppo_config.episode_length,
@@ -314,9 +286,9 @@ def main(argv):
     )
 
     # Train
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Starting training...")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     train_fn = functools.partial(
         ppo.train,
@@ -336,7 +308,7 @@ def main(argv):
         batch_size=ppo_config.batch_size,
         max_grad_norm=ppo_config.max_grad_norm,
         clipping_epsilon=ppo_config.clipping_epsilon,
-        seed=cfg['training']['seed'],
+        seed=cfg["training"]["seed"],
         network_factory=network_factory,
         save_checkpoint_path=ckpt_dir,
         restore_checkpoint_path=_LOAD_CHECKPOINT.value,
@@ -347,9 +319,9 @@ def main(argv):
         progress_fn=progress,
     )
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Training complete!")
-    print("="*60)
+    print("=" * 60)
 
     if len(times) > 1:
         print(f"Time to JIT: {times[1] - times[0]:.2f}s")
@@ -358,13 +330,14 @@ def main(argv):
     # Save final policy
     print("\nSaving policy...")
     import pickle
+
     policy_path = logdir / "policy.pkl"
     with open(policy_path, "wb") as f:
         pickle.dump(params, f)
     print(f"Policy saved to: {policy_path}")
 
     # Render videos
-    if cfg['rendering']['render_videos']:
+    if cfg["rendering"]["render_videos"]:
         print("\nRendering evaluation videos...")
         inference_fn = make_inference_fn(params, deterministic=True)
         jit_inference_fn = jax.jit(inference_fn)
@@ -381,18 +354,18 @@ def main(argv):
             return states
 
         # Generate videos
-        num_videos = cfg['rendering']['num_videos']
+        num_videos = cfg["rendering"]["num_videos"]
         video_paths = []
 
         for i in range(num_videos):
-            rng = jax.random.PRNGKey(cfg['training']['seed'] + i)
+            rng = jax.random.PRNGKey(cfg["training"]["seed"] + i)
             traj = do_rollout(rng)
 
             # Render frames
             frames = env.render(
                 traj[::2],
-                height=cfg['rendering']['render_height'],
-                width=cfg['rendering']['render_width']
+                height=cfg["rendering"]["render_height"],
+                width=cfg["rendering"]["render_width"],
             )
             video_path = logdir / f"rollout_{i}.mp4"
             media.write_video(str(video_path), frames, fps=25)
@@ -400,15 +373,19 @@ def main(argv):
             video_paths.append(video_path)
 
         # Log videos to W&B
-        if cfg['logging']['use_wandb']:
+        if cfg["logging"]["use_wandb"]:
             print("\nLogging videos to W&B...")
             for i, video_path in enumerate(video_paths):
-                wandb.log({
-                    f"videos/rollout_{i}": wandb.Video(str(video_path), fps=25, format="mp4")
-                })
+                wandb.log(
+                    {
+                        f"videos/rollout_{i}": wandb.Video(
+                            str(video_path), fps=25, format="mp4"
+                        )
+                    }
+                )
 
     # Finish W&B run
-    if cfg['logging']['use_wandb']:
+    if cfg["logging"]["use_wandb"]:
         wandb.finish()
         print("W&B run finished")
 

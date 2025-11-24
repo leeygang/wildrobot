@@ -21,9 +21,8 @@ import jax.numpy as jp
 from ml_collections import config_dict
 from mujoco import mjx
 
-from mujoco_playground._src import mjx_env
-from mujoco_playground._src import reward
-from training.wildrobot_playground.wildrobot import base
+from mujoco_playground._src import mjx_env, reward
+from wildrobot import base
 
 
 class WildRobotLocomotion(base.WildRobotEnv):
@@ -49,19 +48,21 @@ class WildRobotLocomotion(base.WildRobotEnv):
         super().__init__(task, config, config_overrides)
 
         # Default joint positions for standing pose
-        self._default_qpos = jp.array([
-            -0.4,   # right_hip_pitch
-            0.0,    # right_hip_roll
-            0.8,    # right_knee_pitch
-            -0.4,   # right_ankle_pitch
-            0.0,    # right_foot_roll
-            -0.4,   # left_hip_pitch
-            0.0,    # left_hip_roll
-            0.8,    # left_knee_pitch
-            -0.4,   # left_ankle_pitch
-            0.0,    # left_foot_roll
-            0.0,    # waist_yaw
-        ])
+        self._default_qpos = jp.array(
+            [
+                -0.4,  # right_hip_pitch
+                0.0,  # right_hip_roll
+                0.8,  # right_knee_pitch
+                -0.4,  # right_ankle_pitch
+                0.0,  # right_foot_roll
+                -0.4,  # left_hip_pitch
+                0.0,  # left_hip_roll
+                0.8,  # left_knee_pitch
+                -0.4,  # left_ankle_pitch
+                0.0,  # left_foot_roll
+                0.0,  # waist_yaw
+            ]
+        )
 
         self._target_height = 0.45  # Target standing height (meters)
 
@@ -75,10 +76,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         # Sample random velocity command (includes standing at 0.0)
         velocity_cmd = jax.random.uniform(
-            key1,
-            shape=(1,),
-            minval=self._min_velocity,
-            maxval=self._max_velocity
+            key1, shape=(1,), minval=self._min_velocity, maxval=self._max_velocity
         )[0]
 
         # Initialize with default standing pose
@@ -87,17 +85,14 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         # Set floating base to standing height
         qpos = self.set_floating_base_qpos(
-            jp.array([0.0, 0.0, self._target_height, 1.0, 0.0, 0.0, 0.0]),
-            qpos
+            jp.array([0.0, 0.0, self._target_height, 1.0, 0.0, 0.0, 0.0]), qpos
         )
 
         # Set joint positions with small random noise
         joint_noise = jax.random.uniform(
             key2, shape=(len(self._default_qpos),), minval=-0.05, maxval=0.05
         )
-        qpos = self.set_actuator_joints_qpos(
-            self._default_qpos + joint_noise, qpos
-        )
+        qpos = self.set_actuator_joints_qpos(self._default_qpos + joint_noise, qpos)
 
         # Create MJX data
         data = mjx.make_data(self.mjx_model)
@@ -112,9 +107,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         return mjx_env.State(data, obs, reward, done, metrics)
 
-    def step(
-        self, state: mjx_env.State, action: jax.Array
-    ) -> mjx_env.State:
+    def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         """Step the environment."""
         # Get velocity command from metrics
         velocity_cmd = state.metrics.get("velocity_command", 0.0)
@@ -143,9 +136,13 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "reward_alive": 1.0 if not done else 0.0,
         }
 
-        return state.replace(data=data, obs=obs, reward=reward, done=done, metrics=metrics)
+        return state.replace(
+            data=data, obs=obs, reward=reward, done=done, metrics=metrics
+        )
 
-    def _get_obs(self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array) -> jax.Array:
+    def _get_obs(
+        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array
+    ) -> jax.Array:
         """
         Get observation vector including velocity command.
 
@@ -174,20 +171,24 @@ class WildRobotLocomotion(base.WildRobotEnv):
         # Command
         cmd = jp.array([velocity_cmd])
 
-        obs = jp.concatenate([
-            qpos,           # 11
-            qvel,           # 11
-            gravity,        # 3
-            angvel,         # 3
-            gyro,           # 9 (3 IMUs x 3)
-            accel,          # 9 (3 IMUs x 3)
-            action,         # 11 (previous action)
-            cmd,            # 1 (velocity command)
-        ])
+        obs = jp.concatenate(
+            [
+                qpos,  # 11
+                qvel,  # 11
+                gravity,  # 3
+                angvel,  # 3
+                gyro,  # 9 (3 IMUs x 3)
+                accel,  # 9 (3 IMUs x 3)
+                action,  # 11 (previous action)
+                cmd,  # 1 (velocity command)
+            ]
+        )
 
         return obs
 
-    def _get_reward(self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array) -> jax.Array:
+    def _get_reward(
+        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array
+    ) -> jax.Array:
         """
         Calculate reward based on velocity command.
 
@@ -208,7 +209,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             bounds=(velocity_cmd - 0.1, velocity_cmd + 0.1),
             margin=0.5,
             value_at_margin=0.0,
-            sigmoid="linear"
+            sigmoid="linear",
         )
 
         # 2. Penalize lateral movement (stay straight)
@@ -221,7 +222,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             bounds=(self._target_height - 0.05, self._target_height + 0.05),
             margin=0.1,
             value_at_margin=0.0,
-            sigmoid="linear"
+            sigmoid="linear",
         )
 
         # 4. Upright posture
@@ -231,7 +232,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             bounds=(0.9, 1.0),
             margin=0.5,
             value_at_margin=0.0,
-            sigmoid="linear"
+            sigmoid="linear",
         )
 
         # 5. Minimize angular velocity (reduce wobbling)
@@ -243,17 +244,19 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         # 7. Energy efficiency (scale by velocity - more important when moving)
         qvel = self.get_actuator_joints_qvel(data.qvel)
-        energy_penalty = -0.001 * jp.sum(jp.square(action * qvel)) * (velocity_cmd + 0.1)
+        energy_penalty = (
+            -0.001 * jp.sum(jp.square(action * qvel)) * (velocity_cmd + 0.1)
+        )
 
         # Weighted sum
         total_reward = (
-            3.0 * velocity_reward +
-            lateral_penalty +
-            1.5 * height_reward +
-            1.5 * upright_reward +
-            angvel_penalty +
-            action_penalty +
-            energy_penalty
+            3.0 * velocity_reward
+            + lateral_penalty
+            + 1.5 * height_reward
+            + 1.5 * upright_reward
+            + angvel_penalty
+            + action_penalty
+            + energy_penalty
         )
 
         return total_reward
@@ -268,9 +271,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
         gravity = self.get_gravity(data)
 
         fallen = jp.where(
-            (height < 0.2) | (gravity[2] < 0.5),  # Too low or too tilted
-            1.0,
-            0.0
+            (height < 0.2) | (gravity[2] < 0.5), 1.0, 0.0  # Too low or too tilted
         )
 
         return fallen

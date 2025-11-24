@@ -10,9 +10,9 @@ dependencies = [
     "jax[cuda12]>=0.8.1; sys_platform != 'darwin'",
     "mediapy>=1.2.4",
     "mujoco>=3.3.7",
+    "mujoco-playground @ git+https://github.com/google-deepmind/mujoco_playground.git",
     "numpy>=2.3.5",
     "onshape-to-robot>=1.7.9",
-    "playground>=0.0.5",
     "pymeshlab>=2025.7",
     "wandb>=0.23.0",
 ]
