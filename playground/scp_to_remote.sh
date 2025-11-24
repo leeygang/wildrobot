@@ -23,11 +23,11 @@ REMOTE_PATH="~/projects/wildrobot/playground/"
 
 # Determine if it's a directory or file
 if [ -d "$FILENAME" ]; then
-    echo "Copying directory '$FILENAME' to $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+    echo "Copying directory '$FILENAME' to $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
     scp -r "$FILENAME" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
 else
-    echo "Copying file '$FILENAME' to $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-    scp "$FILENAME" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+    echo "Copying file '$FILENAME' to $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
+    scp "$FILENAME" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
 fi
 
 # Check if scp was successful
