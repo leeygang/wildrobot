@@ -82,9 +82,6 @@ _LOAD_CHECKPOINT = flags.DEFINE_string(
 _RENDER = flags.DEFINE_boolean(
     "render", None, "Render videos after training (overrides config)"
 )
-_NUM_VIDEOS = flags.DEFINE_integer(
-    "num_videos", None, "Number of videos to render (overrides config)"
-)
 
 # W&B Logging (override config)
 _USE_WANDB = flags.DEFINE_boolean(
@@ -127,8 +124,6 @@ def main(argv):
         overrides["ppo.entropy_cost"] = _ENTROPY_COST.value
     if _RENDER.value is not None:
         overrides["rendering.render_videos"] = _RENDER.value
-    if _NUM_VIDEOS.value is not None:
-        overrides["rendering.num_videos"] = _NUM_VIDEOS.value
     if _USE_WANDB.value is not None:
         overrides["logging.use_wandb"] = _USE_WANDB.value
     if _WANDB_PROJECT.value is not None:

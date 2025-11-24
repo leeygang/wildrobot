@@ -40,8 +40,7 @@ logging:
   wandb_entity: null
 
 rendering:
-  render_videos: true
-  num_videos: 2
+  render_videos: false        # Disable videos for quick testing (very slow!)
   render_height: 480
   render_width: 640
 

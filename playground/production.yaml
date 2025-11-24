@@ -40,8 +40,7 @@ logging:
   wandb_entity: null
 
 rendering:
-  render_videos: true
-  num_videos: 5
+  render_videos: true         # Render evaluation video (only at end, loco-mujoco style)
   render_height: 720
   render_width: 1280
 
