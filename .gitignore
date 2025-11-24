@@ -17,6 +17,7 @@ build/
 .venv/
 venv/
 env/
+.python-version
 
 # IDEs
 .vscode/
@@ -60,3 +61,5 @@ htmlcov/
 
 # Weights & Biases
 wandb/
+
+uv.lock
