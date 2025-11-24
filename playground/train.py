@@ -336,21 +336,26 @@ def main(argv):
         print("=" * 60)
 
         try:
-            from visualize_policy import visualize_policy
+            from visualize_policy import create_env, load_policy, visualize_single_env
 
             video_path = logdir / "final_policy.mp4"
 
+            # Create environment and load policy
+            env = create_env()
+            make_policy, params = load_policy(str(final_checkpoint), env)
+
             # Render a single video of the final policy
-            visualize_policy(
-                checkpoint_path=str(final_checkpoint),
-                config_path=_CONFIG.value or "quick.yaml",
+            visualize_single_env(
+                env=env,
+                make_policy=make_policy,
+                params=params,
                 output_path=str(video_path),
-                n_steps=ppo_config.episode_length,
+                n_steps=ppo_config.episode_length * 5,
                 deterministic=True,
                 seed=cfg["training"]["seed"],
                 height=cfg["rendering"]["render_height"],
                 width=cfg["rendering"]["render_width"],
-                camera="track",
+                camera=None,  # WildRobot has no named cameras, use free camera
                 fps=50,
             )
 
