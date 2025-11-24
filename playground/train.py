@@ -368,10 +368,15 @@ def main(argv):
             print(f"\n✓ Video rendering successful: {video_path}")
 
         except Exception as e:
+            import traceback
             print(
-                f"\nWarning: Video recording failed (likely running on headless server): {e}"
+                f"\nWarning: Video recording failed: {e}"
             )
-            print("Training completed successfully. Video recording skipped.")
+            print("Full traceback:")
+            traceback.print_exc()
+            print("\nTraining completed successfully. Video recording skipped.")
+            print(f"To render video later, run:")
+            print(f"  python visualize_policy.py --checkpoint {final_checkpoint} --output videos/policy.mp4")
     else:
         print("\nVideo rendering disabled (render_videos=false in config)")
         print(f"To render video later, run:")
