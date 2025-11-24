@@ -16,15 +16,16 @@
 
 from typing import Any, Dict, Optional, Union
 
-from etils import epath
 import jax
 import jax.numpy as jp
-from ml_collections import config_dict
 import mujoco
+
+from etils import epath
+from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
-from training.wildrobot_playground.wildrobot import constants
+from playground.wildrobot import constants
 
 
 def get_assets(root_path: str) -> Dict[str, bytes]:
@@ -67,9 +68,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get floating base info
         self.floating_base_name = [
-            self._mj_model.jnt(k).name for k in range(0, self._mj_model.njnt)
+            self._mj_model.jnt(k).name
+            for k in range(0, self._mj_model.njnt)
             if self._mj_model.jnt(k).type == 0
-        ][0]  # Assuming only one floating object (waist_freejoint)
+        ][
+            0
+        ]  # Assuming only one floating object (waist_freejoint)
 
         # Get actuator and joint names
         self.actuator_names = [
@@ -87,9 +91,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self.get_joint_addr_from_name(n) for n in self.actuator_names
         ]
 
-        self.actuator_qvel_addr = jp.array([
-            self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids
-        ])
+        self.actuator_qvel_addr = jp.array(
+            [self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids]
+        )
 
         self.actuator_joint_dict = {
             n: self.get_joint_id_from_name(n) for n in self.actuator_names
@@ -125,7 +129,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """Return the qpos of actuator joints."""
         return data[jp.array(self.actuator_joint_qpos_addr)]
 
-    def set_actuator_joints_qpos(self, new_qpos: jax.Array, qpos: jax.Array) -> jax.Array:
+    def set_actuator_joints_qpos(
+        self, new_qpos: jax.Array, qpos: jax.Array
+    ) -> jax.Array:
         """Set the qpos only for the actuator joints."""
         return qpos.at[jp.array(self.actuator_joint_qpos_addr)].set(new_qpos)
 
@@ -133,30 +139,38 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """Return the qvel of actuator joints."""
         return data[self.actuator_qvel_addr]
 
-    def set_actuator_joints_qvel(self, new_qvel: jax.Array, qvel: jax.Array) -> jax.Array:
+    def set_actuator_joints_qvel(
+        self, new_qvel: jax.Array, qvel: jax.Array
+    ) -> jax.Array:
         """Set the qvel only for the actuator joints."""
         return qvel.at[self.actuator_qvel_addr].set(new_qvel)
 
     def get_floating_base_qpos(self, data: jax.Array) -> jax.Array:
         """Return floating base position (7D: 3 pos + 4 quat)."""
-        return data[self._floating_base_qpos_addr:self._floating_base_qpos_addr+7]
+        return data[self._floating_base_qpos_addr : self._floating_base_qpos_addr + 7]
 
     def get_floating_base_qvel(self, data: jax.Array) -> jax.Array:
         """Return floating base velocity (6D: 3 lin + 3 ang)."""
-        return data[self._floating_base_qvel_addr:self._floating_base_qvel_addr+6]
+        return data[self._floating_base_qvel_addr : self._floating_base_qvel_addr + 6]
 
     def set_floating_base_qpos(self, new_qpos: jax.Array, qpos: jax.Array) -> jax.Array:
         """Set floating base position."""
-        return qpos.at[self._floating_base_qpos_addr:self._floating_base_qpos_addr+7].set(new_qpos)
+        return qpos.at[
+            self._floating_base_qpos_addr : self._floating_base_qpos_addr + 7
+        ].set(new_qpos)
 
     def set_floating_base_qvel(self, new_qvel: jax.Array, qvel: jax.Array) -> jax.Array:
         """Set floating base velocity."""
-        return qvel.at[self._floating_base_qvel_addr:self._floating_base_qvel_addr+6].set(new_qvel)
+        return qvel.at[
+            self._floating_base_qvel_addr : self._floating_base_qvel_addr + 6
+        ].set(new_qvel)
 
     # Sensor readings
     def get_gravity(self, data: mjx.Data) -> jax.Array:
         """Return the gravity vector in the world frame."""
-        return mjx_env.get_sensor_data(self.mj_model, data, self.robot_config.gravity_sensor)
+        return mjx_env.get_sensor_data(
+            self.mj_model, data, self.robot_config.gravity_sensor
+        )
 
     def get_global_angvel(self, data: mjx.Data) -> jax.Array:
         """Return the angular velocity of the robot in the world frame."""

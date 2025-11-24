@@ -37,7 +37,7 @@ from ml_collections import config_dict
 # Add the project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 
-from wildrobot import config_utils, locomotion
+from playground.wildrobot import config_utils, locomotion
 
 # Configuration file
 _CONFIG = flags.DEFINE_string(

@@ -22,7 +22,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env, reward
-from wildrobot import base
+from playground.wildrobot import base
 
 
 class WildRobotLocomotion(base.WildRobotEnv):
