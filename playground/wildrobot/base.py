@@ -87,9 +87,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self.actuator_joint_ids = [
             self.get_joint_id_from_name(n) for n in self.actuator_names
         ]
-        self.actuator_joint_qpos_addr = [
-            self.get_joint_addr_from_name(n) for n in self.actuator_names
-        ]
+        self.actuator_joint_qpos_addr = jp.array(
+            [self.get_joint_addr_from_name(n) for n in self.actuator_names]
+        )
 
         self.actuator_qvel_addr = jp.array(
             [self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids]
@@ -127,13 +127,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def get_actuator_joint_qpos(self, data: jax.Array) -> jax.Array:
         """Return the qpos of actuator joints."""
-        return data[jp.array(self.actuator_joint_qpos_addr)]
+        return data[self.actuator_joint_qpos_addr].squeeze()
 
     def set_actuator_joints_qpos(
         self, new_qpos: jax.Array, qpos: jax.Array
     ) -> jax.Array:
         """Set the qpos only for the actuator joints."""
-        return qpos.at[jp.array(self.actuator_joint_qpos_addr)].set(new_qpos)
+        return qpos.at[self.actuator_joint_qpos_addr].set(new_qpos)
 
     def get_actuator_joints_qvel(self, data: jax.Array) -> jax.Array:
         """Return the qvel of actuator joints."""

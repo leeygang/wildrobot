@@ -279,19 +279,13 @@ def main(argv):
 
             wandb.log(log_dict, step=num_steps)
 
-    # Wrap environment for training
-    from mujoco_playground import wrapper
-
-    wrapped_env = wrapper.wrap_for_brax_training(
-        env,
-        episode_length=ppo_config.episode_length,
-        action_repeat=ppo_config.action_repeat,
-    )
-
     # Train
     print("\n" + "=" * 60)
     print("Starting training...")
     print("=" * 60 + "\n")
+
+    # Import wrapper function (don't pre-wrap the environment)
+    from mujoco_playground import wrapper
 
     train_fn = functools.partial(
         ppo.train,
@@ -318,7 +312,8 @@ def main(argv):
     )
 
     make_inference_fn, params, _ = train_fn(
-        environment=wrapped_env,
+        environment=env,  # Pass unwrapped environment
+        wrap_env_fn=wrapper.wrap_for_brax_training,  # Let Brax wrap it
         progress_fn=progress,
     )
 

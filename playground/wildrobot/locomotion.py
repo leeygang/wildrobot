@@ -72,9 +72,6 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
     def reset(self, rng: jax.Array) -> mjx_env.State:
         """Reset the environment with random velocity command."""
-        # Ensure rng is a proper JAX PRNG key
-        # When vmapped, rng might be a scalar, so we need to fold it into a key
-        rng = jax.random.fold_in(jax.random.PRNGKey(0), rng) if rng.ndim == 0 else rng
         rng, key1, key2 = jax.random.split(rng, 3)
 
         # Sample random velocity command (includes standing at 0.0)
@@ -107,6 +104,8 @@ class WildRobotLocomotion(base.WildRobotEnv):
         reward, done = jp.zeros(2)
         metrics = {
             "velocity_command": velocity_cmd,
+            "height": jp.zeros(()),
+            "forward_velocity": jp.zeros(()),
         }
         info = {}
 
@@ -125,25 +124,18 @@ class WildRobotLocomotion(base.WildRobotEnv):
             data = mjx.step(self.mjx_model, data)
             return data, None
 
-        data, _ = jax.lax.scan(
-            step_fn, data, None, length=int(self.ctrl_dt / self.sim_dt)
-        )
+        data, _ = jax.lax.scan(step_fn, data, None, length=int(self.dt / self.sim_dt))
 
         # Get observations and rewards
         obs = self._get_obs(data, action, velocity_cmd)
         reward = self._get_reward(data, action, velocity_cmd)
         done = self._get_done(data)
 
-        metrics = {
-            "velocity_command": velocity_cmd,
-            "height": self.get_floating_base_qpos(data.qpos)[2],
-            "forward_velocity": self.get_local_linvel(data)[0],
-            "reward_alive": 1.0 if not done else 0.0,
-        }
+        # Update metrics in place (like Open_Duck_Playground does)
+        state.metrics["height"] = self.get_floating_base_qpos(data.qpos)[2]
+        state.metrics["forward_velocity"] = self.get_local_linvel(data)[0]
 
-        return state.replace(
-            data=data, obs=obs, reward=reward, done=done, metrics=metrics
-        )
+        return state.replace(data=data, obs=obs, reward=reward, done=done)
 
     def _get_obs(
         self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array
@@ -161,23 +153,20 @@ class WildRobotLocomotion(base.WildRobotEnv):
             - Previous action (11)
             - Velocity command (1)
         """
-        # Joint state - flatten to ensure 1D shape
-        qpos = jp.ravel(self.get_actuator_joint_qpos(data.qpos))
-        qvel = jp.ravel(self.get_actuator_joints_qvel(data.qvel))
+        # Joint state
+        qpos = self.get_actuator_joint_qpos(data.qpos)
+        qvel = self.get_actuator_joints_qvel(data.qvel)
 
         # Orientation and angular velocity
-        gravity = jp.ravel(self.get_gravity(data))
-        angvel = jp.ravel(self.get_global_angvel(data))
+        gravity = self.get_gravity(data)
+        angvel = self.get_global_angvel(data)
 
         # IMU readings (chest + left knee + right knee)
-        gyro = jp.ravel(self.get_gyros(data))
-        accel = jp.ravel(self.get_accelerometers(data))
+        gyro = self.get_gyros(data)
+        accel = self.get_accelerometers(data)
 
-        # Command - ensure it's a 1D array with one element
-        cmd = jp.ravel(jp.array([velocity_cmd]))
-
-        # Ensure action is also flattened
-        action = jp.ravel(action)
+        # Command
+        cmd = jp.array([velocity_cmd])
 
         obs = jp.concatenate(
             [
@@ -212,36 +201,22 @@ class WildRobotLocomotion(base.WildRobotEnv):
         linvel = self.get_local_linvel(data)
 
         # 1. Velocity tracking reward (most important)
-        velocity_reward = reward.tolerance(
-            linvel[0],  # Actual forward velocity
-            bounds=(velocity_cmd - 0.1, velocity_cmd + 0.1),
-            margin=0.5,
-            value_at_margin=0.0,
-            sigmoid="linear",
-        )
+        # Use exponential reward: exp(-error^2 / tolerance^2)
+        velocity_error = linvel[0] - velocity_cmd
+        velocity_reward = jp.exp(-jp.square(velocity_error) / 0.01)
 
         # 2. Penalize lateral movement (stay straight)
         lateral_penalty = -0.5 * jp.square(linvel[1])
 
         # 3. Height tracking
         height = self.get_floating_base_qpos(data.qpos)[2]
-        height_reward = reward.tolerance(
-            height,
-            bounds=(self._target_height - 0.05, self._target_height + 0.05),
-            margin=0.1,
-            value_at_margin=0.0,
-            sigmoid="linear",
-        )
+        height_error = height - self._target_height
+        height_reward = jp.exp(-jp.square(height_error) / 0.01)
 
         # 4. Upright posture
         gravity = self.get_gravity(data)
-        upright_reward = reward.tolerance(
-            gravity[2],  # z-component of up vector
-            bounds=(0.9, 1.0),
-            margin=0.5,
-            value_at_margin=0.0,
-            sigmoid="linear",
-        )
+        # Reward for z-component being close to 1.0 (pointing up)
+        upright_reward = jp.exp(-jp.square(gravity[2] - 1.0) / 0.1)
 
         # 5. Minimize angular velocity (reduce wobbling)
         angvel = self.get_global_angvel(data)

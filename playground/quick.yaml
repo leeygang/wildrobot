@@ -1,5 +1,5 @@
 # Quick Training Configuration
-# For fast prototyping and testing
+# For fast prototyping and testing (smoke test - should complete in ~2 minutes)
 
 env:
   terrain: "flat"
@@ -7,18 +7,18 @@ env:
   sim_dt: 0.002
 
 training:
-  num_timesteps: 5000000      # 5M steps (faster)
-  num_evals: 5
-  episode_length: 1000
+  num_timesteps: 100000       # 100K steps (VERY fast smoke test)
+  num_evals: 2                # Just 2 evals to verify it works
+  episode_length: 200         # Shorter episodes
   seed: 0
 
 ppo:
-  num_envs: 1024              # Fewer envs (less GPU memory)
-  num_eval_envs: 64
-  batch_size: 256
-  unroll_length: 10
-  num_minibatches: 4
-  num_updates_per_batch: 4
+  num_envs: 256               # Fewer envs for faster compilation (must divide batch_size * num_minibatches)
+  num_eval_envs: 32           # Fewer eval envs
+  batch_size: 128             # Smaller batch (128 * 2 = 256, divisible by 256 envs)
+  unroll_length: 5            # Shorter unrolls
+  num_minibatches: 2          # Fewer minibatches
+  num_updates_per_batch: 2    # Fewer updates
 
   learning_rate: 0.0003
   entropy_cost: 0.01

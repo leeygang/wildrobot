@@ -12,7 +12,7 @@ dependencies = [
     "mujoco>=3.3.7",
     "numpy>=2.3.5",
     "onshape-to-robot>=1.7.9",
-    "playground>=0.0.3",
+    "playground",
     "pymeshlab>=2025.7",
     "wandb>=0.23.0",
 ]
