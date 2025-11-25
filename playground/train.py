@@ -145,6 +145,11 @@ def main(argv):
     env_config = config_dict.ConfigDict()
     env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
     env_config.sim_dt = cfg["env"]["sim_dt"]
+    
+    # Get terminal state params (nested structure matching loco-mujoco)
+    terminal_params = cfg["env"].get("terminal_state_params", {})
+    env_config.min_height = terminal_params.get("min_height", 0.2)
+    env_config.max_height = terminal_params.get("max_height", 0.7)
 
     # Create environment
     env = locomotion.WildRobotLocomotion(task=task_name, config=env_config)

@@ -7,6 +7,11 @@ env:
   ctrl_dt: 0.02               # Control frequency: 50Hz
   sim_dt: 0.002               # Simulation frequency: 500Hz
 
+  # Termination conditions (matches loco-mujoco's HeightBasedTerminalStateHandler)
+  terminal_state_params:
+    min_height: 0.2           # Minimum height before termination (fallen)
+    max_height: 0.7           # Maximum height before termination (jumping/unstable)
+
 training:
   num_timesteps: 30000000     # Total training steps (30M)
   num_evals: 10               # Number of evaluations during training

@@ -70,6 +70,11 @@ class WildRobotLocomotion(base.WildRobotEnv):
         self._min_velocity = 0.0
         self._max_velocity = 1.0
 
+        # Termination height range (configurable via config)
+        # Default values match loco-mujoco's WildRobot config
+        self._min_height = getattr(config, 'min_height', 0.2)
+        self._max_height = getattr(config, 'max_height', 0.7)
+
     def reset(self, rng: jax.Array) -> mjx_env.State:
         """Reset the environment with random velocity command."""
         rng, key1, key2 = jax.random.split(rng, 3)
@@ -248,13 +253,19 @@ class WildRobotLocomotion(base.WildRobotEnv):
         """
         Check if episode should terminate.
 
-        Episode ends if robot falls (too low or too tilted).
+        Episode ends if robot falls (height outside healthy range).
+        Uses only height-based termination like loco-mujoco (no gravity check).
+        Height range is configurable via config (min_height, max_height).
         """
         height = self.get_floating_base_qpos(data.qpos)[2]
-        gravity = self.get_gravity(data)
 
+        # Robot is fallen if height is outside healthy range
+        # Based on loco-mujoco's HeightBasedTerminalStateHandler
+        # Values are configurable in YAML config (default: 0.2 - 0.7m)
+        # See: loco-mujoco/loco_mujoco/environments/humanoids/wildrobot.py
         fallen = jp.where(
-            (height < 0.2) | (gravity[2] < 0.5), 1.0, 0.0  # Too low or too tilted
+            (height < self._min_height) | (height > self._max_height),
+            1.0, 0.0
         )
 
         return fallen
