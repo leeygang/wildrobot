@@ -75,6 +75,33 @@ class WildRobotLocomotion(base.WildRobotEnv):
         self._min_height = getattr(config, 'min_height', 0.2)
         self._max_height = getattr(config, 'max_height', 0.7)
 
+        # Load reward parameters from config (like loco_mujoco)
+        # Default values match loco_mujoco's LocomotionReward
+        reward_params = getattr(config, 'reward_params', {})
+
+        # Velocity tracking weights (primary goal)
+        self._tracking_w_exp_xy = reward_params.get('tracking_w_exp_xy', 15.0)
+        self._tracking_w_lin_xy = reward_params.get('tracking_w_lin_xy', 5.0)
+        self._tracking_w_exp_yaw = reward_params.get('tracking_w_exp_yaw', 4.0)
+        self._tracking_w_lin_yaw = reward_params.get('tracking_w_lin_yaw', 1.0)
+        self._tracking_sigma = reward_params.get('tracking_sigma', 0.25)
+
+        # Stability penalties
+        self._z_vel_coeff = reward_params.get('z_vel_coeff', 2.0)
+        self._roll_pitch_vel_coeff = reward_params.get('roll_pitch_vel_coeff', 0.08)
+        self._roll_pitch_pos_coeff = reward_params.get('roll_pitch_pos_coeff', 0.3)
+
+        # Smoothness penalties
+        self._nominal_joint_pos_coeff = reward_params.get('nominal_joint_pos_coeff', 0.005)
+        self._joint_position_limit_coeff = reward_params.get('joint_position_limit_coeff', 5.0)
+        self._joint_vel_coeff = reward_params.get('joint_vel_coeff', 5e-5)
+        self._joint_acc_coeff = reward_params.get('joint_acc_coeff', 2e-5)
+        self._action_rate_coeff = reward_params.get('action_rate_coeff', 0.02)
+
+        # Energy penalties
+        self._joint_torque_coeff = reward_params.get('joint_torque_coeff', 2e-7)
+        self._energy_coeff = reward_params.get('energy_coeff', 2e-5)
+
     def reset(self, rng: jax.Array) -> mjx_env.State:
         """Reset the environment with random velocity command."""
         rng, key1, key2 = jax.random.split(rng, 3)
@@ -142,9 +169,17 @@ class WildRobotLocomotion(base.WildRobotEnv):
         reward = self._get_reward(data, action, velocity_cmd)
         done = self._get_done(data)
 
-        # Update metrics in place (like Open_Duck_Playground does)
-        state.metrics["height"] = self.get_floating_base_qpos(data.qpos)[2]
-        state.metrics["forward_velocity"] = self.get_local_linvel(data)[0]
+        # Update metrics (these are tracked per environment and averaged during eval)
+        forward_velocity = self.get_local_linvel(data)[0]
+        height = self.get_floating_base_qpos(data.qpos)[2]
+
+        state.metrics["height"] = height
+        state.metrics["forward_velocity"] = forward_velocity
+        state.metrics["velocity_command"] = velocity_cmd
+
+        # Track success (completing episode without falling)
+        # Success = reached end of episode without terminating early
+        state.metrics["success"] = jp.where(done > 0.5, 0.0, 1.0)
 
         return state.replace(data=data, obs=obs, reward=reward, done=done)
 
@@ -200,56 +235,87 @@ class WildRobotLocomotion(base.WildRobotEnv):
         """
         Calculate reward based on velocity command.
 
-        Reward components:
-            - Velocity tracking: Match commanded velocity
-            - Lateral penalty: Minimize sideways drift
-            - Height tracking: Maintain target height
-            - Upright posture: Stay vertical
-            - Angular velocity: Reduce wobbling
-            - Action smoothness: Encourage smooth movements
-            - Energy efficiency: Minimize power consumption
+        Reward components (configurable via YAML - similar to loco_mujoco):
+            - Velocity tracking: Match commanded velocity (exponential + linear)
+            - Stability: Minimize vertical bobbing, tipping, stay upright
+            - Smooth motion: Joint velocities, accelerations, action rate
+            - Energy efficiency: Minimize torque
         """
         linvel = self.get_local_linvel(data)
-
-        # 1. Velocity tracking reward (most important)
-        # Use exponential reward: exp(-error^2 / tolerance^2)
-        velocity_error = linvel[0] - velocity_cmd
-        velocity_reward = jp.exp(-jp.square(velocity_error) / 0.01)
-
-        # 2. Penalize lateral movement (stay straight)
-        lateral_penalty = -0.5 * jp.square(linvel[1])
-
-        # 3. Height tracking
-        height = self.get_floating_base_qpos(data.qpos)[2]
-        height_error = height - self._target_height
-        height_reward = jp.exp(-jp.square(height_error) / 0.01)
-
-        # 4. Upright posture
-        gravity = self.get_gravity(data)
-        # Reward for z-component being close to 1.0 (pointing up)
-        upright_reward = jp.exp(-jp.square(gravity[2] - 1.0) / 0.1)
-
-        # 5. Minimize angular velocity (reduce wobbling)
         angvel = self.get_global_angvel(data)
-        angvel_penalty = -0.01 * jp.sum(jp.square(angvel))
-
-        # 6. Action smoothness
-        action_penalty = -0.001 * jp.sum(jp.square(action))
-
-        # 7. Energy efficiency (scale by velocity - more important when moving)
+        gravity = self.get_gravity(data)
+        qpos = self.get_actuator_joint_qpos(data.qpos)
         qvel = self.get_actuator_joints_qvel(data.qvel)
-        energy_penalty = (
-            -0.001 * jp.sum(jp.square(action * qvel)) * (velocity_cmd + 0.1)
-        )
 
-        # Weighted sum
+        # === 1. VELOCITY TRACKING (Primary Goal) ===
+        # Exponential reward for xy velocity tracking (very strong signal)
+        xy_vel_error = jp.sqrt(jp.square(linvel[0] - velocity_cmd) + jp.square(linvel[1]))
+        tracking_exp_xy = self._tracking_w_exp_xy * jp.exp(-xy_vel_error / self._tracking_sigma)
+
+        # Linear reward for xy velocity tracking (helps with gradient)
+        tracking_lin_xy = self._tracking_w_lin_xy * jp.exp(-jp.square(xy_vel_error))
+
+        # Yaw velocity tracking (keep it zero for straight walking)
+        yaw_vel_error = jp.abs(angvel[2])  # angvel[2] is yaw velocity
+        tracking_exp_yaw = self._tracking_w_exp_yaw * jp.exp(-yaw_vel_error / self._tracking_sigma)
+        tracking_lin_yaw = self._tracking_w_lin_yaw * jp.exp(-jp.square(yaw_vel_error))
+
+        # === 2. STABILITY REWARDS ===
+        # Penalize vertical velocity (bobbing up/down)
+        z_vel_penalty = -self._z_vel_coeff * jp.square(linvel[2])
+
+        # Penalize roll/pitch angular velocity (tipping)
+        roll_pitch_angvel = angvel[:2]  # Roll and pitch angular velocities
+        roll_pitch_vel_penalty = -self._roll_pitch_vel_coeff * jp.sum(jp.square(roll_pitch_angvel))
+
+        # Stay upright (penalize roll/pitch from vertical)
+        # gravity[2] should be close to 1.0 when upright
+        roll_pitch_pos_penalty = -self._roll_pitch_pos_coeff * jp.square(gravity[2] - 1.0)
+
+        # === 3. SMOOTH MOTION ===
+        # Keep joints near nominal pose (default standing)
+        nominal_joint_penalty = -self._nominal_joint_pos_coeff * jp.sum(jp.square(qpos - self._default_qpos))
+
+        # Penalize being near joint limits (use normalized positions)
+        # Assume joint limits are roughly ±2.0 rad for most joints
+        joint_limit_penalty = -self._joint_position_limit_coeff * jp.sum(jp.square(jp.clip(jp.abs(qpos) - 1.5, 0.0, jp.inf)))
+
+        # Penalize large joint velocities
+        joint_vel_penalty = -self._joint_vel_coeff * jp.sum(jp.square(qvel))
+
+        # Penalize joint accelerations (smooth motion)
+        # Approximate acceleration as change in velocity (we don't store prev_qvel)
+        joint_acc_penalty = -self._joint_acc_coeff * jp.sum(jp.square(qvel))
+
+        # Action rate penalty (encourage smooth actions, not jerky)
+        # This requires previous action - for now use action magnitude
+        action_rate_penalty = -self._action_rate_coeff * jp.sum(jp.square(action))
+
+        # === 4. ENERGY EFFICIENCY ===
+        # Penalize torque (action * qvel approximates mechanical power)
+        torque_penalty = -self._joint_torque_coeff * jp.sum(jp.square(action))
+        energy_penalty = -self._energy_coeff * jp.sum(jp.square(action * qvel))
+
+        # === 5. TOTAL REWARD ===
+        # All weights are configurable via YAML (like loco_mujoco)
         total_reward = (
-            3.0 * velocity_reward
-            + lateral_penalty
-            + 1.5 * height_reward
-            + 1.5 * upright_reward
-            + angvel_penalty
-            + action_penalty
+            # Velocity tracking (CRITICAL - must be dominant)
+            tracking_exp_xy
+            + tracking_lin_xy
+            + tracking_exp_yaw
+            + tracking_lin_yaw
+            # Stability (important but secondary)
+            + z_vel_penalty
+            + roll_pitch_vel_penalty
+            + roll_pitch_pos_penalty
+            # Smoothness (tertiary)
+            + nominal_joint_penalty
+            + joint_limit_penalty
+            + joint_vel_penalty
+            + joint_acc_penalty
+            + action_rate_penalty
+            # Energy (minimal weight)
+            + torque_penalty
             + energy_penalty
         )
 

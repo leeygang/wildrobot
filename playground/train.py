@@ -270,6 +270,12 @@ def main(argv):
         eval_reward = metrics.get("eval/episode_reward", 0.0)
         eval_length = metrics.get("eval/avg_episode_length", 0.0)
 
+        # Extract locomotion metrics (tracked by environment)
+        avg_forward_vel = metrics.get("eval/avg_forward_velocity", 0.0)
+        avg_height = metrics.get("eval/avg_height", 0.0)
+        avg_velocity_cmd = metrics.get("eval/avg_velocity_command", 0.0)
+        success_rate = metrics.get("eval/success_rate", 0.0)
+
         # Save final metrics based on validation config
         # (will be overwritten each time, so last call has final values)
         final_metrics = {"training_timesteps": num_steps}
@@ -283,8 +289,19 @@ def main(argv):
         final_metrics["eval/episode_reward"] = eval_reward
         final_metrics["eval/avg_episode_length"] = eval_length
 
+        # Include locomotion metrics for comprehensive tracking
+        if "eval/avg_forward_velocity" in metrics:
+            final_metrics["eval/avg_forward_velocity"] = avg_forward_vel
+        if "eval/avg_height" in metrics:
+            final_metrics["eval/avg_height"] = avg_height
+        if "eval/avg_velocity_command" in metrics:
+            final_metrics["eval/avg_velocity_command"] = avg_velocity_cmd
+        if "eval/success_rate" in metrics:
+            final_metrics["eval/success_rate"] = success_rate
+
         print(
-            f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, elapsed={elapsed:.1f}s"
+            f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, "
+            f"vel={avg_forward_vel:.3f}m/s, height={avg_height:.3f}m, elapsed={elapsed:.1f}s"
         )
 
         # Log to W&B if enabled
@@ -293,8 +310,23 @@ def main(argv):
                 "train/step": num_steps,
                 "train/elapsed_time": elapsed,
                 "eval/episode_reward": eval_reward,
-                "eval/avg_episode_length": eval_length,  # Fixed: consistent naming
+                "eval/avg_episode_length": eval_length,
             }
+
+            # Add locomotion metrics
+            if "eval/avg_forward_velocity" in metrics:
+                log_dict["eval/avg_forward_velocity"] = avg_forward_vel
+            if "eval/avg_height" in metrics:
+                log_dict["eval/avg_height"] = avg_height
+            if "eval/avg_velocity_command" in metrics:
+                log_dict["eval/avg_velocity_command"] = avg_velocity_cmd
+            if "eval/success_rate" in metrics:
+                log_dict["eval/success_rate"] = success_rate
+
+            # Velocity tracking error (how well robot follows commands)
+            if "eval/avg_forward_velocity" in metrics and "eval/avg_velocity_command" in metrics:
+                vel_error = abs(avg_forward_vel - avg_velocity_cmd)
+                log_dict["eval/velocity_tracking_error"] = vel_error
 
             # Log additional training metrics if available
             for key, value in metrics.items():

@@ -11,6 +11,31 @@ env:
     min_height: 0.2          # Minimum height before termination (fallen)
     max_height: 0.7          # Maximum height before termination (jumping/unstable)
 
+  # Reward parameters (similar to loco_mujoco's LocomotionReward)
+  reward_params:
+    # Velocity tracking (primary goal - exponential + linear dual rewards)
+    tracking_w_exp_xy: 15.0       # Exponential reward for XY velocity tracking
+    tracking_w_lin_xy: 5.0        # Linear reward for XY velocity tracking
+    tracking_w_exp_yaw: 4.0       # Exponential reward for yaw velocity tracking
+    tracking_w_lin_yaw: 1.0       # Linear reward for yaw velocity tracking
+    tracking_sigma: 0.25          # Tolerance for exponential rewards
+
+    # Stability penalties (secondary - keep robot upright and stable)
+    z_vel_coeff: 2.0              # Penalize vertical velocity (bobbing)
+    roll_pitch_vel_coeff: 0.08    # Penalize roll/pitch angular velocity (tipping)
+    roll_pitch_pos_coeff: 0.3     # Penalize deviation from upright posture
+
+    # Smooth motion penalties (tertiary - encourage natural movement)
+    nominal_joint_pos_coeff: 0.005      # Keep joints near default pose
+    joint_position_limit_coeff: 5.0     # Avoid joint limits
+    joint_vel_coeff: 5e-5               # Penalize large joint velocities
+    joint_acc_coeff: 2e-5               # Penalize joint accelerations
+    action_rate_coeff: 0.02             # Penalize jerky actions
+
+    # Energy efficiency penalties (minimal weight)
+    joint_torque_coeff: 2e-7      # Penalize torque
+    energy_coeff: 2e-5            # Penalize mechanical power (action * qvel)
+
 training:
   num_timesteps: 100000       # 100K steps (VERY fast smoke test)
   num_evals: 2                # Just 2 evals to verify it works

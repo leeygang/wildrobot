@@ -12,27 +12,52 @@ env:
     min_height: 0.2           # Minimum height before termination (fallen)
     max_height: 0.7           # Maximum height before termination (jumping/unstable)
 
+  # Reward parameters (similar to loco_mujoco's LocomotionReward)
+  reward_params:
+    # Velocity tracking (primary goal - exponential + linear dual rewards)
+    tracking_w_exp_xy: 15.0       # Exponential reward for XY velocity tracking
+    tracking_w_lin_xy: 5.0        # Linear reward for XY velocity tracking
+    tracking_w_exp_yaw: 4.0       # Exponential reward for yaw velocity tracking
+    tracking_w_lin_yaw: 1.0       # Linear reward for yaw velocity tracking
+    tracking_sigma: 0.25          # Tolerance for exponential rewards
+
+    # Stability penalties (secondary - keep robot upright and stable)
+    z_vel_coeff: 2.0              # Penalize vertical velocity (bobbing)
+    roll_pitch_vel_coeff: 0.08    # Penalize roll/pitch angular velocity (tipping)
+    roll_pitch_pos_coeff: 0.3     # Penalize deviation from upright posture
+
+    # Smooth motion penalties (tertiary - encourage natural movement)
+    nominal_joint_pos_coeff: 0.005      # Keep joints near default pose
+    joint_position_limit_coeff: 5.0     # Avoid joint limits
+    joint_vel_coeff: 5e-5               # Penalize large joint velocities
+    joint_acc_coeff: 2e-5               # Penalize joint accelerations
+    action_rate_coeff: 0.02             # Penalize jerky actions
+
+    # Energy efficiency penalties (minimal weight)
+    joint_torque_coeff: 2e-7      # Penalize torque
+    energy_coeff: 2e-5            # Penalize mechanical power (action * qvel)
+
 training:
-  num_timesteps: 30000000     # Total training steps (30M)
-  num_evals: 200              # Number of evaluations during training (data point every ~5 min)
-  episode_length: 1000        # Max steps per episode
+  num_timesteps: 20000000     # Total training steps (20M like loco_mujoco)
+  num_evals: 200              # Number of evaluations during training
+  episode_length: 600         # Max steps per episode (matches loco_mujoco horizon)
   seed: 0                     # Random seed
 
 ppo:
-  num_envs: 1024              # Number of parallel environments (reduced from 2048 for 12GB GPU)
-  num_eval_envs: 64           # Number of evaluation environments (reduced from 128)
-  batch_size: 256             # Batch size for PPO updates (reduced from 512)
-  unroll_length: 10           # Number of steps to unroll
-  num_minibatches: 4          # Number of minibatches per update (reduced from 8)
-  num_updates_per_batch: 4    # Number of gradient updates per batch
+  num_envs: 2048              # Number of parallel environments (same as loco_mujoco)
+  num_eval_envs: 128          # Number of evaluation environments
+  batch_size: 512             # Batch size for PPO updates (2048 envs * 64 steps / 256 batch)
+  unroll_length: 64           # Number of steps to unroll (same as loco_mujoco num_steps)
+  num_minibatches: 32         # Number of minibatches per update (matches loco_mujoco)
+  num_updates_per_batch: 4    # Number of gradient updates per batch (update_epochs)
 
-  learning_rate: 0.0003       # Adam learning rate
-  entropy_cost: 0.01          # Entropy bonus coefficient
-  discounting: 0.97           # Discount factor (gamma)
-  reward_scaling: 0.1         # Reward scaling factor
+  learning_rate: 0.0003       # Adam learning rate (same as loco_mujoco)
+  entropy_cost: 0.01          # Entropy bonus coefficient (same as loco_mujoco ent_coef)
+  discounting: 0.99           # Discount factor (gamma - higher for locomotion)
+  reward_scaling: 1.0         # Reward scaling factor (no scaling, reward is already normalized)
 
-  max_grad_norm: 1.0          # Gradient clipping threshold
-  clipping_epsilon: 0.2       # PPO clipping epsilon
+  max_grad_norm: 0.5          # Gradient clipping threshold (same as loco_mujoco)
+  clipping_epsilon: 0.2       # PPO clipping epsilon (same as loco_mujoco clip_eps)
   normalize_observations: true # Normalize observations
   action_repeat: 1            # Action repeat (1 = no repeat)
 
