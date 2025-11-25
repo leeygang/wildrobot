@@ -193,10 +193,18 @@ def main(argv):
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y%m%d-%H%M%S")
     exp_name = f"wildrobot_locomotion_{terrain}_{timestamp}"
+
+    # Save checkpoints under playground/checkpoints/{exp_name}
+    playground_dir = Path(__file__).parent
+    ckpt_dir = playground_dir / "checkpoints" / exp_name
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Logs still go to training/logs for W&B
     logdir = epath.Path(PROJECT_ROOT) / "training" / "logs" / exp_name
     logdir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nExperiment: {exp_name}")
+    print(f"Checkpoints: {ckpt_dir}")
     print(f"Logs: {logdir}")
 
     # Initialize W&B if enabled
@@ -221,10 +229,6 @@ def main(argv):
         )
         print(f"W&B initialized: {wandb.run.url}")
 
-    # Save config
-    ckpt_dir = logdir / "checkpoints"
-    ckpt_dir.mkdir(exist_ok=True)
-
     # Save both the config file path and overrides
     with open(ckpt_dir / "config.json", "w") as f:
         json.dump(
@@ -246,14 +250,38 @@ def main(argv):
 
     # Progress callback
     times = [time.monotonic()]
+    final_metrics = {}  # Store final metrics for saving in checkpoint
+
+    # Get validation metrics to track from config
+    validation_metrics = cfg.get("validation", {}).get("metrics", {})
+    if not validation_metrics:
+        # Fallback to default metrics if not specified in config
+        validation_metrics = {
+            "reward": "eval/episode_reward",
+            "episode_length": "eval/avg_episode_length",
+        }
 
     def progress(num_steps, metrics):
+        nonlocal final_metrics  # Update the outer scope variable
         times.append(time.monotonic())
         elapsed = times[-1] - times[1] if len(times) > 1 else 0
 
-        # Extract key metrics
+        # Extract key metrics for display
         eval_reward = metrics.get("eval/episode_reward", 0.0)
-        eval_length = metrics.get("eval/avg_episode_length", 0.0)  # Fixed: use avg_episode_length
+        eval_length = metrics.get("eval/avg_episode_length", 0.0)
+
+        # Save final metrics based on validation config
+        # (will be overwritten each time, so last call has final values)
+        final_metrics = {"training_timesteps": num_steps}
+
+        # Add all configured validation metrics
+        for metric_name, metric_key in validation_metrics.items():
+            if metric_key in metrics:
+                final_metrics[metric_key] = metrics[metric_key]
+
+        # Always include the raw metric keys for backward compatibility
+        final_metrics["eval/episode_reward"] = eval_reward
+        final_metrics["eval/avg_episode_length"] = eval_length
 
         print(
             f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, elapsed={elapsed:.1f}s"
@@ -330,9 +358,25 @@ def main(argv):
     import pickle
 
     final_checkpoint = ckpt_dir / "final_policy.pkl"
+
+    # Include final metrics in checkpoint for automatic validation
+    checkpoint_data = {
+        "params": params,
+        "config": cfg,
+        "final_metrics": final_metrics,  # Add final training metrics
+    }
+
     with open(final_checkpoint, "wb") as f:
-        pickle.dump({"params": params, "config": cfg}, f)
+        pickle.dump(checkpoint_data, f)
+
     print(f"Policy saved to: {final_checkpoint}")
+
+    # Print final metrics for reference
+    if final_metrics:
+        print(f"\nFinal Training Metrics:")
+        print(f"  eval/episode_reward: {final_metrics.get('eval/episode_reward', 'N/A')}")
+        print(f"  eval/avg_episode_length: {final_metrics.get('eval/avg_episode_length', 'N/A')}")
+        print(f"  training_timesteps: {final_metrics.get('training_timesteps', 'N/A')}")
 
     # Render videos (Option 2: Render only at the end, like loco-mujoco)
     if cfg["rendering"]["render_videos"]:

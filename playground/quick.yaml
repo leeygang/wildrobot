@@ -52,3 +52,20 @@ rendering:
 checkpointing:
   save_interval: 1000000
   keep_checkpoints: 3
+
+validation:
+  # Metrics to track for validation (saved in checkpoint for automatic validation)
+  # Format: {display_name: metric_key_in_training}
+  metrics:
+    reward: "eval/episode_reward"           # Episode reward during evaluation
+    episode_length: "eval/avg_episode_length"  # Average episode length
+    # Add more metrics here as needed, e.g.:
+    # velocity: "eval/avg_velocity"
+    # height: "eval/avg_height"
+    # action_rate: "eval/avg_action_rate"
+
+  # Validation thresholds (for pass/fail checks)
+  thresholds:
+    reward_tolerance: 0.10       # ±10% tolerance for reward consistency
+    length_tolerance: 0.10       # ±10% tolerance for episode length
+    determinism_threshold: 0.01  # Max difference for determinism check

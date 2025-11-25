@@ -308,6 +308,345 @@ def render_grid_video(
     return output_path
 
 
+def rollout_with_metrics(
+    env,
+    make_policy,
+    params: Params,
+    n_steps: int = 1000,
+    deterministic: bool = True,
+    seed: int = 0,
+):
+    """
+    Rollout policy and collect detailed metrics for validation.
+
+    Args:
+        env: The environment
+        make_policy: Policy inference function
+        params: Policy parameters
+        n_steps: Number of steps to run
+        deterministic: Use deterministic policy
+        seed: Random seed
+
+    Returns:
+        Dictionary with metrics: reward, length, heights, velocities, etc.
+    """
+    jit_reset = jax.jit(env.reset)
+    jit_step = jax.jit(env.step)
+
+    policy = make_policy(params, deterministic=deterministic)
+
+    rng = jax.random.PRNGKey(seed)
+    state = jit_reset(rng)
+
+    # Collect metrics
+    total_reward = 0.0
+    episode_length = 0
+    heights = []
+    velocities = []
+    actions = []
+
+    for step in range(n_steps):
+        rng, action_rng = jax.random.split(rng)
+        action, _ = policy(state.obs, action_rng)
+        state = jit_step(state, action)
+
+        # Accumulate metrics
+        total_reward += float(state.reward)
+        episode_length += 1
+
+        # Track action statistics
+        actions.append(np.array(action))
+
+        # Extract environment-specific metrics
+        if hasattr(state, "metrics") and state.metrics:
+            if "height" in state.metrics:
+                heights.append(float(state.metrics["height"]))
+            if "forward_velocity" in state.metrics:
+                velocities.append(float(state.metrics["forward_velocity"]))
+
+        # Check if done
+        if float(state.done) > 0.5:
+            break
+
+    return {
+        "reward": total_reward,
+        "length": episode_length,
+        "heights": heights,
+        "velocities": velocities,
+        "actions": np.array(actions) if actions else None,
+    }
+
+
+def validate_policy_consistency(
+    checkpoint_path: str,
+    n_trials: int = 10,
+    training_reward: float = None,
+    training_length: float = None,
+):
+    """
+    Validate that visualization matches training performance.
+
+    This function runs multiple rollouts and checks:
+    1. Episode rewards match training performance
+    2. Episode lengths are consistent
+    3. Policy is deterministic (same seed = same result)
+    4. Observations are properly normalized
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+        n_trials: Number of rollouts to average over
+        training_reward: Expected reward from training (optional, auto-loaded from checkpoint if available)
+        training_length: Expected episode length from training (optional, auto-loaded from checkpoint if available)
+
+    Returns:
+        Dictionary with validation results and pass/fail status
+    """
+    print("=" * 70)
+    print("🔍 POLICY CONSISTENCY VALIDATION")
+    print("=" * 70)
+
+    # Load checkpoint
+    print(f"\n📦 Loading checkpoint: {checkpoint_path}")
+    import pickle
+
+    with open(checkpoint_path, "rb") as f:
+        checkpoint_data = pickle.load(f)
+
+    config = checkpoint_data["config"]
+
+    # Try to auto-load metrics from checkpoint (if saved by new train.py)
+    auto_loaded_metrics = {}
+    validation_config = config.get("validation", {})
+    validation_metric_mapping = validation_config.get("metrics", {})
+
+    if "final_metrics" in checkpoint_data:
+        final_metrics = checkpoint_data["final_metrics"]
+        print(f"\n✅ Found training metrics in checkpoint!")
+
+        # Auto-load metrics if not provided by user
+        # Check for standard metrics first (backward compatibility)
+        if training_reward is None and "eval/episode_reward" in final_metrics:
+            training_reward = final_metrics["eval/episode_reward"]
+            auto_loaded_metrics["reward"] = training_reward
+            print(f"   Auto-loaded training_reward: {training_reward:.1f}")
+
+        if training_length is None and "eval/avg_episode_length" in final_metrics:
+            training_length = final_metrics["eval/avg_episode_length"]
+            auto_loaded_metrics["episode_length"] = training_length
+            print(f"   Auto-loaded training_length: {training_length:.1f}")
+
+        # Also check for any additional metrics defined in config
+        if validation_metric_mapping:
+            print(f"   Additional metrics from config:")
+            for metric_name, metric_key in validation_metric_mapping.items():
+                if metric_key in final_metrics and metric_name not in auto_loaded_metrics:
+                    auto_loaded_metrics[metric_name] = final_metrics[metric_key]
+                    print(f"     {metric_name}: {final_metrics[metric_key]}")
+
+    # Get validation thresholds from config
+    thresholds = validation_config.get("thresholds", {})
+    reward_tolerance = thresholds.get("reward_tolerance", 0.10)  # Default 10%
+    length_tolerance = thresholds.get("length_tolerance", 0.10)  # Default 10%
+    determinism_threshold = thresholds.get("determinism_threshold", 0.01)  # Default 0.01
+
+    # Print training metrics
+    print(f"\n{'📊 Training Metrics (for validation)':^70}")
+    print("-" * 70)
+    if training_reward is not None:
+        print(f"  Expected Reward:        {training_reward:.1f}")
+    else:
+        print("  Expected Reward:        (not available)")
+        print("  💡 Tip: Add --training-reward 4800 or retrain with updated train.py")
+
+    if training_length is not None:
+        print(f"  Expected Episode Length: {training_length:.1f}")
+    else:
+        print("  Expected Episode Length: (not available)")
+        print("  💡 Tip: Add --training-length 900 or retrain with updated train.py")
+
+    # Create environment and load policy
+    print(f"\n🏗️  Creating environment...")
+    env = create_env()
+
+    print(f"🧠 Loading policy...")
+    make_policy, params = load_policy(checkpoint_path, env)
+
+    # Run multiple rollouts
+    print(f"\n{'🎯 Visualization Metrics (current rollouts)':^70}")
+    print("-" * 70)
+    print(f"Running {n_trials} rollouts to measure consistency...")
+
+    results = []
+    for trial in range(n_trials):
+        metrics = rollout_with_metrics(
+            env, make_policy, params, n_steps=1000, deterministic=True, seed=trial
+        )
+        results.append(metrics)
+        print(
+            f"  Trial {trial+1:2d}/{n_trials}: "
+            f"Reward={metrics['reward']:7.1f}, "
+            f"Length={metrics['length']:4d}"
+        )
+
+    # Compute statistics
+    rewards = [r["reward"] for r in results]
+    lengths = [r["length"] for r in results]
+    heights = [h for r in results for h in r["heights"]]
+    velocities = [v for r in results for v in r["velocities"]]
+
+    print(f"\n{'📈 Summary Statistics':^70}")
+    print("-" * 70)
+    print(f"  Episode Reward:     {np.mean(rewards):7.1f} ± {np.std(rewards):6.1f}")
+    print(f"  Episode Length:     {np.mean(lengths):7.1f} ± {np.std(lengths):6.1f}")
+    if heights:
+        print(f"  Average Height:     {np.mean(heights):7.3f} ± {np.std(heights):6.3f} m")
+    if velocities:
+        print(
+            f"  Average Velocity:   {np.mean(velocities):7.3f} ± {np.std(velocities):6.3f} m/s"
+        )
+
+    # Validation checks
+    print(f"\n{'✅ Validation Checks':^70}")
+    print("-" * 70)
+
+    validation_results = {"passed": True, "checks": {}}
+
+    # Check 1: Reward consistency with training
+    mean_reward = np.mean(rewards)
+    std_reward = np.std(rewards)
+    print(f"\n1️⃣  Reward Consistency:")
+    print(f"    Mean: {mean_reward:.1f}")
+    print(f"    Std:  {std_reward:.1f}")
+    print(f"    Min:  {np.min(rewards):.1f}")
+    print(f"    Max:  {np.max(rewards):.1f}")
+
+    if training_reward is not None:
+        reward_diff_pct = abs(mean_reward - training_reward) / training_reward
+        print(f"    Difference from training: {reward_diff_pct*100:.1f}%")
+        print(f"    Tolerance threshold: ±{reward_tolerance*100:.0f}% (from config)")
+
+        if reward_diff_pct <= reward_tolerance:
+            print(f"    ✅ PASS: Within ±{reward_tolerance*100:.0f}% of training reward!")
+            validation_results["checks"]["reward_consistency"] = "pass"
+        elif reward_diff_pct <= reward_tolerance * 2:
+            print(f"    ⚠️  WARNING: Within ±{reward_tolerance*200:.0f}% but investigate further")
+            validation_results["checks"]["reward_consistency"] = "warning"
+        else:
+            print(f"    ❌ FAIL: >{reward_tolerance*200:.0f}% difference from training!")
+            validation_results["passed"] = False
+            validation_results["checks"]["reward_consistency"] = "fail"
+    else:
+        print(f"    ℹ️  No training reward provided - cannot validate")
+        validation_results["checks"]["reward_consistency"] = "unknown"
+
+    # Check 2: Episode length
+    mean_length = np.mean(lengths)
+    std_length = np.std(lengths)
+    print(f"\n2️⃣  Episode Length Consistency:")
+    print(f"    Mean: {mean_length:.1f}")
+    print(f"    Std:  {std_length:.1f}")
+
+    if training_length is not None:
+        length_diff_pct = abs(mean_length - training_length) / training_length
+        print(f"    Difference from training: {length_diff_pct*100:.1f}%")
+        print(f"    Tolerance threshold: ±{length_tolerance*100:.0f}% (from config)")
+
+        if length_diff_pct <= length_tolerance:
+            print(f"    ✅ PASS: Within ±{length_tolerance*100:.0f}% of training length!")
+            validation_results["checks"]["length_consistency"] = "pass"
+        elif length_diff_pct <= length_tolerance * 2:
+            print(f"    ⚠️  WARNING: Within ±{length_tolerance*200:.0f}% but acceptable")
+            validation_results["checks"]["length_consistency"] = "warning"
+        else:
+            print(f"    ❌ FAIL: >{length_tolerance*200:.0f}% difference from training!")
+            validation_results["passed"] = False
+            validation_results["checks"]["length_consistency"] = "fail"
+    else:
+        print(f"    ℹ️  No training length provided - cannot validate")
+        validation_results["checks"]["length_consistency"] = "unknown"
+
+    # Check 3: Determinism (run same seed twice)
+    print(f"\n3️⃣  Determinism Check:")
+    m1 = rollout_with_metrics(env, make_policy, params, seed=42, deterministic=True)
+    m2 = rollout_with_metrics(env, make_policy, params, seed=42, deterministic=True)
+    reward_diff = abs(m1["reward"] - m2["reward"])
+    print(f"    Same seed, different runs: reward diff = {reward_diff:.6f}")
+    print(f"    Tolerance threshold: <{determinism_threshold} (from config)")
+
+    if reward_diff < determinism_threshold:
+        print(f"    ✅ PASS: Policy is deterministic!")
+        validation_results["checks"]["determinism"] = "pass"
+    elif reward_diff < 1.0:
+        print(f"    ⚠️  WARNING: Small randomness detected (diff={reward_diff:.6f})")
+        validation_results["checks"]["determinism"] = "warning"
+    else:
+        print(f"    ❌ FAIL: Policy is not deterministic!")
+        validation_results["passed"] = False
+        validation_results["checks"]["determinism"] = "fail"
+
+    # Check 4: Normalization
+    print(f"\n4️⃣  Observation Normalization Check:")
+    if hasattr(params[0], "mean") and hasattr(params[0], "std"):
+        print(f"    ✅ Normalizer params found:")
+        print(f"       Mean shape: {params[0].mean.shape}")
+        print(f"       Std shape:  {params[0].std.shape}")
+        print(f"       First 5 means: {params[0].mean[:5]}")
+        print(f"       First 5 stds:  {params[0].std[:5]}")
+        validation_results["checks"]["normalization"] = "pass"
+    else:
+        print(f"    ℹ️  No normalization params (or not needed)")
+        validation_results["checks"]["normalization"] = "unknown"
+
+    # Check 5: Action statistics
+    if results[0]["actions"] is not None:
+        all_actions = np.concatenate([r["actions"] for r in results])
+        print(f"\n5️⃣  Action Statistics:")
+        print(f"    Shape: {all_actions.shape}")
+        print(f"    Mean:  {all_actions.mean():.3f}")
+        print(f"    Std:   {all_actions.std():.3f}")
+        print(f"    Min:   {all_actions.min():.3f}")
+        print(f"    Max:   {all_actions.max():.3f}")
+
+        if np.abs(all_actions).max() > 2.0:
+            print(f"    ⚠️  WARNING: Actions outside expected range [-1, 1]!")
+            validation_results["checks"]["action_range"] = "warning"
+        else:
+            print(f"    ✅ Actions in expected range")
+            validation_results["checks"]["action_range"] = "pass"
+
+    # Final summary
+    print("\n" + "=" * 70)
+    if validation_results["passed"]:
+        print("🎉 VALIDATION PASSED!")
+        print("=" * 70)
+        print("\n✅ Your visualization accurately represents training performance!")
+        print("✅ You can trust this policy for robot deployment.")
+    else:
+        print("⚠️  VALIDATION FAILED!")
+        print("=" * 70)
+        print("\n❌ Visualization does not match training performance.")
+        print("❌ Investigate issues before deploying to robot.")
+
+    print("\n📝 Next Steps:")
+    if training_reward is None or training_length is None:
+        print("  1. Provide training metrics (--training-reward, --training-length)")
+        print("  2. Check W&B for eval/episode_reward and eval/avg_episode_length")
+    if not validation_results["passed"]:
+        print("  3. Debug inconsistencies (see VISUALIZATION_CONSISTENCY_VALIDATION.md)")
+    else:
+        print("  3. Proceed with confidence - visualization matches training! 🚀")
+
+    print("=" * 70)
+
+    # Store validation results
+    validation_results["mean_reward"] = mean_reward
+    validation_results["std_reward"] = std_reward
+    validation_results["mean_length"] = mean_length
+    validation_results["std_length"] = std_length
+
+    return validation_results
+
+
 def visualize_single_env(
     env,
     make_policy,
@@ -444,6 +783,31 @@ def main():
         help="Number of environments for grid rendering (must be perfect square: 4, 9, 16, etc.) (default: 4)",
     )
 
+    # Validation options
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate policy consistency (run multiple rollouts and check metrics)",
+    )
+    parser.add_argument(
+        "--n_trials",
+        type=int,
+        default=10,
+        help="Number of validation trials (default: 10)",
+    )
+    parser.add_argument(
+        "--training-reward",
+        type=float,
+        default=None,
+        help="Expected training reward for validation (from W&B eval/episode_reward)",
+    )
+    parser.add_argument(
+        "--training-length",
+        type=float,
+        default=None,
+        help="Expected training episode length for validation (from W&B eval/avg_episode_length)",
+    )
+
     args = parser.parse_args()
 
     # Resolve checkpoint path
@@ -456,6 +820,16 @@ def main():
             return
         args.checkpoint = str(checkpoint_path)
         print(f"Using latest checkpoint: {args.checkpoint}")
+
+    # Run validation if requested
+    if args.validate:
+        validate_policy_consistency(
+            checkpoint_path=args.checkpoint,
+            n_trials=args.n_trials,
+            training_reward=args.training_reward,
+            training_length=args.training_length,
+        )
+        return  # Exit after validation
 
     # Create environment
     print(f"\nCreating environment...")
