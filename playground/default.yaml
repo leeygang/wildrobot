@@ -14,7 +14,7 @@ env:
 
 training:
   num_timesteps: 30000000     # Total training steps (30M)
-  num_evals: 10               # Number of evaluations during training
+  num_evals: 200              # Number of evaluations during training (data point every ~5 min)
   episode_length: 1000        # Max steps per episode
   seed: 0                     # Random seed
 
