@@ -29,6 +29,40 @@ from brax.training.types import Params
 from wildrobot.locomotion import WildRobotLocomotion
 
 
+def find_latest_checkpoint(checkpoints_dir: str = None):
+    """Find the most recent checkpoint in the checkpoints directory.
+
+    Args:
+        checkpoints_dir: Path to checkpoints directory. If None, uses playground/checkpoints
+
+    Returns:
+        Path to the latest final_policy.pkl file, or None if not found
+    """
+    if checkpoints_dir is None:
+        # Default to playground/checkpoints
+        checkpoints_dir = Path(__file__).parent / "checkpoints"
+    else:
+        checkpoints_dir = Path(checkpoints_dir)
+
+    if not checkpoints_dir.exists():
+        return None
+
+    # Find all experiment directories (e.g., wildrobot_locomotion_flat_20231125-120000)
+    exp_dirs = sorted(
+        [d for d in checkpoints_dir.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True  # Most recent first
+    )
+
+    # Look for final_policy.pkl in each directory
+    for exp_dir in exp_dirs:
+        checkpoint_path = exp_dir / "final_policy.pkl"
+        if checkpoint_path.exists():
+            return checkpoint_path
+
+    return None
+
+
 def create_env():
     """Create the WildRobot environment (UNWRAPPED for visualization)."""
     env = WildRobotLocomotion(
@@ -43,9 +77,17 @@ def create_env():
 
 
 def load_policy(checkpoint_path: str, env):
-    """Load trained policy from checkpoint."""
+    """
+    Load trained policy from checkpoint.
+
+    This follows the standard Brax approach for loading PPO policies:
+    1. Load params from checkpoint
+    2. Reconstruct network with same architecture
+    3. Use make_inference_fn to create policy function
+    """
     import pickle
 
+    print(f"  Loading checkpoint...")
     with open(checkpoint_path, "rb") as f:
         checkpoint_data = pickle.load(f)
 
@@ -56,20 +98,37 @@ def load_policy(checkpoint_path: str, env):
     policy_hidden_layers = config["network"]["policy_hidden_layers"]
     value_hidden_layers = config["network"]["value_hidden_layers"]
 
+    # Check if normalization was used during training
+    normalize_observations = config["ppo"]["normalize_observations"]
+
     print(f"  Policy network: {policy_hidden_layers}")
     print(f"  Value network: {value_hidden_layers}")
+    print(f"  Normalize observations: {normalize_observations}")
+
+    # Create preprocessing function to match training
+    if normalize_observations:
+        # During training, Brax normalizes observations using running statistics
+        # The params passed to preprocessing is the RunningStatisticsState directly
+        def preprocess_observations_fn(obs, normalizer_params):
+            # normalizer_params is a RunningStatisticsState with .mean and .std
+            return (obs - normalizer_params.mean) / (normalizer_params.std + 1e-8)
+
+        print(f"  ✓ Using observation normalization from checkpoint")
+    else:
+        # No normalization - pass observations through unchanged
+        preprocess_observations_fn = lambda obs, params: obs
+        print(f"  ✓ No observation normalization")
 
     # Create policy network with SAME architecture as training
-    # Note: preprocess_observations_fn takes (obs, processor_params)
-    network_factory = ppo_networks.make_ppo_networks
-    ppo_network = network_factory(
+    ppo_network = ppo_networks.make_ppo_networks(
         env.observation_size,
         env.action_size,
-        preprocess_observations_fn=lambda obs, params: obs,  # No preprocessing
+        preprocess_observations_fn=preprocess_observations_fn,
         policy_hidden_layer_sizes=policy_hidden_layers,
         value_hidden_layer_sizes=value_hidden_layers,
     )
 
+    # Create inference function (deterministic or stochastic)
     make_policy = ppo_networks.make_inference_fn(ppo_network)
 
     return make_policy, params
@@ -321,8 +380,8 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
-        help="Path to trained policy checkpoint (.pkl file)",
+        default="latest",
+        help="Path to trained policy checkpoint (.pkl file), or 'latest' to auto-find most recent (default: latest)",
     )
     parser.add_argument(
         "--output",
@@ -387,12 +446,23 @@ def main():
 
     args = parser.parse_args()
 
+    # Resolve checkpoint path
+    if args.checkpoint == "latest":
+        print("Finding latest checkpoint...")
+        checkpoint_path = find_latest_checkpoint()
+        if checkpoint_path is None:
+            print("ERROR: No checkpoints found in playground/checkpoints/")
+            print("Please train a model first or specify --checkpoint path/to/checkpoint.pkl")
+            return
+        args.checkpoint = str(checkpoint_path)
+        print(f"Using latest checkpoint: {args.checkpoint}")
+
     # Create environment
-    print(f"Creating environment...")
+    print(f"\nCreating environment...")
     env = create_env()
 
     # Load policy
-    print(f"\nLoading policy from: {args.checkpoint}")
+    print(f"Loading policy from: {args.checkpoint}")
     make_policy, params = load_policy(args.checkpoint, env)
 
     # Render grid or single video
