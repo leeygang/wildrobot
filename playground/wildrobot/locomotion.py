@@ -142,6 +142,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "velocity_command": velocity_cmd,
             "height": actual_height,
             "forward_velocity": jp.zeros(()),
+            "success": jp.ones(()),  # Initialize to 1.0 (success until proven otherwise)
             "reset_min_height": self._min_height,  # DEBUG
             "reset_max_height": self._max_height,  # DEBUG
         }
