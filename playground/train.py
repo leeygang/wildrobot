@@ -145,7 +145,7 @@ def main(argv):
     env_config = config_dict.ConfigDict()
     env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
     env_config.sim_dt = cfg["env"]["sim_dt"]
-    
+
     # Get terminal state params (nested structure matching loco-mujoco)
     terminal_params = cfg["env"].get("terminal_state_params", {})
     env_config.min_height = terminal_params.get("min_height", 0.2)
@@ -253,7 +253,7 @@ def main(argv):
 
         # Extract key metrics
         eval_reward = metrics.get("eval/episode_reward", 0.0)
-        eval_length = metrics.get("eval/episode_length", 0.0)
+        eval_length = metrics.get("eval/avg_episode_length", 0.0)  # Fixed: use avg_episode_length
 
         print(
             f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, elapsed={elapsed:.1f}s"
@@ -265,7 +265,7 @@ def main(argv):
                 "train/step": num_steps,
                 "train/elapsed_time": elapsed,
                 "eval/episode_reward": eval_reward,
-                "eval/episode_length": eval_length,
+                "eval/avg_episode_length": eval_length,  # Fixed: consistent naming
             }
 
             # Log additional training metrics if available

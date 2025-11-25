@@ -107,10 +107,16 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         obs = self._get_obs(data, jp.zeros(self.action_size), velocity_cmd)
         reward, done = jp.zeros(2)
+
+        # DIAGNOSTIC: Get actual height after physics forward pass
+        actual_height = self.get_floating_base_qpos(data.qpos)[2]
+
         metrics = {
             "velocity_command": velocity_cmd,
-            "height": jp.zeros(()),
+            "height": actual_height,
             "forward_velocity": jp.zeros(()),
+            "reset_min_height": self._min_height,  # DEBUG
+            "reset_max_height": self._max_height,  # DEBUG
         }
         info = {}
 
@@ -263,6 +269,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
         # Based on loco-mujoco's HeightBasedTerminalStateHandler
         # Values are configurable in YAML config (default: 0.2 - 0.7m)
         # See: loco-mujoco/loco_mujoco/environments/humanoids/wildrobot.py
+
         fallen = jp.where(
             (height < self._min_height) | (height > self._max_height),
             1.0, 0.0
