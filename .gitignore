@@ -29,6 +29,8 @@ env/
 # Logs
 *.log
 logs/
+training_logs/
+checkpoints/
 
 # OS
 .DS_Store
