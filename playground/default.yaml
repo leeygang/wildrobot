@@ -7,6 +7,19 @@ env:
   ctrl_dt: 0.02               # Control frequency: 50Hz
   sim_dt: 0.002               # Simulation frequency: 500Hz
 
+  # === Action Filtering (Low-Pass Filter) ===
+  # Prevents high-frequency stuttering by smoothing actions over time
+  use_action_filter: true      # Enable action filtering
+  action_filter_alpha: 0.7     # Filter coefficient (0.7 = 70% old action, 30% new action)
+                               # Higher = more smoothing (0.9 = very smooth, 0.5 = less smooth)
+
+  # === Phase Signal (Gait Clock) ===
+  # Provides periodic timing to help robot learn rhythmic stepping pattern
+  use_phase_signal: true       # Enable phase signal in observations
+  phase_period: 40             # Steps per gait cycle (40 steps = 0.8s at 50Hz)
+                               # Lower = faster gait, Higher = slower gait
+  num_phase_clocks: 2          # Number of phase clocks (1 = single, 2 = left+right legs)
+
   # Termination conditions (matches loco-mujoco's HeightBasedTerminalStateHandler)
   terminal_state_params:
     min_height: 0.2           # Minimum height before termination (fallen)
@@ -20,23 +33,30 @@ env:
     tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
     tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
     tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
+    # INCREASED to strongly encourage walking over standing
+    tracking_w_exp_xy: 50.0       # Exponential reward for XY velocity tracking (was 15.0)
+    tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
+    tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
+    tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
     tracking_sigma: 0.25          # Tolerance for exponential rewards
 
     # Stability penalties (secondary - keep robot upright and stable)
-    # DECREASED to allow natural walking motion
-    z_vel_coeff: 1.0              # Penalize vertical velocity (bobbing) (was 2.0)
-    roll_pitch_vel_coeff: 0.04    # Penalize roll/pitch angular velocity (tipping) (was 0.08)
-    roll_pitch_pos_coeff: 0.15    # Penalize deviation from upright posture (was 0.3)
+    # FURTHER DECREASED to allow natural walking dynamics (bobbing, rotation)
+    z_vel_coeff: 0.1              # Penalize vertical velocity (allow bobbing for walking!)
+    roll_pitch_vel_coeff: 0.01    # Penalize roll/pitch angular velocity (allow rotation)
+    roll_pitch_pos_coeff: 0.05    # Penalize deviation from upright posture (keep loose)
 
     # Smooth motion penalties (tertiary - encourage natural movement)
-    # DECREASED to allow walking
-    nominal_joint_pos_coeff: 0.002      # Keep joints near default pose (was 0.005)
-    joint_position_limit_coeff: 2.5     # Avoid joint limits (was 5.0)
-    joint_vel_coeff: 2.5e-5             # Penalize large joint velocities (was 5e-5)
-    joint_acc_coeff: 1e-5               # Penalize joint accelerations (was 2e-5)
-    action_rate_coeff: 0.01             # Penalize jerky actions (was 0.02)
+    # MINIMIZED to allow dynamic stepping motions
+    nominal_joint_pos_coeff: 0.0        # Don't penalize deviation from default pose
+    joint_position_limit_coeff: 2.5     # Avoid joint limits (keep this)
+    joint_vel_coeff: 1e-6               # Minimal penalty on joint velocity
+    joint_acc_coeff: 1e-6               # Minimal penalty on joint acceleration
+    action_rate_coeff: 0.001            # Minimal penalty on action rate
 
     # Energy efficiency penalties (minimal weight)
+    joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
+    energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
     joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
     energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
 
@@ -47,6 +67,11 @@ training:
   seed: 0                     # Random seed
 
 ppo:
+  num_envs: 512               # Optimized for 12GB GPU (reduced from 2048)
+  num_eval_envs: 64           # Optimized for 12GB GPU (reduced from 128)
+  batch_size: 256             # Batch size (512 envs * 32 steps / 64 = 256)
+  unroll_length: 32           # Reduced from 64 for memory efficiency
+  num_minibatches: 16         # Reduced from 32 for memory efficiency
   num_envs: 512               # Optimized for 12GB GPU (reduced from 2048)
   num_eval_envs: 64           # Optimized for 12GB GPU (reduced from 128)
   batch_size: 256             # Batch size (512 envs * 32 steps / 64 = 256)

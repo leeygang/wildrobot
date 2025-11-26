@@ -102,6 +102,17 @@ class WildRobotLocomotion(base.WildRobotEnv):
         self._joint_torque_coeff = reward_params.get('joint_torque_coeff', 2e-7)
         self._energy_coeff = reward_params.get('energy_coeff', 2e-5)
 
+        # === Action Filtering (Low-Pass Filter) ===
+        # Prevents high-frequency stuttering by smoothing actions over time
+        self._use_action_filter = getattr(config, 'use_action_filter', True)
+        self._action_filter_alpha = getattr(config, 'action_filter_alpha', 0.7)  # 0.7 = 70% old, 30% new
+
+        # === Phase Signal (Gait Clock) ===
+        # Provides periodic time signal to help robot learn rhythmic stepping
+        self._use_phase_signal = getattr(config, 'use_phase_signal', True)
+        self._phase_period = getattr(config, 'phase_period', 40)  # steps per gait cycle (0.8s at 50Hz)
+        self._num_phase_clocks = getattr(config, 'num_phase_clocks', 2)  # 1=single clock, 2=left+right legs
+
     def reset(self, rng: jax.Array) -> mjx_env.State:
         """Reset the environment with random velocity command."""
         rng, key1, key2 = jax.random.split(rng, 3)
@@ -132,7 +143,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
         data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_qpos)
         data = mjx.forward(self.mjx_model, data)
 
-        obs = self._get_obs(data, jp.zeros(self.action_size), velocity_cmd)
+        obs = self._get_obs(data, jp.zeros(self.action_size), velocity_cmd, step_count=0)
         reward, done = jp.zeros(2)
 
         # DIAGNOSTIC: Get actual height after physics forward pass
@@ -145,6 +156,8 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "success": jp.ones(()),  # Initialize success metric (pytree structure must match step())
             "reset_min_height": self._min_height,  # DEBUG
             "reset_max_height": self._max_height,  # DEBUG
+            "step_count": 0,  # Track step count for phase signal
+            "prev_action": jp.zeros(self.action_size),  # Track previous action for filtering
         }
         info = {}
 
@@ -154,9 +167,19 @@ class WildRobotLocomotion(base.WildRobotEnv):
         """Step the environment."""
         # Get velocity command from metrics
         velocity_cmd = state.metrics.get("velocity_command", 0.0)
+        step_count = state.metrics.get("step_count", 0)
+        prev_action = state.metrics.get("prev_action", jp.zeros(self.action_size))
 
-        # Apply action (PD control)
-        data = state.data.replace(ctrl=action)
+        # === Action Filtering (Low-Pass Filter) ===
+        # Smooth actions to prevent high-frequency stuttering
+        if self._use_action_filter:
+            alpha = self._action_filter_alpha
+            filtered_action = alpha * prev_action + (1.0 - alpha) * action
+        else:
+            filtered_action = action
+
+        # Apply action (PD control) - use filtered action
+        data = state.data.replace(ctrl=filtered_action)
 
         # Physics simulation (multiple substeps)
         def step_fn(data, _):
@@ -165,9 +188,12 @@ class WildRobotLocomotion(base.WildRobotEnv):
 
         data, _ = jax.lax.scan(step_fn, data, None, length=int(self.dt / self.sim_dt))
 
-        # Get observations and rewards
-        obs = self._get_obs(data, action, velocity_cmd)
-        reward = self._get_reward(data, action, velocity_cmd)
+        # Increment step count for phase signal
+        new_step_count = step_count + 1
+
+        # Get observations and rewards (pass step count for phase signal)
+        obs = self._get_obs(data, filtered_action, velocity_cmd, step_count=new_step_count)
+        reward = self._get_reward(data, filtered_action, velocity_cmd, prev_action=prev_action)
         done = self._get_done(data)
 
         # Update metrics (these are tracked per environment and averaged during eval)
@@ -177,6 +203,8 @@ class WildRobotLocomotion(base.WildRobotEnv):
         state.metrics["height"] = height
         state.metrics["forward_velocity"] = forward_velocity
         state.metrics["velocity_command"] = velocity_cmd
+        state.metrics["step_count"] = new_step_count
+        state.metrics["prev_action"] = filtered_action
 
         # Track success (completing episode without falling)
         # Success = reached end of episode without terminating early
@@ -185,12 +213,12 @@ class WildRobotLocomotion(base.WildRobotEnv):
         return state.replace(data=data, obs=obs, reward=reward, done=done)
 
     def _get_obs(
-        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array
+        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array, step_count: int = 0
     ) -> jax.Array:
         """
-        Get observation vector including velocity command.
+        Get observation vector including velocity command and optional phase signal.
 
-        Observation (58D):
+        Observation (base 58D + phase signal):
             - Joint positions (11)
             - Joint velocities (11)
             - Gravity vector (3)
@@ -199,6 +227,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             - Accelerometer readings from 3 IMUs (9)
             - Previous action (11)
             - Velocity command (1)
+            - Phase signal (2 or 4, optional): sin/cos of gait cycle(s)
         """
         # Joint state
         qpos = self.get_actuator_joint_qpos(data.qpos)
@@ -215,23 +244,49 @@ class WildRobotLocomotion(base.WildRobotEnv):
         # Command
         cmd = jp.array([velocity_cmd])
 
-        obs = jp.concatenate(
-            [
-                qpos,  # 11
-                qvel,  # 11
-                gravity,  # 3
-                angvel,  # 3
-                gyro,  # 9 (3 IMUs x 3)
-                accel,  # 9 (3 IMUs x 3)
-                action,  # 11 (previous action)
-                cmd,  # 1 (velocity command)
-            ]
-        )
+        # === Phase Signal (Gait Clock) ===
+        # Provides periodic timing information to help robot learn rhythmic stepping
+        phase_obs = []
+        if self._use_phase_signal:
+            # Calculate phase angle (0 to 2π over phase_period steps)
+            phase = (step_count % self._phase_period) / self._phase_period * 2 * jp.pi
+
+            if self._num_phase_clocks == 1:
+                # Single clock for whole body
+                phase_obs = [jp.sin(phase), jp.cos(phase)]
+            elif self._num_phase_clocks == 2:
+                # Two clocks: left leg and right leg (offset by π)
+                left_phase = phase
+                right_phase = phase + jp.pi
+                phase_obs = [
+                    jp.sin(left_phase), jp.cos(left_phase),
+                    jp.sin(right_phase), jp.cos(right_phase)
+                ]
+            else:
+                # Fallback: no phase signal if misconfigured
+                phase_obs = []
+
+        obs_components = [
+            qpos,  # 11
+            qvel,  # 11
+            gravity,  # 3
+            angvel,  # 3
+            gyro,  # 9 (3 IMUs x 3)
+            accel,  # 9 (3 IMUs x 3)
+            action,  # 11 (previous action)
+            cmd,  # 1 (velocity command)
+        ]
+
+        # Add phase signal if enabled
+        if phase_obs:
+            obs_components.append(jp.array(phase_obs))
+
+        obs = jp.concatenate(obs_components)
 
         return obs
 
     def _get_reward(
-        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array
+        self, data: mjx.Data, action: jax.Array, velocity_cmd: jax.Array, prev_action: jax.Array = None
     ) -> jax.Array:
         """
         Calculate reward based on velocity command.
@@ -289,8 +344,12 @@ class WildRobotLocomotion(base.WildRobotEnv):
         joint_acc_penalty = -self._joint_acc_coeff * jp.sum(jp.square(qvel))
 
         # Action rate penalty (encourage smooth actions, not jerky)
-        # This requires previous action - for now use action magnitude
-        action_rate_penalty = -self._action_rate_coeff * jp.sum(jp.square(action))
+        # Use proper action change if previous action is available
+        if prev_action is not None:
+            action_rate_penalty = -self._action_rate_coeff * jp.sum(jp.square(action - prev_action))
+        else:
+            # Fallback: penalize action magnitude (less effective)
+            action_rate_penalty = -self._action_rate_coeff * jp.sum(jp.square(action))
 
         # === 4. ENERGY EFFICIENCY ===
         # Penalize torque (action * qvel approximates mechanical power)
@@ -373,5 +432,15 @@ class WildRobotLocomotion(base.WildRobotEnv):
     @property
     def observation_size(self) -> int:
         """Size of observation vector."""
-        # qpos(11) + qvel(11) + gravity(3) + angvel(3) + gyro(9) + accel(9) + action(11) + cmd(1) = 58
-        return 58
+        # Base observation: qpos(11) + qvel(11) + gravity(3) + angvel(3) + gyro(9) + accel(9) + action(11) + cmd(1) = 58
+        base_size = 58
+        
+        # Add phase signal size if enabled
+        phase_size = 0
+        if self._use_phase_signal:
+            if self._num_phase_clocks == 1:
+                phase_size = 2  # sin + cos
+            elif self._num_phase_clocks == 2:
+                phase_size = 4  # (sin, cos) for left + (sin, cos) for right
+        
+        return base_size + phase_size
