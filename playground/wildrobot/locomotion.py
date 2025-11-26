@@ -142,6 +142,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "velocity_command": velocity_cmd,
             "height": actual_height,
             "forward_velocity": jp.zeros(()),
+            "success": jp.ones(()),  # Initialize success metric (pytree structure must match step())
             "reset_min_height": self._min_height,  # DEBUG
             "reset_max_height": self._max_height,  # DEBUG
         }
@@ -296,7 +297,15 @@ class WildRobotLocomotion(base.WildRobotEnv):
         torque_penalty = -self._joint_torque_coeff * jp.sum(jp.square(action))
         energy_penalty = -self._energy_coeff * jp.sum(jp.square(action * qvel))
 
-        # === 5. TOTAL REWARD ===
+        # === 5. EXISTENTIAL PENALTY (Forces action) ===
+        # Constant per-timestep penalty to prevent "standing still" exploitation.
+        # Robot must actively move to overcome this negative baseline.
+        # See: https://arxiv.org/abs/1707.06347 (PPO paper, survival bonus discussion)
+        # INCREASED to -5.0 (from -1.0) after observing velocity still decreasing
+        # from 0.279 → 0.075 m/s in first 100K steps with -1.0 penalty
+        existential_penalty = -5.0
+
+        # === 6. TOTAL REWARD ===
         # All weights are configurable via YAML (like loco_mujoco)
         total_reward = (
             # Velocity tracking (CRITICAL - must be dominant)
@@ -317,14 +326,22 @@ class WildRobotLocomotion(base.WildRobotEnv):
             # Energy (minimal weight)
             + torque_penalty
             + energy_penalty
+            # Existential penalty (prevents standing still)
+            + existential_penalty
         )
 
-        # IMPORTANT: Clip reward to [0, inf) like loco-mujoco
-        # This prevents penalties from making walking less rewarding than standing
-        # Standing still gives small positive reward (~2-3 from minimal tracking)
-        # Walking gives larger positive reward (~50-80 from good tracking - penalties)
-        # Without clipping, penalties could make walking negative (robot learns to stand!)
-        total_reward = jp.maximum(total_reward, 0.0)
+        # REMOVED: Reward clipping that allowed "standing still" exploitation
+        # Previously: total_reward = jp.maximum(total_reward, 0.0)
+        #
+        # Why removed:
+        # - Standing still gave ~10 tracking reward - 1 existential = +9/step (clipped to 0)
+        # - Robot learned to stand for 420 steps = 420*0 = 0 total (safe!)
+        # - Walking gave higher per-step reward but fell faster (less total)
+        #
+        # With NO clipping:
+        # - Standing still: ~10 tracking - 1 existential - penalties = -1 to +8/step
+        # - If net negative, robot MUST move to get positive reward
+        # - Walking: ~50 tracking - 1 existential - penalties = +40-45/step (much better!)
 
         return total_reward
 
@@ -335,6 +352,9 @@ class WildRobotLocomotion(base.WildRobotEnv):
         Episode ends if robot falls (height outside healthy range).
         Uses only height-based termination like loco-mujoco (no gravity check).
         Height range is configurable via config (min_height, max_height).
+
+        Additionally applies a large negative reward on fall to discourage
+        "survival mode" strategies that prioritize episode length over walking.
         """
         height = self.get_floating_base_qpos(data.qpos)[2]
 

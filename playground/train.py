@@ -199,13 +199,30 @@ def main(argv):
     ckpt_dir = playground_dir / "checkpoints" / exp_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Logs still go to training/logs for W&B
-    logdir = epath.Path(PROJECT_ROOT) / "training" / "logs" / exp_name
+    # Logs go to playground/training_logs
+    logdir = epath.Path(PROJECT_ROOT) / "playground" / "training_logs" / exp_name
     logdir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nExperiment: {exp_name}")
     print(f"Checkpoints: {ckpt_dir}")
     print(f"Logs: {logdir}")
+
+    # Create training log file
+    training_log_file = logdir / "training_log.txt"
+    metrics_log_file = logdir / "metrics.jsonl"
+
+    # Write initial header to log file
+    with open(training_log_file, "w") as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"WildRobot Training Log - {exp_name}\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Start Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Config: {_CONFIG.value or 'default.yaml'}\n")
+        f.write(f"Terrain: {terrain}\n")
+        f.write(f"Total Timesteps: {ppo_config.num_timesteps:,}\n")
+        f.write(f"Num Environments: {ppo_config.num_envs}\n")
+        f.write(f"Episode Length: {ppo_config.episode_length}\n")
+        f.write("=" * 80 + "\n\n")
 
     # Initialize W&B if enabled
     if cfg["logging"]["use_wandb"]:
@@ -302,10 +319,30 @@ def main(argv):
         final_metrics["eval/avg_velocity_command"] = avg_velocity_cmd
         final_metrics["eval/success_rate"] = success_rate
 
-        print(
+        log_msg = (
             f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, "
             f"vel={avg_forward_vel:.3f}m/s, height={avg_height:.3f}m, elapsed={elapsed:.1f}s"
         )
+        print(log_msg)
+
+        # Write to training log file
+        with open(training_log_file, "a") as f:
+            f.write(f"{log_msg}\n")
+
+        # Write metrics to JSONL file for easy parsing
+        with open(metrics_log_file, "a") as f:
+            metrics_json = {
+                "step": num_steps,
+                "timestamp": time.time(),
+                "elapsed": elapsed,
+                "reward": float(eval_reward),
+                "episode_length": float(eval_length),
+                "forward_velocity": float(avg_forward_vel),
+                "height": float(avg_height),
+                "velocity_command": float(avg_velocity_cmd),
+                "success_rate": float(success_rate),
+            }
+            f.write(json.dumps(metrics_json) + "\n")
 
         # Log to W&B if enabled
         if cfg["logging"]["use_wandb"]:
@@ -400,6 +437,21 @@ def main(argv):
         pickle.dump(checkpoint_data, f)
 
     print(f"Policy saved to: {final_checkpoint}")
+
+    # Write final summary to log file
+    with open(training_log_file, "a") as f:
+        f.write("\n" + "=" * 80 + "\n")
+        f.write("Training Complete!\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"End Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        if len(times) > 1:
+            f.write(f"Time to JIT: {times[1] - times[0]:.2f}s\n")
+            f.write(f"Time to train: {times[-1] - times[1]:.2f}s\n")
+        f.write(f"\nPolicy saved to: {final_checkpoint}\n")
+        f.write("\nFinal Training Metrics:\n")
+        for key, value in final_metrics.items():
+            f.write(f"  {key}: {value}\n")
+        f.write("=" * 80 + "\n")
 
     # Print final metrics for reference
     if final_metrics:
