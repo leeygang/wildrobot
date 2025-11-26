@@ -14,27 +14,30 @@ env:
   # Reward parameters (similar to loco_mujoco's LocomotionReward)
   reward_params:
     # Velocity tracking (primary goal - exponential + linear dual rewards)
-    tracking_w_exp_xy: 15.0       # Exponential reward for XY velocity tracking
-    tracking_w_lin_xy: 5.0        # Linear reward for XY velocity tracking
-    tracking_w_exp_yaw: 4.0       # Exponential reward for yaw velocity tracking
-    tracking_w_lin_yaw: 1.0       # Linear reward for yaw velocity tracking
+    # INCREASED to strongly encourage walking over standing
+    tracking_w_exp_xy: 50.0       # Exponential reward for XY velocity tracking (was 15.0)
+    tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
+    tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
+    tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
     tracking_sigma: 0.25          # Tolerance for exponential rewards
 
     # Stability penalties (secondary - keep robot upright and stable)
-    z_vel_coeff: 2.0              # Penalize vertical velocity (bobbing)
-    roll_pitch_vel_coeff: 0.08    # Penalize roll/pitch angular velocity (tipping)
-    roll_pitch_pos_coeff: 0.3     # Penalize deviation from upright posture
+    # DECREASED to allow natural walking motion
+    z_vel_coeff: 1.0              # Penalize vertical velocity (bobbing) (was 2.0)
+    roll_pitch_vel_coeff: 0.04    # Penalize roll/pitch angular velocity (tipping) (was 0.08)
+    roll_pitch_pos_coeff: 0.15    # Penalize deviation from upright posture (was 0.3)
 
     # Smooth motion penalties (tertiary - encourage natural movement)
-    nominal_joint_pos_coeff: 0.005      # Keep joints near default pose
-    joint_position_limit_coeff: 5.0     # Avoid joint limits
-    joint_vel_coeff: 5e-5               # Penalize large joint velocities
-    joint_acc_coeff: 2e-5               # Penalize joint accelerations
-    action_rate_coeff: 0.02             # Penalize jerky actions
+    # DECREASED to allow walking
+    nominal_joint_pos_coeff: 0.002      # Keep joints near default pose (was 0.005)
+    joint_position_limit_coeff: 2.5     # Avoid joint limits (was 5.0)
+    joint_vel_coeff: 2.5e-5             # Penalize large joint velocities (was 5e-5)
+    joint_acc_coeff: 1e-5               # Penalize joint accelerations (was 2e-5)
+    action_rate_coeff: 0.01             # Penalize jerky actions (was 0.02)
 
     # Energy efficiency penalties (minimal weight)
-    joint_torque_coeff: 2e-7      # Penalize torque
-    energy_coeff: 2e-5            # Penalize mechanical power (action * qvel)
+    joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
+    energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
 
 training:
   num_timesteps: 100000       # 100K steps (VERY fast smoke test)
@@ -43,11 +46,11 @@ training:
   seed: 0
 
 ppo:
-  num_envs: 256               # Fewer envs for faster compilation (must divide batch_size * num_minibatches)
-  num_eval_envs: 32           # Fewer eval envs
-  batch_size: 128             # Smaller batch (128 * 2 = 256, divisible by 256 envs)
+  num_envs: 64                # Very few envs for 12GB GPU (64 * 5 = 320 samples)
+  num_eval_envs: 16           # Fewer eval envs
+  batch_size: 64              # Smaller batch (320 / 2 = 160, 160 / 64 = 2.5, use 64)
   unroll_length: 5            # Shorter unrolls
-  num_minibatches: 2          # Fewer minibatches
+  num_minibatches: 2          # Fewer minibatches (320 samples / 2 = 160 per minibatch)
   num_updates_per_batch: 2    # Fewer updates
 
   learning_rate: 0.0003

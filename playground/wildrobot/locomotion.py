@@ -142,7 +142,6 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "velocity_command": velocity_cmd,
             "height": actual_height,
             "forward_velocity": jp.zeros(()),
-            "success": jp.ones(()),  # Initialize to 1.0 (success until proven otherwise)
             "reset_min_height": self._min_height,  # DEBUG
             "reset_max_height": self._max_height,  # DEBUG
         }
@@ -319,6 +318,13 @@ class WildRobotLocomotion(base.WildRobotEnv):
             + torque_penalty
             + energy_penalty
         )
+
+        # IMPORTANT: Clip reward to [0, inf) like loco-mujoco
+        # This prevents penalties from making walking less rewarding than standing
+        # Standing still gives small positive reward (~2-3 from minimal tracking)
+        # Walking gives larger positive reward (~50-80 from good tracking - penalties)
+        # Without clipping, penalties could make walking negative (robot learns to stand!)
+        total_reward = jp.maximum(total_reward, 0.0)
 
         return total_reward
 

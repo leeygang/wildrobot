@@ -15,27 +15,30 @@ env:
   # Reward parameters (similar to loco_mujoco's LocomotionReward)
   reward_params:
     # Velocity tracking (primary goal - exponential + linear dual rewards)
-    tracking_w_exp_xy: 15.0       # Exponential reward for XY velocity tracking
-    tracking_w_lin_xy: 5.0        # Linear reward for XY velocity tracking
-    tracking_w_exp_yaw: 4.0       # Exponential reward for yaw velocity tracking
-    tracking_w_lin_yaw: 1.0       # Linear reward for yaw velocity tracking
+    # INCREASED to strongly encourage walking over standing
+    tracking_w_exp_xy: 50.0       # Exponential reward for XY velocity tracking (was 15.0)
+    tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
+    tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
+    tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
     tracking_sigma: 0.25          # Tolerance for exponential rewards
 
     # Stability penalties (secondary - keep robot upright and stable)
-    z_vel_coeff: 2.0              # Penalize vertical velocity (bobbing)
-    roll_pitch_vel_coeff: 0.08    # Penalize roll/pitch angular velocity (tipping)
-    roll_pitch_pos_coeff: 0.3     # Penalize deviation from upright posture
+    # DECREASED to allow natural walking motion
+    z_vel_coeff: 1.0              # Penalize vertical velocity (bobbing) (was 2.0)
+    roll_pitch_vel_coeff: 0.04    # Penalize roll/pitch angular velocity (tipping) (was 0.08)
+    roll_pitch_pos_coeff: 0.15    # Penalize deviation from upright posture (was 0.3)
 
     # Smooth motion penalties (tertiary - encourage natural movement)
-    nominal_joint_pos_coeff: 0.005      # Keep joints near default pose
-    joint_position_limit_coeff: 5.0     # Avoid joint limits
-    joint_vel_coeff: 5e-5               # Penalize large joint velocities
-    joint_acc_coeff: 2e-5               # Penalize joint accelerations
-    action_rate_coeff: 0.02             # Penalize jerky actions
+    # DECREASED to allow walking
+    nominal_joint_pos_coeff: 0.002      # Keep joints near default pose (was 0.005)
+    joint_position_limit_coeff: 2.5     # Avoid joint limits (was 5.0)
+    joint_vel_coeff: 2.5e-5             # Penalize large joint velocities (was 5e-5)
+    joint_acc_coeff: 1e-5               # Penalize joint accelerations (was 2e-5)
+    action_rate_coeff: 0.01             # Penalize jerky actions (was 0.02)
 
     # Energy efficiency penalties (minimal weight)
-    joint_torque_coeff: 2e-7      # Penalize torque
-    energy_coeff: 2e-5            # Penalize mechanical power (action * qvel)
+    joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
+    energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
 
 training:
   num_timesteps: 20000000     # Total training steps (20M like loco_mujoco)
@@ -44,11 +47,11 @@ training:
   seed: 0                     # Random seed
 
 ppo:
-  num_envs: 2048              # Number of parallel environments (same as loco_mujoco)
-  num_eval_envs: 128          # Number of evaluation environments
-  batch_size: 512             # Batch size for PPO updates (2048 envs * 64 steps / 256 batch)
-  unroll_length: 64           # Number of steps to unroll (same as loco_mujoco num_steps)
-  num_minibatches: 32         # Number of minibatches per update (matches loco_mujoco)
+  num_envs: 512               # Optimized for 12GB GPU (reduced from 2048)
+  num_eval_envs: 64           # Optimized for 12GB GPU (reduced from 128)
+  batch_size: 256             # Batch size (512 envs * 32 steps / 64 = 256)
+  unroll_length: 32           # Reduced from 64 for memory efficiency
+  num_minibatches: 16         # Reduced from 32 for memory efficiency
   num_updates_per_batch: 4    # Number of gradient updates per batch (update_epochs)
 
   learning_rate: 0.0003       # Adam learning rate (same as loco_mujoco)

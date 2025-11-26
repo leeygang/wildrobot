@@ -270,11 +270,18 @@ def main(argv):
         eval_reward = metrics.get("eval/episode_reward", 0.0)
         eval_length = metrics.get("eval/avg_episode_length", 0.0)
 
-        # Extract locomotion metrics (tracked by environment)
-        avg_forward_vel = metrics.get("eval/avg_forward_velocity", 0.0)
-        avg_height = metrics.get("eval/avg_height", 0.0)
-        avg_velocity_cmd = metrics.get("eval/avg_velocity_command", 0.0)
-        success_rate = metrics.get("eval/success_rate", 0.0)
+        # Extract locomotion metrics (Brax provides SUMMED metrics, not averages)
+        # We need to divide by episode length to get per-step averages
+        episode_forward_vel = metrics.get("eval/episode_forward_velocity", 0.0)
+        episode_height = metrics.get("eval/episode_height", 0.0)
+        episode_velocity_cmd = metrics.get("eval/episode_velocity_command", 0.0)
+        episode_success = metrics.get("eval/episode_success", 0.0)
+
+        # Convert summed metrics to averages
+        avg_forward_vel = episode_forward_vel / max(eval_length, 1.0)
+        avg_height = episode_height / max(eval_length, 1.0)
+        avg_velocity_cmd = episode_velocity_cmd / max(eval_length, 1.0)
+        success_rate = episode_success  # Already a percentage
 
         # Save final metrics based on validation config
         # (will be overwritten each time, so last call has final values)
@@ -290,14 +297,10 @@ def main(argv):
         final_metrics["eval/avg_episode_length"] = eval_length
 
         # Include locomotion metrics for comprehensive tracking
-        if "eval/avg_forward_velocity" in metrics:
-            final_metrics["eval/avg_forward_velocity"] = avg_forward_vel
-        if "eval/avg_height" in metrics:
-            final_metrics["eval/avg_height"] = avg_height
-        if "eval/avg_velocity_command" in metrics:
-            final_metrics["eval/avg_velocity_command"] = avg_velocity_cmd
-        if "eval/success_rate" in metrics:
-            final_metrics["eval/success_rate"] = success_rate
+        final_metrics["eval/avg_forward_velocity"] = avg_forward_vel
+        final_metrics["eval/avg_height"] = avg_height
+        final_metrics["eval/avg_velocity_command"] = avg_velocity_cmd
+        final_metrics["eval/success_rate"] = success_rate
 
         print(
             f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, "
@@ -314,19 +317,14 @@ def main(argv):
             }
 
             # Add locomotion metrics
-            if "eval/avg_forward_velocity" in metrics:
-                log_dict["eval/avg_forward_velocity"] = avg_forward_vel
-            if "eval/avg_height" in metrics:
-                log_dict["eval/avg_height"] = avg_height
-            if "eval/avg_velocity_command" in metrics:
-                log_dict["eval/avg_velocity_command"] = avg_velocity_cmd
-            if "eval/success_rate" in metrics:
-                log_dict["eval/success_rate"] = success_rate
+            log_dict["eval/avg_forward_velocity"] = avg_forward_vel
+            log_dict["eval/avg_height"] = avg_height
+            log_dict["eval/avg_velocity_command"] = avg_velocity_cmd
+            log_dict["eval/success_rate"] = success_rate
 
             # Velocity tracking error (how well robot follows commands)
-            if "eval/avg_forward_velocity" in metrics and "eval/avg_velocity_command" in metrics:
-                vel_error = abs(avg_forward_vel - avg_velocity_cmd)
-                log_dict["eval/velocity_tracking_error"] = vel_error
+            vel_error = abs(avg_forward_vel - avg_velocity_cmd)
+            log_dict["eval/velocity_tracking_error"] = vel_error
 
             # Log additional training metrics if available
             for key, value in metrics.items():
