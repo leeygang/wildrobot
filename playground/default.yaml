@@ -33,11 +33,6 @@ env:
     tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
     tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
     tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
-    # INCREASED to strongly encourage walking over standing
-    tracking_w_exp_xy: 50.0       # Exponential reward for XY velocity tracking (was 15.0)
-    tracking_w_lin_xy: 15.0        # Linear reward for XY velocity tracking (was 5.0)
-    tracking_w_exp_yaw: 10.0       # Exponential reward for yaw velocity tracking (was 4.0)
-    tracking_w_lin_yaw: 3.0        # Linear reward for yaw velocity tracking (was 1.0)
     tracking_sigma: 0.25          # Tolerance for exponential rewards
 
     # Stability penalties (secondary - keep robot upright and stable)
@@ -57,8 +52,6 @@ env:
     # Energy efficiency penalties (minimal weight)
     joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
     energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
-    joint_torque_coeff: 1e-7      # Penalize torque (was 2e-7)
-    energy_coeff: 1e-5            # Penalize mechanical power (action * qvel) (was 2e-5)
 
 training:
   num_timesteps: 20000000     # Total training steps (20M like loco_mujoco)
@@ -67,11 +60,6 @@ training:
   seed: 0                     # Random seed
 
 ppo:
-  num_envs: 512               # Optimized for 12GB GPU (reduced from 2048)
-  num_eval_envs: 64           # Optimized for 12GB GPU (reduced from 128)
-  batch_size: 256             # Batch size (512 envs * 32 steps / 64 = 256)
-  unroll_length: 32           # Reduced from 64 for memory efficiency
-  num_minibatches: 16         # Reduced from 32 for memory efficiency
   num_envs: 512               # Optimized for 12GB GPU (reduced from 2048)
   num_eval_envs: 64           # Optimized for 12GB GPU (reduced from 128)
   batch_size: 256             # Batch size (512 envs * 32 steps / 64 = 256)
