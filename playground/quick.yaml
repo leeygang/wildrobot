@@ -6,6 +6,17 @@ env:
   ctrl_dt: 0.02
   sim_dt: 0.002
 
+  # === Velocity Command Configuration ===
+  # RECOMMENDED for quick testing: Use "fixed" mode with single velocity
+  # This makes learning faster and easier to debug
+  velocity_command_mode: "fixed"   # "fixed" or "range"
+  target_velocity: 0.7             # Fixed at 0.7 m/s for consistent testing
+
+  # Alternative: Use "range" mode for quick generalization test
+  # velocity_command_mode: "range"
+  # min_velocity: 0.6
+  # max_velocity: 0.8
+
   # === Action Filtering (Low-Pass Filter) ===
   # Prevents high-frequency stuttering by smoothing actions over time
   use_action_filter: true      # Enable action filtering
@@ -89,8 +100,10 @@ rendering:
   render_width: 640
 
 checkpointing:
-  save_interval: 1000000
-  keep_checkpoints: 3
+  save_interval: 100000       # Save every 100K steps for quick testing (5 checkpoints for 500K)
+                               # For quick tests, more frequent checkpoints help debug
+                               # Can increase to 250000 (250K) or 500000 (500K) if desired
+  keep_checkpoints: 3         # Keep fewer checkpoints for quick tests (saves disk space)
 
 validation:
   # Metrics to track for validation (saved in checkpoint for automatic validation)

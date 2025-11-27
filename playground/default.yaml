@@ -7,6 +7,32 @@ env:
   ctrl_dt: 0.02               # Control frequency: 50Hz
   sim_dt: 0.002               # Simulation frequency: 500Hz
 
+  # === Velocity Command Configuration ===
+  # Two modes for different training strategies:
+  #
+  # 1. "fixed" mode - Always command the same velocity
+  #    Good for: Initial learning, debugging, ablation studies
+  #    Example: Train with fixed 0.7 m/s to learn basic walking
+  #    Config: velocity_command_mode: "fixed", target_velocity: 0.7
+  #
+  # 2. "range" mode - Sample random velocity from range
+  #    Good for: Generalization, curriculum learning, final training
+  #    Example: Train with 0.5-1.0 m/s range for robust walking
+  #    Config: velocity_command_mode: "range", min_velocity: 0.5, max_velocity: 1.0
+  #
+  velocity_command_mode: "range"   # "fixed" or "range"
+
+  # For "fixed" mode: Always command this velocity
+  target_velocity: 0.7             # meters/second (only used if mode="fixed")
+
+  # For "range" mode: Sample velocity from [min, max]
+  min_velocity: 0.5                # meters/second (only used if mode="range")
+  max_velocity: 1.0                # meters/second (only used if mode="range")
+
+  # IMPORTANT: Avoid velocity commands near 0.0 m/s!
+  # Robot can exploit "standing still" strategy if allowed to stand.
+  # Recommended minimum: 0.5 m/s to force walking behavior.
+
   # === Action Filtering (Low-Pass Filter) ===
   # Prevents high-frequency stuttering by smoothing actions over time
   use_action_filter: true      # Enable action filtering
@@ -92,8 +118,13 @@ rendering:
   render_width: 640           # Video width
 
 checkpointing:
-  save_interval: 1000000      # Save checkpoint every N steps
-  keep_checkpoints: 5         # Number of checkpoints to keep
+  save_interval: 1000000      # Save checkpoint every N steps (1M = every 1 million steps)
+                               # Recommended: 1M for 20M training (20 checkpoints total)
+                               # For faster checkpointing: 500000 (500K = 40 checkpoints)
+                               # For less frequent: 2000000 (2M = 10 checkpoints)
+  keep_checkpoints: 5         # Number of checkpoints to keep (oldest deleted automatically)
+                               # Set to -1 to keep all checkpoints (warning: uses disk space!)
+                               # Recommended: 3-5 for disk space, 10+ if space available
 
 validation:
   # Metrics to track for validation (saved in checkpoint for automatic validation)
