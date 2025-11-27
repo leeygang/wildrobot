@@ -293,12 +293,15 @@ def main(argv):
         episode_height = metrics.get("eval/episode_height", 0.0)
         episode_velocity_cmd = metrics.get("eval/episode_velocity_command", 0.0)
         episode_success = metrics.get("eval/episode_success", 0.0)
+        episode_distance = metrics.get("eval/episode_distance_walked", 0.0)
 
         # Convert summed metrics to averages
         avg_forward_vel = episode_forward_vel / max(eval_length, 1.0)
         avg_height = episode_height / max(eval_length, 1.0)
         avg_velocity_cmd = episode_velocity_cmd / max(eval_length, 1.0)
-        success_rate = episode_success  # Already a percentage
+        # Calculate actual success rate as percentage (successful steps / total steps * 100)
+        success_rate = (episode_success / max(eval_length, 1.0)) * 100.0
+        avg_distance = episode_distance  # Already total distance per episode
 
         # Save final metrics based on validation config
         # (will be overwritten each time, so last call has final values)
@@ -318,10 +321,11 @@ def main(argv):
         final_metrics["eval/avg_height"] = avg_height
         final_metrics["eval/avg_velocity_command"] = avg_velocity_cmd
         final_metrics["eval/success_rate"] = success_rate
+        final_metrics["eval/avg_distance_walked"] = avg_distance
 
         log_msg = (
             f"Step {num_steps:,}: reward={eval_reward:.3f}, length={eval_length:.1f}, "
-            f"vel={avg_forward_vel:.3f}m/s, height={avg_height:.3f}m, elapsed={elapsed:.1f}s"
+            f"vel={avg_forward_vel:.3f}m/s, dist={avg_distance:.2f}m, height={avg_height:.3f}m, elapsed={elapsed:.1f}s"
         )
         print(log_msg)
 
@@ -338,6 +342,7 @@ def main(argv):
                 "reward": float(eval_reward),
                 "episode_length": float(eval_length),
                 "forward_velocity": float(avg_forward_vel),
+                "distance_walked": float(avg_distance),
                 "height": float(avg_height),
                 "velocity_command": float(avg_velocity_cmd),
                 "success_rate": float(success_rate),
@@ -358,6 +363,7 @@ def main(argv):
             log_dict["eval/avg_height"] = avg_height
             log_dict["eval/avg_velocity_command"] = avg_velocity_cmd
             log_dict["eval/success_rate"] = success_rate
+            log_dict["eval/avg_distance_walked"] = avg_distance
 
             # Velocity tracking error (how well robot follows commands)
             vel_error = abs(avg_forward_vel - avg_velocity_cmd)
@@ -456,8 +462,12 @@ def main(argv):
     # Print final metrics for reference
     if final_metrics:
         print(f"\nFinal Training Metrics:")
-        print(f"  eval/episode_reward: {final_metrics.get('eval/episode_reward', 'N/A')}")
-        print(f"  eval/avg_episode_length: {final_metrics.get('eval/avg_episode_length', 'N/A')}")
+        print(
+            f"  eval/episode_reward: {final_metrics.get('eval/episode_reward', 'N/A')}"
+        )
+        print(
+            f"  eval/avg_episode_length: {final_metrics.get('eval/avg_episode_length', 'N/A')}"
+        )
         print(f"  training_timesteps: {final_metrics.get('training_timesteps', 'N/A')}")
 
     # Render videos (Option 2: Render only at the end, like loco-mujoco)
@@ -505,14 +515,15 @@ def main(argv):
 
         except Exception as e:
             import traceback
-            print(
-                f"\nWarning: Video recording failed: {e}"
-            )
+
+            print(f"\nWarning: Video recording failed: {e}")
             print("Full traceback:")
             traceback.print_exc()
             print("\nTraining completed successfully. Video recording skipped.")
             print(f"To render video later, run:")
-            print(f"  python visualize_policy.py --checkpoint {final_checkpoint} --output videos/policy.mp4")
+            print(
+                f"  python visualize_policy.py --checkpoint {final_checkpoint} --output videos/policy.mp4"
+            )
     else:
         print("\nVideo rendering disabled (render_videos=false in config)")
         print(f"To render video later, run:")

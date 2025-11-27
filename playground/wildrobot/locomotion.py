@@ -183,6 +183,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "velocity_command": velocity_cmd,
             "height": actual_height,
             "forward_velocity": jp.zeros(()),
+            "distance_walked": jp.zeros(()),  # NEW: Track cumulative distance
             "success": jp.ones(
                 ()
             ),  # Initialize success metric (pytree structure must match step())
@@ -197,6 +198,9 @@ class WildRobotLocomotion(base.WildRobotEnv):
             "prev_action": jp.zeros(
                 self.action_size
             ),  # Track previous action for filtering
+            "prev_x_position": jp.zeros(
+                ()
+            ),  # NEW: Track previous X position for distance
         }
 
         return mjx_env.State(data, obs, reward, done, metrics, info)
@@ -244,9 +248,19 @@ class WildRobotLocomotion(base.WildRobotEnv):
         forward_velocity = self.get_local_linvel(data)[0]
         height = self.get_floating_base_qpos(data.qpos)[2]
 
+        # Calculate distance walked in this step
+        current_x_position = self.get_floating_base_qpos(data.qpos)[0]
+        prev_x_position = state.info.get("prev_x_position", current_x_position)
+        step_distance = jp.abs(current_x_position - prev_x_position)
+
+        # Accumulate total distance
+        prev_distance = state.metrics.get("distance_walked", 0.0)
+        total_distance = prev_distance + step_distance
+
         state.metrics["height"] = height
         state.metrics["forward_velocity"] = forward_velocity
         state.metrics["velocity_command"] = velocity_cmd
+        state.metrics["distance_walked"] = total_distance
 
         # Track success (completing episode without falling)
         # Success = reached end of episode without terminating early
@@ -255,6 +269,7 @@ class WildRobotLocomotion(base.WildRobotEnv):
         # Update state variables in info (not metrics)
         state.info["step_count"] = new_step_count
         state.info["prev_action"] = filtered_action
+        state.info["prev_x_position"] = current_x_position
 
         return state.replace(data=data, obs=obs, reward=reward, done=done)
 

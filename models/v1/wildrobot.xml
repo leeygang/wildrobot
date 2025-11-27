@@ -197,6 +197,9 @@
         <site group="3" name="chest_imu" pos="0.000119839 -0.000141421 -0.119" quat="3.13528e-17 0.707107 0.707107 7.72933e-17" />
       </body>
     </body>
+    <!-- Tracking camera that follows the robot -->
+    <camera name="track" mode="targetbody" target="waist"
+            pos="-3.0 0 1.5" euler="0 -15 0"/>
   </worldbody>
   <asset>
     <mesh file="htd_45h_1circle.stl" />
