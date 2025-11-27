@@ -1,0 +1,126 @@
+# WildRobot AMP - Phase 1: Contact Rewards
+# Enhanced reward shaping with foot contact and sliding penalties
+# Physics-based approach (no mocap data required)
+
+env:
+  terrain: "flat"
+  ctrl_dt: 0.02
+  sim_dt: 0.002
+
+  # Velocity command
+  velocity_command_mode: "range"
+  target_velocity: 0.7
+  min_velocity: 0.5
+  max_velocity: 1.0
+
+  # Action filtering
+  use_action_filter: true
+  action_filter_alpha: 0.7
+
+  # Phase signal (critical for contact rewards)
+  use_phase_signal: true
+  phase_period: 40
+  num_phase_clocks: 2
+
+  # Termination conditions
+  min_height: 0.2
+  max_height: 0.7
+
+# Reward weights - Phase 1 (with contact rewards)
+reward_weights:
+  # Tracking sigma
+  tracking_sigma: 0.25
+
+  # === Velocity tracking (reduced from baseline to balance with contact) ===
+  tracking_exp_xy: 25.0      # Was 50.0 in baseline
+  tracking_lin_xy: 8.0       # Was 15.0 in baseline
+  tracking_exp_yaw: 5.0      # Was 10.0 in baseline
+  tracking_lin_yaw: 1.5      # Was 3.0 in baseline
+
+  # === Stability penalties (increased for natural motion) ===
+  z_velocity: 1.0            # Was 0.1 - allow some bobbing during walking
+  roll_pitch_velocity: 0.05  # Was 0.01 - allow some rotation
+  roll_pitch_position: 0.1   # Was 0.05 - stay upright but not rigid
+
+  # === Smoothness penalties (keep same) ===
+  nominal_joint_position: 0.0
+  joint_position_limit: 2.5
+  joint_velocity: 1e-6
+  joint_acceleration: 1e-6
+  action_rate: 0.001
+
+  # === Energy penalties (keep same) ===
+  joint_torque: 1e-7
+  mechanical_power: 1e-5
+
+  # === Phase 1: Contact rewards (ENABLED) ===
+  foot_contact: 5.0          # Reward proper contact timing
+  foot_sliding: 10.0         # Penalize sliding during stance
+
+  # === Existential penalty ===
+  existential: 1.0
+
+training:
+  num_timesteps: 20000000
+  num_evals: 200
+  episode_length: 600
+  seed: 0
+
+# Quick verify mode - fast sanity check before full training
+# Usage: Add --quick_verify flag to training script
+quick_verify:
+  enabled: false              # Set to true or use --quick_verify flag
+  num_timesteps: 10000        # ~20 seconds on GPU (512 envs, 10K steps)
+  num_evals: 2                # Just 2 eval runs
+  episode_length: 100         # Shorter episodes
+  num_envs: 128               # Fewer parallel envs (faster startup)
+  num_eval_envs: 16
+  use_wandb: false            # Skip logging for quick tests
+  render_videos: false        # Skip video rendering
+  save_checkpoints: false     # Skip checkpointing
+
+ppo:
+  num_envs: 512
+  num_eval_envs: 64
+  batch_size: 256
+  unroll_length: 32
+  num_minibatches: 16
+  num_updates_per_batch: 4
+
+  learning_rate: 0.0003
+  entropy_cost: 0.01
+  discounting: 0.99
+  reward_scaling: 1.0
+
+  max_grad_norm: 0.5
+  clipping_epsilon: 0.2
+  normalize_observations: true
+  action_repeat: 1
+
+network:
+  policy_hidden_layers: [256, 256, 128]
+  value_hidden_layers: [256, 256, 128]
+
+logging:
+  use_wandb: true
+  wandb_project: "wildrobot-amp"
+  wandb_entity: null
+  wandb_tags: ["phase1", "contact_rewards"]
+
+rendering:
+  render_videos: true
+  render_height: 480
+  render_width: 640
+
+checkpointing:
+  save_interval: 1000000
+  keep_checkpoints: 5
+
+validation:
+  metrics:
+    reward: "eval/episode_reward"
+    episode_length: "eval/avg_episode_length"
+  thresholds:
+    reward_tolerance: 0.10
+    length_tolerance: 0.10
+    determinism_threshold: 0.01
