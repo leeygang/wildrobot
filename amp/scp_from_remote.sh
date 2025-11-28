@@ -3,14 +3,36 @@
 # SCP from Remote - AMP Version
 # Copy files from remote amp/ directory to local amp/ directory
 
+# Parse flags
+USE_PUBLIC=false
+FILENAME=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --public)
+            USE_PUBLIC=true
+            shift
+            ;;
+        *)
+            FILENAME="$1"
+            shift
+            ;;
+    esac
+done
+
 # Check if filename argument is provided
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|checkpoint_folder_name>"
+if [ -z "$FILENAME" ]; then
+    echo "Usage: $0 [--public] <filename|checkpoint_folder_name>"
+    echo ""
+    echo "Options:"
+    echo "  --public    Use public IP from \$LINUX_PUBLIC_IP and \$LINUX_PUBLIC_PORT"
     echo ""
     echo "Examples:"
-    echo "  $0 walk.py                                       # Copy a file"
+    echo "  $0 walk.py                                       # Copy from local network"
+    echo "  $0 --public walk.py                              # Copy from public IP"
     echo "  $0 logs/experiment.log                           # Copy from subdirectory"
     echo "  $0 phase1_contact_flat_20251127-123456           # Copy checkpoint folder"
+    echo "  $0 --public phase1_contact_flat_20251127-123456  # Copy checkpoint via public IP"
     echo "  $0 baseline_flat_20251127-123456                 # Copy checkpoint folder"
     echo ""
     echo "For checkpoint folders:"
@@ -20,13 +42,36 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-# Get the filename from the first argument
-FILENAME="$1"
-
-# Remote destination
+# Remote configuration
 REMOTE_USER="leeygang"
-REMOTE_HOST="linux-pc.local"
 REMOTE_BASE_PATH="~/projects/wildrobot/amp"
+
+# Configure remote host based on --public flag
+if [ "$USE_PUBLIC" = true ]; then
+    if [ -z "$LINUX_PUBLIC_IP" ]; then
+        echo "Error: LINUX_PUBLIC_IP environment variable not set"
+        echo "Set it with: export LINUX_PUBLIC_IP=your.public.ip"
+        exit 1
+    fi
+
+    REMOTE_HOST="$LINUX_PUBLIC_IP"
+
+    # Optional: Use custom SSH port if set
+    if [ -n "$LINUX_PUBLIC_PORT" ]; then
+        SCP_PORT_FLAG="-P $LINUX_PUBLIC_PORT"
+        RSYNC_PORT_FLAG="-e ssh -p $LINUX_PUBLIC_PORT"
+        echo "Using public IP: $REMOTE_HOST (port $LINUX_PUBLIC_PORT)"
+    else
+        SCP_PORT_FLAG=""
+        RSYNC_PORT_FLAG=""
+        echo "Using public IP: $REMOTE_HOST"
+    fi
+else
+    REMOTE_HOST="linux-pc.local"
+    SCP_PORT_FLAG=""
+    RSYNC_PORT_FLAG=""
+    echo "Using local network: $REMOTE_HOST"
+fi
 
 # Check if this looks like a checkpoint folder name
 # Patterns:
@@ -54,11 +99,15 @@ if [[ "$FILENAME" =~ ^(phase[123]_[a-z]+|baseline|quickverify_[a-z_]+)_(flat|rou
     # Falls back to scp if rsync is not available
     if command -v rsync &> /dev/null; then
         echo "Using rsync for efficient transfer..."
-        rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        if [ -n "$RSYNC_PORT_FLAG" ]; then
+            rsync -avz --progress $RSYNC_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        else
+            rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        fi
         RESULT=$?
     else
         echo "Using scp (rsync not found)..."
-        scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
+        scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
         RESULT=$?
     fi
 
@@ -72,7 +121,7 @@ else
     echo "Local:  $LOCAL_PATH"
     echo ""
 
-    scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
+    scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
     RESULT=$?
 fi
 
