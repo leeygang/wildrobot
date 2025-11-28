@@ -121,6 +121,13 @@ for FILENAME in "${FILES[@]}"; do
         echo "   Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
         echo "   Local:  $LOCAL_PATH"
 
+        # Create parent directory if it doesn't exist
+        LOCAL_DIR=$(dirname "$LOCAL_PATH")
+        if [ "$LOCAL_DIR" != "." ] && [ ! -d "$LOCAL_DIR" ]; then
+            echo "   📁 Creating local directory: $LOCAL_DIR"
+            mkdir -p "$LOCAL_DIR"
+        fi
+
         scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
         RESULT=$?
     fi

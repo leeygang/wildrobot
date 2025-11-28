@@ -274,6 +274,11 @@ def main(argv):
     # Progress callback
     times = [time.monotonic()]
 
+    # Create metrics log file
+    metrics_log_path = exp_dir / "metrics.jsonl"
+    metrics_log_file = open(metrics_log_path, "w")
+    print(f"Metrics log: {metrics_log_path}\n")
+
     def progress(num_steps, metrics):
         times.append(time.monotonic())
         elapsed = times[-1] - times[1] if len(times) > 1 else 0
@@ -296,6 +301,88 @@ def main(argv):
               f"Reward: {eval_reward:.2f} | Vel: {forward_vel:.3f} m/s | "
               f"Height: {height:.3f}m | Success: {success:.2%} | "
               f"SPS: {sps:.0f} | ETA: {eta}")
+
+        # VERBOSE LOGGING FOR QUICK_VERIFY MODE
+        if _QUICK_VERIFY.value:
+            print("\n" + "="*70)
+            print("📊 DETAILED REWARD BREAKDOWN (per step)")
+            print("="*70)
+
+            # Collect all reward components
+            reward_components = {}
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_reward/"):
+                    component_name = key.replace("eval/episode_reward/", "")
+                    reward_per_step = value / max(eval_length, 1.0)
+                    reward_components[component_name] = reward_per_step
+
+            # Sort by absolute value (largest penalties/rewards first)
+            sorted_components = sorted(reward_components.items(), key=lambda x: abs(x[1]), reverse=True)
+
+            print("\n🔴 Top Penalties/Rewards:")
+            for i, (name, value) in enumerate(sorted_components[:10], 1):
+                sign = "+" if value >= 0 else ""
+                print(f"  {i:2d}. {name:30s} {sign}{value:>8.3f}")
+
+            # Calculate total from components
+            total_from_components = sum(reward_components.values())
+            print(f"\n{'='*70}")
+            print(f"Total from components:  {total_from_components:>8.3f} per step")
+            print(f"Reported reward:        {eval_reward / max(eval_length, 1.0):>8.3f} per step")
+            print(f"Episode reward:         {eval_reward:>8.3f} (over {eval_length:.0f} steps)")
+            print(f"{'='*70}")
+
+            # Show contact metrics
+            print("\n📍 CONTACT METRICS:")
+            contact_metrics = {}
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_contact/"):
+                    metric_name = key.replace("eval/episode_contact/", "")
+                    metric_per_step = value / max(eval_length, 1.0)
+                    contact_metrics[metric_name] = metric_per_step
+
+            for name, value in sorted(contact_metrics.items()):
+                print(f"  {name:40s} {value:>8.3f}")
+
+            print("="*70 + "\n")
+
+        # Save metrics to log file (always, regardless of W&B)
+        metrics_entry = {
+            "step": int(num_steps),
+            "timestamp": time.time(),
+            "summary": {
+                "reward": float(eval_reward),
+                "reward_per_step": float(eval_reward / max(eval_length, 1.0)),
+                "success_rate": float(success),
+                "forward_velocity": float(forward_vel),
+                "height": float(height),
+                "distance_walked": float(distance),
+                "episode_length": float(eval_length),
+                "sps": float(sps),
+            },
+            "rewards": {},
+            "contact": {},
+            "other": {},
+        }
+
+        # Organize all metrics - convert JAX arrays to Python floats
+        for key, value in metrics.items():
+            value_per_step = float(value / max(eval_length, 1.0))
+
+            if key.startswith("eval/episode_reward/"):
+                component_name = key.replace("eval/episode_reward/", "")
+                metrics_entry["rewards"][component_name] = value_per_step
+            elif key.startswith("eval/episode_contact/"):
+                metric_name = key.replace("eval/episode_contact/", "")
+                metrics_entry["contact"][metric_name] = value_per_step
+            elif key.startswith("eval/"):
+                metric_name = key.replace("eval/episode_", "").replace("eval/", "")
+                if metric_name not in ["reward", "success", "avg_episode_length"]:
+                    metrics_entry["other"][metric_name] = float(value_per_step) if "episode" in key else float(value)
+
+        # Write to JSONL file
+        metrics_log_file.write(json.dumps(metrics_entry) + "\n")
+        metrics_log_file.flush()  # Ensure it's written immediately
 
         # Log to W&B with categorization
         if cfg["logging"]["use_wandb"]:
@@ -398,6 +485,10 @@ def main(argv):
     print(f"\n{'='*80}")
     print("Training completed!")
     print(f"{'='*80}\n")
+
+    # Close metrics log file
+    metrics_log_file.close()
+    print(f"Metrics saved to: {metrics_log_path}\n")
 
     # Save final checkpoint
     if not _QUICK_VERIFY.value:

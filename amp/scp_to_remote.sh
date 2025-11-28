@@ -115,7 +115,7 @@ if [ $? -eq 0 ]; then
     for file in "${VALID_FILES[@]}"; do
         echo "  ✓ $file"
     done
-    
+
     if [ ${#INVALID_FILES[@]} -gt 0 ]; then
         echo ""
         echo "Skipped files (not found):"
