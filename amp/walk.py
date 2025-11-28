@@ -111,6 +111,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         # Phase 1: Foot contact rewards (optional, enabled via config)
         self._use_contact_rewards = reward_weights.get("foot_contact", 0.0) > 0
         self._use_sliding_penalty = reward_weights.get("foot_sliding", 0.0) > 0
+        self._use_air_time_reward = reward_weights.get("foot_air_time", 0.0) > 0
 
         if self._use_contact_rewards:
             self._foot_contact_reward = contact_rewards.FootContactReward(
@@ -128,6 +129,16 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
                 left_foot_geoms=self.robot_config.left_feet_geoms,
                 right_foot_geoms=self.robot_config.right_feet_geoms,
                 contact_threshold=1.0,
+            )
+
+        if self._use_air_time_reward:
+            self._foot_air_time_reward = contact_rewards.FootAirTimeReward(
+                model=self.mj_model,
+                left_foot_geoms=self.robot_config.left_feet_geoms,
+                right_foot_geoms=self.robot_config.right_feet_geoms,
+                contact_threshold=1.0,
+                min_air_time=0.15,  # 150ms minimum flight time
+                dt=self.dt,  # Control timestep
             )
 
     def reset(self, rng: jax.Array) -> base_env.WildRobotEnvState:
@@ -166,18 +177,58 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
 
         actual_height = self.get_floating_base_qpos(data.qpos)[2]
 
+        # Initialize ALL metrics with default values (required for JAX scan pytree consistency)
         metrics = {
+            # Core metrics
             "velocity_command": velocity_cmd,
             "height": actual_height,
             "forward_velocity": jp.zeros(()),
             "distance_walked": jp.zeros(()),
             "success": jp.ones(()),
+            # Reward components (all initialized to 0.0)
+            "reward/total": jp.zeros(()),
+            "reward/tracking_exp_xy": jp.zeros(()),
+            "reward/tracking_lin_xy": jp.zeros(()),
+            "reward/tracking_exp_yaw": jp.zeros(()),
+            "reward/tracking_lin_yaw": jp.zeros(()),
+            "reward/z_velocity": jp.zeros(()),
+            "reward/roll_pitch_velocity": jp.zeros(()),
+            "reward/roll_pitch_position": jp.zeros(()),
+            "reward/nominal_joint_position": jp.zeros(()),
+            "reward/joint_position_limit": jp.zeros(()),
+            "reward/joint_velocity": jp.zeros(()),
+            "reward/joint_acceleration": jp.zeros(()),
+            "reward/action_rate": jp.zeros(()),
+            "reward/joint_torque": jp.zeros(()),
+            "reward/mechanical_power": jp.zeros(()),
+            "reward/foot_contact": jp.zeros(()),
+            "reward/foot_sliding": jp.zeros(()),
+            "reward/foot_air_time": jp.zeros(()),
+            "reward/existential": jp.zeros(()),
+            # Contact metrics
+            "contact/left_foot_force": jp.zeros(()),
+            "contact/right_foot_force": jp.zeros(()),
+            "contact/left_in_contact": jp.zeros(()),
+            "contact/right_in_contact": jp.zeros(()),
+            "contact/both_feet_contact": jp.zeros(()),
+            "contact/no_feet_contact": jp.zeros(()),
+            "contact/gait_phase": jp.zeros(()),
+            "contact/left_sliding_vel": jp.zeros(()),
+            "contact/right_sliding_vel": jp.zeros(()),
+            "contact/left_air_time": jp.zeros(()),
+            "contact/right_air_time": jp.zeros(()),
+            "contact/avg_air_time": jp.zeros(()),
+            "contact/left_meets_air_time_threshold": jp.zeros(()),
+            "contact/right_meets_air_time_threshold": jp.zeros(()),
+            "contact/both_meet_air_time_threshold": jp.zeros(()),
         }
 
         info = {
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
             "prev_x_position": jp.zeros(()),
+            "left_air_time": jp.zeros(()),
+            "right_air_time": jp.zeros(()),
         }
 
         state = base_env.WildRobotEnvState(
@@ -216,9 +267,30 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         obs = self._get_obs(
             data, filtered_action, velocity_cmd, step_count=new_step_count
         )
-        reward = self._get_reward(
+        reward, reward_components = self._get_reward(
             data, filtered_action, velocity_cmd, prev_action=prev_action, step_count=new_step_count
         )
+
+        # === AIR TIME REWARD (Phase 1B) ===
+        # Must be computed here to update state and add to reward
+        if self._use_air_time_reward:
+            left_air_time = state.info.get("left_air_time", 0.0)
+            right_air_time = state.info.get("right_air_time", 0.0)
+            air_time_state = (left_air_time, right_air_time)
+
+            air_time_reward, new_air_time_state = self._foot_air_time_reward.compute(
+                data, filtered_action, air_time_state
+            )
+
+            # Add to reward components and apply weight
+            reward_components["foot_air_time"] = air_time_reward
+            air_time_weight = float(self._reward_weights.get("foot_air_time", 0.0))
+            reward = reward + air_time_weight * air_time_reward
+
+            # Update state
+            state.info["left_air_time"] = new_air_time_state[0]
+            state.info["right_air_time"] = new_air_time_state[1]
+
         done = self._get_done(data)
 
         # Update metrics
@@ -232,11 +304,77 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         prev_distance = state.metrics.get("distance_walked", 0.0)
         total_distance = prev_distance + step_distance
 
+        # Core metrics
         state.metrics["height"] = height
         state.metrics["forward_velocity"] = forward_velocity
         state.metrics["velocity_command"] = velocity_cmd
         state.metrics["distance_walked"] = total_distance
         state.metrics["success"] = jp.where(done > 0.5, 0.0, 1.0)
+
+        # === REWARD COMPONENT METRICS ===
+        state.metrics["reward/total"] = reward
+        for name, value in reward_components.items():
+            state.metrics[f"reward/{name}"] = value
+
+        # === CONTACT METRICS (Phase 1) ===
+        if self._use_contact_rewards:
+            # Calculate phase
+            phase = (new_step_count % self._phase_period) / self._phase_period
+
+            # Get contact forces
+            left_force = self._foot_contact_reward.get_contact_force(
+                data, self._foot_contact_reward.left_foot_geom_ids
+            )
+            right_force = self._foot_contact_reward.get_contact_force(
+                data, self._foot_contact_reward.right_foot_geom_ids
+            )
+
+            # Add to metrics
+            state.metrics["contact/left_foot_force"] = left_force
+            state.metrics["contact/right_foot_force"] = right_force
+            state.metrics["contact/left_in_contact"] = jp.where(left_force > 1.0, 1.0, 0.0)
+            state.metrics["contact/right_in_contact"] = jp.where(right_force > 1.0, 1.0, 0.0)
+            state.metrics["contact/both_feet_contact"] = jp.where(
+                (left_force > 1.0) & (right_force > 1.0), 1.0, 0.0
+            )
+            state.metrics["contact/no_feet_contact"] = jp.where(
+                (left_force <= 1.0) & (right_force <= 1.0), 1.0, 0.0
+            )
+            state.metrics["contact/gait_phase"] = phase
+
+        if self._use_sliding_penalty:
+            # Get foot velocities
+            left_foot_vel = self._foot_sliding_penalty.get_site_velocity(
+                data,
+                self._foot_sliding_penalty.left_foot_site_id,
+                self._foot_sliding_penalty.left_foot_body_id
+            )
+            right_foot_vel = self._foot_sliding_penalty.get_site_velocity(
+                data,
+                self._foot_sliding_penalty.right_foot_site_id,
+                self._foot_sliding_penalty.right_foot_body_id
+            )
+
+            # Horizontal sliding velocities
+            state.metrics["contact/left_sliding_vel"] = jp.linalg.norm(left_foot_vel[..., :2])
+            state.metrics["contact/right_sliding_vel"] = jp.linalg.norm(right_foot_vel[..., :2])
+
+        if self._use_air_time_reward:
+            # Air time metrics
+            state.metrics["contact/left_air_time"] = state.info["left_air_time"]
+            state.metrics["contact/right_air_time"] = state.info["right_air_time"]
+
+            # Derived metrics for better visualization
+            avg_air_time = (state.info["left_air_time"] + state.info["right_air_time"]) / 2.0
+            state.metrics["contact/avg_air_time"] = avg_air_time
+
+            # Check if meeting minimum threshold
+            min_air_time_threshold = 0.15
+            left_meets_threshold = jp.where(state.info["left_air_time"] >= min_air_time_threshold, 1.0, 0.0)
+            right_meets_threshold = jp.where(state.info["right_air_time"] >= min_air_time_threshold, 1.0, 0.0)
+            state.metrics["contact/left_meets_air_time_threshold"] = left_meets_threshold
+            state.metrics["contact/right_meets_air_time_threshold"] = right_meets_threshold
+            state.metrics["contact/both_meet_air_time_threshold"] = left_meets_threshold * right_meets_threshold
 
         state.info["step_count"] = new_step_count
         state.info["prev_action"] = filtered_action
@@ -312,8 +450,12 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         velocity_cmd: jax.Array,
         prev_action: jax.Array = None,
         step_count: int = 0,
-    ) -> jax.Array:
-        """Calculate reward using modular reward system."""
+    ) -> tuple[jax.Array, Dict[str, jax.Array]]:
+        """Calculate reward using modular reward system.
+
+        Returns:
+            tuple: (total_reward, reward_components_dict)
+        """
         # Get basic state
         linvel = self.get_local_linvel(data)
         angvel = self.get_global_angvel(data)
@@ -356,6 +498,12 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             sliding_penalty = self._foot_sliding_penalty.compute(data, action)
             reward_components["foot_sliding"] = sliding_penalty
 
+        if self._use_air_time_reward:
+            # Get air time state from info dict (will be updated in step())
+            # Here we just compute the reward based on current state
+            # The actual state update happens in step() to avoid circular dependency
+            reward_components["foot_air_time"] = jp.array(0.0)  # Placeholder, updated in step()
+
         # 6. Existential penalty
         reward_components["existential"] = jp.array(-5.0)
 
@@ -366,7 +514,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             weight = float(self._reward_weights.get(name, 0.0))
             total_reward = total_reward + weight * value
 
-        return total_reward
+        return total_reward, reward_components
 
     def _compute_velocity_tracking_reward(
         self, linvel: jax.Array, angvel: jax.Array, velocity_cmd: jax.Array

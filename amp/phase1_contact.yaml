@@ -56,6 +56,7 @@ reward_weights:
   # === Phase 1: Contact rewards (ENABLED) ===
   foot_contact: 5.0          # Reward proper contact timing
   foot_sliding: 10.0         # Penalize sliding during stance
+  foot_air_time: 3.0         # Reward minimum flight time (NEW)
 
   # === Existential penalty ===
   existential: 1.0

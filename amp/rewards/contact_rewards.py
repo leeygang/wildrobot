@@ -1,6 +1,6 @@
 """Foot contact reward components for natural gait."""
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import jax
 import jax.numpy as jp
 from mujoco import mjx
@@ -242,4 +242,109 @@ class FootSlidingPenalty:
         return {
             'sliding_vel_left': float(left_sliding),
             'sliding_vel_right': float(right_sliding),
+        }
+
+
+class FootAirTimeReward:
+    """Reward feet being in air for minimum duration.
+
+    Forces proper flight phases and prevents micro-shuffling by requiring
+    each foot to stay off the ground for a minimum time threshold.
+    """
+
+    def __init__(
+        self,
+        model: mjx.Model,
+        left_foot_geoms: List[str],
+        right_foot_geoms: List[str],
+        contact_threshold: float = 1.0,
+        min_air_time: float = 0.15,  # 150ms minimum (conservative for 0.8s stride)
+        dt: float = 0.02,  # Control timestep
+    ):
+        """Initialize foot air time reward.
+
+        Args:
+            model: MuJoCo model
+            left_foot_geoms: Names of left foot collision geoms
+            right_foot_geoms: Names of right foot collision geoms
+            contact_threshold: Minimum force (N) to consider as contact
+            min_air_time: Minimum air time (seconds) to trigger reward
+            dt: Control timestep (seconds)
+        """
+        self.model = model
+        self.contact_threshold = contact_threshold
+        self.min_air_time = min_air_time
+        self.dt = dt
+
+        # Get geom IDs for contact detection
+        self.left_foot_geom_ids = jp.array([
+            model.geom(name).id for name in left_foot_geoms
+        ])
+        self.right_foot_geom_ids = jp.array([
+            model.geom(name).id for name in right_foot_geoms
+        ])
+
+        # Reuse contact detection
+        self.contact_reward = FootContactReward(
+            model, left_foot_geoms, right_foot_geoms, contact_threshold
+        )
+
+    def compute(
+        self,
+        data: mjx.Data,
+        action: jax.Array,
+        air_time_state: Tuple[jax.Array, jax.Array],
+        **kwargs
+    ) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array]]:
+        """Compute air time reward and update air time state.
+
+        Args:
+            data: MuJoCo data
+            action: Action taken
+            air_time_state: (left_air_time, right_air_time) in seconds
+
+        Returns:
+            tuple: (reward, new_air_time_state)
+        """
+        left_air_time, right_air_time = air_time_state
+
+        # Get contact states
+        left_force = self.contact_reward.get_contact_force(data, self.left_foot_geom_ids)
+        right_force = self.contact_reward.get_contact_force(data, self.right_foot_geom_ids)
+
+        left_in_air = left_force < self.contact_threshold
+        right_in_air = right_force < self.contact_threshold
+
+        # Update air times
+        # If in air: increment by dt
+        # If in contact: reset to 0
+        new_left_air_time = jp.where(left_in_air, left_air_time + self.dt, 0.0)
+        new_right_air_time = jp.where(right_in_air, right_air_time + self.dt, 0.0)
+
+        # Reward if air time exceeds threshold
+        # Use smooth reward: clip(air_time - min_air_time, 0, dt)
+        # This gives dt reward per step when above threshold
+        left_reward = jp.clip(left_air_time - self.min_air_time, 0.0, self.dt)
+        right_reward = jp.clip(right_air_time - self.min_air_time, 0.0, self.dt)
+
+        total_reward = left_reward + right_reward
+
+        return total_reward, (new_left_air_time, new_right_air_time)
+
+    def get_info(
+        self,
+        data: mjx.Data,
+        air_time_state: Tuple[jax.Array, jax.Array]
+    ) -> Dict[str, float]:
+        """Get air time info for debugging."""
+        left_air_time, right_air_time = air_time_state
+
+        left_force = self.contact_reward.get_contact_force(data, self.left_foot_geom_ids)
+        right_force = self.contact_reward.get_contact_force(data, self.right_foot_geom_ids)
+
+        return {
+            'air_time_left': float(left_air_time),
+            'air_time_right': float(right_air_time),
+            'left_in_air': float(left_force < self.contact_threshold),
+            'right_in_air': float(right_force < self.contact_threshold),
         }
