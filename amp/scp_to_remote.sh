@@ -64,59 +64,67 @@ else
     echo "Using local network: $REMOTE_HOST"
 fi
 
-# Track success/failure
+# Track files and check existence
 TOTAL_FILES=${#FILES[@]}
-SUCCESS_COUNT=0
-FAILED_FILES=()
+VALID_FILES=()
+INVALID_FILES=()
 
 echo ""
-echo "Transferring $TOTAL_FILES file(s)..."
+echo "Checking $TOTAL_FILES file(s)..."
 echo ""
 
-# Loop through all files
+# Check all files exist first
 for FILENAME in "${FILES[@]}"; do
-    # Check if file exists
     if [ ! -e "$FILENAME" ]; then
         echo "❌ Error: File '$FILENAME' does not exist - skipping"
-        FAILED_FILES+=("$FILENAME")
-        continue
-    fi
-
-    # Determine if it's a directory or file
-    if [ -d "$FILENAME" ]; then
-        echo "📁 Copying directory '$FILENAME'..."
-        scp -r $SCP_PORT_FLAG "$FILENAME" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
+        INVALID_FILES+=("$FILENAME")
     else
-        echo "📄 Copying file '$FILENAME'..."
-        scp $SCP_PORT_FLAG "$FILENAME" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH$FILENAME"
+        VALID_FILES+=("$FILENAME")
+        if [ -d "$FILENAME" ]; then
+            echo "✓ Directory: $FILENAME"
+        else
+            echo "✓ File: $FILENAME"
+        fi
     fi
-
-    # Check if scp was successful
-    if [ $? -eq 0 ]; then
-        echo "   ✅ Success"
-        ((SUCCESS_COUNT++))
-    else
-        echo "   ❌ Failed"
-        FAILED_FILES+=("$FILENAME")
-    fi
-    echo ""
 done
 
-# Summary
-echo "="*60
-echo "Transfer Summary:"
-echo "  Total: $TOTAL_FILES"
-echo "  Success: $SUCCESS_COUNT"
-echo "  Failed: ${#FAILED_FILES[@]}"
-
-if [ ${#FAILED_FILES[@]} -gt 0 ]; then
+# Exit if no valid files
+if [ ${#VALID_FILES[@]} -eq 0 ]; then
     echo ""
-    echo "Failed files:"
-    for file in "${FAILED_FILES[@]}"; do
-        echo "  - $file"
-    done
+    echo "❌ No valid files to transfer!"
     exit 1
+fi
+
+# Transfer all valid files in a single scp command (ONE password prompt!)
+echo ""
+echo "Transferring ${#VALID_FILES[@]} file(s) to $REMOTE_HOST..."
+echo "(You will be prompted for password once)"
+echo ""
+
+# Build scp command with all files
+# Use -r flag to handle both files and directories
+scp -r $SCP_PORT_FLAG "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+
+# Check if scp was successful
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "="*60
+    echo "✅ All transfers completed successfully!"
+    echo ""
+    echo "Transferred files:"
+    for file in "${VALID_FILES[@]}"; do
+        echo "  ✓ $file"
+    done
+    
+    if [ ${#INVALID_FILES[@]} -gt 0 ]; then
+        echo ""
+        echo "Skipped files (not found):"
+        for file in "${INVALID_FILES[@]}"; do
+            echo "  ✗ $file"
+        done
+    fi
 else
     echo ""
-    echo "✅ All transfers completed successfully!"
+    echo "❌ Transfer failed!"
+    exit 1
 fi

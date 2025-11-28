@@ -222,19 +222,23 @@ def main(argv):
     else:
         exp_name = f"{config_name}_{terrain}_{timestamp}"
 
+    # Consolidated training_logs directory structure
     amp_dir = Path(__file__).parent
-    ckpt_dir = amp_dir / "checkpoints" / exp_name
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    exp_dir = amp_dir / "training_logs" / exp_name
+    ckpt_dir = exp_dir / "checkpoints"
+    log_dir = exp_dir / "logs"
 
-    logdir = epath.Path(PROJECT_ROOT) / "amp" / "logs" / exp_name
-    logdir.mkdir(parents=True, exist_ok=True)
+    # Create directories
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nExperiment: {exp_name}")
+    print(f"  Directory: {exp_dir}")
     print(f"  Checkpoints: {ckpt_dir}")
-    print(f"  Logs: {logdir}\n")
+    print(f"  Logs: {log_dir}\n")
 
     # Save config
-    with open(ckpt_dir / "config.json", "w") as f:
+    with open(exp_dir / "config.json", "w") as f:
         json.dump(cfg, f, indent=2)
 
     # Initialize W&B
@@ -243,14 +247,21 @@ def main(argv):
         if _QUICK_VERIFY.value:
             wandb_tags.append("quick_verify")
 
+        # Define metric groups for W&B
         wandb.init(
             project=cfg["logging"]["wandb_project"],
             entity=cfg["logging"]["wandb_entity"],
             name=exp_name,
             config=cfg,
             tags=wandb_tags,
-            dir=str(logdir),
+            dir=str(log_dir),
         )
+
+        # Configure metric grouping and categories
+        wandb.define_metric("steps")
+        wandb.define_metric("topline/*", step_metric="steps")
+        wandb.define_metric("debug/*", step_metric="steps")
+
         print(f"W&B initialized: {wandb.run.url}\n")
 
     # Create network factory
@@ -286,17 +297,78 @@ def main(argv):
               f"Height: {height:.3f}m | Success: {success:.2%} | "
               f"SPS: {sps:.0f} | ETA: {eta}")
 
-        # Log to W&B
+        # Log to W&B with categorization
         if cfg["logging"]["use_wandb"]:
-            wandb.log({
+            # === TOPLINE METRICS (Critical for training monitoring) ===
+            topline_metrics = {
                 "steps": num_steps,
-                "reward": eval_reward,
-                "forward_velocity": forward_vel,
-                "height": height,
-                "success_rate": success,
-                "distance_walked": distance,
-                **metrics
+                "topline/reward": eval_reward,
+                "topline/success_rate": success,
+                "topline/forward_velocity": forward_vel,
+                "topline/height": height,
+                "topline/distance_walked": distance,
+                "topline/sps": sps,
+            }
+
+            # Add key contact metrics if available
+            contact_left_force = metrics.get("eval/episode_contact/left_foot_force", 0.0) / max(eval_length, 1.0)
+            contact_right_force = metrics.get("eval/episode_contact/right_foot_force", 0.0) / max(eval_length, 1.0)
+            avg_air_time = metrics.get("eval/episode_contact/avg_air_time", 0.0) / max(eval_length, 1.0)
+            air_time_threshold_met = metrics.get("eval/episode_contact/both_meet_air_time_threshold", 0.0) / max(eval_length, 1.0)
+
+            topline_metrics.update({
+                "topline/contact_left_force": contact_left_force,
+                "topline/contact_right_force": contact_right_force,
+                "topline/avg_air_time": avg_air_time,
+                "topline/air_time_threshold_met": air_time_threshold_met,
             })
+
+            # Add key reward components
+            reward_foot_contact = metrics.get("eval/episode_reward/foot_contact", 0.0) / max(eval_length, 1.0)
+            reward_foot_sliding = metrics.get("eval/episode_reward/foot_sliding", 0.0) / max(eval_length, 1.0)
+            reward_foot_air_time = metrics.get("eval/episode_reward/foot_air_time", 0.0) / max(eval_length, 1.0)
+            reward_z_velocity = metrics.get("eval/episode_reward/z_velocity", 0.0) / max(eval_length, 1.0)
+            reward_tracking = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
+
+            topline_metrics.update({
+                "topline/reward_foot_contact": reward_foot_contact,
+                "topline/reward_foot_sliding": reward_foot_sliding,
+                "topline/reward_foot_air_time": reward_foot_air_time,
+                "topline/reward_z_velocity": reward_z_velocity,
+                "topline/reward_tracking": reward_tracking,
+            })
+
+            wandb.log(topline_metrics)
+
+            # === DEBUG METRICS (Detailed breakdown for debugging) ===
+            # Only log debug metrics every 10th eval to reduce clutter
+            if num_steps % (ppo_config.num_timesteps // (ppo_config.num_evals // 10)) == 0:
+                debug_metrics = {}
+
+                # All individual reward components (except already in topline)
+                for key, value in metrics.items():
+                    if key.startswith("eval/episode_reward/"):
+                        component_name = key.replace("eval/episode_reward/", "")
+                        if component_name not in ["foot_contact", "foot_sliding", "foot_air_time", "z_velocity", "tracking_exp_xy"]:
+                            debug_metrics[f"debug/reward/{component_name}"] = value / max(eval_length, 1.0)
+
+                # All individual contact metrics (except already in topline)
+                for key, value in metrics.items():
+                    if key.startswith("eval/episode_contact/"):
+                        component_name = key.replace("eval/episode_contact/", "")
+                        if component_name not in ["left_foot_force", "right_foot_force", "avg_air_time", "both_meet_air_time_threshold"]:
+                            debug_metrics[f"debug/contact/{component_name}"] = value / max(eval_length, 1.0)
+
+                # Other eval metrics
+                for key, value in metrics.items():
+                    if key.startswith("eval/") and not key.startswith("eval/episode_reward/") and not key.startswith("eval/episode_contact/"):
+                        if key not in ["eval/episode_reward", "eval/avg_episode_length", "eval/episode_forward_velocity",
+                                       "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
+                            debug_name = key.replace("eval/episode_", "").replace("eval/", "")
+                            debug_metrics[f"debug/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
+
+                if debug_metrics:
+                    wandb.log(debug_metrics)
 
     # Train
     print("Starting training...\n")
