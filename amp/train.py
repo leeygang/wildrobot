@@ -319,7 +319,7 @@ def main(argv):
         seed=cfg["training"]["seed"],
         network_factory=network_factory,
         progress_fn=progress,
-        max_gradient_norm=ppo_config.max_grad_norm,
+        max_grad_norm=ppo_config.max_grad_norm,  # Fixed: was max_gradient_norm
         clipping_epsilon=ppo_config.clipping_epsilon,
     )
 

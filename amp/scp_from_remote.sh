@@ -5,7 +5,7 @@
 
 # Parse flags
 USE_PUBLIC=false
-FILENAME=""
+FILES=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -14,26 +14,27 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            FILENAME="$1"
+            FILES+=("$1")
             shift
             ;;
     esac
 done
 
-# Check if filename argument is provided
-if [ -z "$FILENAME" ]; then
-    echo "Usage: $0 [--public] <filename|checkpoint_folder_name>"
+# Check if at least one file is provided
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "Usage: $0 [--public] <file1> [file2] [file3] ..."
     echo ""
     echo "Options:"
     echo "  --public    Use public IP from \$LINUX_PUBLIC_IP and \$LINUX_PUBLIC_PORT"
     echo ""
     echo "Examples:"
-    echo "  $0 walk.py                                       # Copy from local network"
-    echo "  $0 --public walk.py                              # Copy from public IP"
+    echo "  $0 walk.py                                       # Copy single file (local network)"
+    echo "  $0 walk.py train.py                              # Copy multiple files"
+    echo "  $0 --public walk.py train.py                     # Copy multiple files via public IP"
     echo "  $0 logs/experiment.log                           # Copy from subdirectory"
     echo "  $0 phase1_contact_flat_20251127-123456           # Copy checkpoint folder"
     echo "  $0 --public phase1_contact_flat_20251127-123456  # Copy checkpoint via public IP"
-    echo "  $0 baseline_flat_20251127-123456                 # Copy checkpoint folder"
+    echo "  $0 baseline_flat_20251127-123456 phase1_contact_flat_20251127-123456  # Copy multiple checkpoints"
     echo ""
     echo "For checkpoint folders:"
     echo "  - Automatically detects if it's a checkpoint folder name"
@@ -73,90 +74,93 @@ else
     echo "Using local network: $REMOTE_HOST"
 fi
 
-# Check if this looks like a checkpoint folder name
-# Patterns:
-#   - phase1_contact_flat_YYYYMMDD-HHMMSS
-#   - phase2_imitation_flat_YYYYMMDD-HHMMSS
-#   - phase3_hybrid_flat_YYYYMMDD-HHMMSS
-#   - baseline_flat_YYYYMMDD-HHMMSS
-#   - quickverify_*_YYYYMMDD-HHMMSS
-if [[ "$FILENAME" =~ ^(phase[123]_[a-z]+|baseline|quickverify_[a-z_]+)_(flat|rough)_[0-9]{8}-[0-9]{6}$ ]]; then
-    echo "Detected checkpoint folder: $FILENAME"
+# Track success/failure
+TOTAL_FILES=${#FILES[@]}
+SUCCESS_COUNT=0
+FAILED_FILES=()
 
-    # Set paths for checkpoint folder
-    REMOTE_PATH="$REMOTE_BASE_PATH/checkpoints/$FILENAME"
-    LOCAL_PATH="checkpoints/$FILENAME"
+echo ""
+echo "Transferring $TOTAL_FILES file(s) from remote..."
+echo ""
 
-    # Create local checkpoints directory if it doesn't exist
-    mkdir -p checkpoints
-
-    echo "Copying checkpoint folder from remote..."
-    echo "Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-    echo "Local:  $LOCAL_PATH"
-    echo ""
-
-    # Use rsync for better checkpoint copying (preserves structure, shows progress)
-    # Falls back to scp if rsync is not available
-    if command -v rsync &> /dev/null; then
-        echo "Using rsync for efficient transfer..."
-        if [ -n "$RSYNC_PORT_FLAG" ]; then
-            rsync -avz --progress $RSYNC_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
-        else
-            rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
-        fi
-        RESULT=$?
-    else
-        echo "Using scp (rsync not found)..."
-        scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
-        RESULT=$?
-    fi
-
-else
-    # Regular file/directory copy
-    REMOTE_PATH="$REMOTE_BASE_PATH/$FILENAME"
-    LOCAL_PATH="$FILENAME"
-
-    echo "Copying '$FILENAME' from remote..."
-    echo "Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-    echo "Local:  $LOCAL_PATH"
-    echo ""
-
-    scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
-    RESULT=$?
-fi
-
-# Check if transfer was successful
-if [ $RESULT -eq 0 ]; then
-    echo ""
-    echo "✅ Transfer completed successfully!"
-
-    # Show checkpoint info if it was a checkpoint folder
+# Loop through all files
+for FILENAME in "${FILES[@]}"; do
+    # Check if this looks like a checkpoint folder name
     if [[ "$FILENAME" =~ ^(phase[123]_[a-z]+|baseline|quickverify_[a-z_]+)_(flat|rough)_[0-9]{8}-[0-9]{6}$ ]]; then
-        echo ""
-        echo "Checkpoint folder contents:"
-        ls -lh "$LOCAL_PATH" | head -10
-        echo ""
-        echo "📊 Next steps:"
-        echo ""
+        echo "📦 Detected checkpoint folder: $FILENAME"
 
-        # Check if final_policy.pkl exists
-        if [ -f "$LOCAL_PATH/final_policy.pkl" ]; then
-            echo "Final policy found! To visualize:"
-            echo "  python visualize_policy.py --checkpoint $LOCAL_PATH/final_policy.pkl --output videos/${FILENAME}.mp4"
+        # Set paths for checkpoint folder
+        REMOTE_PATH="$REMOTE_BASE_PATH/checkpoints/$FILENAME"
+        LOCAL_PATH="checkpoints/$FILENAME"
+
+        # Create local checkpoints directory if it doesn't exist
+        mkdir -p checkpoints
+
+        echo "   Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+        echo "   Local:  $LOCAL_PATH"
+
+        # Use rsync for better checkpoint copying (preserves structure, shows progress)
+        if command -v rsync &> /dev/null; then
+            if [ -n "$RSYNC_PORT_FLAG" ]; then
+                rsync -avz --progress $RSYNC_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+            else
+                rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+            fi
+            RESULT=$?
+        else
+            scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
+            RESULT=$?
         fi
 
-        # Check for config
-        if [ -f "$LOCAL_PATH/config.json" ]; then
-            echo ""
-            echo "Config saved at: $LOCAL_PATH/config.json"
-        fi
+    else
+        # Regular file/directory copy
+        REMOTE_PATH="$REMOTE_BASE_PATH/$FILENAME"
+        LOCAL_PATH="$FILENAME"
 
-        echo ""
-        echo "To analyze training logs:"
-        echo "  cat $LOCAL_PATH/config.json | jq ."
+        echo "📄 Copying '$FILENAME'..."
+        echo "   Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+        echo "   Local:  $LOCAL_PATH"
+
+        scp -r $SCP_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
+        RESULT=$?
     fi
+
+    # Check if transfer was successful
+    if [ $RESULT -eq 0 ]; then
+        echo "   ✅ Success"
+        ((SUCCESS_COUNT++))
+
+        # Show checkpoint info if it was a checkpoint folder
+        if [[ "$FILENAME" =~ ^(phase[123]_[a-z]+|baseline|quickverify_[a-z_]+)_(flat|rough)_[0-9]{8}-[0-9]{6}$ ]]; then
+            if [ -f "$LOCAL_PATH/config.json" ]; then
+                echo "   📊 Config: $LOCAL_PATH/config.json"
+            fi
+            if [ -f "$LOCAL_PATH/final_policy.pkl" ]; then
+                echo "   🎯 Policy: $LOCAL_PATH/final_policy.pkl"
+            fi
+        fi
+    else
+        echo "   ❌ Failed"
+        FAILED_FILES+=("$FILENAME")
+    fi
+    echo ""
+done
+
+# Summary
+echo "="*60
+echo "Transfer Summary:"
+echo "  Total: $TOTAL_FILES"
+echo "  Success: $SUCCESS_COUNT"
+echo "  Failed: ${#FAILED_FILES[@]}"
+
+if [ ${#FAILED_FILES[@]} -gt 0 ]; then
+    echo ""
+    echo "Failed files:"
+    for file in "${FAILED_FILES[@]}"; do
+        echo "  - $file"
+    done
+    exit 1
 else
     echo ""
-    echo "❌ Transfer failed!"
-    exit 1
+    echo "✅ All transfers completed successfully!"
 fi

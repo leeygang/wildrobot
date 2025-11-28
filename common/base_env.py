@@ -26,6 +26,18 @@ from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
 from common import constants
+from flax import struct
+
+
+@struct.dataclass
+class WildRobotEnvState(mjx_env.State):
+    """WildRobot environment state with Brax compatibility.
+
+    Extends mujoco_playground's State to add pipeline_state field,
+    which is required by Brax's training wrapper. This should always
+    be set to the same value as 'data'.
+    """
+    pipeline_state: mjx.Data = None
 
 
 def get_assets(root_path: str) -> Dict[str, bytes]:
@@ -46,6 +58,7 @@ class WildRobotEnvBase(mjx_env.MjxEnv):
     - MuJoCo/MJX model loading
     - Robot-specific utilities (joints, sensors, actuators)
     - Low-level state access (qpos, qvel, contacts)
+    - Brax compatibility (adds pipeline_state to states)
 
     Task-specific implementations (walking, jumping, etc.) should inherit from this
     and implement reset(), step(), _get_obs(), _get_reward(), _get_done().
@@ -121,6 +134,20 @@ class WildRobotEnvBase(mjx_env.MjxEnv):
         print(f"WildRobot initialized with {len(self.actuator_names)} actuators")
         print(f"Actuators: {self.actuator_names}")
         print(f"Floating base: {self.floating_base_name}")
+
+    def reset(self, rng: jax.Array) -> "WildRobotEnvState":
+        """Reset environment - must be implemented by subclasses.
+
+        Subclasses should implement their reset logic and return a WildRobotEnvState.
+        """
+        raise NotImplementedError("Subclasses must implement reset()")
+
+    def step(self, state: "WildRobotEnvState", action: jax.Array) -> "WildRobotEnvState":
+        """Step environment - must be implemented by subclasses.
+
+        Subclasses should implement their step logic and return a WildRobotEnvState.
+        """
+        raise NotImplementedError("Subclasses must implement step()")
 
     def get_actuator_id_from_name(self, name: str) -> int:
         """Return the id of a specified actuator."""

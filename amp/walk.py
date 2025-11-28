@@ -114,7 +114,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
 
         if self._use_contact_rewards:
             self._foot_contact_reward = contact_rewards.FootContactReward(
-                model=self.mjx_model,
+                model=self.mj_model,  # Use MuJoCo model, not MJX model
                 left_foot_geoms=self.robot_config.left_feet_geoms,
                 right_foot_geoms=self.robot_config.right_feet_geoms,
                 contact_threshold=1.0,
@@ -122,7 +122,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
 
         if self._use_sliding_penalty:
             self._foot_sliding_penalty = contact_rewards.FootSlidingPenalty(
-                model=self.mjx_model,
+                model=self.mj_model,  # Use MuJoCo model, not MJX model
                 left_foot_site=self.robot_config.feet_sites[0],  # left_foot_mimic
                 right_foot_site=self.robot_config.feet_sites[1],  # right_foot_mimic
                 left_foot_geoms=self.robot_config.left_feet_geoms,
@@ -130,7 +130,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
                 contact_threshold=1.0,
             )
 
-    def reset(self, rng: jax.Array) -> mjx_env.State:
+    def reset(self, rng: jax.Array) -> base_env.WildRobotEnvState:
         """Reset the environment with random velocity command."""
         rng, key1, key2 = jax.random.split(rng, 3)
 
@@ -180,9 +180,14 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             "prev_x_position": jp.zeros(()),
         }
 
-        return mjx_env.State(data, obs, reward, done, metrics, info)
+        state = base_env.WildRobotEnvState(
+            data=data, obs=obs, reward=reward, done=done,
+            metrics=metrics, info=info, pipeline_state=data
+        )
 
-    def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+        return state
+
+    def step(self, state: base_env.WildRobotEnvState, action: jax.Array) -> base_env.WildRobotEnvState:
         """Step the environment."""
         velocity_cmd = state.metrics.get("velocity_command", 0.0)
         step_count = state.info.get("step_count", 0)
@@ -237,7 +242,10 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         state.info["prev_action"] = filtered_action
         state.info["prev_x_position"] = current_x_position
 
-        return state.replace(data=data, obs=obs, reward=reward, done=done)
+        return base_env.WildRobotEnvState(
+            data=data, obs=obs, reward=reward, done=done,
+            metrics=state.metrics, info=state.info, pipeline_state=data
+        )
 
     def _get_obs(
         self,
@@ -349,13 +357,14 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             reward_components["foot_sliding"] = sliding_penalty
 
         # 6. Existential penalty
-        reward_components["existential"] = -5.0
+        reward_components["existential"] = jp.array(-5.0)
 
         # === APPLY WEIGHTS AND SUM ===
-        total_reward = 0.0
+        total_reward = jp.array(0.0)
         for name, value in reward_components.items():
-            weight = self._reward_weights.get(name, 0.0)
-            total_reward += weight * value
+            # Convert weight to float (handles strings like "1e-6")
+            weight = float(self._reward_weights.get(name, 0.0))
+            total_reward = total_reward + weight * value
 
         return total_reward
 

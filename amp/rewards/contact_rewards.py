@@ -49,20 +49,19 @@ class FootContactReward:
         Returns:
             Total contact force magnitude
         """
-        def check_contact(contact):
-            # Check if either geom in the contact pair matches our geoms
-            geom1_match = jp.isin(contact.geom1, geom_ids)
-            geom2_match = jp.isin(contact.geom2, geom_ids)
-            is_our_contact = geom1_match | geom2_match
+        # Check which contacts involve our geoms
+        geom1_matches = jp.isin(data.contact.geom1, geom_ids)
+        geom2_matches = jp.isin(data.contact.geom2, geom_ids)
+        our_contacts = geom1_matches | geom2_matches
 
-            # Get contact force (first 3 elements of force vector)
-            force_mag = jp.linalg.norm(contact.force[:3])
+        # Get normal force for each contact using direct array indexing
+        # efc_address[i] is the index where contact i's forces start in efc_force
+        # The first element at each address is the normal force
+        normal_forces = data.efc_force[data.contact.efc_address]
 
-            return jp.where(is_our_contact, force_mag, 0.0)
-
-        # Sum forces across all contacts
-        forces = jax.vmap(check_contact)(data.contact)
-        return jp.sum(forces)
+        # Sum forces for our contacts only
+        our_forces = jp.where(our_contacts, jp.abs(normal_forces), 0.0)
+        return jp.sum(our_forces)
 
     def compute(
         self,
@@ -146,6 +145,10 @@ class FootSlidingPenalty:
         self.left_foot_site_id = model.site(left_foot_site).id
         self.right_foot_site_id = model.site(right_foot_site).id
 
+        # Get body IDs that sites are attached to
+        self.left_foot_body_id = model.site(left_foot_site).bodyid
+        self.right_foot_body_id = model.site(right_foot_site).bodyid
+
         # Get geom IDs for contact detection
         self.left_foot_geom_ids = jp.array([
             model.geom(name).id for name in left_foot_geoms
@@ -158,6 +161,38 @@ class FootSlidingPenalty:
         self.contact_reward = FootContactReward(
             model, left_foot_geoms, right_foot_geoms, contact_threshold
         )
+
+    def get_site_velocity(self, data: mjx.Data, site_id: int, body_id: int) -> jax.Array:
+        """Compute site velocity from body velocity.
+
+        In MJX, site velocities are not directly available. We compute them from:
+        v_site = v_body + omega_body × r_site_body
+
+        Args:
+            data: MJX data
+            site_id: Site ID
+            body_id: Body ID that the site is attached to
+
+        Returns:
+            Site velocity (3D)
+        """
+        # Get body velocity (linear and angular)
+        # data.cvel has shape [..., num_bodies, 6] where last 6 is [linvel(3), angvel(3)]
+        body_vel = data.cvel[body_id]
+        body_linvel = body_vel[..., :3]  # Linear velocity (last 3 dims)
+        body_angvel = body_vel[..., 3:6]  # Angular velocity (last 3 dims)
+
+        # Get site position and body position
+        site_pos = data.site_xpos[site_id]
+        body_pos = data.xpos[body_id]
+
+        # Compute site offset from body
+        site_offset = site_pos - body_pos
+
+        # Compute site velocity: v_site = v_body + omega × r
+        site_vel = body_linvel + jp.cross(body_angvel, site_offset)
+
+        return site_vel
 
     def compute(
         self,
@@ -174,13 +209,13 @@ class FootSlidingPenalty:
         Returns:
             Penalty value (negative)
         """
-        # Get foot velocities from site sensors
-        left_foot_vel = data.site_xvelp[self.left_foot_site_id]
-        right_foot_vel = data.site_xvelp[self.right_foot_site_id]
+        # Get foot velocities using body kinematics
+        left_foot_vel = self.get_site_velocity(data, self.left_foot_site_id, self.left_foot_body_id)
+        right_foot_vel = self.get_site_velocity(data, self.right_foot_site_id, self.right_foot_body_id)
 
         # Horizontal velocity only (XY plane, ignore Z)
-        left_sliding = jp.linalg.norm(left_foot_vel[:2])
-        right_sliding = jp.linalg.norm(right_foot_vel[:2])
+        left_sliding = jp.linalg.norm(left_foot_vel[..., :2])
+        right_sliding = jp.linalg.norm(right_foot_vel[..., :2])
 
         # Check if feet are in contact
         left_force = self.contact_reward.get_contact_force(data, self.left_foot_geom_ids)
@@ -198,11 +233,11 @@ class FootSlidingPenalty:
 
     def get_info(self, data: mjx.Data) -> Dict[str, float]:
         """Get sliding velocities for debugging."""
-        left_foot_vel = data.site_xvelp[self.left_foot_site_id]
-        right_foot_vel = data.site_xvelp[self.right_foot_site_id]
+        left_foot_vel = self.get_site_velocity(data, self.left_foot_site_id, self.left_foot_body_id)
+        right_foot_vel = self.get_site_velocity(data, self.right_foot_site_id, self.right_foot_body_id)
 
-        left_sliding = jp.linalg.norm(left_foot_vel[:2])
-        right_sliding = jp.linalg.norm(right_foot_vel[:2])
+        left_sliding = jp.linalg.norm(left_foot_vel[..., :2])
+        right_sliding = jp.linalg.norm(right_foot_vel[..., :2])
 
         return {
             'sliding_vel_left': float(left_sliding),
