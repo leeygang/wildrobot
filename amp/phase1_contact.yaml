@@ -49,43 +49,45 @@ tracked_reward_components:
   - foot_air_time
   - existential
 
-# Reward weights - Phase 1B (improved for stability)
-# Updated 2025-11-28: Reduced velocity pressure to prevent collapse
-# Changes from Phase 1A:
-# - tracking_exp_xy: 25.0 → 20.0 (less speed pressure)
-# - foot_contact: 5.0 → 10.0 (better gait timing)
-# - foot_sliding: 10.0 → 25.0 (cleaner foot placement)
-# - foot_air_time: 3.0 → 5.0 (better flight phase)
+# Reward weights - Phase 1C (Hybrid: Balanced rewards & penalties)
+# Updated 2025-11-28: Increase tracking rewards + reduce smoothness penalties
+# Changes from Phase 1B:
+# - tracking_exp_xy: 20.0 → 35.0 (75% increase - more incentive to go fast)
+# - tracking_lin_xy: 8.0 → 14.0 (75% increase)
+# - joint_velocity: 1e-6 → 7e-7 (30% reduction - less penalty for fast movement)
+# - joint_torque: 1e-7 → 7e-8 (30% reduction)
+# - mechanical_power: 1e-5 → 7e-6 (30% reduction)
+# Goal: Better reward/penalty balance to sustain high velocity
 reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
-  # === Velocity tracking (REDUCED to prevent collapse) ===
-  tracking_exp_xy: 20.0      # Was 25.0 - reduced to prioritize gait quality
-  tracking_lin_xy: 8.0       # Keep same
+  # === Velocity tracking (INCREASED from Phase 1B) ===
+  tracking_exp_xy: 35.0      # Was 20.0 - increase tracking reward
+  tracking_lin_xy: 14.0      # Was 8.0 - increase tracking reward
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
   # === Stability penalties (keep same) ===
-  z_velocity: 0.1            # Reduced from 1.0 - was dominating reward
-  roll_pitch_velocity: 0.05  # Was 0.01 - allow some rotation
-  roll_pitch_position: 2.0   # Increased from 0.1 - prevent leaning back
+  z_velocity: 0.1            # Keep same
+  roll_pitch_velocity: 0.05  # Keep same
+  roll_pitch_position: 2.0   # Keep same
 
-  # === Smoothness penalties (keep same) ===
+  # === Smoothness penalties (REDUCED from Phase 1B) ===
   nominal_joint_position: 0.0
   joint_position_limit: 2.5
-  joint_velocity: 1e-6
-  joint_acceleration: 0.0      # DISABLED: Bug found - was using qvel instead of acceleration
-  action_rate: 0.001
+  joint_velocity: 0.0          # DEPRECATED: Disabled (replaced by acceleration)
+  joint_acceleration: 1e-4     # NEW! Penalize jerky motion (smoothness)
+  action_rate: 0.001           # Keep same
 
-  # === Energy penalties (keep same) ===
-  joint_torque: 1e-7
-  mechanical_power: 1e-5
+  # === Energy penalties (REDUCED from Phase 1B) ===
+  joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
+  mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Phase 1B: ENHANCED contact rewards for better gait ===
-  foot_contact: 10.0         # Was 5.0 - DOUBLED to encourage longer stance
-  foot_sliding: 25.0         # Was 10.0 - INCREASED 2.5x to reduce sliding
-  foot_air_time: 5.0         # Was 3.0 - INCREASED for better flight phase
+  # === Contact rewards (keep Phase 1B values) ===
+  foot_contact: 10.0         # Keep enhanced
+  foot_sliding: 25.0         # Keep enhanced
+  foot_air_time: 5.0         # Keep enhanced
 
   # === Existential penalty ===
   existential: 1.0
@@ -106,7 +108,7 @@ quick_verify:
   num_envs: 128               # Fewer parallel envs (faster startup)
   num_eval_envs: 16
   use_wandb: false            # Skip logging for quick tests
-  render_videos: false        # Skip video rendering
+  render_videos: true         # TEST video rendering in quick verify!
   save_checkpoints: false     # Skip checkpointing
 
 ppo:

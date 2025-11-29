@@ -26,7 +26,7 @@ from common import base_env
 from amp.rewards import contact_rewards
 
 
-class WildRobotWalk(base_env.WildRobotEnvBase):
+class WildRobotWalkEnv(base_env.WildRobotEnvBase):
     """WildRobot walking task with modular rewards for human-like motion.
 
     This environment builds on the baseline locomotion with:
@@ -226,6 +226,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         info = {
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
+            "prev_qvel": jp.zeros(self.mj_model.nv - 6),  # Track previous joint velocities (exclude floating base)
             "prev_x_position": jp.zeros(()),
             "left_air_time": jp.zeros(()),
             "right_air_time": jp.zeros(()),
@@ -243,6 +244,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         velocity_cmd = state.metrics.get("velocity_command", 0.0)
         step_count = state.info.get("step_count", 0)
         prev_action = state.info.get("prev_action", jp.zeros(self.action_size))
+        prev_qvel = state.info.get("prev_qvel", None)
 
         # Action filtering
         if self._use_action_filter:
@@ -263,12 +265,16 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
 
         new_step_count = step_count + 1
 
+        # Get current joint velocities (excluding floating base)
+        current_qvel = self.get_actuator_joints_qvel(data.qvel)
+
         # Get observations and rewards
         obs = self._get_obs(
             data, filtered_action, velocity_cmd, step_count=new_step_count
         )
         reward, reward_components = self._get_reward(
-            data, filtered_action, velocity_cmd, prev_action=prev_action, step_count=new_step_count
+            data, filtered_action, velocity_cmd, prev_action=prev_action,
+            prev_qvel=prev_qvel, step_count=new_step_count
         )
 
         # === AIR TIME REWARD (Phase 1B) ===
@@ -376,8 +382,10 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             state.metrics["contact/right_meets_air_time_threshold"] = right_meets_threshold
             state.metrics["contact/both_meet_air_time_threshold"] = left_meets_threshold * right_meets_threshold
 
+        # Update state info for next step
         state.info["step_count"] = new_step_count
         state.info["prev_action"] = filtered_action
+        state.info["prev_qvel"] = current_qvel  # Save current velocity for next step's acceleration calculation
         state.info["prev_x_position"] = current_x_position
 
         return base_env.WildRobotEnvState(
@@ -449,6 +457,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         action: jax.Array,
         velocity_cmd: jax.Array,
         prev_action: jax.Array = None,
+        prev_qvel: jax.Array = None,
         step_count: int = 0,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Calculate reward using modular reward system.
@@ -479,9 +488,9 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             self._compute_stability_reward(linvel, angvel, gravity)
         )
 
-        # 3. Smoothness rewards (baseline)
+        # 3. Smoothness rewards (baseline) - NOW includes acceleration!
         reward_components.update(
-            self._compute_smoothness_reward(qpos, qvel, action, prev_action)
+            self._compute_smoothness_reward(qpos, qvel, action, prev_action, prev_qvel)
         )
 
         # 4. Energy rewards (baseline)
@@ -560,19 +569,29 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         qvel: jax.Array,
         action: jax.Array,
         prev_action: Optional[jax.Array],
+        prev_qvel: Optional[jax.Array],
     ) -> Dict[str, float]:
         """Compute smoothness rewards."""
         nominal_joint_penalty = -jp.sum(jp.square(qpos - self._default_qpos))
         joint_limit_penalty = -jp.sum(
             jp.square(jp.clip(jp.abs(qpos) - 1.5, 0.0, jp.inf))
         )
-        joint_vel_penalty = -jp.sum(jp.square(qvel))
 
-        # DISABLED: Acceleration penalty removed due to bug and numerical instability
-        # It was using qvel instead of actual acceleration (qacc)
-        # Proper implementation would be: qacc = (qvel - prev_qvel) / dt
-        # But this causes numerical explosions and requires careful tuning
-        joint_acc_penalty = jp.array(0.0)
+        # Joint velocity metric (for monitoring, not penalty)
+        # This is useful to track even though we don't penalize it
+        joint_vel_metric = -jp.sum(jp.square(qvel))
+
+        # Joint acceleration penalty (PROPER smoothness penalty)
+        # Penalizes jerky motion for smooth, natural movement
+        if prev_qvel is not None:
+            # acceleration = (qvel - prev_qvel) / dt
+            # We use ctrl_dt as dt (typically 0.02s)
+            dt = 0.02  # This should match env ctrl_dt
+            joint_acc = (qvel - prev_qvel) / dt
+            joint_acc_penalty = -jp.sum(jp.square(joint_acc))
+        else:
+            # First step, no previous velocity available
+            joint_acc_penalty = jp.array(0.0)
 
         if prev_action is not None:
             action_rate_penalty = -jp.sum(jp.square(action - prev_action))
@@ -582,7 +601,7 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
         return {
             "nominal_joint_position": nominal_joint_penalty,
             "joint_position_limit": joint_limit_penalty,
-            "joint_velocity": joint_vel_penalty,
+            "joint_velocity": joint_vel_metric,  # METRIC ONLY (weight=0.0, for monitoring)
             "joint_acceleration": joint_acc_penalty,
             "action_rate": action_rate_penalty,
         }

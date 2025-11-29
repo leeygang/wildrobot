@@ -15,10 +15,56 @@
 # ==============================================================================
 """Train WildRobot AMP with PPO for human-like walking."""
 
+# CRITICAL: Set rendering backend BEFORE importing mujoco
+import os
+import platform
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+# Detect platform and set appropriate rendering backend
+system = platform.system()
+
+if system == "Darwin":  # macOS
+    # macOS uses GLFW (built-in with MuJoCo)
+    os.environ["MUJOCO_GL"] = "glfw"
+    print("macOS detected: Using GLFW renderer")
+else:  # Linux
+    # Check if running in SSH session
+    is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    
+    if is_ssh:
+        # SSH session - prefer osmesa (software rendering) or EGL with xvfb-run
+        import sys
+        try:
+            import ctypes
+            osmesa_available = False
+            for lib_name in ['libOSMesa.so', 'libOSMesa.so.8', 'libOSMesa.so.6']:
+                try:
+                    ctypes.CDLL(lib_name)
+                    osmesa_available = True
+                    print(f"SSH session detected. OSMesa found: {lib_name}")
+                    break
+                except OSError:
+                    continue
+
+            if osmesa_available:
+                os.environ["MUJOCO_GL"] = "osmesa"
+                print("Using osmesa renderer (software rendering)")
+            else:
+                os.environ["MUJOCO_GL"] = "egl"
+                print("OSMesa not found, using egl renderer")
+                print("Note: Run with 'xvfb-run -a python ...' for headless rendering")
+        except Exception as e:
+            print(f"Warning: Could not detect rendering backend: {e}")
+            os.environ["MUJOCO_GL"] = "egl"
+    else:
+        # Local Linux session with display - use GPU rendering via EGL
+        os.environ["MUJOCO_GL"] = "egl"
+        print("Local Linux session detected: Using EGL renderer (GPU accelerated)")
+
 import datetime
 import functools
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -38,7 +84,8 @@ from ml_collections import config_dict
 # Add amp directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from amp import walk
+from amp import walk_env
+from common.video_renderer import VideoRenderer
 
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -66,9 +113,18 @@ _LOAD_CHECKPOINT = flags.DEFINE_string(
 _USE_WANDB = flags.DEFINE_boolean(
     "use_wandb", None, "Use Weights & Biases (overrides config)"
 )
-
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["MUJOCO_GL"] = "egl"
+_RENDER_ONLY = flags.DEFINE_boolean(
+    "render_only", False, "Skip training, only render videos from existing checkpoint"
+)
+_RENDER_CHECKPOINT = flags.DEFINE_string(
+    "render_checkpoint", None, "Checkpoint directory for rendering (required if --render_only)"
+)
+_RENDER_NUM_VIDEOS = flags.DEFINE_integer(
+    "render_num_videos", 3, "Number of videos to render"
+)
+_RENDER_CAMERA = flags.DEFINE_string(
+    "render_camera", "track", "Camera name for rendering: track, side, front, top"
+)
 
 
 def load_config(config_path: str) -> dict:
@@ -112,6 +168,176 @@ def main(argv):
     del argv
 
     logging.set_verbosity(logging.INFO)
+
+    # === RENDER-ONLY MODE ===
+    if _RENDER_ONLY.value:
+        if not _RENDER_CHECKPOINT.value:
+            raise ValueError("--render_checkpoint is required when using --render_only")
+
+        from pathlib import Path
+        import pickle
+
+        checkpoint_dir = Path(_RENDER_CHECKPOINT.value)
+        if not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+
+        # Load config from checkpoint
+        config_path = checkpoint_dir / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config not found: {config_path}")
+
+        with open(config_path, "r") as f:
+            cfg = json.load(f)
+
+        print(f"\n{'='*80}")
+        print(f"WildRobot Video Rendering (Render-Only Mode)")
+        print(f"{'='*80}")
+        print(f"  Checkpoint: {checkpoint_dir}")
+        print(f"  Config: {config_path.name}")
+        print(f"{'='*80}\n")
+
+        # Load checkpoint
+        checkpoint_path = checkpoint_dir / "checkpoints" / "final_policy.pkl"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        print(f"Loading checkpoint: {checkpoint_path}")
+        with open(checkpoint_path, "rb") as f:
+            params = pickle.load(f)
+        print(f"✓ Checkpoint loaded\n")
+
+        # Create environment config
+        env_config = config_dict.ConfigDict()
+        env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
+        env_config.sim_dt = cfg["env"]["sim_dt"]
+        env_config.velocity_command_mode = cfg["env"]["velocity_command_mode"]
+        env_config.min_velocity = cfg["env"]["min_velocity"]
+        env_config.max_velocity = cfg["env"]["max_velocity"]
+        env_config.use_action_filter = cfg["env"]["use_action_filter"]
+        env_config.action_filter_alpha = cfg["env"]["action_filter_alpha"]
+        env_config.use_phase_signal = cfg["env"]["use_phase_signal"]
+        env_config.phase_period = cfg["env"]["phase_period"]
+        env_config.num_phase_clocks = cfg["env"]["num_phase_clocks"]
+        env_config.min_height = cfg["env"]["min_height"]
+        env_config.max_height = cfg["env"]["max_height"]
+        env_config.reward_weights = cfg["reward_weights"]
+
+        # Create environment
+        terrain = cfg["env"]["terrain"]
+        task_name = f"wildrobot_{terrain}"
+        env = walk_env.WildRobotWalkEnv(task=task_name, config=env_config)
+
+        print(f"Environment: {env.__class__.__name__}")
+        print(f"  Task: {task_name}")
+        print(f"  Observation size: {env.observation_size}")
+        print(f"  Action size: {env.action_size}\n")
+
+        # Create network factory
+        network_config = cfg["network"]
+        network_factory = functools.partial(
+            ppo_networks.make_ppo_networks,
+            policy_hidden_layer_sizes=network_config["policy_hidden_layers"],
+            value_hidden_layer_sizes=network_config["value_hidden_layers"],
+        )
+
+        # Create inference function from params
+        print("Creating inference function...")
+        
+        # Build network to get the structure  
+        ppo_networks_tuple = network_factory(env.observation_size, env.action_size)
+        policy_network = ppo_networks_tuple.policy_network
+
+        # Extract params - structure is (normalizer_params, policy_params, value_params)
+        normalizer_params = params[0]  # RunningStatisticsState
+        policy_params = params[1]  # Policy params dict
+
+        # Create inference function
+        # policy_network.apply signature: (processor_params, policy_params, obs)
+        def inference_fn(obs, rng):
+            """Run policy inference - deterministic (use mean)."""
+            # Apply policy network with normalizer and policy params
+            logits = policy_network.apply(normalizer_params, policy_params, obs)
+            
+            # For Gaussian policies, logits contains [mean, log_std]
+            # Use just the mean for deterministic evaluation
+            action_dim = env.action_size
+            mean_action = logits[:action_dim]
+            
+            return mean_action, {}
+
+        print("✓ Inference function created\n")
+
+        # JIT compile environment functions only
+        print("JIT compiling environment...")
+        jit_env_reset = jax.jit(env.reset)
+        jit_env_step = jax.jit(env.step)
+        print("✓ JIT compilation complete\n")
+
+        # Rendering settings
+        num_videos = _RENDER_NUM_VIDEOS.value
+        max_steps = 600
+        camera = _RENDER_CAMERA.value
+        render_height = cfg["rendering"]["render_height"]
+        render_width = cfg["rendering"]["render_width"]
+        fps = int(1.0 / env_config.ctrl_dt)
+        seed = cfg["training"]["seed"]
+
+        # Check if requested camera exists, otherwise use default
+        available_cameras = [env.mj_model.camera(i).name for i in range(env.mj_model.ncam)]
+        if camera not in available_cameras:
+            if available_cameras:
+                camera = available_cameras[0]
+                print(f"⚠️  Camera '{_RENDER_CAMERA.value}' not found. Using '{camera}' instead.")
+                print(f"    Available cameras: {', '.join(available_cameras)}")
+            else:
+                camera = None  # Will use default free camera
+                print(f"⚠️  No named cameras found in model. Using default free camera.")
+
+        print(f"\nRendering settings:")
+        print(f"  Number of videos: {num_videos}")
+        print(f"  Max steps: {max_steps}")
+        print(f"  Resolution: {render_width}x{render_height}")
+        print(f"  Camera: {camera if camera else 'free (default)'}")
+        print(f"  FPS: {fps}")
+        print(f"  Seed: {seed}\n")
+
+        # Output directory
+        video_dir = checkpoint_dir / "rendered_videos"
+        video_dir.mkdir(exist_ok=True)
+
+        # Create VideoRenderer
+        renderer = VideoRenderer(
+            env=env,
+            output_dir=video_dir,
+            width=render_width,
+            height=render_height,
+            fps=fps,
+            camera=camera,
+            max_steps=max_steps,
+        )
+
+        # Render videos
+        rng = jax.random.PRNGKey(seed)
+        results = renderer.render_multiple_videos(
+            inference_fn=inference_fn,
+            rng=rng,
+            num_videos=num_videos,
+            video_prefix="eval_video",
+        )
+
+        # Print summary
+        print(f"\n{'='*80}")
+        print(f"Rendered {len(results)} videos successfully!")
+        for i, (video_path, stats) in enumerate(results, 1):
+            print(f"  {i}. {video_path.name}")
+            print(f"     Length: {stats['length']} steps | "
+                  f"Velocity: {stats['velocity']:.3f} m/s | "
+                  f"Height: {stats['height']:.3f} m")
+        print(f"{'='*80}")
+
+        return
+
+    # === NORMAL TRAINING MODE ===
 
     # Load config
     config_path = Path(__file__).parent / _CONFIG.value
@@ -167,7 +393,7 @@ def main(argv):
     env_config.reward_weights = cfg["reward_weights"]
 
     # Create environment
-    env = walk.WildRobotWalk(task=task_name, config=env_config)
+    env = walk_env.WildRobotWalkEnv(task=task_name, config=env_config)
 
     print(f"Environment: {env.__class__.__name__}")
     print(f"  Observation size: {env.observation_size}")
@@ -427,9 +653,12 @@ def main(argv):
         # Log to W&B with categorization
         if cfg["logging"]["use_wandb"]:
             # === TOPLINE METRICS (Critical for training monitoring) ===
+            reward_per_step = float(eval_reward / max(eval_length, 1.0))
+
             topline_metrics = {
                 "steps": num_steps,
-                "topline/reward": eval_reward,
+                "topline/episode_reward": eval_reward,  # Total episode reward
+                "topline/reward_per_step": reward_per_step,  # Reward per step (NEW!)
                 "topline/success_rate": success,
                 "topline/forward_velocity": forward_vel,
                 "topline/height": height,
@@ -455,47 +684,54 @@ def main(argv):
             reward_foot_sliding = metrics.get("eval/episode_reward/foot_sliding", 0.0) / max(eval_length, 1.0)
             reward_foot_air_time = metrics.get("eval/episode_reward/foot_air_time", 0.0) / max(eval_length, 1.0)
             reward_z_velocity = metrics.get("eval/episode_reward/z_velocity", 0.0) / max(eval_length, 1.0)
-            reward_tracking = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
+            reward_tracking_xy = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
+            reward_tracking_lin_xy = metrics.get("eval/episode_reward/tracking_lin_xy", 0.0) / max(eval_length, 1.0)
+            reward_joint_velocity = metrics.get("eval/episode_reward/joint_velocity", 0.0) / max(eval_length, 1.0)
+            reward_joint_acceleration = metrics.get("eval/episode_reward/joint_acceleration", 0.0) / max(eval_length, 1.0)
+            reward_mechanical_power = metrics.get("eval/episode_reward/mechanical_power", 0.0) / max(eval_length, 1.0)
 
             topline_metrics.update({
                 "topline/reward_foot_contact": reward_foot_contact,
                 "topline/reward_foot_sliding": reward_foot_sliding,
                 "topline/reward_foot_air_time": reward_foot_air_time,
                 "topline/reward_z_velocity": reward_z_velocity,
-                "topline/reward_tracking": reward_tracking,
+                "topline/reward_tracking_exp_xy": reward_tracking_xy,
+                "topline/reward_tracking_lin_xy": reward_tracking_lin_xy,
+                "topline/reward_joint_velocity": reward_joint_velocity,
+                "topline/reward_joint_acceleration": reward_joint_acceleration,
+                "topline/reward_mechanical_power": reward_mechanical_power,
             })
 
             wandb.log(topline_metrics)
 
             # === DEBUG METRICS (Detailed breakdown for debugging) ===
-            # Only log debug metrics every 10th eval to reduce clutter
-            if num_steps % (ppo_config.num_timesteps // (ppo_config.num_evals // 10)) == 0:
-                debug_metrics = {}
+            # Log debug metrics every eval for comprehensive tracking
+            debug_metrics = {}
 
-                # All individual reward components (except already in topline)
-                for key, value in metrics.items():
-                    if key.startswith("eval/episode_reward/"):
-                        component_name = key.replace("eval/episode_reward/", "")
-                        if component_name not in ["foot_contact", "foot_sliding", "foot_air_time", "z_velocity", "tracking_exp_xy"]:
-                            debug_metrics[f"debug/reward/{component_name}"] = value / max(eval_length, 1.0)
+            # All individual reward components (except already in topline)
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_reward/"):
+                    component_name = key.replace("eval/episode_reward/", "")
+                    if component_name not in ["foot_contact", "foot_sliding", "foot_air_time", "z_velocity", "tracking_exp_xy"]:
+                        debug_metrics[f"debug/reward/{component_name}"] = value / max(eval_length, 1.0)
 
-                # All individual contact metrics (except already in topline)
-                for key, value in metrics.items():
-                    if key.startswith("eval/episode_contact/"):
-                        component_name = key.replace("eval/episode_contact/", "")
-                        if component_name not in ["left_foot_force", "right_foot_force", "avg_air_time", "both_meet_air_time_threshold"]:
-                            debug_metrics[f"debug/contact/{component_name}"] = value / max(eval_length, 1.0)
+            # All individual contact metrics (except already in topline)
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_contact/"):
+                    component_name = key.replace("eval/episode_contact/", "")
+                    if component_name not in ["left_foot_force", "right_foot_force", "avg_air_time", "both_meet_air_time_threshold"]:
+                        debug_metrics[f"debug/contact/{component_name}"] = value / max(eval_length, 1.0)
 
-                # Other eval metrics
-                for key, value in metrics.items():
-                    if key.startswith("eval/") and not key.startswith("eval/episode_reward/") and not key.startswith("eval/episode_contact/"):
-                        if key not in ["eval/episode_reward", "eval/avg_episode_length", "eval/episode_forward_velocity",
-                                       "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
-                            debug_name = key.replace("eval/episode_", "").replace("eval/", "")
-                            debug_metrics[f"debug/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
+            # Other eval metrics
+            for key, value in metrics.items():
+                if key.startswith("eval/") and not key.startswith("eval/episode_reward/") and not key.startswith("eval/episode_contact/"):
+                    if key not in ["eval/episode_reward", "eval/avg_episode_length", "eval/episode_forward_velocity",
+                                   "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
+                        debug_name = key.replace("eval/episode_", "").replace("eval/", "")
+                        debug_metrics[f"debug/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
 
-                if debug_metrics:
-                    wandb.log(debug_metrics)
+            if debug_metrics:
+                wandb.log(debug_metrics)
 
     # Train
     print("Starting training...\n")
@@ -539,10 +775,46 @@ def main(argv):
         print(f"Saved final checkpoint: {final_ckpt_path}\n")
 
     # Render videos if enabled
-    if cfg["rendering"]["render_videos"] and not _QUICK_VERIFY.value:
+    # In quick_verify mode, check the quick_verify.render_videos setting
+    should_render_videos = cfg["rendering"]["render_videos"]
+    if _QUICK_VERIFY.value:
+        # In quick_verify mode, use the quick_verify.render_videos setting instead
+        should_render_videos = cfg.get("quick_verify", {}).get("render_videos", False)
+
+    if should_render_videos:
         print("Rendering evaluation videos...")
-        # TODO: Add video rendering code
-        print("Video rendering not yet implemented.\n")
+        print(f"  Output directory: {exp_dir}\n")
+
+        # Create inference function
+        inference_fn = make_inference_fn(params)
+
+        # Create VideoRenderer
+        renderer = VideoRenderer(
+            env=env,
+            output_dir=exp_dir,
+            width=cfg["rendering"]["render_width"],
+            height=cfg["rendering"]["render_height"],
+            fps=int(1.0 / env_config.ctrl_dt),
+            camera="track",
+            max_steps=min(cfg["training"]["episode_length"], 600),
+        )
+
+        # Render videos
+        rng = jax.random.PRNGKey(cfg["training"]["seed"])
+        results = renderer.render_multiple_videos(
+            inference_fn=inference_fn,
+            rng=rng,
+            num_videos=3,
+            video_prefix="eval_video",
+        )
+
+        # Upload to W&B if enabled
+        if cfg["logging"]["use_wandb"]:
+            for i, (video_path, stats) in enumerate(results):
+                wandb.log({f"eval_video_{i}": wandb.Video(str(video_path), fps=renderer.fps)})
+            print(f"  ✓ Videos uploaded to W&B\n")
+
+        print(f"Rendering complete!\n")
 
     if cfg["logging"]["use_wandb"]:
         wandb.finish()

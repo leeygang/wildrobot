@@ -16,6 +16,12 @@
     <worldbody>
         <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
         <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" />
+
+        <!-- Cameras for video rendering -->
+        <camera name="track" mode="trackcom" pos="0 -2.5 1.0" xyaxes="1 0 0 0 0.3 1" />
+        <camera name="side" pos="-2 0 1.0" xyaxes="0 -1 0 0.3 0 1" />
+        <camera name="front" pos="0 -3 1.5" xyaxes="1 0 0 0 0.5 1" />
+        <camera name="top" pos="0 0 4" xyaxes="1 0 0 0 1 0" />
     </worldbody>
 
     <keyframe>
@@ -23,5 +29,3 @@
     </keyframe>
 
 </mujoco>
-
-
