@@ -26,18 +26,47 @@ env:
   min_height: 0.2
   max_height: 0.7
 
-# Reward weights - Phase 1 (with contact rewards)
+# Metrics to track (explicit list - cleaner than filtering)
+# These are the reward components we want to log (no _std variants)
+# Note: "total" is excluded because we compute it ourselves from the components
+tracked_reward_components:
+  - tracking_exp_xy
+  - tracking_lin_xy
+  - tracking_exp_yaw
+  - tracking_lin_yaw
+  - z_velocity
+  - roll_pitch_velocity
+  - roll_pitch_position
+  - joint_velocity
+  - joint_acceleration
+  - action_rate
+  - nominal_joint_position
+  - joint_position_limit
+  - joint_torque
+  - mechanical_power
+  - foot_contact
+  - foot_sliding
+  - foot_air_time
+  - existential
+
+# Reward weights - Phase 1B (improved for stability)
+# Updated 2025-11-28: Reduced velocity pressure to prevent collapse
+# Changes from Phase 1A:
+# - tracking_exp_xy: 25.0 → 20.0 (less speed pressure)
+# - foot_contact: 5.0 → 10.0 (better gait timing)
+# - foot_sliding: 10.0 → 25.0 (cleaner foot placement)
+# - foot_air_time: 3.0 → 5.0 (better flight phase)
 reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
-  # === Velocity tracking (reduced from baseline to balance with contact) ===
-  tracking_exp_xy: 25.0      # Was 50.0 in baseline
-  tracking_lin_xy: 8.0       # Was 15.0 in baseline
-  tracking_exp_yaw: 5.0      # Was 10.0 in baseline
-  tracking_lin_yaw: 1.5      # Was 3.0 in baseline
+  # === Velocity tracking (REDUCED to prevent collapse) ===
+  tracking_exp_xy: 20.0      # Was 25.0 - reduced to prioritize gait quality
+  tracking_lin_xy: 8.0       # Keep same
+  tracking_exp_yaw: 5.0      # Keep same
+  tracking_lin_yaw: 1.5      # Keep same
 
-  # === Stability penalties (increased for natural motion) ===
+  # === Stability penalties (keep same) ===
   z_velocity: 0.1            # Reduced from 1.0 - was dominating reward
   roll_pitch_velocity: 0.05  # Was 0.01 - allow some rotation
   roll_pitch_position: 2.0   # Increased from 0.1 - prevent leaning back
@@ -46,17 +75,17 @@ reward_weights:
   nominal_joint_position: 0.0
   joint_position_limit: 2.5
   joint_velocity: 1e-6
-  joint_acceleration: 1e-6
+  joint_acceleration: 0.0      # DISABLED: Bug found - was using qvel instead of acceleration
   action_rate: 0.001
 
   # === Energy penalties (keep same) ===
   joint_torque: 1e-7
   mechanical_power: 1e-5
 
-  # === Phase 1: Contact rewards (ENABLED) ===
-  foot_contact: 5.0          # Reward proper contact timing
-  foot_sliding: 10.0         # Penalize sliding during stance
-  foot_air_time: 3.0         # Reward minimum flight time (NEW)
+  # === Phase 1B: ENHANCED contact rewards for better gait ===
+  foot_contact: 10.0         # Was 5.0 - DOUBLED to encourage longer stance
+  foot_sliding: 25.0         # Was 10.0 - INCREASED 2.5x to reduce sliding
+  foot_air_time: 5.0         # Was 3.0 - INCREASED for better flight phase
 
   # === Existential penalty ===
   existential: 1.0

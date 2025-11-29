@@ -273,6 +273,7 @@ def main(argv):
 
     # Progress callback
     times = [time.monotonic()]
+    start_time = time.time()  # Track absolute start time for walltime
 
     # Create metrics log file
     metrics_log_path = exp_dir / "metrics.jsonl"
@@ -347,38 +348,77 @@ def main(argv):
             print("="*70 + "\n")
 
         # Save metrics to log file (always, regardless of W&B)
+        # IMPROVED STRUCTURE: Separate rewards & penalties, remove duplicates
         metrics_entry = {
             "step": int(num_steps),
             "timestamp": time.time(),
-            "summary": {
-                "reward": float(eval_reward),
-                "reward_per_step": float(eval_reward / max(eval_length, 1.0)),
-                "success_rate": float(success),
-                "forward_velocity": float(forward_vel),
-                "height": float(height),
-                "distance_walked": float(distance),
-                "episode_length": float(eval_length),
-                "sps": float(sps),
-            },
+            "summary": {},  # Will populate after separating rewards/penalties
             "rewards": {},
+            "penalties": {},
             "contact": {},
             "other": {},
         }
 
-        # Organize all metrics - convert JAX arrays to Python floats
+        # First pass: Collect and separate reward components
+        total_rewards = 0.0
+        total_penalties = 0.0
+
+        # Get list of tracked reward components from config (explicit, not filtered)
+        tracked_components = set(cfg.get("tracked_reward_components", []))
+
         for key, value in metrics.items():
             value_per_step = float(value / max(eval_length, 1.0))
 
             if key.startswith("eval/episode_reward/"):
                 component_name = key.replace("eval/episode_reward/", "")
-                metrics_entry["rewards"][component_name] = value_per_step
+
+                # Only track components listed in config
+                if component_name not in tracked_components:
+                    continue
+
+                # Separate positive (rewards) from negative (penalties)
+                if value_per_step >= 0:
+                    # Positive component - it's a reward
+                    metrics_entry["rewards"][component_name] = value_per_step
+                    total_rewards += value_per_step
+                else:
+                    # Negative component - it's a penalty (store as positive for clarity)
+                    metrics_entry["penalties"][component_name] = abs(value_per_step)
+                    total_penalties += abs(value_per_step)
+
             elif key.startswith("eval/episode_contact/"):
                 metric_name = key.replace("eval/episode_contact/", "")
                 metrics_entry["contact"][metric_name] = value_per_step
             elif key.startswith("eval/"):
                 metric_name = key.replace("eval/episode_", "").replace("eval/", "")
-                if metric_name not in ["reward", "success", "avg_episode_length"]:
+                # Skip duplicates that will be in summary
+                if metric_name not in ["reward", "success", "avg_episode_length",
+                                      "forward_velocity", "height", "distance_walked", "sps"]:
                     metrics_entry["other"][metric_name] = float(value_per_step) if "episode" in key else float(value)
+
+        # Add totals to rewards and penalties buckets
+        metrics_entry["rewards"]["total"] = total_rewards
+        metrics_entry["penalties"]["total"] = total_penalties
+
+        # Now populate summary with clean, deduplicated topline metrics
+        reward_per_step = float(eval_reward / max(eval_length, 1.0))
+        metrics_entry["summary"] = {
+            "reward_per_step": reward_per_step,
+            "reward_per_step_std": float(metrics.get("eval/episode_reward_std", 0.0) / max(eval_length, 1.0)),
+            "total_rewards": total_rewards,
+            "total_penalties": total_penalties,
+            "success_rate": float(success),
+            "forward_velocity": float(forward_vel),
+            "episode_length": float(eval_length),
+            "sps": float(sps),
+        }
+
+        # Add non-duplicate metrics to other bucket
+        metrics_entry["other"]["velocity_command"] = float(metrics.get("eval/episode_velocity_command", 0.0) / max(eval_length, 1.0))
+        metrics_entry["other"]["height"] = float(height)
+        metrics_entry["other"]["distance_walked"] = float(distance)
+        metrics_entry["other"]["walltime"] = time.time() - start_time
+        metrics_entry["other"]["epoch_eval_time"] = float(metrics.get("eval/sps", 0.0))
 
         # Write to JSONL file
         metrics_log_file.write(json.dumps(metrics_entry) + "\n")

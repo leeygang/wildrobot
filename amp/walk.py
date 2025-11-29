@@ -567,7 +567,12 @@ class WildRobotWalk(base_env.WildRobotEnvBase):
             jp.square(jp.clip(jp.abs(qpos) - 1.5, 0.0, jp.inf))
         )
         joint_vel_penalty = -jp.sum(jp.square(qvel))
-        joint_acc_penalty = -jp.sum(jp.square(qvel))
+
+        # DISABLED: Acceleration penalty removed due to bug and numerical instability
+        # It was using qvel instead of actual acceleration (qacc)
+        # Proper implementation would be: qacc = (qvel - prev_qvel) / dt
+        # But this causes numerical explosions and requires careful tuning
+        joint_acc_penalty = jp.array(0.0)
 
         if prev_action is not None:
             action_rate_penalty = -jp.sum(jp.square(action - prev_action))
