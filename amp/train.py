@@ -282,8 +282,8 @@ def generate_and_log_metrics(
     metrics_entry["summary"] = {
         "reward_per_step": reward_per_step,
         "reward_per_step_std": float(metrics.get("eval/episode_reward_std", 0.0) / max(eval_length, 1.0)),
-        "total_rewards": total_rewards,
-        "total_penalties": total_penalties,
+        "total_rewards": total_rewards_weighted,  # FIXED: Use weighted values
+        "total_penalties": total_penalties_weighted,  # FIXED: Use weighted values
         "success_rate": float(success),
         "forward_velocity": float(forward_vel),
         "episode_length": float(eval_length),
