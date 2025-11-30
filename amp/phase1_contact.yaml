@@ -64,35 +64,38 @@ reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
-  # === Velocity tracking (SIGNIFICANTLY INCREASED) ===
-  tracking_exp_xy: 100.0     # Was 35.0 - 3x increase! Task reward dominates
-  tracking_lin_xy: 50.0      # Was 14.0 - 3.5x increase!
+  # === Velocity tracking - REDUCED to baseline levels ===
+  # Issue 2025-11-30: Robot falling immediately with high tracking rewards
+  # Reduced from 100/50 back to baseline 50/15 to allow learning balance first
+  tracking_exp_xy: 50.0      # REDUCED: Was 100.0 → 50.0 (back to baseline)
+  tracking_lin_xy: 15.0      # REDUCED: Was 50.0 → 15.0 (back to baseline)
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
-  # === Stability penalties (keep same) ===
-  z_velocity: 0.1            # Keep same
-  roll_pitch_velocity: 0.05  # Keep same
-  roll_pitch_position: 2.0   # Keep same
+  # === Stability penalties - REVERTED to baseline ===
+  # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
+  # natural walking dynamics. Robot needs to lean/tilt for weight transfer!
+  z_velocity: 0.1
+  roll_pitch_velocity: 0.01      # REDUCED: Was 0.05 → 0.01 (back to baseline)
+  roll_pitch_position: 0.05      # REDUCED: Was 2.0 → 0.05 (back to baseline, 40x reduction!)
 
-  # === Smoothness penalties (REDUCED from Phase 1B) ===
+  # === Smoothness penalties - Keep minimal to allow learning ===
   nominal_joint_position: 0.0
   joint_position_limit: 2.5
-  joint_velocity: 0.0          # DEPRECATED: Disabled (replaced by acceleration)
-  joint_acceleration: 1e-8     # FIXED 2025-11-29: Was 1e-4 → 1e-6 → 1e-8
-                               # Issue: acceleration = (qvel - prev_qvel) / dt creates huge values
-                               # With dt=0.02, division amplifies by 50x, then squaring makes it enormous
-                               # Reduced to 1e-8 to get ~800 penalty instead of 80k
-  action_rate: 0.001           # Keep same
+  joint_velocity: 0.0          # DISABLED: Don't double-penalize with acceleration
+  joint_acceleration: 1e-8     # MINIMAL: 105k × 1e-8 = 0.001 (negligible)
+  action_rate: 0.001           # Keep baseline
 
   # === Energy penalties (REDUCED from Phase 1B) ===
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards ===
-  foot_contact: 10.0         # Keep enhanced
-  foot_sliding: 12.0         # REDUCED 2025-11-30: Was 25.0 - robot ice skating in early training
-  foot_air_time: 5.0         # Keep enhanced
+  # === Contact rewards - Start conservative, focus on walking first ===
+  foot_contact: 10.0         # Reward for proper foot contact
+  foot_sliding: 2.0          # DRASTICALLY REDUCED: Was 12.0 → 2.0
+                             # Robot must learn to walk before learning perfect foot placement
+                             # Will add ~5 penalty instead of ~28, allowing exploration
+  foot_air_time: 5.0         # Reward for proper swing phase
 
   # === Existential penalty ===
   existential: 1.0
