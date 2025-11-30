@@ -182,23 +182,44 @@ def show_progress(exp_name: str, training_dir: Path, show_plot: bool = False):
     print(f"  Forward velocity: {velocity_improvement:+.3f} m/s  ({first['summary']['forward_velocity']:.3f} → {latest['summary']['forward_velocity']:.3f})")
 
     print(f"\n{'='*100}")
-    print("REWARD BREAKDOWN")
+    print("REWARD BREAKDOWN (Weighted - Actual Training Values)")
     print(f"{'='*100}")
-    print(f"  Total rewards:    +{latest['summary']['total_rewards']:.3f}")
-    print(f"  Total penalties:  -{latest['summary']['total_penalties']:.3f}")
+
+    # Use weighted values if available, otherwise fall back to unweighted
+    rewards_weighted = latest.get('rewards_weighted', latest.get('rewards', {}))
+    penalties_weighted = latest.get('penalties_weighted', latest.get('penalties', {}))
+
+    total_rewards_weighted = rewards_weighted.get('total', latest['summary'].get('total_rewards', 0))
+    total_penalties_weighted = penalties_weighted.get('total', latest['summary'].get('total_penalties', 0))
+
+    print(f"  Total rewards:    +{total_rewards_weighted:.3f}")
+    print(f"  Total penalties:  -{total_penalties_weighted:.3f}")
     print(f"  Net per step:     {latest['summary']['reward_per_step']:.3f}")
 
-    print(f"\n  Top Rewards:")
-    rewards = [(k, v) for k, v in latest['rewards'].items() if k != 'total']
+    print(f"\n  Top Rewards (weighted):")
+    rewards = [(k, v) for k, v in rewards_weighted.items() if k != 'total']
     rewards.sort(key=lambda x: x[1], reverse=True)
     for name, val in rewards[:5]:
         print(f"    + {name:30s} {val:>8.3f}")
 
-    print(f"\n  Top Penalties:")
-    penalties = [(k, v) for k, v in latest['penalties'].items() if k != 'total']
+    print(f"\n  Top Penalties (weighted):")
+    penalties = [(k, v) for k, v in penalties_weighted.items() if k != 'total']
     penalties.sort(key=lambda x: x[1], reverse=True)
     for name, val in penalties[:5]:
         print(f"    - {name:30s} {val:>8.3f}")
+
+    # Show unweighted section for debugging if available
+    if 'rewards' in latest and latest.get('rewards') != rewards_weighted:
+        print(f"\n{'='*100}")
+        print("UNWEIGHTED VALUES (for debugging - NOT used in training)")
+        print(f"{'='*100}")
+        print(f"  Top unweighted penalties:")
+        unweighted_penalties = [(k, v) for k, v in latest['penalties'].items() if k != 'total']
+        unweighted_penalties.sort(key=lambda x: x[1], reverse=True)
+        for name, val in unweighted_penalties[:3]:
+            # Show comparison with weighted value
+            weighted_val = penalties_weighted.get(name, 0)
+            print(f"    {name:30s} unweighted: {val:>10.3f} → weighted: {weighted_val:>8.3f}")
 
     print(f"\n{'='*100}")
     print("CONTACT METRICS")

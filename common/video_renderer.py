@@ -1,5 +1,6 @@
 """Video rendering utility for WildRobot policies."""
 
+import functools
 import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -7,6 +8,44 @@ from typing import Callable, Optional, Tuple
 import jax
 import mediapy as media
 import mujoco
+
+
+class CheckpointInferenceFunction:
+    """Inference function callable from checkpoint parameters.
+
+    This class wraps policy network parameters and provides a callable
+    interface for deterministic policy inference.
+    """
+
+    def __init__(self, policy_network, normalizer_params, policy_params, action_dim):
+        """Initialize inference function.
+
+        Args:
+            policy_network: Policy network instance
+            normalizer_params: Normalizer parameters from checkpoint
+            policy_params: Policy parameters from checkpoint
+            action_dim: Action dimension size
+        """
+        self.policy_network = policy_network
+        self.normalizer_params = normalizer_params
+        self.policy_params = policy_params
+        self.action_dim = action_dim
+
+    def __call__(self, obs, rng):
+        """Run policy inference - deterministic (use mean).
+
+        Args:
+            obs: Observation array
+            rng: Random number generator key (unused for deterministic inference)
+
+        Returns:
+            Tuple of (action, info_dict)
+        """
+        logits = self.policy_network.apply(
+            self.normalizer_params, self.policy_params, obs
+        )
+        mean_action = logits[:self.action_dim]
+        return mean_action, {}
 
 
 class VideoRenderer:
@@ -56,6 +95,82 @@ class VideoRenderer:
         # JIT compile environment functions
         self.jit_env_reset = jax.jit(env.reset)
         self.jit_env_step = jax.jit(env.step)
+
+    @classmethod
+    def from_config(
+        cls,
+        env,
+        cfg: dict,
+        output_dir: Path,
+        camera: str = "track",
+        max_steps: int = 600,
+    ):
+        """Create VideoRenderer from config dict.
+
+        Args:
+            env: Brax environment to render
+            cfg: Config dict with rendering settings
+            output_dir: Directory to save videos
+            camera: Camera name for rendering
+            max_steps: Maximum steps per episode
+
+        Returns:
+            VideoRenderer instance
+        """
+        render_width = cfg["rendering"]["render_width"]
+        render_height = cfg["rendering"]["render_height"]
+        fps = int(1.0 / cfg["env"]["ctrl_dt"])
+
+        return cls(
+            env=env,
+            output_dir=output_dir,
+            width=render_width,
+            height=render_height,
+            fps=fps,
+            camera=camera,
+            max_steps=max_steps,
+        )
+
+    @staticmethod
+    def create_inference_from_checkpoint(params, cfg, env):
+        """Create inference function from checkpoint parameters.
+
+        Args:
+            params: Checkpoint parameters (normalizer, policy, value)
+            cfg: Config dict with network settings
+            env: Environment instance (for observation/action sizes)
+
+        Returns:
+            Callable inference function
+        """
+        from brax.training.agents.ppo import networks as ppo_networks
+
+        # Constants for params structure
+        PARAMS_NORMALIZER_INDEX = 0
+        PARAMS_POLICY_INDEX = 1
+
+        # Build network
+        network_config = cfg["network"]
+        network_factory = functools.partial(
+            ppo_networks.make_ppo_networks,
+            policy_hidden_layer_sizes=network_config["policy_hidden_layers"],
+            value_hidden_layer_sizes=network_config["value_hidden_layers"],
+        )
+
+        ppo_networks_tuple = network_factory(env.observation_size, env.action_size)
+        policy_network = ppo_networks_tuple.policy_network
+
+        # Extract params
+        normalizer_params = params[PARAMS_NORMALIZER_INDEX]
+        policy_params = params[PARAMS_POLICY_INDEX]
+
+        # Create and return inference function
+        return CheckpointInferenceFunction(
+            policy_network=policy_network,
+            normalizer_params=normalizer_params,
+            policy_params=policy_params,
+            action_dim=env.action_size,
+        )
 
     def _validate_camera(self, requested_camera: str) -> Optional[str]:
         """Validate camera exists in model, fallback to first available or None.

@@ -50,20 +50,23 @@ tracked_reward_components:
   - existential
 
 # Reward weights - Phase 1C (Hybrid: Balanced rewards & penalties)
-# Updated 2025-11-29: SIGNIFICANTLY increase tracking rewards for better balance
+# Updated 2025-11-30: Reduce foot_sliding penalty to allow learning
 # Changes from previous:
 # - tracking_exp_xy: 35.0 → 100.0 (3x increase - task reward dominates!)
 # - tracking_lin_xy: 14.0 → 50.0 (3.5x increase)
 # - joint_acceleration: 1e-4 → 1e-8 (100x reduction - was causing 80k penalty)
+# - foot_sliding: 25.0 → 12.0 (2025-11-30: Robot is "ice skating" at 5m/s sliding
+#   vs 0.5m/s forward. This is normal in early training. Reduce weight to allow
+#   exploration while still penalizing. Robot will learn to reduce sliding naturally.)
 # Goal: Tracking reward >> penalties, creating clear "go fast" signal
-# Expected: Net reward +50 to +100 (positive!) instead of -55
+# Expected: Net reward closer to 0 or positive
 reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
   # === Velocity tracking (SIGNIFICANTLY INCREASED) ===
   tracking_exp_xy: 100.0     # Was 35.0 - 3x increase! Task reward dominates
-  tracking_lin_xy: 50.0      # Was 14.0 - 3.5x increase! 
+  tracking_lin_xy: 50.0      # Was 14.0 - 3.5x increase!
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
@@ -86,9 +89,9 @@ reward_weights:
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards (keep Phase 1B values) ===
+  # === Contact rewards ===
   foot_contact: 10.0         # Keep enhanced
-  foot_sliding: 25.0         # Keep enhanced
+  foot_sliding: 12.0         # REDUCED 2025-11-30: Was 25.0 - robot ice skating in early training
   foot_air_time: 5.0         # Keep enhanced
 
   # === Existential penalty ===

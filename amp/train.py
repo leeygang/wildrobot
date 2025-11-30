@@ -90,6 +90,398 @@ from common.video_renderer import VideoRenderer
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 
+
+def render_videos(
+    env,
+    params,
+    cfg,
+    output_dir,
+    num_videos=3,
+    max_steps=600,
+    camera="track",
+    seed=0,
+    make_inference_fn=None,
+):
+    """Render evaluation videos using trained policy.
+
+    Args:
+        env: Environment instance
+        params: Policy parameters (either from training or loaded checkpoint)
+        cfg: Config dict
+        output_dir: Directory to save videos
+        num_videos: Number of videos to render
+        max_steps: Maximum steps per video
+        camera: Camera name for rendering
+        seed: Random seed
+        make_inference_fn: Optional inference function factory (if from training).
+                          If None, will create from params directly.
+
+    Returns:
+        List of (video_path, stats) tuples
+    """
+    # Create inference function
+    if make_inference_fn is not None:
+        # From training - use provided factory
+        inference_fn = make_inference_fn(params)
+    else:
+        # From checkpoint - use VideoRenderer helper
+        inference_fn = VideoRenderer.create_inference_from_checkpoint(
+            params=params,
+            cfg=cfg,
+            env=env,
+        )
+
+    # Create renderer from config
+    renderer = VideoRenderer.from_config(
+        env=env,
+        cfg=cfg,
+        output_dir=output_dir,
+        camera=camera,
+        max_steps=max_steps,
+    )
+
+    print(f"\nRendering settings:")
+    print(f"  Number of videos: {num_videos}")
+    print(f"  Max steps: {max_steps}")
+    print(f"  Resolution: {renderer.width}x{renderer.height}")
+    print(f"  Camera: {renderer.camera if renderer.camera else 'free (default)'}")
+    print(f"  FPS: {renderer.fps}")
+    print(f"  Seed: {seed}\n")
+
+    # Render videos
+    rng = jax.random.PRNGKey(seed)
+    results = renderer.render_multiple_videos(
+        inference_fn=inference_fn,
+        rng=rng,
+        num_videos=num_videos,
+        video_prefix="eval_video",
+    )
+
+    # Print summary
+    print(f"\n{'='*80}")
+    print(f"Rendered {len(results)} videos successfully!")
+    for i, (video_path, stats) in enumerate(results, 1):
+        print(f"  {i}. {video_path.name}")
+        print(f"     Length: {stats['length']} steps | "
+              f"Velocity: {stats['velocity']:.3f} m/s | "
+              f"Height: {stats['height']:.3f} m")
+    print(f"{'='*80}\n")
+
+    return results
+
+
+def generate_and_log_metrics(
+    num_steps,
+    metrics,
+    elapsed,
+    start_time,
+    cfg,
+    ppo_config,
+    metrics_log_file,
+):
+    """Generate metrics entry and log to JSONL and W&B.
+
+    Args:
+        num_steps: Current training step
+        metrics: Raw metrics dict from Brax
+        elapsed: Elapsed time since training started
+        start_time: Training start time
+        cfg: Config dict
+        ppo_config: PPO configuration
+        metrics_log_file: File handle for JSONL logging
+
+    Returns:
+        dict: Extracted metrics for printing (eval_reward, eval_length, forward_vel,
+              height, success, distance, sps)
+    """
+    # Extract metrics from raw metrics dict
+    eval_reward = metrics.get("eval/episode_reward", 0.0)
+    eval_length = metrics.get("eval/avg_episode_length", 0.0)
+    forward_vel = metrics.get("eval/episode_forward_velocity", 0.0) / max(eval_length, 1.0)
+    height = metrics.get("eval/episode_height", 0.0) / max(eval_length, 1.0)
+    success = metrics.get("eval/episode_success", 0.0)
+    distance = metrics.get("eval/episode_distance_walked", 0.0)
+    sps = num_steps / elapsed if elapsed > 0 else 0
+
+    # Save metrics to log file (always, regardless of W&B)
+    # IMPROVED STRUCTURE: Separate rewards & penalties, remove duplicates
+    metrics_entry = {
+        "step": int(num_steps),
+        "timestamp": time.time(),
+        "summary": {},  # Will populate after separating rewards/penalties
+        "rewards": {},
+        "penalties": {},
+        "contact": {},
+        "other": {},
+    }
+
+    # First pass: Collect and separate reward components
+    total_rewards = 0.0
+    total_penalties = 0.0
+
+    # Get list of tracked reward components from config (explicit, not filtered)
+    tracked_components = set(cfg.get("tracked_reward_components", []))
+
+    # Track weighted contributions separately
+    metrics_entry["rewards_weighted"] = {}
+    metrics_entry["penalties_weighted"] = {}
+    total_rewards_weighted = 0.0
+    total_penalties_weighted = 0.0
+
+    for key, value in metrics.items():
+        value_per_step = float(value / max(eval_length, 1.0))
+
+        if key.startswith("eval/episode_reward/"):
+            component_name = key.replace("eval/episode_reward/", "")
+
+            # Only track components listed in config
+            if component_name not in tracked_components:
+                continue
+
+            # Get weight for this component
+            weight = float(cfg["reward_weights"].get(component_name, 0.0))
+            weighted_value = value_per_step * weight
+
+            # Separate positive (rewards) from negative (penalties)
+            # UNWEIGHTED (for debugging raw component values)
+            if value_per_step >= 0:
+                # Positive component - it's a reward
+                metrics_entry["rewards"][component_name] = value_per_step
+                total_rewards += value_per_step
+            else:
+                # Negative component - it's a penalty (store as positive for clarity)
+                metrics_entry["penalties"][component_name] = abs(value_per_step)
+                total_penalties += abs(value_per_step)
+
+            # WEIGHTED (actual contribution to training)
+            if weighted_value >= 0:
+                metrics_entry["rewards_weighted"][component_name] = weighted_value
+                total_rewards_weighted += weighted_value
+            else:
+                metrics_entry["penalties_weighted"][component_name] = abs(weighted_value)
+                total_penalties_weighted += abs(weighted_value)
+
+        elif key.startswith("eval/episode_contact/"):
+            metric_name = key.replace("eval/episode_contact/", "")
+            metrics_entry["contact"][metric_name] = value_per_step
+        elif key.startswith("eval/"):
+            metric_name = key.replace("eval/episode_", "").replace("eval/", "")
+            # Skip duplicates that will be in summary
+            if metric_name not in ["reward", "success", "avg_episode_length",
+                                  "forward_velocity", "height", "distance_walked", "sps"]:
+                metrics_entry["other"][metric_name] = float(value_per_step) if "episode" in key else float(value)
+
+    # Add totals to rewards and penalties buckets
+    metrics_entry["rewards"]["total"] = total_rewards
+    metrics_entry["penalties"]["total"] = total_penalties
+    metrics_entry["rewards_weighted"]["total"] = total_rewards_weighted
+    metrics_entry["penalties_weighted"]["total"] = total_penalties_weighted
+
+    # Now populate summary with clean, deduplicated topline metrics
+    reward_per_step = float(eval_reward / max(eval_length, 1.0))
+    metrics_entry["summary"] = {
+        "reward_per_step": reward_per_step,
+        "reward_per_step_std": float(metrics.get("eval/episode_reward_std", 0.0) / max(eval_length, 1.0)),
+        "total_rewards": total_rewards,
+        "total_penalties": total_penalties,
+        "success_rate": float(success),
+        "forward_velocity": float(forward_vel),
+        "episode_length": float(eval_length),
+        "sps": float(sps),
+    }
+
+    # Add non-duplicate metrics to other bucket
+    metrics_entry["other"]["velocity_command"] = float(metrics.get("eval/episode_velocity_command", 0.0) / max(eval_length, 1.0))
+    metrics_entry["other"]["height"] = float(height)
+    metrics_entry["other"]["distance_walked"] = float(distance)
+    metrics_entry["other"]["walltime"] = time.time() - start_time
+    metrics_entry["other"]["epoch_eval_time"] = float(metrics.get("eval/sps", 0.0))
+
+    # Write to JSONL file
+    metrics_log_file.write(json.dumps(metrics_entry) + "\n")
+    metrics_log_file.flush()  # Ensure it's written immediately
+
+    # Log to W&B with categorization
+    if cfg["logging"]["use_wandb"]:
+        # === TOPLINE METRICS (High-level RL training health indicators) ===
+        topline_metrics = {
+            "steps": num_steps,
+            # Core RL metrics
+            "topline/episode_reward": eval_reward,  # Total episode reward (weighted)
+            "topline/reward_per_step": reward_per_step,  # Average reward per step (weighted)
+            "topline/total_rewards": total_rewards_weighted if 'rewards_weighted' in metrics_entry else total_rewards,  # Sum of positive components
+            "topline/total_penalties": total_penalties_weighted if 'penalties_weighted' in metrics_entry else total_penalties,  # Sum of negative components
+
+            # Task performance metrics
+            "topline/success_rate": success,
+            "topline/forward_velocity": forward_vel,
+            "topline/episode_length": eval_length,
+            "topline/distance_walked": distance,
+
+            # Robot state metrics
+            "topline/height": height,
+
+            # Training efficiency
+            "topline/sps": sps,
+        }
+
+        wandb.log(topline_metrics)
+
+        # === DEBUG METRICS (Detailed unweighted component breakdown) ===
+        debug_metrics = {"steps": num_steps}
+
+        # All individual reward components (UNWEIGHTED - raw physical values)
+        for key, value in metrics.items():
+            if key.startswith("eval/episode_reward/"):
+                component_name = key.replace("eval/episode_reward/", "")
+                value_per_step = value / max(eval_length, 1.0)
+
+                # Get weight to also log weighted value
+                weight = float(cfg["reward_weights"].get(component_name, 0.0))
+                weighted_value = value_per_step * weight
+
+                # Log both unweighted (for physical interpretation) and weighted (for training impact)
+                debug_metrics[f"debug/reward_unweighted/{component_name}"] = value_per_step
+                debug_metrics[f"debug/reward_weighted/{component_name}"] = weighted_value
+
+        # All contact metrics
+        for key, value in metrics.items():
+            if key.startswith("eval/episode_contact/"):
+                component_name = key.replace("eval/episode_contact/", "")
+                debug_metrics[f"debug/contact/{component_name}"] = value / max(eval_length, 1.0)
+
+        # Other eval metrics
+        for key, value in metrics.items():
+            if key.startswith("eval/") and not key.startswith("eval/episode_reward/") and not key.startswith("eval/episode_contact/"):
+                if key not in ["eval/episode_reward", "eval/avg_episode_length", "eval/episode_forward_velocity",
+                               "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
+                    debug_name = key.replace("eval/episode_", "").replace("eval/", "")
+                    debug_metrics[f"debug/other/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
+
+        wandb.log(debug_metrics)
+
+    # Return extracted metrics for progress printing
+    return {
+        "eval_reward": eval_reward,
+        "eval_length": eval_length,
+        "forward_vel": forward_vel,
+        "height": height,
+        "success": success,
+        "distance": distance,
+        "sps": sps,
+    }
+
+
+class ProgressCallback:
+    """Progress callback for tracking training metrics.
+
+    This class wraps the progress tracking logic and provides a callable
+    interface for the PPO training loop.
+    """
+
+    def __init__(self, times_list, start_time, cfg, ppo_config, metrics_log_file, quick_verify):
+        """Initialize progress callback.
+
+        Args:
+            times_list: List to track timing (will be mutated)
+            start_time: Training start time
+            cfg: Config dict
+            ppo_config: PPO configuration
+            metrics_log_file: File handle for JSONL logging
+            quick_verify: Boolean flag for verbose output
+        """
+        self.times_list = times_list
+        self.start_time = start_time
+        self.cfg = cfg
+        self.ppo_config = ppo_config
+        self.metrics_log_file = metrics_log_file
+        self.quick_verify = quick_verify
+
+    def __call__(self, num_steps, metrics):
+        """Progress callback function called by PPO training loop.
+
+        Args:
+            num_steps: Current training step
+            metrics: Metrics dict from training
+        """
+        self.times_list.append(time.monotonic())
+        elapsed = self.times_list[-1] - self.times_list[1] if len(self.times_list) > 1 else 0
+
+        # Generate and log metrics (JSONL + W&B) - returns extracted metrics
+        extracted_metrics = generate_and_log_metrics(
+            num_steps=num_steps,
+            metrics=metrics,
+            elapsed=elapsed,
+            start_time=self.start_time,
+            cfg=self.cfg,
+            ppo_config=self.ppo_config,
+            metrics_log_file=self.metrics_log_file,
+        )
+
+        # Unpack metrics for printing
+        eval_reward = extracted_metrics["eval_reward"]
+        eval_length = extracted_metrics["eval_length"]
+        forward_vel = extracted_metrics["forward_vel"]
+        height = extracted_metrics["height"]
+        success = extracted_metrics["success"]
+        distance = extracted_metrics["distance"]
+        sps = extracted_metrics["sps"]
+
+        # Progress bar
+        progress_pct = (num_steps / self.ppo_config.num_timesteps) * 100
+        eta_seconds = (self.ppo_config.num_timesteps - num_steps) / sps if sps > 0 else 0
+        eta = str(datetime.timedelta(seconds=int(eta_seconds)))
+
+        print(f"Step {num_steps:,}/{self.ppo_config.num_timesteps:,} ({progress_pct:.1f}%) | "
+              f"Reward: {eval_reward:.2f} | Vel: {forward_vel:.3f} m/s | "
+              f"Height: {height:.3f}m | Success: {success:.2%} | "
+              f"SPS: {sps:.0f} | ETA: {eta}")
+
+        # VERBOSE LOGGING FOR QUICK_VERIFY MODE
+        if self.quick_verify:
+            print("\n" + "="*70)
+            print("📊 DETAILED REWARD BREAKDOWN (per step)")
+            print("="*70)
+
+            # Collect all reward components
+            reward_components = {}
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_reward/"):
+                    component_name = key.replace("eval/episode_reward/", "")
+                    reward_per_step = value / max(eval_length, 1.0)
+                    reward_components[component_name] = reward_per_step
+
+            # Sort by absolute value (largest penalties/rewards first)
+            sorted_components = sorted(reward_components.items(), key=lambda x: abs(x[1]), reverse=True)
+
+            print("\n🔴 Top Penalties/Rewards:")
+            for i, (name, value) in enumerate(sorted_components[:10], 1):
+                sign = "+" if value >= 0 else ""
+                print(f"  {i:2d}. {name:30s} {sign}{value:>8.3f}")
+
+            # Calculate total from components
+            total_from_components = sum(reward_components.values())
+            print(f"\n{'='*70}")
+            print(f"Total from components:  {total_from_components:>8.3f} per step")
+            print(f"Reported reward:        {eval_reward / max(eval_length, 1.0):>8.3f} per step")
+            print(f"Episode reward:         {eval_reward:>8.3f} (over {eval_length:.0f} steps)")
+            print(f"{'='*70}")
+
+            # Show contact metrics
+            print("\n📍 CONTACT METRICS:")
+            contact_metrics = {}
+            for key, value in metrics.items():
+                if key.startswith("eval/episode_contact/"):
+                    metric_name = key.replace("eval/episode_contact/", "")
+                    metric_per_step = value / max(eval_length, 1.0)
+                    contact_metrics[metric_name] = metric_per_step
+
+            for name, value in sorted(contact_metrics.items()):
+                print(f"  {name:40s} {value:>8.3f}")
+
+            print("="*70 + "\n")
+
+
 # Flags
 _CONFIG = flags.DEFINE_string(
     "config", "phase1_contact.yaml", "Config file name (in amp/)"
@@ -164,6 +556,50 @@ def apply_quick_verify_overrides(cfg: dict) -> dict:
     return cfg
 
 
+def create_env_config(cfg: dict) -> config_dict.ConfigDict:
+    """Create environment config from main config dict.
+
+    Extracts environment-specific parameters from the full config and creates
+    a ConfigDict suitable for environment initialization.
+
+    Args:
+        cfg: Main config dict loaded from YAML
+
+    Returns:
+        ConfigDict for environment initialization
+
+    Raises:
+        ValueError: If required config sections or parameters are missing
+    """
+    # Validate required sections exist
+    if "env" not in cfg:
+        raise ValueError("Config missing required 'env' section")
+    if "reward_weights" not in cfg:
+        raise ValueError("Config missing required 'reward_weights' section")
+
+    env_config = config_dict.ConfigDict()
+
+    # Environment parameters (exclude 'terrain' which is used for task name)
+    env_params = [
+        "ctrl_dt", "sim_dt",
+        "velocity_command_mode", "min_velocity", "max_velocity",
+        "use_action_filter", "action_filter_alpha",
+        "use_phase_signal", "phase_period", "num_phase_clocks",
+        "min_height", "max_height",
+    ]
+
+    # Validate and copy each parameter
+    for param in env_params:
+        if param not in cfg["env"]:
+            raise ValueError(f"Config missing required env parameter: '{param}'")
+        env_config[param] = cfg["env"][param]
+
+    # Add reward weights (from top-level config)
+    env_config.reward_weights = cfg["reward_weights"]
+
+    return env_config
+
+
 def main(argv):
     del argv
 
@@ -205,21 +641,8 @@ def main(argv):
             params = pickle.load(f)
         print(f"✓ Checkpoint loaded\n")
 
-        # Create environment config
-        env_config = config_dict.ConfigDict()
-        env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
-        env_config.sim_dt = cfg["env"]["sim_dt"]
-        env_config.velocity_command_mode = cfg["env"]["velocity_command_mode"]
-        env_config.min_velocity = cfg["env"]["min_velocity"]
-        env_config.max_velocity = cfg["env"]["max_velocity"]
-        env_config.use_action_filter = cfg["env"]["use_action_filter"]
-        env_config.action_filter_alpha = cfg["env"]["action_filter_alpha"]
-        env_config.use_phase_signal = cfg["env"]["use_phase_signal"]
-        env_config.phase_period = cfg["env"]["phase_period"]
-        env_config.num_phase_clocks = cfg["env"]["num_phase_clocks"]
-        env_config.min_height = cfg["env"]["min_height"]
-        env_config.max_height = cfg["env"]["max_height"]
-        env_config.reward_weights = cfg["reward_weights"]
+        # Create environment config using helper function
+        env_config = create_env_config(cfg)
 
         # Create environment
         terrain = cfg["env"]["terrain"]
@@ -231,108 +654,22 @@ def main(argv):
         print(f"  Observation size: {env.observation_size}")
         print(f"  Action size: {env.action_size}\n")
 
-        # Create network factory
-        network_config = cfg["network"]
-        network_factory = functools.partial(
-            ppo_networks.make_ppo_networks,
-            policy_hidden_layer_sizes=network_config["policy_hidden_layers"],
-            value_hidden_layer_sizes=network_config["value_hidden_layers"],
-        )
-
-        # Create inference function from params
-        print("Creating inference function...")
-
-        # Build network to get the structure
-        ppo_networks_tuple = network_factory(env.observation_size, env.action_size)
-        policy_network = ppo_networks_tuple.policy_network
-
-        # Extract params - structure is (normalizer_params, policy_params, value_params)
-        normalizer_params = params[0]  # RunningStatisticsState
-        policy_params = params[1]  # Policy params dict
-
-        # Create inference function
-        # policy_network.apply signature: (processor_params, policy_params, obs)
-        def inference_fn(obs, rng):
-            """Run policy inference - deterministic (use mean)."""
-            # Apply policy network with normalizer and policy params
-            logits = policy_network.apply(normalizer_params, policy_params, obs)
-
-            # For Gaussian policies, logits contains [mean, log_std]
-            # Use just the mean for deterministic evaluation
-            action_dim = env.action_size
-            mean_action = logits[:action_dim]
-
-            return mean_action, {}
-
-        print("✓ Inference function created\n")
-
-        # JIT compile environment functions only
-        print("JIT compiling environment...")
-        jit_env_reset = jax.jit(env.reset)
-        jit_env_step = jax.jit(env.step)
-        print("✓ JIT compilation complete\n")
-
-        # Rendering settings
-        num_videos = _RENDER_NUM_VIDEOS.value
-        max_steps = 600
-        camera = _RENDER_CAMERA.value
-        render_height = cfg["rendering"]["render_height"]
-        render_width = cfg["rendering"]["render_width"]
-        fps = int(1.0 / env_config.ctrl_dt)
-        seed = cfg["training"]["seed"]
-
-        # Check if requested camera exists, otherwise use default
-        available_cameras = [env.mj_model.camera(i).name for i in range(env.mj_model.ncam)]
-        if camera not in available_cameras:
-            if available_cameras:
-                camera = available_cameras[0]
-                print(f"⚠️  Camera '{_RENDER_CAMERA.value}' not found. Using '{camera}' instead.")
-                print(f"    Available cameras: {', '.join(available_cameras)}")
-            else:
-                camera = None  # Will use default free camera
-                print(f"⚠️  No named cameras found in model. Using default free camera.")
-
-        print(f"\nRendering settings:")
-        print(f"  Number of videos: {num_videos}")
-        print(f"  Max steps: {max_steps}")
-        print(f"  Resolution: {render_width}x{render_height}")
-        print(f"  Camera: {camera if camera else 'free (default)'}")
-        print(f"  FPS: {fps}")
-        print(f"  Seed: {seed}\n")
-
         # Output directory
         video_dir = checkpoint_dir / "rendered_videos"
         video_dir.mkdir(exist_ok=True)
 
-        # Create VideoRenderer
-        renderer = VideoRenderer(
+        # Render videos using shared function
+        render_videos(
             env=env,
+            params=params,
+            cfg=cfg,
             output_dir=video_dir,
-            width=render_width,
-            height=render_height,
-            fps=fps,
-            camera=camera,
-            max_steps=max_steps,
+            num_videos=_RENDER_NUM_VIDEOS.value,
+            max_steps=600,
+            camera=_RENDER_CAMERA.value,
+            seed=cfg["training"]["seed"],
+            make_inference_fn=None,  # Will be created from params in render_videos()
         )
-
-        # Render videos
-        rng = jax.random.PRNGKey(seed)
-        results = renderer.render_multiple_videos(
-            inference_fn=inference_fn,
-            rng=rng,
-            num_videos=num_videos,
-            video_prefix="eval_video",
-        )
-
-        # Print summary
-        print(f"\n{'='*80}")
-        print(f"Rendered {len(results)} videos successfully!")
-        for i, (video_path, stats) in enumerate(results, 1):
-            print(f"  {i}. {video_path.name}")
-            print(f"     Length: {stats['length']} steps | "
-                  f"Velocity: {stats['velocity']:.3f} m/s | "
-                  f"Height: {stats['height']:.3f} m")
-        print(f"{'='*80}")
 
         return
 
@@ -373,23 +710,8 @@ def main(argv):
     print(f"  Task: {task_name}")
     print(f"{'='*80}\n")
 
-    # Create environment config
-    env_config = config_dict.ConfigDict()
-    env_config.ctrl_dt = cfg["env"]["ctrl_dt"]
-    env_config.sim_dt = cfg["env"]["sim_dt"]
-    env_config.velocity_command_mode = cfg["env"]["velocity_command_mode"]
-    env_config.min_velocity = cfg["env"]["min_velocity"]
-    env_config.max_velocity = cfg["env"]["max_velocity"]
-    env_config.use_action_filter = cfg["env"]["use_action_filter"]
-    env_config.action_filter_alpha = cfg["env"]["action_filter_alpha"]
-    env_config.use_phase_signal = cfg["env"]["use_phase_signal"]
-    env_config.phase_period = cfg["env"]["phase_period"]
-    env_config.num_phase_clocks = cfg["env"]["num_phase_clocks"]
-    env_config.min_height = cfg["env"]["min_height"]
-    env_config.max_height = cfg["env"]["max_height"]
-
-    # Pass reward weights to environment
-    env_config.reward_weights = cfg["reward_weights"]
+    # Create environment config using helper function
+    env_config = create_env_config(cfg)
 
     # Create environment
     env = walk_env.WildRobotWalkEnv(task=task_name, config=env_config)
@@ -505,250 +827,15 @@ def main(argv):
     metrics_log_file = open(metrics_log_path, "w")
     print(f"Metrics log: {metrics_log_path}\n")
 
-    def progress(num_steps, metrics):
-        times.append(time.monotonic())
-        elapsed = times[-1] - times[1] if len(times) > 1 else 0
-
-        # Extract metrics
-        eval_reward = metrics.get("eval/episode_reward", 0.0)
-        eval_length = metrics.get("eval/avg_episode_length", 0.0)
-        forward_vel = metrics.get("eval/episode_forward_velocity", 0.0) / max(eval_length, 1.0)
-        height = metrics.get("eval/episode_height", 0.0) / max(eval_length, 1.0)
-        success = metrics.get("eval/episode_success", 0.0)
-        distance = metrics.get("eval/episode_distance_walked", 0.0)
-
-        # Progress bar
-        progress_pct = (num_steps / ppo_config.num_timesteps) * 100
-        sps = num_steps / elapsed if elapsed > 0 else 0
-        eta_seconds = (ppo_config.num_timesteps - num_steps) / sps if sps > 0 else 0
-        eta = str(datetime.timedelta(seconds=int(eta_seconds)))
-
-        print(f"Step {num_steps:,}/{ppo_config.num_timesteps:,} ({progress_pct:.1f}%) | "
-              f"Reward: {eval_reward:.2f} | Vel: {forward_vel:.3f} m/s | "
-              f"Height: {height:.3f}m | Success: {success:.2%} | "
-              f"SPS: {sps:.0f} | ETA: {eta}")
-
-        # VERBOSE LOGGING FOR QUICK_VERIFY MODE
-        if _QUICK_VERIFY.value:
-            print("\n" + "="*70)
-            print("📊 DETAILED REWARD BREAKDOWN (per step)")
-            print("="*70)
-
-            # Collect all reward components
-            reward_components = {}
-            for key, value in metrics.items():
-                if key.startswith("eval/episode_reward/"):
-                    component_name = key.replace("eval/episode_reward/", "")
-                    reward_per_step = value / max(eval_length, 1.0)
-                    reward_components[component_name] = reward_per_step
-
-            # Sort by absolute value (largest penalties/rewards first)
-            sorted_components = sorted(reward_components.items(), key=lambda x: abs(x[1]), reverse=True)
-
-            print("\n🔴 Top Penalties/Rewards:")
-            for i, (name, value) in enumerate(sorted_components[:10], 1):
-                sign = "+" if value >= 0 else ""
-                print(f"  {i:2d}. {name:30s} {sign}{value:>8.3f}")
-
-            # Calculate total from components
-            total_from_components = sum(reward_components.values())
-            print(f"\n{'='*70}")
-            print(f"Total from components:  {total_from_components:>8.3f} per step")
-            print(f"Reported reward:        {eval_reward / max(eval_length, 1.0):>8.3f} per step")
-            print(f"Episode reward:         {eval_reward:>8.3f} (over {eval_length:.0f} steps)")
-            print(f"{'='*70}")
-
-            # Show contact metrics
-            print("\n📍 CONTACT METRICS:")
-            contact_metrics = {}
-            for key, value in metrics.items():
-                if key.startswith("eval/episode_contact/"):
-                    metric_name = key.replace("eval/episode_contact/", "")
-                    metric_per_step = value / max(eval_length, 1.0)
-                    contact_metrics[metric_name] = metric_per_step
-
-            for name, value in sorted(contact_metrics.items()):
-                print(f"  {name:40s} {value:>8.3f}")
-
-            print("="*70 + "\n")
-
-        # Save metrics to log file (always, regardless of W&B)
-        # IMPROVED STRUCTURE: Separate rewards & penalties, remove duplicates
-        metrics_entry = {
-            "step": int(num_steps),
-            "timestamp": time.time(),
-            "summary": {},  # Will populate after separating rewards/penalties
-            "rewards": {},
-            "penalties": {},
-            "contact": {},
-            "other": {},
-        }
-
-        # First pass: Collect and separate reward components
-        total_rewards = 0.0
-        total_penalties = 0.0
-
-        # Get list of tracked reward components from config (explicit, not filtered)
-        tracked_components = set(cfg.get("tracked_reward_components", []))
-
-        for key, value in metrics.items():
-            value_per_step = float(value / max(eval_length, 1.0))
-
-            if key.startswith("eval/episode_reward/"):
-                component_name = key.replace("eval/episode_reward/", "")
-
-                # Only track components listed in config
-                if component_name not in tracked_components:
-                    continue
-
-                # Separate positive (rewards) from negative (penalties)
-                if value_per_step >= 0:
-                    # Positive component - it's a reward
-                    metrics_entry["rewards"][component_name] = value_per_step
-                    total_rewards += value_per_step
-                else:
-                    # Negative component - it's a penalty (store as positive for clarity)
-                    metrics_entry["penalties"][component_name] = abs(value_per_step)
-                    total_penalties += abs(value_per_step)
-
-            elif key.startswith("eval/episode_contact/"):
-                metric_name = key.replace("eval/episode_contact/", "")
-                metrics_entry["contact"][metric_name] = value_per_step
-            elif key.startswith("eval/"):
-                metric_name = key.replace("eval/episode_", "").replace("eval/", "")
-                # Skip duplicates that will be in summary
-                if metric_name not in ["reward", "success", "avg_episode_length",
-                                      "forward_velocity", "height", "distance_walked", "sps"]:
-                    metrics_entry["other"][metric_name] = float(value_per_step) if "episode" in key else float(value)
-
-        # Add totals to rewards and penalties buckets
-        metrics_entry["rewards"]["total"] = total_rewards
-        metrics_entry["penalties"]["total"] = total_penalties
-
-        # Now populate summary with clean, deduplicated topline metrics
-        reward_per_step = float(eval_reward / max(eval_length, 1.0))
-        metrics_entry["summary"] = {
-            "reward_per_step": reward_per_step,
-            "reward_per_step_std": float(metrics.get("eval/episode_reward_std", 0.0) / max(eval_length, 1.0)),
-            "total_rewards": total_rewards,
-            "total_penalties": total_penalties,
-            "success_rate": float(success),
-            "forward_velocity": float(forward_vel),
-            "episode_length": float(eval_length),
-            "sps": float(sps),
-        }
-
-        # Add non-duplicate metrics to other bucket
-        metrics_entry["other"]["velocity_command"] = float(metrics.get("eval/episode_velocity_command", 0.0) / max(eval_length, 1.0))
-        metrics_entry["other"]["height"] = float(height)
-        metrics_entry["other"]["distance_walked"] = float(distance)
-        metrics_entry["other"]["walltime"] = time.time() - start_time
-        metrics_entry["other"]["epoch_eval_time"] = float(metrics.get("eval/sps", 0.0))
-
-        # Write to JSONL file
-        metrics_log_file.write(json.dumps(metrics_entry) + "\n")
-        metrics_log_file.flush()  # Ensure it's written immediately
-
-        # Log to W&B with categorization
-        if cfg["logging"]["use_wandb"]:
-            # === TOPLINE METRICS (Critical for training monitoring) ===
-            reward_per_step = float(eval_reward / max(eval_length, 1.0))
-
-            topline_metrics = {
-                "steps": num_steps,
-                "topline/episode_reward": eval_reward,  # Total episode reward
-                "topline/reward_per_step": reward_per_step,  # Reward per step (NEW!)
-                "topline/success_rate": success,
-                "topline/forward_velocity": forward_vel,
-                "topline/height": height,
-                "topline/distance_walked": distance,
-                "topline/sps": sps,
-            }
-
-            # Add key contact metrics if available
-            contact_left_force = metrics.get("eval/episode_contact/left_foot_force", 0.0) / max(eval_length, 1.0)
-            contact_right_force = metrics.get("eval/episode_contact/right_foot_force", 0.0) / max(eval_length, 1.0)
-            avg_air_time = metrics.get("eval/episode_contact/avg_air_time", 0.0) / max(eval_length, 1.0)
-            air_time_threshold_met = metrics.get("eval/episode_contact/both_meet_air_time_threshold", 0.0) / max(eval_length, 1.0)
-
-            topline_metrics.update({
-                "topline/contact_left_force": contact_left_force,
-                "topline/contact_right_force": contact_right_force,
-                "topline/avg_air_time": avg_air_time,
-                "topline/air_time_threshold_met": air_time_threshold_met,
-            })
-
-            # Add key reward/penalty components with CLEAR naming
-            # REWARDS (positive values - things we want to maximize)
-            reward_tracking_exp_xy = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
-            reward_tracking_lin_xy = metrics.get("eval/episode_reward/tracking_lin_xy", 0.0) / max(eval_length, 1.0)
-            reward_tracking_exp_yaw = metrics.get("eval/episode_reward/tracking_exp_yaw", 0.0) / max(eval_length, 1.0)
-            reward_tracking_lin_yaw = metrics.get("eval/episode_reward/tracking_lin_yaw", 0.0) / max(eval_length, 1.0)
-            reward_foot_contact = metrics.get("eval/episode_reward/foot_contact", 0.0) / max(eval_length, 1.0)
-            reward_foot_air_time = metrics.get("eval/episode_reward/foot_air_time", 0.0) / max(eval_length, 1.0)
-
-            # PENALTIES (negative values - things we want to minimize)
-            penalty_z_velocity = abs(metrics.get("eval/episode_reward/z_velocity", 0.0) / max(eval_length, 1.0))
-            penalty_roll_pitch_velocity = abs(metrics.get("eval/episode_reward/roll_pitch_velocity", 0.0) / max(eval_length, 1.0))
-            penalty_roll_pitch_position = abs(metrics.get("eval/episode_reward/roll_pitch_position", 0.0) / max(eval_length, 1.0))
-            penalty_joint_acceleration = abs(metrics.get("eval/episode_reward/joint_acceleration", 0.0) / max(eval_length, 1.0))
-            penalty_joint_torque = abs(metrics.get("eval/episode_reward/joint_torque", 0.0) / max(eval_length, 1.0))
-            penalty_mechanical_power = abs(metrics.get("eval/episode_reward/mechanical_power", 0.0) / max(eval_length, 1.0))
-            penalty_foot_sliding = abs(metrics.get("eval/episode_reward/foot_sliding", 0.0) / max(eval_length, 1.0))
-            penalty_action_rate = abs(metrics.get("eval/episode_reward/action_rate", 0.0) / max(eval_length, 1.0))
-            penalty_existential = abs(metrics.get("eval/episode_reward/existential", 0.0) / max(eval_length, 1.0))
-
-            topline_metrics.update({
-                # Rewards (positive - want to maximize)
-                "topline/reward_tracking_exp_xy": reward_tracking_exp_xy,
-                "topline/reward_tracking_lin_xy": reward_tracking_lin_xy,
-                "topline/reward_tracking_exp_yaw": reward_tracking_exp_yaw,
-                "topline/reward_tracking_lin_yaw": reward_tracking_lin_yaw,
-                "topline/reward_foot_contact": reward_foot_contact,
-                "topline/reward_foot_air_time": reward_foot_air_time,
-                
-                # Penalties (negative - want to minimize)
-                "topline/penalty_z_velocity": penalty_z_velocity,
-                "topline/penalty_roll_pitch_velocity": penalty_roll_pitch_velocity,
-                "topline/penalty_roll_pitch_position": penalty_roll_pitch_position,
-                "topline/penalty_joint_acceleration": penalty_joint_acceleration,
-                "topline/penalty_joint_torque": penalty_joint_torque,
-                "topline/penalty_mechanical_power": penalty_mechanical_power,
-                "topline/penalty_foot_sliding": penalty_foot_sliding,
-                "topline/penalty_action_rate": penalty_action_rate,
-                "topline/penalty_existential": penalty_existential,
-            })
-
-            wandb.log(topline_metrics)
-
-            # === DEBUG METRICS (Detailed breakdown for debugging) ===
-            # Log debug metrics every eval for comprehensive tracking
-            debug_metrics = {}
-
-            # All individual reward components (except already in topline)
-            for key, value in metrics.items():
-                if key.startswith("eval/episode_reward/"):
-                    component_name = key.replace("eval/episode_reward/", "")
-                    if component_name not in ["foot_contact", "foot_sliding", "foot_air_time", "z_velocity", "tracking_exp_xy"]:
-                        debug_metrics[f"debug/reward/{component_name}"] = value / max(eval_length, 1.0)
-
-            # All individual contact metrics (except already in topline)
-            for key, value in metrics.items():
-                if key.startswith("eval/episode_contact/"):
-                    component_name = key.replace("eval/episode_contact/", "")
-                    if component_name not in ["left_foot_force", "right_foot_force", "avg_air_time", "both_meet_air_time_threshold"]:
-                        debug_metrics[f"debug/contact/{component_name}"] = value / max(eval_length, 1.0)
-
-            # Other eval metrics
-            for key, value in metrics.items():
-                if key.startswith("eval/") and not key.startswith("eval/episode_reward/") and not key.startswith("eval/episode_contact/"):
-                    if key not in ["eval/episode_reward", "eval/avg_episode_length", "eval/episode_forward_velocity",
-                                   "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
-                        debug_name = key.replace("eval/episode_", "").replace("eval/", "")
-                        debug_metrics[f"debug/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
-
-            if debug_metrics:
-                wandb.log(debug_metrics)
+    # Create progress callback using class (no nested functions!)
+    progress = ProgressCallback(
+        times_list=times,
+        start_time=start_time,
+        cfg=cfg,
+        ppo_config=ppo_config,
+        metrics_log_file=metrics_log_file,
+        quick_verify=_QUICK_VERIFY.value,
+    )
 
     # Train
     print("Starting training...\n")
@@ -792,46 +879,31 @@ def main(argv):
         print(f"Saved final checkpoint: {final_ckpt_path}\n")
 
     # Render videos if enabled
-    # In quick_verify mode, check the quick_verify.render_videos setting
     should_render_videos = cfg["rendering"]["render_videos"]
     if _QUICK_VERIFY.value:
         # In quick_verify mode, use the quick_verify.render_videos setting instead
         should_render_videos = cfg.get("quick_verify", {}).get("render_videos", False)
 
     if should_render_videos:
-        print("Rendering evaluation videos...")
-        print(f"  Output directory: {exp_dir}\n")
-
-        # Create inference function
-        inference_fn = make_inference_fn(params)
-
-        # Create VideoRenderer
-        renderer = VideoRenderer(
+        # Render videos using shared function
+        results = render_videos(
             env=env,
+            params=params,
+            cfg=cfg,
             output_dir=exp_dir,
-            width=cfg["rendering"]["render_width"],
-            height=cfg["rendering"]["render_height"],
-            fps=int(1.0 / env_config.ctrl_dt),
-            camera="track",
-            max_steps=min(cfg["training"]["episode_length"], 600),
-        )
-
-        # Render videos
-        rng = jax.random.PRNGKey(cfg["training"]["seed"])
-        results = renderer.render_multiple_videos(
-            inference_fn=inference_fn,
-            rng=rng,
             num_videos=3,
-            video_prefix="eval_video",
+            max_steps=min(cfg["training"]["episode_length"], 600),
+            camera="track",
+            seed=cfg["training"]["seed"],
+            make_inference_fn=make_inference_fn,  # From training
         )
 
         # Upload to W&B if enabled
         if cfg["logging"]["use_wandb"]:
+            fps = int(1.0 / env_config.ctrl_dt)
             for i, (video_path, stats) in enumerate(results):
-                wandb.log({f"eval_video_{i}": wandb.Video(str(video_path), fps=renderer.fps)})
+                wandb.log({f"eval_video_{i}": wandb.Video(str(video_path), fps=fps)})
             print(f"  ✓ Videos uploaded to W&B\n")
-
-        print(f"Rendering complete!\n")
 
     if cfg["logging"]["use_wandb"]:
         wandb.finish()
