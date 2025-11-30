@@ -31,7 +31,7 @@ if system == "Darwin":  # macOS
 else:  # Linux
     # Check if running in SSH session
     is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
-    
+
     if is_ssh:
         # SSH session - prefer osmesa (software rendering) or EGL with xvfb-run
         import sys
@@ -174,7 +174,6 @@ def main(argv):
         if not _RENDER_CHECKPOINT.value:
             raise ValueError("--render_checkpoint is required when using --render_only")
 
-        from pathlib import Path
         import pickle
 
         checkpoint_dir = Path(_RENDER_CHECKPOINT.value)
@@ -242,8 +241,8 @@ def main(argv):
 
         # Create inference function from params
         print("Creating inference function...")
-        
-        # Build network to get the structure  
+
+        # Build network to get the structure
         ppo_networks_tuple = network_factory(env.observation_size, env.action_size)
         policy_network = ppo_networks_tuple.policy_network
 
@@ -257,12 +256,12 @@ def main(argv):
             """Run policy inference - deterministic (use mean)."""
             # Apply policy network with normalizer and policy params
             logits = policy_network.apply(normalizer_params, policy_params, obs)
-            
+
             # For Gaussian policies, logits contains [mean, log_std]
             # Use just the mean for deterministic evaluation
             action_dim = env.action_size
             mean_action = logits[:action_dim]
-            
+
             return mean_action, {}
 
         print("✓ Inference function created\n")
@@ -679,27 +678,45 @@ def main(argv):
                 "topline/air_time_threshold_met": air_time_threshold_met,
             })
 
-            # Add key reward components
-            reward_foot_contact = metrics.get("eval/episode_reward/foot_contact", 0.0) / max(eval_length, 1.0)
-            reward_foot_sliding = metrics.get("eval/episode_reward/foot_sliding", 0.0) / max(eval_length, 1.0)
-            reward_foot_air_time = metrics.get("eval/episode_reward/foot_air_time", 0.0) / max(eval_length, 1.0)
-            reward_z_velocity = metrics.get("eval/episode_reward/z_velocity", 0.0) / max(eval_length, 1.0)
-            reward_tracking_xy = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
+            # Add key reward/penalty components with CLEAR naming
+            # REWARDS (positive values - things we want to maximize)
+            reward_tracking_exp_xy = metrics.get("eval/episode_reward/tracking_exp_xy", 0.0) / max(eval_length, 1.0)
             reward_tracking_lin_xy = metrics.get("eval/episode_reward/tracking_lin_xy", 0.0) / max(eval_length, 1.0)
-            reward_joint_velocity = metrics.get("eval/episode_reward/joint_velocity", 0.0) / max(eval_length, 1.0)
-            reward_joint_acceleration = metrics.get("eval/episode_reward/joint_acceleration", 0.0) / max(eval_length, 1.0)
-            reward_mechanical_power = metrics.get("eval/episode_reward/mechanical_power", 0.0) / max(eval_length, 1.0)
+            reward_tracking_exp_yaw = metrics.get("eval/episode_reward/tracking_exp_yaw", 0.0) / max(eval_length, 1.0)
+            reward_tracking_lin_yaw = metrics.get("eval/episode_reward/tracking_lin_yaw", 0.0) / max(eval_length, 1.0)
+            reward_foot_contact = metrics.get("eval/episode_reward/foot_contact", 0.0) / max(eval_length, 1.0)
+            reward_foot_air_time = metrics.get("eval/episode_reward/foot_air_time", 0.0) / max(eval_length, 1.0)
+
+            # PENALTIES (negative values - things we want to minimize)
+            penalty_z_velocity = abs(metrics.get("eval/episode_reward/z_velocity", 0.0) / max(eval_length, 1.0))
+            penalty_roll_pitch_velocity = abs(metrics.get("eval/episode_reward/roll_pitch_velocity", 0.0) / max(eval_length, 1.0))
+            penalty_roll_pitch_position = abs(metrics.get("eval/episode_reward/roll_pitch_position", 0.0) / max(eval_length, 1.0))
+            penalty_joint_acceleration = abs(metrics.get("eval/episode_reward/joint_acceleration", 0.0) / max(eval_length, 1.0))
+            penalty_joint_torque = abs(metrics.get("eval/episode_reward/joint_torque", 0.0) / max(eval_length, 1.0))
+            penalty_mechanical_power = abs(metrics.get("eval/episode_reward/mechanical_power", 0.0) / max(eval_length, 1.0))
+            penalty_foot_sliding = abs(metrics.get("eval/episode_reward/foot_sliding", 0.0) / max(eval_length, 1.0))
+            penalty_action_rate = abs(metrics.get("eval/episode_reward/action_rate", 0.0) / max(eval_length, 1.0))
+            penalty_existential = abs(metrics.get("eval/episode_reward/existential", 0.0) / max(eval_length, 1.0))
 
             topline_metrics.update({
-                "topline/reward_foot_contact": reward_foot_contact,
-                "topline/reward_foot_sliding": reward_foot_sliding,
-                "topline/reward_foot_air_time": reward_foot_air_time,
-                "topline/reward_z_velocity": reward_z_velocity,
-                "topline/reward_tracking_exp_xy": reward_tracking_xy,
+                # Rewards (positive - want to maximize)
+                "topline/reward_tracking_exp_xy": reward_tracking_exp_xy,
                 "topline/reward_tracking_lin_xy": reward_tracking_lin_xy,
-                "topline/reward_joint_velocity": reward_joint_velocity,
-                "topline/reward_joint_acceleration": reward_joint_acceleration,
-                "topline/reward_mechanical_power": reward_mechanical_power,
+                "topline/reward_tracking_exp_yaw": reward_tracking_exp_yaw,
+                "topline/reward_tracking_lin_yaw": reward_tracking_lin_yaw,
+                "topline/reward_foot_contact": reward_foot_contact,
+                "topline/reward_foot_air_time": reward_foot_air_time,
+                
+                # Penalties (negative - want to minimize)
+                "topline/penalty_z_velocity": penalty_z_velocity,
+                "topline/penalty_roll_pitch_velocity": penalty_roll_pitch_velocity,
+                "topline/penalty_roll_pitch_position": penalty_roll_pitch_position,
+                "topline/penalty_joint_acceleration": penalty_joint_acceleration,
+                "topline/penalty_joint_torque": penalty_joint_torque,
+                "topline/penalty_mechanical_power": penalty_mechanical_power,
+                "topline/penalty_foot_sliding": penalty_foot_sliding,
+                "topline/penalty_action_rate": penalty_action_rate,
+                "topline/penalty_existential": penalty_existential,
             })
 
             wandb.log(topline_metrics)

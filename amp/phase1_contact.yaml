@@ -50,21 +50,20 @@ tracked_reward_components:
   - existential
 
 # Reward weights - Phase 1C (Hybrid: Balanced rewards & penalties)
-# Updated 2025-11-28: Increase tracking rewards + reduce smoothness penalties
-# Changes from Phase 1B:
-# - tracking_exp_xy: 20.0 → 35.0 (75% increase - more incentive to go fast)
-# - tracking_lin_xy: 8.0 → 14.0 (75% increase)
-# - joint_velocity: 1e-6 → 7e-7 (30% reduction - less penalty for fast movement)
-# - joint_torque: 1e-7 → 7e-8 (30% reduction)
-# - mechanical_power: 1e-5 → 7e-6 (30% reduction)
-# Goal: Better reward/penalty balance to sustain high velocity
+# Updated 2025-11-29: SIGNIFICANTLY increase tracking rewards for better balance
+# Changes from previous:
+# - tracking_exp_xy: 35.0 → 100.0 (3x increase - task reward dominates!)
+# - tracking_lin_xy: 14.0 → 50.0 (3.5x increase)
+# - joint_acceleration: 1e-4 → 1e-8 (100x reduction - was causing 80k penalty)
+# Goal: Tracking reward >> penalties, creating clear "go fast" signal
+# Expected: Net reward +50 to +100 (positive!) instead of -55
 reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
-  # === Velocity tracking (INCREASED from Phase 1B) ===
-  tracking_exp_xy: 35.0      # Was 20.0 - increase tracking reward
-  tracking_lin_xy: 14.0      # Was 8.0 - increase tracking reward
+  # === Velocity tracking (SIGNIFICANTLY INCREASED) ===
+  tracking_exp_xy: 100.0     # Was 35.0 - 3x increase! Task reward dominates
+  tracking_lin_xy: 50.0      # Was 14.0 - 3.5x increase! 
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
@@ -77,7 +76,10 @@ reward_weights:
   nominal_joint_position: 0.0
   joint_position_limit: 2.5
   joint_velocity: 0.0          # DEPRECATED: Disabled (replaced by acceleration)
-  joint_acceleration: 1e-4     # NEW! Penalize jerky motion (smoothness)
+  joint_acceleration: 1e-8     # FIXED 2025-11-29: Was 1e-4 → 1e-6 → 1e-8
+                               # Issue: acceleration = (qvel - prev_qvel) / dt creates huge values
+                               # With dt=0.02, division amplifies by 50x, then squaring makes it enormous
+                               # Reduced to 1e-8 to get ~800 penalty instead of 80k
   action_rate: 0.001           # Keep same
 
   # === Energy penalties (REDUCED from Phase 1B) ===
