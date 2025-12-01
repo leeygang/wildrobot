@@ -223,10 +223,15 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "contact/left_meets_air_time_threshold": jp.zeros(()),
             "contact/right_meets_air_time_threshold": jp.zeros(()),
             "contact/both_meet_air_time_threshold": jp.zeros(()),
+            # Scheduling / gating diagnostics
+            "reward/tracking_gate_active": jp.zeros(()),
+            "reward/velocity_threshold_scale": jp.ones(()),
+            "global_step": jp.zeros(()),
         }
 
         info = {
             "step_count": 0,
+            "global_step": 0,
             "prev_action": jp.zeros(self.action_size),
             "prev_qvel": jp.zeros(self.mj_model.nv - 6),  # Track previous joint velocities (exclude floating base)
             "prev_x_position": jp.zeros(()),
@@ -245,6 +250,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         """Step the environment."""
         velocity_cmd = state.metrics.get("velocity_command", 0.0)
         step_count = state.info.get("step_count", 0)
+        global_step = state.info.get("global_step", 0)
         prev_action = state.info.get("prev_action", jp.zeros(self.action_size))
         prev_qvel = state.info.get("prev_qvel", None)
 
@@ -266,6 +272,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         data, _ = jax.lax.scan(step_fn, data, None, length=int(self.dt / self.sim_dt))
 
         new_step_count = step_count + 1
+        new_global_step = global_step + 1
 
         # Get current joint velocities (excluding floating base)
         current_qvel = self.get_actuator_joints_qvel(data.qvel)
@@ -276,7 +283,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         )
         reward, reward_components = self._get_reward(
             data, filtered_action, velocity_cmd, prev_action=prev_action,
-            prev_qvel=prev_qvel, step_count=new_step_count
+            prev_qvel=prev_qvel, step_count=new_step_count, global_step=new_global_step
         )
 
         # === AIR TIME REWARD (Phase 1B) ===
@@ -318,6 +325,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         state.metrics["velocity_command"] = velocity_cmd
         state.metrics["distance_walked"] = total_distance
         state.metrics["success"] = jp.where(done > 0.5, 0.0, 1.0)
+        state.metrics["global_step"] = jp.array(new_global_step)
 
         # === REWARD COMPONENT METRICS ===
         state.metrics["reward/total"] = reward
@@ -386,6 +394,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
         # Update state info for next step
         state.info["step_count"] = new_step_count
+        state.info["global_step"] = new_global_step
         state.info["prev_action"] = filtered_action
         state.info["prev_qvel"] = current_qvel  # Save current velocity for next step's acceleration calculation
         state.info["prev_x_position"] = current_x_position
@@ -461,6 +470,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         prev_action: jax.Array = None,
         prev_qvel: jax.Array = None,
         step_count: int = 0,
+        global_step: int = 0,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Calculate reward using modular reward system.
 
@@ -571,12 +581,36 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         # At 0.7 m/s: penalty = 0.0 (no penalty for fast movement)
         velocity_threshold = self._reward_weights.get("velocity_threshold", 0.3)
         velocity_shortfall = jp.maximum(0.0, velocity_threshold - linvel[0])
+        # Velocity threshold penalty scheduling
         velocity_threshold_penalty = -velocity_shortfall
+        decay_start = self._reward_weights.get("velocity_threshold_penalty_decay_start", None)
+        if decay_start is not None:
+            decay_steps = float(self._reward_weights.get("velocity_threshold_penalty_decay_steps", 1.0))
+            min_scale = float(self._reward_weights.get("velocity_threshold_penalty_min_scale", 0.0))
+            progress = jp.maximum(0.0, (global_step - decay_start) / decay_steps)
+            progress = jp.minimum(progress, 1.0)
+            scale = 1.0 - progress * (1.0 - min_scale)
+            velocity_threshold_penalty = velocity_threshold_penalty * scale
+        else:
+            scale = 1.0
 
         # Yaw velocity tracking
         yaw_vel_error = jp.abs(angvel[2])
         tracking_exp_yaw = jp.exp(-yaw_vel_error / tracking_sigma)
         tracking_lin_yaw = jp.exp(-tracking_steepness * jp.square(yaw_vel_error))
+
+        # Optional gating: reduce tracking rewards until minimal forward velocity achieved.
+        # Config keys:
+        #   tracking_gate_velocity: forward velocity threshold before full tracking reward applies
+        #   tracking_gate_scale: multiplier applied to tracking rewards when below threshold
+        tracking_gate_velocity = self._reward_weights.get("tracking_gate_velocity", None)
+        tracking_gate_scale = self._reward_weights.get("tracking_gate_scale", 1.0)
+        if tracking_gate_velocity is not None:
+            gate = jp.where(linvel[0] < tracking_gate_velocity, tracking_gate_scale, 1.0)
+            tracking_exp_xy = tracking_exp_xy * gate
+            tracking_lin_xy = tracking_lin_xy * gate
+
+        tracking_gate_active = jp.where(tracking_gate_velocity is not None, jp.where(linvel[0] < tracking_gate_velocity, 1.0, 0.0), 0.0)
 
         return {
             "tracking_exp_xy": tracking_exp_xy,
@@ -585,6 +619,8 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "tracking_lin_yaw": tracking_lin_yaw,
             "forward_velocity_bonus": forward_velocity_bonus,
             "velocity_threshold_penalty": velocity_threshold_penalty,
+            "tracking_gate_active": tracking_gate_active,
+            "velocity_threshold_scale": jp.array(scale),
         }
 
     def _compute_stability_reward(

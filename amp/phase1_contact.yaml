@@ -83,8 +83,12 @@ reward_weights:
   #   At 0.034 m/s: penalty = 25.0 × 0.116 = -2.9 (was -13.3, reward now positive!)
   #   At 0.15 m/s:  penalty = 0.0 (achievable threshold!)
   #   At 0.7 m/s:   penalty = 0.0 (no penalty)
-  velocity_threshold: 0.15  # REDUCED: Was 0.3 → 0.15 (achievable from 0.1 start)
-  velocity_threshold_penalty: 25.0  # REDUCED: Was 50.0 → 25.0 (half as harsh)
+  velocity_threshold: 0.12  # Further gentler threshold (was 0.15) to reduce early punishment
+  velocity_threshold_penalty: 10.0  # Further reduced (was 25.0) to avoid trapping in low-velocity basin
+  # Decay schedule: start reducing penalty after sustained locomotion phase
+  velocity_threshold_penalty_decay_start: 200000   # global steps when decay begins
+  velocity_threshold_penalty_decay_steps: 300000   # linear decay duration
+  velocity_threshold_penalty_min_scale: 0.0        # final scale (0 disables penalty)
 
   # Combined Effect (Option 3 v2 - GENTLER):
   #   Standing (0.0 m/s):  reward +4.4 (was -12.9, now positive but small)
@@ -96,8 +100,8 @@ reward_weights:
   # === Velocity tracking - REDUCED to baseline levels ===
   # Issue 2025-11-30: Robot falling immediately with high tracking rewards
   # Reduced from 100/50 back to baseline 50/15 to allow learning balance first
-  tracking_exp_xy: 50.0      # REDUCED: Was 100.0 → 50.0 (back to baseline)
-  tracking_lin_xy: 15.0      # REDUCED: Was 50.0 → 15.0 (back to baseline)
+  tracking_exp_xy: 25.0      # FURTHER REDUCED: Limit passive reward when far from target
+  tracking_lin_xy: 12.0      # Slight reduction to maintain gradient without dominance
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
@@ -113,7 +117,7 @@ reward_weights:
   #   - At 0.01 m/s: bonus = 0.5 (tiny)
   #   - At 0.7 m/s:  bonus = 35.0 (huge!)
   #   - Gradient: 70x difference (was only 7x with weight=10.0)
-  forward_velocity_bonus: 50.0  # INCREASED: Was 10.0 → 50.0 (5x stronger!)
+  forward_velocity_bonus: 60.0  # BOOSTED: Strengthen incentive for real forward progress
 
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
@@ -147,7 +151,9 @@ reward_weights:
   foot_air_time: 0.0         # DISABLED - was 5.0
 
   # === Existential penalty ===
-  existential: 1.0
+  existential: 0.5          # Reduced to prevent overshadowing early forward reward shaping
+  tracking_gate_velocity: 0.20   # New: gate tracking rewards until minimal forward speed achieved
+  tracking_gate_scale: 0.20      # New: scale tracking rewards while gated
 
 training:
   num_timesteps: 20000000

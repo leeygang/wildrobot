@@ -78,6 +78,9 @@ def create_test_config(forward_velocity_bonus: float = 50.0) -> config_dict.Conf
     config.reward_weights.foot_sliding = 0.0
     config.reward_weights.foot_air_time = 0.0
     config.reward_weights.existential = 1.0
+    # Optional gating parameters for diagnostics
+    config.reward_weights.tracking_gate_velocity = 0.20
+    config.reward_weights.tracking_gate_scale = 0.20
 
     return config
 
@@ -186,6 +189,8 @@ class TestJAXPytreeContracts:
 
         # Parameters that are NOT reward components (skip these)
         parameters = {"tracking_sigma", "tracking_steepness", "velocity_threshold"}
+        # Add gating parameters (diagnostic only, not reward components)
+        parameters.update({"tracking_gate_velocity", "tracking_gate_scale"})
 
         # Check each component is initialized in metrics
         for component_name in reward_weights.keys():
@@ -368,6 +373,23 @@ class TestRewardComponents:
 
         print(f"✅ PASS: bonus logic correct (vel={forward_vel:.3f}, bonus={bonus:.3f})")
 
+    def test_gating_diagnostics_present(self, env):
+        """Test that gating diagnostic metrics appear when gating configured."""
+        rng = jax.random.PRNGKey(0)
+        state = env.reset(rng)
+
+        # Metrics should include diagnostic placeholders
+        assert "reward/tracking_gate_active" in state.metrics, "tracking_gate_active metric missing in reset()"
+        assert "reward/velocity_threshold_scale" in state.metrics, "velocity_threshold_scale metric missing in reset()"
+
+        # Take a step and verify presence maintained
+        action = jp.zeros(env.action_size)
+        state_step = env.step(state, action)
+        assert "reward/tracking_gate_active" in state_step.metrics
+        assert "reward/velocity_threshold_scale" in state_step.metrics
+
+        print("✅ PASS: gating diagnostics present in reset() and step()")
+
 
 def run_tests():
     """Run tests without pytest (for direct execution)."""
@@ -399,6 +421,7 @@ def run_tests():
         ("Multiple steps maintain structure", lambda: basic_tests.test_multiple_steps_maintain_structure(env)),
         ("Existential penalty applied", lambda: reward_tests.test_existential_penalty_applied(env)),
         ("forward_velocity_bonus logic", lambda: reward_tests.test_forward_velocity_bonus_positive_for_forward_motion(env)),
+        ("Gating diagnostics present", lambda: reward_tests.test_gating_diagnostics_present(env)),
     ]
 
     passed = 0

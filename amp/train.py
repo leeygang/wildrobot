@@ -277,6 +277,15 @@ def generate_and_log_metrics(
     metrics_entry["rewards_weighted"]["total"] = total_rewards_weighted
     metrics_entry["penalties_weighted"]["total"] = total_penalties_weighted
 
+    # Optional gating diagnostic components (treated as rewards with weight 0)
+    # Extract per-step values if present. These are diagnostic only and do not contribute to reward.
+    gate_active_rate = 0.0
+    velocity_threshold_scale_val = 1.0
+    if "eval/episode_reward/tracking_gate_active" in metrics:
+        gate_active_rate = metrics["eval/episode_reward/tracking_gate_active"] / max(eval_length, 1.0)
+    if "eval/episode_reward/velocity_threshold_scale" in metrics:
+        velocity_threshold_scale_val = metrics["eval/episode_reward/velocity_threshold_scale"] / max(eval_length, 1.0)
+
     # Now populate summary with clean, deduplicated topline metrics
     reward_per_step = float(eval_reward / max(eval_length, 1.0))
     metrics_entry["summary"] = {
@@ -288,6 +297,9 @@ def generate_and_log_metrics(
         "forward_velocity": float(forward_vel),
         "episode_length": float(eval_length),
         "sps": float(sps),
+        # Diagnostics (gating + scheduling)
+        "tracking_gate_active_rate": float(gate_active_rate),
+        "velocity_threshold_scale": float(velocity_threshold_scale_val),
     }
 
     # Add non-duplicate metrics to other bucket
@@ -323,7 +335,16 @@ def generate_and_log_metrics(
 
             # Training efficiency
             "topline/sps": sps,
+            # Diagnostics (gating + scheduling)
+            "topline/tracking_gate_active_rate": gate_active_rate,
+            "topline/velocity_threshold_scale": velocity_threshold_scale_val,
         }
+
+        # Static config gating parameters (log if present)
+        if cfg["reward_weights"].get("tracking_gate_velocity") is not None:
+            topline_metrics["topline/tracking_gate_velocity"] = cfg["reward_weights"].get("tracking_gate_velocity")
+        if cfg["reward_weights"].get("tracking_gate_scale") is not None:
+            topline_metrics["topline/tracking_gate_scale"] = cfg["reward_weights"].get("tracking_gate_scale")
 
         wandb.log(topline_metrics)
 

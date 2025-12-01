@@ -18,10 +18,51 @@ Examples:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+
+def kill_local_training() -> bool:
+    """Kill the training process on the local machine.
+    
+    Returns:
+        True if kill command was successful, False otherwise
+    """
+    print(f"\n🔪 FORCE STOP: Killing local training process...")
+    
+    # Command to kill training.py process (matches both "uv run train.py" and "python train.py")
+    kill_cmd = ["pkill", "-f", "train.py.*--config"]
+    
+    try:
+        result = subprocess.run(
+            kill_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            print(f"   ✅ Training process killed successfully")
+            return True
+        elif result.returncode == 1:
+            # pkill returns 1 if no processes matched
+            print(f"   ⚠️  No training process found (may have already stopped)")
+            return True
+        else:
+            print(f"   ❌ Kill command failed (exit code {result.returncode})")
+            if result.stderr:
+                print(f"   Error: {result.stderr.strip()}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"   ❌ Kill command timed out after 5 seconds")
+        return False
+    except Exception as e:
+        print(f"   ❌ Error executing kill command: {e}")
+        return False
 
 
 def monitor_training(log_dir: Path) -> dict:
@@ -89,6 +130,15 @@ def monitor_training(log_dir: Path) -> dict:
     print(f"  Velocity:     {first['summary']['forward_velocity']:>8.3f} → {latest['summary']['forward_velocity']:>8.3f} m/s ({vel_change:>+7.3f})")
     print(f"  Success rate: {first['summary']['success_rate']:>7.1f}% → {latest['summary']['success_rate']:>7.1f}% ({success_change:>+6.1f}%)")
     print(f"  Episode len:  {first['summary']['episode_length']:>8.1f} → {latest['summary']['episode_length']:>8.1f} steps")
+    # Gating diagnostics (if present)
+    gate_first = first['summary'].get('tracking_gate_active_rate')
+    gate_latest = latest['summary'].get('tracking_gate_active_rate')
+    scale_first = first['summary'].get('velocity_threshold_scale')
+    scale_latest = latest['summary'].get('velocity_threshold_scale')
+    if gate_latest is not None:
+        print(f"  Gate active%: {gate_first:>8.2%} → {gate_latest:>8.2%}")
+    if scale_latest is not None:
+        print(f"  VelThreshScale:{scale_first:>8.2f} → {scale_latest:>8.2f}")
 
     # Current metrics
     print(f"\n🎯 CURRENT STATE:")
@@ -96,6 +146,10 @@ def monitor_training(log_dir: Path) -> dict:
     print(f"  Velocity:     {latest['summary']['forward_velocity']:>8.3f} m/s")
     print(f"  Success:      {latest['summary']['success_rate']:>7.1f}%")
     print(f"  Episode len:  {latest['summary']['episode_length']:>8.1f} steps")
+    if gate_latest is not None:
+        print(f"  Gate active%: {gate_latest:>8.2%}")
+    if scale_latest is not None:
+        print(f"  VelThreshScale:{scale_latest:>8.2f}")
 
     # Top penalties and rewards
     print(f"\n🔴 TOP PENALTIES:")
@@ -175,6 +229,20 @@ def monitor_training(log_dir: Path) -> dict:
     if latest['summary']['reward_per_step'] > 0:
         good_signs.append(f"✅ Positive reward ({latest['summary']['reward_per_step']:.2f})")
 
+    # Gating health: if gate still heavily active late in training, warn
+    if gate_latest is not None and progress_pct > 25.0:
+        if gate_latest > 0.50:
+            warnings.append(f"⚠️  Gate active {gate_latest:.0%} (forward velocity below threshold often)")
+        elif gate_latest < 0.10:
+            good_signs.append(f"✅ Gate rarely active ({gate_latest:.0%})")
+
+    # Velocity threshold decay scale: if still high late training, warn
+    if scale_latest is not None and progress_pct > 50.0:
+        if scale_latest > 0.50:
+            warnings.append(f"⚠️  Velocity threshold penalty not decayed yet (scale={scale_latest:.2f})")
+        elif scale_latest < 0.20:
+            good_signs.append(f"✅ Velocity threshold penalty mostly decayed (scale={scale_latest:.2f})")
+
     # Print results
     if issues:
         for issue in issues:
@@ -236,6 +304,9 @@ Examples:
 
   # Custom check interval (every 15 minutes)
   python monitor_training.py training_logs/phase1_contact_flat_20251130-161234 --watch --interval 15
+
+  # Auto-kill training on critical issues (runs locally)
+  python monitor_training.py training_logs/phase1_contact_flat_20251130-161234 --watch --force_stop
         """
     )
     parser.add_argument("log_dir", type=str, help="Path to training log directory")
@@ -248,7 +319,12 @@ Examples:
         "--interval",
         type=int,
         default=15,
-        help="Check interval in minutes (default: 30)",
+        help="Check interval in minutes (default: 15)",
+    )
+    parser.add_argument(
+        "--force_stop",
+        action="store_true",
+        help="Automatically kill local training process when critical issues detected",
     )
 
     args = parser.parse_args()
@@ -289,8 +365,25 @@ Examples:
 
                 if result["status"] == "critical":
                     print(f"\n🚨 CRITICAL ISSUES DETECTED!")
-                    print(f"   Stopping monitor. Please review the training.")
-                    sys.exit(1)
+                    
+                    # Force stop if enabled
+                    if args.force_stop:
+                        print(f"   --force_stop enabled: Attempting to kill training...")
+                        success = kill_local_training()
+                        
+                        if success:
+                            print(f"\n   ✅ Training stopped successfully")
+                            print(f"   Stopping monitor.")
+                            sys.exit(1)
+                        else:
+                            print(f"\n   ❌ Failed to stop training automatically")
+                            print(f"   Please manually run: pkill -f train.py")
+                            print(f"   Stopping monitor anyway.")
+                            sys.exit(1)
+                    else:
+                        print(f"   Stopping monitor. Please review the training.")
+                        print(f"   Hint: Use --force_stop to automatically kill training on critical issues")
+                        sys.exit(1)
 
                 # Wait for next check
                 print(f"\n⏳ Next check in {args.interval} minutes...")
