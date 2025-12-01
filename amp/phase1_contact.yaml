@@ -64,27 +64,34 @@ reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
-  # === OPTION 3 (HYBRID FIX) - NEW 2025-12-01 ===
+  # === OPTION 3 (HYBRID FIX) - UPDATED 2025-12-01 Phase 1G-v2 ===
   # CRITICAL: Fix exp(-error²) being too forgiving (61% reward for 100% error!)
+  #
+  # Phase 1G FAILED: Original params too harsh (penalty -17.61, reward -9.09)
+  # Robot trapped in punishment zone, couldn't escape to higher velocities
   #
   # FIX #1: Stricter tracking formula with steepness factor
   #   OLD: exp(-error²) gives 61% reward for 100% error
   #   NEW: exp(-3 × error²) gives 14% reward for 100% error
   tracking_steepness: 3.0  # Multiply error² by this before exp()
 
-  # FIX #2: Velocity threshold penalty - punish moving too slowly
-  #   If velocity < threshold: penalty = -50.0 × (threshold - velocity)
-  #   At 0.0 m/s: penalty = -15.0 (HUGE!)
-  #   At 0.3 m/s: penalty = 0.0 (threshold)
-  #   At 0.7 m/s: penalty = 0.0 (no penalty)
-  velocity_threshold: 0.3  # Velocity below this gets penalized (m/s)
-  velocity_threshold_penalty: 50.0  # Weight for velocity threshold penalty
+  # FIX #2: Velocity threshold penalty - GENTLER VERSION (Phase 1G-v2)
+  #   Phase 1G: threshold=0.3, weight=50.0 → penalty -17.61, FAILED!
+  #   Phase 1G-v2: threshold=0.15, weight=25.0 → achievable, gentler
+  #
+  #   At 0.0 m/s:   penalty = 25.0 × 0.15 = -3.75 (was -15.0)
+  #   At 0.034 m/s: penalty = 25.0 × 0.116 = -2.9 (was -13.3, reward now positive!)
+  #   At 0.15 m/s:  penalty = 0.0 (achievable threshold!)
+  #   At 0.7 m/s:   penalty = 0.0 (no penalty)
+  velocity_threshold: 0.15  # REDUCED: Was 0.3 → 0.15 (achievable from 0.1 start)
+  velocity_threshold_penalty: 25.0  # REDUCED: Was 50.0 → 25.0 (half as harsh)
 
-  # Combined Effect (Option 3):
-  #   Standing (0.0 m/s): reward -12.9 (PUNISHMENT!)
-  #   Slow (0.2 m/s):     reward +1.5 (barely positive)
-  #   Walking (0.7 m/s):  reward +101.4 (GREAT!)
-  # NEW GRADIENT: 114x difference vs 10.9x in Phase 1F!
+  # Combined Effect (Option 3 v2 - GENTLER):
+  #   Standing (0.0 m/s):  reward +4.4 (was -12.9, now positive but small)
+  #   Slow (0.034 m/s):    reward +9.9 (was -9.1, NOW POSITIVE!)
+  #   Medium (0.15 m/s):   reward +18.5 (escape achieved!)
+  #   Walking (0.7 m/s):   reward +101.4 (GREAT!)
+  # NEW GRADIENT: 23x (0.0→0.7), still strong but robot can explore!
 
   # === Velocity tracking - REDUCED to baseline levels ===
   # Issue 2025-11-30: Robot falling immediately with high tracking rewards
