@@ -137,15 +137,22 @@ if [ ${#VALID_FILES[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Transfer all valid files in a single scp command (ONE password prompt!)
+# Transfer all valid files preserving directory structure
 echo ""
 echo "Transferring ${#VALID_FILES[@]} file(s) to $REMOTE_HOST..."
 echo "(You will be prompted for password once)"
 echo ""
 
-# Build scp command with all files
-# Use -r flag to handle both files and directories
-scp -r $SCP_PORT_FLAG "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+# Use rsync with --relative to preserve directory structure
+# --relative preserves the path from current directory
+# e.g., ./tests/test.py → remote:~/projects/wildrobot/amp/tests/test.py
+if [ "$USE_PUBLIC" = true ] && [ -n "$LINUX_PUBLIC_PORT" ]; then
+    # rsync with custom SSH port
+    rsync -avz --relative -e "ssh -p $LINUX_PUBLIC_PORT" "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+else
+    # rsync with default SSH port
+    rsync -avz --relative "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+fi
 
 # Check if scp was successful
 if [ $? -eq 0 ]; then
