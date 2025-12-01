@@ -27,14 +27,13 @@ env:
   max_height: 0.7
 
 # Metrics to track (explicit list - cleaner than filtering)
-# These are the reward components we want to log (no _std variants)
-# Note: "total" is excluded because we compute it ourselves from the components
 tracked_reward_components:
   - tracking_exp_xy
   - tracking_lin_xy
   - tracking_exp_yaw
   - tracking_lin_yaw
   - forward_velocity_bonus
+  - velocity_threshold_penalty
   - z_velocity
   - roll_pitch_velocity
   - roll_pitch_position
@@ -65,6 +64,28 @@ reward_weights:
   # Tracking sigma
   tracking_sigma: 0.25
 
+  # === OPTION 3 (HYBRID FIX) - NEW 2025-12-01 ===
+  # CRITICAL: Fix exp(-error²) being too forgiving (61% reward for 100% error!)
+  #
+  # FIX #1: Stricter tracking formula with steepness factor
+  #   OLD: exp(-error²) gives 61% reward for 100% error
+  #   NEW: exp(-3 × error²) gives 14% reward for 100% error
+  tracking_steepness: 3.0  # Multiply error² by this before exp()
+
+  # FIX #2: Velocity threshold penalty - punish moving too slowly
+  #   If velocity < threshold: penalty = -50.0 × (threshold - velocity)
+  #   At 0.0 m/s: penalty = -15.0 (HUGE!)
+  #   At 0.3 m/s: penalty = 0.0 (threshold)
+  #   At 0.7 m/s: penalty = 0.0 (no penalty)
+  velocity_threshold: 0.3  # Velocity below this gets penalized (m/s)
+  velocity_threshold_penalty: 50.0  # Weight for velocity threshold penalty
+
+  # Combined Effect (Option 3):
+  #   Standing (0.0 m/s): reward -12.9 (PUNISHMENT!)
+  #   Slow (0.2 m/s):     reward +1.5 (barely positive)
+  #   Walking (0.7 m/s):  reward +101.4 (GREAT!)
+  # NEW GRADIENT: 114x difference vs 10.9x in Phase 1F!
+
   # === Velocity tracking - REDUCED to baseline levels ===
   # Issue 2025-11-30: Robot falling immediately with high tracking rewards
   # Reduced from 100/50 back to baseline 50/15 to allow learning balance first
@@ -73,14 +94,19 @@ reward_weights:
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
-  # === Forward Velocity Bonus - NEW 2025-12-01 ===
+  # === Forward Velocity Bonus - UPDATED 2025-12-01 ===
   # CRITICAL FIX: Tracking rewards were too forgiving (exp(-error^2) gives 42% reward even when moving backward!)
   # Robot discovered local minimum: get tracking reward WITHOUT moving forward
   # Solution: Add direct bonus that ONLY rewards actual forward motion
   #   - backward/stationary: 0.0 bonus (max clips negative to 0)
-  #   - forward at 0.7 m/s: 0.7 × 10.0 = 7.0 bonus
-  # This makes forward motion clearly better than standing still
-  forward_velocity_bonus: 10.0  # Bonus = velocity (m/s) × weight, only if velocity > 0
+  #   - forward at 0.7 m/s: 0.7 × 50.0 = 35.0 bonus
+  #
+  # Phase 1E (10.0): Robot peaked at 0.55 m/s then degraded to 0.01 m/s - bonus too weak
+  # Phase 1F (50.0): 5x stronger to match tracking magnitude (50+15=65 total)
+  #   - At 0.01 m/s: bonus = 0.5 (tiny)
+  #   - At 0.7 m/s:  bonus = 35.0 (huge!)
+  #   - Gradient: 70x difference (was only 7x with weight=10.0)
+  forward_velocity_bonus: 50.0  # INCREASED: Was 10.0 → 50.0 (5x stronger!)
 
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing

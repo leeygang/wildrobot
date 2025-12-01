@@ -25,51 +25,70 @@ from ml_collections import config_dict
 from walk_env import WildRobotWalkEnv
 
 
+def create_test_config(forward_velocity_bonus: float = 50.0) -> config_dict.ConfigDict:
+    """Create test configuration with all reward weights.
+    
+    Centralized config builder to avoid duplicate code across test classes.
+    
+    Args:
+        forward_velocity_bonus: Weight for forward velocity bonus (default 50.0)
+        
+    Returns:
+        ConfigDict with all environment and reward settings
+    """
+    config = config_dict.ConfigDict()
+    
+    # Environment settings
+    config.terrain = "flat"
+    config.ctrl_dt = 0.02
+    config.sim_dt = 0.002
+    config.velocity_command_mode = "range"
+    config.min_velocity = 0.5
+    config.max_velocity = 1.0
+    config.use_action_filter = True
+    config.action_filter_alpha = 0.7
+    config.use_phase_signal = True
+    config.phase_period = 40
+    config.num_phase_clocks = 2
+    config.min_height = 0.2
+    config.max_height = 0.7
+
+    # Reward weights (Option 3 parameters included)
+    config.reward_weights = config_dict.ConfigDict()
+    config.reward_weights.tracking_sigma = 0.25
+    config.reward_weights.tracking_steepness = 3.0  # OPTION 3 FIX #1
+    config.reward_weights.velocity_threshold = 0.3  # OPTION 3 FIX #2
+    config.reward_weights.tracking_exp_xy = 50.0
+    config.reward_weights.tracking_lin_xy = 15.0
+    config.reward_weights.tracking_exp_yaw = 5.0
+    config.reward_weights.tracking_lin_yaw = 1.5
+    config.reward_weights.forward_velocity_bonus = forward_velocity_bonus
+    config.reward_weights.velocity_threshold_penalty = 50.0  # OPTION 3 FIX #2
+    config.reward_weights.z_velocity = 0.1
+    config.reward_weights.roll_pitch_velocity = 0.01
+    config.reward_weights.roll_pitch_position = 0.05
+    config.reward_weights.nominal_joint_position = 0.0
+    config.reward_weights.joint_position_limit = 2.5
+    config.reward_weights.joint_velocity = 0.0
+    config.reward_weights.joint_acceleration = 1e-8
+    config.reward_weights.action_rate = 0.001
+    config.reward_weights.joint_torque = 7e-8
+    config.reward_weights.mechanical_power = 7e-6
+    config.reward_weights.foot_contact = 0.0
+    config.reward_weights.foot_sliding = 0.0
+    config.reward_weights.foot_air_time = 0.0
+    config.reward_weights.existential = 1.0
+    
+    return config
+
+
 class TestJAXPytreeContracts:
     """Test JAX pytree structure consistency (critical for jax.lax.scan)."""
 
     @pytest.fixture
     def env_config(self):
         """Create test config."""
-        config = config_dict.ConfigDict()
-        config.terrain = "flat"
-        config.ctrl_dt = 0.02
-        config.sim_dt = 0.002
-        config.velocity_command_mode = "range"
-        config.min_velocity = 0.5
-        config.max_velocity = 1.0
-        config.use_action_filter = True
-        config.action_filter_alpha = 0.7
-        config.use_phase_signal = True
-        config.phase_period = 40
-        config.num_phase_clocks = 2
-        config.min_height = 0.2
-        config.max_height = 0.7
-
-        # Minimal reward weights
-        config.reward_weights = config_dict.ConfigDict()
-        config.reward_weights.tracking_sigma = 0.25
-        config.reward_weights.tracking_exp_xy = 50.0
-        config.reward_weights.tracking_lin_xy = 15.0
-        config.reward_weights.tracking_exp_yaw = 5.0
-        config.reward_weights.tracking_lin_yaw = 1.5
-        config.reward_weights.forward_velocity_bonus = 10.0
-        config.reward_weights.z_velocity = 0.1
-        config.reward_weights.roll_pitch_velocity = 0.01
-        config.reward_weights.roll_pitch_position = 0.05
-        config.reward_weights.nominal_joint_position = 0.0
-        config.reward_weights.joint_position_limit = 2.5
-        config.reward_weights.joint_velocity = 0.0
-        config.reward_weights.joint_acceleration = 1e-8
-        config.reward_weights.action_rate = 0.001
-        config.reward_weights.joint_torque = 7e-8
-        config.reward_weights.mechanical_power = 7e-6
-        config.reward_weights.foot_contact = 0.0
-        config.reward_weights.foot_sliding = 0.0
-        config.reward_weights.foot_air_time = 0.0
-        config.reward_weights.existential = 1.0
-
-        return config
+        return create_test_config(forward_velocity_bonus=50.0)
 
     @pytest.fixture
     def env(self, env_config):
@@ -165,10 +184,13 @@ class TestJAXPytreeContracts:
         # Get reward weights from config
         reward_weights = env._reward_weights
 
+        # Parameters that are NOT reward components (skip these)
+        parameters = {"tracking_sigma", "tracking_steepness", "velocity_threshold"}
+
         # Check each component is initialized in metrics
         for component_name in reward_weights.keys():
-            if component_name == "tracking_sigma":
-                continue  # Not a reward component, just a parameter
+            if component_name in parameters:
+                continue  # Skip parameters (not reward components)
 
             metric_key = f"reward/{component_name}"
             assert metric_key in state.metrics, (
@@ -176,7 +198,8 @@ class TestJAXPytreeContracts:
                 f"This will cause JAX scan error when step() adds it."
             )
 
-        print(f"✅ PASS: all {len(reward_weights)} reward components initialized")
+        num_components = len([k for k in reward_weights.keys() if k not in parameters])
+        print(f"✅ PASS: all {num_components} reward components initialized")
 
     def test_forward_velocity_bonus_in_metrics(self, env):
         """Specifically test forward_velocity_bonus is initialized.
@@ -204,45 +227,8 @@ class TestEnvironmentBasics:
 
     @pytest.fixture
     def env_config(self):
-        """Create test config (reuse from above)."""
-        config = config_dict.ConfigDict()
-        config.terrain = "flat"
-        config.ctrl_dt = 0.02
-        config.sim_dt = 0.002
-        config.velocity_command_mode = "range"
-        config.min_velocity = 0.5
-        config.max_velocity = 1.0
-        config.use_action_filter = True
-        config.action_filter_alpha = 0.7
-        config.use_phase_signal = True
-        config.phase_period = 40
-        config.num_phase_clocks = 2
-        config.min_height = 0.2
-        config.max_height = 0.7
-
-        config.reward_weights = config_dict.ConfigDict()
-        config.reward_weights.tracking_sigma = 0.25
-        config.reward_weights.tracking_exp_xy = 50.0
-        config.reward_weights.tracking_lin_xy = 15.0
-        config.reward_weights.tracking_exp_yaw = 5.0
-        config.reward_weights.tracking_lin_yaw = 1.5
-        config.reward_weights.forward_velocity_bonus = 10.0
-        config.reward_weights.z_velocity = 0.1
-        config.reward_weights.roll_pitch_velocity = 0.01
-        config.reward_weights.roll_pitch_position = 0.05
-        config.reward_weights.nominal_joint_position = 0.0
-        config.reward_weights.joint_position_limit = 2.5
-        config.reward_weights.joint_velocity = 0.0
-        config.reward_weights.joint_acceleration = 1e-8
-        config.reward_weights.action_rate = 0.001
-        config.reward_weights.joint_torque = 7e-8
-        config.reward_weights.mechanical_power = 7e-6
-        config.reward_weights.foot_contact = 0.0
-        config.reward_weights.foot_sliding = 0.0
-        config.reward_weights.foot_air_time = 0.0
-        config.reward_weights.existential = 1.0
-
-        return config
+        """Create test config (reuse centralized builder)."""
+        return create_test_config(forward_velocity_bonus=10.0)
 
     @pytest.fixture
     def env(self, env_config):
@@ -338,44 +324,8 @@ class TestRewardComponents:
 
     @pytest.fixture
     def env_config(self):
-        """Create test config."""
-        config = config_dict.ConfigDict()
-        config.terrain = "flat"
-        config.ctrl_dt = 0.02
-        config.sim_dt = 0.002
-        config.velocity_command_mode = "fixed"
-        config.target_velocity = 0.7
-        config.use_action_filter = True
-        config.action_filter_alpha = 0.7
-        config.use_phase_signal = True
-        config.phase_period = 40
-        config.num_phase_clocks = 2
-        config.min_height = 0.2
-        config.max_height = 0.7
-
-        config.reward_weights = config_dict.ConfigDict()
-        config.reward_weights.tracking_sigma = 0.25
-        config.reward_weights.tracking_exp_xy = 50.0
-        config.reward_weights.tracking_lin_xy = 15.0
-        config.reward_weights.tracking_exp_yaw = 5.0
-        config.reward_weights.tracking_lin_yaw = 1.5
-        config.reward_weights.forward_velocity_bonus = 10.0
-        config.reward_weights.z_velocity = 0.1
-        config.reward_weights.roll_pitch_velocity = 0.01
-        config.reward_weights.roll_pitch_position = 0.05
-        config.reward_weights.nominal_joint_position = 0.0
-        config.reward_weights.joint_position_limit = 2.5
-        config.reward_weights.joint_velocity = 0.0
-        config.reward_weights.joint_acceleration = 1e-8
-        config.reward_weights.action_rate = 0.001
-        config.reward_weights.joint_torque = 7e-8
-        config.reward_weights.mechanical_power = 7e-6
-        config.reward_weights.foot_contact = 0.0
-        config.reward_weights.foot_sliding = 0.0
-        config.reward_weights.foot_air_time = 0.0
-        config.reward_weights.existential = 1.0
-
-        return config
+        """Create test config (reuse centralized builder)."""
+        return create_test_config(forward_velocity_bonus=10.0)
 
     @pytest.fixture
     def env(self, env_config):
@@ -425,43 +375,8 @@ def run_tests():
     print("WILDROBOT AMP ENVIRONMENT CONTRACT TESTS")
     print("="*80 + "\n")
 
-    # Create config
-    config = config_dict.ConfigDict()
-    config.terrain = "flat"
-    config.ctrl_dt = 0.02
-    config.sim_dt = 0.002
-    config.velocity_command_mode = "range"
-    config.min_velocity = 0.5
-    config.max_velocity = 1.0
-    config.use_action_filter = True
-    config.action_filter_alpha = 0.7
-    config.use_phase_signal = True
-    config.phase_period = 40
-    config.num_phase_clocks = 2
-    config.min_height = 0.2
-    config.max_height = 0.7
-
-    config.reward_weights = config_dict.ConfigDict()
-    config.reward_weights.tracking_sigma = 0.25
-    config.reward_weights.tracking_exp_xy = 50.0
-    config.reward_weights.tracking_lin_xy = 15.0
-    config.reward_weights.tracking_exp_yaw = 5.0
-    config.reward_weights.tracking_lin_yaw = 1.5
-    config.reward_weights.forward_velocity_bonus = 10.0
-    config.reward_weights.z_velocity = 0.1
-    config.reward_weights.roll_pitch_velocity = 0.01
-    config.reward_weights.roll_pitch_position = 0.05
-    config.reward_weights.nominal_joint_position = 0.0
-    config.reward_weights.joint_position_limit = 2.5
-    config.reward_weights.joint_velocity = 0.0
-    config.reward_weights.joint_acceleration = 1e-8
-    config.reward_weights.action_rate = 0.001
-    config.reward_weights.joint_torque = 7e-8
-    config.reward_weights.mechanical_power = 7e-6
-    config.reward_weights.foot_contact = 0.0
-    config.reward_weights.foot_sliding = 0.0
-    config.reward_weights.foot_air_time = 0.0
-    config.reward_weights.existential = 1.0
+    # Create config using centralized builder
+    config = create_test_config(forward_velocity_bonus=10.0)
 
     # Create environment
     print("Creating environment...")

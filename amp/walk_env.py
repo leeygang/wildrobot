@@ -192,6 +192,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "reward/tracking_exp_yaw": jp.zeros(()),
             "reward/tracking_lin_yaw": jp.zeros(()),
             "reward/forward_velocity_bonus": jp.zeros(()),
+            "reward/velocity_threshold_penalty": jp.zeros(()),  # OPTION 3 FIX #2
             "reward/z_velocity": jp.zeros(()),
             "reward/roll_pitch_velocity": jp.zeros(()),
             "reward/roll_pitch_position": jp.zeros(()),
@@ -529,24 +530,53 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
     def _compute_velocity_tracking_reward(
         self, linvel: jax.Array, angvel: jax.Array, velocity_cmd: jax.Array
     ) -> Dict[str, float]:
-        """Compute velocity tracking rewards."""
+        """Compute velocity tracking rewards.
+
+        OPTION 3 (HYBRID FIX):
+        1. Stricter tracking formula: exp(-k × error²) instead of exp(-error²)
+        2. Velocity threshold penalty: Punish moving too slowly
+
+        This fixes the local minimum problem where robot prefers standing (reward +9.3)
+        over walking (reward +101.4) because standing is "easier".
+
+        With Option 3:
+        - Standing (0.0 m/s): reward -12.9 (PUNISHMENT!)
+        - Walking (0.7 m/s): reward +101.4 (REWARD!)
+        - Clear gradient: Must walk to avoid punishment!
+        """
         # XY velocity tracking
         xy_vel_error = jp.sqrt(
             jp.square(linvel[0] - velocity_cmd) + jp.square(linvel[1])
         )
         tracking_sigma = self._reward_weights.get("tracking_sigma", 0.25)
+
+        # OPTION 3 FIX #1: Stricter tracking formula with steepness factor
+        # OLD: exp(-error²) gives 61% reward for 100% error (too forgiving!)
+        # NEW: exp(-k × error²) gives 14% reward for 100% error (strict!)
+        tracking_steepness = self._reward_weights.get("tracking_steepness", 1.0)
         tracking_exp_xy = jp.exp(-xy_vel_error / tracking_sigma)
-        tracking_lin_xy = jp.exp(-jp.square(xy_vel_error))
+        tracking_lin_xy = jp.exp(-tracking_steepness * jp.square(xy_vel_error))
 
         # Forward velocity bonus - ONLY reward actual forward motion
         # This prevents robot from getting tracking reward while moving backward
         # Robot must move forward to get this bonus (max(0, ...) clips negative velocities to 0)
         forward_velocity_bonus = jp.maximum(0.0, linvel[0])
 
+        # OPTION 3 FIX #2: Velocity threshold penalty - punish moving too slowly
+        # If robot moves slower than threshold, apply explicit penalty
+        # This eliminates the local minimum of "standing still"
+        #
+        # At 0.0 m/s: penalty = -50.0 × 0.3 = -15.0 (HUGE punishment!)
+        # At 0.3 m/s: penalty = 0.0 (threshold)
+        # At 0.7 m/s: penalty = 0.0 (no penalty for fast movement)
+        velocity_threshold = self._reward_weights.get("velocity_threshold", 0.3)
+        velocity_shortfall = jp.maximum(0.0, velocity_threshold - linvel[0])
+        velocity_threshold_penalty = -velocity_shortfall
+
         # Yaw velocity tracking
         yaw_vel_error = jp.abs(angvel[2])
         tracking_exp_yaw = jp.exp(-yaw_vel_error / tracking_sigma)
-        tracking_lin_yaw = jp.exp(-jp.square(yaw_vel_error))
+        tracking_lin_yaw = jp.exp(-tracking_steepness * jp.square(yaw_vel_error))
 
         return {
             "tracking_exp_xy": tracking_exp_xy,
@@ -554,6 +584,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "tracking_exp_yaw": tracking_exp_yaw,
             "tracking_lin_yaw": tracking_lin_yaw,
             "forward_velocity_bonus": forward_velocity_bonus,
+            "velocity_threshold_penalty": velocity_threshold_penalty,
         }
 
     def _compute_stability_reward(
