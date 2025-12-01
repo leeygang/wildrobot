@@ -232,7 +232,7 @@ Examples:
     parser.add_argument(
         "--interval",
         type=int,
-        default=30,
+        default=15,
         help="Check interval in minutes (default: 30)",
     )
 
