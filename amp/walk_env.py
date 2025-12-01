@@ -537,6 +537,11 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         tracking_exp_xy = jp.exp(-xy_vel_error / tracking_sigma)
         tracking_lin_xy = jp.exp(-jp.square(xy_vel_error))
 
+        # Forward velocity bonus - ONLY reward actual forward motion
+        # This prevents robot from getting tracking reward while moving backward
+        # Robot must move forward to get this bonus (max(0, ...) clips negative velocities to 0)
+        forward_velocity_bonus = jp.maximum(0.0, linvel[0])
+
         # Yaw velocity tracking
         yaw_vel_error = jp.abs(angvel[2])
         tracking_exp_yaw = jp.exp(-yaw_vel_error / tracking_sigma)
@@ -547,6 +552,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "tracking_lin_xy": tracking_lin_xy,
             "tracking_exp_yaw": tracking_exp_yaw,
             "tracking_lin_yaw": tracking_lin_yaw,
+            "forward_velocity_bonus": forward_velocity_bonus,
         }
 
     def _compute_stability_reward(

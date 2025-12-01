@@ -34,6 +34,7 @@ tracked_reward_components:
   - tracking_lin_xy
   - tracking_exp_yaw
   - tracking_lin_yaw
+  - forward_velocity_bonus
   - z_velocity
   - roll_pitch_velocity
   - roll_pitch_position
@@ -72,6 +73,15 @@ reward_weights:
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
+  # === Forward Velocity Bonus - NEW 2025-12-01 ===
+  # CRITICAL FIX: Tracking rewards were too forgiving (exp(-error^2) gives 42% reward even when moving backward!)
+  # Robot discovered local minimum: get tracking reward WITHOUT moving forward
+  # Solution: Add direct bonus that ONLY rewards actual forward motion
+  #   - backward/stationary: 0.0 bonus (max clips negative to 0)
+  #   - forward at 0.7 m/s: 0.7 × 10.0 = 7.0 bonus
+  # This makes forward motion clearly better than standing still
+  forward_velocity_bonus: 10.0  # Bonus = velocity (m/s) × weight, only if velocity > 0
+
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
   # natural walking dynamics. Robot needs to lean/tilt for weight transfer!
@@ -90,12 +100,18 @@ reward_weights:
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards - Start conservative, focus on walking first ===
-  foot_contact: 10.0         # Reward for proper foot contact
-  foot_sliding: 2.0          # DRASTICALLY REDUCED: Was 12.0 → 2.0
-                             # Robot must learn to walk before learning perfect foot placement
-                             # Will add ~5 penalty instead of ~28, allowing exploration
-  foot_air_time: 5.0         # Reward for proper swing phase
+  # === Contact rewards - ALL DISABLED for Phase 1D ===
+  # 2025-11-30 Issue: Robot peaked at 9.83 reward / 0.568 m/s (step 131K)
+  #                   Then degraded to 2.17 reward / -0.096 m/s (step 2.36M)
+  # Root cause: foot_contact penalty (-1.14) creates barrier to walking
+  #             Robot found local minimum: "freeze = +2.17 reward (safe)"
+  #                                        "walk = +1-3 reward (risky)"
+  # Strategy: DISABLE ALL CONTACT PENALTIES, focus ONLY on velocity tracking
+  #           Let robot learn basic locomotion first
+  #           Add contact refinements in Phase 2
+  foot_contact: 0.0          # DISABLED - was 10.0
+  foot_sliding: 0.0          # DISABLED - was 2.0
+  foot_air_time: 0.0         # DISABLED - was 5.0
 
   # === Existential penalty ===
   existential: 1.0
@@ -116,7 +132,7 @@ quick_verify:
   num_envs: 128               # Fewer parallel envs (faster startup)
   num_eval_envs: 16
   use_wandb: false            # Skip logging for quick tests
-  render_videos: true         # TEST video rendering in quick verify!
+  render_videos: false         # TEST video rendering in quick verify!
   save_checkpoints: false     # Skip checkpointing
 
 ppo:
