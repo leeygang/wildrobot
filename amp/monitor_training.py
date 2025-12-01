@@ -126,6 +126,21 @@ def monitor_training(log_dir: Path) -> dict:
         else:
             print(f"  ⚠️  Zero bonus (not moving forward or standing still)")
 
+    # Special check for velocity_threshold_penalty (Phase 1G Option 3 fix)
+    vel_penalty = latest['penalties_weighted'].get('velocity_threshold_penalty', None)
+    if vel_penalty is not None:
+        print(f"\n🚨 VELOCITY THRESHOLD PENALTY (Phase 1G):")
+        print(f"  velocity_threshold_penalty   -{vel_penalty:>8.2f}")
+        if vel_penalty > 5.0:
+            print(f"  ⚠️  HIGH penalty - robot moving too slowly!")
+            print(f"     (Penalty > 5.0 means velocity < 0.2 m/s)")
+        elif vel_penalty > 0.1:
+            print(f"  ⚠️  Moderate penalty - robot below threshold")
+            print(f"     (Penalty active, velocity < 0.3 m/s)")
+        else:
+            print(f"  ✅ No penalty - robot moving fast enough!")
+            print(f"     (Velocity >= 0.3 m/s threshold)")
+
     # Health checks
     print(f"\n🔍 HEALTH CHECKS:")
     issues = []
