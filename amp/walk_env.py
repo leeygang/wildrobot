@@ -191,6 +191,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "reward/tracking_lin_xy": jp.zeros(()),
             "reward/tracking_exp_yaw": jp.zeros(()),
             "reward/tracking_lin_yaw": jp.zeros(()),
+            "reward/forward_velocity_bonus": jp.zeros(()),
             "reward/z_velocity": jp.zeros(()),
             "reward/roll_pitch_velocity": jp.zeros(()),
             "reward/roll_pitch_position": jp.zeros(()),
