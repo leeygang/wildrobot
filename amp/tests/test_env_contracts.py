@@ -27,17 +27,17 @@ from walk_env import WildRobotWalkEnv
 
 def create_test_config(forward_velocity_bonus: float = 50.0) -> config_dict.ConfigDict:
     """Create test configuration with all reward weights.
-    
+
     Centralized config builder to avoid duplicate code across test classes.
-    
+
     Args:
         forward_velocity_bonus: Weight for forward velocity bonus (default 50.0)
-        
+
     Returns:
         ConfigDict with all environment and reward settings
     """
     config = config_dict.ConfigDict()
-    
+
     # Environment settings
     config.terrain = "flat"
     config.ctrl_dt = 0.02
@@ -78,7 +78,7 @@ def create_test_config(forward_velocity_bonus: float = 50.0) -> config_dict.Conf
     config.reward_weights.foot_sliding = 0.0
     config.reward_weights.foot_air_time = 0.0
     config.reward_weights.existential = 1.0
-    
+
     return config
 
 

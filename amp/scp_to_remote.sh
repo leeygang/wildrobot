@@ -5,12 +5,17 @@
 
 # Parse flags
 USE_PUBLIC=false
+USE_AMP=false
 FILES=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --public)
             USE_PUBLIC=true
+            shift
+            ;;
+        --amp)
+            USE_AMP=true
             shift
             ;;
         *)
@@ -20,12 +25,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# If --amp flag is set, collect all .py and .yaml files (including subdirectories)
+if [ "$USE_AMP" = true ]; then
+    echo "🔍 Collecting all .py and .yaml files from amp/ and common/ (including subdirectories)..."
+    echo ""
+
+    # Directories to exclude from search (as regex pattern for grep)
+    EXCLUDE_PATTERN="\.venv|__pycache__|\.git|training_logs|checkpoints|wandb|\.pytest_cache|models"
+
+    # Collect files from amp/ directory (including subdirectories like tests/)
+    AMP_FILES=()
+    if [ -d "." ]; then
+        while IFS= read -r file; do
+            AMP_FILES+=("$file")
+        done < <(find . -type f \( -name "*.py" -o -name "*.yaml" \) | grep -vE "$EXCLUDE_PATTERN" | sort)
+    fi
+
+    # Collect files from common/ directory (including subdirectories)
+    COMMON_FILES=()
+    if [ -d "../common" ]; then
+        while IFS= read -r file; do
+            COMMON_FILES+=("$file")
+        done < <(find ../common -type f \( -name "*.py" -o -name "*.yaml" \) 2>/dev/null | grep -vE "$EXCLUDE_PATTERN" | sort)
+    fi
+
+    # Add collected files to FILES array
+    FILES=("${AMP_FILES[@]}" "${COMMON_FILES[@]}")
+
+    echo "Found ${#AMP_FILES[@]} files in amp/ (including subdirectories)"
+    echo "Found ${#COMMON_FILES[@]} files in common/ (including subdirectories)"
+    echo ""
+    echo "Excluded: .venv, __pycache__, .git, training_logs, checkpoints, wandb, .pytest_cache, models"
+    echo ""
+fi
+
 # Check if at least one file is provided
 if [ ${#FILES[@]} -eq 0 ]; then
-    echo "Usage: $0 [--public] <file1> [file2] [file3] ..."
+    echo "Usage: $0 [--public] [--amp] [file1] [file2] [file3] ..."
     echo ""
     echo "Options:"
     echo "  --public    Use public IP from \$LINUX_PUBLIC_IP and \$LINUX_PUBLIC_PORT"
+    echo "  --amp       Copy all .py and .yaml files from amp/ and common/ directories"
     echo ""
     echo "Examples:"
     echo "  $0 walk.py                              # Copy single file (local network)"
@@ -33,6 +73,8 @@ if [ ${#FILES[@]} -eq 0 ]; then
     echo "  $0 --public walk.py train.py            # Copy multiple files via public IP"
     echo "  $0 phase1_contact.yaml baseline.yaml   # Copy config files"
     echo "  $0 rewards/                             # Copy entire directory"
+    echo "  $0 --amp                                # Copy all .py and .yaml from amp/ and common/"
+    echo "  $0 --amp --public                       # Copy all .py and .yaml via public IP"
     exit 1
 fi
 
