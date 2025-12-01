@@ -143,17 +143,7 @@ echo "Transferring ${#VALID_FILES[@]} file(s) to $REMOTE_HOST..."
 echo "(You will be prompted for password once)"
 echo ""
 
-<<<<<<< HEAD
-# Use rsync with --relative to preserve directory structure
-# --relative preserves the path from current directory
-# e.g., ./tests/test.py → remote:~/projects/wildrobot/amp/tests/test.py
-if [ "$USE_PUBLIC" = true ] && [ -n "$LINUX_PUBLIC_PORT" ]; then
-    # rsync with custom SSH port
-    rsync -avz --relative -e "ssh -p $LINUX_PUBLIC_PORT" "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-else
-    # rsync with default SSH port
-    rsync -avz --relative "${VALID_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-=======
+
 # Separate amp/ files and common/ files
 AMP_ONLY_FILES=()
 COMMON_ONLY_FILES=()
@@ -176,7 +166,7 @@ if [ ${#AMP_ONLY_FILES[@]} -gt 0 ]; then
     else
         rsync -avz --relative "${AMP_ONLY_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
     fi
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ amp/ transfer failed!"
         exit 1
@@ -186,7 +176,7 @@ fi
 # Transfer common/ files to remote common/ (without --relative)
 if [ ${#COMMON_ONLY_FILES[@]} -gt 0 ]; then
     echo "Transferring ${#COMMON_ONLY_FILES[@]} common/ files..."
-    
+
     # Create remote common/ directory first
     if [ "$USE_PUBLIC" = true ] && [ -n "$LINUX_PUBLIC_PORT" ]; then
         ssh -p "$LINUX_PUBLIC_PORT" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p ~/projects/wildrobot/common"
@@ -195,12 +185,11 @@ if [ ${#COMMON_ONLY_FILES[@]} -gt 0 ]; then
         ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p ~/projects/wildrobot/common"
         rsync -avz "${COMMON_ONLY_FILES[@]}" "$REMOTE_USER@$REMOTE_HOST:~/projects/wildrobot/common/"
     fi
-    
+
     if [ $? -ne 0 ]; then
         echo "❌ common/ transfer failed!"
         exit 1
     fi
->>>>>>> 4f3fa04 ([amp] Fix scp_to_remote.sh --amp to preserve directory structure)
 fi
 
 # Check if scp was successful
