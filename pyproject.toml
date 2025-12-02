@@ -6,16 +6,13 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "brax>=0.13.0",
-    # JAX core dependencies (use realistic version numbers)
-    "jax>=0.5.0",
-    "jaxlib>=0.5.0",
+    "jax>=0.8.1; sys_platform == 'darwin'",
+    "jax[cuda12]>=0.8.1; sys_platform != 'darwin'",
     "mediapy>=1.2.4",
     "mujoco>=3.3.7",
     "numpy>=2.3.5",
     "onshape-to-robot>=1.7.9",
     "playground",
     "pymeshlab>=2025.7",
-    "wandb>=0.23.0",
-    "ml-collections>=0.1.1",
-    "pytest>=7.0.0",
+    "wandb>=0.23.0"
 ]

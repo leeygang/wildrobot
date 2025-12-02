@@ -85,6 +85,22 @@ def create_test_config(forward_velocity_bonus: float = 50.0) -> config_dict.Conf
     return config
 
 
+def create_decay_test_config() -> config_dict.ConfigDict:
+    """Create a config that enables velocity threshold penalty decay to test scheduling.
+
+    Returns:
+        ConfigDict with decay schedule parameters set so scale changes early.
+    """
+    cfg = create_test_config(forward_velocity_bonus=10.0)
+    # Enable decay schedule immediately so tests trigger path that uses global_step.
+    cfg.reward_weights.velocity_threshold_penalty_decay_start = 0
+    cfg.reward_weights.velocity_threshold_penalty_decay_steps = 5  # Fast decay for test
+    cfg.reward_weights.velocity_threshold_penalty_min_scale = 0.2
+    return cfg
+
+    return config
+
+
 class TestJAXPytreeContracts:
     """Test JAX pytree structure consistency (critical for jax.lax.scan)."""
 
@@ -390,6 +406,50 @@ class TestRewardComponents:
 
         print("✅ PASS: gating diagnostics present in reset() and step()")
 
+    def test_velocity_threshold_decay_schedule(self):
+        """Test velocity threshold penalty decay scheduling scales down over steps.
+
+        Ensures global_step-dependent decay path executes (previous bug: NameError when global_step not passed).
+        """
+        rng = jax.random.PRNGKey(0)
+        cfg = create_decay_test_config()
+        env = WildRobotWalkEnv(task="wildrobot_flat", config=cfg)
+
+        # Reset environment
+        state = env.reset(rng)
+        scale_initial = float(state.metrics["reward/velocity_threshold_scale"])  # Should be 1.0 at step 0
+
+        # Step multiple times to advance global_step and trigger decay
+        for _ in range(6):  # > decay_steps to reach min scale
+            action = jp.zeros(env.action_size)
+            state = env.step(state, action)
+
+        scale_final = float(state.metrics["reward/velocity_threshold_scale"])
+
+        assert scale_initial == 1.0, f"Initial velocity_threshold_scale should be 1.0, got {scale_initial}" 
+        assert scale_final < scale_initial, (
+            f"Decay did not reduce scale: initial={scale_initial}, final={scale_final}"
+        )
+        assert scale_final <= 0.21, (
+            f"Final scale should approach configured min (~0.2), got {scale_final}"
+        )
+        print(f"✅ PASS: decay schedule reduces velocity_threshold_scale (initial={scale_initial}, final={scale_final})")
+
+    def test_global_step_dtype_consistent(self):
+        """Ensure global_step metric dtype remains float32 across steps (scan carry stability)."""
+        rng = jax.random.PRNGKey(1)
+        cfg = create_test_config(forward_velocity_bonus=5.0)
+        env = WildRobotWalkEnv(task="wildrobot_flat", config=cfg)
+        state = env.reset(rng)
+        dtype_initial = state.metrics["global_step"].dtype
+        for _ in range(3):
+            action = jp.zeros(env.action_size)
+            state = env.step(state, action)
+            assert state.metrics["global_step"].dtype == dtype_initial, (
+                f"global_step dtype changed from {dtype_initial} to {state.metrics['global_step'].dtype}"
+            )
+        print(f"✅ PASS: global_step dtype stable ({dtype_initial}) over multiple steps")
+
 
 def run_tests():
     """Run tests without pytest (for direct execution)."""
@@ -422,6 +482,8 @@ def run_tests():
         ("Existential penalty applied", lambda: reward_tests.test_existential_penalty_applied(env)),
         ("forward_velocity_bonus logic", lambda: reward_tests.test_forward_velocity_bonus_positive_for_forward_motion(env)),
         ("Gating diagnostics present", lambda: reward_tests.test_gating_diagnostics_present(env)),
+        ("Velocity threshold decay schedule", lambda: reward_tests.test_velocity_threshold_decay_schedule()),
+        ("Global step dtype consistent", lambda: reward_tests.test_global_step_dtype_consistent()),
     ]
 
     passed = 0

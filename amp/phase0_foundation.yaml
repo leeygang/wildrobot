@@ -1,0 +1,159 @@
+# WildRobot AMP - Phase 0: Foundations
+# Goal: Escape stationary local optima, establish sustained forward motion.
+# Focused shaping: velocity tracking + gating + gentle velocity-threshold decay.
+
+env:
+  terrain: "flat"
+  ctrl_dt: 0.02
+  sim_dt: 0.002
+
+  # Velocity command
+  velocity_command_mode: "range"
+  target_velocity: 0.7
+  min_velocity: 0.5
+  max_velocity: 1.0
+
+  # Action filtering
+  use_action_filter: true
+  action_filter_alpha: 0.7
+
+  # Phase signal (kept on; contact shaping uses later phases)
+  use_phase_signal: true
+  phase_period: 40
+  num_phase_clocks: 2
+
+  # Termination conditions
+  min_height: 0.2
+  max_height: 0.7
+
+# Explicit set of tracked components for clearer diagnostics
+tracked_reward_components:
+  - tracking_exp_xy
+  - tracking_lin_xy
+  - tracking_exp_yaw
+  - tracking_lin_yaw
+  - forward_velocity_bonus
+  - velocity_threshold_penalty
+  - z_velocity
+  - roll_pitch_velocity
+  - roll_pitch_position
+  - joint_velocity
+  - joint_acceleration
+  - action_rate
+  - nominal_joint_position
+  - joint_position_limit
+  - joint_torque
+  - mechanical_power
+  - foot_contact
+  - foot_sliding
+  - existential
+
+# Reward weights - Phase 0 (Foundations)
+reward_weights:
+  # Tracking kernel
+  tracking_sigma: 0.25
+  tracking_steepness: 3.0  # steeper exp falloff to avoid forgiving tracking at low speed
+
+  # Velocity threshold penalty (with decay keyed to env_global_step)
+  velocity_threshold: 0.12
+  velocity_threshold_penalty: 10.0
+  velocity_threshold_penalty_decay_start: 150000   # begin decay earlier to unlock speed
+  velocity_threshold_penalty_decay_steps: 300000   # linear decay duration
+  velocity_threshold_penalty_min_scale: 0.3        # retain gentle shaping
+
+  # Velocity tracking (kept moderate to avoid destabilizing early)
+  tracking_exp_xy: 25.0
+  tracking_lin_xy: 12.0
+  tracking_exp_yaw: 5.0
+  tracking_lin_yaw: 1.5
+
+  # Direct forward velocity bonus to guarantee propulsion gradient
+  forward_velocity_bonus: 45.0
+
+  # Stability penalties (baseline)
+  z_velocity: 0.1
+  roll_pitch_velocity: 0.01
+  roll_pitch_position: 0.05
+
+  # Smoothness penalties (minimal early)
+  nominal_joint_position: 0.0
+  joint_position_limit: 2.5
+  joint_velocity: 0.0
+  joint_acceleration: 1e-8
+  action_rate: 0.001
+
+  # Energy penalties (reduced)
+  joint_torque: 7e-8
+  mechanical_power: 7e-6
+
+  # Contact shaping (very light; Phase 1 will strengthen)
+  foot_contact: 5.0
+  foot_sliding: 1.0
+
+  # Existential baseline & gating controls
+  existential: 0.5
+  tracking_gate_velocity: 0.08   # lower to avoid over-suppression early
+  tracking_gate_scale: 0.40      # partial gating preserves some gradient
+
+training:
+  num_timesteps: 20000000
+  num_evals: 200
+  episode_length: 600
+  seed: 0
+
+quick_verify:
+  enabled: false
+  num_timesteps: 10000
+  num_evals: 2
+  episode_length: 100
+  num_envs: 128
+  num_eval_envs: 16
+  use_wandb: false
+  render_videos: false
+  save_checkpoints: false
+
+ppo:
+  num_envs: 512
+  num_eval_envs: 64
+  batch_size: 256
+  unroll_length: 32
+  num_minibatches: 16
+  num_updates_per_batch: 4
+
+  learning_rate: 0.0003
+  entropy_cost: 0.01
+  discounting: 0.99
+  reward_scaling: 1.0
+
+  max_grad_norm: 0.5
+  clipping_epsilon: 0.2
+  normalize_observations: true
+  action_repeat: 1
+
+network:
+  policy_hidden_layers: [256, 256, 128]
+  value_hidden_layers: [256, 256, 128]
+
+logging:
+  use_wandb: true
+  wandb_project: "wildrobot-amp"
+  wandb_entity: null
+  wandb_tags: ["phase0", "foundations"]
+
+rendering:
+  render_videos: true
+  render_height: 480
+  render_width: 640
+
+checkpointing:
+  save_interval: 1000000
+  keep_checkpoints: 5
+
+validation:
+  metrics:
+    reward: "eval/episode_reward"
+    episode_length: "eval/avg_episode_length"
+  thresholds:
+    reward_tolerance: 0.10
+    length_tolerance: 0.10
+    determinism_threshold: 0.01

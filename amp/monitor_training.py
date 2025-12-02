@@ -65,7 +65,113 @@ def kill_local_training() -> bool:
         return False
 
 
-def monitor_training(log_dir: Path) -> dict:
+def _detect_phase(config: dict, log_dir: Path, cli_phase: str | None = None) -> str:
+    """Detect training phase from CLI override, wandb tags, or folder naming.
+
+    Returns: 'phase0', 'phase1', or 'unknown'
+    """
+    if cli_phase and cli_phase in {"phase0", "phase1"}:
+        return cli_phase
+
+    # Try wandb tags
+    try:
+        tags = config.get("logging", {}).get("wandb_tags", []) or []
+        if any(str(t).lower() == "phase0" for t in tags):
+            return "phase0"
+        if any(str(t).lower().startswith("phase1") for t in tags):
+            return "phase1"
+    except Exception:
+        pass
+
+    # Fallback: directory name heuristics
+    name = log_dir.name.lower()
+    if "phase0" in name:
+        return "phase0"
+    if "phase1" in name:
+        return "phase1"
+
+    return "unknown"
+
+
+def _phase0_checks(latest: dict, first: dict, mid: dict, config: dict, progress_pct: float) -> tuple[list[str], list[str], list[str]]:
+    """Phase 0 specific health checks and guidance.
+
+    Returns: (issues, warnings, good_signs)
+    """
+    issues: list[str] = []
+    warnings: list[str] = []
+    good: list[str] = []
+
+    # Extract helpful fields with guards
+    summary = latest.get("summary", {})
+    first_s = first.get("summary", {})
+    gate = summary.get("tracking_gate_active_rate")
+    scale = summary.get("velocity_threshold_scale")
+    velocity = summary.get("forward_velocity")
+    episode_len = summary.get("episode_length") or config.get("training", {}).get("episode_length", 600)
+    ctrl_dt = config.get("env", {}).get("ctrl_dt", 0.02)
+
+    # Dynamic distance proxy if not logged explicitly
+    distance_logged = summary.get("distance_walked")
+    if distance_logged is None and velocity is not None:
+        distance_logged = velocity * episode_len * ctrl_dt
+
+    # Stage thresholds that ramp with progress
+    # Early (<300k steps): focus on positive velocity and decay kickoff soon
+    # Mid (>=300k): velocity >= 0.40 m/s, gate < 30%
+    # Late (>=1.0M): velocity >= 0.55 m/s, gate < 15%
+    # Use progress percentage of total steps as proxy for absolute steps
+    total_steps = config.get("training", {}).get("num_timesteps", 20_000_000)
+    # Try to infer current steps if available
+    current_steps = latest.get("step", progress_pct * total_steps / 100)
+
+    mid_threshold = 300_000
+    late_threshold = 1_000_000
+
+    # Velocity checks
+    if velocity is not None:
+        if current_steps >= late_threshold and velocity < 0.55:
+            warnings.append(f"Phase0: velocity {velocity:.3f} < 0.55 m/s target for exit")
+        elif current_steps >= mid_threshold and velocity < 0.40:
+            warnings.append(f"Phase0: velocity {velocity:.3f} < 0.40 m/s mid-phase target")
+        elif velocity > 0.4:
+            good.append(f"Phase0: good forward velocity ({velocity:.3f} m/s)")
+
+    # Gate activity checks
+    if gate is not None:
+        if current_steps >= late_threshold and gate > 0.15:
+            warnings.append(f"Phase0: gate active {gate:.0%} > 15% exit target")
+        elif current_steps >= mid_threshold and gate > 0.30:
+            warnings.append(f"Phase0: gate active {gate:.0%} > 30% mid-phase target")
+        elif gate < 0.20:
+            good.append(f"Phase0: gate rarely active ({gate:.0%})")
+
+    # Decay activation check (scale < 1 after some steps)
+    if scale is not None:
+        if current_steps > 200_000 and scale >= 0.99:
+            warnings.append(f"Phase0: velocity-threshold decay not active yet (scale={scale:.2f})")
+        elif scale < 0.9:
+            good.append(f"Phase0: decay active (scale={scale:.2f})")
+
+    # Distance consistency check against threshold velocity * horizon (10% tolerance)
+    if distance_logged is not None and episode_len and ctrl_dt:
+        # Expected distance for 0.55 m/s target
+        expected = 0.55 * episode_len * ctrl_dt
+        if current_steps >= late_threshold and distance_logged < 0.9 * expected:
+            warnings.append(f"Phase0: distance {distance_logged:.2f}m < {0.9*expected:.2f}m target")
+
+    # Success rate lenient floor in Phase 0
+    success = summary.get("success_rate")
+    if success is not None:
+        if current_steps >= mid_threshold and success < 50:
+            warnings.append(f"Phase0: low success rate ({success:.1f}%) mid-phase")
+        elif success >= 60:
+            good.append(f"Phase0: good success rate ({success:.1f}%)")
+
+    return issues, warnings, good
+
+
+def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
     """Monitor training progress and check for issues.
 
     Args:
@@ -99,6 +205,7 @@ def monitor_training(log_dir: Path) -> dict:
         total_steps = config['training']['num_timesteps']
     else:
         total_steps = 20_000_000  # Default
+        config = {}
 
     current_steps = latest['step']
     progress_pct = (current_steps / total_steps) * 100
@@ -243,6 +350,21 @@ def monitor_training(log_dir: Path) -> dict:
         elif scale_latest < 0.20:
             good_signs.append(f"✅ Velocity threshold penalty mostly decayed (scale={scale_latest:.2f})")
 
+    # Phase-specific checks (Phase 0 foundations)
+    phase = _detect_phase(config, log_dir, phase_override)
+    if phase == "phase0":
+        print("\n🧭 PHASE 0 CHECKS:")
+        p0_issues, p0_warnings, p0_good = _phase0_checks(latest, first, mid, config, progress_pct)
+        for m in p0_issues:
+            print(f"  {m}")
+        for m in p0_warnings:
+            print(f"  {m}")
+        for m in p0_good:
+            print(f"  {m}")
+        issues.extend(p0_issues)
+        warnings.extend(p0_warnings)
+        good_signs.extend(p0_good)
+
     # Print results
     if issues:
         for issue in issues:
@@ -263,14 +385,46 @@ def monitor_training(log_dir: Path) -> dict:
         print(f"  🚨 STOP TRAINING - Critical issues detected!")
         print(f"     Review reward configuration")
         status = "critical"
-    elif progress_pct < 10:
-        print(f"  ⏳ Early phase - continue monitoring")
-        print(f"     Check again at 10% progress (~2M steps)")
-        status = "early"
-    elif progress_pct < 50:
-        print(f"  ✅ Continue training")
-        print(f"     Check again at 50% progress (~10M steps)")
-        status = "good"
+    else:
+        # Phase-aware decision
+        if phase == "phase0":
+            # If key Phase 0 goals not trending, suggest pause
+            latest_vel = latest['summary'].get('forward_velocity', 0)
+            gate_latest = latest['summary'].get('tracking_gate_active_rate', None)
+            scale_latest = latest['summary'].get('velocity_threshold_scale', None)
+
+            mid_ok = (latest_vel >= 0.40) or (progress_pct < 1.5)  # allow very early grace period
+            gate_ok = (gate_latest is None) or (gate_latest <= 0.30) or (progress_pct < 1.5)
+            decay_ok = (scale_latest is None) or (scale_latest < 0.99) or (progress_pct < 1.0)
+
+            if progress_pct >= 5 and not (mid_ok and gate_ok and decay_ok):
+                print("  ⏸️  PAUSE SOON IF NO IMPROVEMENT - Phase 0 targets not trending")
+                print("     Next step: verify env_global_step wiring and gating params")
+                status = "warning"
+            else:
+                if progress_pct < 10:
+                    print(f"  ⏳ Early phase - continue monitoring")
+                    print(f"     Check again at 10% progress (~2M steps)")
+                    status = "early"
+                elif progress_pct < 50:
+                    print(f"  ✅ Continue training")
+                    print(f"     Check again at 50% progress (~10M steps)")
+                    status = "good"
+                else:
+                    print(f"  ✅ Training progressing well - continue to completion")
+                    status = "good"
+        else:
+            if progress_pct < 10:
+                print(f"  ⏳ Early phase - continue monitoring")
+                print(f"     Check again at 10% progress (~2M steps)")
+                status = "early"
+            elif progress_pct < 50:
+                print(f"  ✅ Continue training")
+                print(f"     Check again at 50% progress (~10M steps)")
+                status = "good"
+            else:
+                print(f"  ✅ Training progressing well - continue to completion")
+                status = "good"
     else:
         print(f"  ✅ Training progressing well - continue to completion")
         status = "good"
@@ -316,6 +470,13 @@ Examples:
         help="Continuously monitor training (check every --interval minutes)",
     )
     parser.add_argument(
+        "--phase",
+        type=str,
+        default=None,
+        choices=["phase0", "phase1", "auto", None],
+        help="Override phase detection (default: auto)",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=15,
@@ -355,7 +516,7 @@ Examples:
                 print(f"{'='*80}\n")
 
                 # Monitor training
-                result = monitor_training(log_dir)
+                result = monitor_training(log_dir, None if args.phase in (None, "auto") else args.phase)
 
                 # Check if training is complete or has critical issues
                 if result.get("progress_pct", 0) >= 99.9:
@@ -396,7 +557,7 @@ Examples:
             sys.exit(0)
     else:
         # Single check mode
-        result = monitor_training(log_dir)
+        result = monitor_training(log_dir, None if args.phase in (None, "auto") else args.phase)
 
         # Exit code based on status
         if result["status"] == "critical":

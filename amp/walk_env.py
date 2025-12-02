@@ -49,6 +49,13 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
         super().__init__(task, config, config_overrides)
 
+        # Non-resetting environment-wide step counter (host-side)
+        # NOTE: This is a Python-side counter and is not part of the JAX state.
+        # It is used only for scheduling (e.g., penalty decay) and logging.
+        # If the env is jitted, this will freeze; in that case switch to a
+        # pure JAX carry by lifting into state.info and preserving across resets.
+        self._env_global_step = 0
+
         # Default joint positions for standing pose
         self._default_qpos = jp.array(
             [
@@ -185,6 +192,9 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "forward_velocity": jp.zeros(()),
             "distance_walked": jp.zeros(()),
             "success": jp.ones(()),
+            # Step counters
+            "global_step": jp.zeros((), dtype=jp.float32),
+            "env_global_step": jp.array(float(self._env_global_step), dtype=jp.float32),
             # Reward components (all initialized to 0.0)
             "reward/total": jp.zeros(()),
             "reward/tracking_exp_xy": jp.zeros(()),
@@ -224,14 +234,13 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "contact/right_meets_air_time_threshold": jp.zeros(()),
             "contact/both_meet_air_time_threshold": jp.zeros(()),
             # Scheduling / gating diagnostics
-            "reward/tracking_gate_active": jp.zeros(()),
-            "reward/velocity_threshold_scale": jp.ones(()),
-            "global_step": jp.zeros(()),
+            "reward/tracking_gate_active": jp.zeros((), dtype=jp.float32),
+            "reward/velocity_threshold_scale": jp.ones((), dtype=jp.float32),
         }
 
         info = {
             "step_count": 0,
-            "global_step": 0,
+            "global_step": 0,  # keep python int in info (not scanned as metric)
             "prev_action": jp.zeros(self.action_size),
             "prev_qvel": jp.zeros(self.mj_model.nv - 6),  # Track previous joint velocities (exclude floating base)
             "prev_x_position": jp.zeros(()),
@@ -248,7 +257,9 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
     def step(self, state: base_env.WildRobotEnvState, action: jax.Array) -> base_env.WildRobotEnvState:
         """Step the environment."""
-        velocity_cmd = state.metrics.get("velocity_command", 0.0)
+        # Increment non-resetting global step before JAX sim (host-side)
+        self._env_global_step += 1
+        velocity_cmd = state.metrics.get("velocity_command", jp.array(0.0))
         step_count = state.info.get("step_count", 0)
         global_step = state.info.get("global_step", 0)
         prev_action = state.info.get("prev_action", jp.zeros(self.action_size))
@@ -278,12 +289,15 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         current_qvel = self.get_actuator_joints_qvel(data.qvel)
 
         # Get observations and rewards
+        # Ensure velocity_cmd is an Array for type stability
+        if not isinstance(velocity_cmd, jax.Array):
+            velocity_cmd = jp.array(velocity_cmd)
         obs = self._get_obs(
             data, filtered_action, velocity_cmd, step_count=new_step_count
         )
         reward, reward_components = self._get_reward(
             data, filtered_action, velocity_cmd, prev_action=prev_action,
-            prev_qvel=prev_qvel, step_count=new_step_count, global_step=new_global_step
+            prev_qvel=prev_qvel, step_count=new_step_count, global_step=self._env_global_step
         )
 
         # === AIR TIME REWARD (Phase 1B) ===
@@ -322,10 +336,13 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         # Core metrics
         state.metrics["height"] = height
         state.metrics["forward_velocity"] = forward_velocity
-        state.metrics["velocity_command"] = velocity_cmd
+        state.metrics["velocity_command"] = jp.array(velocity_cmd)
         state.metrics["distance_walked"] = total_distance
         state.metrics["success"] = jp.where(done > 0.5, 0.0, 1.0)
-        state.metrics["global_step"] = jp.array(new_global_step)
+        # Episode-local step count (for per-episode logic)
+        state.metrics["global_step"] = jp.array(new_step_count, dtype=jp.float32)
+        # Environment cumulative step (host counter mirrored for logging)
+        state.metrics["env_global_step"] = jp.array(self._env_global_step, dtype=jp.float32)
 
         # === REWARD COMPONENT METRICS ===
         state.metrics["reward/total"] = reward
@@ -467,8 +484,8 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         data: mjx.Data,
         action: jax.Array,
         velocity_cmd: jax.Array,
-        prev_action: jax.Array = None,
-        prev_qvel: jax.Array = None,
+        prev_action: Optional[jax.Array] = None,
+        prev_qvel: Optional[jax.Array] = None,
         step_count: int = 0,
         global_step: int = 0,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
@@ -492,7 +509,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
         # 1. Velocity tracking (baseline rewards)
         reward_components.update(
-            self._compute_velocity_tracking_reward(linvel, angvel, velocity_cmd)
+            self._compute_velocity_tracking_reward(linvel, angvel, velocity_cmd, global_step)
         )
 
         # 2. Stability rewards (baseline)
@@ -538,8 +555,8 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         return total_reward, reward_components
 
     def _compute_velocity_tracking_reward(
-        self, linvel: jax.Array, angvel: jax.Array, velocity_cmd: jax.Array
-    ) -> Dict[str, float]:
+        self, linvel: jax.Array, angvel: jax.Array, velocity_cmd: jax.Array, global_step: int
+    ) -> Dict[str, Any]:
         """Compute velocity tracking rewards.
 
         OPTION 3 (HYBRID FIX):
@@ -587,7 +604,8 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         if decay_start is not None:
             decay_steps = float(self._reward_weights.get("velocity_threshold_penalty_decay_steps", 1.0))
             min_scale = float(self._reward_weights.get("velocity_threshold_penalty_min_scale", 0.0))
-            progress = jp.maximum(0.0, (global_step - decay_start) / decay_steps)
+            # Use cumulative env-wide global_step (non-resetting) for decay progress
+            progress = jp.maximum(0.0, (jp.array(global_step, dtype=jp.float32) - decay_start) / jp.maximum(decay_steps, 1.0))
             progress = jp.minimum(progress, 1.0)
             scale = 1.0 - progress * (1.0 - min_scale)
             velocity_threshold_penalty = velocity_threshold_penalty * scale
@@ -605,12 +623,13 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         #   tracking_gate_scale: multiplier applied to tracking rewards when below threshold
         tracking_gate_velocity = self._reward_weights.get("tracking_gate_velocity", None)
         tracking_gate_scale = self._reward_weights.get("tracking_gate_scale", 1.0)
-        if tracking_gate_velocity is not None:
+        if tracking_gate_velocity is None:
+            tracking_gate_active = jp.array(0.0)
+        else:
             gate = jp.where(linvel[0] < tracking_gate_velocity, tracking_gate_scale, 1.0)
             tracking_exp_xy = tracking_exp_xy * gate
             tracking_lin_xy = tracking_lin_xy * gate
-
-        tracking_gate_active = jp.where(tracking_gate_velocity is not None, jp.where(linvel[0] < tracking_gate_velocity, 1.0, 0.0), 0.0)
+            tracking_gate_active = jp.where(linvel[0] < tracking_gate_velocity, 1.0, 0.0)
 
         return {
             "tracking_exp_xy": tracking_exp_xy,
@@ -625,7 +644,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
     def _compute_stability_reward(
         self, linvel: jax.Array, angvel: jax.Array, gravity: jax.Array
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Compute stability rewards."""
         z_vel_penalty = -jp.square(linvel[2])
         roll_pitch_vel_penalty = -jp.sum(jp.square(angvel[:2]))
@@ -644,7 +663,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         action: jax.Array,
         prev_action: Optional[jax.Array],
         prev_qvel: Optional[jax.Array],
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Compute smoothness rewards."""
         nominal_joint_penalty = -jp.sum(jp.square(qpos - self._default_qpos))
         joint_limit_penalty = -jp.sum(
@@ -682,7 +701,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
 
     def _compute_energy_reward(
         self, action: jax.Array, qvel: jax.Array
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Compute energy efficiency rewards."""
         torque_penalty = -jp.sum(jp.square(action))
         energy_penalty = -jp.sum(jp.square(action * qvel))

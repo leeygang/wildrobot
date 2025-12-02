@@ -86,9 +86,9 @@ reward_weights:
   velocity_threshold: 0.12  # Further gentler threshold (was 0.15) to reduce early punishment
   velocity_threshold_penalty: 10.0  # Further reduced (was 25.0) to avoid trapping in low-velocity basin
   # Decay schedule: start reducing penalty after sustained locomotion phase
-  velocity_threshold_penalty_decay_start: 200000   # global steps when decay begins
+  velocity_threshold_penalty_decay_start: 150000   # global env steps when decay begins (earlier)
   velocity_threshold_penalty_decay_steps: 300000   # linear decay duration
-  velocity_threshold_penalty_min_scale: 0.0        # final scale (0 disables penalty)
+  velocity_threshold_penalty_min_scale: 0.3        # do not fully disable; retain gentle shaping
 
   # Combined Effect (Option 3 v2 - GENTLER):
   #   Standing (0.0 m/s):  reward +4.4 (was -12.9, now positive but small)
@@ -117,7 +117,7 @@ reward_weights:
   #   - At 0.01 m/s: bonus = 0.5 (tiny)
   #   - At 0.7 m/s:  bonus = 35.0 (huge!)
   #   - Gradient: 70x difference (was only 7x with weight=10.0)
-  forward_velocity_bonus: 60.0  # BOOSTED: Strengthen incentive for real forward progress
+  forward_velocity_bonus: 45.0  # Reduced ~25% to curb unstable surges, still strong gradient
 
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
@@ -146,14 +146,14 @@ reward_weights:
   # Strategy: DISABLE ALL CONTACT PENALTIES, focus ONLY on velocity tracking
   #           Let robot learn basic locomotion first
   #           Add contact refinements in Phase 2
-  foot_contact: 0.0          # DISABLED - was 10.0
-  foot_sliding: 0.0          # DISABLED - was 2.0
-  foot_air_time: 0.0         # DISABLED - was 5.0
+  foot_contact: 5.0          # Re-enabled moderate reward to encourage alternating contacts
+  foot_sliding: 1.0          # Light penalty to start reducing lateral skating
+  foot_air_time: 0.0         # Keep disabled until baseline gait stabilizes
 
   # === Existential penalty ===
   existential: 0.5          # Reduced to prevent overshadowing early forward reward shaping
-  tracking_gate_velocity: 0.20   # New: gate tracking rewards until minimal forward speed achieved
-  tracking_gate_scale: 0.20      # New: scale tracking rewards while gated
+  tracking_gate_velocity: 0.08   # Lower threshold so robot escapes gate sooner
+  tracking_gate_scale: 0.40      # Less severe scaling; provide early gradient
 
 training:
   num_timesteps: 20000000
