@@ -425,9 +425,7 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
             else:
                 print(f"  ✅ Training progressing well - continue to completion")
                 status = "good"
-    else:
-        print(f"  ✅ Training progressing well - continue to completion")
-        status = "good"
+    # No separate fallback; status already set above
 
     print("="*80)
 
@@ -526,21 +524,31 @@ Examples:
 
                 if result["status"] == "critical":
                     print(f"\n🚨 CRITICAL ISSUES DETECTED!")
-                    
-                    # Force stop if enabled
+
+                    # Define an 'early' guard: don't kill too early in training
+                    progress_pct = float(result.get("progress_pct", 0.0))
+                    is_early = progress_pct < 10.0  # Treat <10% progress as 'too early' to force-stop
+
+                    # Force stop if enabled and not early
                     if args.force_stop:
-                        print(f"   --force_stop enabled: Attempting to kill training...")
-                        success = kill_local_training()
-                        
-                        if success:
-                            print(f"\n   ✅ Training stopped successfully")
-                            print(f"   Stopping monitor.")
-                            sys.exit(1)
+                        if is_early:
+                            print(f"   ⏸️  --force_stop ignored: training is too early ({progress_pct:.1f}% done)")
+                            print(f"   Will continue monitoring without killing the training process.")
+                            # Do not exit; keep monitoring
+                            # Sleep until next interval
                         else:
-                            print(f"\n   ❌ Failed to stop training automatically")
-                            print(f"   Please manually run: pkill -f train.py")
-                            print(f"   Stopping monitor anyway.")
-                            sys.exit(1)
+                            print(f"   --force_stop enabled: Attempting to kill training...")
+                            success = kill_local_training()
+
+                            if success:
+                                print(f"\n   ✅ Training stopped successfully")
+                                print(f"   Stopping monitor.")
+                                sys.exit(1)
+                            else:
+                                print(f"\n   ❌ Failed to stop training automatically")
+                                print(f"   Please manually run: pkill -f train.py")
+                                print(f"   Stopping monitor anyway.")
+                                sys.exit(1)
                     else:
                         print(f"   Stopping monitor. Please review the training.")
                         print(f"   Hint: Use --force_stop to automatically kill training on critical issues")
