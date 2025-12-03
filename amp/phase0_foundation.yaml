@@ -56,10 +56,12 @@ reward_weights:
 
   # Velocity threshold penalty (with decay keyed to env_global_step)
   velocity_threshold: 0.12
-  velocity_threshold_penalty: 10.0
-  velocity_threshold_penalty_decay_start: 150000   # begin decay earlier to unlock speed
-  velocity_threshold_penalty_decay_steps: 300000   # linear decay duration
-  velocity_threshold_penalty_min_scale: 0.3        # retain gentle shaping
+  velocity_threshold_penalty: 7.0
+  # Reduce penalty ~30% to ease suppression (extra softening)
+  velocity_threshold_penalty: 4.9
+  velocity_threshold_penalty_decay_start: 0        # short-term: sidestep decay; keep scale static
+  velocity_threshold_penalty_decay_steps: 0        # guarded in code (uses max(steps,1.0))
+  velocity_threshold_penalty_min_scale: 0.5        # gentler fixed shaping
 
   # Velocity tracking (kept moderate to avoid destabilizing early)
   tracking_exp_xy: 25.0
@@ -68,12 +70,14 @@ reward_weights:
   tracking_lin_yaw: 1.5
 
   # Direct forward velocity bonus to guarantee propulsion gradient
-  forward_velocity_bonus: 45.0
+  # Slightly stronger propulsion incentive (extra +13%)
+  forward_velocity_bonus: 51.0
 
   # Stability penalties (baseline)
   z_velocity: 0.1
-  roll_pitch_velocity: 0.01
-  roll_pitch_position: 0.05
+  # Trim posture penalties modestly
+  roll_pitch_velocity: 0.008
+  roll_pitch_position: 0.04
 
   # Smoothness penalties (minimal early)
   nominal_joint_position: 0.0
@@ -88,12 +92,13 @@ reward_weights:
 
   # Contact shaping (very light; Phase 1 will strengthen)
   foot_contact: 5.0
-  foot_sliding: 1.0
+  foot_sliding: 0.5
 
   # Existential baseline & gating controls
   existential: 0.5
-  tracking_gate_velocity: 0.08   # lower to avoid over-suppression early
-  tracking_gate_scale: 0.40      # partial gating preserves some gradient
+  # Make gating less aggressive to avoid trapping (scale 0.45)
+  tracking_gate_velocity: 0.05
+  tracking_gate_scale: 0.45
 
 training:
   num_timesteps: 20000000

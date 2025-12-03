@@ -147,13 +147,13 @@ reward_weights:
   #           Let robot learn basic locomotion first
   #           Add contact refinements in Phase 2
   foot_contact: 5.0          # Re-enabled moderate reward to encourage alternating contacts
-  foot_sliding: 1.0          # Light penalty to start reducing lateral skating
+  foot_sliding: 2.0          # Slightly stronger to curb sliding without trapping
   foot_air_time: 0.0         # Keep disabled until baseline gait stabilizes
 
   # === Existential penalty ===
   existential: 0.5          # Reduced to prevent overshadowing early forward reward shaping
   tracking_gate_velocity: 0.08   # Lower threshold so robot escapes gate sooner
-  tracking_gate_scale: 0.40      # Less severe scaling; provide early gradient
+  tracking_gate_scale: 0.35      # Slightly lower to ease early exploration; target ≤30% mid-phase
 
 training:
   num_timesteps: 20000000

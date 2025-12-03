@@ -381,16 +381,48 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
 
     # Recommendations
     print(f"\n💡 RECOMMENDATION:")
+    # Phase-aware tightening: For Phase 0, only mark critical on sustained stall
+    phase = _detect_phase(config, log_dir, phase_override)
+    latest_vel = latest['summary'].get('forward_velocity', 0.0)
+    latest_gate = latest['summary'].get('tracking_gate_active_rate', None)
+    mid_vel = mid.get('summary', {}).get('forward_velocity', None)
+    mid_gate = mid.get('summary', {}).get('tracking_gate_active_rate', None)
+
+    sustained_stall = False
+    if phase == "phase0" and latest_gate is not None and mid_gate is not None and mid_vel is not None:
+        sustained_stall = (latest_gate > 0.65 and latest_vel < 0.02 and mid_gate > 0.65 and mid_vel < 0.02)
+
+    # Recovery detection: gate moderated and small positive velocity across two checkpoints
+    recovery_detected = False
+    if phase == "phase0" and latest_gate is not None and mid_gate is not None and mid_vel is not None:
+        recovery_detected = (latest_gate < 0.55 and latest_vel > 0.08 and mid_gate < 0.55 and (mid_vel or 0) > 0.08)
+        if recovery_detected:
+            print("  🟢 RECOVERY DETECTED - Gate moderated and velocity positive across checkpoints")
+            good_signs.append("✅ Recovery: gate < 55% and vel > 0.08 m/s (mid+latest)")
+
     if issues:
-        print(f"  🚨 STOP TRAINING - Critical issues detected!")
-        print(f"     Review reward configuration")
-        status = "critical"
+        if sustained_stall:
+            print(f"  🚨 STOP TRAINING - Sustained Phase 0 stall detected (gate>65%, vel<0.02 m/s)")
+            print(f"     Consider softening gating and boosting forward bonus")
+            status = "critical"
+        else:
+            # Downgrade to warning in Phase 0 to allow recovery window
+            if phase == "phase0":
+                if recovery_detected:
+                    print(f"  ✅ Continue training - Recovery trend detected")
+                    status = "good"
+                else:
+                    print(f"  ⏸️  RECOVERY WINDOW - Issues detected but not sustained; continue monitoring")
+                    status = "warning"
+            else:
+                print(f"  🚨 STOP TRAINING - Critical issues detected!")
+                print(f"     Review reward configuration")
+                status = "critical"
     else:
         # Phase-aware decision
         if phase == "phase0":
             # If key Phase 0 goals not trending, suggest pause
-            latest_vel = latest['summary'].get('forward_velocity', 0)
-            gate_latest = latest['summary'].get('tracking_gate_active_rate', None)
+            gate_latest = latest_gate
             scale_latest = latest['summary'].get('velocity_threshold_scale', None)
 
             mid_ok = (latest_vel >= 0.40) or (progress_pct < 1.5)  # allow very early grace period
