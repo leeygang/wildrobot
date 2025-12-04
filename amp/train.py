@@ -371,7 +371,7 @@ class ProgressCallback:
     interface for the PPO training loop.
     """
 
-    def __init__(self, times_list, start_time, cfg, ppo_config, metrics_log_file, quick_verify):
+    def __init__(self, times_list, start_time, cfg, ppo_config, metrics_log_file, quick_verify, diagnostic=False):
         """Initialize progress callback.
 
         Args:
@@ -381,6 +381,7 @@ class ProgressCallback:
             ppo_config: PPO configuration
             metrics_log_file: File handle for JSONL logging
             quick_verify: Boolean flag for verbose output
+            diagnostic: Boolean flag for diagnostic logging
         """
         self.times_list = times_list
         self.start_time = start_time
@@ -388,6 +389,8 @@ class ProgressCallback:
         self.ppo_config = ppo_config
         self.metrics_log_file = metrics_log_file
         self.quick_verify = quick_verify
+        self.diagnostic = diagnostic
+        self.first_evals = 0  # Track first few evals for diagnostic
 
     def __call__(self, num_steps, metrics):
         """Progress callback function called by PPO training loop.
@@ -428,6 +431,30 @@ class ProgressCallback:
               f"Reward: {eval_reward:.2f} | Vel: {forward_vel:.3f} m/s | "
               f"Height: {height:.3f}m | Success: {success:.2%} | "
               f"SPS: {sps:.0f} | ETA: {eta}")
+
+        # DIAGNOSTIC LOGGING FOR FIRST FEW EVALS
+        if self.diagnostic and self.first_evals < 5:
+            self.first_evals += 1
+            print(f"\n{'='*80}")
+            print(f"DIAGNOSTIC - Eval #{self.first_evals} at step {num_steps:,}")
+            print(f"{'='*80}")
+            print(f"  Forward velocity:     {forward_vel:+.4f} m/s")
+            print(f"  Episode length:       {eval_length:.1f} steps")
+            print(f"  Height:               {height:.3f} m")
+            print(f"  Distance walked:      {distance:.3f} m")
+            print(f"  Velocity command:     {metrics.get('eval/episode_velocity_command', 0.0) / max(eval_length, 1.0):.3f} m/s")
+            
+            # Extract detailed reward breakdown
+            print(f"\n  Reward breakdown:")
+            for key, value in sorted(metrics.items()):
+                if key.startswith("eval/episode_reward/"):
+                    component = key.replace("eval/episode_reward/", "")
+                    per_step = float(value / max(eval_length, 1.0))
+                    if abs(per_step) > 0.01:  # Only show significant components
+                        weight = float(self.cfg["reward_weights"].get(component, 0.0))
+                        weighted = per_step * weight
+                        print(f"    {component:30s}: {per_step:+8.3f} × {weight:6.2f} = {weighted:+8.3f}")
+            print(f"{'='*80}\n")
 
         # VERBOSE LOGGING FOR QUICK_VERIFY MODE
         if self.quick_verify:
@@ -490,6 +517,9 @@ _NUM_TIMESTEPS = flags.DEFINE_integer(
 _NUM_ENVS = flags.DEFINE_integer(
     "num_envs", None, "Number of parallel environments (overrides config)"
 )
+_NUM_EVALS = flags.DEFINE_integer(
+    "num_evals", None, "Number of evaluations (overrides config)"
+)
 _SEED = flags.DEFINE_integer("seed", None, "Random seed (overrides config)")
 _LOAD_CHECKPOINT = flags.DEFINE_string(
     "load_checkpoint", None, "Path to checkpoint to load"
@@ -511,6 +541,9 @@ _RENDER_NUM_VIDEOS = flags.DEFINE_integer(
 )
 _RENDER_CAMERA = flags.DEFINE_string(
     "render_camera", "track", "Camera name for rendering: track, side, front, top"
+)
+_DIAGNOSTIC = flags.DEFINE_boolean(
+    "diagnostic", False, "Enable diagnostic logging for velocity/heading debugging"
 )
 
 
@@ -688,6 +721,8 @@ def main(argv):
         cfg["training"]["num_timesteps"] = _NUM_TIMESTEPS.value
     if _NUM_ENVS.value:
         cfg["ppo"]["num_envs"] = _NUM_ENVS.value
+    if _NUM_EVALS.value:
+        cfg["training"]["num_evals"] = _NUM_EVALS.value
     if _SEED.value:
         cfg["training"]["seed"] = _SEED.value
     if _USE_WANDB.value is not None:
@@ -760,7 +795,8 @@ def main(argv):
     print(f"  Batch size: {ppo_config.batch_size}")
     print(f"  Learning rate: {ppo_config.learning_rate}")
     print(f"  Episode length: {ppo_config.episode_length}")
-    print(f"  Network: {network_config.policy_hidden_layer_sizes}")
+    print(f"  Policy network: {network_config.policy_hidden_layer_sizes}")
+    print(f"  Value network: {network_config.value_hidden_layer_sizes}")
 
     # Setup experiment directory
     now = datetime.datetime.now()
@@ -814,53 +850,57 @@ def main(argv):
 
         print(f"W&B initialized: {wandb.run.url}\n")
 
-    # Create network factory
-    def make_networks_warmstart(*args, **kwargs):
-        # Build PPO networks with explicit env sizes (API requires these)
-        nets = ppo_networks.make_ppo_networks(
-            observation_size=env.observation_size,
-            action_size=env.action_size,
+    # Network factory with explicit architecture
+    def network_factory(observation_size, action_size, preprocess_observations_fn=None):
+        return ppo_networks.make_ppo_networks(
+            observation_size=observation_size,
+            action_size=action_size,
+            preprocess_observations_fn=preprocess_observations_fn,
             policy_hidden_layer_sizes=network_config.policy_hidden_layer_sizes,
             value_hidden_layer_sizes=network_config.value_hidden_layer_sizes,
         )
 
-        # If we have initial_params, attempt to warm-start by overriding init
-        if initial_params is not None:
-            # Some Brax versions do not expose param_init_fn on PPONetworks.
-            # In that case, skip overriding and rely on trainer to handle params.
-            if hasattr(nets, "param_init_fn"):
-                original_param_init_fn = nets.param_init_fn
-
-                def param_init_fn(rng_key, obs_size, action_size):
-                    try:
-                        if initial_params is not None:
-                            return initial_params
-                    except Exception:
-                        pass
-                    return original_param_init_fn(rng_key, obs_size, action_size)
-
-                nets = nets.replace(param_init_fn=param_init_fn) if hasattr(nets, "replace") else nets
-            else:
-                print("Warning: PPONetworks has no 'param_init_fn'; proceeding without init override.")
-
-        return nets
-
-    network_factory = make_networks_warmstart
-
-    # Optional warm-start: load initial policy params from Phase 0
+    # Optional warm-start: load pickle checkpoint params
     initial_params = None
-    if _LOAD_CHECKPOINT.value:
-        try:
-            import pickle
-            ckpt_path = Path(_LOAD_CHECKPOINT.value)
-            if not ckpt_path.exists():
-                print(f"Warning: --load_checkpoint path not found: {ckpt_path}. Proceeding with fresh init.")
-            else:
-                with open(ckpt_path, "rb") as f:
-                    initial_params = pickle.load(f)
-                print(f"Loaded initial policy params from: {ckpt_path}")
-        except Exception as e:
-            print(f"Warning: Failed to load --load_checkpoint '{_LOAD_CHECKPOINT.value}': {e}. Proceeding with fresh init.")
+    checkpoint_path = _LOAD_CHECKPOINT.value
+    if checkpoint_path:
+        import pickle
+        ckpt_path = Path(checkpoint_path)
+        if ckpt_path.exists():
+            with open(ckpt_path, "rb") as f:
+                initial_params = pickle.load(f)
+            
+            # Validate network architecture compatibility
+            try:
+                # Brax checkpoint structure: params is a tuple (policy_params, value_params, ...)
+                if isinstance(initial_params, tuple):
+                    policy_params = initial_params[0]  # First element is policy params
+                else:
+                    # Newer format might be a dict
+                    policy_params = initial_params.get('policy', initial_params)
+                
+                # Navigate to first hidden layer kernel
+                if 'params' in policy_params:
+                    policy_shape = policy_params['params']['hidden_0']['kernel'].shape
+                else:
+                    policy_shape = policy_params['hidden_0']['kernel'].shape
+                    
+                expected_shape = (env.observation_size, network_config.policy_hidden_layer_sizes[0])
+                if policy_shape != expected_shape:
+                    print(f"\nERROR: Network architecture mismatch!")
+                    print(f"  Checkpoint has: obs_size={policy_shape[0]}, first_hidden={policy_shape[1]}")
+                    print(f"  Current config: obs_size={expected_shape[0]}, first_hidden={expected_shape[1]}")
+                    print(f"  Config policy_hidden_layers: {network_config.policy_hidden_layer_sizes}")
+                    print(f"\nHint: Ensure network.policy_hidden_layers in {_CONFIG.value} matches the checkpoint.")
+                    print(f"      Phase 0 uses [256, 256, 128]. Update your YAML file to match.\n")
+                    sys.exit(1)
+                print(f"Warm-start enabled: loaded params from {checkpoint_path}")
+                print(f"  Network architecture validated: {network_config.policy_hidden_layer_sizes}")
+            except Exception as e:
+                print(f"Warning: Could not validate checkpoint architecture: {e}")
+                print(f"Warm-start enabled: loaded params from {checkpoint_path}")
+        else:
+            print(f"Warning: checkpoint not found: {checkpoint_path}")
 
     # Progress callback
     times = [time.monotonic()]
@@ -879,19 +919,21 @@ def main(argv):
         ppo_config=ppo_config,
         metrics_log_file=metrics_log_file,
         quick_verify=_QUICK_VERIFY.value,
+        diagnostic=_DIAGNOSTIC.value,
     )
 
+    # Quick verify + warm-start incompatibility check
+    if _QUICK_VERIFY.value and initial_params is not None:
+        print("\nERROR: Cannot use --quick_verify with --load_checkpoint (warm-start).")
+        print("  Quick verify uses a lightweight config that may not match checkpoint architecture.")
+        print("  For warm-start testing, run a short full training instead:")
+        print(f"    uv run amp/train.py --config {_CONFIG.value} --load_checkpoint {checkpoint_path} --num_timesteps 50000\n")
+        sys.exit(1)
+    
     # Train or skip based on checkpoint usage
     make_inference_fn = None  # Ensure defined for both branches
     if initial_params is not None and _SKIP_TRAIN_IF_CKPT.value:
         print("Checkpoint provided and --skip_training_if_checkpoint set: skipping training.")
-        # Use renderer-created inference directly for eval/render paths
-        def _inference_factory(params):
-            return VideoRenderer.create_inference_from_checkpoint(
-                params=params,
-                cfg=cfg,
-                env=env,
-            )
         params = initial_params
 
         # Run a short eval rollout via renderer to produce metrics
@@ -944,10 +986,8 @@ def main(argv):
     else:
         # Warm-start stabilization tweaks when training from checkpoint
         if initial_params is not None:
-            # Conservative LR and slightly higher entropy for first adaptation phase
             original_lr = ppo_config.learning_rate
             original_entropy = ppo_config.entropy_cost
-            # Apply LR warmup scale from config (default 0.5 if set in warm_start, else keep previous 0.5)
             scaled_lr = float(original_lr) * (lr_warmup_scale if lr_warmup_scale != 1.0 else 0.5)
             ppo_config.learning_rate = scaled_lr
             ppo_config.entropy_cost = float(original_entropy) * 1.5
@@ -957,10 +997,9 @@ def main(argv):
             )
 
         print("Starting training...\n")
-        # Proceed with PPO training, attempting true warm-start when supported
-        import inspect
-        train_sig = inspect.signature(ppo.train)
-        train_kwargs = dict(
+        
+        # Train with warm-start via restore_params (Brax 0.10.4+)
+        make_inference_fn, params, _ = ppo.train(
             environment=env,
             num_timesteps=ppo_config.num_timesteps,
             num_evals=ppo_config.num_evals,
@@ -979,19 +1018,10 @@ def main(argv):
             seed=cfg["training"]["seed"],
             network_factory=network_factory,
             progress_fn=progress,
-            max_grad_norm=ppo_config.max_grad_norm,  # Fixed: was max_gradient_norm
+            max_grad_norm=ppo_config.max_grad_norm,
             clipping_epsilon=ppo_config.clipping_epsilon,
+            restore_params=initial_params,  # None if not warm-starting
         )
-
-        # True warm-start: pass initial_params if supported by current Brax version
-        if initial_params is not None and "initial_params" in train_sig.parameters:
-            train_kwargs["initial_params"] = initial_params
-            print("✓ Using true warm-start via ppo.train(initial_params=...)\n")
-        elif initial_params is not None:
-            print("Warning: This Brax version does not support ppo.train(initial_params).\n"
-                  "         Consider upgrading Brax to enable true warm-start, or we will start from fresh init.\n")
-
-        make_inference_fn, params, _ = ppo.train(**train_kwargs)
 
     print(f"\n{'='*80}")
     print("Training completed!")
