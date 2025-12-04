@@ -29,38 +29,9 @@ if system == "Darwin":  # macOS
     os.environ["MUJOCO_GL"] = "glfw"
     print("macOS detected: Using GLFW renderer")
 else:  # Linux
-    # Check if running in SSH session
-    is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
-
-    if is_ssh:
-        # SSH session - prefer osmesa (software rendering) or EGL with xvfb-run
-        import sys
-        try:
-            import ctypes
-            osmesa_available = False
-            for lib_name in ['libOSMesa.so', 'libOSMesa.so.8', 'libOSMesa.so.6']:
-                try:
-                    ctypes.CDLL(lib_name)
-                    osmesa_available = True
-                    print(f"SSH session detected. OSMesa found: {lib_name}")
-                    break
-                except OSError:
-                    continue
-
-            if osmesa_available:
-                os.environ["MUJOCO_GL"] = "osmesa"
-                print("Using osmesa renderer (software rendering)")
-            else:
-                os.environ["MUJOCO_GL"] = "egl"
-                print("OSMesa not found, using egl renderer")
-                print("Note: Run with 'xvfb-run -a python ...' for headless rendering")
-        except Exception as e:
-            print(f"Warning: Could not detect rendering backend: {e}")
-            os.environ["MUJOCO_GL"] = "egl"
-    else:
-        # Local Linux session with display - use GPU rendering via EGL
-        os.environ["MUJOCO_GL"] = "egl"
-        print("Local Linux session detected: Using EGL renderer (GPU accelerated)")
+    # Local Linux session with display - use GPU rendering via EGL
+    os.environ["MUJOCO_GL"] = "egl"
+    print("Local Linux session detected: Using EGL renderer (GPU accelerated)")
 
 import datetime
 import functools
@@ -90,6 +61,7 @@ from common.video_renderer import VideoRenderer
 # Project root
 PROJECT_ROOT = Path(__file__).parent.parent
 
+        
 
 def render_videos(
     env,
@@ -119,12 +91,11 @@ def render_videos(
     Returns:
         List of (video_path, stats) tuples
     """
+
     # Create inference function
     if make_inference_fn is not None:
-        # From training - use provided factory
         inference_fn = make_inference_fn(params)
     else:
-        # From checkpoint - use VideoRenderer helper
         inference_fn = VideoRenderer.create_inference_from_checkpoint(
             params=params,
             cfg=cfg,
@@ -523,6 +494,9 @@ _SEED = flags.DEFINE_integer("seed", None, "Random seed (overrides config)")
 _LOAD_CHECKPOINT = flags.DEFINE_string(
     "load_checkpoint", None, "Path to checkpoint to load"
 )
+_SKIP_TRAIN_IF_CKPT = flags.DEFINE_boolean(
+    "skip_training_if_checkpoint", False, "If --load_checkpoint is provided, skip training and run eval/render using the checkpoint"
+)
 _USE_WANDB = flags.DEFINE_boolean(
     "use_wandb", None, "Use Weights & Biases (overrides config)"
 )
@@ -732,6 +706,14 @@ def main(argv):
     print(f"{'='*80}\n")
 
     # Create environment config using helper function
+    # Optional warm-start easing parameters
+    warm_cfg = cfg.get("training", {}).get("warm_start", {})
+    lr_warmup_scale = float(warm_cfg.get("lr_warmup_scale", 1.0))
+    gate_ease_scale = float(warm_cfg.get("gate_ease_scale", 1.0))
+
+    # Preserve original gate value for possible two-phase training
+    original_gate = cfg["reward_weights"].get("tracking_gate_scale", None)
+
     env_config = create_env_config(cfg)
 
     # Create environment
@@ -833,11 +815,52 @@ def main(argv):
         print(f"W&B initialized: {wandb.run.url}\n")
 
     # Create network factory
-    network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
-        policy_hidden_layer_sizes=network_config.policy_hidden_layer_sizes,
-        value_hidden_layer_sizes=network_config.value_hidden_layer_sizes,
-    )
+    def make_networks_warmstart(*args, **kwargs):
+        # Build PPO networks with explicit env sizes (API requires these)
+        nets = ppo_networks.make_ppo_networks(
+            observation_size=env.observation_size,
+            action_size=env.action_size,
+            policy_hidden_layer_sizes=network_config.policy_hidden_layer_sizes,
+            value_hidden_layer_sizes=network_config.value_hidden_layer_sizes,
+        )
+
+        # If we have initial_params, attempt to warm-start by overriding init
+        if initial_params is not None:
+            # Some Brax versions do not expose param_init_fn on PPONetworks.
+            # In that case, skip overriding and rely on trainer to handle params.
+            if hasattr(nets, "param_init_fn"):
+                original_param_init_fn = nets.param_init_fn
+
+                def param_init_fn(rng_key, obs_size, action_size):
+                    try:
+                        if initial_params is not None:
+                            return initial_params
+                    except Exception:
+                        pass
+                    return original_param_init_fn(rng_key, obs_size, action_size)
+
+                nets = nets.replace(param_init_fn=param_init_fn) if hasattr(nets, "replace") else nets
+            else:
+                print("Warning: PPONetworks has no 'param_init_fn'; proceeding without init override.")
+
+        return nets
+
+    network_factory = make_networks_warmstart
+
+    # Optional warm-start: load initial policy params from Phase 0
+    initial_params = None
+    if _LOAD_CHECKPOINT.value:
+        try:
+            import pickle
+            ckpt_path = Path(_LOAD_CHECKPOINT.value)
+            if not ckpt_path.exists():
+                print(f"Warning: --load_checkpoint path not found: {ckpt_path}. Proceeding with fresh init.")
+            else:
+                with open(ckpt_path, "rb") as f:
+                    initial_params = pickle.load(f)
+                print(f"Loaded initial policy params from: {ckpt_path}")
+        except Exception as e:
+            print(f"Warning: Failed to load --load_checkpoint '{_LOAD_CHECKPOINT.value}': {e}. Proceeding with fresh init.")
 
     # Progress callback
     times = [time.monotonic()]
@@ -858,30 +881,117 @@ def main(argv):
         quick_verify=_QUICK_VERIFY.value,
     )
 
-    # Train
-    print("Starting training...\n")
-    make_inference_fn, params, _ = ppo.train(
-        environment=env,
-        num_timesteps=ppo_config.num_timesteps,
-        num_evals=ppo_config.num_evals,
-        reward_scaling=ppo_config.reward_scaling,
-        episode_length=ppo_config.episode_length,
-        normalize_observations=ppo_config.normalize_observations,
-        action_repeat=ppo_config.action_repeat,
-        unroll_length=ppo_config.unroll_length,
-        num_minibatches=ppo_config.num_minibatches,
-        num_updates_per_batch=ppo_config.num_updates_per_batch,
-        discounting=ppo_config.discounting,
-        learning_rate=ppo_config.learning_rate,
-        entropy_cost=ppo_config.entropy_cost,
-        num_envs=ppo_config.num_envs,
-        batch_size=ppo_config.batch_size,
-        seed=cfg["training"]["seed"],
-        network_factory=network_factory,
-        progress_fn=progress,
-        max_grad_norm=ppo_config.max_grad_norm,  # Fixed: was max_gradient_norm
-        clipping_epsilon=ppo_config.clipping_epsilon,
-    )
+    # Train or skip based on checkpoint usage
+    make_inference_fn = None  # Ensure defined for both branches
+    if initial_params is not None and _SKIP_TRAIN_IF_CKPT.value:
+        print("Checkpoint provided and --skip_training_if_checkpoint set: skipping training.")
+        # Use renderer-created inference directly for eval/render paths
+        def _inference_factory(params):
+            return VideoRenderer.create_inference_from_checkpoint(
+                params=params,
+                cfg=cfg,
+                env=env,
+            )
+        params = initial_params
+
+        # Run a short eval rollout via renderer to produce metrics
+        try:
+            eval_dir = exp_dir / "eval_skip_training"
+            eval_dir.mkdir(exist_ok=True)
+
+            # Use 1 video, short horizon for quick verification
+            results = render_videos(
+                env=env,
+                params=params,
+                cfg=cfg,
+                output_dir=eval_dir,
+                num_videos=1,
+                camera="track",
+                seed=cfg["training"]["seed"],
+                make_inference_fn=make_inference_fn,
+            )
+
+            # Log topline metrics from the rollout
+            if results:
+                _, stats = results[0]
+                summary_entry = {
+                    "step": 0,
+                    "timestamp": time.time(),
+                    "summary": {
+                        "reward_per_step": None,
+                        "total_rewards": None,
+                        "total_penalties": None,
+                        "success_rate": 0.0,
+                        "forward_velocity": float(stats.get("velocity", 0.0)),
+                        "episode_length": float(stats.get("length", 0.0)),
+                        "sps": 0.0,
+                        "tracking_gate_active_rate": 0.0,
+                        "velocity_threshold_scale": 1.0,
+                    },
+                    "other": {
+                        "height": float(stats.get("height", 0.0)),
+                        "distance_walked": float(stats.get("velocity", 0.0)) * float(stats.get("length", 0.0)) * env_config.ctrl_dt,
+                        "walltime": 0.0,
+                    },
+                }
+                metrics_log_file.write(json.dumps(summary_entry) + "\n")
+                metrics_log_file.flush()
+                print(f"Eval (skip training): vel={summary_entry['summary']['forward_velocity']:.3f} m/s | "
+                      f"len={summary_entry['summary']['episode_length']:.0f} steps | "
+                      f"height={summary_entry['other']['height']:.3f} m\n")
+        except Exception as e:
+            print(f"Warning: eval during skip-training failed: {e}")
+    else:
+        # Warm-start stabilization tweaks when training from checkpoint
+        if initial_params is not None:
+            # Conservative LR and slightly higher entropy for first adaptation phase
+            original_lr = ppo_config.learning_rate
+            original_entropy = ppo_config.entropy_cost
+            # Apply LR warmup scale from config (default 0.5 if set in warm_start, else keep previous 0.5)
+            scaled_lr = float(original_lr) * (lr_warmup_scale if lr_warmup_scale != 1.0 else 0.5)
+            ppo_config.learning_rate = scaled_lr
+            ppo_config.entropy_cost = float(original_entropy) * 1.5
+            print(
+                f"Warm-start stabilization: learning_rate {original_lr}→{ppo_config.learning_rate} (scale), "
+                f"entropy_cost {original_entropy}→{ppo_config.entropy_cost}"
+            )
+
+        print("Starting training...\n")
+        # Proceed with PPO training, attempting true warm-start when supported
+        import inspect
+        train_sig = inspect.signature(ppo.train)
+        train_kwargs = dict(
+            environment=env,
+            num_timesteps=ppo_config.num_timesteps,
+            num_evals=ppo_config.num_evals,
+            reward_scaling=ppo_config.reward_scaling,
+            episode_length=ppo_config.episode_length,
+            normalize_observations=ppo_config.normalize_observations,
+            action_repeat=ppo_config.action_repeat,
+            unroll_length=ppo_config.unroll_length,
+            num_minibatches=ppo_config.num_minibatches,
+            num_updates_per_batch=ppo_config.num_updates_per_batch,
+            discounting=ppo_config.discounting,
+            learning_rate=ppo_config.learning_rate,
+            entropy_cost=ppo_config.entropy_cost,
+            num_envs=ppo_config.num_envs,
+            batch_size=ppo_config.batch_size,
+            seed=cfg["training"]["seed"],
+            network_factory=network_factory,
+            progress_fn=progress,
+            max_grad_norm=ppo_config.max_grad_norm,  # Fixed: was max_gradient_norm
+            clipping_epsilon=ppo_config.clipping_epsilon,
+        )
+
+        # True warm-start: pass initial_params if supported by current Brax version
+        if initial_params is not None and "initial_params" in train_sig.parameters:
+            train_kwargs["initial_params"] = initial_params
+            print("✓ Using true warm-start via ppo.train(initial_params=...)\n")
+        elif initial_params is not None:
+            print("Warning: This Brax version does not support ppo.train(initial_params).\n"
+                  "         Consider upgrading Brax to enable true warm-start, or we will start from fresh init.\n")
+
+        make_inference_fn, params, _ = ppo.train(**train_kwargs)
 
     print(f"\n{'='*80}")
     print("Training completed!")
@@ -892,7 +1002,7 @@ def main(argv):
     print(f"Metrics saved to: {metrics_log_path}\n")
 
     # Save final checkpoint
-    if not _QUICK_VERIFY.value:
+    if not _QUICK_VERIFY.value and not (_SKIP_TRAIN_IF_CKPT.value and initial_params is not None):
         final_ckpt_path = ckpt_dir / "final_policy.pkl"
         with open(final_ckpt_path, "wb") as f:
             import pickle
