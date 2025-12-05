@@ -371,7 +371,8 @@ class ProgressCallback:
     interface for the PPO training loop.
     """
 
-    def __init__(self, times_list, start_time, cfg, ppo_config, metrics_log_file, quick_verify, diagnostic=False):
+    def __init__(self, times_list, start_time, cfg, ppo_config, metrics_log_file, quick_verify, diagnostic=False, 
+                 ckpt_dir=None, save_best=False, best_reward_tracker=None):
         """Initialize progress callback.
 
         Args:
@@ -382,6 +383,9 @@ class ProgressCallback:
             metrics_log_file: File handle for JSONL logging
             quick_verify: Boolean flag for verbose output
             diagnostic: Boolean flag for diagnostic logging
+            ckpt_dir: Directory for checkpoints (for best checkpoint saving)
+            save_best: Whether to save best checkpoints
+            best_reward_tracker: Shared dict to track best reward
         """
         self.times_list = times_list
         self.start_time = start_time
@@ -391,6 +395,9 @@ class ProgressCallback:
         self.quick_verify = quick_verify
         self.diagnostic = diagnostic
         self.first_evals = 0  # Track first few evals for diagnostic
+        self.ckpt_dir = ckpt_dir
+        self.save_best = save_best
+        self.best_reward_tracker = best_reward_tracker
 
     def __call__(self, num_steps, metrics):
         """Progress callback function called by PPO training loop.
@@ -431,6 +438,14 @@ class ProgressCallback:
               f"Reward: {eval_reward:.2f} | Vel: {forward_vel:.3f} m/s | "
               f"Height: {height:.3f}m | Success: {success:.2%} | "
               f"SPS: {sps:.0f} | ETA: {eta}")
+
+        # Best checkpoint tracking (store step, progress_fn doesn't have params)
+        if self.save_best and self.best_reward_tracker is not None:
+            reward_per_step = eval_reward / max(eval_length, 1.0)
+            if reward_per_step > self.best_reward_tracker['best_reward']:
+                self.best_reward_tracker['best_reward'] = reward_per_step
+                self.best_reward_tracker['best_step'] = num_steps
+                print(f"  🏆 New best reward: {reward_per_step:.3f}/step at {num_steps:,}")
 
         # DIAGNOSTIC LOGGING FOR FIRST FEW EVALS
         if self.diagnostic and self.first_evals < 5:
@@ -911,6 +926,17 @@ def main(argv):
     metrics_log_file = open(metrics_log_path, "w")
     print(f"Metrics log: {metrics_log_path}\n")
 
+    # Checkpoint configuration
+    checkpoint_config = cfg.get('checkpointing', {})
+    save_interval = checkpoint_config.get('save_interval', 500_000)  # Default 500K
+    save_best = checkpoint_config.get('save_best', True)
+    
+    checkpoint_tracker = {
+        'best_reward': float('-inf'),
+        'best_step': 0,
+        'last_save_step': 0,
+    }
+    
     # Create progress callback using class (no nested functions!)
     progress = ProgressCallback(
         times_list=times,
@@ -920,7 +946,31 @@ def main(argv):
         metrics_log_file=metrics_log_file,
         quick_verify=_QUICK_VERIFY.value,
         diagnostic=_DIAGNOSTIC.value,
+        ckpt_dir=ckpt_dir,
+        save_best=save_best,
+        best_reward_tracker=checkpoint_tracker,
     )
+    
+    def policy_params_callback(step, make_policy, params):
+        """Callback to save checkpoints during training.
+        
+        Brax calls this with (step, make_policy, params) - no metrics included.
+        We only do periodic saves here, not best checkpoint (no metrics available).
+        
+        Args:
+            step: Current training step
+            make_policy: Policy function factory
+            params: Network parameters (dict with normalizer_params, policy_params, etc.)
+        """
+        import pickle
+        
+        # Periodic checkpoint saving (configurable interval)
+        if step - checkpoint_tracker['last_save_step'] >= save_interval:
+            ckpt_path = ckpt_dir / f"checkpoint_step_{step}.pkl"
+            with open(ckpt_path, "wb") as f:
+                pickle.dump(params, f)
+            checkpoint_tracker['last_save_step'] = step
+            print(f"  💾 Saved periodic checkpoint at step {step:,}: {ckpt_path.name}")
 
     # Quick verify + warm-start incompatibility check
     if _QUICK_VERIFY.value and initial_params is not None:
@@ -1018,6 +1068,7 @@ def main(argv):
             seed=cfg["training"]["seed"],
             network_factory=network_factory,
             progress_fn=progress,
+            policy_params_fn=policy_params_callback,  # Checkpoint saving callback
             max_grad_norm=ppo_config.max_grad_norm,
             clipping_epsilon=ppo_config.clipping_epsilon,
             restore_params=initial_params,  # None if not warm-starting
@@ -1033,11 +1084,17 @@ def main(argv):
 
     # Save final checkpoint
     if not _QUICK_VERIFY.value and not (_SKIP_TRAIN_IF_CKPT.value and initial_params is not None):
+        import pickle
         final_ckpt_path = ckpt_dir / "final_policy.pkl"
         with open(final_ckpt_path, "wb") as f:
-            import pickle
             pickle.dump(params, f)
         print(f"Saved final checkpoint: {final_ckpt_path}\n")
+        
+        # Report best checkpoint info
+        if save_best and checkpoint_tracker['best_step'] > 0:
+            print(f"Best checkpoint was at step {checkpoint_tracker['best_step']:,} "
+                  f"with reward {checkpoint_tracker['best_reward']:.3f}/step")
+            print(f"Note: Best checkpoint saved during training (check checkpoint_step_*.pkl files)\n")
 
     # Render videos if enabled
     should_render_videos = cfg["rendering"]["render_videos"]

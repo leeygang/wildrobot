@@ -1,6 +1,6 @@
-# WildRobot AMP - Phase 1: Contact Rewards
-# Enhanced reward shaping with foot contact and sliding penalties
-# Physics-based approach (no mocap data required)
+# WildRobot AMP - Phase 1: Contact Rewards (Improved)
+# Enhanced reward shaping with balanced rewards to prevent catastrophic forgetting
+# Key improvements: Reduced contact dominance, amplified locomotion, delayed penalty schedule
 
 env:
   terrain: "flat"
@@ -75,20 +75,20 @@ reward_weights:
   #   NEW: exp(-3 × error²) gives 14% reward for 100% error
   tracking_steepness: 3.0  # Multiply error² by this before exp()
 
-  # FIX #2: Velocity threshold penalty - GENTLER VERSION (Phase 1G-v2)
-  #   Phase 1G: threshold=0.3, weight=50.0 → penalty -17.61, FAILED!
-  #   Phase 1G-v2: threshold=0.15, weight=25.0 → achievable, gentler
+  # FIX #2: Velocity threshold penalty - CONFIGURABLE SCHEDULE
+  #   Recommendation #3: Delayed schedule for better exploration
+  #     - decay_start: 150000 → 500000 (allow early skill formation)
+  #     - decay_steps: 300000 → 1000000 (smoother curriculum)
   #
-  #   At 0.0 m/s:   penalty = 25.0 × 0.15 = -3.75 (was -15.0)
-  #   At 0.034 m/s: penalty = 25.0 × 0.116 = -2.9 (was -13.3, reward now positive!)
-  #   At 0.15 m/s:  penalty = 0.0 (achievable threshold!)
-  #   At 0.7 m/s:   penalty = 0.0 (no penalty)
-  velocity_threshold: 0.12  # Further gentler threshold (was 0.15) to reduce early punishment
-  velocity_threshold_penalty: 10.0  # Further reduced (was 25.0) to avoid trapping in low-velocity basin
-  # Decay schedule: start reducing penalty after sustained locomotion phase
-  velocity_threshold_penalty_decay_start: 150000   # global env steps when decay begins (earlier)
-  velocity_threshold_penalty_decay_steps: 300000   # linear decay duration
-  velocity_threshold_penalty_min_scale: 0.3        # do not fully disable; retain gentle shaping
+  #   Current (baseline): Early pressure for quick testing
+  #   Improved (v3): Delayed pressure for better convergence
+  #     Set decay_start=500000, decay_steps=1000000 for improved version
+  velocity_threshold: 0.12
+  velocity_threshold_penalty: 10.0
+  # Decay schedule: Improved for better exploration and smoother curriculum
+  velocity_threshold_penalty_decay_start: 500000   # Delayed start (was 150K) - allows skill formation
+  velocity_threshold_penalty_decay_steps: 1000000  # Extended duration (was 300K) - smoother transitions
+  velocity_threshold_penalty_min_scale: 0.3
 
   # Combined Effect (Option 3 v2 - GENTLER):
   #   Standing (0.0 m/s):  reward +4.4 (was -12.9, now positive but small)
@@ -105,19 +105,11 @@ reward_weights:
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
-  # === Forward Velocity Bonus - UPDATED 2025-12-01 ===
-  # CRITICAL FIX: Tracking rewards were too forgiving (exp(-error^2) gives 42% reward even when moving backward!)
-  # Robot discovered local minimum: get tracking reward WITHOUT moving forward
-  # Solution: Add direct bonus that ONLY rewards actual forward motion
-  #   - backward/stationary: 0.0 bonus (max clips negative to 0)
-  #   - forward at 0.7 m/s: 0.7 × 50.0 = 35.0 bonus
-  #
-  # Phase 1E (10.0): Robot peaked at 0.55 m/s then degraded to 0.01 m/s - bonus too weak
-  # Phase 1F (50.0): 5x stronger to match tracking magnitude (50+15=65 total)
-  #   - At 0.01 m/s: bonus = 0.5 (tiny)
-  #   - At 0.7 m/s:  bonus = 35.0 (huge!)
-  #   - Gradient: 70x difference (was only 7x with weight=10.0)
-  forward_velocity_bonus: 45.0  # Reduced ~25% to curb unstable surges, still strong gradient
+  # === Forward Velocity Bonus - IMPROVED REBALANCING ===
+  # Increased from 45.0 to amplify locomotion signal vs contact penalties
+  #   At 0.65 m/s: 50.0 × 0.65 = 32.5 reward
+  #   Prevents contact penalties from dominating the objective
+  forward_velocity_bonus: 50.0
 
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
@@ -137,17 +129,12 @@ reward_weights:
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards - ALL DISABLED for Phase 1D ===
-  # 2025-11-30 Issue: Robot peaked at 9.83 reward / 0.568 m/s (step 131K)
-  #                   Then degraded to 2.17 reward / -0.096 m/s (step 2.36M)
-  # Root cause: foot_contact penalty (-1.14) creates barrier to walking
-  #             Robot found local minimum: "freeze = +2.17 reward (safe)"
-  #                                        "walk = +1-3 reward (risky)"
-  # Strategy: DISABLE ALL CONTACT PENALTIES, focus ONLY on velocity tracking
-  #           Let robot learn basic locomotion first
-  #           Add contact refinements in Phase 2
-  foot_contact: 5.0          # Re-enabled moderate reward to encourage alternating contacts
-  foot_sliding: 2.0          # Slightly stronger to curb sliding without trapping
+  # === Contact rewards - IMPROVED REBALANCING ===
+  # Reduced from 5.0 to prevent reward hacking and catastrophic forgetting
+  #   Analysis: weight=5.0 caused robot to prefer standing (0.130 m/s) over walking (0.649 m/s)
+  #   At 1.0, contact becomes a constraint rather than the primary objective
+  foot_contact: 1.0
+  foot_sliding: 2.0
   foot_air_time: 0.0         # Keep disabled until baseline gait stabilizes
 
   # === Existential penalty ===
@@ -165,14 +152,14 @@ training:
 # Usage: Add --quick_verify flag to training script
 quick_verify:
   enabled: false              # Set to true or use --quick_verify flag
-  num_timesteps: 10000        # ~20 seconds on GPU (512 envs, 10K steps)
-  num_evals: 2                # Just 2 eval runs
-  episode_length: 100         # Shorter episodes
+  num_timesteps: 1500000      # 1.5M steps to test checkpoint saving & schedule
+  num_evals: 6                # More evals to see checkpoint saves (every 250K steps)
+  episode_length: 100         # Shorter episodes for faster testing
   num_envs: 128               # Fewer parallel envs (faster startup)
   num_eval_envs: 16
   use_wandb: false            # Skip logging for quick tests
-  render_videos: false         # TEST video rendering in quick verify!
-  save_checkpoints: false     # Skip checkpointing
+  render_videos: false
+  save_checkpoints: true      # Enable to test checkpoint saving
 
 ppo:
   num_envs: 512
@@ -208,8 +195,9 @@ rendering:
   render_width: 640
 
 checkpointing:
-  save_interval: 1000000
-  keep_checkpoints: 5
+  save_interval: 500000      # Save checkpoint every N steps (500K default)
+  save_best: true            # Save best checkpoint based on reward
+  keep_checkpoints: 5        # Number of periodic checkpoints to keep (optional)
 
 validation:
   metrics:
