@@ -1,17 +1,21 @@
-# WildRobot AMP - Phase 1: Contact Rewards (Improved)
-# Enhanced reward shaping with balanced rewards to prevent catastrophic forgetting
-# Key improvements: Reduced contact dominance, amplified locomotion, delayed penalty schedule
+# WildRobot AMP - Phase 1: Contact Rewards (v3 - Phase 1 Quick Fix - 2025-12-06)
+# PHASE 1 TEST: Reduce velocity commands to match robot capability (0.3-0.6 m/s)
+# Previous issue: Commands 0.7-1.0 m/s exceeded robot max capability (~0.5 m/s)
+# This caused degradation even with 100x velocity bonus
+# Testing if realistic commands prevent degradation
 
 env:
   terrain: "flat"
   ctrl_dt: 0.02
   sim_dt: 0.002
 
-  # Velocity command
+  # Velocity command - FIXED 2025-12-06: Match commands to robot capability
+  # ISSUE: Commands at 0.7-1.0 m/s were unrealistic (robot max ~0.5 m/s)
+  # FIX: Reduce to achievable range 0.3-0.6 m/s
   velocity_command_mode: "range"
-  target_velocity: 0.7
-  min_velocity: 0.5
-  max_velocity: 1.0
+  target_velocity: 0.5
+  min_velocity: 0.3        # CHANGED: 0.7 → 0.3 (achievable target)
+  max_velocity: 0.6        # CHANGED: 1.0 → 0.6 (matches capability)
 
   # Action filtering
   use_action_filter: true
@@ -75,16 +79,13 @@ reward_weights:
   #   NEW: exp(-3 × error²) gives 14% reward for 100% error
   tracking_steepness: 3.0  # Multiply error² by this before exp()
 
-  # FIX #2: Velocity threshold penalty - CONFIGURABLE SCHEDULE
-  #   Recommendation #3: Delayed schedule for better exploration
-  #     - decay_start: 150000 → 500000 (allow early skill formation)
-  #     - decay_steps: 300000 → 1000000 (smoother curriculum)
-  #
-  #   Current (baseline): Early pressure for quick testing
-  #   Improved (v3): Delayed pressure for better convergence
-  #     Set decay_start=500000, decay_steps=1000000 for improved version
+  # FIX #2: Velocity threshold penalty - REDUCED (2025-12-06)
+  #   PROBLEM: 10x weight caused policy to move slow to avoid penalty
+  #            Even though tracking suffered, avoiding 10x penalty was worth it
+  #   SOLUTION: Reduce to 1.0x - let tracking rewards handle velocity naturally
+  #            Tracking exp/lin already penalize velocity errors strongly
   velocity_threshold: 0.12
-  velocity_threshold_penalty: 10.0
+  velocity_threshold_penalty: 1.0    # CHANGED: 10.0 → 1.0 (10x reduction)
   # Decay schedule: Improved for better exploration and smoother curriculum
   velocity_threshold_penalty_decay_start: 500000   # Delayed start (was 150K) - allows skill formation
   velocity_threshold_penalty_decay_steps: 1000000  # Extended duration (was 300K) - smoother transitions
@@ -105,11 +106,14 @@ reward_weights:
   tracking_exp_yaw: 5.0      # Keep same
   tracking_lin_yaw: 1.5      # Keep same
 
-  # === Forward Velocity Bonus - IMPROVED REBALANCING ===
-  # Increased from 45.0 to amplify locomotion signal vs contact penalties
-  #   At 0.65 m/s: 50.0 × 0.65 = 32.5 reward
-  #   Prevents contact penalties from dominating the objective
-  forward_velocity_bonus: 50.0
+  # === Forward Velocity Bonus - DOUBLED (2025-12-06) ===
+  # PROBLEM: At 50x, slow (0.3 m/s) vs fast (0.7 m/s) gap only +20 points
+  #          Policy chose slow because difficulty penalty > reward advantage
+  # SOLUTION: Double to 100x creates +40 point gap (exceeds all penalties)
+  #   At 0.7 m/s: 100.0 × 0.7 = +70 reward (was +35)
+  #   At 0.3 m/s: 100.0 × 0.3 = +30 reward (was +15)
+  #   Gap: 40 points (was 20) - now worth the difficulty of fast walking
+  forward_velocity_bonus: 100.0    # CHANGED: 50.0 → 100.0
 
   # === Stability penalties - REVERTED to baseline ===
   # Issue 2025-11-30: 40x stronger roll_pitch_position (2.0) was preventing
@@ -129,23 +133,32 @@ reward_weights:
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards - RESTORED TO BASELINE ===
-  # Restored from 1.0 to 5.0 to match phase0 training (smooth transfer learning)
-  #   Analysis of LATEST training: foot_contact=1.0 conflicts with phase0's 5.0
-  #   Result: Early peak (0.1M) from phase0, rapid collapse as policy adapts to new rewards
-  #   Solution: Keep consistent reward structure for stable curriculum learning
+  # === Contact rewards - INCREASED FOOT SLIDING (2025-12-06) ===
+  # foot_contact: Restored to 5.0 (matches phase0)
+  # foot_sliding: INCREASED 2.0 → 5.0 to enforce clean gait
+  #   PROBLEM: Sliding grew from 5.59 to 6.13 penalty as gait degraded
+  #            At 2.0x weight, only 11.2-12.3 total penalty - easily ignored
+  #   SOLUTION: Match foot_contact weight at 5.0x (critical for sim2real)
+  #            Real robot feet will slip/fall if this isn't learned in sim
   foot_contact: 5.0
-  foot_sliding: 2.0
-  foot_air_time: 0.0         # Keep disabled until baseline gait stabilizes
+  foot_sliding: 5.0          # CHANGED: 2.0 → 5.0 (2.5x increase)
+  foot_air_time: 0.0
 
   # === Existential penalty ===
-  existential: 0.5          # Reduced to prevent overshadowing early forward reward shaping
-  tracking_gate_velocity: 0.08   # Lower threshold so robot escapes gate sooner
-  tracking_gate_scale: 0.35      # Slightly lower to ease early exploration; target ≤30% mid-phase
+  existential: 0.5
+  
+  # === Tracking gate - RAISED THRESHOLD (2025-12-06) ===
+  # PROBLEM: Gate at 0.08 m/s too easy to exploit by barely moving
+  #          Policy can oscillate slowly and still activate gate 39% of time
+  #          Then accepts reduced tracking rewards to avoid velocity_threshold_penalty
+  # SOLUTION: Raise to 0.15 m/s - must actually track well to activate gate
+  #          At target 0.7 m/s, must achieve 0.55-0.85 m/s (±0.15 tolerance)
+  tracking_gate_velocity: 0.15   # CHANGED: 0.08 → 0.15 (prevent slow exploitation)
+  tracking_gate_scale: 0.35
 
 training:
-  num_timesteps: 10000000   # Reduced from 20M: all trainings peak by 9M, then degrade
-  num_evals: 100            # Proportionally reduced (was 200)
+  num_timesteps: 2000000    # PHASE 1 TEST: 2M steps for quick verification (~30-45 min)
+  num_evals: 40             # Eval every 50K steps
   episode_length: 600
   seed: 0
 
@@ -198,7 +211,6 @@ rendering:
 checkpointing:
   save_interval: 500000      # Save checkpoint every N steps (500K default)
   save_best: true            # Save best checkpoint based on reward
-  keep_checkpoints: 5        # Number of periodic checkpoints to keep (optional)
   
   # Warm-start from phase0 foundation training
   # Use: --load_checkpoint flag will load this by default if not overridden
