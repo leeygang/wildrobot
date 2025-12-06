@@ -310,6 +310,18 @@ def generate_and_log_metrics(
             "topline/tracking_gate_active_rate": gate_active_rate,
             "topline/velocity_threshold_scale": velocity_threshold_scale_val,
         }
+        
+        # Phase 1 contact metrics (if available)
+        alternation_ratio = metrics.get("eval/episode_contact/alternation_ratio")
+        if alternation_ratio is not None:
+            topline_metrics["topline/alternation_ratio"] = alternation_ratio / max(eval_length, 1.0)
+        
+        avg_sliding = None
+        left_sliding = metrics.get("eval/episode_contact/left_sliding_vel")
+        right_sliding = metrics.get("eval/episode_contact/right_sliding_vel")
+        if left_sliding is not None and right_sliding is not None:
+            avg_sliding = (left_sliding + right_sliding) / (2.0 * max(eval_length, 1.0))
+            topline_metrics["topline/avg_sliding_vel"] = avg_sliding
 
         # Static config gating parameters (log if present)
         if cfg["reward_weights"].get("tracking_gate_velocity") is not None:
