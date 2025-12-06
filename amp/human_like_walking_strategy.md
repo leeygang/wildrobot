@@ -23,15 +23,20 @@ Success Criteria:
 ## Phase 1: Contact Pattern Stabilization
 Focus: Achieve consistent alternating foot contacts, reduce sliding, maintain upright balance.
 Add:
-- Foot contact reward (moderate)
-- Sliding penalty (light)
+- Foot contact reward (moderate, weight: 5.0)
+- Sliding penalty (light, weight: 2.0)
 - Optional phase clock (already present) leveraged for alignment metric.
-Metrics:
-- Contact alternation ratio (L→R→L cycles / total steps)
-- Sliding distance per meter traveled
+Metrics to Monitor:
+- **contact/alternation_ratio**: L→R→L cycle quality (0.0-1.0)
+- **contact/left_sliding_vel & contact/right_sliding_vel**: Foot sliding speed
+- **forward_velocity**: Maintain Phase 0 baseline (≥0.55 m/s)
+- **success_rate**: Episode completion without falls (>55%)
+- **contact/both_meet_air_time_threshold**: Proper swing phase (≥0.15s)
 Progress Gate to Phase 2 when:
-- Alternation ratio > 0.85
-- Sliding < 0.15 m/s average
+- ✅ Alternation ratio > 0.85 (85%)
+- ✅ Average sliding velocity < 0.15 m/s
+- ✅ Forward velocity ≥ 0.55 m/s (maintained from Phase 0)
+- ✅ Success rate > 55% (falls < 45%)
 
 ---
 ## Phase 2: Motion Reference Integration (Imitation)
@@ -100,24 +105,28 @@ Add safety envelopes (joint limits, torque clamps).
 
 ---
 ## Key Metrics Dashboard (Always Track)
-- forward_velocity_mean / commanded_velocity_mean
-- tracking_gate_active_rate
-- velocity_threshold_scale
-- foot_contact_alternation_ratio
-- sliding_speed_avg
-- fall_rate
-- style_discriminator_score
-- energy_per_meter
-- joint_acceleration_norm
-- recovery_success_rate
+- **forward_velocity**: Mean forward velocity (m/s)
+- **tracking_gate_active_rate**: % of time velocity tracking is disabled
+- **velocity_threshold_scale**: Penalty decay schedule (1.0 → 0.0)
+- **contact/alternation_ratio**: Gait cycle quality (0.0-1.0, target >0.85)
+- **contact/left_sliding_vel & contact/right_sliding_vel**: Foot sliding (m/s, target <0.15)
+- **success_rate**: Episode completion rate (%, target >55%)
+- **contact/both_meet_air_time_threshold**: Proper swing phase (0.0-1.0)
+- **reward_per_step**: Total reward (watch for plateau or collapse)
+- **style_discriminator_score**: (Phase 3+)
+- **energy_per_meter**: (Phase 4+)
+- **joint_acceleration_norm**: (Phase 4+)
+- **recovery_success_rate**: (Phase 5+)
 
 ---
 ## Intervention Guide
-If Gate Active Rate High: Lower gate velocity or increase gate scale.
-If Velocity Plateau <0.4 m/s: Increase forward_velocity_bonus slightly OR reduce early penalties (velocity_threshold_penalty weight).
-If Sliding Persists: Increase foot_sliding penalty gradually (1.0 → 2.0 → 3.0) only after forward velocity stable.
-If Energy Cost Explodes: Delay acceleration penalty; confirm torque weight not too low (avoid reckless compensation).
-If Style Discriminator Collapses: Increase entropy bonus temporarily; reduce style weight ramp speed.
+**If Gate Active Rate High**: Lower gate velocity or increase gate scale.
+**If Velocity Plateau <0.4 m/s**: Increase forward_velocity_bonus slightly OR reduce early penalties (velocity_threshold_penalty weight).
+**If Alternation Ratio Stuck <0.70 after 5M steps**: Increase foot_contact reward weight (5.0 → 7.0) OR adjust phase_period for gait timing.
+**If Sliding Persists >0.25 m/s**: Increase foot_sliding penalty gradually (2.0 → 3.0 → 5.0) only after forward velocity stable.
+**If Catastrophic Forgetting Detected**: Load checkpoint from peak steps and reduce learning rate OR adjust reward weights.
+**If Energy Cost Explodes**: Delay acceleration penalty; confirm torque weight not too low (avoid reckless compensation).
+**If Style Discriminator Collapses**: Increase entropy bonus temporarily; reduce style weight ramp speed.
 
 ---
 ## Simplified Timeline (Approximate)
@@ -133,9 +142,15 @@ If Style Discriminator Collapses: Increase entropy bonus temporarily; reduce sty
 
 ---
 ## Next Immediate Actions
-1. Validate env_global_step decay schedule triggers (monitor velocity_threshold_scale decreasing after 150k cumulative steps).
-2. Monitor forward velocity trend post config changes (target >0.4 early).
-3. Introduce contact alternation metric (if not yet logged) to baseline dashboard.
+1. ✅ Contact alternation ratio implemented and tracked in `contact/alternation_ratio` metric
+2. ✅ Early stopping protection added to prevent catastrophic forgetting (60-98% compute savings)
+3. ✅ Phase 1 config optimized: foot_contact=5.0, 10M steps, phase0 warm-start
+4. ⏳ Run Phase 1 training and monitor for success criteria:
+   ```bash
+   python3 amp/train.py amp/phase1_contact.yaml
+   python3 amp/monitor_training.py amp/training_logs/<dir> --watch --force_stop
+   ```
+5. ⏳ Watch for alternation_ratio >85% and sliding <0.15 m/s to gate Phase 2
 
 ---
 ## Roadmap TODO Checklist
@@ -148,9 +163,11 @@ Use this phased checklist; advance only when criteria met.
 - [ ] Foot contact & sliding metrics non-zero
 
 ### Phase 1: Contact Pattern
-- [ ] Alternation ratio > 0.85
-- [ ] Sliding speed avg < 0.15 m/s
-- [ ] Fall rate < 0.45
+- [ ] `contact/alternation_ratio` > 0.85 (85%)
+- [ ] `contact/left_sliding_vel` & `contact/right_sliding_vel` avg < 0.15 m/s
+- [ ] `forward_velocity` ≥ 0.55 m/s (maintained)
+- [ ] `success_rate` > 0.55 (fall rate < 0.45)
+- [ ] `contact/both_meet_air_time_threshold` > 0.7 (70% of episodes)
 
 ### Phase 2: Imitation
 - [ ] Pose tracking RMSE < 0.25

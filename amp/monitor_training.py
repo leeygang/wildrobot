@@ -171,6 +171,98 @@ def _phase0_checks(latest: dict, first: dict, mid: dict, config: dict, progress_
     return issues, warnings, good
 
 
+def _detect_catastrophic_forgetting(metrics: list, current_steps: int) -> tuple[bool, dict]:
+    """Detect catastrophic forgetting by tracking peak performance degradation.
+    
+    Based on analysis of 3 trainings:
+    - BASELINE: peaks 8.8M (31.10), collapses by 11M (<50% peak) - 64% wasted compute
+    - NEW: peaks 15.9M (28.96), collapses by 19M (<50% peak) - 30% wasted compute
+    - LATEST: peaks 0.1M (22.57), collapses by 0.9M (<50% peak) - 98% wasted compute
+    
+    Strategy:
+    - Track best reward in last 2M steps (rolling window for recent peak)
+    - If current reward < 60% of recent peak AND stayed low for 1M steps, trigger stop
+    - Prevents early false positives while catching sustained degradation
+    - Minimum 2M steps before allowing early stop
+    
+    Returns:
+        (should_stop, info_dict)
+    """
+    if len(metrics) < 10:
+        return False, {"reason": "insufficient_data", "evals": len(metrics)}
+    
+    rewards = [entry['summary']['reward_per_step'] for entry in metrics]
+    steps = [entry['step'] for entry in metrics]
+    
+    # Find global peak
+    peak_reward = max(rewards)
+    peak_idx = rewards.index(peak_reward)
+    peak_step = steps[peak_idx]
+    
+    # Find recent peak (last 2M steps)
+    recent_window_start = current_steps - 2_000_000
+    recent_indices = [i for i, s in enumerate(steps) if s >= recent_window_start]
+    
+    if len(recent_indices) < 5:
+        return False, {"reason": "insufficient_recent_data", "recent_evals": len(recent_indices)}
+    
+    recent_rewards = [rewards[i] for i in recent_indices]
+    recent_peak = max(recent_rewards)
+    
+    # Check if in sustained degradation (last 1M steps all below threshold)
+    sustained_window_start = current_steps - 1_000_000
+    sustained_indices = [i for i, s in enumerate(steps) if s >= sustained_window_start]
+    
+    if len(sustained_indices) < 3:
+        return False, {"reason": "insufficient_sustained_window", "sustained_evals": len(sustained_indices)}
+    
+    sustained_rewards = [rewards[i] for i in sustained_indices]
+    sustained_max = max(sustained_rewards)
+    current_reward = rewards[-1]
+    
+    # Trigger conditions:
+    # 1. Peak was significant (>10 reward) - not just noise
+    # 2. Degraded below 50% of global peak
+    # 3. Best in last 1M steps is also below 60% of global peak (sustained degradation)
+    # 4. Current reward hasn't recovered (< 40% of global peak)
+    
+    # Use stricter thresholds based on global peak for clearer signal
+    degraded_threshold = 0.50  # Current < 50% of peak
+    sustained_threshold = 0.60  # Sustained max < 60% of peak
+    critical_threshold = 0.40   # Current < 40% of peak (very degraded)
+    
+    is_peak_significant = peak_reward > 10.0
+    is_degraded = current_reward < (peak_reward * degraded_threshold)
+    is_sustained = sustained_max < (peak_reward * sustained_threshold)
+    is_critical = current_reward < (peak_reward * critical_threshold)
+    
+    should_stop = (
+        is_peak_significant and 
+        ((is_degraded and is_sustained) or is_critical) and  # Either sustained degradation OR critical drop
+        current_steps >= 2_000_000  # Minimum 2M steps before allowing early stop
+    )
+    
+    info = {
+        "peak_reward": peak_reward,
+        "peak_step": peak_step,
+        "recent_peak": recent_peak,
+        "current_reward": current_reward,
+        "sustained_max": sustained_max,
+        "degradation_pct": ((current_reward - peak_reward) / peak_reward * 100) if peak_reward > 0 else 0,
+        "current_vs_peak_pct": (current_reward / peak_reward * 100) if peak_reward > 0 else 0,
+        "sustained_vs_peak_pct": (sustained_max / peak_reward * 100) if peak_reward > 0 else 0,
+        "is_peak_significant": is_peak_significant,
+        "is_degraded": is_degraded,
+        "is_sustained": is_sustained,
+        "is_critical": is_critical,
+        "degraded_threshold": degraded_threshold,
+        "sustained_threshold": sustained_threshold,
+        "critical_threshold": critical_threshold,
+    }
+    
+    return should_stop, info
+
+
 def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
     """Monitor training progress and check for issues.
 
@@ -193,9 +285,10 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
             print("⏳ Training just started, not enough data yet...")
             return {"status": "early", "evaluations": len(lines)}
 
-        first = json.loads(lines[0])
-        latest = json.loads(lines[-1])
-        mid = json.loads(lines[len(lines)//2]) if len(lines) > 2 else first
+        metrics_list = [json.loads(line) for line in lines]
+        first = metrics_list[0]
+        latest = metrics_list[-1]
+        mid = metrics_list[len(metrics_list)//2] if len(metrics_list) > 2 else first
 
     # Load config
     config_file = log_dir / "config.json"
@@ -209,6 +302,9 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
 
     current_steps = latest['step']
     progress_pct = (current_steps / total_steps) * 100
+
+    # Check for catastrophic forgetting
+    should_early_stop, forgetting_info = _detect_catastrophic_forgetting(metrics_list, current_steps)
 
     print("="*80)
     print(f"TRAINING MONITOR: {log_dir.name}")
@@ -257,6 +353,11 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
         print(f"  Gate active%: {gate_latest:>8.2%}")
     if scale_latest is not None:
         print(f"  VelThreshScale:{scale_latest:>8.2f}")
+    
+    # Phase 1 contact metrics (if available)
+    alternation_ratio = latest['summary'].get('contact_alternation_ratio')
+    if alternation_ratio is not None:
+        print(f"  Alternation:  {alternation_ratio:>8.2%} (target: >85%)")
 
     # Top penalties and rewards
     print(f"\n🔴 TOP PENALTIES:")
@@ -301,6 +402,33 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
         else:
             print(f"  ✅ No penalty - robot moving fast enough!")
             print(f"     (Velocity >= 0.3 m/s threshold)")
+
+    # Early stopping analysis
+    if forgetting_info.get('reason') != 'insufficient_data':
+        print(f"\n🧠 EARLY STOPPING ANALYSIS:")
+        if should_early_stop:
+            print(f"  🚨 CATASTROPHIC FORGETTING DETECTED!")
+            print(f"  Peak reward:      {forgetting_info['peak_reward']:>8.2f} @ {forgetting_info['peak_step']/1e6:.1f}M steps")
+            print(f"  Recent peak:      {forgetting_info['recent_peak']:>8.2f} (last 2M steps)")
+            print(f"  Current reward:   {forgetting_info['current_reward']:>8.2f}")
+            print(f"  Sustained max:    {forgetting_info['sustained_max']:>8.2f} (last 1M steps)")
+            print(f"  Degradation:      {forgetting_info['degradation_pct']:>8.1f}% from recent peak")
+            print(f"  Current vs peak:  {forgetting_info['current_vs_peak_pct']:>8.1f}% of global peak")
+            print(f"  💡 Training has degraded and not recovered for 1M+ steps")
+        else:
+            print(f"  Peak reward:      {forgetting_info['peak_reward']:>8.2f} @ {forgetting_info['peak_step']/1e6:.1f}M steps")
+            print(f"  Recent peak:      {forgetting_info['recent_peak']:>8.2f} (last 2M steps)")
+            print(f"  Current reward:   {forgetting_info['current_reward']:>8.2f}")
+            print(f"  Status:           ✅ No sustained degradation detected")
+            degraded_flags = []
+            if not forgetting_info['is_peak_significant']:
+                degraded_flags.append("peak too low")
+            if not forgetting_info['is_degraded']:
+                degraded_flags.append("not degraded")
+            if not forgetting_info['is_sustained']:
+                degraded_flags.append("not sustained")
+            if degraded_flags:
+                print(f"  Reason:           {', '.join(degraded_flags)}")
 
     # Health checks
     print(f"\n🔍 HEALTH CHECKS:")
@@ -381,6 +509,26 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
 
     # Recommendations
     print(f"\n💡 RECOMMENDATION:")
+    
+    # Priority 1: Check for catastrophic forgetting (overrides all other checks)
+    if should_early_stop:
+        print(f"  🚨 STOP TRAINING IMMEDIATELY - Catastrophic forgetting detected!")
+        print(f"     Peak: {forgetting_info['peak_reward']:.2f} @ {forgetting_info['peak_step']/1e6:.1f}M steps")
+        print(f"     Current: {forgetting_info['current_reward']:.2f} ({forgetting_info['current_vs_peak_pct']:.1f}% of peak)")
+        print(f"     Degraded for 1M+ steps with no recovery")
+        print(f"     💡 Load checkpoint from {forgetting_info['peak_step']/1e6:.1f}M steps and adjust hyperparameters")
+        status = "catastrophic_forgetting"
+        return {
+            "status": status,
+            "current_steps": current_steps,
+            "progress_pct": progress_pct,
+            "issues": issues,
+            "warnings": warnings,
+            "good_signs": good_signs,
+            "forgetting_detected": True,
+            "forgetting_info": forgetting_info,
+        }
+    
     # Phase-aware tightening: For Phase 0, only mark critical on sustained stall
     phase = _detect_phase(config, log_dir, phase_override)
     latest_vel = latest['summary'].get('forward_velocity', 0.0)
@@ -471,6 +619,8 @@ def monitor_training(log_dir: Path, phase_override: str | None = None) -> dict:
         "issues": issues,
         "warnings": warnings,
         "good_signs": good_signs,
+        "forgetting_detected": should_early_stop,
+        "forgetting_info": forgetting_info if should_early_stop else None,
     }
 
 
@@ -553,6 +703,28 @@ Examples:
                     print(f"\n🎉 TRAINING COMPLETE!")
                     print(f"   Final check performed.")
                     break
+
+                # Check for catastrophic forgetting (highest priority)
+                if result["status"] == "catastrophic_forgetting":
+                    print(f"\n🚨 CATASTROPHIC FORGETTING DETECTED!")
+                    
+                    if args.force_stop:
+                        print(f"   --force_stop enabled: Attempting to kill training...")
+                        success = kill_local_training()
+                        
+                        if success:
+                            print(f"\n   ✅ Training stopped successfully")
+                            print(f"   Load checkpoint from {result['forgetting_info']['peak_step']/1e6:.1f}M steps")
+                            print(f"   Stopping monitor.")
+                            sys.exit(1)
+                        else:
+                            print(f"\n   ⚠️  Could not kill training automatically")
+                            print(f"   Please stop manually and load checkpoint from {result['forgetting_info']['peak_step']/1e6:.1f}M steps")
+                            sys.exit(1)
+                    else:
+                        print(f"   💡 Run with --force_stop to automatically kill training")
+                        print(f"   Or manually stop and load checkpoint from {result['forgetting_info']['peak_step']/1e6:.1f}M steps")
+                        break
 
                 if result["status"] == "critical":
                     print(f"\n🚨 CRITICAL ISSUES DETECTED!")

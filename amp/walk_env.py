@@ -233,6 +233,9 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "contact/left_meets_air_time_threshold": jp.zeros(()),
             "contact/right_meets_air_time_threshold": jp.zeros(()),
             "contact/both_meet_air_time_threshold": jp.zeros(()),
+            "contact/alternation_ratio": jp.zeros(()),
+            "contact/alternation_cycles": jp.zeros(()),
+            "contact/total_transitions": jp.zeros(()),
             # Scheduling / gating diagnostics
             "reward/tracking_gate_active": jp.zeros((), dtype=jp.float32),
             "reward/velocity_threshold_scale": jp.ones((), dtype=jp.float32),
@@ -246,6 +249,12 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             "prev_x_position": jp.zeros(()),
             "left_air_time": jp.zeros(()),
             "right_air_time": jp.zeros(()),
+            # Alternation tracking state
+            "prev_left_contact": jp.zeros(()),
+            "prev_right_contact": jp.zeros(()),
+            "last_contact_foot": jp.zeros(()),  # 0=none, 1=left, 2=right
+            "alternation_cycles": jp.zeros(()),  # Count of L→R→L or R→L→R cycles
+            "total_transitions": jp.zeros(()),  # Total contact transitions
         }
 
         state = base_env.WildRobotEnvState(
@@ -408,6 +417,90 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             state.metrics["contact/left_meets_air_time_threshold"] = left_meets_threshold
             state.metrics["contact/right_meets_air_time_threshold"] = right_meets_threshold
             state.metrics["contact/both_meet_air_time_threshold"] = left_meets_threshold * right_meets_threshold
+
+        # === ALTERNATION RATIO TRACKING (Phase 1) ===
+        if self._use_contact_rewards:
+            # Get current contact states (binary: 1=contact, 0=no contact)
+            left_contact = jp.where(left_force > 1.0, 1.0, 0.0)
+            right_contact = jp.where(right_force > 1.0, 1.0, 0.0)
+            
+            # Get previous states
+            prev_left = state.info.get("prev_left_contact", 0.0)
+            prev_right = state.info.get("prev_right_contact", 0.0)
+            last_contact_foot = state.info.get("last_contact_foot", 0.0)  # 0=none, 1=left, 2=right
+            alternation_cycles = state.info.get("alternation_cycles", 0.0)
+            total_transitions = state.info.get("total_transitions", 0.0)
+            
+            # Detect transitions: from no contact to contact
+            left_transition = (prev_left < 0.5) & (left_contact > 0.5)
+            right_transition = (prev_right < 0.5) & (right_contact > 0.5)
+            
+            # Update last contact foot and count alternations
+            # L→R→L cycle: last=1 (left), now right transitions → last=2, then left transitions → cycle++
+            # R→L→R cycle: last=2 (right), now left transitions → last=1, then right transitions → cycle++
+            new_last_contact = last_contact_foot
+            new_cycles = alternation_cycles
+            new_transitions = total_transitions
+            
+            # Left foot contact transition
+            new_last_contact = jp.where(
+                left_transition,
+                jp.where(last_contact_foot == 2.0, 1.0, last_contact_foot),  # If was right, switch to left
+                new_last_contact
+            )
+            new_cycles = jp.where(
+                left_transition & (last_contact_foot == 2.0),  # R→L transition completes R→L→R cycle
+                new_cycles + 0.5,  # Half cycle completed
+                new_cycles
+            )
+            new_transitions = jp.where(left_transition, new_transitions + 1.0, new_transitions)
+            
+            # Right foot contact transition
+            new_last_contact = jp.where(
+                right_transition,
+                jp.where(last_contact_foot == 1.0, 2.0, last_contact_foot),  # If was left, switch to right
+                new_last_contact
+            )
+            new_cycles = jp.where(
+                right_transition & (last_contact_foot == 1.0),  # L→R transition completes L→R→L cycle
+                new_cycles + 0.5,  # Half cycle completed
+                new_cycles
+            )
+            new_transitions = jp.where(right_transition, new_transitions + 1.0, new_transitions)
+            
+            # If first transition ever, set last_contact_foot
+            new_last_contact = jp.where(
+                (last_contact_foot == 0.0) & left_transition,
+                1.0,
+                new_last_contact
+            )
+            new_last_contact = jp.where(
+                (last_contact_foot == 0.0) & right_transition,
+                2.0,
+                new_last_contact
+            )
+            
+            # Calculate alternation ratio: cycles / expected_cycles
+            # For N transitions with perfect alternation: (N-1)/2 full cycles
+            # Example: L→R→L→R = 4 transitions, 3 half-cycles = 1.5 full cycles = (4-1)/2
+            expected_cycles = (new_transitions - 1.0) / 2.0
+            alternation_ratio = jp.where(
+                new_transitions > 2.0,
+                new_cycles / expected_cycles,
+                0.0  # Not enough data yet
+            )
+            
+            # Update state info
+            state.info["prev_left_contact"] = left_contact
+            state.info["prev_right_contact"] = right_contact
+            state.info["last_contact_foot"] = new_last_contact
+            state.info["alternation_cycles"] = new_cycles
+            state.info["total_transitions"] = new_transitions
+            
+            # Update metrics
+            state.metrics["contact/alternation_ratio"] = alternation_ratio
+            state.metrics["contact/alternation_cycles"] = new_cycles
+            state.metrics["contact/total_transitions"] = new_transitions
 
         # Update state info for next step
         state.info["step_count"] = new_step_count

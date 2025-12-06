@@ -129,11 +129,12 @@ reward_weights:
   joint_torque: 7e-8         # Was 1e-7 - reduce energy penalty
   mechanical_power: 7e-6     # Was 1e-5 - reduce energy penalty
 
-  # === Contact rewards - IMPROVED REBALANCING ===
-  # Reduced from 5.0 to prevent reward hacking and catastrophic forgetting
-  #   Analysis: weight=5.0 caused robot to prefer standing (0.130 m/s) over walking (0.649 m/s)
-  #   At 1.0, contact becomes a constraint rather than the primary objective
-  foot_contact: 1.0
+  # === Contact rewards - RESTORED TO BASELINE ===
+  # Restored from 1.0 to 5.0 to match phase0 training (smooth transfer learning)
+  #   Analysis of LATEST training: foot_contact=1.0 conflicts with phase0's 5.0
+  #   Result: Early peak (0.1M) from phase0, rapid collapse as policy adapts to new rewards
+  #   Solution: Keep consistent reward structure for stable curriculum learning
+  foot_contact: 5.0
   foot_sliding: 2.0
   foot_air_time: 0.0         # Keep disabled until baseline gait stabilizes
 
@@ -143,8 +144,8 @@ reward_weights:
   tracking_gate_scale: 0.35      # Slightly lower to ease early exploration; target ≤30% mid-phase
 
 training:
-  num_timesteps: 20000000
-  num_evals: 200
+  num_timesteps: 10000000   # Reduced from 20M: all trainings peak by 9M, then degrade
+  num_evals: 100            # Proportionally reduced (was 200)
   episode_length: 600
   seed: 0
 
@@ -198,6 +199,10 @@ checkpointing:
   save_interval: 500000      # Save checkpoint every N steps (500K default)
   save_best: true            # Save best checkpoint based on reward
   keep_checkpoints: 5        # Number of periodic checkpoints to keep (optional)
+  
+  # Warm-start from phase0 foundation training
+  # Use: --load_checkpoint flag will load this by default if not overridden
+  load_checkpoint: "saved_checkpoints/phase0_final_policy.pkl"
 
 validation:
   metrics:
