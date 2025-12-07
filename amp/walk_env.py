@@ -119,6 +119,7 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
         self._use_contact_rewards = reward_weights.get("foot_contact", 0.0) > 0
         self._use_sliding_penalty = reward_weights.get("foot_sliding", 0.0) > 0
         self._use_air_time_reward = reward_weights.get("foot_air_time", 0.0) > 0
+        self._use_contact_alternation = reward_weights.get("contact_alternation", 0.0) > 0
 
         if self._use_contact_rewards:
             self._foot_contact_reward = contact_rewards.FootContactReward(
@@ -501,6 +502,18 @@ class WildRobotWalkEnv(base_env.WildRobotEnvBase):
             state.metrics["contact/alternation_ratio"] = alternation_ratio
             state.metrics["contact/alternation_cycles"] = new_cycles
             state.metrics["contact/total_transitions"] = new_transitions
+
+        # === CONTACT ALTERNATION REWARD (Phase 1 Step 3) ===
+        # Add reward for good alternation ratio to prevent drift
+        if self._use_contact_alternation:
+            # Reward directly proportional to alternation ratio
+            # Perfect alternation (1.0) gets full reward, poor alternation (0.5) gets half
+            contact_alternation_reward = alternation_ratio
+            
+            # Add to reward components and apply weight
+            reward_components["contact_alternation"] = contact_alternation_reward
+            contact_alternation_weight = float(self._reward_weights.get("contact_alternation", 0.0))
+            reward = reward + contact_alternation_weight * contact_alternation_reward
 
         # Update state info for next step
         state.info["step_count"] = new_step_count

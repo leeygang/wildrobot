@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -681,6 +681,10 @@ Examples:
         print(f"   Press Ctrl+C to stop\n")
 
         check_count = 0
+        # Require multiple consecutive confirmations before treating a run as complete.
+        completion_streak = 0
+        completion_required = 3
+        completion_threshold = 99.9
         try:
             while True:
                 check_count += 1
@@ -699,10 +703,26 @@ Examples:
                 result = monitor_training(log_dir, None if args.phase in (None, "auto") else args.phase)
 
                 # Check if training is complete or has critical issues
-                if result.get("progress_pct", 0) >= 99.9:
-                    print(f"\n🎉 TRAINING COMPLETE!")
-                    print(f"   Final check performed.")
-                    break
+                pct = float(result.get("progress_pct", 0.0))
+                if pct >= completion_threshold:
+                    completion_streak += 1
+                    print(f"\n🎉 Progress at {pct:.1f}% >= {completion_threshold}%. Confirmation {completion_streak}/{completion_required}.")
+                    # If the run reports progress >100% this is suspicious (mismatched config/metrics);
+                    # warn the user but still require confirmations before exiting.
+                    if pct > 100.0:
+                        print(f"   ⚠️  Progress ({pct:.1f}%) exceeds configured total_steps. Check run `config.json` and `metrics.jsonl` semantics.")
+
+                    if completion_streak >= completion_required:
+                        print(f"\n🎉 TRAINING COMPLETE!")
+                        print(f"   Final check performed.")
+                        break
+                    else:
+                        print("   Waiting for consecutive confirmations before exiting the monitor.")
+                else:
+                    # Reset streak when progress falls below threshold
+                    if pct > 100.0:
+                        print(f"\n⚠️  Progress ({pct:.1f}%) exceeds configured total_steps - treating as suspicious and continuing to monitor.")
+                    completion_streak = 0
 
                 # Check for catastrophic forgetting (highest priority)
                 if result["status"] == "catastrophic_forgetting":
@@ -724,7 +744,10 @@ Examples:
                     else:
                         print(f"   💡 Run with --force_stop to automatically kill training")
                         print(f"   Or manually stop and load checkpoint from {result['forgetting_info']['peak_step']/1e6:.1f}M steps")
-                        break
+                        print(f"   ⏱  Continuing to monitor (no --force_stop). Will re-check at the next interval.")
+                        # Do not stop the monitor loop; allow users to intervene manually
+                        # Continue to next check
+                        continue
 
                 if result["status"] == "critical":
                     print(f"\n🚨 CRITICAL ISSUES DETECTED!")
@@ -754,12 +777,15 @@ Examples:
                                 print(f"   Stopping monitor anyway.")
                                 sys.exit(1)
                     else:
-                        print(f"   Stopping monitor. Please review the training.")
-                        print(f"   Hint: Use --force_stop to automatically kill training on critical issues")
-                        sys.exit(1)
+                            print(f"   ⚠️  Recommendation: Stop training and inspect logs/checkpoints")
+                            print(f"   Hint: Run this script with --force_stop to automatically kill local training when critical issues are detected")
+                            print(f"   ⏱  Continuing to monitor (no --force_stop). Will re-check at the next interval.")
+                            # Do not exit; continue monitoring so user can intervene
+                            continue
 
-                # Wait for next check
-                print(f"\n⏳ Next check in {args.interval} minutes...")
+                # Wait for next check (show clock time for next check)
+                next_time = datetime.now() + timedelta(minutes=args.interval)
+                print(f"\n⏳ Next check in {args.interval} minutes ({next_time:%H:%M})...")
                 print(f"   (Press Ctrl+C to stop monitoring)")
                 time.sleep(args.interval * 60)
 

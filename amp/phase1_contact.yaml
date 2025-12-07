@@ -147,14 +147,7 @@ reward_weights:
   # === Existential penalty ===
   existential: 0.5
   
-  # === Tracking gate - RAISED THRESHOLD (2025-12-06) ===
-  # PROBLEM: Gate at 0.08 m/s too easy to exploit by barely moving
-  #          Policy can oscillate slowly and still activate gate 39% of time
-  #          Then accepts reduced tracking rewards to avoid velocity_threshold_penalty
-  # SOLUTION: Raise to 0.15 m/s - must actually track well to activate gate
-  #          At target 0.7 m/s, must achieve 0.55-0.85 m/s (±0.15 tolerance)
-  tracking_gate_velocity: 0.15   # CHANGED: 0.08 → 0.15 (prevent slow exploitation)
-  tracking_gate_scale: 0.35
+  # Tracking gate removed from Phase 1 configs; gating logic deprecated.
 
 training:
   num_timesteps: 2000000    # PHASE 1 TEST: 2M steps for quick verification (~30-45 min)

@@ -304,11 +304,11 @@ def generate_and_log_metrics(
             # Robot state metrics
             "topline/height": height,
 
-            # Training efficiency
-            "topline/sps": sps,
+            # Training efficiency (moved to debug metrics)
             # Diagnostics (gating + scheduling)
-            "topline/tracking_gate_active_rate": gate_active_rate,
-            "topline/velocity_threshold_scale": velocity_threshold_scale_val,
+            # NOTE: tracking-gate diagnostics are runtime/diagnostic fields and
+            # should not be part of the high-level topline metrics. They are
+            # instead logged under debug metrics below.
         }
         
         # Phase 1 contact metrics (if available)
@@ -323,11 +323,7 @@ def generate_and_log_metrics(
             avg_sliding = (left_sliding + right_sliding) / (2.0 * max(eval_length, 1.0))
             topline_metrics["topline/avg_sliding_vel"] = avg_sliding
 
-        # Static config gating parameters (log if present)
-        if cfg["reward_weights"].get("tracking_gate_velocity") is not None:
-            topline_metrics["topline/tracking_gate_velocity"] = cfg["reward_weights"].get("tracking_gate_velocity")
-        if cfg["reward_weights"].get("tracking_gate_scale") is not None:
-            topline_metrics["topline/tracking_gate_scale"] = cfg["reward_weights"].get("tracking_gate_scale")
+        # Static config gating parameters are diagnostic; move to debug logs.
 
         wandb.log(topline_metrics)
 
@@ -361,6 +357,16 @@ def generate_and_log_metrics(
                                "eval/episode_height", "eval/episode_success", "eval/episode_distance_walked"]:
                     debug_name = key.replace("eval/episode_", "").replace("eval/", "")
                     debug_metrics[f"debug/other/{debug_name}"] = value / max(eval_length, 1.0) if "episode" in key else value
+
+        # Add gating diagnostics, scheduling and runtime diagnostics to debug metrics
+        debug_metrics["debug/other/tracking_gate_active_rate"] = float(gate_active_rate)
+        debug_metrics["debug/other/velocity_threshold_scale"] = float(velocity_threshold_scale_val)
+        # Log training steps-per-second as a debug/runtime metric (not topline)
+        debug_metrics["debug/other/sps"] = float(sps)
+        if cfg["reward_weights"].get("tracking_gate_velocity") is not None:
+            debug_metrics["debug/config/tracking_gate_velocity"] = cfg["reward_weights"].get("tracking_gate_velocity")
+        if cfg["reward_weights"].get("tracking_gate_scale") is not None:
+            debug_metrics["debug/config/tracking_gate_scale"] = cfg["reward_weights"].get("tracking_gate_scale")
 
         wandb.log(debug_metrics)
 
