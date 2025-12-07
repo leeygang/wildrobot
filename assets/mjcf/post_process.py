@@ -64,6 +64,59 @@ def ensure_root_body_pose(xml_file):
     tree.write(xml_file)
 
 
+def merge_default_blocks(xml_file):
+    """Merge multiple top-level <default> blocks into a single <default> block.
+    
+    onshape-to-robot sometimes generates multiple top-level <default> blocks
+    (one from the base config and one from additional XML includes).
+    MuJoCo allows this, but it's cleaner to have a single top-level default.
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    
+    # Find all top-level <default> elements
+    defaults = root.findall("default")
+    
+    if len(defaults) <= 1:
+        return  # Nothing to merge
+    
+    # Keep the first default block and merge others into it
+    main_default = defaults[0]
+    
+    for other_default in defaults[1:]:
+        # Move all children from other default blocks into the main one
+        for child in list(other_default):
+            main_default.append(child)
+        # Remove the now-empty default block
+        root.remove(other_default)
+    
+    ET.indent(tree, space="  ", level=0)
+    tree.write(xml_file)
+    print(f"Merged {len(defaults)} default blocks into one")
+
+
+def fix_collision_default_geom(xml_file):
+    """Fix collision default class to include type='sphere' for missing geometry types.
+    
+    The collision default class has `<geom group="3"/>` without a type,
+    which causes Isaac Sim to default to sphere and generate warnings.
+    We explicitly set type='sphere' to silence the warning.
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    
+    # Find the collision default class
+    for default in root.findall(".//default[@class='collision']"):
+        for geom in default.findall("geom"):
+            if geom.get("type") is None:
+                # Set explicit type to sphere (MuJoCo's default for collision)
+                geom.set("type", "sphere")
+                print("Fixed collision default geom: added type='sphere'")
+    
+    ET.indent(tree, space="  ", level=0)
+    tree.write(xml_file)
+
+
 def add_common_includes(xml_file):
     """Insert common include files as the first children of the root <mujoco>.
 
@@ -111,6 +164,8 @@ def main() -> None:
     add_collision_names(xml_file)
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
+    merge_default_blocks(xml_file)
+    fix_collision_default_geom(xml_file)
     print("Post process completed")
 
 
