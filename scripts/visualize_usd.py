@@ -12,8 +12,7 @@ parser.add_argument("usd_path", nargs="?", type=str, help="Path to the USD file 
 parser.add_argument("--usd", dest="usd_opt", type=str, help="Path to the USD file to visualize (optional flag)")
 parser.add_argument("--headless", action="store_true", help="Run in headless mode")
 parser.add_argument("--paused", action="store_true", help="Start paused (no physics stepping)")
-parser.add_argument("--height", type=float, default=None, help="Initial Z height for articulation root (meters). If omitted, auto-height is used.")
-# Auto-height is enabled by default when --height is not provided
+parser.add_argument("--height", type=float, default=0.48, help="Initial Z height for articulation root (meters)")
 args_cli = parser.parse_args()
 usd_path_cli = args_cli.usd_opt or args_cli.usd_path
 if not usd_path_cli:
@@ -106,47 +105,9 @@ def main():
     print("[DEBUG] Target root xformOpOrder (pre-height):", xformable_target.GetXformOpOrderAttr().Get())
     ops_pre = xformable_target.GetOrderedXformOps()
     print("[DEBUG] Target root authored ops (pre-height):", [op.GetOpType() for op in ops_pre])
-    # Optionally auto-compute height from world bounds
-    auto_height = None
-    if args_cli.height is None:
-        # Compute bounds manually from Mesh extents transformed to world space
-        min_z = None
-        time = Usd.TimeCode.Default()
-        for child in target_prim.GetChildren():
-            mesh = UsdGeom.Mesh(child)
-            if not mesh:
-                # Recurse one level into children groups
-                for grand in child.GetChildren():
-                    mesh2 = UsdGeom.Mesh(grand)
-                    if not mesh2:
-                        continue
-                    extent = mesh2.GetExtentAttr().Get(time)
-                    if extent and len(extent) == 2:
-                        # Two corners: min and max in local space
-                        xf = UsdGeom.Xformable(grand).ComputeLocalToWorldTransform(time)
-                        # Transform both corners and take z-min
-                        pmin = xf.Transform(extent[0])
-                        pmax = xf.Transform(extent[1])
-                        zmin_local = min(pmin[2], pmax[2])
-                        if (min_z is None) or (zmin_local < min_z):
-                            min_z = zmin_local
-                continue
-            extent = mesh.GetExtentAttr().Get(time)
-            if extent and len(extent) == 2:
-                xf = UsdGeom.Xformable(child).ComputeLocalToWorldTransform(time)
-                pmin = xf.Transform(extent[0])
-                pmax = xf.Transform(extent[1])
-                zmin_local = min(pmin[2], pmax[2])
-                if (min_z is None) or (zmin_local < min_z):
-                    min_z = zmin_local
-        if min_z is not None:
-            margin = 0.05
-            auto_height = max(0.0, -min_z + margin)
-            print(f"[DEBUG] Auto-fit height computed: min_z={min_z:.4f} -> height={auto_height:.4f}")
-        else:
-            print("[DEBUG] Auto-fit height unavailable: no mesh extents; falling back to --height")
-    # If --height provided, it overrides auto-height; else use computed auto-height (or 0.0 fallback)
-    height_to_apply = float(args_cli.height if args_cli.height is not None else (auto_height if auto_height is not None else 0.0))
+    # Manual height only
+    # Apply manual height
+    height_to_apply = float(args_cli.height)
     print(f"[INFO] Height to apply: {height_to_apply:.4f} m")
     # Apply initial height at the import root to lift the entire hierarchy.
     # Some referenced USDs author an incompatible xform stack; force a clean stack and reset.
@@ -229,6 +190,7 @@ def main():
 
     # Play the simulator to activate physics
     sim.reset()
+    # No auto-height or fallback logic
     # Render once to ensure stage updates are visible
     sim.render()
 
