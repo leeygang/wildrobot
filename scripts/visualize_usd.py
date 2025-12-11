@@ -54,7 +54,9 @@ def main():
     print("=" * 80 + "\n")
 
     # Create simulation context
-    sim_cfg = SimulationCfg(dt=0.01, render_interval=1, gravity=(0.0, 0.0, 0.0) if args_cli.paused else None)
+    # Ensure gravity is always a real-valued vector. If paused, disable gravity with (0,0,0),
+    # otherwise use standard Earth gravity so SimulationContext can create the gravity tensor.
+    sim_cfg = SimulationCfg(dt=0.01, render_interval=1, gravity=(0.0, 0.0, 0.0) if args_cli.paused else (0.0, 0.0, -9.81))
     sim = SimulationContext(sim_cfg)
 
     # Design scene manually (ground + lights) before creating InteractiveScene
