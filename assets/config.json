@@ -4,7 +4,7 @@
     // and comment the default kp frictionloss etc
     // "documentId": "ba106cac193c0e2253e1958f",
     "url": "https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/c90fb7b3175cb93a0ac0750b",
-    "outputFormat": "urdf",
+    "outputFormat": "mujoco",
     "assemblyName": "WildRobotDev",
     "robot_name": "WildRobotDev",
     "output_filename": "wildrobot",
