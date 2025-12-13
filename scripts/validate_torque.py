@@ -49,57 +49,57 @@ import numpy as np
 
 
 # Test poses: joint positions in radians
-# Joint order (11 actuated DOFs - foot_roll joints now ENABLED for testing):
-# [r_hip_pitch, r_hip_roll, r_knee, r_ankle, r_foot_roll,
-#  l_hip_pitch, l_hip_roll, l_knee, l_ankle, l_foot_roll, waist]
+# Joint order (9 actuated DOFs - foot_roll joints are PASSIVE):
+# [r_hip_pitch, r_hip_roll, r_knee, r_ankle,
+#  l_hip_pitch, l_hip_roll, l_knee, l_ankle, waist]
 
 TEST_POSES = {
     "standing_neutral": np.array([
-        0.0, 0.0, 0.0, 0.0, 0.0,  # right leg
-        0.0, 0.0, 0.0, 0.0, 0.0,  # left leg
+        0.0, 0.0, 0.0, 0.0,  # right leg
+        0.0, 0.0, 0.0, 0.0,  # left leg
         0.0,  # waist
     ]),
 
     "right_leg_squat": np.array([
-        -0.3, 0.0, 0.6, -0.3, 0.0,   # right leg (squat, foot_roll=0)
-        0.0, 0.0, 0.0, 0.0, 0.0,     # left leg (straight)
+        -0.3, 0.0, 0.6, -0.3,   # right leg (squat)
+        0.0, 0.0, 0.0, 0.0,     # left leg (straight)
         0.0,  # waist
     ]),
 
     "single_leg_right": np.array([
-        -0.15, 0.03, 0.3, -0.15, 0.0,  # right leg (weight bearing, foot_roll=0)
-        0.1, -0.02, 0.2, -0.1, 0.0,    # left leg (lifted)
+        -0.15, 0.03, 0.3, -0.15,  # right leg (weight bearing)
+        0.1, -0.02, 0.2, -0.1,    # left leg (lifted)
         0.0,  # waist
     ]),
 
     "forward_lean": np.array([
-        -0.15, 0.0, 0.3, -0.15, 0.0,  # right leg
-        0.0, 0.0, 0.0, 0.0, 0.0,      # left leg (straight)
+        -0.15, 0.0, 0.3, -0.15,  # right leg
+        0.0, 0.0, 0.0, 0.0,      # left leg (straight)
         0.05,  # waist
     ]),
 
     # Walking gait cycle poses
     "walk_heel_strike_right": np.array([
-        -0.2, 0.02, 0.4, -0.2, 0.0,    # right leg (heel strike)
-        0.1, -0.02, 0.2, -0.1, 0.0,    # left leg (toe-off)
+        -0.2, 0.02, 0.4, -0.2,    # right leg (heel strike)
+        0.1, -0.02, 0.2, -0.1,    # left leg (toe-off)
         0.03,  # waist
     ]),
 
     "walk_mid_stance_right": np.array([
-        -0.1, 0.02, 0.2, -0.1, 0.0,    # right leg (mid-stance)
-        0.15, -0.02, 0.3, -0.15, 0.0,  # left leg (swing)
+        -0.1, 0.02, 0.2, -0.1,    # right leg (mid-stance)
+        0.15, -0.02, 0.3, -0.15,  # left leg (swing)
         0.02,  # waist
     ]),
 
     "walk_toe_off_left": np.array([
-        -0.15, 0.02, 0.3, -0.15, 0.0,  # right leg (forward)
-        0.1, -0.02, 0.2, -0.3, 0.0,    # left leg (toe-off)
+        -0.15, 0.02, 0.3, -0.15,  # right leg (forward)
+        0.1, -0.02, 0.2, -0.3,    # left leg (toe-off)
         0.03,  # waist
     ]),
 
     "walk_toe_off_right": np.array([
-        0.05, 0.02, 0.1, -0.2, 0.0,    # right leg (toe-off)
-        0.0, -0.02, 0.0, 0.0, 0.0,     # left leg (neutral)
+        0.05, 0.02, 0.1, -0.2,    # right leg (toe-off)
+        0.0, -0.02, 0.0, 0.0,     # left leg (neutral)
         0.02,  # waist
     ]),
 }
@@ -202,6 +202,11 @@ class TorqueValidator:
 
         Args:
             qpos: Joint positions for actuated joints (shape: [nu])
+                  For 9 DOF config (foot_roll passive):
+                  Order: [r_hip_pitch, r_hip_roll, r_knee, r_ankle,
+                          l_hip_pitch, l_hip_roll, l_knee, l_ankle, waist]
+
+                  For 11 DOF config (foot_roll active, legacy):
                   Order: [r_hip_pitch, r_hip_roll, r_knee, r_ankle, r_foot_roll,
                           l_hip_pitch, l_hip_roll, l_knee, l_ankle, l_foot_roll, waist]
 
@@ -212,23 +217,22 @@ class TorqueValidator:
         self.data.qpos[:] = 0.0
 
         # Map actuated joint positions to full qpos
-        # Model qpos layout: [freejoint(7), right_hip_pitch, right_hip_roll, right_knee_pitch,
-        #                     right_ankle_pitch, right_foot_roll, left_hip_pitch, left_hip_roll,
-        #                     left_knee_pitch, left_ankle_pitch, left_foot_roll, waist_yaw]
-        # Total: 7 (freejoint) + 11 (joints) = 18
+        # Current model qpos layout: [freejoint(7), right_hip_pitch, right_hip_roll, right_knee_pitch,
+        #                             right_ankle_pitch, left_hip_pitch, left_hip_roll,
+        #                             left_knee_pitch, left_ankle_pitch, waist_yaw]
+        # Total: 7 (freejoint) + 9 (joints) = 16
 
-        if len(qpos) == 11:  # 11 actuated DOFs (with foot_roll)
-            # Direct mapping - qpos already has all joints
+        if len(qpos) == 9:  # 9 actuated DOFs (current config - no foot_roll)
+            # Direct mapping - qpos matches model joints exactly
             self.data.qpos[7:] = qpos
-        elif len(qpos) == 9:  # 9 actuated DOFs (legacy - without foot_roll)
-            # Expand to 11 by inserting zeros for foot_roll joints
-            full_qpos = np.zeros(11)
-            full_qpos[0:4] = qpos[0:4]   # right leg (4 joints)
-            full_qpos[4] = 0.0            # right_foot_roll (set to 0)
-            full_qpos[5:9] = qpos[4:8]   # left leg (4 joints)
-            full_qpos[9] = 0.0            # left_foot_roll (set to 0)
-            full_qpos[10] = qpos[8]       # waist
-            self.data.qpos[7:] = full_qpos
+        elif len(qpos) == 11:  # 11 DOFs (legacy - with foot_roll)
+            # This is for backward compatibility if someone tries to use old test poses
+            # Strip out foot_roll values and use only the actuated joints
+            actuated_qpos = np.zeros(9)
+            actuated_qpos[0:4] = qpos[0:4]   # right leg (without foot_roll at index 4)
+            actuated_qpos[4:8] = qpos[5:9]   # left leg (without foot_roll at index 9)
+            actuated_qpos[8] = qpos[10]      # waist
+            self.data.qpos[7:] = actuated_qpos
         else:
             raise ValueError(f"Expected qpos with 9 or 11 elements, got {len(qpos)}")
 
