@@ -4,11 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WildRobot is a humanoid robotics project integrating MuJoCo simulation, reinforcement learning (RL) training, and hardware deployment. The codebase is organized into three main components:
+WildRobot is a humanoid robotics project integrating MuJoCo simulation, reinforcement learning (RL) training, and hardware deployment. The codebase follows a unified structure supporting both MuJoCo MJX/JAX training (primary) and IsaacLab training (experimental).
 
-- **models/**: MuJoCo MJCF XML models and 3D assets
-- **training/**: RL training pipelines (AMP, PPO)
-- **runtime/**: Hardware deployment code for embedded systems
+The project implements the development roadmap outlined in `mujoco_playground_plan.md`, focusing on:
+- **Phase I**: Digital Twin & Asset Prep
+- **Phase II**: Physics Validation (torque capacity, stability)
+- **Phase III**: RL Training with PPO + AMP
+- **Phase IV**: Domain Randomization for sim2real
+- **Phase V**: Hardware Deployment
+
+### Core Components
+
+- **assets/**: Robot models (MJCF, USD) and CAD sources
+- **mujoco/**: MuJoCo training pipelines (MJX-accelerated + legacy AMP)
+- **scripts/**: Physics validation, model conversion, visualization utilities
+- **outputs/**: Training checkpoints and logs (gitignored)
+- **data/**: AMP motion datasets (gitignored)
 
 ## Key Commands
 
@@ -16,186 +27,300 @@ WildRobot is a humanoid robotics project integrating MuJoCo simulation, reinforc
 
 View model in MuJoCo viewer:
 ```bash
-python -m mujoco.viewer models/v1/wildrobot.xml
+python -m mujoco.viewer assets/mjcf/wildrobot.xml
 ```
 
 Update model from Onshape CAD:
 ```bash
-cd models/v1
-./update_xml.sh
+cd assets/onshape/wildrobot
+python -m onshape_to_robot.main robot
+# Post-process meshes
+python ../post_process.py
+```
+
+Convert MJCF to USD (for IsaacLab):
+```bash
+bash scripts/conversion/mjcf_to_usd.sh
+```
+
+### Physics Validation (Critical - Run Before Training!)
+
+Validate torque capacity (4Nm limit check):
+```bash
+python scripts/physics/validate_torque.py assets/mjcf/wildrobot.xml
+```
+
+Passive stability test:
+```bash
+python scripts/physics/drop_test.py assets/mjcf/wildrobot.xml
 ```
 
 ### Training
 
-**Option 1: mujoco_playground (Recommended - GPU-accelerated)**
+**Option 1: mujoco_playground (Recommended - GPU-accelerated MJX)**
 
-Quick start:
+Train walking with PPO:
 ```bash
-cd training/wildrobot_playground
-./quickstart.sh standing flat 10000000
+cd mujoco/playground
+python train.py --config configs/base.yaml
 ```
 
-Train standing balance:
+Train with AMP (human-like motion priors):
 ```bash
-cd training/wildrobot_playground
-python train.py --task standing --terrain flat --num_timesteps 10000000
+python train.py --config configs/amp.yaml
 ```
 
-Train walking:
+Quick test run:
 ```bash
-python train.py --task walking --terrain flat --num_timesteps 20000000
+python train.py --config configs/quick.yaml
+```
+
+Visualize trained policy:
+```bash
+python visualize_policy.py --checkpoint ../../outputs/checkpoints/policy_latest.pkl
 ```
 
 Export to ONNX:
 ```bash
-python export_onnx.py --policy training/logs/.../policy.pkl --output wildrobot_v1.onnx
+python export_onnx.py --policy ../../outputs/checkpoints/policy_latest.pkl --output wildrobot_v1.onnx
 ```
 
 **Option 2: loco-mujoco (Legacy - AMP)**
 
 Train AMP policy:
 ```bash
-cd training/amp
-python scripts/train.py --config configs/wildrobot_amp_amass.yaml
+cd mujoco/amp
+python train.py
 ```
 
-Visualize trained policy:
+### Hardware Deployment
+
+Deploy policy to robot:
 ```bash
-python scripts/visualize.py --path outputs/2024-11-23/14-30-00/AMPJax_saved.pkl
+cd mujoco/playground
+python deploy.py --policy ../../outputs/checkpoints/policy_latest.pkl
 ```
 
-Export policy to ONNX:
+Test runtime on hardware:
 ```bash
-python scripts/export_onnx.py --policy outputs/.../AMPJax_saved.pkl --output wildrobot_v1.onnx
-```
-
-### Runtime/Hardware
-
-Install runtime package:
-```bash
-cd runtime
-pip install -e .
-```
-
-Test hardware:
-```bash
-python scripts/test_motors.py
-python scripts/test_imu.py
-```
-
-Run policy on hardware:
-```bash
-python scripts/run_policy.py --policy ../training/policies/wildrobot_v1.onnx --config configs/wildrobot_pi5.json
-```
-
-Calibrate joints:
-```bash
-python scripts/calibrate_joints.py
-python scripts/calibrate_imu.py
+cd mujoco/runtime
+python -m wildrobot_runtime.test_motors
+python -m wildrobot_runtime.test_imu
 ```
 
 ## Architecture
 
 ### Robot Configuration
 
-The robot has **11 DOFs** (no head):
-- Left leg: hip_yaw, hip_roll, hip_pitch, knee, ankle (5 DOFs)
-- Right leg: hip_yaw, hip_roll, hip_pitch, knee, ankle (5 DOFs)
+The robot has **9 actuated DOFs** (11 joints total, 2 passive):
+- Left leg: hip_pitch, hip_roll, knee, ankle (4 DOFs) + passive foot_roll
+- Right leg: hip_pitch, hip_roll, knee, ankle (4 DOFs) + passive foot_roll
 - Torso: waist (1 DOF)
 
-Default motor controller: Dynamixel XM430-W350
+**Note**: The foot_roll joints exist for passive compliance but are NOT actuated.
+
+**Critical Constraint**: 4.41Nm torque limit per joint (HTD-45H servos @ 12V)
+- Stall torque: 45 kg·cm = 4.41 Nm
+- Safe continuous: ~60% = 2.65 Nm
+- Peak dynamic: ~85% = 3.75 Nm
+
 Control frequency: 50 Hz (matches training frequency)
 
-### Model Structure
+### Project Structure
 
-The MuJoCo model (`models/v1/wildrobot.xml`) is generated from Onshape CAD using `onshape-to-robot`. Key files:
-- `wildrobot.xml`: Main MJCF model
-- `config.json`: Onshape conversion config
-- `sensors.xml`: Sensor definitions (IMU, joint sensors)
-- `joints_properties.xml`: Joint parameters for HTD-45H servos
-- `scene.xml`: Environment setup
-- `assets/`: STL meshes (simplified for performance)
+```
+wildrobot/
+├── assets/                           # Robot models and CAD sources
+│   ├── mjcf/                         # MuJoCo MJCF models (PRIMARY)
+│   │   ├── wildrobot.xml             # Main robot model
+│   │   ├── scene_flat.xml            # Flat terrain scene
+│   │   ├── scene_rough.xml           # Rough terrain scene
+│   │   ├── meshes/                   # STL/OBJ mesh files
+│   │   │   ├── collision/            # Simplified collision meshes
+│   │   │   └── visual/               # High-res visual meshes
+│   │   └── textures/                 # Material textures
+│   ├── onshape/                      # Onshape CAD source
+│   │   ├── wildrobot/                # onshape-to-robot output
+│   │   └── post_process.py           # Mesh optimization script
+│   └── usd/                          # USD format for IsaacLab
+│       ├── wildrobot.usd             # Converted USD model
+│       └── configuration/            # USD configs
+│
+├── mujoco/                           # MuJoCo training pipelines
+│   ├── playground/                   # MJX/JAX training (PRIMARY)
+│   │   ├── wildrobot/                # Environment package
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py               # Base environment class
+│   │   │   ├── locomotion.py         # Locomotion task
+│   │   │   ├── constants.py          # Robot constants (DOFs, limits)
+│   │   │   └── config_utils.py       # Config loading utilities
+│   │   ├── configs/                  # Training configurations
+│   │   │   ├── base.yaml             # Default training settings
+│   │   │   ├── amp.yaml              # AMP-specific config (NEW)
+│   │   │   ├── quick.yaml            # Quick test config
+│   │   │   └── domain_rand.yaml      # Domain randomization (NEW)
+│   │   ├── train.py                  # Main training script
+│   │   ├── evaluate.py               # (TODO) Evaluation script
+│   │   ├── export_onnx.py            # Policy export for deployment
+│   │   ├── deploy.py                 # Hardware deployment script
+│   │   ├── visualize_policy.py       # Policy visualization
+│   │   └── README.md                 # Playground documentation
+│   ├── amp/                          # Legacy AMP training
+│   │   ├── train.py                  # AMP training script
+│   │   └── walk_env.py               # AMP environment
+│   ├── runtime/                      # Hardware deployment layer
+│   │   ├── wildrobot_runtime/        # Runtime package
+│   │   │   ├── hardware/             # Motor/IMU drivers
+│   │   │   ├── control/              # 50Hz control loop
+│   │   │   └── inference/            # Policy inference
+│   │   └── configs/                  # Hardware configs
+│   └── common/                       # Shared utilities
+│       ├── base_env.py               # Common environment base
+│       ├── constants.py              # Shared constants
+│       └── video_renderer.py         # Rendering utilities
+│
+├── scripts/                          # Validation & utility scripts
+│   ├── physics/                      # Physics validation (CRITICAL)
+│   │   ├── validate_torque.py        # Torque capacity validation
+│   │   ├── drop_test.py              # Passive stability test
+│   │   └── check_dynamics.py         # General physics checks
+│   ├── conversion/                   # Model conversion scripts
+│   │   ├── onshape_to_mjcf.sh        # Onshape → MJCF
+│   │   └── mjcf_to_usd.sh            # MJCF → USD
+│   ├── visualize_usd.py              # USD visualization
+│   ├── validate_usd.py               # USD validation
+│   └── inspect_usd.py                # USD inspection
+│
+├── data/                             # Training data (gitignored)
+│   └── amp/                          # AMP motion datasets
+│       └── amass/                    # AMASS human motion capture
+│
+├── outputs/                          # Training outputs (gitignored)
+│   ├── checkpoints/                  # Model checkpoints
+│   ├── logs/                         # TensorBoard logs
+│   └── videos/                       # Evaluation videos
+│
+├── tests/                            # Unit tests
+│   ├── test_physics.py               # Physics validation tests
+│   └── test_mujoco_env.py            # Environment tests
+│
+├── README.md                         # Project overview
+├── CLAUDE.md                         # This file
+├── mujoco_playground_plan.md         # Development roadmap
+├── requirements.txt                  # Python dependencies
+└── pyproject.toml                    # Package configuration
+```
 
-### Training Pipeline
+### Training Approaches
 
-WildRobot supports two training approaches:
+**1. mujoco_playground (PRIMARY - MJX/JAX accelerated)**
+- GPU-accelerated using MuJoCo MJX (JAX backend)
+- 10-50x faster than CPU-based training (4,000+ parallel envs)
+- PPO algorithm with optional AMP (Adversarial Motion Priors)
+- Domain Randomization for sim2real transfer
+- Direct ONNX export for hardware deployment
+- Located in: `mujoco/playground/`
 
-**1. mujoco_playground (Recommended)**
-- GPU-accelerated using MuJoCo MJX (JAX)
-- 10-50x faster than CPU-based training
-- PPO algorithm with Brax
-- Direct sim-to-real with ONNX export
-- Located in: `training/wildrobot_playground/`
-
-**2. loco-mujoco (Legacy)**
+**2. loco-mujoco (Legacy - CPU-based AMP)**
 - CPU-based with multiprocessing
-- AMP (Adversarial Motion Priors) for human-like locomotion
-- Requires model symlink to loco-mujoco library
-- Located in: `training/amp/`, `training/ppo/`
-
-**Directory structure:**
-- `training/wildrobot_playground/`: mujoco_playground setup (recommended)
-  - `wildrobot/`: Custom environment implementation
-  - `train.py`: Training script
-  - `export_onnx.py`: Policy export for deployment
-  - `deploy.py`: Hardware deployment script
-- `models/v1/`: MuJoCo models (shared with all training methods)
-  - `wildrobot.xml`: Robot MJCF model
-  - `scene_flat_terrain.xml`: Flat terrain scene
-  - `scene_rough_terrain.xml`: Rough terrain scene
-  - `assets/`: STL meshes
-- `training/amp/`: AMP training (legacy)
-- `training/ppo/`: PPO training (legacy)
-- `training/shared/`: Shared utilities
-- `training/policies/`: Production-ready curated policies (.pkl and .onnx)
-- `training/logs/`: Training outputs (gitignored)
-
-Training outputs are saved to `training/logs/YYYY-MM-DD-HH-MM-SS/` and are gitignored.
+- AMP for human-like locomotion
+- Requires external loco-mujoco library
+- Located in: `mujoco/amp/`
 
 ### Runtime Architecture
 
-The runtime package (`wildrobot_runtime`) follows a modular HAL (Hardware Abstraction Layer) design:
+The runtime package (`mujoco/runtime/wildrobot_runtime`) follows a modular HAL design:
+- `hardware/`: Motor controllers (HTD-45H), IMU drivers, sensors
+- `control/`: 50Hz control loop matching training frequency
+- `inference/`: Policy inference (PKL/JAX or ONNX)
+- Located in: `mujoco/runtime/`
 
-- `hardware/`: Motor controllers, IMU drivers, sensors
-- `control/`: 50Hz control loop, observation builder, action processor
-- `inference/`: Policy inference engines (PKL/JAX or ONNX)
-- `utils/`: Kinematics, filters, config loading
-- `io/`: Optional peripherals (camera, gamepad)
+### Model Generation Pipeline
 
-Configuration files (`runtime/configs/*.json`) specify hardware settings, motor parameters, joint offsets, and safety limits.
+1. **CAD Design**: Edit robot in Onshape
+2. **Export**: `onshape-to-robot` generates MJCF + meshes → `assets/onshape/wildrobot/`
+3. **Post-process**: Simplify meshes for physics performance
+4. **Validate**: Run `scripts/physics/validate_torque.py` to verify 4Nm constraint
+5. **Convert**: Generate USD for IsaacLab (optional)
 
 ## Integration with loco-mujoco
 
-The WildRobot model needs to be accessible to loco-mujoco for training. Recommended approach:
+For legacy AMP training, symlink the model to loco-mujoco:
 
-**Symlink (for active development):**
 ```bash
-ln -s /Users/ygli/projects/wildrobot/models/v1 \
+ln -s /Users/ygli/projects/wildrobot/assets/mjcf \
       /path/to/loco-mujoco/loco_mujoco/environments/humanoids/wildrobot
 ```
 
-This ensures model changes immediately propagate to training without manual copying.
+This ensures model changes propagate to training without manual copying.
+
+## Development Workflow (mujoco_playground_plan.md)
+
+### Phase I: Digital Twin & Asset Prep
+1. Export MJCF from Onshape → `assets/onshape/wildrobot/`
+2. Post-process meshes for performance
+3. Verify mass/inertia tensors are accurate
+4. Add sensor sites (IMU, foot contacts)
+
+### Phase II: Physics Validation (CRITICAL - Run Before Training!)
+1. **Passive Drop Test**: `python scripts/physics/drop_test.py`
+   - Validates model stability and contact solver
+2. **Active Torque Test**: `python scripts/validate_torque.py`
+   - **MUST PASS**: Max torque < 2.65Nm (~60% of 4.41Nm, leaving 1.76Nm headroom)
+   - **WARN**: 2.65-3.75Nm (marginal, risky for dynamic motion)
+   - **FAIL**: Max torque > 3.75Nm (~85% of limit) → Return to CAD to reduce mass
+   - Tests deep squat and single-leg stance poses
+   - Prints body dimensions (mass, inertia, COM) for design optimization
+
+### Phase III: RL Training Pipeline
+1. Configure observation space (44-dim: gravity, joints, velocities, prev action)
+2. Configure reward function (velocity tracking, AMP style, torque penalty)
+3. Set domain randomization parameters
+4. Train with MJX (4,000+ parallel envs)
+5. Monitor torque usage during training
+
+### Phase IV: Domain Randomization
+- Friction: [0.4, 1.25]
+- Mass scale: [0.85, 1.15]
+- Motor strength: [0.9, 1.1]
+- Joint damping: [0.5, 1.5]
+- Control latency: [0, 0.02s]
+- Push forces: [0, 10N]
+
+### Phase V: Hardware Deployment
+1. Export policy to ONNX
+2. Test in simulation with latency/noise
+3. Deploy to robot hardware
+4. Safety monitors: temperature, joint limits, emergency stop
 
 ## Git Workflow
 
 **Commit these:**
-- Models: `models/`
-- Training configs/scripts: `training/*/configs/`, `training/*/scripts/`
-- Runtime code: `runtime/wildrobot_runtime/`, `runtime/scripts/`
-- Curated policies: `training/policies/*.onnx` (tested, production-ready)
-- Documentation and tests
+- Models: `assets/mjcf/`, `assets/onshape/`
+- Training configs: `mujoco/playground/configs/`
+- Environment code: `mujoco/playground/wildrobot/`
+- Scripts: `scripts/`
+- Runtime code: `mujoco/runtime/`
+- Documentation: `README.md`, `CLAUDE.md`, `mujoco_playground_plan.md`
+- Tests: `tests/`
 
-**Do NOT commit:**
-- Training outputs: `training/*/outputs/`
-- Large PKL files (except curated policies)
+**Do NOT commit (add to .gitignore):**
+- Training outputs: `outputs/`
+- AMP datasets: `data/amp/`
+- Large checkpoints (except curated production policies)
 - Python artifacts: `__pycache__/`, `*.pyc`, `.venv/`
 - IDE configs: `.vscode/`, `.idea/`
 
 ## Development Notes
 
-- **Model updates**: When modifying the Onshape CAD, run `update_xml.sh` to regenerate the MJCF model
-- **STL simplification**: Models use simplified meshes (`max_stl_size: 0.1MB`) for performance
-- **Joint properties**: HTD-45H servo parameters are defined in `joints_properties.xml` (kp=21.1, damping=0.08516, frictionloss=0.022275)
-- **Sensor suite**: Robot has multiple IMUs (chest, knees, pelvis) for state estimation
-- **Safety**: Runtime includes temperature monitoring, joint limits, and emergency stop functionality
-- **Deployment formats**: PKL (JAX) for maximum performance or ONNX for lightweight deployment
+- **4.41Nm Torque Limit**: This is the PRIMARY constraint (HTD-45H @ 12V: 45 kg·cm). Always validate with `validate_torque.py` before training
+  - Safe continuous operation: ~2.65 Nm (60% of stall)
+  - Peak dynamic: ~3.75 Nm (85% of stall)
+  - Design target: Keep static poses < 2.65 Nm to leave headroom for dynamic acceleration
+- **Model updates**: When modifying CAD, re-run `onshape-to-robot` and post-processing
+- **Mesh optimization**: Use simplified collision meshes for physics performance
+- **Control frequency**: 50Hz matches both training and hardware
+- **Sensor suite**: Multiple IMUs (chest, knees, pelvis) for state estimation
+- **Safety**: Hardware includes temperature monitoring, joint limits, and emergency stop
+- **AMP**: Use human motion priors to learn energy-efficient gaits (critical for 4.41Nm limit)
+- **Domain Randomization**: Essential for sim2real transfer - randomize physics parameters every episode
