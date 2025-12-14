@@ -13,18 +13,26 @@ This roadmap outlines the end-to-end development of a locomotion policy for the 
 
 ## 2. Technology Stack Selection
 
-### Simulation Environment: **MuJoCo Playground (MJX)**
-* **Choice:** Google DeepMind's MJX (JAX-based MuJoCo).
+### Simulation Physics: **MuJoCo MJX**
+* **Choice:** Google DeepMind's MJX (JAX-based MuJoCo) for physics simulation.
 * **Justification:**
     * **Throughput:** Enables running 4,000+ parallel environments on a single GPU (vs. ~60 on CPU).
-    * **Iteration Speed:** Reduces training time from days to hours, essential for tuning constraints on a custom robot.
-    * **Sim2Real:** Native support for Domain Randomization and fast context switching.
+    * **Sim2Real Fidelity:** Exact same physics as standard MuJoCo used for hardware validation.
+    * **JAX Integration:** Native support for JIT compilation and GPU acceleration.
+
+### Training Framework: **Brax v2 with MJX Backend**
+* **Choice:** Brax v2 training infrastructure using MJX physics.
+* **Justification:**
+    * **Battle-Tested:** Production-quality PPO implementation from Google DeepMind.
+    * **Fast Prototyping:** Pre-built training loops, logging, checkpointing.
+    * **Best Practice:** Leverage proven RL infrastructure instead of custom implementation.
+    * **Maintains Physics:** Uses MJX backend so physics matches our MuJoCo model exactly.
 
 ### Algorithm: **PPO + AMP**
 * **Choice:** Proximal Policy Optimization (PPO) with Adversarial Motion Priors (AMP).
 * **Justification:**
     * **Energy Efficiency:** Pure RL tends to learn "jittery" or high-torque gaits. AMP forces the robot to mimic human biomechanics, which are naturally energy-efficient (critical for the 4Nm limit).
-    * **Robustness:** Standard for modern legged robotics (Unitree, Figure, Boston Dynamics R&D).
+    * **Robustness:** Standard for modern legged robotics research.
 
 ---
 
@@ -71,7 +79,13 @@ This roadmap outlines the end-to-end development of a locomotion policy for the 
 ---
 
 ### Phase III: RL Training Pipeline (Days 5-8)
-**Goal:** Train the walking policy using GPU acceleration.
+**Goal:** Train the walking policy using Brax v2 + MJX for fast iteration.
+
+**Training Approach:**
+1. Wrap `WildRobotEnv` (MJX-based) in Brax's `Env` interface
+2. Use Brax's PPO training infrastructure (no custom PPO implementation)
+3. Leverage Brax's vectorization and JIT compilation for 2048+ parallel environments
+4. Maintain exact MuJoCo physics fidelity through MJX backend
 
 #### 1. Environment & Network Setup
 * **Observation Space (44-dim):**

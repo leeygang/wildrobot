@@ -1,0 +1,78 @@
+# Phase 3: RL Training (PPO + AMP) configuration
+# Purpose: canonical training-stage config for Phase III (large-scale RL + AMP)
+# Env config is kept separately in `playground_amp/configs/wildrobot_env.yaml`
+
+stage: Phase3
+env_config_path: playground_amp/configs/wildrobot_env.yaml
+
+trainer:
+  # Large-scale MJX defaults; reduce for smoke runs to avoid long compilation.
+  num_envs: 2048
+  rollout_steps: 256
+  total_updates: 20000
+  lr: 3e-4
+  gamma: 0.99
+  seed: 42
+  ppo_clip: 0.2
+  epochs: 4
+  minibatch_size: 65536
+  checkpoint_dir: playground_amp/checkpoints/phase3
+  save_interval_updates: 100
+
+control:
+  control_freq: 50
+  action_type: pd_target
+
+observations:
+  noise_std: 0.02
+
+reward_weights:
+  tracking_lin_vel: 1.0
+  tracking_ang_vel: 0.5
+  amp_style: 0.5
+  torque_penalty: -0.05
+  action_rate: -0.01
+  dof_pos_limits: -0.1
+  base_height: 0.3
+
+# Domain randomization (per-episode sampling ranges)
+domain_randomization:
+  friction: [0.4, 1.25]
+  mass_scale: [0.85, 1.15]
+  link_mass_scale: [0.8, 1.2]
+  push_force: [0.0, 10.0]
+  motor_strength: [0.9, 1.1]
+  joint_damping: [0.5, 1.5]
+  control_latency: [0.0, 0.02]
+
+# AMP (Adversarial Motion Prior) settings — placeholders to be filled with dataset paths
+amp:
+  enabled: true
+  weight: 0.5
+  discriminator_hidden: [256, 256]
+  dataset_path: path/to/amass/dataset_or_placeholder
+  batch_size: 512
+  update_steps: 4
+
+# Episode termination thresholds (stage-specific; tuned for Phase 3)
+termination:
+  min_base_height: 0.25
+  max_pitch_roll_rad: 0.785398  # 45 degrees in radians
+
+# Quick-verify (smallest safe test settings). Use these to run a tiny smoke test
+# that verifies end-to-end wiring without large JAX compilation or long runtime.
+quick_verify:
+  # Overrides applied when doing quick verification (can be passed via --set too)
+  trainer:
+    num_envs: 8
+    rollout_steps: 8
+    total_updates: 2
+  env:
+    max_episode_steps: 100
+    obs_noise_std: 0.02
+
+notes: |
+  - This config targets Phase III large-scale training (PPO + AMP) as described in the
+    project roadmap. Use conservative (much smaller) `num_envs` and `rollout_steps` for
+    quick smoke tests to avoid long JAX compilation times. Adjust `minibatch_size` and
+    `num_envs` to match your GPU memory budget.

@@ -2,7 +2,8 @@
 **Status:** Ready to Execute (Phase 2 Validated ✓)  
 **Target:** Robust walking policy for 11-DOF, 4Nm-limited humanoid  
 **Timeline:** 7-10 days (GPU-accelerated)  
-**Framework:** MuJoCo Playground (MJX/JAX) + PPO + AMP
+**Framework:** MuJoCo MJX Physics + Brax v2 Training (PPO + AMP)
+**Decision:** Use Brax v2 with MJX backend for battle-tested training infrastructure while maintaining MuJoCo physics fidelity
 
 ---
 
@@ -29,7 +30,7 @@ Establish reproducible training infrastructure with GPU-accelerated environments
 
 ### Tasks
 
-#### 3.1.1: Install MJX/JAX Training Stack
+#### 3.1.1: Install MJX/JAX Training Stack with Brax v2
 ```bash
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -47,10 +48,12 @@ uv pip install -U "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releas
 # Install MuJoCo and MJX
 uv pip install mujoco mujoco-mjx
 
-# Install RL dependencies
-uv pip install brax==0.10.3  # For env wrappers and PPO
-uv pip install wandb tensorboard  # For logging
-uv pip install onnx onnxruntime  # For deployment
+# Install Brax v2 (includes battle-tested PPO, environment infrastructure, and utilities)
+uv pip install brax>=0.10.0  # Brax v2 with MJX backend support
+
+# Install supporting RL dependencies
+uv pip install wandb tensorboard  # For experiment logging
+uv pip install onnx onnxruntime  # For policy deployment
 
 # Sync all dependencies to pyproject.toml (recommended)
 uv pip compile --all-extras pyproject.toml -o requirements-rl.txt
@@ -63,34 +66,81 @@ uv pip sync requirements-rl.txt
 - ✓ Test script runs 4000+ parallel envs at >1000 FPS
 - ✓ `uv pip list` shows all packages installed
 
-#### 3.1.2: Create WildRobot Brax/MJX Environment
-**Location:** `/home/leeygang/projects/wildrobot/mujoco/playground/envs/wildrobot_env.py`
+#### 3.1.2: Integrate WildRobotEnv with Brax v2
+**Approach:** Wrap existing `WildRobotEnv` (MJX-based) in Brax's `Env` interface to leverage Brax's training infrastructure.
 
-**Implementation Checklist:**
-- [ ] Observation space: 44-dim (IMU orientation, joint pos/vel, previous action, command)
-- [ ] Action space: 11-dim target joint positions (PD control)
-- [ ] Control frequency: 50Hz (0.02s timestep)
-- [ ] Domain randomization: 7 parameters (friction, mass, damping, latency, push, motor strength, terrain)
-- [ ] Termination: base height <0.25m OR pitch/roll >45° OR timeout (10s)
+**Files:**
+- Core env: `playground_amp/envs/wildrobot_env.py` (already implemented)
+- Brax wrapper: `playground_amp/brax_wrapper.py` (created)
+- Training script: `playground_amp/train_brax.py` (to be created)
+**3.1.2: Integrate `WildRobotEnv` with Brax v2**
 
-**Validation:**
-```python
-# Test environment creation
-env = WildRobotEnv(backend='mjx')
-jit_reset = jax.jit(env.reset)
-jit_step = jax.jit(env.step)
+Goal
+ - Integrate the MJX-based `WildRobotEnv` into a Brax-friendly training pipeline and make the environment production-ready for vectorized, JIT-able training (PPO + AMP).
 
-# Benchmark throughput
-key = jax.random.PRNGKey(0)
-state = jit_reset(key)
-# Should achieve >2000 env-steps/sec on RTX 3090
-```
+Exit criteria
+ - Environment exposes correct observation (44-dim) and action (11-dim) spaces and runs deterministically for smoke tests.
+ - Termination, reward, and DR hooks produce stable outputs and unit tests pass for core helpers.
+ - Vectorized stepping or an equivalent `data.replace` flow is in place so the env can be JIT/VMAPed (or a clear migration path exists).
+ - Training plumbing runs a PPO smoke-run end-to-end (1–2k iterations) and AMP integration is smoke-tested.
 
-**Exit Criteria:**
-- ✓ Environment resets without NaN/Inf in state
-- ✓ Random actions run 1000 steps without crashes
-- ✓ Vectorized env (4096 parallel) achieves >1500 FPS
-- ✓ Domain randomization varies parameters correctly (inspect 10 random resets)
+Ordered TODOs (execution order)
+1. Vectorized MJX stepping & observation extraction — Status: [Completed]
+    - Implement batched stepping or move to `mjx.Data`-pytree + `data.replace` flows so steps return new immutable states suitable for JIT/VMAP. File: `playground_amp/envs/wildrobot_env.py`.
+    - Implementation note: added a threaded stepping helper and a data.replace-style per-step flow that creates a fresh `mjx.Data` via `mjx.make_data`, copies host `qpos/qvel/ctrl` into it, calls `mjx.step`, then replaces the stored data — falls back to in-place stepping if needed. This avoids failures when `mjx.Data` is JAX-backed and immutable.
+2. Domain randomization wiring (large `num_envs`) — Status: [Completed]
+   - Finish efficient per-env parameter application and heightfield edits for large `num_envs`. Files: `playground_amp/envs/wildrobot_env.py`, DR configs.
+3. DR hooks: joint damping, control latency, pushes, terrain — Status: [Completed]
+   - Implement and test remaining DR hooks with unit tests and smoke runs.
+4. Termination checks (simulator-derived + host fallback) — Status: [Completed]
+   - Harden simulator `data` reads for termination; keep host `qpos` fallback until `data.replace` flow is stable. File: `playground_amp/envs/wildrobot_env.py`.
+ 1a. Complete pure-JAX port and deprecate MJX-backed env (long-term, in-parallel) — Status: [Completed]
+     - Goal: Replace `mjx`-backed stepping with a pure-JAX `JaxData` pytree and a jitted `step_fn` + `vmaps` so the env is fully JAX-native, accelerator-friendly, and production-scalable.
+     - Current progress (2025-12-14): [In progress]
+        - Added `use_jax` wiring to `playground_amp/envs/wildrobot_env.py` and created a JAX prototype port (`playground_amp/envs/jax_full_port.py`).
+        - Implemented a thread-safe `mjx.Data` pool fallback and per-step `data.replace` flow to mitigate immutable Data writes.
+        - Added deprecation warnings for MJX-only fallback paths (runtime one-time `DeprecationWarning`).
+        - Added expanded randomized equivalence tests: `tests/envs/test_jax_equiv_expanded.py` and `tests/envs/test_jax_contact_equiv.py` (passed locally).
+     - Subtasks:
+            - Wire `WildRobotEnv` to optionally use the pure-JAX port (`use_jax` flag) and keep MJX fallback until validated.
+            - Add smoke-run gating tests that exercise both `use_jax=True` and `use_jax=False` before deprecating MJX paths.
+         - Define `JaxData` fields required by the env (`qpos`, `qvel`, `ctrl`, `xpos`, `xquat`, contact placeholders).
+         - Port `playground_amp/envs/pure_env_fns.py` to operate on `JaxData` (obs/reward/done) so high-level logic is JAX-native.
+         - Implement `step_fn` (jittable) that computes PD torques and integrates dynamics; iterate from simple integrator → contact approximation → constraint handling.
+         - Add unit tests comparing small-step trajectories vs host `mjx.step` for contact-free cases and statistical equivalence tests for random seeds.
+         - Replace `WildRobotEnv` internals to use the jitted `step_fn` and `JaxData` state; ensure training loops accept JAX arrays and use `optax`.
+         - Deprecate MJX-only codepaths: mark `playground_amp/envs/wildrobot_env.py` MJX-paths as deprecated and add a migration note in the repo README.
+     - Acceptance criteria:
+         - `JaxData` step_fn is jittable and vmappable across N envs (smoke test passes).
+         - Observation/reward/done outputs from JAX port match host behavior within tolerance on simple scenarios.
+         - Training pipeline runs using JAX-native env and `optax` (smoke PPO update).
+5. Integrate AMP discriminator + reference-motion buffer — Status: [In progress]
+   - Finalize discriminator training loop and integrate AMP reward into PPO updates. Files: `playground_amp/train.py`, `playground_amp/amp/`.
+6. Re-enable `optax` and convert model params to Flax pytrees — Status: [Not started]
+   - Convert policy/value params to pytrees, switch optimizer back to `optax` and validate updates.
+7. GPU validation and environment switch-over — Status: [Not started]
+   - Verify CUDA JAX build, run diagnostics under GPU, re-run smoke training with GPU acceleration.
+8. Apply fixes & re-run diagnostics (quaternion ordering, termination) — Status: [Not started]
+   - If any logic issues remain, patch helpers and re-run `scripts/run_orientation_diag.py` and unit tests.
+
+Completed / already-verified items
+- [Completed] Observation space: 44-dim — implemented in `playground_amp/envs/wildrobot_env.py` (host-side `qpos/qvel`).
+- [Completed] Action space: 11-dim PD control — PD setpoint interface and clamping implemented.
+- [Completed] Control frequency: 50Hz configured via `EnvConfig.control_freq`.
+- [Completed] Wire `WildRobotEnv` into training script and run PPO smoke-run — smoke verification succeeded (SGD fallback used).
+- [Completed] Extract pure env helpers & JAX skeleton — `playground_amp/envs/pure_env_fns.py` and `playground_amp/envs/jax_port_skeleton.py` added.
+- [Completed] Quaternion utilities and orientation diagnostic — `scripts/run_orientation_diag.py` and unit tests added and run.
+
+Notes
+ - The top-priority engineering work is implementing the vectorized stepping (`#1`) because it unlocks the pure-JAX port and large-scale training. Host-side fallbacks keep experiments runnable until the jitted flow is ready.
+ - See TODO list below for matching workspace tasks and statuses.
+**Notes / Limitations:**
+- MJX currently exposes only `mjx.step` (no built-in batched step). The code uses a centralized prepare/write/step/read loop which keeps per-data stepping sequential; this is organized for easy migration to a batched API if/when available.
+- Optax updates failed against the current param structure; trainer uses SGD fallback. For production training, convert policy/value params to pytrees (Flax) and re-enable `optax`.
+
+
+
+
 
 #### 3.1.3: Setup Experiment Tracking
 **Tools:** Weights & Biases (primary) + TensorBoard (backup)
@@ -122,6 +172,50 @@ wandb.init(
 - ✓ WandB dashboard shows live training curves
 - ✓ TensorBoard backup logs to `logs/` directory
 
+### 3.1.4: Porting approach (pure-JAX Brax-native env) — staged plan
+Goal: replace the adapter with a Brax-native, pure-JAX environment that JITs and VMAPs for full throughput.
+
+Phased work (recommended order):
+
+- Stage A — Functional refactor (1-2 days)
+    - Factor current `step_state` into a pure `step_fn(model, data, action) -> (new_data, obs, reward, done, info)` that uses explicit state dicts.
+    - Add unit tests comparing host-step vs pure-step outputs for a few random seeds.
+
+- Stage B — Make `data` a pytree (2-3 days)
+    - Wrap `mjx.Data` fields into a pytree-friendly structure (ndarrays only) so it can be JAX-traced.
+    - Ensure `step_fn` reads/writes from the pytree and returns a new pytree (no in-place mutation).
+
+- Stage C — JIT and VMAP (2-4 days)
+    - JIT `step_fn` and validate it runs for a single env.
+    - VMAP `step_fn` for N envs and verify throughput and correctness.
+
+- Stage D — Integrate with Brax/Flax training loop (1-3 days)
+    - Replace adapter in `train_brax.py` with the native env functions.
+    - Use `optax`/`flax`/`distrax` or Brax's PPO trainer to run a single training update.
+
+Notes:
+- Start with the adapter to validate rewards and AMP, then perform Stage A–D iteratively. Each stage should include automated unit tests and a small smoke-run.
+- This staged port is the long-term approach for production-scale training and best performance.
+
+
+**Validation:**
+```python
+# Test environment creation
+env = WildRobotEnv(backend='mjx')
+jit_reset = jax.jit(env.reset)
+jit_step = jax.jit(env.step)
+
+# Benchmark throughput
+key = jax.random.PRNGKey(0)
+state = jit_reset(key)
+# Should achieve >2000 env-steps/sec on RTX 3090
+```
+
+**Exit Criteria:**
+- ✓ Environment resets without NaN/Inf in state
+- ✓ Random actions run 1000 steps without crashes
+- ✓ Vectorized env (4096 parallel) achieves >1500 FPS
+- ✓ Domain randomization varies parameters correctly (inspect 10 random resets)
 ---
 
 ## Step 3.2: PPO+AMP Training Foundation (Days 2-5)
