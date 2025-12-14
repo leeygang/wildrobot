@@ -162,6 +162,13 @@ else:
 if jax is not None:
     jitted_step = jax.jit(step_fn)
     vmapped_step = jax.vmap(step_fn, in_axes=(0, 0), out_axes=0)
+    # vmap the full step_and_observe to operate on batches of JaxData
+    try:
+        vmapped_step_and_observe = jax.vmap(step_and_observe, in_axes=(0, 0), out_axes=(0, 0, 0, 0))
+        jitted_vmapped_step_and_observe = jax.jit(vmapped_step_and_observe)
+    except Exception:
+        vmapped_step_and_observe = None
+        jitted_vmapped_step_and_observe = None
 
 
 if __name__ == "__main__":
@@ -181,3 +188,7 @@ if __name__ == "__main__":
         targ2 = jax.random.normal(key, (batch, nv)) * 0.2
         out = jax.vmap(step_fn, in_axes=(0, 0))(data, targ2)
         print("vmapped out qpos shape:", out.qpos.shape)
+        if jitted_vmapped_step_and_observe is not None:
+            # smoke test batch step_and_observe
+            nds, obss, rews, dones = jitted_vmapped_step_and_observe(data, targ2, dt=0.02, kp=50.0, kd=1.0, obs_noise_std=0.0, key=None)
+            print("batch obs shape:", obss.shape)

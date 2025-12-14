@@ -342,13 +342,15 @@ class WildRobotEnv:
                 "mjx Data objects do not have 'ctrl' attribute. Ensure your model has actuators and mjx supports controls."
             )
 
-        # Initialize JAX per-env Data objects if requested and available
+        # Initialize JAX batched Data object if requested and available
+        # We prefer a single batched JaxData (batch=num_envs) for vmapped stepping.
+        self._jax_batch = None
         if self._use_jax and self._jax_available:
             try:
-                # make per-env JaxData objects (batch=1 each)
-                self._jax_datas = [self._make_jax_data(self.nq, self.nv, batch=1) for _ in range(self.num_envs)]
+                # make a single batched JaxData for all envs
+                self._jax_batch = self._make_jax_data(self.nq, self.nv, batch=self.num_envs)
             except Exception:
-                self._jax_datas = None
+                self._jax_batch = None
 
     # ---------------------- public API ----------------------
     def reset(self) -> np.ndarray:
@@ -370,19 +372,17 @@ class WildRobotEnv:
             except Exception:
                 pass
 
-        # If using JAX port, initialize jax-data per env to match host qpos/qvel
-        if self._use_jax and self._jax_available and self._jax_datas is not None:
-            for i in range(self.num_envs):
-                try:
-                    d = self._jax_datas[i]
-                    # set qpos/qvel into JaxData via numpy->jax conversion
-                    # jax arrays are immutable, so replace fields
-                    qpos = jnp.array(self.qpos[i][None, :], dtype=jnp.float32)
-                    qvel = jnp.array(self.qvel[i][None, :], dtype=jnp.float32)
-                    ctrl = jnp.zeros_like(qvel)
-                    self._jax_datas[i] = type(d)(qpos=qpos, qvel=qvel, ctrl=ctrl, xpos=d.xpos, xquat=d.xquat)
-                except Exception:
-                    pass
+        # If using JAX port, initialize batched jax-data to match host qpos/qvel
+        if self._use_jax and self._jax_available and self._jax_batch is not None:
+            try:
+                # convert host arrays into jax batched arrays
+                qpos = jnp.array(self.qpos.astype(np.float32), dtype=jnp.float32)
+                qvel = jnp.array(self.qvel.astype(np.float32), dtype=jnp.float32)
+                ctrl = jnp.zeros((self.num_envs, self.nv), dtype=jnp.float32)
+                d = self._jax_batch
+                self._jax_batch = type(d)(qpos=qpos, qvel=qvel, ctrl=ctrl, xpos=d.xpos, xquat=d.xquat)
+            except Exception:
+                pass
 
         # Now build observations deterministically from data objects
         for i in range(self.num_envs):
@@ -447,44 +447,47 @@ class WildRobotEnv:
             except Exception:
                 pass
 
-        # Phase 2: Prefer the pure-JAX stepping path when available. This avoids
+        # Phase 2: Prefer the pure-JAX batched stepping path when available. This avoids
         # touching host `mjx.Data` objects and allows jitted/VMAP execution.
         used_jax = False
-        if self._use_jax and self._jax_available and self._jax_datas is not None:
+        if self._use_jax and self._jax_available and self._jax_batch is not None:
             used_jax = True
-            for i in range(self.num_envs):
-                if self._episode_done[i]:
-                    continue
+            try:
+                # call batched jitted step_and_observe (returns newd_batch, obs_batch, rew_batch, done_batch)
+                newd_batch, obs_batch, rew_batch, done_batch = self._jitted_vmapped_step_and_observe(self._jax_batch, jnp.array(torques_buf, dtype=jnp.float32), dt=self._dt, kp=self.kp, kd=self.kd, obs_noise_std=self.cfg.obs_noise_std, key=None)
+                # update host arrays from jax results
                 try:
-                    d_j = self._jax_datas[i]
-                    # call jitted step_and_observe (returns newd, obs, reward, done)
-                    newd, obs_i, reward_i, done_i = self._jitted_step_and_observe(d_j, torques_buf[i], dt=self._dt, kp=self.kp, kd=self.kd, obs_noise_std=self.cfg.obs_noise_std, key=None)
-                    # update host qpos/qvel from jax arrays when possible
-                    try:
-                        self.qpos[i] = np.array(getattr(newd, "qpos")[0], dtype=np.float32)
-                        self.qvel[i] = np.array(getattr(newd, "qvel")[0], dtype=np.float32)
-                    except Exception:
-                        pass
-                    # store immediate outputs; full obs/reward/done computation will be done below
-                    try:
-                        if obs_i is not None:
-                            self.obs[i] = np.array(obs_i, dtype=np.float32)
-                    except Exception:
-                        pass
-                    try:
-                        # store reward/done in temporary buffers; will be finalized after DR pushes
-                        rewards[i] = float(reward_i) if reward_i is not None else 0.0
-                        dones[i] = bool(done_i) if done_i is not None else False
-                        self._episode_done[i] = dones[i]
-                        self._step_count[i] += 1
-                    except Exception:
-                        pass
-                    # replace jax data
-                    self._jax_datas[i] = newd
+                    # convert to numpy
+                    qpos_batch = np.array(newd_batch.qpos, dtype=np.float32)
+                    qvel_batch = np.array(newd_batch.qvel, dtype=np.float32)
+                    obs_np_batch = np.array(obs_batch, dtype=np.float32) if obs_batch is not None else None
+                    rew_np_batch = np.array(rew_batch, dtype=np.float32) if rew_batch is not None else None
+                    done_np_batch = np.array(done_batch, dtype=bool) if done_batch is not None else None
+                    for i in range(self.num_envs):
+                        if self._episode_done[i]:
+                            continue
+                        try:
+                            self.qpos[i] = qpos_batch[i]
+                            self.qvel[i] = qvel_batch[i]
+                        except Exception:
+                            pass
+                        if obs_np_batch is not None:
+                            try:
+                                self.obs[i] = obs_np_batch[i]
+                            except Exception:
+                                pass
+                        if rew_np_batch is not None:
+                            rewards[i] = float(rew_np_batch[i])
+                        if done_np_batch is not None:
+                            dones[i] = bool(done_np_batch[i])
+                            self._episode_done[i] = dones[i]
+                            self._step_count[i] += 1
                 except Exception:
-                    # any failure falls back to host/MJX stepping for this env
-                    used_jax = False
-                    break
+                    pass
+                # replace batched jax data
+                self._jax_batch = newd_batch
+            except Exception:
+                used_jax = False
 
         if not used_jax:
             # If user requested JAX but we fell back to MJX/Euler, warn once about deprecation
