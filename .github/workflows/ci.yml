@@ -8,6 +8,10 @@ on:
 
 jobs:
   tests:
+    # Disabled automatic CI runs for this repository per maintainer request.
+    # The job is kept so it can be re-enabled easily; set `if: false` prevents
+    # the job from running on pushes or PRs.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
