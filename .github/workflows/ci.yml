@@ -18,13 +18,15 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # Install JAX (CPU) + core deps for env tests
-          pip install "jax[cpu]" || true
-          pip install mujoco || true
-          pip install optax flax || true
+          # Install test/runtime deps
+          pip install pytest numpy
+          # Install JAX (CPU) and core deps for env tests
+          pip install "jax[cpu]"
+          pip install mujoco
+          pip install optax flax
       - name: Run env tests
         run: |
-          python -m pytest -q tests/ || true
+          python -m pytest -q tests/envs
       - name: Run training stub
         run: |
-          python playground_amp/train_jax.py || true
+          python playground_amp/train_jax.py
