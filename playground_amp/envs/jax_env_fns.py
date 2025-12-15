@@ -111,9 +111,11 @@ def build_obs_from_state_j(
     extras = jnp.array([base_height, pitch, roll, com[0], com[1], com[2]], dtype=jnp.float32)
     obs = jnp.concatenate([gravity, joint_pos, joint_vel, pa[:11], jnp.zeros(2, dtype=jnp.float32), extras], axis=0)
 
-    if obs_noise_std > 0.0 and key is not None:
+    # Only add noise when a PRNG key is provided. Use jnp.where so
+    # `obs_noise_std` can be a JAX-traced value during JIT.
+    if key is not None:
         noise = jax.random.normal(key, obs.shape, dtype=jnp.float32) * obs_noise_std
-        obs = obs + noise
+        obs = jnp.where(obs_noise_std > 0.0, obs + noise, obs)
 
     return obs
 
