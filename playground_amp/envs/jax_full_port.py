@@ -7,6 +7,7 @@ This module provides a more complete starting point than `jax_sim_port.py`:
 
 Replace the simple integrator here with richer physics over time.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -54,7 +55,14 @@ def make_jax_data(nq: int, nv: int, batch: int = 1):
     return JaxData(qpos=qpos, qvel=qvel, ctrl=ctrl, xpos=xpos, xquat=xquat)
 
 
-def jax_pd_control(target_qpos: jnp.ndarray, current_qpos: jnp.ndarray, current_qvel: jnp.ndarray, kp: float = 50.0, kd: float = 1.0, clip: float = 4.0):
+def jax_pd_control(
+    target_qpos: jnp.ndarray,
+    current_qpos: jnp.ndarray,
+    current_qvel: jnp.ndarray,
+    kp: float = 50.0,
+    kd: float = 1.0,
+    clip: float = 4.0,
+):
     """Compute PD torques in JAX for batch inputs.
 
     Args:
@@ -82,21 +90,23 @@ def _quat_mul(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
     return jnp.stack([rw, rx, ry, rz], axis=-1)
 
 
-def step_substep(data: JaxData, torque: jnp.ndarray, dt: float = 0.02, mass_scale: jnp.ndarray = None):
+def step_substep(
+    data: JaxData, torque: jnp.ndarray, dt: float = 0.02, mass_scale: jnp.ndarray = None
+):
     """Apply torques and a simple dynamics update (batch-enabled).
 
     This is intentionally simple: accel = torque / mass_scale, then integrate.
     Replace with richer dynamics (contacts, constraints) in later phases.
     """
     # remember original qpos dimensionality to preserve output shapes
-    orig_qpos_ndim = getattr(data.qpos, 'ndim', None)
+    orig_qpos_ndim = getattr(data.qpos, "ndim", None)
 
     # normalize inputs to 2D batch shapes when possible
     # data.qpos/qvel/ctrl may be (n,) or (batch,n) or have extra singleton dims from vmapping
     def _ensure_2d(x):
         if x is None:
             return None
-        if getattr(x, 'ndim', 0) == 1:
+        if getattr(x, "ndim", 0) == 1:
             return x[None, :]
         # collapse trailing dims into a single feature dimension
         return jnp.reshape(x, (x.shape[0], -1))
@@ -144,17 +154,25 @@ def step_substep(data: JaxData, torque: jnp.ndarray, dt: float = 0.02, mass_scal
         base_ang = jnp.reshape(qvel_in[..., 3:6], (qvel_in.shape[0], -1))
         # integrate linear velocity with gravity
         base_lin_vel_new = base_lin_vel + g * dt
-        base_pos = jnp.reshape(qpos_in[..., :3], (qpos_in.shape[0], -1)) + base_lin_vel * dt + 0.5 * g * (dt ** 2)
+        base_pos = (
+            jnp.reshape(qpos_in[..., :3], (qpos_in.shape[0], -1))
+            + base_lin_vel * dt
+            + 0.5 * g * (dt**2)
+        )
         # quaternion update via q_dot = 0.5 * q * omega_quat (omega from angular vel)
         q = jnp.reshape(qpos_in[..., 3:7], (qpos_in.shape[0], -1))
-        omega_quat = jnp.concatenate([jnp.zeros_like(base_ang[..., :1]), base_ang], axis=-1)
+        omega_quat = jnp.concatenate(
+            [jnp.zeros_like(base_ang[..., :1]), base_ang], axis=-1
+        )
         q_dot = 0.5 * _quat_mul(q, omega_quat)
         q_new = q + q_dot * dt
         # normalize with safe fallback to identity quaternion
         norm = jnp.linalg.norm(q_new, axis=-1, keepdims=True)
         eps = 1e-8
-        default_q = jnp.broadcast_to(jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32), q_new.shape)
-        cond = (norm > eps)
+        default_q = jnp.broadcast_to(
+            jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32), q_new.shape
+        )
+        cond = norm > eps
         q_new_normed = jnp.where(cond, q_new / norm, default_q)
         q_new = q_new_normed
         # assemble qpos: replace first 7 entries
@@ -169,7 +187,11 @@ def step_substep(data: JaxData, torque: jnp.ndarray, dt: float = 0.02, mass_scal
             qpos = data.qpos + qvel * dt
         else:
             pad = nq - nv
-            qvel_padded = jnp.pad(qvel, ((0, 0), (0, pad))) if qvel.ndim == 2 else jnp.pad(qvel, (0, pad))
+            qvel_padded = (
+                jnp.pad(qvel, ((0, 0), (0, pad)))
+                if qvel.ndim == 2
+                else jnp.pad(qvel, (0, pad))
+            )
             qpos = data.qpos + qvel_padded * dt
 
     # update placeholders
@@ -181,15 +203,27 @@ def step_substep(data: JaxData, torque: jnp.ndarray, dt: float = 0.02, mass_scal
     if orig_qpos_ndim == 1:
         qpos_out = jnp.reshape(qpos, (-1,))
         qvel_out = jnp.reshape(qvel, (-1,))
-        ctrl_out = jnp.reshape(torque, (-1,)) if getattr(torque, 'ndim', 0) >= 1 else torque
-        xpos_out = jnp.reshape(xpos, (-1,)) if getattr(xpos, 'ndim', 0) >= 2 else xpos
-        xquat_out = jnp.reshape(xquat, (-1,)) if getattr(xquat, 'ndim', 0) >= 2 else xquat
-        return JaxData(qpos=qpos_out, qvel=qvel_out, ctrl=ctrl_out, xpos=xpos_out, xquat=xquat_out)
+        ctrl_out = (
+            jnp.reshape(torque, (-1,)) if getattr(torque, "ndim", 0) >= 1 else torque
+        )
+        xpos_out = jnp.reshape(xpos, (-1,)) if getattr(xpos, "ndim", 0) >= 2 else xpos
+        xquat_out = (
+            jnp.reshape(xquat, (-1,)) if getattr(xquat, "ndim", 0) >= 2 else xquat
+        )
+        return JaxData(
+            qpos=qpos_out, qvel=qvel_out, ctrl=ctrl_out, xpos=xpos_out, xquat=xquat_out
+        )
 
     return JaxData(qpos=qpos, qvel=qvel, ctrl=torque, xpos=xpos, xquat=xquat)
 
 
-def step_fn(data: JaxData, target_qpos: jnp.ndarray, dt: float = 0.02, kp: float = 50.0, kd: float = 1.0):
+def step_fn(
+    data: JaxData,
+    target_qpos: jnp.ndarray,
+    dt: float = 0.02,
+    kp: float = 50.0,
+    kd: float = 1.0,
+):
     """Given a `target_qpos`, compute torques and step one substep.
 
     Returns new JaxData.
@@ -210,14 +244,26 @@ def step_fn(data: JaxData, target_qpos: jnp.ndarray, dt: float = 0.02, kp: float
 
 # Integrate observations, reward, done using jax_env_fns when available
 try:
-    from playground_amp.envs.jax_env_fns import build_obs_from_state_j, compute_reward_from_state_j, is_done_from_state_j
+    from playground_amp.envs.jax_env_fns import (
+        build_obs_from_state_j,
+        compute_reward_from_state_j,
+        is_done_from_state_j,
+    )
 except Exception:
     build_obs_from_state_j = None
     compute_reward_from_state_j = None
     is_done_from_state_j = None
 
 
-def step_and_observe(data: JaxData, target_qpos: jnp.ndarray, dt: float = 0.02, kp: float = 50.0, kd: float = 1.0, obs_noise_std: float = 0.0, key: Optional[jax.random.KeyArray] = None):
+def step_and_observe(
+    data: JaxData,
+    target_qpos: jnp.ndarray,
+    dt: float = 0.02,
+    kp: float = 50.0,
+    kd: float = 1.0,
+    obs_noise_std: float = 0.0,
+    key: Optional[jax.random.KeyArray] = None,
+):
     """Step the `data` and return (new_data, obs, reward, done).
 
     `obs` is constructed from the new qpos/qvel using `build_obs_from_state_j`.
@@ -228,16 +274,32 @@ def step_and_observe(data: JaxData, target_qpos: jnp.ndarray, dt: float = 0.02, 
         return newd, None, None, None
 
     # derive minimal derived dict placeholders from newd (xpos/xquat/com/cfrc not available yet)
-    derived = {"xpos": newd.xpos[0] if newd.xpos is not None else None, "xquat": newd.xquat[0] if newd.xquat is not None else None}
+    derived = {
+        "xpos": newd.xpos[0] if newd.xpos is not None else None,
+        "xquat": newd.xquat[0] if newd.xquat is not None else None,
+    }
     # handle batch case: currently support batch=1 or vectorized via vmap externally
     qpos = newd.qpos[0] if newd.qpos.ndim == 2 else newd.qpos
     qvel = newd.qvel[0] if newd.qvel.ndim == 2 else newd.qvel
-    obs = build_obs_from_state_j(qpos, qvel, newd.ctrl[0] if newd.ctrl.ndim == 2 else newd.ctrl, derived=derived, obs_noise_std=obs_noise_std, key=key)
-    reward = compute_reward_from_state_j(qvel, newd.ctrl[0] if newd.ctrl.ndim == 2 else newd.ctrl)
-    done = is_done_from_state_j(qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0)
+    obs = build_obs_from_state_j(
+        qpos,
+        qvel,
+        newd.ctrl[0] if newd.ctrl.ndim == 2 else newd.ctrl,
+        derived=derived,
+        obs_noise_std=obs_noise_std,
+        key=key,
+    )
+    reward = compute_reward_from_state_j(
+        qvel, newd.ctrl[0] if newd.ctrl.ndim == 2 else newd.ctrl
+    )
+    done = is_done_from_state_j(
+        qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0
+    )
     # Force a fresh evaluation of done using the jitted helper to avoid tracing mismatches.
     try:
-        done = is_done_from_state_j(qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0)
+        done = is_done_from_state_j(
+            qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0
+        )
     except Exception:
         # keep prior value if re-evaluation fails
         pass
@@ -256,48 +318,76 @@ if jax is not None:
     vmapped_step = jax.vmap(step_fn, in_axes=(0, 0), out_axes=0)
 
     # Provide a single-example step_and_observe variant that returns scalar (non-batched)
-    def step_and_observe_single(data: JaxData, target_qpos: jnp.ndarray, dt: float = 0.02, kp: float = 50.0, kd: float = 1.0, obs_noise_std: float = 0.0, key: Optional[jax.random.KeyArray] = None):
+    def step_and_observe_single(
+        data: JaxData,
+        target_qpos: jnp.ndarray,
+        dt: float = 0.02,
+        kp: float = 50.0,
+        kd: float = 1.0,
+        obs_noise_std: float = 0.0,
+        key: Optional[jax.random.KeyArray] = None,
+    ):
         newd = step_fn(data, target_qpos, dt=dt, kp=kp, kd=kd)
         if build_obs_from_state_j is None:
             return newd, None, None, None
+
         # derive single-example arrays (handle both (n,) and (1,n) shapes)
         def _first_or_identity(x):
             if x is None:
                 return None
-            if getattr(x, 'ndim', 0) == 1:
+            if getattr(x, "ndim", 0) == 1:
                 return x
             return x[0]
+
         qpos = _first_or_identity(newd.qpos)
         qvel = _first_or_identity(newd.qvel)
         ctrl = _first_or_identity(newd.ctrl)
-        xpos = _first_or_identity(newd.xpos) if getattr(newd, 'xpos', None) is not None else None
-        xquat = _first_or_identity(newd.xquat) if getattr(newd, 'xquat', None) is not None else None
+        xpos = (
+            _first_or_identity(newd.xpos)
+            if getattr(newd, "xpos", None) is not None
+            else None
+        )
+        xquat = (
+            _first_or_identity(newd.xquat)
+            if getattr(newd, "xquat", None) is not None
+            else None
+        )
 
         derived = {"xpos": xpos, "xquat": xquat}
-        obs = build_obs_from_state_j(qpos, qvel, ctrl, derived=derived, obs_noise_std=obs_noise_std, key=key)
+        obs = build_obs_from_state_j(
+            qpos, qvel, ctrl, derived=derived, obs_noise_std=obs_noise_std, key=key
+        )
         reward = compute_reward_from_state_j(qvel, ctrl)
-        done = is_done_from_state_j(qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0)
+        done = is_done_from_state_j(
+            qpos, qvel, obs, derived=derived, max_episode_steps=500, step_count=0
+        )
         # Squeeze leading singleton batch dims so vmapping stacks into shape (batch, n)
         try:
-            if getattr(newd.qpos, 'ndim', 0) == 2 and newd.qpos.shape[0] == 1:
-                newd = JaxData(qpos=newd.qpos[0], qvel=newd.qvel[0], ctrl=newd.ctrl[0], xpos=(newd.xpos[0] if newd.xpos is not None else None), xquat=(newd.xquat[0] if newd.xquat is not None else None))
+            if getattr(newd.qpos, "ndim", 0) == 2 and newd.qpos.shape[0] == 1:
+                newd = JaxData(
+                    qpos=newd.qpos[0],
+                    qvel=newd.qvel[0],
+                    ctrl=newd.ctrl[0],
+                    xpos=(newd.xpos[0] if newd.xpos is not None else None),
+                    xquat=(newd.xquat[0] if newd.xquat is not None else None),
+                )
         except Exception:
             pass
         try:
-            if obs is not None and getattr(obs, 'ndim', 0) == 2 and obs.shape[0] == 1:
+            if obs is not None and getattr(obs, "ndim", 0) == 2 and obs.shape[0] == 1:
                 obs = obs[0]
         except Exception:
             pass
         try:
-            if getattr(reward, 'ndim', 0) == 1 and reward.shape[0] == 1:
+            if getattr(reward, "ndim", 0) == 1 and reward.shape[0] == 1:
                 reward = reward[0]
         except Exception:
             pass
         try:
-            if getattr(done, 'ndim', 0) == 0:
+            if getattr(done, "ndim", 0) == 0:
                 # scalar boolean OK
                 pass
-            elif getattr(done, 'ndim', 0) == 1 and done.shape[0] == 1:
+            elif getattr(done, "ndim", 0) == 1 and done.shape[0] == 1:
                 done = done[0]
         except Exception:
             pass
@@ -305,7 +395,14 @@ if jax is not None:
 
     # vmap a single-example helper to obtain a true batched jitted function
     try:
-        vmapped_step_and_observe = jax.vmap(step_and_observe_single, in_axes=(0, 0, None, None, None, None, 0), out_axes=(0, 0, 0, 0))
+        # Fix: in_axes should match actual function parameters
+        # step_and_observe_single(data, target_qpos, dt=0.02, kp=50.0, kd=1.0, obs_noise_std=0.0, key=None)
+        # Only first 2 args are batched (data, target_qpos), rest are shared scalars
+        vmapped_step_and_observe = jax.vmap(
+            step_and_observe_single,
+            in_axes=(0, 0, None, None, None, None, 0),
+            out_axes=(0, 0, 0, 0),
+        )
         jitted_vmapped_step_and_observe = jax.jit(vmapped_step_and_observe)
     except Exception:
         vmapped_step_and_observe = None
@@ -331,5 +428,7 @@ if __name__ == "__main__":
         print("vmapped out qpos shape:", out.qpos.shape)
         if jitted_vmapped_step_and_observe is not None:
             # smoke test batch step_and_observe
-            nds, obss, rews, dones = jitted_vmapped_step_and_observe(data, targ2, dt=0.02, kp=50.0, kd=1.0, obs_noise_std=0.0, key=None)
+            nds, obss, rews, dones = jitted_vmapped_step_and_observe(
+                data, targ2, dt=0.02, kp=50.0, kd=1.0, obs_noise_std=0.0, key=None
+            )
             print("batch obs shape:", obss.shape)

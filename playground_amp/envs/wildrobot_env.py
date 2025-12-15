@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+
 import copy
 import dataclasses
 import json
 import os
+import threading
+import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import warnings
 
 import numpy as np
-import time
-import concurrent.futures
-import threading
 
 try:
     import tomllib  # Python 3.11+
@@ -94,11 +95,20 @@ class EnvConfig:
                         data = None
 
         if data is None:
-            raise RuntimeError(f"Failed to parse config file: {path}. Install pyyaml for YAML support or use JSON/TOML.")
+            raise RuntimeError(
+                f"Failed to parse config file: {path}. Install pyyaml for YAML support or use JSON/TOML."
+            )
 
         # Map keys to dataclass fields
         kwargs = {}
-        for field in ("model_path", "num_envs", "control_freq", "obs_noise_std", "max_episode_steps", "seed"):
+        for field in (
+            "model_path",
+            "num_envs",
+            "control_freq",
+            "obs_noise_std",
+            "max_episode_steps",
+            "seed",
+        ):
             if field in data:
                 kwargs[field] = data[field]
 
@@ -140,7 +150,9 @@ class WildRobotEnv:
                 model_path = candidate
             else:
                 # also try absolute workspace location if known
-                alt = str(Path(__file__).resolve().parents[3] / "assets" / "wildrobot.xml")
+                alt = str(
+                    Path(__file__).resolve().parents[3] / "assets" / "wildrobot.xml"
+                )
                 if os.path.exists(alt):
                     model_path = alt
 
@@ -159,7 +171,9 @@ class WildRobotEnv:
                 elif hasattr(self.model, "new_data"):
                     self.data = self.model.new_data()
                 else:
-                    raise RuntimeError("Loaded model but could not create data object for mjx.load() result")
+                    raise RuntimeError(
+                        "Loaded model but could not create data object for mjx.load() result"
+                    )
             elif hasattr(mjx, "MjModel") and hasattr(mjx.MjModel, "from_xml_path"):
                 # newer mujoco Python API
                 self.model = mjx.MjModel.from_xml_path(model_path)
@@ -172,11 +186,15 @@ class WildRobotEnv:
                     self.model = muj.MjModel.from_xml_path(model_path)
                     self.data = muj.MjData(self.model)
                 else:
-                    raise AttributeError("No compatible model loader found on mjx or mujoco module")
+                    raise AttributeError(
+                        "No compatible model loader found on mjx or mujoco module"
+                    )
         except Exception as e:
             load_errs.append(str(e))
             # Provide a helpful error with available attributes to diagnose API mismatch
-            available_attrs = ", ".join(sorted([a for a in dir(mjx) if not a.startswith("__")])[:50])
+            available_attrs = ", ".join(
+                sorted([a for a in dir(mjx) if not a.startswith("__")])[:50]
+            )
             raise RuntimeError(
                 f"Failed to load MJCF model '{model_path}': {e}\n"
                 f"Tried mjx and mujoco loader fallbacks. mjx available attributes (sample): {available_attrs}\n"
@@ -276,15 +294,21 @@ class WildRobotEnv:
 
         # Cache original model parameter arrays for safe scaling/restoration
         try:
-            self._orig_body_mass = np.array(getattr(self.model, "body_mass", []), dtype=np.float32)
+            self._orig_body_mass = np.array(
+                getattr(self.model, "body_mass", []), dtype=np.float32
+            )
         except Exception:
             self._orig_body_mass = np.array([], dtype=np.float32)
         try:
-            self._orig_geom_friction = np.array(getattr(self.model, "geom_friction", []), dtype=np.float32)
+            self._orig_geom_friction = np.array(
+                getattr(self.model, "geom_friction", []), dtype=np.float32
+            )
         except Exception:
             self._orig_geom_friction = np.array([], dtype=np.float32)
         try:
-            self._orig_dof_damping = np.array(getattr(self.model, "dof_damping", []), dtype=np.float32)
+            self._orig_dof_damping = np.array(
+                getattr(self.model, "dof_damping", []), dtype=np.float32
+            )
         except Exception:
             self._orig_dof_damping = np.array([], dtype=np.float32)
 
@@ -300,16 +324,23 @@ class WildRobotEnv:
         self._jax_datas = None
         try:
             import playground_amp.envs.jax_full_port as jax_full_port
-            self._make_jax_data = getattr(jax_full_port, 'make_jax_data', None)
+
+            self._make_jax_data = getattr(jax_full_port, "make_jax_data", None)
             # choose helper: prefer batched vmapped jitted when running multiple envs
-            if self.num_envs > 1 and getattr(jax_full_port, 'jitted_vmapped_step_and_observe', None) is not None:
-                self._jitted_step_and_observe = getattr(jax_full_port, 'jitted_vmapped_step_and_observe')
+            if (
+                self.num_envs > 1
+                and getattr(jax_full_port, "jitted_vmapped_step_and_observe", None)
+                is not None
+            ):
+                self._jitted_step_and_observe = getattr(
+                    jax_full_port, "jitted_vmapped_step_and_observe"
+                )
             else:
                 # fall back to single-step jitted or vmapped helpers
                 self._jitted_step_and_observe = (
-                    getattr(jax_full_port, 'jitted_step_and_observe', None)
-                    or getattr(jax_full_port, 'vmapped_step_and_observe', None)
-                    or getattr(jax_full_port, 'jitted_step', None)
+                    getattr(jax_full_port, "jitted_step_and_observe", None)
+                    or getattr(jax_full_port, "vmapped_step_and_observe", None)
+                    or getattr(jax_full_port, "jitted_step", None)
                 )
             self._jax_available = self._jitted_step_and_observe is not None
         except Exception:
@@ -354,7 +385,9 @@ class WildRobotEnv:
         self._dt = 1.0 / float(self.cfg.control_freq)
         # Action latency / buffering (max supported latency in steps)
         self._max_latency = 5
-        self._action_buffers = np.zeros((self.num_envs, self._max_latency + 1, self.ACT_DIM), dtype=np.float32)
+        self._action_buffers = np.zeros(
+            (self.num_envs, self._max_latency + 1, self.ACT_DIM), dtype=np.float32
+        )
         # Require simulator stepping support (no Euler fallback)
         if not hasattr(mjx, "step"):
             raise RuntimeError(
@@ -373,10 +406,15 @@ class WildRobotEnv:
         if self._use_jax and self._jax_available:
             try:
                 # make a single batched JaxData for all envs
-                self._jax_batch = self._make_jax_data(self.nq, self.nv, batch=self.num_envs)
+                self._jax_batch = self._make_jax_data(
+                    self.nq, self.nv, batch=self.num_envs
+                )
                 # also prepare per-env (batch=1) JaxData objects for the legacy per-env jitted path
                 try:
-                    self._jax_datas = [self._make_jax_data(self.nq, self.nv, batch=1) for _ in range(self.num_envs)]
+                    self._jax_datas = [
+                        self._make_jax_data(self.nq, self.nv, batch=1)
+                        for _ in range(self.num_envs)
+                    ]
                 except Exception:
                     self._jax_datas = None
             except Exception:
@@ -410,8 +448,23 @@ class WildRobotEnv:
                 qpos = jnp.array(self.qpos.astype(np.float32), dtype=jnp.float32)
                 qvel = jnp.array(self.qvel.astype(np.float32), dtype=jnp.float32)
                 ctrl = jnp.zeros((self.num_envs, self.nv), dtype=jnp.float32)
+                # CRITICAL FIX: Initialize xpos and xquat from qpos to prevent early terminations
+                # xpos should be base position (first 3 elements of qpos)
+                # xquat should be base quaternion (elements 3:7 of qpos)
+                xpos = (
+                    qpos[:, :3]
+                    if qpos.shape[-1] >= 3
+                    else jnp.zeros((self.num_envs, 3), dtype=jnp.float32)
+                )
+                xquat = (
+                    qpos[:, 3:7]
+                    if qpos.shape[-1] >= 7
+                    else jnp.zeros((self.num_envs, 4), dtype=jnp.float32)
+                )
                 d = self._jax_batch
-                self._jax_batch = type(d)(qpos=qpos, qvel=qvel, ctrl=ctrl, xpos=d.xpos, xquat=d.xquat)
+                self._jax_batch = type(d)(
+                    qpos=qpos, qvel=qvel, ctrl=ctrl, xpos=xpos, xquat=xquat
+                )
             except Exception:
                 pass
 
@@ -424,7 +477,9 @@ class WildRobotEnv:
         self._episode_done.fill(False)
         return obs
 
-    def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    def step(
+        self, actions: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
         """Take a vectorized step.
 
         actions: np.ndarray (num_envs, ACT_DIM) target joint positions (PD setpoints)
@@ -470,7 +525,9 @@ class WildRobotEnv:
                     try:
                         d.ctrl = ctrl_arr
                     except Exception:
-                        for k in range(min(int(getattr(d, "ctrl").size), torques_buf.shape[1])):
+                        for k in range(
+                            min(int(getattr(d, "ctrl").size), torques_buf.shape[1])
+                        ):
                             try:
                                 d.ctrl[k] = float(ctrl_arr[k])
                             except Exception:
@@ -482,14 +539,16 @@ class WildRobotEnv:
         # touching host `mjx.Data` objects and allows jitted/VMAP execution.
         used_jax = True
         if not (self._jax_available and self._jax_batch is not None):
-            raise RuntimeError("Pure-JAX port not available; MJX fallback removed. Install JAX and ensure jax_full_port is importable.")
+            raise RuntimeError(
+                "Pure-JAX port not available; MJX fallback removed. Install JAX and ensure jax_full_port is importable."
+            )
         # call batched jitted step_and_observe (returns newd_batch, obs_batch, rew_batch, done_batch)
         # Prefer direct vmapped step -> obs/reward/done assembly for better control.
         # Prepare per-env RNG keys to feed into the vmapped jitted helper when available.
         keys = None
         try:
-            if getattr(self, '_rng', None) is None:
-                self._rng = jax.random.PRNGKey(int(getattr(self.cfg, 'seed', 0)))
+            if getattr(self, "_rng", None) is None:
+                self._rng = jax.random.PRNGKey(int(getattr(self.cfg, "seed", 0)))
             rngs = jax.random.split(self._rng, self.num_envs + 1)
             self._rng = rngs[0]
             keys = rngs[1:]
@@ -498,18 +557,23 @@ class WildRobotEnv:
 
         try:
             import playground_amp.envs.jax_full_port as jax_full_port
+
             # Try a direct vmapped jitted step_fn if available
-            vmapped_step = getattr(jax_full_port, 'vmapped_step', None)
+            vmapped_step = getattr(jax_full_port, "vmapped_step", None)
             if vmapped_step is not None:
-                newd_batch = vmapped_step(self._jax_batch, jnp.array(self.actions, dtype=jnp.float32))
+                newd_batch = vmapped_step(
+                    self._jax_batch, jnp.array(self.actions, dtype=jnp.float32)
+                )
             else:
                 # fall back to explicit vmapping + jitting
-                newd_batch = jax.jit(jax.vmap(jax_full_port.step_fn, in_axes=(0, 0), out_axes=0))(self._jax_batch, jnp.array(self.actions, dtype=jnp.float32))
+                newd_batch = jax.jit(
+                    jax.vmap(jax_full_port.step_fn, in_axes=(0, 0), out_axes=0)
+                )(self._jax_batch, jnp.array(self.actions, dtype=jnp.float32))
 
             # Build observations, rewards, dones using jax helpers when available
-            build_obs = getattr(jax_full_port, 'build_obs_from_state_j', None)
-            compute_rew = getattr(jax_full_port, 'compute_reward_from_state_j', None)
-            is_done_j = getattr(jax_full_port, 'is_done_from_state_j', None)
+            build_obs = getattr(jax_full_port, "build_obs_from_state_j", None)
+            compute_rew = getattr(jax_full_port, "compute_reward_from_state_j", None)
+            is_done_j = getattr(jax_full_port, "is_done_from_state_j", None)
 
             obs_batch = None
             rew_batch = None
@@ -521,24 +585,48 @@ class WildRobotEnv:
 
             if build_obs is not None:
                 if keys is not None:
-                    obs_batch = jax.jit(jax.vmap(build_obs, in_axes=(0, 0, 0, None, None, 0), out_axes=0))(
-                        qpos_j, qvel_j, prev_act, None, self.cfg.obs_noise_std, jnp.stack(keys)
+                    obs_batch = jax.jit(
+                        jax.vmap(
+                            build_obs, in_axes=(0, 0, 0, None, None, 0), out_axes=0
+                        )
+                    )(
+                        qpos_j,
+                        qvel_j,
+                        prev_act,
+                        None,
+                        self.cfg.obs_noise_std,
+                        jnp.stack(keys),
                     )
                 else:
-                    obs_batch = jax.jit(jax.vmap(build_obs, in_axes=(0, 0, 0, None, None, None), out_axes=0))(
-                        qpos_j, qvel_j, prev_act, None, self.cfg.obs_noise_std, None
-                    )
+                    obs_batch = jax.jit(
+                        jax.vmap(
+                            build_obs, in_axes=(0, 0, 0, None, None, None), out_axes=0
+                        )
+                    )(qpos_j, qvel_j, prev_act, None, self.cfg.obs_noise_std, None)
             if compute_rew is not None:
-                rew_batch = jax.jit(jax.vmap(compute_rew, in_axes=(0, 0), out_axes=0))(qvel_j, newd_batch.ctrl)
+                rew_batch = jax.jit(jax.vmap(compute_rew, in_axes=(0, 0), out_axes=0))(
+                    qvel_j, newd_batch.ctrl
+                )
             if is_done_j is not None:
                 if keys is not None:
-                    done_batch = jax.jit(jax.vmap(is_done_j, in_axes=(0, 0, 0, None, None, 0), out_axes=0))(
-                        qpos_j, qvel_j, obs_batch, None, self.cfg.max_episode_steps, jnp.stack(keys)
+                    done_batch = jax.jit(
+                        jax.vmap(
+                            is_done_j, in_axes=(0, 0, 0, None, None, 0), out_axes=0
+                        )
+                    )(
+                        qpos_j,
+                        qvel_j,
+                        obs_batch,
+                        None,
+                        self.cfg.max_episode_steps,
+                        jnp.stack(keys),
                     )
                 else:
-                    done_batch = jax.jit(jax.vmap(is_done_j, in_axes=(0, 0, 0, None, None, None), out_axes=0))(
-                        qpos_j, qvel_j, obs_batch, None, self.cfg.max_episode_steps, None
-                    )
+                    done_batch = jax.jit(
+                        jax.vmap(
+                            is_done_j, in_axes=(0, 0, 0, None, None, None), out_axes=0
+                        )
+                    )(qpos_j, qvel_j, obs_batch, None, self.cfg.max_episode_steps, None)
 
             # convert to numpy and write back to host
             qpos_batch = np.array(qpos_j, dtype=np.float32)
@@ -584,7 +672,10 @@ class WildRobotEnv:
             # Fallback: call per-env jitted step_and_observe when vmapped helper fails
             try:
                 import playground_amp.envs.jax_full_port as jax_full_port
-                single = getattr(jax_full_port, 'jitted_step_and_observe', None) or getattr(jax_full_port, 'jitted_step', None)
+
+                single = getattr(
+                    jax_full_port, "jitted_step_and_observe", None
+                ) or getattr(jax_full_port, "jitted_step", None)
                 if single is None:
                     raise
                 qpos_list = []
@@ -606,20 +697,60 @@ class WildRobotEnv:
                         d_i = self._jax_datas[i]
                     else:
                         # Prefer slicing the existing batched JaxData state when available
-                        if getattr(self, '_jax_batch', None) is not None:
+                        if getattr(self, "_jax_batch", None) is not None:
                             try:
                                 jb = self._jax_batch
                                 # build a single-example JaxData view
-                                d_i = type(jb)(qpos=jb.qpos[i:i+1], qvel=jb.qvel[i:i+1], ctrl=(jb.ctrl[i:i+1] if getattr(jb, 'ctrl', None) is not None else None), xpos=(jb.xpos[i:i+1] if getattr(jb, 'xpos', None) is not None else None), xquat=(jb.xquat[i:i+1] if getattr(jb, 'xquat', None) is not None else None))
+                                d_i = type(jb)(
+                                    qpos=jb.qpos[i : i + 1],
+                                    qvel=jb.qvel[i : i + 1],
+                                    ctrl=(
+                                        jb.ctrl[i : i + 1]
+                                        if getattr(jb, "ctrl", None) is not None
+                                        else None
+                                    ),
+                                    xpos=(
+                                        jb.xpos[i : i + 1]
+                                        if getattr(jb, "xpos", None) is not None
+                                        else None
+                                    ),
+                                    xquat=(
+                                        jb.xquat[i : i + 1]
+                                        if getattr(jb, "xquat", None) is not None
+                                        else None
+                                    ),
+                                )
                             except Exception:
-                                d_i = jax_full_port.make_jax_data(self.nq, self.nv, batch=1)
+                                d_i = jax_full_port.make_jax_data(
+                                    self.nq, self.nv, batch=1
+                                )
                         else:
                             d_i = jax_full_port.make_jax_data(self.nq, self.nv, batch=1)
                     # call single-env jitted helper
-                    nd, ob, rw, dn = single(d_i, jnp.array(self.actions[i:i+1], dtype=jnp.float32), self._dt, self.kp, self.kd, self.cfg.obs_noise_std, None)
-                    qpos_list.append(np.array(nd.qpos, dtype=np.float32).reshape(-1, nd.qpos.shape[-1])[0][None, :])
-                    qvel_list.append(np.array(nd.qvel, dtype=np.float32).reshape(-1, nd.qvel.shape[-1])[0][None, :])
-                    obs_list.append(np.array(ob, dtype=np.float32).reshape(-1, ob.shape[-1])[0][None, :])
+                    nd, ob, rw, dn = single(
+                        d_i,
+                        jnp.array(self.actions[i : i + 1], dtype=jnp.float32),
+                        self._dt,
+                        self.kp,
+                        self.kd,
+                        self.cfg.obs_noise_std,
+                        None,
+                    )
+                    qpos_list.append(
+                        np.array(nd.qpos, dtype=np.float32).reshape(
+                            -1, nd.qpos.shape[-1]
+                        )[0][None, :]
+                    )
+                    qvel_list.append(
+                        np.array(nd.qvel, dtype=np.float32).reshape(
+                            -1, nd.qvel.shape[-1]
+                        )[0][None, :]
+                    )
+                    obs_list.append(
+                        np.array(ob, dtype=np.float32).reshape(-1, ob.shape[-1])[0][
+                            None, :
+                        ]
+                    )
                     rew_list.append(float(np.array(rw)))
                     done_list.append(bool(np.array(dn)))
                 # stack into batched arrays
@@ -672,9 +803,13 @@ class WildRobotEnv:
                                 mjx.forward(self.model, d)
                         except Exception:
                             pass
-                        accel = torques_buf[i].astype(np.float32) / (self._mass_scale[i] + 1e-6)
+                        accel = torques_buf[i].astype(np.float32) / (
+                            self._mass_scale[i] + 1e-6
+                        )
                         self.qvel[i, : accel.size] += accel * self._dt
-                        self.qpos[i, : accel.size] += self.qvel[i, : accel.size] * self._dt
+                        self.qpos[i, : accel.size] += (
+                            self.qvel[i, : accel.size] * self._dt
+                        )
 
         # After stepping all envs, apply pushes, compute obs/rewards/dones
         # After stepping all envs, apply pushes, compute obs/rewards/dones.
@@ -690,7 +825,9 @@ class WildRobotEnv:
                         mag = float(dr.get("push_mag", 0.0))
                         dirx = float(dr.get("push_dir_x", 1.0))
                         if self.qvel.shape[1] >= 3:
-                            self.qvel[i, 0] += (mag * dirx) / (self._mass_scale[i] + 1e-6)
+                            self.qvel[i, 0] += (mag * dirx) / (
+                                self._mass_scale[i] + 1e-6
+                            )
                 except Exception:
                     pass
 
@@ -699,7 +836,15 @@ class WildRobotEnv:
                     d_j = self._jax_datas[i]
                     targ = np.array(self.actions[i], dtype=np.float32)
                     # call jitted step_and_observe (returns newd, obs, reward, done)
-                    newd, obs_i, reward_i, done_i = self._jitted_step_and_observe(d_j, targ, dt=self._dt, kp=self.kp, kd=self.kd, obs_noise_std=self.cfg.obs_noise_std, key=None)
+                    newd, obs_i, reward_i, done_i = self._jitted_step_and_observe(
+                        d_j,
+                        targ,
+                        dt=self._dt,
+                        kp=self.kp,
+                        kd=self.kd,
+                        obs_noise_std=self.cfg.obs_noise_std,
+                        key=None,
+                    )
                     # update host qpos/qvel from jax arrays
                     try:
                         self.qpos[i] = np.array(newd.qpos[0], dtype=np.float32)
@@ -769,7 +914,9 @@ class WildRobotEnv:
         self._deprecation_warned = True
 
     def random_action(self) -> np.ndarray:
-        return np.random.uniform(low=-0.5, high=0.5, size=(self.num_envs, self.ACT_DIM)).astype(np.float32)
+        return np.random.uniform(
+            low=-0.5, high=0.5, size=(self.num_envs, self.ACT_DIM)
+        ).astype(np.float32)
 
     # ---------------------- small helpers ----------------------
     def _reset_single(self, idx: int) -> None:
@@ -806,13 +953,20 @@ class WildRobotEnv:
             return
         # If Data writes are not possible for this env, use host-side Euler
         # fallback so stepping reflects `self.qpos` that callers may have set.
-        if getattr(self, "_force_host_qpos", None) is not None and self._force_host_qpos[i]:
+        if (
+            getattr(self, "_force_host_qpos", None) is not None
+            and self._force_host_qpos[i]
+        ):
             accel = torques.astype(np.float32) / (self._mass_scale[i] + 1e-6)
             self.qvel[i, : accel.size] += accel * self._dt
             self.qpos[i, : accel.size] += self.qvel[i, : accel.size] * self._dt
             return
         # Prefer creating a fresh Data object per-step (data.replace-style)
-        model = self._models[i] if (self._per_env_models and i < len(self._models)) else self.model
+        model = (
+            self._models[i]
+            if (self._per_env_models and i < len(self._models))
+            else self.model
+        )
         try:
             # Try to acquire a Data object from the pool when available
             newd = None
@@ -867,10 +1021,15 @@ class WildRobotEnv:
             # replace the stored data reference so subsequent reads see
             # the latest values.
             try:
-                if not self._per_env_models and getattr(self, "_data_pool", None) is not None:
+                if (
+                    not self._per_env_models
+                    and getattr(self, "_data_pool", None) is not None
+                ):
                     # return to pool if there is room
                     with self._pool_lock:
-                        if len(self._data_pool) < int(getattr(self.cfg, "data_pool_size", 16)):
+                        if len(self._data_pool) < int(
+                            getattr(self.cfg, "data_pool_size", 16)
+                        ):
                             self._data_pool.append(newd)
                         else:
                             # pool full: keep as per-env data
@@ -951,7 +1110,14 @@ class WildRobotEnv:
                 try:
                     d.qpos[:] = self.qpos[idx]
                     if hasattr(mjx, "forward"):
-                        mjx.forward(self.model if not self._per_env_models else self._models[idx], d)
+                        mjx.forward(
+                            (
+                                self.model
+                                if not self._per_env_models
+                                else self._models[idx]
+                            ),
+                            d,
+                        )
                 except Exception:
                     pass
 
@@ -961,13 +1127,19 @@ class WildRobotEnv:
                 try:
                     m = self._models[idx]
                     # mass scaling
-                    if getattr(self._orig_body_mass, "size", 0) > 0 and hasattr(m, "body_mass"):
+                    if getattr(self._orig_body_mass, "size", 0) > 0 and hasattr(
+                        m, "body_mass"
+                    ):
                         try:
-                            m.body_mass[:] = (self._orig_body_mass * float(dr.get("mass_scale", 1.0))).astype(np.float32)
+                            m.body_mass[:] = (
+                                self._orig_body_mass * float(dr.get("mass_scale", 1.0))
+                            ).astype(np.float32)
                         except Exception:
                             pass
                     # geom friction
-                    if getattr(self._orig_geom_friction, "size", 0) > 0 and hasattr(m, "geom_friction"):
+                    if getattr(self._orig_geom_friction, "size", 0) > 0 and hasattr(
+                        m, "geom_friction"
+                    ):
                         try:
                             # geom_friction may be (ngeom,3) or (ngeom,)
                             friction_val = float(dr.get("friction", 1.0))
@@ -982,10 +1154,14 @@ class WildRobotEnv:
                         except Exception:
                             pass
                     # joint/dof damping
-                    if getattr(self._orig_dof_damping, "size", 0) > 0 and hasattr(m, "dof_damping"):
+                    if getattr(self._orig_dof_damping, "size", 0) > 0 and hasattr(
+                        m, "dof_damping"
+                    ):
                         try:
                             jd = float(dr.get("joint_damping", 0.0))
-                            m.dof_damping[:] = (self._orig_dof_damping * (1.0 + jd)).astype(np.float32)
+                            m.dof_damping[:] = (
+                                self._orig_dof_damping * (1.0 + jd)
+                            ).astype(np.float32)
                         except Exception:
                             pass
                 except Exception:
@@ -1031,24 +1207,39 @@ class WildRobotEnv:
         try:
             d = self._datas[idx]
             # Prefer qpos z when available (more reliable), otherwise use world-space xpos
-            if getattr(d, 'qpos', None) is not None and getattr(d.qpos, 'size', 0) >= 3:
+            if getattr(d, "qpos", None) is not None and getattr(d.qpos, "size", 0) >= 3:
                 try:
                     base_height = float(d.qpos[2])
                 except Exception:
                     base_height = 0.0
-            elif hasattr(d, 'xpos') and getattr(d, 'xpos') is not None and getattr(d, 'xpos').size >= 3:
+            elif (
+                hasattr(d, "xpos")
+                and getattr(d, "xpos") is not None
+                and getattr(d, "xpos").size >= 3
+            ):
                 try:
-                    base_pos = np.array(d.xpos[:3], dtype=np.float32) if np.asarray(d.xpos).ndim == 1 else np.array(d.xpos[0], dtype=np.float32)
+                    base_pos = (
+                        np.array(d.xpos[:3], dtype=np.float32)
+                        if np.asarray(d.xpos).ndim == 1
+                        else np.array(d.xpos[0], dtype=np.float32)
+                    )
                     base_height = float(base_pos[2])
                 except Exception:
                     base_height = 0.0
 
             # quaternion: read robustly (MJCF/MJX may use wxyz or xyzw ordering)
-            from playground_amp.utils.quaternion import normalize_quat_wxyz, quat_to_euler_wxyz
+            from playground_amp.utils.quaternion import (
+                normalize_quat_wxyz,
+                quat_to_euler_wxyz,
+            )
 
             try:
                 if hasattr(d, "xquat") and getattr(d, "xquat") is not None:
-                    raw_q = np.array(d.xquat[:4], dtype=np.float32) if np.asarray(d.xquat).ndim == 1 else np.array(d.xquat[0], dtype=np.float32)
+                    raw_q = (
+                        np.array(d.xquat[:4], dtype=np.float32)
+                        if np.asarray(d.xquat).ndim == 1
+                        else np.array(d.xquat[0], dtype=np.float32)
+                    )
                 elif d.qpos.size >= 7:
                     raw_q = np.array(d.qpos[3:7], dtype=np.float32)
                 else:
@@ -1080,13 +1271,19 @@ class WildRobotEnv:
         except Exception:
             pass
 
-        extras = np.array([base_height, pitch, roll, com[0], com[1], com[2]], dtype=np.float32)
+        extras = np.array(
+            [base_height, pitch, roll, com[0], com[1], com[2]], dtype=np.float32
+        )
 
-        obs = np.concatenate([gravity, joint_pos, joint_vel, prev_action, phase, extras], axis=0)
+        obs = np.concatenate(
+            [gravity, joint_pos, joint_vel, prev_action, phase, extras], axis=0
+        )
         assert obs.shape[0] == self.OBS_DIM
 
         # Add observation noise
-        noise = np.random.normal(scale=self.cfg.obs_noise_std, size=obs.shape).astype(np.float32)
+        noise = np.random.normal(scale=self.cfg.obs_noise_std, size=obs.shape).astype(
+            np.float32
+        )
         return obs + noise
 
     def _pd_control(self, idx: int, target_qpos: np.ndarray) -> np.ndarray:
@@ -1165,7 +1362,10 @@ class WildRobotEnv:
             roll = None
             if getattr(self, "qpos", None) is not None and self.qpos.shape[1] >= 7:
                 try:
-                    from playground_amp.utils.quaternion import normalize_quat_wxyz, quat_to_euler_wxyz
+                    from playground_amp.utils.quaternion import (
+                        normalize_quat_wxyz,
+                        quat_to_euler_wxyz,
+                    )
 
                     raw_q = np.array(self.qpos[idx, 3:7], dtype=np.float32)
                     q = normalize_quat_wxyz(raw_q)
@@ -1184,13 +1384,18 @@ class WildRobotEnv:
                     roll = 0.0
 
             # allow a brief initial settle period before enforcing base-height terminations
-            min_safe_steps = 20
+            # Increased to 50 steps to ensure JAX state fully settles after reset
+            min_safe_steps = 50
             if self._step_count[idx] >= min_safe_steps and base_height < 0.25:
                 self._log_done_reason(idx, f"low_base_height:{base_height:.3f}")
                 return True
             # convert rad thresholds (45 deg)
-            if abs(pitch) > (45.0 * np.pi / 180.0) or abs(roll) > (45.0 * np.pi / 180.0):
-                self._log_done_reason(idx, f"orientation_45deg:pitch={pitch:.3f},roll={roll:.3f}")
+            if abs(pitch) > (45.0 * np.pi / 180.0) or abs(roll) > (
+                45.0 * np.pi / 180.0
+            ):
+                self._log_done_reason(
+                    idx, f"orientation_45deg:pitch={pitch:.3f},roll={roll:.3f}"
+                )
                 return True
         except Exception:
             pass
@@ -1216,12 +1421,19 @@ class WildRobotEnv:
                 return True
             # use base orientation if available for early termination (upright loss)
             try:
-                from playground_amp.utils.quaternion import normalize_quat_wxyz, quat_to_euler_wxyz
+                from playground_amp.utils.quaternion import (
+                    normalize_quat_wxyz,
+                    quat_to_euler_wxyz,
+                )
 
                 raw_q = None
                 if hasattr(d, "xquat") and getattr(d, "xquat") is not None:
                     try:
-                        raw_q = np.array(d.xquat[:4], dtype=np.float32) if np.asarray(d.xquat).ndim == 1 else np.array(d.xquat[0], dtype=np.float32)
+                        raw_q = (
+                            np.array(d.xquat[:4], dtype=np.float32)
+                            if np.asarray(d.xquat).ndim == 1
+                            else np.array(d.xquat[0], dtype=np.float32)
+                        )
                     except Exception:
                         raw_q = None
                 if raw_q is None and d.qpos.size >= 7:
@@ -1229,8 +1441,13 @@ class WildRobotEnv:
                 if raw_q is not None:
                     q = normalize_quat_wxyz(raw_q)
                     roll_d, pitch_d = quat_to_euler_wxyz(q)
-                    if abs(pitch_d) > (60.0 * np.pi / 180.0) or abs(roll_d) > (60.0 * np.pi / 180.0):
-                        self._log_done_reason(idx, f"orientation_60deg:pitch={pitch_d:.3f},roll={roll_d:.3f}")
+                    if abs(pitch_d) > (60.0 * np.pi / 180.0) or abs(roll_d) > (
+                        60.0 * np.pi / 180.0
+                    ):
+                        self._log_done_reason(
+                            idx,
+                            f"orientation_60deg:pitch={pitch_d:.3f},roll={roll_d:.3f}",
+                        )
                         return True
             except Exception:
                 pass
@@ -1242,7 +1459,7 @@ class WildRobotEnv:
     def _log_done_reason(self, idx: int, reason: str) -> None:
         """Log the termination reason for debugging (optional, can be disabled)."""
         # Store per-env done reasons in a list for later inspection
-        if not hasattr(self, '_done_reasons'):
+        if not hasattr(self, "_done_reasons"):
             self._done_reasons = {}
         self._done_reasons[idx] = reason
         # Optionally print for immediate debugging (can be noisy)
@@ -1258,7 +1475,9 @@ class WildRobotEnv:
         # scheduled push perturbation (time step and magnitude)
         push_prob = rng.uniform()
         if push_prob < 0.15:
-            push_time = int(rng.randint(5, max(6, int(self.cfg.max_episode_steps // 3))))
+            push_time = int(
+                rng.randint(5, max(6, int(self.cfg.max_episode_steps // 3)))
+            )
             push_mag = float(rng.uniform(5.0, 50.0))
             push_dir_x = float(rng.choice([-1.0, 1.0]))
         else:
@@ -1306,7 +1525,11 @@ class WildRobotEnv:
 
         # Fallback: create a fresh Data object from the model and replace
         try:
-            m = self._models[idx] if (self._per_env_models and idx < len(self._models)) else self.model
+            m = (
+                self._models[idx]
+                if (self._per_env_models and idx < len(self._models))
+                else self.model
+            )
             newd = mjx.make_data(m)
             try:
                 newd.qpos[:] = qarr
@@ -1337,16 +1560,24 @@ class WildRobotEnv:
             try:
                 # try one more time to construct a fresh, non-JAX-backed
                 # Data and set qpos as an attribute (may still fail).
-                m = self._models[idx] if (self._per_env_models and idx < len(self._models)) else self.model
+                m = (
+                    self._models[idx]
+                    if (self._per_env_models and idx < len(self._models))
+                    else self.model
+                )
                 newd = mjx.make_data(m)
                 try:
                     setattr(newd, "qpos", qarr)
                     self._datas[idx] = newd
                 except Exception:
                     # give up and keep host qpos updated
-                    print(f"Warning: cannot write qpos into mjx.Data for idx={idx}; updated host qpos only.")
+                    print(
+                        f"Warning: cannot write qpos into mjx.Data for idx={idx}; updated host qpos only."
+                    )
             except Exception:
-                print(f"Warning: cannot create fallback mjx.Data for idx={idx}; updated host qpos only.")
+                print(
+                    f"Warning: cannot create fallback mjx.Data for idx={idx}; updated host qpos only."
+                )
             return
 
 
