@@ -168,10 +168,14 @@ def main():
     # Progress callback
     def progress_fn(num_steps, metrics):
         """Called periodically during training."""
-        if num_steps % 5000 == 0 or num_steps < 1000:
+        # Log more frequently for debugging
+        if num_steps % 1000 == 0 or num_steps < 5000:
             reward = metrics.get("eval/episode_reward", 0.0)
             length = metrics.get("eval/episode_length", 0.0)
-            print(f"Step {num_steps:,}: reward={reward:.2f}, length={length:.1f}")
+            policy_loss = metrics.get("training/policy_loss", 0.0)
+            value_loss = metrics.get("training/value_loss", 0.0)
+            print(f"Step {num_steps:,}: reward={reward:.2f}, length={length:.1f}, "
+                  f"policy_loss={policy_loss:.4f}, value_loss={value_loss:.4f}")
 
             if not args.no_wandb:
                 try:

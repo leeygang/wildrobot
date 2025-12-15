@@ -227,12 +227,12 @@ class BraxWildRobotWrapper(envs.Env if BRAX_AVAILABLE else object):
         if hasattr(reward, 'ndim') and reward.ndim > 0:
             reward = reward[0] if reward.shape[0] == 1 else reward
         reward = jnp.asarray(reward, dtype=jnp.float32)
-        
+
         if hasattr(done, 'ndim') and done.ndim > 0:
             done = done[0] if done.shape[0] == 1 else done
         # Convert done to float32 (Brax convention, not bool!)
         done = jnp.asarray(done, dtype=jnp.float32)
-        
+
         if hasattr(obs, 'ndim') and obs.ndim > 1:
             obs = obs[0] if obs.shape[0] == 1 else obs
         obs = jnp.asarray(obs, dtype=jnp.float32)
