@@ -126,6 +126,8 @@ def main():
         return
 
     # PPO hyperparameters (2024 best practices)
+    # Note: BraxWildRobotWrapper automatically enables Pure-JAX backend (use_jax=True)
+    # This enables full JIT/vmap compatibility with Brax's training infrastructure
     ppo_kwargs = {
         "num_timesteps": num_iterations * 1000,  # Total env steps
         "num_evals": max(1, num_iterations // 20),  # Evaluate every 5% of training
@@ -142,10 +144,6 @@ def main():
         "num_envs": num_envs,
         "batch_size": min(1024, num_envs * 10),
         "seed": 0,
-        # IMPORTANT: Disable JIT/vmap wrappers since our env has numpy backend
-        # This will be slower but allows training with current numpy-based env
-        # Once Task 11 (Pure-JAX port) completes, we can enable JIT/vmap
-        "wrap_for_training": False,  # Disable automatic training wrappers
     }
 
     print(f"\nPPO Configuration:")
