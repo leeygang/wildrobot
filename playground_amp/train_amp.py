@@ -54,6 +54,10 @@ from playground_amp.training.amp_ppo_training import (
     train_amp_ppo,
     TrainingMetrics,
 )
+from playground_amp.training.experiment_tracking import (
+    ExperimentTracker,
+    create_training_metrics,
+)
 
 
 def create_env_functions(num_envs: int, obs_dim: int = 44):
@@ -374,56 +378,127 @@ def main():
         print(f"    Reference mode: {config.ref_motion_mode}")
     print("=" * 60 + "\n")
 
+    # Initialize experiment tracker
+    run_name = f"amp_ppo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if args.verify:
+        run_name = f"verify_{run_name}"
+
+    tracker = ExperimentTracker(
+        project="wildrobot-locomotion",
+        name=run_name,
+        config={
+            "algorithm": "PPO+AMP" if config.enable_amp else "PPO",
+            "num_envs": config.num_envs,
+            "num_steps": config.num_steps,
+            "learning_rate": config.learning_rate,
+            "gamma": config.gamma,
+            "clip_epsilon": config.clip_epsilon,
+            "entropy_coef": config.entropy_coef,
+            "amp_enabled": config.enable_amp,
+            "amp_weight": config.amp_reward_weight if config.enable_amp else 0,
+            "disc_lr": config.disc_learning_rate,
+            "disc_updates": config.disc_updates_per_iter,
+            "ref_motion_mode": config.ref_motion_mode,
+            "total_iterations": config.total_iterations,
+            "seed": config.seed,
+        },
+        tags=["amp" if config.enable_amp else "ppo", "wildrobot"],
+        notes=f"AMP+PPO training run with {config.num_envs} envs",
+        use_wandb=not args.verify,  # Disable WandB for quick verify
+        use_tensorboard=True,
+    )
+
     # Create environment functions
     step_fn, reset_fn = create_env_functions(
         num_envs=config.num_envs,
         obs_dim=config.obs_dim,
     )
 
-    # Create checkpoint callback
-    def checkpoint_callback(
+    # Create training callback with logging
+    def training_callback(
         iteration: int, state: AMPPPOState, metrics: TrainingMetrics
     ):
+        # Log metrics to tracker
+        log_metrics = {
+            # PPO metrics
+            "ppo/policy_loss": metrics.policy_loss,
+            "ppo/value_loss": metrics.value_loss,
+            "ppo/entropy_loss": metrics.entropy_loss,
+            "ppo/total_loss": metrics.total_loss,
+            "ppo/clip_fraction": metrics.clip_fraction,
+            "ppo/approx_kl": metrics.approx_kl,
+            # AMP metrics
+            "amp/disc_loss": metrics.disc_loss,
+            "amp/disc_accuracy": metrics.disc_accuracy,
+            "amp/reward_mean": metrics.amp_reward_mean,
+            "amp/reward_std": metrics.amp_reward_std,
+            # Environment metrics
+            "env/episode_reward": metrics.episode_reward,
+            "env/episode_length": metrics.episode_length,
+            # Performance
+            "perf/env_steps_per_sec": metrics.env_steps_per_sec,
+            "perf/total_steps": int(state.total_steps),
+        }
+        tracker.log(log_metrics, step=iteration)
+
+        # Save checkpoint at intervals
         if iteration > 0 and iteration % config.save_interval == 0:
-            filepath = os.path.join(
-                config.checkpoint_dir,
-                f"checkpoint_{iteration:06d}.pkl",
-            )
-            save_checkpoint(state, config, filepath)
+            checkpoint_data = {
+                "policy_params": jax.device_get(state.policy_params),
+                "value_params": jax.device_get(state.value_params),
+                "disc_params": jax.device_get(state.disc_params),
+                "iteration": int(state.iteration),
+                "total_steps": int(state.total_steps),
+                "config": config,
+            }
+            tracker.save_checkpoint(checkpoint_data, name="model", step=iteration)
 
     # Train
     start_time = time.time()
 
-    final_state = train_amp_ppo(
-        env_step_fn=step_fn,
-        env_reset_fn=reset_fn,
-        config=config,
-        callback=checkpoint_callback,
-    )
+    try:
+        final_state = train_amp_ppo(
+            env_step_fn=step_fn,
+            env_reset_fn=reset_fn,
+            config=config,
+            callback=training_callback,
+        )
 
-    elapsed_time = time.time() - start_time
+        elapsed_time = time.time() - start_time
 
-    # Save final checkpoint
-    final_checkpoint_path = os.path.join(
-        config.checkpoint_dir,
-        "checkpoint_final.pkl",
-    )
-    save_checkpoint(final_state, config, final_checkpoint_path)
+        # Save final checkpoint
+        final_checkpoint_path = os.path.join(
+            config.checkpoint_dir,
+            "checkpoint_final.pkl",
+        )
+        save_checkpoint(final_state, config, final_checkpoint_path)
 
-    # Print summary
-    print("\n" + "=" * 60)
-    print("Training Summary")
-    print("=" * 60)
-    print(f"  Total iterations: {int(final_state.iteration)}")
-    print(f"  Total steps: {int(final_state.total_steps)}")
-    print(f"  Wall time: {elapsed_time:.1f}s")
-    print(f"  Steps/second: {int(final_state.total_steps) / elapsed_time:.0f}")
-    print(f"  Final checkpoint: {final_checkpoint_path}")
-    print("=" * 60)
+        # Log summary metrics
+        tracker.log_summary({
+            "final/total_iterations": int(final_state.iteration),
+            "final/total_steps": int(final_state.total_steps),
+            "final/wall_time_seconds": elapsed_time,
+            "final/steps_per_second": int(final_state.total_steps) / elapsed_time,
+        })
 
-    if args.verify:
-        print("\n✅ VERIFICATION PASSED!")
-        print("AMP+PPO training loop is working correctly.")
+        # Print summary
+        print("\n" + "=" * 60)
+        print("Training Summary")
+        print("=" * 60)
+        print(f"  Total iterations: {int(final_state.iteration)}")
+        print(f"  Total steps: {int(final_state.total_steps)}")
+        print(f"  Wall time: {elapsed_time:.1f}s")
+        print(f"  Steps/second: {int(final_state.total_steps) / elapsed_time:.0f}")
+        print(f"  Final checkpoint: {final_checkpoint_path}")
+        print("=" * 60)
+
+        if args.verify:
+            print("\n✅ VERIFICATION PASSED!")
+            print("AMP+PPO training loop is working correctly.")
+
+    finally:
+        # Always close the tracker
+        tracker.finish()
 
 
 if __name__ == "__main__":
