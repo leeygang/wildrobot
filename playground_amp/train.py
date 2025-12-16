@@ -194,36 +194,43 @@ def main():
         print(f"  AMP weight: {amp_weight}")
     print(f"  WandB logging: {'disabled' if args.no_wandb else 'enabled'}")
 
-    # Initialize AMP discriminator if requested
+    # Initialize AMP discriminator if requested (LEGACY CODE - NOT USED)
+    # Note: AMP integration now uses AMPRewardWrapper instead
     amp_disc = None
     ref_buffer = None
-    amp_weight = 1.0
 
-    if args.enable_amp:
-        try:
-            from playground_amp.amp.discriminator import AMPDiscriminator
-            from playground_amp.amp.ref_buffer import ReferenceMotionBuffer
-
-            amp_config = training_config.get('amp', {})
-            amp_weight = args.amp_weight or amp_config.get('weight', 1.0)
-
-            amp_disc = AMPDiscriminator(input_dim=44)  # obs_dim
-            ref_buffer = ReferenceMotionBuffer(
-                max_size=amp_config.get('buffer_size', 1000),
-                seq_len=amp_config.get('seq_len', 32)
-            )
-            print(f"✓ AMP discriminator initialized (weight={amp_weight})")
-            print(f"  Note: AMP training requires reference motion data")
-            print(f"  See Phase 3 plan (Task 5) for reference motion preparation")
-        except Exception as e:
-            print(f"Warning: Failed to initialize AMP: {e}")
-            print(f"  Continuing without AMP support")
-            args.enable_amp = False
+    # Get AMP weight (used by wrapper)
+    amp_weight = args.amp_weight or training_config.get('amp', {}).get('weight', 0.5)
 
     # Create Brax-wrapped environment
     print(f"\nInitializing environment...")
     env = BraxWildRobotWrapper(env_cfg, autoreset=True)
     print(f"✓ Environment created (backend: {env.backend})")
+
+    # Wrap with AMP if requested
+    if args.enable_amp:
+        try:
+            from playground_amp.amp.amp_wrapper import AMPRewardWrapper
+
+            # Get AMP config
+            amp_config = training_config.get('amp', {})
+
+            env = AMPRewardWrapper(
+                base_env=env,
+                amp_weight=amp_weight,
+                discriminator_lr=amp_config.get('discriminator_lr', 1e-4),
+                obs_dim=44,
+                ref_motion_mode="walking",  # Use synthetic walking for now
+                ref_motion_num_sequences=200,
+                seed=trainer_config.get("seed", 0),
+            )
+            print(f"✓ AMP wrapper enabled")
+            print(f"  Note: AMP discriminator reward is added to task rewards")
+            print(f"  Discriminator is pre-initialized (not trained during PPO)")
+        except Exception as e:
+            print(f"Warning: Failed to wrap environment with AMP: {e}")
+            print(f"  Continuing without AMP support")
+            args.enable_amp = False
 
     # Try to import Brax PPO
     try:
