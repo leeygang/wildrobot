@@ -178,24 +178,45 @@ Implement and validate termination logic for both NumPy (host) and JAX (device) 
 ---
 
 ### Task 5: AMP Discriminator Integration
-**Status:** 🔄 IN PROGRESS
+**Status:** 🔄 IN PROGRESS (~60% Complete - Phase 1 Done, Phase 2 Next)
 
 **Work Description:**
 Finalize discriminator training loop and integrate AMP reward into PPO updates.
 
-**Progress/Result:**
-- ⏳ Discriminator architecture needs implementation
-- ⏳ Reference motion dataset needs preparation
-- ⏳ AMP reward integration into PPO pending
-- ⏳ Training loop integration pending
+**Progress/Result (2025-12-16):**
+- ✅ **Phase 1 Complete**: AMP components implemented and validated
+  - ✅ JAX/Flax discriminator (1024-512-256 architecture, 2024 best practices)
+  - ✅ Reference motion buffer with synthetic walking motion generator
+  - ✅ All 7 component tests passed (discriminator, buffer, training step)
+  - ✅ Backward compatibility wrapper for gradual migration
+- ⏳ **Phase 2 Pending**: Integration into training loop
+  - ⏳ Hook discriminator training into Brax PPO progress callback
+  - ⏳ Collect rollout observations for discriminator training
+  - ⏳ Compute and inject AMP reward into environment rewards
+  - ⏳ Test end-to-end with `--enable-amp --verify`
+- 📅 **Phase 3 Future**: Production training with real MoCap data
+
+**Key Achievements:**
+- Discriminator: Binary cross-entropy + WGAN-GP gradient penalty
+- Reference buffer: Synthetic standing pose + sinusoidal walking motion
+- Testing: `scripts/test_amp_components.py` validates all components
+- Documentation: `docs/task5_amp_integration_progress.md` (comprehensive)
 
 **Next Actions:**
-1. Prepare reference motion dataset (AMASS or CMU MoCap)
-2. Implement discriminator network
-3. Integrate AMP reward calculation
-4. Test end-to-end with training loop
+1. ✅ ~~Implement discriminator network~~ (DONE)
+2. ✅ ~~Prepare reference motion dataset~~ (DONE - synthetic for now)
+3. ⏳ Integrate discriminator training into `train.py` PPO loop
+4. ⏳ Test end-to-end with `python train.py --enable-amp --verify`
+5. 📅 (Future) Replace synthetic with real MoCap data (AMASS or CMU)
 
-**Files to Modify:** `playground_amp/train.py`, `playground_amp/amp/discriminator.py`
+**Files Created:**
+- `playground_amp/amp/discriminator.py` (~300 lines) - Full implementation
+- `playground_amp/amp/ref_buffer.py` (~300 lines) - Buffer + generators
+- `scripts/test_amp_components.py` (~150 lines) - Validation suite
+- `docs/task5_amp_integration_progress.md` - Detailed progress report
+
+**Files Modified:**
+- `playground_amp/train.py` - Already has AMP initialization hooks
 
 ---
 
