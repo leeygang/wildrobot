@@ -1,14 +1,41 @@
-# Training Scripts Comparison
+# Training Scripts - Historical Comparison & Consolidation
 
-## Overview
+**Status**: CONSOLIDATED (2025-12-16)
+**Current**: Single unified `train.py` script
+**Previous**: 4 separate training scripts (now removed)
 
-The `playground_amp` directory contains three training scripts with different purposes and maturity levels:
+---
 
-## 1. `train_jax.py` - Minimal JAX/Optax Stub ⚠️
+## Current State
+
+The `playground_amp` directory now has **ONE unified training script**:
+
+### ✅ `train.py` - Unified Brax PPO + AMP Trainer
+
+**Status**: Production-ready, actively maintained
+
+**Features**:
+- ✅ Brax PPO trainer (battle-tested, GPU-optimized)
+- ✅ AMP discriminator support (Task 5 ready)
+- ✅ Pure-JAX backend (full JIT/vmap compatibility)
+- ✅ Config system (YAML + CLI overrides)
+- ✅ Quick-verify mode for smoke testing
+- ✅ WandB logging and checkpointing
+- ✅ Progress callbacks with detailed metrics
+
+**Usage**: See `playground_amp/TRAINING_README.md`
+
+---
+
+## Historical Context (Pre-Consolidation)
+
+The `playground_amp` directory previously contained four training scripts with different purposes and maturity levels:
+
+## 1. `train_jax.py` - Minimal JAX/Optax Stub ⚠️ [REMOVED]
 
 **Purpose:** Minimal proof-of-concept demonstrating JAX/Optax integration
 
-**Status:** Development stub - NOT for actual training
+**Status:** Development stub - NOT for actual training [DELETED 2025-12-16]
 
 **What it does:**
 - Creates dummy parameters (10x10 weight matrix)
@@ -36,11 +63,11 @@ def run_smoke():
 
 ---
 
-## 2. `train_brax.py` - Brax Integration Wrapper 🔄
+## 2. `train_brax.py` - Brax Integration Wrapper 🔄 [REMOVED]
 
 **Purpose:** Wire WildRobotEnv into Brax's training ecosystem
 
-**Status:** Experimental integration - requires Brax v2 compatibility
+**Status:** Experimental integration - requires Brax v2 compatibility [DELETED 2025-12-16, superseded by train.py]
 
 **What it does:**
 - Creates Brax-compatible environment wrapper
@@ -77,11 +104,27 @@ uv run python -m playground_amp.train_brax \
 
 ---
 
-## 3. `train.py` - Self-Contained PPO Trainer ✅ (RECOMMENDED)
+## 3. `train_brax_ppo.py` - Brax PPO Integration ✅ [REMOVED]
+
+**Purpose:** Brax's battle-tested PPO trainer integrated with WildRobotEnv
+
+**Status:** Production-ready, Task 10 validated [DELETED 2025-12-16, merged into train.py]
+
+**Key achievements**:
+- Validated Brax PPO integration (Task 10 complete)
+- Smoke test passed (4.1s, 10 iterations, 4 envs)
+- GPU-optimized, JIT-compiled training
+- Progress callbacks and checkpointing
+
+**Removal rationale**: Merged with train.py to create single unified script
+
+---
+
+## 4. `train.py` - Original Self-Contained PPO+AMP Trainer [REPLACED]
 
 **Purpose:** Full-featured, self-contained training script for Phase 3 development
 
-**Status:** Production-ready for Phase 3 smoke training and development
+**Status:** Replaced with unified version [2025-12-16]
 
 **What it does:**
 - **Complete PPO training loop** with proper clipping and minibatching
@@ -180,65 +223,153 @@ PYTHONPATH=/Users/ygli/projects/wildrobot uv run --with numpy --with jax --with 
 
 ---
 
-## Recommendation for Phase 3
+---
 
-### For Current Task 9.3 (Smoke Training):
+## Consolidation Decision (2025-12-16)
 
-**Use `train.py`** with `--verify` flag for quick validation:
+### Why Consolidate?
 
-```bash
-PYTHONPATH=/Users/ygli/projects/wildrobot uv run --with numpy --with jax --with mujoco \
-    python playground_amp/train.py --verify \
-    --config playground_amp/configs/wildrobot_phase3_training.yaml
-```
+**Problems with 4 separate scripts**:
+- ❌ Maintenance burden (4 codebases to keep in sync)
+- ❌ Confusion (which script to use when?)
+- ❌ Duplication (both train.py and train_brax_ppo.py implemented PPO)
+- ❌ Against DRY principle
 
-This runs a minimal forward pass without optimization to verify:
-- Environment resets correctly
-- Observations are valid
-- Rewards are computed
-- No crashes or terminations
+**Solution**: Merge best features into single `train.py`
+- ✅ Brax PPO trainer (from train_brax_ppo.py) - battle-tested
+- ✅ AMP support (from original train.py) - Task 5 ready
+- ✅ Config system (best of both)
+- ✅ Single source of truth
 
-For full smoke training (100 updates):
+### What Was Merged
 
-```bash
-PYTHONPATH=/Users/ygli/projects/wildrobot uv run --with numpy --with jax --with mujoco \
-    python playground_amp/train.py \
-    --config playground_amp/configs/wildrobot_phase3_training.yaml \
-    --set trainer.total_updates=100 \
-    --set trainer.num_envs=16
-```
+**From `train_brax_ppo.py`**:
+- Brax PPO trainer integration
+- Progress callbacks
+- Checkpoint saving
+- WandB logging
 
-### Migration Path
+**From original `train.py`**:
+- AMP discriminator hooks
+- Reference motion buffer
+- Config override system
+- Quick-verify mode
 
-1. **Phase 3 (Current):** Use `train.py` for development and smoke testing
-2. **Phase 4 (Optional):** Migrate to `train_brax.py` for production-scale training if needed
-3. **Future:** Consider integrating with other training frameworks (CleanRL, RLlib, etc.)
+**Result**: Unified `train.py` with all features
 
 ---
 
-## Summary Table
+## New Recommendation (Post-Consolidation)
 
-| Feature | `train_jax.py` | `train_brax.py` | `train.py` |
-|---------|----------------|-----------------|------------|
-| **Purpose** | Library test stub | Brax integration | Self-contained trainer |
-| **Status** | Dev stub | Experimental | Production-ready |
-| **PPO Implementation** | ❌ None | ✅ Brax PPO | ✅ Custom PPO |
-| **WildRobotEnv Direct** | ❌ No env | 🔄 Via wrapper | ✅ Direct |
-| **AMP Support** | ❌ No | ❌ No | ✅ Yes |
-| **Flax/Optax** | ✅ Demo only | 🔄 Via Brax | ✅ Optional |
-| **Minibatch Training** | ❌ No | ✅ Via Brax | ✅ Yes |
-| **Quick-Verify Mode** | ❌ No | 🔄 Basic | ✅ Full |
-| **Config System** | ❌ No | ✅ YAML | ✅ YAML + CLI |
-| **Checkpointing** | ❌ No | ✅ Via Brax | ✅ Yes |
-| **Lines of Code** | 39 | 97 | 549 |
-| **Recommended For** | Testing libs | Production scale | Phase 3 dev |
+### For All Training Tasks:
+
+**Use `train.py`** - the unified training script:
+
+```bash
+# Quick verification
+python playground_amp/train.py --verify
+
+# CPU training (development)
+python playground_amp/train.py --num-iterations 100 --num-envs 16
+
+# GPU training (production)
+python playground_amp/train.py --num-iterations 3000 --num-envs 2048
+
+# Enable AMP for natural motion
+python playground_amp/train.py --enable-amp --amp-weight 1.0
+```
+
+**See**: `playground_amp/TRAINING_README.md` for complete documentation
 
 ---
 
-## Why Three Scripts?
+## Summary Table (Historical vs Current)
 
-1. **`train_jax.py`**: Proof-of-concept during JAX/Optax exploration (Task 7 prep)
-2. **`train_brax.py`**: Exploration of Brax integration for production training
-3. **`train.py`**: Main development trainer with full control for Phase 3 tasks
+### Before Consolidation (4 scripts)
 
-This is common in ML projects during development - multiple approaches are explored, and the best one emerges based on project needs. For Phase 3, `train.py` is the clear winner for development and smoke testing.
+| Feature | `train_jax.py` | `train_brax.py` | `train_brax_ppo.py` | `train.py` (old) |
+|---------|----------------|-----------------|---------------------|------------------|
+| **Purpose** | Library test | Brax exploration | Brax PPO (Task 10) | Self-contained |
+| **Status** | Dev stub | Experimental | Validated | AMP-ready |
+| **PPO** | ❌ None | 🔄 Basic | ✅ Brax PPO | ✅ Custom PPO |
+| **AMP Support** | ❌ No | ❌ No | ❌ No | ✅ Yes |
+| **Lines of Code** | 39 | 97 | 259 | 549 |
+
+### After Consolidation (1 script)
+
+| Feature | `train.py` (unified) |
+|---------|----------------------|
+| **Purpose** | Unified training script |
+| **Status** | ✅ Production-ready |
+| **PPO Implementation** | ✅ Brax PPO (battle-tested) |
+| **AMP Support** | ✅ Yes (Task 5 ready) |
+| **Pure-JAX Backend** | ✅ Yes (full JIT/vmap) |
+| **Config System** | ✅ YAML + CLI overrides |
+| **Quick-Verify Mode** | ✅ Yes |
+| **WandB Logging** | ✅ Yes |
+| **Checkpointing** | ✅ Yes |
+| **Lines of Code** | ~450 |
+| **Recommended For** | All training tasks |
+
+---
+
+## Why Consolidate Now?
+
+**Historical**: During development, multiple approaches were explored:
+1. **`train_jax.py`**: JAX/Optax exploration (Task 7 prep)
+2. **`train_brax.py`**: Early Brax integration experiments
+3. **`train_brax_ppo.py`**: Validated Brax PPO integration (Task 10)
+4. **`train.py`**: Self-contained PPO + AMP development
+
+**Decision Point**: After Task 10 validated Brax PPO, the path forward became clear:
+- Brax PPO works ✅
+- AMP integration is needed (Task 5) ✅
+- Multiple scripts create confusion ❌
+
+**Action**: Merge best features into single unified `train.py`
+
+**Result**:
+- Single source of truth
+- Best of both worlds (Brax + AMP)
+- Easier maintenance
+- Clear upgrade path
+
+---
+
+## Benefits of Consolidation
+
+### For Users
+- ✅ No confusion about which script to use
+- ✅ Single command interface for all training modes
+- ✅ Consistent configuration system
+- ✅ All features in one place
+
+### For Developers
+- ✅ Single codebase to maintain
+- ✅ Easier to add new features
+- ✅ Centralized bug fixes
+- ✅ Clear testing path
+
+### For Project
+- ✅ Aligns with Phase 3 plan: "MuJoCo MJX Physics + Brax v2 Training"
+- ✅ Task 10 validated: Brax integration works
+- ✅ Task 5 ready: AMP hooks in place
+- ✅ Clean foundation for remaining tasks
+
+---
+
+## Files Changed
+
+**Deleted** (2025-12-16):
+- `playground_amp/train_jax.py` (test stub)
+- `playground_amp/train_brax.py` (early exploration)
+- `playground_amp/train_brax_ppo.py` (validated, merged)
+
+**Updated**:
+- `playground_amp/train.py` (unified version)
+
+**Created**:
+- `playground_amp/TRAINING_README.md` (comprehensive guide)
+
+**Documentation**:
+- This file updated to reflect consolidation
