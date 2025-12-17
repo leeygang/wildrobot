@@ -72,7 +72,7 @@ def flatten_transitions(
         RolloutBatch ready for minibatch training
     """
     # Import GAE computation
-    from playground_amp.training.ppo_building_blocks import compute_gae
+    from playground_amp.training.ppo_core import compute_gae
 
     # transitions arrays have shape (num_steps, num_envs, ...)
     num_steps = transitions.obs.shape[0]

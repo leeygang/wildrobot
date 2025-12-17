@@ -41,7 +41,7 @@ from playground_amp.amp.discriminator import (
     discriminator_loss,
 )
 from playground_amp.amp.ref_buffer import create_reference_buffer, ReferenceMotionBuffer
-from playground_amp.training.ppo_building_blocks import (
+from playground_amp.training.ppo_core import (
     compute_gae,
     create_optimizer,
     create_policy_network,

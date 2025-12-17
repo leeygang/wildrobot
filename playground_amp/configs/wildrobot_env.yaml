@@ -1,12 +1,43 @@
-# Example environment config for WildRobot
-model_path: ../../assets/wildrobot.xml
+# WildRobot Environment Configuration
+# This file defines all required parameters for WildRobotEnv
+
+# Model path (relative to project root)
+model_path: assets/scene_flat_terrain.xml
+
+# Simulation timing
+ctrl_dt: 0.02      # Control frequency: 50Hz
+sim_dt: 0.002      # Simulation frequency: 500Hz (10 substeps per control)
+
+# Robot parameters
+target_height: 0.45    # Target standing height (meters)
+min_height: 0.2        # Termination: too low
+max_height: 0.7        # Termination: too high
+
+# Velocity command range (m/s)
+min_velocity: 0.5
+max_velocity: 1.0
+
+# Action filtering (low-pass filter for smooth control)
+use_action_filter: true
+action_filter_alpha: 0.7   # alpha * prev + (1-alpha) * current
+
+# Episode configuration
+max_episode_steps: 500
+
+# Reward weights
+reward_weights:
+  forward_velocity: 1.0
+  healthy: 0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+
+# Legacy fields (for backward compatibility)
 num_envs: 8
 control_freq: 50
 obs_noise_std: 0.02
-max_episode_steps: 500
 seed: 42
 
-# Domain randomization defaults (used by env when implemented)
+# Domain randomization (used when implemented)
 domain_randomization:
   friction: [0.8, 1.0]
   mass_scale: [0.95, 1.05]
@@ -15,7 +46,3 @@ domain_randomization:
   control_latency: [0.0, 0.01]
   push_force: [0.0, 5.0]
   terrain_noise: [0.0, 0.02]
-
-# NOTE: episode termination thresholds are training-stage specific and can be
-# tuned per-stage. Move termination settings into the stage/trainer config
-# (e.g., `playground_amp/configs/wildrobot_phase3_training.yaml`).

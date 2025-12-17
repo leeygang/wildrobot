@@ -14,8 +14,8 @@ Architecture:
 - Shapes rewards using discriminator output
 """
 
-from playground_amp.training.amp_ppo_training import AMPPPOConfig, train_amp_ppo
-from playground_amp.training.ppo_building_blocks import (
+from playground_amp.training.trainer import AMPPPOConfig, train_amp_ppo
+from playground_amp.training.ppo_core import (
     compute_gae,
     create_policy_network,
     create_value_network,
