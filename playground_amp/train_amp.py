@@ -41,30 +41,92 @@ from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
+import yaml
+from ml_collections import config_dict
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from playground_amp.envs.wildrobot_env import (
-    WildRobotEnv,
-    WildRobotEnvState,
-    default_config,
-    load_config,
-)
-from playground_amp.training.experiment_tracking import (
-    ExperimentTracker,
+from playground_amp.envs.wildrobot_env import WildRobotEnv, WildRobotEnvState
+from playground_amp.training.experiment_tracking import ExperimentTracker
+
+# Default training config path
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).parent / "configs" / "wildrobot_phase3_training.yaml"
 )
 
 
-def create_env():
-    """Create WildRobotEnv instance.
+def load_training_config(config_path: Optional[Path] = None) -> dict:
+    """Load training configuration from YAML file.
+
+    Args:
+        config_path: Path to YAML config file. Uses default if not provided.
+
+    Returns:
+        Configuration dictionary.
+    """
+    path = config_path or DEFAULT_CONFIG_PATH
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def create_env_config(training_config: dict) -> config_dict.ConfigDict:
+    """Create environment config from training config.
+
+    Args:
+        training_config: Full training configuration dict.
+
+    Returns:
+        ConfigDict for WildRobotEnv.
+    """
+    env_cfg = training_config.get("env", {})
+
+    config = config_dict.ConfigDict()
+
+    # Simulation timing
+    config.ctrl_dt = env_cfg.get("ctrl_dt", 0.02)
+    config.sim_dt = env_cfg.get("sim_dt", 0.002)
+
+    # Robot parameters
+    config.target_height = env_cfg.get("target_height", 0.45)
+    config.min_height = env_cfg.get("min_height", 0.2)
+    config.max_height = env_cfg.get("max_height", 0.7)
+
+    # Velocity command
+    config.min_velocity = env_cfg.get("min_velocity", 0.5)
+    config.max_velocity = env_cfg.get("max_velocity", 1.0)
+
+    # Action filtering
+    config.use_action_filter = env_cfg.get("use_action_filter", True)
+    config.action_filter_alpha = env_cfg.get("action_filter_alpha", 0.7)
+
+    # Episode length
+    config.max_episode_steps = env_cfg.get("max_episode_steps", 500)
+
+    # Reward weights (from training config reward_weights section)
+    reward_cfg = training_config.get("reward_weights", {})
+    config.reward_weights = config_dict.ConfigDict()
+    config.reward_weights.forward_velocity = reward_cfg.get("tracking_lin_vel", 1.0)
+    config.reward_weights.healthy = reward_cfg.get("base_height", 0.1)
+    config.reward_weights.action_rate = reward_cfg.get("action_rate", -0.01)
+    config.reward_weights.joint_velocity = reward_cfg.get("torque_penalty", -0.001)
+
+    return config
+
+
+def create_env(config_path: Optional[Path] = None):
+    """Create WildRobotEnv instance with config from training YAML.
+
+    Args:
+        config_path: Optional path to training config. Uses default if not provided.
 
     Returns:
         WildRobotEnv: Environment extending mjx_env.MjxEnv
     """
-    config = default_config()
-    env = WildRobotEnv(config=config)
+    training_config = load_training_config(config_path)
+    env_config = create_env_config(training_config)
+    env = WildRobotEnv(config=env_config)
     return env
 
 
@@ -177,7 +239,9 @@ def train_with_brax_ppo(args):
     # Create environment
     print("Creating WildRobotEnv...")
     env = create_env()
-    print(f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})")
+    print(
+        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
+    )
 
     # PPO configuration
     num_timesteps = args.iterations * args.num_envs * 1000
@@ -264,27 +328,67 @@ def train_with_custom_loop(args):
         TrainingMetrics,
     )
 
+    # Load training config
+    training_config = load_training_config()
+    trainer_cfg = training_config.get("trainer", {})
+    networks_cfg = training_config.get("networks", {})
+    amp_cfg = training_config.get("amp", {})
+
     # Create environment
     print("Creating WildRobotEnv...")
     env = create_env()
-    print(f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})")
+    print(
+        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
+    )
 
-    # Create configuration
+    # Create configuration from YAML + CLI overrides
     config = AMPPPOConfig(
+        # Environment
         obs_dim=env.observation_size,
         action_dim=env.action_size,
         num_envs=args.num_envs,
-        num_steps=10,
+        num_steps=trainer_cfg.get("rollout_steps", 10),
+        max_episode_steps=training_config.get("env", {}).get("max_episode_steps", 500),
+        # PPO hyperparameters
         learning_rate=args.lr,
         gamma=args.gamma,
+        gae_lambda=trainer_cfg.get("gae_lambda", 0.95),
         clip_epsilon=args.clip_epsilon,
+        value_loss_coef=trainer_cfg.get("value_loss_coef", 0.5),
         entropy_coef=args.entropy_coef,
+        max_grad_norm=trainer_cfg.get("max_grad_norm", 0.5),
+        # PPO training
+        num_minibatches=trainer_cfg.get("num_minibatches", 4),
+        update_epochs=trainer_cfg.get("epochs", 4),
+        # Network architecture (from YAML)
+        policy_hidden_dims=tuple(
+            networks_cfg.get("policy_hidden_dims", [512, 256, 128])
+        ),
+        value_hidden_dims=tuple(networks_cfg.get("value_hidden_dims", [512, 256, 128])),
+        log_std_min=networks_cfg.get("log_std_min", -20.0),
+        log_std_max=networks_cfg.get("log_std_max", 2.0),
+        # AMP configuration
         enable_amp=True,
         amp_reward_weight=args.amp_weight,
         disc_learning_rate=args.disc_lr,
+        disc_updates_per_iter=amp_cfg.get("update_steps", 2),
+        disc_batch_size=amp_cfg.get("batch_size", 512),
+        gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
+        # AMP discriminator architecture
+        disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
+        # Reference motion
+        ref_buffer_size=amp_cfg.get("ref_buffer_size", 1000),
+        ref_seq_len=amp_cfg.get("ref_seq_len", 32),
+        ref_motion_mode=amp_cfg.get("ref_motion_mode", "walking"),
+        ref_motion_path=amp_cfg.get("dataset_path"),
+        # Feature normalization
+        normalize_amp_features=amp_cfg.get("normalize_features", True),
+        # Training
         total_iterations=args.iterations,
         seed=args.seed,
+        # Logging
         log_interval=args.log_interval,
+        save_interval=trainer_cfg.get("save_interval_updates", 100),
         checkpoint_dir=args.checkpoint_dir,
     )
 
@@ -398,6 +502,7 @@ def main():
     except Exception as e:
         print(f"\n❌ Training failed: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

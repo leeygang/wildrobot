@@ -43,13 +43,13 @@ from playground_amp.amp.discriminator import (
 from playground_amp.amp.ref_buffer import create_reference_buffer, ReferenceMotionBuffer
 from playground_amp.training.ppo_core import (
     compute_gae,
+    compute_ppo_loss,
+    compute_values,
+    create_networks,
     create_optimizer,
-    create_policy_network,
-    create_value_network,
-    PolicyNetwork,
-    ppo_loss,
-    PPOLossOutput,
-    ValueNetwork,
+    init_network_params,
+    PPOLossMetrics,
+    sample_actions,
 )
 
 from playground_amp.training.transitions import (
@@ -61,60 +61,66 @@ from playground_amp.training.transitions import (
 
 @dataclass
 class AMPPPOConfig:
-    """Configuration for AMP+PPO training."""
+    """Configuration for AMP+PPO training.
 
-    # Environment
-    obs_dim: int = 44
-    action_dim: int = 11
-    num_envs: int = 16
-    num_steps: int = 10  # Steps per rollout before update
-    max_episode_steps: int = 500
+    All parameters must be provided explicitly - no defaults.
+    Load from wildrobot_phase3_training.yaml and pass to this config.
+    """
 
-    # PPO hyperparameters
-    learning_rate: float = 3e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_epsilon: float = 0.2
-    value_loss_coef: float = 0.5
-    entropy_coef: float = 0.01
-    max_grad_norm: float = 0.5
+    # Environment (required - from env section)
+    obs_dim: int
+    action_dim: int
+    num_envs: int
+    num_steps: int  # Steps per rollout before update
+    max_episode_steps: int
 
-    # PPO training
-    num_minibatches: int = 4
-    update_epochs: int = 4
+    # PPO hyperparameters (required - from trainer section)
+    learning_rate: float
+    gamma: float
+    gae_lambda: float
+    clip_epsilon: float
+    value_loss_coef: float
+    entropy_coef: float
+    max_grad_norm: float
 
-    # Network architecture
-    policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)
-    value_hidden_dims: Tuple[int, ...] = (512, 256, 128)
+    # PPO training (required - from trainer section)
+    num_minibatches: int
+    update_epochs: int
 
-    # AMP configuration
-    enable_amp: bool = True
-    amp_reward_weight: float = 1.0
-    disc_learning_rate: float = 1e-4
-    disc_updates_per_iter: int = 2
-    disc_batch_size: int = 512
-    gradient_penalty_weight: float = 5.0
+    # Network architecture (required - from networks section)
+    policy_hidden_dims: Tuple[int, ...]
+    value_hidden_dims: Tuple[int, ...]
+    log_std_min: float
+    log_std_max: float
 
-    # AMP discriminator architecture
-    disc_hidden_dims: Tuple[int, ...] = (1024, 512, 256)
+    # AMP configuration (required - from amp section)
+    enable_amp: bool
+    amp_reward_weight: float
+    disc_learning_rate: float
+    disc_updates_per_iter: int
+    disc_batch_size: int
+    gradient_penalty_weight: float
 
-    # Reference motion
-    ref_buffer_size: int = 1000
-    ref_seq_len: int = 32
-    ref_motion_mode: str = "walking"  # "walking", "standing", or "file"
-    ref_motion_path: Optional[str] = None
+    # AMP discriminator architecture (required - from amp section)
+    disc_hidden_dims: Tuple[int, ...]
+
+    # Reference motion (required - from amp section)
+    ref_buffer_size: int
+    ref_seq_len: int
+    ref_motion_mode: str  # "walking", "standing", or "file"
+    ref_motion_path: Optional[str]
 
     # Feature normalization
-    normalize_amp_features: bool = True
+    normalize_amp_features: bool
 
-    # Training
-    total_iterations: int = 1000
-    seed: int = 0
+    # Training (required - from trainer section)
+    total_iterations: int
+    seed: int
 
-    # Logging
-    log_interval: int = 10
-    save_interval: int = 100
-    checkpoint_dir: str = "checkpoints/amp_ppo"
+    # Logging (required - from trainer section)
+    log_interval: int
+    save_interval: int
+    checkpoint_dir: str
 
 
 class AMPPPOState(NamedTuple):
@@ -165,7 +171,7 @@ class TrainingMetrics(NamedTuple):
 def create_amp_ppo_state(
     config: AMPPPOConfig,
     rng: jax.Array,
-) -> Tuple[AMPPPOState, PolicyNetwork, ValueNetwork, AMPDiscriminator]:
+) -> Tuple[AMPPPOState, Any, AMPDiscriminator]:
     """Create initial training state.
 
     Args:
@@ -173,23 +179,21 @@ def create_amp_ppo_state(
         rng: Random key
 
     Returns:
-        (state, policy_net, value_net, disc_model): State and network modules
+        (state, ppo_network, disc_model): State and network modules
     """
     rng, policy_rng, value_rng, disc_rng = jax.random.split(rng, 4)
 
-    # Create policy network
-    policy_net, policy_params = create_policy_network(
+    # Create PPO networks using Brax's factory
+    ppo_network = create_networks(
         obs_dim=config.obs_dim,
         action_dim=config.action_dim,
-        hidden_dims=config.policy_hidden_dims,
-        seed=int(policy_rng[0]),
+        policy_hidden_dims=config.policy_hidden_dims,
+        value_hidden_dims=config.value_hidden_dims,
     )
 
-    # Create value network
-    value_net, value_params = create_value_network(
-        obs_dim=config.obs_dim,
-        hidden_dims=config.value_hidden_dims,
-        seed=int(value_rng[0]),
+    # Initialize parameters
+    policy_params, value_params = init_network_params(
+        ppo_network, config.obs_dim, config.action_dim, seed=int(policy_rng[0])
     )
 
     # Create discriminator
@@ -233,14 +237,13 @@ def create_amp_ppo_state(
         rng=rng,
     )
 
-    return state, policy_net, value_net, disc_model
+    return state, ppo_network, disc_model
 
 
 def collect_rollout(
     env_step_fn: Callable,
     env_state: Any,
-    policy_net: PolicyNetwork,
-    value_net: ValueNetwork,
+    ppo_network: Any,
     policy_params: Any,
     value_params: Any,
     rng: jax.Array,
@@ -252,8 +255,7 @@ def collect_rollout(
     Args:
         env_step_fn: Function to step environment (state, action) -> (new_state, obs, reward, done, info)
         env_state: Current environment state
-        policy_net: Policy network module
-        value_net: Value network module
+        ppo_network: PPO networks from create_networks()
         policy_params: Policy parameters
         value_params: Value parameters
         rng: Random key
@@ -272,11 +274,13 @@ def collect_rollout(
     for step in range(num_steps):
         rng, action_rng, step_rng = jax.random.split(rng, 3)
 
-        # Get action from policy
-        action, log_prob = policy_net.sample(policy_params, current_obs, action_rng)
+        # Get action from policy using Brax's network
+        action, log_prob = sample_actions(
+            policy_params, ppo_network, current_obs, action_rng
+        )
 
         # Get value estimate
-        value = value_net.apply(value_params, current_obs)
+        value = compute_values(value_params, ppo_network, current_obs)
 
         # Step environment
         new_state, new_obs, reward, done, info = env_step_fn(current_state, action)
@@ -305,7 +309,7 @@ def collect_rollout(
     transitions = stack_transitions(transitions_list)
 
     # Get bootstrap value for final state
-    bootstrap_value = value_net.apply(value_params, current_obs)
+    bootstrap_value = compute_values(value_params, ppo_network, current_obs)
 
     return current_state, transitions, bootstrap_value
 
@@ -359,13 +363,12 @@ def ppo_update_step(
     value_params: Any,
     policy_opt_state: Any,
     value_opt_state: Any,
-    policy_net: PolicyNetwork,
-    value_net: ValueNetwork,
+    ppo_network: Any,
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     batch: RolloutBatch,
     config: AMPPPOConfig,
-) -> Tuple[Any, Any, Any, Any, PPOLossOutput]:
+) -> Tuple[Any, Any, Any, Any, PPOLossMetrics]:
     """Single PPO update step on a minibatch.
 
     Args:
@@ -373,8 +376,7 @@ def ppo_update_step(
         value_params: Value parameters
         policy_opt_state: Policy optimizer state
         value_opt_state: Value optimizer state
-        policy_net: Policy network module
-        value_net: Value network module
+        ppo_network: PPO networks from create_networks()
         policy_optimizer: Policy optimizer
         value_optimizer: Value optimizer
         batch: Minibatch of rollout data
@@ -385,11 +387,10 @@ def ppo_update_step(
     """
 
     def loss_fn(policy_p, value_p):
-        return ppo_loss(
+        return compute_ppo_loss(
             policy_params=policy_p,
             value_params=value_p,
-            policy_network=policy_net,
-            value_network=value_net,
+            ppo_network=ppo_network,
             obs=batch.obs,
             actions=batch.actions,
             old_log_probs=batch.log_probs,
@@ -430,8 +431,7 @@ def train_iteration(
     state: AMPPPOState,
     env_step_fn: Callable,
     env_state: Any,
-    policy_net: PolicyNetwork,
-    value_net: ValueNetwork,
+    ppo_network: Any,
     disc_model: AMPDiscriminator,
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
@@ -451,8 +451,7 @@ def train_iteration(
         state: Current training state
         env_step_fn: Environment step function
         env_state: Current environment state
-        policy_net: Policy network module
-        value_net: Value network module
+        ppo_network: PPO networks from create_networks()
         disc_model: Discriminator module
         policy_optimizer: Policy optimizer
         value_optimizer: Value optimizer
@@ -475,8 +474,7 @@ def train_iteration(
     new_env_state, transitions, bootstrap_value = collect_rollout(
         env_step_fn=env_step_fn,
         env_state=env_state,
-        policy_net=policy_net,
-        value_net=value_net,
+        ppo_network=ppo_network,
         policy_params=state.policy_params,
         value_params=state.value_params,
         rng=rollout_rng,
@@ -667,8 +665,7 @@ def train_iteration(
                 value_params=value_params,
                 policy_opt_state=policy_opt_state,
                 value_opt_state=value_opt_state,
-                policy_net=policy_net,
-                value_net=value_net,
+                ppo_network=ppo_network,
                 policy_optimizer=policy_optimizer,
                 value_optimizer=value_optimizer,
                 batch=minibatch,
@@ -751,7 +748,7 @@ def train_amp_ppo(
     rng, init_rng, env_rng = jax.random.split(rng, 3)
 
     # Create training state and networks
-    state, policy_net, value_net, disc_model = create_amp_ppo_state(config, init_rng)
+    state, ppo_network, disc_model = create_amp_ppo_state(config, init_rng)
 
     # Create optimizers
     policy_optimizer = create_optimizer(
@@ -791,8 +788,7 @@ def train_amp_ppo(
             state=state,
             env_step_fn=env_step_fn,
             env_state=env_state,
-            policy_net=policy_net,
-            value_net=value_net,
+            ppo_network=ppo_network,
             disc_model=disc_model,
             policy_optimizer=policy_optimizer,
             value_optimizer=value_optimizer,
@@ -830,12 +826,53 @@ if __name__ == "__main__":
     # Test with dummy environment
     print("Testing AMP+PPO training loop...")
 
+    # Test config with all required parameters
     config = AMPPPOConfig(
+        # Environment
+        obs_dim=44,
+        action_dim=11,
         num_envs=4,
         num_steps=5,
-        total_iterations=3,
+        max_episode_steps=500,
+        # PPO hyperparameters
+        learning_rate=3e-4,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_epsilon=0.2,
+        value_loss_coef=0.5,
+        entropy_coef=0.01,
+        max_grad_norm=0.5,
+        # PPO training
+        num_minibatches=4,
+        update_epochs=4,
+        # Network architecture
+        policy_hidden_dims=(512, 256, 128),
+        value_hidden_dims=(512, 256, 128),
+        log_std_min=-20.0,
+        log_std_max=2.0,
+        # AMP configuration
         enable_amp=True,
+        amp_reward_weight=1.0,
+        disc_learning_rate=1e-4,
+        disc_updates_per_iter=2,
+        disc_batch_size=512,
+        gradient_penalty_weight=5.0,
+        # AMP discriminator architecture
+        disc_hidden_dims=(1024, 512, 256),
+        # Reference motion
+        ref_buffer_size=1000,
+        ref_seq_len=32,
+        ref_motion_mode="walking",
+        ref_motion_path=None,
+        # Feature normalization
+        normalize_amp_features=True,
+        # Training
+        total_iterations=3,
+        seed=0,
+        # Logging
         log_interval=1,
+        save_interval=100,
+        checkpoint_dir="checkpoints/amp_ppo",
     )
 
     # Dummy environment functions

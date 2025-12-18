@@ -1,9 +1,29 @@
 # Phase 3: RL Training (PPO + AMP) configuration
 # Purpose: canonical training-stage config for Phase III (large-scale RL + AMP)
-# Env config is kept separately in `playground_amp/configs/wildrobot_env.yaml`
 
 stage: Phase3
-env_config_path: playground_amp/configs/wildrobot_env.yaml
+
+# Environment configuration (previously in wildrobot_env.yaml)
+env:
+  # Simulation timing
+  ctrl_dt: 0.02      # Control frequency: 50Hz
+  sim_dt: 0.002      # Simulation frequency: 500Hz (10 substeps per control)
+
+  # Robot parameters
+  target_height: 0.45    # Target standing height (meters)
+  min_height: 0.2        # Termination: too low
+  max_height: 0.7        # Termination: too high
+
+  # Velocity command range (m/s)
+  min_velocity: 0.5
+  max_velocity: 1.0
+
+  # Action filtering (low-pass filter for smooth control)
+  use_action_filter: true
+  action_filter_alpha: 0.7   # alpha * prev + (1-alpha) * current
+
+  # Episode configuration
+  max_episode_steps: 500
 
 trainer:
   # Large-scale MJX defaults; reduce for smoke runs to avoid long compilation.
@@ -18,6 +38,13 @@ trainer:
   minibatch_size: 65536
   checkpoint_dir: playground_amp/checkpoints/phase3
   save_interval_updates: 100
+
+# Network architecture
+networks:
+  policy_hidden_dims: [512, 256, 128]
+  value_hidden_dims: [512, 256, 128]
+  log_std_min: -20.0
+  log_std_max: 2.0
 
 control:
   control_freq: 50

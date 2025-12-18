@@ -122,123 +122,6 @@ WILDROBOT_CONFIG = RobotConfig(
 
 
 # =============================================================================
-# Configuration Factory
-# =============================================================================
-
-
-def default_config() -> config_dict.ConfigDict:
-    """Return default configuration for WildRobotEnv."""
-    config = config_dict.ConfigDict()
-
-    # Simulation timing
-    config.ctrl_dt = 0.02  # 50Hz control frequency
-    config.sim_dt = 0.002  # 500Hz simulation frequency
-
-    # Robot parameters
-    config.target_height = 0.45  # Target standing height (meters)
-    config.min_height = 0.2  # Termination height (too low)
-    config.max_height = 0.7  # Termination height (too high)
-
-    # Velocity command
-    config.min_velocity = 0.5  # m/s
-    config.max_velocity = 1.0  # m/s
-
-    # Action filtering
-    config.use_action_filter = True
-    config.action_filter_alpha = 0.7
-
-    # Episode length
-    config.max_episode_steps = 500
-
-    # Reward weights
-    config.reward_weights = config_dict.ConfigDict()
-    config.reward_weights.forward_velocity = 1.0
-    config.reward_weights.healthy = 0.1
-    config.reward_weights.action_rate = -0.01
-    config.reward_weights.joint_velocity = -0.001
-
-    return config
-
-
-def load_config(path: str) -> config_dict.ConfigDict:
-    """Load configuration from YAML file.
-
-    Args:
-        path: Path to YAML config file.
-
-    Returns:
-        ConfigDict with all required parameters.
-    """
-    import yaml
-
-    with open(path, "r") as f:
-        data = yaml.safe_load(f)
-
-    config = config_dict.ConfigDict()
-
-    # Required parameters - will raise KeyError if missing
-    required_params = [
-        "ctrl_dt",
-        "sim_dt",
-        "target_height",
-        "min_height",
-        "max_height",
-        "min_velocity",
-        "max_velocity",
-        "use_action_filter",
-        "action_filter_alpha",
-        "max_episode_steps",
-    ]
-
-    for param in required_params:
-        if param not in data:
-            raise KeyError(f"Missing required config parameter: {param}")
-        setattr(config, param, data[param])
-
-    # Reward weights (nested dict)
-    if "reward_weights" not in data:
-        raise KeyError("Missing required config parameter: reward_weights")
-
-    config.reward_weights = config_dict.ConfigDict()
-    for key, value in data["reward_weights"].items():
-        setattr(config.reward_weights, key, value)
-
-    return config
-
-
-# =============================================================================
-# Asset Loading
-# =============================================================================
-
-
-def get_assets(root_path: str) -> Dict[str, bytes]:
-    """Load all assets (STL files) for the environment."""
-    assets = {}
-    path = epath.Path(root_path)
-    mjx_env.update_assets(assets, path, "*.xml")
-    mjx_env.update_assets(assets, path / "assets")
-    return assets
-
-
-def find_model_path() -> epath.Path:
-    """Find the WildRobot model XML file."""
-    # Try multiple locations
-    candidates = [
-        epath.Path(__file__).parent.parent.parent / "assets" / "wildrobot.xml",
-        epath.Path(__file__).parent.parent.parent / "models" / "v1" / "scene_flat_terrain.xml",
-        epath.Path(__file__).parent.parent.parent.parent / "assets" / "wildrobot.xml",
-    ]
-
-    for path in candidates:
-        if path.exists():
-            return path
-
-    raise FileNotFoundError(
-        f"Could not find WildRobot model. Tried: {[str(p) for p in candidates]}"
-    )
-
-
-# =============================================================================
 # Environment
 # =============================================================================
 
@@ -266,18 +149,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def __init__(
         self,
-        config: Optional[config_dict.ConfigDict] = None,
+        config: config_dict.ConfigDict,
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ) -> None:
         """Initialize WildRobotEnv.
 
         Args:
             config: Configuration dict with ctrl_dt, sim_dt, etc.
+                    Must be provided - load from training config YAML.
             config_overrides: Optional overrides for config values.
         """
-        if config is None:
-            config = default_config()
-
         super().__init__(config, config_overrides)
 
         # Load MuJoCo model
@@ -343,9 +224,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._mj_model.jnt(k).name for k in range(self._mj_model.njnt)
         ]
 
-        self.actuator_joint_ids = [
-            self._get_joint_id(n) for n in self.actuator_names
-        ]
+        self.actuator_joint_ids = [self._get_joint_id(n) for n in self.actuator_names]
         self.actuator_joint_qpos_addr = jp.array(
             [self._mj_model.joint(n).qposadr for n in self.actuator_names]
         )
@@ -402,7 +281,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_noise = jax.random.uniform(
             key2, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
         )
-        qpos = qpos.at[7:7 + len(self._default_joint_qpos)].set(
+        qpos = qpos.at[7 : 7 + len(self._default_joint_qpos)].set(
             self._default_joint_qpos + joint_noise
         )
 
@@ -446,9 +325,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pipeline_state=data,  # Required for Brax compatibility
         )
 
-    def step(
-        self, state: WildRobotEnvState, action: jax.Array
-    ) -> WildRobotEnvState:
+    def step(self, state: WildRobotEnvState, action: jax.Array) -> WildRobotEnvState:
         """Step environment forward.
 
         Args:
@@ -556,16 +433,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_vel = self.get_actuator_joints_qvel(data.qvel)
 
         # Build observation
-        obs = jp.concatenate([
-            gravity,  # 3
-            angvel,  # 3
-            linvel,  # 3
-            joint_pos,  # 11
-            joint_vel,  # 11
-            action,  # 11
-            jp.array([velocity_cmd]),  # 1
-            jp.zeros(1),  # padding to 44
-        ])
+        obs = jp.concatenate(
+            [
+                gravity,  # 3
+                angvel,  # 3
+                linvel,  # 3
+                joint_pos,  # 11
+                joint_vel,  # 11
+                action,  # 11
+                jp.array([velocity_cmd]),  # 1
+                jp.zeros(1),  # padding to 44
+            ]
+        )
 
         return obs
 
@@ -660,11 +539,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def get_floating_base_qpos(self, qpos: jax.Array) -> jax.Array:
         """Get floating base position (7D: 3 pos + 4 quat)."""
-        return qpos[self._floating_base_qpos_addr:self._floating_base_qpos_addr + 7]
+        return qpos[self._floating_base_qpos_addr : self._floating_base_qpos_addr + 7]
 
     def get_floating_base_qvel(self, qvel: jax.Array) -> jax.Array:
         """Get floating base velocity (6D: 3 lin + 3 ang)."""
-        return qvel[self._floating_base_qvel_addr:self._floating_base_qvel_addr + 6]
+        return qvel[self._floating_base_qvel_addr : self._floating_base_qvel_addr + 6]
 
     def get_gravity(self, data: mjx.Data) -> jax.Array:
         """Get gravity vector in local frame."""

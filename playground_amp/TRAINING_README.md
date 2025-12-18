@@ -49,17 +49,16 @@ Enables Adversarial Motion Priors for learning natural, human-like gaits.
 
 ## Configuration Files
 
-### Main Training Config
+### Training Config
 `playground_amp/configs/wildrobot_phase3_training.yaml`
-- Trainer hyperparameters (learning rate, gamma, epochs, etc.)
-- AMP configuration (if enabled)
-- Quick-verify overrides
 
-### Environment Config
-`playground_amp/configs/wildrobot_env.yaml`
-- Robot parameters
-- Domain randomization settings
-- Observation/action specifications
+All configuration is consolidated in this single file:
+- **`env:`** - Environment parameters (timing, robot params, action filtering, episode length)
+- **`trainer:`** - PPO hyperparameters (learning rate, gamma, epochs, etc.)
+- **`reward_weights:`** - Reward function weights
+- **`domain_randomization:`** - Domain randomization settings
+- **`amp:`** - AMP configuration (if enabled)
+- **`quick_verify:`** - Override settings for smoke tests
 
 ## Examples
 
