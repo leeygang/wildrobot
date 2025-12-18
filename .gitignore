@@ -1,6 +1,6 @@
 # Training outputs
 training/*/outputs/
-*.pkl
+# *.pkl
 !training/policies/*.pkl  # Keep curated policies
 
 # Python
