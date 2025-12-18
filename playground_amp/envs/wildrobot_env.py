@@ -45,6 +45,46 @@ from mujoco_playground._src import mjx_env
 
 
 # =============================================================================
+# Asset Loading
+# =============================================================================
+
+
+def _get_wildrobot_root_path() -> Path:
+    """Get the root path for WildRobot assets."""
+    # Assets are in the 'assets' folder relative to the project root
+    project_root = Path(__file__).parent.parent.parent
+    return project_root / "assets"
+
+
+def find_model_path() -> Path:
+    """Find the WildRobot scene XML file."""
+    root = _get_wildrobot_root_path()
+    scene_path = root / "scene_flat_terrain.xml"
+    if scene_path.exists():
+        return scene_path
+    # Fallback to scene.xml
+    scene_path = root / "scene.xml"
+    if scene_path.exists():
+        return scene_path
+    raise FileNotFoundError(f"Could not find WildRobot scene XML in {root}")
+
+
+def get_assets(root_path: Path) -> Dict[str, bytes]:
+    """Load all assets from the WildRobot assets directory."""
+    assets = {}
+
+    # Load XML files
+    mjx_env.update_assets(assets, root_path, "*.xml")
+
+    # Load STL meshes from assets/assets subdirectory
+    meshes_path = root_path / "assets"
+    if meshes_path.exists():
+        mjx_env.update_assets(assets, meshes_path, "*.stl")
+
+    return assets
+
+
+# =============================================================================
 # State Definition
 # =============================================================================
 

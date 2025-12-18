@@ -1,15 +1,21 @@
-"""Reference motion buffer with synthetic data generation.
+"""Reference motion buffer with real MoCap and synthetic data generation.
 
 For AMP training, we need reference motion data. This module provides:
 1. Buffer for storing reference motion sequences
-2. Synthetic motion generator (for testing without real MoCap data)
-3. Data loading from pkl files (for real MoCap data when available)
+2. Loading real MoCap data from AMASS (retargeted to WildRobot)
+3. Synthetic motion generator (for testing without real MoCap data)
+4. Data loading from pkl files
 """
 
-import numpy as np
 from collections import deque
 from typing import Optional
+
 import jax.numpy as jnp
+import numpy as np
+
+
+# Default path to retargeted AMASS walking data
+DEFAULT_MOCAP_PATH = "data/walking_motions.pkl"
 
 
 class ReferenceMotionBuffer:
@@ -58,6 +64,7 @@ class ReferenceMotionBuffer:
             return np.zeros((0, self.seq_len, self.obs_dim), dtype=np.float32)
 
         import random
+
         batch = random.sample(self.data, min(batch_size, len(self.data)))
         return np.stack(batch, axis=0).astype(np.float32)
 
@@ -76,6 +83,7 @@ class ReferenceMotionBuffer:
             return np.zeros((0, self.obs_dim), dtype=np.float32)
 
         import random
+
         frames = []
         for _ in range(batch_size):
             # Sample random sequence
@@ -90,25 +98,29 @@ class ReferenceMotionBuffer:
         """Load reference motion data from pickle file.
 
         Expected format: numpy array of shape (num_frames, obs_dim)
-        or list of sequences.
+        or list of sequences, or dict with 'features' key.
 
         Args:
             filepath: Path to pkl file
         """
         import pickle
+
         with open(filepath, "rb") as f:
             data = pickle.load(f)
 
-        if isinstance(data, np.ndarray):
-            # Single long sequence - split into chunks
-            if data.ndim == 2:  # (num_frames, obs_dim)
-                num_frames = data.shape[0]
-                for start_idx in range(0, num_frames - self.seq_len, self.seq_len // 2):
-                    seq = data[start_idx : start_idx + self.seq_len]
-                    self.add(seq)
+        if isinstance(data, dict):
+            # New format from retarget_amass_walking.py
+            if "features" in data:
+                features = data["features"]  # (total_frames, feature_dim)
+                self._load_from_features(features)
+            elif "motions" in data:
+                # Load from individual motion sequences
+                for motion in data["motions"]:
+                    self._load_motion_dict(motion)
             else:
-                raise ValueError(f"Expected 2D array, got shape {data.shape}")
-
+                raise ValueError(f"Unknown dict format. Keys: {data.keys()}")
+        elif isinstance(data, np.ndarray):
+            self._load_from_features(data)
         elif isinstance(data, list):
             # List of sequences
             for seq in data:
@@ -116,6 +128,125 @@ class ReferenceMotionBuffer:
                     self.add(seq)
 
         print(f"Loaded {len(self.data)} reference motion sequences from {filepath}")
+
+    def _load_from_features(self, features: np.ndarray):
+        """Load from feature array of shape (num_frames, feature_dim).
+
+        Converts feature format to observation format and splits into sequences.
+        """
+        if features.ndim != 2:
+            raise ValueError(f"Expected 2D array, got shape {features.shape}")
+
+        num_frames, feature_dim = features.shape
+
+        # Convert features to observations if needed
+        if feature_dim != self.obs_dim:
+            # Pad or map features to obs_dim
+            observations = self._features_to_obs(features)
+        else:
+            observations = features
+
+        # Split into overlapping sequences
+        stride = max(1, self.seq_len // 2)  # 50% overlap
+        for start_idx in range(0, num_frames - self.seq_len, stride):
+            seq = observations[start_idx : start_idx + self.seq_len]
+            self.add(seq)
+
+    def _features_to_obs(self, features: np.ndarray) -> np.ndarray:
+        """Convert AMP features (29-dim) to full observation space (44-dim).
+
+        AMP features (29-dim):
+        - joint_positions: 9
+        - joint_velocities: 9
+        - root_linear_velocity: 3
+        - root_angular_velocity: 3
+        - root_height: 1
+        - foot_contacts: 4
+
+        WildRobot obs (44-dim):
+        - base_height: 1
+        - base_orientation: 6
+        - joint_positions: 9
+        - base_lin_vel: 3
+        - base_ang_vel: 3
+        - joint_velocities: 9
+        - contacts: 4
+        - prev_actions: 9
+        """
+        num_frames, feature_dim = features.shape
+        observations = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
+
+        if feature_dim == 29:
+            # Map 29-dim features to 44-dim observations
+            # Joint positions (0-8 in features -> 7-15 in obs)
+            observations[:, 7:16] = features[:, 0:9]
+
+            # Joint velocities (9-17 in features -> 25-33 in obs)
+            observations[:, 25:34] = features[:, 9:18]
+
+            # Root linear velocity (18-20 in features -> 16-18 in obs)
+            observations[:, 16:19] = features[:, 18:21]
+
+            # Root angular velocity (21-23 in features -> 19-21 in obs)
+            observations[:, 19:22] = features[:, 21:24]
+
+            # Root height (24 in features -> 0 in obs)
+            observations[:, 0] = features[:, 24]
+
+            # Foot contacts (25-28 in features -> 34-37 in obs)
+            observations[:, 34:38] = features[:, 25:29]
+
+            # Base orientation - identity quaternion as 6D repr
+            observations[:, 1] = 1.0  # w of quaternion
+            observations[:, 2:7] = 0.0
+
+        else:
+            # Just use first obs_dim features or pad with zeros
+            copy_dim = min(feature_dim, self.obs_dim)
+            observations[:, :copy_dim] = features[:, :copy_dim]
+
+        return observations
+
+    def _load_motion_dict(self, motion: dict):
+        """Load from a single motion dictionary."""
+        if "joint_positions" not in motion:
+            return
+
+        num_frames = motion["joint_positions"].shape[0]
+        if num_frames < self.seq_len:
+            return
+
+        # Build observation array
+        observations = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
+
+        # Root height
+        observations[:, 0] = motion.get("root_position", np.zeros((num_frames, 3)))[
+            :, 2
+        ]
+
+        # Base orientation (identity for now)
+        observations[:, 1] = 1.0
+
+        # Joint positions
+        observations[:, 7:16] = motion["joint_positions"]
+
+        # Root velocity
+        if "root_velocity" in motion:
+            observations[:, 16:19] = motion["root_velocity"]
+
+        # Root angular velocity
+        if "root_angular_velocity" in motion:
+            observations[:, 19:22] = motion["root_angular_velocity"]
+
+        # Joint velocities
+        if "joint_velocities" in motion:
+            observations[:, 25:34] = motion["joint_velocities"]
+
+        # Split into sequences
+        stride = max(1, self.seq_len // 2)
+        for start_idx in range(0, num_frames - self.seq_len, stride):
+            seq = observations[start_idx : start_idx + self.seq_len]
+            self.add(seq)
 
     def generate_synthetic_standing_pose(self, num_sequences: int = 100):
         """Generate synthetic reference motion (stable standing pose).
@@ -148,19 +279,27 @@ class ReferenceMotionBuffer:
                 obs[0] = 0.5 + np.random.normal(0, 0.01)
 
                 # Base orientation (identity quaternion: [1,0,0,0] as 6D repr)
-                obs[1:7] = np.array([1, 0, 0, 0, 0, 0], dtype=np.float32)  # Simplified 6D rot
+                obs[1:7] = np.array(
+                    [1, 0, 0, 0, 0, 0], dtype=np.float32
+                )  # Simplified 6D rot
 
                 # Joint positions (small noise around zero)
-                obs[7:18] = default_qpos + np.random.normal(0, 0.02, size=11).astype(np.float32)
+                obs[7:18] = default_qpos + np.random.normal(0, 0.02, size=11).astype(
+                    np.float32
+                )
 
                 # Velocities (near zero for standing)
                 obs[18:32] = np.random.normal(0, 0.01, size=14).astype(np.float32)
 
                 # Joint velocities
-                obs[32:43] = default_qvel + np.random.normal(0, 0.05, size=11).astype(np.float32)
+                obs[32:43] = default_qvel + np.random.normal(0, 0.05, size=11).astype(
+                    np.float32
+                )
 
                 # Contact forces (feet on ground) - last 4 dimensions
-                obs[40:44] = np.array([0.2, 0.2, 0, 0], dtype=np.float32) # Front feet have contact
+                obs[40:44] = np.array(
+                    [0.2, 0.2, 0, 0], dtype=np.float32
+                )  # Front feet have contact
 
                 sequence.append(obs)
 
@@ -200,37 +339,62 @@ class ReferenceMotionBuffer:
                 obs[1:7] = np.array([1, 0, 0, 0, 0, 0], dtype=np.float32)
 
                 # Joint positions (simplified alternating leg motion)
-                hip_l = 0.3 * np.sin(phase)          # Left hip
+                hip_l = 0.3 * np.sin(phase)  # Left hip
                 hip_r = 0.3 * np.sin(phase + np.pi)  # Right hip (opposite)
                 knee_l = 0.5 * np.abs(np.sin(phase))
                 knee_r = 0.5 * np.abs(np.sin(phase + np.pi))
 
-                obs[7:18] = np.array([
-                    hip_l, knee_l, 0.0,  # Left leg
-                    hip_r, knee_r, 0.0,  # Right leg
-                    0.0, 0.0,            # Arms
-                    0.0, 0.0, 0.0        # Other joints
-                ], dtype=np.float32)
+                obs[7:18] = np.array(
+                    [
+                        hip_l,
+                        knee_l,
+                        0.0,  # Left leg
+                        hip_r,
+                        knee_r,
+                        0.0,  # Right leg
+                        0.0,
+                        0.0,  # Arms
+                        0.0,
+                        0.0,
+                        0.0,  # Other joints
+                    ],
+                    dtype=np.float32,
+                )
 
                 # Base velocities (forward motion)
-                obs[18:21] = np.array([0.4, 0.0, 0.0], dtype=np.float32)  # Forward velocity
+                obs[18:21] = np.array(
+                    [0.4, 0.0, 0.0], dtype=np.float32
+                )  # Forward velocity
                 obs[21:24] = np.zeros(3, dtype=np.float32)  # Angular velocity
 
                 # Joint velocities (derivatives of positions)
                 omega = 2 * np.pi * stride_freq
-                obs[32:43] = np.array([
-                    0.3 * omega * np.cos(phase),
-                    0.5 * omega * np.cos(phase) * np.sign(np.sin(phase)),
-                    0.0,
-                    0.3 * omega * np.cos(phase + np.pi),
-                    0.5 * omega * np.cos(phase + np.pi) * np.sign(np.sin(phase + np.pi)),
-                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-                ], dtype=np.float32)
+                obs[32:43] = np.array(
+                    [
+                        0.3 * omega * np.cos(phase),
+                        0.5 * omega * np.cos(phase) * np.sign(np.sin(phase)),
+                        0.0,
+                        0.3 * omega * np.cos(phase + np.pi),
+                        0.5
+                        * omega
+                        * np.cos(phase + np.pi)
+                        * np.sign(np.sin(phase + np.pi)),
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
+                    dtype=np.float32,
+                )
 
                 # Contact forces (alternating feet) - last 4 dimensions
                 left_contact = 0.5 if np.sin(phase) < 0 else 0.0
                 right_contact = 0.5 if np.sin(phase + np.pi) < 0 else 0.0
-                obs[40:44] = np.array([left_contact, right_contact, 0, 0], dtype=np.float32)
+                obs[40:44] = np.array(
+                    [left_contact, right_contact, 0, 0], dtype=np.float32
+                )
 
                 sequence.append(obs)
 
@@ -253,7 +417,7 @@ def create_reference_buffer(
     max_size: int = 1000,
     mode: str = "walking",
     num_sequences: int = 200,
-    filepath: Optional[str] = None
+    filepath: Optional[str] = None,
 ) -> ReferenceMotionBuffer:
     """Create and populate a reference motion buffer.
 
@@ -268,11 +432,7 @@ def create_reference_buffer(
     Returns:
         Populated ReferenceMotionBuffer
     """
-    buffer = ReferenceMotionBuffer(
-        max_size=max_size,
-        seq_len=seq_len,
-        obs_dim=obs_dim
-    )
+    buffer = ReferenceMotionBuffer(max_size=max_size, seq_len=seq_len, obs_dim=obs_dim)
 
     if mode == "file" and filepath is not None:
         buffer.load_from_file(filepath)

@@ -72,14 +72,19 @@ domain_randomization:
   joint_damping: [0.5, 1.5]
   control_latency: [0.0, 0.02]
 
-# AMP (Adversarial Motion Prior) settings — placeholders to be filled with dataset paths
+# AMP (Adversarial Motion Prior) settings — using retargeted AMASS walking data
 amp:
   enabled: true
-  weight: 0.5
-  discriminator_hidden: [256, 256]
-  dataset_path: path/to/amass/dataset_or_placeholder
+  weight: 1.0  # Equal weight to task reward (2024 SoTA)
+  discriminator_hidden: [1024, 512, 256]  # Larger network for better motion discrimination
+  dataset_path: data/walking_motions.pkl  # Retargeted AMASS walking motions
+  ref_motion_mode: file  # Load from file instead of synthetic
+  ref_buffer_size: 2000  # Buffer size for reference motions
+  ref_seq_len: 32  # Sequence length for AMP
   batch_size: 512
-  update_steps: 4
+  update_steps: 2
+  gradient_penalty_weight: 5.0  # WGAN-GP regularization
+  normalize_features: true
 
 # Episode termination thresholds (stage-specific; tuned for Phase 3)
 termination:
