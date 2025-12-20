@@ -311,6 +311,38 @@ This ensures model changes propagate to training without manual copying.
 - Python artifacts: `__pycache__/`, `*.pyc`, `.venv/`
 - IDE configs: `.vscode/`, `.idea/`
 
+## GMR (General Motion Retargeting) Integration
+
+**IMPORTANT PRINCIPLE**: When working with GMR project, **DO NOT modify GMR code**. Instead:
+
+1. **Understand and leverage GMR's existing flow** - GMR has been tested with many robots and provides a robust IK-based retargeting pipeline
+2. **Only modify configuration files** (e.g., `configs/smplx_to_wildrobot.json`) to adapt to wildrobot
+3. **If code changes seem necessary**, discuss with the team first - there may be a configuration-based solution
+4. **Joint limits are automatic** - GMR uses `mink.ConfigurationLimit(model)` which reads limits directly from the MuJoCo XML
+5. **Use `*_mimic` bodies** in IK configs - these are special sites placed at key joint locations for IK matching
+
+### Key GMR Concepts
+
+- **IK-based retargeting**: GMR matches body positions (pelvis, hip, knee, foot), not joint angles directly
+- **Position/rotation weights**: Control IK priority (e.g., `knee_mimic: [50, 10]` means position weight=50, rotation weight=10)
+- **human_scale_table**: Scales human body parts to robot proportions (wildrobot uses 0.6 scale)
+- **ik_match_table1/2**: Two-stage IK solving (table2 is optional refinement)
+
+### Wildrobot GMR Config Location
+
+- GMR config: `/Users/ygli/projects/GMR/general_motion_retargeting/ik_configs/smplx_to_wildrobot.json`
+- Local copy: `/Users/ygli/projects/wildrobot/configs/smplx_to_wildrobot.json`
+
+### Running GMR for Wildrobot
+
+```bash
+cd /Users/ygli/projects/GMR
+python scripts/smplx_to_robot.py \
+    --robot wildrobot \
+    --smplx_file /path/to/motion.npz \
+    --save_path /path/to/output.pkl
+```
+
 ## Development Notes
 
 - **4.41Nm Torque Limit**: This is the PRIMARY constraint (HTD-45H @ 12V: 45 kg·cm). Always validate with `validate_torque.py` before training
