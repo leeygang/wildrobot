@@ -770,37 +770,279 @@ Train walking policy with AMP from day 1 for natural, energy-efficient gait (ind
 ### Tasks
 
 #### 3.2.1: Prepare Reference Motion Dataset (Day 2 Morning)
-**Source Options (in priority order):**
+**Status:** ✅ COMPLETE (2025-12-20)
 
-1. **AMASS Dataset (Recommended):**
-   - Download: https://amass.is.tue.mpg.de/
-   - Use SMPL-H walking sequences (subjects: CMU, BioMotionLab)
-   - Retarget to WildRobot skeleton using IK
+---
 
-2. **CMU MoCap (Fallback):**
-   - Subject 35 (walking trials 01-10)
-   - Already in BVH format, easier retargeting
+### Motion Processing Pipeline Overview
 
-**Retargeting Script:**
-```python
-# Location: mujoco/playground/utils/retarget_mocap.py
-# Input: SMPL walking sequence (60 fps)
-# Output: WildRobot joint angles (50 fps, 11 DOF)
-# Method: Inverse kinematics with MuJoCo IK solver
+The motion processing pipeline consists of three stages:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    MOTION PROCESSING PIPELINE                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Stage 1: RETARGETING                                                   │
+│  ┌─────────────────┐    ┌──────────────────────┐    ┌────────────────┐ │
+│  │ AMASS SMPL-X    │───▶│ smplx_to_robot_      │───▶│ GMR Format     │ │
+│  │ (.npz)          │    │ headless.py          │    │ (.pkl)         │ │
+│  │ ~33 FPS         │    │                      │    │ ~33 FPS        │ │
+│  └─────────────────┘    └──────────────────────┘    └────────────────┘ │
+│        Human MoCap           IK Retargeting           Robot joints     │
+│                                                                         │
+│  Stage 2: CONVERSION                                                    │
+│  ┌─────────────────┐    ┌──────────────────────┐    ┌────────────────┐ │
+│  │ GMR Format      │───▶│ convert_to_amp_      │───▶│ AMP Format     │ │
+│  │ (.pkl)          │    │ format.py            │    │ (.pkl)         │ │
+│  │ ~33 FPS         │    │                      │    │ 50 FPS         │ │
+│  └─────────────────┘    └──────────────────────┘    └────────────────┘ │
+│     Joint positions        Add velocities,         29-dim features    │
+│                            contacts, resample                          │
+│                                                                         │
+│  Stage 3: MERGING                                                       │
+│  ┌─────────────────┐    ┌──────────────────────┐    ┌────────────────┐ │
+│  │ Multiple AMP    │───▶│ batch_convert_to_    │───▶│ Merged Dataset │ │
+│  │ files           │    │ amp.py               │    │ (.pkl)         │ │
+│  └─────────────────┘    └──────────────────────┘    └────────────────┘ │
+│    Individual motions      Concatenate frames        Training ready   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Processing Steps:**
-1. Load SMPL mesh sequence
-2. Extract keypoint trajectories (pelvis, knees, ankles)
-3. Solve IK for WildRobot MJCF model to match end-effector positions
-4. Smooth and resample to 50Hz
-5. Validate: Play back in MuJoCo viewer - motion should look stable, feet on ground
+**Key Scripts (in `~/projects/GMR/scripts/`):**
+| Script | Purpose |
+|--------|---------|
+| `smplx_to_robot_headless.py` | Retarget single SMPL-X motion to robot |
+| `batch_retarget_walking.py` | Batch retarget multiple walking motions |
+| `convert_to_amp_format.py` | Convert single GMR motion to AMP format |
+| `batch_convert_to_amp.py` | Batch convert + merge all motions |
 
-**Exit Criteria:**
-- ✓ 50+ seconds of retargeted walking motion (2500+ frames)
-- ✓ Playback in MuJoCo shows robot feet grounded (no floating/penetration)
-- ✓ Motion saved as `.pkl` with shape `(num_frames, 22)` [11 pos + 11 vel]
-- ✓ Visual inspection: motion looks smooth and natural
+---
+
+### Quick Start: Generate Full Dataset
+
+```bash
+# Step 1: Batch retarget walking motions from AMASS KIT
+cd ~/projects/GMR
+uv run python scripts/batch_retarget_walking.py
+
+# Step 2: Convert all to AMP format and merge
+uv run python scripts/batch_convert_to_amp.py
+
+# Output: ~/projects/wildrobot/data/amp/walking_motions_merged.pkl
+```
+
+---
+
+### Source Data
+
+**AMASS Dataset (KIT subset)**
+- Download: https://amass.is.tue.mpg.de/
+- Location: `~/projects/amass/smplx/KIT/`
+- Format: SMPL-X `.npz` files
+
+**Tool:** GMR (General Motion Retargeting) - `/Users/ygli/projects/GMR`
+- IK-based retargeting from SMPL-X to WildRobot skeleton
+- Config: `general_motion_retargeting/ik_configs/smplx_to_wildrobot.json`
+- Key parameter: `human_scale_table: 0.55` (human-to-robot scale)
+
+---
+
+### Stage 1: Retargeting (SMPL-X → Robot)
+
+**Single Motion:**
+```bash
+cd ~/projects/GMR
+uv run python scripts/smplx_to_robot_headless.py \
+    --smplx_file ~/projects/amass/smplx/KIT/3/walking_medium10_stageii.npz \
+    --robot wildrobot \
+    --save_path ~/projects/wildrobot/assets/motions/walking_medium10.pkl
+```
+
+**Batch Processing (Recommended):**
+```bash
+cd ~/projects/GMR
+uv run python scripts/batch_retarget_walking.py
+```
+
+The batch script retargets 15 walking motions from different KIT subjects:
+- Subjects: 3, 167, 183, 317, 359 (different body types)
+- Speeds: slow, medium, fast (gait variety)
+- Total: ~87 seconds of motion data
+
+**GMR Output Format (.pkl):**
+```python
+{
+    'fps': 33.2,                    # Source frame rate
+    'root_pos': (N, 3),             # Root position (x, y, z)
+    'root_rot': (N, 4),             # Root quaternion (xyzw)
+    'dof_pos': (N, 9),              # Joint positions (radians)
+    'num_frames': N,                # Total frames
+    'duration_sec': float,          # Duration in seconds
+}
+```
+
+---
+
+### Stage 2: Conversion (GMR → AMP Format)
+
+**Single Motion:**
+```bash
+cd ~/projects/GMR
+uv run python scripts/convert_to_amp_format.py \
+    --input ~/projects/wildrobot/assets/motions/walking_medium10.pkl \
+    --output ~/projects/wildrobot/data/amp/walking_medium10_amp.pkl \
+    --target_fps 50
+```
+
+**What Conversion Does:**
+1. Resamples from ~33 FPS to 50 FPS (matches control frequency)
+2. Computes joint velocities from positions
+3. Computes root linear/angular velocities
+4. Estimates foot contacts from gait phase
+5. Packages into 29-dim feature vector
+
+**AMP Format (29-dim features):**
+| Feature | Indices | Dim | Description |
+|---------|---------|-----|-------------|
+| Joint positions | 0-8 | 9 | Hip, knee, ankle angles |
+| Joint velocities | 9-17 | 9 | Computed from positions |
+| Root linear velocity | 18-20 | 3 | Forward/lateral/vertical |
+| Root angular velocity | 21-23 | 3 | Roll/pitch/yaw rates |
+| Root height | 24 | 1 | Base height above ground |
+| Foot contacts | 25-28 | 4 | L/R toe/heel contacts |
+
+---
+
+### Stage 3: Merging (Multiple Motions → Single Dataset)
+
+**Batch Convert + Merge (Recommended):**
+```bash
+cd ~/projects/GMR
+uv run python scripts/batch_convert_to_amp.py
+```
+
+This script:
+1. Converts all `.pkl` files in `~/projects/wildrobot/assets/motions/` to AMP format
+2. Saves individual AMP files to `~/projects/wildrobot/data/amp/`
+3. Merges all into `walking_motions_merged.pkl`
+
+**Why Merge Multiple Motions?**
+
+| Pros ✅ | Cons ⚠️ |
+|---------|---------|
+| More diversity = better generalization | Slightly more discriminator training |
+| Different speeds help velocity tracking | Need consistent motion quality |
+| Different subjects = robust sim2real | Keep motions in same "family" |
+| Standard practice (50-100+ seconds) | |
+
+**Will Merging Look Weird?** No! AMP samples individual frames, not sequences.
+The discriminator learns the *distribution* of natural poses/velocities.
+The policy blends styles naturally while achieving the task.
+
+---
+
+### Current Dataset (2025-12-20)
+
+**Merged Dataset:** `~/projects/wildrobot/data/amp/walking_motions_merged.pkl`
+
+| Property | Value |
+|----------|-------|
+| Total Frames | 4,350 |
+| Total Duration | 87.07s |
+| Number of Motions | 16 |
+| Feature Dimension | 29 |
+| FPS | 50.0 |
+| Features Shape | (4350, 29) |
+
+**Included Motions:**
+| Motion | Frames | Duration | Speed |
+|--------|--------|----------|-------|
+| walking_slow01-06 | ~1,900 | ~38s | Slow |
+| walking_medium01-10 | ~1,800 | ~36s | Medium |
+| walking_fast02 | 261 | 5.2s | Fast |
+| walking_run04 | 326 | 6.5s | Run |
+| turn_left05 | 302 | 6.0s | Turn |
+| run02 | 44 | 0.9s | Run |
+
+**Feature Statistics:**
+| Component | Min | Max | Mean | Std |
+|-----------|-----|-----|------|-----|
+| Joint Positions (0-8) | -0.85 | 0.93 | -0.02 | 0.17 |
+| Joint Velocities (9-17) | -8.83 | 12.65 | 0.00 | 0.94 |
+| Root Lin Vel (18-20) | -2.59 | 2.31 | -0.06 | 0.23 |
+| Root Ang Vel (21-23) | -5.89 | 7.16 | 0.00 | 0.67 |
+| Root Height (24) | 0.42 | 0.50 | 0.47 | 0.01 |
+| Foot Contacts (25-28) | 0.30 | 1.00 | 0.87 | 0.16 |
+
+---
+
+### Validation
+
+**Visual Inspection:**
+```bash
+cd ~/projects/GMR
+uv run python scripts/render_robot_motion.py \
+    --robot wildrobot \
+    --motion_path ~/projects/wildrobot/assets/motions/walking_medium10.pkl \
+    --output_video ~/projects/wildrobot/assets/motions/walking_medium10.mp4
+```
+
+**Joint Range Check:**
+```bash
+uv run python -c "
+import pickle
+import numpy as np
+with open('$HOME/projects/wildrobot/assets/motions/walking_medium10.pkl', 'rb') as f:
+    data = pickle.load(f)
+left_knee = np.degrees(data['dof_pos'][:, 2])
+right_knee = np.degrees(data['dof_pos'][:, 7])
+print(f'Left knee: {left_knee.min():.1f}° to {left_knee.max():.1f}°')
+print(f'Right knee: {right_knee.min():.1f}° to {right_knee.max():.1f}°')
+"
+```
+
+---
+
+### Exit Criteria
+
+- ✅ AMASS motions retargeted via GMR IK (16 motions)
+- ✅ Video playback shows natural walking with knee bending
+- ✅ Motions saved as `.pkl` with GMR format
+- ✅ Converted to 29-dim AMP format at 50 FPS
+- ✅ **50+ seconds total achieved (87.07s)**
+- ✅ Merged dataset ready for training
+
+---
+
+### Usage in Training
+
+```bash
+# Run PPO+AMP training with merged motion dataset
+cd ~/projects/wildrobot
+python playground_amp/train_amp.py \
+    --iterations 3000 \
+    --num-envs 32 \
+    --amp-weight 1.0 \
+    --amp-data data/amp/walking_motions_merged.pkl
+```
+
+---
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Knees don't bend | Check `human_scale_table` (try 0.5-0.6) |
+| Joints exceed limits | Verify `wildrobot.xml` joint ranges match IK config |
+| Motion looks jittery | Check source FPS, ensure smooth interpolation |
+| Foot sliding | Adjust IK solver iterations or contact detection |
+
+**Reference Files:**
+- IK Config: `~/projects/GMR/general_motion_retargeting/ik_configs/smplx_to_wildrobot.json`
+- Robot Path: `~/projects/wildrobot/assets/scene_flat_terrain.xml`
+- Guidance Doc: `~/projects/wildrobot/WildRobot_Guidance.md`
 
 #### 3.2.2: Implement AMP Discriminator
 **Architecture (DeepMind AMP paper + 2024 improvements):**
