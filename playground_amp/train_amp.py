@@ -39,7 +39,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+# Enable 64-bit support in JAX (must be before importing jax)
 import jax
+jax.config.update("jax_enable_x64", True)
+
 import jax.numpy as jnp
 import yaml
 from ml_collections import config_dict
