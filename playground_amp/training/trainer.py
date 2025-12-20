@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
+
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -126,6 +127,9 @@ class AMPPPOConfig:
 class AMPPPOState(NamedTuple):
     """Complete training state for AMP+PPO."""
 
+    # Processor params for observation normalization
+    processor_params: Any
+
     # Policy/Value parameters and optimizers
     policy_params: Any
     value_params: Any
@@ -171,7 +175,7 @@ class TrainingMetrics(NamedTuple):
 def create_amp_ppo_state(
     config: AMPPPOConfig,
     rng: jax.Array,
-) -> Tuple[AMPPPOState, Any, AMPDiscriminator]:
+) -> Tuple[AMPPPOState, Any, AMPDiscriminator, optax.GradientTransformation, optax.GradientTransformation, optax.GradientTransformation]:
     """Create initial training state.
 
     Args:
@@ -179,7 +183,8 @@ def create_amp_ppo_state(
         rng: Random key
 
     Returns:
-        (state, ppo_network, disc_model): State and network modules
+        (state, ppo_network, disc_model, policy_optimizer, value_optimizer, disc_optimizer):
+        State, network modules, and optimizers
     """
     rng, policy_rng, value_rng, disc_rng = jax.random.split(rng, 4)
 
@@ -191,8 +196,8 @@ def create_amp_ppo_state(
         value_hidden_dims=config.value_hidden_dims,
     )
 
-    # Initialize parameters
-    policy_params, value_params = init_network_params(
+    # Initialize parameters (returns processor_params, policy_params, value_params)
+    processor_params, policy_params, value_params = init_network_params(
         ppo_network, config.obs_dim, config.action_dim, seed=int(policy_rng[0])
     )
 
@@ -203,7 +208,7 @@ def create_amp_ppo_state(
         seed=int(disc_rng[0]),
     )
 
-    # Create optimizers
+    # Create optimizers (create ONCE and return them)
     policy_optimizer = create_optimizer(
         learning_rate=config.learning_rate,
         max_grad_norm=config.max_grad_norm,
@@ -225,6 +230,7 @@ def create_amp_ppo_state(
     amp_feature_stats = create_running_stats(amp_feature_dim)
 
     state = AMPPPOState(
+        processor_params=processor_params,
         policy_params=policy_params,
         value_params=value_params,
         policy_opt_state=policy_opt_state,
@@ -233,17 +239,18 @@ def create_amp_ppo_state(
         disc_opt_state=disc_opt_state,
         amp_feature_stats=amp_feature_stats,
         iteration=jnp.array(0, dtype=jnp.int32),
-        total_steps=jnp.array(0, dtype=jnp.int64),
+        total_steps=jnp.array(0, dtype=jnp.int32),  # Use int32 instead of int64
         rng=rng,
     )
 
-    return state, ppo_network, disc_model
+    return state, ppo_network, disc_model, policy_optimizer, value_optimizer, disc_optimizer
 
 
 def collect_rollout(
     env_step_fn: Callable,
     env_state: Any,
     ppo_network: Any,
+    processor_params: Any,
     policy_params: Any,
     value_params: Any,
     rng: jax.Array,
@@ -256,6 +263,7 @@ def collect_rollout(
         env_step_fn: Function to step environment (state, action) -> (new_state, obs, reward, done, info)
         env_state: Current environment state
         ppo_network: PPO networks from create_networks()
+        processor_params: Observation normalization parameters (empty tuple if not used)
         policy_params: Policy parameters
         value_params: Value parameters
         rng: Random key
@@ -274,25 +282,27 @@ def collect_rollout(
     for step in range(num_steps):
         rng, action_rng, step_rng = jax.random.split(rng, 3)
 
-        # Get action from policy using Brax's network
-        action, log_prob = sample_actions(
-            policy_params, ppo_network, current_obs, action_rng
+        # Get action from policy using Brax's network API
+        # sample_actions returns (postprocessed_actions, raw_actions, log_probs)
+        postprocessed_action, raw_action, log_prob = sample_actions(
+            processor_params, policy_params, ppo_network, current_obs, action_rng
         )
 
         # Get value estimate
-        value = compute_values(value_params, ppo_network, current_obs)
+        value = compute_values(processor_params, value_params, ppo_network, current_obs)
 
-        # Step environment
-        new_state, new_obs, reward, done, info = env_step_fn(current_state, action)
+        # Step environment with postprocessed actions
+        new_state, new_obs, reward, done, info = env_step_fn(current_state, postprocessed_action)
 
         # Extract AMP features
         amp_feat = extract_amp_features(current_obs, new_obs)
 
         # Store transition
+        # NOTE: We store RAW actions for PPO loss computation (log_prob is computed on raw actions)
         transition = AMPTransition(
             obs=current_obs,
             next_obs=new_obs,
-            action=action,
+            action=raw_action,  # Store raw actions for PPO
             reward=reward,
             done=done,
             log_prob=log_prob,
@@ -309,7 +319,7 @@ def collect_rollout(
     transitions = stack_transitions(transitions_list)
 
     # Get bootstrap value for final state
-    bootstrap_value = compute_values(value_params, ppo_network, current_obs)
+    bootstrap_value = compute_values(processor_params, value_params, ppo_network, current_obs)
 
     return current_state, transitions, bootstrap_value
 
@@ -339,6 +349,9 @@ def train_discriminator_step(
     Returns:
         (new_params, new_opt_state, metrics): Updated state and metrics
     """
+    # Ensure features are float32 (not traced or float64)
+    agent_features = jnp.asarray(agent_features, dtype=jnp.float32)
+    expert_features = jnp.asarray(expert_features, dtype=jnp.float32)
 
     def loss_fn(params):
         return discriminator_loss(
@@ -352,13 +365,15 @@ def train_discriminator_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(disc_params)
 
-    updates, new_opt_state = disc_optimizer.update(grads, disc_opt_state)
+    # Use optax directly to update - avoid potential issues with optimizer state
+    updates, new_opt_state = disc_optimizer.update(grads, disc_opt_state, disc_params)
     new_params = optax.apply_updates(disc_params, updates)
 
     return new_params, new_opt_state, metrics
 
 
 def ppo_update_step(
+    processor_params: Any,
     policy_params: Any,
     value_params: Any,
     policy_opt_state: Any,
@@ -367,11 +382,13 @@ def ppo_update_step(
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     batch: RolloutBatch,
+    rng: jax.Array,
     config: AMPPPOConfig,
 ) -> Tuple[Any, Any, Any, Any, PPOLossMetrics]:
     """Single PPO update step on a minibatch.
 
     Args:
+        processor_params: Observation normalization parameters (empty tuple if not used)
         policy_params: Policy parameters
         value_params: Value parameters
         policy_opt_state: Policy optimizer state
@@ -380,6 +397,7 @@ def ppo_update_step(
         policy_optimizer: Policy optimizer
         value_optimizer: Value optimizer
         batch: Minibatch of rollout data
+        rng: Random key for entropy computation
         config: Training configuration
 
     Returns:
@@ -388,6 +406,7 @@ def ppo_update_step(
 
     def loss_fn(policy_p, value_p):
         return compute_ppo_loss(
+            processor_params=processor_params,
             policy_params=policy_p,
             value_params=value_p,
             ppo_network=ppo_network,
@@ -396,6 +415,7 @@ def ppo_update_step(
             old_log_probs=batch.log_probs,
             advantages=batch.advantages,
             returns=batch.returns,
+            rng=rng,
             clip_epsilon=config.clip_epsilon,
             value_loss_coef=config.value_loss_coef,
             entropy_coef=config.entropy_coef,
@@ -475,6 +495,7 @@ def train_iteration(
         env_step_fn=env_step_fn,
         env_state=env_state,
         ppo_network=ppo_network,
+        processor_params=state.processor_params,
         policy_params=state.policy_params,
         value_params=state.value_params,
         rng=rollout_rng,
@@ -515,8 +536,8 @@ def train_iteration(
             rng, disc_step_rng, sample_rng = jax.random.split(rng, 3)
 
             # Sample expert features from reference buffer
-            expert_obs = ref_buffer.sample_single_frames(config.disc_batch_size)
-            expert_features = extract_amp_features(jnp.array(expert_obs))
+            # The buffer stores 29-dim AMP features directly (not observations)
+            expert_features = jnp.array(ref_buffer.sample_single_frames(config.disc_batch_size))
 
             if config.normalize_amp_features:
                 expert_features = normalize_features(expert_features, amp_feature_stats)
@@ -654,6 +675,8 @@ def train_iteration(
                 ),
             )
 
+            rng, ppo_step_rng = jax.random.split(rng)
+
             (
                 policy_params,
                 value_params,
@@ -661,6 +684,7 @@ def train_iteration(
                 value_opt_state,
                 ppo_metrics,
             ) = ppo_update_step(
+                processor_params=state.processor_params,
                 policy_params=policy_params,
                 value_params=value_params,
                 policy_opt_state=policy_opt_state,
@@ -669,6 +693,7 @@ def train_iteration(
                 policy_optimizer=policy_optimizer,
                 value_optimizer=value_optimizer,
                 batch=minibatch,
+                rng=ppo_step_rng,
                 config=config,
             )
 
@@ -680,6 +705,7 @@ def train_iteration(
     env_steps = config.num_steps * config.num_envs
 
     new_state = AMPPPOState(
+        processor_params=state.processor_params,
         policy_params=policy_params,
         value_params=value_params,
         policy_opt_state=policy_opt_state,
@@ -738,6 +764,7 @@ def train_amp_ppo(
     print(f"  num_steps: {config.num_steps}")
     print(f"  total_iterations: {config.total_iterations}")
     print(f"  enable_amp: {config.enable_amp}")
+    print(f"  disc_batch_size: {config.disc_batch_size}")  # DEBUG: print actual batch size
     if config.enable_amp:
         print(f"  amp_reward_weight: {config.amp_reward_weight}")
         print(f"  disc_updates_per_iter: {config.disc_updates_per_iter}")
@@ -747,25 +774,14 @@ def train_amp_ppo(
     rng = jax.random.PRNGKey(config.seed)
     rng, init_rng, env_rng = jax.random.split(rng, 3)
 
-    # Create training state and networks
-    state, ppo_network, disc_model = create_amp_ppo_state(config, init_rng)
-
-    # Create optimizers
-    policy_optimizer = create_optimizer(
-        learning_rate=config.learning_rate,
-        max_grad_norm=config.max_grad_norm,
-    )
-    value_optimizer = create_optimizer(
-        learning_rate=config.learning_rate,
-        max_grad_norm=config.max_grad_norm,
-    )
-    disc_optimizer = create_discriminator_optimizer(
-        learning_rate=config.disc_learning_rate,
-    )
+    # Create training state and networks (with optimizers)
+    state, ppo_network, disc_model, policy_optimizer, value_optimizer, disc_optimizer = create_amp_ppo_state(config, init_rng)
 
     # Create reference motion buffer
+    # Use feature_dim=29 for AMP features (not obs_dim=38)
+    amp_feature_dim = DEFAULT_AMP_CONFIG.feature_dim  # 29
     ref_buffer = create_reference_buffer(
-        obs_dim=config.obs_dim,
+        obs_dim=amp_feature_dim,  # Use 29-dim features, not 38-dim observations
         seq_len=config.ref_seq_len,
         max_size=config.ref_buffer_size,
         mode=config.ref_motion_mode,
@@ -778,6 +794,13 @@ def train_amp_ppo(
     env_state = env_reset_fn(env_rng)
 
     print(f"✓ Environment initialized")
+
+    # Re-initialize discriminator optimizer state after env reset
+    # This is a workaround for MJX overflow warnings affecting JAX state
+    disc_optimizer = create_discriminator_optimizer(learning_rate=config.disc_learning_rate)
+    disc_opt_state = disc_optimizer.init(state.disc_params)
+    state = state._replace(disc_opt_state=disc_opt_state)
+
     print("=" * 60)
     print("Starting training...")
     print()

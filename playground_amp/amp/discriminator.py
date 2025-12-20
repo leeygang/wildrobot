@@ -196,10 +196,10 @@ def create_discriminator_optimizer(learning_rate=1e-4):
     Returns:
         optax optimizer
     """
-    return optax.chain(
-        optax.clip_by_global_norm(1.0),  # Gradient clipping
-        optax.adam(learning_rate),
-    )
+    # Ensure learning_rate is a Python scalar, not a JAX/numpy array
+    # This is critical because optax expects scalar learning rates
+    learning_rate = float(learning_rate)
+    return optax.adam(learning_rate)
 
 
 # Compatibility layer: NumPy-style interface for gradual migration

@@ -19,24 +19,34 @@ DEFAULT_MOCAP_PATH = "data/walking_motions.pkl"
 
 
 class ReferenceMotionBuffer:
-    """Buffer for storing and sampling reference motion sequences.
+    """Buffer for storing and sampling reference motion features.
 
-    Stores sequences of observations (seq_len x obs_dim) up to max_size.
-    Supports both synthetic generation and loading from files.
+    Stores AMP features (29-dim) directly from reference motion files.
+    Features are sampled for discriminator training.
+
+    AMP Feature Format (29-dim):
+    - Joint positions: 0-8 (9)
+    - Joint velocities: 9-17 (9)
+    - Root linear velocity: 18-20 (3)
+    - Root angular velocity: 21-23 (3)
+    - Root height: 24 (1)
+    - Foot contacts: 25-28 (4)
     """
 
-    def __init__(self, max_size: int = 1000, seq_len: int = 32, obs_dim: int = 44):
+    def __init__(self, max_size: int = 1000, seq_len: int = 32, obs_dim: int = 29):
         """Initialize reference motion buffer.
 
         Args:
             max_size: Maximum number of sequences to store
             seq_len: Length of each sequence (timesteps)
-            obs_dim: Observation dimension
+            obs_dim: Feature dimension (29 for AMP features)
         """
         self.max_size = max_size
         self.seq_len = seq_len
         self.obs_dim = obs_dim
         self.data = deque(maxlen=max_size)
+        # Store raw features separately for direct sampling
+        self._raw_features = None
 
     def add(self, seq: np.ndarray):
         """Add a sequence to the buffer.
@@ -316,6 +326,14 @@ class ReferenceMotionBuffer:
         This generates a simple periodic walking motion using sinusoids.
         Not as good as real MoCap, but better than standing for AMP testing.
 
+        Generates 29-dim AMP features:
+        - Joint positions (0-8): 9 dims
+        - Joint velocities (9-17): 9 dims
+        - Root linear velocity (18-20): 3 dims
+        - Root angular velocity (21-23): 3 dims
+        - Root height (24): 1 dim
+        - Foot contacts (25-28): 4 dims
+
         Args:
             num_sequences: Number of sequences to generate
         """
@@ -330,73 +348,59 @@ class ReferenceMotionBuffer:
                 time = t * 0.02  # Assuming 50Hz control (0.02s per step)
                 phase = 2 * np.pi * stride_freq * time + phase_offset
 
-                obs = np.zeros(self.obs_dim, dtype=np.float32)
+                # Create 29-dim feature vector
+                features = np.zeros(self.obs_dim, dtype=np.float32)
 
-                # Base height (slight bobbing during walk)
-                obs[0] = 0.5 + 0.02 * np.sin(2 * phase)
-
-                # Base orientation (small pitch oscillation)
-                obs[1:7] = np.array([1, 0, 0, 0, 0, 0], dtype=np.float32)
-
-                # Joint positions (simplified alternating leg motion)
+                # Joint positions (0-8): simplified alternating leg motion
                 hip_l = 0.3 * np.sin(phase)  # Left hip
                 hip_r = 0.3 * np.sin(phase + np.pi)  # Right hip (opposite)
                 knee_l = 0.5 * np.abs(np.sin(phase))
                 knee_r = 0.5 * np.abs(np.sin(phase + np.pi))
 
-                obs[7:18] = np.array(
+                features[0:9] = np.array(
                     [
-                        hip_l,
-                        knee_l,
-                        0.0,  # Left leg
-                        hip_r,
-                        knee_r,
-                        0.0,  # Right leg
-                        0.0,
-                        0.0,  # Arms
-                        0.0,
-                        0.0,
-                        0.0,  # Other joints
+                        hip_l, 0.0, knee_l, 0.0,  # Left leg (4 joints)
+                        0.0,  # Waist
+                        hip_r, 0.0, knee_r, 0.0,  # Right leg (4 joints)
                     ],
                     dtype=np.float32,
                 )
 
-                # Base velocities (forward motion)
-                obs[18:21] = np.array(
-                    [0.4, 0.0, 0.0], dtype=np.float32
-                )  # Forward velocity
-                obs[21:24] = np.zeros(3, dtype=np.float32)  # Angular velocity
-
-                # Joint velocities (derivatives of positions)
+                # Joint velocities (9-17): derivatives of positions
                 omega = 2 * np.pi * stride_freq
-                obs[32:43] = np.array(
+                features[9:18] = np.array(
                     [
                         0.3 * omega * np.cos(phase),
+                        0.0,
                         0.5 * omega * np.cos(phase) * np.sign(np.sin(phase)),
                         0.0,
+                        0.0,
                         0.3 * omega * np.cos(phase + np.pi),
-                        0.5
-                        * omega
-                        * np.cos(phase + np.pi)
-                        * np.sign(np.sin(phase + np.pi)),
                         0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
+                        0.5 * omega * np.cos(phase + np.pi) * np.sign(np.sin(phase + np.pi)),
                         0.0,
                     ],
                     dtype=np.float32,
                 )
 
-                # Contact forces (alternating feet) - last 4 dimensions
+                # Root linear velocity (18-20): forward motion
+                features[18:21] = np.array([0.4, 0.0, 0.0], dtype=np.float32)
+
+                # Root angular velocity (21-23): near zero
+                features[21:24] = np.zeros(3, dtype=np.float32)
+
+                # Root height (24): slight bobbing during walk
+                features[24] = 0.74 + 0.02 * np.sin(2 * phase)
+
+                # Foot contacts (25-28): alternating feet
                 left_contact = 0.5 if np.sin(phase) < 0 else 0.0
                 right_contact = 0.5 if np.sin(phase + np.pi) < 0 else 0.0
-                obs[40:44] = np.array(
-                    [left_contact, right_contact, 0, 0], dtype=np.float32
+                features[25:29] = np.array(
+                    [left_contact, left_contact, right_contact, right_contact],
+                    dtype=np.float32,
                 )
 
-                sequence.append(obs)
+                sequence.append(features)
 
             seq_array = np.stack(sequence, axis=0)
             self.add(seq_array)

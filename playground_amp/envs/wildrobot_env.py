@@ -451,13 +451,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         - Base orientation (gravity vector in local frame): 3
         - Base angular velocity: 3
         - Base linear velocity (local): 3
-        - Joint positions: 11
-        - Joint velocities: 11
-        - Previous action: 11
+        - Joint positions (actuated): 9
+        - Joint velocities (actuated): 9
+        - Previous action: 9
         - Velocity command: 1
-        - Phase signal (sin/cos): 2 (optional)
+        - Padding: 1
 
-        Total: 44 (without phase) or 46 (with phase)
+        Total: 38
         """
         # Gravity in local frame (from sensor)
         gravity = self.get_gravity(data)
@@ -468,9 +468,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Local linear velocity
         linvel = self.get_local_linvel(data)
 
-        # Joint positions and velocities
-        joint_pos = self.get_actuator_joint_qpos(data.qpos)
-        joint_vel = self.get_actuator_joints_qvel(data.qvel)
+        # Joint positions and velocities (squeeze to handle vmap extra dims)
+        joint_pos = self.get_actuator_joint_qpos(data.qpos).squeeze()
+        joint_vel = self.get_actuator_joints_qvel(data.qvel).squeeze()
 
         # Build observation
         obs = jp.concatenate(
@@ -478,15 +478,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 gravity,  # 3
                 angvel,  # 3
                 linvel,  # 3
-                joint_pos,  # 11
-                joint_vel,  # 11
-                action,  # 11
+                joint_pos,  # 9 (actuated joints only)
+                joint_vel,  # 9 (actuated joints only)
+                action,  # 9
                 jp.array([velocity_cmd]),  # 1
-                jp.zeros(1),  # padding to 44
+                jp.zeros(1),  # padding to 38
             ]
         )
 
-        return obs
+        # Ensure float32 output (x64 mode can produce float64)
+        return obs.astype(jp.float32)
 
     def _get_reward(
         self,
@@ -625,4 +626,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     @property
     def observation_size(self) -> int:
-        return 44
+        """Return observation size.
+
+        Observation components:
+        - Gravity vector: 3
+        - Angular velocity: 3
+        - Linear velocity: 3
+        - Joint positions: 9 (actuated joints only)
+        - Joint velocities: 9 (actuated joints only)
+        - Previous action: 9
+        - Velocity command: 1
+        - Padding: 1
+
+        Total: 38
+        """
+        return 38

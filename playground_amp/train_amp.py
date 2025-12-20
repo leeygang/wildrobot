@@ -39,20 +39,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-# Enable 64-bit support in JAX (must be before importing jax)
-import jax
-jax.config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp
 import yaml
 from ml_collections import config_dict
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-
-from playground_amp.envs.wildrobot_env import WildRobotEnv, WildRobotEnvState
-from playground_amp.training.experiment_tracking import ExperimentTracker
 
 # Default training config path
 DEFAULT_CONFIG_PATH = (
@@ -127,6 +119,8 @@ def create_env(config_path: Optional[Path] = None):
     Returns:
         WildRobotEnv: Environment extending mjx_env.MjxEnv
     """
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+
     training_config = load_training_config(config_path)
     env_config = create_env_config(training_config)
     env = WildRobotEnv(config=env_config)
@@ -346,6 +340,11 @@ def train_with_custom_loop(args):
 
     Use this when you need AMP discriminator integration.
     """
+    # Import JAX here to avoid potential issues with module-level imports
+    import jax
+    import jax.numpy as jnp
+
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
     from playground_amp.training.trainer import (
         AMPPPOConfig,
         AMPPPOState,
@@ -397,7 +396,7 @@ def train_with_custom_loop(args):
         amp_reward_weight=args.amp_weight,
         disc_learning_rate=args.disc_lr,
         disc_updates_per_iter=amp_cfg.get("update_steps", 2),
-        disc_batch_size=amp_cfg.get("batch_size", 512),
+        disc_batch_size=getattr(args, '_quick_verify_disc_batch_size', None) or amp_cfg.get("batch_size", 512),
         gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
         # AMP discriminator architecture
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
@@ -526,8 +525,11 @@ def main():
     if args.verify:
         quick_cfg = training_config.get("quick_verify", {})
         quick_trainer = quick_cfg.get("trainer", {})
+        quick_amp = quick_cfg.get("amp", {})
         args.iterations = quick_trainer.get("iterations", 10)
         args.num_envs = quick_trainer.get("num_envs", 4)
+        # Override disc_batch_size for quick verify (stored as temp attribute)
+        args._quick_verify_disc_batch_size = quick_amp.get("batch_size", 32)
         args.log_interval = 1
         print("=" * 60)
         print("VERIFICATION MODE")

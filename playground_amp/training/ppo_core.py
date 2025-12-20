@@ -14,6 +14,20 @@ The custom GAE and PPO loss implementations allow us to:
 1. Shape rewards with AMP discriminator output between rollout and update
 2. Access intermediate values for logging
 3. Customize loss computation if needed
+
+IMPORTANT: Brax Network API Notes
+---------------------------------
+Brax's FeedForwardNetwork has a specific apply signature:
+  network.apply(processor_params, network_params, obs)
+
+Where:
+  - processor_params: Parameters for observation normalization (running statistics)
+                      Can be empty tuple () if no normalization is used
+  - network_params: The actual neural network weights
+  - obs: Observation tensor
+
+The policy network returns LOGITS (raw output), not a distribution.
+Use ppo_network.parametric_action_distribution to convert logits to actions/log_probs.
 """
 
 from __future__ import annotations
@@ -52,18 +66,25 @@ def create_networks(
         action_dim: Action dimension
         policy_hidden_dims: Hidden layer sizes for policy network
         value_hidden_dims: Hidden layer sizes for value network
-        preprocess_observations_fn: Optional observation preprocessing
+        preprocess_observations_fn: Optional observation preprocessing.
+            If None, uses Brax's identity preprocessor.
 
     Returns:
         PPONetworks: Brax's PPO network container with policy and value networks
     """
-    return ppo_networks.make_ppo_networks(
-        observation_size=obs_dim,
-        action_size=action_dim,
-        preprocess_observations_fn=preprocess_observations_fn,
-        policy_hidden_layer_sizes=policy_hidden_dims,
-        value_hidden_layer_sizes=value_hidden_dims,
-    )
+    # Build kwargs - only include preprocess_observations_fn if explicitly provided
+    # If None, Brax will use its default identity_observation_preprocessor
+    kwargs = {
+        "observation_size": obs_dim,
+        "action_size": action_dim,
+        "policy_hidden_layer_sizes": policy_hidden_dims,
+        "value_hidden_layer_sizes": value_hidden_dims,
+    }
+
+    if preprocess_observations_fn is not None:
+        kwargs["preprocess_observations_fn"] = preprocess_observations_fn
+
+    return ppo_networks.make_ppo_networks(**kwargs)
 
 
 def init_network_params(
@@ -74,6 +95,10 @@ def init_network_params(
 ):
     """Initialize network parameters.
 
+    Brax's networks require TWO sets of parameters:
+    1. processor_params: For observation normalization (empty tuple if not used)
+    2. network_params: The actual network weights
+
     Args:
         ppo_network: PPO networks from create_networks()
         obs_dim: Observation dimension
@@ -81,7 +106,10 @@ def init_network_params(
         seed: Random seed
 
     Returns:
-        Initialized parameters for policy and value networks
+        Tuple of (processor_params, policy_params, value_params)
+        - processor_params: Empty tuple (no normalization) or running statistics state
+        - policy_params: Policy network weights
+        - value_params: Value network weights
     """
     rng = jax.random.PRNGKey(seed)
     rng, policy_rng, value_rng = jax.random.split(rng, 3)
@@ -92,7 +120,10 @@ def init_network_params(
     # Initialize value
     value_params = ppo_network.value_network.init(value_rng)
 
-    return policy_params, value_params
+    # No observation normalization by default (empty tuple as processor_params)
+    processor_params = ()
+
+    return processor_params, policy_params, value_params
 
 
 # ============================================================================
@@ -129,6 +160,14 @@ def compute_gae(
     """
     num_steps = rewards.shape[0]
 
+    # Ensure consistent float32 dtype
+    rewards = rewards.astype(jnp.float32)
+    values = values.astype(jnp.float32)
+    dones = dones.astype(jnp.float32)
+    bootstrap_value = bootstrap_value.astype(jnp.float32)
+    gamma = jnp.float32(gamma)
+    gae_lambda = jnp.float32(gae_lambda)
+
     # Append bootstrap value
     values_with_bootstrap = jnp.concatenate(
         [values, bootstrap_value[None, ...]], axis=0
@@ -149,10 +188,13 @@ def compute_gae(
 
         return gae, gae
 
+    # Initialize with float32
+    init_gae = jnp.zeros_like(bootstrap_value, dtype=jnp.float32)
+
     # Compute GAE backwards
     _, advantages = jax.lax.scan(
         gae_step,
-        jnp.zeros_like(bootstrap_value),
+        init_gae,
         jnp.arange(num_steps - 1, -1, -1),
     )
 
@@ -183,6 +225,7 @@ class PPOLossMetrics(NamedTuple):
 
 
 def compute_ppo_loss(
+    processor_params: Any,
     policy_params: Any,
     value_params: Any,
     ppo_network,
@@ -191,6 +234,7 @@ def compute_ppo_loss(
     old_log_probs: jnp.ndarray,
     advantages: jnp.ndarray,
     returns: jnp.ndarray,
+    rng: jax.Array,
     clip_epsilon: float = 0.2,
     value_loss_coef: float = 0.5,
     entropy_coef: float = 0.01,
@@ -201,15 +245,22 @@ def compute_ppo_loss(
     This uses Brax's network interface but computes the loss explicitly
     to expose all metrics for logging and AMP integration.
 
+    IMPORTANT: Brax's network API:
+    - policy_network.apply(processor_params, policy_params, obs) -> logits
+    - parametric_action_distribution.log_prob(logits, raw_actions) -> log_probs
+    - parametric_action_distribution.entropy(logits, rng) -> entropy
+
     Args:
+        processor_params: Observation normalization parameters (empty tuple if not used)
         policy_params: Policy network parameters
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
         obs: Observations (batch_size, obs_dim)
-        actions: Actions (batch_size, action_dim)
+        actions: Raw/pre-tanh actions (batch_size, action_dim) - NOT postprocessed
         old_log_probs: Log probs from rollout (batch_size,)
         advantages: GAE advantages (batch_size,)
         returns: Discounted returns (batch_size,)
+        rng: Random key for entropy computation
         clip_epsilon: PPO clipping parameter
         value_loss_coef: Value loss weight
         entropy_coef: Entropy bonus weight
@@ -222,17 +273,17 @@ def compute_ppo_loss(
     if normalize_advantages:
         advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + 1e-8)
 
-    # Get policy distribution from Brax network
-    policy_network = ppo_network.policy_network
-    value_network = ppo_network.value_network
+    # Get logits from policy network (NOT a distribution!)
+    # Brax API: apply(processor_params, network_params, obs) -> logits
+    logits = ppo_network.policy_network.apply(processor_params, policy_params, obs)
 
-    # Compute new log probs using Brax's policy network
-    # Brax's policy network returns a distribution
-    dist = policy_network.apply(policy_params, obs)
-    new_log_probs = dist.log_prob(actions)
+    # Use parametric_action_distribution to compute log_probs
+    # NOTE: We use raw actions (before postprocessing) for log_prob
+    new_log_probs = ppo_network.parametric_action_distribution.log_prob(logits, actions)
 
     # Compute value estimates
-    values = value_network.apply(value_params, obs)
+    # Brax API: apply(processor_params, network_params, obs) -> values
+    values = ppo_network.value_network.apply(processor_params, value_params, obs)
 
     # Policy loss (clipped surrogate objective)
     ratio = jnp.exp(new_log_probs - old_log_probs)
@@ -243,8 +294,8 @@ def compute_ppo_loss(
     # Value loss (squared error)
     value_loss = 0.5 * jnp.mean((values - returns) ** 2)
 
-    # Entropy bonus (from distribution)
-    entropy = jnp.mean(dist.entropy())
+    # Entropy bonus
+    entropy = jnp.mean(ppo_network.parametric_action_distribution.entropy(logits, rng))
     entropy_loss = -entropy
 
     # Total loss
@@ -284,6 +335,10 @@ def create_optimizer(
     Returns:
         Optax optimizer
     """
+    # Ensure learning_rate and max_grad_norm are Python scalars, not JAX/numpy arrays
+    # This is critical because optax expects scalar learning rates
+    learning_rate = float(learning_rate)
+    max_grad_norm = float(max_grad_norm)
     return optax.chain(
         optax.clip_by_global_norm(max_grad_norm),
         optax.adam(learning_rate),
@@ -296,15 +351,26 @@ def create_optimizer(
 
 
 def sample_actions(
+    processor_params: Any,
     policy_params: Any,
     ppo_network,
     obs: jnp.ndarray,
     rng: jax.Array,
     deterministic: bool = False,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Sample actions from policy.
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Sample actions from policy using Brax's network API.
+
+    IMPORTANT: Brax's network flow:
+    1. policy_network.apply(processor_params, policy_params, obs) -> logits
+    2. parametric_action_distribution.sample_no_postprocessing(logits, rng) -> raw_actions
+    3. parametric_action_distribution.postprocess(raw_actions) -> postprocessed_actions (for environment)
+    4. parametric_action_distribution.log_prob(logits, raw_actions) -> log_probs
+
+    For PPO updates, we need RAW actions (before postprocessing) for log_prob computation.
+    For environment stepping, we use POSTPROCESSED actions.
 
     Args:
+        processor_params: Observation normalization parameters (empty tuple if not used)
         policy_params: Policy network parameters
         ppo_network: PPO networks from create_networks()
         obs: Observations (batch, obs_dim)
@@ -312,29 +378,43 @@ def sample_actions(
         deterministic: If True, return mode of distribution
 
     Returns:
-        actions: Sampled actions (batch, action_dim)
-        log_probs: Log probabilities of actions (batch,)
+        postprocessed_actions: Actions to send to environment (batch, action_dim)
+        raw_actions: Pre-postprocessing actions for log_prob computation (batch, action_dim)
+        log_probs: Log probabilities of raw actions (batch,)
     """
-    dist = ppo_network.policy_network.apply(policy_params, obs)
+    # Get logits from policy network
+    # Brax API: apply(processor_params, network_params, obs) -> logits
+    logits = ppo_network.policy_network.apply(processor_params, policy_params, obs)
+
+    dist = ppo_network.parametric_action_distribution
 
     if deterministic:
-        actions = dist.mode()
+        # Mode returns postprocessed actions
+        postprocessed_actions = dist.mode(logits)
+        # For deterministic, raw = inverse_postprocess(postprocessed)
+        raw_actions = dist.inverse_postprocess(postprocessed_actions)
     else:
-        actions = dist.sample(seed=rng)
+        # Sample raw actions (before postprocessing)
+        raw_actions = dist.sample_no_postprocessing(logits, rng)
+        # Postprocess for environment
+        postprocessed_actions = dist.postprocess(raw_actions)
 
-    log_probs = dist.log_prob(actions)
+    # Log prob is computed on raw actions
+    log_probs = dist.log_prob(logits, raw_actions)
 
-    return actions, log_probs
+    return postprocessed_actions, raw_actions, log_probs
 
 
 def compute_values(
+    processor_params: Any,
     value_params: Any,
     ppo_network,
     obs: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Compute value estimates.
+    """Compute value estimates using Brax's network API.
 
     Args:
+        processor_params: Observation normalization parameters (empty tuple if not used)
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
         obs: Observations (batch, obs_dim)
@@ -342,7 +422,8 @@ def compute_values(
     Returns:
         values: Value estimates (batch,)
     """
-    return ppo_network.value_network.apply(value_params, obs)
+    # Brax API: apply(processor_params, network_params, obs) -> values
+    return ppo_network.value_network.apply(processor_params, value_params, obs)
 
 
 # ============================================================================
@@ -390,22 +471,26 @@ if __name__ == "__main__":
     )
     print(f"✓ PPO networks created (Brax)")
 
-    # Initialize parameters
-    policy_params, value_params = init_network_params(
+    # Initialize parameters (now returns processor_params, policy_params, value_params)
+    processor_params, policy_params, value_params = init_network_params(
         ppo_network, obs_dim, action_dim, seed=0
     )
     print(f"✓ Network parameters initialized")
+    print(f"  processor_params: {type(processor_params)}")
 
     # Test policy sampling
     rng = jax.random.PRNGKey(0)
     obs = jax.random.normal(rng, (batch_size, obs_dim))
-    actions, log_probs = sample_actions(policy_params, ppo_network, obs, rng)
+    postprocessed_actions, raw_actions, log_probs = sample_actions(
+        processor_params, policy_params, ppo_network, obs, rng
+    )
     print(
-        f"✓ Policy sample: action shape {actions.shape}, log_prob shape {log_probs.shape}"
+        f"✓ Policy sample: action shape {postprocessed_actions.shape}, "
+        f"raw_action shape {raw_actions.shape}, log_prob shape {log_probs.shape}"
     )
 
     # Test value computation
-    values = compute_values(value_params, ppo_network, obs)
+    values = compute_values(processor_params, value_params, ppo_network, obs)
     print(f"✓ Value: shape {values.shape}")
 
     # Test GAE
@@ -418,13 +503,15 @@ if __name__ == "__main__":
     print(f"✓ GAE: advantages shape {advantages.shape}, returns shape {returns.shape}")
 
     # Test PPO loss
+    rng, loss_rng = jax.random.split(rng)
     obs_batch = jax.random.normal(rng, (batch_size, obs_dim))
-    action_batch = jax.random.normal(rng, (batch_size, action_dim))
+    action_batch = jax.random.normal(rng, (batch_size, action_dim))  # raw actions
     log_prob_batch = jax.random.normal(rng, (batch_size,))
     adv_batch = jax.random.normal(rng, (batch_size,))
     ret_batch = jax.random.normal(rng, (batch_size,))
 
     loss, metrics = compute_ppo_loss(
+        processor_params,
         policy_params,
         value_params,
         ppo_network,
@@ -433,6 +520,7 @@ if __name__ == "__main__":
         log_prob_batch,
         adv_batch,
         ret_batch,
+        loss_rng,
     )
     print(f"✓ PPO loss: {loss:.4f}")
     print(f"  Policy loss: {metrics.policy_loss:.4f}")
@@ -444,11 +532,13 @@ if __name__ == "__main__":
     opt_state = optimizer.init(policy_params)
     print(f"✓ Optimizer created")
 
-    # Test inference function
+    # Test inference function (uses Brax's API with tuple params)
     inference_fn = make_inference_fn(ppo_network)
-    policy_fn = inference_fn(policy_params, deterministic=True)
+    # Brax expects params as tuple: (processor_params, policy_params, value_params)
+    params_tuple = (processor_params, policy_params, value_params)
+    policy_fn = inference_fn(params_tuple, deterministic=True)
     test_obs = jax.random.normal(rng, (1, obs_dim))
-    test_action = policy_fn(test_obs, rng)
+    test_action, _ = policy_fn(test_obs, rng)
     print(f"✓ Inference function: action shape {test_action.shape}")
 
     print("\n✅ All PPO building blocks tests passed (using Brax)!")
