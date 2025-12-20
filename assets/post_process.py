@@ -1,6 +1,8 @@
 import sys
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Dict, List, Any, Optional
 
 
 def add_option(xml_file):
@@ -230,6 +232,219 @@ def add_common_includes(xml_file):
     tree.write(xml_file)
 
 
+def generate_robot_config(xml_file: str, output_file: str = "robot_config.yaml") -> Dict[str, Any]:
+    """Generate robot configuration from MuJoCo XML.
+
+    This function extracts all robot-specific information from the XML and
+    saves it to a YAML config file. This config is then used by all Python
+    training code to avoid hardcoding robot specifications.
+
+    Extracts:
+        - Joint names and their order
+        - Actuator names and their order
+        - Joint limits (if specified)
+        - Sensor names and types
+        - Floating base information
+        - Body hierarchy
+
+    Args:
+        xml_file: Path to the MuJoCo XML file
+        output_file: Output YAML file path
+
+    Returns:
+        Dictionary containing the robot configuration
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    config: Dict[str, Any] = {
+        "robot_name": root.get("model", "unknown"),
+        "generated_from": xml_file,
+    }
+
+    # =========================================================================
+    # Extract Actuators (these define the action space)
+    # =========================================================================
+    actuator_section = root.find("actuator")
+    actuators: List[Dict[str, Any]] = []
+    if actuator_section is not None:
+        for actuator in actuator_section:
+            act_info = {
+                "name": actuator.get("name"),
+                "joint": actuator.get("joint"),
+                "type": actuator.tag,  # e.g., "position", "motor", etc.
+                "class": actuator.get("class"),
+            }
+            actuators.append(act_info)
+
+    config["actuators"] = {
+        "names": [a["name"] for a in actuators],
+        "joints": [a["joint"] for a in actuators],
+        "count": len(actuators),
+        "details": actuators,
+    }
+
+    # =========================================================================
+    # Extract Joints (scan all bodies for joint definitions)
+    # =========================================================================
+    joints: List[Dict[str, Any]] = []
+    floating_base: Optional[Dict[str, Any]] = None
+
+    for joint in root.findall(".//joint"):
+        joint_name = joint.get("name")
+        joint_type = joint.get("type", "hinge")  # Default is hinge
+
+        # Check if this is a freejoint (floating base)
+        if joint_type == "free" or joint.tag == "freejoint":
+            floating_base = {
+                "name": joint_name,
+                "type": "free",
+            }
+            continue
+
+        joint_info = {
+            "name": joint_name,
+            "type": joint_type,
+            "axis": joint.get("axis", "0 0 1"),
+            "class": joint.get("class"),
+        }
+
+        # Extract range if available
+        range_str = joint.get("range")
+        if range_str:
+            range_vals = [float(x) for x in range_str.split()]
+            joint_info["range"] = range_vals
+
+        joints.append(joint_info)
+
+    # Also check for freejoint elements (MuJoCo shorthand)
+    for freejoint in root.findall(".//freejoint"):
+        if floating_base is None:
+            floating_base = {
+                "name": freejoint.get("name"),
+                "type": "free",
+            }
+
+    config["joints"] = {
+        "names": [j["name"] for j in joints],
+        "count": len(joints),
+        "details": joints,
+    }
+
+    # =========================================================================
+    # Extract Floating Base Info
+    # =========================================================================
+    if floating_base:
+        # Find the body containing the floating base
+        root_body = None
+        for body in root.findall(".//body"):
+            for child in body:
+                if child.tag in ("freejoint", "joint"):
+                    if child.get("name") == floating_base["name"]:
+                        root_body = body.get("name")
+                        break
+                    if child.get("type") == "free":
+                        root_body = body.get("name")
+                        break
+
+        floating_base["root_body"] = root_body
+        floating_base["qpos_dim"] = 7  # 3 pos + 4 quat
+        floating_base["qvel_dim"] = 6  # 3 linear + 3 angular
+
+    config["floating_base"] = floating_base
+
+    # =========================================================================
+    # Extract Sensors
+    # =========================================================================
+    sensor_section = root.find("sensor")
+    sensors: Dict[str, List[Dict[str, Any]]] = {}
+
+    if sensor_section is not None:
+        for sensor in sensor_section:
+            sensor_type = sensor.tag
+            sensor_info = {
+                "name": sensor.get("name"),
+                "site": sensor.get("site"),
+                "objname": sensor.get("objname"),
+                "objtype": sensor.get("objtype"),
+            }
+
+            if sensor_type not in sensors:
+                sensors[sensor_type] = []
+            sensors[sensor_type].append(sensor_info)
+
+    config["sensors"] = sensors
+
+    # =========================================================================
+    # Compute Dimensions
+    # =========================================================================
+    num_actuators = len(actuators)
+    num_joints = len(joints)
+
+    # Observation dimension breakdown (matching wildrobot_env.py)
+    # This should match the actual observation construction
+    obs_breakdown = {
+        "gravity_vector": 3,
+        "base_angular_velocity": 3,
+        "base_linear_velocity": 3,
+        "joint_positions": num_actuators,
+        "joint_velocities": num_actuators,
+        "previous_action": num_actuators,
+        "velocity_command": 1,
+        "padding": 1,  # For alignment
+    }
+    obs_dim = sum(obs_breakdown.values())
+
+    # AMP feature dimension breakdown (matching amp_features.py)
+    amp_breakdown = {
+        "joint_positions": num_actuators,
+        "joint_velocities": num_actuators,
+        "root_linear_velocity": 3,
+        "root_angular_velocity": 3,
+        "root_height": 1,
+        "foot_contacts": 4,
+    }
+    amp_feature_dim = sum(amp_breakdown.values())
+
+    config["dimensions"] = {
+        "action_dim": num_actuators,
+        "observation_dim": obs_dim,
+        "amp_feature_dim": amp_feature_dim,
+        "num_actuated_joints": num_actuators,
+        "num_total_joints": num_joints,
+        "observation_breakdown": obs_breakdown,
+        "amp_feature_breakdown": amp_breakdown,
+    }
+
+    # =========================================================================
+    # Observation to AMP Feature Mapping (indices into observation vector)
+    # =========================================================================
+    # These indices allow AMP feature extraction from observations
+    obs_idx = 0
+    obs_indices = {}
+    for key, size in obs_breakdown.items():
+        obs_indices[key] = {"start": obs_idx, "end": obs_idx + size}
+        obs_idx += size
+
+    config["observation_indices"] = obs_indices
+
+    # =========================================================================
+    # Save to YAML
+    # =========================================================================
+    import yaml
+
+    with open(output_file, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    print(f"Generated robot config: {output_file}")
+    print(f"  Actuators: {num_actuators}")
+    print(f"  Joints: {num_joints}")
+    print(f"  Observation dim: {obs_dim}")
+    print(f"  AMP feature dim: {amp_feature_dim}")
+
+    return config
+
+
 def main() -> None:
     xml_file = "wildrobot.xml"
     print("start post process...")
@@ -240,6 +455,11 @@ def main() -> None:
     merge_default_blocks(xml_file)
     fix_collision_default_geom(xml_file)
     add_mimic_bodies(xml_file)  # Add dummy bodies for GMR compatibility
+
+    # Generate robot configuration from XML
+    # This config is used by all Python training code
+    generate_robot_config(xml_file, "robot_config.yaml")
+
     print("Post process completed")
 
 

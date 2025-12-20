@@ -10,6 +10,8 @@ Based on DeepMind AMP paper and 2024 best practices:
 - Joint velocities
 - Root height + orientation
 - Normalize features with running statistics
+
+Configuration is loaded from robot_config.yaml to avoid hardcoding.
 """
 
 from __future__ import annotations
@@ -19,63 +21,108 @@ from typing import NamedTuple, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
+from playground_amp.configs.config import get_robot_config, RobotConfig
+
 
 class AMPFeatureConfig(NamedTuple):
     """Configuration for AMP feature extraction.
 
     Defines which parts of the observation to use for discriminator.
-    This MUST match the 29-dim format from the reference motion retargeting pipeline.
-
-    Reference motion AMP format (29-dim):
-    - Joint positions: 0-8 (9 actuated joints)
-    - Joint velocities: 9-17 (9 actuated joints)
-    - Root linear velocity: 18-20 (3)
-    - Root angular velocity: 21-23 (3)
-    - Root height: 24 (1)
-    - Foot contacts: 25-28 (4) - placeholder, set to zeros from obs
-
-    WildRobot 38-dim observation layout:
-    - gravity: 0-2 (3)
-    - angvel: 3-5 (3)
-    - linvel: 6-8 (3)
-    - joint_pos: 9-17 (9 actuated joints)
-    - joint_vel: 18-26 (9 actuated joints)
-    - prev_action: 27-35 (9)
-    - velocity_cmd: 36 (1)
-    - padding: 37 (1)
+    Indices are derived from robot_config.yaml observation_indices.
     """
 
     # Observation indices for feature extraction
     # Joint positions
-    joint_pos_start: int = 9
-    joint_pos_end: int = 18  # 9 actuated joints
+    joint_pos_start: int
+    joint_pos_end: int
 
     # Joint velocities
-    joint_vel_start: int = 18
-    joint_vel_end: int = 27  # 9 actuated joints
+    joint_vel_start: int
+    joint_vel_end: int
 
     # Root velocities (from observation)
-    root_linvel_start: int = 6  # linvel in obs
-    root_linvel_end: int = 9
-    root_angvel_start: int = 3  # angvel in obs
-    root_angvel_end: int = 6
+    root_linvel_start: int
+    root_linvel_end: int
+    root_angvel_start: int
+    root_angvel_end: int
 
     # Root height - gravity z-component is proxy for uprightness
-    root_height_idx: int = 2  # gravity[2]
+    root_height_idx: int
 
     # Whether to use transition features (current + next)
     use_transition_features: bool = False
 
-    # Feature dimension - MUST BE 29 to match reference motion format
+    # Number of actuated joints
+    num_actuated_joints: int = 9
+
+    # Feature dimension
     @property
     def feature_dim(self) -> int:
-        # Fixed at 29 to match reference motion format:
-        # joint_pos(9) + joint_vel(9) + root_linvel(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
-        return 29
+        """AMP feature dimension.
+
+        Format: joint_pos + joint_vel + root_linvel(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
+        """
+        return self.num_actuated_joints * 2 + 3 + 3 + 1 + 4
 
 
-# Default config for WildRobot
-DEFAULT_AMP_CONFIG = AMPFeatureConfig()
+def create_amp_config_from_robot(robot_config: Optional[RobotConfig] = None) -> AMPFeatureConfig:
+    """Create AMPFeatureConfig from robot configuration.
+
+    Args:
+        robot_config: Robot configuration. If None, loads from default path.
+
+    Returns:
+        AMPFeatureConfig with indices from robot config
+    """
+    if robot_config is None:
+        robot_config = get_robot_config()
+
+    obs_indices = robot_config.observation_indices
+
+    return AMPFeatureConfig(
+        joint_pos_start=obs_indices["joint_positions"]["start"],
+        joint_pos_end=obs_indices["joint_positions"]["end"],
+        joint_vel_start=obs_indices["joint_velocities"]["start"],
+        joint_vel_end=obs_indices["joint_velocities"]["end"],
+        root_linvel_start=obs_indices["base_linear_velocity"]["start"],
+        root_linvel_end=obs_indices["base_linear_velocity"]["end"],
+        root_angvel_start=obs_indices["base_angular_velocity"]["start"],
+        root_angvel_end=obs_indices["base_angular_velocity"]["end"],
+        root_height_idx=obs_indices["gravity_vector"]["start"] + 2,  # gravity[2]
+        use_transition_features=False,
+        num_actuated_joints=robot_config.action_dim,
+    )
+
+
+# Lazy-loaded default config
+_default_amp_config: Optional[AMPFeatureConfig] = None
+
+
+def get_default_amp_config() -> AMPFeatureConfig:
+    """Get default AMP feature configuration.
+
+    Loads from robot config on first call, then caches.
+    """
+    global _default_amp_config
+    if _default_amp_config is None:
+        _default_amp_config = create_amp_config_from_robot()
+    return _default_amp_config
+
+
+# For backward compatibility
+DEFAULT_AMP_CONFIG = AMPFeatureConfig(
+    joint_pos_start=9,
+    joint_pos_end=18,
+    joint_vel_start=18,
+    joint_vel_end=27,
+    root_linvel_start=6,
+    root_linvel_end=9,
+    root_angvel_start=3,
+    root_angvel_end=6,
+    root_height_idx=2,
+    use_transition_features=False,
+    num_actuated_joints=9,
+)
 
 
 def extract_amp_features(

@@ -2,8 +2,8 @@
 # Purpose: canonical training-stage config for Phase III (large-scale RL + AMP)
 #
 # Usage:
-#   uv run python playground_amp/train_amp.py --use-custom-loop
-#   uv run python playground_amp/train_amp.py --use-custom-loop --config configs/wildrobot_phase3_training.yaml
+#   uv run python playground_amp/train_amp.py
+#   uv run python playground_amp/train_amp.py --config configs/wildrobot_phase3_training.yaml
 #
 # CLI arguments override config file values when provided.
 
@@ -166,16 +166,16 @@ termination:
   min_base_height: 0.25
   max_pitch_roll_rad: 0.785398  # 45 degrees
 
-# Quick-verify settings (for smoke tests)
+# Quick-verify settings (for smoke tests) - minimal for fastest possible test
 quick_verify:
   trainer:
-    num_envs: 4
-    rollout_steps: 8
-    iterations: 10
+    num_envs: 2       # Minimum vectorized
+    rollout_steps: 4  # Minimum for GAE
+    iterations: 2     # Just 2 iterations to verify loop works
   env:
-    max_episode_steps: 100
+    max_episode_steps: 20  # Very short episodes
   amp:
-    batch_size: 32  # Smaller batch for quick verify (must fit in 4*8=32 agent samples)
+    batch_size: 8  # Smallest batch (must fit in 2*4=8 agent samples)
 
 notes: |
   Phase 3 PPO+AMP Training Configuration
@@ -186,7 +186,7 @@ notes: |
     RTX 3090 (24GB): 2048-4096
 
   Training Command:
-    uv run python playground_amp/train_amp.py --use-custom-loop
+    uv run python playground_amp/train_amp.py
 
   Quick Verify:
-    uv run python playground_amp/train_amp.py --use-custom-loop --verify
+    uv run python playground_amp/train_amp.py --verify
