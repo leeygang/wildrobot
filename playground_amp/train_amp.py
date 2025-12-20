@@ -131,56 +131,67 @@ def create_env(config_path: Optional[Path] = None):
 
 
 def parse_args():
-    """Parse command-line arguments."""
+    """Parse command-line arguments.
+
+    CLI arguments override config file values when explicitly provided.
+    """
     parser = argparse.ArgumentParser(
         description="Train WildRobot with PPO+AMP",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # Training configuration
+    # Config file (loaded first, then CLI overrides)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to training config YAML (default: configs/wildrobot_phase3_training.yaml)",
+    )
+
+    # Training configuration (CLI overrides config file)
     parser.add_argument(
         "--iterations",
         type=int,
-        default=1000,
-        help="Number of training iterations",
+        default=None,
+        help="Number of training iterations (default from config)",
     )
     parser.add_argument(
         "--num-envs",
         type=int,
-        default=16,
-        help="Number of parallel environments",
+        default=None,
+        help="Number of parallel environments (default from config)",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=0,
-        help="Random seed",
+        default=None,
+        help="Random seed (default from config)",
     )
 
     # PPO hyperparameters
     parser.add_argument(
         "--lr",
         type=float,
-        default=3e-4,
-        help="Learning rate",
+        default=None,
+        help="Learning rate (default from config)",
     )
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.99,
-        help="Discount factor",
+        default=None,
+        help="Discount factor (default from config)",
     )
     parser.add_argument(
         "--clip-epsilon",
         type=float,
-        default=0.2,
-        help="PPO clipping parameter",
+        default=None,
+        help="PPO clipping parameter (default from config)",
     )
     parser.add_argument(
         "--entropy-coef",
         type=float,
-        default=0.01,
-        help="Entropy bonus coefficient",
+        default=None,
+        help="Entropy bonus coefficient (default from config)",
     )
 
     # Training mode
@@ -194,8 +205,8 @@ def parse_args():
     parser.add_argument(
         "--amp-weight",
         type=float,
-        default=1.0,
-        help="Weight for AMP reward (custom loop only)",
+        default=None,
+        help="Weight for AMP reward (default from config)",
     )
     parser.add_argument(
         "--amp-data",
@@ -206,8 +217,8 @@ def parse_args():
     parser.add_argument(
         "--disc-lr",
         type=float,
-        default=1e-4,
-        help="Discriminator learning rate (custom loop only)",
+        default=None,
+        help="Discriminator learning rate (default from config)",
     )
     parser.add_argument(
         "--no-amp",
@@ -219,21 +230,21 @@ def parse_args():
     parser.add_argument(
         "--log-interval",
         type=int,
-        default=10,
-        help="Log metrics every N iterations",
+        default=None,
+        help="Log metrics every N iterations (default from config)",
     )
     parser.add_argument(
         "--checkpoint-dir",
         type=str,
-        default="checkpoints/wildrobot",
-        help="Directory for saving checkpoints",
+        default=None,
+        help="Directory for saving checkpoints (default from config)",
     )
 
     # Quick test mode
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="Run quick verification (10 iterations)",
+        help="Run quick verification (10 iterations, 4 envs)",
     )
 
     return parser.parse_args()
@@ -474,10 +485,46 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    # Quick verify mode
+    # Load config file
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    print(f"Loading config from: {config_path}")
+    training_config = load_training_config(config_path)
+
+    trainer_cfg = training_config.get("trainer", {})
+    amp_cfg = training_config.get("amp", {})
+
+    # Merge config with CLI overrides (CLI takes precedence if provided)
+    if args.iterations is None:
+        args.iterations = trainer_cfg.get("iterations", 3000)
+    if args.num_envs is None:
+        args.num_envs = trainer_cfg.get("num_envs", 512)
+    if args.seed is None:
+        args.seed = trainer_cfg.get("seed", 42)
+    if args.lr is None:
+        args.lr = trainer_cfg.get("lr", 3e-4)
+    if args.gamma is None:
+        args.gamma = trainer_cfg.get("gamma", 0.99)
+    if args.clip_epsilon is None:
+        args.clip_epsilon = trainer_cfg.get("clip_epsilon", 0.2)
+    if args.entropy_coef is None:
+        args.entropy_coef = trainer_cfg.get("entropy_coef", 0.01)
+    if args.amp_weight is None:
+        args.amp_weight = amp_cfg.get("weight", 1.0)
+    if args.disc_lr is None:
+        args.disc_lr = amp_cfg.get("disc_lr", 1e-4)
+    if args.log_interval is None:
+        args.log_interval = trainer_cfg.get("log_interval", 10)
+    if args.checkpoint_dir is None:
+        args.checkpoint_dir = trainer_cfg.get("checkpoint_dir", "playground_amp/checkpoints")
+    if args.amp_data is None:
+        args.amp_data = amp_cfg.get("dataset_path")
+
+    # Quick verify mode (override everything)
     if args.verify:
-        args.iterations = 10
-        args.num_envs = 4
+        quick_cfg = training_config.get("quick_verify", {})
+        quick_trainer = quick_cfg.get("trainer", {})
+        args.iterations = quick_trainer.get("iterations", 10)
+        args.num_envs = quick_trainer.get("num_envs", 4)
         args.log_interval = 1
         print("=" * 60)
         print("VERIFICATION MODE")
@@ -488,10 +535,15 @@ def main():
     print("WildRobot Training")
     print(f"{'=' * 60}")
     print(f"  Mode: {'Custom AMP+PPO' if args.use_custom_loop else 'Brax PPO'}")
+    print(f"  Config: {config_path}")
     print(f"  Iterations: {args.iterations}")
     print(f"  Environments: {args.num_envs}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Seed: {args.seed}")
+    if args.use_custom_loop:
+        print(f"  AMP weight: {args.amp_weight}")
+        print(f"  AMP data: {args.amp_data}")
+    print(f"  Checkpoint dir: {args.checkpoint_dir}")
     print(f"{'=' * 60}\n")
 
     start_time = time.time()

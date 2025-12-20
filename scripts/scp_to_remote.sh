@@ -26,9 +26,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Get script directory (wildrobot root)
+# Get script directory and move to wildrobot root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 sync_file() {
     local FILE="$1"
@@ -62,14 +62,14 @@ sync_file() {
 sync_data() {
     echo -e "\n${YELLOW}=== Syncing Data Files ===${NC}\n"
 
-    # Motion data (retargeted)
+    # Motion data (retargeted) - in assets/motions
     if [ -d "assets/motions" ]; then
         sync_file "assets/motions"
     fi
 
-    # AMP formatted data
-    if [ -d "data/amp" ]; then
-        sync_file "data/amp"
+    # AMP formatted data - in playground_amp/data
+    if [ -d "playground_amp/data" ]; then
+        sync_file "playground_amp/data"
     fi
 
     echo -e "\n${GREEN}✓ Data sync complete${NC}"

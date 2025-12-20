@@ -28,9 +28,9 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Get script directory (wildrobot root)
+# Get script directory and move to wildrobot root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 list_checkpoints() {
     echo -e "\n${YELLOW}=== Available Checkpoints on Remote ===${NC}\n"
