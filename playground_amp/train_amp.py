@@ -198,10 +198,21 @@ def parse_args():
         help="Weight for AMP reward (custom loop only)",
     )
     parser.add_argument(
+        "--amp-data",
+        type=str,
+        default=None,
+        help="Path to AMP reference motion dataset (.pkl file)",
+    )
+    parser.add_argument(
         "--disc-lr",
         type=float,
         default=1e-4,
         help="Discriminator learning rate (custom loop only)",
+    )
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable AMP (pure PPO training)",
     )
 
     # Logging and checkpoints
@@ -376,11 +387,11 @@ def train_with_custom_loop(args):
         gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
         # AMP discriminator architecture
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
-        # Reference motion
+        # Reference motion (CLI override takes precedence)
         ref_buffer_size=amp_cfg.get("ref_buffer_size", 1000),
         ref_seq_len=amp_cfg.get("ref_seq_len", 32),
         ref_motion_mode=amp_cfg.get("ref_motion_mode", "walking"),
-        ref_motion_path=amp_cfg.get("dataset_path"),
+        ref_motion_path=args.amp_data or amp_cfg.get("dataset_path"),
         # Feature normalization
         normalize_amp_features=amp_cfg.get("normalize_features", True),
         # Training
