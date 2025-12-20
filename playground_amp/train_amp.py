@@ -5,26 +5,26 @@ This script provides a command-line interface for training a walking policy
 using PPO with Adversarial Motion Priors (AMP) for natural motion learning.
 
 Usage:
-    # Basic training (using Brax PPO)
+    # Default training with AMP+PPO (recommended)
     python train_amp.py
 
     # With custom configuration
-    python train_amp.py --num-envs 32 --iterations 5000
-
-    # Training with AMP (custom loop)
-    python train_amp.py --use-custom-loop --amp-weight 1.0
+    python train_amp.py --num-envs 512 --iterations 5000
 
     # Quick smoke test
     python train_amp.py --verify
 
+    # Debug mode: Pure PPO without AMP (Brax trainer)
+    python train_amp.py --debug-brax-ppo
+
 Architecture:
     This script supports two training modes:
 
-    1. Brax PPO (default): Uses Brax's battle-tested PPO trainer with
-       mujoco_playground wrapper for automatic Brax compatibility.
+    1. AMP+PPO (default): Uses custom training loop that integrates AMP
+       discriminator for natural motion learning from reference data.
 
-    2. Custom AMP+PPO loop (--use-custom-loop): Uses our custom training
-       loop that integrates AMP discriminator naturally.
+    2. Brax PPO (--debug-brax-ppo): Uses Brax's PPO trainer without AMP.
+       For debugging and comparison only.
 """
 
 from __future__ import annotations
@@ -194,11 +194,11 @@ def parse_args():
         help="Entropy bonus coefficient (default from config)",
     )
 
-    # Training mode
+    # Training mode - AMP+PPO is default, Brax PPO is for debugging
     parser.add_argument(
-        "--use-custom-loop",
+        "--debug-brax-ppo",
         action="store_true",
-        help="Use custom AMP+PPO training loop instead of Brax PPO",
+        help="Use Brax PPO trainer without AMP (for debugging only)",
     )
 
     # AMP configuration (only for custom loop)
@@ -531,16 +531,19 @@ def main():
         print("Running quick smoke test")
         print("=" * 60)
 
+    # Determine training mode
+    use_amp = not args.debug_brax_ppo and not args.no_amp
+
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
     print(f"{'=' * 60}")
-    print(f"  Mode: {'Custom AMP+PPO' if args.use_custom_loop else 'Brax PPO'}")
+    print(f"  Mode: {'AMP+PPO (custom loop)' if use_amp else 'Brax PPO (debug)'}")
     print(f"  Config: {config_path}")
     print(f"  Iterations: {args.iterations}")
     print(f"  Environments: {args.num_envs}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Seed: {args.seed}")
-    if args.use_custom_loop:
+    if use_amp:
         print(f"  AMP weight: {args.amp_weight}")
         print(f"  AMP data: {args.amp_data}")
     print(f"  Checkpoint dir: {args.checkpoint_dir}")
@@ -549,7 +552,7 @@ def main():
     start_time = time.time()
 
     try:
-        if args.use_custom_loop:
+        if use_amp:
             train_with_custom_loop(args)
         else:
             train_with_brax_ppo(args)
