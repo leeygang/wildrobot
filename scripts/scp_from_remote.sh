@@ -1,29 +1,24 @@
 #!/bin/bash
 
-# Sync wildrobot files from Ubuntu GPU machine (linux-pc.local) to Mac
+# Sync wildrobot files from Ubuntu GPU machine to Mac
 #
 # Usage:
-#   ./scp_from_remote.sh <filename>           # Copy single file/directory
-#   ./scp_from_remote.sh --checkpoints        # List available checkpoints
-#   ./scp_from_remote.sh --latest             # Copy latest checkpoint
-#   ./scp_from_remote.sh <checkpoint_name>    # Copy specific checkpoint folder
-#   ./scp_from_remote.sh --wandb-runs         # List available W&B runs
-#   ./scp_from_remote.sh --wandb <run_name>   # Copy specific W&B run folder
+#   ./scp_from_remote.sh [--public] <filename>           # Copy single file/directory
+#   ./scp_from_remote.sh [--public] --checkpoints        # List available checkpoints
+#   ./scp_from_remote.sh [--public] --latest             # Copy latest checkpoint
+#   ./scp_from_remote.sh [--public] <checkpoint_name>    # Copy specific checkpoint folder
+#   ./scp_from_remote.sh [--public] --wandb-runs         # List available W&B runs
+#   ./scp_from_remote.sh [--public] --wandb <run_name>   # Copy specific W&B run folder
+#
+# Options:
+#   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
 #
 # Examples:
-#   ./scp_from_remote.sh checkpoints/wildrobot/final_amp_policy.pkl
-#   ./scp_from_remote.sh videos/policy.mp4
-#   ./scp_from_remote.sh --latest
-#   ./scp_from_remote.sh wildrobot_amp_20251220-180000
-#   ./scp_from_remote.sh --wandb-runs
+#   ./scp_from_remote.sh --public --checkpoints
+#   ./scp_from_remote.sh --public --latest
 #   ./scp_from_remote.sh --wandb run-20251220_183447-gef6ixl2
 
 set -e
-
-# Remote destination
-REMOTE_USER="leeygang"
-REMOTE_HOST="linux-pc.local"
-REMOTE_BASE="/home/leeygang/projects/wildrobot"
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,6 +26,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Remote destination
+REMOTE_USER="leeygang"
+REMOTE_HOST="linux-pc.local"  # Default
+REMOTE_BASE="/home/leeygang/projects/wildrobot"
+
+# Parse --public option
+if [[ "$1" == "--public" ]]; then
+    if [ -z "$LINUX_PUBLIC_IP" ]; then
+        echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
+        echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
+        exit 1
+    fi
+    REMOTE_HOST="$LINUX_PUBLIC_IP"
+    shift
+fi
+
+echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
 
 # Get script directory and move to wildrobot root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,30 +1,46 @@
 #!/bin/bash
 
-# Sync wildrobot files from Mac to Ubuntu GPU machine (linux-pc.local)
+# Sync wildrobot files from Mac to Ubuntu GPU machine
 #
 # Usage:
-#   ./scp_to_remote.sh <filename>           # Sync single file/directory
-#   ./scp_to_remote.sh --all                # Sync all essential training files
-#   ./scp_to_remote.sh --data               # Sync only data files (motions, AMP)
-#   ./scp_to_remote.sh --code               # Sync only code files
+#   ./scp_to_remote.sh [--public] <filename>    # Sync single file/directory
+#   ./scp_to_remote.sh [--public] --all         # Sync all essential training files
+#   ./scp_to_remote.sh [--public] --data        # Sync only data files (motions, AMP)
+#   ./scp_to_remote.sh [--public] --code        # Sync only code files
+#
+# Options:
+#   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
 #
 # Examples:
-#   ./scp_to_remote.sh playground_amp/train_amp.py
-#   ./scp_to_remote.sh data/amp/walking_motions_merged.pkl
-#   ./scp_to_remote.sh --all
+#   ./scp_to_remote.sh --public --code
+#   ./scp_to_remote.sh --public playground_amp/train_amp.py
+#   ./scp_to_remote.sh --all                    # Uses linux-pc.local
 
 set -e
-
-# Remote destination
-REMOTE_USER="leeygang"
-REMOTE_HOST="linux-pc.local"
-REMOTE_BASE="~/projects/wildrobot"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# Remote destination
+REMOTE_USER="leeygang"
+REMOTE_HOST="linux-pc.local"  # Default
+REMOTE_BASE="~/projects/wildrobot"
+
+# Parse --public option
+if [[ "$1" == "--public" ]]; then
+    if [ -z "$LINUX_PUBLIC_IP" ]; then
+        echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
+        echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
+        exit 1
+    fi
+    REMOTE_HOST="$LINUX_PUBLIC_IP"
+    shift
+fi
+
+echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
 
 # Get script directory and move to wildrobot root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
