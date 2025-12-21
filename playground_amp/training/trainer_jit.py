@@ -98,9 +98,8 @@ class AMPPPOConfigJit:
     disc_updates_per_iter: int
     disc_batch_size: int
     gradient_penalty_weight: float
-    disc_input_noise_std: float = 0.0  # Gaussian noise std for discriminator inputs
     disc_hidden_dims: Tuple[int, ...]
-    label_smoothing: float = 0.1  # Label smoothing for discriminator (prevents mode collapse)
+    label_smoothing: float  # Label smoothing for discriminator (prevents mode collapse)
 
     # Training
     total_iterations: int
@@ -368,7 +367,6 @@ def train_discriminator_scan(
     batch_size: int,
     gradient_penalty_weight: float,
     label_smoothing: float = 0.1,
-    input_noise_std: float = 0.0,
 ) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
     """Train discriminator using jax.lax.scan.
 
@@ -413,7 +411,6 @@ def train_discriminator_scan(
                 rng_key=loss_rng,
                 gradient_penalty_weight=gradient_penalty_weight,
                 label_smoothing=label_smoothing,
-                input_noise_std=input_noise_std,
             )
 
         (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -631,7 +628,6 @@ def make_train_iteration_fn(
             batch_size=config.disc_batch_size,
             gradient_penalty_weight=config.gradient_penalty_weight,
             label_smoothing=config.label_smoothing,
-            input_noise_std=config.disc_input_noise_std,
         )
 
         # ====================================================================
