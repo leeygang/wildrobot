@@ -562,10 +562,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         weights = self._reward_weights
 
-        # Forward velocity tracking
+        # Forward velocity tracking (sharper exponential to penalize standing still)
         forward_vel = self.get_local_linvel(data)[0]
         vel_error = jp.abs(forward_vel - velocity_cmd)
-        forward_reward = jp.exp(-vel_error * 2.0)  # Exponential reward
+        # TUNED: 2.0 → 4.0 (standing still: exp(-0.7*4)=0.06 vs exp(-0.7*2)=0.25)
+        forward_reward = jp.exp(-vel_error * 4.0)
+
+        # Forward movement bonus (incentivize any forward motion)
+        # Clips negative velocity to 0, caps at 1.0 m/s
+        forward_bonus = jp.clip(forward_vel, 0.0, 1.0) * 0.3
 
         # Healthy reward (staying upright)
         height = self.get_floating_base_qpos(data.qpos)[2]
@@ -590,7 +595,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         w_joint_vel = weights.joint_velocity
 
         total = (
-            w_forward * forward_reward
+            w_forward * (forward_reward + forward_bonus)  # Include movement bonus
             + w_healthy * healthy
             + w_action * action_rate
             + w_joint_vel * joint_vel_penalty

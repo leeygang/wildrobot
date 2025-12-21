@@ -205,11 +205,6 @@ def parse_args():
         action="store_true",
         help="Use Brax PPO trainer without AMP (for debugging only)",
     )
-    parser.add_argument(
-        "--legacy",
-        action="store_true",
-        help="Use legacy Python-loop trainer (slow, for debugging)",
-    )
 
     # AMP configuration (only for custom loop)
     parser.add_argument(
@@ -428,6 +423,7 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
         label_smoothing=amp_cfg.get("label_smoothing", 0.1),
+        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
         # Training
         total_iterations=args.iterations,
         seed=args.seed,
@@ -632,198 +628,6 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     return final_state
 
 
-def train_with_custom_loop(args, wandb_tracker: Optional[WandbTracker] = None):
-    """Train using custom AMP+PPO training loop.
-
-    Use this when you need AMP discriminator integration.
-
-    Args:
-        args: Parsed command-line arguments
-        wandb_tracker: Optional W&B tracker for logging
-    """
-    # Import JAX here to avoid potential issues with module-level imports
-    import jax
-    import jax.numpy as jnp
-
-    # Check JAX backend and devices
-    print(f"\n{'=' * 60}")
-    print("JAX Configuration")
-    print(f"{'=' * 60}")
-    print(f"  Backend: {jax.default_backend()}")
-    print(f"  Devices: {jax.devices()}")
-    if jax.default_backend() != "gpu":
-        print("  ⚠️  WARNING: JAX is NOT using GPU!")
-        print("  Install JAX with CUDA: pip install jax[cuda12]")
-    else:
-        print("  ✓ GPU detected")
-    print(f"{'=' * 60}\n")
-
-    from playground_amp.envs.wildrobot_env import WildRobotEnv
-    from playground_amp.training.trainer import (
-        AMPPPOConfig,
-        AMPPPOState,
-        train_amp_ppo,
-        TrainingMetrics,
-    )
-
-    # Load training config (use args.config if provided, else default)
-    config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
-    training_cfg = load_training_config(config_path)
-    training_config = training_cfg.raw_config
-    trainer_cfg = training_config.get("trainer", {})
-    networks_cfg = training_config.get("networks", {})
-    amp_cfg = training_config.get("amp", {})
-
-    # Create environment
-    print("Creating WildRobotEnv...")
-    env = create_env()
-    print(
-        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
-    )
-
-    # Create configuration from YAML + CLI overrides
-    config = AMPPPOConfig(
-        # Environment
-        obs_dim=env.observation_size,
-        action_dim=env.action_size,
-        num_envs=args.num_envs,
-        num_steps=trainer_cfg.get("rollout_steps", 10),
-        max_episode_steps=training_config.get("env", {}).get("max_episode_steps", 500),
-        # PPO hyperparameters
-        learning_rate=args.lr,
-        gamma=args.gamma,
-        gae_lambda=trainer_cfg.get("gae_lambda", 0.95),
-        clip_epsilon=args.clip_epsilon,
-        value_loss_coef=trainer_cfg.get("value_loss_coef", 0.5),
-        entropy_coef=args.entropy_coef,
-        max_grad_norm=trainer_cfg.get("max_grad_norm", 0.5),
-        # PPO training
-        num_minibatches=trainer_cfg.get("num_minibatches", 4),
-        update_epochs=trainer_cfg.get("epochs", 4),
-        # Network architecture (from YAML)
-        policy_hidden_dims=tuple(
-            networks_cfg.get("policy_hidden_dims", [512, 256, 128])
-        ),
-        value_hidden_dims=tuple(networks_cfg.get("value_hidden_dims", [512, 256, 128])),
-        log_std_min=networks_cfg.get("log_std_min", -20.0),
-        log_std_max=networks_cfg.get("log_std_max", 2.0),
-        # AMP configuration
-        enable_amp=True,
-        amp_reward_weight=args.amp_weight,
-        disc_learning_rate=args.disc_lr,
-        disc_updates_per_iter=amp_cfg.get("update_steps", 2),
-        disc_batch_size=getattr(args, '_quick_verify_disc_batch_size', None) or amp_cfg.get("batch_size", 512),
-        gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
-        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
-        # AMP discriminator architecture
-        disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
-        # Reference motion (CLI override takes precedence)
-        ref_buffer_size=amp_cfg.get("ref_buffer_size", 1000),
-        ref_seq_len=amp_cfg.get("ref_seq_len", 32),
-        ref_motion_mode=amp_cfg.get("ref_motion_mode", "walking"),
-        ref_motion_path=args.amp_data or amp_cfg.get("dataset_path"),
-        # Feature normalization
-        normalize_amp_features=amp_cfg.get("normalize_features", True),
-        # Training
-        total_iterations=args.iterations,
-        seed=args.seed,
-        # Logging
-        log_interval=args.log_interval,
-        save_interval=trainer_cfg.get("save_interval_updates", 100),
-        checkpoint_dir=args.checkpoint_dir,
-    )
-
-    # Create vmapped environment functions
-    def step_fn(state, action):
-        new_state = env.step(state, action)
-        return new_state, new_state.obs, new_state.reward, new_state.done, {}
-
-    def reset_fn(rng):
-        return env.reset(rng)
-
-    vmapped_step = jax.vmap(step_fn, in_axes=(0, 0))
-    vmapped_reset = jax.vmap(reset_fn, in_axes=(0,))
-
-    def batched_step_fn(states, actions):
-        new_states, obs, rewards, dones, _ = vmapped_step(states, actions)
-        return new_states, obs, rewards, dones, {}
-
-    def batched_reset_fn(rng):
-        rngs = jax.random.split(rng, config.num_envs)
-        return vmapped_reset(rngs)
-
-    print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
-
-    # Training callback with W&B logging
-    def callback(iteration: int, state, metrics):
-        # Calculate total steps
-        total_steps = int(state.total_steps)
-
-        # Log to W&B
-        if wandb_tracker is not None:
-            wandb_metrics = create_training_metrics(
-                iteration=iteration,
-                episode_reward=metrics.episode_reward,
-                ppo_loss=metrics.total_loss,
-                policy_loss=metrics.policy_loss,
-                value_loss=metrics.value_loss,
-                entropy_loss=metrics.entropy_loss,
-                disc_loss=metrics.disc_loss,
-                disc_accuracy=metrics.disc_accuracy,
-                amp_reward_mean=metrics.amp_reward_mean,
-                amp_reward_std=metrics.amp_reward_std,
-                clip_fraction=metrics.clip_fraction,
-                approx_kl=metrics.approx_kl,
-                env_steps_per_sec=metrics.env_steps_per_sec,
-            )
-            wandb_tracker.log(wandb_metrics, step=total_steps)
-
-        # Console logging at log_interval
-        if iteration % config.log_interval == 0:
-            print(
-                f"{total_steps:>10}: "
-                f"reward={metrics.episode_reward:>8.2f} | "
-                f"amp_reward={metrics.amp_reward_mean:>7.4f} | "
-                f"disc_acc={metrics.disc_accuracy:>5.2f} | "
-                f"steps/s={metrics.env_steps_per_sec:>6.0f}"
-            )
-
-    # Train
-    print("\n" + "=" * 60)
-    print("Starting custom AMP+PPO training...")
-    print("=" * 60 + "\n")
-
-    final_state = train_amp_ppo(
-        env_step_fn=batched_step_fn,
-        env_reset_fn=batched_reset_fn,
-        config=config,
-        callback=callback,
-    )
-
-    print("\n" + "=" * 60)
-    print("Training complete!")
-    print(f"Total steps: {final_state.total_steps}")
-    print("=" * 60)
-
-    # Save checkpoint
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(args.checkpoint_dir, "final_amp_policy.pkl")
-
-    checkpoint_data = {
-        "policy_params": jax.device_get(final_state.policy_params),
-        "value_params": jax.device_get(final_state.value_params),
-        "disc_params": jax.device_get(final_state.disc_params),
-        "config": config,
-    }
-
-    with open(checkpoint_path, "wb") as f:
-        pickle.dump(checkpoint_data, f)
-
-    print(f"✓ Policy saved to: {checkpoint_path}")
-
-    return final_state
-
-
 def main():
     """Main entry point."""
     args = parse_args()
@@ -890,15 +694,12 @@ def main():
 
     # Determine training mode
     use_amp = not args.debug_brax_ppo and not args.no_amp
-    use_jit = use_amp and not args.legacy
 
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
     print(f"{'=' * 60}")
-    if use_jit:
+    if use_amp:
         mode_str = "AMP+PPO (JIT-compiled - FAST)"
-    elif use_amp:
-        mode_str = "AMP+PPO (legacy Python loop - SLOW)"
     else:
         mode_str = "Brax PPO (debug)"
     print(f"  Mode: {mode_str}")
@@ -949,10 +750,8 @@ def main():
         define_wandb_topline_metrics()
 
     try:
-        if use_jit:
+        if use_amp:
             train_with_jit_loop(args, wandb_tracker=wandb_tracker)
-        elif use_amp:
-            train_with_custom_loop(args, wandb_tracker=wandb_tracker)
         else:
             train_with_brax_ppo(args)
 

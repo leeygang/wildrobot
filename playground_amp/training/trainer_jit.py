@@ -100,6 +100,7 @@ class AMPPPOConfigJit:
     gradient_penalty_weight: float
     disc_hidden_dims: Tuple[int, ...]
     label_smoothing: float  # Label smoothing for discriminator (prevents mode collapse)
+    disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 
     # Training
     total_iterations: int
@@ -367,6 +368,7 @@ def train_discriminator_scan(
     batch_size: int,
     gradient_penalty_weight: float,
     label_smoothing: float = 0.1,
+    input_noise_std: float = 0.0,
 ) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
     """Train discriminator using jax.lax.scan.
 
@@ -382,6 +384,7 @@ def train_discriminator_scan(
         batch_size: Batch size per update
         gradient_penalty_weight: WGAN-GP penalty weight
         label_smoothing: Label smoothing amount (0.1 = use 0.9/0.1 instead of 1/0)
+        input_noise_std: Gaussian noise std to add to inputs (hides simulation artifacts)
 
     Returns:
         (new_params, new_opt_state, mean_loss, mean_accuracy)
@@ -391,7 +394,7 @@ def train_discriminator_scan(
 
     def disc_update_step(carry, rng):
         params, opt_state = carry
-        rng, agent_rng, expert_rng, loss_rng = jax.random.split(rng, 4)
+        rng, agent_rng, expert_rng, loss_rng, noise_rng1, noise_rng2 = jax.random.split(rng, 6)
 
         # Sample agent features
         agent_indices = jax.random.choice(agent_rng, num_agent_samples, shape=(batch_size,), replace=True)
@@ -400,6 +403,11 @@ def train_discriminator_scan(
         # Sample expert features
         expert_indices = jax.random.choice(expert_rng, num_ref_samples, shape=(batch_size,), replace=True)
         expert_batch = ref_buffer_data[expert_indices]
+
+        # Add input noise to both batches (hides simulation artifacts)
+        if input_noise_std > 0:
+            agent_batch = agent_batch + jax.random.normal(noise_rng1, agent_batch.shape) * input_noise_std
+            expert_batch = expert_batch + jax.random.normal(noise_rng2, expert_batch.shape) * input_noise_std
 
         # Compute loss and gradients
         def loss_fn(p):
@@ -628,6 +636,7 @@ def make_train_iteration_fn(
             batch_size=config.disc_batch_size,
             gradient_penalty_weight=config.gradient_penalty_weight,
             label_smoothing=config.label_smoothing,
+            input_noise_std=config.disc_input_noise_std,
         )
 
         # ====================================================================
@@ -714,12 +723,9 @@ def make_train_iteration_fn(
         forward_velocity = jnp.mean(new_env_state.metrics["forward_velocity"])
         robot_height = jnp.mean(new_env_state.metrics["height"])
 
-        # Episode length: count steps where done=0 (not terminated)
-        # transitions.done shape: (num_steps, num_envs)
-        # done=1.0 means terminated, done=0.0 means continuing
-        # Count continuing steps per env, then average across envs
-        steps_alive = jnp.sum(1.0 - transitions.done, axis=0)  # per env
-        episode_length = jnp.mean(steps_alive)
+        # Episode length: actual step count since last reset (from environment)
+        # This is the TRUE episode length, max = max_episode_steps (500)
+        episode_length = jnp.mean(new_env_state.info["step_count"])
 
         new_state = TrainingState(
             policy_params=new_policy_params,

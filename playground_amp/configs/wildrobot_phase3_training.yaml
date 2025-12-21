@@ -1,295 +1,120 @@
-# Phase 3: RL Training (PPO + AMP) configuration
-# Purpose: canonical training-stage config for Phase III (large-scale RL + AMP)
+# WildRobot Training Configuration (PPO + AMP)
 #
 # Usage:
 #   uv run python playground_amp/train_amp.py
-#   uv run python playground_amp/train_amp.py --config configs/wildrobot_phase3_training.yaml
 #
-# CLI arguments override config file values when provided.
+# Total steps = iterations × num_envs × rollout_steps
 
-stage: Phase3
-
-# Environment configuration
+# =============================================================================
+# Environment
+# =============================================================================
 env:
-  # Simulation timing
-  ctrl_dt: 0.02      # Control frequency: 50Hz
-  sim_dt: 0.002      # Simulation frequency: 500Hz (10 substeps per control)
+  ctrl_dt: 0.02          # Control: 50Hz
+  sim_dt: 0.002          # Simulation: 500Hz (10 substeps)
 
-  # Robot parameters
-  target_height: 0.45    # Target standing height (meters)
-  min_height: 0.2        # Termination: too low
-  max_height: 0.7        # Termination: too high
+  # Height bounds (termination + healthy reward)
+  target_height: 0.45
+  min_height: 0.2
+  max_height: 0.7
 
   # Velocity command range (m/s)
   min_velocity: 0.5
   max_velocity: 1.0
 
-  # Action filtering (low-pass filter for smooth control)
+  # Action filtering
   use_action_filter: true
-  action_filter_alpha: 0.7   # alpha * prev + (1-alpha) * current
+  action_filter_alpha: 0.7
 
-  # Episode configuration
+  # Max steps per episode before forced reset
   max_episode_steps: 500
 
-# Trainer configuration
+# =============================================================================
+# Training
+# =============================================================================
 trainer:
-  # Number of parallel environments
-  # GPU Memory Guide (for WildRobot 9-DOF):
-  #   RTX 5070 (12GB): 1024
-  #   RTX 3080 (10GB): 512-1024
-  #   RTX 3090 (24GB): 2048-4096
-  #   RTX 4090 (24GB): 4096-8192
-  # Higher = better GPU utilization, but more memory
-  num_envs: 1024
+  num_envs: 1024         # Parallel environments (GPU memory dependent)
+  rollout_steps: 128     # Steps per env before PPO update (2.56s at 50Hz)
+  iterations: 3000       # Total policy updates
 
-  # Rollout steps per environment before policy update
-  # Higher = more data per update, better sample efficiency
-  # Memory: num_envs * rollout_steps * obs_dim * sizeof(float32)
-  rollout_steps: 20
-
-  # Total training iterations
-  iterations: 3000
-
-  # Learning rate
+  # PPO hyperparameters
   lr: 3e-4
-
-  # Discount factor
   gamma: 0.99
-
-  # GAE lambda
   gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  epochs: 4              # PPO epochs per iteration
+  num_minibatches: 8     # Minibatch size = (num_envs × rollout_steps) / num_minibatches
 
-  # Random seed
+  # Logging
+  log_interval: 10
+  checkpoint_dir: playground_amp/checkpoints
   seed: 42
 
-  # PPO clipping parameter
-  clip_epsilon: 0.2
-
-  # Entropy coefficient (exploration bonus)
-  entropy_coef: 0.01
-
-  # Value loss coefficient
-  value_loss_coef: 0.5
-
-  # Gradient clipping
-  max_grad_norm: 0.5
-
-  # PPO update epochs per iteration
-  epochs: 4
-
-  # Number of minibatches per epoch
-  # Higher = smaller minibatch, less memory but more updates
-  # Minibatch size = (num_envs * rollout_steps) / num_minibatches
-  # With 2048 envs * 20 steps / 8 = 5120 samples per minibatch
-  num_minibatches: 8
-
-  # Checkpoint directory
-  checkpoint_dir: playground_amp/checkpoints
-
-  # Save checkpoint every N iterations
-  save_interval: 100
-
-  # Log metrics every N iterations
-  log_interval: 10
-
-# Network architecture
+# =============================================================================
+# Networks
+# =============================================================================
 networks:
   policy_hidden_dims: [512, 256, 128]
   value_hidden_dims: [512, 256, 128]
-  log_std_min: -20.0
-  log_std_max: 2.0
 
-# Control settings
-control:
-  control_freq: 50
-  action_type: pd_target
-
-# Observation settings
-observations:
-  noise_std: 0.02
-
-# Reward weights
-# NOTE: tracking_lin_vel increased to help policy learn to move before AMP kicks in
+# =============================================================================
+# Reward Weights
+# =============================================================================
 reward_weights:
-  tracking_lin_vel: 2.0
-  tracking_ang_vel: 0.5
-  amp_style: 1.0          # Equal weight to task reward (2024 SoTA)
-  torque_penalty: -0.05
-  action_rate: -0.01
-  dof_pos_limits: -0.1
-  base_height: 0.3
+  tracking_lin_vel: 5.0  # Forward velocity tracking (increased to force movement)
+  base_height: 0.3       # Healthy reward (mapped to 'healthy' in env)
+  action_rate: -0.01     # Action smoothness penalty
 
-# Domain randomization (per-episode sampling ranges)
-domain_randomization:
-  friction: [0.4, 1.25]
-  mass_scale: [0.85, 1.15]
-  link_mass_scale: [0.8, 1.2]
-  push_force: [0.0, 10.0]
-  motor_strength: [0.9, 1.1]
-  joint_damping: [0.5, 1.5]
-  control_latency: [0.0, 0.02]
-
-# AMP (Adversarial Motion Prior) settings
+# =============================================================================
+# AMP (Adversarial Motion Prior)
+# =============================================================================
 amp:
-  # Enable/disable AMP
-  enabled: true
-
-  # AMP reward weight
-  # TUNED: 1.0 → 0.1 (warm-start: let policy learn basic locomotion first)
-  # Increase to 0.5-1.0 after robot can walk (around iteration 500-1000)
-  weight: 0.1
-
-  # Discriminator architecture
-  # TUNED: [1024, 512, 256] → [256, 128] (smaller = learns general style, not memorizing)
-  discriminator_hidden: [256, 128]
-
-  # Path to reference motion dataset (relative to project root)
-  # Generated by: cd ~/projects/GMR && uv run python scripts/batch_convert_to_amp.py
+  weight: 0.1                    # AMP reward weight (low at start, increase later)
   dataset_path: playground_amp/data/walking_motions_merged.pkl
 
-  # Reference motion mode: 'file' (load from dataset_path) or 'synthetic' (generated)
-  ref_motion_mode: file
-
-  # Reference motion buffer size
-  ref_buffer_size: 2000
-
-  # Sequence length for AMP transitions
-  ref_seq_len: 32
-
-  # ==========================================================================
-  # Discriminator Training Settings (tuned to prevent mode collapse)
-  #
-  # Problem: If disc learns too fast, it reaches 100% accuracy and policy
-  #          gets no gradient signal (AMP reward stays deeply negative).
-  #
-  # Solution: Slow down discriminator, increase regularization.
-  # Target disc_accuracy: 0.4-0.7 (NOT 100%!)
-  # ==========================================================================
-
-  # Discriminator learning rate
-  # TUNED: 1e-4 → 1e-5 → 5e-6 (20x slower to prevent mode collapse)
-  disc_lr: 5e-6
-
-  # Discriminator batch size
-  # TUNED: 2048 → 512 → 256 (smaller batches = more noise = implicit regularization)
+  # Discriminator
+  discriminator_hidden: [256, 128]
+  disc_lr: 5e-6                  # Very slow (prevents mode collapse)
   batch_size: 256
+  update_steps: 4                # Disc updates per policy iteration
+  gradient_penalty_weight: 50.0  # WGAN-GP regularization
+  label_smoothing: 0.2           # Soft labels (0.8/0.2 instead of 1/0)
+  disc_input_noise_std: 0.05     # Input noise (hides simulation artifacts)
 
-  # Discriminator updates per policy iteration
-  # TUNED: 1 → 4 (update disc every 4 policy iters = policy catches up)
-  # This means: for every 4 policy updates, discriminator updates once
-  update_steps: 4
-
-  # WGAN-GP gradient penalty weight
-  # TUNED: 15.0 → 50.0 (much stronger regularization to keep disc gradients smooth)
-  gradient_penalty_weight: 50.0
-
-  # Label smoothing for discriminator (prevents overconfidence/mode collapse)
-  # Real labels: 1.0 → 0.9, Fake labels: 0.0 → 0.1
-  # This prevents discriminator from becoming too confident
-  label_smoothing: 0.1
-
-  # Input noise for discriminator (prevents overfitting to high-freq jitter)
-  # ADDED: Gaussian noise std applied to both real and fake observations
-  disc_input_noise_std: 0.02
-
-  # Normalize AMP features
+  # Reference motion
+  ref_seq_len: 16                # Must be < rollout_steps
   normalize_features: true
 
-# Episode termination thresholds
-termination:
-  min_base_height: 0.25
-  max_pitch_roll_rad: 0.785398  # 45 degrees
-
-# Weights & Biases (W&B) experiment tracking
+# =============================================================================
+# W&B Logging
+# =============================================================================
 wandb:
-  # Enable/disable W&B logging
   enabled: true
-
-  # W&B project name (appears in dashboard)
   project: wildrobot-amp
-
-  # W&B entity (team/username, null for personal account)
-  entity: null
-
-  # Run name (auto-generated if null)
-  name: null
-
-  # Tags for filtering runs
-  tags:
-    - ppo
-    - amp
-
-  # W&B mode: "online" (sync to cloud), "offline" (local only), "disabled"
   mode: online
+  tags: [ppo, amp]
 
-  # Log frequency (log every N iterations)
-  log_frequency: 10
-
-  # Local log backup directory
-  log_dir: logs
-
-# Video generation settings (evaluation rollouts after training)
+# =============================================================================
+# Video (after training)
+# =============================================================================
 video:
-  # Enable/disable video generation after training
   enabled: true
-
-  # Number of evaluation videos to generate
-  num_videos: 1
-
-  # Episode length for evaluation rollouts (steps)
   episode_length: 500
-
-  # Render every N frames (higher = faster, lower quality)
-  render_every: 2
-
-  # Video resolution
   width: 640
   height: 480
-
-  # Frames per second for video output
   fps: 25
 
-  # Upload video to W&B (requires wandb.enabled=true)
-  upload_to_wandb: true
-
-  # Output directory for video files (relative to checkpoint_dir)
-  output_subdir: videos
-
-# Quick-verify settings (for smoke tests) - minimal for fastest possible test
+# =============================================================================
+# Quick Verify (smoke test)
+# =============================================================================
 quick_verify:
   trainer:
-    num_envs: 4       # Minimum vectorized
-    rollout_steps: 8  # Minimum for GAE
-    iterations: 3     # Just 3 iterations to verify loop works
-  env:
-    max_episode_steps: 20  # Very short episodes
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
   amp:
-    batch_size: 16  # Smallest batch (must fit in 4*8=32 agent samples)
+    batch_size: 16
   wandb:
-    enabled: false  # Disable W&B for smoke tests
-
-# GPU memory presets (use with --num-envs CLI override)
-# Uncomment the appropriate section for your GPU:
-#
-# RTX 5070 (12GB) - Balanced:
-#   num_envs: 2048, rollout_steps: 20, batch_size: 2048
-#
-# RTX 5070 (12GB) - Max utilization (if no OOM):
-#   num_envs: 4096, rollout_steps: 10, batch_size: 2048
-#
-# RTX 3090/4090 (24GB):
-#   num_envs: 4096, rollout_steps: 20, batch_size: 4096
-
-notes: |
-  Phase 3 PPO+AMP Training Configuration
-
-  GPU Memory Guide for --num-envs:
-    RTX 5070 (12GB): 512
-    RTX 3080 (10GB): 512-1024
-    RTX 3090 (24GB): 2048-4096
-
-  Training Command:
-    uv run python playground_amp/train_amp.py
-
-  Quick Verify:
-    uv run python playground_amp/train_amp.py --verify
+    enabled: false
