@@ -350,6 +350,19 @@ def train_with_custom_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     import jax
     import jax.numpy as jnp
 
+    # Check JAX backend and devices
+    print(f"\n{'=' * 60}")
+    print("JAX Configuration")
+    print(f"{'=' * 60}")
+    print(f"  Backend: {jax.default_backend()}")
+    print(f"  Devices: {jax.devices()}")
+    if jax.default_backend() != "gpu":
+        print("  ⚠️  WARNING: JAX is NOT using GPU!")
+        print("  Install JAX with CUDA: pip install jax[cuda12]")
+    else:
+        print("  ✓ GPU detected")
+    print(f"{'=' * 60}\n")
+
     from playground_amp.envs.wildrobot_env import WildRobotEnv
     from playground_amp.training.trainer import (
         AMPPPOConfig,
