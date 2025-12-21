@@ -35,12 +35,12 @@ env:
 trainer:
   # Number of parallel environments
   # GPU Memory Guide (for WildRobot 9-DOF):
-  #   RTX 5070 (12GB): 1024-2048
-  #   RTX 3080 (10GB): 1024
-  #   RTX 3090 (24GB): 4096
+  #   RTX 5070 (12GB): 1024
+  #   RTX 3080 (10GB): 512-1024
+  #   RTX 3090 (24GB): 2048-4096
   #   RTX 4090 (24GB): 4096-8192
   # Higher = better GPU utilization, but more memory
-  num_envs: 2048
+  num_envs: 1024
 
   # Rollout steps per environment before policy update
   # Higher = more data per update, better sample efficiency
