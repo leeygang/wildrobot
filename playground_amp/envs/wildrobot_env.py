@@ -302,6 +302,85 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # MjxEnv Interface
     # =========================================================================
 
+    def _make_initial_state(
+        self,
+        qpos: jax.Array,
+        velocity_cmd: jax.Array,
+    ) -> WildRobotEnvState:
+        """Create initial environment state from qpos (shared by reset and auto-reset).
+
+        Args:
+            qpos: Initial joint positions (including floating base)
+            velocity_cmd: Velocity command for this episode
+
+        Returns:
+            Initial WildRobotEnvState
+        """
+        qvel = jp.zeros(self._mj_model.nv)
+
+        # Create MJX data and run forward kinematics
+        data = mjx.make_data(self._mjx_model)
+        data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
+        data = mjx.forward(self._mjx_model, data)
+
+        # Build observation
+        action = jp.zeros(self.action_size)
+        obs = self._get_obs(data, action, velocity_cmd)
+
+        # Initial reward and done
+        reward = jp.zeros(())
+        done = jp.zeros(())
+
+        # Compute actual initial metrics (not zeros)
+        height = self.get_floating_base_qpos(data.qpos)[2]
+
+        # Forward reward: robot is stationary (vel=0), so miss target by velocity_cmd
+        forward_reward = jp.exp(-velocity_cmd * 2.0)
+
+        # Healthy reward: robot is upright at reset
+        healthy_reward = jp.where(
+            (height > self._min_height) & (height < self._max_height),
+            1.0,
+            0.0,
+        )
+
+        # Action rate: no previous action, so no penalty
+        action_rate = jp.zeros(())
+
+        # Compute total reward with weights
+        weights = self._reward_weights
+        total_reward = (
+            weights.forward_velocity * forward_reward
+            + weights.healthy * healthy_reward
+            + weights.action_rate * action_rate
+        )
+
+        metrics = {
+            "velocity_command": velocity_cmd,
+            "height": height,
+            "forward_velocity": jp.zeros(()),  # Robot starts stationary
+            "reward/total": total_reward,
+            "reward/forward": forward_reward,
+            "reward/healthy": healthy_reward,
+            "reward/action_rate": action_rate,
+        }
+
+        # Info
+        info = {
+            "step_count": 0,
+            "prev_action": jp.zeros(self.action_size),
+        }
+
+        return WildRobotEnvState(
+            data=data,
+            obs=obs,
+            reward=reward,
+            done=done,
+            metrics=metrics,
+            info=info,
+            pipeline_state=data,
+        )
+
     def reset(self, rng: jax.Array) -> WildRobotEnvState:
         """Reset environment to initial state.
 
@@ -320,7 +399,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Use initial qpos from model (keyframe or qpos0)
         qpos = self._init_qpos.copy()
-        qvel = jp.zeros(self._mj_model.nv)
 
         # Add small random noise to joint positions (not floating base)
         joint_noise = jax.random.uniform(
@@ -330,55 +408,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._default_joint_qpos + joint_noise
         )
 
-        # Create MJX data and run forward kinematics
-        data = mjx.make_data(self._mjx_model)
-        data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
-        data = mjx.forward(self._mjx_model, data)
-
-        # Build observation
-        obs = self._get_obs(data, jp.zeros(self.action_size), velocity_cmd)
-
-        # Initial reward and done
-        reward = jp.zeros(())
-        done = jp.zeros(())
-
-        # Metrics (all must be JAX arrays for scan compatibility)
-        height = self.get_floating_base_qpos(data.qpos)[2]
-        metrics = {
-            "velocity_command": velocity_cmd,
-            "height": height,
-            "forward_velocity": jp.zeros(()),
-            "reward/total": jp.zeros(()),
-            "reward/forward": jp.zeros(()),
-            "reward/healthy": jp.zeros(()),
-            "reward/action_rate": jp.zeros(()),
-        }
-
-        # Info (can contain Python types)
-        info = {
-            "step_count": 0,
-            "prev_action": jp.zeros(self.action_size),
-        }
-
-        return WildRobotEnvState(
-            data=data,
-            obs=obs,
-            reward=reward,
-            done=done,
-            metrics=metrics,
-            info=info,
-            pipeline_state=data,  # Required for Brax compatibility
-        )
+        return self._make_initial_state(qpos, velocity_cmd)
 
     def step(self, state: WildRobotEnvState, action: jax.Array) -> WildRobotEnvState:
-        """Step environment forward.
+        """Step environment forward with auto-reset on termination.
 
         Args:
             state: Current environment state.
             action: Action to apply (joint position targets).
 
         Returns:
-            New WildRobotEnvState.
+            New WildRobotEnvState. If episode terminated, state is auto-reset
+            but done=True is still returned so the algorithm knows.
         """
         velocity_cmd = state.metrics["velocity_command"]
         step_count = state.info["step_count"]
@@ -412,7 +453,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Check termination
         done = self._get_done(data, step_count + 1)
 
-        # Update metrics
+        # Update metrics (before potential reset)
         height = self.get_floating_base_qpos(data.qpos)[2]
         forward_vel = self.get_local_linvel(data)[0]
 
@@ -430,14 +471,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "prev_action": filtered_action,
         }
 
+        # =================================================================
+        # Auto-reset on termination
+        # When done=True, reset physics state to initial keyframe but keep
+        # done=True so the algorithm knows an episode ended.
+        # =================================================================
+        reset_state = self._make_initial_state(self._init_qpos, velocity_cmd)
+
+        final_data, final_obs, final_metrics, final_info = jax.lax.cond(
+            done > 0.5,
+            lambda: (reset_state.data, reset_state.obs, reset_state.metrics, reset_state.info),
+            lambda: (data, obs, metrics, info),
+        )
+
         return WildRobotEnvState(
-            data=data,
-            obs=obs,
-            reward=reward,
-            done=done,
-            metrics=metrics,
-            info=info,
-            pipeline_state=data,
+            data=final_data,
+            obs=final_obs,
+            reward=reward,  # Keep original reward (from before reset)
+            done=done,      # Keep done=True so algorithm knows episode ended
+            metrics=final_metrics,
+            info=final_info,
+            pipeline_state=final_data,
         )
 
     # =========================================================================
