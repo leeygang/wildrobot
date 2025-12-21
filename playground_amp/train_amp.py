@@ -426,7 +426,9 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         disc_updates_per_iter=amp_cfg.get("update_steps", 2),
         disc_batch_size=amp_cfg.get("batch_size", 2048),
         gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
+        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
+        label_smoothing=amp_cfg.get("label_smoothing", 0.1),
         # Training
         total_iterations=args.iterations,
         seed=args.seed,
@@ -713,6 +715,7 @@ def train_with_custom_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         disc_updates_per_iter=amp_cfg.get("update_steps", 2),
         disc_batch_size=getattr(args, '_quick_verify_disc_batch_size', None) or amp_cfg.get("batch_size", 512),
         gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
+        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
         # AMP discriminator architecture
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
         # Reference motion (CLI override takes precedence)

@@ -92,17 +92,27 @@ def discriminator_loss(
     real_obs,
     fake_obs,
     rng_key,
-    gradient_penalty_weight=5.0
+    gradient_penalty_weight=5.0,
+    label_smoothing=0.1,
+    input_noise_std=0.0,
 ):
-    """Compute discriminator loss with gradient penalty.
+    """Compute discriminator loss with gradient penalty and label smoothing.
 
-    Binary cross-entropy loss:
-    - Real samples should have D(x) → 1
-    - Fake samples should have D(x) → 0
+    Binary cross-entropy loss with label smoothing:
+    - Real samples should have D(x) → (1 - label_smoothing) = 0.9
+    - Fake samples should have D(x) → label_smoothing = 0.1
+
+    Label smoothing prevents discriminator from becoming overconfident,
+    which helps prevent mode collapse in adversarial training.
 
     Gradient penalty (WGAN-GP style):
     - Encourages smooth discriminator
     - Prevents mode collapse
+
+    Input noise (optional):
+    - Adds Gaussian noise to observations before feeding to discriminator
+    - Prevents overfitting to high-frequency jitter unique to simulation
+    - Helps discriminator focus on general motion style
 
     Args:
         params: Discriminator parameters
@@ -111,18 +121,32 @@ def discriminator_loss(
         fake_obs: Policy rollout observations (batch, obs_dim)
         rng_key: JAX random key
         gradient_penalty_weight: Weight for gradient penalty term
+        label_smoothing: Amount of label smoothing (0.0 = no smoothing)
+        input_noise_std: Std of Gaussian noise to add to inputs (0.0 = no noise)
 
     Returns:
         (loss, metrics): Total loss and dict of metrics
     """
+    # Add input noise to prevent discriminator overfitting to high-freq jitter
+    if input_noise_std > 0.0:
+        rng_key, noise_key1, noise_key2 = jax.random.split(rng_key, 3)
+        real_noise = jax.random.normal(noise_key1, real_obs.shape) * input_noise_std
+        fake_noise = jax.random.normal(noise_key2, fake_obs.shape) * input_noise_std
+        real_obs = real_obs + real_noise
+        fake_obs = fake_obs + fake_noise
+
     # Forward pass on real and fake samples
     real_logits = model.apply(params, real_obs, training=True)
     fake_logits = model.apply(params, fake_obs, training=True)
 
-    # Binary cross-entropy loss
-    # Real samples: target = 1, Fake samples: target = 0
-    real_loss = optax.sigmoid_binary_cross_entropy(real_logits, jnp.ones_like(real_logits))
-    fake_loss = optax.sigmoid_binary_cross_entropy(fake_logits, jnp.zeros_like(fake_logits))
+    # Binary cross-entropy loss with label smoothing
+    # Real samples: target = 1 - smoothing (e.g., 0.9)
+    # Fake samples: target = smoothing (e.g., 0.1)
+    real_targets = jnp.ones_like(real_logits) * (1.0 - label_smoothing)
+    fake_targets = jnp.ones_like(fake_logits) * label_smoothing
+
+    real_loss = optax.sigmoid_binary_cross_entropy(real_logits, real_targets)
+    fake_loss = optax.sigmoid_binary_cross_entropy(fake_logits, fake_targets)
     bce_loss = jnp.mean(real_loss) + jnp.mean(fake_loss)
 
     # Gradient penalty (on interpolated samples)
@@ -140,7 +164,7 @@ def discriminator_loss(
     # Total loss
     total_loss = bce_loss + gradient_penalty_weight * gradient_penalty
 
-    # Metrics for logging
+    # Metrics for logging (accuracy still uses hard 0.5 threshold)
     real_probs = jax.nn.sigmoid(real_logits)
     fake_probs = jax.nn.sigmoid(fake_logits)
     accuracy = (

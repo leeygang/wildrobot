@@ -98,7 +98,9 @@ class AMPPPOConfigJit:
     disc_updates_per_iter: int
     disc_batch_size: int
     gradient_penalty_weight: float
+    disc_input_noise_std: float = 0.0  # Gaussian noise std for discriminator inputs
     disc_hidden_dims: Tuple[int, ...]
+    label_smoothing: float = 0.1  # Label smoothing for discriminator (prevents mode collapse)
 
     # Training
     total_iterations: int
@@ -365,6 +367,8 @@ def train_discriminator_scan(
     num_updates: int,
     batch_size: int,
     gradient_penalty_weight: float,
+    label_smoothing: float = 0.1,
+    input_noise_std: float = 0.0,
 ) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
     """Train discriminator using jax.lax.scan.
 
@@ -379,6 +383,7 @@ def train_discriminator_scan(
         num_updates: Number of discriminator updates
         batch_size: Batch size per update
         gradient_penalty_weight: WGAN-GP penalty weight
+        label_smoothing: Label smoothing amount (0.1 = use 0.9/0.1 instead of 1/0)
 
     Returns:
         (new_params, new_opt_state, mean_loss, mean_accuracy)
@@ -407,6 +412,8 @@ def train_discriminator_scan(
                 fake_obs=agent_batch,
                 rng_key=loss_rng,
                 gradient_penalty_weight=gradient_penalty_weight,
+                label_smoothing=label_smoothing,
+                input_noise_std=input_noise_std,
             )
 
         (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -623,6 +630,8 @@ def make_train_iteration_fn(
             num_updates=config.disc_updates_per_iter,
             batch_size=config.disc_batch_size,
             gradient_penalty_weight=config.gradient_penalty_weight,
+            label_smoothing=config.label_smoothing,
+            input_noise_std=config.disc_input_noise_std,
         )
 
         # ====================================================================
@@ -704,12 +713,17 @@ def make_train_iteration_fn(
         episode_reward = jnp.mean(jnp.sum(transitions.reward, axis=0))
 
         # Extract environment metrics from the final env state
-        # These are stored in env_state.metrics by WildRobotEnv
-        forward_velocity = jnp.mean(new_env_state.metrics.get("forward_velocity", jnp.zeros(())))
-        robot_height = jnp.mean(new_env_state.metrics.get("height", jnp.zeros(())))
+        # In vmapped context, metrics values are arrays of shape (num_envs,)
+        # Direct dict access - keys are guaranteed to exist in WildRobotEnv
+        forward_velocity = jnp.mean(new_env_state.metrics["forward_velocity"])
+        robot_height = jnp.mean(new_env_state.metrics["height"])
 
-        # Episode length approximation (count non-done steps)
-        episode_length = jnp.mean(jnp.sum(1.0 - transitions.done, axis=0))
+        # Episode length: count steps where done=0 (not terminated)
+        # transitions.done shape: (num_steps, num_envs)
+        # done=1.0 means terminated, done=0.0 means continuing
+        # Count continuing steps per env, then average across envs
+        steps_alive = jnp.sum(1.0 - transitions.done, axis=0)  # per env
+        episode_length = jnp.mean(steps_alive)
 
         new_state = TrainingState(
             policy_params=new_policy_params,

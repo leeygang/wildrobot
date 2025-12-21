@@ -285,10 +285,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Use first keyframe (typically "home" pose)
             self._init_qpos = jp.array(self._mj_model.key_qpos[0])
             print(f"  Using keyframe qpos from model (nkey={self._mj_model.nkey})")
+            # Debug: print initial height from keyframe
+            init_height = float(self._init_qpos[2])
+            print(f"  Initial height from keyframe: {init_height:.4f}m")
         else:
             # Fall back to qpos0 (default initial state)
             self._init_qpos = jp.array(self._mj_model.qpos0)
             print(f"  Using qpos0 from model")
+            init_height = float(self._init_qpos[2])
+            print(f"  Initial height from qpos0: {init_height:.4f}m")
 
         # Extract joint-only qpos for control default (exclude floating base: first 7 values)
         self._default_joint_qpos = self._init_qpos[7:]

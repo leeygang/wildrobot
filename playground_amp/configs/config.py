@@ -244,6 +244,7 @@ class TrainingConfig:
     disc_updates_per_iter: int
     disc_batch_size: int
     gradient_penalty_weight: float
+    disc_input_noise_std: float
     disc_hidden_dims: Tuple[int, ...]
     ref_buffer_size: int
     ref_seq_len: int
@@ -320,6 +321,7 @@ class TrainingConfig:
             disc_updates_per_iter=amp.get("update_steps", 2),
             disc_batch_size=amp.get("batch_size", 512),
             gradient_penalty_weight=amp.get("gradient_penalty_weight", 5.0),
+            disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
             disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
             ref_buffer_size=amp.get("ref_buffer_size", 2000),
             ref_seq_len=amp.get("ref_seq_len", 32),

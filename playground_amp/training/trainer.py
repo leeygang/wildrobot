@@ -101,6 +101,7 @@ class AMPPPOConfig:
     disc_updates_per_iter: int
     disc_batch_size: int
     gradient_penalty_weight: float
+    disc_input_noise_std: float  # Gaussian noise std for discriminator inputs
 
     # AMP discriminator architecture (required - from amp section)
     disc_hidden_dims: Tuple[int, ...]
@@ -333,6 +334,7 @@ def train_discriminator_step(
     expert_features: jnp.ndarray,
     rng: jax.Array,
     gradient_penalty_weight: float = 5.0,
+    input_noise_std: float = 0.0,
 ) -> Tuple[Any, Any, Dict[str, float]]:
     """Single discriminator training step.
 
@@ -345,6 +347,7 @@ def train_discriminator_step(
         expert_features: Features from reference motion (batch, feat_dim)
         rng: Random key
         gradient_penalty_weight: Weight for gradient penalty
+        input_noise_std: Std of Gaussian noise to add to inputs
 
     Returns:
         (new_params, new_opt_state, metrics): Updated state and metrics
@@ -361,6 +364,7 @@ def train_discriminator_step(
             fake_obs=agent_features,
             rng_key=rng,
             gradient_penalty_weight=gradient_penalty_weight,
+            input_noise_std=input_noise_std,
         )
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(disc_params)
@@ -561,6 +565,7 @@ def train_iteration(
                 expert_features=expert_features,
                 rng=disc_step_rng,
                 gradient_penalty_weight=config.gradient_penalty_weight,
+                input_noise_std=config.disc_input_noise_std,
             )
 
             disc_loss = float(disc_metrics["discriminator_loss"])
