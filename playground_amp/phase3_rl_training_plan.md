@@ -756,6 +756,8 @@ state = jit_reset(key)
 
 ## Step 3.2: PPO+AMP Training Foundation (Days 2-5)
 
+**Status:** 🔄 IN PROGRESS (2025-12-21)
+
 ### Goal
 Train walking policy with AMP from day 1 for natural, energy-efficient gait (industry SoTA approach).
 
@@ -771,6 +773,8 @@ Train walking policy with AMP from day 1 for natural, energy-efficient gait (ind
 
 #### 3.2.1: Prepare Reference Motion Dataset (Day 2 Morning)
 **Status:** ✅ COMPLETE (2025-12-20)
+
+**Summary:** 16 walking motions from AMASS KIT dataset retargeted via GMR IK. Total 87.07 seconds (4,350 frames) of motion data at 50 FPS. Merged dataset at `playground_amp/data/walking_motions_merged.pkl`.
 
 ---
 
@@ -1045,6 +1049,10 @@ python playground_amp/train_amp.py \
 - Guidance Doc: `~/projects/wildrobot/WildRobot_Guidance.md`
 
 #### 3.2.2: Implement AMP Discriminator
+**Status:** ✅ COMPLETE (2025-12-16, Task 5)
+
+**Summary:** JAX/Flax discriminator with 1024-512-256 architecture, WGAN-GP gradient penalty, and 29-dim AMP feature extraction. Files: `playground_amp/amp/discriminator.py`, `playground_amp/amp/amp_features.py`.
+
 **Architecture (DeepMind AMP paper + 2024 improvements):**
 
 ```python
@@ -1097,6 +1105,10 @@ amp_config = {
 - ✓ Implementation tested: forward pass, backward pass, no NaN gradients
 
 #### 3.2.3: Configure PPO Hyperparameters (State-of-Art 2024/2025)
+**Status:** ✅ COMPLETE (2025-12-20)
+
+**Summary:** Hyperparameters configured in `playground_amp/configs/wildrobot_phase3_training.yaml`. Key settings: num_envs=1024, rollout_steps=20, lr=3e-4, amp_weight=1.0.
+
 **Reference:** Based on DeepMind/Unitree/ETH Zurich best practices
 
 ```python
@@ -1185,24 +1197,58 @@ reward_scales = {
 - ✓ No catastrophic failures (reward hacking)
 - ✓ Average torque <3.2Nm per joint
 
-#### 3.2.5: Initial Training Run (Days 2-3)
-#### 3.3.3: Train PPO+AMP Policy
-**Training Run:**
+#### 3.2.4: Initial Training Run (Days 2-3)
+**Status:** 🔄 IN PROGRESS (2025-12-21)
+
+---
+
+**Goal:** Train a walking policy using AMP+PPO that achieves natural, energy-efficient locomotion.
+
+---
+
+**Progress (2025-12-21):**
+- ✅ Created `trainer_jit.py` - Fully JIT-compiled AMP+PPO training loop
+- ✅ Fixed dynamic slicing error (use `jax.lax.dynamic_slice`)
+- ✅ Integrated W&B experiment tracking
+- ✅ GPU detected and working (RTX 5070, 12GB)
+- ⏳ Running first full training (3000 iterations)
+
+**Performance Improvement (JIT Trainer):**
+| Metric | Legacy Trainer | JIT Trainer |
+|--------|---------------|-------------|
+| Steps/sec | 15 | 10,000-50,000 (expected) |
+| GPU Utilization | 5-10% | 70-90% (expected) |
+| 3000 iterations | ~50 hours | ~10 minutes (expected) |
+
+**Files Created:**
+- `playground_amp/training/trainer_jit.py` (~900 lines) - Fully JIT-compiled trainer
+
+**Files Modified:**
+- `playground_amp/train_amp.py` - Added JIT trainer integration, `--legacy` flag for old trainer
+
+---
+
+**Training Command:**
 ```bash
-python mujoco/playground/train_ppo_amp.py \
-    --config configs/wildrobot_amp.yaml \
-    --num_envs 4096 \
-    --num_iterations 5000 \
-    --amp_data data/retargeted_walking.pkl \
-    --wandb_project wildrobot-locomotion \
-    --wandb_name "ppo-amp-v1"
+cd ~/projects/wildrobot
+python playground_amp/train_amp.py \
+    --iterations 3000 \
+    --num-envs 1024 \
+    --amp-data playground_amp/data/walking_motions_merged.pkl
 ```
 
+---
+
 **Expected Training Dynamics:**
-- **Iterations 0-500:** Policy explores, AMP reward low (~-2.0)
-- **Iterations 500-1500:** Gait stabilizes, AMP reward rises to ~0.0
-- **Iterations 1500-3000:** Natural walking emerges, AMP reward >0.5
-- **Iterations 3000+:** Fine-tuning, diminishing returns
+
+| Iteration Range | Expected Behavior |
+|-----------------|-------------------|
+| 0-500 | Policy explores, AMP reward low (~-2.0) |
+| 500-1500 | Gait stabilizes, AMP reward rises to ~0.0 |
+| 1500-3000 | Natural walking emerges, AMP reward >0.5 |
+| 3000+ | Fine-tuning, diminishing returns |
+
+---
 
 **Monitoring Checklist (check every 500 iters):**
 - [ ] Task reward increasing (velocity tracking improving)
@@ -1210,14 +1256,26 @@ python mujoco/playground/train_ppo_amp.py \
 - [ ] Torque penalty decreasing (energy efficiency improving)
 - [ ] Episode length increasing (fewer falls)
 
+---
+
 **Exit Criteria:**
-- ✓ Training completes 5000 iterations (~50M timesteps)
-- ✓ Final policy achieves:
-  - Episode reward >350 (vs baseline ~250)
-  - AMP reward >0.7
-  - Success rate >85% on flat terrain
-  - Average torque <2.8Nm per joint
-- ✓ Model saved as `checkpoints/ppo_amp_final.pkl`
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| Training Duration | 3000-5000 iterations | ~30-50M timesteps |
+| **Forward Velocity** | **0.3-0.8 m/s** | **Tracks commanded speed** |
+| Episode Reward | >350 | vs baseline ~250 |
+| AMP Reward | >0.7 | Natural human-like gait |
+| Success Rate | >85% | On flat terrain without falling |
+| Average Torque | <2.8Nm | Per joint, energy efficient |
+| Checkpoint | Saved | `checkpoints/ppo_amp_final.pkl` |
+
+---
+
+**Deliverables:**
+1. ✓ Trained policy checkpoint (`checkpoints/ppo_amp_final.pkl`)
+2. ✓ W&B training logs with reward curves
+3. ✓ Video of walking behavior (optional)
 
 ---
 
@@ -1269,7 +1327,7 @@ domain_randomization = {
   - 10N lateral pushes
   - ±15% mass variations
 
-#### 3.3.3: Adversarial Robustness Testing
+#### 3.4.3: Adversarial Robustness Testing
 **Test Suite:**
 1. **Worst-case friction:** µ=0.3 (icy floor)
 2. **Heavy payload:** +30% torso mass

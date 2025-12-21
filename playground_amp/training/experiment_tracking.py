@@ -2,6 +2,13 @@
 
 This module provides logging to Weights & Biases for experiment tracking.
 
+Topline Metrics (Section 3.2.4 Exit Criteria):
+- Forward Velocity: 0.3-0.8 m/s (target)
+- Episode Reward: >350 (target)
+- AMP Reward: >0.7 (target for natural gait)
+- Success Rate: >85% (target)
+- Average Torque: <2.8Nm (target for energy efficiency)
+
 Usage:
     from playground_amp.training.experiment_tracking import WandbTracker
 
@@ -29,6 +36,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+
+# =============================================================================
+# Exit Criteria Targets (Section 3.2.4)
+# =============================================================================
+
+EXIT_CRITERIA_TARGETS = {
+    "forward_velocity": {"min": 0.3, "max": 0.8, "unit": "m/s"},
+    "episode_reward": {"target": 350, "baseline": 250, "unit": ""},
+    "amp_reward": {"target": 0.7, "unit": ""},
+    "success_rate": {"target": 0.85, "unit": "%"},
+    "avg_torque": {"target": 2.8, "max_allowed": 4.0, "unit": "Nm"},
+}
 
 
 @dataclass
@@ -416,9 +436,20 @@ def create_training_metrics(
     clip_fraction: float = 0.0,
     approx_kl: float = 0.0,
     env_steps_per_sec: float = 0.0,
+    forward_velocity: float = 0.0,
+    success_rate: float = 0.0,
+    avg_torque: float = 0.0,
+    episode_length: float = 0.0,
     **extra_metrics,
 ) -> Dict[str, float]:
     """Create a flat dictionary of training metrics for logging.
+
+    Includes TOPLINE metrics (Section 3.2.4 Exit Criteria) for easy tracking:
+    - topline/episode_reward (target: >350)
+    - topline/amp_reward (target: >0.7)
+    - topline/forward_velocity (target: 0.3-0.8 m/s)
+    - topline/success_rate (target: >85%)
+    - topline/avg_torque (target: <2.8 Nm)
 
     Args:
         iteration: Current training iteration
@@ -434,15 +465,36 @@ def create_training_metrics(
         clip_fraction: PPO clip fraction
         approx_kl: Approximate KL divergence
         env_steps_per_sec: Environment steps per second
+        forward_velocity: Current forward velocity (m/s)
+        success_rate: Episode success rate (0-1)
+        avg_torque: Average torque per joint (Nm)
+        episode_length: Mean episode length (steps)
         **extra_metrics: Additional metrics
 
     Returns:
         Flat dictionary of metrics with prefixes
     """
     metrics = {
+        # =====================================================================
+        # TOPLINE METRICS (Section 3.2.4 Exit Criteria)
+        # These are the key metrics to track training progress
+        # =====================================================================
+        "topline/episode_reward": episode_reward,      # Target: >350
+        "topline/amp_reward": amp_reward_mean,          # Target: >0.7
+        "topline/forward_velocity": forward_velocity,   # Target: 0.3-0.8 m/s
+        "topline/success_rate": success_rate * 100,     # Target: >85%
+        "topline/avg_torque": avg_torque,               # Target: <2.8 Nm
+        "topline/steps_per_sec": env_steps_per_sec,     # Performance metric
+        # =====================================================================
+
         # Environment metrics
         "env/episode_reward": episode_reward,
+        "env/episode_length": episode_length,
         "env/steps_per_sec": env_steps_per_sec,
+        "env/forward_velocity": forward_velocity,
+        "env/success_rate": success_rate,
+        "env/avg_torque": avg_torque,
+
         # PPO metrics
         "ppo/total_loss": ppo_loss,
         "ppo/policy_loss": policy_loss,
@@ -450,11 +502,13 @@ def create_training_metrics(
         "ppo/entropy_loss": entropy_loss,
         "ppo/clip_fraction": clip_fraction,
         "ppo/approx_kl": approx_kl,
+
         # AMP metrics
         "amp/disc_loss": disc_loss,
         "amp/disc_accuracy": disc_accuracy,
         "amp/reward_mean": amp_reward_mean,
         "amp/reward_std": amp_reward_std,
+
         # Progress
         "progress/iteration": iteration,
     }
@@ -467,3 +521,88 @@ def create_training_metrics(
             metrics[key] = float(value.item())
 
     return metrics
+
+
+def create_topline_metrics_only(
+    episode_reward: float = 0.0,
+    amp_reward: float = 0.0,
+    forward_velocity: float = 0.0,
+    success_rate: float = 0.0,
+    avg_torque: float = 0.0,
+    steps_per_sec: float = 0.0,
+) -> Dict[str, float]:
+    """Create only the topline metrics for quick logging.
+
+    Use this when you only want to update the key exit criteria metrics.
+
+    Args:
+        episode_reward: Mean episode reward (target: >350)
+        amp_reward: Mean AMP reward (target: >0.7)
+        forward_velocity: Forward velocity in m/s (target: 0.3-0.8)
+        success_rate: Success rate 0-1 (target: >0.85)
+        avg_torque: Average torque in Nm (target: <2.8)
+        steps_per_sec: Training speed
+
+    Returns:
+        Dictionary with topline/ prefixed metrics
+    """
+    return {
+        "topline/episode_reward": episode_reward,
+        "topline/amp_reward": amp_reward,
+        "topline/forward_velocity": forward_velocity,
+        "topline/success_rate": success_rate * 100,  # Convert to percentage
+        "topline/avg_torque": avg_torque,
+        "topline/steps_per_sec": steps_per_sec,
+    }
+
+
+def define_wandb_topline_metrics():
+    """Define W&B metrics with targets for Section 3.2.4 exit criteria.
+
+    This sets up:
+    1. Metric definitions with step_metric
+    2. Summary statistics (min, max, mean)
+    3. Target reference lines for charts
+
+    Should be called after wandb.init() in the training script.
+    """
+    try:
+        import wandb
+
+        if wandb.run is None:
+            return
+
+        # Define topline metrics to sync with global step
+        wandb.define_metric("topline/*", step_metric="progress/iteration")
+
+        # Store targets in config for reference
+        wandb.config.update({
+            "exit_criteria": {
+                "episode_reward_target": 350,
+                "episode_reward_baseline": 250,
+                "amp_reward_target": 0.7,
+                "forward_velocity_min": 0.3,
+                "forward_velocity_max": 0.8,
+                "success_rate_target": 85,  # percentage
+                "avg_torque_target": 2.8,
+                "avg_torque_max": 4.0,
+            }
+        }, allow_val_change=True)
+
+        # Log target reference lines as constants (these appear as horizontal lines)
+        # We log them once at step 0 with a special prefix
+        wandb.log({
+            "targets/episode_reward": 350,
+            "targets/amp_reward": 0.7,
+            "targets/forward_velocity_min": 0.3,
+            "targets/forward_velocity_max": 0.8,
+            "targets/success_rate": 85,
+            "targets/avg_torque": 2.8,
+        }, step=0)
+
+        print("✓ W&B topline metrics defined with exit criteria targets")
+
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"⚠️ Failed to define W&B topline metrics: {e}")

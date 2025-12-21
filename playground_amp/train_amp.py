@@ -61,7 +61,11 @@ from playground_amp.configs.config import (
 )
 
 # Import W&B tracker
-from playground_amp.training.experiment_tracking import WandbTracker, create_training_metrics
+from playground_amp.training.experiment_tracking import (
+    WandbTracker,
+    create_training_metrics,
+    define_wandb_topline_metrics,
+)
 
 
 def create_env_config(training_config: dict) -> config_dict.ConfigDict:
@@ -841,6 +845,9 @@ def main():
             enabled=wandb_cfg.enabled,
             log_dir=wandb_cfg.log_dir,
         )
+
+        # Define topline metrics with exit criteria targets (Section 3.2.4)
+        define_wandb_topline_metrics()
 
     try:
         if use_jit:
