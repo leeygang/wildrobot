@@ -446,33 +446,38 @@ def train_with_custom_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
 
     # Training callback with W&B logging
-    def callback(iteration, state, metrics):
+    def callback(iteration: int, state, metrics):
+        # Calculate total steps
+        total_steps = int(state.total_steps)
+
+        # Log to W&B
+        if wandb_tracker is not None:
+            wandb_metrics = create_training_metrics(
+                iteration=iteration,
+                episode_reward=metrics.episode_reward,
+                ppo_loss=metrics.total_loss,
+                policy_loss=metrics.policy_loss,
+                value_loss=metrics.value_loss,
+                entropy_loss=metrics.entropy_loss,
+                disc_loss=metrics.disc_loss,
+                disc_accuracy=metrics.disc_accuracy,
+                amp_reward_mean=metrics.amp_reward_mean,
+                amp_reward_std=metrics.amp_reward_std,
+                clip_fraction=metrics.clip_fraction,
+                approx_kl=metrics.approx_kl,
+                env_steps_per_sec=metrics.env_steps_per_sec,
+            )
+            wandb_tracker.log(wandb_metrics, step=total_steps)
+
+        # Console logging at log_interval
         if iteration % config.log_interval == 0:
             print(
-                f"Iter {iteration:5d} | "
-                f"Reward: {metrics.episode_reward:8.2f} | "
-                f"AMP: {metrics.amp_reward_mean:6.4f} | "
-                f"Steps/s: {metrics.env_steps_per_sec:6.0f}"
+                f"{total_steps:>10}: "
+                f"reward={metrics.episode_reward:>8.2f} | "
+                f"amp_reward={metrics.amp_reward_mean:>7.4f} | "
+                f"disc_acc={metrics.disc_accuracy:>5.2f} | "
+                f"steps/s={metrics.env_steps_per_sec:>6.0f}"
             )
-
-            # Log to W&B
-            if wandb_tracker is not None:
-                wandb_metrics = create_training_metrics(
-                    iteration=iteration,
-                    episode_reward=metrics.episode_reward,
-                    ppo_loss=metrics.total_loss,
-                    policy_loss=metrics.policy_loss,
-                    value_loss=metrics.value_loss,
-                    entropy_loss=metrics.entropy_loss,
-                    disc_loss=metrics.disc_loss,
-                    disc_accuracy=metrics.disc_accuracy,
-                    amp_reward_mean=metrics.amp_reward_mean,
-                    amp_reward_std=metrics.amp_reward_std,
-                    clip_fraction=metrics.clip_fraction,
-                    approx_kl=metrics.approx_kl,
-                    env_steps_per_sec=metrics.env_steps_per_sec,
-                )
-                wandb_tracker.log(wandb_metrics, step=iteration)
 
     # Train
     print("\n" + "=" * 60)

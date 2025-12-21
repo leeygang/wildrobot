@@ -128,6 +128,7 @@ class WandbTracker:
                 self._wandb_run = wandb.run
                 return
 
+            # Simple init - compatible with all wandb versions
             self._wandb_run = wandb.init(
                 project=self.project,
                 name=self.name,
@@ -136,9 +137,15 @@ class WandbTracker:
                 notes=self.notes,
                 entity=self.entity,
                 mode=self.mode,
-                finish_previous=True,  # Finish any previous run before starting new one
             )
-            print(f"✓ W&B initialized: {self._wandb_run.url}")
+
+            # Print run info
+            if self._wandb_run is not None:
+                print(f"✓ W&B initialized")
+                print(f"  Project: {self.project}")
+                print(f"  Run: {self.name}")
+                if self._wandb_run.url:
+                    print(f"  URL: {self._wandb_run.url}")
 
         except ImportError:
             print("⚠️ W&B not installed. Install with: pip install wandb")

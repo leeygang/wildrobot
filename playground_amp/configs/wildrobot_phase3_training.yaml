@@ -34,15 +34,18 @@ env:
 # Trainer configuration
 trainer:
   # Number of parallel environments
-  # GPU Memory Guide:
-  #   RTX 5070 (12GB): 512
-  #   RTX 3080 (10GB): 512-1024
-  #   RTX 3090 (24GB): 2048-4096
-  #   RTX 4090 (24GB): 2048-4096
-  num_envs: 512
+  # GPU Memory Guide (for WildRobot 9-DOF):
+  #   RTX 5070 (12GB): 1024-2048
+  #   RTX 3080 (10GB): 1024
+  #   RTX 3090 (24GB): 4096
+  #   RTX 4090 (24GB): 4096-8192
+  # Higher = better GPU utilization, but more memory
+  num_envs: 2048
 
   # Rollout steps per environment before policy update
-  rollout_steps: 10
+  # Higher = more data per update, better sample efficiency
+  # Memory: num_envs * rollout_steps * obs_dim * sizeof(float32)
+  rollout_steps: 20
 
   # Total training iterations
   iterations: 3000
@@ -75,7 +78,10 @@ trainer:
   epochs: 4
 
   # Number of minibatches per epoch
-  num_minibatches: 4
+  # Higher = smaller minibatch, less memory but more updates
+  # Minibatch size = (num_envs * rollout_steps) / num_minibatches
+  # With 2048 envs * 20 steps / 8 = 5120 samples per minibatch
+  num_minibatches: 8
 
   # Checkpoint directory
   checkpoint_dir: playground_amp/checkpoints
@@ -150,7 +156,8 @@ amp:
   disc_lr: 1e-4
 
   # Discriminator batch size
-  batch_size: 512
+  # Should be <= num_envs * rollout_steps for sufficient samples
+  batch_size: 2048
 
   # Discriminator updates per policy iteration
   update_steps: 2
@@ -197,15 +204,27 @@ wandb:
 # Quick-verify settings (for smoke tests) - minimal for fastest possible test
 quick_verify:
   trainer:
-    num_envs: 2       # Minimum vectorized
-    rollout_steps: 4  # Minimum for GAE
-    iterations: 2     # Just 2 iterations to verify loop works
+    num_envs: 4       # Minimum vectorized
+    rollout_steps: 8  # Minimum for GAE
+    iterations: 3     # Just 3 iterations to verify loop works
   env:
     max_episode_steps: 20  # Very short episodes
   amp:
-    batch_size: 8  # Smallest batch (must fit in 2*4=8 agent samples)
+    batch_size: 16  # Smallest batch (must fit in 4*8=32 agent samples)
   wandb:
     enabled: false  # Disable W&B for smoke tests
+
+# GPU memory presets (use with --num-envs CLI override)
+# Uncomment the appropriate section for your GPU:
+#
+# RTX 5070 (12GB) - Balanced:
+#   num_envs: 2048, rollout_steps: 20, batch_size: 2048
+#
+# RTX 5070 (12GB) - Max utilization (if no OOM):
+#   num_envs: 4096, rollout_steps: 10, batch_size: 2048
+#
+# RTX 3090/4090 (24GB):
+#   num_envs: 4096, rollout_steps: 20, batch_size: 4096
 
 notes: |
   Phase 3 PPO+AMP Training Configuration
