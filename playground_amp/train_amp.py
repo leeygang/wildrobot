@@ -500,7 +500,13 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
                 clip_fraction=0.0,
                 approx_kl=0.0,
                 env_steps_per_sec=steps_per_sec,
+                # Task reward breakdown
+                forward_velocity=float(metrics.forward_velocity),
+                episode_length=float(metrics.episode_length),
             )
+            # Add task reward breakdown to metrics
+            wandb_metrics["debug/task_reward_per_step"] = float(metrics.task_reward_mean)
+            wandb_metrics["debug/robot_height"] = float(metrics.robot_height)
             wandb_tracker.log(wandb_metrics, step=int(state.total_steps))
 
     # Train

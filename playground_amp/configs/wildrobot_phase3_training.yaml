@@ -163,20 +163,20 @@ amp:
   # ==========================================================================
 
   # Discriminator learning rate
-  # TUNED: 1e-4 → 1e-5 (10x slower to prevent mode collapse)
-  disc_lr: 1e-5
+  # TUNED: 1e-4 → 1e-5 → 5e-6 (20x slower to prevent mode collapse)
+  disc_lr: 5e-6
 
   # Discriminator batch size
-  # TUNED: 2048 → 512 (smaller batches = more noise = implicit regularization)
-  batch_size: 512
+  # TUNED: 2048 → 512 → 256 (smaller batches = more noise = implicit regularization)
+  batch_size: 256
 
   # Discriminator updates per policy iteration
   # TUNED: 2 → 1 (balanced disc/policy training ratio)
   update_steps: 1
 
   # WGAN-GP gradient penalty weight
-  # TUNED: 5.0 → 10.0 (stronger regularization for smoother decision boundary)
-  gradient_penalty_weight: 10.0
+  # TUNED: 5.0 → 10.0 → 15.0 (stronger regularization for smoother decision boundary)
+  gradient_penalty_weight: 15.0
 
   # Normalize AMP features
   normalize_features: true

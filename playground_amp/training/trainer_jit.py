@@ -154,14 +154,22 @@ class Transition(NamedTuple):
 
 class IterationMetrics(NamedTuple):
     """Metrics from one training iteration."""
+    # PPO losses
     policy_loss: jnp.ndarray
     value_loss: jnp.ndarray
     entropy_loss: jnp.ndarray
     total_loss: jnp.ndarray
+    # AMP metrics
     disc_loss: jnp.ndarray
     disc_accuracy: jnp.ndarray
     amp_reward_mean: jnp.ndarray
+    # Episode metrics
     episode_reward: jnp.ndarray
+    # Task reward breakdown (for debugging)
+    task_reward_mean: jnp.ndarray      # Mean task reward per step
+    forward_velocity: jnp.ndarray      # Actual forward velocity (m/s)
+    robot_height: jnp.ndarray          # Robot base height (m)
+    episode_length: jnp.ndarray        # Mean episode length (steps)
 
 
 # =============================================================================
@@ -685,10 +693,23 @@ def make_train_iteration_fn(
         )
 
         # ====================================================================
-        # Step 7: Update state
+        # Step 7: Update state and collect metrics
         # ====================================================================
         env_steps = config.num_steps * config.num_envs
+
+        # Task reward breakdown (mean per step)
+        task_reward_mean = jnp.mean(transitions.reward)
+
+        # Episode metrics
         episode_reward = jnp.mean(jnp.sum(transitions.reward, axis=0))
+
+        # Extract environment metrics from the final env state
+        # These are stored in env_state.metrics by WildRobotEnv
+        forward_velocity = jnp.mean(new_env_state.metrics.get("forward_velocity", jnp.zeros(())))
+        robot_height = jnp.mean(new_env_state.metrics.get("height", jnp.zeros(())))
+
+        # Episode length approximation (count non-done steps)
+        episode_length = jnp.mean(jnp.sum(1.0 - transitions.done, axis=0))
 
         new_state = TrainingState(
             policy_params=new_policy_params,
@@ -715,6 +736,10 @@ def make_train_iteration_fn(
             disc_accuracy=disc_accuracy,
             amp_reward_mean=amp_reward_mean,
             episode_reward=episode_reward,
+            task_reward_mean=task_reward_mean,
+            forward_velocity=forward_velocity,
+            robot_height=robot_height,
+            episode_length=episode_length,
         )
 
         return new_state, new_env_state, metrics
@@ -921,12 +946,21 @@ def train_amp_ppo_jit(
         if iteration % config.log_interval == 0 or iteration == 1:
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
+
+            # Main metrics line
             print(
                 f"Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"amp={float(metrics.amp_reward_mean):>7.4f} | "
                 f"disc_acc={float(metrics.disc_accuracy):>5.2f} | "
                 f"steps/s={steps_per_sec:>8.0f}"
+            )
+            # Task breakdown line (indented)
+            print(
+                f"  └─ task_r={float(metrics.task_reward_mean):>6.3f}/step | "
+                f"vel={float(metrics.forward_velocity):>5.2f}m/s | "
+                f"height={float(metrics.robot_height):>5.3f}m | "
+                f"ep_len={float(metrics.episode_length):>5.1f}"
             )
 
             if callback is not None:
