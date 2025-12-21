@@ -606,3 +606,229 @@ def define_wandb_topline_metrics():
         pass
     except Exception as e:
         print(f"⚠️ Failed to define W&B topline metrics: {e}")
+
+
+def generate_eval_video(
+    env,
+    inference_fn,
+    rng_key,
+    episode_length: int = 500,
+    num_rollouts: int = 1,
+    render_every: int = 2,
+    height: int = 480,
+    width: int = 640,
+) -> List[np.ndarray]:
+    """Generate evaluation rollout videos.
+
+    Reference: mujoco_playground/learning/train_jax_ppo.py
+
+    Args:
+        env: Environment instance with reset(), step(), and render() methods
+        inference_fn: JIT-compiled inference function (obs) -> action
+        rng_key: JAX random key
+        episode_length: Number of steps per rollout
+        num_rollouts: Number of rollout videos to generate
+        render_every: Render every N frames (for speed)
+        height: Video height in pixels
+        width: Video width in pixels
+
+    Returns:
+        List of video arrays, each shape (num_frames, height, width, 3)
+    """
+    try:
+        import jax
+        import jax.numpy as jnp
+        import mujoco
+    except ImportError as e:
+        print(f"⚠️ Cannot generate video: {e}")
+        return []
+
+    print(f"\nGenerating {num_rollouts} evaluation video(s)...")
+
+    videos = []
+
+    for i in range(num_rollouts):
+        # Reset environment
+        rng_key, reset_key, rollout_key = jax.random.split(rng_key, 3)
+        state = env.reset(reset_key)
+
+        # Collect trajectory
+        frames = []
+        for step in range(episode_length):
+            # Get action from policy
+            rollout_key, action_key = jax.random.split(rollout_key)
+            action = inference_fn(state.obs, action_key)
+
+            # Step environment
+            state = env.step(state, action)
+
+            # Render frame (every N steps for speed)
+            if step % render_every == 0:
+                try:
+                    # Try to render using env's render method
+                    if hasattr(env, 'render'):
+                        frame = env.render(state, height=height, width=width)
+                        if frame is not None:
+                            frames.append(np.array(frame))
+                except Exception as e:
+                    # Skip rendering if it fails
+                    if step == 0:
+                        print(f"⚠️ Rendering failed: {e}")
+                    break
+
+            # Stop if episode is done
+            if hasattr(state, 'done') and state.done:
+                break
+
+        if frames:
+            video = np.stack(frames, axis=0)
+            videos.append(video)
+            print(f"  Video {i+1}: {len(frames)} frames")
+
+    return videos
+
+
+def save_and_upload_video(
+    video: np.ndarray,
+    filepath: str,
+    fps: float = 30.0,
+    upload_to_wandb: bool = True,
+    wandb_key: str = "eval/rollout_video",
+) -> Optional[str]:
+    """Save video to file and optionally upload to W&B.
+
+    Args:
+        video: Video array, shape (num_frames, height, width, 3)
+        filepath: Path to save video file (.mp4)
+        fps: Frames per second
+        upload_to_wandb: Whether to upload to W&B
+        wandb_key: W&B metric key for the video
+
+    Returns:
+        Path to saved video file, or None if failed
+    """
+    if video is None or len(video) == 0:
+        print("⚠️ No video frames to save")
+        return None
+
+    try:
+        # Try mediapy first (preferred)
+        try:
+            import mediapy as media
+            media.write_video(filepath, video, fps=fps)
+            print(f"✓ Video saved to: {filepath}")
+        except ImportError:
+            # Fallback to imageio
+            try:
+                import imageio
+                imageio.mimsave(filepath, video, fps=fps)
+                print(f"✓ Video saved to: {filepath}")
+            except ImportError:
+                print("⚠️ Neither mediapy nor imageio installed. Cannot save video.")
+                print("  Install with: pip install mediapy  OR  pip install imageio[ffmpeg]")
+                return None
+
+        # Upload to W&B
+        if upload_to_wandb:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    # W&B expects (time, channels, height, width) for Video
+                    # Our video is (time, height, width, channels)
+                    video_wandb = np.transpose(video, (0, 3, 1, 2))
+                    wandb.log({wandb_key: wandb.Video(video_wandb, fps=int(fps), format="mp4")})
+                    print(f"✓ Video uploaded to W&B as '{wandb_key}'")
+            except Exception as e:
+                print(f"⚠️ W&B video upload failed: {e}")
+
+        return filepath
+
+    except Exception as e:
+        print(f"⚠️ Video save failed: {e}")
+        return None
+
+
+def generate_and_upload_eval_videos(
+    env,
+    policy_params,
+    policy_network,
+    rng_key,
+    output_dir: str = "videos",
+    num_videos: int = 1,
+    episode_length: int = 500,
+    fps: float = 25.0,
+    upload_to_wandb: bool = True,
+) -> List[str]:
+    """Generate evaluation videos and upload to W&B.
+
+    This is a convenience function that combines video generation, saving, and upload.
+
+    Args:
+        env: Environment instance
+        policy_params: Trained policy parameters
+        policy_network: Policy network module
+        rng_key: JAX random key
+        output_dir: Directory to save videos
+        num_videos: Number of videos to generate
+        episode_length: Steps per episode
+        fps: Video frames per second
+        upload_to_wandb: Whether to upload to W&B
+
+    Returns:
+        List of saved video file paths
+    """
+    try:
+        import jax
+    except ImportError:
+        print("⚠️ JAX not available for video generation")
+        return []
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create inference function
+    def inference_fn(obs, rng):
+        """Get action from policy."""
+        # This is a simplified inference - actual implementation depends on network architecture
+        try:
+            action_dist = policy_network.apply(policy_params, obs)
+            if hasattr(action_dist, 'sample'):
+                return action_dist.sample(seed=rng)
+            elif hasattr(action_dist, 'mode'):
+                return action_dist.mode()
+            else:
+                return action_dist  # Assume it's already the action
+        except Exception:
+            # Fallback: assume policy_network returns action directly
+            return policy_network.apply(policy_params, obs)
+
+    jit_inference_fn = jax.jit(inference_fn)
+
+    # Generate videos
+    videos = generate_eval_video(
+        env=env,
+        inference_fn=jit_inference_fn,
+        rng_key=rng_key,
+        episode_length=episode_length,
+        num_rollouts=num_videos,
+        render_every=2,
+    )
+
+    # Save and upload videos
+    saved_paths = []
+    for i, video in enumerate(videos):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(output_dir, f"eval_rollout_{timestamp}_{i}.mp4")
+        wandb_key = f"eval/rollout_video_{i}" if i > 0 else "eval/rollout_video"
+
+        path = save_and_upload_video(
+            video=video,
+            filepath=filepath,
+            fps=fps,
+            upload_to_wandb=upload_to_wandb,
+            wandb_key=wandb_key,
+        )
+        if path:
+            saved_paths.append(path)
+
+    return saved_paths

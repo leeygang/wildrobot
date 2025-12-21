@@ -174,9 +174,24 @@ class WandbConfig:
     entity: Optional[str] = None
     name: Optional[str] = None
     tags: List[str] = field(default_factory=list)
-    mode: str = "online"  # "online", "offline", "disabled"
+    mode: str = "online"
     log_frequency: int = 10
     log_dir: str = "logs"
+
+
+@dataclass
+class VideoConfig:
+    """Video generation configuration for evaluation rollouts."""
+
+    enabled: bool = True
+    num_videos: int = 1
+    episode_length: int = 500
+    render_every: int = 2
+    width: int = 640
+    height: int = 480
+    fps: int = 25
+    upload_to_wandb: bool = True
+    output_subdir: str = "videos"
 
 
 @dataclass

@@ -201,6 +201,33 @@ wandb:
   # Local log backup directory
   log_dir: logs
 
+# Video generation settings (evaluation rollouts after training)
+video:
+  # Enable/disable video generation after training
+  enabled: true
+
+  # Number of evaluation videos to generate
+  num_videos: 1
+
+  # Episode length for evaluation rollouts (steps)
+  episode_length: 500
+
+  # Render every N frames (higher = faster, lower quality)
+  render_every: 2
+
+  # Video resolution
+  width: 640
+  height: 480
+
+  # Frames per second for video output
+  fps: 25
+
+  # Upload video to W&B (requires wandb.enabled=true)
+  upload_to_wandb: true
+
+  # Output directory for video files (relative to checkpoint_dir)
+  output_subdir: videos
+
 # Quick-verify settings (for smoke tests) - minimal for fastest possible test
 quick_verify:
   trainer:

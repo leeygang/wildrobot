@@ -65,6 +65,8 @@ from playground_amp.training.experiment_tracking import (
     WandbTracker,
     create_training_metrics,
     define_wandb_topline_metrics,
+    generate_eval_video,
+    save_and_upload_video,
 )
 
 
@@ -530,6 +532,95 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         pickle.dump(checkpoint_data, f)
 
     print(f"✓ Policy saved to: {checkpoint_path}")
+
+    # Generate and upload evaluation video after training
+    video_cfg = training_config.get("video", {})
+    video_enabled = video_cfg.get("enabled", True) and not args.verify
+
+    if video_enabled:
+        try:
+            import jax
+
+            print("\n" + "=" * 60)
+            print("Generating evaluation video...")
+            print("=" * 60)
+
+            # Create a single-env reset and step function for video generation
+            def single_reset_fn(rng):
+                return env.reset(rng)
+
+            def single_step_fn(state, action):
+                return env.step(state, action)
+
+            # Create inference function from trained policy
+            from playground_amp.training.ppo_core import sample_actions, create_networks
+
+            ppo_network = create_networks(
+                obs_dim=config.obs_dim,
+                action_dim=config.action_dim,
+                policy_hidden_dims=config.policy_hidden_dims,
+                value_hidden_dims=config.value_hidden_dims,
+            )
+
+            def policy_inference(obs, rng):
+                """Get action from trained policy."""
+                action, _, _ = sample_actions(
+                    final_state.processor_params,
+                    final_state.policy_params,
+                    ppo_network,
+                    obs,
+                    rng,
+                )
+                return action
+
+            jit_inference_fn = jax.jit(policy_inference)
+
+            # Get video config settings
+            num_videos = video_cfg.get("num_videos", 1)
+            episode_length = video_cfg.get("episode_length", 500)
+            render_every = video_cfg.get("render_every", 2)
+            video_width = video_cfg.get("width", 640)
+            video_height = video_cfg.get("height", 480)
+            video_fps = video_cfg.get("fps", 25)
+            upload_to_wandb = video_cfg.get("upload_to_wandb", True) and (wandb_tracker is not None)
+            output_subdir = video_cfg.get("output_subdir", "videos")
+
+            # Generate video
+            rng_key = jax.random.PRNGKey(config.seed + 1000)
+            videos = generate_eval_video(
+                env=env,
+                inference_fn=jit_inference_fn,
+                rng_key=rng_key,
+                episode_length=episode_length,
+                num_rollouts=num_videos,
+                render_every=render_every,
+                height=video_height,
+                width=video_width,
+            )
+
+            # Save and upload to W&B
+            if videos:
+                video_dir = os.path.join(args.checkpoint_dir, output_subdir)
+                os.makedirs(video_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+                for i, video in enumerate(videos):
+                    video_path = os.path.join(video_dir, f"eval_rollout_{timestamp}_{i}.mp4")
+                    wandb_key = f"eval/rollout_video_{i}" if i > 0 else "eval/final_rollout"
+
+                    save_and_upload_video(
+                        video=video,
+                        filepath=video_path,
+                        fps=float(video_fps),
+                        upload_to_wandb=upload_to_wandb,
+                        wandb_key=wandb_key,
+                    )
+            else:
+                print("⚠️ No video frames captured (rendering may not be available)")
+
+        except Exception as e:
+            print(f"⚠️ Video generation failed: {e}")
+            print("  (This is non-critical - training completed successfully)")
 
     return final_state
 
