@@ -25,10 +25,7 @@
     </worldbody>
 
     <keyframe>
-        <!-- qpos: 7 floating base (pos xyz + quat wxyz) + 9 joints -->
-        <!-- Joints order: right_hip_pitch, right_hip_roll, right_knee_pitch, right_ankle_pitch,
-                          left_hip_pitch, left_hip_roll, left_knee_pitch, left_ankle_pitch, waist_yaw -->
-        <key name="home" qpos="-0.00692549 0.0149391 0.487869 0.999632 -0.0254871 -0.00610409 -0.00700632 -3.42235e-05 -0.00215037 -0.0452561 0.0278619 0.0200629 0.0390773 -2.97196e-05 0.0469174 0.0275132" />
+        <key name="home" qpos="-0.00669632 -0.000208472 0.469411 0.999882 0.00198167 -0.00846883 -0.0126362 -1.11471e-05 -0.00513261 0.00470611 0.00610119 0.00673078 -0.00524127 0.00265402 -0.000115434 -0.00198456"/>
     </keyframe>
 
 </mujoco>
