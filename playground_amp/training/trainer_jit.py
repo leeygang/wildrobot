@@ -885,8 +885,13 @@ def train_amp_ppo_jit(
     else:
         train_batch_fn = None
 
+    # Calculate total expected steps for progress tracking
+    total_expected_steps = config.total_iterations * config.num_envs * config.num_steps
+
     print("=" * 60)
     print("Starting training...")
+    print(f"  Total iterations: {config.total_iterations:,}")
+    print(f"  Total steps: {total_expected_steps:,}")
     print("(First iteration includes JIT compilation)")
     print()
 
@@ -915,8 +920,9 @@ def train_amp_ppo_jit(
         # Logging
         if iteration % config.log_interval == 0 or iteration == 1:
             total_steps = int(state.total_steps)
+            progress_pct = (total_steps / total_expected_steps) * 100
             print(
-                f"{total_steps:>10}: "
+                f"Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"amp={float(metrics.amp_reward_mean):>7.4f} | "
                 f"disc_acc={float(metrics.disc_accuracy):>5.2f} | "

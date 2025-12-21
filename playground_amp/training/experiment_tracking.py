@@ -48,6 +48,10 @@ EXIT_CRITERIA_TARGETS = {
     "amp_reward": {"target": 0.7, "unit": ""},
     "success_rate": {"target": 0.85, "unit": "%"},
     "avg_torque": {"target": 2.8, "max_allowed": 4.0, "unit": "Nm"},
+    # Stability metrics
+    "episode_length": {"target": 400, "min": 200, "unit": "steps"},
+    "survival_rate": {"target": 0.95, "unit": "%"},
+    "disc_accuracy": {"target_min": 0.4, "target_max": 0.7, "unit": ""},  # Should NOT be 100%
 }
 
 
@@ -485,6 +489,9 @@ def create_training_metrics(
         "topline/success_rate": success_rate * 100,     # Target: >85%
         "topline/avg_torque": avg_torque,               # Target: <2.8 Nm
         "topline/steps_per_sec": env_steps_per_sec,     # Performance metric
+        # Stability metrics
+        "topline/episode_length": episode_length,       # Target: >400 steps
+        "topline/disc_accuracy": disc_accuracy,         # Target: 0.4-0.7 (NOT 100%!)
         # =====================================================================
 
         # Environment metrics

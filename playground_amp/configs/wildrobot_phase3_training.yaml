@@ -152,18 +152,31 @@ amp:
   # Sequence length for AMP transitions
   ref_seq_len: 32
 
+  # ==========================================================================
+  # Discriminator Training Settings (tuned to prevent mode collapse)
+  #
+  # Problem: If disc learns too fast, it reaches 100% accuracy and policy
+  #          gets no gradient signal (AMP reward stays deeply negative).
+  #
+  # Solution: Slow down discriminator, increase regularization.
+  # Target disc_accuracy: 0.4-0.7 (NOT 100%!)
+  # ==========================================================================
+
   # Discriminator learning rate
-  disc_lr: 1e-4
+  # TUNED: 1e-4 → 1e-5 (10x slower to prevent mode collapse)
+  disc_lr: 1e-5
 
   # Discriminator batch size
-  # Should be <= num_envs * rollout_steps for sufficient samples
-  batch_size: 2048
+  # TUNED: 2048 → 512 (smaller batches = more noise = implicit regularization)
+  batch_size: 512
 
   # Discriminator updates per policy iteration
-  update_steps: 2
+  # TUNED: 2 → 1 (balanced disc/policy training ratio)
+  update_steps: 1
 
   # WGAN-GP gradient penalty weight
-  gradient_penalty_weight: 5.0
+  # TUNED: 5.0 → 10.0 (stronger regularization for smoother decision boundary)
+  gradient_penalty_weight: 10.0
 
   # Normalize AMP features
   normalize_features: true
