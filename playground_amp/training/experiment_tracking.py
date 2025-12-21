@@ -116,7 +116,8 @@ class WandbTracker:
             log_dir: Local directory for config backup
         """
         self.project = project
-        self.name = name or self._generate_run_name()
+        self._run_id = self._generate_run_id()  # Timestamp-based ID for folder naming
+        self.name = name or f"run_{self._run_id}"
         self.config = config or {}
         self.tags = tags or []
         self.notes = notes
@@ -136,10 +137,16 @@ class WandbTracker:
         # Save config locally as backup
         self._save_config_local()
 
-    def _generate_run_name(self) -> str:
-        """Generate a unique run name based on timestamp."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"run_{timestamp}"
+    def _generate_run_id(self) -> str:
+        """Generate a unique run ID based on timestamp.
+
+        This ID is used for both the run name and the local folder name.
+        Format: YYYYMMDD_HHMMSS (no random suffix)
+
+        The folder will be: wandb/run-YYYYMMDD_HHMMSS/
+        Instead of:         wandb/run-YYYYMMDD_HHMMSS-abc12xyz/
+        """
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
 
     def _init_wandb(self):
         """Initialize Weights & Biases tracking."""
@@ -152,9 +159,11 @@ class WandbTracker:
                 self._wandb_run = wandb.run
                 return
 
-            # Simple init - compatible with all wandb versions
+            # Use timestamp-based ID for cleaner folder names
+            # Folder will be: wandb/run-YYYYMMDD_HHMMSS/
             self._wandb_run = wandb.init(
                 project=self.project,
+                id=self._run_id,  # Custom ID removes random suffix from folder name
                 name=self.name,
                 config=self.config,
                 tags=self.tags,
