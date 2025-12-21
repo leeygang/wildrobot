@@ -57,7 +57,11 @@ from playground_amp.configs.config import (
     load_training_config,
     TrainingConfig,
     RobotConfig,
+    WandbConfig,
 )
+
+# Import W&B tracker
+from playground_amp.training.experiment_tracking import WandbTracker, create_training_metrics
 
 
 def create_env_config(training_config: dict) -> config_dict.ConfigDict:
@@ -333,10 +337,14 @@ def train_with_brax_ppo(args):
     return make_inference_fn, params, metrics
 
 
-def train_with_custom_loop(args):
+def train_with_custom_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     """Train using custom AMP+PPO training loop.
 
     Use this when you need AMP discriminator integration.
+
+    Args:
+        args: Parsed command-line arguments
+        wandb_tracker: Optional W&B tracker for logging
     """
     # Import JAX here to avoid potential issues with module-level imports
     import jax
@@ -437,7 +445,7 @@ def train_with_custom_loop(args):
 
     print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
 
-    # Training callback
+    # Training callback with W&B logging
     def callback(iteration, state, metrics):
         if iteration % config.log_interval == 0:
             print(
@@ -446,6 +454,25 @@ def train_with_custom_loop(args):
                 f"AMP: {metrics.amp_reward_mean:6.4f} | "
                 f"Steps/s: {metrics.env_steps_per_sec:6.0f}"
             )
+
+            # Log to W&B
+            if wandb_tracker is not None:
+                wandb_metrics = create_training_metrics(
+                    iteration=iteration,
+                    episode_reward=metrics.episode_reward,
+                    ppo_loss=metrics.total_loss,
+                    policy_loss=metrics.policy_loss,
+                    value_loss=metrics.value_loss,
+                    entropy_loss=metrics.entropy_loss,
+                    disc_loss=metrics.disc_loss,
+                    disc_accuracy=metrics.disc_accuracy,
+                    amp_reward_mean=metrics.amp_reward_mean,
+                    amp_reward_std=metrics.amp_reward_std,
+                    clip_fraction=metrics.clip_fraction,
+                    approx_kl=metrics.approx_kl,
+                    env_steps_per_sec=metrics.env_steps_per_sec,
+                )
+                wandb_tracker.log(wandb_metrics, step=iteration)
 
     # Train
     print("\n" + "=" * 60)
@@ -567,9 +594,39 @@ def main():
 
     start_time = time.time()
 
+    # Initialize W&B tracker
+    wandb_cfg = training_cfg.wandb
+    wandb_tracker = None
+
+    if wandb_cfg.enabled and not args.verify:
+        # Create config dict for W&B
+        wandb_config = {
+            "iterations": args.iterations,
+            "num_envs": args.num_envs,
+            "learning_rate": args.lr,
+            "gamma": args.gamma,
+            "clip_epsilon": args.clip_epsilon,
+            "entropy_coef": args.entropy_coef,
+            "amp_weight": args.amp_weight if use_amp else 0.0,
+            "disc_lr": args.disc_lr if use_amp else 0.0,
+            "seed": args.seed,
+            "mode": "amp+ppo" if use_amp else "brax-ppo",
+        }
+
+        wandb_tracker = WandbTracker(
+            project=wandb_cfg.project,
+            entity=wandb_cfg.entity,
+            name=wandb_cfg.name,
+            config=wandb_config,
+            tags=wandb_cfg.tags,
+            mode=wandb_cfg.mode,
+            enabled=wandb_cfg.enabled,
+            log_dir=wandb_cfg.log_dir,
+        )
+
     try:
         if use_amp:
-            train_with_custom_loop(args)
+            train_with_custom_loop(args, wandb_tracker=wandb_tracker)
         else:
             train_with_brax_ppo(args)
 
@@ -587,6 +644,10 @@ def main():
 
         traceback.print_exc()
         return 1
+    finally:
+        # Finish W&B tracking
+        if wandb_tracker is not None:
+            wandb_tracker.finish()
 
     return 0
 

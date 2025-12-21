@@ -1,13 +1,11 @@
-"""Experiment Tracking Module for WildRobot Training.
+"""W&B Experiment Tracking Module for WildRobot Training.
 
-This module provides unified logging to:
-- Weights & Biases (primary) - cloud-based, rich visualization
-- TensorBoard (backup) - local, simple
+This module provides logging to Weights & Biases for experiment tracking.
 
 Usage:
-    from playground_amp.training.experiment_tracking import ExperimentTracker
+    from playground_amp.training.experiment_tracking import WandbTracker
 
-    tracker = ExperimentTracker(
+    tracker = WandbTracker(
         project="wildrobot-locomotion",
         name="ppo-amp-v1",
         config={"lr": 3e-4, "num_envs": 4096},
@@ -28,48 +26,44 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 
 @dataclass
-class ExperimentConfig:
-    """Configuration for experiment tracking."""
+class WandbConfig:
+    """Configuration for W&B experiment tracking."""
+
+    # Enable/disable W&B
+    enabled: bool = True
 
     # Project settings
     project: str = "wildrobot-locomotion"
-    name: Optional[str] = None
+    entity: Optional[str] = None  # W&B team/user
+    name: Optional[str] = None  # Run name (auto-generated if None)
     tags: List[str] = field(default_factory=list)
     notes: str = ""
 
-    # Logging settings
-    log_dir: str = "logs"
-    use_wandb: bool = True
-    use_tensorboard: bool = True
-
-    # WandB settings
-    wandb_entity: Optional[str] = None
-    wandb_mode: str = "online"  # "online", "offline", "disabled"
+    # W&B mode: "online", "offline", "disabled"
+    mode: str = "online"
 
     # Logging frequency
     log_frequency: int = 10  # Log every N iterations
-    video_frequency: int = 100  # Log videos every N iterations
 
-    # Checkpointing
-    checkpoint_dir: str = "checkpoints"
-    checkpoint_frequency: int = 100
+    # Local log directory (for config backup)
+    log_dir: str = "logs"
 
 
-class ExperimentTracker:
-    """Unified experiment tracking for WandB and TensorBoard.
+class WandbTracker:
+    """W&B experiment tracker for training.
 
     Handles:
     - Metric logging (scalars, histograms)
     - Video logging (rollout recordings)
     - Config tracking
-    - Checkpoint management
-    - Graceful fallbacks if services unavailable
+    - Checkpoint artifacts
+    - Graceful fallback if W&B unavailable
     """
 
     def __init__(
@@ -79,62 +73,58 @@ class ExperimentTracker:
         config: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         notes: str = "",
+        entity: Optional[str] = None,
+        mode: str = "online",
+        enabled: bool = True,
         log_dir: str = "logs",
-        use_wandb: bool = True,
-        use_tensorboard: bool = True,
-        wandb_entity: Optional[str] = None,
-        wandb_mode: str = "online",
     ):
-        """Initialize experiment tracker.
+        """Initialize W&B tracker.
 
         Args:
-            project: Project name (WandB project, TensorBoard subdir)
+            project: W&B project name
             name: Run name (auto-generated if None)
             config: Training configuration dict
             tags: List of tags for filtering
             notes: Notes/description for the run
-            log_dir: Base directory for logs
-            use_wandb: Whether to use WandB
-            use_tensorboard: Whether to use TensorBoard
-            wandb_entity: WandB entity (team/user)
-            wandb_mode: WandB mode ("online", "offline", "disabled")
+            entity: W&B entity (team/user)
+            mode: W&B mode ("online", "offline", "disabled")
+            enabled: Whether to enable W&B logging
+            log_dir: Local directory for config backup
         """
         self.project = project
         self.name = name or self._generate_run_name()
         self.config = config or {}
         self.tags = tags or []
         self.notes = notes
+        self.entity = entity
+        self.mode = mode
+        self.enabled = enabled
         self.log_dir = log_dir
-        self.use_wandb = use_wandb
-        self.use_tensorboard = use_tensorboard
 
         self._wandb_run = None
-        self._tb_writer = None
         self._start_time = time.time()
         self._step = 0
 
-        # Initialize backends
-        if use_wandb:
-            self._init_wandb(wandb_entity, wandb_mode)
-        if use_tensorboard:
-            self._init_tensorboard()
+        # Initialize W&B if enabled
+        if enabled:
+            self._init_wandb()
 
-        # Log initial config
-        self._log_config()
+        # Save config locally as backup
+        self._save_config_local()
 
     def _generate_run_name(self) -> str:
         """Generate a unique run name based on timestamp."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"run_{timestamp}"
 
-    def _init_wandb(self, entity: Optional[str], mode: str):
+    def _init_wandb(self):
         """Initialize Weights & Biases tracking."""
         try:
             import wandb
 
             # Check if already initialized
             if wandb.run is not None:
-                print(f"⚠️ WandB already initialized, using existing run")
+                print(f"⚠️ W&B already initialized, using existing run")
                 self._wandb_run = wandb.run
                 return
 
@@ -144,50 +134,21 @@ class ExperimentTracker:
                 config=self.config,
                 tags=self.tags,
                 notes=self.notes,
-                entity=entity,
-                mode=mode,
+                entity=self.entity,
+                mode=self.mode,
                 reinit=True,
             )
-            print(f"✓ WandB initialized: {self._wandb_run.url}")
+            print(f"✓ W&B initialized: {self._wandb_run.url}")
 
         except ImportError:
-            print("⚠️ WandB not installed. Install with: pip install wandb")
-            self.use_wandb = False
+            print("⚠️ W&B not installed. Install with: pip install wandb")
+            self.enabled = False
         except Exception as e:
-            print(f"⚠️ WandB initialization failed: {e}")
-            self.use_wandb = False
+            print(f"⚠️ W&B initialization failed: {e}")
+            self.enabled = False
 
-    def _init_tensorboard(self):
-        """Initialize TensorBoard logging."""
-        try:
-            from torch.utils.tensorboard import SummaryWriter
-
-            tb_log_dir = os.path.join(self.log_dir, self.project, self.name)
-            os.makedirs(tb_log_dir, exist_ok=True)
-            self._tb_writer = SummaryWriter(log_dir=tb_log_dir)
-            print(f"✓ TensorBoard initialized: {tb_log_dir}")
-
-        except ImportError:
-            # Try tensorboardX as fallback
-            try:
-                from tensorboardX import SummaryWriter
-
-                tb_log_dir = os.path.join(self.log_dir, self.project, self.name)
-                os.makedirs(tb_log_dir, exist_ok=True)
-                self._tb_writer = SummaryWriter(log_dir=tb_log_dir)
-                print(f"✓ TensorBoardX initialized: {tb_log_dir}")
-
-            except ImportError:
-                print(
-                    "⚠️ TensorBoard not installed. Install with: pip install tensorboard"
-                )
-                self.use_tensorboard = False
-        except Exception as e:
-            print(f"⚠️ TensorBoard initialization failed: {e}")
-            self.use_tensorboard = False
-
-    def _log_config(self):
-        """Log configuration to file."""
+    def _save_config_local(self):
+        """Save configuration to local file as backup."""
         config_dir = os.path.join(self.log_dir, self.project, self.name)
         os.makedirs(config_dir, exist_ok=True)
 
@@ -213,7 +174,7 @@ class ExperimentTracker:
         step: Optional[int] = None,
         prefix: str = "",
     ):
-        """Log metrics to all backends.
+        """Log metrics to W&B.
 
         Args:
             metrics: Dictionary of metric name -> value
@@ -234,25 +195,13 @@ class ExperimentTracker:
         metrics["time/elapsed_seconds"] = time.time() - self._start_time
         metrics["time/step"] = step
 
-        # Log to WandB
-        if self.use_wandb and self._wandb_run is not None:
+        # Log to W&B
+        if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
-
                 wandb.log(metrics, step=step)
             except Exception as e:
-                print(f"⚠️ WandB logging failed: {e}")
-
-        # Log to TensorBoard
-        if self.use_tensorboard and self._tb_writer is not None:
-            try:
-                for name, value in metrics.items():
-                    if isinstance(value, (int, float, np.number)):
-                        self._tb_writer.add_scalar(name, value, step)
-                    elif isinstance(value, np.ndarray) and value.ndim == 0:
-                        self._tb_writer.add_scalar(name, float(value), step)
-            except Exception as e:
-                print(f"⚠️ TensorBoard logging failed: {e}")
+                print(f"⚠️ W&B logging failed: {e}")
 
     def log_histogram(
         self,
@@ -267,21 +216,16 @@ class ExperimentTracker:
             values: Array of values
             step: Training step
         """
+        if not self.enabled or self._wandb_run is None:
+            return
+
         step = step or self._step
 
-        if self.use_wandb and self._wandb_run is not None:
-            try:
-                import wandb
-
-                wandb.log({name: wandb.Histogram(values)}, step=step)
-            except Exception as e:
-                print(f"⚠️ WandB histogram logging failed: {e}")
-
-        if self.use_tensorboard and self._tb_writer is not None:
-            try:
-                self._tb_writer.add_histogram(name, values, step)
-            except Exception as e:
-                print(f"⚠️ TensorBoard histogram logging failed: {e}")
+        try:
+            import wandb
+            wandb.log({name: wandb.Histogram(values)}, step=step)
+        except Exception as e:
+            print(f"⚠️ W&B histogram logging failed: {e}")
 
     def log_video(
         self,
@@ -298,32 +242,24 @@ class ExperimentTracker:
             step: Training step
             fps: Frames per second
         """
+        if not self.enabled or self._wandb_run is None:
+            return
+
         step = step or self._step
 
-        # Ensure correct shape (T, C, H, W) for WandB
+        # Ensure correct shape (T, C, H, W) for W&B
         if frames.ndim == 4:
             if frames.shape[-1] in [1, 3, 4]:  # (T, H, W, C)
-                frames_wandb = np.transpose(frames, (0, 3, 1, 2))
-            else:  # Already (T, C, H, W)
-                frames_wandb = frames
+                frames = np.transpose(frames, (0, 3, 1, 2))
         else:
             print(f"⚠️ Invalid video shape: {frames.shape}")
             return
 
-        if self.use_wandb and self._wandb_run is not None:
-            try:
-                import wandb
-
-                wandb.log({name: wandb.Video(frames_wandb, fps=fps)}, step=step)
-            except Exception as e:
-                print(f"⚠️ WandB video logging failed: {e}")
-
-        if self.use_tensorboard and self._tb_writer is not None:
-            try:
-                # TensorBoard expects (N, T, C, H, W)
-                self._tb_writer.add_video(name, frames_wandb[None, ...], step, fps=fps)
-            except Exception as e:
-                print(f"⚠️ TensorBoard video logging failed: {e}")
+        try:
+            import wandb
+            wandb.log({name: wandb.Video(frames, fps=fps)}, step=step)
+        except Exception as e:
+            print(f"⚠️ W&B video logging failed: {e}")
 
     def log_image(
         self,
@@ -338,26 +274,16 @@ class ExperimentTracker:
             image: Image array (H, W, C) or (H, W)
             step: Training step
         """
+        if not self.enabled or self._wandb_run is None:
+            return
+
         step = step or self._step
 
-        if self.use_wandb and self._wandb_run is not None:
-            try:
-                import wandb
-
-                wandb.log({name: wandb.Image(image)}, step=step)
-            except Exception as e:
-                print(f"⚠️ WandB image logging failed: {e}")
-
-        if self.use_tensorboard and self._tb_writer is not None:
-            try:
-                # TensorBoard expects (C, H, W)
-                if image.ndim == 3:
-                    image_tb = np.transpose(image, (2, 0, 1))
-                else:
-                    image_tb = image[None, ...]  # Add channel dim
-                self._tb_writer.add_image(name, image_tb, step)
-            except Exception as e:
-                print(f"⚠️ TensorBoard image logging failed: {e}")
+        try:
+            import wandb
+            wandb.log({name: wandb.Image(image)}, step=step)
+        except Exception as e:
+            print(f"⚠️ W&B image logging failed: {e}")
 
     def log_table(
         self,
@@ -365,21 +291,22 @@ class ExperimentTracker:
         columns: List[str],
         data: List[List[Any]],
     ):
-        """Log tabular data (WandB only).
+        """Log tabular data.
 
         Args:
             name: Table name
             columns: Column names
             data: List of rows
         """
-        if self.use_wandb and self._wandb_run is not None:
-            try:
-                import wandb
+        if not self.enabled or self._wandb_run is None:
+            return
 
-                table = wandb.Table(columns=columns, data=data)
-                wandb.log({name: table})
-            except Exception as e:
-                print(f"⚠️ WandB table logging failed: {e}")
+        try:
+            import wandb
+            table = wandb.Table(columns=columns, data=data)
+            wandb.log({name: table})
+        except Exception as e:
+            print(f"⚠️ W&B table logging failed: {e}")
 
     def log_summary(self, metrics: Dict[str, Any]):
         """Log summary metrics (final values).
@@ -387,72 +314,54 @@ class ExperimentTracker:
         Args:
             metrics: Dictionary of summary metrics
         """
-        if self.use_wandb and self._wandb_run is not None:
+        if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
-
                 for key, value in metrics.items():
                     wandb.run.summary[key] = value
             except Exception as e:
-                print(f"⚠️ WandB summary logging failed: {e}")
+                print(f"⚠️ W&B summary logging failed: {e}")
 
-        # Also save to file
+        # Also save to local file
         summary_path = os.path.join(
             self.log_dir, self.project, self.name, "summary.json"
         )
+        os.makedirs(os.path.dirname(summary_path), exist_ok=True)
         with open(summary_path, "w") as f:
             json.dump(metrics, f, indent=2, default=str)
 
-    def save_checkpoint(
+    def save_artifact(
         self,
-        checkpoint_data: Dict[str, Any],
-        name: str = "checkpoint",
-        step: Optional[int] = None,
-    ) -> str:
-        """Save training checkpoint.
+        filepath: str,
+        name: str,
+        artifact_type: str = "model",
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Save file as W&B artifact.
 
         Args:
-            checkpoint_data: Data to save
-            name: Checkpoint name
-            step: Training step (appended to filename)
-
-        Returns:
-            Path to saved checkpoint
+            filepath: Path to file
+            name: Artifact name
+            artifact_type: Type of artifact (e.g., "model", "dataset")
+            metadata: Optional metadata dict
         """
-        import pickle
+        if not self.enabled or self._wandb_run is None:
+            return
 
-        checkpoint_dir = os.path.join(self.log_dir, self.project, self.name, "checkpoints")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        if step is not None:
-            filename = f"{name}_step_{step:06d}.pkl"
-        else:
-            filename = f"{name}.pkl"
-
-        filepath = os.path.join(checkpoint_dir, filename)
-
-        with open(filepath, "wb") as f:
-            pickle.dump(checkpoint_data, f)
-
-        # Log to WandB as artifact
-        if self.use_wandb and self._wandb_run is not None:
-            try:
-                import wandb
-
-                artifact = wandb.Artifact(
-                    name=f"{self.name}-checkpoint",
-                    type="model",
-                    metadata={"step": step},
-                )
-                artifact.add_file(filepath)
-                wandb.log_artifact(artifact)
-            except Exception as e:
-                print(f"⚠️ WandB artifact logging failed: {e}")
-
-        return filepath
+        try:
+            import wandb
+            artifact = wandb.Artifact(
+                name=name,
+                type=artifact_type,
+                metadata=metadata or {},
+            )
+            artifact.add_file(filepath)
+            wandb.log_artifact(artifact)
+        except Exception as e:
+            print(f"⚠️ W&B artifact logging failed: {e}")
 
     def finish(self):
-        """Finalize tracking and close connections."""
+        """Finalize tracking and close W&B connection."""
         # Log final elapsed time
         elapsed = time.time() - self._start_time
         self.log_summary(
@@ -463,21 +372,13 @@ class ExperimentTracker:
             }
         )
 
-        if self.use_wandb and self._wandb_run is not None:
+        if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
-
                 wandb.finish()
-                print(f"✓ WandB run finished")
+                print(f"✓ W&B run finished")
             except Exception as e:
-                print(f"⚠️ WandB finish failed: {e}")
-
-        if self.use_tensorboard and self._tb_writer is not None:
-            try:
-                self._tb_writer.close()
-                print(f"✓ TensorBoard writer closed")
-            except Exception as e:
-                print(f"⚠️ TensorBoard close failed: {e}")
+                print(f"⚠️ W&B finish failed: {e}")
 
     def __enter__(self):
         return self
@@ -486,153 +387,76 @@ class ExperimentTracker:
         self.finish()
         return False
 
+    @property
+    def url(self) -> Optional[str]:
+        """Get W&B run URL."""
+        if self._wandb_run is not None:
+            return self._wandb_run.url
+        return None
+
 
 def create_training_metrics(
-    ppo_metrics: Any,
-    amp_metrics: Optional[Dict[str, float]] = None,
-    env_metrics: Optional[Dict[str, float]] = None,
+    iteration: int,
+    episode_reward: float,
+    ppo_loss: float,
+    policy_loss: float,
+    value_loss: float,
+    entropy_loss: float,
+    disc_loss: float = 0.0,
+    disc_accuracy: float = 0.5,
+    amp_reward_mean: float = 0.0,
+    amp_reward_std: float = 0.0,
+    clip_fraction: float = 0.0,
+    approx_kl: float = 0.0,
+    env_steps_per_sec: float = 0.0,
+    **extra_metrics,
 ) -> Dict[str, float]:
     """Create a flat dictionary of training metrics for logging.
 
     Args:
-        ppo_metrics: PPO loss output (PPOLossOutput namedtuple)
-        amp_metrics: AMP discriminator metrics
-        env_metrics: Environment metrics (rewards, episode lengths)
+        iteration: Current training iteration
+        episode_reward: Mean episode reward
+        ppo_loss: Total PPO loss
+        policy_loss: Policy loss component
+        value_loss: Value loss component
+        entropy_loss: Entropy loss component
+        disc_loss: Discriminator loss (AMP)
+        disc_accuracy: Discriminator accuracy (AMP)
+        amp_reward_mean: Mean AMP reward
+        amp_reward_std: Std of AMP reward
+        clip_fraction: PPO clip fraction
+        approx_kl: Approximate KL divergence
+        env_steps_per_sec: Environment steps per second
+        **extra_metrics: Additional metrics
 
     Returns:
-        Flat dictionary of metrics
+        Flat dictionary of metrics with prefixes
     """
-    metrics = {}
-
-    # PPO metrics
-    if ppo_metrics is not None:
-        if hasattr(ppo_metrics, "_asdict"):
-            ppo_dict = ppo_metrics._asdict()
-        elif isinstance(ppo_metrics, dict):
-            ppo_dict = ppo_metrics
-        else:
-            ppo_dict = {}
-
-        for key, value in ppo_dict.items():
-            if isinstance(value, (int, float, np.number)):
-                metrics[f"ppo/{key}"] = float(value)
-            elif hasattr(value, "item"):
-                metrics[f"ppo/{key}"] = float(value.item())
-
-    # AMP metrics
-    if amp_metrics is not None:
-        for key, value in amp_metrics.items():
-            if isinstance(value, (int, float, np.number)):
-                metrics[f"amp/{key}"] = float(value)
-            elif hasattr(value, "item"):
-                metrics[f"amp/{key}"] = float(value.item())
-
-    # Environment metrics
-    if env_metrics is not None:
-        for key, value in env_metrics.items():
-            if isinstance(value, (int, float, np.number)):
-                metrics[f"env/{key}"] = float(value)
-            elif hasattr(value, "item"):
-                metrics[f"env/{key}"] = float(value.item())
-
-    return metrics
-
-
-# Convenience functions for quick setup
-def quick_wandb_init(
-    name: str,
-    config: Dict[str, Any],
-    project: str = "wildrobot-locomotion",
-    tags: Optional[List[str]] = None,
-) -> ExperimentTracker:
-    """Quick initialization for WandB-only tracking.
-
-    Args:
-        name: Run name
-        config: Training configuration
-        project: Project name
-        tags: Optional tags
-
-    Returns:
-        ExperimentTracker instance
-    """
-    return ExperimentTracker(
-        project=project,
-        name=name,
-        config=config,
-        tags=tags or [],
-        use_wandb=True,
-        use_tensorboard=False,
-    )
-
-
-def quick_tensorboard_init(
-    name: str,
-    config: Dict[str, Any],
-    log_dir: str = "logs",
-) -> ExperimentTracker:
-    """Quick initialization for TensorBoard-only tracking.
-
-    Args:
-        name: Run name
-        config: Training configuration
-        log_dir: Log directory
-
-    Returns:
-        ExperimentTracker instance
-    """
-    return ExperimentTracker(
-        project="wildrobot",
-        name=name,
-        config=config,
-        use_wandb=False,
-        use_tensorboard=True,
-        log_dir=log_dir,
-    )
-
-
-if __name__ == "__main__":
-    # Test the experiment tracker
-    print("Testing ExperimentTracker...")
-
-    config = {
-        "algorithm": "PPO",
-        "num_envs": 4096,
-        "learning_rate": 3e-4,
-        "gamma": 0.99,
-        "amp_enabled": True,
+    metrics = {
+        # Environment metrics
+        "env/episode_reward": episode_reward,
+        "env/steps_per_sec": env_steps_per_sec,
+        # PPO metrics
+        "ppo/total_loss": ppo_loss,
+        "ppo/policy_loss": policy_loss,
+        "ppo/value_loss": value_loss,
+        "ppo/entropy_loss": entropy_loss,
+        "ppo/clip_fraction": clip_fraction,
+        "ppo/approx_kl": approx_kl,
+        # AMP metrics
+        "amp/disc_loss": disc_loss,
+        "amp/disc_accuracy": disc_accuracy,
+        "amp/reward_mean": amp_reward_mean,
+        "amp/reward_std": amp_reward_std,
+        # Progress
+        "progress/iteration": iteration,
     }
 
-    # Test with TensorBoard only (doesn't require WandB login)
-    tracker = ExperimentTracker(
-        project="wildrobot-test",
-        name="test_run",
-        config=config,
-        tags=["test", "ppo", "amp"],
-        notes="Test run for experiment tracking",
-        use_wandb=False,  # Disable WandB for test
-        use_tensorboard=True,
-    )
+    # Add extra metrics
+    for key, value in extra_metrics.items():
+        if isinstance(value, (int, float, np.number)):
+            metrics[key] = float(value)
+        elif hasattr(value, "item"):
+            metrics[key] = float(value.item())
 
-    # Simulate training loop
-    for step in range(10):
-        metrics = {
-            "loss/policy": 0.5 - step * 0.03,
-            "loss/value": 1.0 - step * 0.05,
-            "reward/episode": step * 10 + np.random.randn() * 5,
-            "reward/amp": -2.0 + step * 0.2,
-            "performance/fps": 1000 + np.random.randint(-50, 50),
-        }
-        tracker.log(metrics, step=step)
-
-    # Log summary
-    tracker.log_summary(
-        {
-            "final_reward": 100.0,
-            "final_amp_reward": 0.5,
-            "success_rate": 0.85,
-        }
-    )
-
-    tracker.finish()
-    print("\n✅ ExperimentTracker test passed!")
+    return metrics

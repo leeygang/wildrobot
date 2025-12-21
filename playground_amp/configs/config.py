@@ -166,6 +166,20 @@ class RobotConfig:
 
 
 @dataclass
+class WandbConfig:
+    """W&B experiment tracking configuration."""
+
+    enabled: bool = True
+    project: str = "wildrobot-locomotion"
+    entity: Optional[str] = None
+    name: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    mode: str = "online"  # "online", "offline", "disabled"
+    log_frequency: int = 10
+    log_dir: str = "logs"
+
+
+@dataclass
 class TrainingConfig:
     """Training configuration loaded from YAML file.
 
@@ -224,6 +238,9 @@ class TrainingConfig:
 
     # Reward weights
     reward_weights: Dict[str, float]
+
+    # W&B configuration
+    wandb: WandbConfig
 
     # Raw config for additional access
     raw_config: Dict[str, Any] = field(repr=False)
@@ -296,8 +313,24 @@ class TrainingConfig:
             normalize_amp_features=amp.get("normalize_features", True),
             # Reward weights
             reward_weights=rewards,
+            # W&B configuration
+            wandb=cls._parse_wandb_config(config.get("wandb", {})),
             # Raw config
             raw_config=config,
+        )
+
+    @staticmethod
+    def _parse_wandb_config(wandb_cfg: Dict[str, Any]) -> WandbConfig:
+        """Parse W&B configuration from YAML dict."""
+        return WandbConfig(
+            enabled=wandb_cfg.get("enabled", True),
+            project=wandb_cfg.get("project", "wildrobot-locomotion"),
+            entity=wandb_cfg.get("entity"),
+            name=wandb_cfg.get("name"),
+            tags=wandb_cfg.get("tags", []),
+            mode=wandb_cfg.get("mode", "online"),
+            log_frequency=wandb_cfg.get("log_frequency", 10),
+            log_dir=wandb_cfg.get("log_dir", "logs"),
         )
 
 

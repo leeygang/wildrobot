@@ -1,32 +1,28 @@
 """Configuration module for WildRobot training.
 
-Exports:
-    - RobotConfig: Robot configuration dataclass
-    - TrainingConfig: Training configuration dataclass
-    - load_robot_config: Load robot config from YAML
-    - load_training_config: Load training config from YAML
-    - get_robot_config: Get cached robot config
-    - get_training_config: Get cached training config
+This module provides centralized configuration management.
 """
 
 from playground_amp.configs.config import (
-    RobotConfig,
-    TrainingConfig,
-    load_robot_config,
-    load_training_config,
-    get_robot_config,
-    get_training_config,
     clear_config_cache,
     get_obs_indices,
+    get_robot_config,
+    get_training_config,
+    load_robot_config,
+    load_training_config,
+    RobotConfig,
+    TrainingConfig,
+    WandbConfig,
 )
 
 __all__ = [
     "RobotConfig",
     "TrainingConfig",
+    "WandbConfig",
     "load_robot_config",
     "load_training_config",
     "get_robot_config",
     "get_training_config",
-    "clear_config_cache",
     "get_obs_indices",
+    "clear_config_cache",
 ]

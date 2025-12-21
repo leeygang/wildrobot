@@ -166,6 +166,34 @@ termination:
   min_base_height: 0.25
   max_pitch_roll_rad: 0.785398  # 45 degrees
 
+# Weights & Biases (W&B) experiment tracking
+wandb:
+  # Enable/disable W&B logging
+  enabled: true
+
+  # W&B project name (appears in dashboard)
+  project: wildrobot-amp
+
+  # W&B entity (team/username, null for personal account)
+  entity: null
+
+  # Run name (auto-generated if null)
+  name: null
+
+  # Tags for filtering runs
+  tags:
+    - ppo
+    - amp
+
+  # W&B mode: "online" (sync to cloud), "offline" (local only), "disabled"
+  mode: online
+
+  # Log frequency (log every N iterations)
+  log_frequency: 10
+
+  # Local log backup directory
+  log_dir: logs
+
 # Quick-verify settings (for smoke tests) - minimal for fastest possible test
 quick_verify:
   trainer:
@@ -176,6 +204,8 @@ quick_verify:
     max_episode_steps: 20  # Very short episodes
   amp:
     batch_size: 8  # Smallest batch (must fit in 2*4=8 agent samples)
+  wandb:
+    enabled: false  # Disable W&B for smoke tests
 
 notes: |
   Phase 3 PPO+AMP Training Configuration
