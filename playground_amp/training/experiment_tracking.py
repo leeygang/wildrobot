@@ -136,7 +136,7 @@ class WandbTracker:
                 notes=self.notes,
                 entity=self.entity,
                 mode=self.mode,
-                reinit=True,
+                finish_previous=True,  # Finish any previous run before starting new one
             )
             print(f"✓ W&B initialized: {self._wandb_run.url}")
 
