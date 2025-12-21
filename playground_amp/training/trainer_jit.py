@@ -452,18 +452,24 @@ def ppo_update_scan(
     minibatch_size = batch_size // num_minibatches
     num_updates = num_epochs * num_minibatches
 
-    def ppo_step(carry, update_info):
-        policy_p, value_p, policy_opt, value_opt = carry
-        rng, epoch_idx, mb_idx = update_info
+    def ppo_step(carry, update_idx):
+        policy_p, value_p, policy_opt, value_opt, rng = carry
+        rng, shuffle_rng, step_rng = jax.random.split(rng, 3)
 
-        # Compute permutation for this epoch
-        perm = jax.random.permutation(rng, batch_size)
+        # Compute which epoch and minibatch we're in
+        epoch_idx = update_idx // num_minibatches
+        mb_idx = update_idx % num_minibatches
 
-        # Get minibatch indices
+        # Generate a fresh permutation for each epoch
+        # Use epoch_idx to generate consistent permutation within an epoch
+        epoch_rng = jax.random.fold_in(shuffle_rng, epoch_idx)
+        perm = jax.random.permutation(epoch_rng, batch_size)
+
+        # Get minibatch indices using dynamic_slice
         start_idx = mb_idx * minibatch_size
-        mb_indices = perm[start_idx:start_idx + minibatch_size]
+        mb_indices = jax.lax.dynamic_slice(perm, (start_idx,), (minibatch_size,))
 
-        # Extract minibatch
+        # Extract minibatch using advanced indexing
         mb_obs = obs[mb_indices]
         mb_actions = actions[mb_indices]
         mb_old_log_probs = old_log_probs[mb_indices]
@@ -485,7 +491,7 @@ def ppo_update_scan(
                 old_log_probs=mb_old_log_probs,
                 advantages=mb_advantages,
                 returns=mb_returns,
-                rng=rng,
+                rng=step_rng,
                 clip_epsilon=clip_epsilon,
                 value_loss_coef=value_loss_coef,
                 entropy_coef=entropy_coef,
@@ -503,19 +509,15 @@ def ppo_update_scan(
         value_updates, new_value_opt = value_optimizer.update(value_grads, value_opt)
         new_value_p = optax.apply_updates(value_p, value_updates)
 
-        return (new_policy_p, new_value_p, new_policy_opt, new_value_opt), metrics
+        return (new_policy_p, new_value_p, new_policy_opt, new_value_opt, rng), metrics
 
-    # Generate update schedule: (rng, epoch_idx, minibatch_idx)
-    rngs = jax.random.split(rng, num_updates)
-    epoch_indices = jnp.repeat(jnp.arange(num_epochs), num_minibatches)
-    mb_indices = jnp.tile(jnp.arange(num_minibatches), num_epochs)
-    update_info = (rngs, epoch_indices, mb_indices)
+    # Run scan over update indices
+    update_indices = jnp.arange(num_updates)
 
-    # Run scan
-    init_carry = (policy_params, value_params, policy_opt_state, value_opt_state)
-    final_carry, all_metrics = jax.lax.scan(ppo_step, init_carry, update_info)
+    init_carry = (policy_params, value_params, policy_opt_state, value_opt_state, rng)
+    final_carry, all_metrics = jax.lax.scan(ppo_step, init_carry, update_indices)
 
-    new_policy_params, new_value_params, new_policy_opt, new_value_opt = final_carry
+    new_policy_params, new_value_params, new_policy_opt, new_value_opt, _ = final_carry
 
     # Average metrics
     mean_policy_loss = jnp.mean(all_metrics.policy_loss)
