@@ -163,17 +163,22 @@ class WandbTracker:
             run_dir = os.path.join(self.log_dir, self.name)
             os.makedirs(run_dir, exist_ok=True)
 
-            # Initialize W&B with custom directory
-            # This avoids the redundant timestamp in folder name (run-timestamp-id)
+            # Set WANDB_DIR to control where wandb creates its files
+            # This avoids the extra wandb/ subdirectory
+            os.environ["WANDB_DIR"] = run_dir
+
+            # Initialize W&B with custom directory and ID
+            # Setting id removes the random suffix from folder name
             self._wandb_run = wandb.init(
                 project=self.project,
+                id=self._run_id,  # Use our timestamp as ID (removes random suffix)
                 name=self.name,
                 config=self.config,
                 tags=self.tags,
                 notes=self.notes,
                 entity=self.entity,
                 mode=self.mode,
-                dir=run_dir,  # Custom directory for clean folder naming
+                dir=run_dir,
             )
 
             # Print run info
