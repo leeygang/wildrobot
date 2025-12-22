@@ -76,7 +76,7 @@ class WandbConfig:
     log_frequency: int = 10  # Log every N iterations
 
     # Local log directory (for config backup)
-    log_dir: str = "logs"
+    log_dir: str = "playground_amp/logs"
 
 
 class WandbTracker:
@@ -100,7 +100,7 @@ class WandbTracker:
         entity: Optional[str] = None,
         mode: str = "online",
         enabled: bool = True,
-        log_dir: str = "logs",
+        log_dir: str = "playground_amp/logs",
     ):
         """Initialize W&B tracker.
 
@@ -159,17 +159,21 @@ class WandbTracker:
                 self._wandb_run = wandb.run
                 return
 
-            # Use timestamp-based ID for cleaner folder names
-            # Folder will be: wandb/run-YYYYMMDD_HHMMSS/
+            # Create custom log directory with clean naming: run_YYYYMMDD_HHMMSS
+            run_dir = os.path.join(self.log_dir, self.name)
+            os.makedirs(run_dir, exist_ok=True)
+
+            # Initialize W&B with custom directory
+            # This avoids the redundant timestamp in folder name (run-timestamp-id)
             self._wandb_run = wandb.init(
                 project=self.project,
-                id=self._run_id,  # Custom ID removes random suffix from folder name
                 name=self.name,
                 config=self.config,
                 tags=self.tags,
                 notes=self.notes,
                 entity=self.entity,
                 mode=self.mode,
+                dir=run_dir,  # Custom directory for clean folder naming
             )
 
             # Print run info
