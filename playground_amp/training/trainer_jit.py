@@ -1032,7 +1032,7 @@ def train_amp_ppo_jit(
 
             # Main metrics line
             print(
-                f"Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
+                f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"amp={float(metrics.amp_reward_mean):>7.4f} | "
                 f"disc_acc={float(metrics.disc_accuracy):>5.2f} | "

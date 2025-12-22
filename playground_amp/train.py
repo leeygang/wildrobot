@@ -64,11 +64,12 @@ from playground_amp.configs.config import (
 
 # Import checkpoint management
 from playground_amp.training.checkpoint import (
-    list_best_checkpoints,
+    get_top_checkpoints_by_reward,
     load_checkpoint,
     manage_checkpoints,
-    print_best_checkpoints_summary,
+    print_top_checkpoints_summary,
     save_checkpoint,
+    save_checkpoint_from_cpu,
 )
 
 # Import W&B tracker
@@ -534,7 +535,19 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
 
     # Checkpoint management state (captured by callback closure)
-    best_reward = {"value": float("-inf")}  # Use dict to allow mutation in closure
+    # Track global best (for best_checkpoint files)
+    best_reward = {"value": float("-inf")}
+
+    # Track best within current checkpoint window
+    # We save the best performing checkpoint within each N-iteration window,
+    # not just the checkpoint at iteration N
+    window_best = {
+        "reward": float("-inf"),
+        "state": None,  # Will hold CPU copy of state (via jax.device_get)
+        "metrics": None,
+        "iteration": 0,
+        "total_steps": 0,
+    }
 
     # Training callback for W&B logging and checkpoint management
     def callback(
@@ -570,28 +583,62 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
             wandb_metrics["debug/robot_height"] = float(metrics.robot_height)
             wandb_tracker.log(wandb_metrics, step=int(state.total_steps))
 
-        # Checkpoint management
-        if checkpoint_interval > 0 and iteration % checkpoint_interval == 0:
-            current_reward = float(metrics.episode_reward)
-            is_best = current_reward > best_reward["value"]
-            if is_best:
-                best_reward["value"] = current_reward
+        # Skip checkpoint tracking if disabled
+        if checkpoint_interval <= 0:
+            return
 
-            ckpt_path = save_checkpoint(
-                state=state,
+        current_reward = float(metrics.episode_reward)
+
+        # Track best within current checkpoint window
+        if current_reward > window_best["reward"]:
+            window_best["reward"] = current_reward
+            # Copy state to CPU to free GPU memory (JAX arrays are immutable)
+            window_best["state"] = jax.device_get(state)
+            window_best["metrics"] = metrics
+            window_best["iteration"] = iteration
+            window_best["total_steps"] = int(state.total_steps)
+
+        # At checkpoint boundary, save the best from this window
+        if iteration % checkpoint_interval == 0:
+            # Use the best state from this window (not current state)
+            save_state = window_best["state"]
+            save_metrics = window_best["metrics"]
+            save_iteration = window_best["iteration"]
+            save_reward = window_best["reward"]
+
+            # Check if this is also the global best
+            is_global_best = save_reward > best_reward["value"]
+            if is_global_best:
+                best_reward["value"] = save_reward
+
+            # Save checkpoint using the best state from this window
+            ckpt_path = save_checkpoint_from_cpu(
+                state_cpu=save_state,
                 config=config,
-                iteration=iteration,
+                iteration=save_iteration,
+                total_steps=window_best["total_steps"],
                 checkpoint_dir=checkpoint_dir,
-                is_best=is_best,
-                metrics=metrics,
+                is_best=is_global_best,
+                metrics=save_metrics,
             )
 
-            if is_best:
+            if is_global_best:
                 print(
-                    f"  💾 Checkpoint saved (iter {iteration}) - NEW BEST: reward={current_reward:.2f}"
+                    f"  💾 Checkpoint saved (best from window, iter {save_iteration}) "
+                    f"- NEW GLOBAL BEST: reward={save_reward:.2f}"
                 )
             else:
-                print(f"  💾 Checkpoint saved (iter {iteration})")
+                print(
+                    f"  💾 Checkpoint saved (best from window, iter {save_iteration}, "
+                    f"reward={save_reward:.2f})"
+                )
+
+            # Reset window tracking for next window
+            window_best["reward"] = float("-inf")
+            window_best["state"] = None
+            window_best["metrics"] = None
+            window_best["iteration"] = 0
+            window_best["total_steps"] = 0
 
             # Clean up old checkpoints
             manage_checkpoints(checkpoint_dir, keep_checkpoints)
@@ -627,7 +674,7 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"✓ Policy saved to: {checkpoint_path}")
 
     # Print best checkpoints summary
-    print_best_checkpoints_summary(checkpoint_dir)
+    print_top_checkpoints_summary(checkpoint_dir)
 
     # Generate and upload evaluation video after training
     video_cfg = training_config.get("video", {})

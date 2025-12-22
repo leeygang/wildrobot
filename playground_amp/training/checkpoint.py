@@ -8,9 +8,9 @@ Usage:
     from playground_amp.training.checkpoint import (
         save_checkpoint,
         load_checkpoint,
-        list_best_checkpoints,
+        get_top_checkpoints_by_reward,
         manage_checkpoints,
-        print_best_checkpoints_summary,
+        print_top_checkpoints_summary,
     )
 """
 
@@ -44,6 +44,46 @@ def save_checkpoint(
     Returns:
         Path to saved checkpoint
     """
+    # Convert state to CPU and delegate to save_checkpoint_from_cpu
+    state_cpu = jax.device_get(state)
+    total_steps = int(state.total_steps)
+    return save_checkpoint_from_cpu(
+        state_cpu=state_cpu,
+        config=config,
+        iteration=iteration,
+        total_steps=total_steps,
+        checkpoint_dir=checkpoint_dir,
+        is_best=is_best,
+        metrics=metrics,
+    )
+
+
+def save_checkpoint_from_cpu(
+    state_cpu: Any,
+    config: Any,
+    iteration: int,
+    total_steps: int,
+    checkpoint_dir: str,
+    is_best: bool = False,
+    metrics: Optional[Any] = None,
+) -> str:
+    """Save training checkpoint from pre-copied CPU state.
+
+    This is useful when the state has already been copied to CPU (e.g., for
+    tracking the best checkpoint within a window without repeated GPU->CPU transfers).
+
+    Args:
+        state_cpu: Training state already on CPU (via jax.device_get)
+        config: Training configuration (AMPPPOConfigJit)
+        iteration: Iteration number when this state was captured
+        total_steps: Total steps when this state was captured
+        checkpoint_dir: Directory to save checkpoints
+        is_best: If True, also save as best checkpoint
+        metrics: Optional IterationMetrics to save with checkpoint
+
+    Returns:
+        Path to saved checkpoint
+    """
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Store metrics if provided
@@ -62,21 +102,22 @@ def save_checkpoint(
             "disc_loss": float(metrics.disc_loss),
         }
 
+    # state_cpu is already on CPU, no need for jax.device_get
     checkpoint_data = {
         "iteration": iteration,
-        "total_steps": int(state.total_steps),
+        "total_steps": total_steps,
         "metrics": metrics_dict,
-        "policy_params": jax.device_get(state.policy_params),
-        "value_params": jax.device_get(state.value_params),
-        "processor_params": jax.device_get(state.processor_params),
-        "disc_params": jax.device_get(state.disc_params),
-        "policy_opt_state": jax.device_get(state.policy_opt_state),
-        "value_opt_state": jax.device_get(state.value_opt_state),
-        "disc_opt_state": jax.device_get(state.disc_opt_state),
-        "feature_mean": jax.device_get(state.feature_mean),
-        "feature_var": jax.device_get(state.feature_var),
-        "feature_count": jax.device_get(state.feature_count),
-        "rng": jax.device_get(state.rng),
+        "policy_params": state_cpu.policy_params,
+        "value_params": state_cpu.value_params,
+        "processor_params": state_cpu.processor_params,
+        "disc_params": state_cpu.disc_params,
+        "policy_opt_state": state_cpu.policy_opt_state,
+        "value_opt_state": state_cpu.value_opt_state,
+        "disc_opt_state": state_cpu.disc_opt_state,
+        "feature_mean": state_cpu.feature_mean,
+        "feature_var": state_cpu.feature_var,
+        "feature_count": state_cpu.feature_count,
+        "rng": state_cpu.rng,
         "config": {
             "obs_dim": config.obs_dim,
             "action_dim": config.action_dim,
@@ -106,20 +147,12 @@ def save_checkpoint(
         },
     }
 
-    # Save iteration checkpoint
+    # Save iteration checkpoint (format: checkpoint_iteration_steps.pkl)
     checkpoint_path = os.path.join(
-        checkpoint_dir, f"checkpoint_iter_{iteration:06d}.pkl"
+        checkpoint_dir, f"checkpoint_{iteration}_{total_steps}.pkl"
     )
     with open(checkpoint_path, "wb") as f:
         pickle.dump(checkpoint_data, f)
-
-    # Save as best if requested (with iteration number in filename)
-    if is_best:
-        best_path = os.path.join(
-            checkpoint_dir, f"best_checkpoint_iter_{iteration:06d}.pkl"
-        )
-        with open(best_path, "wb") as f:
-            pickle.dump(checkpoint_data, f)
 
     return checkpoint_path
 
@@ -152,10 +185,17 @@ def list_checkpoints(checkpoint_dir: str) -> list:
 
     checkpoints = []
     for f in os.listdir(checkpoint_dir):
-        if f.startswith("checkpoint_iter_") and f.endswith(".pkl"):
+        # Match format: checkpoint_iteration_steps.pkl
+        if (
+            f.startswith("checkpoint_")
+            and not f.startswith("best_")
+            and f.endswith(".pkl")
+        ):
             try:
-                iter_num = int(f.split("_")[-1].replace(".pkl", ""))
-                checkpoints.append((iter_num, f))
+                parts = f.replace(".pkl", "").split("_")
+                if len(parts) >= 3:
+                    iter_num = int(parts[1])
+                    checkpoints.append((iter_num, f))
             except ValueError:
                 continue
 
@@ -163,45 +203,50 @@ def list_checkpoints(checkpoint_dir: str) -> list:
     return checkpoints
 
 
-def list_best_checkpoints(checkpoint_dir: str) -> list:
-    """List all best checkpoints in directory, sorted by iteration.
+def get_top_checkpoints_by_reward(checkpoint_dir: str, top_n: int = 3) -> list:
+    """Get top N checkpoints sorted by reward (highest first).
 
     Args:
         checkpoint_dir: Directory containing checkpoints
+        top_n: Number of top checkpoints to return
 
     Returns:
-        List of (iteration, filename) tuples sorted by iteration
+        List of (reward, iteration, steps, filename, metrics) tuples sorted by reward descending
     """
     if not os.path.exists(checkpoint_dir):
         return []
 
-    checkpoints = []
-    for f in os.listdir(checkpoint_dir):
-        if f.startswith("best_checkpoint_iter_") and f.endswith(".pkl"):
-            try:
-                iter_num = int(f.split("_")[-1].replace(".pkl", ""))
-                checkpoints.append((iter_num, f))
-            except ValueError:
-                continue
+    checkpoints_with_metrics = []
+    for iter_num, filename in list_checkpoints(checkpoint_dir):
+        filepath = os.path.join(checkpoint_dir, filename)
+        try:
+            ckpt_data = load_checkpoint(filepath)
+            metrics = ckpt_data.get("metrics", {})
+            if metrics:
+                reward = metrics.get("episode_reward", float("-inf"))
+                steps = ckpt_data.get("total_steps", 0)
+                checkpoints_with_metrics.append(
+                    (reward, iter_num, steps, filename, metrics)
+                )
+        except Exception:
+            continue
 
-    checkpoints.sort(key=lambda x: x[0])
-    return checkpoints
+    # Sort by reward descending
+    checkpoints_with_metrics.sort(key=lambda x: x[0], reverse=True)
+    return checkpoints_with_metrics[:top_n]
 
 
 def manage_checkpoints(checkpoint_dir: str, keep_last_n: int = 5) -> None:
-    """Remove old checkpoints, keeping only the last N of each type.
-
-    Cleans up both regular checkpoints (checkpoint_iter_*) and
-    best checkpoints (best_checkpoint_iter_*).
+    """Remove old checkpoints, keeping only the last N.
 
     Args:
         checkpoint_dir: Directory containing checkpoints
-        keep_last_n: Number of recent checkpoints to keep (for each type)
+        keep_last_n: Number of recent checkpoints to keep
     """
     if not os.path.exists(checkpoint_dir):
         return
 
-    # Clean up regular checkpoints
+    # Clean up regular checkpoints (keep last N by iteration)
     regular_checkpoints = list_checkpoints(checkpoint_dir)
     if len(regular_checkpoints) > keep_last_n:
         for iter_num, filename in regular_checkpoints[:-keep_last_n]:
@@ -211,61 +256,52 @@ def manage_checkpoints(checkpoint_dir: str, keep_last_n: int = 5) -> None:
             except OSError:
                 pass
 
-    # Clean up best checkpoints
-    best_checkpoints = list_best_checkpoints(checkpoint_dir)
-    if len(best_checkpoints) > keep_last_n:
-        for iter_num, filename in best_checkpoints[:-keep_last_n]:
-            filepath = os.path.join(checkpoint_dir, filename)
-            try:
-                os.remove(filepath)
-            except OSError:
-                pass
 
+def print_top_checkpoints_summary(checkpoint_dir: str, top_n: int = 3) -> None:
+    """Print summary of top N checkpoints ranked by reward.
 
-def print_best_checkpoints_summary(checkpoint_dir: str) -> None:
-    """Print summary of top 5 best checkpoints with metrics.
+    Parses all checkpoints and displays the best ones by episode reward.
 
     Args:
         checkpoint_dir: Directory containing checkpoints
+        top_n: Number of top checkpoints to display
     """
-    best_checkpoints = list_best_checkpoints(checkpoint_dir)
-    if not best_checkpoints:
-        print("No best checkpoints found.")
+    top_checkpoints = get_top_checkpoints_by_reward(checkpoint_dir, top_n)
+    if not top_checkpoints:
+        print("No checkpoints found.")
         return
 
     print()
-    print("📊 Top 5 Best Checkpoints:")
-    print("-" * 100)
+    print(f"🏆 Top {len(top_checkpoints)} Checkpoints (by reward):")
+    print("-" * 120)
     print(
-        f"{'#':<3} {'Checkpoint':<35} {'Reward':>10} {'AMP':>10} "
-        f"{'Disc Acc':>10} {'Vel (m/s)':>10} {'Height':>10} {'Ep Len':>10}"
+        f"{'Rank':<5} {'Iter':>6} {'Steps':>12} "
+        f"{'Reward':>10} {'AMP':>10} {'Disc Acc':>10} "
+        f"{'Vel':>8} {'Height':>8} {'Ep Len':>8}"
     )
-    print("-" * 100)
+    print("-" * 120)
 
-    for i, (iter_num, filename) in enumerate(best_checkpoints[-5:], 1):
-        filepath = os.path.join(checkpoint_dir, filename)
-        try:
-            ckpt_data = load_checkpoint(filepath)
-            m = ckpt_data.get("metrics", {})
-            if m:
-                print(
-                    f"{i:<3} {filename:<35} "
-                    f"{m.get('episode_reward', 0):>10.2f} "
-                    f"{m.get('amp_reward_mean', 0):>10.4f} "
-                    f"{m.get('disc_accuracy', 0):>10.2f} "
-                    f"{m.get('forward_velocity', 0):>10.2f} "
-                    f"{m.get('robot_height', 0):>10.3f} "
-                    f"{m.get('episode_length', 0):>10.1f}"
-                )
-            else:
-                print(f"{i:<3} {filename:<35} (no metrics saved)")
-        except Exception:
-            print(f"{i:<3} {filename:<35} (failed to load)")
+    for rank, (reward, iter_num, steps, filename, metrics) in enumerate(
+        top_checkpoints, 1
+    ):
+        print(
+            f"#{rank:<4} {iter_num:>6} {steps:>12,} "
+            f"{reward:>10.2f} "
+            f"{metrics.get('amp_reward_mean', 0):>10.4f} "
+            f"{metrics.get('disc_accuracy', 0):>10.2f} "
+            f"{metrics.get('forward_velocity', 0):>8.2f} "
+            f"{metrics.get('robot_height', 0):>8.3f} "
+            f"{metrics.get('episode_length', 0):>8.1f}"
+        )
 
-    print("-" * 100)
-    print()
-    print(
-        f"💡 To resume from best: --resume "
-        f"{os.path.join(checkpoint_dir, best_checkpoints[-1][1])}"
-    )
+    print("-" * 120)
+
+    # Show resume command for the best checkpoint
+    if top_checkpoints:
+        best_filename = top_checkpoints[0][3]
+        print()
+        print(
+            f"💡 To resume from best: --resume "
+            f"{os.path.join(checkpoint_dir, best_filename)}"
+        )
     print()
