@@ -153,9 +153,9 @@ We implement a custom training loop using Brax's building blocks, but owning the
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    train_amp.py (CLI)                       │
+│                    train.py (CLI)                       │
 │                                                             │
-│  python train_amp.py --iterations 3000 --amp-weight 1.0     │
+│  python train.py --iterations 3000 --amp-weight 1.0     │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
@@ -200,7 +200,7 @@ playground_amp/
 │   ├── discriminator.py         # AMP discriminator (existing)
 │   ├── ref_buffer.py            # Reference motion buffer (existing)
 │   └── amp_features.py          # Feature extraction
-└── train_amp.py                 # CLI entry point
+└── train.py                 # CLI entry point
 ```
 
 ### Training Loop Flow
@@ -337,10 +337,10 @@ class AMPPPOConfig:
 
 ```bash
 # Quick smoke test (10 iterations)
-python playground_amp/train_amp.py --verify
+python playground_amp/train.py --verify
 
 # Full training with AMP
-python playground_amp/train_amp.py \
+python playground_amp/train.py \
     --iterations 3000 \
     --num-envs 32 \
     --amp-weight 1.0

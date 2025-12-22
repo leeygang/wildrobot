@@ -32,17 +32,15 @@ from __future__ import annotations
 import functools
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
+from typing import Any, Callable, NamedTuple, Optional, Tuple
+
+import flax.linen as nn
 
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import optax
 
-from playground_amp.amp.amp_features import (
-    DEFAULT_AMP_CONFIG,
-    extract_amp_features,
-)
+from playground_amp.amp.amp_features import DEFAULT_AMP_CONFIG, extract_amp_features
 from playground_amp.amp.discriminator import (
     AMPDiscriminator,
     compute_amp_reward,
@@ -63,12 +61,14 @@ from playground_amp.training.ppo_core import (
 # Configuration
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class AMPPPOConfigJit:
     """Configuration for JIT-compiled AMP+PPO training.
 
     All values must be static (known at compile time) for JIT.
     """
+
     # Environment
     obs_dim: int
     action_dim: int
@@ -112,8 +112,10 @@ class AMPPPOConfigJit:
 # Training State
 # =============================================================================
 
+
 class RunningMeanStdState(NamedTuple):
     """State for online mean/std computation."""
+
     mean: jnp.ndarray
     var: jnp.ndarray
     count: jnp.ndarray
@@ -121,6 +123,7 @@ class RunningMeanStdState(NamedTuple):
 
 class TrainingState(NamedTuple):
     """Complete training state - all JAX arrays, no Python objects."""
+
     # Network parameters
     policy_params: Any
     value_params: Any
@@ -145,6 +148,7 @@ class TrainingState(NamedTuple):
 
 class Transition(NamedTuple):
     """Single transition for rollout storage."""
+
     obs: jnp.ndarray
     action: jnp.ndarray
     reward: jnp.ndarray
@@ -156,6 +160,7 @@ class Transition(NamedTuple):
 
 class IterationMetrics(NamedTuple):
     """Metrics from one training iteration."""
+
     # PPO losses
     policy_loss: jnp.ndarray
     value_loss: jnp.ndarray
@@ -168,15 +173,16 @@ class IterationMetrics(NamedTuple):
     # Episode metrics
     episode_reward: jnp.ndarray
     # Task reward breakdown (for debugging)
-    task_reward_mean: jnp.ndarray      # Mean task reward per step
-    forward_velocity: jnp.ndarray      # Actual forward velocity (m/s)
-    robot_height: jnp.ndarray          # Robot base height (m)
-    episode_length: jnp.ndarray        # Mean episode length (steps)
+    task_reward_mean: jnp.ndarray  # Mean task reward per step
+    forward_velocity: jnp.ndarray  # Actual forward velocity (m/s)
+    robot_height: jnp.ndarray  # Robot base height (m)
+    episode_length: jnp.ndarray  # Mean episode length (steps)
 
 
 # =============================================================================
 # Reference Motion Buffer (GPU-resident)
 # =============================================================================
+
 
 class JaxReferenceBuffer:
     """GPU-resident reference motion buffer for efficient sampling.
@@ -205,13 +211,16 @@ class JaxReferenceBuffer:
         Returns:
             Sampled features, shape (batch_size, feature_dim)
         """
-        indices = jax.random.choice(rng, self.num_samples, shape=(batch_size,), replace=True)
+        indices = jax.random.choice(
+            rng, self.num_samples, shape=(batch_size,), replace=True
+        )
         return self.data[indices]
 
 
 # =============================================================================
 # Feature Normalization (Online, JAX-compatible)
 # =============================================================================
+
 
 def update_running_stats(
     mean: jnp.ndarray,
@@ -260,6 +269,7 @@ def normalize_features(
 # =============================================================================
 # Rollout Collection (jax.lax.scan)
 # =============================================================================
+
 
 def collect_rollout_scan(
     env_step_fn: Callable,
@@ -335,6 +345,7 @@ def collect_rollout_scan(
 # AMP Feature Extraction (Batched)
 # =============================================================================
 
+
 def extract_amp_features_batched(
     obs: jnp.ndarray,
     next_obs: jnp.ndarray,
@@ -355,6 +366,7 @@ def extract_amp_features_batched(
 # =============================================================================
 # Discriminator Training (jax.lax.scan)
 # =============================================================================
+
 
 def train_discriminator_scan(
     disc_params: Any,
@@ -394,20 +406,32 @@ def train_discriminator_scan(
 
     def disc_update_step(carry, rng):
         params, opt_state = carry
-        rng, agent_rng, expert_rng, loss_rng, noise_rng1, noise_rng2 = jax.random.split(rng, 6)
+        rng, agent_rng, expert_rng, loss_rng, noise_rng1, noise_rng2 = jax.random.split(
+            rng, 6
+        )
 
         # Sample agent features
-        agent_indices = jax.random.choice(agent_rng, num_agent_samples, shape=(batch_size,), replace=True)
+        agent_indices = jax.random.choice(
+            agent_rng, num_agent_samples, shape=(batch_size,), replace=True
+        )
         agent_batch = agent_features[agent_indices]
 
         # Sample expert features
-        expert_indices = jax.random.choice(expert_rng, num_ref_samples, shape=(batch_size,), replace=True)
+        expert_indices = jax.random.choice(
+            expert_rng, num_ref_samples, shape=(batch_size,), replace=True
+        )
         expert_batch = ref_buffer_data[expert_indices]
 
         # Add input noise to both batches (hides simulation artifacts)
         if input_noise_std > 0:
-            agent_batch = agent_batch + jax.random.normal(noise_rng1, agent_batch.shape) * input_noise_std
-            expert_batch = expert_batch + jax.random.normal(noise_rng2, expert_batch.shape) * input_noise_std
+            agent_batch = (
+                agent_batch
+                + jax.random.normal(noise_rng1, agent_batch.shape) * input_noise_std
+            )
+            expert_batch = (
+                expert_batch
+                + jax.random.normal(noise_rng2, expert_batch.shape) * input_noise_std
+            )
 
         # Compute loss and gradients
         def loss_fn(p):
@@ -441,6 +465,7 @@ def train_discriminator_scan(
 # =============================================================================
 # PPO Update (jax.lax.scan)
 # =============================================================================
+
 
 def ppo_update_scan(
     policy_params: Any,
@@ -497,7 +522,9 @@ def ppo_update_scan(
         mb_returns = returns[mb_indices]
 
         # Normalize advantages
-        mb_advantages = (mb_advantages - jnp.mean(mb_advantages)) / (jnp.std(mb_advantages) + 1e-8)
+        mb_advantages = (mb_advantages - jnp.mean(mb_advantages)) / (
+            jnp.std(mb_advantages) + 1e-8
+        )
 
         # Compute loss and gradients
         def loss_fn(policy_p, value_p):
@@ -522,7 +549,9 @@ def ppo_update_scan(
         )(policy_p, value_p)
 
         # Update policy
-        policy_updates, new_policy_opt = policy_optimizer.update(policy_grads, policy_opt)
+        policy_updates, new_policy_opt = policy_optimizer.update(
+            policy_grads, policy_opt
+        )
         new_policy_p = optax.apply_updates(policy_p, policy_updates)
 
         # Update value
@@ -546,14 +575,21 @@ def ppo_update_scan(
     mean_total_loss = jnp.mean(all_metrics.total_loss)
 
     return (
-        new_policy_params, new_value_params, new_policy_opt, new_value_opt,
-        mean_policy_loss, mean_value_loss, mean_entropy_loss, mean_total_loss
+        new_policy_params,
+        new_value_params,
+        new_policy_opt,
+        new_value_opt,
+        mean_policy_loss,
+        mean_value_loss,
+        mean_entropy_loss,
+        mean_total_loss,
     )
 
 
 # =============================================================================
 # Single Training Iteration (JIT-compiled)
 # =============================================================================
+
 
 def make_train_iteration_fn(
     env_step_fn: Callable,
@@ -600,7 +636,9 @@ def make_train_iteration_fn(
         # ====================================================================
         # Step 2: Extract and normalize AMP features
         # ====================================================================
-        amp_features = extract_amp_features_batched(transitions.obs, transitions.next_obs)
+        amp_features = extract_amp_features_batched(
+            transitions.obs, transitions.next_obs
+        )
         # Shape: (num_steps, num_envs, feature_dim)
 
         # Flatten for discriminator training
@@ -608,7 +646,10 @@ def make_train_iteration_fn(
 
         # Update running stats
         new_feature_mean, new_feature_var, new_feature_count = update_running_stats(
-            state.feature_mean, state.feature_var, state.feature_count, flat_amp_features
+            state.feature_mean,
+            state.feature_var,
+            state.feature_count,
+            flat_amp_features,
         )
 
         # Normalize features
@@ -624,19 +665,21 @@ def make_train_iteration_fn(
         # ====================================================================
         # Step 3: Train discriminator using jax.lax.scan
         # ====================================================================
-        new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy = train_discriminator_scan(
-            disc_params=state.disc_params,
-            disc_opt_state=state.disc_opt_state,
-            disc_model=disc_model,
-            disc_optimizer=disc_optimizer,
-            agent_features=norm_amp_features,
-            ref_buffer_data=norm_ref_data,
-            rng=disc_rng,
-            num_updates=config.disc_updates_per_iter,
-            batch_size=config.disc_batch_size,
-            gradient_penalty_weight=config.gradient_penalty_weight,
-            label_smoothing=config.label_smoothing,
-            input_noise_std=config.disc_input_noise_std,
+        new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy = (
+            train_discriminator_scan(
+                disc_params=state.disc_params,
+                disc_opt_state=state.disc_opt_state,
+                disc_model=disc_model,
+                disc_optimizer=disc_optimizer,
+                agent_features=norm_amp_features,
+                ref_buffer_data=norm_ref_data,
+                rng=disc_rng,
+                num_updates=config.disc_updates_per_iter,
+                batch_size=config.disc_batch_size,
+                gradient_penalty_weight=config.gradient_penalty_weight,
+                label_smoothing=config.label_smoothing,
+                input_noise_std=config.disc_input_noise_std,
+            )
         )
 
         # ====================================================================
@@ -649,7 +692,9 @@ def make_train_iteration_fn(
         def compute_amp_reward_single(feat):
             return compute_amp_reward(new_disc_params, disc_model, feat)
 
-        amp_rewards = jax.vmap(jax.vmap(compute_amp_reward_single))(norm_amp_features_shaped)
+        amp_rewards = jax.vmap(jax.vmap(compute_amp_reward_single))(
+            norm_amp_features_shaped
+        )
         # Shape: (num_steps, num_envs)
 
         amp_reward_mean = jnp.mean(amp_rewards)
@@ -682,8 +727,14 @@ def make_train_iteration_fn(
         flat_returns = returns.reshape(batch_size)
 
         (
-            new_policy_params, new_value_params, new_policy_opt, new_value_opt,
-            policy_loss, value_loss, entropy_loss, total_loss
+            new_policy_params,
+            new_value_params,
+            new_policy_opt,
+            new_value_opt,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            total_loss,
         ) = ppo_update_scan(
             policy_params=state.policy_params,
             value_params=state.value_params,
@@ -767,6 +818,7 @@ def make_train_iteration_fn(
 # Batch Training (Multiple iterations in one JIT call)
 # =============================================================================
 
+
 def make_train_n_iterations_fn(
     train_iteration_fn: Callable,
     n_iterations: int,
@@ -807,12 +859,15 @@ def make_train_n_iterations_fn(
 # Main Training Function
 # =============================================================================
 
+
 def train_amp_ppo_jit(
     env_step_fn: Callable,
     env_reset_fn: Callable,
     config: AMPPPOConfigJit,
     ref_motion_data: jnp.ndarray,
-    callback: Optional[Callable[[int, TrainingState, IterationMetrics, float], None]] = None,
+    callback: Optional[
+        Callable[[int, TrainingState, IterationMetrics, float], None]
+    ] = None,
 ) -> TrainingState:
     """Main training function with fully JIT-compiled training loop.
 
@@ -821,7 +876,8 @@ def train_amp_ppo_jit(
         env_reset_fn: Batched environment reset function (rng) -> state
         config: Training configuration
         ref_motion_data: Reference motion features, shape (num_samples, feature_dim)
-        callback: Optional callback for logging, called every log_interval
+        callback: Optional callback for logging and checkpoint management,
+                  called every log_interval with (iteration, state, metrics, steps_per_sec)
 
     Returns:
         Final training state
@@ -943,22 +999,33 @@ def train_amp_ppo_jit(
     while iteration < config.total_iterations:
         iter_start = time.time()
 
-        if train_batch_fn is not None and iteration + batch_size <= config.total_iterations:
+        if (
+            train_batch_fn is not None
+            and iteration + batch_size <= config.total_iterations
+        ):
             # Run batch of iterations
-            state, env_state, metrics = train_batch_fn(state, env_state, ref_buffer_data)
+            state, env_state, metrics = train_batch_fn(
+                state, env_state, ref_buffer_data
+            )
             iteration += batch_size
         else:
             # Run single iteration
-            state, env_state, metrics = train_iteration_fn(state, env_state, ref_buffer_data)
+            state, env_state, metrics = train_iteration_fn(
+                state, env_state, ref_buffer_data
+            )
             iteration += 1
 
         # Force sync to get accurate timing
         jax.block_until_ready(state.total_steps)
 
         iter_time = time.time() - iter_start
-        steps_per_sec = (config.num_steps * config.num_envs * batch_size) / iter_time if train_batch_fn else (config.num_steps * config.num_envs) / iter_time
+        steps_per_sec = (
+            (config.num_steps * config.num_envs * batch_size) / iter_time
+            if train_batch_fn
+            else (config.num_steps * config.num_envs) / iter_time
+        )
 
-        # Logging
+        # Logging and callback (handles W&B logging and checkpoint saving)
         if iteration % config.log_interval == 0 or iteration == 1:
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100

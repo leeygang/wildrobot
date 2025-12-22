@@ -10,7 +10,7 @@ hardcoding robot-specific values.
 Usage:
     from playground_amp.configs.config import load_robot_config, load_training_config, RobotConfig
 
-    # Load robot config (path passed from train_amp.py)
+    # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")
 
     # Access robot properties
@@ -310,7 +310,9 @@ class TrainingConfig:
             save_interval=trainer.get("save_interval", 100),
             checkpoint_dir=trainer.get("checkpoint_dir", "playground_amp/checkpoints"),
             # Networks
-            policy_hidden_dims=tuple(networks.get("policy_hidden_dims", [512, 256, 128])),
+            policy_hidden_dims=tuple(
+                networks.get("policy_hidden_dims", [512, 256, 128])
+            ),
             value_hidden_dims=tuple(networks.get("value_hidden_dims", [512, 256, 128])),
             log_std_min=networks.get("log_std_min", -20.0),
             log_std_max=networks.get("log_std_max", 2.0),
@@ -399,7 +401,9 @@ def get_robot_config() -> RobotConfig:
         RuntimeError: If config hasn't been loaded yet
     """
     if _robot_config is None:
-        raise RuntimeError("Robot config not loaded. Call load_robot_config(path) first.")
+        raise RuntimeError(
+            "Robot config not loaded. Call load_robot_config(path) first."
+        )
     return _robot_config
 
 
@@ -410,7 +414,9 @@ def get_training_config() -> TrainingConfig:
         RuntimeError: If config hasn't been loaded yet
     """
     if _training_config is None:
-        raise RuntimeError("Training config not loaded. Call load_training_config(path) first.")
+        raise RuntimeError(
+            "Training config not loaded. Call load_training_config(path) first."
+        )
     return _training_config
 
 

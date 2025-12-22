@@ -6,16 +6,16 @@ using PPO with Adversarial Motion Priors (AMP) for natural motion learning.
 
 Usage:
     # Default training with AMP+PPO (recommended)
-    python train_amp.py
+    python train.py
 
     # With custom configuration
-    python train_amp.py --num-envs 512 --iterations 5000
+    python train.py --num-envs 512 --iterations 5000
 
     # Quick smoke test
-    python train_amp.py --verify
+    python train.py --verify
 
     # Debug mode: Pure PPO without AMP (Brax trainer)
-    python train_amp.py --debug-brax-ppo
+    python train.py --debug-brax-ppo
 
 Architecture:
     This script supports two training modes:

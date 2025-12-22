@@ -1,7 +1,7 @@
 # WildRobot Training Configuration (PPO + AMP)
 #
 # Usage:
-#   uv run python playground_amp/train_amp.py
+#   uv run python playground_amp/train.py
 #
 # Total steps = iterations × num_envs × rollout_steps
 
@@ -95,6 +95,14 @@ wandb:
   project: wildrobot-amp
   mode: online
   tags: [ppo, amp]
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  interval: 100              # Save checkpoint every N iterations
+  keep_last_n: 5             # Number of recent checkpoints to keep
+  save_best: true            # Also save best checkpoint (by reward)
 
 # =============================================================================
 # Video (after training)

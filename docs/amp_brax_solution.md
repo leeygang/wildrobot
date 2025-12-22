@@ -346,7 +346,7 @@ playground_amp/
 │   ├── amp_ppo_training.py   # NEW: Custom training loop
 │   ├── ppo_building_blocks.py # NEW: Ported Brax components
 │   └── transitions.py        # NEW: AMPTransition dataclass
-└── train_amp.py              # NEW: Entry point
+└── train.py              # NEW: Entry point
 ```
 
 ---

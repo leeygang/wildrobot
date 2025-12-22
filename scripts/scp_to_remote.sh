@@ -13,7 +13,7 @@
 #
 # Examples:
 #   ./scp_to_remote.sh --public --code
-#   ./scp_to_remote.sh --public playground_amp/train_amp.py
+#   ./scp_to_remote.sh --public playground_amp/train.py
 #   ./scp_to_remote.sh --all                    # Uses linux-pc.local
 
 set -e
@@ -95,7 +95,6 @@ sync_code() {
     echo -e "\n${YELLOW}=== Syncing Code Files ===${NC}\n"
 
     # Training scripts
-    sync_file "playground_amp/train_amp.py"
     sync_file "playground_amp/train.py"
 
     # Training modules
@@ -139,7 +138,7 @@ sync_all() {
     echo -e "\n${YELLOW}To start training on Ubuntu:${NC}"
     echo "  ssh $REMOTE_USER@$REMOTE_HOST"
     echo "  cd ~/projects/wildrobot"
-    echo "  uv run python playground_amp/train_amp.py \\"
+    echo "  uv run python playground_amp/train.py \\"
     echo "      --use-custom-loop \\"
     echo "      --iterations 3000 \\"
     echo "      --num-envs 2048 \\"
@@ -158,7 +157,7 @@ if [ $# -eq 0 ]; then
     echo "  --code       Sync only code files"
     echo ""
     echo "Examples:"
-    echo "  $0 playground_amp/train_amp.py"
+    echo "  $0 playground_amp/train.py"
     echo "  $0 data/amp/walking_motions_merged.pkl"
     echo "  $0 --all"
     exit 1

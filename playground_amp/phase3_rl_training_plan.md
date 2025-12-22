@@ -204,7 +204,7 @@ Implement AMP (Adversarial Motion Priors) discriminator for natural motion learn
   - ✅ `compute_gae()` for advantage estimation
   - ✅ `ppo_loss()` with clipped surrogate objective
   - ✅ `train_amp_ppo()` complete training loop
-  - ✅ `train_amp.py` CLI entry point
+  - ✅ `train.py` CLI entry point
   - ✅ **Smoke test PASSED** (3 iterations, discriminator training working)
 
 **Root Cause Analysis (2025-12-16):**
@@ -264,7 +264,7 @@ Iter     2 | Reward:     0.00 | PPO Loss:   0.1649 | Disc Loss: 6.0245 | Disc Ac
 - `playground_amp/training/transitions.py` (~110 lines) - **AMPTransition dataclass (NEW)**
 - `playground_amp/training/ppo_building_blocks.py` (~380 lines) - **GAE, PPO loss, networks (NEW)**
 - `playground_amp/training/amp_ppo_training.py` (~620 lines) - **Custom training loop (NEW)**
-- `playground_amp/train_amp.py` (~260 lines) - **CLI entry point (NEW)**
+- `playground_amp/train.py` (~260 lines) - **CLI entry point (NEW)**
 - `scripts/test_amp_components.py` (~150 lines) - Validation suite
 - `docs/task5_amp_integration_progress.md` - Phase 1 progress report
 - `docs/task5_phase2_integration_status.md` - Phase 2 status
@@ -277,13 +277,13 @@ Iter     2 | Reward:     0.00 | PPO Loss:   0.1649 | Disc Loss: 6.0245 | Disc Ac
 **Usage:**
 ```bash
 # Quick smoke test (10 iterations)
-python playground_amp/train_amp.py --verify
+python playground_amp/train.py --verify
 
 # Full training with AMP
-python playground_amp/train_amp.py --iterations 3000 --num-envs 32 --amp-weight 1.0
+python playground_amp/train.py --iterations 3000 --num-envs 32 --amp-weight 1.0
 
 # Training without AMP (pure PPO baseline)
-python playground_amp/train_amp.py --no-amp
+python playground_amp/train.py --no-amp
 ```
 
 **Value Delivered:**
@@ -642,7 +642,7 @@ Created unified `ExperimentTracker` module that provides:
 - `playground_amp/training/experiment_tracking.py` (~500 lines) - Unified tracking module
 
 **Files Modified:**
-- `playground_amp/train_amp.py` - Integrated ExperimentTracker with full metrics logging
+- `playground_amp/train.py` - Integrated ExperimentTracker with full metrics logging
 - `playground_amp/train.py` - Added import for ExperimentTracker
 
 **Metrics Logged (per iteration):**
@@ -1025,7 +1025,7 @@ print(f'Right knee: {right_knee.min():.1f}° to {right_knee.max():.1f}°')
 ```bash
 # Run PPO+AMP training with merged motion dataset
 cd ~/projects/wildrobot
-python playground_amp/train_amp.py \
+python playground_amp/train.py \
     --iterations 3000 \
     --num-envs 32 \
     --amp-weight 1.0 \
@@ -1224,7 +1224,7 @@ reward_scales = {
 - `playground_amp/training/trainer_jit.py` (~900 lines) - Fully JIT-compiled trainer
 
 **Files Modified:**
-- `playground_amp/train_amp.py` - Added JIT trainer integration, `--legacy` flag for old trainer
+- `playground_amp/train.py` - Added JIT trainer integration, `--legacy` flag for old trainer
 
 ---
 
