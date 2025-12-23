@@ -1,10 +1,17 @@
 """AMP Discriminator for natural motion learning.
 
-Based on DeepMind's AMP paper (2021) with 2024 improvements:
+Based on the original AMP paper (Peng et al., 2021) using LSGAN formulation:
+- Least Squares GAN loss (more stable than BCE)
+- AMP reward as POSITIVE BONUS (not penalty)
 - Larger network (1024-512-256) for better expressiveness
 - LayerNorm for training stability
 - ELU activations
-- Binary classification (real reference motion vs fake policy motion)
+
+LSGAN Formulation:
+- Discriminator outputs raw scores (no sigmoid)
+- D(real) → 1, D(fake) → 0
+- Loss: (D(real) - 1)² + D(fake)²
+- Reward: max(0, 1 - 0.25 * (D(s) - 1)²)
 """
 
 from typing import Sequence
@@ -93,17 +100,18 @@ def discriminator_loss(
     fake_obs,
     rng_key,
     gradient_penalty_weight=5.0,
-    label_smoothing=0.1,
     input_noise_std=0.0,
 ):
-    """Compute discriminator loss with gradient penalty and label smoothing.
+    """Compute LSGAN discriminator loss with gradient penalty.
 
-    Binary cross-entropy loss with label smoothing:
-    - Real samples should have D(x) → (1 - label_smoothing) = 0.9
-    - Fake samples should have D(x) → label_smoothing = 0.1
+    LSGAN (Least Squares GAN) loss from the original AMP paper:
+    - Real samples: (D(x) - 1)² (want D to output 1 for real)
+    - Fake samples: (D(x) - 0)² (want D to output 0 for fake)
 
-    Label smoothing prevents discriminator from becoming overconfident,
-    which helps prevent mode collapse in adversarial training.
+    Benefits of LSGAN over BCE:
+    - More stable gradients (no vanishing gradients when D is confident)
+    - Smoother loss landscape
+    - Better convergence in adversarial training
 
     Gradient penalty (WGAN-GP style):
     - Encourages smooth discriminator
@@ -121,7 +129,6 @@ def discriminator_loss(
         fake_obs: Policy rollout observations (batch, obs_dim)
         rng_key: JAX random key
         gradient_penalty_weight: Weight for gradient penalty term
-        label_smoothing: Amount of label smoothing (0.0 = no smoothing)
         input_noise_std: Std of Gaussian noise to add to inputs (0.0 = no noise)
 
     Returns:
@@ -135,19 +142,16 @@ def discriminator_loss(
         real_obs = real_obs + real_noise
         fake_obs = fake_obs + fake_noise
 
-    # Forward pass on real and fake samples
-    real_logits = model.apply(params, real_obs, training=True)
-    fake_logits = model.apply(params, fake_obs, training=True)
+    # Forward pass on real and fake samples (raw logits, no sigmoid)
+    real_scores = model.apply(params, real_obs, training=True)
+    fake_scores = model.apply(params, fake_obs, training=True)
 
-    # Binary cross-entropy loss with label smoothing
-    # Real samples: target = 1 - smoothing (e.g., 0.9)
-    # Fake samples: target = smoothing (e.g., 0.1)
-    real_targets = jnp.ones_like(real_logits) * (1.0 - label_smoothing)
-    fake_targets = jnp.ones_like(fake_logits) * label_smoothing
-
-    real_loss = optax.sigmoid_binary_cross_entropy(real_logits, real_targets)
-    fake_loss = optax.sigmoid_binary_cross_entropy(fake_logits, fake_targets)
-    bce_loss = jnp.mean(real_loss) + jnp.mean(fake_loss)
+    # LSGAN loss: least squares instead of BCE
+    # Real samples: want D(x) → 1, so loss = (D(x) - 1)²
+    # Fake samples: want D(x) → 0, so loss = D(x)²
+    real_loss = jnp.mean((real_scores - 1.0) ** 2)
+    fake_loss = jnp.mean(fake_scores ** 2)
+    lsgan_loss = 0.5 * (real_loss + fake_loss)
 
     # Gradient penalty (on interpolated samples)
     batch_size = real_obs.shape[0]
@@ -162,36 +166,44 @@ def discriminator_loss(
     gradient_penalty = jnp.mean((grad_norm - 1.0) ** 2)
 
     # Total loss
-    total_loss = bce_loss + gradient_penalty_weight * gradient_penalty
+    total_loss = lsgan_loss + gradient_penalty_weight * gradient_penalty
 
-    # Metrics for logging (accuracy still uses hard 0.5 threshold)
-    real_probs = jax.nn.sigmoid(real_logits)
-    fake_probs = jax.nn.sigmoid(fake_logits)
+    # Metrics for logging
+    # For LSGAN, "accuracy" = how well D separates real (→1) from fake (→0)
+    # Use 0.5 threshold on raw scores
     accuracy = (
-        jnp.mean(real_probs > 0.5).astype(jnp.float32) * 0.5 +
-        jnp.mean(fake_probs < 0.5).astype(jnp.float32) * 0.5
+        jnp.mean(real_scores > 0.5).astype(jnp.float32) * 0.5 +
+        jnp.mean(fake_scores < 0.5).astype(jnp.float32) * 0.5
     )
 
     metrics = {
         "discriminator_loss": total_loss,
-        "discriminator_bce": bce_loss,
+        "discriminator_lsgan": lsgan_loss,
         "discriminator_gp": gradient_penalty,
         "discriminator_accuracy": accuracy,
-        "discriminator_real_mean": jnp.mean(real_probs),
-        "discriminator_fake_mean": jnp.mean(fake_probs),
+        "discriminator_real_mean": jnp.mean(real_scores),  # Should → 1
+        "discriminator_fake_mean": jnp.mean(fake_scores),  # Should → 0
     }
 
     return total_loss, metrics
 
 
 def compute_amp_reward(params, model, obs):
-    """Compute AMP reward for policy training.
+    """Compute AMP reward for policy training (LSGAN formulation).
 
-    AMP reward encourages policy to generate motions similar to reference.
+    Original AMP paper reward formula (Peng et al., 2021):
+        r_amp = max(0, 1 - 0.25 * (D(s) - 1)²)
 
-    Reward formula: r_amp = log(sigmoid(D(x)))
-    - High when discriminator thinks motion is "real" (like reference)
-    - Low when discriminator thinks motion is "fake"
+    This is a POSITIVE BONUS (not a penalty):
+    - D(s) = 1.0 (looks like reference) → reward = 1.0 (maximum bonus)
+    - D(s) = 0.5 → reward = 0.9375
+    - D(s) = 0.0 (looks fake) → reward = 0.75
+    - D(s) = -1.0 → reward = 0.0 (clipped)
+
+    Benefits:
+    - Always positive (0 to 1 range) - easier to balance with task reward
+    - Smooth gradient everywhere (no log singularities)
+    - Matches the LSGAN discriminator loss
 
     Args:
         params: Discriminator parameters
@@ -199,13 +211,17 @@ def compute_amp_reward(params, model, obs):
         obs: Policy observations (batch, obs_dim)
 
     Returns:
-        amp_reward: (batch,) AMP rewards
+        amp_reward: (batch,) AMP rewards (positive values, 0 to 1)
     """
-    logits = model.apply(params, obs, training=False)
-    probs = jax.nn.sigmoid(logits)
-    # Clip to avoid log(0)
-    probs = jnp.clip(probs, 1e-8, 1.0 - 1e-8)
-    amp_reward = jnp.log(probs)
+    # Get raw discriminator scores (not sigmoid - LSGAN uses raw outputs)
+    scores = model.apply(params, obs, training=False)
+
+    # LSGAN reward: max(0, 1 - 0.25 * (D(s) - 1)²)
+    # When D(s) → 1 (real), reward → 1.0
+    # When D(s) → 0 (fake), reward → 0.75
+    # When D(s) → -1, reward → 0.0 (clipped)
+    amp_reward = jnp.maximum(0.0, 1.0 - 0.25 * (scores - 1.0) ** 2)
+
     return amp_reward
 
 

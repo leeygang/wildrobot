@@ -140,7 +140,6 @@ def save_checkpoint_from_cpu(
             "disc_batch_size": config.disc_batch_size,
             "gradient_penalty_weight": config.gradient_penalty_weight,
             "disc_hidden_dims": config.disc_hidden_dims,
-            "label_smoothing": config.label_smoothing,
             "disc_input_noise_std": config.disc_input_noise_std,
             "total_iterations": config.total_iterations,
             "seed": config.seed,

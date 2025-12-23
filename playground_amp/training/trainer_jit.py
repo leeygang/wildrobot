@@ -99,7 +99,6 @@ class AMPPPOConfigJit:
     disc_batch_size: int
     gradient_penalty_weight: float
     disc_hidden_dims: Tuple[int, ...]
-    label_smoothing: float  # Label smoothing for discriminator (prevents mode collapse)
     disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 
     # Training
@@ -218,42 +217,31 @@ class JaxReferenceBuffer:
 
 
 # =============================================================================
-# Feature Normalization (Online, JAX-compatible)
+# Feature Normalization (Fixed from Reference Data)
 # =============================================================================
 
 
-def update_running_stats(
-    mean: jnp.ndarray,
-    var: jnp.ndarray,
-    count: jnp.ndarray,
-    batch: jnp.ndarray,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Update running mean/variance with Welford's algorithm.
+def compute_normalization_stats(
+    data: jnp.ndarray,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute normalization statistics from reference data.
+
+    These stats are computed ONCE from reference motion data and used
+    throughout training. This prevents distribution drift where the
+    running statistics adapt to the policy's motion, causing the
+    reference data to appear "out of distribution".
 
     Args:
-        mean: Current mean
-        var: Current variance
-        count: Current count
-        batch: New batch of data, shape (batch_size, feature_dim)
+        data: Reference motion features, shape (num_samples, feature_dim)
 
     Returns:
-        Updated (mean, var, count)
+        (mean, var): Fixed normalization statistics
     """
-    batch_mean = jnp.mean(batch, axis=0)
-    batch_var = jnp.var(batch, axis=0)
-    batch_count = batch.shape[0]
-
-    new_count = count + batch_count
-    delta = batch_mean - mean
-
-    new_mean = mean + delta * batch_count / new_count
-
-    m_a = var * count
-    m_b = batch_var * batch_count
-    m2 = m_a + m_b + delta**2 * count * batch_count / new_count
-    new_var = m2 / new_count
-
-    return new_mean, new_var, new_count
+    mean = jnp.mean(data, axis=0)
+    var = jnp.var(data, axis=0)
+    # Ensure variance is at least some minimum to avoid division by zero
+    var = jnp.maximum(var, 1e-8)
+    return mean, var
 
 
 def normalize_features(
@@ -379,7 +367,6 @@ def train_discriminator_scan(
     num_updates: int,
     batch_size: int,
     gradient_penalty_weight: float,
-    label_smoothing: float = 0.1,
     input_noise_std: float = 0.0,
 ) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
     """Train discriminator using jax.lax.scan.
@@ -395,7 +382,6 @@ def train_discriminator_scan(
         num_updates: Number of discriminator updates
         batch_size: Batch size per update
         gradient_penalty_weight: WGAN-GP penalty weight
-        label_smoothing: Label smoothing amount (0.1 = use 0.9/0.1 instead of 1/0)
         input_noise_std: Gaussian noise std to add to inputs (hides simulation artifacts)
 
     Returns:
@@ -442,7 +428,6 @@ def train_discriminator_scan(
                 fake_obs=agent_batch,
                 rng_key=loss_rng,
                 gradient_penalty_weight=gradient_penalty_weight,
-                label_smoothing=label_smoothing,
             )
 
         (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -644,22 +629,16 @@ def make_train_iteration_fn(
         # Flatten for discriminator training
         flat_amp_features = amp_features.reshape(-1, amp_features.shape[-1])
 
-        # Update running stats
-        new_feature_mean, new_feature_var, new_feature_count = update_running_stats(
-            state.feature_mean,
-            state.feature_var,
-            state.feature_count,
-            flat_amp_features,
-        )
-
-        # Normalize features
+        # Use FIXED normalization stats from reference data (prevents distribution drift)
+        # These were computed once at initialization from ref_motion_data
+        # Both policy and reference features use the same fixed stats
         norm_amp_features = normalize_features(
-            flat_amp_features, new_feature_mean, new_feature_var
+            flat_amp_features, state.feature_mean, state.feature_var
         )
 
-        # Also normalize reference data with same stats
+        # Reference data also uses same fixed stats (computed from itself)
         norm_ref_data = normalize_features(
-            ref_buffer_data, new_feature_mean, new_feature_var
+            ref_buffer_data, state.feature_mean, state.feature_var
         )
 
         # ====================================================================
@@ -677,7 +656,6 @@ def make_train_iteration_fn(
                 num_updates=config.disc_updates_per_iter,
                 batch_size=config.disc_batch_size,
                 gradient_penalty_weight=config.gradient_penalty_weight,
-                label_smoothing=config.label_smoothing,
                 input_noise_std=config.disc_input_noise_std,
             )
         )
@@ -786,9 +764,9 @@ def make_train_iteration_fn(
             policy_opt_state=new_policy_opt,
             value_opt_state=new_value_opt,
             disc_opt_state=new_disc_opt_state,
-            feature_mean=new_feature_mean,
-            feature_var=new_feature_var,
-            feature_count=new_feature_count,
+            feature_mean=state.feature_mean,  # Fixed - never changes
+            feature_var=state.feature_var,    # Fixed - never changes
+            feature_count=state.feature_count,  # Not used anymore, kept for API compat
             iteration=state.iteration + 1,
             total_steps=state.total_steps + env_steps,
             rng=rng,
@@ -934,10 +912,15 @@ def train_amp_ppo_jit(
     value_opt_state = value_optimizer.init(value_params)
     disc_opt_state = disc_optimizer.init(disc_params)
 
-    # Initialize feature normalization
-    feature_mean = jnp.zeros(amp_feature_dim)
-    feature_var = jnp.ones(amp_feature_dim)
-    feature_count = jnp.array(1e-4)
+    # Move reference data to GPU first (needed for normalization stats)
+    ref_buffer_data = jnp.asarray(ref_motion_data, dtype=jnp.float32)
+    print(f"✓ Reference buffer: {ref_buffer_data.shape[0]} samples on GPU")
+
+    # Compute FIXED normalization stats from reference data
+    # This prevents distribution drift during training
+    feature_mean, feature_var = compute_normalization_stats(ref_buffer_data)
+    feature_count = jnp.array(float(ref_buffer_data.shape[0]))  # Not used, kept for compat
+    print(f"✓ Fixed normalization stats from reference data")
 
     # Create initial training state
     state = TrainingState(
@@ -959,10 +942,6 @@ def train_amp_ppo_jit(
     # Initialize environment
     env_state = env_reset_fn(env_rng)
     print(f"✓ Environment initialized")
-
-    # Move reference data to GPU
-    ref_buffer_data = jnp.asarray(ref_motion_data, dtype=jnp.float32)
-    print(f"✓ Reference buffer: {ref_buffer_data.shape[0]} samples on GPU")
 
     # Create JIT-compiled training function
     train_iteration_fn = make_train_iteration_fn(

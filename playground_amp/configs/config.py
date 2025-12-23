@@ -247,7 +247,6 @@ class TrainingConfig:
     disc_input_noise_std: float
     disc_hidden_dims: Tuple[int, ...]
     ref_buffer_size: int
-    ref_seq_len: int
     ref_motion_mode: str
     ref_motion_path: Optional[str]
     normalize_amp_features: bool
@@ -326,7 +325,6 @@ class TrainingConfig:
             disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
             disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
             ref_buffer_size=amp.get("ref_buffer_size", 2000),
-            ref_seq_len=amp.get("ref_seq_len", 32),
             ref_motion_mode=amp.get("ref_motion_mode", "file"),
             ref_motion_path=amp.get("dataset_path"),
             normalize_amp_features=amp.get("normalize_features", True),
