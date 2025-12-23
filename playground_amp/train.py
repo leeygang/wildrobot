@@ -1,548 +1,946 @@
-"""Minimal JAX trainer for playground_amp using WildRobotEnv.
+#!/usr/bin/env python3
+"""Entry point for AMP+PPO training on WildRobot.
 
-This is a lightweight, self-contained training script that:
-- Instantiates `playground_amp.envs.wildrobot_env.WildRobotEnv`
-- Uses a small MLP policy (Gaussian) and value network in JAX
-- Collects rollouts from the vectorized env and runs simple policy-gradient + value updates
+This script provides a command-line interface for training a walking policy
+using PPO with Adversarial Motion Priors (AMP) for natural motion learning.
 
-This trainer is intentionally small for development and smoke training. It does NOT
-implement full PPO clipping, minibatching, or advanced optimizers — those can be
-added later. It avoids importing code from `mujoco-brax` as requested.
+Usage:
+    # Default training with AMP+PPO (recommended)
+    python train.py
+
+    # With custom configuration
+    python train.py --num-envs 512 --iterations 5000
+
+    # Quick smoke test
+    python train.py --verify
+
+    # Debug mode: Pure PPO without AMP (Brax trainer)
+    python train.py --debug-brax-ppo
+
+Architecture:
+    This script supports two training modes:
+
+    1. AMP+PPO (default): Uses custom training loop that integrates AMP
+       discriminator for natural motion learning from reference data.
+
+    2. Brax PPO (--debug-brax-ppo): Uses Brax's PPO trainer without AMP.
+       For debugging and comparison only.
 """
 
 from __future__ import annotations
 
-import time
-import os
 import argparse
-from dataclasses import dataclass
-from typing import Tuple, Any
+import functools
+import os
+import pickle
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
 
-import jax
-import jax.numpy as jnp
-import numpy as np
+from ml_collections import config_dict
 
-from playground_amp.envs.wildrobot_env import EnvConfig, WildRobotEnv
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
-# Prefer Flax + Optax when available for clean optax updates and Flax models
-use_flax = False
-try:
-    import flax.linen as nn
-    import optax
-    use_flax = True
-except Exception:
-    try:
-        import optax
-        use_flax = False
-    except Exception:
-        use_flax = False
+# Default config paths
+DEFAULT_TRAINING_CONFIG_PATH = (
+    Path(__file__).parent / "configs" / "ppo_amass_training.yaml"
+)
+DEFAULT_ROBOT_CONFIG_PATH = (
+    Path(__file__).parent.parent / "assets" / "robot_config.yaml"
+)
 
+# Import config loaders from configs module
+from playground_amp.configs.config import (
+    load_robot_config,
+    load_training_config,
+    RobotConfig,
+    TrainingConfig,
+    WandbConfig,
+)
 
-@dataclass
-class TrainerConfig:
-    num_envs: int = 8
-    rollout_steps: int = 64
-    total_updates: int = 20
-    lr: float = 1e-3
-    gamma: float = 0.99
-    seed: int = 0
-    policy_layers: list = None
-    value_layers: list = None
+# Import checkpoint management
+from playground_amp.training.checkpoint import (
+    get_top_checkpoints_by_reward,
+    load_checkpoint,
+    manage_checkpoints,
+    print_top_checkpoints_summary,
+    save_checkpoint,
+    save_checkpoint_from_cpu,
+)
 
-
-if use_flax:
-    class MLP(nn.Module):
-        layer_sizes: tuple
-
-        @nn.compact
-        def __call__(self, x):
-            h = x
-            for i, size in enumerate(self.layer_sizes[1:]):
-                h = nn.Dense(size)(h)
-                if i < len(self.layer_sizes[1:]) - 1:
-                    h = nn.tanh(h)
-            return h
-else:
-    def init_mlp(layer_sizes, key, scale=0.1):
-        params = []
-        ks = jax.random.split(key, len(layer_sizes) - 1)
-        for k, (n_in, n_out) in zip(ks, zip(layer_sizes[:-1], layer_sizes[1:])):
-            w = scale * jax.random.normal(k, (n_in, n_out))
-            b = jnp.zeros((n_out,))
-            params.append((w, b))
-        return params
+# Import W&B tracker
+from playground_amp.training.experiment_tracking import (
+    create_training_metrics,
+    define_wandb_topline_metrics,
+    generate_eval_video,
+    save_and_upload_video,
+    WandbTracker,
+)
 
 
-    def mlp_apply(params, x):
-        h = x
-        for i, (w, b) in enumerate(params):
-            h = jnp.dot(h, w) + b
-            if i < len(params) - 1:
-                h = jnp.tanh(h)
-        return h
+def create_env_config(training_config: dict) -> config_dict.ConfigDict:
+    """Create environment config from training config.
 
+    Args:
+        training_config: Full training configuration dict.
 
-def gaussian_log_prob(mean, log_std, a):
-    var = jnp.exp(2 * log_std)
-    return -0.5 * (((a - mean) ** 2) / var + 2 * log_std + jnp.log(2 * jnp.pi)).sum(axis=-1)
-
-
-def discount_cumsum(x, gamma):
-    out = np.zeros_like(x)
-    running = 0.0
-    for t in reversed(range(len(x))):
-        running = x[t] + gamma * running
-        out[t] = running
-    return out
-
-
-# ----- Optimizer and loss helpers (top-level, no nested functions) -----
-def tree_zeros_like(pytree):
-    return jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), pytree)
-
-
-def adam_init(params):
-    # params is a list of (w,b) tuples from init_mlp; mirror that structure for m and v
-    m = []
-    v = []
-    for (w, b) in params:
-        m.append((jnp.zeros_like(w), jnp.zeros_like(b)))
-        v.append((jnp.zeros_like(w), jnp.zeros_like(b)))
-    return {'m': m, 'v': v, 't': 0}
-
-
-def adam_update(params, grads, opt_state, lr=3e-4, beta1=0.9, beta2=0.999, eps=1e-8):
-    # Manual Adam for params structured as list of (w,b) tuples.
-    # Use numpy for the manual updates to avoid JAX array-indexing issues
-    t = opt_state['t'] + 1
-    new_m = []
-    new_v = []
-    params_updated = []
-    for (p_w, p_b), (g_w, g_b), (m_w, m_b), (v_w, v_b) in zip(params, grads, opt_state['m'], opt_state['v']):
-        # convert to numpy for safe arithmetic
-        pw = np.array(p_w)
-        pb = np.array(p_b)
-        gw = np.array(g_w)
-        gb = np.array(g_b)
-        mw = np.array(m_w)
-        mb = np.array(m_b)
-        vw = np.array(v_w)
-        vb = np.array(v_b)
-
-        m_w_new = beta1 * mw + (1 - beta1) * gw
-        m_b_new = beta1 * mb + (1 - beta1) * gb
-
-        v_w_new = beta2 * vw + (1 - beta2) * (gw * gw)
-        v_b_new = beta2 * vb + (1 - beta2) * (gb * gb)
-
-        m_hat_w = m_w_new / (1 - beta1 ** t)
-        m_hat_b = m_b_new / (1 - beta1 ** t)
-        v_hat_w = v_w_new / (1 - beta2 ** t)
-        v_hat_b = v_b_new / (1 - beta2 ** t)
-
-        pw_new = pw - lr * m_hat_w / (np.sqrt(v_hat_w) + eps)
-        pb_new = pb - lr * m_hat_b / (np.sqrt(v_hat_b) + eps)
-
-        # convert back to jnp arrays for consistency with rest of code
-        p_w_new = jnp.array(pw_new)
-        p_b_new = jnp.array(pb_new)
-
-        new_m.append((jnp.array(m_w_new), jnp.array(m_b_new)))
-        new_v.append((jnp.array(v_w_new), jnp.array(v_b_new)))
-        params_updated.append((p_w_new, p_b_new))
-
-    return params_updated, {'m': new_m, 'v': new_v, 't': t}
-
-
-def save_checkpoint(ckpt_dir: str, step: int, policy_p, value_p, log_std_p):
-    os.makedirs(ckpt_dir, exist_ok=True)
-    fn = f"{ckpt_dir}/ckpt_{step}.npz"
-    # minimal checkpoint: save log_std; more complete saving can be added later
-    np.savez(fn, log_std=np.array(log_std_p))
-    print(f"Saved checkpoint {fn}")
-
-
-def ppo_policy_loss(p_params, log_std_param, mb_obs, mb_acts, mb_old_logp, mb_adv, ppo_clip):
-    mean = mlp_apply(p_params, jnp.array(mb_obs))
-    logp = gaussian_log_prob(mean, log_std_param, jnp.array(mb_acts))
-    ratio = jnp.exp(logp - jnp.array(mb_old_logp))
-    clipped = jnp.clip(ratio, 1.0 - ppo_clip, 1.0 + ppo_clip)
-    loss = -jnp.mean(jnp.minimum(ratio * jnp.array(mb_adv), clipped * jnp.array(mb_adv)))
-    return loss
-
-
-def value_loss(value_params, mb_obs, mb_ret):
-    vpred = mlp_apply(value_params, jnp.array(mb_obs)).squeeze(-1)
-    return jnp.mean((jnp.array(mb_ret) - vpred) ** 2)
-
-
-
-
-
-def load_trainer_config(path: str) -> Tuple[dict, dict]:
-    """Load a trainer-only config file (YAML/JSON/TOML).
-
-    Returns (trainer_dict, raw_dict).
+    Returns:
+        ConfigDict for WildRobotEnv.
     """
-    data = None
-    try:
-        import yaml
+    env_cfg = training_config.get("env", {})
 
-        with open(path, 'r') as f:
-            data = yaml.safe_load(f)
-    except Exception:
-        pass
+    config = config_dict.ConfigDict()
 
-    if data is None:
-        import json
+    # Model path (required)
+    if "model_path" not in env_cfg:
+        raise ValueError("model_path is required in env config")
+    config.model_path = env_cfg["model_path"]
 
-        with open(path, 'r') as f:
-            try:
-                data = json.load(f)
-            except Exception:
-                try:
-                    import tomllib
+    # Simulation timing
+    config.ctrl_dt = env_cfg.get("ctrl_dt", 0.02)
+    config.sim_dt = env_cfg.get("sim_dt", 0.002)
 
-                    with open(path, 'rb') as fb:
-                        data = tomllib.load(fb)
-                except Exception:
-                    raise RuntimeError(f"Failed to parse config file: {path}. Install pyyaml or provide JSON/TOML.")
+    # Robot parameters
+    config.target_height = env_cfg.get("target_height", 0.45)
+    config.min_height = env_cfg.get("min_height", 0.2)
+    config.max_height = env_cfg.get("max_height", 0.7)
 
-    raw = data or {}
-    trainer_raw = raw.get('trainer', raw)
-    return trainer_raw, raw
+    # Velocity command
+    config.min_velocity = env_cfg.get("min_velocity", 0.5)
+    config.max_velocity = env_cfg.get("max_velocity", 1.0)
+
+    # Action filtering
+    config.use_action_filter = env_cfg.get("use_action_filter", True)
+    config.action_filter_alpha = env_cfg.get("action_filter_alpha", 0.7)
+
+    # Episode length
+    config.max_episode_steps = env_cfg.get("max_episode_steps", 500)
+
+    # Reward weights (from training config reward_weights section)
+    reward_cfg = training_config.get("reward_weights", {})
+    config.reward_weights = config_dict.ConfigDict()
+    config.reward_weights.forward_velocity = reward_cfg.get("tracking_lin_vel", 1.0)
+    config.reward_weights.healthy = reward_cfg.get("base_height", 0.1)
+    config.reward_weights.action_rate = reward_cfg.get("action_rate", -0.01)
+    config.reward_weights.joint_velocity = reward_cfg.get("torque_penalty", -0.001)
+
+    return config
 
 
-def apply_overrides(cfg: dict, overrides: list):
-    """Apply list of overrides of the form ['trainer.num_envs=512', ...] to cfg dict."""
-    for ov in overrides or []:
-        if '=' not in ov:
-            continue
-        key, val = ov.split('=', 1)
-        # nested keys with dot notation
-        parts = key.split('.')
-        d = cfg
-        for p in parts[:-1]:
-            if p not in d or not isinstance(d[p], dict):
-                d[p] = {}
-            d = d[p]
-        # try to cast value to int/float/bool if appropriate
-        v: Any
-        s = val.strip()
-        if s.lower() in ('true', 'false'):
-            v = s.lower() == 'true'
+def create_env(config_path: Optional[Path] = None):
+    """Create WildRobotEnv instance with config from training YAML.
+
+    Args:
+        config_path: Optional path to training config. Uses default if not provided.
+
+    Returns:
+        WildRobotEnv: Environment extending mjx_env.MjxEnv
+    """
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+
+    # Use default path if not provided
+    if config_path is None:
+        config_path = DEFAULT_TRAINING_CONFIG_PATH
+
+    training_cfg = load_training_config(config_path)
+    env_config = create_env_config(training_cfg.raw_config)
+    env = WildRobotEnv(config=env_config)
+    return env
+
+
+def parse_args():
+    """Parse command-line arguments.
+
+    CLI arguments override config file values when explicitly provided.
+    """
+    parser = argparse.ArgumentParser(
+        description="Train WildRobot with PPO+AMP",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Config file (loaded first, then CLI overrides)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to training config YAML (default: configs/wildrobot_phase3_training.yaml)",
+    )
+
+    # Training configuration (CLI overrides config file)
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        help="Number of training iterations (default from config)",
+    )
+    parser.add_argument(
+        "--num-envs",
+        type=int,
+        default=None,
+        help="Number of parallel environments (default from config)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (default from config)",
+    )
+
+    # PPO hyperparameters
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Learning rate (default from config)",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=None,
+        help="Discount factor (default from config)",
+    )
+    parser.add_argument(
+        "--clip-epsilon",
+        type=float,
+        default=None,
+        help="PPO clipping parameter (default from config)",
+    )
+    parser.add_argument(
+        "--entropy-coef",
+        type=float,
+        default=None,
+        help="Entropy bonus coefficient (default from config)",
+    )
+
+    # Training mode - JIT AMP+PPO is default
+    parser.add_argument(
+        "--debug-brax-ppo",
+        action="store_true",
+        help="Use Brax PPO trainer without AMP (for debugging only)",
+    )
+
+    # AMP configuration (only for custom loop)
+    parser.add_argument(
+        "--amp-weight",
+        type=float,
+        default=None,
+        help="Weight for AMP reward (default from config)",
+    )
+    parser.add_argument(
+        "--amp-data",
+        type=str,
+        default=None,
+        help="Path to AMP reference motion dataset (.pkl file)",
+    )
+    parser.add_argument(
+        "--disc-lr",
+        type=float,
+        default=None,
+        help="Discriminator learning rate (default from config)",
+    )
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable AMP (pure PPO training)",
+    )
+
+    # Logging and checkpoints
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=None,
+        help="Log metrics every N iterations (default from config)",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=None,
+        help="Directory for saving checkpoints (default from config)",
+    )
+
+    # Quick test mode
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Run quick verification (10 iterations, 4 envs)",
+    )
+
+    # Resume training from checkpoint
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from (e.g., checkpoints/best_checkpoint.pkl)",
+    )
+
+    # Checkpoint settings
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help="Save checkpoint every N iterations (default from config)",
+    )
+    parser.add_argument(
+        "--keep-checkpoints",
+        type=int,
+        default=None,
+        help="Number of recent checkpoints to keep (default from config)",
+    )
+
+    return parser.parse_args()
+
+
+def train_with_brax_ppo(args):
+    """Train using Brax's PPO trainer with mujoco_playground wrapper.
+
+    This is the recommended approach - clean and efficient.
+    """
+    from brax.training.agents.ppo import train as ppo
+    from mujoco_playground import wrapper
+
+    # Create environment
+    print("Creating WildRobotEnv...")
+    env = create_env()
+    print(
+        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
+    )
+
+    # PPO configuration
+    num_timesteps = args.iterations * args.num_envs * 1000
+
+    ppo_kwargs = {
+        "num_timesteps": num_timesteps,
+        "num_evals": max(1, args.iterations // 20),
+        "reward_scaling": 1.0,
+        "episode_length": 500,
+        "normalize_observations": True,
+        "action_repeat": 1,
+        "unroll_length": 20,
+        "num_minibatches": 4,
+        "num_updates_per_batch": 4,
+        "discounting": args.gamma,
+        "learning_rate": args.lr,
+        "entropy_cost": args.entropy_coef,
+        "num_envs": args.num_envs,
+        "batch_size": min(1024, args.num_envs * 10),
+        "seed": args.seed,
+    }
+
+    print("\nPPO Configuration:")
+    for key, value in ppo_kwargs.items():
+        print(f"  {key}: {value}")
+
+    # Progress callback
+    times = [time.time()]
+
+    def progress_fn(num_steps, metrics):
+        times.append(time.time())
+        if num_steps % 1000 == 0 or num_steps < 5000:
+            reward = metrics.get("eval/episode_reward", 0.0)
+            length = metrics.get("eval/episode_length", 0.0)
+            print(f"Step {num_steps:,}: reward={reward:.2f}, length={length:.1f}")
+
+    # Train
+    print("\n" + "=" * 60)
+    print("Starting Brax PPO training...")
+    print("=" * 60 + "\n")
+
+    train_fn = functools.partial(ppo.train, **ppo_kwargs, progress_fn=progress_fn)
+
+    make_inference_fn, params, metrics = train_fn(
+        environment=env,
+        wrap_env_fn=wrapper.wrap_for_brax_training,  # Automatic Brax compatibility!
+    )
+
+    print("\n" + "=" * 60)
+    print("Training complete!")
+    print("=" * 60)
+
+    if len(times) > 1:
+        print(f"Time to JIT: {times[1] - times[0]:.2f}s")
+        print(f"Time to train: {times[-1] - times[1]:.2f}s")
+
+    # Save checkpoint
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(args.checkpoint_dir, "final_policy.pkl")
+
+    checkpoint_data = {
+        "params": params,
+        "config": ppo_kwargs,
+        "final_metrics": metrics,
+    }
+
+    with open(checkpoint_path, "wb") as f:
+        pickle.dump(checkpoint_data, f)
+
+    print(f"✓ Policy saved to: {checkpoint_path}")
+
+    return make_inference_fn, params, metrics
+
+
+def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
+    """Train using fully JIT-compiled AMP+PPO training loop.
+
+    This is the fastest training mode - entire training loop runs on GPU.
+    Expected 1000x+ speedup over Python-loop based training.
+
+    Args:
+        args: Parsed command-line arguments
+        wandb_tracker: Optional W&B tracker for logging
+    """
+    import pickle
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    # Check JAX backend
+    print(f"\n{'=' * 60}")
+    print("JAX Configuration")
+    print(f"{'=' * 60}")
+    print(f"  Backend: {jax.default_backend()}")
+    print(f"  Devices: {jax.devices()}")
+    if jax.default_backend() != "gpu":
+        print("  ⚠️  WARNING: JAX is NOT using GPU!")
+        print("  Install JAX with CUDA: pip install jax[cuda12]")
+    else:
+        print("  ✓ GPU detected")
+    print(f"{'=' * 60}\n")
+
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+    from playground_amp.training.trainer_jit import (
+        AMPPPOConfigJit,
+        IterationMetrics,
+        train_amp_ppo_jit,
+        TrainingState,
+    )
+
+    # Load training config
+    config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
+    training_cfg = load_training_config(config_path)
+    training_config = training_cfg.raw_config
+    trainer_cfg = training_config.get("trainer", {})
+    networks_cfg = training_config.get("networks", {})
+    amp_cfg = training_config.get("amp", {})
+
+    # Create environment
+    print("Creating WildRobotEnv...")
+    env = create_env()
+    print(
+        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
+    )
+
+    # Get checkpoint settings from config or CLI
+    checkpoint_cfg = training_config.get("checkpoints", {})
+    checkpoint_interval = args.checkpoint_interval or checkpoint_cfg.get(
+        "interval", 100
+    )
+    keep_checkpoints = args.keep_checkpoints or checkpoint_cfg.get("keep_last_n", 5)
+
+    # Create training job name (for checkpoint subdirectory)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    job_name = f"wildrobot_amp_{timestamp}"
+    checkpoint_dir = os.path.join(args.checkpoint_dir, job_name)
+
+    print(f"Training job: {job_name}")
+    print(f"Checkpoints will be saved to: {checkpoint_dir}")
+
+    # Create JIT config (no checkpoint fields - handled by callback)
+    config = AMPPPOConfigJit(
+        # Environment
+        obs_dim=env.observation_size,
+        action_dim=env.action_size,
+        num_envs=args.num_envs,
+        num_steps=trainer_cfg.get("rollout_steps", 20),
+        # PPO hyperparameters
+        learning_rate=args.lr,
+        gamma=args.gamma,
+        gae_lambda=trainer_cfg.get("gae_lambda", 0.95),
+        clip_epsilon=args.clip_epsilon,
+        value_loss_coef=trainer_cfg.get("value_loss_coef", 0.5),
+        entropy_coef=args.entropy_coef,
+        max_grad_norm=trainer_cfg.get("max_grad_norm", 0.5),
+        # PPO training
+        num_minibatches=trainer_cfg.get("num_minibatches", 8),
+        update_epochs=trainer_cfg.get("epochs", 4),
+        # Network architecture
+        policy_hidden_dims=tuple(
+            networks_cfg.get("policy_hidden_dims", [512, 256, 128])
+        ),
+        value_hidden_dims=tuple(networks_cfg.get("value_hidden_dims", [512, 256, 128])),
+        # AMP configuration
+        amp_reward_weight=args.amp_weight,
+        disc_learning_rate=args.disc_lr,
+        disc_updates_per_iter=amp_cfg.get("update_steps", 2),
+        disc_batch_size=amp_cfg.get("batch_size", 2048),
+        gradient_penalty_weight=amp_cfg.get("gradient_penalty_weight", 5.0),
+        disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
+        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
+        # Training
+        total_iterations=args.iterations,
+        seed=args.seed,
+        log_interval=args.log_interval,
+    )
+
+    # Load reference motion data
+    print(f"Loading reference motion data from: {args.amp_data}")
+    with open(args.amp_data, "rb") as f:
+        ref_data = pickle.load(f)
+
+    # Extract AMP features from reference data
+    if isinstance(ref_data, np.ndarray) and ref_data.ndim == 2:
+        # Already extracted features (2D array: num_samples x feature_dim)
+        ref_features = ref_data
+    elif isinstance(ref_data, dict):
+        # If it's a dict with 'features' key
+        if "features" in ref_data:
+            ref_features = np.array(ref_data["features"])
+        elif "observations" in ref_data:
+            # Need to convert observations to AMP features
+            from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+
+            amp_config = get_default_amp_config()
+            obs = np.array(ref_data["observations"])
+            # Extract features from observations
+            features_list = []
+            for seq in obs:
+                for i in range(len(seq)):
+                    feat = extract_amp_features(seq[i], amp_config)
+                    features_list.append(feat)
+            ref_features = np.array(features_list)
         else:
-            try:
-                if '.' in s:
-                    v = float(s)
-                    # if integer-like, cast
-                    if v.is_integer():
-                        v = int(v)
-                else:
-                    v = int(s)
-            except Exception:
-                v = s
-        d[parts[-1]] = v
-    return cfg
+            raise ValueError(f"Unknown reference data format: {ref_data.keys()}")
+    elif isinstance(ref_data, list):
+        # List of sequences - flatten and extract features
+        from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+
+        amp_config = get_default_amp_config()
+        features_list = []
+        for seq in ref_data:
+            seq = np.array(seq)
+            for i in range(len(seq)):
+                feat = extract_amp_features(seq[i], amp_config)
+                features_list.append(feat)
+        ref_features = np.array(features_list)
+    else:
+        ref_features = np.array(ref_data)
+
+    print(f"✓ Reference features: {ref_features.shape}")
+
+    # Create vmapped environment functions
+    def batched_step_fn(state, action):
+        """Batched environment step."""
+        return jax.vmap(lambda s, a: env.step(s, a))(state, action)
+
+    def batched_reset_fn(rng):
+        """Batched environment reset."""
+        rngs = jax.random.split(rng, config.num_envs)
+        return jax.vmap(env.reset)(rngs)
+
+    print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
+
+    # Checkpoint management state (captured by callback closure)
+    # Track global best (for best_checkpoint files)
+    best_reward = {"value": float("-inf")}
+
+    # Track best within current checkpoint window
+    # We save the best performing checkpoint within each N-iteration window,
+    # not just the checkpoint at iteration N
+    window_best = {
+        "reward": float("-inf"),
+        "state": None,  # Will hold CPU copy of state (via jax.device_get)
+        "metrics": None,
+        "iteration": 0,
+        "total_steps": 0,
+    }
+
+    # Training callback for W&B logging and checkpoint management
+    def callback(
+        iteration: int,
+        state: TrainingState,
+        metrics: IterationMetrics,
+        steps_per_sec: float,
+    ):
+        # W&B logging
+        if wandb_tracker is not None:
+            wandb_metrics = create_training_metrics(
+                iteration=iteration,
+                episode_reward=float(metrics.episode_reward),
+                ppo_loss=float(metrics.total_loss),
+                policy_loss=float(metrics.policy_loss),
+                value_loss=float(metrics.value_loss),
+                entropy_loss=float(metrics.entropy_loss),
+                disc_loss=float(metrics.disc_loss),
+                disc_accuracy=float(metrics.disc_accuracy),
+                amp_reward_mean=float(metrics.amp_reward_mean),
+                amp_reward_std=0.0,
+                clip_fraction=0.0,
+                approx_kl=0.0,
+                env_steps_per_sec=steps_per_sec,
+                # Task reward breakdown
+                forward_velocity=float(metrics.forward_velocity),
+                episode_length=float(metrics.episode_length),
+            )
+            # Add task reward breakdown to metrics
+            wandb_metrics["debug/task_reward_per_step"] = float(
+                metrics.task_reward_mean
+            )
+            wandb_metrics["debug/robot_height"] = float(metrics.robot_height)
+            wandb_tracker.log(wandb_metrics, step=int(state.total_steps))
+
+        # Skip checkpoint tracking if disabled
+        if checkpoint_interval <= 0:
+            return
+
+        current_reward = float(metrics.episode_reward)
+
+        # Track best within current checkpoint window
+        if current_reward > window_best["reward"]:
+            window_best["reward"] = current_reward
+            # Copy state to CPU to free GPU memory (JAX arrays are immutable)
+            window_best["state"] = jax.device_get(state)
+            window_best["metrics"] = metrics
+            window_best["iteration"] = iteration
+            window_best["total_steps"] = int(state.total_steps)
+
+        # At checkpoint boundary, save the best from this window
+        if iteration % checkpoint_interval == 0:
+            # Use the best state from this window (not current state)
+            save_state = window_best["state"]
+            save_metrics = window_best["metrics"]
+            save_iteration = window_best["iteration"]
+            save_reward = window_best["reward"]
+
+            # Check if this is also the global best
+            is_global_best = save_reward > best_reward["value"]
+            if is_global_best:
+                best_reward["value"] = save_reward
+
+            # Save checkpoint using the best state from this window
+            ckpt_path = save_checkpoint_from_cpu(
+                state_cpu=save_state,
+                config=config,
+                iteration=save_iteration,
+                total_steps=window_best["total_steps"],
+                checkpoint_dir=checkpoint_dir,
+                is_best=is_global_best,
+                metrics=save_metrics,
+            )
+
+            if is_global_best:
+                print(
+                    f"  💾 Checkpoint saved (best from window, iter {save_iteration}) "
+                    f"- NEW GLOBAL BEST: reward={save_reward:.2f}"
+                )
+            else:
+                print(
+                    f"  💾 Checkpoint saved (best from window, iter {save_iteration}, "
+                    f"reward={save_reward:.2f})"
+                )
+
+            # Reset window tracking for next window
+            window_best["reward"] = float("-inf")
+            window_best["state"] = None
+            window_best["metrics"] = None
+            window_best["iteration"] = 0
+            window_best["total_steps"] = 0
+
+            # Clean up old checkpoints
+            manage_checkpoints(checkpoint_dir, keep_checkpoints)
+
+    # Train
+    print("\n" + "=" * 60)
+    print("Starting JIT-compiled AMP+PPO training...")
+    print("=" * 60 + "\n")
+
+    final_state = train_amp_ppo_jit(
+        env_step_fn=batched_step_fn,
+        env_reset_fn=batched_reset_fn,
+        config=config,
+        ref_motion_data=ref_features,
+        callback=callback,
+    )
+
+    # Save checkpoint
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(args.checkpoint_dir, "final_jit_policy.pkl")
+
+    checkpoint_data = {
+        "policy_params": jax.device_get(final_state.policy_params),
+        "value_params": jax.device_get(final_state.value_params),
+        "disc_params": jax.device_get(final_state.disc_params),
+        "feature_mean": jax.device_get(final_state.feature_mean),
+        "feature_var": jax.device_get(final_state.feature_var),
+    }
+
+    with open(checkpoint_path, "wb") as f:
+        pickle.dump(checkpoint_data, f)
+
+    print(f"✓ Policy saved to: {checkpoint_path}")
+
+    # Print best checkpoints summary
+    print_top_checkpoints_summary(checkpoint_dir)
+
+    # Generate and upload evaluation video after training
+    video_cfg = training_config.get("video", {})
+    video_enabled = video_cfg.get("enabled", True) and not args.verify
+
+    if video_enabled:
+        try:
+            import jax
+
+            print("\n" + "=" * 60)
+            print("Generating evaluation video...")
+            print("=" * 60)
+
+            # Create a single-env reset and step function for video generation
+            def single_reset_fn(rng):
+                return env.reset(rng)
+
+            def single_step_fn(state, action):
+                return env.step(state, action)
+
+            # Create inference function from trained policy
+            from playground_amp.training.ppo_core import create_networks, sample_actions
+
+            ppo_network = create_networks(
+                obs_dim=config.obs_dim,
+                action_dim=config.action_dim,
+                policy_hidden_dims=config.policy_hidden_dims,
+                value_hidden_dims=config.value_hidden_dims,
+            )
+
+            def policy_inference(obs, rng):
+                """Get action from trained policy."""
+                action, _, _ = sample_actions(
+                    final_state.processor_params,
+                    final_state.policy_params,
+                    ppo_network,
+                    obs,
+                    rng,
+                )
+                return action
+
+            jit_inference_fn = jax.jit(policy_inference)
+
+            # Get video config settings
+            num_videos = video_cfg.get("num_videos", 1)
+            episode_length = video_cfg.get("episode_length", 500)
+            render_every = video_cfg.get("render_every", 2)
+            video_width = video_cfg.get("width", 640)
+            video_height = video_cfg.get("height", 480)
+            video_fps = video_cfg.get("fps", 25)
+            upload_to_wandb = video_cfg.get("upload_to_wandb", True) and (
+                wandb_tracker is not None
+            )
+            output_subdir = video_cfg.get("output_subdir", "videos")
+
+            # Generate video
+            rng_key = jax.random.PRNGKey(config.seed + 1000)
+            videos = generate_eval_video(
+                env=env,
+                inference_fn=jit_inference_fn,
+                rng_key=rng_key,
+                episode_length=episode_length,
+                num_rollouts=num_videos,
+                render_every=render_every,
+                height=video_height,
+                width=video_width,
+            )
+
+            # Save and upload to W&B
+            if videos:
+                video_dir = os.path.join(args.checkpoint_dir, output_subdir)
+                os.makedirs(video_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+                for i, video in enumerate(videos):
+                    video_path = os.path.join(
+                        video_dir, f"eval_rollout_{timestamp}_{i}.mp4"
+                    )
+                    wandb_key = (
+                        f"eval/rollout_video_{i}" if i > 0 else "eval/final_rollout"
+                    )
+
+                    save_and_upload_video(
+                        video=video,
+                        filepath=video_path,
+                        fps=float(video_fps),
+                        upload_to_wandb=upload_to_wandb,
+                        wandb_key=wandb_key,
+                    )
+            else:
+                print("⚠️ No video frames captured (rendering may not be available)")
+
+        except Exception as e:
+            print(f"⚠️ Video generation failed: {e}")
+            print("  (This is non-critical - training completed successfully)")
+
+    return final_state
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='playground_amp/configs/wildrobot_phase3_training.yaml', help='Path to trainer stage config (YAML/JSON/TOML)')
-    parser.add_argument('--set', action='append', help='Override config key, format: key.subkey=value (can be used multiple times)')
-    parser.add_argument('--verify', action='store_true', help='Apply `quick_verify` overrides from the stage config for a minimal end-to-end check')
-    parser.add_argument('--enable-amp', action='store_true', help='Enable AMP discriminator and reference-motion buffer hooks')
-    args = parser.parse_args()
+    """Main entry point."""
+    args = parse_args()
 
-    # Load env config (shared) and trainer config (stage-specific)
-    env_cfg = EnvConfig.from_file('playground_amp/configs/wildrobot_env.yaml')
-    trainer_raw, raw = load_trainer_config(args.config)
-    # If quick_verify requested, apply those small-test overrides first (so CLI --set can still override)
-    if args.verify and 'quick_verify' in raw:
-        qv = raw['quick_verify']
-        trainer_q = qv.get('trainer', {})
-        # merge trainer quick-verify entries into trainer_raw
-        for k, v in trainer_q.items():
-            trainer_raw[k] = v
-        # apply env quick-verify overrides onto env_cfg
-        env_q = qv.get('env', {})
-        for k, v in env_q.items():
-            # only set existing attributes if present on EnvConfig, else add
-            try:
-                setattr(env_cfg, k, v)
-            except Exception:
-                env_cfg.__dict__[k] = v
+    # Load config file
+    config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
+    print(f"Loading config from: {config_path}")
+    training_cfg = load_training_config(config_path)
+    # Get raw dict for backward compatibility with existing code
+    training_config = training_cfg.raw_config
 
-    # apply CLI overrides (highest precedence)
-    trainer_raw = apply_overrides(trainer_raw, args.set)
-    # build TrainerConfig with defaults
-    trainer_kwargs = {k: trainer_raw[k] for k in ('num_envs', 'rollout_steps', 'total_updates', 'lr', 'gamma', 'seed') if k in trainer_raw}
-    cfg = TrainerConfig(**trainer_kwargs)
-    # ensure trainer and env agree on num_envs
-    if getattr(cfg, 'num_envs', None) is not None:
-        env_cfg.num_envs = cfg.num_envs
-    env = WildRobotEnv(env_cfg)
-
-    # AMP hooks (optional)
-    enable_amp = args.enable_amp
-    amp_disc = None
-    ref_buffer = None
-    if enable_amp:
-        try:
-            from playground_amp.amp.discriminator import AMPDiscriminator
-            from playground_amp.amp.ref_buffer import ReferenceMotionBuffer
-
-            amp_disc = AMPDiscriminator(input_dim=env.OBS_DIM)
-            ref_buffer = ReferenceMotionBuffer(max_size=raw.get('amp', {}).get('buffer_size', 1000), seq_len=raw.get('amp', {}).get('seq_len', 32))
-            print('AMP hooks enabled: discriminator + reference buffer initialized')
-        except Exception as e:
-            print(f'Failed to initialize AMP hooks ({e}); continuing without AMP')
-
-    obs_dim = env.OBS_DIM
-    act_dim = env.ACT_DIM
-
-    key = jax.random.PRNGKey(cfg.seed)
-    key, pk, vk = jax.random.split(key, 3)
-
-    # Policy: MLP -> mean; separate log_std param
-    policy_layers = [obs_dim, 64, 64, act_dim]
-    value_layers = [obs_dim, 64, 64, 1]
-
-    # Initialize policy/value as Flax models when available, otherwise use init_mlp
-    if use_flax:
-        policy_model = MLP(tuple(policy_layers))
-        value_model = MLP(tuple(value_layers))
-        # Flax init expects batch shape; pass zeros with batch dim
-        policy_params = policy_model.init(pk, jnp.zeros((1, obs_dim)))
-        value_params = value_model.init(vk, jnp.zeros((1, obs_dim)))
-        # pack into a single params pytree for optax updates
-        params = {'policy': policy_params, 'value': value_params, 'log_std': jnp.zeros((act_dim,)) - 1.0}
-        # define flax loss wrappers now that models exist
-        def ppo_policy_loss_flax(params, mb_obs, mb_acts, mb_old_logp, mb_adv, ppo_clip):
-            mean = jnp.asarray(policy_model.apply(params['policy'], jnp.array(mb_obs)))
-            logp = gaussian_log_prob(mean, params['log_std'], jnp.array(mb_acts))
-            ratio = jnp.exp(logp - jnp.array(mb_old_logp))
-            clipped = jnp.clip(ratio, 1.0 - ppo_clip, 1.0 + ppo_clip)
-            loss = -jnp.mean(jnp.minimum(ratio * jnp.array(mb_adv), clipped * jnp.array(mb_adv)))
-            return loss
-
-        def value_loss_flax(params, mb_obs, mb_ret):
-            vpred = jnp.asarray(value_model.apply(params['value'], jnp.array(mb_obs))).squeeze(-1)
-            return jnp.mean((jnp.array(mb_ret) - vpred) ** 2)
+    # Load robot config (generated by assets/post_process.py)
+    # This must be loaded before any module that uses get_robot_config()
+    if DEFAULT_ROBOT_CONFIG_PATH.exists():
+        robot_cfg = load_robot_config(DEFAULT_ROBOT_CONFIG_PATH)
+        print(
+            f"Loaded robot config: {robot_cfg.robot_name} (action_dim={robot_cfg.action_dim})"
+        )
     else:
-        policy_params = init_mlp(policy_layers, pk)
-        value_params = init_mlp(value_layers, vk)
-        log_std = jnp.zeros((act_dim,)) - 1.0
+        print(f"Warning: Robot config not found at {DEFAULT_ROBOT_CONFIG_PATH}")
+        print("Run 'cd assets && python post_process.py' to generate it.")
 
-    # Detect SOTA JAX libraries (flax + rlax) and optax for optimized implementations.
-    use_sota = False
-    try:
-        import flax
-        import rlax
-        use_sota = True
-    except Exception:
-        use_sota = False
+    trainer_cfg = training_config.get("trainer", {})
+    amp_cfg = training_config.get("amp", {})
 
-    # Prefer optax if available for optimizer; otherwise fall back to manual Adam
-    use_optax = False
-    try:
-        import optax
+    # Merge config with CLI overrides (CLI takes precedence if provided)
+    if args.iterations is None:
+        args.iterations = trainer_cfg.get("iterations", 3000)
+    if args.num_envs is None:
+        args.num_envs = trainer_cfg.get("num_envs", 512)
+    if args.seed is None:
+        args.seed = trainer_cfg.get("seed", 42)
+    if args.lr is None:
+        args.lr = trainer_cfg.get("lr", 3e-4)
+    if args.gamma is None:
+        args.gamma = trainer_cfg.get("gamma", 0.99)
+    if args.clip_epsilon is None:
+        args.clip_epsilon = trainer_cfg.get("clip_epsilon", 0.2)
+    if args.entropy_coef is None:
+        args.entropy_coef = trainer_cfg.get("entropy_coef", 0.01)
+    if args.amp_weight is None:
+        args.amp_weight = amp_cfg.get("weight", 1.0)
+    if args.disc_lr is None:
+        args.disc_lr = amp_cfg.get("disc_lr", 1e-4)
+    if args.log_interval is None:
+        args.log_interval = trainer_cfg.get("log_interval", 10)
+    if args.checkpoint_dir is None:
+        args.checkpoint_dir = trainer_cfg.get(
+            "checkpoint_dir", "playground_amp/checkpoints"
+        )
+    if args.amp_data is None:
+        args.amp_data = amp_cfg.get("dataset_path")
 
-        use_optax = True
-    except Exception:
-        use_optax = False
-
-    if use_flax and 'optax' in globals():
-        tx = optax.adam(cfg.lr)
-        opt_state = tx.init(params)
-        print('Using Flax+Optax for training')
-    if use_sota:
-        print('Detected flax+rlax available — consider refactoring to rlax PPO + flax models for SOTA implementation')
-    if not use_flax:
-        p_opt = adam_init(policy_params)
-        v_opt = adam_init(value_params)
-    if use_flax:
-        log_std_m = jnp.zeros_like(params['log_std'])
-        log_std_v = jnp.zeros_like(params['log_std'])
-        log_std_t = 0
-    else:
-        log_std_m = jnp.zeros_like(log_std)
-        log_std_v = jnp.zeros_like(log_std)
-        log_std_t = 0
-
-    # Simple SGD updater for list-of-(w,b) parameter structure
-    def sgd_update(params, grads, lr):
-        new_params = []
-        for (p_w, p_b), (g_w, g_b) in zip(params, grads):
-            new_w = jnp.array(np.array(p_w) - lr * np.array(g_w))
-            new_b = jnp.array(np.array(p_b) - lr * np.array(g_b))
-            new_params.append((new_w, new_b))
-        return new_params
-
-    ckpt_dir = raw.get('trainer', {}).get('checkpoint_dir', 'playground_amp/checkpoints')
-
-    # PPO hyperparams (from config or defaults)
-    ppo_clip = raw.get('trainer', {}).get('ppo_clip', 0.2)
-    epochs = raw.get('trainer', {}).get('epochs', 2)
-    minibatch_size = raw.get('trainer', {}).get('minibatch_size', 128)
-
-    # Main training loop (collect rollouts, then update with PPO-style clipped loss)
-    obs = env.reset()
-
-    # Quick-verify mode: run small number of forward steps without doing any gradient updates
+    # Quick verify mode (override everything)
     if args.verify:
-        print('Running quick-verify: stepping env with policy forward (no optimization)')
-        total_rew = 0.0
-        # small per-env ring buffers to collect ref-motion sequences when AMP enabled
-        per_env_seq = [[] for _ in range(cfg.num_envs)]
-        for t in range(cfg.rollout_steps):
-            if use_flax:
-                mean = policy_model.apply(params['policy'], jnp.array(obs))
-            else:
-                mean = mlp_apply(policy_params, jnp.array(obs))
-            acts = np.array(mean)
-            obs, rews, dones, infos = env.step(acts)
-            # AMP discriminator scoring (optional): add discriminator score to rewards
-            if amp_disc is not None:
-                try:
-                    scores = amp_disc.score(obs)
-                    # amp weight from config
-                    w = float(raw.get('amp', {}).get('weight', 1.0))
-                    rews = rews + (w * np.array(scores))
-                except Exception:
-                    pass
-            total_rew += float(np.mean(rews))
-            # collect ref-motion snippets if enabled
-            if ref_buffer is not None:
-                for n in range(cfg.num_envs):
-                    per_env_seq[n].append(obs[n].copy())
-                    if len(per_env_seq[n]) >= ref_buffer.seq_len:
-                        seq = np.stack(per_env_seq[n][-ref_buffer.seq_len :], axis=0)
-                        ref_buffer.add(seq)
-        print(f'Quick-verify complete: avg reward per step {total_rew / max(1, cfg.rollout_steps):.6f}')
-        return
-    for update in range(cfg.total_updates):
-        batch_obs = []
-        batch_acts = []
-        batch_rews = []
-        batch_vals = []
-        batch_logp = []
+        quick_cfg = training_config.get("quick_verify", {})
+        quick_trainer = quick_cfg.get("trainer", {})
+        quick_amp = quick_cfg.get("amp", {})
+        args.iterations = quick_trainer.get("iterations", 10)
+        args.num_envs = quick_trainer.get("num_envs", 4)
+        # Override disc_batch_size for quick verify (stored as temp attribute)
+        args._quick_verify_disc_batch_size = quick_amp.get("batch_size", 32)
+        args.log_interval = 1
+        print("=" * 60)
+        print("VERIFICATION MODE")
+        print("Running quick smoke test")
+        print("=" * 60)
 
-        for t in range(cfg.rollout_steps):
-            if use_flax:
-                mean = jnp.array(policy_model.apply(params['policy'], jnp.array(obs)))
-            else:
-                mean = jnp.array(mlp_apply(policy_params, jnp.array(obs)))
-            std = jnp.exp(log_std)
-            key, sub = jax.random.split(key)
-            acts = np.array(mean + std * jax.random.normal(sub, mean.shape))
+    # Determine training mode
+    use_amp = not args.debug_brax_ppo and not args.no_amp
 
-            if use_flax:
-                vals = np.array(value_model.apply(params['value'], jnp.array(obs))).squeeze(-1)
-            else:
-                vals = np.array(mlp_apply(value_params, jnp.array(obs))).squeeze(-1)
+    print(f"\n{'=' * 60}")
+    print("WildRobot Training")
+    print(f"{'=' * 60}")
+    print(f"  Version: {training_cfg.version} ({training_cfg.version_name})")
+    print(f"  PID: {os.getpid()}  (kill -9 {os.getpid()} to terminate)")
+    if use_amp:
+        mode_str = "AMP+PPO (JIT-compiled - FAST)"
+    else:
+        mode_str = "Brax PPO (debug)"
+    print(f"  Mode: {mode_str}")
+    print(f"  Config: {config_path}")
+    print(f"  Iterations: {args.iterations}")
+    print(f"  Environments: {args.num_envs}")
+    print(f"  Learning rate: {args.lr}")
+    print(f"  Seed: {args.seed}")
+    if use_amp:
+        print(f"  AMP weight: {args.amp_weight}")
+        print(f"  AMP data: {args.amp_data}")
+    print(f"  Checkpoint dir: {args.checkpoint_dir}")
+    print(f"{'=' * 60}\n")
 
-            next_obs, rews, dones, infos = env.step(acts)
-            # AMP scoring during regular rollout
-            if amp_disc is not None:
-                try:
-                    scores = amp_disc.score(next_obs)
-                    w = float(raw.get('amp', {}).get('weight', 1.0))
-                    rews = rews + (w * np.array(scores))
-                except Exception:
-                    pass
+    start_time = time.time()
 
-            if use_flax:
-                log_std_curr = np.array(params['log_std'])
-            else:
-                log_std_curr = log_std
-            logp = np.array(gaussian_log_prob(mean, log_std_curr, jnp.array(acts)))
+    # Initialize W&B tracker
+    wandb_cfg = training_cfg.wandb
+    wandb_tracker = None
 
-            batch_obs.append(obs.copy())
-            batch_acts.append(acts)
-            batch_rews.append(rews)
-            batch_vals.append(vals)
-            batch_logp.append(logp)
+    if wandb_cfg.enabled and not args.verify:
+        # Create config dict for W&B
+        wandb_config = {
+            # Version tracking
+            "version": training_cfg.version,
+            "version_name": training_cfg.version_name,
+            # Training params
+            "iterations": args.iterations,
+            "num_envs": args.num_envs,
+            "learning_rate": args.lr,
+            "gamma": args.gamma,
+            "clip_epsilon": args.clip_epsilon,
+            "entropy_coef": args.entropy_coef,
+            "amp_weight": args.amp_weight if use_amp else 0.0,
+            "disc_lr": args.disc_lr if use_amp else 0.0,
+            "seed": args.seed,
+            "mode": "amp+ppo" if use_amp else "brax-ppo",
+        }
 
-            obs = next_obs
+        wandb_tracker = WandbTracker(
+            project=wandb_cfg.project,
+            entity=wandb_cfg.entity,
+            name=wandb_cfg.name,
+            config=wandb_config,
+            tags=wandb_cfg.tags,
+            mode=wandb_cfg.mode,
+            enabled=wandb_cfg.enabled,
+            log_dir=wandb_cfg.log_dir,
+        )
 
-        batch_obs = np.stack(batch_obs)  # (T, N, obs_dim)
-        batch_acts = np.stack(batch_acts)
-        batch_rews = np.stack(batch_rews)
-        batch_vals = np.stack(batch_vals)
-        batch_logp = np.stack(batch_logp)
+        # Define topline metrics with exit criteria targets (Section 3.2.4)
+        define_wandb_topline_metrics()
 
-        # returns & advantages
-        returns = np.zeros_like(batch_rews)
-        for n in range(cfg.num_envs):
-            returns[:, n] = discount_cumsum(batch_rews[:, n], cfg.gamma)
-        advantages = returns - batch_vals
+    try:
+        if use_amp:
+            train_with_jit_loop(args, wandb_tracker=wandb_tracker)
+        else:
+            train_with_brax_ppo(args)
 
-        # flatten
-        T, N = batch_rews.shape
-        batch_size = T * N
-        obs_flat = batch_obs.reshape(batch_size, obs_dim)
-        acts_flat = batch_acts.reshape(batch_size, act_dim)
-        adv_flat = advantages.reshape(batch_size)
-        ret_flat = returns.reshape(batch_size)
-        old_logp_flat = batch_logp.reshape(batch_size)
+        elapsed = time.time() - start_time
+        print(f"\nTotal time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
 
-        # PPO update epochs
-        idxs = np.arange(batch_size)
-        for epoch in range(epochs):
-            np.random.shuffle(idxs)
-            for start in range(0, batch_size, minibatch_size):
-                mb_idx = idxs[start : start + minibatch_size]
-                mb_obs = obs_flat[mb_idx]
-                mb_acts = acts_flat[mb_idx]
-                mb_adv = adv_flat[mb_idx]
-                mb_ret = ret_flat[mb_idx]
-                mb_old_logp = old_logp_flat[mb_idx]
-                if use_flax:
-                    # Use combined loss and optax updates on the params pytree
-                    mb_obs_j = jnp.array(mb_obs)
-                    mb_acts_j = jnp.array(mb_acts)
-                    mb_old_logp_j = jnp.array(mb_old_logp)
-                    mb_adv_j = jnp.array(mb_adv)
-                    mb_ret_j = jnp.array(mb_ret)
+        if args.verify:
+            print("\n✅ VERIFICATION PASSED!")
 
-                    def total_loss(pytree):
-                        pl = ppo_policy_loss_flax(pytree, mb_obs_j, mb_acts_j, mb_old_logp_j, mb_adv_j, ppo_clip)
-                        vl = value_loss_flax(pytree, mb_obs_j, mb_ret_j)
-                        return pl + 0.5 * vl
+    except KeyboardInterrupt:
+        print("\n\nTraining interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Training failed: {type(e).__name__}: {e}")
+        import traceback
 
-                    grads = jax.grad(total_loss)(params)
-                    updates, opt_state = tx.update(grads, opt_state, params)
-                    params = optax.apply_updates(params, updates)
-                else:
-                    p_grads = jax.grad(ppo_policy_loss, argnums=(0, 1))(policy_params, log_std, mb_obs, mb_acts, mb_old_logp, mb_adv, ppo_clip)
+        traceback.print_exc()
+        return 1
+    finally:
+        # Finish W&B tracking
+        if wandb_tracker is not None:
+            wandb_tracker.finish()
 
-                    v_grads = jax.grad(value_loss)(value_params, mb_obs, mb_ret)
-
-                    # Use SGD/manual Adam style updates
-                    try:
-                        policy_params = sgd_update(policy_params, p_grads[0], cfg.lr)
-                        value_params = sgd_update(value_params, v_grads, cfg.lr)
-                        log_std_grad = p_grads[1]
-                        log_std = log_std - cfg.lr * jnp.array(log_std_grad)
-                    except Exception:
-                        # fallback to safe numpy updates
-                        policy_params = sgd_update(policy_params, p_grads[0], cfg.lr)
-                        value_params = sgd_update(value_params, v_grads, cfg.lr)
-                        log_std = log_std - cfg.lr * jnp.array(p_grads[1])
-
-        mean_return = float(np.mean(np.sum(batch_rews, axis=0)))
-        print(f"update {update+1}/{cfg.total_updates} mean_return={mean_return:.4f}")
-
-        # checkpoint
-        if (update + 1) % 5 == 0:
-            if use_flax:
-                save_checkpoint(ckpt_dir, update + 1, params['policy'], params['value'], params['log_std'])
-            else:
-                save_checkpoint(ckpt_dir, update + 1, policy_params, value_params, log_std)
-
-    print("Training (PPO-like) completed (smoke).")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
