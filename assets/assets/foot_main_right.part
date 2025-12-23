@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "4dcc3206d8b7e6761255a971",
+    "documentMicroversion": "9ec863d452e20f131c486e6d",
     "elementId": "89ceb3190ceb802f85d40185",
     "fullConfiguration": "default",
     "id": "M+TTW5glsdug1xgGs",
     "isStandardContent": false,
     "name": "foot_main_right <1>",
-    "partId": "RFBD",
+    "partId": "RGBD",
     "suppressed": false,
     "type": "Part"
 }

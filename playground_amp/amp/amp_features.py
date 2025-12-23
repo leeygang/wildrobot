@@ -112,6 +112,7 @@ def get_default_amp_config() -> AMPFeatureConfig:
 def extract_amp_features(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
+    foot_contacts: jnp.ndarray = None,
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
@@ -121,7 +122,9 @@ def extract_amp_features(
     - Root linear velocity DIRECTION (18-20): 3 dims (normalized unit vector)
     - Root angular velocity (21-23): 3 dims
     - Root height (24): 1 dim
-    - Foot contacts (25-28): 4 dims (zeros placeholder)
+    - Foot contacts (25-28): 4 dims
+
+    v0.5.0: Now accepts foot_contacts from environment instead of returning zeros.
 
     NOTE: Root linear velocity is NORMALIZED to unit direction vector.
     This preserves directional info (forward/backward/sideways) while
@@ -131,6 +134,7 @@ def extract_amp_features(
     Args:
         obs: Current observation (..., obs_dim=38)
         config: Feature extraction configuration (REQUIRED)
+        foot_contacts: Foot contact values from env (..., 4), or None to use zeros
 
     Returns:
         amp_features: Motion features (..., 29)
@@ -168,10 +172,15 @@ def extract_amp_features(
         jnp.zeros_like(root_linvel)           # Zero for stationary
     )
 
-    # Foot contacts - we don't have this in observation, use zeros
-    # Shape: (..., 4)
-    batch_shape = obs.shape[:-1]
-    foot_contacts = jnp.zeros(batch_shape + (4,), dtype=obs.dtype)
+    # Foot contacts - v0.5.0: REQUIRED (no silent fallback to zeros!)
+    # The distribution mismatch bug (ref: 88% non-zero, policy: always zeros)
+    # was caused by silently using zeros. Now we fail loudly.
+    if foot_contacts is None:
+        raise ValueError(
+            "foot_contacts is required (v0.5.0). "
+            "For policy rollouts: pass foot_contacts from env.state.info['foot_contacts']. "
+            "For reference data: pre-extract contacts using scripts/add_temporal_context_to_ref.py"
+        )
 
     # Concatenate in order (29-dim with normalized velocity direction):
     # [joint_pos(9), joint_vel(9), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
@@ -192,6 +201,136 @@ def extract_amp_features(
 
 # JIT-compiled version for performance
 extract_amp_features_jit = jax.jit(extract_amp_features, static_argnames=("config",))
+
+
+# =============================================================================
+# Temporal Feature Buffer (v0.5.0: 3-frame history for discriminator)
+# =============================================================================
+
+
+class TemporalFeatureConfig(NamedTuple):
+    """Configuration for temporal feature extraction.
+
+    v0.5.0: Added temporal context for AMP discriminator.
+    The discriminator can now see 2-3 frames of motion to detect:
+    - Acceleration and jerk (smoothness indicators)
+    - Gait phase continuity
+    - Natural motion dynamics
+    """
+
+    num_frames: int = 3  # Number of frames in temporal window
+    feature_dim: int = 29  # Per-frame feature dimension
+
+    @property
+    def temporal_dim(self) -> int:
+        """Total dimension of temporal features (num_frames × feature_dim)."""
+        return self.num_frames * self.feature_dim
+
+
+def create_temporal_buffer(
+    num_envs: int,
+    config: TemporalFeatureConfig,
+) -> jnp.ndarray:
+    """Create initial temporal buffer filled with zeros.
+
+    Args:
+        num_envs: Number of parallel environments
+        config: Temporal feature configuration
+
+    Returns:
+        buffer: Shape (num_envs, num_frames, feature_dim)
+    """
+    return jnp.zeros(
+        (num_envs, config.num_frames, config.feature_dim),
+        dtype=jnp.float32,
+    )
+
+
+def update_temporal_buffer(
+    buffer: jnp.ndarray,
+    new_features: jnp.ndarray,
+) -> jnp.ndarray:
+    """Update temporal buffer with new frame (shift left, add new at end).
+
+    This implements a sliding window:
+    - Old: [t-2, t-1, t]
+    - New features for t+1
+    - Result: [t-1, t, t+1]
+
+    Args:
+        buffer: Current buffer, shape (num_envs, num_frames, feature_dim)
+        new_features: New features, shape (num_envs, feature_dim)
+
+    Returns:
+        Updated buffer, shape (num_envs, num_frames, feature_dim)
+    """
+    # Shift left (drop oldest frame at index 0)
+    shifted = jnp.roll(buffer, shift=-1, axis=1)
+
+    # Add new frame at the end
+    return shifted.at[:, -1, :].set(new_features)
+
+
+def get_temporal_features(
+    buffer: jnp.ndarray,
+) -> jnp.ndarray:
+    """Flatten temporal buffer to feature vector.
+
+    Args:
+        buffer: Temporal buffer, shape (num_envs, num_frames, feature_dim)
+
+    Returns:
+        Flattened features, shape (num_envs, num_frames * feature_dim)
+    """
+    num_envs = buffer.shape[0]
+    return buffer.reshape(num_envs, -1)
+
+
+def add_temporal_context_to_reference(
+    features: jnp.ndarray,
+    num_frames: int = 3,
+) -> jnp.ndarray:
+    """Convert single-frame features to temporal features for reference data.
+
+    Creates overlapping windows of consecutive frames:
+    - Input: (N, feature_dim)
+    - Output: (N - num_frames + 1, num_frames * feature_dim)
+
+    The last `num_frames - 1` samples are lost because they don't have
+    enough future frames to form a complete window.
+
+    Args:
+        features: Single-frame features, shape (N, feature_dim)
+        num_frames: Number of frames per temporal window
+
+    Returns:
+        Temporal features, shape (N - num_frames + 1, num_frames * feature_dim)
+    """
+    N = features.shape[0]
+    feature_dim = features.shape[1]
+
+    # Number of valid windows
+    num_windows = N - num_frames + 1
+
+    if num_windows <= 0:
+        raise ValueError(
+            f"Not enough frames ({N}) for temporal window of size {num_frames}"
+        )
+
+    # Create indices for each window
+    # window[i] contains frames [i, i+1, ..., i+num_frames-1]
+    indices = jnp.arange(num_windows)[:, None] + jnp.arange(num_frames)
+
+    # Gather frames and flatten each window
+    windows = features[indices]  # (num_windows, num_frames, feature_dim)
+    temporal_features = windows.reshape(num_windows, -1)  # (num_windows, num_frames * feature_dim)
+
+    return temporal_features
+
+
+# =============================================================================
+# Running Statistics for Feature Normalization
+# =============================================================================
 
 
 class RunningMeanStd(NamedTuple):

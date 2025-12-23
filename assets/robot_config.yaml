@@ -388,14 +388,18 @@ feet:
   sites:
   - left_foot_mimic
   - right_foot_mimic
+  left_toe: left_toe
+  left_heel: left_heel
+  right_toe: right_toe
+  right_heel: right_heel
   left_geoms:
-  - left_foot_btm_back
-  - left_foot_btm_front
+  - left_heel
+  - left_toe
   right_geoms:
-  - right_foot_btm_front
-  - right_foot_btm_back
+  - right_toe
+  - right_heel
   all_geoms:
-  - left_foot_btm_back
-  - left_foot_btm_front
-  - right_foot_btm_front
-  - right_foot_btm_back
+  - left_toe
+  - left_heel
+  - right_toe
+  - right_heel

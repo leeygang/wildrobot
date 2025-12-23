@@ -160,6 +160,7 @@ class Transition(NamedTuple):
     value: jnp.ndarray
     next_obs: jnp.ndarray
     truncated: jnp.ndarray  # 1.0 if episode ended due to time limit (success)
+    foot_contacts: jnp.ndarray  # v0.5.0: Foot contacts for AMP discriminator (4,)
 
 
 class IterationMetrics(NamedTuple):
@@ -323,6 +324,7 @@ def collect_rollout_scan(
             value=value,
             next_obs=next_env_state.obs,
             truncated=next_env_state.info["truncated"],  # 1.0 if reached max steps (success)
+            foot_contacts=next_env_state.info["foot_contacts"],  # v0.5.0: For AMP discriminator
         )
 
         return (next_env_state, rng), transition
@@ -349,20 +351,28 @@ def collect_rollout_scan(
 def extract_amp_features_batched(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
+    foot_contacts: jnp.ndarray,
 ) -> jnp.ndarray:
     """Extract AMP features from observations (batched).
+
+    v0.5.0: foot_contacts is now REQUIRED (no silent fallback to zeros).
 
     Args:
         obs: Observations, shape (num_steps, num_envs, obs_dim)
         config: Feature extraction configuration (REQUIRED)
+        foot_contacts: Foot contacts from env, shape (num_steps, num_envs, 4) (REQUIRED)
 
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
     """
-    # Vectorize over steps and envs
-    # functools.partial to bind config for vmap
-    extract_fn = functools.partial(extract_amp_features, config=config)
-    return jax.vmap(jax.vmap(extract_fn))(obs)
+    # v0.5.0: foot_contacts is required - no more silent fallback
+    # With foot contacts: need to pass both obs and foot_contacts
+    def extract_with_contacts(obs_fc):
+        obs_single, fc_single = obs_fc
+        return extract_amp_features(obs_single, config=config, foot_contacts=fc_single)
+
+    # Stack obs and foot_contacts for vmap, then unstack inside
+    return jax.vmap(jax.vmap(extract_with_contacts))((obs, foot_contacts))
 
 
 # =============================================================================
@@ -659,7 +669,10 @@ def make_train_iteration_fn(
         # ====================================================================
         # Step 2: Extract and normalize AMP features
         # ====================================================================
-        amp_features = extract_amp_features_batched(transitions.obs, amp_feature_config)
+        # v0.5.0: Pass foot contacts from environment for real contact info
+        amp_features = extract_amp_features_batched(
+            transitions.obs, amp_feature_config, transitions.foot_contacts
+        )
         # Shape: (num_steps, num_envs, feature_dim)
 
         # Flatten for discriminator training

@@ -24,21 +24,28 @@ def add_option(xml_file):
 
 
 def add_collision_names(xml_file):
+    """Add clear semantic names to foot collision geoms.
+
+    v0.5.0: Changed from left_foot_btm_back/front to left_heel/toe
+    for clarity and to match AMP feature naming convention.
+    """
     tree = ET.parse(xml_file)
     root = tree.getroot()
-    # Find left_foot body and its foot_btm_front collision geom
+    # Find left_foot body and name collision geoms
+    # foot_btm_front = toe (front of foot)
+    # foot_btm_back = heel (back of foot)
     for body in root.findall(".//body[@name='left_foot']"):
         for geom in body.findall("geom[@mesh='foot_btm_front'][@class='collision']"):
-            geom.set("name", "left_foot_btm_front")
+            geom.set("name", "left_toe")
         for geom in body.findall("geom[@mesh='foot_btm_back'][@class='collision']"):
-            geom.set("name", "left_foot_btm_back")
+            geom.set("name", "left_heel")
 
     # Same for right foot
     for body in root.findall(".//body[@name='right_foot']"):
         for geom in body.findall("geom[@mesh='foot_btm_front'][@class='collision']"):
-            geom.set("name", "right_foot_btm_front")
+            geom.set("name", "right_toe")
         for geom in body.findall("geom[@mesh='foot_btm_back'][@class='collision']"):
-            geom.set("name", "right_foot_btm_back")
+            geom.set("name", "right_heel")
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
@@ -438,21 +445,37 @@ def generate_robot_config(xml_file: str, output_file: str = "robot_config.yaml")
         if "foot" in site_name.lower() and "mimic" in site_name.lower():
             feet_sites.append(site_name)
 
-    # Feet geoms (for contact detection) - added by add_collision_names()
-    left_feet_geoms = []
-    right_feet_geoms = []
+    # Feet geoms (for contact detection)
+    # v0.5.0: Search for new semantic names (left_toe, left_heel, etc.)
+    # These are added by add_collision_names() function
+    left_toe = None
+    left_heel = None
+    right_toe = None
+    right_heel = None
+
     for geom in root.findall(".//geom[@name]"):
         geom_name = geom.get("name", "")
-        if "left_foot" in geom_name and ("btm" in geom_name or "bottom" in geom_name):
-            left_feet_geoms.append(geom_name)
-        elif "right_foot" in geom_name and ("btm" in geom_name or "bottom" in geom_name):
-            right_feet_geoms.append(geom_name)
+        if geom_name == "left_toe":
+            left_toe = geom_name
+        elif geom_name == "left_heel":
+            left_heel = geom_name
+        elif geom_name == "right_toe":
+            right_toe = geom_name
+        elif geom_name == "right_heel":
+            right_heel = geom_name
 
+    # Build feet config with explicit keys (v0.5.0)
     config["feet"] = {
         "sites": feet_sites,
-        "left_geoms": left_feet_geoms,
-        "right_geoms": right_feet_geoms,
-        "all_geoms": left_feet_geoms + right_feet_geoms,
+        # Explicit semantic keys - no array order dependency
+        "left_toe": left_toe or "left_toe",
+        "left_heel": left_heel or "left_heel",
+        "right_toe": right_toe or "right_toe",
+        "right_heel": right_heel or "right_heel",
+        # Legacy array format (for backward compatibility)
+        "left_geoms": [g for g in [left_heel, left_toe] if g],
+        "right_geoms": [g for g in [right_toe, right_heel] if g],
+        "all_geoms": [g for g in [left_toe, left_heel, right_toe, right_heel] if g],
     }
 
     # =========================================================================

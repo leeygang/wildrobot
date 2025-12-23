@@ -128,7 +128,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         super().__init__(config, config_overrides)
 
         # Model path (required - must be in config)
-        if not hasattr(config, 'model_path') or config.model_path is None:
+        if not hasattr(config, "model_path") or config.model_path is None:
             raise ValueError(
                 "model_path is required in config. "
                 "Add 'model_path: assets/scene_flat_terrain.xml' to your config."
@@ -214,6 +214,50 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self.actuator_qvel_addr = jp.array(
             [self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids]
         )
+
+        # Foot contact geom IDs (from robot_config.yaml)
+        # These are used for computing foot contact features for AMP discriminator
+        # v0.5.0: Use explicit keys instead of array indexing (no order assumptions)
+        feet_config = self._robot_config.raw_config.get("feet", {})
+
+        # Get geom IDs using explicit config keys - order: [left_toe, left_heel, right_toe, right_heel]
+        # Explicit keys - clear semantic meaning, no array order dependency
+        left_toe_name = feet_config.get("left_toe", "left_toe")
+        left_heel_name = feet_config.get("left_heel", "left_heel")
+        right_toe_name = feet_config.get("right_toe", "right_toe")
+        right_heel_name = feet_config.get("right_heel", "right_heel")
+
+        try:
+            self._left_toe_geom_id = self._mj_model.geom(left_toe_name).id
+            self._left_heel_geom_id = self._mj_model.geom(left_heel_name).id
+            self._right_toe_geom_id = self._mj_model.geom(right_toe_name).id
+            self._right_heel_geom_id = self._mj_model.geom(right_heel_name).id
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not find foot geoms in MuJoCo model. "
+                f"Expected: {left_toe_name}, {left_heel_name}, {right_toe_name}, {right_heel_name}. "
+                f"Run 'cd assets && python post_process.py' to add foot geom names to XML. "
+                f"Original error: {e}"
+            )
+
+        self._foot_geom_ids = jp.array(
+            [
+                self._left_toe_geom_id,
+                self._left_heel_geom_id,
+                self._right_toe_geom_id,
+                self._right_heel_geom_id,
+            ]
+        )
+        print(
+            f"  Foot geom IDs: L_toe={self._left_toe_geom_id}, L_heel={self._left_heel_geom_id}, "
+            f"R_toe={self._right_toe_geom_id}, R_heel={self._right_heel_geom_id}"
+        )
+
+        # Contact detection parameters (configurable from env config)
+        # contact_threshold: Minimum force (N) to consider contact (not currently used)
+        # contact_scale: Divisor for tanh normalization (10.0 means 10N → tanh(1) ≈ 0.76)
+        self._contact_threshold = getattr(self._config, "contact_threshold", 1.0)
+        self._contact_scale = getattr(self._config, "contact_scale", 10.0)
 
         self._floating_base_qpos_addr = self._mj_model.jnt_qposadr[
             jp.where(self._mj_model.jnt_type == 0)
@@ -313,6 +357,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
             "truncated": jp.zeros(()),  # No truncation at reset
+            "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
         }
 
         return WildRobotEnvState(
@@ -414,6 +459,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "step_count": step_count + 1,
             "prev_action": filtered_action,
             "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
+            "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
         }
 
         # =================================================================
@@ -425,7 +471,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         final_data, final_obs, final_metrics, final_info = jax.lax.cond(
             done > 0.5,
-            lambda: (reset_state.data, reset_state.obs, reset_state.metrics, reset_state.info),
+            lambda: (
+                reset_state.data,
+                reset_state.obs,
+                reset_state.metrics,
+                reset_state.info,
+            ),
             lambda: (data, obs, metrics, info),
         )
 
@@ -433,7 +484,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data=final_data,
             obs=final_obs,
             reward=reward,  # Keep original reward (from before reset)
-            done=done,      # Keep done=True so algorithm knows episode ended
+            done=done,  # Keep done=True so algorithm knows episode ended
             metrics=final_metrics,
             info=final_info,
             pipeline_state=final_data,
@@ -623,6 +674,66 @@ class WildRobotEnv(mjx_env.MjxEnv):
         return mjx_env.get_sensor_data(
             self._mj_model, data, self._robot_config.local_linvel_sensor
         )
+
+    def get_foot_contacts(self, data: mjx.Data) -> jax.Array:
+        """Get foot contact features for AMP discriminator.
+
+        Extracts contact forces from MJX and converts to soft-thresholded
+        contact values in range [0, 1] using tanh normalization.
+
+        This follows industry best practices (DeepMind, ETH Zurich, NVIDIA):
+        - Continuous values (not binary) for smoother gradients
+        - tanh normalization: tanh(force / scale)
+        - 4-dim output: [left_toe, left_heel, right_toe, right_heel]
+
+        Args:
+            data: MJX simulation data containing contact information
+
+        Returns:
+            foot_contacts: (4,) array of contact values in [0, 1]
+                [0] = left_toe (left_foot_btm_front)
+                [1] = left_heel (left_foot_btm_back)
+                [2] = right_toe (right_foot_btm_front)
+                [3] = right_heel (right_foot_btm_back)
+        """
+        # v0.5.0: _foot_geom_ids is guaranteed to exist (exception raised in __init__ if not found)
+
+        def get_contact_force_for_geom(geom_id: int) -> jax.Array:
+            """Get total contact force for a single geom."""
+            # Check which contacts involve this geom (either as geom1 or geom2)
+            geom1_match = data.contact.geom1 == geom_id
+            geom2_match = data.contact.geom2 == geom_id
+            is_our_contact = geom1_match | geom2_match
+
+            # Get normal forces from constraint solver
+            # efc_address[i] is the index where contact i's forces start in efc_force
+            # The first element at each address is the normal force
+            normal_forces = data.efc_force[data.contact.efc_address]
+
+            # Sum forces for contacts involving this geom
+            our_forces = jp.where(is_our_contact, jp.abs(normal_forces), 0.0)
+            total_force = jp.sum(our_forces)
+
+            return total_force
+
+        # Get contact forces for each foot geom
+        left_toe_force = get_contact_force_for_geom(self._left_toe_geom_id)
+        left_heel_force = get_contact_force_for_geom(self._left_heel_geom_id)
+        right_toe_force = get_contact_force_for_geom(self._right_toe_geom_id)
+        right_heel_force = get_contact_force_for_geom(self._right_heel_geom_id)
+
+        # Soft thresholding with tanh: continuous value in [0, 1]
+        # scale=10.0 means: 10N → tanh(1) ≈ 0.76, 20N → tanh(2) ≈ 0.96
+        foot_contacts = jp.array(
+            [
+                jp.tanh(left_toe_force / self._contact_scale),
+                jp.tanh(left_heel_force / self._contact_scale),
+                jp.tanh(right_toe_force / self._contact_scale),
+                jp.tanh(right_heel_force / self._contact_scale),
+            ]
+        )
+
+        return foot_contacts
 
     # =========================================================================
     # Properties (MjxEnv interface)
