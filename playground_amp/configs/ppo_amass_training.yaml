@@ -75,7 +75,7 @@ networks:
 # Reward Weights
 # =============================================================================
 reward_weights:
-  tracking_lin_vel: 1.5  # Reduced from 5.0 - less focus on raw speed
+  tracking_lin_vel: 5.0  # Increased from 1.5 - stronger velocity incentive
   base_height: 0.3       # Healthy reward (mapped to 'healthy' in env)
   action_rate: -0.01     # Action smoothness penalty
 
@@ -83,16 +83,16 @@ reward_weights:
 # AMP (Adversarial Motion Prior)
 # =============================================================================
 amp:
-  weight: 1.0                    # High weight - prioritize natural style over raw speed
+  weight: 0.5                    # Reduced from 1.0 - balance with velocity reward
   dataset_path: playground_amp/data/walking_motions_merged.pkl
 
   # Discriminator
   discriminator_hidden: [256, 128]
-  disc_lr: 5e-6                  # Very slow (prevents mode collapse)
+  disc_lr: 1e-4                  # Increased from 5e-6 - discriminator was not learning!
   batch_size: 256
-  update_steps: 2                # Reduced from 4 - give policy more room to learn
-  gradient_penalty_weight: 50.0  # WGAN-GP regularization
-  disc_input_noise_std: 0.05     # Input noise (hides simulation artifacts)
+  update_steps: 4                # Increased from 2 - more disc updates per iteration
+  gradient_penalty_weight: 10.0  # Reduced from 50.0 - was over-regularizing
+  disc_input_noise_std: 0.02     # Reduced from 0.05 - less noise for clearer signal
 
 # =============================================================================
 # W&B Logging
