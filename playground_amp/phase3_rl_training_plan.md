@@ -1202,6 +1202,51 @@ reward_scales = {
 
 ---
 
+### 🔴 TODO: AMP Discriminator Improvements (v0.4.0+)
+
+**Added:** 2025-12-23
+**Source:** External design review feedback
+
+These are recommended improvements based on industry best practices review:
+
+#### P2: Spectral Normalization (v0.5.0)
+**Priority:** Medium
+**Effort:** 30 min
+**Why:** Replace LayerNorm with Spectral Normalization in discriminator. Spectral Norm is the industry standard for GAN stability as it strictly controls the Lipschitz constant, preventing the discriminator from "overpowering" the policy.
+
+```python
+# Replace:
+x = nn.LayerNorm()(x)
+# With:
+x = SpectralNorm(nn.Dense(hidden_dim))(x)
+```
+
+#### P2: Policy Replay Buffer (v0.5.0)
+**Priority:** Medium
+**Effort:** 2 hours
+**Why:** Training on a buffer of the last 10–20 policy iterations prevents "catastrophic forgetting" where the discriminator forgets how to penalize old bad behaviors. Currently only uses current rollout samples.
+
+```python
+class PolicyReplayBuffer:
+    """Stores historical policy samples for discriminator training."""
+    def __init__(self, max_size: int, feature_dim: int):
+        self.buffer = jnp.zeros((max_size, feature_dim))
+        self.ptr = 0
+```
+
+#### P3: Temporal Context / Observation History (v0.6.0)
+**Priority:** Low (but high impact)
+**Effort:** 4 hours
+**Why:** SOTA implementations (DeepMind, NVIDIA) pass a "window" of the last 2–3 frames to the discriminator. A single frame can show a pose, but it can't distinguish between a "smooth swing" and a "teleporting jitter." Temporal context allows the discriminator to judge **acceleration and jerk**, which are the hallmarks of natural motion.
+
+```python
+# Current: 29-dim single frame
+# Proposed: 87-dim (3 frames × 29 features)
+amp_features = jnp.concatenate([obs_t_minus_2, obs_t_minus_1, obs_t], axis=-1)
+```
+
+---
+
 **Goal:** Train a walking policy using AMP+PPO that achieves natural, energy-efficient locomotion.
 
 ---

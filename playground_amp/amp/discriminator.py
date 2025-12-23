@@ -3,7 +3,7 @@
 Based on the original AMP paper (Peng et al., 2021) using LSGAN formulation:
 - Least Squares GAN loss (more stable than BCE)
 - AMP reward as POSITIVE BONUS (not penalty)
-- Larger network (1024-512-256) for better expressiveness
+- Larger network (512-256 or 1024-512) for better expressiveness
 - LayerNorm for training stability
 - ELU activations
 
@@ -11,7 +11,10 @@ LSGAN Formulation:
 - Discriminator outputs raw scores (no sigmoid)
 - D(real) → 1, D(fake) → 0
 - Loss: (D(real) - 1)² + D(fake)²
-- Reward: max(0, 1 - 0.25 * (D(s) - 1)²)
+- Reward: clipped linear mapping (D=0 → 0, D=1 → 1)
+
+v0.4.0 Fix: Reward formula changed from quadratic to clipped linear.
+Old formula gave 0.75 reward when D=0 (fake), now gives 0.0.
 """
 
 from typing import Sequence
@@ -194,21 +197,22 @@ def discriminator_loss(
 
 
 def compute_amp_reward(params, model, obs):
-    """Compute AMP reward for policy training (LSGAN formulation).
+    """Compute AMP reward for policy training (clipped linear formulation).
 
-    Original AMP paper reward formula (Peng et al., 2021):
-        r_amp = max(0, 1 - 0.25 * (D(s) - 1)²)
+    v0.4.0 Fix: Changed from quadratic to clipped linear mapping.
 
-    This is a POSITIVE BONUS (not a penalty):
-    - D(s) = 1.0 (looks like reference) → reward = 1.0 (maximum bonus)
-    - D(s) = 0.5 → reward = 0.9375
-    - D(s) = 0.0 (looks fake) → reward = 0.75
-    - D(s) = -1.0 → reward = 0.0 (clipped)
+    Old (buggy) formula: max(0, 1 - 0.25 * (D(s) - 1)²)
+    - D(s) = 0.0 (fake) → reward = 0.75 (too high!)
 
-    Benefits:
-    - Always positive (0 to 1 range) - easier to balance with task reward
-    - Smooth gradient everywhere (no log singularities)
-    - Matches the LSGAN discriminator loss
+    New (correct) formula: clip(D(s), 0, 1)
+    - D(s) = 1.0 (looks like reference) → reward = 1.0
+    - D(s) = 0.5 → reward = 0.5
+    - D(s) = 0.0 (looks fake) → reward = 0.0
+    - D(s) < 0 → reward = 0.0 (clipped)
+
+    This matches industry standard (NVIDIA IsaacGym, DeepMind) where
+    fake motion receives zero style reward, providing proper gradient
+    signal for the policy to improve.
 
     Args:
         params: Discriminator parameters
@@ -216,16 +220,14 @@ def compute_amp_reward(params, model, obs):
         obs: Policy observations (batch, obs_dim)
 
     Returns:
-        amp_reward: (batch,) AMP rewards (positive values, 0 to 1)
+        amp_reward: (batch,) AMP rewards (0 to 1 range)
     """
     # Get raw discriminator scores (not sigmoid - LSGAN uses raw outputs)
     scores = model.apply(params, obs, training=False)
 
-    # LSGAN reward: max(0, 1 - 0.25 * (D(s) - 1)²)
-    # When D(s) → 1 (real), reward → 1.0
-    # When D(s) → 0 (fake), reward → 0.75
-    # When D(s) → -1, reward → 0.0 (clipped)
-    amp_reward = jnp.maximum(0.0, 1.0 - 0.25 * (scores - 1.0) ** 2)
+    # Clipped linear reward: D=0 → 0, D=1 → 1
+    # This ensures fake motion (D≈0) gets zero reward, not 0.75
+    amp_reward = jnp.clip(scores, 0.0, 1.0)
 
     return amp_reward
 

@@ -4,6 +4,65 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.3.1] - 2024-12-23: Config-Driven Pipeline (No Hardcoding)
+
+### Problem
+Joint order mismatch between reference data and policy features. GMR's `convert_to_amp_format.py` had **hardcoded** joint order that didn't match MuJoCo qpos order, causing discriminator to compare misaligned features.
+
+| Component | Expected | Bug |
+|-----------|----------|-----|
+| MuJoCo qpos | `waist_yaw` at index 0 | ✅ Correct |
+| `robot_config.yaml` | `waist_yaw` at index 0 | ✅ Correct |
+| GMR hardcoded | `left_hip_pitch` at index 0 | ❌ Wrong |
+
+### Changes
+
+#### GMR Pipeline (Config-Driven)
+| File | Change |
+|------|--------|
+| `GMR/scripts/convert_to_amp_format.py` | Added `--robot-config` flag (required), removed all hardcoded joint names/indices |
+| `GMR/scripts/batch_convert_to_amp.py` | Added `--robot-config` flag (required), uses `get_joint_names()` |
+
+#### WildRobot Fixes
+| File | Change |
+|------|--------|
+| `amp/amp_features.py` | Fixed NamedTuple field order (defaults must come last) |
+| `envs/wildrobot_env.py` | Fixed `_init_qpos` access before initialization, added `_mjx_model` creation |
+| `scripts/scp_to_remote.sh` | Exclude cache files (`__pycache__`, `*.pyc`), include `robot_config.yaml` |
+
+#### Cleanup
+- Deleted workaround scripts: `fix_reference_data.py`, `reorder_reference_data.py`
+- Cleaned `playground_amp/data/` - only `walking_motions_normalized_vel.pkl` remains (641KB)
+- Removed 14 intermediate/old data files
+
+### Reference Data Regeneration
+```bash
+# Full pipeline with config-driven joint order
+cd ~/projects/GMR
+uv run python scripts/batch_retarget_walking.py
+uv run python scripts/batch_convert_to_amp.py \
+    --robot-config ~/projects/wildrobot/assets/robot_config.yaml
+
+cd ~/projects/wildrobot
+uv run python scripts/convert_ref_data_normalized_velocity.py
+```
+
+### Validation
+```
+✅ Joint order: ['waist_yaw', 'left_hip_pitch', ...] matches robot_config.yaml
+✅ Features shape: (3407, 29)
+✅ Velocity normalized: True
+✅ 12 motions, 68.19s total duration
+```
+
+### Key Principle
+**"Fail fast, no silent defaults"** - Joint order now comes from `robot_config.yaml`, never hardcoded. Missing config raises immediate error.
+
+### Status
+🔄 Ready to train - code synced to remote
+
+---
+
 ## [v0.3.0] - 2024-12-23: Velocity Normalization
 
 ### Problem

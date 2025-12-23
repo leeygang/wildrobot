@@ -159,6 +159,7 @@ class Transition(NamedTuple):
     log_prob: jnp.ndarray
     value: jnp.ndarray
     next_obs: jnp.ndarray
+    truncated: jnp.ndarray  # 1.0 if episode ended due to time limit (success)
 
 
 class IterationMetrics(NamedTuple):
@@ -180,6 +181,7 @@ class IterationMetrics(NamedTuple):
     forward_velocity: jnp.ndarray  # Actual forward velocity (m/s)
     robot_height: jnp.ndarray  # Robot base height (m)
     episode_length: jnp.ndarray  # Mean episode length (steps)
+    success_rate: jnp.ndarray  # % of episodes that reached max steps without falling
 
 
 # =============================================================================
@@ -315,6 +317,7 @@ def collect_rollout_scan(
             log_prob=log_prob,
             value=value,
             next_obs=next_env_state.obs,
+            truncated=next_env_state.info["truncated"],  # 1.0 if reached max steps (success)
         )
 
         return (next_env_state, rng), transition
@@ -648,8 +651,32 @@ def make_train_iteration_fn(
         )
 
         # ====================================================================
-        # Step 3: Train discriminator using jax.lax.scan
+        # Step 3: Compute AMP rewards FIRST (using OLD disc_params)
         # ====================================================================
+        # v0.4.0 Fix: Compute rewards BEFORE training discriminator.
+        # This ensures the policy is rewarded based on the discriminator
+        # that was active when the samples were collected, not the updated one.
+        # Using the updated discriminator creates a "moving target" that
+        # destabilizes training.
+
+        # Reshape normalized features back to (num_steps, num_envs, feature_dim)
+        norm_amp_features_shaped = norm_amp_features.reshape(amp_features.shape)
+
+        # Compute AMP reward for each transition using OLD disc_params
+        def compute_amp_reward_single(feat):
+            return compute_amp_reward(state.disc_params, disc_model, feat)  # OLD params
+
+        amp_rewards = jax.vmap(jax.vmap(compute_amp_reward_single))(
+            norm_amp_features_shaped
+        )
+        # Shape: (num_steps, num_envs)
+
+        amp_reward_mean = jnp.mean(amp_rewards)
+
+        # ====================================================================
+        # Step 4: THEN train discriminator
+        # ====================================================================
+        # Now update discriminator for the NEXT iteration
         new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy = (
             train_discriminator_scan(
                 disc_params=state.disc_params,
@@ -665,23 +692,6 @@ def make_train_iteration_fn(
                 input_noise_std=config.disc_input_noise_std,
             )
         )
-
-        # ====================================================================
-        # Step 4: Compute AMP rewards
-        # ====================================================================
-        # Reshape normalized features back to (num_steps, num_envs, feature_dim)
-        norm_amp_features_shaped = norm_amp_features.reshape(amp_features.shape)
-
-        # Compute AMP reward for each transition
-        def compute_amp_reward_single(feat):
-            return compute_amp_reward(new_disc_params, disc_model, feat)
-
-        amp_rewards = jax.vmap(jax.vmap(compute_amp_reward_single))(
-            norm_amp_features_shaped
-        )
-        # Shape: (num_steps, num_envs)
-
-        amp_reward_mean = jnp.mean(amp_rewards)
 
         # Shape rewards: task_reward + amp_weight * amp_reward
         shaped_rewards = transitions.reward + config.amp_reward_weight * amp_rewards
@@ -762,6 +772,18 @@ def make_train_iteration_fn(
         # This is the TRUE episode length, max = max_episode_steps (500)
         episode_length = jnp.mean(new_env_state.info["step_count"])
 
+        # Success rate: % of episodes that ended due to reaching max steps (truncated)
+        # vs falling (terminated). Computed over all transitions in this rollout.
+        # truncated=1.0 when done due to time limit (success), 0.0 otherwise
+        total_done = jnp.sum(transitions.done)
+        total_truncated = jnp.sum(transitions.truncated)
+        # Avoid division by zero: if no episodes ended, success rate is 0
+        success_rate = jnp.where(
+            total_done > 0,
+            total_truncated / total_done,
+            0.0,
+        )
+
         new_state = TrainingState(
             policy_params=new_policy_params,
             value_params=new_value_params,
@@ -791,6 +813,7 @@ def make_train_iteration_fn(
             forward_velocity=forward_velocity,
             robot_height=robot_height,
             episode_length=episode_length,
+            success_rate=success_rate,
         )
 
         return new_state, new_env_state, metrics
@@ -1044,7 +1067,8 @@ def train_amp_ppo_jit(
                 f"  └─ task_r={float(metrics.task_reward_mean):>6.3f}/step | "
                 f"vel={float(metrics.forward_velocity):>5.2f}m/s | "
                 f"height={float(metrics.robot_height):>5.3f}m | "
-                f"ep_len={float(metrics.episode_length):>5.1f}"
+                f"ep_len={float(metrics.episode_length):>5.1f} | "
+                f"success={float(metrics.success_rate)*100:>5.1f}%"
             )
 
             if callback is not None:

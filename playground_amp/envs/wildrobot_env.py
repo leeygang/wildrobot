@@ -312,6 +312,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         info = {
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
+            "truncated": jp.zeros(()),  # No truncation at reset
         }
 
         return WildRobotEnvState(
@@ -393,8 +394,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data, filtered_action, prev_action, velocity_cmd
         )
 
-        # Check termination
-        done = self._get_done(data, step_count + 1)
+        # Check termination (get done, terminated, and truncated flags)
+        done, terminated, truncated = self._get_termination(data, step_count + 1)
 
         # Update metrics (before potential reset)
         height = self.get_floating_base_qpos(data.qpos)[2]
@@ -408,10 +409,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             **reward_components,
         }
 
-        # Update info
+        # Update info with truncated flag for success rate tracking
         info = {
             "step_count": step_count + 1,
             "prev_action": filtered_action,
+            "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
         }
 
         # =================================================================
@@ -552,22 +554,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         return total, components
 
-    def _get_done(self, data: mjx.Data, step_count: int) -> jax.Array:
+    def _get_termination(
+        self, data: mjx.Data, step_count: int
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Check termination conditions.
 
-        Terminates if:
-        - Height too low or too high
-        - Episode length exceeded
+        Returns:
+            (done, terminated, truncated) where:
+            - done: True if episode ended (terminated OR truncated)
+            - terminated: True if ended due to failure (falling)
+            - truncated: True if ended due to time limit (success)
         """
         height = self.get_floating_base_qpos(data.qpos)[2]
 
-        # Height termination
-        height_done = (height < self._min_height) | (height > self._max_height)
+        # Height termination (failure - robot fell)
+        terminated = (height < self._min_height) | (height > self._max_height)
 
-        # Episode length termination
-        length_done = step_count >= self._max_episode_steps
+        # Episode length truncation (success - reached max steps without falling)
+        truncated = (step_count >= self._max_episode_steps) & ~terminated
 
-        return jp.where(height_done | length_done, 1.0, 0.0)
+        # Combined done flag
+        done = terminated | truncated
+
+        return (
+            jp.where(done, 1.0, 0.0),
+            jp.where(terminated, 1.0, 0.0),
+            jp.where(truncated, 1.0, 0.0),
+        )
 
     # =========================================================================
     # Robot Utilities (Joint/Sensor Access)
