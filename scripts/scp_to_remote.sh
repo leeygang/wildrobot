@@ -75,6 +75,38 @@ sync_file() {
     fi
 }
 
+sync_dir_no_cache() {
+    # Sync directory excluding __pycache__, .pyc, .pyo, .egg-info, etc.
+    local DIR="$1"
+    local REMOTE_PATH="$REMOTE_BASE/$DIR"
+
+    if [ ! -d "$DIR" ]; then
+        echo -e "${RED}Error: Directory '$DIR' does not exist${NC}"
+        return 1
+    fi
+
+    # Create remote directory if needed
+    ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_PATH" 2>/dev/null || true
+
+    echo -e "${YELLOW}Syncing directory (excluding cache):${NC} $DIR"
+    rsync -avz --progress \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='*.pyo' \
+        --exclude='*.egg-info' \
+        --exclude='.pytest_cache' \
+        --exclude='.mypy_cache' \
+        --exclude='.ruff_cache' \
+        "$DIR/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Synced:${NC} $DIR"
+    else
+        echo -e "${RED}✗ Failed:${NC} $DIR"
+        return 1
+    fi
+}
+
 sync_data() {
     echo -e "\n${YELLOW}=== Syncing Data Files ===${NC}\n"
 
@@ -94,31 +126,47 @@ sync_data() {
 sync_code() {
     echo -e "\n${YELLOW}=== Syncing Code Files ===${NC}\n"
 
+    # Robot config (critical - code depends on this)
+    sync_file "assets/robot_config.yaml"
+
+    # Scene/model files
+    sync_file "assets/scene_flat_terrain.xml"
+
     # Training scripts
     sync_file "playground_amp/train.py"
 
-    # Training modules
+    # Training modules (exclude __pycache__)
     if [ -d "playground_amp/training" ]; then
-        sync_file "playground_amp/training"
+        sync_dir_no_cache "playground_amp/training"
     fi
 
-    # AMP modules
+    # AMP modules (exclude __pycache__)
     if [ -d "playground_amp/amp" ]; then
-        sync_file "playground_amp/amp"
+        sync_dir_no_cache "playground_amp/amp"
     fi
 
-    # Environment
+    # Environment (exclude __pycache__)
     if [ -d "playground_amp/envs" ]; then
-        sync_file "playground_amp/envs"
+        sync_dir_no_cache "playground_amp/envs"
     fi
 
-    # Configs
+    # Configs (exclude __pycache__)
     if [ -d "playground_amp/configs" ]; then
-        sync_file "playground_amp/configs"
+        sync_dir_no_cache "playground_amp/configs"
     fi
 
-    # Phase 3 training plan
-    sync_file "playground_amp/phase3_rl_training_plan.md"
+    # Utils (exclude __pycache__)
+    if [ -d "playground_amp/utils" ]; then
+        sync_dir_no_cache "playground_amp/utils"
+    fi
+
+    # Documentation
+    if [ -f "playground_amp/phase3_rl_training_plan.md" ]; then
+        sync_file "playground_amp/phase3_rl_training_plan.md"
+    fi
+    if [ -f "playground_amp/reference_data_generation.md" ]; then
+        sync_file "playground_amp/reference_data_generation.md"
+    fi
 
     echo -e "\n${GREEN}✓ Code sync complete${NC}"
 }

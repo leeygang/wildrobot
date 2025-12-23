@@ -185,8 +185,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             xml_path.read_text(), assets=get_assets(root_path)
         )
         self._mj_model.opt.timestep = self.sim_dt
-        # Extract joint-only qpos for control default (exclude floating base: first 7 values)
-        self._default_joint_qpos = self._init_qpos[7:]
+
+        # Create MJX model for JAX compatibility
+        self._mjx_model = mjx.put_model(self._mj_model)
 
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()

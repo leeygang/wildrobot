@@ -54,11 +54,12 @@ class AMPFeatureConfig(NamedTuple):
     # Root height - gravity z-component is proxy for uprightness
     root_height_idx: int
 
-    # Whether to use transition features (current + next)
-    use_transition_features: bool = False
-
     # Number of actuated joints (from robot_config.action_dim)
     num_actuated_joints: int
+
+    # Whether to use transition features (current + next)
+    # Fields with defaults must come after fields without defaults
+    use_transition_features: bool = False
 
     # Feature dimension
     @property
