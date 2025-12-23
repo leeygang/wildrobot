@@ -138,7 +138,7 @@ def save_checkpoint_from_cpu(
             "disc_learning_rate": config.disc_learning_rate,
             "disc_updates_per_iter": config.disc_updates_per_iter,
             "disc_batch_size": config.disc_batch_size,
-            "gradient_penalty_weight": config.gradient_penalty_weight,
+            "r1_gamma": config.r1_gamma,
             "disc_hidden_dims": config.disc_hidden_dims,
             "disc_input_noise_std": config.disc_input_noise_std,
             "total_iterations": config.total_iterations,

@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.4.0"
-version_name: "Critical Bug Fixes"
+version: "0.4.1"
+version_name: "R1 Regularizer"
 
 # =============================================================================
 # Environment
@@ -95,12 +95,12 @@ amp:
   weight: 0.3                    # Reduced - lower style pressure until robot is smoother
   dataset_path: playground_amp/data/walking_motions_normalized_vel.pkl
 
-  # Discriminator (middle-ground: not too strong, not collapsed)
+  # Discriminator (v0.4.1: uses R1 regularizer instead of WGAN-GP)
   discriminator_hidden: [512, 256]  # Increased capacity (was [256, 128])
   disc_lr: 1e-4                  # Increased from 5e-5 - disc was collapsing
   batch_size: 256
   update_steps: 3                # Increased from 2 - give disc more updates
-  gradient_penalty_weight: 5.0   # Reduced from 15.0 - was over-regularizing
+  r1_gamma: 5.0                  # R1 regularizer weight (v0.4.1: replaced gradient_penalty_weight)
   disc_input_noise_std: 0.02     # Reduced from 0.05 - too much blur
 
 # =============================================================================

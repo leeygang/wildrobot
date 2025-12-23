@@ -1,8 +1,8 @@
 # AMP Discriminator Design Review
 
-**Document Version:** 2.0
+**Document Version:** 2.1
 **Date:** 2025-12-23
-**Status:** ✅ Reviewed & Fixes Implemented (v0.4.0)
+**Status:** ✅ Reviewed & Fixes Implemented (v0.4.1)
 **Project:** WildRobot AMP Walking
 
 ---
@@ -81,13 +81,15 @@ The external review confirmed both critical issues identified in this document:
 
 ---
 
-## Implementation Status (v0.4.0)
+## Implementation Status (v0.4.1)
 
 | Fix | Priority | Status | File |
-|-----|----------|--------|------|
-| Reward Formula | P0 | ✅ **IMPLEMENTED** | `discriminator.py` |
-| Training Order | P0 | ✅ **IMPLEMENTED** | `trainer_jit.py` |
-| Network Size `[512, 256]` | P1 | ✅ **IMPLEMENTED** | `ppo_amass_training.yaml` |
+|-----|----------|--------|----- |
+| Reward Formula | P0 | ✅ **IMPLEMENTED** (v0.4.0) | `discriminator.py` |
+| Training Order | P0 | ✅ **IMPLEMENTED** (v0.4.0) | `trainer_jit.py` |
+| Network Size `[512, 256]` | P1 | ✅ **IMPLEMENTED** (v0.4.0) | `ppo_amass_training.yaml` |
+| **R1 Regularizer** | P1 | ✅ **IMPLEMENTED** (v0.4.1) | `discriminator.py`, `trainer_jit.py` |
+| **Distribution Metrics** | P1 | ✅ **IMPLEMENTED** (v0.4.1) | `trainer_jit.py` |
 | Spectral Normalization | P2 | 📋 TODO (v0.5.0) | - |
 | Policy Replay Buffer | P2 | 📋 TODO (v0.5.0) | - |
 | Temporal Context (2-3 frames) | P3 | 📋 TODO (v0.6.0) | - |
@@ -164,11 +166,13 @@ class AMPDiscriminator(nn.Module):
 
 ### Loss Function
 
-**LSGAN Loss (Least Squares GAN):**
+**LSGAN Loss + R1 Regularizer (v0.4.1):**
+
+v0.4.1 replaced WGAN-GP with R1 regularizer for consistency with LSGAN:
 
 ```python
 def discriminator_loss(params, model, real_obs, fake_obs, rng_key,
-                       gradient_penalty_weight, input_noise_std):
+                       r1_gamma=5.0, input_noise_std=0.0):
     # Add input noise (optional)
     if input_noise_std > 0.0:
         real_obs = real_obs + noise
@@ -183,23 +187,29 @@ def discriminator_loss(params, model, real_obs, fake_obs, rng_key,
     fake_loss = jnp.mean(fake_scores ** 2)
     lsgan_loss = 0.5 * (real_loss + fake_loss)
 
-    # Gradient penalty (WGAN-GP style)
-    alpha = jax.random.uniform(rng_key, shape=(batch_size, 1))
-    interpolated = alpha * real_obs + (1 - alpha) * fake_obs
-    grad_interp = jax.grad(disc_fn)(interpolated)
-    grad_norm = jnp.sqrt(jnp.sum(grad_interp ** 2, axis=-1) + 1e-8)
-    gradient_penalty = jnp.mean((grad_norm - 1.0) ** 2)
+    # R1 Regularizer (v0.4.1): gradient penalty on REAL samples only
+    # More appropriate for LSGAN than WGAN-GP (which uses interpolated)
+    def real_disc_sum(x):
+        return jnp.sum(model.apply(params, x, training=True))
+    grad_real = jax.grad(real_disc_sum)(real_obs)
+    r1_penalty = jnp.mean(jnp.sum(grad_real ** 2, axis=-1))
 
-    total_loss = lsgan_loss + gradient_penalty_weight * gradient_penalty
+    total_loss = lsgan_loss + (r1_gamma / 2.0) * r1_penalty
     return total_loss, metrics
 ```
 
-**Current Hyperparameters:**
+**Why R1 over WGAN-GP (from second external review):**
+- LSGAN uses bounded targets [0, 1]
+- WGAN-GP was designed for Wasserstein critics (unbounded outputs)
+- R1 only penalizes gradient on real samples (simpler, faster, more stable)
+- Mixing LSGAN + WGAN-GP is theoretically inconsistent
+
+**Current Hyperparameters (v0.4.1):**
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `disc_lr` | `1e-4` | Learning rate |
 | `update_steps` | `3` | Updates per policy iteration |
-| `gradient_penalty_weight` | `5.0` | WGAN-GP regularization |
+| `r1_gamma` | `5.0` | R1 regularizer weight (replaced gradient_penalty_weight) |
 | `disc_input_noise_std` | `0.02` | Input blur |
 | `batch_size` | `256` | Samples per update |
 
@@ -520,9 +530,9 @@ Run training for 100 iterations and verify:
 
 ---
 
-## Appendix A: Implemented Fixes (v0.4.0)
+## Appendix A: Implemented Fixes
 
-### A.1 Reward Formula Fix ✅ IMPLEMENTED
+### A.1 Reward Formula Fix ✅ (v0.4.0)
 
 **File:** `playground_amp/amp/discriminator.py`
 
@@ -544,7 +554,7 @@ def compute_amp_reward(params, model, obs):
     return amp_reward
 ```
 
-### A.2 Training Order Fix ✅ IMPLEMENTED
+### A.2 Training Order Fix ✅ (v0.4.0)
 
 **File:** `playground_amp/training/trainer_jit.py`
 
@@ -554,7 +564,7 @@ The training order was corrected to:
 
 This ensures the policy is rewarded based on the discriminator that was active when samples were collected.
 
-### A.3 Network Size Increase ✅ IMPLEMENTED
+### A.3 Network Size Increase ✅ (v0.4.0)
 
 **File:** `playground_amp/configs/ppo_amass_training.yaml`
 
@@ -562,6 +572,50 @@ This ensures the policy is rewarded based on the discriminator that was active w
 amp:
   discriminator_hidden: [512, 256]  # Increased from [256, 128]
 ```
+
+### A.4 R1 Regularizer ✅ (v0.4.1)
+
+**Files:** `playground_amp/amp/discriminator.py`, `playground_amp/training/trainer_jit.py`
+
+Replaced WGAN-GP with R1 regularizer for theoretical consistency with LSGAN:
+
+```python
+# R1 Regularization: gradient penalty on REAL samples only
+def real_disc_sum(x):
+    return jnp.sum(model.apply(params, x, training=True))
+
+grad_real = jax.grad(real_disc_sum)(real_obs)
+r1_penalty = jnp.mean(jnp.sum(grad_real ** 2, axis=-1))
+
+total_loss = lsgan_loss + (r1_gamma / 2.0) * r1_penalty
+```
+
+**Why this matters:**
+- WGAN-GP was designed for Wasserstein critics (unbounded outputs)
+- LSGAN uses bounded targets [0, 1]
+- R1 penalizes gradient on REAL samples only (not interpolated)
+- More theoretically consistent and often more stable
+
+### A.5 Distribution Metrics ✅ (v0.4.1)
+
+**File:** `playground_amp/training/trainer_jit.py`
+
+Added detailed discriminator distribution metrics for debugging:
+
+```python
+class IterationMetrics(NamedTuple):
+    # ... existing metrics ...
+    # v0.4.1: Distribution metrics for debugging
+    disc_real_mean: jnp.ndarray  # Mean D(real) score - should → 1
+    disc_fake_mean: jnp.ndarray  # Mean D(fake) score - should → 0
+    disc_real_std: jnp.ndarray   # Std of D(real) scores
+    disc_fake_std: jnp.ndarray   # Std of D(fake) scores
+```
+
+These metrics help diagnose discriminator behavior:
+- `disc_real_mean` should approach 1.0 (real samples correctly identified)
+- `disc_fake_mean` should approach 0.0 (fake samples correctly identified)
+- If both are similar, discriminator is not learning separation
 
 ---
 
@@ -609,7 +663,8 @@ This enables the discriminator to judge acceleration and jerk, which are hallmar
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-12-23 | Initial design review |
-| 2.0 | 2025-12-23 | Added external review feedback, marked fixes as implemented |
+| 2.0 | 2025-12-23 | Added external review feedback, marked v0.4.0 fixes as implemented |
+| 2.1 | 2025-12-23 | Added v0.4.1 changes: R1 regularizer, distribution metrics |
 
 ---
 

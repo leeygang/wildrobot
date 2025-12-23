@@ -101,7 +101,7 @@ class AMPPPOConfigJit:
     disc_learning_rate: float
     disc_updates_per_iter: int
     disc_batch_size: int
-    gradient_penalty_weight: float
+    r1_gamma: float  # R1 regularizer weight (v0.4.1: replaced gradient_penalty_weight)
     disc_hidden_dims: Tuple[int, ...]
     disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 
@@ -174,6 +174,11 @@ class IterationMetrics(NamedTuple):
     disc_loss: jnp.ndarray
     disc_accuracy: jnp.ndarray
     amp_reward_mean: jnp.ndarray
+    # v0.4.1: Discriminator distribution metrics for debugging
+    disc_real_mean: jnp.ndarray  # Mean D(real) score - should → 1
+    disc_fake_mean: jnp.ndarray  # Mean D(fake) score - should → 0
+    disc_real_std: jnp.ndarray   # Std of D(real) scores
+    disc_fake_std: jnp.ndarray   # Std of D(fake) scores
     # Episode metrics
     episode_reward: jnp.ndarray
     # Task reward breakdown (for debugging)
@@ -375,10 +380,12 @@ def train_discriminator_scan(
     rng: jax.Array,
     num_updates: int,
     batch_size: int,
-    gradient_penalty_weight: float,
+    r1_gamma: float,
     input_noise_std: float = 0.0,
-) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray, dict]:
     """Train discriminator using jax.lax.scan.
+
+    v0.4.1: Uses R1 regularizer instead of WGAN-GP.
 
     Args:
         disc_params: Discriminator parameters
@@ -390,11 +397,11 @@ def train_discriminator_scan(
         rng: Random key
         num_updates: Number of discriminator updates
         batch_size: Batch size per update
-        gradient_penalty_weight: WGAN-GP penalty weight
+        r1_gamma: R1 gradient penalty weight (on real samples only)
         input_noise_std: Gaussian noise std to add to inputs (hides simulation artifacts)
 
     Returns:
-        (new_params, new_opt_state, mean_loss, mean_accuracy)
+        (new_params, new_opt_state, mean_loss, mean_accuracy, distribution_metrics)
     """
     num_ref_samples = ref_buffer_data.shape[0]
     num_agent_samples = agent_features.shape[0]
@@ -428,7 +435,7 @@ def train_discriminator_scan(
                 + jax.random.normal(noise_rng2, expert_batch.shape) * input_noise_std
             )
 
-        # Compute loss and gradients
+        # Compute loss and gradients (v0.4.1: uses R1 regularizer)
         def loss_fn(p):
             return discriminator_loss(
                 params=p,
@@ -436,7 +443,7 @@ def train_discriminator_scan(
                 real_obs=expert_batch,
                 fake_obs=agent_batch,
                 rng_key=loss_rng,
-                gradient_penalty_weight=gradient_penalty_weight,
+                r1_gamma=r1_gamma,
             )
 
         (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -445,15 +452,35 @@ def train_discriminator_scan(
         updates, new_opt_state = disc_optimizer.update(grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
 
-        return (new_params, new_opt_state), (loss, metrics["discriminator_accuracy"])
+        # Return metrics for aggregation
+        step_metrics = (
+            loss,
+            metrics["discriminator_accuracy"],
+            metrics["discriminator_real_mean"],
+            metrics["discriminator_fake_mean"],
+            metrics["discriminator_real_std"],
+            metrics["discriminator_fake_std"],
+        )
+
+        return (new_params, new_opt_state), step_metrics
 
     # Run scan over updates
     rngs = jax.random.split(rng, num_updates)
-    (final_params, final_opt_state), (losses, accuracies) = jax.lax.scan(
+    (final_params, final_opt_state), all_metrics = jax.lax.scan(
         disc_update_step, (disc_params, disc_opt_state), rngs
     )
 
-    return final_params, final_opt_state, jnp.mean(losses), jnp.mean(accuracies)
+    # Unpack and average metrics
+    losses, accuracies, real_means, fake_means, real_stds, fake_stds = all_metrics
+
+    distribution_metrics = {
+        "disc_real_mean": jnp.mean(real_means),
+        "disc_fake_mean": jnp.mean(fake_means),
+        "disc_real_std": jnp.mean(real_stds),
+        "disc_fake_std": jnp.mean(fake_stds),
+    }
+
+    return final_params, final_opt_state, jnp.mean(losses), jnp.mean(accuracies), distribution_metrics
 
 
 # =============================================================================
@@ -677,7 +704,8 @@ def make_train_iteration_fn(
         # Step 4: THEN train discriminator
         # ====================================================================
         # Now update discriminator for the NEXT iteration
-        new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy = (
+        # v0.4.1: Uses R1 regularizer instead of WGAN-GP
+        new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy, disc_dist_metrics = (
             train_discriminator_scan(
                 disc_params=state.disc_params,
                 disc_opt_state=state.disc_opt_state,
@@ -688,7 +716,7 @@ def make_train_iteration_fn(
                 rng=disc_rng,
                 num_updates=config.disc_updates_per_iter,
                 batch_size=config.disc_batch_size,
-                gradient_penalty_weight=config.gradient_penalty_weight,
+                r1_gamma=config.r1_gamma,
                 input_noise_std=config.disc_input_noise_std,
             )
         )
@@ -808,6 +836,11 @@ def make_train_iteration_fn(
             disc_loss=disc_loss,
             disc_accuracy=disc_accuracy,
             amp_reward_mean=amp_reward_mean,
+            # v0.4.1: Distribution metrics for debugging
+            disc_real_mean=disc_dist_metrics["disc_real_mean"],
+            disc_fake_mean=disc_dist_metrics["disc_fake_mean"],
+            disc_real_std=disc_dist_metrics["disc_real_std"],
+            disc_fake_std=disc_dist_metrics["disc_fake_std"],
             episode_reward=episode_reward,
             task_reward_mean=task_reward_mean,
             forward_velocity=forward_velocity,

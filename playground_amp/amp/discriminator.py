@@ -14,7 +14,10 @@ LSGAN Formulation:
 - Reward: clipped linear mapping (D=0 → 0, D=1 → 1)
 
 v0.4.0 Fix: Reward formula changed from quadratic to clipped linear.
-Old formula gave 0.75 reward when D=0 (fake), now gives 0.0.
+v0.4.1 Fix: Replaced WGAN-GP with R1 regularizer for loss consistency.
+  - WGAN-GP was designed for Wasserstein critics (unbounded outputs)
+  - R1 regularizer is the correct pairing for classification-style LSGAN loss
+  - R1 penalizes gradient on REAL samples only (not interpolated)
 """
 
 from typing import Sequence
@@ -29,7 +32,7 @@ class AMPDiscriminator(nn.Module):
 
     Architecture follows 2024 best practices:
     - Input: observation features (joint pos/vel or full obs)
-    - Hidden layers: 1024 -> 512 -> 256
+    - Hidden layers: 512 -> 256 (configurable)
     - Output: single logit (real vs fake)
     - Activations: ELU
     - Normalization: LayerNorm after each hidden layer
@@ -37,8 +40,8 @@ class AMPDiscriminator(nn.Module):
     Training:
     - Real samples: reference motion dataset
     - Fake samples: current policy rollouts
-    - Loss: binary cross-entropy
-    - Regularization: WGAN-GP style gradient penalty
+    - Loss: LSGAN (least squares)
+    - Regularization: R1 gradient penalty on real samples
     """
 
     hidden_dims: Sequence[int]
@@ -107,28 +110,31 @@ def discriminator_loss(
     real_obs,
     fake_obs,
     rng_key,
-    gradient_penalty_weight=5.0,
+    r1_gamma=5.0,
     input_noise_std=0.0,
 ):
-    """Compute LSGAN discriminator loss with gradient penalty.
+    """Compute LSGAN discriminator loss with R1 regularization.
 
-    LSGAN (Least Squares GAN) loss from the original AMP paper:
+    v0.4.1: Replaced WGAN-GP with R1 regularizer for consistency with LSGAN.
+
+    LSGAN (Least Squares GAN) loss:
     - Real samples: (D(x) - 1)² (want D to output 1 for real)
     - Fake samples: (D(x) - 0)² (want D to output 0 for fake)
 
-    Benefits of LSGAN over BCE:
-    - More stable gradients (no vanishing gradients when D is confident)
-    - Smoother loss landscape
-    - Better convergence in adversarial training
+    R1 Regularization (Mescheder et al., 2018):
+    - Penalizes gradient norm on REAL samples only
+    - Formula: R1 = γ/2 * E[||∇D(x_real)||²]
+    - More appropriate for classification-style losses than WGAN-GP
+    - WGAN-GP was designed for Wasserstein critics (unbounded outputs)
 
-    Gradient penalty (WGAN-GP style):
-    - Encourages smooth discriminator
-    - Prevents mode collapse
+    Why R1 over WGAN-GP:
+    - LSGAN uses bounded targets [0, 1]
+    - WGAN-GP uses interpolated samples (makes sense for Wasserstein, not LSGAN)
+    - R1 only penalizes gradient on real samples (simpler, faster, more stable)
 
     Input noise (optional):
     - Adds Gaussian noise to observations before feeding to discriminator
     - Prevents overfitting to high-frequency jitter unique to simulation
-    - Helps discriminator focus on general motion style
 
     Args:
         params: Discriminator parameters
@@ -136,7 +142,7 @@ def discriminator_loss(
         real_obs: Reference motion observations (batch, obs_dim)
         fake_obs: Policy rollout observations (batch, obs_dim)
         rng_key: JAX random key
-        gradient_penalty_weight: Weight for gradient penalty term
+        r1_gamma: Weight for R1 gradient penalty (default 5.0)
         input_noise_std: Std of Gaussian noise to add to inputs (0.0 = no noise)
 
     Returns:
@@ -161,20 +167,17 @@ def discriminator_loss(
     fake_loss = jnp.mean(fake_scores ** 2)
     lsgan_loss = 0.5 * (real_loss + fake_loss)
 
-    # Gradient penalty (on interpolated samples)
-    batch_size = real_obs.shape[0]
-    alpha = jax.random.uniform(rng_key, shape=(batch_size, 1))
-    interpolated = alpha * real_obs + (1 - alpha) * fake_obs
-
-    def disc_fn(x):
+    # R1 Regularization: gradient penalty on REAL samples only
+    # This is more appropriate for LSGAN than WGAN-GP (which uses interpolated samples)
+    def real_disc_sum(x):
         return jnp.sum(model.apply(params, x, training=True))
 
-    grad_interp = jax.grad(disc_fn)(interpolated)
-    grad_norm = jnp.sqrt(jnp.sum(grad_interp ** 2, axis=-1) + 1e-8)
-    gradient_penalty = jnp.mean((grad_norm - 1.0) ** 2)
+    grad_real = jax.grad(real_disc_sum)(real_obs)
+    # R1 = (gamma/2) * E[||grad||^2]
+    r1_penalty = jnp.mean(jnp.sum(grad_real ** 2, axis=-1))
 
     # Total loss
-    total_loss = lsgan_loss + gradient_penalty_weight * gradient_penalty
+    total_loss = lsgan_loss + (r1_gamma / 2.0) * r1_penalty
 
     # Metrics for logging
     # For LSGAN, "accuracy" = how well D separates real (→1) from fake (→0)
@@ -187,10 +190,18 @@ def discriminator_loss(
     metrics = {
         "discriminator_loss": total_loss,
         "discriminator_lsgan": lsgan_loss,
-        "discriminator_gp": gradient_penalty,
+        "discriminator_r1": r1_penalty,
         "discriminator_accuracy": accuracy,
+        # Distribution metrics for debugging
         "discriminator_real_mean": jnp.mean(real_scores),  # Should → 1
+        "discriminator_real_std": jnp.std(real_scores),
         "discriminator_fake_mean": jnp.mean(fake_scores),  # Should → 0
+        "discriminator_fake_std": jnp.std(fake_scores),
+        # Min/max for histogram-like understanding
+        "discriminator_real_min": jnp.min(real_scores),
+        "discriminator_real_max": jnp.max(real_scores),
+        "discriminator_fake_min": jnp.min(fake_scores),
+        "discriminator_fake_max": jnp.max(fake_scores),
     }
 
     return total_loss, metrics
