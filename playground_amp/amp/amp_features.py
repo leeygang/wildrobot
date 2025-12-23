@@ -29,6 +29,11 @@ class AMPFeatureConfig(NamedTuple):
 
     Defines which parts of the observation to use for discriminator.
     Indices are derived from robot_config.yaml observation_indices.
+
+    NOTE: Root linear velocity is NORMALIZED to unit direction vector.
+    This preserves directional information (forward/backward/sideways)
+    while removing speed magnitude that causes mismatch between
+    reference data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
     """
 
     # Observation indices for feature extraction
@@ -60,8 +65,10 @@ class AMPFeatureConfig(NamedTuple):
     def feature_dim(self) -> int:
         """AMP feature dimension.
 
-        Format: joint_pos + joint_vel + root_linvel(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
+        Format: joint_pos + joint_vel + root_linvel_dir(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
+        NOTE: root_linvel is NORMALIZED to unit direction (removes speed, keeps direction)
         """
+        # 9 joint_pos + 9 joint_vel + 3 root_linvel_dir + 3 root_angvel + 1 root_height + 4 foot_contacts = 29
         return self.num_actuated_joints * 2 + 3 + 3 + 1 + 4
 
 
@@ -132,13 +139,18 @@ def extract_amp_features(
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
-    Maps observation to 29-dim AMP feature format to match reference motion data:
+    Maps observation to 29-dim AMP feature format:
     - Joint positions (0-8): 9 dims
     - Joint velocities (9-17): 9 dims
-    - Root linear velocity (18-20): 3 dims
+    - Root linear velocity DIRECTION (18-20): 3 dims (normalized unit vector)
     - Root angular velocity (21-23): 3 dims
     - Root height (24): 1 dim
     - Foot contacts (25-28): 4 dims (zeros placeholder)
+
+    NOTE: Root linear velocity is NORMALIZED to unit direction vector.
+    This preserves directional info (forward/backward/sideways) while
+    removing speed magnitude that causes mismatch between reference
+    data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
 
     Args:
         obs: Current observation (..., obs_dim=38)
@@ -164,21 +176,38 @@ def extract_amp_features(
     root_angvel = obs[..., config.root_angvel_start : config.root_angvel_end]  # 3 dims
     root_height = obs[..., config.root_height_idx : config.root_height_idx + 1]  # 1 dim
 
+    # Normalize root linear velocity to unit direction vector
+    # This removes speed (magnitude) while preserving direction
+    # SAFETY: When velocity is very small (standing/start of episode),
+    # return zero vector instead of noisy normalized direction
+    linvel_norm = jnp.linalg.norm(root_linvel, axis=-1, keepdims=True)
+
+    # Threshold: if speed < 0.1 m/s, consider it "stationary" → zero direction
+    min_speed_threshold = 0.1
+    is_moving = linvel_norm > min_speed_threshold
+
+    # Safe normalization: only normalize if moving, else zero
+    root_linvel_dir = jnp.where(
+        is_moving,
+        root_linvel / (linvel_norm + 1e-8),  # Normalized direction
+        jnp.zeros_like(root_linvel)           # Zero for stationary
+    )
+
     # Foot contacts - we don't have this in observation, use zeros
     # Shape: (..., 4)
     batch_shape = obs.shape[:-1]
     foot_contacts = jnp.zeros(batch_shape + (4,), dtype=obs.dtype)
 
-    # Concatenate in the exact order of reference motion format (29-dim):
-    # [joint_pos(9), joint_vel(9), root_linvel(3), root_angvel(3), root_height(1), foot_contacts(4)]
+    # Concatenate in order (29-dim with normalized velocity direction):
+    # [joint_pos(9), joint_vel(9), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
     features = jnp.concatenate(
         [
-            joint_pos,  # 0-8: 9 dims
-            joint_vel,  # 9-17: 9 dims
-            root_linvel,  # 18-20: 3 dims
-            root_angvel,  # 21-23: 3 dims
-            root_height,  # 24: 1 dim
-            foot_contacts,  # 25-28: 4 dims
+            joint_pos,        # 0-8: 9 dims
+            joint_vel,        # 9-17: 9 dims
+            root_linvel_dir,  # 18-20: 3 dims (normalized direction)
+            root_angvel,      # 21-23: 3 dims
+            root_height,      # 24: 1 dim
+            foot_contacts,    # 25-28: 4 dims
         ],
         axis=-1,
     )

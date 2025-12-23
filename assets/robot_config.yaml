@@ -355,7 +355,7 @@ dimensions:
   amp_feature_breakdown:
     joint_positions: 9
     joint_velocities: 9
-    root_linear_velocity: 3
+    root_linear_velocity_direction: 3
     root_angular_velocity: 3
     root_height: 1
     foot_contacts: 4

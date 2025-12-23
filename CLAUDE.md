@@ -343,6 +343,47 @@ python scripts/smplx_to_robot.py \
     --save_path /path/to/output.pkl
 ```
 
+## AMP Training Changelog
+
+**IMPORTANT**: Keep `playground_amp/CHANGELOG.md` synced with all AMP training changes!
+
+### When to Update CHANGELOG.md
+
+Update the changelog whenever you make changes to:
+1. **Capability changes**: New features, algorithms, or training modes
+2. **Config changes**: Updates to `ppo_amass_training.yaml` (discriminator settings, reward weights, etc.)
+3. **Feature format**: Changes to AMP features (dimensions, normalization, etc.)
+4. **Bug fixes**: Fixes that affect training behavior
+
+### Changelog Structure
+
+Each version entry should include:
+- **Problem**: What issue was addressed
+- **Changes**: Capability, files modified, config updates
+- **Result**: Training outcomes (disc_acc, velocity, reward)
+- **Lessons Learned**: Reusable insights
+
+### Version in Config
+
+The training config (`ppo_amass_training.yaml`) contains version tracking:
+```yaml
+version: "0.3.0"
+version_name: "Velocity Normalization"
+```
+
+**Always update both** the config version AND the changelog when making significant changes.
+
+### Training Results Log
+
+After each training run, update the **Training Results Log** table in CHANGELOG.md:
+```markdown
+| Date | Version | Iterations | disc_acc | Velocity | Notes |
+|------|---------|------------|----------|----------|-------|
+| 2024-12-23 | v0.3.0 | 500 | 0.65-0.80 | 0.7 m/s | Velocity normalized ✅ |
+```
+
+This creates a historical record of what worked and what didn't.
+
 ## Development Notes
 
 - **4.41Nm Torque Limit**: This is the PRIMARY constraint (HTD-45H @ 12V: 45 kg·cm). Always validate with `validate_torque.py` before training

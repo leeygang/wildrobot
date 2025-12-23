@@ -201,6 +201,10 @@ class TrainingConfig:
     This dataclass provides easy access to all training parameters.
     """
 
+    # Version tracking (see CHANGELOG.md)
+    version: str
+    version_name: str
+
     # Environment
     ctrl_dt: float
     sim_dt: float
@@ -273,6 +277,9 @@ class TrainingConfig:
         rewards = config.get("reward_weights", {})
 
         return cls(
+            # Version tracking
+            version=config.get("version", "0.0.0"),
+            version_name=config.get("version_name", "Unknown"),
             # Environment
             ctrl_dt=env.get("ctrl_dt", 0.02),
             sim_dt=env.get("sim_dt", 0.002),

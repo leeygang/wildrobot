@@ -847,6 +847,7 @@ def main():
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
     print(f"{'=' * 60}")
+    print(f"  Version: {training_cfg.version} ({training_cfg.version_name})")
     print(f"  PID: {os.getpid()}  (kill -9 {os.getpid()} to terminate)")
     if use_amp:
         mode_str = "AMP+PPO (JIT-compiled - FAST)"
@@ -873,6 +874,10 @@ def main():
     if wandb_cfg.enabled and not args.verify:
         # Create config dict for W&B
         wandb_config = {
+            # Version tracking
+            "version": training_cfg.version,
+            "version_name": training_cfg.version_name,
+            # Training params
             "iterations": args.iterations,
             "num_envs": args.num_envs,
             "learning_rate": args.lr,

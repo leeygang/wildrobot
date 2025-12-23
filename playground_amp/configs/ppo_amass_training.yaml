@@ -18,6 +18,12 @@
 #   - 600 iterations (~79M steps): ~12 hours (recommended for quick experiments)
 
 # =============================================================================
+# Version (see CHANGELOG.md for details)
+# =============================================================================
+version: "0.3.0"
+version_name: "Velocity Normalization"
+
+# =============================================================================
 # Environment
 # =============================================================================
 env:
@@ -84,7 +90,7 @@ reward_weights:
 # =============================================================================
 amp:
   weight: 0.3                    # Reduced - lower style pressure until robot is smoother
-  dataset_path: playground_amp/data/walking_motions_merged.pkl
+  dataset_path: playground_amp/data/walking_motions_normalized_vel.pkl
 
   # Discriminator (middle-ground: not too strong, not collapsed)
   discriminator_hidden: [256, 128]
