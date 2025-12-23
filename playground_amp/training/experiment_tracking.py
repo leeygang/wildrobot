@@ -113,11 +113,10 @@ class WandbTracker:
             entity: W&B entity (team/user)
             mode: W&B mode ("online", "offline", "disabled")
             enabled: Whether to enable W&B logging
-            log_dir: Local directory for config backup
+            log_dir: Local directory for wandb files
         """
         self.project = project
-        self._run_id = self._generate_run_id()  # Timestamp-based ID for folder naming
-        self.name = name or f"run_{self._run_id}"
+        self.name = name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.config = config or {}
         self.tags = tags or []
         self.notes = notes
@@ -127,6 +126,7 @@ class WandbTracker:
         self.log_dir = log_dir
 
         self._wandb_run = None
+        self._run_dir = None  # Will be set after wandb.init()
         self._start_time = time.time()
         self._step = 0
 
@@ -134,19 +134,8 @@ class WandbTracker:
         if enabled:
             self._init_wandb()
 
-        # Save config locally as backup
+        # Save config locally (to wandb's run dir if available, else log_dir)
         self._save_config_local()
-
-    def _generate_run_id(self) -> str:
-        """Generate a unique run ID based on timestamp.
-
-        This ID is used for both the run name and the local folder name.
-        Format: YYYYMMDD_HHMMSS (no random suffix)
-
-        The folder will be: wandb/run-YYYYMMDD_HHMMSS/
-        Instead of:         wandb/run-YYYYMMDD_HHMMSS-abc12xyz/
-        """
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
 
     def _init_wandb(self):
         """Initialize Weights & Biases tracking."""
@@ -157,6 +146,7 @@ class WandbTracker:
             if wandb.run is not None:
                 print(f"⚠️ W&B already initialized, using existing run")
                 self._wandb_run = wandb.run
+                self._run_dir = wandb.run.dir
                 return
 
             # Set WANDB_DIR to parent of log_dir so wandb creates its subfolder there
@@ -166,10 +156,11 @@ class WandbTracker:
             os.makedirs(wandb_parent_dir, exist_ok=True)
             os.environ["WANDB_DIR"] = wandb_parent_dir
 
-            # Initialize W&B with custom ID (removes random suffix from folder name)
+            # Initialize W&B
+            # Note: We don't set 'id' to avoid duplicate timestamps in folder name
+            # wandb will generate a random 8-char ID: run-YYYYMMDD_HHMMSS-abc12xyz
             self._wandb_run = wandb.init(
                 project=self.project,
-                id=self._run_id,  # Use our timestamp as ID
                 name=self.name,
                 config=self.config,
                 tags=self.tags,
@@ -178,11 +169,13 @@ class WandbTracker:
                 mode=self.mode,
             )
 
-            # Print run info
+            # Store wandb's run directory for saving config/summary
             if self._wandb_run is not None:
+                self._run_dir = self._wandb_run.dir
                 print(f"✓ W&B initialized")
                 print(f"  Project: {self.project}")
                 print(f"  Run: {self.name}")
+                print(f"  Dir: {self._run_dir}")
                 if self._wandb_run.url:
                     print(f"  URL: {self._wandb_run.url}")
 
@@ -194,10 +187,13 @@ class WandbTracker:
             self.enabled = False
 
     def _save_config_local(self):
-        """Save configuration to local file as backup."""
-        # Save to: playground_amp/wandb/run_YYYYMMDD_HHMMSS/config.json
-        config_dir = os.path.join(self.log_dir, self.name)
-        os.makedirs(config_dir, exist_ok=True)
+        """Save configuration to local file (in wandb's run dir if available)."""
+        # Use wandb's run dir if available, otherwise create our own folder
+        if self._run_dir:
+            config_dir = self._run_dir
+        else:
+            config_dir = os.path.join(self.log_dir, self.name)
+            os.makedirs(config_dir, exist_ok=True)
 
         config_path = os.path.join(config_dir, "config.json")
         with open(config_path, "w") as f:
@@ -369,11 +365,14 @@ class WandbTracker:
             except Exception as e:
                 print(f"⚠️ W&B summary logging failed: {e}")
 
-        # Also save to local file
-        summary_path = os.path.join(
-            self.log_dir, self.name, "summary.json"
-        )
-        os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+        # Also save to local file (in wandb's run dir if available)
+        if self._run_dir:
+            summary_path = os.path.join(self._run_dir, "summary.json")
+        else:
+            summary_dir = os.path.join(self.log_dir, self.name)
+            os.makedirs(summary_dir, exist_ok=True)
+            summary_path = os.path.join(summary_dir, "summary.json")
+
         with open(summary_path, "w") as f:
             json.dump(metrics, f, indent=2, default=str)
 

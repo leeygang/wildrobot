@@ -333,7 +333,7 @@ class TrainingConfig:
             tags=wandb_cfg.get("tags", []),
             mode=wandb_cfg.get("mode", "online"),
             log_frequency=wandb_cfg.get("log_frequency", 10),
-            log_dir=wandb_cfg.get("log_dir", "logs"),
+            log_dir=wandb_cfg.get("log_dir", "playground_amp/wandb"),
         )
 
 

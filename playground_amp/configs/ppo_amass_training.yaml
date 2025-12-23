@@ -102,6 +102,7 @@ wandb:
   project: wildrobot-amp
   mode: online
   tags: [ppo, amp]
+  log_dir: playground_amp/wandb  # Local directory for wandb files and config backup
 
 # =============================================================================
 # Checkpoints
