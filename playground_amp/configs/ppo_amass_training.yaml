@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.3.0"
-version_name: "Velocity Normalization"
+version: "0.3.1"
+version_name: "Minibatch Optimization"
 
 # =============================================================================
 # Environment
@@ -62,8 +62,8 @@ trainer:
   entropy_coef: 0.01
   value_loss_coef: 0.5
   max_grad_norm: 0.5
-  epochs: 4              # PPO epochs per iteration
-  num_minibatches: 8     # Minibatch size = (num_envs × rollout_steps) / num_minibatches
+  epochs: 3              # PPO epochs per iteration (reduced from 4 for minibatch fix)
+  num_minibatches: 128   # Minibatch size ≈ 1024 (was 8 → 16K, too large for PPO)
 
   # Logging
   log_interval: 10
