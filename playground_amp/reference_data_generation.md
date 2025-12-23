@@ -84,16 +84,20 @@ cd ~/projects/GMR
 uv run python scripts/convert_to_amp_format.py \
     --input ~/projects/wildrobot/assets/motions/walking_slow01.pkl \
     --output ~/projects/wildrobot/playground_amp/data/walking_slow01_amp.pkl \
+    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
     --target_fps 50
 ```
 
 ### Batch Convert All Motions
 ```bash
 uv run python scripts/batch_convert_to_amp.py \
-    --input_dir ~/projects/wildrobot/assets/motions \
-    --output_dir ~/projects/wildrobot/playground_amp/data \
+    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
+    --input-dir ~/projects/wildrobot/assets/motions \
+    --output-dir ~/projects/wildrobot/playground_amp/data \
     --target_fps 50
 ```
+
+**Important:** The `--robot-config` flag is required. Joint order is loaded from the config file, not hardcoded.
 
 ### 29-dim Feature Format (Original)
 | Index | Feature | Dims |
@@ -204,6 +208,10 @@ amp:
   dataset_path: playground_amp/data/walking_motions_normalized_vel.pkl
 ```
 
+**Critical:** The reference data joint order MUST match `robot_config.yaml`. This is ensured by:
+- GMR's `convert_to_amp_format.py` reads joint order from `--robot-config`
+- No hardcoded joint names anywhere in the pipeline
+
 And verify `robot_config.yaml` has correct dimension:
 
 ```yaml
@@ -220,18 +228,27 @@ dimensions:
 cd ~/projects/GMR
 uv run python scripts/batch_retarget_walking.py
 
-# 2. Convert to AMP format
+# 2. Convert to AMP format (joint order from robot_config.yaml)
 uv run python scripts/batch_convert_to_amp.py \
-    --input_dir ~/projects/wildrobot/assets/motions \
-    --output_dir ~/projects/wildrobot/playground_amp/data \
-    --merge_output walking_motions_merged.pkl
+    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
+    --input-dir ~/projects/wildrobot/assets/motions \
+    --output-dir ~/projects/wildrobot/playground_amp/data \
+    --merged-output walking_motions_merged.pkl
 
 # 3. Normalize velocity to direction only
 cd ~/projects/wildrobot
 uv run python scripts/convert_ref_data_normalized_velocity.py
 
-# 4. Verify
-uv run python scripts/analyze_reference_velocities.py
+# 4. Verify joint order matches
+uv run python -c "
+import pickle, yaml
+with open('playground_amp/data/walking_motions_normalized_vel.pkl', 'rb') as f:
+    ref = pickle.load(f)
+with open('assets/robot_config.yaml', 'r') as f:
+    cfg = yaml.safe_load(f)
+assert ref['joint_names'] == cfg['actuators']['joints'], 'Joint order mismatch!'
+print('✓ Joint order verified')
+"
 
 # 5. Train!
 uv run python playground_amp/train.py

@@ -55,28 +55,9 @@ EXIT_CRITERIA_TARGETS = {
 }
 
 
-@dataclass
-class WandbConfig:
-    """Configuration for W&B experiment tracking."""
-
-    # Enable/disable W&B
-    enabled: bool = True
-
-    # Project settings
-    project: str = "wildrobot-locomotion"
-    entity: Optional[str] = None  # W&B team/user
-    name: Optional[str] = None  # Run name (auto-generated if None)
-    tags: List[str] = field(default_factory=list)
-    notes: str = ""
-
-    # W&B mode: "online", "offline", "disabled"
-    mode: str = "online"
-
-    # Logging frequency
-    log_frequency: int = 10  # Log every N iterations
-
-    # Local log directory (for config backup)
-    log_dir: str = "playground_amp/wandb"
+# Import WandbConfig from config.py (single source of truth)
+# This prevents duplicate definitions and ensures consistency
+from playground_amp.configs.config import WandbConfig
 
 
 class WandbTracker:

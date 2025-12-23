@@ -1,50 +1,26 @@
-"""MoCap retargeting utilities for WildRobot.
+"""MoCap utilities for WildRobot AMP training.
 
-Retargets human walking motion data to WildRobot's 9-DOF skeleton:
-- Right leg: hip_pitch, hip_roll, knee_pitch, ankle_pitch
-- Left leg: hip_pitch, hip_roll, knee_pitch, ankle_pitch
-- Torso: waist_yaw
+For motion retargeting from SMPL/SMPLX to WildRobot, use GMR (General Motion Retargeting):
+    /Users/ygli/projects/GMR/general_motion_retargeting/ik_configs/smplx_to_wildrobot.json
 
-Supports loading from:
-1. AMASS dataset (SMPL format)
-2. CMU MoCap (BVH format)
-3. Simple keypoint trajectories (CSV/NPY)
+This module provides:
+1. Synthetic walking motion generation (parameterized gait)
+2. Loading pre-retargeted motion data (from GMR output)
+3. Converting motion to AMP observation format
+
+Robot configuration is loaded from robot_config.yaml via get_robot_config().
+The config must be loaded by the caller before using these utilities.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-
-# WildRobot joint order (matching actuator order in XML)
-WILDROBOT_JOINTS = [
-    "right_hip_pitch",
-    "right_hip_roll",
-    "right_knee_pitch",
-    "right_ankle_pitch",
-    "left_hip_pitch",
-    "left_hip_roll",
-    "left_knee_pitch",
-    "left_ankle_pitch",
-    "waist_yaw",
-]
-
-# Joint limits from the XML (radians)
-JOINT_LIMITS = {
-    "right_hip_pitch": (-1.571, 0.087),
-    "right_hip_roll": (-0.175, 1.571),
-    "right_knee_pitch": (0.0, 1.396),
-    "right_ankle_pitch": (-0.785, 0.785),
-    "left_hip_pitch": (-0.188, 1.470),
-    "left_hip_roll": (-1.634, 0.111),
-    "left_knee_pitch": (-0.208, 1.188),
-    "left_ankle_pitch": (-0.785, 0.785),
-    "waist_yaw": (-0.524, 0.524),
-}
+from playground_amp.configs.config import get_robot_config
 
 
 @dataclass
@@ -70,36 +46,70 @@ class RetargetedMotion:
 
 
 def create_walking_motion_from_keypoints(
-    hip_amplitude: float = 0.4,
-    knee_amplitude: float = 0.6,
-    ankle_amplitude: float = 0.3,
-    stride_frequency: float = 1.5,  # Hz
-    duration: float = 10.0,  # seconds
-    fps: float = 50.0,  # control frequency
-    forward_speed: float = 0.4,  # m/s
+    hip_amplitude: float,
+    knee_amplitude: float,
+    ankle_amplitude: float,
+    hip_roll_amplitude: float,
+    waist_yaw_amplitude: float,
+    stride_frequency: float,
+    duration: float,
+    fps: float,
+    forward_speed: float,
+    standing_height: float,
+    height_bob_amplitude: float,
 ) -> RetargetedMotion:
     """Create a simple walking motion using parameterized gait.
 
     This generates a more realistic walking pattern than pure sinusoids,
     using separate swing and stance phases.
 
+    Requires: Robot config must be loaded via load_robot_config() before calling.
+
     Args:
         hip_amplitude: Maximum hip flexion/extension (radians)
         knee_amplitude: Maximum knee flexion (radians)
         ankle_amplitude: Maximum ankle flexion (radians)
-        stride_frequency: Steps per second
-        duration: Total motion duration
-        fps: Frames per second
+        hip_roll_amplitude: Maximum hip roll (radians)
+        waist_yaw_amplitude: Maximum waist yaw (radians)
+        stride_frequency: Steps per second (Hz)
+        duration: Total motion duration (seconds)
+        fps: Frames per second (control frequency)
         forward_speed: Forward walking speed (m/s)
+        standing_height: Base standing height (meters)
+        height_bob_amplitude: Vertical bobbing amplitude (meters)
 
     Returns:
         RetargetedMotion with walking gait
     """
+    # Get joint limits from cached config
+    robot_config = get_robot_config()
+    joint_limits = robot_config.joint_limits
+    joint_names = robot_config.actuator_joints
+    num_joints = robot_config.action_dim
+
+    # Build index mapping from joint names
+    def get_joint_idx(name: str) -> int:
+        try:
+            return joint_names.index(name)
+        except ValueError:
+            raise ValueError(f"Joint '{name}' not found in config. Available: {joint_names}")
+
+    # Get indices for each joint from config
+    idx_waist_yaw = get_joint_idx("waist_yaw")
+    idx_left_hip_pitch = get_joint_idx("left_hip_pitch")
+    idx_left_hip_roll = get_joint_idx("left_hip_roll")
+    idx_left_knee_pitch = get_joint_idx("left_knee_pitch")
+    idx_left_ankle_pitch = get_joint_idx("left_ankle_pitch")
+    idx_right_hip_pitch = get_joint_idx("right_hip_pitch")
+    idx_right_hip_roll = get_joint_idx("right_hip_roll")
+    idx_right_knee_pitch = get_joint_idx("right_knee_pitch")
+    idx_right_ankle_pitch = get_joint_idx("right_ankle_pitch")
+
     dt = 1.0 / fps
     num_frames = int(duration * fps)
 
-    joint_positions = np.zeros((num_frames, 9), dtype=np.float32)
-    joint_velocities = np.zeros((num_frames, 9), dtype=np.float32)
+    joint_positions = np.zeros((num_frames, num_joints), dtype=np.float32)
+    joint_velocities = np.zeros((num_frames, num_joints), dtype=np.float32)
     root_position = np.zeros((num_frames, 3), dtype=np.float32)
     root_orientation = np.zeros((num_frames, 4), dtype=np.float32)
     root_velocity = np.zeros((num_frames, 3), dtype=np.float32)
@@ -107,6 +117,11 @@ def create_walking_motion_from_keypoints(
 
     # Default orientation (identity quaternion wxyz)
     root_orientation[:, 0] = 1.0
+
+    # Clamp helper function
+    def clamp(val: float, joint: str) -> float:
+        limits = joint_limits.get(joint, (-np.pi, np.pi))
+        return np.clip(val, limits[0], limits[1])
 
     for i in range(num_frames):
         t = i * dt
@@ -116,7 +131,7 @@ def create_walking_motion_from_keypoints(
         # Hip: flexion during swing, extension during stance
         right_hip_pitch = hip_amplitude * np.sin(phase)
         # Hip roll: slight lateral motion
-        right_hip_roll = 0.05 * np.sin(phase)
+        right_hip_roll = hip_roll_amplitude * np.sin(phase)
         # Knee: flexed during swing phase
         swing_phase_right = (np.sin(phase) + 1) / 2  # 0-1 during swing
         right_knee_pitch = (
@@ -127,7 +142,7 @@ def create_walking_motion_from_keypoints(
 
         # Left leg (180° out of phase)
         left_hip_pitch = hip_amplitude * np.sin(phase + np.pi)
-        left_hip_roll = 0.05 * np.sin(phase + np.pi)
+        left_hip_roll = hip_roll_amplitude * np.sin(phase + np.pi)
         swing_phase_left = (np.sin(phase + np.pi) + 1) / 2
         left_knee_pitch = (
             knee_amplitude * swing_phase_left * np.maximum(0, np.sin(phase + np.pi))
@@ -135,30 +150,25 @@ def create_walking_motion_from_keypoints(
         left_ankle_pitch = ankle_amplitude * np.sin(phase + np.pi + np.pi / 4)
 
         # Waist yaw: counter-rotation for balance
-        waist_yaw = 0.1 * np.sin(phase)
+        waist_yaw = waist_yaw_amplitude * np.sin(phase)
 
-        # Clamp to joint limits
-        joint_positions[i] = np.array(
-            [
-                np.clip(right_hip_pitch, *JOINT_LIMITS["right_hip_pitch"]),
-                np.clip(right_hip_roll, *JOINT_LIMITS["right_hip_roll"]),
-                np.clip(right_knee_pitch, *JOINT_LIMITS["right_knee_pitch"]),
-                np.clip(right_ankle_pitch, *JOINT_LIMITS["right_ankle_pitch"]),
-                np.clip(left_hip_pitch, *JOINT_LIMITS["left_hip_pitch"]),
-                np.clip(left_hip_roll, *JOINT_LIMITS["left_hip_roll"]),
-                np.clip(left_knee_pitch, *JOINT_LIMITS["left_knee_pitch"]),
-                np.clip(left_ankle_pitch, *JOINT_LIMITS["left_ankle_pitch"]),
-                np.clip(waist_yaw, *JOINT_LIMITS["waist_yaw"]),
-            ],
-            dtype=np.float32,
-        )
+        # Assign to joint positions using config-based indices
+        joint_positions[i, idx_right_hip_pitch] = clamp(right_hip_pitch, "right_hip_pitch")
+        joint_positions[i, idx_right_hip_roll] = clamp(right_hip_roll, "right_hip_roll")
+        joint_positions[i, idx_right_knee_pitch] = clamp(right_knee_pitch, "right_knee_pitch")
+        joint_positions[i, idx_right_ankle_pitch] = clamp(right_ankle_pitch, "right_ankle_pitch")
+        joint_positions[i, idx_left_hip_pitch] = clamp(left_hip_pitch, "left_hip_pitch")
+        joint_positions[i, idx_left_hip_roll] = clamp(left_hip_roll, "left_hip_roll")
+        joint_positions[i, idx_left_knee_pitch] = clamp(left_knee_pitch, "left_knee_pitch")
+        joint_positions[i, idx_left_ankle_pitch] = clamp(left_ankle_pitch, "left_ankle_pitch")
+        joint_positions[i, idx_waist_yaw] = clamp(waist_yaw, "waist_yaw")
 
         # Root position: forward motion with slight vertical bobbing
         root_position[i] = np.array(
             [
                 forward_speed * t,  # x: forward
                 0.0,  # y: lateral
-                0.5 + 0.02 * np.sin(2 * phase),  # z: height with double-frequency bob
+                standing_height + height_bob_amplitude * np.sin(2 * phase),  # z: height with double-frequency bob
             ],
             dtype=np.float32,
         )
@@ -168,7 +178,7 @@ def create_walking_motion_from_keypoints(
             [
                 forward_speed,
                 0.0,
-                0.02 * 2 * 2 * np.pi * stride_frequency * np.cos(2 * phase),
+                height_bob_amplitude * 2 * 2 * np.pi * stride_frequency * np.cos(2 * phase),
             ],
             dtype=np.float32,
         )
@@ -190,139 +200,10 @@ def create_walking_motion_from_keypoints(
     )
 
 
-def load_amass_and_retarget(
-    amass_path: str,
-    target_fps: float = 50.0,
-) -> RetargetedMotion:
-    """Load AMASS SMPL data and retarget to WildRobot.
-
-    AMASS uses SMPL body model with 23 joints. We need to extract:
-    - Pelvis orientation → root
-    - L/R Hip joints → hip_pitch, hip_roll
-    - L/R Knee joints → knee_pitch
-    - L/R Ankle joints → ankle_pitch
-    - Spine → waist_yaw (approximation)
-
-    Args:
-        amass_path: Path to AMASS .npz file
-        target_fps: Target frame rate for output
-
-    Returns:
-        RetargetedMotion for WildRobot
-    """
-    # SMPL joint indices
-    # 0: Pelvis, 1: L_Hip, 2: R_Hip, 3: Spine1, 4: L_Knee, 5: R_Knee
-    # 6: Spine2, 7: L_Ankle, 8: R_Ankle, 9: Spine3, etc.
-
-    data = np.load(amass_path)
-
-    # AMASS provides:
-    # - 'poses': (num_frames, 156) - axis-angle for 52 joints (SMPL-H)
-    # - 'trans': (num_frames, 3) - root translation
-    # - 'betas': (16,) - body shape parameters
-    # - 'gender': str
-    # - 'mocap_framerate': float
-
-    poses = data["poses"]  # (N, 156) or (N, 72) for SMPL
-    trans = data["trans"]  # (N, 3)
-    source_fps = float(data.get("mocap_framerate", 120.0))
-
-    num_frames_source = poses.shape[0]
-    num_joints = poses.shape[1] // 3
-
-    # Reshape to (N, num_joints, 3) axis-angle
-    poses = poses.reshape(num_frames_source, num_joints, 3)
-
-    # Extract relevant joints (axis-angle → euler angles approximation)
-    # For small angles, axis-angle ≈ euler angles
-
-    # SMPL joint mapping (standard SMPL, not SMPL-H):
-    # 0: pelvis, 1: left_hip, 2: right_hip, 3: spine1
-    # 4: left_knee, 5: right_knee, 6: spine2
-    # 7: left_ankle, 8: right_ankle, 9: spine3
-
-    if num_joints >= 22:  # SMPL
-        pelvis = poses[:, 0]  # (N, 3)
-        left_hip = poses[:, 1]
-        right_hip = poses[:, 2]
-        spine = poses[:, 3]
-        left_knee = poses[:, 4]
-        right_knee = poses[:, 5]
-        left_ankle = poses[:, 7]
-        right_ankle = poses[:, 8]
-    else:
-        raise ValueError(f"Unexpected number of joints: {num_joints}")
-
-    # Resample to target FPS
-    resample_factor = source_fps / target_fps
-    num_frames_target = int(num_frames_source / resample_factor)
-
-    indices = np.linspace(0, num_frames_source - 1, num_frames_target).astype(int)
-
-    # Extract joint angles
-    # Hip pitch is rotation around Y axis (sagittal plane)
-    # Hip roll is rotation around X axis (frontal plane)
-    # Knee pitch is rotation around Y axis
-    # Ankle pitch is rotation around Y axis
-
-    joint_positions = np.zeros((num_frames_target, 9), dtype=np.float32)
-
-    for i, idx in enumerate(indices):
-        # Right leg
-        joint_positions[i, 0] = -right_hip[idx, 0]  # hip_pitch (negate for convention)
-        joint_positions[i, 1] = right_hip[idx, 2]  # hip_roll
-        joint_positions[i, 2] = right_knee[idx, 0]  # knee_pitch
-        joint_positions[i, 3] = right_ankle[idx, 0]  # ankle_pitch
-
-        # Left leg
-        joint_positions[i, 4] = -left_hip[idx, 0]  # hip_pitch
-        joint_positions[i, 5] = -left_hip[idx, 2]  # hip_roll (negate for symmetry)
-        joint_positions[i, 6] = left_knee[idx, 0]  # knee_pitch
-        joint_positions[i, 7] = left_ankle[idx, 0]  # ankle_pitch
-
-        # Waist yaw from spine rotation
-        joint_positions[i, 8] = spine[idx, 1]  # yaw
-
-    # Clamp to joint limits
-    for j, joint_name in enumerate(WILDROBOT_JOINTS):
-        limits = JOINT_LIMITS[joint_name]
-        joint_positions[:, j] = np.clip(joint_positions[:, j], limits[0], limits[1])
-
-    # Root position and orientation
-    root_position = trans[indices]
-    root_position[:, 2] += 0.5  # Offset to WildRobot base height
-
-    # Convert pelvis axis-angle to quaternion
-    root_orientation = np.zeros((num_frames_target, 4), dtype=np.float32)
-    root_orientation[:, 0] = 1.0  # Identity for now (TODO: proper conversion)
-
-    # Compute velocities
-    dt = 1.0 / target_fps
-    joint_velocities = np.zeros_like(joint_positions)
-    joint_velocities[1:] = (joint_positions[1:] - joint_positions[:-1]) / dt
-    joint_velocities[0] = joint_velocities[1]
-
-    root_velocity = np.zeros((num_frames_target, 3), dtype=np.float32)
-    root_velocity[1:] = (root_position[1:] - root_position[:-1]) / dt
-    root_velocity[0] = root_velocity[1]
-
-    root_angular_velocity = np.zeros((num_frames_target, 3), dtype=np.float32)
-
-    return RetargetedMotion(
-        joint_positions=joint_positions,
-        joint_velocities=joint_velocities,
-        root_position=root_position,
-        root_orientation=root_orientation,
-        root_velocity=root_velocity,
-        root_angular_velocity=root_angular_velocity,
-        dt=dt,
-        fps=target_fps,
-    )
-
-
 def load_bvh_and_retarget(
     bvh_path: str,
-    target_fps: float = 50.0,
+    target_fps: float,
+    standing_height: float,
 ) -> RetargetedMotion:
     """Load CMU MoCap BVH data and retarget to WildRobot.
 
@@ -331,13 +212,20 @@ def load_bvh_and_retarget(
     2. Extract relevant joint angles
     3. Map to WildRobot joints
 
+    Requires: Robot config must be loaded via load_robot_config() before calling.
+
     Args:
         bvh_path: Path to BVH file
         target_fps: Target frame rate
+        standing_height: Robot standing height in meters
 
     Returns:
         RetargetedMotion for WildRobot
     """
+    # Get config for joint count
+    robot_config = get_robot_config()
+    num_joints = robot_config.action_dim
+
     # Simple BVH parser (minimal implementation)
     # For production, use a library like bvh-python
 
@@ -375,10 +263,9 @@ def load_bvh_and_retarget(
     # Resample
     resample_factor = source_fps / target_fps
     num_frames_target = int(num_frames / resample_factor)
-    indices = np.linspace(0, num_frames - 1, num_frames_target).astype(int)
 
     # Extract joint positions (placeholder - needs proper BVH parsing)
-    joint_positions = np.zeros((num_frames_target, 9), dtype=np.float32)
+    joint_positions = np.zeros((num_frames_target, num_joints), dtype=np.float32)
 
     # For now, return zeros with proper structure
     # TODO: Implement proper BVH joint mapping
@@ -386,9 +273,9 @@ def load_bvh_and_retarget(
     dt = 1.0 / target_fps
     joint_velocities = np.zeros_like(joint_positions)
     root_position = np.zeros((num_frames_target, 3), dtype=np.float32)
-    root_position[:, 2] = 0.5
+    root_position[:, 2] = standing_height
     root_orientation = np.zeros((num_frames_target, 4), dtype=np.float32)
-    root_orientation[:, 0] = 1.0
+    root_orientation[:, 0] = 1.0  # Identity quaternion (w=1, x=y=z=0)
     root_velocity = np.zeros((num_frames_target, 3), dtype=np.float32)
     root_angular_velocity = np.zeros((num_frames_target, 3), dtype=np.float32)
 
@@ -404,12 +291,25 @@ def load_bvh_and_retarget(
     )
 
 
-def save_retargeted_motion(motion: RetargetedMotion, output_path: str):
+def save_retargeted_motion(
+    motion: RetargetedMotion,
+    output_path: str,
+):
     """Save retargeted motion to pickle file for AMP training.
 
     The saved format matches what ref_buffer.py expects.
+
+    Requires: Robot config must be loaded via load_robot_config() before calling.
+
+    Args:
+        motion: RetargetedMotion data to save
+        output_path: Output pickle file path
     """
     import pickle
+
+    # Get joint names from cached config
+    robot_config = get_robot_config()
+    joint_names = robot_config.actuator_joints
 
     # Combine into observation format expected by AMP
     # AMP features typically include: joint_pos, joint_vel, root_vel, etc.
@@ -423,7 +323,7 @@ def save_retargeted_motion(motion: RetargetedMotion, output_path: str):
         "root_angular_velocity": motion.root_angular_velocity,
         "dt": motion.dt,
         "fps": motion.fps,
-        "joint_names": WILDROBOT_JOINTS,
+        "joint_names": joint_names,
     }
 
     with open(output_path, "wb") as f:
@@ -437,11 +337,14 @@ def save_retargeted_motion(motion: RetargetedMotion, output_path: str):
 
 def motion_to_amp_observations(
     motion: RetargetedMotion,
-    obs_dim: int = 44,
+    obs_dim: int,
 ) -> np.ndarray:
     """Convert retargeted motion to AMP observation format.
 
     Creates observation vectors matching WildRobotEnv's observation space.
+    Uses observation indices from robot_config.yaml.
+
+    Requires: Robot config must be loaded via load_robot_config() before calling.
 
     Args:
         motion: RetargetedMotion data
@@ -450,51 +353,100 @@ def motion_to_amp_observations(
     Returns:
         Array of shape (num_frames, obs_dim)
     """
+    # Get observation indices from config
+    robot_config = get_robot_config()
+    obs_indices = robot_config.observation_indices
+
+    # Get slice ranges from config
+    def get_slice(component: str) -> slice:
+        indices = obs_indices.get(component, {})
+        return slice(indices.get("start", 0), indices.get("end", 0))
+
+    slice_gravity = get_slice("gravity_vector")
+    slice_base_angvel = get_slice("base_angular_velocity")
+    slice_base_linvel = get_slice("base_linear_velocity")
+    slice_joint_pos = get_slice("joint_positions")
+    slice_joint_vel = get_slice("joint_velocities")
+
     num_frames = motion.num_frames
     observations = np.zeros((num_frames, obs_dim), dtype=np.float32)
 
     for i in range(num_frames):
         obs = observations[i]
 
-        # Base height
-        obs[0] = motion.root_position[i, 2]
+        # Gravity vector (world up vector rotated into body frame)
+        # World up vector is [0, 0, 1], rotate by inverse of body orientation
+        quat = motion.root_orientation[i]  # wxyz format
+        obs[slice_gravity] = _rotate_vector_by_quat_inverse(
+            np.array([0.0, 0.0, 1.0]), quat
+        )
 
-        # Base orientation (6D representation from quaternion)
-        # Simplified: store quaternion in first 4 slots of orientation
-        q = motion.root_orientation[i]
-        obs[1:5] = q  # wxyz quaternion
-        obs[5:7] = 0.0  # Padding for 6D repr
+        # Base angular velocity
+        obs[slice_base_angvel] = motion.root_angular_velocity[i]
 
-        # Joint positions (9 joints)
-        obs[7:16] = motion.joint_positions[i]
+        # Base linear velocity
+        obs[slice_base_linvel] = motion.root_velocity[i]
 
-        # Base linear velocity (3)
-        obs[16:19] = motion.root_velocity[i]
+        # Joint positions
+        obs[slice_joint_pos] = motion.joint_positions[i]
 
-        # Base angular velocity (3)
-        obs[19:22] = motion.root_angular_velocity[i]
+        # Joint velocities
+        obs[slice_joint_vel] = motion.joint_velocities[i]
 
-        # Joint velocities (9)
-        obs[22:31] = motion.joint_velocities[i]
-
-        # Remaining dimensions (contact forces, previous actions, etc.)
+        # Remaining dimensions (previous_action, velocity_command, padding)
         # Set to default/zero for reference motion
-        obs[31:] = 0.0
 
     return observations
 
 
+def _rotate_vector_by_quat_inverse(vec: np.ndarray, quat: np.ndarray) -> np.ndarray:
+    """Rotate a vector by the inverse of a quaternion.
+
+    Args:
+        vec: 3D vector to rotate
+        quat: Quaternion in wxyz format [w, x, y, z]
+
+    Returns:
+        Rotated vector
+    """
+    # Extract quaternion components (wxyz format)
+    w, x, y, z = quat
+
+    # For inverse rotation, negate the vector part (conjugate)
+    # q_inv = [w, -x, -y, -z] for unit quaternion
+
+    # Rotation matrix from quaternion (transposed for inverse)
+    # This is equivalent to rotating by q_conjugate
+    r00 = 1 - 2 * (y * y + z * z)
+    r01 = 2 * (x * y + w * z)
+    r02 = 2 * (x * z - w * y)
+    r10 = 2 * (x * y - w * z)
+    r11 = 1 - 2 * (x * x + z * z)
+    r12 = 2 * (y * z + w * x)
+    r20 = 2 * (x * z + w * y)
+    r21 = 2 * (y * z - w * x)
+    r22 = 1 - 2 * (x * x + y * y)
+
+    # Apply transposed rotation (inverse)
+    return np.array([
+        r00 * vec[0] + r10 * vec[1] + r20 * vec[2],
+        r01 * vec[0] + r11 * vec[1] + r21 * vec[2],
+        r02 * vec[0] + r12 * vec[1] + r22 * vec[2],
+    ], dtype=np.float32)
+
+
 if __name__ == "__main__":
     import argparse
+    from playground_amp.configs.config import load_robot_config
 
     parser = argparse.ArgumentParser(
         description="Generate/retarget walking motion for AMP"
     )
     parser.add_argument(
         "--mode",
-        choices=["generate", "amass", "bvh"],
-        default="generate",
-        help="Mode: generate synthetic, load AMASS, or load BVH",
+        choices=["generate", "bvh"],
+        required=True,
+        help="Mode: generate synthetic or load BVH. For AMASS/SMPL data, use GMR.",
     )
     parser.add_argument(
         "--input", type=str, help="Input file path (for amass/bvh modes)"
@@ -502,45 +454,132 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=str,
-        default="data/walking_motion.pkl",
+        required=True,
         help="Output pickle file path",
+    )
+    parser.add_argument(
+        "--robot-config",
+        type=str,
+        required=True,
+        help="Path to robot_config.yaml",
+    )
+    # Common parameters
+    parser.add_argument(
+        "--fps",
+        type=float,
+        required=True,
+        help="Frames per second (target fps)",
+    )
+    parser.add_argument(
+        "--standing-height",
+        type=float,
+        required=True,
+        help="Robot standing height in meters",
+    )
+    # Gait parameters (required for generate mode)
+    parser.add_argument(
+        "--hip-amplitude",
+        type=float,
+        help="Max hip flexion/extension in radians (required for generate mode)",
+    )
+    parser.add_argument(
+        "--knee-amplitude",
+        type=float,
+        help="Max knee flexion in radians (required for generate mode)",
+    )
+    parser.add_argument(
+        "--ankle-amplitude",
+        type=float,
+        help="Max ankle flexion in radians (required for generate mode)",
+    )
+    parser.add_argument(
+        "--hip-roll-amplitude",
+        type=float,
+        help="Max hip roll in radians (required for generate mode)",
+    )
+    parser.add_argument(
+        "--waist-yaw-amplitude",
+        type=float,
+        help="Max waist yaw in radians (required for generate mode)",
+    )
+    parser.add_argument(
+        "--stride-frequency",
+        type=float,
+        help="Steps per second in Hz (required for generate mode)",
     )
     parser.add_argument(
         "--duration",
         type=float,
-        default=30.0,
-        help="Duration in seconds (for generate mode)",
+        help="Duration in seconds (required for generate mode)",
     )
     parser.add_argument(
-        "--speed", type=float, default=0.4, help="Walking speed m/s (for generate mode)"
+        "--forward-speed",
+        type=float,
+        help="Walking speed in m/s (required for generate mode)",
+    )
+    parser.add_argument(
+        "--height-bob-amplitude",
+        type=float,
+        help="Vertical bobbing amplitude in meters (required for generate mode)",
     )
 
     args = parser.parse_args()
 
+    # Load robot config first (required by all retargeting functions)
+    load_robot_config(args.robot_config)
+
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "generate":
-        print(f"Generating {args.duration}s of walking motion at {args.speed} m/s...")
+        # Validate required parameters for generate mode
+        required_params = [
+            ("hip_amplitude", args.hip_amplitude),
+            ("knee_amplitude", args.knee_amplitude),
+            ("ankle_amplitude", args.ankle_amplitude),
+            ("hip_roll_amplitude", args.hip_roll_amplitude),
+            ("waist_yaw_amplitude", args.waist_yaw_amplitude),
+            ("stride_frequency", args.stride_frequency),
+            ("duration", args.duration),
+            ("forward_speed", args.forward_speed),
+            ("height_bob_amplitude", args.height_bob_amplitude),
+        ]
+        missing = [name for name, val in required_params if val is None]
+        if missing:
+            parser.error(
+                f"Generate mode requires: --{', --'.join(name.replace('_', '-') for name in missing)}"
+            )
+
+        print(f"Generating {args.duration}s of walking motion at {args.forward_speed} m/s...")
         motion = create_walking_motion_from_keypoints(
+            hip_amplitude=args.hip_amplitude,
+            knee_amplitude=args.knee_amplitude,
+            ankle_amplitude=args.ankle_amplitude,
+            hip_roll_amplitude=args.hip_roll_amplitude,
+            waist_yaw_amplitude=args.waist_yaw_amplitude,
+            stride_frequency=args.stride_frequency,
             duration=args.duration,
-            forward_speed=args.speed,
+            fps=args.fps,
+            forward_speed=args.forward_speed,
+            standing_height=args.standing_height,
+            height_bob_amplitude=args.height_bob_amplitude,
         )
-    elif args.mode == "amass":
-        if not args.input:
-            raise ValueError("--input required for amass mode")
-        print(f"Loading AMASS data from {args.input}...")
-        motion = load_amass_and_retarget(args.input)
     elif args.mode == "bvh":
         if not args.input:
-            raise ValueError("--input required for bvh mode")
+            parser.error("--input required for bvh mode")
         print(f"Loading BVH data from {args.input}...")
-        motion = load_bvh_and_retarget(args.input)
+        motion = load_bvh_and_retarget(
+            args.input,
+            target_fps=args.fps,
+            standing_height=args.standing_height,
+        )
 
     save_retargeted_motion(motion, args.output)
 
     # Also save as AMP observations
     obs_output = args.output.replace(".pkl", "_amp_obs.pkl")
-    amp_obs = motion_to_amp_observations(motion)
+    # Get obs_dim from robot config
+    robot_config = get_robot_config()
+    amp_obs = motion_to_amp_observations(motion, obs_dim=robot_config.observation_dim)
     import pickle
 
     with open(obs_output, "wb") as f:

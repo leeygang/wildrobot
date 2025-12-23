@@ -16,7 +16,7 @@ Configuration is loaded from robot_config.yaml to avoid hardcoding.
 
 from __future__ import annotations
 
-from typing import NamedTuple, Optional, Tuple
+from typing import NamedTuple, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -57,8 +57,8 @@ class AMPFeatureConfig(NamedTuple):
     # Whether to use transition features (current + next)
     use_transition_features: bool = False
 
-    # Number of actuated joints
-    num_actuated_joints: int = 9
+    # Number of actuated joints (from robot_config.action_dim)
+    num_actuated_joints: int
 
     # Feature dimension
     @property
@@ -72,18 +72,15 @@ class AMPFeatureConfig(NamedTuple):
         return self.num_actuated_joints * 2 + 3 + 3 + 1 + 4
 
 
-def create_amp_config_from_robot(robot_config: Optional[RobotConfig] = None) -> AMPFeatureConfig:
+def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
     """Create AMPFeatureConfig from robot configuration.
 
     Args:
-        robot_config: Robot configuration. If None, loads from default path.
+        robot_config: Robot configuration (REQUIRED).
 
     Returns:
         AMPFeatureConfig with indices from robot config
     """
-    if robot_config is None:
-        robot_config = get_robot_config()
-
     obs_indices = robot_config.observation_indices
 
     return AMPFeatureConfig(
@@ -101,41 +98,19 @@ def create_amp_config_from_robot(robot_config: Optional[RobotConfig] = None) -> 
     )
 
 
-# Lazy-loaded default config
-_default_amp_config: Optional[AMPFeatureConfig] = None
-
-
 def get_default_amp_config() -> AMPFeatureConfig:
-    """Get default AMP feature configuration.
+    """Get AMP feature configuration from cached robot config.
 
-    Loads from robot config on first call, then caches.
+    Raises:
+        RuntimeError: If robot_config hasn't been loaded yet.
     """
-    global _default_amp_config
-    if _default_amp_config is None:
-        _default_amp_config = create_amp_config_from_robot()
-    return _default_amp_config
-
-
-# For backward compatibility
-DEFAULT_AMP_CONFIG = AMPFeatureConfig(
-    joint_pos_start=9,
-    joint_pos_end=18,
-    joint_vel_start=18,
-    joint_vel_end=27,
-    root_linvel_start=6,
-    root_linvel_end=9,
-    root_angvel_start=3,
-    root_angvel_end=6,
-    root_height_idx=2,
-    use_transition_features=False,
-    num_actuated_joints=9,
-)
+    robot_config = get_robot_config()
+    return create_amp_config_from_robot(robot_config)
 
 
 def extract_amp_features(
     obs: jnp.ndarray,
-    next_obs: Optional[jnp.ndarray] = None,
-    config: AMPFeatureConfig = DEFAULT_AMP_CONFIG,
+    config: AMPFeatureConfig,
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
@@ -154,8 +129,7 @@ def extract_amp_features(
 
     Args:
         obs: Current observation (..., obs_dim=38)
-        next_obs: Optional next observation (unused)
-        config: Feature extraction configuration
+        config: Feature extraction configuration (REQUIRED)
 
     Returns:
         amp_features: Motion features (..., 29)
@@ -304,85 +278,3 @@ def normalize_features(
 # JIT compiled versions
 update_running_stats_jit = jax.jit(update_running_stats)
 normalize_features_jit = jax.jit(normalize_features, static_argnames=("clip",))
-
-
-def compute_feature_dim(obs_dim: int = 44) -> int:
-    """Compute the AMP feature dimension for a given observation dimension.
-
-    Default WildRobot observation (44-dim):
-    - Joint positions: 11
-    - Joint velocities: 11
-    - Base height: 1
-    - Base orientation: 6
-    Total: 29 features
-
-    Args:
-        obs_dim: Observation dimension (default 44 for WildRobot)
-
-    Returns:
-        Feature dimension
-    """
-    return DEFAULT_AMP_CONFIG.feature_dim
-
-
-# Alternative feature extraction using full observation (simpler)
-def extract_amp_features_full(
-    obs: jnp.ndarray,
-    next_obs: Optional[jnp.ndarray] = None,
-) -> jnp.ndarray:
-    """Extract AMP features using full observation.
-
-    This is a simpler alternative that uses the full observation
-    as features. Can work well if discriminator is large enough.
-
-    Args:
-        obs: Current observation (..., obs_dim)
-        next_obs: Optional next observation (unused in this variant)
-
-    Returns:
-        Features (same as input observation)
-    """
-    return obs
-
-
-# Select which feature extraction to use
-def get_amp_feature_fn(mode: str = "selective"):
-    """Get AMP feature extraction function.
-
-    Args:
-        mode: "selective" for motion-specific features, "full" for full obs
-
-    Returns:
-        Feature extraction function
-    """
-    if mode == "full":
-        return extract_amp_features_full
-    else:
-        return extract_amp_features_jit
-
-
-if __name__ == "__main__":
-    # Test feature extraction
-    key = jax.random.PRNGKey(0)
-
-    # Create dummy observation
-    obs = jax.random.normal(key, (8, 44))  # Batch of 8, 44-dim obs
-
-    # Extract features
-    features = extract_amp_features(obs)
-    print(f"Input obs shape: {obs.shape}")
-    print(f"AMP features shape: {features.shape}")
-    print(f"Expected feature dim: {DEFAULT_AMP_CONFIG.feature_dim}")
-
-    # Test running stats
-    stats = create_running_stats(features.shape[-1])
-    stats = update_running_stats(stats, features)
-    print(f"\nRunning stats count: {stats.count}")
-    print(f"Running mean shape: {stats.mean.shape}")
-
-    # Test normalization
-    normalized = normalize_features(features, stats)
-    print(f"\nNormalized features mean: {jnp.mean(normalized):.4f}")
-    print(f"Normalized features std: {jnp.std(normalized):.4f}")
-
-    print("\n✅ AMP feature extraction test passed!")

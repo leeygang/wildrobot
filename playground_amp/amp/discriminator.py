@@ -38,7 +38,7 @@ class AMPDiscriminator(nn.Module):
     - Regularization: WGAN-GP style gradient penalty
     """
 
-    hidden_dims: Sequence[int] = (1024, 512, 256)
+    hidden_dims: Sequence[int]
 
     @nn.compact
     def __call__(self, x, training: bool = True):
@@ -76,17 +76,22 @@ class AMPDiscriminator(nn.Module):
         return logits.squeeze(-1)  # (batch,)
 
 
-def create_discriminator(obs_dim: int, seed: int = 0):
+def create_discriminator(
+    obs_dim: int,
+    hidden_dims: Sequence[int],
+    seed: int = 0,
+):
     """Create discriminator network and initialize parameters.
 
     Args:
         obs_dim: Observation dimension
+        hidden_dims: Hidden layer dimensions (REQUIRED - read from config)
         seed: Random seed for initialization
 
     Returns:
         (model, params): Discriminator module and initialized parameters
     """
-    model = AMPDiscriminator()
+    model = AMPDiscriminator(hidden_dims=tuple(hidden_dims))
     rng = jax.random.PRNGKey(seed)
     dummy_obs = jnp.zeros((1, obs_dim), dtype=jnp.float32)
     params = model.init(rng, dummy_obs, training=False)
@@ -225,7 +230,7 @@ def compute_amp_reward(params, model, obs):
     return amp_reward
 
 
-def create_discriminator_optimizer(learning_rate=1e-4):
+def create_discriminator_optimizer(learning_rate: float):
     """Create optimizer for discriminator training.
 
     Uses Adam with gradient clipping (standard for GANs).

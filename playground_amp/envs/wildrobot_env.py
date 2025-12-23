@@ -29,19 +29,19 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import jax
 import jax.numpy as jp
 import mujoco
-from etils import epath
 from flax import struct
 from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
+
+from playground_amp.configs.config import get_robot_config
 
 
 # =============================================================================
@@ -49,28 +49,15 @@ from mujoco_playground._src import mjx_env
 # =============================================================================
 
 
-def _get_wildrobot_root_path() -> Path:
-    """Get the root path for WildRobot assets."""
-    # Assets are in the 'assets' folder relative to the project root
-    project_root = Path(__file__).parent.parent.parent
-    return project_root / "assets"
-
-
-def find_model_path() -> Path:
-    """Find the WildRobot scene XML file."""
-    root = _get_wildrobot_root_path()
-    scene_path = root / "scene_flat_terrain.xml"
-    if scene_path.exists():
-        return scene_path
-    # Fallback to scene.xml
-    scene_path = root / "scene.xml"
-    if scene_path.exists():
-        return scene_path
-    raise FileNotFoundError(f"Could not find WildRobot scene XML in {root}")
-
-
 def get_assets(root_path: Path) -> Dict[str, bytes]:
-    """Load all assets from the WildRobot assets directory."""
+    """Load all assets from the WildRobot assets directory.
+
+    Args:
+        root_path: Path to assets directory (REQUIRED)
+
+    Returns:
+        Dict of asset name to bytes content
+    """
     assets = {}
 
     # Load XML files
@@ -98,67 +85,6 @@ class WildRobotEnvState(mjx_env.State):
     """
 
     pipeline_state: mjx.Data = None
-
-
-# =============================================================================
-# Robot Configuration
-# =============================================================================
-
-
-@dataclass
-class RobotConfig:
-    """Configuration for WildRobot hardware."""
-
-    feet_sites: List[str]
-    left_feet_geoms: List[str]
-    right_feet_geoms: List[str]
-    joint_names: List[str]
-    root_body: str
-    gravity_sensor: str
-    global_linvel_sensor: str
-    global_angvel_sensor: str
-    local_linvel_sensor: str
-    accelerometer_sensors: List[str]
-    gyro_sensors: List[str]
-
-    @property
-    def feet_geoms(self) -> List[str]:
-        return self.left_feet_geoms + self.right_feet_geoms
-
-
-WILDROBOT_CONFIG = RobotConfig(
-    feet_sites=["left_foot_mimic", "right_foot_mimic"],
-    left_feet_geoms=["left_foot_btm_front", "left_foot_btm_back"],
-    right_feet_geoms=["right_foot_btm_front", "right_foot_btm_back"],
-    joint_names=[
-        "right_hip_pitch",
-        "right_hip_roll",
-        "right_knee_pitch",
-        "right_ankle_pitch",
-        "right_foot_roll",
-        "left_hip_pitch",
-        "left_hip_roll",
-        "left_knee_pitch",
-        "left_ankle_pitch",
-        "left_foot_roll",
-        "waist_yaw",
-    ],
-    root_body="waist",
-    gravity_sensor="pelvis_upvector",
-    global_linvel_sensor="pelvis_global_linvel",
-    global_angvel_sensor="pelvis_global_angvel",
-    local_linvel_sensor="pelvis_local_linvel",
-    accelerometer_sensors=[
-        "chest_imu_accel",
-        "left_knee_imu_accel",
-        "right_knee_imu_accel",
-    ],
-    gyro_sensors=[
-        "chest_imu_gyro",
-        "left_knee_imu_gyro",
-        "right_knee_imu_gyro",
-    ],
-)
 
 
 # =============================================================================
@@ -201,7 +127,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         super().__init__(config, config_overrides)
 
-        # Load MuJoCo model
+        # Model path (required - must be in config)
+        if not hasattr(config, 'model_path') or config.model_path is None:
+            raise ValueError(
+                "model_path is required in config. "
+                "Add 'model_path: assets/scene_flat_terrain.xml' to your config."
+            )
+        self._model_path = Path(config.model_path)
+
         # Load model and setup robot infrastructure
         self._load_model()
 
@@ -229,12 +162,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """Load MuJoCo model and setup robot infrastructure.
 
         This method:
-        - Finds and loads the XML model file
+        - Loads the XML model file from config path
         - Creates MJX model for JAX compatibility
         - Sets up actuator and joint mappings
         - Extracts initial qpos from keyframe or qpos0
         """
-        xml_path = find_model_path()
+        # Resolve model path relative to project root
+        project_root = Path(__file__).parent.parent.parent
+        xml_path = project_root / self._model_path
+
+        if not xml_path.exists():
+            raise FileNotFoundError(
+                f"Model file not found: {xml_path}. "
+                f"Check model_path in config: {self._model_path}"
+            )
+
         root_path = xml_path.parent
 
         print(f"Loading WildRobot model from: {xml_path}")
@@ -243,11 +185,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             xml_path.read_text(), assets=get_assets(root_path)
         )
         self._mj_model.opt.timestep = self.sim_dt
-        self._mjx_model = mjx.put_model(self._mj_model)
-        self._xml_path = str(xml_path)
+        # Extract joint-only qpos for control default (exclude floating base: first 7 values)
+        self._default_joint_qpos = self._init_qpos[7:]
 
-        # Robot configuration
-        self.robot_config = WILDROBOT_CONFIG
+        # Get robot config (loaded by train.py at startup)
+        self._robot_config = get_robot_config()
 
         # Get floating base info
         self.floating_base_name = [
@@ -653,19 +595,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def get_gravity(self, data: mjx.Data) -> jax.Array:
         """Get gravity vector in local frame."""
         return mjx_env.get_sensor_data(
-            self._mj_model, data, self.robot_config.gravity_sensor
+            self._mj_model, data, self._robot_config.gravity_sensor
         )
 
     def get_global_angvel(self, data: mjx.Data) -> jax.Array:
         """Get angular velocity in world frame."""
         return mjx_env.get_sensor_data(
-            self._mj_model, data, self.robot_config.global_angvel_sensor
+            self._mj_model, data, self._robot_config.global_angvel_sensor
         )
 
     def get_local_linvel(self, data: mjx.Data) -> jax.Array:
         """Get linear velocity in local frame."""
         return mjx_env.get_sensor_data(
-            self._mj_model, data, self.robot_config.local_linvel_sensor
+            self._mj_model, data, self._robot_config.local_linvel_sensor
         )
 
     # =========================================================================

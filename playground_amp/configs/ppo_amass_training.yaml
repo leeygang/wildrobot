@@ -27,6 +27,9 @@ version_name: "Minibatch Optimization"
 # Environment
 # =============================================================================
 env:
+  # Model path (relative to project root)
+  model_path: assets/scene_flat_terrain.xml
+
   ctrl_dt: 0.02          # Control: 50Hz
   sim_dt: 0.002          # Simulation: 500Hz (10 substeps)
 

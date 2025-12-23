@@ -386,6 +386,8 @@ This creates a historical record of what worked and what didn't.
 
 ## Development Notes
 
+- **Fail Fast, No Silent Defaults**: Configuration values must be explicitly provided. If a required config (like `robot_config.yaml`) is missing, raise an error immediately rather than falling back to hardcoded defaults. This prevents subtle bugs from config mismatches.
+
 - **4.41Nm Torque Limit**: This is the PRIMARY constraint (HTD-45H @ 12V: 45 kg·cm). Always validate with `validate_torque.py` before training
   - Safe continuous operation: ~2.65 Nm (60% of stall)
   - Peak dynamic: ~3.75 Nm (85% of stall)

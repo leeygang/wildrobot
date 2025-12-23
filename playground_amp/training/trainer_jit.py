@@ -40,7 +40,11 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from playground_amp.amp.amp_features import DEFAULT_AMP_CONFIG, extract_amp_features
+from playground_amp.amp.amp_features import (
+    AMPFeatureConfig,
+    get_default_amp_config,
+    extract_amp_features,
+)
 from playground_amp.amp.discriminator import (
     AMPDiscriminator,
     compute_amp_reward,
@@ -336,19 +340,21 @@ def collect_rollout_scan(
 
 def extract_amp_features_batched(
     obs: jnp.ndarray,
-    next_obs: jnp.ndarray,
+    config: AMPFeatureConfig,
 ) -> jnp.ndarray:
-    """Extract AMP features from transitions (batched).
+    """Extract AMP features from observations (batched).
 
     Args:
-        obs: Current observations, shape (num_steps, num_envs, obs_dim)
-        next_obs: Next observations, shape (num_steps, num_envs, obs_dim)
+        obs: Observations, shape (num_steps, num_envs, obs_dim)
+        config: Feature extraction configuration (REQUIRED)
 
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
     """
     # Vectorize over steps and envs
-    return jax.vmap(jax.vmap(extract_amp_features))(obs, next_obs)
+    # functools.partial to bind config for vmap
+    extract_fn = functools.partial(extract_amp_features, config=config)
+    return jax.vmap(jax.vmap(extract_fn))(obs)
 
 
 # =============================================================================
@@ -590,6 +596,8 @@ def make_train_iteration_fn(
     This is a factory that creates the train_iteration function with
     static arguments baked in for maximum JIT efficiency.
     """
+    # Get AMP feature config once (before JIT) and capture in closure
+    amp_feature_config = get_default_amp_config()
 
     @jax.jit
     def train_iteration(
@@ -621,9 +629,7 @@ def make_train_iteration_fn(
         # ====================================================================
         # Step 2: Extract and normalize AMP features
         # ====================================================================
-        amp_features = extract_amp_features_batched(
-            transitions.obs, transitions.next_obs
-        )
+        amp_features = extract_amp_features_batched(transitions.obs, amp_feature_config)
         # Shape: (num_steps, num_envs, feature_dim)
 
         # Flatten for discriminator training
@@ -890,9 +896,10 @@ def train_amp_ppo_jit(
     )
 
     # Create discriminator
-    amp_feature_dim = DEFAULT_AMP_CONFIG.feature_dim
+    amp_feature_dim = get_default_amp_config().feature_dim
     disc_model, disc_params = create_discriminator(
         obs_dim=amp_feature_dim,
+        hidden_dims=config.disc_hidden_dims,
         seed=int(disc_rng[0]),
     )
 

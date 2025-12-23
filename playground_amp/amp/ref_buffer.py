@@ -1,21 +1,21 @@
-"""Reference motion buffer with real MoCap and synthetic data generation.
+"""Reference motion buffer for AMP training.
 
 For AMP training, we need reference motion data. This module provides:
-1. Buffer for storing reference motion sequences
-2. Loading real MoCap data from AMASS (retargeted to WildRobot)
-3. Synthetic motion generator (for testing without real MoCap data)
-4. Data loading from pkl files
+1. Buffer for storing reference motion sequences (29-dim AMP features)
+2. Loading reference features from pkl files
+
+AMP Feature Format (29-dim):
+- Joint positions: 0-8 (9)
+- Joint velocities: 9-17 (9)
+- Root linear velocity direction: 18-20 (3) - normalized unit vector
+- Root angular velocity: 21-23 (3)
+- Root height: 24 (1)
+- Foot contacts: 25-28 (4)
 """
 
 from collections import deque
-from typing import Optional
 
-import jax.numpy as jnp
 import numpy as np
-
-
-# Default path to retargeted AMASS walking data
-DEFAULT_MOCAP_PATH = "data/walking_motions.pkl"
 
 
 class ReferenceMotionBuffer:
@@ -23,42 +23,33 @@ class ReferenceMotionBuffer:
 
     Stores AMP features (29-dim) directly from reference motion files.
     Features are sampled for discriminator training.
-
-    AMP Feature Format (29-dim):
-    - Joint positions: 0-8 (9)
-    - Joint velocities: 9-17 (9)
-    - Root linear velocity: 18-20 (3)
-    - Root angular velocity: 21-23 (3)
-    - Root height: 24 (1)
-    - Foot contacts: 25-28 (4)
     """
 
-    def __init__(self, max_size: int = 1000, seq_len: int = 32, obs_dim: int = 29):
+    def __init__(self, max_size: int, seq_len: int, feature_dim: int):
         """Initialize reference motion buffer.
 
         Args:
-            max_size: Maximum number of sequences to store
-            seq_len: Length of each sequence (timesteps)
-            obs_dim: Feature dimension (29 for AMP features)
+            max_size: Maximum number of sequences to store (REQUIRED)
+            seq_len: Length of each sequence in timesteps (REQUIRED)
+            feature_dim: Feature dimension, must be 29 for AMP features (REQUIRED)
         """
         self.max_size = max_size
         self.seq_len = seq_len
-        self.obs_dim = obs_dim
+        self.feature_dim = feature_dim
         self.data = deque(maxlen=max_size)
-        # Store raw features separately for direct sampling
-        self._raw_features = None
 
     def add(self, seq: np.ndarray):
         """Add a sequence to the buffer.
 
         Args:
-            seq: Sequence array of shape (seq_len, obs_dim)
+            seq: Sequence array of shape (seq_len, feature_dim)
         """
         if seq.shape[0] < self.seq_len:
             return
-        if seq.shape[1] != self.obs_dim:
-            print(f"Warning: Expected obs_dim={self.obs_dim}, got {seq.shape[1]}")
-            return
+        if seq.shape[1] != self.feature_dim:
+            raise ValueError(
+                f"Feature dimension mismatch: expected {self.feature_dim}, got {seq.shape[1]}"
+            )
         self.data.append(seq.copy())
 
     def sample(self, batch_size: int) -> np.ndarray:
@@ -68,10 +59,10 @@ class ReferenceMotionBuffer:
             batch_size: Number of sequences to sample
 
         Returns:
-            batch: Array of shape (batch_size, seq_len, obs_dim)
+            batch: Array of shape (batch_size, seq_len, feature_dim)
         """
         if len(self.data) == 0:
-            return np.zeros((0, self.seq_len, self.obs_dim), dtype=np.float32)
+            raise RuntimeError("Cannot sample from empty buffer. Load reference data first.")
 
         import random
 
@@ -87,18 +78,16 @@ class ReferenceMotionBuffer:
             batch_size: Number of frames to sample
 
         Returns:
-            frames: Array of shape (batch_size, obs_dim)
+            frames: Array of shape (batch_size, feature_dim)
         """
         if len(self.data) == 0:
-            return np.zeros((0, self.obs_dim), dtype=np.float32)
+            raise RuntimeError("Cannot sample from empty buffer. Load reference data first.")
 
         import random
 
         frames = []
         for _ in range(batch_size):
-            # Sample random sequence
             seq = random.choice(self.data)
-            # Sample random frame from sequence
             frame_idx = random.randint(0, seq.shape[0] - 1)
             frames.append(seq[frame_idx])
 
@@ -107,11 +96,11 @@ class ReferenceMotionBuffer:
     def load_from_file(self, filepath: str):
         """Load reference motion data from pickle file.
 
-        Expected format: numpy array of shape (num_frames, obs_dim)
-        or list of sequences, or dict with 'features' key.
+        Expected format: numpy array of shape (num_frames, feature_dim)
+        or dict with 'features' key.
 
         Args:
-            filepath: Path to pkl file
+            filepath: Path to pkl file (REQUIRED)
         """
         import pickle
 
@@ -119,294 +108,44 @@ class ReferenceMotionBuffer:
             data = pickle.load(f)
 
         if isinstance(data, dict):
-            # New format from retarget_amass_walking.py
             if "features" in data:
-                features = data["features"]  # (total_frames, feature_dim)
+                features = data["features"]
                 self._load_from_features(features)
-            elif "motions" in data:
-                # Load from individual motion sequences
-                for motion in data["motions"]:
-                    self._load_motion_dict(motion)
             else:
-                raise ValueError(f"Unknown dict format. Keys: {data.keys()}")
+                raise ValueError(
+                    f"Unknown dict format. Expected 'features' key, got: {data.keys()}"
+                )
         elif isinstance(data, np.ndarray):
             self._load_from_features(data)
-        elif isinstance(data, list):
-            # List of sequences
-            for seq in data:
-                if isinstance(seq, np.ndarray) and seq.ndim == 2:
-                    self.add(seq)
+        else:
+            raise ValueError(
+                f"Unknown data format: {type(data)}. Expected dict with 'features' or numpy array."
+            )
 
         print(f"Loaded {len(self.data)} reference motion sequences from {filepath}")
 
     def _load_from_features(self, features: np.ndarray):
         """Load from feature array of shape (num_frames, feature_dim).
 
-        Converts feature format to observation format and splits into sequences.
+        Stores features directly - no conversion needed since discriminator
+        works with features, not observations.
         """
         if features.ndim != 2:
             raise ValueError(f"Expected 2D array, got shape {features.shape}")
 
         num_frames, feature_dim = features.shape
 
-        # Convert features to observations if needed
-        if feature_dim != self.obs_dim:
-            # Pad or map features to obs_dim
-            observations = self._features_to_obs(features)
-        else:
-            observations = features
+        if feature_dim != self.feature_dim:
+            raise ValueError(
+                f"Feature dimension mismatch: expected {self.feature_dim}, got {feature_dim}. "
+                "Buffer feature_dim must match the feature dimension of reference data."
+            )
 
         # Split into overlapping sequences
         stride = max(1, self.seq_len // 2)  # 50% overlap
         for start_idx in range(0, num_frames - self.seq_len, stride):
-            seq = observations[start_idx : start_idx + self.seq_len]
+            seq = features[start_idx : start_idx + self.seq_len]
             self.add(seq)
-
-    def _features_to_obs(self, features: np.ndarray) -> np.ndarray:
-        """Convert AMP features (29-dim) to full observation space (44-dim).
-
-        AMP features (29-dim):
-        - joint_positions: 9
-        - joint_velocities: 9
-        - root_linear_velocity: 3
-        - root_angular_velocity: 3
-        - root_height: 1
-        - foot_contacts: 4
-
-        WildRobot obs (44-dim):
-        - base_height: 1
-        - base_orientation: 6
-        - joint_positions: 9
-        - base_lin_vel: 3
-        - base_ang_vel: 3
-        - joint_velocities: 9
-        - contacts: 4
-        - prev_actions: 9
-        """
-        num_frames, feature_dim = features.shape
-        observations = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
-
-        if feature_dim == 29:
-            # Map 29-dim features to 44-dim observations
-            # Joint positions (0-8 in features -> 7-15 in obs)
-            observations[:, 7:16] = features[:, 0:9]
-
-            # Joint velocities (9-17 in features -> 25-33 in obs)
-            observations[:, 25:34] = features[:, 9:18]
-
-            # Root linear velocity (18-20 in features -> 16-18 in obs)
-            observations[:, 16:19] = features[:, 18:21]
-
-            # Root angular velocity (21-23 in features -> 19-21 in obs)
-            observations[:, 19:22] = features[:, 21:24]
-
-            # Root height (24 in features -> 0 in obs)
-            observations[:, 0] = features[:, 24]
-
-            # Foot contacts (25-28 in features -> 34-37 in obs)
-            observations[:, 34:38] = features[:, 25:29]
-
-            # Base orientation - identity quaternion as 6D repr
-            observations[:, 1] = 1.0  # w of quaternion
-            observations[:, 2:7] = 0.0
-
-        else:
-            # Just use first obs_dim features or pad with zeros
-            copy_dim = min(feature_dim, self.obs_dim)
-            observations[:, :copy_dim] = features[:, :copy_dim]
-
-        return observations
-
-    def _load_motion_dict(self, motion: dict):
-        """Load from a single motion dictionary."""
-        if "joint_positions" not in motion:
-            return
-
-        num_frames = motion["joint_positions"].shape[0]
-        if num_frames < self.seq_len:
-            return
-
-        # Build observation array
-        observations = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
-
-        # Root height
-        observations[:, 0] = motion.get("root_position", np.zeros((num_frames, 3)))[
-            :, 2
-        ]
-
-        # Base orientation (identity for now)
-        observations[:, 1] = 1.0
-
-        # Joint positions
-        observations[:, 7:16] = motion["joint_positions"]
-
-        # Root velocity
-        if "root_velocity" in motion:
-            observations[:, 16:19] = motion["root_velocity"]
-
-        # Root angular velocity
-        if "root_angular_velocity" in motion:
-            observations[:, 19:22] = motion["root_angular_velocity"]
-
-        # Joint velocities
-        if "joint_velocities" in motion:
-            observations[:, 25:34] = motion["joint_velocities"]
-
-        # Split into sequences
-        stride = max(1, self.seq_len // 2)
-        for start_idx in range(0, num_frames - self.seq_len, stride):
-            seq = observations[start_idx : start_idx + self.seq_len]
-            self.add(seq)
-
-    def generate_synthetic_standing_pose(self, num_sequences: int = 100):
-        """Generate synthetic reference motion (stable standing pose).
-
-        This is for testing AMP integration without real MoCap data.
-        Generates a stable standing pose with small random perturbations.
-
-        Args:
-            num_sequences: Number of sequences to generate
-        """
-        # Default standing pose (11 joint positions + 11 joint velocities = 22 dims)
-        # Plus other observation features up to obs_dim
-
-        # Joint positions for standing (roughly zero for small humanoid)
-        default_qpos = np.zeros(11, dtype=np.float32)
-        default_qvel = np.zeros(11, dtype=np.float32)
-
-        # Full observation (44-dim for WildRobot)
-        # Simplified: [base_height, base_ori(6), joint_pos(11), base_lin_vel(3),
-        #              base_ang_vel(3), joint_vel(11), contact(4), actions(11)]
-        # For reference motion, we care about joint poses primarily
-
-        for _ in range(num_sequences):
-            sequence = []
-            for t in range(self.seq_len):
-                # Standing pose with small noise
-                obs = np.zeros(self.obs_dim, dtype=np.float32)
-
-                # Base height (around 0.5m for standing)
-                obs[0] = 0.5 + np.random.normal(0, 0.01)
-
-                # Base orientation (identity quaternion: [1,0,0,0] as 6D repr)
-                obs[1:7] = np.array(
-                    [1, 0, 0, 0, 0, 0], dtype=np.float32
-                )  # Simplified 6D rot
-
-                # Joint positions (small noise around zero)
-                obs[7:18] = default_qpos + np.random.normal(0, 0.02, size=11).astype(
-                    np.float32
-                )
-
-                # Velocities (near zero for standing)
-                obs[18:32] = np.random.normal(0, 0.01, size=14).astype(np.float32)
-
-                # Joint velocities
-                obs[32:43] = default_qvel + np.random.normal(0, 0.05, size=11).astype(
-                    np.float32
-                )
-
-                # Contact forces (feet on ground) - last 4 dimensions
-                obs[40:44] = np.array(
-                    [0.2, 0.2, 0, 0], dtype=np.float32
-                )  # Front feet have contact
-
-                sequence.append(obs)
-
-            seq_array = np.stack(sequence, axis=0)  # (seq_len, obs_dim)
-            self.add(seq_array)
-
-        print(f"Generated {num_sequences} synthetic standing pose sequences")
-        print(f"  Buffer now has {len(self.data)} sequences")
-        print(f"  Each sequence: ({self.seq_len}, {self.obs_dim})")
-
-    def generate_synthetic_walking_motion(self, num_sequences: int = 100):
-        """Generate synthetic walking motion (simple sinusoidal gait).
-
-        This generates a simple periodic walking motion using sinusoids.
-        Not as good as real MoCap, but better than standing for AMP testing.
-
-        Generates 29-dim AMP features:
-        - Joint positions (0-8): 9 dims
-        - Joint velocities (9-17): 9 dims
-        - Root linear velocity (18-20): 3 dims
-        - Root angular velocity (21-23): 3 dims
-        - Root height (24): 1 dim
-        - Foot contacts (25-28): 4 dims
-
-        Args:
-            num_sequences: Number of sequences to generate
-        """
-        for _ in range(num_sequences):
-            sequence = []
-
-            # Random phase offset for variety
-            phase_offset = np.random.uniform(0, 2 * np.pi)
-            stride_freq = 2.0  # Hz (1 step every 0.5s)
-
-            for t in range(self.seq_len):
-                time = t * 0.02  # Assuming 50Hz control (0.02s per step)
-                phase = 2 * np.pi * stride_freq * time + phase_offset
-
-                # Create 29-dim feature vector
-                features = np.zeros(self.obs_dim, dtype=np.float32)
-
-                # Joint positions (0-8): simplified alternating leg motion
-                hip_l = 0.3 * np.sin(phase)  # Left hip
-                hip_r = 0.3 * np.sin(phase + np.pi)  # Right hip (opposite)
-                knee_l = 0.5 * np.abs(np.sin(phase))
-                knee_r = 0.5 * np.abs(np.sin(phase + np.pi))
-
-                features[0:9] = np.array(
-                    [
-                        hip_l, 0.0, knee_l, 0.0,  # Left leg (4 joints)
-                        0.0,  # Waist
-                        hip_r, 0.0, knee_r, 0.0,  # Right leg (4 joints)
-                    ],
-                    dtype=np.float32,
-                )
-
-                # Joint velocities (9-17): derivatives of positions
-                omega = 2 * np.pi * stride_freq
-                features[9:18] = np.array(
-                    [
-                        0.3 * omega * np.cos(phase),
-                        0.0,
-                        0.5 * omega * np.cos(phase) * np.sign(np.sin(phase)),
-                        0.0,
-                        0.0,
-                        0.3 * omega * np.cos(phase + np.pi),
-                        0.0,
-                        0.5 * omega * np.cos(phase + np.pi) * np.sign(np.sin(phase + np.pi)),
-                        0.0,
-                    ],
-                    dtype=np.float32,
-                )
-
-                # Root linear velocity (18-20): forward motion
-                features[18:21] = np.array([0.4, 0.0, 0.0], dtype=np.float32)
-
-                # Root angular velocity (21-23): near zero
-                features[21:24] = np.zeros(3, dtype=np.float32)
-
-                # Root height (24): slight bobbing during walk
-                features[24] = 0.74 + 0.02 * np.sin(2 * phase)
-
-                # Foot contacts (25-28): alternating feet
-                left_contact = 0.5 if np.sin(phase) < 0 else 0.0
-                right_contact = 0.5 if np.sin(phase + np.pi) < 0 else 0.0
-                features[25:29] = np.array(
-                    [left_contact, left_contact, right_contact, right_contact],
-                    dtype=np.float32,
-                )
-
-                sequence.append(features)
-
-            seq_array = np.stack(sequence, axis=0)
-            self.add(seq_array)
-
-        print(f"Generated {num_sequences} synthetic walking motion sequences")
-        print(f"  Buffer now has {len(self.data)} sequences")
 
     def __len__(self):
         return len(self.data)
@@ -416,35 +155,26 @@ class ReferenceMotionBuffer:
 
 
 def create_reference_buffer(
-    obs_dim: int = 44,
-    seq_len: int = 32,
-    max_size: int = 1000,
-    mode: str = "walking",
-    num_sequences: int = 200,
-    filepath: Optional[str] = None,
+    feature_dim: int,
+    seq_len: int,
+    max_size: int,
+    filepath: str,
 ) -> ReferenceMotionBuffer:
-    """Create and populate a reference motion buffer.
+    """Create and populate a reference motion buffer from file.
 
     Args:
-        obs_dim: Observation dimension
-        seq_len: Sequence length
-        max_size: Maximum buffer size
-        mode: Generation mode ("standing", "walking", or "file")
-        num_sequences: Number of sequences to generate (if synthetic)
-        filepath: Path to pkl file (if mode="file")
+        feature_dim: Feature dimension, must be 29 for AMP features (REQUIRED)
+        seq_len: Sequence length in timesteps (REQUIRED)
+        max_size: Maximum buffer size (REQUIRED)
+        filepath: Path to pkl file with reference features (REQUIRED)
 
     Returns:
         Populated ReferenceMotionBuffer
     """
-    buffer = ReferenceMotionBuffer(max_size=max_size, seq_len=seq_len, obs_dim=obs_dim)
-
-    if mode == "file" and filepath is not None:
-        buffer.load_from_file(filepath)
-    elif mode == "walking":
-        buffer.generate_synthetic_walking_motion(num_sequences)
-    elif mode == "standing":
-        buffer.generate_synthetic_standing_pose(num_sequences)
-    else:
-        print(f"Warning: Unknown mode '{mode}', buffer will be empty")
-
+    buffer = ReferenceMotionBuffer(
+        max_size=max_size,
+        seq_len=seq_len,
+        feature_dim=feature_dim,
+    )
+    buffer.load_from_file(filepath)
     return buffer

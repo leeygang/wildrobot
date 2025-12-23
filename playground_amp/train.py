@@ -95,6 +95,11 @@ def create_env_config(training_config: dict) -> config_dict.ConfigDict:
 
     config = config_dict.ConfigDict()
 
+    # Model path (required)
+    if "model_path" not in env_cfg:
+        raise ValueError("model_path is required in env config")
+    config.model_path = env_cfg["model_path"]
+
     # Simulation timing
     config.ctrl_dt = env_cfg.get("ctrl_dt", 0.02)
     config.sim_dt = env_cfg.get("sim_dt", 0.002)
@@ -487,33 +492,38 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         ref_data = pickle.load(f)
 
     # Extract AMP features from reference data
-    if isinstance(ref_data, dict):
+    if isinstance(ref_data, np.ndarray) and ref_data.ndim == 2:
+        # Already extracted features (2D array: num_samples x feature_dim)
+        ref_features = ref_data
+    elif isinstance(ref_data, dict):
         # If it's a dict with 'features' key
         if "features" in ref_data:
             ref_features = np.array(ref_data["features"])
         elif "observations" in ref_data:
             # Need to convert observations to AMP features
-            from playground_amp.amp.amp_features import extract_amp_features
+            from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
 
+            amp_config = get_default_amp_config()
             obs = np.array(ref_data["observations"])
-            # Extract features from consecutive observations
+            # Extract features from observations
             features_list = []
             for seq in obs:
-                for i in range(len(seq) - 1):
-                    feat = extract_amp_features(seq[i], seq[i + 1])
+                for i in range(len(seq)):
+                    feat = extract_amp_features(seq[i], amp_config)
                     features_list.append(feat)
             ref_features = np.array(features_list)
         else:
             raise ValueError(f"Unknown reference data format: {ref_data.keys()}")
     elif isinstance(ref_data, list):
         # List of sequences - flatten and extract features
-        from playground_amp.amp.amp_features import extract_amp_features
+        from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
 
+        amp_config = get_default_amp_config()
         features_list = []
         for seq in ref_data:
             seq = np.array(seq)
-            for i in range(len(seq) - 1):
-                feat = extract_amp_features(seq[i], seq[i + 1])
+            for i in range(len(seq)):
+                feat = extract_amp_features(seq[i], amp_config)
                 features_list.append(feat)
         ref_features = np.array(features_list)
     else:

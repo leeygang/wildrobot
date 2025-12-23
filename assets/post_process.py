@@ -429,6 +429,33 @@ def generate_robot_config(xml_file: str, output_file: str = "robot_config.yaml")
     config["observation_indices"] = obs_indices
 
     # =========================================================================
+    # Extract Feet Configuration (for contact detection)
+    # =========================================================================
+    # Feet sites (for position tracking)
+    feet_sites = []
+    for site in root.findall(".//site[@name]"):
+        site_name = site.get("name", "")
+        if "foot" in site_name.lower() and "mimic" in site_name.lower():
+            feet_sites.append(site_name)
+
+    # Feet geoms (for contact detection) - added by add_collision_names()
+    left_feet_geoms = []
+    right_feet_geoms = []
+    for geom in root.findall(".//geom[@name]"):
+        geom_name = geom.get("name", "")
+        if "left_foot" in geom_name and ("btm" in geom_name or "bottom" in geom_name):
+            left_feet_geoms.append(geom_name)
+        elif "right_foot" in geom_name and ("btm" in geom_name or "bottom" in geom_name):
+            right_feet_geoms.append(geom_name)
+
+    config["feet"] = {
+        "sites": feet_sites,
+        "left_geoms": left_feet_geoms,
+        "right_geoms": right_feet_geoms,
+        "all_geoms": left_feet_geoms + right_feet_geoms,
+    }
+
+    # =========================================================================
     # Save to YAML
     # =========================================================================
     import yaml

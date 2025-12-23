@@ -69,7 +69,61 @@ class RobotConfig:
     observation_breakdown: Dict[str, int]
     amp_feature_breakdown: Dict[str, int]
     sensors: Dict[str, List[Dict[str, Any]]]
+
+    # Feet configuration (for contact detection)
+    feet_sites: List[str]
+    feet_left_geoms: List[str]
+    feet_right_geoms: List[str]
+    feet_all_geoms: List[str]
+
     raw_config: Dict[str, Any] = field(repr=False)
+
+    # Sensor names (derived from sensors dict for convenience)
+    @property
+    def gravity_sensor(self) -> str:
+        """Get gravity/up-vector sensor name."""
+        framezaxis = self.sensors.get("framezaxis", [])
+        for s in framezaxis:
+            if "pelvis" in s.get("name", "").lower() or "upvector" in s.get("name", "").lower():
+                return s["name"]
+        return framezaxis[0]["name"] if framezaxis else ""
+
+    @property
+    def global_linvel_sensor(self) -> str:
+        """Get global linear velocity sensor name."""
+        framelinvel = self.sensors.get("framelinvel", [])
+        for s in framelinvel:
+            if "pelvis" in s.get("name", "").lower() and "global" in s.get("name", "").lower():
+                return s["name"]
+        return framelinvel[0]["name"] if framelinvel else ""
+
+    @property
+    def global_angvel_sensor(self) -> str:
+        """Get global angular velocity sensor name."""
+        frameangvel = self.sensors.get("frameangvel", [])
+        for s in frameangvel:
+            if "pelvis" in s.get("name", "").lower() and "global" in s.get("name", "").lower():
+                return s["name"]
+        return frameangvel[0]["name"] if frameangvel else ""
+
+    @property
+    def local_linvel_sensor(self) -> str:
+        """Get local linear velocity sensor name."""
+        velocimeter = self.sensors.get("velocimeter", [])
+        for s in velocimeter:
+            if "pelvis" in s.get("name", "").lower():
+                return s["name"]
+        return velocimeter[0]["name"] if velocimeter else ""
+
+    @property
+    def gyro_sensor_names(self) -> List[str]:
+        """Get list of gyro sensor names."""
+        return [s["name"] for s in self.sensors.get("gyro", [])]
+
+    @property
+    def accelerometer_sensor_names(self) -> List[str]:
+        """Get list of accelerometer sensor names."""
+        return [s["name"] for s in self.sensors.get("accelerometer", [])]
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "RobotConfig":
@@ -121,6 +175,13 @@ class RobotConfig:
         # Extract sensors
         sensors = config.get("sensors", {})
 
+        # Extract feet configuration
+        feet = config.get("feet", {})
+        feet_sites = feet.get("sites", [])
+        feet_left_geoms = feet.get("left_geoms", [])
+        feet_right_geoms = feet.get("right_geoms", [])
+        feet_all_geoms = feet.get("all_geoms", [])
+
         return cls(
             robot_name=config.get("robot_name", "unknown"),
             actuator_names=actuator_names,
@@ -138,6 +199,10 @@ class RobotConfig:
             observation_breakdown=observation_breakdown,
             amp_feature_breakdown=amp_feature_breakdown,
             sensors=sensors,
+            feet_sites=feet_sites,
+            feet_left_geoms=feet_left_geoms,
+            feet_right_geoms=feet_right_geoms,
+            feet_all_geoms=feet_all_geoms,
             raw_config=config,
         )
 
