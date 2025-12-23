@@ -270,7 +270,7 @@ uv run python playground_amp/train.py
 **Solutions:**
 - Increase `disc_lr` (e.g., 5e-5 → 1e-4)
 - Increase `update_steps` (e.g., 1 → 2)
-- Reduce `gradient_penalty_weight`
+- Reduce `r1_gamma`
 
 ### Issue: AMP reward low despite good locomotion
 **Cause:** Speed mismatch between reference and policy.

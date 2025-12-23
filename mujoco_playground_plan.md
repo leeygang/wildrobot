@@ -325,7 +325,7 @@ class AMPPPOConfig:
     amp_reward_weight: float = 1.0  # Equal to task reward (2024 best practice)
     disc_learning_rate: float = 1e-4
     disc_updates_per_iter: int = 2
-    gradient_penalty_weight: float = 5.0
+    r1_gamma: float = 5.0
 
     # Network architecture
     policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)

@@ -209,7 +209,7 @@ def discriminator_loss(params, model, real_obs, fake_obs, rng_key,
 |-----------|-------|-------|
 | `disc_lr` | `1e-4` | Learning rate |
 | `update_steps` | `3` | Updates per policy iteration |
-| `r1_gamma` | `5.0` | R1 regularizer weight (replaced gradient_penalty_weight) |
+| `r1_gamma` | `5.0` | R1 regularizer weight |
 | `disc_input_noise_std` | `0.02` | Input blur |
 | `batch_size` | `256` | Samples per update |
 

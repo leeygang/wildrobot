@@ -308,7 +308,7 @@ class TrainingConfig:
     disc_learning_rate: float
     disc_updates_per_iter: int
     disc_batch_size: int
-    gradient_penalty_weight: float
+    r1_gamma: float  # R1 regularizer weight
     disc_input_noise_std: float
     disc_hidden_dims: Tuple[int, ...]
     ref_motion_path: Optional[str]
@@ -382,7 +382,7 @@ class TrainingConfig:
             disc_learning_rate=amp.get("disc_lr", 1e-4),
             disc_updates_per_iter=amp.get("update_steps", 2),
             disc_batch_size=amp.get("batch_size", 512),
-            gradient_penalty_weight=amp.get("gradient_penalty_weight", 5.0),
+            r1_gamma=amp.get("r1_gamma", 5.0),
             disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
             disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
             ref_motion_path=amp.get("dataset_path"),

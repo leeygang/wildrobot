@@ -1094,7 +1094,7 @@ amp_config = {
     "amp_reward_weight": 1.0,        # ⚠️ Equal to task reward (not 0.5)
     "replay_buffer_size": 200000,    # Larger buffer for diversity
     "discriminator_batch_size": 512, # Doubled from 256
-    "gradient_penalty_weight": 5.0,  # WGAN-GP regularization
+    "r1_gamma": 5.0,                 # R1 regularization
     "discriminator_updates": 2,      # Update D twice per policy update
 }
 ```

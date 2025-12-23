@@ -101,7 +101,7 @@ class AMPPPOConfigJit:
     disc_learning_rate: float
     disc_updates_per_iter: int
     disc_batch_size: int
-    r1_gamma: float  # R1 regularizer weight (v0.4.1: replaced gradient_penalty_weight)
+    r1_gamma: float  # R1 regularizer weight
     disc_hidden_dims: Tuple[int, ...]
     disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 

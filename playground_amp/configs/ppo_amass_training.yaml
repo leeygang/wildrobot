@@ -100,7 +100,7 @@ amp:
   disc_lr: 1e-4                  # Increased from 5e-5 - disc was collapsing
   batch_size: 256
   update_steps: 3                # Increased from 2 - give disc more updates
-  r1_gamma: 5.0                  # R1 regularizer weight (v0.4.1: replaced gradient_penalty_weight)
+  r1_gamma: 5.0                  # R1 regularizer weight
   disc_input_noise_std: 0.02     # Reduced from 0.05 - too much blur
 
 # =============================================================================
