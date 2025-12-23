@@ -86,13 +86,13 @@ amp:
   weight: 0.3                    # Reduced - lower style pressure until robot is smoother
   dataset_path: playground_amp/data/walking_motions_merged.pkl
 
-  # Discriminator (tuned to drive disc_acc down from 0.97 toward 0.7)
+  # Discriminator (middle-ground: not too strong, not collapsed)
   discriminator_hidden: [256, 128]
-  disc_lr: 2e-5                  # Slowed down so policy can "keep up"
+  disc_lr: 5e-5                  # Middle ground (was 2e-5 too slow, 1e-4 too fast)
   batch_size: 256
-  update_steps: 1                # One disc update per policy update (was 4)
-  gradient_penalty_weight: 30.0  # Smoother gradients for clearer policy signals
-  disc_input_noise_std: 0.05     # Add blur to prevent discriminator overfitting
+  update_steps: 2                # Two disc updates per policy update
+  gradient_penalty_weight: 15.0  # Moderate regularization
+  disc_input_noise_std: 0.05     # Keep blur to prevent overfitting
 
 # =============================================================================
 # W&B Logging
