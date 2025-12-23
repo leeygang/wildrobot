@@ -965,10 +965,25 @@ def train_amp_ppo_jit(
     total_expected_steps = config.total_iterations * config.num_envs * config.num_steps
 
     print("=" * 60)
+    print("Pre-compiling JIT functions...")
+
+    # Trigger JIT compilation before training starts
+    # This prevents a 30s pause after iteration #1 when switching to batch mode
+    compile_start = time.time()
+    _ = train_iteration_fn(state, env_state, ref_buffer_data)
+    jax.block_until_ready(_)
+    print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
+
+    if train_batch_fn is not None:
+        compile_start = time.time()
+        _ = train_batch_fn(state, env_state, ref_buffer_data)
+        jax.block_until_ready(_)
+        print(f"  ✓ train_batch_fn compiled ({time.time() - compile_start:.1f}s)")
+
+    print("=" * 60)
     print("Starting training...")
     print(f"  Total iterations: {config.total_iterations:,}")
     print(f"  Total steps: {total_expected_steps:,}")
-    print("(First iteration includes JIT compilation)")
     print()
 
     # Training loop

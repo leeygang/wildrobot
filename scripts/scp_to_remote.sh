@@ -138,12 +138,7 @@ sync_all() {
     echo -e "\n${YELLOW}To start training on Ubuntu:${NC}"
     echo "  ssh $REMOTE_USER@$REMOTE_HOST"
     echo "  cd ~/projects/wildrobot"
-    echo "  uv run python playground_amp/train.py \\"
-    echo "      --use-custom-loop \\"
-    echo "      --iterations 3000 \\"
-    echo "      --num-envs 2048 \\"
-    echo "      --amp-weight 1.0 \\"
-    echo "      --amp-data data/amp/walking_motions_merged.pkl"
+    echo "  uv run python playground_amp/train.py"
 }
 
 # Main

@@ -76,7 +76,7 @@ class WandbConfig:
     log_frequency: int = 10  # Log every N iterations
 
     # Local log directory (for config backup)
-    log_dir: str = "playground_amp/logs"
+    log_dir: str = "playground_amp/wandb"
 
 
 class WandbTracker:
@@ -100,7 +100,7 @@ class WandbTracker:
         entity: Optional[str] = None,
         mode: str = "online",
         enabled: bool = True,
-        log_dir: str = "playground_amp/logs",
+        log_dir: str = "playground_amp/wandb",
     ):
         """Initialize W&B tracker.
 
@@ -159,26 +159,23 @@ class WandbTracker:
                 self._wandb_run = wandb.run
                 return
 
-            # Create custom log directory with clean naming: run_YYYYMMDD_HHMMSS
-            run_dir = os.path.join(self.log_dir, self.name)
-            os.makedirs(run_dir, exist_ok=True)
+            # Set WANDB_DIR to parent of log_dir so wandb creates its subfolder there
+            # wandb always creates a wandb/ subfolder, so:
+            #   WANDB_DIR = "playground_amp" -> wandb creates "playground_amp/wandb/run-..."
+            wandb_parent_dir = os.path.dirname(self.log_dir) or "."
+            os.makedirs(wandb_parent_dir, exist_ok=True)
+            os.environ["WANDB_DIR"] = wandb_parent_dir
 
-            # Set WANDB_DIR to control where wandb creates its files
-            # This avoids the extra wandb/ subdirectory
-            os.environ["WANDB_DIR"] = run_dir
-
-            # Initialize W&B with custom directory and ID
-            # Setting id removes the random suffix from folder name
+            # Initialize W&B with custom ID (removes random suffix from folder name)
             self._wandb_run = wandb.init(
                 project=self.project,
-                id=self._run_id,  # Use our timestamp as ID (removes random suffix)
+                id=self._run_id,  # Use our timestamp as ID
                 name=self.name,
                 config=self.config,
                 tags=self.tags,
                 notes=self.notes,
                 entity=self.entity,
                 mode=self.mode,
-                dir=run_dir,
             )
 
             # Print run info
@@ -198,7 +195,8 @@ class WandbTracker:
 
     def _save_config_local(self):
         """Save configuration to local file as backup."""
-        config_dir = os.path.join(self.log_dir, self.project, self.name)
+        # Save to: playground_amp/wandb/run_YYYYMMDD_HHMMSS/config.json
+        config_dir = os.path.join(self.log_dir, self.name)
         os.makedirs(config_dir, exist_ok=True)
 
         config_path = os.path.join(config_dir, "config.json")
@@ -373,7 +371,7 @@ class WandbTracker:
 
         # Also save to local file
         summary_path = os.path.join(
-            self.log_dir, self.project, self.name, "summary.json"
+            self.log_dir, self.name, "summary.json"
         )
         os.makedirs(os.path.dirname(summary_path), exist_ok=True)
         with open(summary_path, "w") as f:

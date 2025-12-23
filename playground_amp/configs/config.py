@@ -176,7 +176,7 @@ class WandbConfig:
     tags: List[str] = field(default_factory=list)
     mode: str = "online"
     log_frequency: int = 10
-    log_dir: str = "logs"
+    log_dir: str = "playground_amp/wandb"
 
 
 @dataclass
@@ -228,17 +228,13 @@ class TrainingConfig:
     update_epochs: int
     seed: int
     log_interval: int
-    save_interval: int
     checkpoint_dir: str
 
     # Networks
     policy_hidden_dims: Tuple[int, ...]
     value_hidden_dims: Tuple[int, ...]
-    log_std_min: float
-    log_std_max: float
 
     # AMP
-    amp_enabled: bool
     amp_weight: float
     disc_learning_rate: float
     disc_updates_per_iter: int
@@ -246,10 +242,7 @@ class TrainingConfig:
     gradient_penalty_weight: float
     disc_input_noise_std: float
     disc_hidden_dims: Tuple[int, ...]
-    ref_buffer_size: int
-    ref_motion_mode: str
     ref_motion_path: Optional[str]
-    normalize_amp_features: bool
 
     # Reward weights
     reward_weights: Dict[str, float]
@@ -306,17 +299,13 @@ class TrainingConfig:
             update_epochs=trainer.get("epochs", 4),
             seed=trainer.get("seed", 42),
             log_interval=trainer.get("log_interval", 10),
-            save_interval=trainer.get("save_interval", 100),
             checkpoint_dir=trainer.get("checkpoint_dir", "playground_amp/checkpoints"),
             # Networks
             policy_hidden_dims=tuple(
                 networks.get("policy_hidden_dims", [512, 256, 128])
             ),
             value_hidden_dims=tuple(networks.get("value_hidden_dims", [512, 256, 128])),
-            log_std_min=networks.get("log_std_min", -20.0),
-            log_std_max=networks.get("log_std_max", 2.0),
             # AMP
-            amp_enabled=amp.get("enabled", True),
             amp_weight=amp.get("weight", 1.0),
             disc_learning_rate=amp.get("disc_lr", 1e-4),
             disc_updates_per_iter=amp.get("update_steps", 2),
@@ -324,10 +313,7 @@ class TrainingConfig:
             gradient_penalty_weight=amp.get("gradient_penalty_weight", 5.0),
             disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
             disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
-            ref_buffer_size=amp.get("ref_buffer_size", 2000),
-            ref_motion_mode=amp.get("ref_motion_mode", "file"),
             ref_motion_path=amp.get("dataset_path"),
-            normalize_amp_features=amp.get("normalize_features", True),
             # Reward weights
             reward_weights=rewards,
             # W&B configuration
