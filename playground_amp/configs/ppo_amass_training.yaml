@@ -83,16 +83,16 @@ reward_weights:
 # AMP (Adversarial Motion Prior)
 # =============================================================================
 amp:
-  weight: 0.5                    # Reduced from 1.0 - balance with velocity reward
+  weight: 0.3                    # Reduced - lower style pressure until robot is smoother
   dataset_path: playground_amp/data/walking_motions_merged.pkl
 
-  # Discriminator
+  # Discriminator (tuned to drive disc_acc down from 0.97 toward 0.7)
   discriminator_hidden: [256, 128]
-  disc_lr: 1e-4                  # Increased from 5e-6 - discriminator was not learning!
+  disc_lr: 2e-5                  # Slowed down so policy can "keep up"
   batch_size: 256
-  update_steps: 4                # Increased from 2 - more disc updates per iteration
-  gradient_penalty_weight: 10.0  # Reduced from 50.0 - was over-regularizing
-  disc_input_noise_std: 0.02     # Reduced from 0.05 - less noise for clearer signal
+  update_steps: 1                # One disc update per policy update (was 4)
+  gradient_penalty_weight: 30.0  # Smoother gradients for clearer policy signals
+  disc_input_noise_std: 0.05     # Add blur to prevent discriminator overfitting
 
 # =============================================================================
 # W&B Logging

@@ -847,6 +847,7 @@ def main():
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
     print(f"{'=' * 60}")
+    print(f"  PID: {os.getpid()}  (kill -9 {os.getpid()} to terminate)")
     if use_amp:
         mode_str = "AMP+PPO (JIT-compiled - FAST)"
     else:
