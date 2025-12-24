@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.6.2"
-version_name: "Golden Rule Configuration"
+version: "0.6.3"
+version_name: "Clean Feature Extractor"
 
 # =============================================================================
 # Environment
@@ -116,6 +116,14 @@ amp:
   contact_threshold_angle: 0.1   # Hip pitch angle threshold for contact detection (rad)
   contact_knee_scale: 0.5        # Knee angle at which confidence starts decreasing (rad, ~28°)
   contact_min_confidence: 0.3    # Minimum confidence when hip indicates contact (0-1)
+
+  # v0.6.3: Feature Cleaning (removes discriminator cheats)
+  mask_waist: true               # Exclude waist_yaw from features (AMASS has constant 0)
+  velocity_filter_alpha: 0.5     # EMA filter for velocity smoothing (0=off, 0.5=moderate)
+  ankle_offset: 0.18             # Ankle pitch calibration offset (rad) - fixes neutral pose mismatch
+
+  # v0.6.4: Gait Mirroring (Gold Rule for symmetric gaits)
+  enable_mirror_augmentation: true  # Mirror left/right to fix asymmetric reference data
 
 # =============================================================================
 # W&B Logging

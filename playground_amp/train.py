@@ -489,6 +489,10 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         contact_threshold_angle=amp_cfg.get("contact_threshold_angle", 0.1),
         contact_knee_scale=amp_cfg.get("contact_knee_scale", 0.5),
         contact_min_confidence=amp_cfg.get("contact_min_confidence", 0.3),
+        # v0.6.3: Feature Cleaning (removes discriminator cheats)
+        mask_waist=amp_cfg.get("mask_waist", True),
+        velocity_filter_alpha=amp_cfg.get("velocity_filter_alpha", 0.0),
+        ankle_offset=amp_cfg.get("ankle_offset", 0.18),
         # Training
         total_iterations=args.iterations,
         seed=args.seed,
@@ -542,6 +546,39 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         ref_features = np.array(ref_data)
 
     print(f"✓ Reference features: {ref_features.shape}")
+
+    # v0.6.3: Mask waist features from reference data to match policy output
+    # Reference data is 29-dim, policy output is 27-dim when mask_waist=True
+    mask_waist = amp_cfg.get("mask_waist", True)
+    if mask_waist and ref_features.shape[1] == 29:
+        print("  Applying waist masking to reference data...")
+        # Original 29-dim format: [joint_pos(9), joint_vel(9), root_linvel(3), root_angvel(3), root_height(1), foot_contacts(4)]
+        # Indices to remove: 0 (waist_yaw pos), 9 (waist_yaw vel)
+        # Keep all indices except 0 and 9
+        keep_indices = [i for i in range(29) if i not in [0, 9]]
+        ref_features = ref_features[:, keep_indices]
+        print(f"  ✓ Masked reference features: {ref_features.shape}")
+
+    # v0.6.4: Gait Mirroring (Gold Rule for symmetric gaits)
+    enable_mirror = amp_cfg.get("enable_mirror_augmentation", True)
+    if enable_mirror:
+        print("  Applying gait mirroring (left/right augmentation)...")
+        from playground_amp.amp.amp_mirror import (
+            augment_with_mirror,
+            verify_mirror_symmetry,
+        )
+
+        original_count = ref_features.shape[0]
+        ref_features = augment_with_mirror(ref_features)
+        print(
+            f"  ✓ Mirrored reference features: {ref_features.shape} (2x from {original_count})"
+        )
+
+        # Verify symmetry
+        symmetry_stats = verify_mirror_symmetry(ref_features)
+        print(
+            f"  ✓ Symmetry check: contact_error={symmetry_stats['contact_symmetry_error']:.6f}"
+        )
 
     # Create vmapped environment functions
     def batched_step_fn(state, action):

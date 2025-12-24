@@ -333,6 +333,11 @@ class TrainingConfig:
     contact_knee_scale: float  # Knee angle at which confidence starts decreasing (rad)
     contact_min_confidence: float  # Minimum confidence when hip indicates contact (0-1)
 
+    # v0.6.3: Feature Cleaning (removes discriminator cheats)
+    mask_waist: bool  # Exclude waist_yaw from features (AMASS has constant 0)
+    velocity_filter_alpha: float  # EMA filter for velocity smoothing (0=off)
+    ankle_offset: float  # Ankle pitch calibration offset (rad)
+
     # Reward weights
     reward_weights: Dict[str, float]
 
@@ -412,6 +417,10 @@ class TrainingConfig:
             contact_threshold_angle=amp.get("contact_threshold_angle", 0.1),
             contact_knee_scale=amp.get("contact_knee_scale", 0.5),
             contact_min_confidence=amp.get("contact_min_confidence", 0.3),
+            # v0.6.3: Feature Cleaning
+            mask_waist=amp.get("mask_waist", True),
+            velocity_filter_alpha=amp.get("velocity_filter_alpha", 0.0),
+            ankle_offset=amp.get("ankle_offset", 0.18),
             # Reward weights
             reward_weights=rewards,
             # W&B configuration

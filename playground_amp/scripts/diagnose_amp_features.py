@@ -46,8 +46,44 @@ from playground_amp.configs.config import load_robot_config
 robot_config_path = project_root / "assets" / "robot_config.yaml"
 load_robot_config(robot_config_path)
 
-# Feature names for 29-dim AMP features
-FEATURE_NAMES = [
+# Feature names for 27-dim AMP features (v0.6.3: waist masked)
+# If mask_waist=False, use 29-dim feature names instead
+FEATURE_NAMES_27DIM = [
+    # Joint positions (0-7) - waist excluded
+    "joint_pos[0] (left_hip_pitch)",
+    "joint_pos[1] (left_hip_roll)",
+    "joint_pos[2] (left_knee_pitch)",
+    "joint_pos[3] (left_ankle_pitch)",
+    "joint_pos[4] (right_hip_pitch)",
+    "joint_pos[5] (right_hip_roll)",
+    "joint_pos[6] (right_knee_pitch)",
+    "joint_pos[7] (right_ankle_pitch)",
+    # Joint velocities (8-15) - waist excluded
+    "joint_vel[0] (left_hip_pitch)",
+    "joint_vel[1] (left_hip_roll)",
+    "joint_vel[2] (left_knee_pitch)",
+    "joint_vel[3] (left_ankle_pitch)",
+    "joint_vel[4] (right_hip_pitch)",
+    "joint_vel[5] (right_hip_roll)",
+    "joint_vel[6] (right_knee_pitch)",
+    "joint_vel[7] (right_ankle_pitch)",
+    # Root velocities (16-21)
+    "linvel_dir_x",
+    "linvel_dir_y",
+    "linvel_dir_z",
+    "angvel_x",
+    "angvel_y",
+    "angvel_z",
+    # Root height (22) - CRITICAL CHECK
+    "root_height",
+    # Foot contacts (23-26)
+    "foot_contact[0] (left_toe)",
+    "foot_contact[1] (left_heel)",
+    "foot_contact[2] (right_toe)",
+    "foot_contact[3] (right_heel)",
+]
+
+FEATURE_NAMES_29DIM = [
     # Joint positions (0-8)
     "joint_pos[0] (waist_yaw)",
     "joint_pos[1] (left_hip_pitch)",
@@ -84,15 +120,19 @@ FEATURE_NAMES = [
     "foot_contact[3] (right_heel)",
 ]
 
+# Will be set based on mask_waist config
+FEATURE_NAMES = FEATURE_NAMES_27DIM  # Default to v0.6.3
+
 # Critical feature indices that commonly cause leaks
+# v0.6.3: Index 22 for root_height (was 24 in 29-dim)
 CRITICAL_FEATURES = {
-    24: "root_height",  # Most common leak source
+    22: "root_height",  # Most common leak source (27-dim index)
 }
 
 
 def load_reference_features():
     """Load reference features from pickle file specified in training config."""
-    from playground_amp.configs.config import load_training_config
+    from playground_amp.configs.config import get_training_config, load_training_config
 
     # Load training config to get dataset path
     training_config_path = (
@@ -111,7 +151,44 @@ def load_reference_features():
 
     with open(ref_path, "rb") as f:
         data = pickle.load(f)
-    return np.array(data["features"])
+
+    features = np.array(data["features"])
+
+    # v0.6.3: Mask waist features from reference data if configured
+    mask_waist = training_config.mask_waist
+    if mask_waist and features.shape[1] == 29:
+        print(f"  Applying waist masking to reference data...")
+        # Remove indices 0 (waist_yaw pos) and 9 (waist_yaw vel)
+        keep_indices = [i for i in range(29) if i not in [0, 9]]
+        features = features[:, keep_indices]
+        print(f"  ✓ Masked reference features: {features.shape}")
+
+    # v0.6.4: Apply gait mirroring if enabled
+    # Read from raw_config since enable_mirror_augmentation may not be in TrainingConfig dataclass yet
+    raw_config = training_config.raw_config
+    amp_cfg = raw_config.get("amp", {})
+    enable_mirror = amp_cfg.get("enable_mirror_augmentation", True)
+
+    if enable_mirror:
+        print(f"  Applying gait mirroring (left/right augmentation)...")
+        from playground_amp.amp.amp_mirror import (
+            augment_with_mirror,
+            verify_mirror_symmetry,
+        )
+
+        original_count = features.shape[0]
+        features = augment_with_mirror(features)
+        print(
+            f"  ✓ Mirrored reference features: {features.shape} (2x from {original_count})"
+        )
+
+        # Verify symmetry
+        symmetry_stats = verify_mirror_symmetry(features)
+        print(
+            f"  ✓ Symmetry check: contact_error={symmetry_stats['contact_symmetry_error']:.6f}"
+        )
+
+    return features
 
 
 def collect_policy_features(num_samples=1000):
@@ -137,6 +214,9 @@ def collect_policy_features(num_samples=1000):
     contact_threshold_angle = training_config.contact_threshold_angle
     contact_knee_scale = training_config.contact_knee_scale
     contact_min_confidence = training_config.contact_min_confidence
+    # v0.6.3: Feature cleaning params
+    velocity_filter_alpha = training_config.velocity_filter_alpha
+    ankle_offset = training_config.ankle_offset
 
     print(f"  Creating environment...", end=" ", flush=True)
     env = create_env()
@@ -149,6 +229,10 @@ def collect_policy_features(num_samples=1000):
     print(f"    contact_threshold_angle={contact_threshold_angle}")
     print(f"    contact_knee_scale={contact_knee_scale}")
     print(f"    contact_min_confidence={contact_min_confidence}")
+    print(f"  v0.6.3 Feature Cleaning:")
+    print(f"    mask_waist={amp_config.mask_waist}")
+    print(f"    velocity_filter_alpha={velocity_filter_alpha}")
+    print(f"    ankle_offset={ankle_offset}")
 
     # JIT-compile single-env functions (fast to compile)
     @jax.jit
@@ -423,7 +507,11 @@ def check_root_height(ref_features, policy_features):
     print("CHECK 5: Root Height (Critical - most common Golden Rule violation)")
     print("-" * 80)
 
-    ROOT_HEIGHT_IDX = 24
+    # v0.6.3: Root height index depends on feature dimension
+    # 27-dim (mask_waist=True): index 22
+    # 29-dim (mask_waist=False): index 24
+    feature_dim = ref_features.shape[1]
+    ROOT_HEIGHT_IDX = 22 if feature_dim == 27 else 24
 
     ref_height = ref_features[:, ROOT_HEIGHT_IDX]
     pol_height = policy_features[:, ROOT_HEIGHT_IDX]
@@ -490,9 +578,16 @@ def check_temporal_correlation(ref_features, policy_features):
     ref_deltas = np.diff(ref_features, axis=0)
     pol_deltas = np.diff(policy_features, axis=0)
 
-    # Focus on velocity features (9-17) where frame rate matters most
-    VELOCITY_START = 9
-    VELOCITY_END = 18
+    # v0.6.3: Velocity indices depend on feature dimension
+    # 27-dim (mask_waist=True): velocities at 8-15 (8 joints)
+    # 29-dim (mask_waist=False): velocities at 9-17 (9 joints)
+    feature_dim = ref_features.shape[1]
+    if feature_dim == 27:
+        VELOCITY_START = 8
+        VELOCITY_END = 16
+    else:
+        VELOCITY_START = 9
+        VELOCITY_END = 18
 
     ref_vel_deltas = ref_deltas[:, VELOCITY_START:VELOCITY_END]
     pol_vel_deltas = pol_deltas[:, VELOCITY_START:VELOCITY_END]

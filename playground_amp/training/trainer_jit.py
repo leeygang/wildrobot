@@ -123,6 +123,11 @@ class AMPPPOConfigJit:
     contact_knee_scale: float = 0.5  # Knee angle for confidence scaling (rad)
     contact_min_confidence: float = 0.3  # Minimum confidence when hip indicates contact
 
+    # v0.6.3: Feature Cleaning (removes discriminator cheats)
+    mask_waist: bool = True  # Exclude waist_yaw from features (AMASS has constant 0)
+    velocity_filter_alpha: float = 0.0  # EMA filter for velocity smoothing (0=off)
+    ankle_offset: float = 0.18  # Ankle pitch calibration offset (rad)
+
 
 # =============================================================================
 # Training State
@@ -398,12 +403,15 @@ def extract_amp_features_batched(
     contact_threshold_angle: float = 0.1,
     contact_knee_scale: float = 0.5,
     contact_min_confidence: float = 0.3,
+    velocity_filter_alpha: float = 0.0,
+    ankle_offset: float = 0.0,
 ) -> jnp.ndarray:
     """Extract AMP features from observations (batched).
 
     v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
     v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
     v0.6.2: GOLDEN RULES - all params from training config.
+    v0.6.3: Feature cleaning - waist masking, velocity filter, ankle calibration.
 
     Args:
         obs: Observations, shape (num_steps, num_envs, obs_dim)
@@ -417,6 +425,8 @@ def extract_amp_features_batched(
         contact_threshold_angle: Hip pitch threshold for contact detection (rad)
         contact_knee_scale: Knee angle for confidence scaling (rad)
         contact_min_confidence: Minimum confidence when hip indicates contact (0-1)
+        velocity_filter_alpha: EMA filter alpha for velocity smoothing (0=off)
+        ankle_offset: Ankle pitch calibration offset (rad)
 
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
@@ -436,6 +446,8 @@ def extract_amp_features_batched(
             contact_threshold_angle=contact_threshold_angle,
             contact_knee_scale=contact_knee_scale,
             contact_min_confidence=contact_min_confidence,
+            velocity_filter_alpha=velocity_filter_alpha,
+            ankle_offset=ankle_offset,
         )
 
     return jax.vmap(jax.vmap(extract_single))(
@@ -758,6 +770,8 @@ def make_train_iteration_fn(
             contact_threshold_angle=config.contact_threshold_angle,
             contact_knee_scale=config.contact_knee_scale,
             contact_min_confidence=config.contact_min_confidence,
+            velocity_filter_alpha=config.velocity_filter_alpha,  # v0.6.3 Feature Cleaning
+            ankle_offset=config.ankle_offset,  # v0.6.3 Ankle Calibration
         )
         # Shape: (num_steps, num_envs, feature_dim)
 
