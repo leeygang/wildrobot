@@ -20,37 +20,38 @@ sys.path.insert(0, str(project_root))
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ml_collections import config_dict
 import yaml
+from ml_collections import config_dict
 
 
 def setup_environment():
     """Initialize environment for testing."""
-    from playground_amp.configs.config import load_robot_config, clear_config_cache
+    from playground_amp.configs.config import clear_config_cache, load_robot_config
 
     clear_config_cache()
-    load_robot_config('assets/robot_config.yaml')
+    load_robot_config("assets/robot_config.yaml")
 
     # Load training config
-    with open('playground_amp/configs/ppo_amass_training.yaml', 'r') as f:
+    with open("playground_amp/configs/ppo_amass_training.yaml", "r") as f:
         yaml_config = yaml.safe_load(f)
 
     # Build complete env config
-    env_dict = yaml_config['env'].copy()
+    env_dict = yaml_config["env"].copy()
 
     # Map YAML reward weight keys to env code keys
     # YAML: tracking_lin_vel, base_height, action_rate
     # ENV:  forward_velocity, healthy, action_rate, joint_velocity
-    yaml_rewards = yaml_config['reward_weights']
-    env_dict['reward_weights'] = {
-        'forward_velocity': yaml_rewards.get('tracking_lin_vel', 5.0),
-        'healthy': yaml_rewards.get('base_height', 0.3),
-        'action_rate': yaml_rewards.get('action_rate', -0.01),
-        'joint_velocity': yaml_rewards.get('joint_velocity', 0.0),
+    yaml_rewards = yaml_config["reward_weights"]
+    env_dict["reward_weights"] = {
+        "forward_velocity": yaml_rewards.get("tracking_lin_vel", 5.0),
+        "healthy": yaml_rewards.get("base_height", 0.3),
+        "action_rate": yaml_rewards.get("action_rate", -0.01),
+        "joint_velocity": yaml_rewards.get("joint_velocity", 0.0),
     }
     env_config = config_dict.ConfigDict(env_dict)
 
     from playground_amp.envs.wildrobot_env import WildRobotEnv
+
     return WildRobotEnv(config=env_config)
 
 
@@ -63,11 +64,13 @@ def test_1_env_returns_foot_contacts():
     state = env.reset(rng)
 
     # Check foot_contacts exists in state.info
-    assert 'foot_contacts' in state.info, "foot_contacts missing from state.info"
-    foot_contacts = state.info['foot_contacts']
+    assert "foot_contacts" in state.info, "foot_contacts missing from state.info"
+    foot_contacts = state.info["foot_contacts"]
 
     # Check shape
-    assert foot_contacts.shape == (4,), f"Expected shape (4,), got {foot_contacts.shape}"
+    assert foot_contacts.shape == (
+        4,
+    ), f"Expected shape (4,), got {foot_contacts.shape}"
 
     # Check values are in valid range [0, 1]
     assert jnp.all(foot_contacts >= 0), "foot_contacts should be >= 0"
@@ -87,7 +90,7 @@ def test_2_foot_contacts_update_after_step():
     rng = jax.random.PRNGKey(42)
     state = env.reset(rng)
 
-    initial_contacts = state.info['foot_contacts']
+    initial_contacts = state.info["foot_contacts"]
 
     # Step environment multiple times
     action = jnp.zeros(env.action_size)
@@ -95,7 +98,7 @@ def test_2_foot_contacts_update_after_step():
 
     for i in range(10):
         state = env.step(state, action)
-        contacts_history.append(state.info['foot_contacts'])
+        contacts_history.append(state.info["foot_contacts"])
 
     # Check that contacts changed at some point
     contacts_array = jnp.stack(contacts_history)
@@ -114,13 +117,13 @@ def test_3_amp_features_require_foot_contacts():
     """Test 3: extract_amp_features raises ValueError when foot_contacts=None."""
     print("\n=== Test 3: amp_features require foot_contacts ===")
 
-    from playground_amp.configs.config import load_robot_config, clear_config_cache
-    from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
+    from playground_amp.configs.config import clear_config_cache, load_robot_config
 
     clear_config_cache()
-    load_robot_config('assets/robot_config.yaml')
+    load_robot_config("assets/robot_config.yaml")
 
-    config = get_default_amp_config()
+    config = get_amp_config()
     fake_obs = jnp.zeros(38)
 
     try:
@@ -129,7 +132,7 @@ def test_3_amp_features_require_foot_contacts():
         return False
     except ValueError as e:
         print(f"  ✓ Correctly raised ValueError")
-        print(f"    Message: \"{str(e)[:70]}...\"")
+        print(f'    Message: "{str(e)[:70]}..."')
         return True
 
 
@@ -137,13 +140,13 @@ def test_4_amp_features_use_foot_contacts():
     """Test 4: extract_amp_features correctly uses foot_contacts."""
     print("\n=== Test 4: amp_features use foot_contacts ===")
 
-    from playground_amp.configs.config import load_robot_config, clear_config_cache
-    from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
+    from playground_amp.configs.config import clear_config_cache, load_robot_config
 
     clear_config_cache()
-    load_robot_config('assets/robot_config.yaml')
+    load_robot_config("assets/robot_config.yaml")
 
-    config = get_default_amp_config()
+    config = get_amp_config()
     fake_obs = jnp.zeros(38)
 
     # Test with specific foot contact values
@@ -155,8 +158,9 @@ def test_4_amp_features_use_foot_contacts():
 
     # Last 4 dims should be foot_contacts
     extracted_contacts = features[25:29]
-    assert jnp.allclose(extracted_contacts, foot_contacts), \
-        f"foot_contacts not at expected position: {extracted_contacts} vs {foot_contacts}"
+    assert jnp.allclose(
+        extracted_contacts, foot_contacts
+    ), f"foot_contacts not at expected position: {extracted_contacts} vs {foot_contacts}"
 
     print(f"  ✓ Features shape: {features.shape}")
     print(f"  ✓ Features[25:29] = {features[25:29]} (matches input foot_contacts)")
@@ -167,14 +171,14 @@ def test_5_batched_features_require_foot_contacts():
     """Test 5: extract_amp_features_batched requires foot_contacts."""
     print("\n=== Test 5: Batched features require foot_contacts ===")
 
-    from playground_amp.configs.config import load_robot_config, clear_config_cache
-    from playground_amp.amp.amp_features import get_default_amp_config
+    from playground_amp.amp.amp_features import get_amp_config
+    from playground_amp.configs.config import clear_config_cache, load_robot_config
     from playground_amp.training.trainer_jit import extract_amp_features_batched
 
     clear_config_cache()
-    load_robot_config('assets/robot_config.yaml')
+    load_robot_config("assets/robot_config.yaml")
 
-    config = get_default_amp_config()
+    config = get_amp_config()
 
     # Create batch of observations (num_steps, num_envs, obs_dim)
     num_steps, num_envs = 5, 4
@@ -184,13 +188,17 @@ def test_5_batched_features_require_foot_contacts():
     # This should work with foot_contacts
     features = extract_amp_features_batched(fake_obs, config, fake_contacts)
 
-    assert features.shape == (num_steps, num_envs, 29), \
-        f"Expected shape ({num_steps}, {num_envs}, 29), got {features.shape}"
+    assert features.shape == (
+        num_steps,
+        num_envs,
+        29,
+    ), f"Expected shape ({num_steps}, {num_envs}, 29), got {features.shape}"
 
     # Check that foot_contacts are in features
     extracted_contacts = features[:, :, 25:29]
-    assert jnp.allclose(extracted_contacts, fake_contacts), \
-        "foot_contacts not correctly extracted in batched version"
+    assert jnp.allclose(
+        extracted_contacts, fake_contacts
+    ), "foot_contacts not correctly extracted in batched version"
 
     print(f"  ✓ Batched features shape: {features.shape}")
     print(f"  ✓ foot_contacts correctly propagated through batched extraction")
@@ -204,8 +212,9 @@ def test_6_transition_has_foot_contacts():
     from playground_amp.training.trainer_jit import Transition
 
     # Check field exists
-    assert 'foot_contacts' in Transition._fields, \
-        "foot_contacts missing from Transition namedtuple"
+    assert (
+        "foot_contacts" in Transition._fields
+    ), "foot_contacts missing from Transition namedtuple"
 
     # Create a dummy transition
     dummy_transition = Transition(
@@ -231,14 +240,14 @@ def test_7_features_are_not_all_zeros():
     """Test 7: End-to-end test - features from env have non-zero contacts."""
     print("\n=== Test 7: End-to-end feature extraction (non-zero contacts) ===")
 
-    from playground_amp.configs.config import load_robot_config, clear_config_cache
-    from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
+    from playground_amp.configs.config import clear_config_cache, load_robot_config
 
     clear_config_cache()
-    load_robot_config('assets/robot_config.yaml')
+    load_robot_config("assets/robot_config.yaml")
 
     env = setup_environment()
-    config = get_default_amp_config()
+    config = get_amp_config()
 
     rng = jax.random.PRNGKey(42)
     state = env.reset(rng)
@@ -250,7 +259,7 @@ def test_7_features_are_not_all_zeros():
 
     # Extract features
     obs = state.obs
-    foot_contacts = state.info['foot_contacts']
+    foot_contacts = state.info["foot_contacts"]
     features = extract_amp_features(obs, config, foot_contacts=foot_contacts)
 
     # Check features shape
@@ -262,11 +271,14 @@ def test_7_features_are_not_all_zeros():
     print(f"  Observation shape: {obs.shape}")
     print(f"  Foot contacts from env: {foot_contacts}")
     print(f"  Features[25:29]: {feature_contacts}")
-    print(f"  Features match env contacts: {jnp.allclose(feature_contacts, foot_contacts)}")
+    print(
+        f"  Features match env contacts: {jnp.allclose(feature_contacts, foot_contacts)}"
+    )
 
     # Verify features match env foot_contacts
-    assert jnp.allclose(feature_contacts, foot_contacts), \
-        "Features don't match env foot_contacts!"
+    assert jnp.allclose(
+        feature_contacts, foot_contacts
+    ), "Features don't match env foot_contacts!"
 
     print(f"  ✓ Features correctly include foot_contacts from environment")
     return True
@@ -286,7 +298,7 @@ def test_8_contact_distribution_not_zeros():
 
     for i in range(200):
         state = env.step(state, action)
-        all_contacts.append(state.info['foot_contacts'])
+        all_contacts.append(state.info["foot_contacts"])
 
     contacts_array = jnp.stack(all_contacts)  # (200, 4)
 
@@ -302,8 +314,7 @@ def test_8_contact_distribution_not_zeros():
 
     # The robot should have SOME contacts during normal operation
     # This test catches the original bug where policy always returned zeros
-    assert jnp.max(max_contacts) > 0.1, \
-        "Contacts are all near-zero - likely a bug!"
+    assert jnp.max(max_contacts) > 0.1, "Contacts are all near-zero - likely a bug!"
 
     print(f"  ✓ Contacts are NOT all zeros (bug from v0.4.x is fixed)")
     return True
@@ -317,13 +328,28 @@ def run_all_tests():
 
     tests = [
         ("Test 1: env returns foot_contacts", test_1_env_returns_foot_contacts),
-        ("Test 2: foot_contacts update after step", test_2_foot_contacts_update_after_step),
-        ("Test 3: amp_features require foot_contacts", test_3_amp_features_require_foot_contacts),
-        ("Test 4: amp_features use foot_contacts", test_4_amp_features_use_foot_contacts),
-        ("Test 5: batched features require foot_contacts", test_5_batched_features_require_foot_contacts),
+        (
+            "Test 2: foot_contacts update after step",
+            test_2_foot_contacts_update_after_step,
+        ),
+        (
+            "Test 3: amp_features require foot_contacts",
+            test_3_amp_features_require_foot_contacts,
+        ),
+        (
+            "Test 4: amp_features use foot_contacts",
+            test_4_amp_features_use_foot_contacts,
+        ),
+        (
+            "Test 5: batched features require foot_contacts",
+            test_5_batched_features_require_foot_contacts,
+        ),
         ("Test 6: Transition has foot_contacts", test_6_transition_has_foot_contacts),
         ("Test 7: end-to-end feature extraction", test_7_features_are_not_all_zeros),
-        ("Test 8: contact distribution not zeros", test_8_contact_distribution_not_zeros),
+        (
+            "Test 8: contact distribution not zeros",
+            test_8_contact_distribution_not_zeros,
+        ),
     ]
 
     results = []

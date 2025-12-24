@@ -43,7 +43,7 @@ import optax
 from playground_amp.amp.amp_features import (
     AMPFeatureConfig,
     extract_amp_features,
-    get_default_amp_config,
+    get_amp_config,
 )
 from playground_amp.amp.discriminator import (
     AMPDiscriminator,
@@ -664,7 +664,7 @@ def make_train_iteration_fn(
     static arguments baked in for maximum JIT efficiency.
     """
     # Get AMP feature config once (before JIT) and capture in closure
-    amp_feature_config = get_default_amp_config()
+    amp_feature_config = get_amp_config()
 
     @jax.jit
     def train_iteration(
@@ -1004,7 +1004,7 @@ def train_amp_ppo_jit(
     )
 
     # Create discriminator
-    amp_feature_dim = get_default_amp_config().feature_dim
+    amp_feature_dim = get_amp_config().feature_dim
     disc_model, disc_params = create_discriminator(
         obs_dim=amp_feature_dim,
         hidden_dims=config.disc_hidden_dims,

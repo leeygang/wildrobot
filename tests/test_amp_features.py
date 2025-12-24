@@ -14,7 +14,7 @@ from playground_amp.amp.amp_features import (
     AMPFeatureConfig,
     create_running_stats,
     extract_amp_features,
-    get_default_amp_config,
+    get_amp_config,
     normalize_features,
     update_running_stats,
 )
@@ -23,7 +23,7 @@ from playground_amp.configs.config import load_robot_config
 
 def test_feature_extraction():
     """Test basic feature extraction from observations."""
-    # Load robot config first (required before get_default_amp_config)
+    # Load robot config first (required before get_amp_config)
     robot_config_path = project_root / "assets" / "robot_config.yaml"
     if not robot_config_path.exists():
         print(f"⚠️  Skipping test: robot_config.yaml not found at {robot_config_path}")
@@ -31,7 +31,7 @@ def test_feature_extraction():
         return
 
     load_robot_config(robot_config_path)
-    config = get_default_amp_config()
+    config = get_amp_config()
 
     # Create dummy observation (38-dim as per robot_config)
     key = jax.random.PRNGKey(0)
@@ -107,13 +107,13 @@ def test_velocity_normalization():
         return
 
     load_robot_config(robot_config_path)
-    config = get_default_amp_config()
+    config = get_amp_config()
 
     # Create observation with known velocity
     obs = jnp.zeros((1, 38))
 
     # Set root linear velocity to (3, 4, 0) - magnitude = 5
-    obs = obs.at[0, config.root_linvel_start:config.root_linvel_end].set(
+    obs = obs.at[0, config.root_linvel_start : config.root_linvel_end].set(
         jnp.array([3.0, 4.0, 0.0])
     )
 
@@ -142,11 +142,11 @@ def test_stationary_velocity():
         return
 
     load_robot_config(robot_config_path)
-    config = get_default_amp_config()
+    config = get_amp_config()
 
     # Create observation with very small velocity (below threshold)
     obs = jnp.zeros((1, 38))
-    obs = obs.at[0, config.root_linvel_start:config.root_linvel_end].set(
+    obs = obs.at[0, config.root_linvel_start : config.root_linvel_end].set(
         jnp.array([0.01, 0.02, 0.0])  # magnitude ~0.02, below 0.1 threshold
     )
 

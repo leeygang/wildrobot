@@ -99,7 +99,7 @@ def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
     )
 
 
-def get_default_amp_config() -> AMPFeatureConfig:
+def get_amp_config() -> AMPFeatureConfig:
     """Get AMP feature configuration from cached robot config.
 
     Raises:
@@ -181,19 +181,19 @@ def extract_amp_features(
     root_linvel_dir = jnp.where(
         is_moving,
         root_linvel / (linvel_norm + 1e-8),  # Normalized direction
-        jnp.zeros_like(root_linvel)           # Zero for stationary
+        jnp.zeros_like(root_linvel),  # Zero for stationary
     )
 
     # Concatenate in order (29-dim with normalized velocity direction):
     # [joint_pos(9), joint_vel(9), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
     features = jnp.concatenate(
         [
-            joint_pos,        # 0-8: 9 dims
-            joint_vel,        # 9-17: 9 dims
+            joint_pos,  # 0-8: 9 dims
+            joint_vel,  # 9-17: 9 dims
             root_linvel_dir,  # 18-20: 3 dims (normalized direction)
-            root_angvel,      # 21-23: 3 dims
-            root_height_feat, # 24: 1 dim (actual height in meters)
-            foot_contacts,    # 25-28: 4 dims
+            root_angvel,  # 21-23: 3 dims
+            root_height_feat,  # 24: 1 dim (actual height in meters)
+            foot_contacts,  # 25-28: 4 dims
         ],
         axis=-1,
     )
@@ -325,7 +325,9 @@ def add_temporal_context_to_reference(
 
     # Gather frames and flatten each window
     windows = features[indices]  # (num_windows, num_frames, feature_dim)
-    temporal_features = windows.reshape(num_windows, -1)  # (num_windows, num_frames * feature_dim)
+    temporal_features = windows.reshape(
+        num_windows, -1
+    )  # (num_windows, num_frames * feature_dim)
 
     return temporal_features
 

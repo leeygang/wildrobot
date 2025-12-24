@@ -92,10 +92,10 @@ class TestAMPFeatureExtraction:
         """Test: obs (37-dim) + foot_contacts (4-dim) → features (29-dim)."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
 
         # Create mock observation (37-dim)
         obs = jax.random.normal(rng, (37,))
@@ -109,10 +109,10 @@ class TestAMPFeatureExtraction:
         """Test: batched extraction maintains correct shapes."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
         num_steps, num_envs = 128, 64
 
         # Create batched observations
@@ -130,9 +130,9 @@ class TestAMPFeatureExtraction:
 
     def test_feature_config_values(self):
         """Test: default config has expected values."""
-        from playground_amp.amp.amp_features import get_default_amp_config
+        from playground_amp.amp.amp_features import get_amp_config
 
-        config = get_default_amp_config()
+        config = get_amp_config()
 
         assert config.feature_dim == 29
         assert config.num_actuated_joints == 9
@@ -142,10 +142,10 @@ class TestAMPFeatureExtraction:
         """Test: root velocity is normalized to unit direction."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
 
         # Create obs with known velocity
         obs = jnp.zeros(37)
@@ -167,10 +167,10 @@ class TestAMPFeatureExtraction:
         """Test: foot contacts are preserved in features."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
 
         obs = jax.random.normal(rng, (37,))
         foot_contacts = jnp.array([0.1, 0.2, 0.3, 0.4])
@@ -190,10 +190,10 @@ class TestAMPFeatureExtraction:
         """Test: same input produces same output."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
         obs = jax.random.normal(rng, (37,))
         foot_contacts = jnp.array([0.5, 0.3, 0.7, 0.2])
 
@@ -752,7 +752,7 @@ class TestIntegration:
         """Test: features flow correctly through discriminator."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
         from playground_amp.amp.discriminator import (
             compute_amp_reward,
@@ -767,7 +767,7 @@ class TestIntegration:
         )
 
         # Extract features
-        config = get_default_amp_config()
+        config = get_amp_config()
         batch_size = 32
         obs = jax.random.normal(rng, (batch_size, 37))
         foot_contacts = jax.random.uniform(rng, (batch_size, 4))
@@ -843,10 +843,10 @@ class TestAMPFeaturesBranchCoverage:
         """Test: ValueError raised when foot_contacts is None."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
         obs = jax.random.normal(rng, (37,))
 
         with pytest.raises(ValueError, match="foot_contacts is required"):
@@ -1291,10 +1291,10 @@ class TestEdgeCases:
         """Test: Feature extraction handles zero observations."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
         obs = jnp.zeros(37)
         foot_contacts = jnp.zeros(4)
 
@@ -1307,10 +1307,10 @@ class TestEdgeCases:
         """Test: Feature extraction handles large values."""
         from playground_amp.amp.amp_features import (
             extract_amp_features,
-            get_default_amp_config,
+            get_amp_config,
         )
 
-        config = get_default_amp_config()
+        config = get_amp_config()
         obs = jax.random.normal(rng, (37,)) * 100  # Large values
         foot_contacts = jnp.array([0.9, 0.8, 0.7, 0.6])
 

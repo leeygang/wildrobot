@@ -506,10 +506,10 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
             # Need to convert observations to AMP features
             from playground_amp.amp.amp_features import (
                 extract_amp_features,
-                get_default_amp_config,
+                get_amp_config,
             )
 
-            amp_config = get_default_amp_config()
+            amp_config = get_amp_config()
             obs = np.array(ref_data["observations"])
             # Extract features from observations
             features_list = []
@@ -522,12 +522,9 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
             raise ValueError(f"Unknown reference data format: {ref_data.keys()}")
     elif isinstance(ref_data, list):
         # List of sequences - flatten and extract features
-        from playground_amp.amp.amp_features import (
-            extract_amp_features,
-            get_default_amp_config,
-        )
+        from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
 
-        amp_config = get_default_amp_config()
+        amp_config = get_amp_config()
         features_list = []
         for seq in ref_data:
             seq = np.array(seq)
