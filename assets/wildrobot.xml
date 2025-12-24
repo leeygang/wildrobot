@@ -70,7 +70,7 @@
   <worldbody>
     <body name="waist" pos="0 0 0.5" quat="1 0 0 0" childclass="WildRobotDev">
       <freejoint name="waist_freejoint" />
-      <inertial pos="-0.00181517 -3.08835e-05 0.00596571" mass="0.439621" fullinertia="0.000998265 0.000698685 0.00070313 -7.22885e-08 1.38528e-05 5.24148e-07" />
+      <inertial pos="0.00207427 0.00159876 0.0785345" mass="1.28083" fullinertia="0.00602084 0.00549671 0.00162867 -0.000111987 -0.00020739 -0.000103631" />
       <geom type="mesh" class="visual" pos="-0.0596393 -0.00143119 -0.0273687" quat="0.706991 0.707223 -0 2.16453e-17" mesh="htd_45h_1circle" material="htd_45h_1circle_material" />
       <geom type="mesh" class="visual" pos="0.000128558 -0.000153209 0.12518" quat="0.34202 -1.65887e-17 2.22045e-16 -0.939693" mesh="waist_trunk_support" material="waist_trunk_support_material" />
       <geom type="mesh" class="visual" pos="-1.8982e-19 0 0" quat="0.707107 0 0 -0.707107" mesh="trunk_bottom" material="trunk_bottom_material" />
@@ -85,26 +85,22 @@
       <geom type="mesh" class="visual" pos="-1.38778e-17 0.00025 1.46954e-17" quat="0.707107 0 1.11022e-16 -0.707107" mesh="hip_cover" material="hip_cover_material" />
       <geom type="mesh" class="visual" pos="0.0596393 0.00143119 -0.0273687" quat="2.16453e-17 0 -0.707223 -0.706991" mesh="htd_45h_1circle" material="htd_45h_1circle_material" />
       <geom type="mesh" class="visual" pos="-1.38778e-17 0.0001 1.3452e-17" quat="0.707107 0 1.11022e-16 -0.707107" mesh="hip_trunk_connect" material="hip_trunk_connect_material" />
+      <geom type="mesh" class="visual" pos="-0.21121 0.0233777 0.0810344" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
+      <geom type="mesh" class="visual" pos="0.031089 0.00995652 0.116228" quat="0.000704463 0.707107 0.707106 0.000120096" mesh="rp_assemble" material="rp_assemble_material" />
+      <geom type="mesh" class="visual" pos="0.023299 -4.3479e-05 0.116227" quat="0.707106 0.000120096 -0.000704463 -0.707107" mesh="batterybox" material="batterybox_material" />
+      <geom type="mesh" class="visual" pos="-0.000260321 0.0952486 0.167121" quat="0.000120096 -0.707106 0.707107 -0.000704463" mesh="bno085" material="bno085_material" />
+      <geom type="mesh" class="visual" pos="-0.23501 -7.2321e-05 0.0810261" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
+      <geom type="mesh" class="visual" pos="-0.23501 -0.0235223 0.0810454" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
+      <geom type="mesh" class="visual" pos="-0.000210713 -3.65539e-05 0.124579" quat="0.707107 -0.000704463 -0.000120096 0.707106" mesh="waist_platform" material="waist_platform_material" />
+      <geom type="mesh" class="visual" pos="-0.000210713 -3.65539e-05 0.124579" quat="0.707107 -0.000704463 -0.000120096 0.707106" mesh="waist_platform_2" material="waist_platform_2_material" />
+      <geom type="mesh" class="visual" pos="-0.23501 0.0233777 0.0810067" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
+      <geom type="mesh" class="visual" pos="-0.21121 -0.0235223 0.0810732" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
+      <geom type="mesh" class="visual" pos="-0.21121 -7.2321e-05 0.0810538" quat="0.499502 -0.500498 -0.500085 0.499915" mesh="cell" material="cell_material" />
       <site group="3" name="pelvis_mimic" pos="0 0 0" quat="1 0 0 0" />
       <body name="pelvis_mimic" pos="0 0 0" quat="1 0 0 0">
         <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
       </body>
-      <body name="chassis" pos="1.97751e-05 4.17458e-05 0.0482" quat="0.000704463 0.707107 0.707106 0.000120096">
-        <joint axis="0 0 1" name="waist_yaw" type="hinge" range="-0.5235987755982606 0.523598775598337" class="htd45hServo" />
-        <inertial pos="0.00235226 0.00416672 -0.0682563" mass="0.841214" fullinertia="0.00126289 0.00149567 0.000913668 -0.000107674 2.45804e-05 3.30802e-05" />
-        <geom type="mesh" class="visual" pos="0.0233086 -0.211191 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <geom type="mesh" class="visual" pos="0.00985858 0.0311486 -0.068" quat="1 1.2301e-17 1.00683e-16 -2.53276e-14" mesh="rp_assemble" material="rp_assemble_material" />
-        <geom type="mesh" class="visual" pos="-0.000141421 0.0233586 -0.068" quat="9.55991e-17 -2.56969e-14 -1 -1.31901e-17" mesh="batterybox" material="batterybox_material" />
-        <geom type="mesh" class="visual" pos="0.0951086 -0.000141421 -0.119" quat="2.46341e-14 -7.28855e-17 9.91939e-18 1" mesh="bno085" material="bno085_material" />
-        <geom type="mesh" class="visual" pos="-0.000141421 -0.234991 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <geom type="mesh" class="visual" pos="-0.0235914 -0.234991 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <geom type="mesh" class="visual" pos="-0.000141421 -0.000141421 -0.0763796" quat="3.29563e-18 1 -2.28694e-14 -1.00289e-17" mesh="waist_platform" material="waist_platform_material" />
-        <geom type="mesh" class="visual" pos="-0.000141421 -0.000141421 -0.0763796" quat="1.18862e-16 1 -2.5683e-14 -6.20706e-17" mesh="waist_platform_2" material="waist_platform_2_material" />
-        <geom type="mesh" class="visual" pos="0.0233086 -0.234991 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <geom type="mesh" class="visual" pos="-0.0235914 -0.211191 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <geom type="mesh" class="visual" pos="-0.000141421 -0.211191 -0.0331" quat="0.707107 0.707107 -2.01892e-14 -2.04114e-14" mesh="cell" material="cell_material" />
-        <site group="3" name="chest_imu" pos="0.000119839 -0.000141421 -0.119" quat="3.13528e-17 0.707107 0.707107 7.72933e-17" />
-      </body>
+      <site group="3" name="chest_imu" pos="-0.000260412 0.000259929 0.1672" quat="1 -0.00041321 -0.000583051 -2.40923e-07" />
       <body name="left_hip" pos="-4.74705e-05 0.0536 -0.0335836" quat="0.000292354 -0.000292013 0.707519 -0.706694">
         <joint axis="0 0 1" name="left_hip_pitch" type="hinge" range="-0.08726646259971647 1.5707963267948966" class="htd45hServo" />
         <inertial pos="-0.00291444 -0.00897832 -0.0331054" mass="0.0849728" fullinertia="2.00234e-05 1.92641e-05 2.44282e-05 3.89652e-07 -8.26001e-07 -1.4809e-06" />
@@ -145,8 +141,8 @@
               <geom type="mesh" class="visual" pos="3.04688e-16 0.0435 0.0268" quat="0.5 0.5 -0.5 0.5" mesh="foot_main" material="foot_main_material" />
               <geom type="mesh" class="visual" pos="8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" />
               <geom type="mesh" class="collision" pos="8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" name="left_toe" />
-              <site group="3" name="left_foot_mimic" pos="0.0165234 0.0601 0.0173323" quat="0.707107 0.707107 -1.88411e-15 -2.76413e-15" />
-              <body name="left_foot_mimic" pos="0.0165234 0.0601 0.0173323" quat="0.707107 0.707107 -1.88411e-15 -2.76413e-15">
+              <site group="3" name="left_foot_mimic" pos="3.14568e-16 0.04 0.0268" quat="0.707107 0.707107 -1.9301e-15 -2.82214e-15" />
+              <body name="left_foot_mimic" pos="3.14568e-16 0.04 0.0268" quat="0.707107 0.707107 -1.9301e-15 -2.82214e-15">
                 <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
               </body>
             </body>
@@ -193,8 +189,8 @@
               <geom type="mesh" class="visual" pos="-6.75458e-17 0.0435 0.1868" quat="0.5 0.5 -0.5 0.5" mesh="foot_side_right" material="foot_side_right_material" />
               <geom type="mesh" class="visual" pos="-8.28427e-05 0.0412 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" />
               <geom type="mesh" class="collision" pos="-8.28427e-05 0.0412 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" name="right_heel" />
-              <site group="3" name="right_foot_mimic" pos="0.0165234 0.0601 0.0362677" quat="0.707107 0.707107 1.81119e-15 6.76592e-16" />
-              <body name="right_foot_mimic" pos="0.0165234 0.0601 0.0362677" quat="0.707107 0.707107 1.81119e-15 6.76592e-16">
+              <site group="3" name="right_foot_mimic" pos="-1.58388e-16 0.04 0.0268" quat="0.707107 0.707107 2.71841e-15 -4.03138e-16" />
+              <body name="right_foot_mimic" pos="-1.58388e-16 0.04 0.0268" quat="0.707107 0.707107 2.71841e-15 -4.03138e-16">
                 <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
               </body>
             </body>
@@ -204,36 +200,36 @@
     </body>
   </worldbody>
   <asset>
-    <mesh file="rp_assemble.stl" />
-    <mesh file="servo_bracket_top.stl" />
     <mesh file="knee_ball_left.stl" />
-    <mesh file="foot_side.stl" />
-    <mesh file="hip_servo_hook_left.stl" />
-    <mesh file="batterybox.stl" />
-    <mesh file="trunk_servo_connect.stl" />
-    <mesh file="up_leg_servo_connect.stl" />
-    <mesh file="scroll_out.stl" />
-    <mesh file="hip_cover.stl" />
     <mesh file="trunk_bottom.stl" />
-    <mesh file="cell.stl" />
-    <mesh file="foot_side_right.stl" />
-    <mesh file="knee_ball_mid.stl" />
-    <mesh file="waist_platform.stl" />
+    <mesh file="low_leg_right.stl" />
     <mesh file="icm45686.stl" />
-    <mesh file="htd_45h_1circle.stl" />
-    <mesh file="hip_servo_hook_right.stl" />
-    <mesh file="hip_trunk_connect.stl" />
-    <mesh file="foot_main.stl" />
+    <mesh file="up_leg_servo_connect.stl" />
+    <mesh file="foot_btm_back.stl" />
     <mesh file="knee_ball_right.stl" />
     <mesh file="waist_trunk_support.stl" />
-    <mesh file="up_leg.stl" />
-    <mesh file="bno085.stl" />
-    <mesh file="low_leg_left.stl" />
+    <mesh file="trunk_servo_connect.stl" />
+    <mesh file="waist_platform.stl" />
+    <mesh file="rp_assemble.stl" />
     <mesh file="foot_btm_front.stl" />
-    <mesh file="low_leg_right.stl" />
-    <mesh file="foot_btm_back.stl" />
+    <mesh file="htd_45h_1circle.stl" />
+    <mesh file="hip_trunk_connect.stl" />
     <mesh file="foot_main_right.stl" />
+    <mesh file="foot_side_right.stl" />
     <mesh file="waist_platform_2.stl" />
+    <mesh file="hip_servo_hook_left.stl" />
+    <mesh file="up_leg.stl" />
+    <mesh file="knee_ball_mid.stl" />
+    <mesh file="foot_main.stl" />
+    <mesh file="cell.stl" />
+    <mesh file="servo_bracket_top.stl" />
+    <mesh file="scroll_out.stl" />
+    <mesh file="hip_servo_hook_right.stl" />
+    <mesh file="bno085.stl" />
+    <mesh file="batterybox.stl" />
+    <mesh file="foot_side.stl" />
+    <mesh file="hip_cover.stl" />
+    <mesh file="low_leg_left.stl" />
     <material name="htd_45h_1circle_material" rgba="0.615686 0.811765 0.929412 1" />
     <material name="waist_trunk_support_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="trunk_bottom_material" rgba="0.301961 0.301961 0.301961 1" />
@@ -266,7 +262,6 @@
     <material name="foot_side_right_material" rgba="0.980392 0.713725 0.00392157 1" />
   </asset>
   <actuator>
-    <position class="htd45hServo" name="waist_yaw" joint="waist_yaw" inheritrange="1" />
     <position class="htd45hServo" name="left_hip_pitch" joint="left_hip_pitch" inheritrange="1" />
     <position class="htd45hServo" name="left_hip_roll" joint="left_hip_roll" inheritrange="1" />
     <position class="htd45hServo" name="left_knee_pitch" joint="left_knee_pitch" inheritrange="1" />

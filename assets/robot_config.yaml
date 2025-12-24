@@ -2,7 +2,6 @@ robot_name: WildRobotDev
 generated_from: wildrobot.xml
 actuators:
   names:
-  - waist_yaw
   - left_hip_pitch
   - left_hip_roll
   - left_knee_pitch
@@ -12,7 +11,6 @@ actuators:
   - right_knee_pitch
   - right_ankle_pitch
   joints:
-  - waist_yaw
   - left_hip_pitch
   - left_hip_roll
   - left_knee_pitch
@@ -21,12 +19,8 @@ actuators:
   - right_hip_roll
   - right_knee_pitch
   - right_ankle_pitch
-  count: 9
+  count: 8
   details:
-  - name: waist_yaw
-    joint: waist_yaw
-    type: position
-    class: htd45hServo
   - name: left_hip_pitch
     joint: left_hip_pitch
     type: position
@@ -64,7 +58,6 @@ joints:
   - null
   - null
   - null
-  - waist_yaw
   - left_hip_pitch
   - left_hip_roll
   - left_knee_pitch
@@ -73,7 +66,7 @@ joints:
   - right_hip_roll
   - right_knee_pitch
   - right_ankle_pitch
-  count: 12
+  count: 11
   details:
   - name: null
     type: hinge
@@ -90,13 +83,6 @@ joints:
     range:
     - -0.008726646259971648
     - 0.008726646259971648
-  - name: waist_yaw
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -0.5235987755982606
-    - 0.523598775598337
   - name: left_hip_pitch
     type: hinge
     axis: 0 0 1
@@ -338,23 +324,23 @@ sensors:
     objname: left_hip_mimic
     objtype: site
 dimensions:
-  action_dim: 9
-  observation_dim: 38
-  amp_feature_dim: 29
-  num_actuated_joints: 9
-  num_total_joints: 12
+  action_dim: 8
+  observation_dim: 35
+  amp_feature_dim: 27
+  num_actuated_joints: 8
+  num_total_joints: 11
   observation_breakdown:
     gravity_vector: 3
     base_angular_velocity: 3
     base_linear_velocity: 3
-    joint_positions: 9
-    joint_velocities: 9
-    previous_action: 9
+    joint_positions: 8
+    joint_velocities: 8
+    previous_action: 8
     velocity_command: 1
     padding: 1
   amp_feature_breakdown:
-    joint_positions: 9
-    joint_velocities: 9
+    joint_positions: 8
+    joint_velocities: 8
     root_linear_velocity: 3
     root_angular_velocity: 3
     root_height: 1
@@ -371,19 +357,19 @@ observation_indices:
     end: 9
   joint_positions:
     start: 9
-    end: 18
+    end: 17
   joint_velocities:
-    start: 18
-    end: 27
+    start: 17
+    end: 25
   previous_action:
-    start: 27
-    end: 36
+    start: 25
+    end: 33
   velocity_command:
-    start: 36
-    end: 37
+    start: 33
+    end: 34
   padding:
-    start: 37
-    end: 38
+    start: 34
+    end: 35
 feet:
   sites:
   - left_foot_mimic
