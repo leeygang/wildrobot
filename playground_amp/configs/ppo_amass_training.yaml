@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.6.3"
-version_name: "Clean Feature Extractor"
+version: "0.6.5"
+version_name: "Discriminator Middle-Ground + Diagnostic"
 
 # =============================================================================
 # Environment
@@ -92,20 +92,22 @@ reward_weights:
 # AMP (Adversarial Motion Prior)
 # =============================================================================
 amp:
-  weight: 0.3                    # Reduced - lower style pressure until robot is smoother
+  weight: 0.5                    # Increased from 0.3 - boost AMP signal
   dataset_path: playground_amp/data/walking_motions_normalized_vel.pkl
 
-  # Discriminator (v0.6.0: Spectral Normalization + R1 regularizer)
-  discriminator_hidden: [512, 256]  # Increased capacity (was [256, 128])
-  disc_lr: 1e-4                  # Increased from 5e-5 - disc was collapsing
+  # Discriminator (v0.6.5: Middle-ground + diagnostic)
+  # v0.6.3: disc_acc=1.00 (too strong) | v0.6.4: disc_acc=0.50 (collapsed)
+  # TARGET: disc_acc=0.55-0.75 (healthy adversarial game)
+  discriminator_hidden: [512, 256]
+  disc_lr: 8e-5                  # Middle: was 1e-4 (too high) → 5e-5 (too low) → 8e-5
   batch_size: 256
-  update_steps: 3                # Increased from 2 - give disc more updates
-  r1_gamma: 5.0                  # R1 regularizer weight
-  disc_input_noise_std: 0.02     # Reduced from 0.05 - too much blur
+  update_steps: 2                # Middle: was 3 (too many) → 1 (too few) → 2
+  r1_gamma: 10.0                 # Middle: was 5.0 (too weak) → 20.0 (too strong) → 10.0
+  disc_input_noise_std: 0.0      # Disabled to test if noise erases distribution
 
   # v0.6.0: Policy Replay Buffer (prevents catastrophic forgetting)
   replay_buffer_size: 100000     # 0 = disabled, >0 = capacity (industry: 100K-200K)
-  replay_buffer_ratio: 0.5       # Ratio of historical samples (0.5 = 50% current, 50% historical)
+  replay_buffer_ratio: 0.2       # FIXED: Reduced from 0.5 (less old samples when D is strong)
 
   # v0.6.2: Golden Rule Configuration (Mathematical Parity)
   # These ensure policy and reference features are computed identically
@@ -119,7 +121,7 @@ amp:
 
   # v0.6.3: Feature Cleaning (removes discriminator cheats)
   mask_waist: true               # Exclude waist_yaw from features (AMASS has constant 0)
-  velocity_filter_alpha: 0.5     # EMA filter for velocity smoothing (0=off, 0.5=moderate)
+  velocity_filter_alpha: 0.0     # Disabled to test if filter erases distribution
   ankle_offset: 0.18             # Ankle pitch calibration offset (rad) - fixes neutral pose mismatch
 
   # v0.6.4: Gait Mirroring (Gold Rule for symmetric gaits)

@@ -4,6 +4,102 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.6.5] - 2024-12-24: Discriminator Middle-Ground + Diagnostic
+
+### Problem: disc_acc stuck at extremes
+
+| Version | `disc_acc` | Problem |
+|---------|-----------|---------|
+| v0.6.3 | 1.00 | D too strong (overpowered) |
+| v0.6.4 | 0.50 | D collapsed (not learning) |
+
+### Changes
+
+**Middle-ground discriminator settings:**
+| Parameter | v0.6.3 | v0.6.4 | v0.6.5 |
+|-----------|--------|--------|--------|
+| `disc_lr` | 1e-4 | 5e-5 | **8e-5** |
+| `update_steps` | 3 | 1 | **2** |
+| `r1_gamma` | 5.0 | 20.0 | **10.0** |
+
+**Diagnostic settings (test if noise/filter erases distribution):**
+| Parameter | Before | v0.6.5 | Rationale |
+|-----------|--------|--------|-----------|
+| `amp.weight` | 0.3 | **0.5** | Boost AMP signal (was underfeeding) |
+| `disc_input_noise_std` | 0.03 | **0.0** | Test if noise erases distribution |
+| `velocity_filter_alpha` | 0.5 | **0.0** | Test if filter erases distribution |
+
+### Expected Outcomes
+
+**If disc_acc jumps above 0.50:**
+- Noise/filter was erasing the distribution difference
+- Re-enable with lower values
+
+**If disc_acc stays at 0.50:**
+- Feature mismatch between policy and reference
+- Run `diagnose_amp_features.py` to compare features
+- Check: joint ordering, pelvis orientation (Z-up vs Y-up), degrees vs radians
+
+### Target
+
+`disc_acc = 0.55-0.75` (healthy adversarial game)
+
+---
+
+## [v0.6.4] - 2024-12-24: Discriminator Balance Fix
+
+### Problem: Discriminator Collapse (disc_acc = 1.00)
+
+Training logs showed classic discriminator collapse:
+```
+#60-#220: disc_acc=1.00 | amp≈0.02-0.03 | success=0.0%
+```
+
+**Root Cause Analysis:**
+- `disc_acc = 1.00` means discriminator perfectly classifies real vs policy samples
+- This causes `amp_reward → 0` (policy gets no gradient from AMP)
+- Policy ignores style and only optimizes task reward → no AMASS transfer
+- This is the "perfect expert classifier" failure mode
+
+**Why it happened (previous v0.6.3 config):**
+| Parameter | Old Value | Problem |
+|-----------|-----------|---------|
+| `disc_lr` | 1e-4 | Too high - D learns too fast |
+| `update_steps` | 3 | Too many D updates per PPO iter |
+| `r1_gamma` | 5.0 | Too weak - not enough gradient penalty |
+| `disc_input_noise_std` | 0.02 | Too low - D can overfit to clean features |
+| `replay_buffer_ratio` | 0.5 | D learns to perfectly classify old samples |
+
+### Changes
+
+**Config (ppo_amass_training.yaml):**
+| Parameter | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| `disc_lr` | 1e-4 | 5e-5 | Slow down D learning |
+| `update_steps` | 3 | 1 | Fewer D updates per PPO iteration |
+| `r1_gamma` | 5.0 | 20.0 | Stronger gradient penalty to smooth D |
+| `disc_input_noise_std` | 0.02 | 0.05 | More noise to blur D decision boundary |
+| `replay_buffer_ratio` | 0.5 | 0.2 | Less historical samples when D is strong |
+
+### Expected Post-Fix Behavior
+
+| Metric | Before | Expected After |
+|--------|--------|----------------|
+| `disc_acc` | 1.00 (stuck) | 0.55-0.75 (oscillating) |
+| `amp_reward` | ≈0.02 | 0.1-0.4 (rising) |
+| `task_r` | Rising fast | May dip initially, then rise |
+| `success` | 0.0% | Should become non-zero |
+
+**Key insight:** You want the discriminator to **struggle**, not win. A healthy GAN game keeps D accuracy around 0.55-0.75.
+
+### Future Tuning
+
+Once `disc_acc` stabilizes in 0.55-0.75 range:
+- Increase `amp.weight` from 0.3 → 0.5 for stronger style influence
+- Monitor for any regression back to 1.00
+
+---
+
 ## [v0.6.2] - 2024-12-24: Golden Rule Configuration
 
 ### Problem
