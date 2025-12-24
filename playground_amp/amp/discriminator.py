@@ -19,11 +19,12 @@ Version History:
 - v0.6.0: Replaced LayerNorm with Spectral Normalization for strict Lipschitz control
 """
 
-from typing import Sequence, Optional
+from typing import Optional, Sequence
+
 import jax
 import jax.numpy as jnp
-from flax import linen as nn
 import optax
+from flax import linen as nn
 
 
 class SpectralNormDense(nn.Module):
@@ -35,9 +36,12 @@ class SpectralNormDense(nn.Module):
     This is the industry standard for GAN discriminators (Miyato et al., 2018)
     and prevents the discriminator from "overpowering" the generator/policy.
     """
+
     features: int
     use_bias: bool = True
-    kernel_init: nn.initializers.Initializer = nn.initializers.orthogonal(scale=jnp.sqrt(2.0))
+    kernel_init: nn.initializers.Initializer = nn.initializers.orthogonal(
+        scale=jnp.sqrt(2.0)
+    )
     bias_init: nn.initializers.Initializer = nn.initializers.zeros
 
     @nn.compact
@@ -57,7 +61,8 @@ class SpectralNormDense(nn.Module):
             collection_name="batch_stats",  # Store singular vectors here
         )
 
-        return spectral_dense(x)
+        # update_stats=True during training to update singular value estimates
+        return spectral_dense(x, update_stats=training)
 
 
 class AMPDiscriminator(nn.Module):
@@ -110,7 +115,7 @@ class AMPDiscriminator(nn.Module):
                     features=hidden_dim,
                     kernel_init=nn.initializers.orthogonal(scale=jnp.sqrt(2.0)),
                     bias_init=nn.initializers.zeros,
-                    name=f"spectral_dense_{i}"
+                    name=f"spectral_dense_{i}",
                 )(x, training=training)
             else:
                 # Legacy: LayerNorm (for A/B testing)
@@ -118,7 +123,7 @@ class AMPDiscriminator(nn.Module):
                     hidden_dim,
                     kernel_init=nn.initializers.orthogonal(scale=jnp.sqrt(2.0)),
                     bias_init=nn.initializers.zeros,
-                    name=f"dense_{i}"
+                    name=f"dense_{i}",
                 )(x)
                 x = nn.LayerNorm(name=f"ln_{i}")(x)
 
@@ -129,7 +134,7 @@ class AMPDiscriminator(nn.Module):
             1,
             kernel_init=nn.initializers.orthogonal(scale=0.01),
             bias_init=nn.initializers.zeros,
-            name="output"
+            name="output",
         )(x)
 
         return logits.squeeze(-1)  # (batch,)
@@ -169,6 +174,7 @@ def discriminator_loss(
     """Compute LSGAN discriminator loss with R1 regularization.
 
     v0.4.1: Replaced WGAN-GP with R1 regularizer for consistency with LSGAN.
+    v0.6.0: Added SpectralNorm support with mutable batch_stats.
 
     LSGAN (Least Squares GAN) loss:
     - Real samples: (D(x) - 1)² (want D to output 1 for real)
@@ -190,7 +196,7 @@ def discriminator_loss(
     - Prevents overfitting to high-frequency jitter unique to simulation
 
     Args:
-        params: Discriminator parameters
+        params: Discriminator parameters (includes batch_stats for SpectralNorm)
         model: Discriminator network
         real_obs: Reference motion observations (batch, obs_dim)
         fake_obs: Policy rollout observations (batch, obs_dim)
@@ -210,24 +216,33 @@ def discriminator_loss(
         fake_obs = fake_obs + fake_noise
 
     # Forward pass on real and fake samples (raw logits, no sigmoid)
-    real_scores = model.apply(params, real_obs, training=True)
-    fake_scores = model.apply(params, fake_obs, training=True)
+    # v0.6.0: SpectralNorm requires mutable=["batch_stats"] to update singular vectors
+    # We use training=True to enable spectral norm updates
+    real_scores = model.apply(params, real_obs, training=True, mutable=["batch_stats"])
+    # apply returns (output, updated_vars) when mutable is specified
+    if isinstance(real_scores, tuple):
+        real_scores, _ = real_scores  # Discard updated vars (we recompute each step)
+
+    fake_scores = model.apply(params, fake_obs, training=True, mutable=["batch_stats"])
+    if isinstance(fake_scores, tuple):
+        fake_scores, _ = fake_scores
 
     # LSGAN loss: least squares instead of BCE
     # Real samples: want D(x) → 1, so loss = (D(x) - 1)²
     # Fake samples: want D(x) → 0, so loss = D(x)²
     real_loss = jnp.mean((real_scores - 1.0) ** 2)
-    fake_loss = jnp.mean(fake_scores ** 2)
+    fake_loss = jnp.mean(fake_scores**2)
     lsgan_loss = 0.5 * (real_loss + fake_loss)
 
     # R1 Regularization: gradient penalty on REAL samples only
     # This is more appropriate for LSGAN than WGAN-GP (which uses interpolated samples)
     def real_disc_sum(x):
-        return jnp.sum(model.apply(params, x, training=True))
+        scores = model.apply(params, x, training=False)  # No mutation needed for grad
+        return jnp.sum(scores)
 
     grad_real = jax.grad(real_disc_sum)(real_obs)
     # R1 = (gamma/2) * E[||grad||^2]
-    r1_penalty = jnp.mean(jnp.sum(grad_real ** 2, axis=-1))
+    r1_penalty = jnp.mean(jnp.sum(grad_real**2, axis=-1))
 
     # Total loss
     total_loss = lsgan_loss + (r1_gamma / 2.0) * r1_penalty
@@ -236,8 +251,8 @@ def discriminator_loss(
     # For LSGAN, "accuracy" = how well D separates real (→1) from fake (→0)
     # Use 0.5 threshold on raw scores
     accuracy = (
-        jnp.mean(real_scores > 0.5).astype(jnp.float32) * 0.5 +
-        jnp.mean(fake_scores < 0.5).astype(jnp.float32) * 0.5
+        jnp.mean(real_scores > 0.5).astype(jnp.float32) * 0.5
+        + jnp.mean(fake_scores < 0.5).astype(jnp.float32) * 0.5
     )
 
     metrics = {

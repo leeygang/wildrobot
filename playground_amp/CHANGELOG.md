@@ -30,7 +30,7 @@ Two remaining discriminator stability issues:
 class SpectralNormDense(nn.Module):
     """Dense layer with Spectral Normalization."""
     features: int
-    
+
     @nn.compact
     def __call__(self, x, training: bool = True):
         dense = nn.Dense(features=self.features, ...)
@@ -60,7 +60,7 @@ class JITReplayBuffer:
     def add(state: dict, samples: jnp.ndarray) -> dict:
         # Functional update for use in jax.lax.scan
         ...
-    
+
     @staticmethod
     def sample(state: dict, rng: jax.Array, batch_size: int) -> jnp.ndarray:
         # Sample batch mixing fresh + historical

@@ -105,14 +105,14 @@ class AMPPPOConfigJit:
     disc_hidden_dims: Tuple[int, ...]
     disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 
-    # v0.6.0: Policy Replay Buffer
-    replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
-    replay_buffer_ratio: float = 0.5  # Ratio of historical samples to current (0.5 = 50% each)
-
     # Training
     total_iterations: int
     seed: int
     log_interval: int
+
+    # v0.6.0: Policy Replay Buffer (defaults at end to satisfy dataclass rules)
+    replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
+    replay_buffer_ratio: float = 0.5  # Ratio of historical samples (0.5 = 50% each)
 
 
 # =============================================================================
@@ -171,6 +171,7 @@ class Transition(NamedTuple):
     next_obs: jnp.ndarray
     truncated: jnp.ndarray  # 1.0 if episode ended due to time limit (success)
     foot_contacts: jnp.ndarray  # v0.5.0: Foot contacts for AMP discriminator (4,)
+    root_height: jnp.ndarray  # v0.6.1: Actual root height for AMP features (1,)
 
 
 class IterationMetrics(NamedTuple):
@@ -339,6 +340,9 @@ def collect_rollout_scan(
             foot_contacts=next_env_state.info[
                 "foot_contacts"
             ],  # v0.5.0: For AMP discriminator
+            root_height=next_env_state.info[
+                "root_height"
+            ],  # v0.6.1: Actual height for AMP features
         )
 
         return (next_env_state, rng), transition
@@ -366,28 +370,30 @@ def extract_amp_features_batched(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
     foot_contacts: jnp.ndarray,
+    root_height: jnp.ndarray,
 ) -> jnp.ndarray:
     """Extract AMP features from observations (batched).
 
-    v0.5.0: foot_contacts is now REQUIRED (no silent fallback to zeros).
+    v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
+    v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
 
     Args:
         obs: Observations, shape (num_steps, num_envs, obs_dim)
         config: Feature extraction configuration (REQUIRED)
         foot_contacts: Foot contacts from env, shape (num_steps, num_envs, 4) (REQUIRED)
+        root_height: Root height from env, shape (num_steps, num_envs) (REQUIRED)
 
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
     """
 
-    # v0.5.0: foot_contacts is required - no more silent fallback
-    # With foot contacts: need to pass both obs and foot_contacts
-    def extract_with_contacts(obs_fc):
-        obs_single, fc_single = obs_fc
-        return extract_amp_features(obs_single, config=config, foot_contacts=fc_single)
+    def extract_single(inputs):
+        obs_single, fc_single, rh_single = inputs
+        return extract_amp_features(
+            obs_single, config=config, foot_contacts=fc_single, root_height=rh_single
+        )
 
-    # Stack obs and foot_contacts for vmap, then unstack inside
-    return jax.vmap(jax.vmap(extract_with_contacts))((obs, foot_contacts))
+    return jax.vmap(jax.vmap(extract_single))((obs, foot_contacts, root_height))
 
 
 # =============================================================================
@@ -691,8 +697,12 @@ def make_train_iteration_fn(
         # Step 2: Extract and normalize AMP features
         # ====================================================================
         # v0.5.0: Pass foot contacts from environment for real contact info
+        # v0.6.1: Pass root_height from environment for matching reference data
         amp_features = extract_amp_features_batched(
-            transitions.obs, amp_feature_config, transitions.foot_contacts
+            transitions.obs,
+            amp_feature_config,
+            transitions.foot_contacts,
+            transitions.root_height,  # v0.6.1: Actual height (not gravity[2])
         )
         # Shape: (num_steps, num_envs, feature_dim)
 
@@ -1030,12 +1040,18 @@ def train_amp_ppo_jit(
     print(f"✓ Fixed normalization stats from reference data")
 
     # v0.6.0: Initialize policy replay buffer
-    replay_buffer_size = config.replay_buffer_size if config.replay_buffer_size > 0 else 1
-    replay_buffer_data = jnp.zeros((replay_buffer_size, amp_feature_dim), dtype=jnp.float32)
+    replay_buffer_size = (
+        config.replay_buffer_size if config.replay_buffer_size > 0 else 1
+    )
+    replay_buffer_data = jnp.zeros(
+        (replay_buffer_size, amp_feature_dim), dtype=jnp.float32
+    )
     replay_buffer_ptr = jnp.array(0, dtype=jnp.int32)
     replay_buffer_count = jnp.array(0, dtype=jnp.int32)
     if config.replay_buffer_size > 0:
-        print(f"✓ Policy replay buffer: {config.replay_buffer_size} capacity (ratio={config.replay_buffer_ratio})")
+        print(
+            f"✓ Policy replay buffer: {config.replay_buffer_size} capacity (ratio={config.replay_buffer_ratio})"
+        )
 
     # Create initial training state
     state = TrainingState(

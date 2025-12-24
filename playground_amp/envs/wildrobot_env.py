@@ -358,6 +358,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "prev_action": jp.zeros(self.action_size),
             "truncated": jp.zeros(()),  # No truncation at reset
             "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
+            "root_height": height,  # v0.6.1: Actual root height for AMP features
         }
 
         return WildRobotEnvState(
@@ -460,6 +461,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "prev_action": filtered_action,
             "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
             "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
+            "root_height": height,  # v0.6.1: Actual root height for AMP features
         }
 
         # =================================================================

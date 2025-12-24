@@ -16,3 +16,9 @@ dependencies = [
     "pymeshlab>=2025.7",
     "wandb>=0.23.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+]

@@ -29,6 +29,7 @@ Usage:
 """
 
 from typing import Tuple
+
 import jax
 import jax.numpy as jnp
 
@@ -71,7 +72,7 @@ class PolicyReplayBuffer:
 
         if num_samples >= self.max_size:
             # If adding more samples than buffer size, just keep the last max_size
-            self.data = samples[-self.max_size:]
+            self.data = samples[-self.max_size :]
             self.ptr = 0
             self.size = self.max_size
             return
@@ -81,13 +82,15 @@ class PolicyReplayBuffer:
 
         if end_ptr <= self.max_size:
             # Simple case: no wraparound
-            self.data = self.data.at[self.ptr:end_ptr].set(samples)
+            self.data = self.data.at[self.ptr : end_ptr].set(samples)
             self.ptr = end_ptr % self.max_size
         else:
             # Wraparound case
             first_chunk = self.max_size - self.ptr
-            self.data = self.data.at[self.ptr:].set(samples[:first_chunk])
-            self.data = self.data.at[:end_ptr - self.max_size].set(samples[first_chunk:])
+            self.data = self.data.at[self.ptr :].set(samples[:first_chunk])
+            self.data = self.data.at[: end_ptr - self.max_size].set(
+                samples[first_chunk:]
+            )
             self.ptr = end_ptr - self.max_size
 
         self.size = min(self.size + num_samples, self.max_size)
@@ -107,9 +110,7 @@ class PolicyReplayBuffer:
             return jnp.zeros((batch_size, self.feature_dim), dtype=jnp.float32)
 
         # Sample with replacement from valid portion of buffer
-        indices = jax.random.choice(
-            rng, self.size, shape=(batch_size,), replace=True
-        )
+        indices = jax.random.choice(rng, self.size, shape=(batch_size,), replace=True)
         return self.data[indices]
 
     def is_ready(self, min_samples: int = 1000) -> bool:
@@ -196,15 +197,29 @@ class JITReplayBuffer:
 
         Returns:
             Sampled features, shape (batch_size, feature_dim)
+            Returns zeros if buffer is empty.
         """
-        # Sample indices from valid portion
-        indices = jax.random.choice(
-            rng,
-            state["size"],
-            shape=(batch_size,),
-            replace=True,
+        feature_dim = state["feature_dim"]
+
+        def sample_from_buffer(_):
+            indices = jax.random.choice(
+                rng,
+                state["size"],
+                shape=(batch_size,),
+                replace=True,
+            )
+            return state["data"][indices]
+
+        def return_zeros(_):
+            return jnp.zeros((batch_size, feature_dim), dtype=jnp.float32)
+
+        # Use jax.lax.cond for JIT-compatible conditional
+        return jax.lax.cond(
+            state["size"] > 0,
+            sample_from_buffer,
+            return_zeros,
+            operand=None,
         )
-        return state["data"][indices]
 
     @staticmethod
     def is_ready(state: dict, min_samples: int = 1000) -> jnp.ndarray:

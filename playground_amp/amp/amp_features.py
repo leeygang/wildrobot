@@ -112,7 +112,8 @@ def get_default_amp_config() -> AMPFeatureConfig:
 def extract_amp_features(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
-    foot_contacts: jnp.ndarray = None,
+    foot_contacts: jnp.ndarray,
+    root_height: jnp.ndarray,
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
@@ -121,20 +122,25 @@ def extract_amp_features(
     - Joint velocities (9-17): 9 dims
     - Root linear velocity DIRECTION (18-20): 3 dims (normalized unit vector)
     - Root angular velocity (21-23): 3 dims
-    - Root height (24): 1 dim
+    - Root height (24): 1 dim (actual height in meters)
     - Foot contacts (25-28): 4 dims
 
-    v0.5.0: Now accepts foot_contacts from environment instead of returning zeros.
+    v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
+    v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
 
     NOTE: Root linear velocity is NORMALIZED to unit direction vector.
     This preserves directional info (forward/backward/sideways) while
     removing speed magnitude that causes mismatch between reference
     data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
 
+    NOTE: Root height is the ACTUAL robot height (meters), not gravity[2].
+    This must match the reference data format which uses actual height.
+
     Args:
         obs: Current observation (..., obs_dim=38)
         config: Feature extraction configuration (REQUIRED)
-        foot_contacts: Foot contact values from env (..., 4), or None to use zeros
+        foot_contacts: Foot contact values from env (..., 4) (REQUIRED)
+        root_height: Root height from env (...,) in meters (REQUIRED)
 
     Returns:
         amp_features: Motion features (..., 29)
@@ -153,7 +159,13 @@ def extract_amp_features(
     joint_vel = obs[..., config.joint_vel_start : config.joint_vel_end]  # 9 dims
     root_linvel = obs[..., config.root_linvel_start : config.root_linvel_end]  # 3 dims
     root_angvel = obs[..., config.root_angvel_start : config.root_angvel_end]  # 3 dims
-    root_height = obs[..., config.root_height_idx : config.root_height_idx + 1]  # 1 dim
+
+    # Root height: ensure shape is (..., 1) for concatenation
+    # v0.6.1: root_height is REQUIRED - must be actual height from env.info["root_height"]
+    if root_height.ndim == 0 or (root_height.ndim > 0 and root_height.shape[-1] != 1):
+        root_height_feat = root_height[..., jnp.newaxis]
+    else:
+        root_height_feat = root_height
 
     # Normalize root linear velocity to unit direction vector
     # This removes speed (magnitude) while preserving direction
@@ -172,16 +184,6 @@ def extract_amp_features(
         jnp.zeros_like(root_linvel)           # Zero for stationary
     )
 
-    # Foot contacts - v0.5.0: REQUIRED (no silent fallback to zeros!)
-    # The distribution mismatch bug (ref: 88% non-zero, policy: always zeros)
-    # was caused by silently using zeros. Now we fail loudly.
-    if foot_contacts is None:
-        raise ValueError(
-            "foot_contacts is required (v0.5.0). "
-            "For policy rollouts: pass foot_contacts from env.state.info['foot_contacts']. "
-            "For reference data: pre-extract contacts using scripts/add_temporal_context_to_ref.py"
-        )
-
     # Concatenate in order (29-dim with normalized velocity direction):
     # [joint_pos(9), joint_vel(9), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
     features = jnp.concatenate(
@@ -190,7 +192,7 @@ def extract_amp_features(
             joint_vel,        # 9-17: 9 dims
             root_linvel_dir,  # 18-20: 3 dims (normalized direction)
             root_angvel,      # 21-23: 3 dims
-            root_height,      # 24: 1 dim
+            root_height_feat, # 24: 1 dim (actual height in meters)
             foot_contacts,    # 25-28: 4 dims
         ],
         axis=-1,
