@@ -100,8 +100,11 @@ def load_reference_features():
     )
     training_config = load_training_config(training_config_path)
 
-    # Get dataset path from config
-    dataset_path = training_config.amp.dataset_path
+    # Get dataset path from config (ref_motion_path is where it's stored)
+    dataset_path = training_config.ref_motion_path
+    if dataset_path is None:
+        raise ValueError("ref_motion_path not set in training config")
+
     ref_path = project_root / dataset_path
 
     print(f"  Loading from: {ref_path}")
