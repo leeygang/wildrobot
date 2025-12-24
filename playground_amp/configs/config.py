@@ -323,9 +323,13 @@ class TrainingConfig:
     ref_motion_path: Optional[str]
 
     # v0.6.2: AMP Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: bool  # Use joint-based contact estimation (matches reference)
+    use_estimated_contacts: (
+        bool  # Use joint-based contact estimation (matches reference)
+    )
     use_finite_diff_vel: bool  # Use finite difference velocities (matches reference)
-    contact_threshold_angle: float  # Hip pitch angle threshold for contact detection (rad)
+    contact_threshold_angle: (
+        float  # Hip pitch angle threshold for contact detection (rad)
+    )
     contact_knee_scale: float  # Knee angle at which confidence starts decreasing (rad)
     contact_min_confidence: float  # Minimum confidence when hip indicates contact (0-1)
 

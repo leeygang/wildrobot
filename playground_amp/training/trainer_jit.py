@@ -117,7 +117,9 @@ class AMPPPOConfigJit:
     # v0.6.2: Golden Rule Configuration (Mathematical Parity)
     use_estimated_contacts: bool = True  # Use joint-based contact estimation
     use_finite_diff_vel: bool = True  # Use finite difference velocities
-    contact_threshold_angle: float = 0.1  # Hip pitch threshold for contact detection (rad)
+    contact_threshold_angle: float = (
+        0.1  # Hip pitch threshold for contact detection (rad)
+    )
     contact_knee_scale: float = 0.5  # Knee angle for confidence scaling (rad)
     contact_min_confidence: float = 0.3  # Minimum confidence when hip indicates contact
 

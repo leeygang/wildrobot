@@ -126,8 +126,8 @@ def collect_policy_features(num_samples=1000):
     import jax
     import jax.numpy as jnp
     from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-    from playground_amp.train import create_env
     from playground_amp.configs.config import get_training_config
+    from playground_amp.train import create_env
 
     # Get Golden Rule params from training config
     training_config = get_training_config()

@@ -102,7 +102,9 @@ def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
         try:
             return actuator_names.index(name)
         except ValueError:
-            raise ValueError(f"Joint '{name}' not found in actuator_names: {actuator_names}")
+            raise ValueError(
+                f"Joint '{name}' not found in actuator_names: {actuator_names}"
+            )
 
     return AMPFeatureConfig(
         joint_pos_start=obs_indices["joint_positions"]["start"],

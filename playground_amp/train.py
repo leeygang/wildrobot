@@ -483,6 +483,12 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         # v0.6.0: Policy Replay Buffer
         replay_buffer_size=amp_cfg.get("replay_buffer_size", 0),
         replay_buffer_ratio=amp_cfg.get("replay_buffer_ratio", 0.5),
+        # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+        use_estimated_contacts=amp_cfg.get("use_estimated_contacts", True),
+        use_finite_diff_vel=amp_cfg.get("use_finite_diff_vel", True),
+        contact_threshold_angle=amp_cfg.get("contact_threshold_angle", 0.1),
+        contact_knee_scale=amp_cfg.get("contact_knee_scale", 0.5),
+        contact_min_confidence=amp_cfg.get("contact_min_confidence", 0.3),
         # Training
         total_iterations=args.iterations,
         seed=args.seed,
