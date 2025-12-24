@@ -42,8 +42,8 @@ import optax
 
 from playground_amp.amp.amp_features import (
     AMPFeatureConfig,
-    get_default_amp_config,
     extract_amp_features,
+    get_default_amp_config,
 )
 from playground_amp.amp.discriminator import (
     AMPDiscriminator,
@@ -105,6 +105,10 @@ class AMPPPOConfigJit:
     disc_hidden_dims: Tuple[int, ...]
     disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
 
+    # v0.6.0: Policy Replay Buffer
+    replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
+    replay_buffer_ratio: float = 0.5  # Ratio of historical samples to current (0.5 = 50% each)
+
     # Training
     total_iterations: int
     seed: int
@@ -143,6 +147,12 @@ class TrainingState(NamedTuple):
     feature_var: jnp.ndarray
     feature_count: jnp.ndarray
 
+    # v0.6.0: Policy replay buffer state (for discriminator training)
+    # Stores historical policy features to prevent catastrophic forgetting
+    replay_buffer_data: jnp.ndarray  # (max_size, feature_dim)
+    replay_buffer_ptr: jnp.ndarray  # Current write position
+    replay_buffer_size: jnp.ndarray  # Number of valid samples
+
     # Training progress
     iteration: jnp.ndarray
     total_steps: jnp.ndarray
@@ -178,8 +188,8 @@ class IterationMetrics(NamedTuple):
     # v0.4.1: Discriminator distribution metrics for debugging
     disc_real_mean: jnp.ndarray  # Mean D(real) score - should → 1
     disc_fake_mean: jnp.ndarray  # Mean D(fake) score - should → 0
-    disc_real_std: jnp.ndarray   # Std of D(real) scores
-    disc_fake_std: jnp.ndarray   # Std of D(fake) scores
+    disc_real_std: jnp.ndarray  # Std of D(real) scores
+    disc_fake_std: jnp.ndarray  # Std of D(fake) scores
     # Episode metrics
     episode_reward: jnp.ndarray
     # Task reward breakdown (for debugging)
@@ -323,8 +333,12 @@ def collect_rollout_scan(
             log_prob=log_prob,
             value=value,
             next_obs=next_env_state.obs,
-            truncated=next_env_state.info["truncated"],  # 1.0 if reached max steps (success)
-            foot_contacts=next_env_state.info["foot_contacts"],  # v0.5.0: For AMP discriminator
+            truncated=next_env_state.info[
+                "truncated"
+            ],  # 1.0 if reached max steps (success)
+            foot_contacts=next_env_state.info[
+                "foot_contacts"
+            ],  # v0.5.0: For AMP discriminator
         )
 
         return (next_env_state, rng), transition
@@ -365,6 +379,7 @@ def extract_amp_features_batched(
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
     """
+
     # v0.5.0: foot_contacts is required - no more silent fallback
     # With foot contacts: need to pass both obs and foot_contacts
     def extract_with_contacts(obs_fc):
@@ -490,7 +505,13 @@ def train_discriminator_scan(
         "disc_fake_std": jnp.mean(fake_stds),
     }
 
-    return final_params, final_opt_state, jnp.mean(losses), jnp.mean(accuracies), distribution_metrics
+    return (
+        final_params,
+        final_opt_state,
+        jnp.mean(losses),
+        jnp.mean(accuracies),
+        distribution_metrics,
+    )
 
 
 # =============================================================================
@@ -718,20 +739,24 @@ def make_train_iteration_fn(
         # ====================================================================
         # Now update discriminator for the NEXT iteration
         # v0.4.1: Uses R1 regularizer instead of WGAN-GP
-        new_disc_params, new_disc_opt_state, disc_loss, disc_accuracy, disc_dist_metrics = (
-            train_discriminator_scan(
-                disc_params=state.disc_params,
-                disc_opt_state=state.disc_opt_state,
-                disc_model=disc_model,
-                disc_optimizer=disc_optimizer,
-                agent_features=norm_amp_features,
-                ref_buffer_data=norm_ref_data,
-                rng=disc_rng,
-                num_updates=config.disc_updates_per_iter,
-                batch_size=config.disc_batch_size,
-                r1_gamma=config.r1_gamma,
-                input_noise_std=config.disc_input_noise_std,
-            )
+        (
+            new_disc_params,
+            new_disc_opt_state,
+            disc_loss,
+            disc_accuracy,
+            disc_dist_metrics,
+        ) = train_discriminator_scan(
+            disc_params=state.disc_params,
+            disc_opt_state=state.disc_opt_state,
+            disc_model=disc_model,
+            disc_optimizer=disc_optimizer,
+            agent_features=norm_amp_features,
+            ref_buffer_data=norm_ref_data,
+            rng=disc_rng,
+            num_updates=config.disc_updates_per_iter,
+            batch_size=config.disc_batch_size,
+            r1_gamma=config.r1_gamma,
+            input_noise_std=config.disc_input_noise_std,
         )
 
         # Shape rewards: task_reward + amp_weight * amp_reward
@@ -834,8 +859,12 @@ def make_train_iteration_fn(
             value_opt_state=new_value_opt,
             disc_opt_state=new_disc_opt_state,
             feature_mean=state.feature_mean,  # Fixed - never changes
-            feature_var=state.feature_var,    # Fixed - never changes
+            feature_var=state.feature_var,  # Fixed - never changes
             feature_count=state.feature_count,  # Not used anymore, kept for API compat
+            # v0.6.0: Replay buffer - keep unchanged for now (TODO: update with new samples)
+            replay_buffer_data=state.replay_buffer_data,
+            replay_buffer_ptr=state.replay_buffer_ptr,
+            replay_buffer_size=state.replay_buffer_size,
             iteration=state.iteration + 1,
             total_steps=state.total_steps + env_steps,
             rng=rng,
@@ -995,8 +1024,18 @@ def train_amp_ppo_jit(
     # Compute FIXED normalization stats from reference data
     # This prevents distribution drift during training
     feature_mean, feature_var = compute_normalization_stats(ref_buffer_data)
-    feature_count = jnp.array(float(ref_buffer_data.shape[0]))  # Not used, kept for compat
+    feature_count = jnp.array(
+        float(ref_buffer_data.shape[0])
+    )  # Not used, kept for compat
     print(f"✓ Fixed normalization stats from reference data")
+
+    # v0.6.0: Initialize policy replay buffer
+    replay_buffer_size = config.replay_buffer_size if config.replay_buffer_size > 0 else 1
+    replay_buffer_data = jnp.zeros((replay_buffer_size, amp_feature_dim), dtype=jnp.float32)
+    replay_buffer_ptr = jnp.array(0, dtype=jnp.int32)
+    replay_buffer_count = jnp.array(0, dtype=jnp.int32)
+    if config.replay_buffer_size > 0:
+        print(f"✓ Policy replay buffer: {config.replay_buffer_size} capacity (ratio={config.replay_buffer_ratio})")
 
     # Create initial training state
     state = TrainingState(
@@ -1010,6 +1049,9 @@ def train_amp_ppo_jit(
         feature_mean=feature_mean,
         feature_var=feature_var,
         feature_count=feature_count,
+        replay_buffer_data=replay_buffer_data,
+        replay_buffer_ptr=replay_buffer_ptr,
+        replay_buffer_size=replay_buffer_count,
         iteration=jnp.array(0, dtype=jnp.int32),
         total_steps=jnp.array(0, dtype=jnp.int32),
         rng=rng,

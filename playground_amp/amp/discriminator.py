@@ -4,7 +4,7 @@ Based on the original AMP paper (Peng et al., 2021) using LSGAN formulation:
 - Least Squares GAN loss (more stable than BCE)
 - AMP reward as POSITIVE BONUS (not penalty)
 - Larger network (512-256 or 1024-512) for better expressiveness
-- LayerNorm for training stability
+- Spectral Normalization for Lipschitz control (v0.6.0)
 - ELU activations
 
 LSGAN Formulation:
@@ -13,18 +13,51 @@ LSGAN Formulation:
 - Loss: (D(real) - 1)² + D(fake)²
 - Reward: clipped linear mapping (D=0 → 0, D=1 → 1)
 
-v0.4.0 Fix: Reward formula changed from quadratic to clipped linear.
-v0.4.1 Fix: Replaced WGAN-GP with R1 regularizer for loss consistency.
-  - WGAN-GP was designed for Wasserstein critics (unbounded outputs)
-  - R1 regularizer is the correct pairing for classification-style LSGAN loss
-  - R1 penalizes gradient on REAL samples only (not interpolated)
+Version History:
+- v0.4.0: Reward formula changed from quadratic to clipped linear
+- v0.4.1: Replaced WGAN-GP with R1 regularizer for loss consistency
+- v0.6.0: Replaced LayerNorm with Spectral Normalization for strict Lipschitz control
 """
 
-from typing import Sequence
+from typing import Sequence, Optional
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
 import optax
+
+
+class SpectralNormDense(nn.Module):
+    """Dense layer with Spectral Normalization.
+
+    Spectral Normalization constrains the Lipschitz constant of the layer
+    by normalizing the weight matrix by its largest singular value.
+
+    This is the industry standard for GAN discriminators (Miyato et al., 2018)
+    and prevents the discriminator from "overpowering" the generator/policy.
+    """
+    features: int
+    use_bias: bool = True
+    kernel_init: nn.initializers.Initializer = nn.initializers.orthogonal(scale=jnp.sqrt(2.0))
+    bias_init: nn.initializers.Initializer = nn.initializers.zeros
+
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        # Create the dense layer
+        dense = nn.Dense(
+            features=self.features,
+            use_bias=self.use_bias,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )
+
+        # Wrap with spectral normalization
+        # SpectralNorm normalizes weights by their largest singular value
+        spectral_dense = nn.SpectralNorm(
+            dense,
+            collection_name="batch_stats",  # Store singular vectors here
+        )
+
+        return spectral_dense(x)
 
 
 class AMPDiscriminator(nn.Module):
@@ -35,7 +68,17 @@ class AMPDiscriminator(nn.Module):
     - Hidden layers: 512 -> 256 (configurable)
     - Output: single logit (real vs fake)
     - Activations: ELU
-    - Normalization: LayerNorm after each hidden layer
+    - Normalization: Spectral Normalization (v0.6.0, was LayerNorm)
+
+    v0.6.0 Change: Replaced LayerNorm with Spectral Normalization
+    - LayerNorm: Normalizes activations (helps with internal covariate shift)
+    - SpectralNorm: Normalizes weights by singular value (controls Lipschitz constant)
+
+    Why Spectral Normalization:
+    - Industry standard for GAN discriminators (Miyato et al., 2018)
+    - Strictly controls Lipschitz constant of the discriminator
+    - Prevents discriminator from "overpowering" the policy
+    - More theoretically grounded than LayerNorm for adversarial training
 
     Training:
     - Real samples: reference motion dataset
@@ -45,6 +88,7 @@ class AMPDiscriminator(nn.Module):
     """
 
     hidden_dims: Sequence[int]
+    use_spectral_norm: bool = True  # v0.6.0: Can disable for A/B testing
 
     @nn.compact
     def __call__(self, x, training: bool = True):
@@ -52,26 +96,35 @@ class AMPDiscriminator(nn.Module):
 
         Args:
             x: Input observations (batch, obs_dim)
-            training: Whether in training mode (affects LayerNorm)
+            training: Whether in training mode (affects SpectralNorm updates)
 
         Returns:
             logits: (batch,) discriminator scores (real/fake logits)
         """
-        # Input normalization (helps with varying observation scales)
         x = x.astype(jnp.float32)
 
-        # Hidden layers with LayerNorm
         for i, hidden_dim in enumerate(self.hidden_dims):
-            x = nn.Dense(
-                hidden_dim,
-                kernel_init=nn.initializers.orthogonal(scale=jnp.sqrt(2.0)),
-                bias_init=nn.initializers.zeros,
-                name=f"dense_{i}"
-            )(x)
-            x = nn.LayerNorm()(x)
+            if self.use_spectral_norm:
+                # v0.6.0: Spectral Normalization (industry standard)
+                x = SpectralNormDense(
+                    features=hidden_dim,
+                    kernel_init=nn.initializers.orthogonal(scale=jnp.sqrt(2.0)),
+                    bias_init=nn.initializers.zeros,
+                    name=f"spectral_dense_{i}"
+                )(x, training=training)
+            else:
+                # Legacy: LayerNorm (for A/B testing)
+                x = nn.Dense(
+                    hidden_dim,
+                    kernel_init=nn.initializers.orthogonal(scale=jnp.sqrt(2.0)),
+                    bias_init=nn.initializers.zeros,
+                    name=f"dense_{i}"
+                )(x)
+                x = nn.LayerNorm(name=f"ln_{i}")(x)
+
             x = nn.elu(x)
 
-        # Output layer (single logit)
+        # Output layer (single logit) - no spectral norm on output
         logits = nn.Dense(
             1,
             kernel_init=nn.initializers.orthogonal(scale=0.01),

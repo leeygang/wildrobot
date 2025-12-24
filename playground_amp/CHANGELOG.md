@@ -4,6 +4,250 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.6.0] - 2024-12-23: Spectral Normalization + Policy Replay Buffer
+
+### Problem
+Two remaining discriminator stability issues:
+1. **Unconstrained Lipschitz constant**: Discriminator gradients could explode, destabilizing training
+2. **Catastrophic forgetting**: Discriminator overfits to recent policy samples, forgetting earlier distributions
+
+### Changes
+
+#### Spectral Normalization (Miyato et al., 2018)
+| File | Change |
+|------|--------|
+| `amp/discriminator.py` | Added `SpectralNormDense` layer wrapping Flax `nn.SpectralNorm` |
+| `amp/discriminator.py` | `AMPDiscriminator` now uses spectral-normalized layers by default |
+| `amp/discriminator.py` | Added `use_spectral_norm` flag for A/B testing (default: `True`) |
+
+**Why Spectral Normalization:**
+- Industry standard for GANs (StyleGAN, BigGAN, etc.)
+- Controls Lipschitz constant to 1 by normalizing weights by largest singular value
+- Prevents gradient explosion without hyperparameter tuning
+- More stable than gradient penalties alone
+
+```python
+class SpectralNormDense(nn.Module):
+    """Dense layer with Spectral Normalization."""
+    features: int
+    
+    @nn.compact
+    def __call__(self, x, training: bool = True):
+        dense = nn.Dense(features=self.features, ...)
+        spectral_dense = nn.SpectralNorm(dense, collection_name="batch_stats")
+        return spectral_dense(x)
+```
+
+#### Policy Replay Buffer
+| File | Change |
+|------|--------|
+| `amp/replay_buffer.py` | NEW: `PolicyReplayBuffer` (Python mutations) |
+| `amp/replay_buffer.py` | NEW: `JITReplayBuffer` (functional JAX updates) |
+| `training/trainer_jit.py` | Added `replay_buffer_size` and `replay_buffer_ratio` to config |
+| `training/trainer_jit.py` | Added replay buffer state fields to `TrainingState` |
+| `train.py` | Pass replay buffer config from YAML |
+| `configs/ppo_amass_training.yaml` | Added replay buffer settings |
+
+**Why Replay Buffer:**
+- Stores historical policy features to prevent discriminator from overfitting to current policy
+- Mixes `replay_buffer_ratio` (default 50%) historical samples with fresh samples
+- JIT-compatible implementation using functional updates for `jax.lax.scan`
+
+```python
+# JIT-compatible replay buffer (functional updates)
+class JITReplayBuffer:
+    @staticmethod
+    def add(state: dict, samples: jnp.ndarray) -> dict:
+        # Functional update for use in jax.lax.scan
+        ...
+    
+    @staticmethod
+    def sample(state: dict, rng: jax.Array, batch_size: int) -> jnp.ndarray:
+        # Sample batch mixing fresh + historical
+        ...
+```
+
+### Config
+```yaml
+version: "0.6.0"
+version_name: "Spectral Normalization + Policy Replay Buffer"
+
+amp:
+  # v0.6.0: Policy Replay Buffer
+  replay_buffer_size: 100000
+  replay_buffer_ratio: 0.5  # 50% historical samples
+```
+
+### Expected Result
+- More stable discriminator training (no gradient explosions)
+- Smoother `disc_acc` curves (less catastrophic forgetting)
+- Better generalization of discriminator across policy evolution
+
+### Status
+🔄 Ready to train - building on v0.5.0 foot contact fix
+
+---
+
+## [v0.5.0] - 2024-12-23: Foot Contact Fix + Temporal Context
+
+### Problem
+**Critical distribution mismatch bug discovered:** Policy rollouts sent zeros for foot contacts while reference data had 88% non-zero foot contacts. The discriminator learned to trivially distinguish them by checking if foot_contacts == 0, achieving 100% accuracy without learning actual motion quality.
+
+| Source | Foot Contacts |
+|--------|---------------|
+| Reference Data | 88% non-zero (real contact values) |
+| Policy Rollouts (v0.4.x) | 100% zeros (not extracted from sim!) |
+
+**Result:** `disc_acc = 1.00` and `amp_reward ≈ 0` — the "foot contact cheat" bug.
+
+### Root Cause
+`foot_contacts` were never extracted from MJX simulation during policy rollouts. The `extract_amp_features()` function silently fell back to zeros when `foot_contacts=None`.
+
+### Changes
+
+#### Foot Contact Extraction (Core Fix)
+| File | Change |
+|------|--------|
+| `envs/wildrobot_env.py` | Extract real foot contacts from MJX contact forces |
+| `envs/wildrobot_env.py` | Use explicit config keys (`left_toe`, `left_heel`, etc.) |
+| `envs/wildrobot_env.py` | Raise `RuntimeError` if foot geoms not found |
+| `envs/wildrobot_env.py` | Made `contact_threshold` and `contact_scale` configurable |
+| `training/trainer_jit.py` | Added `foot_contacts` to `Transition` namedtuple |
+| `training/trainer_jit.py` | Pass `foot_contacts` through entire training pipeline |
+| `amp/amp_features.py` | Require `foot_contacts` (no silent fallback to zeros!) |
+
+#### Asset Updates
+| File | Change |
+|------|--------|
+| `assets/post_process.py` | Renamed geoms: `left_toe/left_heel` (was `left_foot_btm_front/back`) |
+| `assets/post_process.py` | Added explicit config keys to `robot_config.yaml` |
+| `assets/robot_config.yaml` | Added `left_toe`, `left_heel`, `right_toe`, `right_heel` keys |
+| `assets/wildrobot.xml` | Updated geom names via post_process.py |
+
+#### Temporal Context Infrastructure (P3 - Prepared, Not Enabled)
+| File | Change |
+|------|--------|
+| `amp/amp_features.py` | Added `TemporalFeatureConfig`, `create_temporal_buffer()` |
+| `amp/amp_features.py` | Added `update_temporal_buffer()`, `add_temporal_context_to_reference()` |
+
+#### Testing
+| File | Description |
+|------|-------------|
+| `tests/test_foot_contacts.py` | 8 comprehensive tests for foot contact pipeline |
+
+### Foot Contact Detection
+```python
+# 4-point model: [left_toe, left_heel, right_toe, right_heel]
+# Soft thresholding: tanh(force / scale) for continuous 0-1 values
+foot_contacts = jnp.tanh(contact_forces / self._contact_scale)
+```
+
+### Key Principle
+**"Fail loudly, no silent fallbacks"** — If foot contacts are missing, raise an exception immediately rather than silently using zeros.
+
+### Expected Result
+- `disc_acc` should fluctuate around 0.5-0.7 (healthy discrimination)
+- `amp_reward` should stay meaningful (0.3-0.8)
+- `success_rate` should gradually increase as robot learns
+
+### Status
+🔄 Ready to train - foot contacts now correctly extracted from simulation
+
+---
+
+## [v0.4.1] - 2024-12-23: R1 Regularizer + Distribution Metrics
+
+### Problem
+WGAN-GP gradient penalty was theoretically inconsistent with LSGAN loss (which uses bounded targets [0, 1]).
+
+### Changes
+
+#### R1 Regularizer (Replaced WGAN-GP)
+| File | Change |
+|------|--------|
+| `amp/discriminator.py` | Replaced WGAN-GP with R1 regularizer |
+| `training/trainer_jit.py` | Updated discriminator training to use R1 |
+| `configs/ppo_amass_training.yaml` | Renamed `gradient_penalty_weight` → `r1_gamma` |
+
+**Why R1 over WGAN-GP:**
+- WGAN-GP uses interpolated samples (designed for Wasserstein critics)
+- R1 only penalizes gradient on REAL samples (simpler, faster)
+- More theoretically consistent with LSGAN
+
+```python
+# R1 Regularization: gradient penalty on REAL samples only
+def real_disc_sum(x):
+    return jnp.sum(model.apply(params, x, training=True))
+
+grad_real = jax.grad(real_disc_sum)(real_obs)
+r1_penalty = jnp.mean(jnp.sum(grad_real ** 2, axis=-1))
+
+total_loss = lsgan_loss + (r1_gamma / 2.0) * r1_penalty
+```
+
+#### Distribution Metrics
+| File | Change |
+|------|--------|
+| `training/trainer_jit.py` | Added `disc_real_mean`, `disc_fake_mean`, `disc_real_std`, `disc_fake_std` |
+
+These metrics help diagnose discriminator behavior:
+- `disc_real_mean` should approach 1.0
+- `disc_fake_mean` should approach 0.0
+- If both are similar, discriminator is not learning separation
+
+### Config
+```yaml
+amp:
+  r1_gamma: 5.0  # R1 regularizer weight (was gradient_penalty_weight)
+```
+
+### Status
+✅ Implemented and validated
+
+---
+
+## [v0.4.0] - 2024-12-23: Critical Bug Fixes (Reward Formula + Training Order)
+
+### Problem
+Two critical bugs identified by external design review:
+
+1. **Reward Formula Bug ("The Participation Trophy"):** Policy received 0.75 reward when discriminator was 100% sure motion was fake.
+2. **Training Order Bug ("The Hindsight Bias"):** AMP rewards computed with updated discriminator, not the one active when samples were collected.
+
+### Changes
+
+#### Fix 1: Reward Formula (Clipped Linear)
+| Before (Buggy) | After (Fixed) |
+|----------------|---------------|
+| `max(0, 1 - 0.25 * (D(s) - 1)²)` | `clip(D(s), 0, 1)` |
+| D=0 (fake) → reward=0.75 ❌ | D=0 (fake) → reward=0.0 ✅ |
+
+| File | Change |
+|------|--------|
+| `amp/discriminator.py` | Changed reward formula to clipped linear |
+
+#### Fix 2: Training Order
+| Before (Buggy) | After (Fixed) |
+|----------------|---------------|
+| Train disc → Compute reward (NEW params) | Compute reward (OLD params) → Train disc |
+
+| File | Change |
+|------|--------|
+| `training/trainer_jit.py` | Moved AMP reward computation BEFORE discriminator training |
+
+#### Fix 3: Network Size Increase
+| Setting | Before | After |
+|---------|--------|-------|
+| `discriminator_hidden` | `[256, 128]` | `[512, 256]` |
+
+### Expected Result
+After these fixes, `disc_acc` should immediately jump from 0.50 to 0.60-0.80 within the first 20 iterations.
+
+### Status
+✅ Implemented and validated
+
+---
+
 ## [v0.3.1] - 2024-12-23: Config-Driven Pipeline (No Hardcoding)
 
 ### Problem

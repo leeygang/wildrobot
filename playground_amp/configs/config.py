@@ -84,7 +84,10 @@ class RobotConfig:
         """Get gravity/up-vector sensor name."""
         framezaxis = self.sensors.get("framezaxis", [])
         for s in framezaxis:
-            if "pelvis" in s.get("name", "").lower() or "upvector" in s.get("name", "").lower():
+            if (
+                "pelvis" in s.get("name", "").lower()
+                or "upvector" in s.get("name", "").lower()
+            ):
                 return s["name"]
         return framezaxis[0]["name"] if framezaxis else ""
 
@@ -93,7 +96,10 @@ class RobotConfig:
         """Get global linear velocity sensor name."""
         framelinvel = self.sensors.get("framelinvel", [])
         for s in framelinvel:
-            if "pelvis" in s.get("name", "").lower() and "global" in s.get("name", "").lower():
+            if (
+                "pelvis" in s.get("name", "").lower()
+                and "global" in s.get("name", "").lower()
+            ):
                 return s["name"]
         return framelinvel[0]["name"] if framelinvel else ""
 
@@ -102,7 +108,10 @@ class RobotConfig:
         """Get global angular velocity sensor name."""
         frameangvel = self.sensors.get("frameangvel", [])
         for s in frameangvel:
-            if "pelvis" in s.get("name", "").lower() and "global" in s.get("name", "").lower():
+            if (
+                "pelvis" in s.get("name", "").lower()
+                and "global" in s.get("name", "").lower()
+            ):
                 return s["name"]
         return frameangvel[0]["name"] if frameangvel else ""
 

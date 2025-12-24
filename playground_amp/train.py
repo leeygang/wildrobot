@@ -480,6 +480,9 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         r1_gamma=amp_cfg.get("r1_gamma", 5.0),
         disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
         disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
+        # v0.6.0: Policy Replay Buffer
+        replay_buffer_size=amp_cfg.get("replay_buffer_size", 0),
+        replay_buffer_ratio=amp_cfg.get("replay_buffer_ratio", 0.5),
         # Training
         total_iterations=args.iterations,
         seed=args.seed,
@@ -501,7 +504,10 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
             ref_features = np.array(ref_data["features"])
         elif "observations" in ref_data:
             # Need to convert observations to AMP features
-            from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+            from playground_amp.amp.amp_features import (
+                extract_amp_features,
+                get_default_amp_config,
+            )
 
             amp_config = get_default_amp_config()
             obs = np.array(ref_data["observations"])
@@ -516,7 +522,10 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
             raise ValueError(f"Unknown reference data format: {ref_data.keys()}")
     elif isinstance(ref_data, list):
         # List of sequences - flatten and extract features
-        from playground_amp.amp.amp_features import extract_amp_features, get_default_amp_config
+        from playground_amp.amp.amp_features import (
+            extract_amp_features,
+            get_default_amp_config,
+        )
 
         amp_config = get_default_amp_config()
         features_list = []
