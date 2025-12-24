@@ -4,6 +4,103 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.6.2] - 2024-12-24: Golden Rule Configuration
+
+### Problem
+The v0.6.1 Golden Rule fixes had hardcoded values that should be configurable:
+1. **Hardcoded joint indices**: `left_hip_pitch=1`, `left_knee_pitch=3`, etc. were hardcoded instead of derived from `robot_config.yaml`
+2. **Magic numbers unexplained**: Contact estimation used unexplained values (0.5, 0.3, 1.0)
+3. **Parameters as defaults**: `use_estimated_contacts`, `use_finite_diff_vel`, and contact params had defaults instead of being required from training config
+
+### Changes
+
+#### Configuration (Training Config → Feature Extraction)
+| File | Change |
+|------|--------|
+| `configs/ppo_amass_training.yaml` | Added Golden Rule section with all configurable params |
+| `configs/config.py` | Added Golden Rule params to `TrainingConfig` dataclass |
+
+**New Config Options:**
+```yaml
+amp:
+  # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+  use_estimated_contacts: true   # Use joint-based contact estimation (matches reference)
+  use_finite_diff_vel: true      # Use finite difference velocities (matches reference)
+  contact_threshold_angle: 0.1   # Hip pitch threshold for contact detection (rad, ~6°)
+  contact_knee_scale: 0.5        # Knee angle at which confidence decreases (rad, ~28°)
+  contact_min_confidence: 0.3    # Minimum confidence when hip indicates contact (0-1)
+```
+
+#### Feature Extraction (Config-Driven Joint Indices)
+| File | Change |
+|------|--------|
+| `amp/amp_features.py` | Added joint indices to `AMPFeatureConfig` (derived from robot_config) |
+| `amp/amp_features.py` | `estimate_foot_contacts_from_joints()` uses config indices |
+| `amp/amp_features.py` | `extract_amp_features()` now REQUIRES Golden Rule params (no defaults) |
+| `amp/amp_features.py` | Added comprehensive docstrings explaining magic numbers |
+
+**AMPFeatureConfig Now Includes:**
+```python
+class AMPFeatureConfig(NamedTuple):
+    # ... existing fields ...
+    # v0.6.2: Joint indices for contact estimation (from robot_config)
+    left_hip_pitch_idx: int   # Index of left_hip_pitch in joint_pos
+    left_knee_pitch_idx: int  # Index of left_knee_pitch in joint_pos
+    right_hip_pitch_idx: int  # Index of right_hip_pitch in joint_pos
+    right_knee_pitch_idx: int # Index of right_knee_pitch in joint_pos
+```
+
+**Magic Numbers Explained:**
+```python
+def estimate_foot_contacts_from_joints(
+    joint_pos, config,
+    threshold_angle: float = 0.1,   # ~6° - leg behind body → contact
+    knee_scale: float = 0.5,        # ~28° - confidence decreases as knee bends
+    min_confidence: float = 0.3,    # 30% - minimum contact when hip indicates contact
+):
+    # Confidence formula: clip(1.0 - |knee| / knee_scale, min_confidence, 1.0)
+    # - knee=0 → confidence=1.0 (fully extended)
+    # - knee=0.5 → confidence=0.3 (min, bent knee)
+```
+
+#### Training Pipeline (Pass Config Through)
+| File | Change |
+|------|--------|
+| `training/trainer_jit.py` | Added Golden Rule params to `AMPPPOConfigJit` |
+| `training/trainer_jit.py` | `extract_amp_features_batched()` accepts all params |
+| `training/trainer_jit.py` | `make_train_iteration_fn()` passes config values |
+
+#### Diagnostic Script (Config-Driven)
+| File | Change |
+|------|--------|
+| `scripts/diagnose_amp_features.py` | Reads Golden Rule params from training config |
+| `scripts/diagnose_amp_features.py` | Prints config values for debugging |
+
+### Config
+```yaml
+version: "0.6.2"
+version_name: "Golden Rule Configuration"
+```
+
+### Key Principle
+**"No hardcoding, everything from config"** — All parameters that affect feature extraction now come from `ppo_amass_training.yaml` and `robot_config.yaml`. Joint indices are derived from actuator names, not hardcoded.
+
+### Migration
+If upgrading from v0.6.1, add these fields to your training config:
+```yaml
+amp:
+  use_estimated_contacts: true
+  use_finite_diff_vel: true
+  contact_threshold_angle: 0.1
+  contact_knee_scale: 0.5
+  contact_min_confidence: 0.3
+```
+
+### Status
+✅ Complete - all Golden Rule parameters are now configurable
+
+---
+
 ## [v0.6.0] - 2024-12-23: Spectral Normalization + Policy Replay Buffer
 
 ### Problem

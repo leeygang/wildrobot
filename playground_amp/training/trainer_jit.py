@@ -114,6 +114,13 @@ class AMPPPOConfigJit:
     replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
     replay_buffer_ratio: float = 0.5  # Ratio of historical samples (0.5 = 50% each)
 
+    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+    use_estimated_contacts: bool = True  # Use joint-based contact estimation
+    use_finite_diff_vel: bool = True  # Use finite difference velocities
+    contact_threshold_angle: float = 0.1  # Hip pitch threshold for contact detection (rad)
+    contact_knee_scale: float = 0.5  # Knee angle for confidence scaling (rad)
+    contact_min_confidence: float = 0.3  # Minimum confidence when hip indicates contact
+
 
 # =============================================================================
 # Training State
@@ -172,6 +179,9 @@ class Transition(NamedTuple):
     truncated: jnp.ndarray  # 1.0 if episode ended due to time limit (success)
     foot_contacts: jnp.ndarray  # v0.5.0: Foot contacts for AMP discriminator (4,)
     root_height: jnp.ndarray  # v0.6.1: Actual root height for AMP features (1,)
+    prev_joint_pos: (
+        jnp.ndarray
+    )  # v0.6.2: Previous joint positions for finite diff velocity (9,)
 
 
 class IterationMetrics(NamedTuple):
@@ -309,7 +319,7 @@ def collect_rollout_scan(
     """
 
     def step_fn(carry, _):
-        env_state, rng = carry
+        env_state, rng, prev_joint_pos = carry
         rng, action_rng = jax.random.split(rng)
 
         obs = env_state.obs
@@ -324,6 +334,10 @@ def collect_rollout_scan(
 
         # Step environment
         next_env_state = env_step_fn(env_state, action)
+
+        # Extract current joint positions for next iteration
+        # Joint positions are at indices 9-18 in observation (38-dim layout)
+        current_joint_pos = obs[..., 9:18]
 
         # Create transition
         transition = Transition(
@@ -343,13 +357,17 @@ def collect_rollout_scan(
             root_height=next_env_state.info[
                 "root_height"
             ],  # v0.6.1: Actual height for AMP features
+            prev_joint_pos=prev_joint_pos,  # v0.6.2: For finite diff velocity
         )
 
-        return (next_env_state, rng), transition
+        return (next_env_state, rng, current_joint_pos), transition
+
+    # Initialize prev_joint_pos from initial observation
+    initial_joint_pos = env_state.obs[..., 9:18]
 
     # Run scan
-    init_carry = (env_state, rng)
-    (final_env_state, _), transitions = jax.lax.scan(
+    init_carry = (env_state, rng, initial_joint_pos)
+    (final_env_state, _, _), transitions = jax.lax.scan(
         step_fn, init_carry, None, length=num_steps
     )
 
@@ -371,29 +389,56 @@ def extract_amp_features_batched(
     config: AMPFeatureConfig,
     foot_contacts: jnp.ndarray,
     root_height: jnp.ndarray,
+    prev_joint_pos: jnp.ndarray,
+    dt: float,
+    use_estimated_contacts: bool,
+    use_finite_diff_vel: bool,
+    contact_threshold_angle: float = 0.1,
+    contact_knee_scale: float = 0.5,
+    contact_min_confidence: float = 0.3,
 ) -> jnp.ndarray:
     """Extract AMP features from observations (batched).
 
     v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
     v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
+    v0.6.2: GOLDEN RULES - all params from training config.
 
     Args:
         obs: Observations, shape (num_steps, num_envs, obs_dim)
         config: Feature extraction configuration (REQUIRED)
-        foot_contacts: Foot contacts from env, shape (num_steps, num_envs, 4) (REQUIRED)
+        foot_contacts: Foot contacts from env (for physics mode), shape (num_steps, num_envs, 4)
         root_height: Root height from env, shape (num_steps, num_envs) (REQUIRED)
+        prev_joint_pos: Previous joint positions, shape (num_steps, num_envs, 9) (REQUIRED)
+        dt: Time step for finite difference calculation (REQUIRED from config)
+        use_estimated_contacts: Use joint-based contact estimation (REQUIRED from config)
+        use_finite_diff_vel: Use finite difference velocities (REQUIRED from config)
+        contact_threshold_angle: Hip pitch threshold for contact detection (rad)
+        contact_knee_scale: Knee angle for confidence scaling (rad)
+        contact_min_confidence: Minimum confidence when hip indicates contact (0-1)
 
     Returns:
         AMP features, shape (num_steps, num_envs, feature_dim)
     """
 
     def extract_single(inputs):
-        obs_single, fc_single, rh_single = inputs
+        obs_single, fc_single, rh_single, prev_jp_single = inputs
         return extract_amp_features(
-            obs_single, config=config, foot_contacts=fc_single, root_height=rh_single
+            obs_single,
+            config=config,
+            foot_contacts=fc_single,
+            root_height=rh_single,
+            prev_joint_pos=prev_jp_single,
+            dt=dt,
+            use_estimated_contacts=use_estimated_contacts,
+            use_finite_diff_vel=use_finite_diff_vel,
+            contact_threshold_angle=contact_threshold_angle,
+            contact_knee_scale=contact_knee_scale,
+            contact_min_confidence=contact_min_confidence,
         )
 
-    return jax.vmap(jax.vmap(extract_single))((obs, foot_contacts, root_height))
+    return jax.vmap(jax.vmap(extract_single))(
+        (obs, foot_contacts, root_height, prev_joint_pos)
+    )
 
 
 # =============================================================================
@@ -698,11 +743,19 @@ def make_train_iteration_fn(
         # ====================================================================
         # v0.5.0: Pass foot contacts from environment for real contact info
         # v0.6.1: Pass root_height from environment for matching reference data
+        # v0.6.2: Pass prev_joint_pos for finite difference velocities (Golden Rule)
         amp_features = extract_amp_features_batched(
             transitions.obs,
             amp_feature_config,
             transitions.foot_contacts,
             transitions.root_height,  # v0.6.1: Actual height (not gravity[2])
+            transitions.prev_joint_pos,  # v0.6.2: For finite diff velocity
+            dt=0.02,  # ctrl_dt from config (TODO: pass from TrainingConfig)
+            use_estimated_contacts=config.use_estimated_contacts,  # v0.6.2 Golden Rule
+            use_finite_diff_vel=config.use_finite_diff_vel,  # v0.6.2 Golden Rule
+            contact_threshold_angle=config.contact_threshold_angle,
+            contact_knee_scale=config.contact_knee_scale,
+            contact_min_confidence=config.contact_min_confidence,
         )
         # Shape: (num_steps, num_envs, feature_dim)
 

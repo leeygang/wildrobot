@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.6.0"
-version_name: "Spectral Normalization + Policy Replay Buffer"
+version: "0.6.2"
+version_name: "Golden Rule Configuration"
 
 # =============================================================================
 # Environment
@@ -106,6 +106,16 @@ amp:
   # v0.6.0: Policy Replay Buffer (prevents catastrophic forgetting)
   replay_buffer_size: 100000     # 0 = disabled, >0 = capacity (industry: 100K-200K)
   replay_buffer_ratio: 0.5       # Ratio of historical samples (0.5 = 50% current, 50% historical)
+
+  # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+  # These ensure policy and reference features are computed identically
+  use_estimated_contacts: true   # Use joint-based contact estimation (matches reference data)
+  use_finite_diff_vel: true      # Use finite difference velocities (matches reference data)
+
+  # Foot contact estimation parameters (for use_estimated_contacts=true)
+  contact_threshold_angle: 0.1   # Hip pitch angle threshold for contact detection (rad)
+  contact_knee_scale: 0.5        # Knee angle at which confidence starts decreasing (rad, ~28°)
+  contact_min_confidence: 0.3    # Minimum confidence when hip indicates contact (0-1)
 
 # =============================================================================
 # W&B Logging

@@ -322,6 +322,13 @@ class TrainingConfig:
     disc_hidden_dims: Tuple[int, ...]
     ref_motion_path: Optional[str]
 
+    # v0.6.2: AMP Golden Rule Configuration (Mathematical Parity)
+    use_estimated_contacts: bool  # Use joint-based contact estimation (matches reference)
+    use_finite_diff_vel: bool  # Use finite difference velocities (matches reference)
+    contact_threshold_angle: float  # Hip pitch angle threshold for contact detection (rad)
+    contact_knee_scale: float  # Knee angle at which confidence starts decreasing (rad)
+    contact_min_confidence: float  # Minimum confidence when hip indicates contact (0-1)
+
     # Reward weights
     reward_weights: Dict[str, float]
 
@@ -395,6 +402,12 @@ class TrainingConfig:
             disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
             disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
             ref_motion_path=amp.get("dataset_path"),
+            # v0.6.2: Golden Rule Configuration
+            use_estimated_contacts=amp.get("use_estimated_contacts", True),
+            use_finite_diff_vel=amp.get("use_finite_diff_vel", True),
+            contact_threshold_angle=amp.get("contact_threshold_angle", 0.1),
+            contact_knee_scale=amp.get("contact_knee_scale", 0.5),
+            contact_min_confidence=amp.get("contact_min_confidence", 0.3),
             # Reward weights
             reward_weights=rewards,
             # W&B configuration

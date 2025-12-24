@@ -34,6 +34,8 @@ class AMPFeatureConfig(NamedTuple):
     This preserves directional information (forward/backward/sideways)
     while removing speed magnitude that causes mismatch between
     reference data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
+
+    v0.6.2: Added Golden Rule parameters for Mathematical Parity.
     """
 
     # Observation indices for feature extraction
@@ -56,6 +58,13 @@ class AMPFeatureConfig(NamedTuple):
 
     # Number of actuated joints (from robot_config.action_dim)
     num_actuated_joints: int
+
+    # v0.6.2: Joint indices for contact estimation (from robot_config actuator order)
+    # These map actuator names to indices in joint_pos array
+    left_hip_pitch_idx: int  # Index of left_hip_pitch in joint_pos
+    left_knee_pitch_idx: int  # Index of left_knee_pitch in joint_pos
+    right_hip_pitch_idx: int  # Index of right_hip_pitch in joint_pos
+    right_knee_pitch_idx: int  # Index of right_knee_pitch in joint_pos
 
     # Whether to use transition features (current + next)
     # Fields with defaults must come after fields without defaults
@@ -84,6 +93,17 @@ def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
     """
     obs_indices = robot_config.observation_indices
 
+    # v0.6.2: Derive joint indices from actuator names
+    # These are used for contact estimation to match reference data
+    actuator_names = robot_config.actuator_names
+
+    def get_joint_index(name: str) -> int:
+        """Get index of joint in actuator_names list."""
+        try:
+            return actuator_names.index(name)
+        except ValueError:
+            raise ValueError(f"Joint '{name}' not found in actuator_names: {actuator_names}")
+
     return AMPFeatureConfig(
         joint_pos_start=obs_indices["joint_positions"]["start"],
         joint_pos_end=obs_indices["joint_positions"]["end"],
@@ -96,6 +116,11 @@ def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
         root_height_idx=obs_indices["gravity_vector"]["start"] + 2,  # gravity[2]
         use_transition_features=False,
         num_actuated_joints=robot_config.action_dim,
+        # v0.6.2: Joint indices for contact estimation (derived from robot_config)
+        left_hip_pitch_idx=get_joint_index("left_hip_pitch"),
+        left_knee_pitch_idx=get_joint_index("left_knee_pitch"),
+        right_hip_pitch_idx=get_joint_index("right_hip_pitch"),
+        right_knee_pitch_idx=get_joint_index("right_knee_pitch"),
     )
 
 
@@ -109,11 +134,78 @@ def get_amp_config() -> AMPFeatureConfig:
     return create_amp_config_from_robot(robot_config)
 
 
+def estimate_foot_contacts_from_joints(
+    joint_pos: jnp.ndarray,
+    config: AMPFeatureConfig,
+    threshold_angle: float = 0.1,
+    knee_scale: float = 0.5,
+    min_confidence: float = 0.3,
+) -> jnp.ndarray:
+    """Estimate foot contacts from joint positions (matches reference data).
+
+    This uses the same heuristic as the reference data generation:
+    - When hip pitch is negative (leg behind body), foot is likely in contact
+    - When knee is more bent, contact confidence decreases
+
+    v0.6.2: All parameters are now configurable from training config.
+    Joint indices are derived from robot_config.yaml.
+
+    Args:
+        joint_pos: Joint positions (9,)
+        config: AMP feature config with joint indices
+        threshold_angle: Hip pitch angle threshold (rad). When hip_pitch < threshold,
+            the leg is behind the body and foot is likely in contact. Default 0.1 rad (~6°).
+        knee_scale: Knee angle at which confidence starts decreasing (rad).
+            When |knee_angle| > knee_scale, the leg is bent and less likely to have
+            ground contact. Default 0.5 rad (~28°). Confidence is linearly scaled
+            from 1.0 at knee=0 to min_confidence at knee=knee_scale.
+        min_confidence: Minimum confidence value (0-1) when hip indicates contact
+            but knee is bent. Default 0.3 (30%). Prevents complete contact loss
+            during bent-knee stance phases.
+
+    Returns:
+        Estimated foot contacts (4,) - [left_toe, left_heel, right_toe, right_heel]
+    """
+    # Joint indices from config (derived from robot_config.yaml actuator order)
+    left_hip_pitch = joint_pos[config.left_hip_pitch_idx]
+    left_knee = joint_pos[config.left_knee_pitch_idx]
+    right_hip_pitch = joint_pos[config.right_hip_pitch_idx]
+    right_knee = joint_pos[config.right_knee_pitch_idx]
+
+    # Left foot contact estimation:
+    # - Base contact: hip_pitch < threshold (leg behind body)
+    # - Confidence scaling: reduces when knee is bent
+    #   - At knee=0: confidence = 1.0 (fully extended)
+    #   - At knee=knee_scale: confidence = min_confidence
+    #   - Formula: clip(1.0 - |knee| / knee_scale, min_confidence, 1.0)
+    left_contact = (left_hip_pitch < threshold_angle).astype(jnp.float32)
+    left_contact = left_contact * jnp.clip(
+        1.0 - jnp.abs(left_knee) / knee_scale, min_confidence, 1.0
+    )
+
+    # Right foot contact (same logic)
+    right_contact = (right_hip_pitch < threshold_angle).astype(jnp.float32)
+    right_contact = right_contact * jnp.clip(
+        1.0 - jnp.abs(right_knee) / knee_scale, min_confidence, 1.0
+    )
+
+    # Return 4 contacts: [left_toe, left_heel, right_toe, right_heel]
+    # Toe and heel share the same contact estimate for each foot
+    return jnp.array([left_contact, left_contact, right_contact, right_contact])
+
+
 def extract_amp_features(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
     foot_contacts: jnp.ndarray,
     root_height: jnp.ndarray,
+    prev_joint_pos: jnp.ndarray,
+    dt: float,
+    use_estimated_contacts: bool,
+    use_finite_diff_vel: bool,
+    contact_threshold_angle: float = 0.1,
+    contact_knee_scale: float = 0.5,
+    contact_min_confidence: float = 0.3,
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
@@ -125,22 +217,25 @@ def extract_amp_features(
     - Root height (24): 1 dim (actual height in meters)
     - Foot contacts (25-28): 4 dims
 
-    v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
-    v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
+    v0.6.2 GOLDEN RULES for Mathematical Parity:
+    - foot_contacts: Use joint-based estimation (matches reference data)
+    - joint_vel: Use finite differences (matches reference data)
 
-    NOTE: Root linear velocity is NORMALIZED to unit direction vector.
-    This preserves directional info (forward/backward/sideways) while
-    removing speed magnitude that causes mismatch between reference
-    data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
-
-    NOTE: Root height is the ACTUAL robot height (meters), not gravity[2].
-    This must match the reference data format which uses actual height.
+    These settings ensure the discriminator cannot "cheat" by detecting
+    calculation method differences between reference and policy data.
 
     Args:
         obs: Current observation (..., obs_dim=38)
         config: Feature extraction configuration (REQUIRED)
-        foot_contacts: Foot contact values from env (..., 4) (REQUIRED)
+        foot_contacts: Physics-based foot contacts (only used if use_estimated_contacts=False)
         root_height: Root height from env (...,) in meters (REQUIRED)
+        prev_joint_pos: Previous joint positions for finite difference velocity (..., 9)
+        dt: Time step for finite difference calculation (e.g., 0.02 = 50Hz) (REQUIRED)
+        use_estimated_contacts: If True, estimate contacts from joint angles (REQUIRED)
+        use_finite_diff_vel: If True, use finite difference velocities (REQUIRED)
+        contact_threshold_angle: Hip pitch threshold for contact detection (rad)
+        contact_knee_scale: Knee angle for confidence scaling (rad)
+        contact_min_confidence: Minimum confidence when hip indicates contact (0-1)
 
     Returns:
         amp_features: Motion features (..., 29)
@@ -156,12 +251,40 @@ def extract_amp_features(
     # - padding: 37 (1)
 
     joint_pos = obs[..., config.joint_pos_start : config.joint_pos_end]  # 9 dims
-    joint_vel = obs[..., config.joint_vel_start : config.joint_vel_end]  # 9 dims
     root_linvel = obs[..., config.root_linvel_start : config.root_linvel_end]  # 3 dims
     root_angvel = obs[..., config.root_angvel_start : config.root_angvel_end]  # 3 dims
 
+    # === GOLDEN RULE FIX 1: Joint Velocities ===
+    # Use finite differences to match reference data calculation method
+    if use_finite_diff_vel and prev_joint_pos is not None:
+        # Finite difference velocity (matches AMASS reference processing)
+        joint_vel = (joint_pos - prev_joint_pos) / dt
+    else:
+        # Fallback to analytical velocities from MuJoCo (not recommended for AMP)
+        joint_vel = obs[..., config.joint_vel_start : config.joint_vel_end]
+
+    # === GOLDEN RULE FIX 2: Foot Contacts ===
+    # Use joint-based estimation to match reference data calculation method
+    if use_estimated_contacts:
+        # Estimate from joint angles (matches AMASS reference processing)
+        foot_contacts_feat = estimate_foot_contacts_from_joints(
+            joint_pos,
+            config,
+            threshold_angle=contact_threshold_angle,
+            knee_scale=contact_knee_scale,
+            min_confidence=contact_min_confidence,
+        )
+    else:
+        # Use physics contacts (may cause distribution mismatch)
+        if foot_contacts is None:
+            raise ValueError(
+                "foot_contacts is required when use_estimated_contacts=False"
+            )
+        foot_contacts_feat = foot_contacts
+
     # Root height: ensure shape is (..., 1) for concatenation
-    # v0.6.1: root_height is REQUIRED - must be actual height from env.info["root_height"]
+    if root_height is None:
+        raise ValueError("root_height is required")
     if root_height.ndim == 0 or (root_height.ndim > 0 and root_height.shape[-1] != 1):
         root_height_feat = root_height[..., jnp.newaxis]
     else:
@@ -169,8 +292,6 @@ def extract_amp_features(
 
     # Normalize root linear velocity to unit direction vector
     # This removes speed (magnitude) while preserving direction
-    # SAFETY: When velocity is very small (standing/start of episode),
-    # return zero vector instead of noisy normalized direction
     linvel_norm = jnp.linalg.norm(root_linvel, axis=-1, keepdims=True)
 
     # Threshold: if speed < 0.1 m/s, consider it "stationary" → zero direction
@@ -189,11 +310,11 @@ def extract_amp_features(
     features = jnp.concatenate(
         [
             joint_pos,  # 0-8: 9 dims
-            joint_vel,  # 9-17: 9 dims
+            joint_vel,  # 9-17: 9 dims (finite diff or analytical)
             root_linvel_dir,  # 18-20: 3 dims (normalized direction)
             root_angvel,  # 21-23: 3 dims
             root_height_feat,  # 24: 1 dim (actual height in meters)
-            foot_contacts,  # 25-28: 4 dims
+            foot_contacts_feat,  # 25-28: 4 dims (estimated or physics)
         ],
         axis=-1,
     )

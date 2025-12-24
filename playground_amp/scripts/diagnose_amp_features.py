@@ -115,105 +115,138 @@ def load_reference_features():
 
 
 def collect_policy_features(num_samples=1000):
-    """Collect policy features from random rollouts using batched environments.
+    """Collect policy features from random rollouts.
 
-    Optimized for speed using:
-    - Batched environments (64 parallel envs)
-    - JIT-compiled step and feature extraction
-    - Vectorized operations
+    Uses simple JIT-compiled single-env step (no vmap - vmap causes
+    massive JIT compilation time on MuJoCo envs).
+
+    v0.6.2: Reads Golden Rule parameters from training config
+    to match the training pipeline exactly.
     """
     import jax
     import jax.numpy as jnp
     from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
     from playground_amp.train import create_env
+    from playground_amp.configs.config import get_training_config
 
-    NUM_ENVS = 64  # Run 64 envs in parallel
-    STEPS_PER_ENV = (num_samples // NUM_ENVS) + 1
+    # Get Golden Rule params from training config
+    training_config = get_training_config()
+    dt = training_config.ctrl_dt
+    use_estimated_contacts = training_config.use_estimated_contacts
+    use_finite_diff_vel = training_config.use_finite_diff_vel
+    contact_threshold_angle = training_config.contact_threshold_angle
+    contact_knee_scale = training_config.contact_knee_scale
+    contact_min_confidence = training_config.contact_min_confidence
 
+    print(f"  Creating environment...", end=" ", flush=True)
     env = create_env()
     amp_config = get_amp_config()
+    print("done")
 
-    # JIT-compile the step function
+    print(f"  Golden Rule params from config:")
+    print(f"    dt={dt}, use_estimated_contacts={use_estimated_contacts}")
+    print(f"    use_finite_diff_vel={use_finite_diff_vel}")
+    print(f"    contact_threshold_angle={contact_threshold_angle}")
+    print(f"    contact_knee_scale={contact_knee_scale}")
+    print(f"    contact_min_confidence={contact_min_confidence}")
+
+    # JIT-compile single-env functions (fast to compile)
     @jax.jit
-    def batched_step(states, actions):
-        return jax.vmap(env.step)(states, actions)
+    def step_fn(state, action):
+        return env.step(state, action)
 
     @jax.jit
-    def batched_reset(rngs):
-        return jax.vmap(env.reset)(rngs)
+    def reset_fn(rng):
+        return env.reset(rng)
 
-    # JIT-compile feature extraction
     @jax.jit
-    def batched_extract_features(obs, foot_contacts, root_height):
-        return jax.vmap(lambda o, fc, rh: extract_amp_features(o, amp_config, fc, rh))(
-            obs, foot_contacts, root_height
+    def extract_fn(obs, foot_contacts, root_height, prev_joint_pos):
+        """Extract features using Golden Rule parameters (from config)."""
+        return extract_amp_features(
+            obs,
+            amp_config,
+            foot_contacts=foot_contacts,
+            root_height=root_height,
+            prev_joint_pos=prev_joint_pos,
+            dt=dt,
+            use_estimated_contacts=use_estimated_contacts,
+            use_finite_diff_vel=use_finite_diff_vel,
+            contact_threshold_angle=contact_threshold_angle,
+            contact_knee_scale=contact_knee_scale,
+            contact_min_confidence=contact_min_confidence,
         )
 
     rng = jax.random.PRNGKey(42)
     features_list = []
 
-    # Reset all envs
+    # Warm-up JIT (compile once)
+    print(f"  JIT compiling...", end=" ", flush=True)
     rng, reset_rng = jax.random.split(rng)
-    reset_rngs = jax.random.split(reset_rng, NUM_ENVS)
+    state = reset_fn(reset_rng)
 
-    print(f"  JIT compiling (first run)...", end=" ", flush=True)
-    states = batched_reset(reset_rngs)
-
-    # Warm-up JIT compilation with one step
     rng, action_rng = jax.random.split(rng)
-    actions = jax.random.uniform(action_rng, (NUM_ENVS, 9), minval=-1, maxval=1)
-    states = batched_step(states, actions)
+    action = jax.random.uniform(action_rng, (9,), minval=-1, maxval=1)
+    prev_state = state
+    state = step_fn(state, action)
 
-    # Extract features once to compile that too
-    obs = states.obs
-    foot_contacts = states.info["foot_contacts"]
-    root_height = states.info["root_height"]
-    _ = batched_extract_features(obs, foot_contacts, root_height)
-    print("done")
-
-    print(
-        f"  Collecting {num_samples} samples from {NUM_ENVS} parallel envs...",
-        end=" ",
-        flush=True,
+    # Get joint positions from observation (indices 9-18)
+    prev_joint_pos = prev_state.obs[9:18]
+    _ = extract_fn(
+        state.obs,
+        state.info["foot_contacts"],
+        state.info["root_height"],
+        prev_joint_pos,
     )
+    print("done")
 
-    # Collect features
-    for step in range(STEPS_PER_ENV):
-        rng, action_rng = jax.random.split(rng)
-        actions = jax.random.uniform(action_rng, (NUM_ENVS, 9), minval=-1, maxval=1)
+    # Collect features with progress
+    print(f"  Collecting {num_samples} samples: ", end="", flush=True)
 
-        states = batched_step(states, actions)
+    steps = 0
+    episode_steps = 0
+    progress_interval = num_samples // 10  # Print progress every 10%
 
-        obs = states.obs
-        foot_contacts = states.info["foot_contacts"]
-        root_height = states.info["root_height"]
+    # Store previous joint positions for finite difference velocity
+    prev_joint_pos = state.obs[9:18]
 
-        features = batched_extract_features(obs, foot_contacts, root_height)
-        features_list.append(np.array(features))  # (NUM_ENVS, 29)
-
-        # Reset done envs
-        done_mask = states.done
-        if jnp.any(done_mask):
+    while steps < num_samples:
+        # Reset if needed
+        if episode_steps == 0 or state.done:
             rng, reset_rng = jax.random.split(rng)
-            reset_rngs = jax.random.split(reset_rng, NUM_ENVS)
-            new_states = batched_reset(reset_rngs)
-            # Replace done states with new states
-            states = jax.tree.map(
-                lambda old, new: jnp.where(
-                    done_mask.reshape(-1, *([1] * (old.ndim - 1))), new, old
-                ),
-                states,
-                new_states,
-            )
+            state = reset_fn(reset_rng)
+            episode_steps = 0
+            prev_joint_pos = state.obs[9:18]  # Reset prev_joint_pos too
 
-        if len(features_list) * NUM_ENVS >= num_samples:
-            break
+        # Step
+        rng, action_rng = jax.random.split(rng)
+        action = jax.random.uniform(action_rng, (9,), minval=-1, maxval=1)
+
+        # Store current joint pos before stepping
+        current_joint_pos = state.obs[9:18]
+
+        state = step_fn(state, action)
+        episode_steps += 1
+
+        # Extract features with Golden Rule parameters
+        features = extract_fn(
+            state.obs,
+            state.info["foot_contacts"],
+            state.info["root_height"],
+            prev_joint_pos,  # Previous step's joint positions
+        )
+        features_list.append(np.array(features))
+        steps += 1
+
+        # Update prev_joint_pos for next iteration
+        prev_joint_pos = current_joint_pos
+
+        # Progress indicator
+        if steps % progress_interval == 0:
+            print(f"{steps // progress_interval * 10}%...", end="", flush=True)
 
     print("done")
 
-    # Stack and flatten: (num_steps, NUM_ENVS, 29) -> (num_steps * NUM_ENVS, 29)
-    all_features = np.concatenate(features_list, axis=0)
-    return all_features[:num_samples]
+    return np.stack(features_list)
 
 
 def check_constant_features(ref_features, policy_features):
