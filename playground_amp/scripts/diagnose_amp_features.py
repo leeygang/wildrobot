@@ -115,42 +115,105 @@ def load_reference_features():
 
 
 def collect_policy_features(num_samples=1000):
-    """Collect policy features from random rollouts."""
+    """Collect policy features from random rollouts using batched environments.
+
+    Optimized for speed using:
+    - Batched environments (64 parallel envs)
+    - JIT-compiled step and feature extraction
+    - Vectorized operations
+    """
     import jax
     import jax.numpy as jnp
     from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-
     from playground_amp.train import create_env
+
+    NUM_ENVS = 64  # Run 64 envs in parallel
+    STEPS_PER_ENV = (num_samples // NUM_ENVS) + 1
 
     env = create_env()
     amp_config = get_amp_config()
 
+    # JIT-compile the step function
+    @jax.jit
+    def batched_step(states, actions):
+        return jax.vmap(env.step)(states, actions)
+
+    @jax.jit
+    def batched_reset(rngs):
+        return jax.vmap(env.reset)(rngs)
+
+    # JIT-compile feature extraction
+    @jax.jit
+    def batched_extract_features(obs, foot_contacts, root_height):
+        return jax.vmap(lambda o, fc, rh: extract_amp_features(o, amp_config, fc, rh))(
+            obs, foot_contacts, root_height
+        )
+
     rng = jax.random.PRNGKey(42)
     features_list = []
 
-    steps = 0
-    while steps < num_samples:
-        rng, reset_rng, step_rng = jax.random.split(rng, 3)
-        state = env.reset(reset_rng)
+    # Reset all envs
+    rng, reset_rng = jax.random.split(rng)
+    reset_rngs = jax.random.split(reset_rng, NUM_ENVS)
 
-        for _ in range(100):
-            step_rng, action_rng = jax.random.split(step_rng)
-            action = jax.random.uniform(action_rng, (9,), minval=-1, maxval=1)
+    print(f"  JIT compiling (first run)...", end=" ", flush=True)
+    states = batched_reset(reset_rngs)
 
-            state = env.step(state, action)
+    # Warm-up JIT compilation with one step
+    rng, action_rng = jax.random.split(rng)
+    actions = jax.random.uniform(action_rng, (NUM_ENVS, 9), minval=-1, maxval=1)
+    states = batched_step(states, actions)
 
-            obs = state.obs
-            foot_contacts = state.info["foot_contacts"]
-            root_height = state.info["root_height"]
+    # Extract features once to compile that too
+    obs = states.obs
+    foot_contacts = states.info["foot_contacts"]
+    root_height = states.info["root_height"]
+    _ = batched_extract_features(obs, foot_contacts, root_height)
+    print("done")
 
-            features = extract_amp_features(obs, amp_config, foot_contacts, root_height)
-            features_list.append(np.array(features))
-            steps += 1
+    print(
+        f"  Collecting {num_samples} samples from {NUM_ENVS} parallel envs...",
+        end=" ",
+        flush=True,
+    )
 
-            if state.done or steps >= num_samples:
-                break
+    # Collect features
+    for step in range(STEPS_PER_ENV):
+        rng, action_rng = jax.random.split(rng)
+        actions = jax.random.uniform(action_rng, (NUM_ENVS, 9), minval=-1, maxval=1)
 
-    return np.stack(features_list[:num_samples])
+        states = batched_step(states, actions)
+
+        obs = states.obs
+        foot_contacts = states.info["foot_contacts"]
+        root_height = states.info["root_height"]
+
+        features = batched_extract_features(obs, foot_contacts, root_height)
+        features_list.append(np.array(features))  # (NUM_ENVS, 29)
+
+        # Reset done envs
+        done_mask = states.done
+        if jnp.any(done_mask):
+            rng, reset_rng = jax.random.split(rng)
+            reset_rngs = jax.random.split(reset_rng, NUM_ENVS)
+            new_states = batched_reset(reset_rngs)
+            # Replace done states with new states
+            states = jax.tree.map(
+                lambda old, new: jnp.where(
+                    done_mask.reshape(-1, *([1] * (old.ndim - 1))), new, old
+                ),
+                states,
+                new_states,
+            )
+
+        if len(features_list) * NUM_ENVS >= num_samples:
+            break
+
+    print("done")
+
+    # Stack and flatten: (num_steps, NUM_ENVS, 29) -> (num_steps * NUM_ENVS, 29)
+    all_features = np.concatenate(features_list, axis=0)
+    return all_features[:num_samples]
 
 
 def check_constant_features(ref_features, policy_features):
