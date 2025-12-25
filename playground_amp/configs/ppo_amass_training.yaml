@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.6.5"
-version_name: "Discriminator Middle-Ground + Diagnostic"
+version: "0.6.6"
+version_name: "Feature Parity Fix"
 
 # =============================================================================
 # Environment
@@ -119,8 +119,7 @@ amp:
   contact_knee_scale: 0.5        # Knee angle at which confidence starts decreasing (rad, ~28°)
   contact_min_confidence: 0.3    # Minimum confidence when hip indicates contact (0-1)
 
-  # v0.6.3: Feature Cleaning (removes discriminator cheats)
-  mask_waist: true               # Exclude waist_yaw from features (AMASS has constant 0)
+  # v0.6.3: Feature Cleaning
   velocity_filter_alpha: 0.0     # Disabled to test if filter erases distribution
   ankle_offset: 0.18             # Ankle pitch calibration offset (rad) - fixes neutral pose mismatch
 

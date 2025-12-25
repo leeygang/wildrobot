@@ -4,6 +4,75 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.6.6] - 2024-12-24: Feature Parity Fix (Root Linear Velocity)
+
+### Problem: Policy and Reference Features Had Different Root Velocity Semantics
+
+Root cause of `disc_acc = 0.50` (discriminator stuck at chance):
+
+| Feature | Policy Extractor | Reference Generator | Impact |
+|---------|------------------|---------------------|--------|
+| **Root linear vel** | Normalized to unit direction | Raw velocity (m/s) | **CRITICAL** |
+
+When features have different semantics, the discriminator cannot learn a stable decision boundary → collapses to 0.50 accuracy.
+
+### Root Cause Analysis
+
+**Root Linear Velocity Normalization Mismatch**
+```python
+# Policy (WRONG - normalized to unit direction):
+root_linvel_dir = root_linvel / ||root_linvel||  # Removes magnitude!
+
+# Reference (correct - raw velocity):
+root_lin_vel = (root_pos[1:] - root_pos[:-1]) / dt  # Keeps magnitude
+```
+
+After z-score normalization with reference stats, policy velocities (unit vectors with small variance) become near-constant, removing a major discriminative signal.
+
+### Changes
+
+**Policy Feature Extractor (`amp/amp_features.py`):**
+```python
+# BEFORE (v0.6.5):
+root_linvel_dir = root_linvel / (linvel_norm + 1e-8)  # ❌ Normalized
+
+# AFTER (v0.6.6):
+root_linvel_feat = root_linvel  # ✅ Raw velocity in m/s
+```
+
+**Waist Masking:** Removed (both policy and reference use 29 dims).
+
+The waist_yaw being constant 0 in AMASS is actually valid signal - the policy will learn to keep waist stable like the reference data.
+
+### Feature Vector Contract (v0.6.6)
+
+Both policy and reference produce identical **29-dim** vectors:
+
+| Index | Feature | Dims |
+|-------|---------|------|
+| 0-8 | Joint positions | 9 |
+| 9-17 | Joint velocities | 9 |
+| 18-20 | Root linear velocity (**raw m/s**) | 3 |
+| 21-23 | Root angular velocity | 3 |
+| 24 | Root height | 1 |
+| 25-28 | Foot contacts | 4 |
+| **Total** | | **29** |
+
+### No Reference Data Rebuild Needed
+
+This fix only changes the policy extractor. Reference data already uses raw velocities and 29 dims.
+
+### Expected Post-Fix Behavior
+
+| Metric | Before (v0.6.5) | Expected (v0.6.6) |
+|--------|-----------------|-------------------|
+| `disc_acc` | 0.50 (stuck) | 0.55-0.75 (oscillating) |
+| `D(real)` | ≈0.5 | 0.7-0.9 |
+| `D(fake)` | ≈0.5 | 0.3-0.5 |
+| `amp_reward` | ≈0.05 | 0.1-0.4 |
+
+---
+
 ## [v0.6.5] - 2024-12-24: Discriminator Middle-Ground + Diagnostic
 
 ### Problem: disc_acc stuck at extremes

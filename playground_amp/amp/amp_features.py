@@ -30,13 +30,12 @@ class AMPFeatureConfig(NamedTuple):
     Defines which parts of the observation to use for discriminator.
     Indices are derived from robot_config.yaml observation_indices.
 
-    NOTE: Root linear velocity is NORMALIZED to unit direction vector.
-    This preserves directional information (forward/backward/sideways)
-    while removing speed magnitude that causes mismatch between
-    reference data (~0.27 m/s) and commanded speed (0.5-1.0 m/s).
+    NOTE: Root linear velocity uses RAW values (m/s), NOT normalized.
+    v0.6.6 fix: Both policy and reference must use raw velocity for
+    feature parity. Normalization was causing discriminator collapse.
 
     v0.6.2: Added Golden Rule parameters for Mathematical Parity.
-    v0.6.3: Added feature cleaning (waist masking, velocity filter, ankle calibration).
+    v0.6.3: Added feature cleaning (velocity filter, ankle calibration).
     """
 
     # Observation indices for feature extraction
@@ -75,26 +74,17 @@ class AMPFeatureConfig(NamedTuple):
     # Fields with defaults must come after fields without defaults
     use_transition_features: bool = False
 
-    # v0.6.3: Feature cleaning configuration
-    # Waist masking - AMASS has constant 0 waist_yaw, so mask it to prevent discriminator cheating
-    mask_waist: bool = True  # If True, exclude waist_yaw (index 0) from features
-
     # Feature dimension
     @property
     def feature_dim(self) -> int:
         """AMP feature dimension.
 
-        Format: joint_pos + joint_vel + root_linvel_dir(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
-        NOTE: root_linvel is NORMALIZED to unit direction (removes speed, keeps direction)
+        Format: joint_pos + joint_vel + root_linvel(3) + root_angvel(3) + root_height(1) + foot_contacts(4)
 
-        v0.6.3: If mask_waist=True, reduces from 29 to 27 dims (removes waist_yaw pos and vel)
+        v0.6.6: 27 dims for 8-joint robot (waist_yaw removed from robot).
         """
-        # Base: 9 joint_pos + 9 joint_vel + 3 root_linvel_dir + 3 root_angvel + 1 root_height + 4 foot_contacts = 29
-        base_dim = self.num_actuated_joints * 2 + 3 + 3 + 1 + 4
-        if self.mask_waist:
-            # Remove waist_yaw from both position and velocity = -2
-            return base_dim - 2
-        return base_dim
+        # 8 joint_pos + 8 joint_vel + 3 root_linvel + 3 root_angvel + 1 root_height + 4 foot_contacts = 27
+        return self.num_actuated_joints * 2 + 3 + 3 + 1 + 4
 
 
 def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
@@ -141,8 +131,7 @@ def create_amp_config_from_robot(robot_config: RobotConfig) -> AMPFeatureConfig:
         # v0.6.3: Ankle indices for calibration offset
         left_ankle_pitch_idx=get_joint_index("left_ankle_pitch"),
         right_ankle_pitch_idx=get_joint_index("right_ankle_pitch"),
-        # v0.6.3: Feature cleaning defaults
-        mask_waist=True,  # Mask waist_yaw by default (AMASS has constant 0)
+        # v0.6.6: 8 joints (waist_yaw removed from robot), 27-dim features
     )
 
 
@@ -219,119 +208,77 @@ def estimate_foot_contacts_from_joints(
 def extract_amp_features(
     obs: jnp.ndarray,
     config: AMPFeatureConfig,
-    foot_contacts: jnp.ndarray,
     root_height: jnp.ndarray,
     prev_joint_pos: jnp.ndarray,
     dt: float,
-    use_estimated_contacts: bool,
-    use_finite_diff_vel: bool,
     contact_threshold_angle: float = 0.1,
     contact_knee_scale: float = 0.5,
     contact_min_confidence: float = 0.3,
-    velocity_filter_alpha: float = 0.0,
-    ankle_offset: float = 0.0,
 ) -> jnp.ndarray:
     """Extract motion features for discriminator from observation.
 
-    v0.6.3 "Clean Feature Extractor" with industry-standard fixes:
-    1. Waist masking: Exclude waist_yaw (index 0) - AMASS has constant 0
-    2. Velocity filtering: Optional EMA to smooth finite diff velocities
-    3. Ankle calibration: Offset to fix neutral pose mismatch
+    v0.7.0: Simplified API - no fallback options.
+    - All velocities in HEADING-LOCAL frame (Contract A)
+    - Joint velocities: ALWAYS use finite differences (matches reference)
+    - Foot contacts: ALWAYS use joint-based estimation (matches reference)
+    - Ankle calibration: REMOVED (foot_mimic sites relocated in robot)
 
-    Feature dimensions:
-    - With mask_waist=True (default): 27 dims
-    - With mask_waist=False: 29 dims
-
-    Format (27-dim with waist masked):
-    - Joint positions (0-7): 8 dims (waist excluded)
-    - Joint velocities (8-15): 8 dims (waist excluded)
-    - Root linear velocity DIRECTION (16-18): 3 dims (normalized unit vector)
-    - Root angular velocity (19-21): 3 dims
-    - Root height (22): 1 dim (actual height in meters)
-    - Foot contacts (23-26): 4 dims
-
-    v0.6.2 GOLDEN RULES for Mathematical Parity:
-    - foot_contacts: Use joint-based estimation (matches reference data)
-    - joint_vel: Use finite differences (matches reference data)
+    Feature format (27-dim for 8-joint robot):
+    - Joint positions (0-7): 8 dims
+    - Joint velocities (8-15): 8 dims (finite diff)
+    - Root linear velocity (16-18): 3 dims (heading-local, raw m/s)
+    - Root angular velocity (19-21): 3 dims (heading-local)
+    - Root height (22): 1 dim (waist height)
+    - Foot contacts (23-26): 4 dims (estimated from joints)
 
     Args:
-        obs: Current observation (..., obs_dim=38)
+        obs: Current observation (..., obs_dim=35)
+             Layout: gravity(3), angvel(3), linvel(3), joint_pos(8),
+             joint_vel(8), prev_action(8), velocity_cmd(1), padding(1)
+             Note: angvel and linvel are already in heading-local frame
         config: Feature extraction configuration (REQUIRED)
-        foot_contacts: Physics-based foot contacts (only used if use_estimated_contacts=False)
         root_height: Root height from env (...,) in meters (REQUIRED)
-        prev_joint_pos: Previous joint positions for finite difference velocity (..., 9)
-        dt: Time step for finite difference calculation (e.g., 0.02 = 50Hz) (REQUIRED)
-        use_estimated_contacts: If True, estimate contacts from joint angles (REQUIRED)
-        use_finite_diff_vel: If True, use finite difference velocities (REQUIRED)
+        prev_joint_pos: Previous joint positions for finite diff (..., 8) (REQUIRED)
+        dt: Time step for finite diff (e.g., 0.02 = 50Hz) (REQUIRED)
         contact_threshold_angle: Hip pitch threshold for contact detection (rad)
         contact_knee_scale: Knee angle for confidence scaling (rad)
-        contact_min_confidence: Minimum confidence when hip indicates contact (0-1)
-        velocity_filter_alpha: EMA filter alpha for velocity smoothing (0=no filter, 0.5=moderate)
-        ankle_offset: Calibration offset for ankle pitch joints (rad)
+        contact_min_confidence: Minimum confidence when hip indicates contact
 
     Returns:
-        amp_features: Motion features (..., 27 or 29 depending on mask_waist)
+        amp_features: Motion features (..., 27)
     """
-    # Extract components from observation (38-dim layout):
+    # Observation layout (35-dim):
     # - gravity: 0-2 (3)
-    # - angvel: 3-5 (3)
-    # - linvel: 6-8 (3)
-    # - joint_pos: 9-17 (9)
-    # - joint_vel: 18-26 (9)
-    # - prev_action: 27-35 (9)
-    # - velocity_cmd: 36 (1)
-    # - padding: 37 (1)
+    # - angvel: 3-5 (3) - heading-local frame
+    # - linvel: 6-8 (3) - heading-local frame
+    # - joint_pos: 9-16 (8)
+    # - joint_vel: 17-24 (8)
+    # - prev_action: 25-32 (8)
+    # - velocity_cmd: 33 (1)
+    # - padding: 34 (1)
 
-    joint_pos = obs[..., config.joint_pos_start : config.joint_pos_end]  # 9 dims
+    joint_pos = obs[..., config.joint_pos_start : config.joint_pos_end]  # 8 dims
     root_linvel = obs[..., config.root_linvel_start : config.root_linvel_end]  # 3 dims
     root_angvel = obs[..., config.root_angvel_start : config.root_angvel_end]  # 3 dims
 
-    # === v0.6.3 FIX 3: Ankle Calibration Offset ===
-    # Fix neutral pose mismatch between AMASS and MuJoCo model
-    # Apply offset to ankle pitch joints before any other processing
-    if ankle_offset != 0.0:
-        joint_pos = joint_pos.at[..., config.left_ankle_pitch_idx].add(-ankle_offset)
-        joint_pos = joint_pos.at[..., config.right_ankle_pitch_idx].add(-ankle_offset)
-
-    # === GOLDEN RULE FIX 1: Joint Velocities ===
-    # Use finite differences to match reference data calculation method
-    if use_finite_diff_vel and prev_joint_pos is not None:
-        # Finite difference velocity (matches AMASS reference processing)
-        joint_vel = (joint_pos - prev_joint_pos) / dt
-
-        # === v0.6.3 FIX 2: Velocity Filtering (EMA) ===
-        # Apply exponential moving average to smooth velocity jitter
-        # This matches the "smoothness" of motion capture data
-        # alpha=0 means no filtering, alpha=0.5 means moderate smoothing
-        if velocity_filter_alpha > 0.0:
-            # EMA: vel_filtered = alpha * prev_vel + (1 - alpha) * current_vel
-            # For single-frame extraction, we use a simple clip-based smoothing
-            # to reduce extreme velocity spikes
-            vel_std = 3.0  # Expected std for reasonable velocities
-            vel_max = vel_std * 3.0  # Clip at 3 sigma
-            joint_vel = jnp.clip(joint_vel, -vel_max, vel_max)
-    else:
-        # Fallback to analytical velocities from MuJoCo (not recommended for AMP)
-        joint_vel = obs[..., config.joint_vel_start : config.joint_vel_end]
-
-    # === GOLDEN RULE FIX 2: Foot Contacts ===
-    # Use joint-based estimation to match reference data calculation method
-    if use_estimated_contacts:
-        # Estimate from joint angles (matches AMASS reference processing)
-        foot_contacts_feat = estimate_foot_contacts_from_joints(
-            joint_pos,
-            config,
-            threshold_angle=contact_threshold_angle,
-            knee_scale=contact_knee_scale,
-            min_confidence=contact_min_confidence,
+    # Joint velocities: ALWAYS use finite differences (v0.7.0 - no fallback)
+    # This matches reference data calculation method for feature parity
+    if prev_joint_pos is None:
+        raise ValueError(
+            "prev_joint_pos is REQUIRED for finite difference velocity. "
+            "Pass the previous frame's joint positions."
         )
-    else:
-        # Use physics contacts (may cause distribution mismatch)
-        if foot_contacts is None:
-            raise ValueError(
-                "foot_contacts is required when use_estimated_contacts=False"
-            )
-        foot_contacts_feat = foot_contacts
+    joint_vel = (joint_pos - prev_joint_pos) / dt
+
+    # Foot contacts: ALWAYS use joint-based estimation (v0.7.0 - no fallback)
+    # This matches reference data calculation method for feature parity
+    foot_contacts_feat = estimate_foot_contacts_from_joints(
+        joint_pos,
+        config,
+        threshold_angle=contact_threshold_angle,
+        knee_scale=contact_knee_scale,
+        min_confidence=contact_min_confidence,
+    )
 
     # Root height: ensure shape is (..., 1) for concatenation
     if root_height is None:
@@ -341,44 +288,19 @@ def extract_amp_features(
     else:
         root_height_feat = root_height
 
-    # Normalize root linear velocity to unit direction vector
-    # This removes speed (magnitude) while preserving direction
-    linvel_norm = jnp.linalg.norm(root_linvel, axis=-1, keepdims=True)
+    # Root linear velocity: raw velocity (NOT normalized to direction)
+    root_linvel_feat = root_linvel  # 3 dims, raw m/s (matches reference)
 
-    # Threshold: if speed < 0.1 m/s, consider it "stationary" → zero direction
-    min_speed_threshold = 0.1
-    is_moving = linvel_norm > min_speed_threshold
-
-    # Safe normalization: only normalize if moving, else zero
-    root_linvel_dir = jnp.where(
-        is_moving,
-        root_linvel / (linvel_norm + 1e-8),  # Normalized direction
-        jnp.zeros_like(root_linvel),  # Zero for stationary
-    )
-
-    # === v0.6.3 FIX 1: Waist Masking ===
-    # AMASS reference data has constant 0 for waist_yaw, so discriminator can cheat
-    # by checking "is waist moving?" - mask it to force judging actual gait
-    if config.mask_waist:
-        # Skip index 0 (waist_yaw) from both positions and velocities
-        # Robot joint order: [waist_yaw(0), left_hip_pitch(1), left_hip_roll(2), ...]
-        joint_pos_masked = joint_pos[..., 1:]  # 8 dims (indices 1-8)
-        joint_vel_masked = joint_vel[..., 1:]  # 8 dims (indices 1-8)
-    else:
-        joint_pos_masked = joint_pos  # 9 dims
-        joint_vel_masked = joint_vel  # 9 dims
-
-    # Concatenate in order:
-    # With waist masked (27-dim): [joint_pos(8), joint_vel(8), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
-    # Without mask (29-dim): [joint_pos(9), joint_vel(9), root_linvel_dir(3), root_angvel(3), root_height(1), foot_contacts(4)]
+    # Concatenate all features (27 dims for 8-joint robot)
+    # [joint_pos(8), joint_vel(8), root_linvel(3), root_angvel(3), root_height(1), foot_contacts(4)]
     features = jnp.concatenate(
         [
-            joint_pos_masked,  # 8 or 9 dims
-            joint_vel_masked,  # 8 or 9 dims (finite diff or analytical)
-            root_linvel_dir,  # 3 dims (normalized direction)
-            root_angvel,  # 3 dims
-            root_height_feat,  # 1 dim (actual height in meters)
-            foot_contacts_feat,  # 4 dims (estimated or physics)
+            joint_pos,  # 8 dims
+            joint_vel,  # 8 dims (finite diff - REQUIRED)
+            root_linvel_feat,  # 3 dims (heading-local, raw m/s)
+            root_angvel,  # 3 dims (heading-local)
+            root_height_feat,  # 1 dim (waist height)
+            foot_contacts_feat,  # 4 dims (estimated from joints - REQUIRED)
         ],
         axis=-1,
     )

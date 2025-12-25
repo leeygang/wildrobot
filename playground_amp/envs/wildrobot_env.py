@@ -359,6 +359,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "truncated": jp.zeros(()),  # No truncation at reset
             "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
             "root_height": height,  # v0.6.1: Actual root height for AMP features
+            # v0.9.1: Track previous root pose for finite-diff velocity computation
+            # This aligns policy velocity with reference velocity (both finite-diff)
+            "prev_root_pos": self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
+            "prev_root_quat": self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
         }
 
         return WildRobotEnvState(
@@ -432,8 +436,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         n_substeps = int(self.dt / self.sim_dt)
         data, _ = jax.lax.scan(substep_fn, data, None, length=n_substeps)
 
-        # Compute observation
-        obs = self._get_obs(data, filtered_action, velocity_cmd)
+        # Compute observation with finite-diff velocities
+        # v0.9.1: Pass previous root pose for FD velocity computation
+        prev_root_pos = state.info["prev_root_pos"]
+        prev_root_quat = state.info["prev_root_quat"]
+        obs = self._get_obs(
+            data, filtered_action, velocity_cmd, prev_root_pos, prev_root_quat
+        )
 
         # Compute reward
         reward, reward_components = self._get_reward(
@@ -456,12 +465,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         }
 
         # Update info with truncated flag for success rate tracking
+        # v0.9.1: Update previous root pose for finite-diff velocity
+        curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
+        curr_root_quat = self.get_floating_base_qpos(data.qpos)[3:7]
+
         info = {
             "step_count": step_count + 1,
             "prev_action": filtered_action,
             "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
             "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
             "root_height": height,  # v0.6.1: Actual root height for AMP features
+            # v0.9.1: Update previous root pose for finite-diff velocity
+            "prev_root_pos": curr_root_pos,
+            "prev_root_quat": curr_root_quat,
         }
 
         # =================================================================
@@ -501,29 +517,54 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data: mjx.Data,
         action: jax.Array,
         velocity_cmd: jax.Array,
+        prev_root_pos: Optional[jax.Array] = None,
+        prev_root_quat: Optional[jax.Array] = None,
     ) -> jax.Array:
         """Build observation vector.
 
+        v0.9.1: CRITICAL FIX - Use finite-diff velocities for AMP parity.
+        When prev_root_pos/quat are provided, velocities are computed from
+        position changes (matching reference data). Otherwise, use qvel (for reset).
+
+        v0.7.0: All velocities are now in heading-local frame for AMP parity.
+        This is done transparently - the observation layout remains the same.
+
         Observation includes:
         - Base orientation (gravity vector in local frame): 3
-        - Base angular velocity: 3
-        - Base linear velocity (local): 3
-        - Joint positions (actuated): 9
-        - Joint velocities (actuated): 9
-        - Previous action: 9
+        - Base angular velocity (heading-local, from FD or qvel): 3
+        - Base linear velocity (heading-local, from FD or qvel): 3
+        - Joint positions (actuated): 8
+        - Joint velocities (actuated): 8
+        - Previous action: 8
         - Velocity command: 1
         - Padding: 1
 
-        Total: 38
+        Total: 35
+
+        Args:
+            data: MJX simulation data
+            action: Previous action
+            velocity_cmd: Current velocity command
+            prev_root_pos: Previous root position for FD velocity (optional)
+            prev_root_quat: Previous root quaternion for FD velocity (optional)
+
+        Returns:
+            Observation vector (35,)
         """
         # Gravity in local frame (from sensor)
         gravity = self.get_gravity(data)
 
-        # Angular velocity
-        angvel = self.get_global_angvel(data)
-
-        # Local linear velocity
-        linvel = self.get_local_linvel(data)
+        # v0.9.1: Use finite-diff velocities when prev_root_* are available
+        # This is the key fix for AMP parity - matches reference data computation
+        if prev_root_pos is not None and prev_root_quat is not None:
+            # Finite-diff velocities (heading-local) - matches reference exactly
+            linvel = self.get_heading_local_linvel_fd(data, prev_root_pos, self.dt)
+            angvel = self.get_heading_local_angvel_fd(data, prev_root_quat, self.dt)
+        else:
+            # qvel-based velocities (for reset when no previous state)
+            # These will be zero at reset anyway
+            linvel = self.get_heading_local_linvel(data)
+            angvel = self.get_heading_local_angvel(data)
 
         # Joint positions and velocities (squeeze to handle vmap extra dims)
         joint_pos = self.get_actuator_joint_qpos(data.qpos).squeeze()
@@ -532,14 +573,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Build observation
         obs = jp.concatenate(
             [
-                gravity,  # 3
-                angvel,  # 3
-                linvel,  # 3
-                joint_pos,  # 9 (actuated joints only)
-                joint_vel,  # 9 (actuated joints only)
-                action,  # 9
-                jp.array([velocity_cmd]),  # 1
-                jp.zeros(1),  # padding to 38
+                gravity,  # 0-2: 3
+                angvel,  # 3-5: 3 (heading-local, FD when available)
+                linvel,  # 6-8: 3 (heading-local, FD when available)
+                joint_pos,  # 9-16: 8 (actuated joints only)
+                joint_vel,  # 17-24: 8 (actuated joints only)
+                action,  # 25-32: 8
+                jp.array([velocity_cmd]),  # 33: 1
+                jp.zeros(1),  # 34: padding
             ]
         )
 
@@ -677,6 +718,258 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._mj_model, data, self._robot_config.local_linvel_sensor
         )
 
+    def get_root_quat(self, data: mjx.Data) -> jax.Array:
+        """Get root quaternion (wxyz format from MuJoCo qpos)."""
+        # MuJoCo qpos stores quaternion as [w, x, y, z] at indices 3-6
+        return self.get_floating_base_qpos(data.qpos)[3:7]
+
+    def get_heading_sin_cos(self, data: mjx.Data) -> jax.Array:
+        """Get heading (yaw) as sin/cos for observation.
+
+        Extracts yaw angle from root quaternion and returns [sin(yaw), cos(yaw)].
+        This allows the policy and AMP features to compute heading-local frame
+        velocities for rotation invariance.
+
+        Returns:
+            heading_sin_cos: (2,) array of [sin(yaw), cos(yaw)]
+        """
+        # Get quaternion in wxyz format
+        quat = self.get_root_quat(data)  # [w, x, y, z]
+
+        # v0.7.0: Normalize quaternion for numerical stability
+        # MuJoCo quaternions are typically normalized but can drift slightly
+        quat = quat / (jp.linalg.norm(quat) + 1e-8)
+
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Extract yaw (rotation around z-axis) from quaternion
+        # Using standard euler extraction formula for ZYX convention
+        # yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+
+        # Normalize to get sin/cos directly
+        norm = jp.sqrt(siny_cosp * siny_cosp + cosy_cosp * cosy_cosp + 1e-8)
+        sin_yaw = siny_cosp / norm
+        cos_yaw = cosy_cosp / norm
+
+        return jp.array([sin_yaw, cos_yaw])
+
+    def get_heading_local_linvel(self, data: mjx.Data) -> jax.Array:
+        """Get linear velocity in heading-local frame.
+
+        v0.7.0: Heading-local = world frame rotated by -yaw.
+        This matches the reference data definition in GMR.
+
+        The heading-local frame provides:
+        - Invariance to global heading (yaw)
+        - Preserves forward/lateral velocity semantics
+
+        Returns:
+            linvel_heading: (3,) linear velocity in heading-local frame
+        """
+        # Get world-frame linear velocity from qvel (floating base)
+        # qvel[0:3] = world-frame linear velocity of floating base
+        linvel_world = self.get_floating_base_qvel(data.qvel)[0:3]
+
+        # Get heading sin/cos
+        heading = self.get_heading_sin_cos(data)  # [sin_yaw, cos_yaw]
+        sin_yaw, cos_yaw = heading[0], heading[1]
+
+        # Rotate world velocity to heading-local frame
+        # R_heading_from_world = R_z(-yaw)
+        # v_heading = R_z(-yaw) @ v_world
+        vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
+
+        # R_z(-yaw) @ [vx, vy, vz]
+        vx_heading = cos_yaw * vx + sin_yaw * vy
+        vy_heading = -sin_yaw * vx + cos_yaw * vy
+        vz_heading = vz  # z component unchanged by z rotation
+
+        return jp.array([vx_heading, vy_heading, vz_heading])
+
+    def get_heading_local_angvel(self, data: mjx.Data) -> jax.Array:
+        """Get angular velocity in heading-local frame.
+
+        Converts world-frame angular velocity to heading-local frame.
+        This provides rotation invariance for the AMP discriminator.
+
+        Returns:
+            angvel_heading: (3,) angular velocity in heading-local frame
+        """
+        # Get world-frame angular velocity
+        angvel_world = self.get_global_angvel(data)  # [wx, wy, wz] in world frame
+
+        # Get heading sin/cos
+        heading = self.get_heading_sin_cos(data)
+        sin_yaw, cos_yaw = heading[0], heading[1]
+
+        # Rotate world angular velocity to heading-local frame
+        # R_heading_from_world = R_z(-yaw)
+        # v_heading = R_z(-yaw) @ v_world
+        wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
+
+        # R_z(-yaw) @ [wx, wy, wz]
+        wx_heading = cos_yaw * wx + sin_yaw * wy
+        wy_heading = -sin_yaw * wx + cos_yaw * wy
+        wz_heading = wz  # z component unchanged by z rotation
+
+        return jp.array([wx_heading, wy_heading, wz_heading])
+
+    # =========================================================================
+    # v0.9.1: Finite-Difference Velocity Computation for AMP Parity
+    # =========================================================================
+    # These methods compute velocities from finite differences of qpos,
+    # matching the reference data computation method exactly.
+    # This eliminates the distribution shift between:
+    # - Reference: finite-diff of root_pos (kinematic)
+    # - Policy (old): qvel from MuJoCo dynamics (different under contacts)
+    #
+    # Industry best practice: Use FD velocities for imitation features
+    # even if the controller uses qvel internally.
+
+    def get_heading_local_linvel_fd(
+        self,
+        data: mjx.Data,
+        prev_root_pos: jax.Array,
+        dt: float,
+    ) -> jax.Array:
+        """Get linear velocity via finite difference (heading-local frame).
+
+        v0.9.1: Computes velocity from position change, matching reference data.
+        This is the key fix for AMP feature parity.
+
+        Args:
+            data: Current MJX data
+            prev_root_pos: Previous root position (3,)
+            dt: Time step for finite difference (control_dt, e.g., 0.02s)
+
+        Returns:
+            linvel_heading: (3,) linear velocity in heading-local frame
+        """
+        # Current root position
+        curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
+
+        # Finite difference in world frame (same as reference)
+        linvel_world = (curr_root_pos - prev_root_pos) / dt
+
+        # Convert to heading-local frame
+        heading = self.get_heading_sin_cos(data)
+        sin_yaw, cos_yaw = heading[0], heading[1]
+
+        vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
+        vx_heading = cos_yaw * vx + sin_yaw * vy
+        vy_heading = -sin_yaw * vx + cos_yaw * vy
+        vz_heading = vz
+
+        return jp.array([vx_heading, vy_heading, vz_heading])
+
+    def get_heading_local_angvel_fd(
+        self,
+        data: mjx.Data,
+        prev_root_quat: jax.Array,
+        dt: float,
+    ) -> jax.Array:
+        """Get angular velocity via finite difference (heading-local frame).
+
+        v0.9.1: Computes angular velocity from quaternion change using axis-angle.
+        This matches the reference data computation method exactly.
+
+        Method: omega = (q_curr * q_prev^-1).as_rotvec() / dt
+        This gives world-frame angular velocity, then converted to heading-local.
+
+        Args:
+            data: Current MJX data
+            prev_root_quat: Previous root quaternion (4,) in wxyz format
+            dt: Time step for finite difference (control_dt, e.g., 0.02s)
+
+        Returns:
+            angvel_heading: (3,) angular velocity in heading-local frame
+        """
+        # Current quaternion (wxyz format from MuJoCo)
+        curr_quat = self.get_floating_base_qpos(data.qpos)[3:7]
+
+        # Compute relative rotation: R_delta = R_curr * R_prev^-1
+        # In quaternion: q_delta = q_curr * q_prev_conjugate
+        # For unit quaternions, conjugate = inverse
+
+        # Previous quaternion conjugate (wxyz format: [w, -x, -y, -z])
+        w_prev, x_prev, y_prev, z_prev = (
+            prev_root_quat[0],
+            prev_root_quat[1],
+            prev_root_quat[2],
+            prev_root_quat[3],
+        )
+        q_prev_conj = jp.array([w_prev, -x_prev, -y_prev, -z_prev])
+
+        # Quaternion multiplication: q_delta = q_curr * q_prev_conj
+        w_curr, x_curr, y_curr, z_curr = (
+            curr_quat[0],
+            curr_quat[1],
+            curr_quat[2],
+            curr_quat[3],
+        )
+
+        # Hamilton product (wxyz)
+        w_delta = (
+            w_curr * q_prev_conj[0]
+            - x_curr * q_prev_conj[1]
+            - y_curr * q_prev_conj[2]
+            - z_curr * q_prev_conj[3]
+        )
+        x_delta = (
+            w_curr * q_prev_conj[1]
+            + x_curr * q_prev_conj[0]
+            + y_curr * q_prev_conj[3]
+            - z_curr * q_prev_conj[2]
+        )
+        y_delta = (
+            w_curr * q_prev_conj[2]
+            - x_curr * q_prev_conj[3]
+            + y_curr * q_prev_conj[0]
+            + z_curr * q_prev_conj[1]
+        )
+        z_delta = (
+            w_curr * q_prev_conj[3]
+            + x_curr * q_prev_conj[2]
+            - y_curr * q_prev_conj[1]
+            + z_curr * q_prev_conj[0]
+        )
+
+        # Convert quaternion to rotation vector (axis * angle)
+        # For small rotations: rotvec ≈ 2 * [x, y, z] (when w ≈ 1)
+        # General formula: rotvec = 2 * acos(w) * [x, y, z] / |[x, y, z]|
+
+        # Vector part of quaternion
+        vec = jp.array([x_delta, y_delta, z_delta])
+        vec_norm = jp.linalg.norm(vec) + 1e-8
+
+        # Angle from quaternion: angle = 2 * acos(w)
+        # For numerical stability with w near ±1:
+        # angle = 2 * atan2(|vec|, w)
+        angle = 2.0 * jp.arctan2(vec_norm, jp.abs(w_delta))
+
+        # Handle sign of w (quaternion double cover)
+        angle = jp.where(w_delta < 0, -angle, angle)
+
+        # Rotation vector = angle * axis
+        axis = vec / vec_norm
+        rotvec = angle * axis
+
+        # Angular velocity = rotvec / dt (world frame)
+        angvel_world = rotvec / dt
+
+        # Convert to heading-local frame
+        heading = self.get_heading_sin_cos(data)
+        sin_yaw, cos_yaw = heading[0], heading[1]
+
+        wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
+        wx_heading = cos_yaw * wx + sin_yaw * wy
+        wy_heading = -sin_yaw * wx + cos_yaw * wy
+        wz_heading = wz
+
+        return jp.array([wx_heading, wy_heading, wz_heading])
+
     def get_foot_contacts(self, data: mjx.Data) -> jax.Array:
         """Get foot contact features for AMP discriminator.
 
@@ -761,16 +1054,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def observation_size(self) -> int:
         """Return observation size.
 
+        v0.7.0: Velocities are now in heading-local frame for AMP parity.
+        The observation layout is unchanged.
+
         Observation components:
         - Gravity vector: 3
-        - Angular velocity: 3
-        - Linear velocity: 3
-        - Joint positions: 9 (actuated joints only)
-        - Joint velocities: 9 (actuated joints only)
-        - Previous action: 9
+        - Angular velocity (heading-local): 3
+        - Linear velocity (heading-local): 3
+        - Joint positions: 8 (actuated joints only)
+        - Joint velocities: 8 (actuated joints only)
+        - Previous action: 8
         - Velocity command: 1
         - Padding: 1
 
-        Total: 38
+        Total: 35
         """
-        return 38
+        return 35

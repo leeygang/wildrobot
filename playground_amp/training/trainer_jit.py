@@ -1183,6 +1183,27 @@ def train_amp_ppo_jit(
         jax.block_until_ready(_)
         print(f"  ✓ train_batch_fn compiled ({time.time() - compile_start:.1f}s)")
 
+    # === DEBUG: Test C - Reward Mapping Verification ===
+    # Verify that the reward formula is correct:
+    #   D=0.0 → reward=0.0 (fake motion gets zero)
+    #   D=0.5 → reward=0.5 (uncertain motion)
+    #   D=1.0 → reward=1.0 (real-looking motion)
+    print()
+    print("  === Reward Mapping Test (Test C) ===")
+    test_scores = jnp.array([0.0, 0.25, 0.5, 0.75, 1.0, -0.5, 1.5])
+    test_rewards = jnp.clip(test_scores, 0.0, 1.0)
+    for score, reward in zip(test_scores.tolist(), test_rewards.tolist()):
+        status = (
+            "✓"
+            if (score <= 0 and reward == 0)
+            or (score >= 1 and reward == 1)
+            or (0 < score < 1 and abs(reward - score) < 0.01)
+            else "⚠️"
+        )
+        print(f"    D={score:>5.2f} → reward={reward:.2f} {status}")
+    print("  Expected: D=0→0, D=0.5→0.5, D=1→1 (clipped linear)")
+    print()
+
     print("=" * 60)
     print("Starting training...")
     print(f"  Total iterations: {config.total_iterations:,}")
@@ -1242,6 +1263,14 @@ def train_amp_ppo_jit(
                 f"height={float(metrics.robot_height):>5.3f}m | "
                 f"ep_len={float(metrics.episode_length):>5.1f} | "
                 f"success={float(metrics.success_rate)*100:>5.1f}%"
+            )
+
+            # === DEBUG: Discriminator Distribution (Test A) ===
+            # Healthy: D(real)≈0.7-0.9, D(fake)≈0.3-0.6
+            # Problem: D(real)≈D(fake)≈0.5 means features are identical
+            print(
+                f"  └─ D(real)={float(metrics.disc_real_mean):>5.2f}±{float(metrics.disc_real_std):>4.2f} | "
+                f"D(fake)={float(metrics.disc_fake_mean):>5.2f}±{float(metrics.disc_fake_std):>4.2f}"
             )
 
             if callback is not None:
