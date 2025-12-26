@@ -371,9 +371,7 @@ observation_indices:
     start: 34
     end: 35
 feet:
-  sites:
-  - left_foot_mimic
-  - right_foot_mimic
+  sites: []
   left_toe: left_toe
   left_heel: left_heel
   right_toe: right_toe
