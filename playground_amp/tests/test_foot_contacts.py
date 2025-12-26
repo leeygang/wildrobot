@@ -26,7 +26,7 @@ from ml_collections import config_dict
 
 def setup_environment():
     """Initialize environment for testing."""
-    from playground_amp.configs.config import clear_config_cache, load_robot_config
+    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
@@ -117,13 +117,13 @@ def test_3_amp_features_require_foot_contacts():
     """Test 3: extract_amp_features raises ValueError when foot_contacts=None."""
     print("\n=== Test 3: amp_features require foot_contacts ===")
 
-    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-    from playground_amp.configs.config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
+    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
 
-    config = get_amp_config()
+    config = get_feature_config()
     fake_obs = jnp.zeros(38)
 
     try:
@@ -140,13 +140,13 @@ def test_4_amp_features_use_foot_contacts():
     """Test 4: extract_amp_features correctly uses foot_contacts."""
     print("\n=== Test 4: amp_features use foot_contacts ===")
 
-    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-    from playground_amp.configs.config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import get_feature_config
+    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
 
-    config = get_amp_config()
+    config = get_feature_config()
     fake_obs = jnp.zeros(38)
 
     # Test with specific foot contact values
@@ -171,14 +171,14 @@ def test_5_batched_features_require_foot_contacts():
     """Test 5: extract_amp_features_batched requires foot_contacts."""
     print("\n=== Test 5: Batched features require foot_contacts ===")
 
-    from playground_amp.amp.amp_features import get_amp_config
-    from playground_amp.configs.config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import get_feature_config
+    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
     from playground_amp.training.trainer_jit import extract_amp_features_batched
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
 
-    config = get_amp_config()
+    config = get_feature_config()
 
     # Create batch of observations (num_steps, num_envs, obs_dim)
     num_steps, num_envs = 5, 4
@@ -240,14 +240,14 @@ def test_7_features_are_not_all_zeros():
     """Test 7: End-to-end test - features from env have non-zero contacts."""
     print("\n=== Test 7: End-to-end feature extraction (non-zero contacts) ===")
 
-    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-    from playground_amp.configs.config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
+    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
 
     env = setup_environment()
-    config = get_amp_config()
+    config = get_feature_config()
 
     rng = jax.random.PRNGKey(42)
     state = env.reset(rng)

@@ -10,20 +10,20 @@ sys.path.insert(0, str(project_root))
 import jax
 import jax.numpy as jnp
 
-from playground_amp.amp.amp_features import (
-    AMPFeatureConfig,
+from playground_amp.amp.policy_features import (
+    FeatureConfig,
     create_running_stats,
     extract_amp_features,
-    get_amp_config,
+    get_feature_config,
     normalize_features,
     update_running_stats,
 )
-from playground_amp.configs.config import load_robot_config
+from playground_amp.configs.training_config import load_robot_config
 
 
 def test_feature_extraction():
     """Test basic feature extraction from observations."""
-    # Load robot config first (required before get_amp_config)
+    # Load robot config first (required before get_feature_config)
     robot_config_path = project_root / "assets" / "robot_config.yaml"
     if not robot_config_path.exists():
         print(f"⚠️  Skipping test: robot_config.yaml not found at {robot_config_path}")
@@ -31,7 +31,7 @@ def test_feature_extraction():
         return
 
     load_robot_config(robot_config_path)
-    config = get_amp_config()
+    config = get_feature_config()
 
     # Create dummy observation (38-dim as per robot_config)
     key = jax.random.PRNGKey(0)
@@ -107,7 +107,7 @@ def test_velocity_normalization():
         return
 
     load_robot_config(robot_config_path)
-    config = get_amp_config()
+    config = get_feature_config()
 
     # Create observation with known velocity
     obs = jnp.zeros((1, 38))
@@ -142,7 +142,7 @@ def test_stationary_velocity():
         return
 
     load_robot_config(robot_config_path)
-    config = get_amp_config()
+    config = get_feature_config()
 
     # Create observation with very small velocity (below threshold)
     obs = jnp.zeros((1, 38))

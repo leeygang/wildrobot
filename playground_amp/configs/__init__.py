@@ -3,7 +3,7 @@
 This module provides centralized configuration management.
 """
 
-from playground_amp.configs.config import (
+from playground_amp.configs.training_config import (
     clear_config_cache,
     get_obs_indices,
     get_robot_config,

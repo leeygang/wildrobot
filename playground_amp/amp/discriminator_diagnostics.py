@@ -43,7 +43,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from playground_amp.amp.amp_features import AMPFeatureConfig
+from playground_amp.amp.policy_features import FeatureConfig
 
 
 @dataclass
@@ -102,7 +102,7 @@ class AMPDiagnostics:
 
     def __init__(
         self,
-        amp_config: AMPFeatureConfig,
+        amp_config: FeatureConfig,
         diag_config: Optional[DiagnosticConfig] = None,
     ):
         """Initialize diagnostics.

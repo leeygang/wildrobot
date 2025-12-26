@@ -17,12 +17,12 @@ import jax.numpy as jnp
 import numpy as np
 
 # Load robot config first
-from playground_amp.configs.config import load_robot_config
+from playground_amp.configs.training_config import load_robot_config
 
 robot_config_path = Path("assets/robot_config.yaml")
 load_robot_config(robot_config_path)
 
-from playground_amp.amp.amp_features import get_amp_config
+from playground_amp.amp.policy_features import get_feature_config
 
 
 def analyze_reference_data():
@@ -135,12 +135,12 @@ def analyze_policy_features():
     print("POLICY FEATURE ANALYSIS (from random initial states)")
     print("=" * 70)
 
-    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
+    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
     from playground_amp.envs.wildrobot_env import EnvConfig, WildRobotEnv
 
     # Create environment
     env = WildRobotEnv(config=EnvConfig())
-    amp_config = get_amp_config()
+    amp_config = get_feature_config()
 
     # Collect features from random policy
     rng = jax.random.PRNGKey(42)

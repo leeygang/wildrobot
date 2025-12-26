@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from playground_amp.configs.config import get_robot_config
+from playground_amp.configs.training_config import get_robot_config
 
 
 @dataclass
@@ -437,7 +437,7 @@ def _rotate_vector_by_quat_inverse(vec: np.ndarray, quat: np.ndarray) -> np.ndar
 
 if __name__ == "__main__":
     import argparse
-    from playground_amp.configs.config import load_robot_config
+    from playground_amp.configs.training_config import load_robot_config
 
     parser = argparse.ArgumentParser(
         description="Generate/retarget walking motion for AMP"

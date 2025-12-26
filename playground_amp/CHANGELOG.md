@@ -1,6 +1,206 @@
 # AMP Training Changelog
+# CHANGELOG
 
 This changelog tracks capability changes, configuration updates, and training results for the WildRobot AMP training pipeline.
+
+---
+
+## [v0.8.0] - 2024-12-26: Feature Set Refactoring
+
+### Major Change: Single Source of Truth Architecture
+
+Complete refactoring of AMP feature configuration and extraction to establish clear separation of concerns and a single source of truth for feature layout.
+
+### Feature Dropping (Prevent Discriminator Shortcuts)
+
+Added v0.8.0 feature flags to prevent discriminator from exploiting artifact-prone features:
+
+| Flag | Effect | Rationale |
+|------|--------|-----------|
+| `drop_contacts` | Drop foot contacts (4 dims) | Discrete values, easy to exploit |
+| `drop_height` | Drop root height (1 dim) | Policy/reference mismatch early in training |
+| `normalize_velocity` | Normalize root_linvel to unit direction | Remove speed as discriminative signal |
+
+```yaml
+# ppo_amass_training.yaml
+amp:
+  feature:
+    drop_contacts: false
+    drop_height: false
+    normalize_velocity: false
+```
+
+### Architecture Refactoring
+
+**New Structure:**
+```
+playground_amp/
+├── amp/
+│   ├── policy_features.py     # Online extraction (JAX) + extract_amp_features_batched
+│   └── ref_features.py        # Offline extraction (NumPy) + load_reference_features
+├── configs/
+│   ├── feature_config.py      # FeatureConfig + _FeatureLayout (SINGLE SOURCE OF TRUTH)
+│   ├── training_config.py     # TrainingConfig + RobotConfig
+│   └── training_runtime_config.py  # TrainingRuntimeConfig (JIT)
+└── training/
+    └── trainer_jit.py         # Training loop with normalize_features (training-specific)
+```
+
+#### Files Created
+| File | Description |
+|------|-------------|
+| `configs/training_runtime_config.py` | `TrainingRuntimeConfig` class (renamed from `AMPPPOConfigJit`) |
+
+#### Files Moved
+| From | To |
+|------|-----|
+| `amp/feature_config.py` | `configs/feature_config.py` |
+
+#### Files Deleted
+| File | Reason |
+|------|--------|
+| `amp/amp_features.py` | Superseded by `policy_features.py` |
+| `common/preproc.py` | Functionality moved to `policy_features.py` and `ref_features.py` |
+
+### Key Changes
+
+#### `_FeatureLayout` Class (Single Source of Truth)
+```python
+class _FeatureLayout:
+    """Centralized feature layout definition."""
+
+    COMPONENT_DEFS = [
+        ("joint_pos", "num_joints", False),      # not droppable
+        ("joint_vel", "num_joints", False),      # not droppable
+        ("root_linvel", "ROOT_LINVEL_DIM", False),
+        ("root_angvel", "ROOT_ANGVEL_DIM", False),
+        ("root_height", "ROOT_HEIGHT_DIM", True),   # droppable
+        ("foot_contacts", "FOOT_CONTACTS_DIM", True), # droppable
+    ]
+```
+
+#### `TrainingConfig.to_runtime_config()` Method
+```python
+# Only way to create TrainingRuntimeConfig
+runtime_config = training_cfg.to_runtime_config()
+```
+
+#### `load_reference_features()` Function
+```python
+# Consolidated reference data loading in ref_features.py
+from playground_amp.amp.ref_features import load_reference_features
+ref_features = load_reference_features(args.amp_data)
+```
+
+#### CLI Overrides Applied to TrainingConfig
+```python
+# CLI parameters overwrite training_cfg BEFORE to_runtime_config()
+if args.iterations is not None:
+    training_cfg.iterations = args.iterations
+# ... other CLI overrides
+config = training_cfg.to_runtime_config()
+```
+
+### Removed Code
+
+| Removed | Reason |
+|---------|--------|
+| `mask_waist` config/code | No waist joint in robot |
+| `velocity_filter_alpha` from runtime | Not used in training |
+| `ankle_offset` from runtime | Not used in training |
+| `RunningMeanStd` class | Only used in tests |
+| `create_running_stats()` | Only used in tests |
+| `update_running_stats()` | Only used in tests |
+| `normalize_features()` in policy_features.py | Duplicate, kept in trainer_jit.py |
+
+### Design Principles Established
+
+1. **Feature extraction** (`policy_features.py`, `ref_features.py`) - extracts raw features
+2. **Training normalization** (`trainer_jit.py`) - statistical normalization for training
+3. **Single source of truth** - `_FeatureLayout.COMPONENT_DEFS` defines feature ordering
+4. **Config-driven** - All drop flags read from `TrainingConfig`
+
+### Config
+```yaml
+version: "0.8.0"
+version_name: "Feature Set Refactoring"
+```
+
+### Migration
+
+If upgrading from v0.7.0:
+1. Update imports from `amp.feature_config` → `configs.feature_config`
+2. Update imports from `amp.amp_features` → `amp.policy_features`
+3. Replace `AMPPPOConfigJit` with `TrainingRuntimeConfig`
+4. Use `training_cfg.to_runtime_config()` instead of direct instantiation
+5. Remove any references to `mask_waist`, `velocity_filter_alpha`, `ankle_offset` in runtime code
+
+### Status
+✅ Complete - architecture refactored with single source of truth
+
+---
+
+## [v0.7.0] - 2024-12-25: Physics Reference Data
+
+### Major Change: Physics-Generated Reference Data
+
+Switched from GMR retargeted motions to physics-realized reference data.
+
+**Why**: GMR motions are dynamically infeasible (robot falls immediately). Physics rollout ensures reference data is achievable by the robot.
+
+### Physics Reference Generator
+
+New script: `scripts/generate_physics_reference_dataset.py`
+
+**Features:**
+- Full harness mode (Height + XY + Orientation stabilization)
+- Physics-derived contacts from MuJoCo `efc_force`
+- AMP features computed from realized physics states
+- Quality gates (accept/trim/reject based on load support)
+
+**Results:**
+- 12 motions processed → All accepted
+- 3,407 frames, 68.14s total duration
+- Output: `playground_amp/data/physics_ref/walking_physics_merged.pkl`
+
+### GMR Script Updates (v0.7.0 + v0.9.3)
+
+**v0.7.0 - Heading-Local Frame:**
+```python
+# All velocities now in heading-local frame (rotation invariance)
+root_lin_vel_heading = world_to_heading_local(root_lin_vel, root_rot)
+root_ang_vel_heading = world_to_heading_local(root_ang_vel, root_rot)
+```
+
+**v0.7.0 - FK-Based Contacts:**
+```python
+# Replaced hip-pitch heuristic (84% double stance) with FK
+foot_contacts = estimate_foot_contacts_fk(
+    dof_pos, root_pos, root_rot, mj_model,
+    contact_height_threshold=0.02
+)
+```
+
+### Config Changes
+
+```yaml
+# ppo_amass_training.yaml
+version: "0.7.0"
+version_name: "Physics Reference Data"
+
+amp:
+  # NEW: Physics-generated reference data
+  dataset_path: playground_amp/data/physics_ref/walking_physics_merged.pkl
+  # was: playground_amp/data/walking_motions_normalized_vel.pkl
+```
+
+### Expected Training Behavior
+
+| Metric | GMR Baseline | Expected (Physics) |
+|--------|--------------|-------------------|
+| Robot falls | Immediately | Should walk |
+| `disc_acc` | 0.50 (stuck) | 0.55-0.75 (healthy) |
+| Reference feasibility | ~15% load support | 100% (harness) |
 
 ---
 

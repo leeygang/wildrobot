@@ -6,30 +6,32 @@ This package provides training utilities for the WildRobot environment:
 - experiment_tracking: W&B integration for logging
 """
 
+from playground_amp.training.trainer_jit import (
+    IterationMetrics,
+    TrainingState,
+    train_amp_ppo_jit,
+)
 from playground_amp.training.ppo_core import (
-    create_networks,
     compute_gae,
     compute_ppo_loss,
-    sample_actions,
     compute_values,
+    create_networks,
+    init_network_params,
+    sample_actions,
 )
-from playground_amp.training.trainer_jit import (
-    AMPPPOConfigJit,
-    train_amp_ppo_jit,
-    TrainingState,
-    IterationMetrics,
-)
+from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 
 __all__ = [
-    # JIT trainer (recommended)
-    "AMPPPOConfigJit",
+    # Training
     "train_amp_ppo_jit",
     "TrainingState",
     "IterationMetrics",
+    "TrainingRuntimeConfig",
     # PPO core
-    "create_networks",
     "compute_gae",
     "compute_ppo_loss",
-    "sample_actions",
     "compute_values",
+    "create_networks",
+    "init_network_params",
+    "sample_actions",
 ]

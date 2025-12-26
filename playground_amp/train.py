@@ -54,7 +54,7 @@ DEFAULT_ROBOT_CONFIG_PATH = (
 )
 
 # Import config loaders from configs module
-from playground_amp.configs.config import (
+from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
     RobotConfig,
@@ -413,15 +413,38 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
 
     from playground_amp.envs.wildrobot_env import WildRobotEnv
     from playground_amp.training.trainer_jit import (
-        AMPPPOConfigJit,
         IterationMetrics,
         train_amp_ppo_jit,
         TrainingState,
     )
+    from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 
     # Load training config
     config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
     training_cfg = load_training_config(config_path)
+
+    # Overwrite training_cfg with CLI parameters (CLI takes priority)
+    if args.iterations is not None:
+        training_cfg.iterations = args.iterations
+    if args.num_envs is not None:
+        training_cfg.num_envs = args.num_envs
+    if args.lr is not None:
+        training_cfg.learning_rate = args.lr
+    if args.gamma is not None:
+        training_cfg.gamma = args.gamma
+    if args.clip_epsilon is not None:
+        training_cfg.clip_epsilon = args.clip_epsilon
+    if args.entropy_coef is not None:
+        training_cfg.entropy_coef = args.entropy_coef
+    if args.amp_weight is not None:
+        training_cfg.amp_weight = args.amp_weight
+    if args.disc_lr is not None:
+        training_cfg.disc_learning_rate = args.disc_lr
+    if args.seed is not None:
+        training_cfg.seed = args.seed
+    if args.log_interval is not None:
+        training_cfg.log_interval = args.log_interval
+
     training_config = training_cfg.raw_config
     trainer_cfg = training_config.get("trainer", {})
     networks_cfg = training_config.get("networks", {})
@@ -434,13 +457,6 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
     )
 
-    # Get checkpoint settings from config or CLI
-    checkpoint_cfg = training_config.get("checkpoints", {})
-    checkpoint_interval = args.checkpoint_interval or checkpoint_cfg.get(
-        "interval", 100
-    )
-    keep_checkpoints = args.keep_checkpoints or checkpoint_cfg.get("keep_last_n", 5)
-
     # Create training job name (for checkpoint subdirectory)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     job_name = f"wildrobot_amp_{timestamp}"
@@ -449,136 +465,18 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"Training job: {job_name}")
     print(f"Checkpoints will be saved to: {checkpoint_dir}")
 
-    # Create JIT config (no checkpoint fields - handled by callback)
-    config = AMPPPOConfigJit(
-        # Environment
-        obs_dim=env.observation_size,
-        action_dim=env.action_size,
-        num_envs=args.num_envs,
-        num_steps=trainer_cfg.get("rollout_steps", 20),
-        # PPO hyperparameters
-        learning_rate=args.lr,
-        gamma=args.gamma,
-        gae_lambda=trainer_cfg.get("gae_lambda", 0.95),
-        clip_epsilon=args.clip_epsilon,
-        value_loss_coef=trainer_cfg.get("value_loss_coef", 0.5),
-        entropy_coef=args.entropy_coef,
-        max_grad_norm=trainer_cfg.get("max_grad_norm", 0.5),
-        # PPO training
-        num_minibatches=trainer_cfg.get("num_minibatches", 8),
-        update_epochs=trainer_cfg.get("epochs", 4),
-        # Network architecture
-        policy_hidden_dims=tuple(
-            networks_cfg.get("policy_hidden_dims", [512, 256, 128])
-        ),
-        value_hidden_dims=tuple(networks_cfg.get("value_hidden_dims", [512, 256, 128])),
-        # AMP configuration
-        amp_reward_weight=args.amp_weight,
-        disc_learning_rate=args.disc_lr,
-        disc_updates_per_iter=amp_cfg.get("update_steps", 2),
-        disc_batch_size=amp_cfg.get("batch_size", 2048),
-        r1_gamma=amp_cfg.get("r1_gamma", 5.0),
-        disc_hidden_dims=tuple(amp_cfg.get("discriminator_hidden", [1024, 512, 256])),
-        disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
-        # v0.6.0: Policy Replay Buffer
-        replay_buffer_size=amp_cfg.get("replay_buffer_size", 0),
-        replay_buffer_ratio=amp_cfg.get("replay_buffer_ratio", 0.5),
-        # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-        use_estimated_contacts=amp_cfg.get("use_estimated_contacts", True),
-        use_finite_diff_vel=amp_cfg.get("use_finite_diff_vel", True),
-        contact_threshold_angle=amp_cfg.get("contact_threshold_angle", 0.1),
-        contact_knee_scale=amp_cfg.get("contact_knee_scale", 0.5),
-        contact_min_confidence=amp_cfg.get("contact_min_confidence", 0.3),
-        # v0.6.3: Feature Cleaning (removes discriminator cheats)
-        mask_waist=amp_cfg.get("mask_waist", True),
-        velocity_filter_alpha=amp_cfg.get("velocity_filter_alpha", 0.0),
-        ankle_offset=amp_cfg.get("ankle_offset", 0.18),
-        # Training
-        total_iterations=args.iterations,
-        seed=args.seed,
-        log_interval=args.log_interval,
-    )
-
-    # Load reference motion data
+    # Load reference motion data using ref_features module
     print(f"Loading reference motion data from: {args.amp_data}")
-    with open(args.amp_data, "rb") as f:
-        ref_data = pickle.load(f)
+    from playground_amp.amp.ref_features import load_reference_features
 
-    # Extract AMP features from reference data
-    if isinstance(ref_data, np.ndarray) and ref_data.ndim == 2:
-        # Already extracted features (2D array: num_samples x feature_dim)
-        ref_features = ref_data
-    elif isinstance(ref_data, dict):
-        # If it's a dict with 'features' key
-        if "features" in ref_data:
-            ref_features = np.array(ref_data["features"])
-        elif "observations" in ref_data:
-            # Need to convert observations to AMP features
-            from playground_amp.amp.amp_features import (
-                extract_amp_features,
-                get_amp_config,
-            )
-
-            amp_config = get_amp_config()
-            obs = np.array(ref_data["observations"])
-            # Extract features from observations
-            features_list = []
-            for seq in obs:
-                for i in range(len(seq)):
-                    feat = extract_amp_features(seq[i], amp_config)
-                    features_list.append(feat)
-            ref_features = np.array(features_list)
-        else:
-            raise ValueError(f"Unknown reference data format: {ref_data.keys()}")
-    elif isinstance(ref_data, list):
-        # List of sequences - flatten and extract features
-        from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-
-        amp_config = get_amp_config()
-        features_list = []
-        for seq in ref_data:
-            seq = np.array(seq)
-            for i in range(len(seq)):
-                feat = extract_amp_features(seq[i], amp_config)
-                features_list.append(feat)
-        ref_features = np.array(features_list)
-    else:
-        ref_features = np.array(ref_data)
-
+    ref_features = load_reference_features(args.amp_data)
     print(f"✓ Reference features: {ref_features.shape}")
 
-    # v0.6.3: Mask waist features from reference data to match policy output
-    # Reference data is 29-dim, policy output is 27-dim when mask_waist=True
-    mask_waist = amp_cfg.get("mask_waist", True)
-    if mask_waist and ref_features.shape[1] == 29:
-        print("  Applying waist masking to reference data...")
-        # Original 29-dim format: [joint_pos(9), joint_vel(9), root_linvel(3), root_angvel(3), root_height(1), foot_contacts(4)]
-        # Indices to remove: 0 (waist_yaw pos), 9 (waist_yaw vel)
-        # Keep all indices except 0 and 9
-        keep_indices = [i for i in range(29) if i not in [0, 9]]
-        ref_features = ref_features[:, keep_indices]
-        print(f"  ✓ Masked reference features: {ref_features.shape}")
+    print(f"✓ Environment functions created (vmapped for {training_cfg.num_envs} envs)")
 
-    # v0.6.4: Gait Mirroring (Gold Rule for symmetric gaits)
-    enable_mirror = amp_cfg.get("enable_mirror_augmentation", True)
-    if enable_mirror:
-        print("  Applying gait mirroring (left/right augmentation)...")
-        from playground_amp.amp.amp_mirror import (
-            augment_with_mirror,
-            verify_mirror_symmetry,
-        )
-
-        original_count = ref_features.shape[0]
-        ref_features = augment_with_mirror(ref_features)
-        print(
-            f"  ✓ Mirrored reference features: {ref_features.shape} (2x from {original_count})"
-        )
-
-        # Verify symmetry
-        symmetry_stats = verify_mirror_symmetry(ref_features)
-        print(
-            f"  ✓ Symmetry check: contact_error={symmetry_stats['contact_symmetry_error']:.6f}"
-        )
+    # Create runtime config using TrainingConfig.to_runtime_config()
+    # CLI overrides have already been applied to training_cfg above
+    config = training_cfg.to_runtime_config()
 
     # Create vmapped environment functions
     def batched_step_fn(state, action):
@@ -590,7 +488,10 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         rngs = jax.random.split(rng, config.num_envs)
         return jax.vmap(env.reset)(rngs)
 
-    print(f"✓ Environment functions created (vmapped for {config.num_envs} envs)")
+    # Get checkpoint settings from config
+    checkpoint_cfg = training_config.get("checkpoints", {})
+    checkpoint_interval = checkpoint_cfg.get("interval", 100)
+    keep_checkpoints = checkpoint_cfg.get("keep_last_n", 5)
 
     # Checkpoint management state (captured by callback closure)
     # Track global best (for best_checkpoint files)

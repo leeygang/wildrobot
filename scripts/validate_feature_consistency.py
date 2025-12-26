@@ -97,7 +97,7 @@ def compute_policy_style_features(obs: np.ndarray) -> np.ndarray:
     """
     try:
         import jax.numpy as jnp
-        from playground_amp.amp.amp_features import extract_amp_features
+        from playground_amp.amp.policy_features import extract_amp_features
     except ImportError as e:
         raise ImportError(f"Cannot import JAX/amp_features: {e}")
 

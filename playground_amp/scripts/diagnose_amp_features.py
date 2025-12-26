@@ -41,7 +41,7 @@ sys.path.insert(0, str(project_root))
 import numpy as np
 
 # Load robot config first
-from playground_amp.configs.config import load_robot_config
+from playground_amp.configs.training_config import load_robot_config
 
 robot_config_path = project_root / "assets" / "robot_config.yaml"
 load_robot_config(robot_config_path)
@@ -132,7 +132,7 @@ CRITICAL_FEATURES = {
 
 def load_reference_features():
     """Load reference features from pickle file specified in training config."""
-    from playground_amp.configs.config import get_training_config, load_training_config
+    from playground_amp.configs.training_config import get_training_config, load_training_config
 
     # Load training config to get dataset path
     training_config_path = (
@@ -202,8 +202,8 @@ def collect_policy_features(num_samples=1000):
     """
     import jax
     import jax.numpy as jnp
-    from playground_amp.amp.amp_features import extract_amp_features, get_amp_config
-    from playground_amp.configs.config import get_training_config
+    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
+    from playground_amp.configs.training_config import get_training_config
     from playground_amp.train import create_env
 
     # Get Golden Rule params from training config
@@ -220,7 +220,7 @@ def collect_policy_features(num_samples=1000):
 
     print(f"  Creating environment...", end=" ", flush=True)
     env = create_env()
-    amp_config = get_amp_config()
+    amp_config = get_feature_config()
     print("done")
 
     print(f"  Golden Rule params from config:")

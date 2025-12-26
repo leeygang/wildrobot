@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Convert reference motion data to use normalized velocity direction.
 
-The AMP discriminator now uses 29-dim features with normalized velocity
-direction (unit vector) instead of raw velocity. This preserves directional
+The AMP discriminator uses features with normalized velocity direction
+(unit vector) instead of raw velocity. This preserves directional
 information while removing speed magnitude that causes mismatch.
 
-This script normalizes root_linvel (indices 18-20) to unit direction.
+Supports both:
+- 27-dim features (8 joints): root_linvel at indices 16-18
+- 29-dim features (9 joints): root_linvel at indices 18-20
 
 Usage:
     python scripts/convert_ref_data_normalized_velocity.py
@@ -17,7 +19,7 @@ from pathlib import Path
 
 
 def convert_reference_data(input_path: str, output_path: str):
-    """Convert 29-dim reference data to use normalized velocity direction."""
+    """Convert reference data to use normalized velocity direction."""
 
     print(f"Loading reference data from: {input_path}")
     with open(input_path, "rb") as f:
@@ -31,20 +33,38 @@ def convert_reference_data(input_path: str, output_path: str):
 
     print(f"Original features shape: {features.shape}")
 
-    if features.shape[-1] != 29:
-        print(f"⚠️  Expected 29-dim features, got {features.shape[-1]}-dim")
+    feature_dim = features.shape[-1]
+
+    # Determine feature layout based on dimension
+    if feature_dim == 27:
+        # 27-dim layout (8 joints):
+        # - joint_pos: 0-7 (8 dims)
+        # - joint_vel: 8-15 (8 dims)
+        # - root_linvel: 16-18 (3 dims) ← NORMALIZE THIS
+        # - root_angvel: 19-21 (3 dims)
+        # - root_height: 22 (1 dim)
+        # - foot_contacts: 23-26 (4 dims)
+        linvel_start, linvel_end = 16, 19
+        num_joints = 8
+        print(f"Detected 27-dim features (8 joints)")
+    elif feature_dim == 29:
+        # 29-dim layout (9 joints):
+        # - joint_pos: 0-8 (9 dims)
+        # - joint_vel: 9-17 (9 dims)
+        # - root_linvel: 18-20 (3 dims) ← NORMALIZE THIS
+        # - root_angvel: 21-23 (3 dims)
+        # - root_height: 24 (1 dim)
+        # - foot_contacts: 25-28 (4 dims)
+        linvel_start, linvel_end = 18, 21
+        num_joints = 9
+        print(f"Detected 29-dim features (9 joints)")
+    else:
+        print(f"⚠️  Unsupported feature dimension: {feature_dim}")
+        print(f"   Expected 27 (8 joints) or 29 (9 joints)")
         return
 
-    # 29-dim layout:
-    # - joint_pos: 0-8 (9 dims)
-    # - joint_vel: 9-17 (9 dims)
-    # - root_linvel: 18-20 (3 dims) ← NORMALIZE THIS
-    # - root_angvel: 21-23 (3 dims)
-    # - root_height: 24 (1 dim)
-    # - foot_contacts: 25-28 (4 dims)
-
     # Extract root linear velocity
-    root_linvel = features[:, 18:21].copy()
+    root_linvel = features[:, linvel_start:linvel_end].copy()
 
     # Print original velocity stats
     print(f"\nOriginal root_linvel stats:")
@@ -74,28 +94,28 @@ def convert_reference_data(input_path: str, output_path: str):
 
     # Create new features with normalized velocity direction
     new_features = features.copy()
-    new_features[:, 18:21] = root_linvel_dir
+    new_features[:, linvel_start:linvel_end] = root_linvel_dir
 
     # Verify normalization
-    new_norms = np.linalg.norm(new_features[:, 18:21], axis=1)
+    new_norms = np.linalg.norm(new_features[:, linvel_start:linvel_end], axis=1)
     print(f"\nNormalized velocity direction:")
     print(f"  Norm mean: {new_norms.mean():.6f} (should be ~1.0)")
     print(f"  Norm std:  {new_norms.std():.6f} (should be ~0.0)")
-    print(f"  Direction mean: {np.mean(new_features[:, 18:21], axis=0)}")
+    print(f"  Direction mean: {np.mean(new_features[:, linvel_start:linvel_end], axis=0)}")
 
     print(f"\nNew features shape: {new_features.shape}")
 
     # Save
     if isinstance(data, dict):
         data["features"] = new_features
-        data["feature_dim"] = 29
+        data["feature_dim"] = feature_dim
         data["velocity_normalized"] = True
-        data["notes"] = "root_linvel (indices 18-20) normalized to unit direction"
+        data["notes"] = f"root_linvel (indices {linvel_start}-{linvel_end-1}) normalized to unit direction"
         output_data = data
     else:
         output_data = {
             "features": new_features,
-            "feature_dim": 29,
+            "feature_dim": feature_dim,
             "velocity_normalized": True,
         }
 

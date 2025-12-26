@@ -40,11 +40,12 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from playground_amp.amp.amp_features import (
-    AMPFeatureConfig,
+from playground_amp.amp.policy_features import (
+    FeatureConfig,
     extract_amp_features,
-    get_amp_config,
+    extract_amp_features_batched,
 )
+from playground_amp.configs.feature_config import get_feature_config
 from playground_amp.amp.discriminator import (
     AMPDiscriminator,
     compute_amp_reward,
@@ -59,74 +60,12 @@ from playground_amp.training.ppo_core import (
     init_network_params,
     sample_actions,
 )
+from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 
 
 # =============================================================================
-# Configuration
+# Configuration (TrainingRuntimeConfig is now in configs/training_runtime_config.py)
 # =============================================================================
-
-
-@dataclass(frozen=True)
-class AMPPPOConfigJit:
-    """Configuration for JIT-compiled AMP+PPO training.
-
-    All values must be static (known at compile time) for JIT.
-    """
-
-    # Environment
-    obs_dim: int
-    action_dim: int
-    num_envs: int
-    num_steps: int  # Unroll length per iteration
-
-    # PPO hyperparameters
-    learning_rate: float
-    gamma: float
-    gae_lambda: float
-    clip_epsilon: float
-    value_loss_coef: float
-    entropy_coef: float
-    max_grad_norm: float
-
-    # PPO training
-    num_minibatches: int
-    update_epochs: int
-
-    # Network architecture
-    policy_hidden_dims: Tuple[int, ...]
-    value_hidden_dims: Tuple[int, ...]
-
-    # AMP configuration
-    amp_reward_weight: float
-    disc_learning_rate: float
-    disc_updates_per_iter: int
-    disc_batch_size: int
-    r1_gamma: float  # R1 regularizer weight
-    disc_hidden_dims: Tuple[int, ...]
-    disc_input_noise_std: float  # Gaussian noise std for discriminator inputs (hides simulation artifacts)
-
-    # Training
-    total_iterations: int
-    seed: int
-    log_interval: int
-
-    # v0.6.0: Policy Replay Buffer (defaults at end to satisfy dataclass rules)
-    replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
-    replay_buffer_ratio: float = 0.5  # Ratio of historical samples (0.5 = 50% each)
-
-    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: bool = True  # Use joint-based contact estimation
-    use_finite_diff_vel: bool = True  # Use finite difference velocities
-    contact_threshold_angle: float = (
-        0.1  # Hip pitch threshold for contact detection (rad)
-    )
-    contact_knee_scale: float = 0.5  # Knee angle for confidence scaling (rad)
-    contact_min_confidence: float = 0.3  # Minimum confidence when hip indicates contact
-
-    # v0.6.3: Feature Cleaning (removes discriminator cheats)
-    mask_waist: bool = True  # Exclude waist_yaw from features (AMASS has constant 0)
-    velocity_filter_alpha: float = 0.0  # EMA filter for velocity smoothing (0=off)
-    ankle_offset: float = 0.18  # Ankle pitch calibration offset (rad)
 
 
 # =============================================================================
@@ -384,75 +323,6 @@ def collect_rollout_scan(
     )
 
     return final_env_state, transitions, bootstrap_value
-
-
-# =============================================================================
-# AMP Feature Extraction (Batched)
-# =============================================================================
-
-
-def extract_amp_features_batched(
-    obs: jnp.ndarray,
-    config: AMPFeatureConfig,
-    foot_contacts: jnp.ndarray,
-    root_height: jnp.ndarray,
-    prev_joint_pos: jnp.ndarray,
-    dt: float,
-    use_estimated_contacts: bool,
-    use_finite_diff_vel: bool,
-    contact_threshold_angle: float = 0.1,
-    contact_knee_scale: float = 0.5,
-    contact_min_confidence: float = 0.3,
-    velocity_filter_alpha: float = 0.0,
-    ankle_offset: float = 0.0,
-) -> jnp.ndarray:
-    """Extract AMP features from observations (batched).
-
-    v0.5.0: foot_contacts is REQUIRED (no silent fallback to zeros).
-    v0.6.1: root_height is REQUIRED (must be actual height, not gravity[2]).
-    v0.6.2: GOLDEN RULES - all params from training config.
-    v0.6.3: Feature cleaning - waist masking, velocity filter, ankle calibration.
-
-    Args:
-        obs: Observations, shape (num_steps, num_envs, obs_dim)
-        config: Feature extraction configuration (REQUIRED)
-        foot_contacts: Foot contacts from env (for physics mode), shape (num_steps, num_envs, 4)
-        root_height: Root height from env, shape (num_steps, num_envs) (REQUIRED)
-        prev_joint_pos: Previous joint positions, shape (num_steps, num_envs, 9) (REQUIRED)
-        dt: Time step for finite difference calculation (REQUIRED from config)
-        use_estimated_contacts: Use joint-based contact estimation (REQUIRED from config)
-        use_finite_diff_vel: Use finite difference velocities (REQUIRED from config)
-        contact_threshold_angle: Hip pitch threshold for contact detection (rad)
-        contact_knee_scale: Knee angle for confidence scaling (rad)
-        contact_min_confidence: Minimum confidence when hip indicates contact (0-1)
-        velocity_filter_alpha: EMA filter alpha for velocity smoothing (0=off)
-        ankle_offset: Ankle pitch calibration offset (rad)
-
-    Returns:
-        AMP features, shape (num_steps, num_envs, feature_dim)
-    """
-
-    def extract_single(inputs):
-        obs_single, fc_single, rh_single, prev_jp_single = inputs
-        return extract_amp_features(
-            obs_single,
-            config=config,
-            foot_contacts=fc_single,
-            root_height=rh_single,
-            prev_joint_pos=prev_jp_single,
-            dt=dt,
-            use_estimated_contacts=use_estimated_contacts,
-            use_finite_diff_vel=use_finite_diff_vel,
-            contact_threshold_angle=contact_threshold_angle,
-            contact_knee_scale=contact_knee_scale,
-            contact_min_confidence=contact_min_confidence,
-            velocity_filter_alpha=velocity_filter_alpha,
-            ankle_offset=ankle_offset,
-        )
-
-    return jax.vmap(jax.vmap(extract_single))(
-        (obs, foot_contacts, root_height, prev_joint_pos)
-    )
 
 
 # =============================================================================
@@ -715,7 +585,7 @@ def make_train_iteration_fn(
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     disc_optimizer: optax.GradientTransformation,
-    config: AMPPPOConfigJit,
+    config: TrainingRuntimeConfig,
 ):
     """Create JIT-compiled training iteration function.
 
@@ -723,7 +593,8 @@ def make_train_iteration_fn(
     static arguments baked in for maximum JIT efficiency.
     """
     # Get AMP feature config once (before JIT) and capture in closure
-    amp_feature_config = get_amp_config()
+    # v0.8.0: Feature drop flags are read from global training config
+    amp_feature_config = get_feature_config()
 
     @jax.jit
     def train_iteration(
@@ -770,8 +641,6 @@ def make_train_iteration_fn(
             contact_threshold_angle=config.contact_threshold_angle,
             contact_knee_scale=config.contact_knee_scale,
             contact_min_confidence=config.contact_min_confidence,
-            velocity_filter_alpha=config.velocity_filter_alpha,  # v0.6.3 Feature Cleaning
-            ankle_offset=config.ankle_offset,  # v0.6.3 Ankle Calibration
         )
         # Shape: (num_steps, num_envs, feature_dim)
 
@@ -1024,7 +893,7 @@ def make_train_n_iterations_fn(
 def train_amp_ppo_jit(
     env_step_fn: Callable,
     env_reset_fn: Callable,
-    config: AMPPPOConfigJit,
+    config: TrainingRuntimeConfig,
     ref_motion_data: jnp.ndarray,
     callback: Optional[
         Callable[[int, TrainingState, IterationMetrics, float], None]
@@ -1073,7 +942,7 @@ def train_amp_ppo_jit(
     )
 
     # Create discriminator
-    amp_feature_dim = get_amp_config().feature_dim
+    amp_feature_dim = get_feature_config().feature_dim
     disc_model, disc_params = create_discriminator(
         obs_dim=amp_feature_dim,
         hidden_dims=config.disc_hidden_dims,

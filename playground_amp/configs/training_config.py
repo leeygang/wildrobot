@@ -8,7 +8,7 @@ All other modules should import configuration through this module instead of
 hardcoding robot-specific values.
 
 Usage:
-    from playground_amp.configs.config import load_robot_config, load_training_config, RobotConfig
+    from playground_amp.configs.training_config import load_robot_config, load_training_config, RobotConfig
 
     # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")
@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
+
+from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 
 
 @dataclass
@@ -334,9 +337,13 @@ class TrainingConfig:
     contact_min_confidence: float  # Minimum confidence when hip indicates contact (0-1)
 
     # v0.6.3: Feature Cleaning (removes discriminator cheats)
-    mask_waist: bool  # Exclude waist_yaw from features (AMASS has constant 0)
     velocity_filter_alpha: float  # EMA filter for velocity smoothing (0=off)
     ankle_offset: float  # Ankle pitch calibration offset (rad)
+
+    # v0.8.0: Feature Dropping (prevent discriminator shortcuts)
+    drop_contacts: bool  # Drop foot contacts (4 dims) from features
+    drop_height: bool  # Drop root height (1 dim) from features
+    normalize_velocity: bool  # Normalize root_linvel to unit direction
 
     # Reward weights
     reward_weights: Dict[str, float]
@@ -418,9 +425,12 @@ class TrainingConfig:
             contact_knee_scale=amp.get("contact_knee_scale", 0.5),
             contact_min_confidence=amp.get("contact_min_confidence", 0.3),
             # v0.6.3: Feature Cleaning
-            mask_waist=amp.get("mask_waist", True),
             velocity_filter_alpha=amp.get("velocity_filter_alpha", 0.0),
             ankle_offset=amp.get("ankle_offset", 0.18),
+            # v0.8.0: Feature Dropping
+            drop_contacts=amp.get("feature", {}).get("drop_contacts", False),
+            drop_height=amp.get("feature", {}).get("drop_height", False),
+            normalize_velocity=amp.get("feature", {}).get("normalize_velocity", False),
             # Reward weights
             reward_weights=rewards,
             # W&B configuration
@@ -441,6 +451,65 @@ class TrainingConfig:
             mode=wandb_cfg.get("mode", "online"),
             log_frequency=wandb_cfg.get("log_frequency", 10),
             log_dir=wandb_cfg.get("log_dir", "playground_amp/wandb"),
+        )
+
+    def to_runtime_config(self) -> TrainingRuntimeConfig:
+        """Create TrainingRuntimeConfig for JIT-compiled training.
+
+        This is the ONLY way to create TrainingRuntimeConfig, ensuring
+        consistency between training config and runtime config.
+
+        Note: CLI overrides should be applied to TrainingConfig fields
+        BEFORE calling this method.
+
+        Returns:
+            TrainingRuntimeConfig with all values needed for JIT compilation
+        """
+        # Get obs_dim and action_dim from RobotConfig
+        robot_config = get_robot_config()
+
+        return TrainingRuntimeConfig(
+            # Environment (from RobotConfig and TrainingConfig)
+            obs_dim=robot_config.observation_dim,
+            action_dim=robot_config.action_dim,
+            num_envs=self.num_envs,
+            num_steps=self.rollout_steps,
+            # PPO hyperparameters
+            learning_rate=self.learning_rate,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            clip_epsilon=self.clip_epsilon,
+            value_loss_coef=self.value_loss_coef,
+            entropy_coef=self.entropy_coef,
+            max_grad_norm=self.max_grad_norm,
+            # PPO training
+            num_minibatches=self.num_minibatches,
+            update_epochs=self.update_epochs,
+            # Network architecture
+            policy_hidden_dims=self.policy_hidden_dims,
+            value_hidden_dims=self.value_hidden_dims,
+            # AMP configuration
+            amp_reward_weight=self.amp_weight,
+            disc_learning_rate=self.disc_learning_rate,
+            disc_updates_per_iter=self.disc_updates_per_iter,
+            disc_batch_size=self.disc_batch_size,
+            r1_gamma=self.r1_gamma,
+            disc_hidden_dims=self.disc_hidden_dims,
+            disc_input_noise_std=self.disc_input_noise_std,
+            # Training
+            total_iterations=self.iterations,
+            seed=self.seed,
+            log_interval=self.log_interval,
+            # v0.6.2: Golden Rule Configuration
+            use_estimated_contacts=self.use_estimated_contacts,
+            use_finite_diff_vel=self.use_finite_diff_vel,
+            contact_threshold_angle=self.contact_threshold_angle,
+            contact_knee_scale=self.contact_knee_scale,
+            contact_min_confidence=self.contact_min_confidence,
+            # v0.8.0: Feature Dropping
+            drop_contacts=self.drop_contacts,
+            drop_height=self.drop_height,
+            normalize_velocity=self.normalize_velocity,
         )
 
 

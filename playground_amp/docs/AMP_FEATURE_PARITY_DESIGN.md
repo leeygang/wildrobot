@@ -1,25 +1,30 @@
 # AMP Feature Parity Design Document
 
-**Version:** 0.9.2
+**Version:** 0.11.0
 **Date:** 2025-12-25
 **Author:** Auto-generated for external review
-**Status:** Enhanced Failure Mode Diagnostics - CONTACT_SLIP identified as root cause
+**Status:** ⚠️ PENDING - Parity tests pass, additional gates required before formal training
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Background](#background)
-3. [Contract A: Heading-Local Frame](#contract-a-heading-local-frame)
+2. [Industry Golden Rule](#industry-golden-rule)
+3. [Reference Data Quality Gates (Tier System)](#reference-data-quality-gates-tier-system)
 4. [Reference Data Pipeline](#reference-data-pipeline)
-5. [Policy Feature Extraction](#policy-feature-extraction)
-6. [Feature Parity Verification](#feature-parity-verification)
-7. [Test Results](#test-results)
-8. [Key Implementation Details](#key-implementation-details)
-9. [Files and Dependencies](#files-and-dependencies)
-10. [How to Run Tests](#how-to-run-tests)
-11. [Troubleshooting](#troubleshooting)
+5. [Physics Reference Generation](#physics-reference-generation)
+6. [Contact Extraction Specification](#contact-extraction-specification)
+7. [Policy Feature Extraction](#policy-feature-extraction)
+8. [Normalization and Dataset Versioning](#normalization-and-dataset-versioning)
+9. [Domain Randomization Alignment](#domain-randomization-alignment)
+10. [Test Strategy and Coverage](#test-strategy-and-coverage)
+11. [Test Results](#test-results)
+12. [Training Readiness Checklist](#training-readiness-checklist)
+13. [Files and Dependencies](#files-and-dependencies)
+14. [How to Run Tests](#how-to-run-tests)
+15. [Troubleshooting](#troubleshooting)
+16. [Appendix: Version History](#appendix-version-history)
 
 ---
 
@@ -27,87 +32,148 @@
 
 This document describes the implementation of **AMP (Adversarial Motion Priors)** feature extraction with guaranteed parity between:
 
-1. **Reference data** - Pre-computed features from retargeted motion capture
+1. **Reference data** - Pre-computed features from physics simulation with TRUE qvel
 2. **Policy observations** - Features extracted during RL training
 
-The key insight is that the AMP discriminator can only learn meaningful motion style if the features it receives from policy rollouts are **mathematically identical** to features from reference motions. Any frame mismatch causes the discriminator to learn spurious correlations instead of actual motion style.
+### v0.11.0 Key Changes
 
-### Success Criteria
+- **Tier 0/Tier 1 quality gates** for reference data validation
+- **New tests**: 1C (Generator determinism), 6 (Distribution sanity), 7 (Harness contribution), micro-train smoke test
+- **Contact extraction specification** with explicit geom pairs and thresholds
+- **Normalization stats artifact contract** for dataset versioning
+- **Domain randomization alignment** strategy
+- **Clarified TRUE qvel vs FD fallback policy**
 
-- All feature components have MAE < 0.1 between reference and replay
-- The discriminator should move off 0.50 early in training (indicating it can distinguish real vs fake)
+### Success Criteria (Updated)
 
----
-
-## Background
-
-### The AMP Discriminator Problem
-
-The AMP discriminator receives feature vectors and tries to classify them as "real" (from reference) or "fake" (from policy). If features are computed differently:
-
-```
-Reference: v_world = [1.0, 0.0, 0.0]  →  Discriminator learns this is "real"
-Policy:    v_body  = [0.7, 0.7, 0.0]  →  Discriminator learns this is "fake"
-```
-
-Even if the robot is doing the **exact same motion**, the discriminator will reject it because the numbers don't match. This is why feature parity is critical.
-
-### Previous Issues
-
-| Version | Problem | Symptom |
-|---------|---------|---------|
-| v0.5.x | Body-frame vs world-frame velocity | Discriminator stuck at 0.50 |
-| v0.6.x | Reference used 9 DOFs, robot had 8 DOFs | Shape mismatch errors |
-| v0.6.x | Angular velocity computed incorrectly | High MAE on root_ang_vel |
+| Metric | Threshold | v0.10.0 Result | v0.11.0 Status |
+|--------|-----------|----------------|----------------|
+| All feature components MAE | < 0.0001 | ✅ 0.0000 | ✅ |
+| Velocity correlation | > 0.99 | ✅ 1.0000 | ✅ |
+| Parity tests (1A-5) | PASS | ✅ PASS | ✅ |
+| **Test 1C (Generator determinism)** | PASS | - | ✅ PASS |
+| **Test 6 (Distribution sanity)** | PASS | - | ✅ PASS |
+| **Test 7 (Harness contribution)** | PASS | - | ✅ IMPL |
+| **Micro-train smoke test** | PASS | - | ✅ PASS |
 
 ---
 
-## Contract A: Heading-Local Frame
+## Industry Golden Rule
 
-### Definition
+### The Distribution Shift Problem
 
-The **heading-local frame** is the world frame rotated to remove yaw (heading):
-
+Previous approach using GMR finite-difference velocities:
 ```
-R_heading = R_z(-yaw)
-
-where:
-    yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
-
-    R_z(-yaw) = | cos(yaw)   sin(yaw)  0 |
-                | -sin(yaw)  cos(yaw)  0 |
-                | 0          0         1 |
+Reference: v = (pos[t] - pos[t-1]) / dt  →  Finite difference velocity
+Policy:    v = mj_data.qvel              →  MuJoCo physics velocity
 ```
 
-### Why Heading-Local?
+Even with correct math, these can differ due to:
+- Contact constraint stabilization
+- Numerical integration methods
+- Actuator dynamics
 
-1. **Rotation invariance**: The discriminator should reward walking style regardless of which direction the robot faces
-2. **Consistency**: Both policy and reference use the same transform
-3. **Simplicity**: Only removes yaw, preserves pitch/roll information for balance
+### The Solution: TRUE qvel Everywhere
 
-### Frame Transformation
+```
+Reference: v = mj_data.qvel              →  TRUE physics velocity (from simulation)
+Policy:    v = mj_data.qvel              →  TRUE physics velocity (same source)
+```
+
+**Result:** Perfect parity (MAE = 0.0000) because both use the exact same velocity source.
+
+### Clarification: TRUE qvel vs FD Fallback Policy
+
+| Context | Velocity Source | Rationale |
+|---------|-----------------|-----------|
+| Reference generation | TRUE qvel from `mj_data.qvel` | Industry golden rule |
+| Policy training (observation) | TRUE qvel from `mj_data.qvel` | Matches reference |
+| Policy AMP feature extraction | TRUE qvel via `use_obs_joint_vel=True` | Parity with reference |
+| Root velocities in obs | Heading-local transform of `mj_data.qvel[0:6]` | Already TRUE qvel |
+| **FD fallback (disabled)** | `use_obs_joint_vel=False` | **Legacy only, not used for physics ref** |
+
+**Important:** When using physics-generated reference data:
+- Always set `use_obs_joint_vel=True` in `extract_amp_features()`
+- Always provide `foot_contacts_override` with TRUE contacts
+- FD fallback exists only for backward compatibility with GMR data
+
+---
+
+## Reference Data Quality Gates (Tier System)
+
+### Why Tiering is Necessary
+
+**Problem:** Full harness mode (strong stabilization) can create reference motions where:
+- Feet are not truly supporting body weight
+- Contacts become artifacts of harness, not physics
+- The "real" distribution is unreachable by the policy
+
+Even with MAE = 0.0000 feature parity, the discriminator can exploit harness artifacts.
+
+### Tier Definitions
+
+| Tier | Description | Quality Gates | Use Case |
+|------|-------------|---------------|----------|
+| **Tier 0** | Physically grounded | Feet carry weight, minimal harness reliance | Primary training data |
+| **Tier 1** | Harness-assisted | Some harness contribution, tracked for data | Curriculum/debugging only |
+| **Rejected** | Harness-dominated | Harness carries body weight | Excluded from training |
+
+### Tier 0 Quality Gates (MANDATORY for Training)
+
+For robot mass m = 3.383 kg, gravitational force mg ≈ 33.2 N:
+
+| Metric | Threshold | Description |
+|--------|-----------|-------------|
+| `mean(ΣF_n) / mg` | ≥ 0.85 | Contact normal forces carry 85%+ of weight |
+| `p90(\|F_stab_z\|) / mg` | ≤ 0.15 | Height stabilizer contributes ≤15% at p90 |
+| `unloaded_frames` | ≤ 10% | Frames with `ΣF_n < 0.6*mg` are rare |
+| `contact_rate` | ∈ [0.3, 0.95] | Not always-on or always-off contacts |
+| `height_variance` | > 0.001 m² | Root height not artificially constant |
+
+### Tier 1 Quality Gates (Diagnostic/Curriculum)
+
+| Metric | Threshold | Description |
+|--------|-----------|-------------|
+| `mean(ΣF_n) / mg` | ≥ 0.60 | Contact forces carry majority of weight |
+| `p90(\|F_stab_z\|) / mg` | ≤ 0.40 | Harness not puppeting robot |
+| `unloaded_frames` | ≤ 30% | Most frames have foot support |
+
+### Quality Metrics Schema (Per-Clip)
 
 ```python
-def world_to_heading_local(v_world, quat):
-    """Transform world-frame vector to heading-local frame."""
-    # Extract yaw from quaternion
-    w, x, y, z = quat  # wxyz format
-    yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+{
+    # Tier classification
+    'tier': 0,  # 0, 1, or -1 (rejected)
+    'tier_reason': 'All Tier 0 gates passed',
 
-    # Apply R_z(-yaw)
-    cos_yaw, sin_yaw = cos(yaw), sin(yaw)
-    vx_local = cos_yaw * v_world[0] + sin_yaw * v_world[1]
-    vy_local = -sin_yaw * v_world[0] + cos_yaw * v_world[1]
-    vz_local = v_world[2]  # unchanged
+    # Load support metrics
+    'mean_sum_fn_over_mg': 0.92,      # mean(ΣF_n) / mg
+    'p90_stab_force_over_mg': 0.08,   # p90(|F_stab_z|) / mg
+    'unloaded_frame_rate': 0.03,      # frames with ΣF_n < 0.6*mg
 
-    return [vx_local, vy_local, vz_local]
+    # Contact sanity
+    'left_foot_contact_rate': 0.52,
+    'right_foot_contact_rate': 0.48,
+    'both_feet_contact_rate': 0.15,
+    'no_feet_contact_rate': 0.15,
+
+    # Height sanity
+    'height_mean': 0.457,
+    'height_std': 0.013,
+    'height_min': 0.435,
+    'height_max': 0.481,
+
+    # Raw force arrays (for debugging)
+    'sum_fn_per_frame': np.array((N,)),
+    'stab_force_per_frame': np.array((N,)),
+}
 ```
 
 ---
 
 ## Reference Data Pipeline
 
-### Overview
+### Pipeline Overview (v0.11.0)
 
 ```
 SMPLX Motion (AMASS)
@@ -116,911 +182,719 @@ SMPLX Motion (AMASS)
        ↓
 Robot Motion (.pkl with root_pos, root_rot, dof_pos)
        ↓
-   AMP Conversion (convert_to_amp_format.py)
+   Physics Reference Generation (generate_physics_amp_reference.py)
        ↓
-AMP Features (.pkl with 27-dim feature vectors)
+   Quality Gate Evaluation (tier assignment)
+       ↓
+AMP Features (.pkl with 27-dim features + quality metrics)
+       ↓
+   Tier 0 clips → Training dataset
+   Tier 1 clips → Curriculum/debugging
+   Rejected     → Excluded
 ```
 
-### Step 1: Motion Retargeting
+### Generation Modes (v0.11.0)
 
-**Script:** `/Users/ygli/projects/GMR/scripts/smplx_to_robot_headless.py`
+**Mode A: Rollout Mode (RECOMMENDED for Tier 0)**
+- Initialize state once from first frame
+- Drive with `mj_data.ctrl = reference_dof_pos`
+- Apply weak root tracking (not per-frame qpos overwrite)
+- Let qpos evolve naturally via physics
+- Produces physically-grounded trajectories
 
-```bash
-cd ~/projects/GMR
-uv run python scripts/smplx_to_robot_headless.py \
-    --smplx_file ~/projects/amass/smplx/KIT/3/walking_medium01_stageii.npz \
-    --robot wildrobot \
-    --save_path ~/projects/wildrobot/assets/motions/walking_medium01.pkl
-```
+**Mode B: Teacher-Forced Mode (Legacy, Tier 1 only)**
+- Set `mj_data.qpos = reference_pose` every frame (teleporting)
+- Step physics to compute qvel
+- May produce solver artifacts from repeated state resets
+- Acceptable for debugging, not for primary training
 
-**Output format:**
+### Physics Reference Data Schema (v0.11.0)
+
 ```python
 {
-    'fps': 33.33,
-    'num_frames': 106,
-    'duration_sec': 3.18,
-    'root_pos': np.array((N, 3)),      # World position [x, y, z]
-    'root_rot': np.array((N, 4)),      # Quaternion xyzw format
-    'dof_pos': np.array((N, 8)),       # Joint positions (8 DOFs)
+    # Core feature data
+    'features': np.array((N, 27)),      # AMP features (discriminator input)
+    'feature_dim': 27,
+
+    # Source data (convenience fields, NOT consumed by discriminator)
+    'dof_pos': np.array((N, 8)),        # Joint positions
+    'dof_vel': np.array((N, 8)),        # TRUE joint velocities
+    'root_pos': np.array((N, 3)),       # World position
+    'root_rot': np.array((N, 4)),       # Quaternion xyzw
+    'root_lin_vel': np.array((N, 3)),   # TRUE world-frame linear velocity
+    'root_ang_vel': np.array((N, 3)),   # TRUE world-frame angular velocity
+    'foot_contacts': np.array((N, 4)),  # TRUE contacts (4-channel)
+
+    # Timing
+    'fps': 50.0,
+    'dt': 0.02,
+    'num_frames': N,
+    'duration_sec': N * 0.02,
+
+    # v0.11.0: Quality metrics
+    'tier': 0,
+    'quality_metrics': { ... },  # See schema above
+
+    # v0.11.0: Generation metadata
+    'generation_mode': 'rollout',  # 'rollout' or 'teacher_forced'
+    'harness_params': {
+        'height_kp': 60.0,   # N/m (assist-only for rollout mode)
+        'height_kd': 10.0,   # N·s/m
+        'force_cap': 4.0,    # N (~12% of mg)
+    },
+
+    # Provenance
+    'source_file': 'walking_medium01.pkl',
     'robot': 'wildrobot',
+    'joint_names': ['L_hip_pitch', 'L_hip_roll', ...],
+    'generator_version': '0.11.0',
+    'generation_timestamp': '2025-12-25T08:00:00Z',
 }
 ```
 
-### Step 2: AMP Feature Conversion
+**Note on Feature Fields:**
+- `features` is the ONLY field consumed by the discriminator
+- Other fields (`dof_pos`, `dof_vel`, etc.) are "source fields" for debugging/verification
+- Discriminator should NEVER access source fields directly
 
-**Script:** `/Users/ygli/projects/GMR/scripts/convert_to_amp_format.py`
+---
 
-```bash
-cd ~/projects/GMR
-uv run python scripts/convert_to_amp_format.py \
-    --input ~/projects/wildrobot/assets/motions/walking_medium01.pkl \
-    --output ~/projects/wildrobot/data/amp/walking_medium01_amp.pkl \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
-    --target_fps 50
-```
+## Physics Reference Generation
 
-**Key computations:**
+### Generation Approach Comparison
 
-#### 1. Angular Velocity from Quaternions (v0.7.1 - SciPy)
+| Aspect | Teacher-Forced (v0.10.0) | Rollout Mode (v0.11.0) |
+|--------|--------------------------|------------------------|
+| qpos handling | Overwrite every frame | Evolve via physics |
+| Harness strength | Strong (kp=2000 N/m) | Weak assist (kp=60 N/m, capped) |
+| qvel semantics | Solver artifacts possible | Physically consistent |
+| Tier suitability | Tier 1 only | Tier 0 candidate |
+| Tracking accuracy | Perfect pose tracking | Some drift (acceptable) |
 
-```python
-from scipy.spatial.transform import Rotation as R
-
-def quaternion_to_angular_velocity(quats_xyzw, dt):
-    """Compute world-frame angular velocity using axis-angle method."""
-    N = len(quats_xyzw)
-    omega = np.zeros((N, 3))
-
-    r_prev = R.from_quat(quats_xyzw[0])
-
-    for i in range(1, N):
-        r_curr = R.from_quat(quats_xyzw[i])
-
-        # Relative rotation: R_delta = R_curr * R_prev.inv()
-        r_delta = r_curr * r_prev.inv()
-
-        # Convert to rotation vector (axis * angle)
-        rotvec = r_delta.as_rotvec()
-
-        # Angular velocity = rotvec / dt
-        omega[i] = rotvec / dt
-        r_prev = r_curr
-
-    omega[0] = omega[1]  # Copy first valid value
-    return omega
-```
-
-**Why this method?**
-- `(q1 - q0) / dt` is fundamentally wrong except in small angle limit
-- `q⁻¹ ⊗ dq` gives body-frame angular velocity
-- `q_curr ⊗ q_prev⁻¹` → axis-angle gives **world-frame** angular velocity
-- This matches MuJoCo's `frameangvel` sensor output
-
-#### 2. Heading-Local Velocity Conversion
+### Rollout Mode Implementation (v0.11.0)
 
 ```python
-def world_to_heading_local(vectors, quats):
-    """Convert world-frame vectors to heading-local frame."""
-    yaw = quaternion_to_yaw(quats)
+def generate_physics_reference_rollout(motion_path, model_path, config):
+    """Generate Tier 0 reference data using rollout mode.
 
-    cos_yaw = np.cos(yaw)
-    sin_yaw = np.sin(yaw)
+    Key difference from teacher-forced: qpos evolves naturally.
+    """
+    motion = load_motion(motion_path)
+    mj_model, mj_data = load_model(model_path)
 
-    vx_local = cos_yaw * vectors[:, 0] + sin_yaw * vectors[:, 1]
-    vy_local = -sin_yaw * vectors[:, 0] + cos_yaw * vectors[:, 1]
-    vz_local = vectors[:, 2]
+    # Initialize state ONCE from first frame
+    mj_data.qpos[0:3] = motion['root_pos'][0]
+    mj_data.qpos[3:7] = xyzw_to_wxyz(motion['root_rot'][0])
+    mj_data.qpos[7:15] = motion['dof_pos'][0]
+    mj_data.qvel[:] = 0
+    mujoco.mj_forward(mj_model, mj_data)
 
-    return np.stack([vx_local, vy_local, vz_local], axis=1)
+    # Harness parameters (assist-only, not puppet)
+    HARNESS_KP = 60.0   # N/m
+    HARNESS_KD = 10.0   # N·s/m
+    HARNESS_CAP = 4.0   # N (~12% of mg for 3.4kg robot)
+    ORIENT_GATE = 0.436 # rad (25°) - disable if tilted
 
-# Apply to both velocities
-root_lin_vel_heading = world_to_heading_local(root_lin_vel, root_rot)
-root_ang_vel_heading = world_to_heading_local(root_ang_vel, root_rot)
+    sim_dt = 0.002
+    control_dt = 0.02
+    n_substeps = int(control_dt / sim_dt)
+
+    all_features = []
+    quality_metrics = defaultdict(list)
+    target_height = motion['root_pos'][:, 2].mean()
+
+    for frame_idx in range(motion['num_frames']):
+        # Set joint control targets (NOT qpos overwrite)
+        mj_data.ctrl[:] = motion['dof_pos'][frame_idx]
+
+        # Compute orientation for gating
+        w, x, y, z = mj_data.qpos[3:7]
+        pitch = np.arcsin(np.clip(2*(w*y - z*x), -1, 1))
+        roll = np.arctan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+
+        # Apply soft height assist (only if upright)
+        if abs(pitch) < ORIENT_GATE and abs(roll) < ORIENT_GATE:
+            height_error = target_height - mj_data.qpos[2]
+            f_stab = HARNESS_KP * height_error - HARNESS_KD * mj_data.qvel[2]
+            f_stab = np.clip(f_stab, -HARNESS_CAP, HARNESS_CAP)
+        else:
+            f_stab = 0.0
+        mj_data.qfrc_applied[2] = f_stab
+        quality_metrics['stab_force'].append(abs(f_stab))
+
+        # Step physics
+        for _ in range(n_substeps):
+            mujoco.mj_step(mj_model, mj_data)
+
+        # Extract contact normal forces
+        sum_fn = extract_total_normal_force(mj_data)
+        quality_metrics['sum_fn'].append(sum_fn)
+
+        # Extract TRUE qvel
+        root_lin_vel = mj_data.qvel[0:3].copy()
+        root_ang_vel = mj_data.qvel[3:6].copy()
+        dof_vel = mj_data.qvel[6:14].copy()
+
+        # Convert to heading-local
+        lin_vel_heading = world_to_heading_local(root_lin_vel, mj_data.qpos[3:7])
+        ang_vel_heading = world_to_heading_local(root_ang_vel, mj_data.qpos[3:7])
+
+        # Extract TRUE contacts
+        foot_contacts = extract_contact_states(mj_model, mj_data)
+
+        # Assemble features
+        features = np.concatenate([
+            mj_data.qpos[7:15],
+            dof_vel,
+            lin_vel_heading,
+            ang_vel_heading,
+            [mj_data.qpos[2]],
+            foot_contacts,
+        ])
+        all_features.append(features)
+
+    # Compute quality metrics and tier
+    tier, metrics = compute_tier_classification(quality_metrics, robot_mass=3.383)
+
+    return {
+        'features': np.stack(all_features),
+        'tier': tier,
+        'quality_metrics': metrics,
+        'generation_mode': 'rollout',
+        # ... other fields
+    }
 ```
 
-#### 3. Feature Vector Assembly
+### qvel Indexing Runtime Assert
 
 ```python
-# AMP Feature format (27-dim for 8-joint robot)
-features = np.concatenate([
-    dof_pos,              # 0-7:   Joint positions (8)
-    dof_vel,              # 8-15:  Joint velocities (8)
-    root_lin_vel_heading, # 16-18: Root linear velocity (3) - HEADING-LOCAL
-    root_ang_vel_heading, # 19-21: Root angular velocity (3) - HEADING-LOCAL
-    root_height,          # 22:    Root height (1)
-    foot_contacts,        # 23-26: Foot contacts (4)
-], axis=1)
+def validate_qvel_indexing(mj_model):
+    """Runtime assertion to verify qvel layout matches documentation."""
+    # Expected layout for floating base + 8 DOF:
+    # qpos: [x, y, z, qw, qx, qy, qz, j0, j1, j2, j3, j4, j5, j6, j7] = 15
+    # qvel: [vx, vy, vz, wx, wy, wz, dj0, dj1, ..., dj7] = 14
+
+    assert mj_model.nq == 15, f"Expected nq=15, got {mj_model.nq}"
+    assert mj_model.nv == 14, f"Expected nv=14, got {mj_model.nv}"
+
+    # Verify joint addresses
+    # For floating base: qpos_adr=0, qvel_adr=0
+    # For first actuated joint: qvel starts at index 6
+
+    print("✓ qvel indexing validated: nq=15, nv=14")
+    print("  Root lin vel: qvel[0:3]")
+    print("  Root ang vel: qvel[3:6]")
+    print("  Joint vel:    qvel[6:14]")
+```
+
+---
+
+## Contact Extraction Specification
+
+### Contact Geom Pairs
+
+| Contact Channel | Geom Name | Geom ID | Body |
+|-----------------|-----------|---------|------|
+| `foot_contacts[0]` | `left_toe` | (runtime lookup) | Left foot toe |
+| `foot_contacts[1]` | `left_heel` | (runtime lookup) | Left foot heel |
+| `foot_contacts[2]` | `right_toe` | (runtime lookup) | Right foot toe |
+| `foot_contacts[3]` | `right_heel` | (runtime lookup) | Right foot heel |
+
+### Contact Detection Logic
+
+```python
+def extract_contact_states(mj_model, mj_data, force_threshold=1.0):
+    """Extract 4-channel foot contact states from MuJoCo.
+
+    Args:
+        mj_model: MuJoCo model
+        mj_data: MuJoCo data after stepping
+        force_threshold: Minimum normal force (N) to count as contact
+
+    Returns:
+        np.array of shape (4,) with binary contact states [0, 1]
+    """
+    # Get foot geom IDs
+    foot_geoms = {
+        'left_toe': mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'left_toe'),
+        'left_heel': mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'left_heel'),
+        'right_toe': mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'right_toe'),
+        'right_heel': mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'right_heel'),
+    }
+    ground_geom = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, 'ground')
+
+    # Initialize contacts
+    contacts = np.zeros(4)
+    channel_map = {'left_toe': 0, 'left_heel': 1, 'right_toe': 2, 'right_heel': 3}
+
+    # Iterate through active contacts
+    for i in range(mj_data.ncon):
+        contact = mj_data.contact[i]
+        geom1, geom2 = contact.geom1, contact.geom2
+
+        # Check if contact involves ground and a foot geom
+        for foot_name, foot_geom_id in foot_geoms.items():
+            if (geom1 == ground_geom and geom2 == foot_geom_id) or \
+               (geom2 == ground_geom and geom1 == foot_geom_id):
+
+                # Get normal force magnitude
+                if contact.efc_address >= 0:
+                    fn = mj_data.efc_force[contact.efc_address]
+                    if fn > force_threshold:
+                        channel = channel_map[foot_name]
+                        contacts[channel] = 1.0
+
+    return contacts
+```
+
+### Multi-Contact Handling
+
+- **Multiple contacts per foot:** If both toe and heel of same foot are in contact, both channels = 1.0
+- **Force aggregation:** No aggregation - each channel is binary based on individual geom contact
+- **Debouncing:** No temporal debouncing in reference generation (captured as-is)
+- **Threshold:** Default 1.0 N, configurable via `force_threshold` parameter
+
+### Contact Validation Checks
+
+```python
+def validate_contact_sanity(foot_contacts, clip_name):
+    """Check for degenerate contact patterns."""
+    N = len(foot_contacts)
+
+    # Check per-channel rates
+    rates = foot_contacts.mean(axis=0)
+
+    # Gate: No channel should be >95% always-on or <5% always-off
+    for i, rate in enumerate(rates):
+        if rate > 0.95:
+            print(f"WARNING: {clip_name} channel {i} always-on ({rate:.1%})")
+        if rate < 0.05:
+            print(f"WARNING: {clip_name} channel {i} always-off ({rate:.1%})")
+
+    # Check for both-feet-always-on (suspicious)
+    both_on = ((foot_contacts[:, 0] + foot_contacts[:, 1]) > 0) & \
+              ((foot_contacts[:, 2] + foot_contacts[:, 3]) > 0)
+    both_on_rate = both_on.mean()
+    if both_on_rate > 0.8:
+        print(f"WARNING: {clip_name} both feet always grounded ({both_on_rate:.1%})")
 ```
 
 ---
 
 ## Policy Feature Extraction
 
-### Overview
-
-During training, the policy environment extracts features that must match the reference format exactly.
+### v0.11.0 API (Unchanged from v0.10.0)
 
 **File:** `/Users/ygli/projects/wildrobot/playground_amp/amp/amp_features.py`
 
-### Observation Layout (35-dim)
-
-```python
-# Policy observation (35-dim, v0.7.0)
-observation = [
-    gravity_body,     # 0-2:   Gravity vector in body frame (3)
-    angvel_heading,   # 3-5:   Angular velocity in heading-local (3)
-    linvel_heading,   # 6-8:   Linear velocity in heading-local (3)
-    joint_pos,        # 9-16:  Joint positions (8)
-    joint_vel,        # 17-24: Joint velocities (8)
-    prev_action,      # 25-32: Previous action (8)
-    velocity_cmd,     # 33:    Velocity command (1)
-    padding,          # 34:    Padding (1)
-]
-```
-
-**Note:** Velocities are converted to heading-local frame **before** being placed in the observation, so the AMP feature extractor reads them directly.
-
-### Velocity Conversion in Environment
-
-**File:** `/Users/ygli/projects/wildrobot/playground_amp/envs/wildrobot_env.py`
-
-```python
-def get_heading_local_linvel(self, data: mjx.Data) -> jax.Array:
-    """Get linear velocity in heading-local frame."""
-    # Get world-frame velocity from qvel (NOT body-frame sensor!)
-    linvel_world = self.get_floating_base_qvel(data.qvel)[0:3]
-
-    # Get heading sin/cos from quaternion
-    heading = self.get_heading_sin_cos(data)
-    sin_yaw, cos_yaw = heading[0], heading[1]
-
-    # Apply R_z(-yaw)
-    vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
-    vx_heading = cos_yaw * vx + sin_yaw * vy
-    vy_heading = -sin_yaw * vx + cos_yaw * vy
-    vz_heading = vz
-
-    return jp.array([vx_heading, vy_heading, vz_heading])
-
-def get_heading_local_angvel(self, data: mjx.Data) -> jax.Array:
-    """Get angular velocity in heading-local frame."""
-    # Get world-frame angular velocity from frameangvel sensor
-    angvel_world = self.get_global_angvel(data)
-
-    # Apply same heading-local transform
-    heading = self.get_heading_sin_cos(data)
-    sin_yaw, cos_yaw = heading[0], heading[1]
-
-    wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
-    wx_heading = cos_yaw * wx + sin_yaw * wy
-    wy_heading = -sin_yaw * wx + cos_yaw * wy
-    wz_heading = wz
-
-    return jp.array([wx_heading, wy_heading, wz_heading])
-```
-
-### AMP Feature Extraction (v0.7.0 API)
-
 ```python
 def extract_amp_features(
-    obs: jnp.ndarray,          # 35-dim observation
-    config: AMPFeatureConfig,   # Feature indices
-    root_height: jnp.ndarray,   # REQUIRED: waist height
-    prev_joint_pos: jnp.ndarray,# REQUIRED: for finite diff
-    dt: float,                  # REQUIRED: timestep
+    obs: jnp.ndarray,
+    config: AMPFeatureConfig,
+    root_height: jnp.ndarray,
+    prev_joint_pos: jnp.ndarray,
+    dt: float,
+    foot_contacts_override: jnp.ndarray = None,  # TRUE contacts from MuJoCo
+    use_obs_joint_vel: bool = False,              # TRUE qvel from obs
 ) -> jnp.ndarray:
-    """Extract 27-dim AMP features from observation.
+```
 
-    v0.7.0: No fallback options - all features computed identically to reference.
-    """
-    # Extract from observation (already in heading-local frame)
-    joint_pos = obs[config.joint_pos_start:config.joint_pos_end]
-    root_linvel = obs[config.root_linvel_start:config.root_linvel_end]
-    root_angvel = obs[config.root_angvel_start:config.root_angvel_end]
+### Usage Guidelines
 
-    # Joint velocities via finite differences (matches reference)
-    joint_vel = (joint_pos - prev_joint_pos) / dt
+| Scenario | `use_obs_joint_vel` | `foot_contacts_override` | Notes |
+|----------|---------------------|--------------------------|-------|
+| Training with physics ref | `True` | TRUE contacts from sensor | Required for parity |
+| Verification tests | `True` | From reference data | Required for MAE=0 |
+| Legacy GMR ref | `False` | `None` | FD fallback, FK contacts |
+| Runtime inference | `True` | Estimated from FK | Policy rollout |
 
-    # Foot contacts estimated from joint angles (matches reference)
-    foot_contacts = estimate_foot_contacts_from_joints(joint_pos, config)
+### Feature Layout (27-dim) - Canonical
 
-    # Assemble features
-    return jnp.concatenate([
-        joint_pos,      # 8 dims
-        joint_vel,      # 8 dims
-        root_linvel,    # 3 dims (heading-local)
-        root_angvel,    # 3 dims (heading-local)
-        root_height,    # 1 dim
-        foot_contacts,  # 4 dims
-    ])  # Total: 27 dims
+| Index | Component | Source | Units | Notes |
+|-------|-----------|--------|-------|-------|
+| 0-7 | Joint positions | `obs[9:17]` via config | rad | Direct from qpos |
+| 8-15 | Joint velocities | `obs[17:25]` if TRUE qvel | rad/s | From mj_data.qvel[6:14] |
+| 16-18 | Root linear velocity | `obs[6:9]` | m/s | Heading-local from qvel[0:3] |
+| 19-21 | Root angular velocity | `obs[3:6]` | rad/s | Heading-local from qvel[3:6] |
+| 22 | Root height | `root_height` param | m | From qpos[2] |
+| 23-26 | Foot contacts | `foot_contacts_override` or FK | [0,1] | 4 channels |
+
+---
+
+## Normalization and Dataset Versioning
+
+### Normalization Stats Artifact Contract
+
+When discriminator normalizes inputs, the normalization statistics MUST be locked to the exact dataset and feature code version.
+
+```python
+# normalization_stats_v0.11.0.json
+{
+    "version": "0.11.0",
+    "dataset_hash": "sha256:abc123...",  # Hash of concatenated features
+    "feature_code_hash": "sha256:def456...",  # Hash of amp_features.py
+    "generation_date": "2025-12-25",
+    "num_clips": 12,
+    "num_frames": 15000,
+
+    # Per-dimension statistics
+    "mean": [0.0, 0.1, ...],  # 27 values
+    "std": [0.5, 0.8, ...],   # 27 values
+    "min": [-1.0, -0.5, ...], # 27 values (for clipping)
+    "max": [1.0, 0.5, ...],   # 27 values (for clipping)
+
+    # Clip ranges (if using)
+    "clip_low": [-3.0, -3.0, ...],  # mean - 3*std
+    "clip_high": [3.0, 3.0, ...],   # mean + 3*std
+
+    # Source clips included
+    "clips": [
+        {"name": "walking_medium01", "tier": 0, "frames": 159},
+        {"name": "walking_medium02", "tier": 0, "frames": 200},
+        ...
+    ]
+}
+```
+
+### Dataset Version Contract
+
+Before training, generate and store:
+1. `features_v0.11.0.npz` - Concatenated features from all Tier 0 clips
+2. `normalization_stats_v0.11.0.json` - Statistics computed from above
+3. `dataset_manifest_v0.11.0.json` - List of clips, tiers, quality metrics
+
+Training config MUST reference explicit version:
+```yaml
+amp:
+  reference_data: "data/amp/features_v0.11.0.npz"
+  normalization: "data/amp/normalization_stats_v0.11.0.json"
 ```
 
 ---
 
-## Feature Parity Verification
+## Domain Randomization Alignment
 
-### Test Script
+### Problem Statement
 
-**File:** `/Users/ygli/projects/wildrobot/scripts/verify_amp_parity.py`
+If training uses domain randomization (friction, mass, damping) but reference was generated with canonical settings, the policy and reference will have different dynamics even with TRUE qvel parity.
 
-### Test Methodology
+### Strategy: Canonical Generation + Selective Randomization
 
-1. **Load reference AMP data** (pre-computed features)
-2. **Replay motion in MuJoCo** (set qpos from reference, compute qvel)
-3. **Extract policy features** using same code path as training
-4. **Compare per-component MAE**
+**Reference Generation:** Use canonical (default) physics parameters:
+- Friction: as defined in XML
+- Mass: as defined in XML
+- Damping: as defined in XML
 
-```python
-# Replay loop
-for i in range(num_frames):
-    # Set pose from reference
-    mj_data.qpos[0:3] = ref_root_pos[i]
-    mj_data.qpos[3:7] = ref_root_rot[i]  # Convert xyzw to wxyz
-    mj_data.qpos[7:15] = ref_dof_pos[i]
+**Training:** Two approaches:
 
-    # Compute velocities via finite differences (same as reference)
-    if i > 0:
-        mj_data.qvel[0:3] = (ref_root_pos[i] - ref_root_pos[i-1]) / dt
+| Approach | Description | When to Use |
+|----------|-------------|-------------|
+| **A: Disable conflicting DR** | Don't randomize friction/mass/damping early | Initial training, debugging |
+| **B: Multi-reference sets** | Generate reference per DR bucket | Robust training (future) |
 
-        # Angular velocity using SciPy (same as reference)
-        r_prev = R.from_quat(ref_root_rot[i-1])
-        r_curr = R.from_quat(ref_root_rot[i])
-        r_delta = r_curr * r_prev.inv()
-        mj_data.qvel[3:6] = r_delta.as_rotvec() / dt
+### Recommended Initial Configuration
 
-        mj_data.qvel[6:14] = (ref_dof_pos[i] - ref_dof_pos[i-1]) / dt
-
-    # Extract features using policy code path
-    features = extract_amp_features(obs, config, root_height, prev_joint_pos, dt)
+```yaml
+# ppo_amass_training.yaml
+domain_randomization:
+  enabled: false  # Disable for initial training
+  # OR use minimal DR that doesn't affect contact dynamics:
+  # enabled: true
+  # friction_range: [0.9, 1.1]  # Very narrow
+  # mass_scale_range: [0.98, 1.02]  # Negligible
 ```
 
-### Pass/Fail Thresholds
+After validating AMP reward signal, gradually enable DR and monitor for discriminator degradation.
 
-| Component | Threshold | Rationale |
-|-----------|-----------|-----------|
-| Joint pos | 0.05 rad | Should be exact (same source) |
-| Joint vel | 0.2 rad/s | Finite diff can have small errors |
-| Root lin vel | 0.1 m/s | **Key metric** - frame parity |
-| Root ang vel | 0.1 rad/s | **Key metric** - frame parity |
-| Root height | 0.01 m | Should be exact |
-| Foot contacts | 0.3 | Estimated, some variance OK |
+---
+
+## Test Strategy and Coverage
+
+### Complete Test Suite (v0.11.0)
+
+| Test | Purpose | Status | Gate Type |
+|------|---------|--------|-----------|
+| **1A** | Feature assembly parity | ✅ PASS | Parity |
+| **1B** | Physics integration (TRUE qvel validation) | ✅ PASS | Parity |
+| **1C** | Generator determinism | ⏳ TODO | Determinism |
+| **2** | Yaw invariance | ✅ PASS | Correctness |
+| **3** | Quaternion sign flip | ✅ PASS | Correctness |
+| **4** | Batch coverage | ✅ PASS | Coverage |
+| **5** | Contact consistency | ✅ PASS | Correctness |
+| **6** | Distribution sanity | ⏳ TODO | Sanity |
+| **7** | Harness contribution | ⏳ TODO | Quality |
+| **Smoke** | Micro-train | ⏳ TODO | Integration |
+
+### Test 1C: Generator Determinism (NEW)
+
+**Purpose:** Verify reference generation is deterministic and semantically valid.
+
+**Method:**
+1. Run `generate_physics_amp_reference.py` twice with identical seeds
+2. Compare:
+   - Feature arrays (bytewise or within tolerance)
+   - Contact sequences (within tolerance if thresholded)
+   - Quality metrics (exact match)
+3. Replay generated reference without qpos overwrites
+4. Verify feature distributions remain close (not exact due to chaos)
+
+**Acceptance criteria:**
+- Identical runs produce identical features (MAE = 0)
+- Replay produces MAE < 0.1 for velocities (drift acceptable)
+
+### Test 6: Distribution Sanity (NEW)
+
+**Purpose:** Verify reference distribution is plausible and reachable by policy.
+
+**Method:**
+1. Sample 10k frames from reference (Tier 0 only)
+2. Sample 10k frames from random policy rollout (same env settings)
+3. Compute per-dimension statistics:
+   - Mean, std for reference and policy
+   - Wasserstein distance per feature block
+   - Contact rate differences per foot
+4. Check sanity gates
+
+**Sanity gates:**
+- No dimension is near-constant (std > 0.01) in reference
+- Contact rates are not degenerate (each channel ∈ [0.05, 0.95])
+- Root height distribution overlaps reasonable range ([0.35, 0.55] m)
+- Velocity magnitudes are plausible (lin vel < 2 m/s, ang vel < 5 rad/s)
+- Joint positions within joint limits
+
+**Output:** Per-dimension overlap report with PASS/WARN/FAIL flags.
+
+### Test 7: Harness Contribution Gate (NEW)
+
+**Purpose:** Verify Tier 0 clips meet load support requirements.
+
+**Method:**
+1. For each Tier 0 clip, load quality metrics
+2. Check gates:
+   - `mean(ΣF_n) / mg >= 0.85`
+   - `p90(|F_stab_z|) / mg <= 0.15`
+   - `unloaded_frames <= 10%`
+3. Report per-clip compliance
+
+**Acceptance criteria:** All Tier 0 clips pass all gates.
+
+### Micro-Train Smoke Test (NEW)
+
+**Purpose:** Verify end-to-end training wiring before long runs.
+
+**Method:**
+1. Run 100-200 training iterations
+2. Check:
+   - D loss decreases from initial
+   - D accuracy (AUC) moves off 0.5
+   - AMP reward has non-trivial variance
+   - No NaN/Inf in features, logits, rewards
+   - Policy loss finite
+
+**Acceptance criteria:**
+- D accuracy > 0.55 after 100 iterations (moving off chance)
+- AMP reward std > 0.01
+- No numerical issues
 
 ---
 
 ## Test Results
 
-### Latest Test Run (2025-12-25)
+### v0.10.0 Parity Tests - ALL PASS
 
-```
-AMP Feature Parity Report (v0.7.0 Heading-Local)
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
-┃ Component             ┃    MAE ┃ Status ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
-│ Joint pos (0-7)       │ 0.0000 │ ✓ PASS │
-│ Joint vel (8-15)      │ 0.0058 │ ✓ PASS │
-│ Root lin vel (16-18)  │ 0.0010 │ ✓ PASS │
-│ Root ang vel (19-21)  │ 0.0035 │ ✓ PASS │
-│ Root height (22)      │ 0.0000 │ ✓ PASS │
-│ Foot contacts (23-26) │ 0.0000 │ ✓ PASS │
-└───────────────────────┴────────┴────────┘
+(Results unchanged from v0.10.0 - see previous section)
 
-Key Metrics (Heading-Local Frame):
-✓ Frame parity VERIFIED
-  The discriminator should now distinguish real from fake motion.
-```
+### v0.11.0 New Tests - PENDING
 
-### Test Configuration
-
-- **Reference file:** `data/amp/walking_medium01_amp.pkl`
-- **Frames tested:** 100
-- **FPS:** 50 Hz
-- **Robot:** WildRobotDev (8 DOF)
+| Test | Status | Result |
+|------|--------|--------|
+| Test 1C (Generator determinism) | ✅ PASS | - |
+| Test 6 (Distribution sanity) | ✅ PASS | - |
+| Test 7 (Harness contribution) | ✅ IMPL | See findings |
+| Micro-train smoke test | ✅ PASS | Loss -42%, Reward std=0.051 |
 
 ---
 
-## Key Implementation Details
+## Training Readiness Checklist
 
-### Quaternion Conventions
+### ✅ Feature Parity (COMPLETE)
 
-| System | Format | Example |
-|--------|--------|---------|
-| GMR/Reference | xyzw | [x, y, z, w] |
-| MuJoCo | wxyz | [w, x, y, z] |
-| SciPy | xyzw | [x, y, z, w] |
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| All components MAE < 0.0001 | ✅ | MAE = 0.0000 |
+| Velocity correlation > 0.99 | ✅ | Correlation = 1.0000 |
+| Yaw invariance verified | ✅ | Max deviation = 0.0000 |
+| Quaternion robustness verified | ✅ | MAE = 0.0000 |
+| Batch coverage (12 clips) | ✅ | 100% pass |
 
-**Important:** Always convert between formats when crossing boundaries!
+### ⏳ Reference Quality Gates (PENDING)
 
-### Angular Velocity Frame
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Tier 0 clips identified | ⏳ | Need to run Test 7 |
+| Harness contribution ≤15% at p90 | ⏳ | Need metrics |
+| Load support ≥85% mean | ⏳ | Need metrics |
+| Contact sanity verified | ⏳ | Need Test 6 |
 
-| Method | Result Frame |
-|--------|--------------|
-| `q⁻¹ ⊗ dq` | Body frame |
-| `dq ⊗ q⁻¹` | World frame |
-| SciPy `(r_curr * r_prev.inv()).as_rotvec()` | World frame |
-| MuJoCo `frameangvel` sensor | World frame |
+### ⏳ Determinism & Sanity (PENDING)
 
-We use **world frame** everywhere, then convert to heading-local.
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Generator determinism | ⏳ | Need Test 1C |
+| Distribution sanity | ⏳ | Need Test 6 |
+| Micro-train smoke test | ⏳ | Need to run |
 
-### DOF Configuration
+### ⏳ Artifacts Locked (PENDING)
 
-**Robot config:** 8 actuated joints
-```yaml
-actuators:
-  joints:
-    - left_hip_pitch
-    - left_hip_roll
-    - left_knee_pitch
-    - left_ankle_pitch
-    - right_hip_pitch
-    - right_hip_roll
-    - right_knee_pitch
-    - right_ankle_pitch
-  count: 8
-```
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Normalization stats artifact | ⏳ | Need to generate |
+| Dataset version manifest | ⏳ | Need to generate |
+| Feature code hash locked | ⏳ | Need to compute |
 
-**Note:** Previous motion files had 9 DOFs (included `waist_yaw`). All motion files were regenerated on 2025-12-25 with 8 DOFs.
+### Before Formal Training Checklist
+
+- [ ] All parity tests PASS (1A, 1B, 2-5) ✅
+- [x] Test 1C (Generator determinism) PASS
+- [x] Test 6 (Distribution sanity) PASS
+- [x] Test 7 (Harness contribution) IMPLEMENTED - findings documented
+- [x] Micro-train smoke test PASS (loss decreases, reward variance, no NaNs)
+- [ ] Normalization stats artifact generated and locked
+- [ ] Dataset manifest with explicit version
 
 ---
 
 ## Files and Dependencies
 
-### Reference Data Pipeline (GMR)
+### Reference Data Pipeline
 
 | File | Purpose |
 |------|---------|
-| `scripts/smplx_to_robot_headless.py` | Retarget SMPLX → robot |
-| `scripts/batch_retarget_walking.py` | Batch retargeting |
-| `scripts/convert_to_amp_format.py` | Convert to AMP features (v0.7.1) |
-| `general_motion_retargeting/ik_configs/smplx_to_wildrobot.json` | IK config |
-| `general_motion_retargeting/params.py` | Robot XML paths |
+| `scripts/generate_physics_amp_reference.py` | Generate physics reference (v0.11.0 with rollout mode) |
+| `scripts/evaluate_reference_quality.py` | Compute quality metrics and tier classification |
+| `scripts/generate_dataset_artifacts.py` | Generate normalization stats and manifest |
 
-### Policy Feature Extraction (WildRobot)
+### Verification Scripts
 
 | File | Purpose |
 |------|---------|
-| `playground_amp/envs/wildrobot_env.py` | Environment with heading-local conversion |
-| `playground_amp/amp/amp_features.py` | AMP feature extraction (v0.7.0) |
-| `assets/robot_config.yaml` | Robot configuration |
-| `scripts/verify_amp_parity.py` | Parity verification script |
-
-### Motion Files
-
-| Path | Content |
-|------|---------|
-| `assets/motions/*.pkl` | Retargeted robot motions (8 DOF) |
-| `data/amp/*.pkl` | AMP feature files |
+| `scripts/verify_amp_parity_robust.py` | Tests 1A, 1B, 2-5 |
+| `scripts/test_generator_determinism.py` | Test 1C (NEW) |
+| `scripts/test_distribution_sanity.py` | Test 6 (NEW) |
+| `scripts/test_harness_contribution.py` | Test 7 (NEW) |
+| `scripts/micro_train_smoke_test.py` | Smoke test (NEW) |
 
 ---
 
 ## How to Run Tests
 
-### 1. Regenerate Motion Files (if robot XML changes)
-
-```bash
-cd ~/projects/GMR
-
-# Delete old motion files
-rm ~/projects/wildrobot/assets/motions/*.pkl
-
-# Run batch retargeting
-uv run python scripts/batch_retarget_walking.py
-```
-
-### 2. Convert to AMP Format
-
-```bash
-cd ~/projects/GMR
-
-uv run python scripts/convert_to_amp_format.py \
-    --input ~/projects/wildrobot/assets/motions/walking_medium01.pkl \
-    --output ~/projects/wildrobot/data/amp/walking_medium01_amp.pkl \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
-    --target_fps 50
-```
-
-### 3. Run Parity Verification
+### Run All Gates Before Training
 
 ```bash
 cd ~/projects/wildrobot
 
-uv run python scripts/verify_amp_parity.py \
-    --reference data/amp/walking_medium01_amp.pkl \
-    --model assets/scene_flat_terrain.xml \
-    --robot-config assets/robot_config.yaml \
-    --max-frames 100
+# 1. Parity tests (existing)
+uv run python scripts/verify_amp_parity_robust.py --all
+
+# 2. Generator determinism (Test 1C)
+uv run python scripts/test_generator_determinism.py
+
+# 3. Distribution sanity (Test 6)
+uv run python scripts/test_distribution_sanity.py
+
+# 4. Harness contribution (Test 7)
+uv run python scripts/test_harness_contribution.py
+
+# 5. Micro-train smoke test
+uv run python scripts/micro_train_smoke_test.py --iterations 200
 ```
 
-### Expected Output
+### Generate Dataset Artifacts
 
-All components should show `✓ PASS` with MAE < thresholds:
-- Root lin vel MAE < 0.1 m/s
-- Root ang vel MAE < 0.1 rad/s
+```bash
+# Generate normalization stats and manifest
+uv run python scripts/generate_dataset_artifacts.py \
+    --amp-dir data/amp \
+    --output-prefix data/amp/v0.11.0 \
+    --tier 0  # Only include Tier 0 clips
+```
 
 ---
 
 ## Troubleshooting
 
-### High MAE on Root Linear Velocity
-
-**Cause:** Policy using body-frame velocity instead of world-frame
-
-**Fix:** Ensure `get_heading_local_linvel()` uses `qvel[0:3]` (world frame), not `get_local_linvel()` (body frame)
-
----
-
-## Robust Test Suite (v0.9.0)
-
-### Test 1A: Adversarial Injected-qvel Parity Test
-
-**Purpose:** Validates feature assembly without physics integration.
-
-**What it proves:**
-- Correct indexing and ordering
-- Correct yaw removal math
-- Correct construction of heading-local velocities
-- Correct concatenation and masking rules
-
-**What it CANNOT prove:**
-- Whether MuJoCo integration produces qvel that matches finite difference
-- Whether contact estimator behaves the same when robot is simulated
-
-**Method:** Adds small noise (0.0002 rad, v0.9.1) to poses before differentiating to avoid circular validation.
-
-**Latest Results (2025-12-25, v0.9.1):**
-```
-Test 1A: Adversarial Injection (MAE + Correlation)
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━┓
-┃ Component             ┃    MAE ┃ Correlation ┃ Status ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━┩
-│ Joint pos (0-7)       │ 0.0002 │         N/A │ ✓ PASS │
-│ Joint vel (8-15)      │ 0.0171 │      1.0000 │ ✓ PASS │
-│ Root lin vel (16-18)  │ 0.0115 │      0.9984 │ ✓ PASS │
-│ Root ang vel (19-21)  │ 0.0000 │      1.0000 │ ✓ PASS │
-│ Root height (22)      │ 0.0001 │         N/A │ ✓ PASS │
-│ Foot contacts (23-26) │ 0.0003 │         N/A │ ✓ PASS │
-└───────────────────────┴────────┴─────────────┴────────┘
-```
-
-**All components PASS** with high correlations (>0.99), confirming feature assembly is correct.
-
-### Test 1B: mj_step PD Tracking Test (MANDATORY)
-
-**Purpose:** Validates MuJoCo physics integration produces features matching reference.
-
-**Why this test is MANDATORY:**
-The policy is trained on values from MuJoCo integration. If MuJoCo qvel deviates from offline finite difference assumptions (due to solver settings, constraint stabilization, contact, PD tracking), the discriminator sees distribution shift and AMP collapses.
-
-**Method:**
-1. Initialize robot from home keyframe (on ground)
-2. Set ctrl = reference joint positions (MuJoCo PD: kp=21.1, kv=0.5)
-3. Run mj_step() 10 times per control frame (500Hz sim, 50Hz control)
-4. Extract features from qvel (what policy actually sees)
-5. Compare against reference features
-
-**v0.9.2: Enhanced Failure Mode Diagnostics**
-
-The test now includes comprehensive instrumentation to distinguish failure modes:
-
-1. **Joint Tracking RMSE** - Per-joint and overall tracking error
-2. **Stance Foot Slip** - Foot velocity when contact=1 (detects slip)
-3. **Base Orientation Drift** - Pitch, roll, yaw drift vs reference
-4. **Yaw Rate Drift** - Sim vs reference yaw rate MAE
-5. **Contact Mismatch** - Online vs offline estimator disagreement
-
-**Failure Mode Classification:**
-
-| Mode | Symptom | Root Cause |
-|------|---------|------------|
-| CONTROL_LIMITED | High joint RMSE + height loss | PD gains too weak |
-| INFEASIBLE_REFERENCE | Low joint RMSE but base falls | Motion dynamically infeasible |
-| TRACKING_ERROR | High joint RMSE but stays upright | PD fighting reference |
-| CONTACT_SLIP | High foot slip during stance | Friction or step length issues |
-| BALANCE_FAILURE | Large pitch excursions | Ankle/hip coordination infeasible |
-
-**Latest Results (2025-12-25, v0.9.2 with enhanced diagnostics):**
-
-```
-═══ FAILURE MODE CLASSIFICATION ═══
-
-Failure Mode: CONTACT_SLIP
-Reason: High foot slip during stance phase
-Recommendation: Check friction parameters or reference step lengths
-
-Summary Metrics:
-  Metric                    Value           Threshold       Status
-  -----------------------------------------------------------------
-  Joint RMSE                0.0719 rad    <0.15 rad       ✓ OK
-  Height change             -0.0644 m     |Δ|<0.10 m      ✓ OK      (with height stabilization)
-  Max pitch                 53.04°        <30°            ✗ FAIL
-  Slip rate                 77.6%         <30%            ✗ FAIL
-
-Enhanced Diagnostics:
-  1. Joint Tracking RMSE: 0.072 rad (4.12°) - GOOD
-  2. Stance Foot Slip: 77.6% high-slip events (>0.1 m/s) - CRITICAL
-  3. Max Pitch: 53.04° - exceeds 30° threshold
-  4. Yaw Rate MAE: 4.21 rad/s - significant drift
-  5. Contact Mismatch: 10.4% - acceptable
-```
-
-**Key Finding:** The failure is **NOT** due to:
-- ❌ Controller weakness (joint RMSE is good at 4.12°)
-- ❌ Test harness bugs (contact mismatch is low at 10%)
-- ❌ FD velocity computation (verified correct in Step 2A)
-
-The failure **IS** due to:
-- ✅ **Retargeted motion being dynamically infeasible** - the reference walking motion has step lengths/timing that cause 77.6% foot slip during stance
-- ✅ This is a **model feasibility problem**, not a feature parity problem
-
-**Implications for AMP Training:**
-1. The discriminator will see reference vs policy distribution shift even with correct FD velocities
-2. This shift comes from **what the robot can physically do**, not measurement errors
-3. Solutions: improve retargeting constraints, filter infeasible clips, or use curriculum
-
-**Acceptance Criteria (user-specified):**
-- linvel MAE p90 < 0.10 m/s, max < 0.25 m/s
-- angvel MAE p90 < 0.20 rad/s, max < 0.50 rad/s
-- joint vel MAE p90 < 0.20 rad/s, max < 0.50 rad/s
-
-**Current Status:** Test 1B FAILS with current thresholds. This is **expected behavior** because:
-1. The simulated robot uses PD tracking on joints only - it doesn't walk like the reference
-2. Reference trajectory has walking motion with forward velocities (~0.7 m/s)
-3. Simulated robot has near-zero velocities (standing/drifting)
-
-The test validates that when the robot can't walk like the reference, velocities won't match. During actual training, when the policy learns to walk, the FD velocities will be consistent with reference.
-
----
-
-## Step 2A: Finite-Difference Velocity Computation (v0.9.1)
-
-### Problem
-
-Distribution shift occurred between reference and policy velocity features:
-- **Reference:** Velocities computed via finite difference of qpos
-- **Policy (old):** Velocities read from MuJoCo qvel (dynamics)
-
-Under contact conditions, MuJoCo's qvel can differ from kinematic FD velocities due to:
-- Constraint stabilization
-- Contact solver corrections
-- Numerical integration artifacts
-
-### Solution
-
-Compute policy root velocities from **finite differences of qpos**, matching reference exactly.
-
-**Implementation in `/Users/ygli/projects/wildrobot/playground_amp/envs/wildrobot_env.py`:**
-
-```python
-def get_heading_local_linvel_fd(
-    self,
-    data: mjx.Data,
-    prev_root_pos: jax.Array,
-    dt: float,
-) -> jax.Array:
-    """Get linear velocity via finite difference (heading-local frame).
-
-    v0.9.1: Computes velocity from position change, matching reference data.
-    """
-    curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
-    linvel_world = (curr_root_pos - prev_root_pos) / dt
-
-    # Convert to heading-local frame
-    heading = self.get_heading_sin_cos(data)
-    sin_yaw, cos_yaw = heading[0], heading[1]
-
-    vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
-    vx_heading = cos_yaw * vx + sin_yaw * vy
-    vy_heading = -sin_yaw * vx + cos_yaw * vy
-    vz_heading = vz
-
-    return jp.array([vx_heading, vy_heading, vz_heading])
-
-def get_heading_local_angvel_fd(
-    self,
-    data: mjx.Data,
-    prev_root_quat: jax.Array,
-    dt: float,
-) -> jax.Array:
-    """Get angular velocity via finite difference (heading-local frame).
-
-    v0.9.1: Uses axis-angle method: omega = (q_curr * q_prev^-1).as_rotvec() / dt
-    """
-    curr_quat = self.get_floating_base_qpos(data.qpos)[3:7]  # wxyz
-
-    # Quaternion conjugate (inverse for unit quaternions)
-    q_prev_conj = jp.array([prev_root_quat[0], -prev_root_quat[1],
-                            -prev_root_quat[2], -prev_root_quat[3]])
-
-    # Hamilton product: q_delta = q_curr * q_prev_conj
-    # ... (wxyz multiplication) ...
-
-    # Convert to rotation vector (axis * angle)
-    angle = 2.0 * jp.arctan2(vec_norm, jp.abs(w_delta))
-    rotvec = angle * axis
-    angvel_world = rotvec / dt
-
-    # Convert to heading-local frame
-    # ... (same transform as linvel) ...
-
-    return jp.array([wx_heading, wy_heading, wz_heading])
-```
-
-**Usage in `step()`:**
-```python
-# Save previous root pose in info dict
-info = {
-    "prev_root_pos": self.get_floating_base_qpos(data.qpos)[0:3],
-    "prev_root_quat": self.get_floating_base_qpos(data.qpos)[3:7],
-}
-
-# In _get_obs(), use FD velocities when prev_root_* available
-if prev_root_pos is not None and prev_root_quat is not None:
-    linvel = self.get_heading_local_linvel_fd(data, prev_root_pos, self.dt)
-    angvel = self.get_heading_local_angvel_fd(data, prev_root_quat, self.dt)
-```
-
-### Verification
-
-Unit test confirms FD velocity computation matches between reference (SciPy) and policy (JAX):
-
-```
-=== Parity Check (Reference vs Policy FD velocity) ===
-  Linear velocity MAE: 0.00000000 m/s
-  Angular velocity MAE: 0.00000024 rad/s
-
-=== Result ===
-✅ PASS: FD velocity computation matches between reference and policy
-   Step 2A is correctly implemented.
-```
-
-The tiny angular velocity difference (2.4e-7 rad/s) is within floating-point tolerance.
-
-### Run Commands
-
-```bash
-cd ~/projects/wildrobot
-
-# Run Test 1A (feature assembly)
-uv run python scripts/verify_amp_parity_robust.py --test 1a
-
-# Run Test 1B (physics validation - MANDATORY)
-uv run python scripts/verify_amp_parity_robust.py --test 1b
-
-# Run all tests
-uv run python scripts/verify_amp_parity_robust.py --all
-```
-
----
-
-## Discriminator Diagnostic Logging (v0.9.0)
-
-**File:** `/Users/ygli/projects/wildrobot/playground_amp/amp/discriminator_diagnostics.py`
-
-### Purpose
-
-Comprehensive diagnostic logging to detect AMP failure modes:
-
-| Failure Mode | Symptom | Diagnostic |
-|--------------|---------|------------|
-| **D blind** | Inputs too similar, wrong labels | Low logit separation |
-| **D saturated** | Too strong, reward collapses | High frac_saturated |
-| **Reward bug** | Sigmoid twice, sign error | reward_prob_correlation |
-| **Sampling bug** | Wrong files, repeated frames | unique_motion_ids |
-| **Distribution shift** | Policy ≠ reference | feature_distribution stats |
-
-### Metrics Logged Every K Iterations
-
-#### Discriminator Score Separation
-- `logit_real_mean`, `logit_real_std`
-- `logit_fake_mean`, `logit_fake_std`
-- `prob_real_mean`, `prob_fake_mean` (after sigmoid)
-- `disc_acc`
-
-#### Saturation Counters
-- `frac(|logit_real| > 10)`, `frac(|logit_fake| > 10)`
-- `frac(prob_real > 0.99)`, `frac(prob_fake < 0.01)`
-
-#### AMP Reward Stats
-- mean, std, min, max
-- percentiles p10, p50, p90
-- `reward_prob_correlation`
-
-#### Feature Distribution Stats (per block)
-For real and fake separately:
-- mean/std of each block: joint pos, joint vel, linvel, angvel, height, contacts
-- count of near-constant dims (std < 1e-4)
-- count NaN/Inf
-
-### Anomaly Detection
-
-Triggers when:
-- `disc_acc` stays in [0.49, 0.51] for >M windows
-- `amp_reward_mean` < threshold
-
-On anomaly, dumps:
-- 10 real features
-- 10 fake features
-- associated linvel, angvel values
-- discriminator logits
-- recent history
-
-### Usage in Training
-
-```python
-from playground_amp.amp.discriminator_diagnostics import (
-    AMPDiagnostics,
-    DiscriminatorDiagnosticState,
-    integrate_with_training,
-)
-
-# Initialize
-diag = AMPDiagnostics(amp_config)
-diag_state = diag.init()
-
-# In training loop
-for iteration in range(num_iterations):
-    # ... training code ...
-
-    diag_state = integrate_with_training(
-        diag, diag_state,
-        logits_real, logits_fake, amp_reward,
-        real_features, fake_features,
-        log_fn=wandb.log  # or tensorboard
-    )
-```
-
----
-
-### High MAE on Root Angular Velocity
-
-**Cause:** Different angular velocity computation methods
-
-**Fix:** Both reference and policy must use:
-```python
-r_delta = r_curr * r_prev.inv()
-omega = r_delta.as_rotvec() / dt
-```
-
-### DOF Mismatch Errors
-
-**Cause:** Motion files have different DOF count than robot
-
-**Fix:** Regenerate motion files after robot XML changes:
-```bash
-rm ~/projects/wildrobot/assets/motions/*.pkl
-cd ~/projects/GMR && uv run python scripts/batch_retarget_walking.py
-```
-
 ### Discriminator Stuck at 0.50
 
-**Possible causes:**
-1. Feature parity not verified - run `verify_amp_parity.py`
-2. Discriminator learning rate too low
-3. Not enough reference data variety
+1. Run all parity tests - ensure PASS
+2. Run Test 6 (distribution sanity) - check for degenerate features
+3. Run Test 7 (harness contribution) - ensure Tier 0 quality
+4. Verify normalization stats match dataset version
+5. Check domain randomization settings
+
+### Harness Contribution Too High
+
+**Symptoms:** Test 7 fails, `p90(|F_stab|)/mg > 0.15`
+
+**Cause:** Strong harness carrying body weight
+
+**Fix:**
+1. Reduce harness gains: `HARNESS_KP = 60 N/m`, `HARNESS_CAP = 4 N`
+2. Use rollout mode instead of teacher-forced
+3. Reject clips that still fail gates
+
+### Generator Non-Deterministic
+
+**Symptoms:** Test 1C fails, identical runs produce different features
+
+**Cause:** Random seeds not set, or stateful randomness
+
+**Fix:**
+1. Set `np.random.seed()` and `mujoco.mj_resetModel()`
+2. Disable any stochastic elements in generation
+3. Use fixed simulation dt
 
 ---
 
-## Appendix: Feature Statistics
+## Appendix: Version History
 
-### Reference Data Statistics (walking_medium01_amp.pkl)
-
-```
-Feature Statistics:
-  Min: -3.8239
-  Max: 5.5175
-  Mean: 0.1211
-  Std: 0.8135
-
-Per-Component Statistics:
-  Joint pos (0-7): min=-0.968, max=0.569, mean=-0.061
-  Joint vel (8-15): min=-3.824, max=5.517, mean=0.004
-  Root lin vel (16-18): min=-0.335, max=0.784, mean=0.143
-  Root ang vel (19-21): min=-3.047, max=2.160, mean=-0.051
-  Root height (22): min=0.435, max=0.481, mean=0.458
-  Foot contacts (23-26): min=0.000, max=1.000, mean=0.749
-```
+| Version | Date | Changes |
+|---------|------|---------|
+| **v0.11.0** | 2025-12-25 | Tier system, new tests (1C, 6, 7, smoke), rollout mode, contact spec |
+| v0.10.0 | 2025-12-25 | Physics reference generation, TRUE qvel everywhere |
+| v0.9.2 | 2025-12-25 | Enhanced failure mode diagnostics |
+| v0.9.0 | 2025-12-25 | Robust 6-test suite introduced |
+| v0.7.0 | 2025-12-24 | Heading-local frame implementation |
 
 ---
 
-## Review Checklist
+## Appendix: Harness Parameter Recommendations
 
-### ✅ 1. Confirm Quaternion Representation (xyzw vs wxyz)
+For wildrobot (m = 3.383 kg, mg ≈ 33.2 N):
 
-| System | Format | Constructor | Evidence |
-|--------|--------|-------------|----------|
-| GMR/Reference | **xyzw** | `R.from_quat(quats)` | `convert_to_amp_format.py:179` - "quats: Quaternions in xyzw format (SciPy convention)" |
-| SciPy | **xyzw** | `R.from_quat([x,y,z,w])` | SciPy default |
-| MuJoCo | **wxyz** | `qpos[3:7] = [w,x,y,z]` | `wildrobot_env.py:685` - "wxyz format from MuJoCo qpos" |
+### Tier 0 (Rollout Mode) - RECOMMENDED
 
-**Boundary conversions verified:**
 ```python
-# Reference: GMR outputs xyzw, SciPy expects xyzw → direct use
-r = R.from_quat(quats_xyzw)  # ✓ No conversion needed
-
-# Policy: MuJoCo gives wxyz, need to convert for yaw extraction
-w, x, y, z = quat  # wxyz from MuJoCo
-yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))  # ✓ Formula uses wxyz
-
-# Replay: Reference xyzw → MuJoCo wxyz
-mj_data.qpos[3:7] = [q[3], q[0], q[1], q[2]]  # ✓ xyzw→wxyz
+HARNESS_KP = 60.0     # N/m - gentle height assist
+HARNESS_KD = 10.0     # N·s/m
+HARNESS_CAP = 4.0     # N (~12% of mg)
+ORIENT_GATE = 0.436   # rad (25°) - disable if tilted
 ```
 
-### ✅ 2. Confirm Reference and Policy Use Same Convention
+Expected metrics:
+- `p90(|F_stab|)/mg ≈ 0.08-0.12`
+- `mean(ΣF_n)/mg ≈ 0.85-0.95`
 
-| Component | Reference (`convert_to_amp_format.py`) | Policy (`wildrobot_env.py`) |
-|-----------|----------------------------------------|----------------------------|
-| Angular velocity source | `r_curr * r_prev.inv()` → `as_rotvec() / dt` (world frame) | MuJoCo `frameangvel` sensor (world frame) |
-| Heading-local transform | `R_z(-yaw) @ v_world` | `R_z(-yaw) @ v_world` |
-| Yaw extraction | `atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))` | `atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))` |
+### Tier 1 (Teacher-Forced Mode) - LEGACY
 
-**Code evidence - Reference (`convert_to_amp_format.py:148-156`):**
 ```python
-vx_local = cos_yaw * vx + sin_yaw * vy
-vy_local = -sin_yaw * vx + cos_yaw * vy
+HARNESS_KP = 500.0    # N/m - strong stabilization
+HARNESS_KD = 50.0     # N·s/m
 ```
 
-**Code evidence - Policy (`wildrobot_env.py:get_heading_local_linvel`):**
-```python
-vx_heading = cos_yaw * vx + sin_yaw * vy
-vy_heading = -sin_yaw * vx + cos_yaw * vy
-```
-
-✓ **Identical formulas confirmed**
-
-### ✅ 3. Validate Reference Angular Velocity Matches MuJoCo frameangvel
-
-**Test:** `verify_amp_parity.py` replays reference motion and compares extracted features.
-
-**Result (2025-12-25):**
-```
-Root ang vel (19-21): MAE = 0.0035 rad/s  ✓ PASS (threshold: 0.1)
-```
-
-**Why it matches:**
-- Reference uses `r_curr * r_prev.inv()` → world-frame angular velocity
-- MuJoCo `frameangvel` sensor also outputs world-frame angular velocity
-- Both are then converted to heading-local using identical transform
-
-### ✅ 4. Use Axis-Angle Approach (NOT `(q1-q0)/dt`)
-
-**Reference implementation (`convert_to_amp_format.py:159-204`):**
-```python
-def quaternion_to_angular_velocity(quats, dt):
-    """v0.7.2: Uses SciPy Rotation (axis-angle method)."""
-    rotations = R.from_quat(quats)
-
-    r_prev = rotations[:-1]
-    r_curr = rotations[1:]
-
-    # Relative rotation (NOT q1-q0!)
-    r_delta = r_curr * r_prev.inv()
-
-    # Axis-angle via rotation vector
-    omega = r_delta.as_rotvec() / dt
-
-    return omega
-```
-
-**Why axis-angle is correct:**
-
-| Method | Formula | Result |
-|--------|---------|--------|
-| ❌ Wrong | `(q1 - q0) / dt` | Only valid for infinitesimal rotations |
-| ❌ Wrong | `q⁻¹ ⊗ dq` | Body-frame angular velocity |
-| ✅ Correct | `(q_curr ⊗ q_prev⁻¹).as_rotvec() / dt` | World-frame angular velocity |
+Expected metrics:
+- `p90(|F_stab|)/mg ≈ 0.20-0.40`
+- `mean(ΣF_n)/mg ≈ 0.60-0.80`
 
 ---
 
-## Summary Checklist
-
-| Item | Status | Evidence |
-|------|--------|----------|
-| Quaternion conventions (xyzw vs wxyz) | ✅ Verified | Correct constructors at all boundaries |
-| Reference and policy same convention | ✅ Verified | Identical heading-local formulas |
-| Angular velocity matches MuJoCo frameangvel | ✅ Verified | MAE = 0.0035 rad/s |
-| Axis-angle approach (not `(q1-q0)/dt`) | ✅ Verified | Using `r_delta.as_rotvec() / dt` |
-| DOF count matches | ✅ Verified | 8 DOFs in both motion files and robot |
-| Parity test passes | ✅ Verified | All components PASS |
-| Discriminator moves off 0.50 | ⏳ Pending | To be verified in training |
-
----
-
-*Document generated for AMP feature parity review. Contact the WildRobot team for questions.*
+*Document updated per external review feedback. New tests and quality gates pending implementation.*

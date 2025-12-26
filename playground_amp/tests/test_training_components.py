@@ -32,12 +32,12 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def load_robot_config_fixture():
-    """Load robot config once for the entire test session.
+"""Load robot config once for the entire test session.
 
     This is required because amp_features.py depends on robot config
     for joint indices and other robot-specific parameters.
     """
-    from playground_amp.configs.config import load_robot_config
+    from playground_amp.configs.training_config import load_robot_config
 
     robot_config_path = Path("assets/robot_config.yaml")
     if robot_config_path.exists():
@@ -90,12 +90,12 @@ class TestAMPFeatureExtraction:
 
     def test_feature_extraction_shape(self, rng):
         """Test: obs (37-dim) + foot_contacts (4-dim) → features (29-dim)."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
 
         # Create mock observation (37-dim)
         obs = jax.random.normal(rng, (37,))
@@ -107,12 +107,12 @@ class TestAMPFeatureExtraction:
 
     def test_feature_extraction_batched_shape(self, rng):
         """Test: batched extraction maintains correct shapes."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
         num_steps, num_envs = 128, 64
 
         # Create batched observations
@@ -130,9 +130,9 @@ class TestAMPFeatureExtraction:
 
     def test_feature_config_values(self):
         """Test: default config has expected values."""
-        from playground_amp.amp.amp_features import get_amp_config
+        from playground_amp.amp.policy_features import get_feature_config
 
-        config = get_amp_config()
+        config = get_feature_config()
 
         assert config.feature_dim == 29
         assert config.num_actuated_joints == 9
@@ -140,12 +140,12 @@ class TestAMPFeatureExtraction:
 
     def test_velocity_normalization(self, rng):
         """Test: root velocity is normalized to unit direction."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
 
         # Create obs with known velocity
         obs = jnp.zeros(37)
@@ -165,12 +165,12 @@ class TestAMPFeatureExtraction:
 
     def test_foot_contacts_passthrough(self, rng):
         """Test: foot contacts are preserved in features."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
 
         obs = jax.random.normal(rng, (37,))
         foot_contacts = jnp.array([0.1, 0.2, 0.3, 0.4])
@@ -188,12 +188,12 @@ class TestAMPFeatureExtraction:
 
     def test_feature_extraction_deterministic(self, rng):
         """Test: same input produces same output."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
         obs = jax.random.normal(rng, (37,))
         foot_contacts = jnp.array([0.5, 0.3, 0.7, 0.2])
 
@@ -750,9 +750,9 @@ class TestIntegration:
 
     def test_feature_to_discriminator_pipeline(self, rng, feature_dim):
         """Test: features flow correctly through discriminator."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
         from playground_amp.amp.discriminator import (
             compute_amp_reward,
@@ -767,7 +767,7 @@ class TestIntegration:
         )
 
         # Extract features
-        config = get_amp_config()
+        config = get_feature_config()
         batch_size = 32
         obs = jax.random.normal(rng, (batch_size, 37))
         foot_contacts = jax.random.uniform(rng, (batch_size, 4))
@@ -841,12 +841,12 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_foot_contacts_required_error(self, rng):
         """Test: ValueError raised when foot_contacts is None."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
         obs = jax.random.normal(rng, (37,))
 
         with pytest.raises(ValueError, match="foot_contacts is required"):
@@ -854,7 +854,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_temporal_feature_config(self):
         """Test: TemporalFeatureConfig properties."""
-        from playground_amp.amp.amp_features import TemporalFeatureConfig
+        from playground_amp.amp.policy_features import TemporalFeatureConfig
 
         config = TemporalFeatureConfig(num_frames=3, feature_dim=29)
 
@@ -864,7 +864,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_create_temporal_buffer(self):
         """Test: create_temporal_buffer returns correct shape."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             create_temporal_buffer,
             TemporalFeatureConfig,
         )
@@ -877,7 +877,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_update_temporal_buffer(self, rng):
         """Test: update_temporal_buffer shifts and adds new frame."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             create_temporal_buffer,
             TemporalFeatureConfig,
             update_temporal_buffer,
@@ -895,7 +895,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_get_temporal_features(self, rng):
         """Test: get_temporal_features flattens buffer correctly."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             create_temporal_buffer,
             get_temporal_features,
             TemporalFeatureConfig,
@@ -917,7 +917,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_add_temporal_context_to_reference(self, rng):
         """Test: add_temporal_context_to_reference creates windows."""
-        from playground_amp.amp.amp_features import add_temporal_context_to_reference
+        from playground_amp.amp.policy_features import add_temporal_context_to_reference
 
         # Create single-frame features
         features = jax.random.normal(rng, (100, 29))
@@ -930,7 +930,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_add_temporal_context_insufficient_frames(self, rng):
         """Test: ValueError when not enough frames for temporal window."""
-        from playground_amp.amp.amp_features import add_temporal_context_to_reference
+        from playground_amp.amp.policy_features import add_temporal_context_to_reference
 
         # Only 2 frames, but need 3
         features = jax.random.normal(rng, (2, 29))
@@ -940,7 +940,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_running_mean_std_creation(self):
         """Test: create_running_stats returns correct initial state."""
-        from playground_amp.amp.amp_features import create_running_stats
+        from playground_amp.amp.policy_features import create_running_stats
 
         stats = create_running_stats(feature_dim=29)
 
@@ -951,7 +951,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_update_running_stats(self, rng):
         """Test: update_running_stats updates mean and var correctly."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             create_running_stats,
             update_running_stats,
         )
@@ -969,7 +969,7 @@ class TestAMPFeaturesBranchCoverage:
 
     def test_normalize_features_with_stats(self, rng):
         """Test: normalize_features clips and normalizes correctly."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             create_running_stats,
             normalize_features,
             update_running_stats,
@@ -1289,12 +1289,12 @@ class TestEdgeCases:
 
     def test_feature_extraction_with_zeros(self):
         """Test: Feature extraction handles zero observations."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
         obs = jnp.zeros(37)
         foot_contacts = jnp.zeros(4)
 
@@ -1305,12 +1305,12 @@ class TestEdgeCases:
 
     def test_feature_extraction_with_large_values(self, rng):
         """Test: Feature extraction handles large values."""
-        from playground_amp.amp.amp_features import (
+        from playground_amp.amp.policy_features import (
             extract_amp_features,
-            get_amp_config,
+            get_feature_config,
         )
 
-        config = get_amp_config()
+        config = get_feature_config()
         obs = jax.random.normal(rng, (37,)) * 100  # Large values
         foot_contacts = jnp.array([0.9, 0.8, 0.7, 0.6])
 

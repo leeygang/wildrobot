@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify AMP feature parity between reference data and sim replay.
 
+v0.10.0: Industry Golden Rule - TRUE qvel support for physics reference data.
 v0.7.0: Verification script for heading-local frame implementation.
 
 This script:
@@ -8,6 +9,11 @@ This script:
 2. Replays the same motion in MuJoCo sim (open-loop PD tracking)
 3. Extracts policy AMP features during replay
 4. Compares per-dimension mean absolute error
+
+v0.10.0: Physics Reference Support
+For physics reference data (has dof_vel and foot_contacts stored), this script
+automatically uses TRUE qvel instead of finite-diff velocities. This follows
+the industry golden rule: use TRUE qvel from MuJoCo everywhere.
 
 If heading-local frame parity is correct:
 - Linear velocity dimensions should match closely (MAE < 0.1 m/s)
@@ -50,12 +56,12 @@ from rich.table import Table
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from playground_amp.amp.amp_features import (
-    AMPFeatureConfig,
-    create_amp_config_from_robot,
+from playground_amp.amp.policy_features import (
+    FeatureConfig,
+    create_config_from_robot,
     extract_amp_features,
 )
-from playground_amp.configs.config import get_robot_config, load_robot_config
+from playground_amp.configs.training_config import get_robot_config, load_robot_config
 
 
 def load_reference_data(path: str) -> Dict[str, Any]:
@@ -75,6 +81,13 @@ def load_reference_data(path: str) -> Dict[str, Any]:
     print(f"  FPS: {data['fps']}")
     print(f"  Feature dim: {data['feature_dim']}")
     print(f"  Duration: {data['duration_sec']:.2f}s")
+
+    # v0.10.0: Detect physics reference data
+    is_physics_ref = "dof_vel" in data and "foot_contacts" in data
+    if is_physics_ref:
+        print(f"  [yellow]Physics reference detected: has TRUE qvel stored[/yellow]")
+    else:
+        print(f"  [dim]GMR reference: will use finite-diff velocities[/dim]")
 
     return data
 
@@ -107,13 +120,20 @@ def setup_mujoco_sim(model_path: str) -> Tuple[mujoco.MjModel, mujoco.MjData]:
 def extract_sim_features(
     mj_model: mujoco.MjModel,
     mj_data: mujoco.MjData,
-    config: AMPFeatureConfig,
+    config: FeatureConfig,
     prev_joint_pos: np.ndarray,
     dt: float,
+    use_true_qvel: bool = False,
+    true_dof_vel: np.ndarray = None,
+    true_foot_contacts: np.ndarray = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Extract AMP features from current sim state.
 
     This mimics the policy's feature extraction during training.
+
+    v0.10.0: TRUE qvel support for physics reference data.
+    When use_true_qvel=True, uses the stored TRUE velocities and contacts
+    instead of computing finite-diff or FK-estimated values.
 
     Args:
         mj_model: MuJoCo model
@@ -121,6 +141,9 @@ def extract_sim_features(
         config: AMP feature config
         prev_joint_pos: Previous joint positions for finite diff
         dt: Time step
+        use_true_qvel: If True, use TRUE qvel from reference (v0.10.0)
+        true_dof_vel: TRUE joint velocities from reference (v0.10.0)
+        true_foot_contacts: TRUE foot contacts from reference (v0.10.0)
 
     Returns:
         (features, current_joint_pos) tuple
@@ -165,8 +188,11 @@ def extract_sim_features(
     ang_vel_world = mj_data.qvel[3:6]
     ang_vel_heading = world_to_heading_local_np(ang_vel_world, cos_yaw, sin_yaw)
 
-    # Joint velocities
-    joint_vel = mj_data.qvel[6 : 6 + config.num_actuated_joints].copy()
+    # v0.10.0: Use TRUE qvel if available, otherwise use MuJoCo qvel
+    if use_true_qvel and true_dof_vel is not None:
+        joint_vel = true_dof_vel.copy()
+    else:
+        joint_vel = mj_data.qvel[6 : 6 + config.num_actuated_joints].copy()
 
     # Build 35-dim observation (v0.7.0 layout - no heading sin/cos in obs)
     obs = np.concatenate(
@@ -188,16 +214,27 @@ def extract_sim_features(
         jnp.array(prev_joint_pos) if prev_joint_pos is not None else None
     )
 
-    # Extract AMP features (v0.7.0 API - no fallback options)
-    # Foot contacts are always estimated from joints internally
-    # Joint velocities are always computed via finite diff internally
-    features = extract_amp_features(
-        obs=obs_jax,
-        config=config,
-        root_height=jnp.array(root_height),
-        prev_joint_pos=prev_joint_pos_jax,
-        dt=dt,
-    )
+    # v0.10.0: Extract AMP features with TRUE qvel support
+    # For physics reference, use TRUE contacts and TRUE qvel from observation
+    if use_true_qvel and true_foot_contacts is not None:
+        features = extract_amp_features(
+            obs=obs_jax,
+            config=config,
+            root_height=jnp.array(root_height),
+            prev_joint_pos=prev_joint_pos_jax,
+            dt=dt,
+            foot_contacts_override=jnp.array(true_foot_contacts),
+            use_obs_joint_vel=True,  # Use TRUE qvel from observation
+        )
+    else:
+        # GMR reference: estimate contacts and use finite-diff internally
+        features = extract_amp_features(
+            obs=obs_jax,
+            config=config,
+            root_height=jnp.array(root_height),
+            prev_joint_pos=prev_joint_pos_jax,
+            dt=dt,
+        )
 
     return np.array(features), joint_pos
 
@@ -243,7 +280,7 @@ def world_to_heading_local_np(
 
 def estimate_foot_contacts_np(
     joint_pos: np.ndarray,
-    config: AMPFeatureConfig,
+    config: FeatureConfig,
 ) -> np.ndarray:
     """Estimate foot contacts from joint positions (numpy version)."""
     left_hip = joint_pos[config.left_hip_pitch_idx]
@@ -267,9 +304,12 @@ def replay_motion_and_extract_features(
     mj_model: mujoco.MjModel,
     mj_data: mujoco.MjData,
     ref_data: Dict[str, Any],
-    config: AMPFeatureConfig,
+    config: FeatureConfig,
 ) -> np.ndarray:
     """Replay reference motion in sim and extract features.
+
+    v0.10.0: Physics Reference Support
+    Automatically detects physics reference data and uses TRUE qvel.
 
     Args:
         mj_model: MuJoCo model
@@ -285,6 +325,22 @@ def replay_motion_and_extract_features(
     ref_root_rot = ref_data["root_rot"]  # xyzw in reference
     num_frames = ref_data["num_frames"]
     dt = ref_data["dt"]
+
+    # v0.10.0: Detect physics reference data (has TRUE qvel stored)
+    is_physics_ref = "dof_vel" in ref_data and "foot_contacts" in ref_data
+    if is_physics_ref:
+        print(
+            "  [yellow]Physics reference detected: using TRUE qvel (industry golden rule)[/yellow]"
+        )
+        ref_dof_vel = ref_data["dof_vel"]
+        ref_foot_contacts = ref_data["foot_contacts"]
+        ref_features = ref_data["features"]
+        n = config.num_actuated_joints
+    else:
+        print("  [dim]GMR reference: using finite-diff velocities[/dim]")
+        ref_dof_vel = None
+        ref_foot_contacts = None
+        ref_features = None
 
     # Set simulation timestep
     mj_model.opt.timestep = dt
@@ -320,34 +376,81 @@ def replay_motion_and_extract_features(
         if prev_joint_pos is None:
             prev_joint_pos = current_joint_pos.copy()
 
-        # Compute velocities using finite differences
-        if i > 0:
-            mj_data.qvel[0:3] = (ref_root_pos[i] - ref_root_pos[i - 1]) / dt
+        # v0.10.0: Use TRUE qvel for physics reference, finite-diff for GMR
+        if is_physics_ref:
+            # Extract heading-local velocities from reference features
+            ref_lin_vel_heading = ref_features[i, 2 * n : 2 * n + 3]
+            ref_ang_vel_heading = ref_features[i, 2 * n + 3 : 2 * n + 6]
 
-            # Angular velocity from quaternion using axis-angle method
-            # This matches the reference data computation (SciPy Rotation)
-            from scipy.spatial.transform import Rotation as R
+            # Compute yaw for world-frame conversion
+            w, x, y, z = mj_data.qpos[3:7]
+            siny_cosp = 2.0 * (w * z + x * y)
+            cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+            norm = np.sqrt(siny_cosp**2 + cosy_cosp**2 + 1e-8)
+            sin_yaw, cos_yaw = siny_cosp / norm, cosy_cosp / norm
 
-            q0_xyzw = ref_root_rot[i - 1]
-            q1_xyzw = ref_root_rot[i]
+            # Convert heading-local to world frame for qvel injection
+            lin_vel_world = np.array(
+                [
+                    cos_yaw * ref_lin_vel_heading[0] - sin_yaw * ref_lin_vel_heading[1],
+                    sin_yaw * ref_lin_vel_heading[0] + cos_yaw * ref_lin_vel_heading[1],
+                    ref_lin_vel_heading[2],
+                ]
+            )
+            ang_vel_world = np.array(
+                [
+                    cos_yaw * ref_ang_vel_heading[0] - sin_yaw * ref_ang_vel_heading[1],
+                    sin_yaw * ref_ang_vel_heading[0] + cos_yaw * ref_ang_vel_heading[1],
+                    ref_ang_vel_heading[2],
+                ]
+            )
 
-            r_prev = R.from_quat(q0_xyzw)
-            r_curr = R.from_quat(q1_xyzw)
+            # Inject TRUE qvel into MuJoCo data
+            mj_data.qvel[0:3] = lin_vel_world
+            mj_data.qvel[3:6] = ang_vel_world
+            mj_data.qvel[6 : 6 + config.num_actuated_joints] = ref_dof_vel[i]
 
-            # Relative rotation: R_delta = R_curr * R_prev.inv()
-            r_delta = r_curr * r_prev.inv()
-            rotvec = r_delta.as_rotvec()
-            mj_data.qvel[3:6] = rotvec / dt
+            # Extract features with TRUE qvel
+            features, _ = extract_sim_features(
+                mj_model,
+                mj_data,
+                config,
+                prev_joint_pos,
+                dt,
+                use_true_qvel=True,
+                true_dof_vel=ref_dof_vel[i],
+                true_foot_contacts=ref_foot_contacts[i],
+            )
+        else:
+            # GMR reference: compute velocities using finite differences
+            if i > 0:
+                mj_data.qvel[0:3] = (ref_root_pos[i] - ref_root_pos[i - 1]) / dt
 
-            # Joint velocities
-            mj_data.qvel[6 : 6 + config.num_actuated_joints] = (
-                ref_dof_pos[i] - ref_dof_pos[i - 1]
-            ) / dt
+                # Angular velocity from quaternion using axis-angle method
+                # This matches the reference data computation (SciPy Rotation)
+                from scipy.spatial.transform import Rotation as R
 
-        # Extract features
-        features, _ = extract_sim_features(
-            mj_model, mj_data, config, prev_joint_pos, dt
-        )
+                q0_xyzw = ref_root_rot[i - 1]
+                q1_xyzw = ref_root_rot[i]
+
+                r_prev = R.from_quat(q0_xyzw)
+                r_curr = R.from_quat(q1_xyzw)
+
+                # Relative rotation: R_delta = R_curr * R_prev.inv()
+                r_delta = r_curr * r_prev.inv()
+                rotvec = r_delta.as_rotvec()
+                mj_data.qvel[3:6] = rotvec / dt
+
+                # Joint velocities
+                mj_data.qvel[6 : 6 + config.num_actuated_joints] = (
+                    ref_dof_pos[i] - ref_dof_pos[i - 1]
+                ) / dt
+
+            # Extract features with finite-diff
+            features, _ = extract_sim_features(
+                mj_model, mj_data, config, prev_joint_pos, dt
+            )
+
         all_features.append(features)
         prev_joint_pos = current_joint_pos
 
@@ -360,7 +463,7 @@ def replay_motion_and_extract_features(
 def compute_parity_report(
     ref_features: np.ndarray,
     sim_features: np.ndarray,
-    config: AMPFeatureConfig,
+    config: FeatureConfig,
 ) -> Dict[str, float]:
     """Compute per-component MAE between reference and sim features.
 
@@ -483,7 +586,7 @@ def main():
     print(f"[bold blue]Loading robot config:[/bold blue] {args.robot_config}")
     load_robot_config(args.robot_config)
     robot_config = get_robot_config()
-    amp_config = create_amp_config_from_robot(robot_config)
+    amp_config = create_config_from_robot(robot_config)
 
     # Load reference data
     print(f"\n[bold blue]Loading reference data:[/bold blue]")

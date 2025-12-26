@@ -20,8 +20,8 @@
 # =============================================================================
 # Version (see CHANGELOG.md for details)
 # =============================================================================
-version: "0.6.6"
-version_name: "Feature Parity Fix"
+version: "0.8.0"
+version_name: "Feature Set Refactoring"
 
 # =============================================================================
 # Environment
@@ -93,6 +93,11 @@ reward_weights:
 # =============================================================================
 amp:
   weight: 0.5                    # Increased from 0.3 - boost AMP signal
+
+  # v0.7.1: GMR-based reference data (68.1 seconds from AMASS)
+  # Direct retargeting from human mocap - no physics validation needed
+  # The discriminator learns motion style, not physical feasibility
+  # See: playground_amp/docs/reference_data_generation.md
   dataset_path: playground_amp/data/walking_motions_normalized_vel.pkl
 
   # Discriminator (v0.6.5: Middle-ground + diagnostic)
@@ -109,22 +114,28 @@ amp:
   replay_buffer_size: 100000     # 0 = disabled, >0 = capacity (industry: 100K-200K)
   replay_buffer_ratio: 0.2       # FIXED: Reduced from 0.5 (less old samples when D is strong)
 
-  # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-  # These ensure policy and reference features are computed identically
-  use_estimated_contacts: true   # Use joint-based contact estimation (matches reference data)
-  use_finite_diff_vel: true      # Use finite difference velocities (matches reference data)
+  # v0.7.1: GMR Reference Data Feature Parity
+  # GMR reference uses: finite-diff velocities + joint-based contact estimation
+  # Policy must use matching methods for discriminator parity
+  # NOTE: GMR data has 29-dim (9 joints), needs conversion to 27-dim (8 joints)
+  use_estimated_contacts: true   # Use joint-based contact estimation (matches GMR method)
+  use_finite_diff_vel: true      # Use finite difference velocities (matches GMR method)
 
   # Foot contact estimation parameters (for use_estimated_contacts=true)
   contact_threshold_angle: 0.1   # Hip pitch angle threshold for contact detection (rad)
   contact_knee_scale: 0.5        # Knee angle at which confidence starts decreasing (rad, ~28°)
   contact_min_confidence: 0.3    # Minimum confidence when hip indicates contact (0-1)
 
-  # v0.6.3: Feature Cleaning
-  velocity_filter_alpha: 0.0     # Disabled to test if filter erases distribution
-  ankle_offset: 0.18             # Ankle pitch calibration offset (rad) - fixes neutral pose mismatch
-
   # v0.6.4: Gait Mirroring (Gold Rule for symmetric gaits)
   enable_mirror_augmentation: true  # Mirror left/right to fix asymmetric reference data
+
+  # v0.8.0: Feature Dropping (prevent discriminator shortcuts)
+  # Drop artifact-prone features early in training to force learning motion style
+  # See: playground_amp/docs/AMP_FEATURE_PARITY_DESIGN.md
+  feature:
+    drop_contacts: false    # Drop foot contacts (4 dims) - discrete, easy to exploit
+    drop_height: false      # Drop root height (1 dim) - policy/reference mismatch early
+    normalize_velocity: false  # Normalize root_linvel to unit direction
 
 # =============================================================================
 # W&B Logging

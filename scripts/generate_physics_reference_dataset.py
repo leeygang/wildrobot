@@ -57,11 +57,11 @@ from scipy.spatial.transform import Rotation as R
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from playground_amp.amp.amp_features import (
-    AMPFeatureConfig,
-    create_amp_config_from_robot,
+from playground_amp.amp.policy_features import (
+    FeatureConfig,
+    create_config_from_robot,
 )
-from playground_amp.configs.config import get_robot_config, load_robot_config
+from playground_amp.configs.training_config import get_robot_config, load_robot_config
 
 console = Console()
 
@@ -169,7 +169,7 @@ def run_physics_rollout(
     gmr_motion: Dict[str, Any],
     mj_model: mujoco.MjModel,
     config: PhysicsRolloutConfig,
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
 ) -> Dict[str, Any]:
     """Run physics rollout on GMR motion data.
 
@@ -464,7 +464,7 @@ def extract_foot_contact_forces(
 
 def extract_amp_features_from_physics(
     rollout: Dict[str, Any],
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
     control_dt: float,
 ) -> np.ndarray:
     """Extract AMP features from physics rollout data.
@@ -717,7 +717,7 @@ def process_single_motion(
     gmr_path: Path,
     mj_model: mujoco.MjModel,
     config: PhysicsRolloutConfig,
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
 ) -> Tuple[Optional[Dict[str, Any]], ClipMetadata]:
     """Process a single GMR motion file through physics rollout.
 
@@ -846,7 +846,7 @@ def batch_generate_physics_references(
     output_dir: Path,
     mj_model: mujoco.MjModel,
     config: PhysicsRolloutConfig,
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
 ) -> Tuple[List[Path], List[ClipMetadata]]:
     """Batch process all GMR motions through physics rollout.
 
@@ -919,7 +919,7 @@ def batch_generate_physics_references(
 def merge_physics_references(
     physics_files: List[Path],
     output_path: Path,
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
 ) -> Dict[str, Any]:
     """Merge physics reference files into single discriminator dataset.
 
@@ -1053,7 +1053,7 @@ def verify_determinism(
     gmr_path: Path,
     mj_model: mujoco.MjModel,
     config: PhysicsRolloutConfig,
-    amp_config: AMPFeatureConfig,
+    amp_config: FeatureConfig,
     tolerance: float = 1e-6,
 ) -> bool:
     """Verify feature extraction is deterministic by replaying and comparing.
@@ -1192,7 +1192,7 @@ def main():
     print(f"[bold blue]Loading robot config:[/bold blue] {args.robot_config}")
     load_robot_config(args.robot_config)
     robot_config = get_robot_config()
-    amp_config = create_amp_config_from_robot(robot_config)
+    amp_config = create_config_from_robot(robot_config)
     print(f"  Feature dimension: {amp_config.feature_dim}")
 
     # Load MuJoCo model

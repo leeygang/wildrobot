@@ -57,7 +57,7 @@ EXIT_CRITERIA_TARGETS = {
 
 # Import WandbConfig from config.py (single source of truth)
 # This prevents duplicate definitions and ensures consistency
-from playground_amp.configs.config import WandbConfig
+from playground_amp.configs.training_config import WandbConfig
 
 
 class WandbTracker:

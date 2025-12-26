@@ -41,7 +41,7 @@ from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
 
-from playground_amp.configs.config import get_robot_config
+from playground_amp.configs.training_config import get_robot_config
 
 
 # =============================================================================
