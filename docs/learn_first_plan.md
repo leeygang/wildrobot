@@ -1,0 +1,314 @@
+# Learn First, Retarget Later: Robot-Native Walking Policy
+
+**Version:** v0.10.0
+**Status:** Planning
+**Last Updated:** 2024-12-26
+
+## Overview
+
+This document outlines a phased approach to training a walking policy for WildRobot. Instead of starting with human motion retargeting (GMR), we first discover the robot's natural gait manifold through reinforcement learning, then progressively add style refinement.
+
+### Why This Approach?
+
+The GMR-first approach failed because:
+1. Human gait ≠ Robot gait (different mass, leg length, joint limits)
+2. IK retargeting preserves pose, not dynamics
+3. Physics validation rejected most retargeted motion (0% Tier 0+)
+4. The robot's feasible motion manifold was unknown
+
+This approach discovers what the robot *can* do before trying to make it look human-like.
+
+---
+
+## Stage 1: Robot-Native Walking Policy (v0.10.x)
+
+**Goal:** Learn a stable, repeatable, controllable gait using task rewards only (no AMP, no reference motion).
+
+### Exit Criteria
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Episode length | > 400 steps (8s) | Average over 100 episodes |
+| Forward velocity | 0.5-1.0 m/s | Tracking error < 0.2 m/s |
+| Fall rate | < 5% | Episodes ending in fall |
+| Gait periodicity | Visible alternating steps | Visual inspection |
+| Torque usage | < 80% of limits | Max torque / torque limit |
+
+### Value Delivered
+
+- Proof that robot can walk in simulation
+- Understanding of robot's natural gait dynamics
+- Baseline policy for comparison
+- Foundation for all subsequent stages
+
+### Version Milestones
+
+#### v0.10.0 - PPO Infrastructure Setup
+**Objective:** Clean PPO training without AMP dependencies
+
+Tasks:
+- [ ] Create `ppo_walking.yaml` config (PPO-only, no AMP section)
+- [ ] Verify train.py works with `--no-amp` flag
+- [ ] Validate simulation setup passes all checks
+- [ ] Smoke test: 10 iterations, policy updates without errors
+
+Exit: Training loop runs, loss decreases, no crashes
+
+#### v0.10.1 - Reward Shaping
+**Objective:** Design rewards that encourage stable walking
+
+Tasks:
+- [ ] Implement velocity tracking reward
+- [ ] Implement upright reward (penalize pitch/roll)
+- [ ] Implement contact reward (feet on ground)
+- [ ] Implement energy penalty (minimize torque)
+- [ ] Implement action smoothness penalty
+
+Exit: Rewards are computed correctly, logged to W&B
+
+#### v0.10.2 - Basic Standing
+**Objective:** Robot maintains balance without falling
+
+Tasks:
+- [ ] Train with zero velocity command
+- [ ] Robot stays upright for 500 steps
+- [ ] Tune PD gains if needed
+
+Exit: Standing policy with < 5% fall rate
+
+#### v0.10.3 - Forward Walking
+**Objective:** Robot walks forward at commanded velocity
+
+Tasks:
+- [ ] Train with velocity command 0.5-1.0 m/s
+- [ ] Tune reward weights for velocity tracking
+- [ ] Add gait symmetry reward (optional)
+
+Exit: Robot walks forward, tracks velocity within 0.2 m/s
+
+#### v0.10.4 - Gait Quality
+**Objective:** Improve gait consistency and efficiency
+
+Tasks:
+- [ ] Analyze gait pattern (is it shuffling? hopping?)
+- [ ] Add periodic gait reward if needed
+- [ ] Tune action smoothness penalty
+- [ ] Reduce torque usage
+
+Exit: Consistent alternating gait, reasonable energy usage
+
+#### v0.10.5 - Robustness
+**Objective:** Policy handles perturbations
+
+Tasks:
+- [ ] Add push disturbances during training
+- [ ] Add terrain variations (small bumps)
+- [ ] Test velocity command changes
+
+Exit: Policy recovers from small pushes, handles velocity changes
+
+---
+
+## Stage 2: Collect Robot-Native Reference Data (v0.11.x)
+
+**Goal:** Generate high-quality reference motion dataset from trained policy.
+
+### Exit Criteria
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Total duration | > 60 seconds | Sum of all segments |
+| Segment count | > 100 segments | After filtering |
+| Velocity coverage | 0.3-1.2 m/s | Range of velocities |
+| Fall rate in dataset | 0% | No falls in kept segments |
+
+### Value Delivered
+
+- Physics-valid reference motion database
+- Perfectly matched feature statistics
+- No retargeting error
+- Guaranteed learnable by policy class
+
+### Version Milestones
+
+#### v0.11.0 - Rollout Collection Infrastructure
+**Objective:** Automated rollout collection and storage
+
+Tasks:
+- [ ] Create rollout collector script
+- [ ] Define data format (matches AMP features)
+- [ ] Implement multi-velocity collection
+- [ ] Add perturbation diversity
+
+Exit: Can collect and save rollouts in correct format
+
+#### v0.11.1 - Quality Filtering
+**Objective:** Filter out unstable segments
+
+Tasks:
+- [ ] Implement fall detection filter
+- [ ] Implement velocity consistency filter
+- [ ] Implement symmetry filter (optional)
+- [ ] Generate quality statistics
+
+Exit: Clean dataset with 0% falls, consistent quality
+
+#### v0.11.2 - Dataset Validation
+**Objective:** Verify dataset is suitable for AMP
+
+Tasks:
+- [ ] Compute feature statistics (mean, std)
+- [ ] Verify dimensions match policy observation
+- [ ] Test discriminator can distinguish (overfit test)
+
+Exit: Dataset passes all validation checks
+
+---
+
+## Stage 3: Self-Imitation AMP (v0.12.x)
+
+**Goal:** Use robot-native rollouts as AMP reference to regularize gait.
+
+### Exit Criteria
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Discriminator accuracy | 0.55-0.75 | Healthy adversarial game |
+| Gait smoothness | Improved vs Stage 1 | Visual + action rate metric |
+| Gait consistency | Lower variance | Std of joint trajectories |
+| Performance maintained | > 90% of Stage 1 | Velocity tracking, episode length |
+
+### Value Delivered
+
+- Smoother, more consistent gait
+- Reduced mode switching
+- AMP working as designed (style, not physics)
+- Foundation for human-style injection
+
+### Version Milestones
+
+#### v0.12.0 - AMP with Robot Reference
+**Objective:** Train AMP using Stage 2 dataset
+
+Tasks:
+- [ ] Configure AMP with robot-native dataset
+- [ ] Verify discriminator trains correctly
+- [ ] Monitor disc_acc (target: 0.55-0.75)
+
+Exit: AMP training runs, discriminator is balanced
+
+#### v0.12.1 - Style Regularization
+**Objective:** Policy becomes more consistent
+
+Tasks:
+- [ ] Compare gait variance: Stage 1 vs Stage 3
+- [ ] Evaluate smoothness metrics
+- [ ] Tune AMP weight if needed
+
+Exit: Measurable improvement in consistency/smoothness
+
+#### v0.12.2 - Performance Validation
+**Objective:** Ensure AMP didn't hurt task performance
+
+Tasks:
+- [ ] Compare velocity tracking
+- [ ] Compare episode length
+- [ ] Compare robustness to pushes
+
+Exit: Performance >= 90% of Stage 1
+
+---
+
+## Stage 4: Human Style Blending (v0.13.x)
+
+**Goal:** Gradually inject human motion characteristics while maintaining physical feasibility.
+
+### Exit Criteria
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Human-likeness | Subjective improvement | Visual comparison |
+| Physical stability | Maintained | Fall rate < 5% |
+| Discriminator balance | 0.55-0.75 | With mixed dataset |
+
+### Value Delivered
+
+- Human-like gait aesthetics
+- Physically feasible motion
+- Tuneable human/robot style balance
+
+### Version Milestones
+
+#### v0.13.0 - Mixed Dataset (Option A)
+**Objective:** Blend robot + GMR reference data
+
+Tasks:
+- [ ] Prepare GMR dataset (reuse existing)
+- [ ] Create mixed dataset loader (configurable ratio)
+- [ ] Start with 80% robot / 20% human
+- [ ] Monitor discriminator stability
+
+Exit: Training runs with mixed dataset
+
+#### v0.13.1 - Feature-Level Bias (Option B)
+**Objective:** Use human data as soft constraints
+
+Tasks:
+- [ ] Extract joint angle distributions from GMR
+- [ ] Add distribution matching reward
+- [ ] Add posture regularization
+
+Exit: Policy biased toward human-like posture
+
+#### v0.13.2 - Phase-Aligned Priors (Option C)
+**Objective:** Align human style to gait phase
+
+Tasks:
+- [ ] Extract phase from robot gait
+- [ ] Align human joint statistics to phase
+- [ ] Add phase-conditioned style reward
+
+Exit: Phase-aware human style injection
+
+#### v0.13.3 - Final Tuning
+**Objective:** Balance style and performance
+
+Tasks:
+- [ ] Tune human/robot blend ratio
+- [ ] Optimize for deployment
+- [ ] Final evaluation suite
+
+Exit: Deployment-ready policy
+
+---
+
+## Quick Reference
+
+| Stage | Version | Focus | Key Output |
+|-------|---------|-------|------------|
+| 1 | v0.10.x | Task rewards, PPO only | Walking policy |
+| 2 | v0.11.x | Data collection | Robot-native dataset |
+| 3 | v0.12.x | Self-imitation AMP | Regularized policy |
+| 4 | v0.13.x | Human style blend | Human-like policy |
+
+---
+
+## Pre-Training Checklist
+
+Before starting any training:
+
+```bash
+# Validate MuJoCo setup
+uv run python scripts/validate_training_setup.py
+
+# Expected output: "All checks passed! Ready for training."
+```
+
+---
+
+## Related Files
+
+- Config: `playground_amp/configs/ppo_walking.yaml`
+- Training: `playground_amp/train.py --config configs/ppo_walking.yaml --no-amp`
+- Validation: `scripts/validate_training_setup.py`
+- Changelog: `playground_amp/CHANGELOG.md`

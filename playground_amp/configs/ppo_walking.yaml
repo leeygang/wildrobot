@@ -1,0 +1,195 @@
+# WildRobot PPO Walking Training Configuration
+#
+# Stage 1: Robot-Native Walking Policy (No AMP)
+# Goal: Learn stable walking using task rewards only
+#
+# Usage:
+#   uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp
+#
+# Total steps = iterations × num_envs × rollout_steps
+# Example: 1000 × 1024 × 128 = 131M steps
+#
+# See: docs/learn_first_plan.md for roadmap
+
+# =============================================================================
+# Version
+# =============================================================================
+version: "0.10.0"
+version_name: "Robot-Native Walking - Infrastructure Setup"
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  # Model path (relative to project root)
+  model_path: assets/scene_flat_terrain.xml
+
+  # Simulation timing
+  ctrl_dt: 0.02          # Control frequency: 50Hz
+  sim_dt: 0.002          # Physics timestep: 500Hz (10 substeps per control)
+
+  # Robot height bounds
+  target_height: 0.45    # Target pelvis height (m)
+  min_height: 0.2        # Terminate if below (fallen)
+  max_height: 0.7        # Terminate if above (jumping)
+
+  # Velocity command range (m/s)
+  min_velocity: 0.0      # Include standing (v=0) for v0.10.2
+  max_velocity: 1.0      # Max forward velocity
+
+  # Action filtering (smooth actuator commands)
+  use_action_filter: true
+  action_filter_alpha: 0.7   # Higher = more smoothing
+
+  # Episode length
+  max_episode_steps: 500     # 10 seconds at 50Hz
+
+# =============================================================================
+# PPO Training
+# =============================================================================
+ppo:
+  # Parallelization
+  num_envs: 1024           # Parallel environments (adjust for GPU memory)
+  rollout_steps: 128       # Steps per env before update (2.56s at 50Hz)
+
+  # Training duration
+  iterations: 1000         # Total policy updates
+
+  # Learning rate
+  learning_rate: 3e-4      # Adam optimizer LR
+
+  # Discount and advantage
+  gamma: 0.99              # Discount factor
+  gae_lambda: 0.95         # GAE lambda for advantage estimation
+
+  # PPO clipping
+  clip_epsilon: 0.2        # Clipping range for policy ratio
+
+  # Loss coefficients
+  entropy_coef: 0.01       # Entropy bonus (encourages exploration)
+  value_loss_coef: 0.5     # Value function loss weight
+
+  # Optimization
+  max_grad_norm: 0.5       # Gradient clipping
+  epochs: 4                # PPO epochs per iteration
+  num_minibatches: 32      # Minibatches per epoch (batch_size = num_envs * rollout_steps / num_minibatches)
+
+  # Random seed
+  seed: 42
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Policy network (actor)
+  policy_hidden_dims: [256, 256, 128]
+
+  # Value network (critic)
+  value_hidden_dims: [256, 256, 128]
+
+  # Activation function
+  activation: elu
+
+# =============================================================================
+# Reward Weights
+#
+# Stage 1 focuses on task completion, not style.
+# Rewards encourage: forward velocity, stability, efficiency
+# =============================================================================
+rewards:
+  # === Task Rewards ===
+  # Primary objective: track commanded velocity
+  velocity_tracking:
+    weight: 2.0
+    # reward = weight * exp(-error^2 / sigma^2)
+    sigma: 0.25            # Tolerance for velocity error
+
+  # === Stability Rewards ===
+  # Keep robot upright
+  upright:
+    weight: 0.5
+    # reward = weight * (1 - normalized_tilt)
+    max_pitch: 0.5         # Max pitch before zero reward (rad, ~29°)
+    max_roll: 0.3          # Max roll before zero reward (rad, ~17°)
+
+  # Maintain target height
+  height:
+    weight: 0.2
+    sigma: 0.1             # Tolerance for height error
+
+  # Reward feet contact during stance
+  feet_contact:
+    weight: 0.3
+    # reward = weight * (left_contact + right_contact) / 2
+
+  # === Efficiency Penalties ===
+  # Minimize energy usage
+  torque:
+    weight: -0.001         # Penalty per unit torque^2
+
+  # Smooth actions
+  action_rate:
+    weight: -0.01          # Penalty for action changes
+
+  # Joint acceleration (smooth motion)
+  joint_acceleration:
+    weight: -0.0001        # Penalty for joint acc^2
+
+  # === Termination Penalty ===
+  # Discourage falling
+  termination:
+    weight: -1.0           # One-time penalty on episode end due to fall
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  # Console output
+  log_interval: 10         # Print every N iterations
+
+  # Metrics to track
+  metrics:
+    - episode_reward
+    - episode_length
+    - velocity_tracking
+    - fall_rate
+    - mean_torque
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: playground_amp/checkpoints
+  interval: 50             # Save every N iterations
+  keep_last_n: 5           # Keep N most recent checkpoints
+
+# =============================================================================
+# W&B Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: online
+  tags: [ppo, stage1, walking]
+  log_dir: playground_amp/wandb
+
+# =============================================================================
+# Video Recording
+# =============================================================================
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+# =============================================================================
+# Quick Verify (smoke test)
+# =============================================================================
+quick_verify:
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+  wandb:
+    enabled: false

@@ -65,6 +65,22 @@
       "segments": []
     },
     {
+      "clip_name": "walking_slow01_flipped",
+      "total_frames": 305,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow01_gmr_orig",
+      "total_frames": 305,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
       "clip_name": "walking_slow02",
       "total_frames": 294,
       "tier0plus_segments": 0,
@@ -98,8 +114,8 @@
     }
   ],
   "summary": {
-    "total_clips": 12,
-    "total_frames": 3407,
+    "total_clips": 14,
+    "total_frames": 4017,
     "tier0plus_segments": 0,
     "tier0plus_frames": 0,
     "tier0plus_seconds": 0.0
