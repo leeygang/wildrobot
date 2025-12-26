@@ -1,0 +1,107 @@
+{
+  "clips": [
+    {
+      "clip_name": "walking_fast02",
+      "total_frames": 261,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium01",
+      "total_frames": 159,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium02",
+      "total_frames": 330,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium03",
+      "total_frames": 255,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium04",
+      "total_frames": 278,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium05",
+      "total_frames": 228,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_medium06",
+      "total_frames": 263,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow01",
+      "total_frames": 305,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow02",
+      "total_frames": 294,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow03",
+      "total_frames": 318,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow04",
+      "total_frames": 356,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    },
+    {
+      "clip_name": "walking_slow06",
+      "total_frames": 360,
+      "tier0plus_segments": 0,
+      "tier0plus_frames": 0,
+      "tier0plus_seconds": 0.0,
+      "segments": []
+    }
+  ],
+  "summary": {
+    "total_clips": 12,
+    "total_frames": 3407,
+    "tier0plus_segments": 0,
+    "tier0plus_frames": 0,
+    "tier0plus_seconds": 0.0
+  }
+}

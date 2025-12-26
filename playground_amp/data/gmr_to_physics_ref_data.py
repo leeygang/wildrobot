@@ -25,14 +25,13 @@ Usage:
     cd ~/projects/wildrobot
 
     # Generate Tier 0+ segments from all motions
-    uv run python scripts/generate_tier0plus_segments.py \
-        --output-dir playground_amp/data/tier0plus
+    uv run python playground_amp/data/gmr_to_physics_ref_data.py
 
     # With verbose segment info
-    uv run python scripts/generate_tier0plus_segments.py --verbose
+    uv run python playground_amp/data/gmr_to_physics_ref_data.py --verbose
 
     # Custom harness cap (stricter)
-    uv run python scripts/generate_tier0plus_segments.py --harness-cap 0.10
+    uv run python playground_amp/data/gmr_to_physics_ref_data.py --harness-cap 0.10
 """
 
 import argparse
@@ -49,12 +48,10 @@ from rich import print
 from rich.console import Console
 from rich.table import Table
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from playground_amp.amp.policy_features import (
-    FeatureConfig,
-    create_config_from_robot,
-)
+from playground_amp.amp.ref_features import extract_ref_features
+from playground_amp.configs.feature_config import FeatureConfig, create_config_from_robot
 from playground_amp.configs.training_config import get_robot_config, load_robot_config
 
 console = Console()
@@ -66,8 +63,8 @@ console = Console()
 
 
 @dataclass
-class Tier0PlusConfig:
-    """Configuration for Tier 0+ segment generation."""
+class GMR2PRDConfig:
+    """Configuration for GMR to Physics Reference Data conversion."""
 
     # Simulation timing
     sim_dt: float = 0.002  # 500 Hz simulation
@@ -99,11 +96,11 @@ class Tier0PlusConfig:
     # ==========================================================================
     # Tier 0+ Quality Thresholds (STRICT)
     # ==========================================================================
-    tier0plus_min_load_support: float = 0.90  # mean(ΣF_n)/mg >= 90%
-    tier0plus_max_harness_p95: float = 0.10  # p95(|F_stab|)/mg <= 10%
-    tier0plus_max_unloaded_rate: float = 0.05  # unloaded frames <= 5%
-    tier0plus_max_pitch_p95: float = 0.349  # p95(|pitch|) <= 20°
-    tier0plus_max_roll_p95: float = 0.349  # p95(|roll|) <= 20°
+    min_load_support: float = 0.90  # mean(ΣF_n)/mg >= 90%
+    max_harness_p95: float = 0.10  # p95(|F_stab|)/mg <= 10%
+    max_unloaded_rate: float = 0.05  # unloaded frames <= 5%
+    max_pitch_p95: float = 0.349  # p95(|pitch|) <= 20°
+    max_roll_p95: float = 0.349  # p95(|roll|) <= 20°
     unloaded_threshold: float = 0.6  # Frame is "unloaded" if ΣF_n < 0.6*mg
 
     # Segment length requirements
@@ -214,7 +211,7 @@ def load_mujoco_model(model_path: str) -> mujoco.MjModel:
 def run_physics_rollout_with_frame_metrics(
     gmr_motion: Dict[str, Any],
     mj_model: mujoco.MjModel,
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
     amp_config: FeatureConfig,
     start_frame: int = 0,
     max_frames: Optional[int] = None,
@@ -457,7 +454,7 @@ def run_physics_rollout_with_frame_metrics(
 
 def compute_frame_tier0plus_mask(
     rollout: Dict[str, Any],
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
 ) -> np.ndarray:
     """Compute per-frame mask for Tier 0+ eligibility.
 
@@ -530,7 +527,7 @@ def compute_segment_metrics(
     end: int,
     clip_name: str,
     segment_idx: int,
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
 ) -> SegmentMetrics:
     """Compute detailed metrics for a segment.
 
@@ -595,29 +592,29 @@ def compute_segment_metrics(
     # Tier 0+ classification
     tier0plus_failures = []
 
-    if mean_load_support < config.tier0plus_min_load_support:
+    if mean_load_support < config.min_load_support:
         tier0plus_failures.append(
-            f"load_support={mean_load_support:.1%}<{config.tier0plus_min_load_support:.0%}"
+            f"load_support={mean_load_support:.1%}<{config.min_load_support:.0%}"
         )
 
-    if p95_harness > config.tier0plus_max_harness_p95:
+    if p95_harness > config.max_harness_p95:
         tier0plus_failures.append(
-            f"p95_harness={p95_harness:.1%}>{config.tier0plus_max_harness_p95:.0%}"
+            f"p95_harness={p95_harness:.1%}>{config.max_harness_p95:.0%}"
         )
 
-    if unloaded_frame_rate > config.tier0plus_max_unloaded_rate:
+    if unloaded_frame_rate > config.max_unloaded_rate:
         tier0plus_failures.append(
-            f"unloaded={unloaded_frame_rate:.1%}>{config.tier0plus_max_unloaded_rate:.0%}"
+            f"unloaded={unloaded_frame_rate:.1%}>{config.max_unloaded_rate:.0%}"
         )
 
-    if p95_pitch > np.degrees(config.tier0plus_max_pitch_p95):
+    if p95_pitch > np.degrees(config.max_pitch_p95):
         tier0plus_failures.append(
-            f"p95_pitch={p95_pitch:.1f}°>{np.degrees(config.tier0plus_max_pitch_p95):.0f}°"
+            f"p95_pitch={p95_pitch:.1f}°>{np.degrees(config.max_pitch_p95):.0f}°"
         )
 
-    if p95_roll > np.degrees(config.tier0plus_max_roll_p95):
+    if p95_roll > np.degrees(config.max_roll_p95):
         tier0plus_failures.append(
-            f"p95_roll={p95_roll:.1f}°>{np.degrees(config.tier0plus_max_roll_p95):.0f}°"
+            f"p95_roll={p95_roll:.1f}°>{np.degrees(config.max_roll_p95):.0f}°"
         )
 
     is_tier0plus = len(tier0plus_failures) == 0
@@ -656,7 +653,7 @@ def compute_segment_metrics(
 def find_tier0plus_segments(
     rollout: Dict[str, Any],
     clip_name: str,
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
 ) -> Tuple[List[SegmentMetrics], List[Tuple[int, int]]]:
     """Find all Tier 0+ segments in a rollout.
 
@@ -725,7 +722,10 @@ def extract_amp_features(
     rollout: Dict[str, Any],
     amp_config: FeatureConfig,
 ) -> np.ndarray:
-    """Extract AMP features from physics rollout data."""
+    """Extract AMP features from physics rollout data.
+
+    Uses extract_ref_features from ref_features.py for consistent feature ordering.
+    """
     n = amp_config.num_actuated_joints
 
     qpos = rollout["qpos_trajectory"]
@@ -747,22 +747,18 @@ def extract_amp_features(
     root_ang_vel_heading = world_to_heading_local(root_ang_vel_world, root_rot)
 
     # Root height
-    root_height = root_pos[:, 2:3]
+    root_height = root_pos[:, 2]
 
-    # Assemble features
-    features = np.concatenate(
-        [
-            joint_pos,
-            joint_vel,
-            root_lin_vel_heading,
-            root_ang_vel_heading,
-            root_height,
-            contact_states,
-        ],
-        axis=1,
-    ).astype(np.float32)
-
-    return features
+    # Use extract_ref_features for consistent feature ordering
+    return extract_ref_features(
+        joint_pos=joint_pos,
+        joint_vel=joint_vel,
+        root_linvel=root_lin_vel_heading,
+        root_angvel=root_ang_vel_heading,
+        root_height=root_height,
+        foot_contacts=contact_states,
+        config=amp_config,
+    )
 
 
 # =============================================================================
@@ -812,7 +808,7 @@ def resample_motion(motion_data: Dict[str, Any], target_fps: float) -> Dict[str,
 def process_clip(
     gmr_path: Path,
     mj_model: mujoco.MjModel,
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
     amp_config: FeatureConfig,
     verbose: bool = False,
     multi_start_interval: int = 0,  # 0 = disabled, >0 = start interval in frames
@@ -963,7 +959,7 @@ def process_clip(
 
 def _deduplicate_segments(
     segments: List[Tuple[int, int, Dict, int, int]],
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
 ) -> List[Tuple[int, int, Dict, int, int]]:
     """Remove overlapping segments, keeping the one with more frames.
 
@@ -1014,7 +1010,7 @@ def batch_generate_tier0plus(
     input_dir: Path,
     output_dir: Path,
     mj_model: mujoco.MjModel,
-    config: Tier0PlusConfig,
+    config: GMR2PRDConfig,
     amp_config: FeatureConfig,
     verbose: bool = False,
     multi_start_interval: int = 0,
@@ -1050,11 +1046,11 @@ def batch_generate_tier0plus(
         if max_window_frames:
             print(f"    Max window: {max_window_frames} frames ({max_window_frames * config.control_dt:.1f}s)")
     print(f"  Tier 0+ thresholds:")
-    print(f"    mean(ΣFn)/mg >= {config.tier0plus_min_load_support:.0%}")
-    print(f"    p95(|F_stab|)/mg <= {config.tier0plus_max_harness_p95:.0%}")
-    print(f"    unloaded_frames <= {config.tier0plus_max_unloaded_rate:.0%}")
-    print(f"    p95(|pitch|) <= {np.degrees(config.tier0plus_max_pitch_p95):.0f}°")
-    print(f"    p95(|roll|) <= {np.degrees(config.tier0plus_max_roll_p95):.0f}°")
+    print(f"    mean(ΣFn)/mg >= {config.min_load_support:.0%}")
+    print(f"    p95(|F_stab|)/mg <= {config.max_harness_p95:.0%}")
+    print(f"    unloaded_frames <= {config.max_unloaded_rate:.0%}")
+    print(f"    p95(|pitch|) <= {np.degrees(config.max_pitch_p95):.0f}°")
+    print(f"    p95(|roll|) <= {np.degrees(config.max_roll_p95):.0f}°")
 
     for motion_path in motion_files:
         try:
@@ -1137,7 +1133,7 @@ def merge_tier0plus_dataset(
 def print_summary_report(
     summaries: List[ClipSummary],
     merged_data: Optional[Dict[str, Any]] = None,
-    config: Tier0PlusConfig = None,
+    config: GMR2PRDConfig = None,
 ):
     """Print summary report of Tier 0+ segment generation."""
     print(f"\n{'='*70}")
@@ -1294,24 +1290,24 @@ def save_segment_metrics_json(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate Tier 0+ segments from GMR motions"
+        description="Generate Physics Based segments from GMR motions"
     )
     parser.add_argument(
         "--input-dir",
         type=str,
-        default="assets/motions",
+        default="playground_amp/data/gmr",
         help="Directory containing GMR .pkl files",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="playground_amp/data/tier0plus",
-        help="Output directory for Tier 0+ data",
+        default="playground_amp/data/pbrd",
+        help="Output directory for Tier 0+ physics-based reference data",
     )
     parser.add_argument(
         "--merged-output",
         type=str,
-        default="tier0plus_merged.pkl",
+        default="physics_validated_merged.pkl",
         help="Filename for merged dataset",
     )
     parser.add_argument(
@@ -1403,13 +1399,13 @@ def main():
     print(f"  [green]✓ Model loaded[/green]")
 
     # Create configuration
-    config = Tier0PlusConfig(
+    config = GMR2PRDConfig(
         harness_cap_fraction=args.harness_cap,
-        tier0plus_min_load_support=args.min_load_support,
-        tier0plus_max_harness_p95=args.max_harness_p95,
-        tier0plus_max_unloaded_rate=args.max_unloaded_rate,
-        tier0plus_max_pitch_p95=np.radians(args.max_pitch_p95),
-        tier0plus_max_roll_p95=np.radians(args.max_roll_p95),
+        min_load_support=args.min_load_support,
+        max_harness_p95=args.max_harness_p95,
+        max_unloaded_rate=args.max_unloaded_rate,
+        max_pitch_p95=np.radians(args.max_pitch_p95),
+        max_roll_p95=np.radians(args.max_roll_p95),
         min_segment_seconds=args.min_segment_seconds,
         min_segment_frames=int(args.min_segment_seconds / 0.02),
     )

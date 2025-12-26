@@ -282,7 +282,7 @@ Your actuator force range is **±4 N**. If actuators frequently saturate during 
 
 ```bash
 # Check saturation during reference generation
-uv run python scripts/generate_tier0plus_segments.py --verbose 2>&1 | grep "saturated"
+uv run python playground_amp/data/gmr_to_physics_ref_data.py --verbose 2>&1 | grep "saturated"
 ```
 
 ### If Saturation > 10%
@@ -311,13 +311,13 @@ Options (within current tools):
 
 | Action | Implementation | Status |
 |--------|----------------|--------|
-| Multi-start rollouts | `--multi-start-interval 50` in `generate_tier0plus_segments.py` | ✅ Implemented |
+| Multi-start rollouts | `--multi-start-interval 50` in `gmr_to_physics_ref_data.py` | ✅ Implemented |
 | Time warp augmentation | 0.9–1.1x speed during reference generation | ⏳ TODO |
 | Left-right mirroring | If morphology symmetric | ⏳ TODO |
 | Heading variations | Small δ during generation | ⏳ TODO |
 | Mine ALL segments | Extract every valid window, not just longest | ✅ Implemented |
 
-**Exit Criterion**: 
+**Exit Criterion**:
 ```
 ✓ ≥60 seconds Tier 0+ data (optimal: 60-180s)
 ⚠ 30-60 seconds: borderline, can attempt with caution
@@ -385,7 +385,7 @@ Tier 0+ dataset has meaningful subset with:
 **Actions**:
 1. Run segment mining with multi-start:
    ```bash
-   uv run python scripts/generate_tier0plus_segments.py \
+   uv run python playground_amp/data/gmr_to_physics_ref_data.py \
        --multi-start-interval 50 \
        --max-window-frames 200 \
        --harness-cap 0.15 \
@@ -399,7 +399,7 @@ Tier 0+ dataset has meaningful subset with:
 
 **Gate**: Total Tier 0+ seconds ≥ 60
 
-**If FAIL**: 
+**If FAIL**:
 - Try relaxing thresholds slightly (e.g., `--max-harness-p95 0.12`)
 - If still <30s, proceed to Phase 4 (Stop Condition)
 
@@ -481,7 +481,7 @@ Tier 0+ dataset has meaningful subset with:
    - Stability reward (orientation, base angular velocity)
    - Energy minimization
    - Foot clearance during swing
-   
+
 2. Once stable walking achieved:
    - Collect rollouts from policy
    - Add AMP with Tier 0+ references at **low weight** (w_amp = 0.1)
@@ -494,16 +494,16 @@ Tier 0+ dataset has meaningful subset with:
 ### Segment Generation
 ```bash
 # Standard Tier 0+ generation
-uv run python scripts/generate_tier0plus_segments.py --verbose
+uv run python playground_amp/data/gmr_to_physics_ref_data.py --verbose
 
 # With multi-start for more coverage
-uv run python scripts/generate_tier0plus_segments.py \
+uv run python playground_amp/data/gmr_to_physics_ref_data.py \
     --multi-start-interval 50 \
     --max-window-frames 200 \
     --verbose
 
 # Relaxed thresholds (if borderline)
-uv run python scripts/generate_tier0plus_segments.py \
+uv run python playground_amp/data/gmr_to_physics_ref_data.py \
     --max-harness-p95 0.12 \
     --min-load-support 0.85 \
     --verbose
@@ -615,10 +615,10 @@ foot_speed_near_ground  # Smooth transition
 # Training schedule
 phase_1:  # Steps 0-50K
   contact_weight: 0.0
-  
+
 phase_2:  # Steps 50K-100K
   contact_weight: 0.3
-  
+
 phase_3:  # Steps 100K+
   contact_weight: 1.0
 ```

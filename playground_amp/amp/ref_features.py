@@ -12,7 +12,7 @@ OF TRUTH for feature ordering and dimensions.
 Used by:
 - scripts/convert_ref_data_*.py
 - scripts/generate_physics_reference_dataset.py
-- scripts/generate_tier0plus_segments.py
+- playground_amp/data/gmr_to_physics_ref_data.py
 - train.py (load_reference_features)
 """
 

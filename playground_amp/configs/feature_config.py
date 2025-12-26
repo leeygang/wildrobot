@@ -251,6 +251,11 @@ class FeatureConfig(NamedTuple):
 
         return _FeatureLayout(num_joints=self.num_actuated_joints, drop=drop)
 
+    @property
+    def feature_dim(self) -> int:
+        """Get feature dimension (respecting drop flags)."""
+        return self.get_layout().dim
+
 
 
 def create_config_from_robot(
