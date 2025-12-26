@@ -1,16 +1,18 @@
 """Training modules for WildRobot.
 
 This package provides training utilities for the WildRobot environment:
-- trainer_jit: Fully JIT-compiled AMP+PPO trainer (recommended, 1000x faster)
+- training_loop: Unified JIT-compiled trainer for PPO and AMP+PPO (v0.10+)
 - ppo_core: Core PPO components (networks, GAE, losses)
+- rollout: Unified rollout collector
 - experiment_tracking: W&B integration for logging
+
+Usage (v0.10+):
+    from playground_amp.training import train
+    train(env_step_fn, env_reset_fn, config, ref_motion_data)  # AMP mode
+    train(env_step_fn, env_reset_fn, config, ref_motion_data=None)  # PPO-only
 """
 
-from playground_amp.training.trainer_jit import (
-    IterationMetrics,
-    TrainingState,
-    train_amp_ppo_jit,
-)
+from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 from playground_amp.training.ppo_core import (
     compute_gae,
     compute_ppo_loss,
@@ -19,14 +21,23 @@ from playground_amp.training.ppo_core import (
     init_network_params,
     sample_actions,
 )
-from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
+from playground_amp.training.rollout import (
+    collect_rollout,
+    compute_reward_total,
+    TrajectoryBatch,
+)
+from playground_amp.training.training_loop import IterationMetrics, train, TrainingState
 
 __all__ = [
-    # Training
-    "train_amp_ppo_jit",
+    # Unified training (v0.10+)
+    "train",
     "TrainingState",
     "IterationMetrics",
     "TrainingRuntimeConfig",
+    # Rollout
+    "TrajectoryBatch",
+    "collect_rollout",
+    "compute_reward_total",
     # PPO core
     "compute_gae",
     "compute_ppo_loss",

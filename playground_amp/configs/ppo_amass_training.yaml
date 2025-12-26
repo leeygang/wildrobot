@@ -50,27 +50,39 @@ env:
   max_episode_steps: 500
 
 # =============================================================================
-# Training
+# PPO Training
 # =============================================================================
-trainer:
-  num_envs: 1024         # Parallel environments (GPU memory dependent)
-  rollout_steps: 128     # Steps per env before PPO update (2.56s at 50Hz)
-  iterations: 1000       # Total policy updates (reduced from 3000 - plateau at ~600)
+ppo:
+  # Parallelization
+  num_envs: 1024           # Parallel environments (GPU memory dependent)
+  rollout_steps: 128       # Steps per env before PPO update (2.56s at 50Hz)
 
-  # PPO hyperparameters
-  lr: 3e-4
+  # Training duration
+  iterations: 1000         # Total policy updates (reduced from 3000 - plateau at ~600)
+
+  # Learning rate
+  learning_rate: 3e-4      # Adam optimizer LR
+
+  # Discount and advantage
   gamma: 0.99
   gae_lambda: 0.95
+
+  # PPO clipping
   clip_epsilon: 0.2
+
+  # Loss coefficients
   entropy_coef: 0.01
   value_loss_coef: 0.5
+
+  # Optimization
   max_grad_norm: 0.5
-  epochs: 3              # PPO epochs per iteration (reduced from 4 for minibatch fix)
-  num_minibatches: 128   # Minibatch size ≈ 1024 (was 8 → 16K, too large for PPO)
+  epochs: 3                # PPO epochs per iteration (reduced from 4 for minibatch fix)
+  num_minibatches: 128     # Minibatch size ≈ 1024 (was 8 → 16K, too large for PPO)
 
   # Logging
   log_interval: 10
-  checkpoint_dir: playground_amp/checkpoints
+
+  # Random seed
   seed: 42
 
 # =============================================================================
@@ -168,7 +180,7 @@ video:
 # Quick Verify (smoke test)
 # =============================================================================
 quick_verify:
-  trainer:
+  ppo:
     num_envs: 4
     rollout_steps: 8
     iterations: 3

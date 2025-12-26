@@ -1,0 +1,771 @@
+"""Unified JIT-compiled trainer for PPO and AMP+PPO.
+
+This module provides a single training loop that works for both:
+- Stage 1: PPO-only (amp_weight=0)
+- Stage 3: AMP+PPO (amp_weight>0)
+
+Key Design Principles:
+1. Single code path for both stages (no separate trainers)
+2. lax.cond branching for AMP vs no-AMP (no recompilation needed)
+3. Identical PPO behavior whether AMP is enabled or disabled
+4. All Brax components reused: networks, distributions, optimizers
+
+Architecture:
+    train_iteration(state, env_state, amp_weight) -> new_state, metrics
+        ├── collect_rollout() - unified rollout collector
+        ├── lax.cond(amp_weight > 0):
+        │   ├── True: extract_amp_features -> disc_reward -> train_disc
+        │   └── False: skip (no RNG, no compute, no grads)
+        ├── compute_reward_total() - task + amp_weight * amp
+        ├── compute_gae() - GAE advantage estimation
+        └── ppo_update_scan() - PPO policy/value update
+
+Usage:
+    # Stage 1: PPO-only
+    config = TrainingRuntimeConfig(..., amp_weight=0.0)
+    train_unified(env_step_fn, env_reset_fn, config, ref_motion_data=None)
+
+    # Stage 3: AMP+PPO
+    config = TrainingRuntimeConfig(..., amp_weight=0.5)
+    train_unified(env_step_fn, env_reset_fn, config, ref_motion_data=ref_data)
+"""
+
+from __future__ import annotations
+
+import functools
+import time
+from typing import Any, Callable, NamedTuple, Optional, Tuple
+
+import jax
+import jax.numpy as jnp
+import optax
+from playground_amp.amp.discriminator import (
+    AMPDiscriminator,
+    compute_amp_reward,
+    create_discriminator,
+    discriminator_loss,
+)
+from playground_amp.amp.policy_features import (
+    extract_amp_features_batched,
+    FeatureConfig,
+)
+from playground_amp.configs.feature_config import get_feature_config
+from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
+
+from playground_amp.training.ppo_core import (
+    compute_gae,
+    compute_ppo_loss,
+    compute_values,
+    create_networks,
+    init_network_params,
+    sample_actions,
+)
+from playground_amp.training.rollout import (
+    collect_rollout,
+    compute_reward_total,
+    TrajectoryBatch,
+)
+
+
+# =============================================================================
+# Training State (unified for both PPO-only and AMP)
+# =============================================================================
+
+
+class TrainingState(NamedTuple):
+    """Complete training state - all JAX arrays, no Python objects.
+
+    This state is used for both PPO-only and AMP+PPO training.
+    When amp_weight=0, discriminator fields are still present but unused.
+    """
+
+    # Network parameters (always used)
+    policy_params: Any
+    value_params: Any
+    processor_params: Any
+
+    # Optimizer states (always used)
+    policy_opt_state: Any
+    value_opt_state: Any
+
+    # Discriminator (present but unused when amp_weight=0)
+    disc_params: Any
+    disc_opt_state: Any
+
+    # Feature normalization (computed from ref data, or dummy when no AMP)
+    feature_mean: jnp.ndarray
+    feature_var: jnp.ndarray
+
+    # Training progress
+    iteration: jnp.ndarray
+    total_steps: jnp.ndarray
+    rng: jax.Array
+
+
+class IterationMetrics(NamedTuple):
+    """Metrics from one training iteration.
+
+    All fields are present for both PPO-only and AMP modes.
+    AMP-specific fields are zero when amp_weight=0.
+    """
+
+    # PPO losses
+    policy_loss: jnp.ndarray
+    value_loss: jnp.ndarray
+    entropy_loss: jnp.ndarray
+    total_loss: jnp.ndarray
+
+    # AMP metrics (zero when amp_weight=0)
+    disc_loss: jnp.ndarray
+    disc_accuracy: jnp.ndarray
+    amp_reward_mean: jnp.ndarray
+
+    # Episode metrics
+    episode_reward: jnp.ndarray
+    task_reward_mean: jnp.ndarray
+    forward_velocity: jnp.ndarray
+    robot_height: jnp.ndarray
+    episode_length: jnp.ndarray
+    success_rate: jnp.ndarray
+
+
+# =============================================================================
+# Feature Normalization
+# =============================================================================
+
+
+def compute_normalization_stats(
+    data: jnp.ndarray,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute normalization statistics from reference data."""
+    mean = jnp.mean(data, axis=0)
+    var = jnp.var(data, axis=0)
+    var = jnp.maximum(var, 1e-8)
+    return mean, var
+
+
+def normalize_features(
+    features: jnp.ndarray,
+    mean: jnp.ndarray,
+    var: jnp.ndarray,
+    epsilon: float = 1e-8,
+) -> jnp.ndarray:
+    """Normalize features using fixed statistics."""
+    return (features - mean) / jnp.sqrt(var + epsilon)
+
+
+# =============================================================================
+# Discriminator Training
+# =============================================================================
+
+
+def train_discriminator_scan(
+    disc_params: Any,
+    disc_opt_state: Any,
+    disc_model: AMPDiscriminator,
+    disc_optimizer: optax.GradientTransformation,
+    agent_features: jnp.ndarray,
+    ref_buffer_data: jnp.ndarray,
+    rng: jax.Array,
+    num_updates: int,
+    batch_size: int,
+    r1_gamma: float,
+) -> Tuple[Any, Any, jnp.ndarray, jnp.ndarray]:
+    """Train discriminator using jax.lax.scan."""
+    num_ref_samples = ref_buffer_data.shape[0]
+    num_agent_samples = agent_features.shape[0]
+
+    def disc_update_step(carry, rng):
+        params, opt_state = carry
+        rng, agent_rng, expert_rng, loss_rng = jax.random.split(rng, 4)
+
+        # Sample batches
+        agent_indices = jax.random.choice(
+            agent_rng, num_agent_samples, shape=(batch_size,), replace=True
+        )
+        agent_batch = agent_features[agent_indices]
+
+        expert_indices = jax.random.choice(
+            expert_rng, num_ref_samples, shape=(batch_size,), replace=True
+        )
+        expert_batch = ref_buffer_data[expert_indices]
+
+        # Compute loss and gradients
+        def loss_fn(p):
+            return discriminator_loss(
+                params=p,
+                model=disc_model,
+                real_obs=expert_batch,
+                fake_obs=agent_batch,
+                rng_key=loss_rng,
+                r1_gamma=r1_gamma,
+            )
+
+        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+
+        # Update parameters
+        updates, new_opt_state = disc_optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+
+        return (new_params, new_opt_state), (loss, metrics["discriminator_accuracy"])
+
+    # Run scan
+    rngs = jax.random.split(rng, num_updates)
+    (final_params, final_opt_state), (losses, accuracies) = jax.lax.scan(
+        disc_update_step, (disc_params, disc_opt_state), rngs
+    )
+
+    return final_params, final_opt_state, jnp.mean(losses), jnp.mean(accuracies)
+
+
+# =============================================================================
+# PPO Update
+# =============================================================================
+
+
+def ppo_update_scan(
+    policy_params: Any,
+    value_params: Any,
+    processor_params: Any,
+    policy_opt_state: Any,
+    value_opt_state: Any,
+    ppo_network: Any,
+    policy_optimizer: optax.GradientTransformation,
+    value_optimizer: optax.GradientTransformation,
+    obs: jnp.ndarray,
+    actions: jnp.ndarray,
+    old_log_probs: jnp.ndarray,
+    advantages: jnp.ndarray,
+    returns: jnp.ndarray,
+    rng: jax.Array,
+    num_epochs: int,
+    num_minibatches: int,
+    clip_epsilon: float,
+    value_loss_coef: float,
+    entropy_coef: float,
+) -> Tuple[Any, Any, Any, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """PPO update using jax.lax.scan over epochs and minibatches."""
+    batch_size = obs.shape[0]
+    minibatch_size = batch_size // num_minibatches
+    num_updates = num_epochs * num_minibatches
+
+    def ppo_step(carry, update_idx):
+        policy_p, value_p, policy_opt, value_opt, rng = carry
+        rng, shuffle_rng, step_rng = jax.random.split(rng, 3)
+
+        # Compute epoch and minibatch indices
+        epoch_idx = update_idx // num_minibatches
+        mb_idx = update_idx % num_minibatches
+
+        # Generate permutation for this epoch
+        epoch_rng = jax.random.fold_in(shuffle_rng, epoch_idx)
+        perm = jax.random.permutation(epoch_rng, batch_size)
+
+        # Get minibatch
+        start_idx = mb_idx * minibatch_size
+        mb_indices = jax.lax.dynamic_slice(perm, (start_idx,), (minibatch_size,))
+
+        mb_obs = obs[mb_indices]
+        mb_actions = actions[mb_indices]
+        mb_old_log_probs = old_log_probs[mb_indices]
+        mb_advantages = advantages[mb_indices]
+        mb_returns = returns[mb_indices]
+
+        # Normalize advantages
+        mb_advantages = (mb_advantages - jnp.mean(mb_advantages)) / (
+            jnp.std(mb_advantages) + 1e-8
+        )
+
+        # Compute loss and gradients
+        def loss_fn(policy_p, value_p):
+            return compute_ppo_loss(
+                processor_params=processor_params,
+                policy_params=policy_p,
+                value_params=value_p,
+                ppo_network=ppo_network,
+                obs=mb_obs,
+                actions=mb_actions,
+                old_log_probs=mb_old_log_probs,
+                advantages=mb_advantages,
+                returns=mb_returns,
+                rng=step_rng,
+                clip_epsilon=clip_epsilon,
+                value_loss_coef=value_loss_coef,
+                entropy_coef=entropy_coef,
+            )
+
+        (total_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
+            loss_fn, argnums=(0, 1), has_aux=True
+        )(policy_p, value_p)
+
+        # Update networks
+        policy_updates, new_policy_opt = policy_optimizer.update(
+            policy_grads, policy_opt
+        )
+        new_policy_p = optax.apply_updates(policy_p, policy_updates)
+
+        value_updates, new_value_opt = value_optimizer.update(value_grads, value_opt)
+        new_value_p = optax.apply_updates(value_p, value_updates)
+
+        return (new_policy_p, new_value_p, new_policy_opt, new_value_opt, rng), metrics
+
+    # Run scan
+    update_indices = jnp.arange(num_updates)
+    init_carry = (policy_params, value_params, policy_opt_state, value_opt_state, rng)
+    final_carry, all_metrics = jax.lax.scan(ppo_step, init_carry, update_indices)
+
+    new_policy_params, new_value_params, new_policy_opt, new_value_opt, _ = final_carry
+
+    return (
+        new_policy_params,
+        new_value_params,
+        new_policy_opt,
+        new_value_opt,
+        jnp.mean(all_metrics.policy_loss),
+        jnp.mean(all_metrics.value_loss),
+        jnp.mean(all_metrics.entropy_loss),
+        jnp.mean(all_metrics.total_loss),
+    )
+
+
+# =============================================================================
+# Unified Training Iteration (with lax.cond for AMP branching)
+# =============================================================================
+
+
+def make_train_iteration_fn(
+    env_step_fn: Callable,
+    ppo_network: Any,
+    disc_model: AMPDiscriminator,
+    policy_optimizer: optax.GradientTransformation,
+    value_optimizer: optax.GradientTransformation,
+    disc_optimizer: optax.GradientTransformation,
+    config: TrainingRuntimeConfig,
+    ref_buffer_data: Optional[jnp.ndarray],
+):
+    """Create JIT-compiled training iteration function.
+
+    This function handles both PPO-only (amp_weight=0) and AMP+PPO (amp_weight>0)
+    using lax.cond for zero-overhead branching.
+    """
+    amp_feature_config = get_feature_config()
+    amp_enabled = config.amp.reward_weight > 0.0
+
+    @jax.jit
+    def train_iteration(
+        state: TrainingState,
+        env_state: Any,
+    ) -> Tuple[TrainingState, Any, IterationMetrics]:
+        """Execute one training iteration (fully on GPU)."""
+
+        rng = state.rng
+        rng, rollout_rng, disc_rng, ppo_rng = jax.random.split(rng, 4)
+
+        # ================================================================
+        # Step 1: Collect rollout (unified for both modes)
+        # ================================================================
+        new_env_state, trajectory = collect_rollout(
+            env_step_fn=env_step_fn,
+            env_state=env_state,
+            policy_params=state.policy_params,
+            value_params=state.value_params,
+            processor_params=state.processor_params,
+            ppo_network=ppo_network,
+            rng=rollout_rng,
+            num_steps=config.training.num_steps,
+            collect_amp_features=amp_enabled,
+        )
+
+        # ================================================================
+        # Step 2-4: AMP branch (skipped when amp_weight=0)
+        # ================================================================
+
+        def amp_branch(_):
+            """AMP enabled: extract features, compute rewards, train disc."""
+            # Extract AMP features
+            amp_features = extract_amp_features_batched(
+                trajectory.obs,
+                amp_feature_config,
+                trajectory.foot_contacts,
+                trajectory.root_heights,
+                trajectory.prev_joint_positions,
+                dt=0.02,
+                use_estimated_contacts=config.amp.use_estimated_contacts,
+                use_finite_diff_vel=config.amp.use_finite_diff_vel,
+                contact_threshold_angle=config.amp.contact_threshold_angle,
+                contact_knee_scale=config.amp.contact_knee_scale,
+                contact_min_confidence=config.amp.contact_min_confidence,
+            )
+
+            # Flatten and normalize
+            flat_features = amp_features.reshape(-1, amp_features.shape[-1])
+            norm_features = normalize_features(
+                flat_features, state.feature_mean, state.feature_var
+            )
+            norm_ref = normalize_features(
+                ref_buffer_data, state.feature_mean, state.feature_var
+            )
+
+            # Compute AMP rewards (using OLD disc_params)
+            norm_features_shaped = norm_features.reshape(amp_features.shape)
+
+            def compute_reward_single(feat):
+                return compute_amp_reward(state.disc_params, disc_model, feat)
+
+            amp_rewards = jax.vmap(jax.vmap(compute_reward_single))(
+                norm_features_shaped
+            )
+
+            # Train discriminator
+            new_disc_params, new_disc_opt, disc_loss, disc_acc = (
+                train_discriminator_scan(
+                    disc_params=state.disc_params,
+                    disc_opt_state=state.disc_opt_state,
+                    disc_model=disc_model,
+                    disc_optimizer=disc_optimizer,
+                    agent_features=norm_features,
+                    ref_buffer_data=norm_ref,
+                    rng=disc_rng,
+                    num_updates=config.amp.disc_updates_per_iter,
+                    batch_size=config.amp.disc_batch_size,
+                    r1_gamma=config.amp.r1_gamma,
+                )
+            )
+
+            return amp_rewards, new_disc_params, new_disc_opt, disc_loss, disc_acc
+
+        def no_amp_branch(_):
+            """AMP disabled: return zeros, keep params unchanged."""
+            amp_rewards = jnp.zeros_like(trajectory.task_rewards)
+            return (
+                amp_rewards,
+                state.disc_params,
+                state.disc_opt_state,
+                jnp.array(0.0),
+                jnp.array(0.5),  # Neutral accuracy
+            )
+
+        # Use lax.cond for zero-overhead branching
+        # When amp_enabled is a compile-time constant, the unused branch is optimized out
+        if amp_enabled:
+            amp_rewards, new_disc_params, new_disc_opt, disc_loss, disc_acc = (
+                amp_branch(None)
+            )
+        else:
+            amp_rewards, new_disc_params, new_disc_opt, disc_loss, disc_acc = (
+                no_amp_branch(None)
+            )
+
+        # ================================================================
+        # Step 5: Combine rewards
+        # ================================================================
+        total_rewards = compute_reward_total(
+            trajectory.task_rewards, amp_rewards, config.amp.reward_weight
+        )
+
+        # ================================================================
+        # Step 6: Compute GAE advantages
+        # ================================================================
+        advantages, returns = compute_gae(
+            rewards=total_rewards,
+            values=trajectory.values,
+            dones=trajectory.dones,
+            bootstrap_value=trajectory.bootstrap_value,
+            gamma=config.ppo.gamma,
+            gae_lambda=config.ppo.gae_lambda,
+        )
+
+        # ================================================================
+        # Step 7: PPO update
+        # ================================================================
+        batch_size = config.training.num_steps * config.training.num_envs
+
+        flat_obs = trajectory.obs.reshape(batch_size, -1)
+        flat_actions = trajectory.actions.reshape(batch_size, -1)
+        flat_log_probs = trajectory.log_probs.reshape(batch_size)
+        flat_advantages = advantages.reshape(batch_size)
+        flat_returns = returns.reshape(batch_size)
+
+        (
+            new_policy_params,
+            new_value_params,
+            new_policy_opt,
+            new_value_opt,
+            policy_loss,
+            value_loss,
+            entropy_loss,
+            total_loss,
+        ) = ppo_update_scan(
+            policy_params=state.policy_params,
+            value_params=state.value_params,
+            processor_params=state.processor_params,
+            policy_opt_state=state.policy_opt_state,
+            value_opt_state=state.value_opt_state,
+            ppo_network=ppo_network,
+            policy_optimizer=policy_optimizer,
+            value_optimizer=value_optimizer,
+            obs=flat_obs,
+            actions=flat_actions,
+            old_log_probs=flat_log_probs,
+            advantages=flat_advantages,
+            returns=flat_returns,
+            rng=ppo_rng,
+            num_epochs=config.ppo.update_epochs,
+            num_minibatches=config.ppo.num_minibatches,
+            clip_epsilon=config.ppo.clip_epsilon,
+            value_loss_coef=config.ppo.value_loss_coef,
+            entropy_coef=config.ppo.entropy_coef,
+        )
+
+        # ================================================================
+        # Step 8: Build new state and metrics
+        # ================================================================
+        env_steps = config.training.num_steps * config.training.num_envs
+
+        # Episode metrics
+        episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
+        task_reward_mean = jnp.mean(trajectory.task_rewards)
+        forward_velocity = jnp.mean(trajectory.forward_velocities)
+        robot_height = jnp.mean(trajectory.heights)
+
+        # Episode length from env state
+        episode_length = jnp.mean(new_env_state.info["step_count"])
+
+        # Success rate
+        total_done = jnp.sum(trajectory.dones)
+        total_truncated = jnp.sum(trajectory.truncations)
+        success_rate = jnp.where(
+            total_done > 0,
+            total_truncated / total_done,
+            0.0,
+        )
+
+        new_state = TrainingState(
+            policy_params=new_policy_params,
+            value_params=new_value_params,
+            processor_params=state.processor_params,
+            policy_opt_state=new_policy_opt,
+            value_opt_state=new_value_opt,
+            disc_params=new_disc_params,
+            disc_opt_state=new_disc_opt,
+            feature_mean=state.feature_mean,
+            feature_var=state.feature_var,
+            iteration=state.iteration + 1,
+            total_steps=state.total_steps + env_steps,
+            rng=rng,
+        )
+
+        metrics = IterationMetrics(
+            policy_loss=policy_loss,
+            value_loss=value_loss,
+            entropy_loss=entropy_loss,
+            total_loss=total_loss,
+            disc_loss=disc_loss,
+            disc_accuracy=disc_acc,
+            amp_reward_mean=jnp.mean(amp_rewards),
+            episode_reward=episode_reward,
+            task_reward_mean=task_reward_mean,
+            forward_velocity=forward_velocity,
+            robot_height=robot_height,
+            episode_length=episode_length,
+            success_rate=success_rate,
+        )
+
+        return new_state, new_env_state, metrics
+
+    return train_iteration
+
+
+# =============================================================================
+# Main Training Function
+# =============================================================================
+
+
+def train(
+    env_step_fn: Callable,
+    env_reset_fn: Callable,
+    config: TrainingRuntimeConfig,
+    ref_motion_data: Optional[jnp.ndarray] = None,
+    callback: Optional[
+        Callable[[int, TrainingState, IterationMetrics, float], None]
+    ] = None,
+) -> TrainingState:
+    """Main training function for both PPO-only and AMP+PPO.
+
+    This is the single entry point for all training modes:
+    - Stage 1: config.amp.reward_weight=0, ref_motion_data=None
+    - Stage 3: config.amp.reward_weight>0, ref_motion_data=<data>
+
+    Args:
+        env_step_fn: Batched environment step function
+        env_reset_fn: Batched environment reset function
+        config: Training configuration
+        ref_motion_data: Reference motion features (required if amp_weight>0)
+        callback: Optional callback for logging/checkpointing
+
+    Returns:
+        Final training state
+    """
+    amp_enabled = config.amp.reward_weight > 0.0
+    mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
+
+    print("=" * 60)
+    print(f"Unified Training ({mode_str})")
+    print("=" * 60)
+    print(f"Configuration:")
+    print(f"  obs_dim: {config.obs_dim}")
+    print(f"  action_dim: {config.action_dim}")
+    print(f"  num_envs: {config.training.num_envs}")
+    print(f"  num_steps: {config.training.num_steps}")
+    print(f"  total_iterations: {config.training.total_iterations}")
+    print(f"  amp_reward_weight: {config.amp.reward_weight}")
+    print("=" * 60)
+
+    # Validate inputs
+    if amp_enabled and ref_motion_data is None:
+        raise ValueError(
+            f"amp.reward_weight={config.amp.reward_weight} > 0 but ref_motion_data is None. "
+            "Either set amp.reward_weight=0 or provide ref_motion_data."
+        )
+
+    # Initialize RNG
+    rng = jax.random.PRNGKey(config.training.seed)
+    rng, init_rng, env_rng, disc_rng = jax.random.split(rng, 4)
+
+    # Create networks
+    ppo_network = create_networks(
+        obs_dim=config.obs_dim,
+        action_dim=config.action_dim,
+        policy_hidden_dims=config.network.policy_hidden_dims,
+        value_hidden_dims=config.network.value_hidden_dims,
+    )
+
+    # Initialize network parameters
+    processor_params, policy_params, value_params = init_network_params(
+        ppo_network, config.obs_dim, config.action_dim, seed=int(init_rng[0])
+    )
+
+    # Create discriminator (always created, may be unused)
+    amp_feature_dim = get_feature_config().feature_dim
+    disc_model, disc_params = create_discriminator(
+        obs_dim=amp_feature_dim,
+        hidden_dims=config.amp.disc_hidden_dims,
+        seed=int(disc_rng[0]),
+    )
+
+    # Create optimizers
+    policy_optimizer = optax.chain(
+        optax.clip_by_global_norm(config.ppo.max_grad_norm),
+        optax.adam(float(config.ppo.learning_rate)),
+    )
+    value_optimizer = optax.chain(
+        optax.clip_by_global_norm(config.ppo.max_grad_norm),
+        optax.adam(float(config.ppo.learning_rate)),
+    )
+    disc_optimizer = optax.adam(float(config.amp.disc_learning_rate))
+
+    # Initialize optimizer states
+    policy_opt_state = policy_optimizer.init(policy_params)
+    value_opt_state = value_optimizer.init(value_params)
+    disc_opt_state = disc_optimizer.init(disc_params)
+
+    # Feature normalization stats
+    if amp_enabled:
+        ref_buffer_data = jnp.asarray(ref_motion_data, dtype=jnp.float32)
+        feature_mean, feature_var = compute_normalization_stats(ref_buffer_data)
+        print(f"✓ Reference buffer: {ref_buffer_data.shape[0]} samples on GPU")
+    else:
+        # Dummy stats for PPO-only mode
+        ref_buffer_data = None
+        feature_mean = jnp.zeros(amp_feature_dim)
+        feature_var = jnp.ones(amp_feature_dim)
+
+    # Create initial training state
+    state = TrainingState(
+        policy_params=policy_params,
+        value_params=value_params,
+        processor_params=processor_params,
+        policy_opt_state=policy_opt_state,
+        value_opt_state=value_opt_state,
+        disc_params=disc_params,
+        disc_opt_state=disc_opt_state,
+        feature_mean=feature_mean,
+        feature_var=feature_var,
+        iteration=jnp.array(0, dtype=jnp.int32),
+        total_steps=jnp.array(0, dtype=jnp.int32),
+        rng=rng,
+    )
+
+    # Initialize environment
+    env_state = env_reset_fn(env_rng)
+    print(f"✓ Environment initialized")
+
+    # Create JIT-compiled training function
+    train_iteration_fn = make_train_iteration_fn(
+        env_step_fn=env_step_fn,
+        ppo_network=ppo_network,
+        disc_model=disc_model,
+        policy_optimizer=policy_optimizer,
+        value_optimizer=value_optimizer,
+        disc_optimizer=disc_optimizer,
+        config=config,
+        ref_buffer_data=ref_buffer_data,
+    )
+
+    print("=" * 60)
+    print("Pre-compiling JIT functions...")
+    compile_start = time.time()
+    _ = train_iteration_fn(state, env_state)
+    jax.block_until_ready(_)
+    print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
+    print("=" * 60)
+
+    print("Starting training...")
+    print(f"  Total iterations: {config.training.total_iterations:,}")
+    total_expected_steps = config.training.total_iterations * config.training.num_envs * config.training.num_steps
+    print(f"  Total steps: {total_expected_steps:,}")
+    print()
+
+    # Training loop
+    start_time = time.time()
+
+    for iteration in range(1, config.training.total_iterations + 1):
+        iter_start = time.time()
+
+        state, env_state, metrics = train_iteration_fn(state, env_state)
+        jax.block_until_ready(state.total_steps)
+
+        iter_time = time.time() - iter_start
+        steps_per_sec = (config.training.num_steps * config.training.num_envs) / iter_time
+
+        # Logging
+        if iteration % config.training.log_interval == 0 or iteration == 1:
+            total_steps = int(state.total_steps)
+            progress_pct = (total_steps / total_expected_steps) * 100
+
+            print(
+                f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
+                f"reward={float(metrics.episode_reward):>8.2f} | "
+                f"vel={float(metrics.forward_velocity):>5.2f}m/s | "
+                f"steps/s={steps_per_sec:>8.0f}"
+            )
+
+            if amp_enabled:
+                print(
+                    f"  └─ amp={float(metrics.amp_reward_mean):>6.4f} | "
+                    f"disc_acc={float(metrics.disc_accuracy):>5.2f}"
+                )
+
+            if callback is not None:
+                callback(iteration, state, metrics, steps_per_sec)
+
+    elapsed = time.time() - start_time
+    print()
+    print("=" * 60)
+    print("Training complete!")
+    print(f"  Total steps: {int(state.total_steps):,}")
+    print(f"  Total time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
+    print(f"  Average steps/sec: {int(state.total_steps) / elapsed:,.0f}")
+    print("=" * 60)
+
+    return state

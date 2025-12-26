@@ -293,12 +293,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         qpos: jax.Array,
         velocity_cmd: jax.Array,
+        base_info: dict | None = None,
     ) -> WildRobotEnvState:
         """Create initial environment state from qpos (shared by reset and auto-reset).
 
         Args:
             qpos: Initial joint positions (including floating base)
             velocity_cmd: Velocity command for this episode
+            base_info: Optional base info dict to preserve (for auto-reset).
+                       When provided, env fields are merged on top of base_info
+                       to preserve wrapper-injected fields (truncation, episode_done, etc.)
 
         Returns:
             Initial WildRobotEnvState
@@ -352,8 +356,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/action_rate": action_rate,
         }
 
-        # Info
-        info = {
+        # Info - merge with base_info if provided (preserves wrapper fields during auto-reset)
+        env_info = {
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
             "truncated": jp.zeros(()),  # No truncation at reset
@@ -364,6 +368,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "prev_root_pos": self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
             "prev_root_quat": self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
         }
+
+        # Merge: base_info (wrapper fields) + env_info (env fields override)
+        if base_info is not None:
+            info = dict(base_info)
+            info.update(env_info)
+        else:
+            info = env_info
 
         return WildRobotEnvState(
             data=data,
@@ -469,23 +480,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
         curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
         curr_root_quat = self.get_floating_base_qpos(data.qpos)[3:7]
 
-        info = {
-            "step_count": step_count + 1,
-            "prev_action": filtered_action,
-            "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
-            "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
-            "root_height": height,  # v0.6.1: Actual root height for AMP features
-            # v0.9.1: Update previous root pose for finite-diff velocity
-            "prev_root_pos": curr_root_pos,
-            "prev_root_quat": curr_root_quat,
-        }
+        # v0.10.0: Preserve existing info fields from wrapper (Brax compatibility)
+        # The Brax training wrapper adds fields like 'truncation', 'episode_done',
+        # 'episode_metrics', 'first_obs', 'steps', 'first_state'. We need to preserve
+        # these to maintain pytree structure compatibility with jax.lax.scan.
+        info = dict(state.info)  # Copy existing fields
+        info.update(
+            {
+                "step_count": step_count + 1,
+                "prev_action": filtered_action,
+                "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
+                "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
+                "root_height": height,  # v0.6.1: Actual root height for AMP features
+                # v0.9.1: Update previous root pose for finite-diff velocity
+                "prev_root_pos": curr_root_pos,
+                "prev_root_quat": curr_root_quat,
+            }
+        )
 
         # =================================================================
         # Auto-reset on termination
         # When done=True, reset physics state to initial keyframe but keep
         # done=True so the algorithm knows an episode ended.
         # =================================================================
-        reset_state = self._make_initial_state(self._init_qpos, velocity_cmd)
+        # Pass state.info as base_info to preserve wrapper fields during auto-reset
+        reset_state = self._make_initial_state(
+            self._init_qpos, velocity_cmd, base_info=state.info
+        )
 
         final_data, final_obs, final_metrics, final_info = jax.lax.cond(
             done > 0.5,
@@ -493,7 +514,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 reset_state.data,
                 reset_state.obs,
                 reset_state.metrics,
-                reset_state.info,
+                reset_state.info,  # Already has wrapper fields preserved via base_info
             ),
             lambda: (data, obs, metrics, info),
         )

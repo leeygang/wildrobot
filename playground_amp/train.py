@@ -1,30 +1,42 @@
 #!/usr/bin/env python3
-"""Entry point for AMP+PPO training on WildRobot.
+"""Entry point for WildRobot training.
 
-This script provides a command-line interface for training a walking policy
-using PPO with Adversarial Motion Priors (AMP) for natural motion learning.
+This script provides a command-line interface for training walking policies
+using PPO with optional Adversarial Motion Priors (AMP) for natural motion learning.
 
-Usage:
-    # Default training with AMP+PPO (recommended)
-    python train.py
+Training Modes:
+    1. PPO-only (Stage 1): Learn robot-native walking without reference motion
+       python train.py --config configs/ppo_walking.yaml --no-amp
 
-    # With custom configuration
+    2. AMP+PPO (default): Use human motion priors for natural-looking gait
+       python train.py --config configs/ppo_amass_training.yaml
+
+Usage Examples:
+    # Stage 1: PPO-only training (robot-native walking)
+    python train.py --config playground_amp/configs/ppo_walking.yaml --no-amp
+
+    # Stage 1: Quick smoke test
+    python train.py --config playground_amp/configs/ppo_walking.yaml --no-amp --verify
+
+    # AMP+PPO training with human motion priors
+    python train.py --config playground_amp/configs/ppo_amass_training.yaml
+
+    # With custom parameters
     python train.py --num-envs 512 --iterations 5000
-
-    # Quick smoke test
-    python train.py --verify
-
-    # Debug mode: Pure PPO without AMP (Brax trainer)
-    python train.py --debug-brax-ppo
 
 Architecture:
     This script supports two training modes:
 
-    1. AMP+PPO (default): Uses custom training loop that integrates AMP
-       discriminator for natural motion learning from reference data.
+    1. PPO-only (--no-amp): Stage 1 training for discovering robot's natural gait.
+       Uses Brax's PPO trainer with mujoco_playground wrapper. No reference motion.
 
-    2. Brax PPO (--debug-brax-ppo): Uses Brax's PPO trainer without AMP.
-       For debugging and comparison only.
+    2. AMP+PPO (default): Uses custom JIT-compiled training loop that integrates
+       AMP discriminator for natural motion learning from reference data.
+
+See also:
+    - playground_amp/docs/learn_first_plan.md: Roadmap for the "Learn First, Retarget Later" approach
+    - playground_amp/configs/ppo_walking.yaml: Stage 1 config
+    - playground_amp/configs/ppo_amass_training.yaml: AMP+PPO config
 """
 
 from __future__ import annotations
@@ -216,13 +228,6 @@ def parse_args():
         help="Entropy bonus coefficient (default from config)",
     )
 
-    # Training mode - JIT AMP+PPO is default
-    parser.add_argument(
-        "--debug-brax-ppo",
-        action="store_true",
-        help="Use Brax PPO trainer without AMP (for debugging only)",
-    )
-
     # AMP configuration (only for custom loop)
     parser.add_argument(
         "--amp-weight",
@@ -294,103 +299,25 @@ def parse_args():
     return parser.parse_args()
 
 
-def train_with_brax_ppo(args):
-    """Train using Brax's PPO trainer with mujoco_playground wrapper.
+def start_training(
+    training_cfg: "TrainingConfig",
+    wandb_tracker: Optional[WandbTracker] = None,
+    use_amp: bool = True,
+    checkpoint_dir: Optional[str] = None,
+    amp_data_path: Optional[str] = None,
+):
+    """Unified training using training_loop.py for both PPO-only and AMP+PPO.
 
-    This is the recommended approach - clean and efficient.
-    """
-    from brax.training.agents.ppo import train as ppo
-    from mujoco_playground import wrapper
-
-    # Create environment
-    print("Creating WildRobotEnv...")
-    env = create_env()
-    print(
-        f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
-    )
-
-    # PPO configuration
-    num_timesteps = args.iterations * args.num_envs * 1000
-
-    ppo_kwargs = {
-        "num_timesteps": num_timesteps,
-        "num_evals": max(1, args.iterations // 20),
-        "reward_scaling": 1.0,
-        "episode_length": 500,
-        "normalize_observations": True,
-        "action_repeat": 1,
-        "unroll_length": 20,
-        "num_minibatches": 4,
-        "num_updates_per_batch": 4,
-        "discounting": args.gamma,
-        "learning_rate": args.lr,
-        "entropy_cost": args.entropy_coef,
-        "num_envs": args.num_envs,
-        "batch_size": min(1024, args.num_envs * 10),
-        "seed": args.seed,
-    }
-
-    print("\nPPO Configuration:")
-    for key, value in ppo_kwargs.items():
-        print(f"  {key}: {value}")
-
-    # Progress callback
-    times = [time.time()]
-
-    def progress_fn(num_steps, metrics):
-        times.append(time.time())
-        if num_steps % 1000 == 0 or num_steps < 5000:
-            reward = metrics.get("eval/episode_reward", 0.0)
-            length = metrics.get("eval/episode_length", 0.0)
-            print(f"Step {num_steps:,}: reward={reward:.2f}, length={length:.1f}")
-
-    # Train
-    print("\n" + "=" * 60)
-    print("Starting Brax PPO training...")
-    print("=" * 60 + "\n")
-
-    train_fn = functools.partial(ppo.train, **ppo_kwargs, progress_fn=progress_fn)
-
-    make_inference_fn, params, metrics = train_fn(
-        environment=env,
-        wrap_env_fn=wrapper.wrap_for_brax_training,  # Automatic Brax compatibility!
-    )
-
-    print("\n" + "=" * 60)
-    print("Training complete!")
-    print("=" * 60)
-
-    if len(times) > 1:
-        print(f"Time to JIT: {times[1] - times[0]:.2f}s")
-        print(f"Time to train: {times[-1] - times[1]:.2f}s")
-
-    # Save checkpoint
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(args.checkpoint_dir, "final_policy.pkl")
-
-    checkpoint_data = {
-        "params": params,
-        "config": ppo_kwargs,
-        "final_metrics": metrics,
-    }
-
-    with open(checkpoint_path, "wb") as f:
-        pickle.dump(checkpoint_data, f)
-
-    print(f"✓ Policy saved to: {checkpoint_path}")
-
-    return make_inference_fn, params, metrics
-
-
-def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
-    """Train using fully JIT-compiled AMP+PPO training loop.
-
-    This is the fastest training mode - entire training loop runs on GPU.
-    Expected 1000x+ speedup over Python-loop based training.
+    This is the single training path for all modes:
+    - Stage 1: PPO-only (use_amp=False) - robot-native walking
+    - Stage 3: AMP+PPO (use_amp=True) - natural motion learning
 
     Args:
-        args: Parsed command-line arguments
+        training_cfg: Training configuration (single source of truth)
         wandb_tracker: Optional W&B tracker for logging
+        use_amp: Whether to use AMP discriminator
+        checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
+        amp_data_path: Path to AMP reference data (overrides config if provided)
     """
     import pickle
 
@@ -412,71 +339,53 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"{'=' * 60}\n")
 
     from playground_amp.envs.wildrobot_env import WildRobotEnv
-    from playground_amp.training.trainer_jit import (
+    from playground_amp.training.training_loop import (
         IterationMetrics,
-        train_amp_ppo_jit,
+        train,
         TrainingState,
     )
-    from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
 
-    # Load training config
-    config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
-    training_cfg = load_training_config(config_path)
-
-    # Overwrite training_cfg with CLI parameters (CLI takes priority)
-    if args.iterations is not None:
-        training_cfg.iterations = args.iterations
-    if args.num_envs is not None:
-        training_cfg.num_envs = args.num_envs
-    if args.lr is not None:
-        training_cfg.learning_rate = args.lr
-    if args.gamma is not None:
-        training_cfg.gamma = args.gamma
-    if args.clip_epsilon is not None:
-        training_cfg.clip_epsilon = args.clip_epsilon
-    if args.entropy_coef is not None:
-        training_cfg.entropy_coef = args.entropy_coef
-    if args.amp_weight is not None:
-        training_cfg.amp_weight = args.amp_weight
-    if args.disc_lr is not None:
-        training_cfg.disc_learning_rate = args.disc_lr
-    if args.seed is not None:
-        training_cfg.seed = args.seed
-    if args.log_interval is not None:
-        training_cfg.log_interval = args.log_interval
-
-    training_config = training_cfg.raw_config
-    trainer_cfg = training_config.get("trainer", {})
-    networks_cfg = training_config.get("networks", {})
-    amp_cfg = training_config.get("amp", {})
-
-    # Create environment
+    # Create environment config and environment
     print("Creating WildRobotEnv...")
-    env = create_env()
+    env_config = create_env_config(training_cfg.raw_config)
+    env = WildRobotEnv(config=env_config)
     print(
         f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
     )
 
+    # Determine checkpoint directory
+    final_checkpoint_dir = checkpoint_dir or training_cfg.checkpoint_dir
+
     # Create training job name (for checkpoint subdirectory)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_name = f"wildrobot_amp_{timestamp}"
-    checkpoint_dir = os.path.join(args.checkpoint_dir, job_name)
+    mode_suffix = "amp" if use_amp else "ppo"
+    job_name = f"wildrobot_{mode_suffix}_{timestamp}"
+    job_checkpoint_dir = os.path.join(final_checkpoint_dir, job_name)
 
     print(f"Training job: {job_name}")
-    print(f"Checkpoints will be saved to: {checkpoint_dir}")
+    print(f"Checkpoints will be saved to: {job_checkpoint_dir}")
 
-    # Load reference motion data using ref_features module
-    print(f"Loading reference motion data from: {args.amp_data}")
-    from playground_amp.amp.ref_features import load_reference_features
+    # Load reference motion data only if AMP enabled
+    ref_features = None
+    if use_amp:
+        ref_path = amp_data_path or training_cfg.ref_motion_path
+        if ref_path is None:
+            raise ValueError(
+                "AMP mode requires reference motion data. "
+                "Set amp.dataset_path in config or pass --amp-data."
+            )
+        print(f"Loading reference motion data from: {ref_path}")
+        from playground_amp.amp.ref_features import load_reference_features
 
-    ref_features = load_reference_features(args.amp_data)
-    print(f"✓ Reference features: {ref_features.shape}")
-
-    print(f"✓ Environment functions created (vmapped for {training_cfg.num_envs} envs)")
+        ref_features = load_reference_features(ref_path)
+        print(f"✓ Reference features: {ref_features.shape}")
 
     # Create runtime config using TrainingConfig.to_runtime_config()
-    # CLI overrides have already been applied to training_cfg above
     config = training_cfg.to_runtime_config()
+
+    print(
+        f"✓ Environment functions created (vmapped for {training_cfg.training.num_envs} envs)"
+    )
 
     # Create vmapped environment functions
     def batched_step_fn(state, action):
@@ -485,24 +394,19 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
 
     def batched_reset_fn(rng):
         """Batched environment reset."""
-        rngs = jax.random.split(rng, config.num_envs)
+        rngs = jax.random.split(rng, config.training.num_envs)
         return jax.vmap(env.reset)(rngs)
 
     # Get checkpoint settings from config
-    checkpoint_cfg = training_config.get("checkpoints", {})
+    checkpoint_cfg = training_cfg.raw_config.get("checkpoints", {})
     checkpoint_interval = checkpoint_cfg.get("interval", 100)
     keep_checkpoints = checkpoint_cfg.get("keep_last_n", 5)
 
     # Checkpoint management state (captured by callback closure)
-    # Track global best (for best_checkpoint files)
     best_reward = {"value": float("-inf")}
-
-    # Track best within current checkpoint window
-    # We save the best performing checkpoint within each N-iteration window,
-    # not just the checkpoint at iteration N
     window_best = {
         "reward": float("-inf"),
-        "state": None,  # Will hold CPU copy of state (via jax.device_get)
+        "state": None,
         "metrics": None,
         "iteration": 0,
         "total_steps": 0,
@@ -524,18 +428,16 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
                 policy_loss=float(metrics.policy_loss),
                 value_loss=float(metrics.value_loss),
                 entropy_loss=float(metrics.entropy_loss),
-                disc_loss=float(metrics.disc_loss),
-                disc_accuracy=float(metrics.disc_accuracy),
-                amp_reward_mean=float(metrics.amp_reward_mean),
+                disc_loss=float(metrics.disc_loss) if use_amp else 0.0,
+                disc_accuracy=float(metrics.disc_accuracy) if use_amp else 0.5,
+                amp_reward_mean=float(metrics.amp_reward_mean) if use_amp else 0.0,
                 amp_reward_std=0.0,
                 clip_fraction=0.0,
                 approx_kl=0.0,
                 env_steps_per_sec=steps_per_sec,
-                # Task reward breakdown
                 forward_velocity=float(metrics.forward_velocity),
                 episode_length=float(metrics.episode_length),
             )
-            # Add task reward breakdown to metrics
             wandb_metrics["debug/task_reward_per_step"] = float(
                 metrics.task_reward_mean
             )
@@ -551,7 +453,6 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
         # Track best within current checkpoint window
         if current_reward > window_best["reward"]:
             window_best["reward"] = current_reward
-            # Copy state to CPU to free GPU memory (JAX arrays are immutable)
             window_best["state"] = jax.device_get(state)
             window_best["metrics"] = metrics
             window_best["iteration"] = iteration
@@ -559,24 +460,21 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
 
         # At checkpoint boundary, save the best from this window
         if iteration % checkpoint_interval == 0:
-            # Use the best state from this window (not current state)
             save_state = window_best["state"]
             save_metrics = window_best["metrics"]
             save_iteration = window_best["iteration"]
             save_reward = window_best["reward"]
 
-            # Check if this is also the global best
             is_global_best = save_reward > best_reward["value"]
             if is_global_best:
                 best_reward["value"] = save_reward
 
-            # Save checkpoint using the best state from this window
             ckpt_path = save_checkpoint_from_cpu(
                 state_cpu=save_state,
                 config=config,
                 iteration=save_iteration,
                 total_steps=window_best["total_steps"],
-                checkpoint_dir=checkpoint_dir,
+                checkpoint_dir=job_checkpoint_dir,
                 is_best=is_global_best,
                 metrics=save_metrics,
             )
@@ -592,39 +490,42 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
                     f"reward={save_reward:.2f})"
                 )
 
-            # Reset window tracking for next window
+            # Reset window tracking
             window_best["reward"] = float("-inf")
             window_best["state"] = None
             window_best["metrics"] = None
             window_best["iteration"] = 0
             window_best["total_steps"] = 0
 
-            # Clean up old checkpoints
-            manage_checkpoints(checkpoint_dir, keep_checkpoints)
+            manage_checkpoints(job_checkpoint_dir, keep_checkpoints)
 
-    # Train
+    # Train using unified trainer
+    mode_str = "AMP+PPO" if use_amp else "PPO-only (Stage 1)"
     print("\n" + "=" * 60)
-    print("Starting JIT-compiled AMP+PPO training...")
+    print(f"Starting unified training ({mode_str})...")
     print("=" * 60 + "\n")
 
-    final_state = train_amp_ppo_jit(
+    final_state = train(
         env_step_fn=batched_step_fn,
         env_reset_fn=batched_reset_fn,
         config=config,
-        ref_motion_data=ref_features,
+        ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
     )
 
-    # Save checkpoint
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(args.checkpoint_dir, "final_jit_policy.pkl")
+    # Save final checkpoint
+    os.makedirs(final_checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(
+        final_checkpoint_dir, f"final_{mode_suffix}_policy.pkl"
+    )
 
     checkpoint_data = {
         "policy_params": jax.device_get(final_state.policy_params),
         "value_params": jax.device_get(final_state.value_params),
-        "disc_params": jax.device_get(final_state.disc_params),
-        "feature_mean": jax.device_get(final_state.feature_mean),
-        "feature_var": jax.device_get(final_state.feature_var),
+        "disc_params": jax.device_get(final_state.disc_params) if use_amp else None,
+        "feature_mean": jax.device_get(final_state.feature_mean) if use_amp else None,
+        "feature_var": jax.device_get(final_state.feature_var) if use_amp else None,
+        "mode": mode_suffix,
     }
 
     with open(checkpoint_path, "wb") as f:
@@ -633,102 +534,7 @@ def train_with_jit_loop(args, wandb_tracker: Optional[WandbTracker] = None):
     print(f"✓ Policy saved to: {checkpoint_path}")
 
     # Print best checkpoints summary
-    print_top_checkpoints_summary(checkpoint_dir)
-
-    # Generate and upload evaluation video after training
-    video_cfg = training_config.get("video", {})
-    video_enabled = video_cfg.get("enabled", True) and not args.verify
-
-    if video_enabled:
-        try:
-            import jax
-
-            print("\n" + "=" * 60)
-            print("Generating evaluation video...")
-            print("=" * 60)
-
-            # Create a single-env reset and step function for video generation
-            def single_reset_fn(rng):
-                return env.reset(rng)
-
-            def single_step_fn(state, action):
-                return env.step(state, action)
-
-            # Create inference function from trained policy
-            from playground_amp.training.ppo_core import create_networks, sample_actions
-
-            ppo_network = create_networks(
-                obs_dim=config.obs_dim,
-                action_dim=config.action_dim,
-                policy_hidden_dims=config.policy_hidden_dims,
-                value_hidden_dims=config.value_hidden_dims,
-            )
-
-            def policy_inference(obs, rng):
-                """Get action from trained policy."""
-                action, _, _ = sample_actions(
-                    final_state.processor_params,
-                    final_state.policy_params,
-                    ppo_network,
-                    obs,
-                    rng,
-                )
-                return action
-
-            jit_inference_fn = jax.jit(policy_inference)
-
-            # Get video config settings
-            num_videos = video_cfg.get("num_videos", 1)
-            episode_length = video_cfg.get("episode_length", 500)
-            render_every = video_cfg.get("render_every", 2)
-            video_width = video_cfg.get("width", 640)
-            video_height = video_cfg.get("height", 480)
-            video_fps = video_cfg.get("fps", 25)
-            upload_to_wandb = video_cfg.get("upload_to_wandb", True) and (
-                wandb_tracker is not None
-            )
-            output_subdir = video_cfg.get("output_subdir", "videos")
-
-            # Generate video
-            rng_key = jax.random.PRNGKey(config.seed + 1000)
-            videos = generate_eval_video(
-                env=env,
-                inference_fn=jit_inference_fn,
-                rng_key=rng_key,
-                episode_length=episode_length,
-                num_rollouts=num_videos,
-                render_every=render_every,
-                height=video_height,
-                width=video_width,
-            )
-
-            # Save and upload to W&B
-            if videos:
-                video_dir = os.path.join(args.checkpoint_dir, output_subdir)
-                os.makedirs(video_dir, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-                for i, video in enumerate(videos):
-                    video_path = os.path.join(
-                        video_dir, f"eval_rollout_{timestamp}_{i}.mp4"
-                    )
-                    wandb_key = (
-                        f"eval/rollout_video_{i}" if i > 0 else "eval/final_rollout"
-                    )
-
-                    save_and_upload_video(
-                        video=video,
-                        filepath=video_path,
-                        fps=float(video_fps),
-                        upload_to_wandb=upload_to_wandb,
-                        wandb_key=wandb_key,
-                    )
-            else:
-                print("⚠️ No video frames captured (rendering may not be available)")
-
-        except Exception as e:
-            print(f"⚠️ Video generation failed: {e}")
-            print("  (This is non-critical - training completed successfully)")
+    print_top_checkpoints_summary(job_checkpoint_dir)
 
     return final_state
 
@@ -755,44 +561,45 @@ def main():
         print(f"Warning: Robot config not found at {DEFAULT_ROBOT_CONFIG_PATH}")
         print("Run 'cd assets && python post_process.py' to generate it.")
 
-    trainer_cfg = training_config.get("trainer", {})
+    # Support both 'ppo:' (unified format) config
+    ppo_cfg = training_config.get("ppo", {})
     amp_cfg = training_config.get("amp", {})
 
     # Merge config with CLI overrides (CLI takes precedence if provided)
     if args.iterations is None:
-        args.iterations = trainer_cfg.get("iterations", 3000)
+        args.iterations = ppo_cfg.get("iterations", 3000)
     if args.num_envs is None:
-        args.num_envs = trainer_cfg.get("num_envs", 512)
+        args.num_envs = ppo_cfg.get("num_envs", 512)
     if args.seed is None:
-        args.seed = trainer_cfg.get("seed", 42)
+        args.seed = ppo_cfg.get("seed", 42)
     if args.lr is None:
-        args.lr = trainer_cfg.get("lr", 3e-4)
+        args.lr = ppo_cfg.get("learning_rate", 3e-4)
     if args.gamma is None:
-        args.gamma = trainer_cfg.get("gamma", 0.99)
+        args.gamma = ppo_cfg.get("gamma", 0.99)
     if args.clip_epsilon is None:
-        args.clip_epsilon = trainer_cfg.get("clip_epsilon", 0.2)
+        args.clip_epsilon = ppo_cfg.get("clip_epsilon", 0.2)
     if args.entropy_coef is None:
-        args.entropy_coef = trainer_cfg.get("entropy_coef", 0.01)
+        args.entropy_coef = ppo_cfg.get("entropy_coef", 0.01)
     if args.amp_weight is None:
         args.amp_weight = amp_cfg.get("weight", 1.0)
     if args.disc_lr is None:
         args.disc_lr = amp_cfg.get("disc_lr", 1e-4)
     if args.log_interval is None:
-        args.log_interval = trainer_cfg.get("log_interval", 10)
+        args.log_interval = ppo_cfg.get("log_interval", 10)
     if args.checkpoint_dir is None:
-        args.checkpoint_dir = trainer_cfg.get(
-            "checkpoint_dir", "playground_amp/checkpoints"
-        )
+        # Support 'checkpoints:' section for checkpoint directory
+        checkpoints_cfg = training_config.get("checkpoints", {})
+        args.checkpoint_dir = checkpoints_cfg.get("dir", "playground_amp/checkpoints")
     if args.amp_data is None:
         args.amp_data = amp_cfg.get("dataset_path")
 
     # Quick verify mode (override everything)
     if args.verify:
         quick_cfg = training_config.get("quick_verify", {})
-        quick_trainer = quick_cfg.get("trainer", {})
+        quick_ppo = quick_cfg.get("ppo", {})
         quick_amp = quick_cfg.get("amp", {})
-        args.iterations = quick_trainer.get("iterations", 10)
-        args.num_envs = quick_trainer.get("num_envs", 4)
+        args.iterations = quick_ppo.get("iterations", 10)
+        args.num_envs = quick_ppo.get("num_envs", 4)
         # Override disc_batch_size for quick verify (stored as temp attribute)
         args._quick_verify_disc_batch_size = quick_amp.get("batch_size", 32)
         args.log_interval = 1
@@ -801,8 +608,8 @@ def main():
         print("Running quick smoke test")
         print("=" * 60)
 
-    # Determine training mode
-    use_amp = not args.debug_brax_ppo and not args.no_amp
+    # Determine training mode: AMP+PPO (default) or PPO-only (--no-amp)
+    use_amp = not args.no_amp
 
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
@@ -812,7 +619,7 @@ def main():
     if use_amp:
         mode_str = "AMP+PPO (JIT-compiled - FAST)"
     else:
-        mode_str = "Brax PPO (debug)"
+        mode_str = "PPO-only (Stage 1: Robot-Native Walking)"
     print(f"  Mode: {mode_str}")
     print(f"  Config: {config_path}")
     print(f"  Iterations: {args.iterations}")
@@ -847,7 +654,7 @@ def main():
             "amp_weight": args.amp_weight if use_amp else 0.0,
             "disc_lr": args.disc_lr if use_amp else 0.0,
             "seed": args.seed,
-            "mode": "amp+ppo" if use_amp else "brax-ppo",
+            "mode": "amp+ppo" if use_amp else "ppo-only",
         }
 
         wandb_tracker = WandbTracker(
@@ -865,10 +672,42 @@ def main():
         define_wandb_topline_metrics()
 
     try:
+        # Apply CLI overrides to training_cfg (config is single source of truth)
+        # Uses composed config structure: training_cfg.ppo.*, training_cfg.amp.*, training_cfg.training.*
+        if args.iterations is not None:
+            training_cfg.training.total_iterations = args.iterations
+        if args.num_envs is not None:
+            training_cfg.training.num_envs = args.num_envs
+        if args.seed is not None:
+            training_cfg.training.seed = args.seed
+        if args.lr is not None:
+            training_cfg.ppo.learning_rate = args.lr
+        if args.gamma is not None:
+            training_cfg.ppo.gamma = args.gamma
+        if args.clip_epsilon is not None:
+            training_cfg.ppo.clip_epsilon = args.clip_epsilon
+        if args.entropy_coef is not None:
+            training_cfg.ppo.entropy_coef = args.entropy_coef
+        if args.log_interval is not None:
+            training_cfg.training.log_interval = args.log_interval
+        if args.disc_lr is not None:
+            training_cfg.amp.disc_learning_rate = args.disc_lr
+
+        # Set AMP weight based on mode
         if use_amp:
-            train_with_jit_loop(args, wandb_tracker=wandb_tracker)
+            if args.amp_weight is not None:
+                training_cfg.amp.reward_weight = args.amp_weight
         else:
-            train_with_brax_ppo(args)
+            training_cfg.amp.reward_weight = 0.0  # PPO-only mode
+
+        # Unified training for both PPO-only and AMP modes
+        start_training(
+            training_cfg=training_cfg,
+            wandb_tracker=wandb_tracker,
+            use_amp=use_amp,
+            checkpoint_dir=args.checkpoint_dir,
+            amp_data_path=args.amp_data,
+        )
 
         elapsed = time.time() - start_time
         print(f"\nTotal time: {elapsed:.1f}s ({elapsed/60:.1f} min)")

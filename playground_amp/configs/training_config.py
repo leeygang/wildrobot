@@ -1,14 +1,15 @@
 """Centralized configuration management for WildRobot training.
 
-This module provides utilities to load and manage:
-1. Robot configuration (from robot_config.yaml) - robot-specific info
-2. Training configuration (from training YAML files) - training parameters
+This module provides utilities to load and manage training configuration
+from training YAML files.
 
-All other modules should import configuration through this module instead of
-hardcoding robot-specific values.
+Design Principle: Shared config classes (PPOConfig, AMPConfig, etc.) are defined
+in training_runtime_config.py and composed into both TrainingConfig (mutable)
+and TrainingRuntimeConfig (frozen for JIT).
 
 Usage:
-    from playground_amp.configs.training_config import load_robot_config, load_training_config, RobotConfig
+    from playground_amp.configs.training_config import load_training_config, TrainingConfig
+    from playground_amp.configs.robot_config import load_robot_config, get_robot_config, RobotConfig
 
     # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")
@@ -23,223 +24,32 @@ Usage:
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import yaml
 
+# Re-export for backward compatibility
 
-from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
-
-
-@dataclass
-class RobotConfig:
-    """Robot configuration loaded from robot_config.yaml.
-
-    This dataclass provides easy access to all robot-specific parameters
-    extracted from the MuJoCo XML file.
-
-    Attributes:
-        robot_name: Name of the robot model
-        actuator_names: List of actuator names in order
-        actuator_joints: List of joint names corresponding to actuators
-        action_dim: Number of actuators (action space dimension)
-        observation_dim: Total observation dimension
-        amp_feature_dim: AMP feature dimension
-        floating_base_name: Name of the floating base joint
-        floating_base_body: Name of the root body
-        joint_names: List of all joint names
-        joint_limits: Dict mapping joint name to (min, max) limits
-        observation_indices: Dict mapping observation component to (start, end) indices
-        sensors: Dict mapping sensor type to list of sensor info
-    """
-
-    robot_name: str
-    actuator_names: List[str]
-    actuator_joints: List[str]
-    action_dim: int
-    observation_dim: int
-    amp_feature_dim: int
-    floating_base_name: Optional[str]
-    floating_base_body: Optional[str]
-    floating_base_qpos_dim: int
-    floating_base_qvel_dim: int
-    joint_names: List[str]
-    joint_limits: Dict[str, Tuple[float, float]]
-    observation_indices: Dict[str, Dict[str, int]]
-    observation_breakdown: Dict[str, int]
-    amp_feature_breakdown: Dict[str, int]
-    sensors: Dict[str, List[Dict[str, Any]]]
-
-    # Feet configuration (for contact detection)
-    feet_sites: List[str]
-    feet_left_geoms: List[str]
-    feet_right_geoms: List[str]
-    feet_all_geoms: List[str]
-
-    raw_config: Dict[str, Any] = field(repr=False)
-
-    # Sensor names (derived from sensors dict for convenience)
-    @property
-    def gravity_sensor(self) -> str:
-        """Get gravity/up-vector sensor name."""
-        framezaxis = self.sensors.get("framezaxis", [])
-        for s in framezaxis:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                or "upvector" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return framezaxis[0]["name"] if framezaxis else ""
-
-    @property
-    def global_linvel_sensor(self) -> str:
-        """Get global linear velocity sensor name."""
-        framelinvel = self.sensors.get("framelinvel", [])
-        for s in framelinvel:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                and "global" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return framelinvel[0]["name"] if framelinvel else ""
-
-    @property
-    def global_angvel_sensor(self) -> str:
-        """Get global angular velocity sensor name."""
-        frameangvel = self.sensors.get("frameangvel", [])
-        for s in frameangvel:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                and "global" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return frameangvel[0]["name"] if frameangvel else ""
-
-    @property
-    def local_linvel_sensor(self) -> str:
-        """Get local linear velocity sensor name."""
-        velocimeter = self.sensors.get("velocimeter", [])
-        for s in velocimeter:
-            if "pelvis" in s.get("name", "").lower():
-                return s["name"]
-        return velocimeter[0]["name"] if velocimeter else ""
-
-    @property
-    def gyro_sensor_names(self) -> List[str]:
-        """Get list of gyro sensor names."""
-        return [s["name"] for s in self.sensors.get("gyro", [])]
-
-    @property
-    def accelerometer_sensor_names(self) -> List[str]:
-        """Get list of accelerometer sensor names."""
-        return [s["name"] for s in self.sensors.get("accelerometer", [])]
-
-    @classmethod
-    def from_yaml(cls, config_path: str | Path) -> "RobotConfig":
-        """Load robot configuration from YAML file.
-
-        Args:
-            config_path: Path to robot_config.yaml
-
-        Returns:
-            RobotConfig instance
-        """
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        # Extract actuator info
-        actuators = config.get("actuators", {})
-        actuator_names = actuators.get("names", [])
-        actuator_joints = actuators.get("joints", [])
-        action_dim = actuators.get("count", len(actuator_names))
-
-        # Extract dimensions
-        dims = config.get("dimensions", {})
-        observation_dim = dims.get("observation_dim", 38)
-        amp_feature_dim = dims.get("amp_feature_dim", 29)
-
-        # Extract floating base info
-        fb = config.get("floating_base", {}) or {}
-        floating_base_name = fb.get("name")
-        floating_base_body = fb.get("root_body")
-        floating_base_qpos_dim = fb.get("qpos_dim", 7)
-        floating_base_qvel_dim = fb.get("qvel_dim", 6)
-
-        # Extract joint info
-        joints = config.get("joints", {})
-        joint_names = [j for j in joints.get("names", []) if j is not None]
-
-        # Build joint limits dict
-        joint_limits = {}
-        for joint_detail in joints.get("details", []):
-            name = joint_detail.get("name")
-            if name and "range" in joint_detail:
-                joint_limits[name] = tuple(joint_detail["range"])
-
-        # Extract observation indices
-        observation_indices = config.get("observation_indices", {})
-        observation_breakdown = dims.get("observation_breakdown", {})
-        amp_feature_breakdown = dims.get("amp_feature_breakdown", {})
-
-        # Extract sensors
-        sensors = config.get("sensors", {})
-
-        # Extract feet configuration
-        feet = config.get("feet", {})
-        feet_sites = feet.get("sites", [])
-        feet_left_geoms = feet.get("left_geoms", [])
-        feet_right_geoms = feet.get("right_geoms", [])
-        feet_all_geoms = feet.get("all_geoms", [])
-
-        return cls(
-            robot_name=config.get("robot_name", "unknown"),
-            actuator_names=actuator_names,
-            actuator_joints=actuator_joints,
-            action_dim=action_dim,
-            observation_dim=observation_dim,
-            amp_feature_dim=amp_feature_dim,
-            floating_base_name=floating_base_name,
-            floating_base_body=floating_base_body,
-            floating_base_qpos_dim=floating_base_qpos_dim,
-            floating_base_qvel_dim=floating_base_qvel_dim,
-            joint_names=joint_names,
-            joint_limits=joint_limits,
-            observation_indices=observation_indices,
-            observation_breakdown=observation_breakdown,
-            amp_feature_breakdown=amp_feature_breakdown,
-            sensors=sensors,
-            feet_sites=feet_sites,
-            feet_left_geoms=feet_left_geoms,
-            feet_right_geoms=feet_right_geoms,
-            feet_all_geoms=feet_all_geoms,
-            raw_config=config,
-        )
-
-    def get_obs_slice(self, component: str) -> slice:
-        """Get slice for extracting observation component.
-
-        Args:
-            component: Name of observation component (e.g., 'joint_positions')
-
-        Returns:
-            slice object for indexing into observation array
-        """
-        indices = self.observation_indices.get(component, {})
-        return slice(indices.get("start", 0), indices.get("end", 0))
-
-    def get_sensor_names(self, sensor_type: str) -> List[str]:
-        """Get list of sensor names for a given type.
-
-        Args:
-            sensor_type: Sensor type (e.g., 'gyro', 'accelerometer')
-
-        Returns:
-            List of sensor names
-        """
-        return [s["name"] for s in self.sensors.get(sensor_type, [])]
+from playground_amp.configs.robot_config import (  # noqa: F401
+    clear_robot_config_cache,
+    get_obs_indices,
+    get_robot_config,
+    load_robot_config,
+    RobotConfig,
+)
+from playground_amp.configs.training_runtime_config import (
+    freeze_amp,
+    freeze_network,
+    freeze_ppo,
+    freeze_training_loop,
+    MutableAMPConfig,
+    MutableNetworkConfig,
+    MutablePPOConfig,
+    MutableTrainingLoopConfig,
+    TrainingRuntimeConfig,
+)
 
 
 @dataclass
@@ -275,7 +85,7 @@ class VideoConfig:
 class TrainingConfig:
     """Training configuration loaded from YAML file.
 
-    This dataclass provides easy access to all training parameters.
+    Uses composed mutable config objects for easy CLI overrides.
     """
 
     # Version tracking (see CHANGELOG.md)
@@ -294,56 +104,19 @@ class TrainingConfig:
     use_action_filter: bool
     action_filter_alpha: float
 
-    # Trainer
-    num_envs: int
-    rollout_steps: int
-    iterations: int
-    learning_rate: float
-    gamma: float
-    gae_lambda: float
-    clip_epsilon: float
-    entropy_coef: float
-    value_loss_coef: float
-    max_grad_norm: float
-    num_minibatches: int
-    update_epochs: int
-    seed: int
-    log_interval: int
+    # Composed mutable configs (supports direct modification)
+    ppo: MutablePPOConfig
+    amp: MutableAMPConfig
+    network: MutableNetworkConfig
+    training: MutableTrainingLoopConfig
+
+    # Paths and other settings
     checkpoint_dir: str
-
-    # Networks
-    policy_hidden_dims: Tuple[int, ...]
-    value_hidden_dims: Tuple[int, ...]
-
-    # AMP
-    amp_weight: float
-    disc_learning_rate: float
-    disc_updates_per_iter: int
-    disc_batch_size: int
-    r1_gamma: float  # R1 regularizer weight
-    disc_input_noise_std: float
-    disc_hidden_dims: Tuple[int, ...]
     ref_motion_path: Optional[str]
-
-    # v0.6.2: AMP Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: (
-        bool  # Use joint-based contact estimation (matches reference)
-    )
-    use_finite_diff_vel: bool  # Use finite difference velocities (matches reference)
-    contact_threshold_angle: (
-        float  # Hip pitch angle threshold for contact detection (rad)
-    )
-    contact_knee_scale: float  # Knee angle at which confidence starts decreasing (rad)
-    contact_min_confidence: float  # Minimum confidence when hip indicates contact (0-1)
 
     # v0.6.3: Feature Cleaning (removes discriminator cheats)
     velocity_filter_alpha: float  # EMA filter for velocity smoothing (0=off)
     ankle_offset: float  # Ankle pitch calibration offset (rad)
-
-    # v0.8.0: Feature Dropping (prevent discriminator shortcuts)
-    drop_contacts: bool  # Drop foot contacts (4 dims) from features
-    drop_height: bool  # Drop root height (1 dim) from features
-    normalize_velocity: bool  # Normalize root_linvel to unit direction
 
     # Reward weights
     reward_weights: Dict[str, float]
@@ -358,6 +131,8 @@ class TrainingConfig:
     def from_yaml(cls, config_path: str | Path) -> "TrainingConfig":
         """Load training configuration from YAML file.
 
+        Config format uses 'ppo:' section for PPO hyperparameters.
+
         Args:
             config_path: Path to training config YAML
 
@@ -368,10 +143,62 @@ class TrainingConfig:
             config = yaml.safe_load(f)
 
         env = config.get("env", {})
-        trainer = config.get("trainer", {})
         networks = config.get("networks", {})
-        amp = config.get("amp", {})
-        rewards = config.get("reward_weights", {})
+        amp_cfg = config.get("amp", {})
+        ppo_cfg = config.get("ppo", {})
+
+        # Support both 'rewards:' (Stage 1) and 'reward_weights:' (AMP) format
+        rewards = config.get("rewards", config.get("reward_weights", {}))
+
+        # Create composed mutable configs
+        ppo = MutablePPOConfig(
+            learning_rate=ppo_cfg.get("learning_rate", 3e-4),
+            gamma=ppo_cfg.get("gamma", 0.99),
+            gae_lambda=ppo_cfg.get("gae_lambda", 0.95),
+            clip_epsilon=ppo_cfg.get("clip_epsilon", 0.2),
+            value_loss_coef=ppo_cfg.get("value_loss_coef", 0.5),
+            entropy_coef=ppo_cfg.get("entropy_coef", 0.01),
+            max_grad_norm=ppo_cfg.get("max_grad_norm", 0.5),
+            num_minibatches=ppo_cfg.get("num_minibatches", 4),
+            update_epochs=ppo_cfg.get("epochs", 4),
+        )
+
+        amp = MutableAMPConfig(
+            reward_weight=amp_cfg.get("weight", 1.0),
+            disc_learning_rate=amp_cfg.get("disc_lr", 1e-4),
+            disc_updates_per_iter=amp_cfg.get("update_steps", 2),
+            disc_batch_size=amp_cfg.get("batch_size", 512),
+            r1_gamma=amp_cfg.get("r1_gamma", 5.0),
+            disc_hidden_dims=tuple(
+                amp_cfg.get("discriminator_hidden", [1024, 512, 256])
+            ),
+            disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
+            use_estimated_contacts=amp_cfg.get("use_estimated_contacts", True),
+            use_finite_diff_vel=amp_cfg.get("use_finite_diff_vel", True),
+            contact_threshold_angle=amp_cfg.get("contact_threshold_angle", 0.1),
+            contact_knee_scale=amp_cfg.get("contact_knee_scale", 0.5),
+            contact_min_confidence=amp_cfg.get("contact_min_confidence", 0.3),
+            drop_contacts=amp_cfg.get("feature", {}).get("drop_contacts", False),
+            drop_height=amp_cfg.get("feature", {}).get("drop_height", False),
+            normalize_velocity=amp_cfg.get("feature", {}).get(
+                "normalize_velocity", False
+            ),
+        )
+
+        network = MutableNetworkConfig(
+            policy_hidden_dims=tuple(
+                networks.get("policy_hidden_dims", [512, 256, 128])
+            ),
+            value_hidden_dims=tuple(networks.get("value_hidden_dims", [512, 256, 128])),
+        )
+
+        training_loop = MutableTrainingLoopConfig(
+            num_envs=ppo_cfg.get("num_envs", 512),
+            num_steps=ppo_cfg.get("rollout_steps", 10),
+            total_iterations=ppo_cfg.get("iterations", 3000),
+            seed=ppo_cfg.get("seed", 42),
+            log_interval=ppo_cfg.get("log_interval", 10),
+        )
 
         return cls(
             # Version tracking
@@ -388,49 +215,19 @@ class TrainingConfig:
             max_episode_steps=env.get("max_episode_steps", 500),
             use_action_filter=env.get("use_action_filter", True),
             action_filter_alpha=env.get("action_filter_alpha", 0.7),
-            # Trainer
-            num_envs=trainer.get("num_envs", 512),
-            rollout_steps=trainer.get("rollout_steps", 10),
-            iterations=trainer.get("iterations", 3000),
-            learning_rate=trainer.get("lr", 3e-4),
-            gamma=trainer.get("gamma", 0.99),
-            gae_lambda=trainer.get("gae_lambda", 0.95),
-            clip_epsilon=trainer.get("clip_epsilon", 0.2),
-            entropy_coef=trainer.get("entropy_coef", 0.01),
-            value_loss_coef=trainer.get("value_loss_coef", 0.5),
-            max_grad_norm=trainer.get("max_grad_norm", 0.5),
-            num_minibatches=trainer.get("num_minibatches", 4),
-            update_epochs=trainer.get("epochs", 4),
-            seed=trainer.get("seed", 42),
-            log_interval=trainer.get("log_interval", 10),
-            checkpoint_dir=trainer.get("checkpoint_dir", "playground_amp/checkpoints"),
-            # Networks
-            policy_hidden_dims=tuple(
-                networks.get("policy_hidden_dims", [512, 256, 128])
+            # Composed configs
+            ppo=ppo,
+            amp=amp,
+            network=network,
+            training=training_loop,
+            # Paths
+            checkpoint_dir=config.get("checkpoints", {}).get(
+                "dir", "playground_amp/checkpoints"
             ),
-            value_hidden_dims=tuple(networks.get("value_hidden_dims", [512, 256, 128])),
-            # AMP
-            amp_weight=amp.get("weight", 1.0),
-            disc_learning_rate=amp.get("disc_lr", 1e-4),
-            disc_updates_per_iter=amp.get("update_steps", 2),
-            disc_batch_size=amp.get("batch_size", 512),
-            r1_gamma=amp.get("r1_gamma", 5.0),
-            disc_input_noise_std=amp.get("disc_input_noise_std", 0.0),
-            disc_hidden_dims=tuple(amp.get("discriminator_hidden", [1024, 512, 256])),
-            ref_motion_path=amp.get("dataset_path"),
-            # v0.6.2: Golden Rule Configuration
-            use_estimated_contacts=amp.get("use_estimated_contacts", True),
-            use_finite_diff_vel=amp.get("use_finite_diff_vel", True),
-            contact_threshold_angle=amp.get("contact_threshold_angle", 0.1),
-            contact_knee_scale=amp.get("contact_knee_scale", 0.5),
-            contact_min_confidence=amp.get("contact_min_confidence", 0.3),
+            ref_motion_path=amp_cfg.get("dataset_path"),
             # v0.6.3: Feature Cleaning
-            velocity_filter_alpha=amp.get("velocity_filter_alpha", 0.0),
-            ankle_offset=amp.get("ankle_offset", 0.18),
-            # v0.8.0: Feature Dropping
-            drop_contacts=amp.get("feature", {}).get("drop_contacts", False),
-            drop_height=amp.get("feature", {}).get("drop_height", False),
-            normalize_velocity=amp.get("feature", {}).get("normalize_velocity", False),
+            velocity_filter_alpha=amp_cfg.get("velocity_filter_alpha", 0.0),
+            ankle_offset=amp_cfg.get("ankle_offset", 0.18),
             # Reward weights
             reward_weights=rewards,
             # W&B configuration
@@ -456,11 +253,7 @@ class TrainingConfig:
     def to_runtime_config(self) -> TrainingRuntimeConfig:
         """Create TrainingRuntimeConfig for JIT-compiled training.
 
-        This is the ONLY way to create TrainingRuntimeConfig, ensuring
-        consistency between training config and runtime config.
-
-        Note: CLI overrides should be applied to TrainingConfig fields
-        BEFORE calling this method.
+        Converts mutable composed configs to frozen versions for JIT.
 
         Returns:
             TrainingRuntimeConfig with all values needed for JIT compilation
@@ -469,74 +262,17 @@ class TrainingConfig:
         robot_config = get_robot_config()
 
         return TrainingRuntimeConfig(
-            # Environment (from RobotConfig and TrainingConfig)
             obs_dim=robot_config.observation_dim,
             action_dim=robot_config.action_dim,
-            num_envs=self.num_envs,
-            num_steps=self.rollout_steps,
-            # PPO hyperparameters
-            learning_rate=self.learning_rate,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-            clip_epsilon=self.clip_epsilon,
-            value_loss_coef=self.value_loss_coef,
-            entropy_coef=self.entropy_coef,
-            max_grad_norm=self.max_grad_norm,
-            # PPO training
-            num_minibatches=self.num_minibatches,
-            update_epochs=self.update_epochs,
-            # Network architecture
-            policy_hidden_dims=self.policy_hidden_dims,
-            value_hidden_dims=self.value_hidden_dims,
-            # AMP configuration
-            amp_reward_weight=self.amp_weight,
-            disc_learning_rate=self.disc_learning_rate,
-            disc_updates_per_iter=self.disc_updates_per_iter,
-            disc_batch_size=self.disc_batch_size,
-            r1_gamma=self.r1_gamma,
-            disc_hidden_dims=self.disc_hidden_dims,
-            disc_input_noise_std=self.disc_input_noise_std,
-            # Training
-            total_iterations=self.iterations,
-            seed=self.seed,
-            log_interval=self.log_interval,
-            # v0.6.2: Golden Rule Configuration
-            use_estimated_contacts=self.use_estimated_contacts,
-            use_finite_diff_vel=self.use_finite_diff_vel,
-            contact_threshold_angle=self.contact_threshold_angle,
-            contact_knee_scale=self.contact_knee_scale,
-            contact_min_confidence=self.contact_min_confidence,
-            # v0.8.0: Feature Dropping
-            drop_contacts=self.drop_contacts,
-            drop_height=self.drop_height,
-            normalize_velocity=self.normalize_velocity,
+            ppo=freeze_ppo(self.ppo),
+            amp=freeze_amp(self.amp),
+            network=freeze_network(self.network),
+            training=freeze_training_loop(self.training),
         )
 
 
-# Cached configs
-_robot_config: Optional[RobotConfig] = None
+# Cached training config
 _training_config: Optional[TrainingConfig] = None
-
-
-def load_robot_config(config_path: str | Path) -> RobotConfig:
-    """Load robot configuration.
-
-    Caches the config after first load for efficiency.
-
-    Args:
-        config_path: Path to robot_config.yaml (required).
-
-    Returns:
-        RobotConfig instance
-    """
-    global _robot_config
-
-    # Return cached if already loaded
-    if _robot_config is not None:
-        return _robot_config
-
-    _robot_config = RobotConfig.from_yaml(config_path)
-    return _robot_config
 
 
 def load_training_config(config_path: str | Path) -> TrainingConfig:
@@ -554,19 +290,6 @@ def load_training_config(config_path: str | Path) -> TrainingConfig:
     return _training_config
 
 
-def get_robot_config() -> RobotConfig:
-    """Get cached robot configuration.
-
-    Raises:
-        RuntimeError: If config hasn't been loaded yet
-    """
-    if _robot_config is None:
-        raise RuntimeError(
-            "Robot config not loaded. Call load_robot_config(path) first."
-        )
-    return _robot_config
-
-
 def get_training_config() -> TrainingConfig:
     """Get cached training configuration.
 
@@ -581,22 +304,7 @@ def get_training_config() -> TrainingConfig:
 
 
 def clear_config_cache() -> None:
-    """Clear cached configurations."""
-    global _robot_config, _training_config
-    _robot_config = None
+    """Clear cached configurations (both robot and training)."""
+    global _training_config
     _training_config = None
-
-
-# Convenience function to get observation indices
-def get_obs_indices(component: str) -> Tuple[int, int]:
-    """Get (start, end) indices for an observation component.
-
-    Args:
-        component: Name of observation component
-
-    Returns:
-        Tuple of (start, end) indices
-    """
-    robot_cfg = get_robot_config()
-    indices = robot_cfg.observation_indices.get(component, {})
-    return indices.get("start", 0), indices.get("end", 0)
+    clear_robot_config_cache()

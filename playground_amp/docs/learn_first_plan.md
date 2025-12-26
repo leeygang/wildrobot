@@ -43,16 +43,25 @@ This approach discovers what the robot *can* do before trying to make it look hu
 
 ### Version Milestones
 
-#### v0.10.0 - PPO Infrastructure Setup
+#### v0.10.0 - PPO Infrastructure Setup ✅
 **Objective:** Clean PPO training without AMP dependencies
 
 Tasks:
-- [ ] Create `ppo_walking.yaml` config (PPO-only, no AMP section)
-- [ ] Verify train.py works with `--no-amp` flag
-- [ ] Validate simulation setup passes all checks
-- [ ] Smoke test: 10 iterations, policy updates without errors
+- [x] Create `ppo_walking.yaml` config (PPO-only, no AMP section)
+- [x] Verify train.py works with `--no-amp` flag
+- [x] Validate simulation setup passes all checks
+- [x] Smoke test: 10 iterations, policy updates without errors
+- [x] Unified trainer: `trainer_unified.py` supports both PPO-only and AMP modes
+- [x] Invariance tests: Verify PPO behavior is identical regardless of AMP mode
 
 Exit: Training loop runs, loss decreases, no crashes
+
+**Completed:** 2024-12-26
+- Created `ppo_walking.yaml` with PPO-only config
+- Created `trainer_unified.py` - single trainer for Stage 1 and Stage 3
+- Created `rollout.py` - unified rollout collector
+- Added 11 invariance tests in `test_trainer_invariance.py`
+- Verified `--no-amp` smoke test passes
 
 #### v0.10.1 - Reward Shaping
 **Objective:** Design rewards that encourage stable walking
@@ -139,6 +148,10 @@ Tasks:
 - [ ] Define data format (matches AMP features)
 - [ ] Implement multi-velocity collection
 - [ ] Add perturbation diversity
+- [ ] **Unify PPO trainer**: Make trainer_jit.py support amp_weight=0 (optional but recommended)
+      - Currently Stage 1 uses Brax PPO, Stage 3 uses custom JIT trainer
+      - Unifying ensures consistent PPO behavior across stages
+      - See TODO in trainer_jit.py for implementation notes
 
 Exit: Can collect and save rollouts in correct format
 

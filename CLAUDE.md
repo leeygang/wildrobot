@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current Execution Plan
+
+**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `playground_amp/docs/learn_first_plan.md`. This is the active execution plan for training a walking policy.
+
+### Current Stage: v0.10.x - Robot-Native Walking Policy
+
+We are implementing Stage 1: Learn stable walking using PPO task rewards only (no AMP, no reference motion).
+
+**Key Commands for Current Stage:**
+```bash
+# Validate MuJoCo setup before training
+uv run python scripts/validate_training_setup.py
+
+# Stage 1: PPO-only training
+uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp
+
+# Quick smoke test
+uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp --verify
+```
+
+**Exit Criteria for Stage 1:**
+- Episode length > 400 steps (8s)
+- Forward velocity 0.5-1.0 m/s with tracking error < 0.2 m/s
+- Fall rate < 5%
+- Visible alternating gait
+
+See `playground_amp/docs/learn_first_plan.md` for full roadmap including Stage 2 (data collection), Stage 3 (self-imitation AMP), and Stage 4 (human style blending).
+
 ## Project Overview
 
 WildRobot is a humanoid robotics project integrating MuJoCo simulation, reinforcement learning (RL) training, and hardware deployment. The codebase follows a unified structure supporting both MuJoCo MJX/JAX training (primary) and IsaacLab training (experimental).

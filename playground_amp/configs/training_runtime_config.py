@@ -1,88 +1,227 @@
 """Runtime configuration for JIT-compiled training.
 
-This module contains the TrainingRuntimeConfig class which holds all
-compile-time constants needed for JAX JIT compilation.
+This module contains shared config dataclasses that are used by both
+TrainingConfig (mutable, from YAML) and TrainingRuntimeConfig (frozen, for JIT).
 
-TrainingRuntimeConfig is created ONLY through TrainingConfig.to_runtime_config()
-to ensure consistency between training config and runtime config.
+Design Principle: Define fields in both Mutable*Config and *Config classes.
+- Mutable versions are used in TrainingConfig for CLI overrides
+- Frozen versions are used in TrainingRuntimeConfig for JIT compilation
 
 Usage:
     from playground_amp.configs.training_config import load_training_config
 
     training_config = load_training_config("configs/ppo_amass_training.yaml")
-    runtime_config = training_config.to_runtime_config(
-        obs_dim=env.observation_size,
-        action_dim=env.action_size,
-    )
+
+    # Modify via mutable configs
+    training_config.ppo.learning_rate = 1e-4
+
+    # Convert to frozen for JIT
+    runtime_config = training_config.to_runtime_config()
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Tuple
+
+
+# =============================================================================
+# Mutable Config Classes (for TrainingConfig - supports CLI overrides)
+# =============================================================================
+
+
+@dataclass
+class MutablePPOConfig:
+    """Mutable PPO hyperparameters for TrainingConfig."""
+
+    learning_rate: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_epsilon: float = 0.2
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 0.01
+    max_grad_norm: float = 0.5
+    num_minibatches: int = 4
+    update_epochs: int = 4
+
+
+@dataclass
+class MutableAMPConfig:
+    """Mutable AMP configuration for TrainingConfig."""
+
+    # Reward weighting
+    reward_weight: float = 0.5
+
+    # Discriminator training
+    disc_learning_rate: float = 1e-4
+    disc_updates_per_iter: int = 2
+    disc_batch_size: int = 256
+    r1_gamma: float = 10.0
+    disc_hidden_dims: Tuple[int, ...] = (512, 256)
+    disc_input_noise_std: float = 0.0
+
+    # v0.6.0: Policy Replay Buffer
+    replay_buffer_size: int = 0
+    replay_buffer_ratio: float = 0.5
+
+    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+    use_estimated_contacts: bool = True
+    use_finite_diff_vel: bool = True
+    contact_threshold_angle: float = 0.1
+    contact_knee_scale: float = 0.5
+    contact_min_confidence: float = 0.3
+
+    # v0.8.0: Feature Dropping
+    drop_contacts: bool = False
+    drop_height: bool = False
+    normalize_velocity: bool = False
+
+
+@dataclass
+class MutableNetworkConfig:
+    """Mutable network architecture configuration for TrainingConfig."""
+
+    policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)
+    value_hidden_dims: Tuple[int, ...] = (512, 256, 128)
+
+
+@dataclass
+class MutableTrainingLoopConfig:
+    """Mutable training loop parameters for TrainingConfig."""
+
+    num_envs: int = 512
+    num_steps: int = 64  # rollout_steps
+    total_iterations: int = 1000
+    seed: int = 42
+    log_interval: int = 10
+
+
+# =============================================================================
+# Frozen Config Classes (for TrainingRuntimeConfig - JIT compatible)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class PPOConfig:
+    """Frozen PPO hyperparameters for JIT compilation."""
+
+    learning_rate: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_epsilon: float = 0.2
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 0.01
+    max_grad_norm: float = 0.5
+    num_minibatches: int = 4
+    update_epochs: int = 4
+
+
+@dataclass(frozen=True)
+class AMPConfig:
+    """Frozen AMP configuration for JIT compilation."""
+
+    # Reward weighting
+    reward_weight: float = 0.5
+
+    # Discriminator training
+    disc_learning_rate: float = 1e-4
+    disc_updates_per_iter: int = 2
+    disc_batch_size: int = 256
+    r1_gamma: float = 10.0
+    disc_hidden_dims: Tuple[int, ...] = (512, 256)
+    disc_input_noise_std: float = 0.0
+
+    # v0.6.0: Policy Replay Buffer
+    replay_buffer_size: int = 0
+    replay_buffer_ratio: float = 0.5
+
+    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
+    use_estimated_contacts: bool = True
+    use_finite_diff_vel: bool = True
+    contact_threshold_angle: float = 0.1
+    contact_knee_scale: float = 0.5
+    contact_min_confidence: float = 0.3
+
+    # v0.8.0: Feature Dropping
+    drop_contacts: bool = False
+    drop_height: bool = False
+    normalize_velocity: bool = False
+
+
+@dataclass(frozen=True)
+class NetworkConfig:
+    """Frozen network architecture configuration for JIT compilation."""
+
+    policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)
+    value_hidden_dims: Tuple[int, ...] = (512, 256, 128)
+
+
+@dataclass(frozen=True)
+class TrainingLoopConfig:
+    """Frozen training loop parameters for JIT compilation."""
+
+    num_envs: int = 512
+    num_steps: int = 64  # rollout_steps
+    total_iterations: int = 1000
+    seed: int = 42
+    log_interval: int = 10
+
+
+# =============================================================================
+# Freeze Helpers (convert mutable → frozen)
+# =============================================================================
+
+
+def freeze_ppo(mutable: MutablePPOConfig) -> PPOConfig:
+    """Convert MutablePPOConfig to frozen PPOConfig."""
+    return PPOConfig(**asdict(mutable))
+
+
+def freeze_amp(mutable: MutableAMPConfig) -> AMPConfig:
+    """Convert MutableAMPConfig to frozen AMPConfig."""
+    return AMPConfig(**asdict(mutable))
+
+
+def freeze_network(mutable: MutableNetworkConfig) -> NetworkConfig:
+    """Convert MutableNetworkConfig to frozen NetworkConfig."""
+    return NetworkConfig(**asdict(mutable))
+
+
+def freeze_training_loop(mutable: MutableTrainingLoopConfig) -> TrainingLoopConfig:
+    """Convert MutableTrainingLoopConfig to frozen TrainingLoopConfig."""
+    return TrainingLoopConfig(**asdict(mutable))
+
+
+# =============================================================================
+# TrainingRuntimeConfig (composed from frozen configs)
+# =============================================================================
 
 
 @dataclass(frozen=True)
 class TrainingRuntimeConfig:
     """Runtime configuration for JIT-compiled AMP+PPO training.
 
+    This class composes frozen config objects for JIT compatibility.
     All values must be static (known at compile time) for JIT.
 
     NOTE: This class should only be created through TrainingConfig.to_runtime_config().
-    Do not instantiate directly.
+
+    Usage:
+        config = training_cfg.to_runtime_config()
+
+        # Access via composed configs
+        config.ppo.learning_rate
+        config.amp.reward_weight
+        config.network.policy_hidden_dims
+        config.training.num_envs
     """
 
-    # Environment
+    # Environment dimensions (from RobotConfig)
     obs_dim: int
     action_dim: int
-    num_envs: int
-    num_steps: int  # Unroll length per iteration
 
-    # PPO hyperparameters
-    learning_rate: float
-    gamma: float
-    gae_lambda: float
-    clip_epsilon: float
-    value_loss_coef: float
-    entropy_coef: float
-    max_grad_norm: float
-
-    # PPO training
-    num_minibatches: int
-    update_epochs: int
-
-    # Network architecture
-    policy_hidden_dims: Tuple[int, ...]
-    value_hidden_dims: Tuple[int, ...]
-
-    # AMP configuration
-    amp_reward_weight: float
-    disc_learning_rate: float
-    disc_updates_per_iter: int
-    disc_batch_size: int
-    r1_gamma: float  # R1 regularizer weight
-    disc_hidden_dims: Tuple[int, ...]
-    disc_input_noise_std: float  # Gaussian noise std for discriminator inputs
-
-    # Training
-    total_iterations: int
-    seed: int
-    log_interval: int
-
-    # v0.6.0: Policy Replay Buffer (defaults at end to satisfy dataclass rules)
-    replay_buffer_size: int = 0  # 0 = disabled, >0 = enabled with this capacity
-    replay_buffer_ratio: float = 0.5  # Ratio of historical samples (0.5 = 50% each)
-
-    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: bool = True  # Use joint-based contact estimation
-    use_finite_diff_vel: bool = True  # Use finite difference velocities
-    contact_threshold_angle: float = (
-        0.1  # Hip pitch threshold for contact detection (rad)
-    )
-    contact_knee_scale: float = 0.5  # Knee angle for confidence scaling (rad)
-    contact_min_confidence: float = 0.3  # Min confidence when hip indicates contact
-
-    # v0.8.0: Feature Dropping (prevent discriminator shortcuts)
-    drop_contacts: bool = False  # Drop foot contacts (4 dims) from features
-    drop_height: bool = False  # Drop root height (1 dim) from features
-    normalize_velocity: bool = False  # Normalize root_linvel to unit direction
+    # Composed frozen configs
+    ppo: PPOConfig
+    amp: AMPConfig
+    network: NetworkConfig
+    training: TrainingLoopConfig

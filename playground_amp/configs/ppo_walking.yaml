@@ -56,7 +56,7 @@ ppo:
   iterations: 1000         # Total policy updates
 
   # Learning rate
-  learning_rate: 3e-4      # Adam optimizer LR
+  learning_rate: 0.0003     # Adam optimizer LR (3e-4)
 
   # Discount and advantage
   gamma: 0.99              # Discount factor
@@ -73,6 +73,9 @@ ppo:
   max_grad_norm: 0.5       # Gradient clipping
   epochs: 4                # PPO epochs per iteration
   num_minibatches: 32      # Minibatches per epoch (batch_size = num_envs * rollout_steps / num_minibatches)
+
+  # Logging
+  log_interval: 10         # Print metrics every N iterations
 
   # Random seed
   seed: 42
@@ -94,66 +97,13 @@ networks:
 # Reward Weights
 #
 # Stage 1 focuses on task completion, not style.
-# Rewards encourage: forward velocity, stability, efficiency
+# These weights are used directly by wildrobot_env.py:_get_reward()
 # =============================================================================
-rewards:
-  # === Task Rewards ===
-  # Primary objective: track commanded velocity
-  velocity_tracking:
-    weight: 2.0
-    # reward = weight * exp(-error^2 / sigma^2)
-    sigma: 0.25            # Tolerance for velocity error
-
-  # === Stability Rewards ===
-  # Keep robot upright
-  upright:
-    weight: 0.5
-    # reward = weight * (1 - normalized_tilt)
-    max_pitch: 0.5         # Max pitch before zero reward (rad, ~29°)
-    max_roll: 0.3          # Max roll before zero reward (rad, ~17°)
-
-  # Maintain target height
-  height:
-    weight: 0.2
-    sigma: 0.1             # Tolerance for height error
-
-  # Reward feet contact during stance
-  feet_contact:
-    weight: 0.3
-    # reward = weight * (left_contact + right_contact) / 2
-
-  # === Efficiency Penalties ===
-  # Minimize energy usage
-  torque:
-    weight: -0.001         # Penalty per unit torque^2
-
-  # Smooth actions
-  action_rate:
-    weight: -0.01          # Penalty for action changes
-
-  # Joint acceleration (smooth motion)
-  joint_acceleration:
-    weight: -0.0001        # Penalty for joint acc^2
-
-  # === Termination Penalty ===
-  # Discourage falling
-  termination:
-    weight: -1.0           # One-time penalty on episode end due to fall
-
-# =============================================================================
-# Logging
-# =============================================================================
-logging:
-  # Console output
-  log_interval: 10         # Print every N iterations
-
-  # Metrics to track
-  metrics:
-    - episode_reward
-    - episode_length
-    - velocity_tracking
-    - fall_rate
-    - mean_torque
+reward_weights:
+  tracking_lin_vel: 2.0    # Forward velocity tracking (exp(-vel_error * 4.0))
+  base_height: 0.5         # Healthy reward (1.0 if height in bounds, else 0.0)
+  action_rate: -0.01       # Penalty for action changes (smoothness)
+  torque_penalty: -0.001   # Penalty for joint velocity (efficiency)
 
 # =============================================================================
 # Checkpoints

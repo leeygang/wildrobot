@@ -331,10 +331,11 @@ def get_feature_config() -> FeatureConfig:
     # Try to read v0.8.0 flags from training config
     try:
         training_config = get_training_config()
-        drop_contacts = training_config.drop_contacts
-        drop_height = training_config.drop_height
-        normalize_velocity = training_config.normalize_velocity
-    except RuntimeError:
+        # v0.10.0: Flags are now under training_config.amp (MutableAMPConfig)
+        drop_contacts = training_config.amp.drop_contacts
+        drop_height = training_config.amp.drop_height
+        normalize_velocity = training_config.amp.normalize_velocity
+    except (RuntimeError, AttributeError):
         # Training config not loaded yet, use defaults
         drop_contacts = False
         drop_height = False
