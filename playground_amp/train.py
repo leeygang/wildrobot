@@ -58,9 +58,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # Default config paths
-DEFAULT_TRAINING_CONFIG_PATH = (
-    Path(__file__).parent / "configs" / "ppo_amass_training.yaml"
-)
+DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking.yaml"
 DEFAULT_ROBOT_CONFIG_PATH = (
     Path(__file__).parent.parent / "assets" / "robot_config.yaml"
 )
@@ -92,76 +90,6 @@ from playground_amp.training.experiment_tracking import (
     save_and_upload_video,
     WandbTracker,
 )
-
-
-def create_env_config(training_config: dict) -> config_dict.ConfigDict:
-    """Create environment config from training config.
-
-    Args:
-        training_config: Full training configuration dict.
-
-    Returns:
-        ConfigDict for WildRobotEnv.
-    """
-    env_cfg = training_config.get("env", {})
-
-    config = config_dict.ConfigDict()
-
-    # Model path (required)
-    if "model_path" not in env_cfg:
-        raise ValueError("model_path is required in env config")
-    config.model_path = env_cfg["model_path"]
-
-    # Simulation timing
-    config.ctrl_dt = env_cfg.get("ctrl_dt", 0.02)
-    config.sim_dt = env_cfg.get("sim_dt", 0.002)
-
-    # Robot parameters
-    config.target_height = env_cfg.get("target_height", 0.45)
-    config.min_height = env_cfg.get("min_height", 0.2)
-    config.max_height = env_cfg.get("max_height", 0.7)
-
-    # Velocity command
-    config.min_velocity = env_cfg.get("min_velocity", 0.5)
-    config.max_velocity = env_cfg.get("max_velocity", 1.0)
-
-    # Action filtering
-    config.use_action_filter = env_cfg.get("use_action_filter", True)
-    config.action_filter_alpha = env_cfg.get("action_filter_alpha", 0.7)
-
-    # Episode length
-    config.max_episode_steps = env_cfg.get("max_episode_steps", 500)
-
-    # Reward weights (from training config reward_weights section)
-    reward_cfg = training_config.get("reward_weights", {})
-    config.reward_weights = config_dict.ConfigDict()
-    config.reward_weights.forward_velocity = reward_cfg.get("tracking_lin_vel", 1.0)
-    config.reward_weights.healthy = reward_cfg.get("base_height", 0.1)
-    config.reward_weights.action_rate = reward_cfg.get("action_rate", -0.01)
-    config.reward_weights.joint_velocity = reward_cfg.get("torque_penalty", -0.001)
-
-    return config
-
-
-def create_env(config_path: Optional[Path] = None):
-    """Create WildRobotEnv instance with config from training YAML.
-
-    Args:
-        config_path: Optional path to training config. Uses default if not provided.
-
-    Returns:
-        WildRobotEnv: Environment extending mjx_env.MjxEnv
-    """
-    from playground_amp.envs.wildrobot_env import WildRobotEnv
-
-    # Use default path if not provided
-    if config_path is None:
-        config_path = DEFAULT_TRAINING_CONFIG_PATH
-
-    training_cfg = load_training_config(config_path)
-    env_config = create_env_config(training_cfg.raw_config)
-    env = WildRobotEnv(config=env_config)
-    return env
 
 
 def parse_args():
@@ -347,14 +275,13 @@ def start_training(
 
     # Create environment config and environment
     print("Creating WildRobotEnv...")
-    env_config = create_env_config(training_cfg.raw_config)
-    env = WildRobotEnv(config=env_config)
+    env = WildRobotEnv(config=training_cfg)
     print(
         f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
     )
 
     # Determine checkpoint directory
-    final_checkpoint_dir = checkpoint_dir or training_cfg.checkpoint_dir
+    final_checkpoint_dir = checkpoint_dir or training_cfg.checkpoints.dir
 
     # Create training job name (for checkpoint subdirectory)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -368,7 +295,7 @@ def start_training(
     # Load reference motion data only if AMP enabled
     ref_features = None
     if use_amp:
-        ref_path = amp_data_path or training_cfg.ref_motion_path
+        ref_path = amp_data_path or training_cfg.amp.dataset_path
         if ref_path is None:
             raise ValueError(
                 "AMP mode requires reference motion data. "
@@ -380,11 +307,8 @@ def start_training(
         ref_features = load_reference_features(ref_path)
         print(f"✓ Reference features: {ref_features.shape}")
 
-    # Create runtime config using TrainingConfig.to_runtime_config()
-    config = training_cfg.to_runtime_config()
-
     print(
-        f"✓ Environment functions created (vmapped for {training_cfg.training.num_envs} envs)"
+        f"✓ Environment functions created (vmapped for {training_cfg.ppo.num_envs} envs)"
     )
 
     # Create vmapped environment functions
@@ -394,13 +318,12 @@ def start_training(
 
     def batched_reset_fn(rng):
         """Batched environment reset."""
-        rngs = jax.random.split(rng, config.training.num_envs)
+        rngs = jax.random.split(rng, training_cfg.ppo.num_envs)
         return jax.vmap(env.reset)(rngs)
 
     # Get checkpoint settings from config
-    checkpoint_cfg = training_cfg.raw_config.get("checkpoints", {})
-    checkpoint_interval = checkpoint_cfg.get("interval", 100)
-    keep_checkpoints = checkpoint_cfg.get("keep_last_n", 5)
+    checkpoint_interval = training_cfg.checkpoints.interval
+    keep_checkpoints = training_cfg.checkpoints.keep_last_n
 
     # Checkpoint management state (captured by callback closure)
     best_reward = {"value": float("-inf")}
@@ -471,7 +394,7 @@ def start_training(
 
             ckpt_path = save_checkpoint_from_cpu(
                 state_cpu=save_state,
-                config=config,
+                config=training_cfg,
                 iteration=save_iteration,
                 total_steps=window_best["total_steps"],
                 checkpoint_dir=job_checkpoint_dir,
@@ -508,7 +431,7 @@ def start_training(
     final_state = train(
         env_step_fn=batched_step_fn,
         env_reset_fn=batched_reset_fn,
-        config=config,
+        config=training_cfg,
         ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
     )
@@ -561,55 +484,77 @@ def main():
         print(f"Warning: Robot config not found at {DEFAULT_ROBOT_CONFIG_PATH}")
         print("Run 'cd assets && python post_process.py' to generate it.")
 
-    # Support both 'ppo:' (unified format) config
-    ppo_cfg = training_config.get("ppo", {})
-    amp_cfg = training_config.get("amp", {})
-
-    # Merge config with CLI overrides (CLI takes precedence if provided)
+    # Support both 'ppo:' (unified format) config - but use TrainingConfig properties
+    # These are used for displaying defaults in help text
     if args.iterations is None:
-        args.iterations = ppo_cfg.get("iterations", 3000)
+        args.iterations = training_cfg.ppo.iterations
     if args.num_envs is None:
-        args.num_envs = ppo_cfg.get("num_envs", 512)
+        args.num_envs = training_cfg.ppo.num_envs
     if args.seed is None:
-        args.seed = ppo_cfg.get("seed", 42)
+        args.seed = training_cfg.seed
     if args.lr is None:
-        args.lr = ppo_cfg.get("learning_rate", 3e-4)
+        args.lr = training_cfg.ppo.learning_rate
     if args.gamma is None:
-        args.gamma = ppo_cfg.get("gamma", 0.99)
+        args.gamma = training_cfg.ppo.gamma
     if args.clip_epsilon is None:
-        args.clip_epsilon = ppo_cfg.get("clip_epsilon", 0.2)
+        args.clip_epsilon = training_cfg.ppo.clip_epsilon
     if args.entropy_coef is None:
-        args.entropy_coef = ppo_cfg.get("entropy_coef", 0.01)
+        args.entropy_coef = training_cfg.ppo.entropy_coef
     if args.amp_weight is None:
-        args.amp_weight = amp_cfg.get("weight", 1.0)
+        args.amp_weight = training_cfg.amp.weight
     if args.disc_lr is None:
-        args.disc_lr = amp_cfg.get("disc_lr", 1e-4)
+        args.disc_lr = training_cfg.amp.discriminator.learning_rate
     if args.log_interval is None:
-        args.log_interval = ppo_cfg.get("log_interval", 10)
+        args.log_interval = training_cfg.ppo.log_interval
     if args.checkpoint_dir is None:
-        # Support 'checkpoints:' section for checkpoint directory
-        checkpoints_cfg = training_config.get("checkpoints", {})
-        args.checkpoint_dir = checkpoints_cfg.get("dir", "playground_amp/checkpoints")
+        args.checkpoint_dir = training_cfg.checkpoints.dir
     if args.amp_data is None:
-        args.amp_data = amp_cfg.get("dataset_path")
+        args.amp_data = training_cfg.amp.dataset_path
 
-    # Quick verify mode (override everything)
-    if args.verify:
-        quick_cfg = training_config.get("quick_verify", {})
-        quick_ppo = quick_cfg.get("ppo", {})
-        quick_amp = quick_cfg.get("amp", {})
-        args.iterations = quick_ppo.get("iterations", 10)
-        args.num_envs = quick_ppo.get("num_envs", 4)
-        # Override disc_batch_size for quick verify (stored as temp attribute)
-        args._quick_verify_disc_batch_size = quick_amp.get("batch_size", 32)
-        args.log_interval = 1
+    # Determine training mode: AMP+PPO (default) or PPO-only (--no-amp)
+    use_amp = not args.no_amp
+
+    # Quick verify mode - apply overrides from config's quick_verify section
+    # Priority: CLI > Quick_Verify > Config
+    # Apply quick_verify first, then CLI overrides will take precedence
+    quick_verify_section = training_cfg.raw_config.get("quick_verify", {})
+    quick_verify_enabled = quick_verify_section.get("enabled", False) or args.verify
+    if quick_verify:
+        training_cfg.apply_overrides(quick_verify_section)
         print("=" * 60)
         print("VERIFICATION MODE")
         print("Running quick smoke test")
         print("=" * 60)
 
-    # Determine training mode: AMP+PPO (default) or PPO-only (--no-amp)
-    use_amp = not args.no_amp
+    # Apply CLI overrides (highest priority - overrides both config and quick_verify)
+    if args.iterations is not None:
+        training_cfg.ppo.iterations = args.iterations
+    if args.num_envs is not None:
+        training_cfg.ppo.num_envs = args.num_envs
+    if args.seed is not None:
+        training_cfg.seed = args.seed
+    if args.lr is not None:
+        training_cfg.ppo.learning_rate = args.lr
+    if args.gamma is not None:
+        training_cfg.ppo.gamma = args.gamma
+    if args.clip_epsilon is not None:
+        training_cfg.ppo.clip_epsilon = args.clip_epsilon
+    if args.entropy_coef is not None:
+        training_cfg.ppo.entropy_coef = args.entropy_coef
+    if args.log_interval is not None:
+        training_cfg.ppo.log_interval = args.log_interval
+    if args.disc_lr is not None:
+        training_cfg.amp.discriminator.learning_rate = args.disc_lr
+
+    # Set AMP weight based on mode
+    if use_amp:
+        if args.amp_weight is not None:
+            training_cfg.amp.weight = args.amp_weight
+    else:
+        training_cfg.amp.weight = 0.0  # PPO-only mode
+
+    # Freeze config after all overrides are applied
+    training_cfg.freeze()
 
     print(f"\n{'=' * 60}")
     print("WildRobot Training")
@@ -622,12 +567,12 @@ def main():
         mode_str = "PPO-only (Stage 1: Robot-Native Walking)"
     print(f"  Mode: {mode_str}")
     print(f"  Config: {config_path}")
-    print(f"  Iterations: {args.iterations}")
-    print(f"  Environments: {args.num_envs}")
-    print(f"  Learning rate: {args.lr}")
-    print(f"  Seed: {args.seed}")
+    print(f"  Iterations: {training_cfg.ppo.iterations}")
+    print(f"  Environments: {training_cfg.ppo.num_envs}")
+    print(f"  Learning rate: {training_cfg.ppo.learning_rate}")
+    print(f"  Seed: {training_cfg.seed}")
     if use_amp:
-        print(f"  AMP weight: {args.amp_weight}")
+        print(f"  AMP weight: {training_cfg.amp.weight}")
         print(f"  AMP data: {args.amp_data}")
     print(f"  Checkpoint dir: {args.checkpoint_dir}")
     print(f"{'=' * 60}\n")
@@ -645,15 +590,15 @@ def main():
             "version": training_cfg.version,
             "version_name": training_cfg.version_name,
             # Training params
-            "iterations": args.iterations,
-            "num_envs": args.num_envs,
-            "learning_rate": args.lr,
-            "gamma": args.gamma,
-            "clip_epsilon": args.clip_epsilon,
-            "entropy_coef": args.entropy_coef,
-            "amp_weight": args.amp_weight if use_amp else 0.0,
-            "disc_lr": args.disc_lr if use_amp else 0.0,
-            "seed": args.seed,
+            "iterations": training_cfg.ppo.iterations,
+            "num_envs": training_cfg.ppo.num_envs,
+            "learning_rate": training_cfg.ppo.learning_rate,
+            "gamma": training_cfg.ppo.gamma,
+            "clip_epsilon": training_cfg.ppo.clip_epsilon,
+            "entropy_coef": training_cfg.ppo.entropy_coef,
+            "amp_weight": training_cfg.amp.weight,
+            "disc_lr": training_cfg.amp.discriminator.learning_rate if use_amp else 0.0,
+            "seed": training_cfg.seed,
             "mode": "amp+ppo" if use_amp else "ppo-only",
         }
 
@@ -672,34 +617,6 @@ def main():
         define_wandb_topline_metrics()
 
     try:
-        # Apply CLI overrides to training_cfg (config is single source of truth)
-        # Uses composed config structure: training_cfg.ppo.*, training_cfg.amp.*, training_cfg.training.*
-        if args.iterations is not None:
-            training_cfg.training.total_iterations = args.iterations
-        if args.num_envs is not None:
-            training_cfg.training.num_envs = args.num_envs
-        if args.seed is not None:
-            training_cfg.training.seed = args.seed
-        if args.lr is not None:
-            training_cfg.ppo.learning_rate = args.lr
-        if args.gamma is not None:
-            training_cfg.ppo.gamma = args.gamma
-        if args.clip_epsilon is not None:
-            training_cfg.ppo.clip_epsilon = args.clip_epsilon
-        if args.entropy_coef is not None:
-            training_cfg.ppo.entropy_coef = args.entropy_coef
-        if args.log_interval is not None:
-            training_cfg.training.log_interval = args.log_interval
-        if args.disc_lr is not None:
-            training_cfg.amp.disc_learning_rate = args.disc_lr
-
-        # Set AMP weight based on mode
-        if use_amp:
-            if args.amp_weight is not None:
-                training_cfg.amp.reward_weight = args.amp_weight
-        else:
-            training_cfg.amp.reward_weight = 0.0  # PPO-only mode
-
         # Unified training for both PPO-only and AMP modes
         start_training(
             training_cfg=training_cfg,

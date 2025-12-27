@@ -1,8 +1,8 @@
-import sys
 import json
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
 
 def add_option(xml_file):
@@ -239,7 +239,9 @@ def add_common_includes(xml_file):
     tree.write(xml_file)
 
 
-def generate_robot_config(xml_file: str, output_file: str = "robot_config.yaml") -> Dict[str, Any]:
+def generate_robot_config(
+    xml_file: str, output_file: str = "robot_config.yaml"
+) -> Dict[str, Any]:
     """Generate robot configuration from MuJoCo XML.
 
     This function extracts all robot-specific information from the XML and
@@ -464,9 +466,24 @@ def generate_robot_config(xml_file: str, output_file: str = "robot_config.yaml")
         elif geom_name == "right_heel":
             right_heel = geom_name
 
+    # Feet body names (for slip/clearance computation)
+    # v0.10.1: Extract foot body names from XML structure
+    left_foot_body = None
+    right_foot_body = None
+
+    for body in root.findall(".//body[@name]"):
+        body_name = body.get("name", "")
+        if body_name == "left_foot":
+            left_foot_body = body_name
+        elif body_name == "right_foot":
+            right_foot_body = body_name
+
     # Build feet config with explicit keys (v0.5.0)
     config["feet"] = {
         "sites": feet_sites,
+        # Foot body names (for position/velocity tracking)
+        "left_foot_body": left_foot_body or "left_foot",
+        "right_foot_body": right_foot_body or "right_foot",
         # Explicit semantic keys - no array order dependency
         "left_toe": left_toe or "left_toe",
         "left_heel": left_heel or "left_heel",

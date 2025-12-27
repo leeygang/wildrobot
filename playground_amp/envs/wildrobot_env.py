@@ -13,11 +13,14 @@ Architecture:
         └── Robot utilities (joint access, sensors)
 
 Usage:
-    from playground_amp.envs.wildrobot_env import WildRobotEnv, default_config
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+    from playground_amp.configs.training_config import load_training_config
     from mujoco_playground import wrapper
     from brax.training.agents.ppo import train as ppo
 
-    env = WildRobotEnv(config=default_config())
+    training_cfg = load_training_config("configs/ppo_walking.yaml")
+    runtime_cfg = training_cfg.to_runtime_config()
+    env = WildRobotEnv(config=runtime_cfg)
 
     # Train with Brax PPO
     make_inference_fn, params, _ = ppo.train(
@@ -29,6 +32,7 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -41,7 +45,177 @@ from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
 
-from playground_amp.configs.training_config import get_robot_config
+from playground_amp.configs.training_config import get_robot_config, TrainingConfig
+
+
+# =============================================================================
+# Observation Layout
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ObsLayout:
+    """Defines the observation vector structure.
+
+    This is the single source of truth for observation dimensions.
+    Used by both _get_obs() and observation_size property.
+
+    Layout:
+        [0:3]   gravity      - Gravity vector in local frame
+        [3:6]   angvel       - Angular velocity (heading-local)
+        [6:9]   linvel       - Linear velocity (heading-local)
+        [9:9+n] joint_pos    - Joint positions (n = num_actuators)
+        [...]   joint_vel    - Joint velocities (n = num_actuators)
+        [...]   action       - Previous action (n = num_actuators)
+        [...]   velocity_cmd - Velocity command (1)
+        [...]   padding      - Padding for alignment (1)
+    """
+
+    # Fixed dimensions (independent of robot)
+    GRAVITY_DIM: int = 3
+    ANGVEL_DIM: int = 3
+    LINVEL_DIM: int = 3
+    VELOCITY_CMD_DIM: int = 1
+    PADDING_DIM: int = 1
+
+    @classmethod
+    def _get_num_actuators(cls) -> int:
+        """Get number of actuators from robot config (single source of truth)."""
+        return get_robot_config().action_dim
+
+    @classmethod
+    def total_size(cls) -> int:
+        """Compute total observation size.
+
+        Number of actuators is read from robot_config.
+
+        Returns:
+            Total observation dimension
+        """
+        num_actuators = cls._get_num_actuators()
+        fixed = (
+            cls.GRAVITY_DIM
+            + cls.ANGVEL_DIM
+            + cls.LINVEL_DIM
+            + cls.VELOCITY_CMD_DIM
+            + cls.PADDING_DIM
+        )
+        dynamic = 3 * num_actuators  # joint_pos + joint_vel + action
+        return fixed + dynamic
+
+    @classmethod
+    def get_slices(cls) -> Dict[str, slice]:
+        """Get named slices for each observation component.
+
+        Useful for debugging or extracting specific components.
+        Number of actuators is read from robot_config.
+
+        Returns:
+            Dict mapping component names to slice objects
+        """
+        num_actuators = cls._get_num_actuators()
+        idx = 0
+        slices = {}
+
+        slices["gravity"] = slice(idx, idx + cls.GRAVITY_DIM)
+        idx += cls.GRAVITY_DIM
+
+        slices["angvel"] = slice(idx, idx + cls.ANGVEL_DIM)
+        idx += cls.ANGVEL_DIM
+
+        slices["linvel"] = slice(idx, idx + cls.LINVEL_DIM)
+        idx += cls.LINVEL_DIM
+
+        slices["joint_pos"] = slice(idx, idx + num_actuators)
+        idx += num_actuators
+
+        slices["joint_vel"] = slice(idx, idx + num_actuators)
+        idx += num_actuators
+
+        slices["action"] = slice(idx, idx + num_actuators)
+        idx += num_actuators
+
+        slices["velocity_cmd"] = slice(idx, idx + cls.VELOCITY_CMD_DIM)
+        idx += cls.VELOCITY_CMD_DIM
+
+        slices["padding"] = slice(idx, idx + cls.PADDING_DIM)
+
+        return slices
+
+    @classmethod
+    def build_obs(
+        cls,
+        gravity: jax.Array,
+        angvel: jax.Array,
+        linvel: jax.Array,
+        joint_pos: jax.Array,
+        joint_vel: jax.Array,
+        action: jax.Array,
+        velocity_cmd: jax.Array,
+    ) -> jax.Array:
+        """Build observation vector from components.
+
+        This is the canonical way to construct observations, ensuring
+        the layout matches get_slices() and total_size().
+
+        Args:
+            gravity: Gravity vector in local frame (3,)
+            angvel: Angular velocity, heading-local (3,)
+            linvel: Linear velocity, heading-local (3,)
+            joint_pos: Joint positions (num_actuators,)
+            joint_vel: Joint velocities (num_actuators,)
+            action: Previous action (num_actuators,)
+            velocity_cmd: Velocity command scalar
+
+        Returns:
+            Observation vector (total_size,) as float32
+
+        Raises:
+            ValueError: If input dimensions don't match expected layout
+        """
+        num_actuators = cls._get_num_actuators()
+
+        # Validate fixed dimensions
+        if gravity.shape != (cls.GRAVITY_DIM,):
+            raise ValueError(
+                f"gravity shape {gravity.shape} != expected ({cls.GRAVITY_DIM},)"
+            )
+        if angvel.shape != (cls.ANGVEL_DIM,):
+            raise ValueError(
+                f"angvel shape {angvel.shape} != expected ({cls.ANGVEL_DIM},)"
+            )
+        if linvel.shape != (cls.LINVEL_DIM,):
+            raise ValueError(
+                f"linvel shape {linvel.shape} != expected ({cls.LINVEL_DIM},)"
+            )
+
+        # Validate dynamic dimensions
+        if joint_pos.shape != (num_actuators,):
+            raise ValueError(
+                f"joint_pos shape {joint_pos.shape} != expected ({num_actuators},)"
+            )
+        if joint_vel.shape != (num_actuators,):
+            raise ValueError(
+                f"joint_vel shape {joint_vel.shape} != expected ({num_actuators},)"
+            )
+        if action.shape != (num_actuators,):
+            raise ValueError(
+                f"action shape {action.shape} != expected ({num_actuators},)"
+            )
+
+        obs = jp.concatenate(
+            [
+                gravity,
+                angvel,
+                linvel,
+                joint_pos,
+                joint_vel,
+                action,
+                jp.atleast_1d(velocity_cmd),
+                jp.zeros(cls.PADDING_DIM),
+            ]
+        )
+        return obs.astype(jp.float32)
 
 
 # =============================================================================
@@ -101,8 +275,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
     - Robot utilities (joint access, sensor reading)
 
     Example:
-        config = default_config()
-        env = WildRobotEnv(config=config)
+        training_cfg = load_training_config("configs/ppo_walking.yaml")
+        runtime_cfg = training_cfg.to_runtime_config()
+        env = WildRobotEnv(config=runtime_cfg)
 
         # JIT-compiled reset and step
         reset_fn = jax.jit(env.reset)
@@ -115,39 +290,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def __init__(
         self,
-        config: config_dict.ConfigDict,
+        config: TrainingConfig,
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
     ) -> None:
         """Initialize WildRobotEnv.
 
         Args:
-            config: Configuration dict with ctrl_dt, sim_dt, etc.
-                    Must be provided - load from training config YAML.
+            config: TrainingConfig (frozen, JIT-compatible).
+                    Call config.freeze() before passing.
             config_overrides: Optional overrides for config values.
         """
-        super().__init__(config, config_overrides)
+        # Create ConfigDict for parent class (MjxEnv expects ConfigDict)
+        parent_config = config_dict.ConfigDict()
+        parent_config.ctrl_dt = config.env.ctrl_dt
+        parent_config.sim_dt = config.env.sim_dt
+        super().__init__(parent_config, config_overrides)
+
+        # Store frozen runtime config directly - no extraction needed!
+        # All values accessed via self._config.env.*, self._config.ppo.*, etc.
+        self._config = config
 
         # Model path (required - must be in config)
-        if not hasattr(config, "model_path") or config.model_path is None:
+        if not config.env.model_path:
             raise ValueError(
-                "model_path is required in config. "
+                "model_path is required in config.env. "
                 "Add 'model_path: assets/scene_flat_terrain.xml' to your config."
             )
-        self._model_path = Path(config.model_path)
+        self._model_path = Path(config.env.model_path)
 
         # Load model and setup robot infrastructure
         self._load_model()
-
-        # Config parameters (required - defined in default_config())
-        self._target_height = config.target_height
-        self._min_height = config.min_height
-        self._max_height = config.max_height
-        self._min_velocity = config.min_velocity
-        self._max_velocity = config.max_velocity
-        self._use_action_filter = config.use_action_filter
-        self._action_filter_alpha = config.action_filter_alpha
-        self._max_episode_steps = config.max_episode_steps
-        self._reward_weights = config.reward_weights
 
         print(f"WildRobotEnv initialized:")
         print(f"  Actuators: {len(self.actuator_names)}")
@@ -253,11 +425,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
             f"R_toe={self._right_toe_geom_id}, R_heel={self._right_heel_geom_id}"
         )
 
-        # Contact detection parameters (configurable from env config)
+        # Contact detection parameters (from env config)
         # contact_threshold: Minimum force (N) to consider contact (not currently used)
         # contact_scale: Divisor for tanh normalization (10.0 means 10N → tanh(1) ≈ 0.76)
-        self._contact_threshold = getattr(self._config, "contact_threshold", 1.0)
-        self._contact_scale = getattr(self._config, "contact_scale", 10.0)
+        self._contact_threshold = self._config.env.contact_threshold_force
+        self._contact_scale = self._config.env.contact_scale
+
+        # v0.10.1: Foot body IDs for slip/clearance computation
+        # Use actual foot bodies (not *_mimic sites which are for GMR retargeting)
+        # Read from robot_config instead of hard-coding
+        self._left_foot_body_id = mujoco.mj_name2id(
+            self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._robot_config.left_foot_body
+        )
+        self._right_foot_body_id = mujoco.mj_name2id(
+            self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._robot_config.right_foot_body
+        )
+
+        # v0.10.1: Actuator force limits for torque penalty normalization
+        # MuJoCo stores force limits in actuator_forcerange (nu x 2)
+        self._actuator_force_limit = jp.array(
+            [self._mj_model.actuator_forcerange[i, 1] for i in range(self._mj_model.nu)]
+        )  # Take upper limit (positive)
 
         self._floating_base_qpos_addr = self._mj_model.jnt_qposadr[
             jp.where(self._mj_model.jnt_type == 0)
@@ -325,12 +513,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Compute actual initial metrics (not zeros)
         height = self.get_floating_base_qpos(data.qpos)[2]
 
+        # v0.10.1: Simplified initial reward (robot at rest, no slip/clearance yet)
         # Forward reward: robot is stationary (vel=0), so miss target by velocity_cmd
-        forward_reward = jp.exp(-velocity_cmd * 2.0)
+        forward_reward = jp.exp(
+            -velocity_cmd * self._config.reward_weights.forward_velocity_scale
+        )
 
         # Healthy reward: robot is upright at reset
         healthy_reward = jp.where(
-            (height > self._min_height) & (height < self._max_height),
+            (height > self._config.env.min_height)
+            & (height < self._config.env.max_height),
             1.0,
             0.0,
         )
@@ -338,11 +530,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Action rate: no previous action, so no penalty
         action_rate = jp.zeros(())
 
-        # Compute total reward with weights
-        weights = self._reward_weights
+        # v0.10.1: Initialize all metric keys to match step() for JAX pytree compatibility
+        # At reset, robot is stationary so most values are zero
+        pitch, roll = self.get_pitch_roll(data)
+        left_force, right_force = self.get_raw_foot_contacts(data)
+
+        # Compute total reward with weights (from config)
+        weights = self._config.reward_weights
         total_reward = (
-            weights.forward_velocity * forward_reward
-            + weights.healthy * healthy_reward
+            weights.tracking_lin_vel * forward_reward
+            + weights.base_height * healthy_reward
             + weights.action_rate * action_rate
         )
 
@@ -351,22 +548,45 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "height": height,
             "forward_velocity": jp.zeros(()),  # Robot starts stationary
             "reward/total": total_reward,
+            # Primary rewards
             "reward/forward": forward_reward,
+            "reward/lateral": jp.zeros(()),
             "reward/healthy": healthy_reward,
+            "reward/orientation": jp.zeros(()),
+            "reward/angvel": jp.zeros(()),
+            # Effort rewards
+            "reward/torque": jp.zeros(()),
+            "reward/saturation": jp.zeros(()),
+            # Smoothness rewards
             "reward/action_rate": action_rate,
+            "reward/joint_vel": jp.zeros(()),
+            # Foot stability rewards
+            "reward/slip": jp.zeros(()),
+            "reward/clearance": jp.zeros(()),
+            # Debug metrics
+            "debug/pitch": pitch,
+            "debug/roll": roll,
+            "debug/forward_vel": jp.zeros(()),
+            "debug/lateral_vel": jp.zeros(()),
+            "debug/left_force": left_force,
+            "debug/right_force": right_force,
         }
 
         # Info - merge with base_info if provided (preserves wrapper fields during auto-reset)
+        left_foot_pos, right_foot_pos = self.get_foot_positions(data)
         env_info = {
             "step_count": 0,
             "prev_action": jp.zeros(self.action_size),
             "truncated": jp.zeros(()),  # No truncation at reset
-            "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
+            "foot_contacts": self.get_norm_foot_contacts(data),  # For AMP discriminator
             "root_height": height,  # v0.6.1: Actual root height for AMP features
             # v0.9.1: Track previous root pose for finite-diff velocity computation
             # This aligns policy velocity with reference velocity (both finite-diff)
             "prev_root_pos": self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
             "prev_root_quat": self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
+            # v0.10.1: Track previous foot positions for slip computation
+            "prev_left_foot_pos": left_foot_pos,
+            "prev_right_foot_pos": right_foot_pos,
         }
 
         # Merge: base_info (wrapper fields) + env_info (env fields override)
@@ -399,7 +619,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Sample velocity command
         velocity_cmd = jax.random.uniform(
-            key1, shape=(), minval=self._min_velocity, maxval=self._max_velocity
+            key1,
+            shape=(),
+            minval=self._config.env.min_velocity,
+            maxval=self._config.env.max_velocity,
         )
 
         # Use initial qpos from model (keyframe or qpos0)
@@ -431,8 +654,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_action = state.info["prev_action"]
 
         # Action filtering (low-pass)
-        if self._use_action_filter:
-            alpha = self._action_filter_alpha
+        if self._config.env.use_action_filter:
+            alpha = self._config.env.action_filter_alpha
             filtered_action = alpha * prev_action + (1.0 - alpha) * action
         else:
             filtered_action = action
@@ -455,9 +678,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data, filtered_action, velocity_cmd, prev_root_pos, prev_root_quat
         )
 
+        # v0.10.1: Get previous foot positions for slip computation
+        prev_left_foot_pos = state.info.get("prev_left_foot_pos", None)
+        prev_right_foot_pos = state.info.get("prev_right_foot_pos", None)
+
         # Compute reward
         reward, reward_components = self._get_reward(
-            data, filtered_action, prev_action, velocity_cmd
+            data,
+            filtered_action,
+            prev_action,
+            velocity_cmd,
+            prev_left_foot_pos,
+            prev_right_foot_pos,
         )
 
         # Check termination (get done, terminated, and truncated flags)
@@ -480,6 +712,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
         curr_root_quat = self.get_floating_base_qpos(data.qpos)[3:7]
 
+        # v0.10.1: Track foot positions for slip computation
+        curr_left_foot_pos, curr_right_foot_pos = self.get_foot_positions(data)
+
         # v0.10.0: Preserve existing info fields from wrapper (Brax compatibility)
         # The Brax training wrapper adds fields like 'truncation', 'episode_done',
         # 'episode_metrics', 'first_obs', 'steps', 'first_state'. We need to preserve
@@ -490,11 +725,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 "step_count": step_count + 1,
                 "prev_action": filtered_action,
                 "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
-                "foot_contacts": self.get_foot_contacts(data),  # For AMP discriminator
+                "foot_contacts": self.get_norm_foot_contacts(
+                    data
+                ),  # For AMP discriminator
                 "root_height": height,  # v0.6.1: Actual root height for AMP features
                 # v0.9.1: Update previous root pose for finite-diff velocity
                 "prev_root_pos": curr_root_pos,
                 "prev_root_quat": curr_root_quat,
+                # v0.10.1: Update previous foot positions for slip computation
+                "prev_left_foot_pos": curr_left_foot_pos,
+                "prev_right_foot_pos": curr_right_foot_pos,
             }
         )
 
@@ -591,22 +831,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_pos = self.get_actuator_joint_qpos(data.qpos).squeeze()
         joint_vel = self.get_actuator_joints_qvel(data.qvel).squeeze()
 
-        # Build observation
-        obs = jp.concatenate(
-            [
-                gravity,  # 0-2: 3
-                angvel,  # 3-5: 3 (heading-local, FD when available)
-                linvel,  # 6-8: 3 (heading-local, FD when available)
-                joint_pos,  # 9-16: 8 (actuated joints only)
-                joint_vel,  # 17-24: 8 (actuated joints only)
-                action,  # 25-32: 8
-                jp.array([velocity_cmd]),  # 33: 1
-                jp.zeros(1),  # 34: padding
-            ]
+        # Build observation using shared layout
+        return ObsLayout.build_obs(
+            gravity=gravity,
+            angvel=angvel,
+            linvel=linvel,
+            joint_pos=joint_pos,
+            joint_vel=joint_vel,
+            action=action,
+            velocity_cmd=velocity_cmd,
         )
-
-        # Ensure float32 output (x64 mode can produce float64)
-        return obs.astype(jp.float32)
 
     def _get_reward(
         self,
@@ -614,57 +848,175 @@ class WildRobotEnv(mjx_env.MjxEnv):
         action: jax.Array,
         prev_action: jax.Array,
         velocity_cmd: jax.Array,
+        prev_left_foot_pos: Optional[jax.Array] = None,
+        prev_right_foot_pos: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
-        """Compute reward.
+        """Compute reward following gold standard for bipedal locomotion.
+
+        v0.10.1: Implements industry best practices:
+        - Primary: velocity tracking, alive bonus, orientation, slip penalty
+        - Secondary: torque penalty, saturation, action smoothness, clearance
 
         Returns:
             (total_reward, reward_components_dict)
         """
-        weights = self._reward_weights
 
-        # Forward velocity tracking (sharper exponential to penalize standing still)
+        # =====================================================================
+        # PRIMARY REWARDS (Tier 1)
+        # =====================================================================
+
+        # 1. Forward velocity tracking (exp shaping)
         forward_vel = self.get_local_linvel(data)[0]
         vel_error = jp.abs(forward_vel - velocity_cmd)
-        # TUNED: 2.0 → 4.0 (standing still: exp(-0.7*4)=0.06 vs exp(-0.7*2)=0.25)
-        forward_reward = jp.exp(-vel_error * 4.0)
+        forward_reward = jp.exp(
+            -vel_error * self._config.reward_weights.forward_velocity_scale
+        )
 
-        # Forward movement bonus (incentivize any forward motion)
-        # Clips negative velocity to 0, caps at 1.0 m/s
-        forward_bonus = jp.clip(forward_vel, 0.0, 1.0) * 0.3
+        # 2. Lateral velocity penalty (penalize sideways drift)
+        lateral_vel = self.get_local_linvel(data)[1]
+        lateral_penalty = jp.square(lateral_vel)
 
-        # Healthy reward (staying upright)
+        # 3. Alive/healthy reward (height-based)
         height = self.get_floating_base_qpos(data.qpos)[2]
         healthy = jp.where(
-            (height > self._min_height) & (height < self._max_height),
+            (height > self._config.env.min_height)
+            & (height < self._config.env.max_height),
             1.0,
             0.0,
         )
 
-        # Action rate penalty
-        action_diff = action - prev_action
-        action_rate = jp.sum(jp.square(action_diff))
+        # 4. Orientation penalty (pitch² + roll²)
+        pitch, roll = self.get_pitch_roll(data)
+        orientation_penalty = jp.square(pitch) + jp.square(roll)
 
-        # Joint velocity penalty
+        # 5. Angular velocity penalty (reduce body rotation)
+        base_angvel = self.get_floating_base_qvel(data.qvel)[3:6]  # wx, wy, wz
+        angvel_penalty = jp.sum(jp.square(base_angvel))
+
+        # =====================================================================
+        # EFFORT REWARDS (Tier 1 - critical for sim2real)
+        # =====================================================================
+
+        # 6. Torque penalty - penalize normalized torque usage
+        torques = self.get_actuator_torques(data)
+        normalized_torques = torques / (self._actuator_force_limit + 1e-6)
+        torque_penalty = jp.sum(jp.square(normalized_torques))
+
+        # 7. Saturation penalty - penalize actuators near limits
+        saturation = jp.abs(normalized_torques) > 0.95
+        saturation_penalty = jp.sum(saturation.astype(jp.float32))
+
+        # =====================================================================
+        # SMOOTHNESS REWARDS (Tier 2)
+        # =====================================================================
+
+        # 8. Action rate penalty (smoothness)
+        action_diff = action - prev_action
+        action_rate_penalty = jp.sum(jp.square(action_diff))
+
+        # 9. Joint velocity penalty (efficiency)
         joint_vel = self.get_actuator_joints_qvel(data.qvel)
         joint_vel_penalty = jp.sum(jp.square(joint_vel))
 
-        # Combine rewards (weights from config, no defaults)
-        w_forward = weights.forward_velocity
-        w_healthy = weights.healthy
-        w_action = weights.action_rate
-        w_joint_vel = weights.joint_velocity
+        # =====================================================================
+        # FOOT STABILITY REWARDS (Tier 2)
+        # =====================================================================
+
+        # Get foot contact forces for slip/clearance gating
+        left_force, right_force = self.get_raw_foot_contacts(data)
+        left_pos, right_pos = self.get_foot_positions(data)
+
+        # Robot weight for contact threshold (approximate: mass * gravity)
+        # ~2kg robot * 9.81 ≈ 20N total, so ~5N per foot is "loaded"
+        # v0.10.1: Read from config instead of hard-coding
+        contact_threshold = self._config.env.contact_threshold_force
+
+        # 10. Slip penalty (when foot is loaded, penalize tangential velocity)
+        # Use finite-diff velocity if previous positions available
+        if prev_left_foot_pos is not None and prev_right_foot_pos is not None:
+            left_vel, right_vel = self.get_foot_velocities(
+                data, prev_left_foot_pos, prev_right_foot_pos
+            )
+            # Tangential (xy) velocity magnitude
+            left_slip = jp.sqrt(jp.square(left_vel[0]) + jp.square(left_vel[1]))
+            right_slip = jp.sqrt(jp.square(right_vel[0]) + jp.square(right_vel[1]))
+
+            # Gate by contact force (only penalize when loaded)
+            left_loaded = left_force > contact_threshold
+            right_loaded = right_force > contact_threshold
+            slip_penalty = jp.where(left_loaded, jp.square(left_slip), 0.0) + jp.where(
+                right_loaded, jp.square(right_slip), 0.0
+            )
+        else:
+            slip_penalty = jp.zeros(())
+            left_slip = jp.zeros(())
+            right_slip = jp.zeros(())
+
+        # 11. Swing clearance reward (when foot is unloaded, reward height)
+        # Reward foot height above ground during swing phase
+        min_clearance = 0.02  # 2cm minimum clearance during swing
+        left_clearance = jp.clip(left_pos[2] - min_clearance, 0.0, 0.05)  # cap at 5cm
+        right_clearance = jp.clip(right_pos[2] - min_clearance, 0.0, 0.05)
+
+        # Gate by NOT loaded (only reward clearance during swing)
+        left_swing = left_force < contact_threshold
+        right_swing = right_force < contact_threshold
+        clearance_reward = (
+            jp.where(left_swing, left_clearance, 0.0)
+            + jp.where(right_swing, right_clearance, 0.0)
+        ) * 10.0  # Scale up small clearance values
+
+        # =====================================================================
+        # COMBINE REWARDS
+        # =====================================================================
+
+        # Get weights from frozen config (type-safe access)
+        weights = self._config.reward_weights
 
         total = (
-            w_forward * (forward_reward + forward_bonus)  # Include movement bonus
-            + w_healthy * healthy
-            + w_action * action_rate
-            + w_joint_vel * joint_vel_penalty
+            # Primary (Tier 1)
+            weights.tracking_lin_vel * forward_reward
+            + weights.lateral_velocity * lateral_penalty
+            + weights.base_height * healthy
+            + weights.orientation * orientation_penalty
+            + weights.angular_velocity * angvel_penalty
+            # Effort (Tier 1)
+            + weights.torque * torque_penalty
+            + weights.saturation * saturation_penalty
+            # Smoothness (Tier 2)
+            + weights.action_rate * action_rate_penalty
+            + weights.joint_velocity * joint_vel_penalty
+            # Foot stability (Tier 2)
+            + weights.slip * slip_penalty
+            + weights.clearance * clearance_reward
         )
 
+        # =====================================================================
+        # REWARD COMPONENTS FOR LOGGING
+        # =====================================================================
         components = {
+            # Primary
             "reward/forward": forward_reward,
+            "reward/lateral": lateral_penalty,
             "reward/healthy": healthy,
-            "reward/action_rate": action_rate,
+            "reward/orientation": orientation_penalty,
+            "reward/angvel": angvel_penalty,
+            # Effort
+            "reward/torque": torque_penalty,
+            "reward/saturation": saturation_penalty,
+            # Smoothness
+            "reward/action_rate": action_rate_penalty,
+            "reward/joint_vel": joint_vel_penalty,
+            # Foot stability
+            "reward/slip": slip_penalty,
+            "reward/clearance": clearance_reward,
+            # Debug metrics
+            "debug/pitch": pitch,
+            "debug/roll": roll,
+            "debug/forward_vel": forward_vel,
+            "debug/lateral_vel": lateral_vel,
+            "debug/left_force": left_force,
+            "debug/right_force": right_force,
         }
 
         return total, components
@@ -674,19 +1026,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Check termination conditions.
 
+        v0.10.1: Added orientation termination (pitch/roll limits).
+
         Returns:
             (done, terminated, truncated) where:
             - done: True if episode ended (terminated OR truncated)
-            - terminated: True if ended due to failure (falling)
+            - terminated: True if ended due to failure (falling or bad orientation)
             - truncated: True if ended due to time limit (success)
         """
         height = self.get_floating_base_qpos(data.qpos)[2]
 
         # Height termination (failure - robot fell)
-        terminated = (height < self._min_height) | (height > self._max_height)
+        height_fail = (height < self._config.env.min_height) | (
+            height > self._config.env.max_height
+        )
 
-        # Episode length truncation (success - reached max steps without falling)
-        truncated = (step_count >= self._max_episode_steps) & ~terminated
+        # v0.10.1: Orientation termination (extreme pitch/roll)
+        pitch, roll = self.get_pitch_roll(data)
+        orientation_fail = (jp.abs(pitch) > self._config.env.max_pitch) | (
+            jp.abs(roll) > self._config.env.max_roll
+        )
+
+        # Combined failure termination
+        terminated = height_fail | orientation_fail
+
+        # Episode length truncation (success - reached max steps without failing)
+        truncated = (step_count >= self._config.env.max_episode_steps) & ~terminated
 
         # Combined done flag
         done = terminated | truncated
@@ -991,8 +1356,102 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         return jp.array([wx_heading, wy_heading, wz_heading])
 
-    def get_foot_contacts(self, data: mjx.Data) -> jax.Array:
-        """Get foot contact features for AMP discriminator.
+    # =========================================================================
+    # Reward Utility Methods
+    # =========================================================================
+
+    def get_pitch_roll(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
+        """Get pitch and roll angles from root quaternion.
+
+        Uses ZYX Euler angle extraction from quaternion.
+        Pitch = rotation around Y axis (forward tilt)
+        Roll = rotation around X axis (sideways tilt)
+
+        Returns:
+            (pitch, roll): Tuple of scalar angles in radians
+        """
+        quat = self.get_root_quat(data)  # [w, x, y, z]
+        quat = quat / (jp.linalg.norm(quat) + 1e-8)  # Normalize
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Pitch (rotation around Y): atan2(2*(w*y - z*x), 1 - 2*(x*x + y*y))
+        sinp = 2.0 * (w * y - z * x)
+        pitch = jp.arcsin(jp.clip(sinp, -1.0, 1.0))
+
+        # Roll (rotation around X): atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = jp.arctan2(sinr_cosp, cosr_cosp)
+
+        return pitch, roll
+
+    def get_actuator_torques(self, data: mjx.Data) -> jax.Array:
+        """Get actuator forces/torques.
+
+        Returns:
+            actuator_force: (nu,) array of actuator forces in Nm
+        """
+        return data.qfrc_actuator[self.actuator_qvel_addr]
+
+    # =========================================================================
+    # Foot Utilities
+    # =========================================================================
+
+    def _get_raw_foot_contact_by_geom(self, data: mjx.Data, geom_id: int) -> jax.Array:
+        """Get raw contact force for a single foot geom.
+
+        Args:
+            data: MJX simulation data
+            geom_id: ID of the geom to query
+
+        Returns:
+            Total normal force on the geom in Newtons
+        """
+        geom1_match = data.contact.geom1 == geom_id
+        geom2_match = data.contact.geom2 == geom_id
+        is_our_contact = geom1_match | geom2_match
+
+        # Get normal forces from constraint solver
+        # efc_address[i] is the index where contact i's forces start in efc_force
+        # The first element at each address is the normal force
+        normal_forces = data.efc_force[data.contact.efc_address]
+
+        # Sum forces for contacts involving this geom
+        our_forces = jp.where(is_our_contact, jp.abs(normal_forces), 0.0)
+        return jp.sum(our_forces)
+
+    def get_foot_positions(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
+        """Get foot body positions in world frame.
+
+        Uses actual foot bodies (not *_mimic sites which are for GMR retargeting).
+
+        Returns:
+            (left_foot_pos, right_foot_pos): Each (3,) in world frame
+        """
+        left_pos = data.xpos[self._left_foot_body_id]
+        right_pos = data.xpos[self._right_foot_body_id]
+        return left_pos, right_pos
+
+    def get_foot_velocities(
+        self, data: mjx.Data, prev_left_pos: jax.Array, prev_right_pos: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        """Get foot velocities via finite difference.
+
+        Args:
+            data: Current MJX data
+            prev_left_pos: Previous left foot position (3,)
+            prev_right_pos: Previous right foot position (3,)
+
+        Returns:
+            (left_vel, right_vel): Each (3,) in world frame
+        """
+        left_pos, right_pos = self.get_foot_positions(data)
+        left_vel = (left_pos - prev_left_pos) / self.dt
+        right_vel = (right_pos - prev_right_pos) / self.dt
+        return left_vel, right_vel
+
+    def get_norm_foot_contacts(self, data: mjx.Data) -> jax.Array:
+        """Get normalized foot contact features for AMP discriminator.
 
         Extracts contact forces from MJX and converts to soft-thresholded
         contact values in range [0, 1] using tanh normalization.
@@ -1012,31 +1471,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 [2] = right_toe (right_foot_btm_front)
                 [3] = right_heel (right_foot_btm_back)
         """
-        # v0.5.0: _foot_geom_ids is guaranteed to exist (exception raised in __init__ if not found)
-
-        def get_contact_force_for_geom(geom_id: int) -> jax.Array:
-            """Get total contact force for a single geom."""
-            # Check which contacts involve this geom (either as geom1 or geom2)
-            geom1_match = data.contact.geom1 == geom_id
-            geom2_match = data.contact.geom2 == geom_id
-            is_our_contact = geom1_match | geom2_match
-
-            # Get normal forces from constraint solver
-            # efc_address[i] is the index where contact i's forces start in efc_force
-            # The first element at each address is the normal force
-            normal_forces = data.efc_force[data.contact.efc_address]
-
-            # Sum forces for contacts involving this geom
-            our_forces = jp.where(is_our_contact, jp.abs(normal_forces), 0.0)
-            total_force = jp.sum(our_forces)
-
-            return total_force
-
         # Get contact forces for each foot geom
-        left_toe_force = get_contact_force_for_geom(self._left_toe_geom_id)
-        left_heel_force = get_contact_force_for_geom(self._left_heel_geom_id)
-        right_toe_force = get_contact_force_for_geom(self._right_toe_geom_id)
-        right_heel_force = get_contact_force_for_geom(self._right_heel_geom_id)
+        left_toe_force = self._get_raw_foot_contact_by_geom(
+            data, self._left_toe_geom_id
+        )
+        left_heel_force = self._get_raw_foot_contact_by_geom(
+            data, self._left_heel_geom_id
+        )
+        right_toe_force = self._get_raw_foot_contact_by_geom(
+            data, self._right_toe_geom_id
+        )
+        right_heel_force = self._get_raw_foot_contact_by_geom(
+            data, self._right_heel_geom_id
+        )
 
         # Soft thresholding with tanh: continuous value in [0, 1]
         # scale=10.0 means: 10N → tanh(1) ≈ 0.76, 20N → tanh(2) ≈ 0.96
@@ -1050,6 +1497,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         return foot_contacts
+
+    def get_raw_foot_contacts(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
+        """Get raw foot contact forces (not normalized).
+
+        Returns normal forces for left and right feet (sum of toe + heel).
+        Used for reward computation where threshold comparison is needed.
+
+        Returns:
+            (left_force, right_force): Scalar normal forces in Newtons
+        """
+        left_toe_force = self._get_raw_foot_contact_by_geom(
+            data, self._left_toe_geom_id
+        )
+        left_heel_force = self._get_raw_foot_contact_by_geom(
+            data, self._left_heel_geom_id
+        )
+        right_toe_force = self._get_raw_foot_contact_by_geom(
+            data, self._right_toe_geom_id
+        )
+        right_heel_force = self._get_raw_foot_contact_by_geom(
+            data, self._right_heel_geom_id
+        )
+
+        left_force = left_toe_force + left_heel_force
+        right_force = right_toe_force + right_heel_force
+
+        return left_force, right_force
 
     # =========================================================================
     # Properties (MjxEnv interface)
@@ -1073,21 +1547,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     @property
     def observation_size(self) -> int:
-        """Return observation size.
+        """Return observation size using shared ObsLayout.
 
         v0.7.0: Velocities are now in heading-local frame for AMP parity.
         The observation layout is unchanged.
 
-        Observation components:
-        - Gravity vector: 3
-        - Angular velocity (heading-local): 3
-        - Linear velocity (heading-local): 3
-        - Joint positions: 8 (actuated joints only)
-        - Joint velocities: 8 (actuated joints only)
-        - Previous action: 8
-        - Velocity command: 1
-        - Padding: 1
-
-        Total: 35
+        See ObsLayout class for component breakdown.
         """
-        return 35
+        return ObsLayout.total_size()

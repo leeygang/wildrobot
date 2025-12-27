@@ -73,6 +73,9 @@ class RobotConfig:
     feet_left_geoms: List[str]
     feet_right_geoms: List[str]
     feet_all_geoms: List[str]
+    # Foot body names (for slip/clearance computation)
+    left_foot_body: str
+    right_foot_body: str
 
     raw_config: Dict[str, Any] = field(repr=False)
 
@@ -188,6 +191,8 @@ class RobotConfig:
         feet_left_geoms = feet.get("left_geoms", [])
         feet_right_geoms = feet.get("right_geoms", [])
         feet_all_geoms = feet.get("all_geoms", [])
+        left_foot_body = feet.get("left_foot_body", "left_foot")
+        right_foot_body = feet.get("right_foot_body", "right_foot")
 
         return cls(
             robot_name=config.get("robot_name", "unknown"),
@@ -210,6 +215,8 @@ class RobotConfig:
             feet_left_geoms=feet_left_geoms,
             feet_right_geoms=feet_right_geoms,
             feet_all_geoms=feet_all_geoms,
+            left_foot_body=left_foot_body,
+            right_foot_body=right_foot_body,
             raw_config=config,
         )
 

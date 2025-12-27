@@ -12,7 +12,7 @@ Usage (v0.10+):
     train(env_step_fn, env_reset_fn, config, ref_motion_data=None)  # PPO-only
 """
 
-from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
+from playground_amp.configs.training_config import TrainingConfig
 from playground_amp.training.ppo_core import (
     compute_gae,
     compute_ppo_loss,
@@ -33,7 +33,7 @@ __all__ = [
     "train",
     "TrainingState",
     "IterationMetrics",
-    "TrainingRuntimeConfig",
+    "TrainingConfig",
     # Rollout
     "TrajectoryBatch",
     "collect_rollout",

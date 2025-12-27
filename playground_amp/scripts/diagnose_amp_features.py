@@ -132,7 +132,10 @@ CRITICAL_FEATURES = {
 
 def load_reference_features():
     """Load reference features from pickle file specified in training config."""
-    from playground_amp.configs.training_config import get_training_config, load_training_config
+    from playground_amp.configs.training_config import (
+        get_training_config,
+        load_training_config,
+    )
 
     # Load training config to get dataset path
     training_config_path = (
@@ -202,9 +205,21 @@ def collect_policy_features(num_samples=1000):
     """
     import jax
     import jax.numpy as jnp
-    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
-    from playground_amp.configs.training_config import get_training_config
-    from playground_amp.train import create_env
+    from playground_amp.amp.policy_features import (
+        extract_amp_features,
+        get_feature_config,
+    )
+    from playground_amp.configs.training_config import (
+        get_training_config,
+        load_training_config,
+    )
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+
+    def create_env():
+        """Create WildRobotEnv instance with default config."""
+        training_cfg = get_training_config()
+        runtime_config = training_cfg.to_runtime_config()
+        return WildRobotEnv(config=runtime_config)
 
     # Get Golden Rule params from training config
     training_config = get_training_config()

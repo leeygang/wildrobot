@@ -22,12 +22,14 @@ Architecture:
 
 Usage:
     # Stage 1: PPO-only
-    config = TrainingRuntimeConfig(..., amp_weight=0.0)
-    train_unified(env_step_fn, env_reset_fn, config, ref_motion_data=None)
+    config = load_training_config("configs/ppo_walking.yaml")
+    config.freeze()
+    train(env_step_fn, env_reset_fn, config, ref_motion_data=None)
 
     # Stage 3: AMP+PPO
-    config = TrainingRuntimeConfig(..., amp_weight=0.5)
-    train_unified(env_step_fn, env_reset_fn, config, ref_motion_data=ref_data)
+    config = load_training_config("configs/ppo_amp.yaml")
+    config.freeze()
+    train(env_step_fn, env_reset_fn, config, ref_motion_data=ref_data)
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ from playground_amp.amp.policy_features import (
     FeatureConfig,
 )
 from playground_amp.configs.feature_config import get_feature_config
-from playground_amp.configs.training_runtime_config import TrainingRuntimeConfig
+from playground_amp.configs.training_config import get_robot_config, TrainingConfig
 
 from playground_amp.training.ppo_core import (
     compute_gae,
@@ -340,7 +342,7 @@ def make_train_iteration_fn(
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     disc_optimizer: optax.GradientTransformation,
-    config: TrainingRuntimeConfig,
+    config: TrainingConfig,
     ref_buffer_data: Optional[jnp.ndarray],
 ):
     """Create JIT-compiled training iteration function.
@@ -349,7 +351,7 @@ def make_train_iteration_fn(
     using lax.cond for zero-overhead branching.
     """
     amp_feature_config = get_feature_config()
-    amp_enabled = config.amp.reward_weight > 0.0
+    amp_enabled = config.amp.weight > 0.0
 
     @jax.jit
     def train_iteration(
@@ -372,7 +374,7 @@ def make_train_iteration_fn(
             processor_params=state.processor_params,
             ppo_network=ppo_network,
             rng=rollout_rng,
-            num_steps=config.training.num_steps,
+            num_steps=config.ppo.rollout_steps,
             collect_amp_features=amp_enabled,
         )
 
@@ -390,11 +392,11 @@ def make_train_iteration_fn(
                 trajectory.root_heights,
                 trajectory.prev_joint_positions,
                 dt=0.02,
-                use_estimated_contacts=config.amp.use_estimated_contacts,
-                use_finite_diff_vel=config.amp.use_finite_diff_vel,
-                contact_threshold_angle=config.amp.contact_threshold_angle,
-                contact_knee_scale=config.amp.contact_knee_scale,
-                contact_min_confidence=config.amp.contact_min_confidence,
+                use_estimated_contacts=config.amp.feature_config.use_estimated_contacts,
+                use_finite_diff_vel=config.amp.feature_config.use_finite_diff_vel,
+                contact_threshold_angle=0.1,
+                contact_knee_scale=0.5,
+                contact_min_confidence=0.3,
             )
 
             # Flatten and normalize
@@ -426,9 +428,9 @@ def make_train_iteration_fn(
                     agent_features=norm_features,
                     ref_buffer_data=norm_ref,
                     rng=disc_rng,
-                    num_updates=config.amp.disc_updates_per_iter,
-                    batch_size=config.amp.disc_batch_size,
-                    r1_gamma=config.amp.r1_gamma,
+                    num_updates=config.amp.discriminator.updates_per_ppo_update,
+                    batch_size=config.amp.discriminator.batch_size,
+                    r1_gamma=config.amp.discriminator.r1_gamma,
                 )
             )
 
@@ -460,7 +462,7 @@ def make_train_iteration_fn(
         # Step 5: Combine rewards
         # ================================================================
         total_rewards = compute_reward_total(
-            trajectory.task_rewards, amp_rewards, config.amp.reward_weight
+            trajectory.task_rewards, amp_rewards, config.amp.weight
         )
 
         # ================================================================
@@ -478,7 +480,7 @@ def make_train_iteration_fn(
         # ================================================================
         # Step 7: PPO update
         # ================================================================
-        batch_size = config.training.num_steps * config.training.num_envs
+        batch_size = config.ppo.rollout_steps * config.ppo.num_envs
 
         flat_obs = trajectory.obs.reshape(batch_size, -1)
         flat_actions = trajectory.actions.reshape(batch_size, -1)
@@ -510,7 +512,7 @@ def make_train_iteration_fn(
             advantages=flat_advantages,
             returns=flat_returns,
             rng=ppo_rng,
-            num_epochs=config.ppo.update_epochs,
+            num_epochs=config.ppo.epochs,
             num_minibatches=config.ppo.num_minibatches,
             clip_epsilon=config.ppo.clip_epsilon,
             value_loss_coef=config.ppo.value_loss_coef,
@@ -520,7 +522,7 @@ def make_train_iteration_fn(
         # ================================================================
         # Step 8: Build new state and metrics
         # ================================================================
-        env_steps = config.training.num_steps * config.training.num_envs
+        env_steps = config.ppo.rollout_steps * config.ppo.num_envs
 
         # Episode metrics
         episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
@@ -584,7 +586,7 @@ def make_train_iteration_fn(
 def train(
     env_step_fn: Callable,
     env_reset_fn: Callable,
-    config: TrainingRuntimeConfig,
+    config: TrainingConfig,
     ref_motion_data: Optional[jnp.ndarray] = None,
     callback: Optional[
         Callable[[int, TrainingState, IterationMetrics, float], None]
@@ -606,50 +608,54 @@ def train(
     Returns:
         Final training state
     """
-    amp_enabled = config.amp.reward_weight > 0.0
+    amp_enabled = config.amp.weight > 0.0
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
     print("=" * 60)
     print(f"Unified Training ({mode_str})")
     print("=" * 60)
     print(f"Configuration:")
-    print(f"  obs_dim: {config.obs_dim}")
-    print(f"  action_dim: {config.action_dim}")
-    print(f"  num_envs: {config.training.num_envs}")
-    print(f"  num_steps: {config.training.num_steps}")
-    print(f"  total_iterations: {config.training.total_iterations}")
-    print(f"  amp_reward_weight: {config.amp.reward_weight}")
+    robot_config = get_robot_config()
+    print(f"  obs_dim: {robot_config.obs_dim}")
+    print(f"  action_dim: {robot_config.action_dim}")
+    print(f"  num_envs: {config.ppo.num_envs}")
+    print(f"  rollout_steps: {config.ppo.rollout_steps}")
+    print(f"  iterations: {config.ppo.iterations}")
+    print(f"  amp_weight: {config.amp.weight}")
     print("=" * 60)
 
     # Validate inputs
     if amp_enabled and ref_motion_data is None:
         raise ValueError(
-            f"amp.reward_weight={config.amp.reward_weight} > 0 but ref_motion_data is None. "
+            f"amp.weight={config.amp.weight} > 0 but ref_motion_data is None. "
             "Either set amp.reward_weight=0 or provide ref_motion_data."
         )
 
     # Initialize RNG
-    rng = jax.random.PRNGKey(config.training.seed)
+    rng = jax.random.PRNGKey(config.seed)
     rng, init_rng, env_rng, disc_rng = jax.random.split(rng, 4)
 
     # Create networks
     ppo_network = create_networks(
-        obs_dim=config.obs_dim,
-        action_dim=config.action_dim,
-        policy_hidden_dims=config.network.policy_hidden_dims,
-        value_hidden_dims=config.network.value_hidden_dims,
+        obs_dim=robot_config.obs_dim,
+        action_dim=robot_config.action_dim,
+        policy_hidden_dims=config.networks.actor.hidden_sizes,
+        value_hidden_dims=config.networks.critic.hidden_sizes,
     )
 
     # Initialize network parameters
     processor_params, policy_params, value_params = init_network_params(
-        ppo_network, config.obs_dim, config.action_dim, seed=int(init_rng[0])
+        ppo_network,
+        robot_config.obs_dim,
+        robot_config.action_dim,
+        seed=int(init_rng[0]),
     )
 
     # Create discriminator (always created, may be unused)
     amp_feature_dim = get_feature_config().feature_dim
     disc_model, disc_params = create_discriminator(
         obs_dim=amp_feature_dim,
-        hidden_dims=config.amp.disc_hidden_dims,
+        hidden_dims=config.networks.discriminator.hidden_sizes,
         seed=int(disc_rng[0]),
     )
 
@@ -662,7 +668,7 @@ def train(
         optax.clip_by_global_norm(config.ppo.max_grad_norm),
         optax.adam(float(config.ppo.learning_rate)),
     )
-    disc_optimizer = optax.adam(float(config.amp.disc_learning_rate))
+    disc_optimizer = optax.adam(float(config.amp.discriminator.learning_rate))
 
     # Initialize optimizer states
     policy_opt_state = policy_optimizer.init(policy_params)
@@ -721,25 +727,27 @@ def train(
     print("=" * 60)
 
     print("Starting training...")
-    print(f"  Total iterations: {config.training.total_iterations:,}")
-    total_expected_steps = config.training.total_iterations * config.training.num_envs * config.training.num_steps
+    print(f"  Total iterations: {config.ppo.iterations:,}")
+    total_expected_steps = (
+        config.ppo.iterations * config.ppo.num_envs * config.ppo.rollout_steps
+    )
     print(f"  Total steps: {total_expected_steps:,}")
     print()
 
     # Training loop
     start_time = time.time()
 
-    for iteration in range(1, config.training.total_iterations + 1):
+    for iteration in range(1, config.ppo.iterations + 1):
         iter_start = time.time()
 
         state, env_state, metrics = train_iteration_fn(state, env_state)
         jax.block_until_ready(state.total_steps)
 
         iter_time = time.time() - iter_start
-        steps_per_sec = (config.training.num_steps * config.training.num_envs) / iter_time
+        steps_per_sec = (config.ppo.rollout_steps * config.ppo.num_envs) / iter_time
 
         # Logging
-        if iteration % config.training.log_interval == 0 or iteration == 1:
+        if iteration % config.ppo.log_interval == 0 or iteration == 1:
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
 

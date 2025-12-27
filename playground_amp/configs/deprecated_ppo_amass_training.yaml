@@ -1,4 +1,10 @@
-# WildRobot Training Configuration (PPO + AMP)
+# =============================================================================
+# DEPRECATED: This config file uses the old schema and is no longer maintained.
+# Please use ppo_walking.yaml with the new unified schema instead.
+# See: playground_amp/configs/training_runtime_config.py for new schema
+# =============================================================================
+#
+# WildRobot Training Configuration (PPO + AMP) - OLD SCHEMA
 #
 # Usage:
 #   uv run python playground_amp/train.py

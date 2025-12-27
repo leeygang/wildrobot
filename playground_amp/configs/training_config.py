@@ -3,35 +3,39 @@
 This module provides utilities to load and manage training configuration
 from training YAML files.
 
-Design Principle: Shared config classes (PPOConfig, AMPConfig, etc.) are defined
-in training_runtime_config.py and composed into both TrainingConfig (mutable)
-and TrainingRuntimeConfig (frozen for JIT).
+Design Principle: Single freezable config classes defined in training_runtime_config.py.
+Call config.freeze() after CLI overrides to make configs JIT-compatible.
 
 Usage:
-    from playground_amp.configs.training_config import load_training_config, TrainingConfig
-    from playground_amp.configs.robot_config import load_robot_config, get_robot_config, RobotConfig
+    from playground_amp.configs.training_config import load_training_config
+    from playground_amp.configs.robot_config import load_robot_config
 
     # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")
 
-    # Access robot properties
-    print(robot_config.action_dim)  # 9
-    print(robot_config.actuator_names)  # ['waist_yaw', 'left_hip_pitch', ...]
-
     # Load training config
-    training_config = load_training_config("configs/wildrobot_phase3_training.yaml")
+    config = load_training_config("configs/ppo_walking.yaml")
+
+    # Access config properties (new unified access pattern)
+    print(config.networks.actor.hidden_sizes)  # (256, 256, 128)
+    print(config.ppo.learning_rate)            # 3e-4
+    print(config.amp.discriminator.r1_gamma)   # 10.0
+
+    # Modify config before training
+    config.ppo.learning_rate = 1e-4
+
+    # Freeze for JIT (call once before training)
+    config.freeze()
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-# Re-export for backward compatibility
-
+# Re-export robot config utilities
 from playground_amp.configs.robot_config import (  # noqa: F401
     clear_robot_config_cache,
     get_obs_indices,
@@ -39,236 +43,276 @@ from playground_amp.configs.robot_config import (  # noqa: F401
     load_robot_config,
     RobotConfig,
 )
+
+# Import all config classes from runtime config
 from playground_amp.configs.training_runtime_config import (
-    freeze_amp,
-    freeze_network,
-    freeze_ppo,
-    freeze_training_loop,
-    MutableAMPConfig,
-    MutableNetworkConfig,
-    MutablePPOConfig,
-    MutableTrainingLoopConfig,
-    TrainingRuntimeConfig,
+    ActorNetworkConfig,
+    AMPConfig,
+    AMPFeatureConfig,
+    AMPTargetsConfig,
+    CheckpointConfig,
+    CriticNetworkConfig,
+    DiscriminatorNetworkConfig,
+    DiscriminatorTrainingConfig,
+    EnvConfig,
+    Freezable,
+    FrozenInstanceError,
+    NetworksConfig,
+    PPOConfig,
+    RewardCompositionConfig,
+    RewardWeightsConfig,
+    TrainingConfig,
+    VideoConfig,
+    WandbConfig,
 )
 
 
-@dataclass
-class WandbConfig:
-    """W&B experiment tracking configuration."""
+__all__ = [
+    # Main config
+    "TrainingConfig",
+    "load_training_config",
+    "get_training_config",
+    "clear_config_cache",
+    # Sub-configs
+    "EnvConfig",
+    "PPOConfig",
+    "AMPConfig",
+    "NetworksConfig",
+    "ActorNetworkConfig",
+    "CriticNetworkConfig",
+    "DiscriminatorNetworkConfig",
+    "RewardWeightsConfig",
+    "RewardCompositionConfig",
+    "CheckpointConfig",
+    "WandbConfig",
+    "VideoConfig",
+    # Utils
+    "Freezable",
+    "FrozenInstanceError",
+    # Robot config re-exports
+    "RobotConfig",
+    "load_robot_config",
+    "get_robot_config",
+]
 
-    enabled: bool = True
-    project: str = "wildrobot-locomotion"
-    entity: Optional[str] = None
-    name: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    mode: str = "online"
-    log_frequency: int = 10
-    log_dir: str = "playground_amp/wandb"
+
+def _parse_list_to_tuple(value: Any, default: Tuple) -> Tuple[int, ...]:
+    """Convert list from YAML to tuple for hidden_sizes."""
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return default
 
 
-@dataclass
-class VideoConfig:
-    """Video generation configuration for evaluation rollouts."""
+def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
+    """Parse environment configuration from YAML dict."""
+    env = config.get("env", {})
+    return EnvConfig(
+        model_path=env.get("model_path", "assets/scene_flat_terrain.xml"),
+        sim_dt=env.get("sim_dt", 0.002),
+        ctrl_dt=env.get("ctrl_dt", 0.02),
+        max_episode_steps=env.get("max_episode_steps", 500),
+        target_height=env.get("target_height", 0.45),
+        min_height=env.get("min_height", 0.20),
+        max_height=env.get("max_height", 0.70),
+        max_pitch=env.get("max_pitch", 0.8),
+        max_roll=env.get("max_roll", 0.8),
+        min_velocity=env.get("min_velocity", 0.0),
+        max_velocity=env.get("max_velocity", 1.0),
+        contact_threshold_force=env.get("contact_threshold_force", 5.0),
+        contact_scale=env.get("contact_scale", 10.0),
+        use_action_filter=env.get("use_action_filter", True),
+        action_filter_alpha=env.get("action_filter_alpha", 0.7),
+    )
 
-    enabled: bool = True
-    num_videos: int = 1
-    episode_length: int = 500
-    render_every: int = 2
-    width: int = 640
-    height: int = 480
-    fps: int = 25
-    upload_to_wandb: bool = True
-    output_subdir: str = "videos"
+
+def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
+    """Parse PPO configuration from YAML dict."""
+    ppo = config.get("ppo", {})
+    return PPOConfig(
+        num_envs=ppo.get("num_envs", 1024),
+        rollout_steps=ppo.get("rollout_steps", 128),
+        iterations=ppo.get("iterations", 1000),
+        learning_rate=ppo.get("learning_rate", 3e-4),
+        gamma=ppo.get("gamma", 0.99),
+        gae_lambda=ppo.get("gae_lambda", 0.95),
+        clip_epsilon=ppo.get("clip_epsilon", 0.2),
+        entropy_coef=ppo.get("entropy_coef", 0.01),
+        value_loss_coef=ppo.get("value_loss_coef", 0.5),
+        epochs=ppo.get("epochs", 4),
+        num_minibatches=ppo.get("num_minibatches", 32),
+        max_grad_norm=ppo.get("max_grad_norm", 0.5),
+        log_interval=ppo.get("log_interval", 10),
+    )
 
 
-@dataclass
-class TrainingConfig:
-    """Training configuration loaded from YAML file.
+def _parse_amp_config(config: Dict[str, Any]) -> AMPConfig:
+    """Parse AMP configuration from YAML dict."""
+    amp = config.get("amp", {})
+    disc = amp.get("discriminator", {})
+    feature = amp.get("feature_config", {})
+    targets = amp.get("targets", {})
 
-    Uses composed mutable config objects for easy CLI overrides.
+    return AMPConfig(
+        enabled=amp.get("enabled", False),
+        dataset_path=amp.get("dataset_path"),
+        weight=amp.get("weight", 0.0),
+        discriminator=DiscriminatorTrainingConfig(
+            learning_rate=disc.get("learning_rate", 8e-5),
+            batch_size=disc.get("batch_size", 256),
+            updates_per_ppo_update=disc.get("updates_per_ppo_update", 2),
+            r1_gamma=disc.get("r1_gamma", 10.0),
+            input_noise_std=disc.get("input_noise_std", 0.03),
+        ),
+        feature_config=AMPFeatureConfig(
+            use_finite_diff_vel=feature.get("use_finite_diff_vel", True),
+            use_estimated_contacts=feature.get("use_estimated_contacts", True),
+            mask_waist=feature.get("mask_waist", False),
+            enable_mirror_augmentation=feature.get("enable_mirror_augmentation", False),
+        ),
+        targets=AMPTargetsConfig(
+            disc_acc_min=targets.get("disc_acc_min", 0.55),
+            disc_acc_max=targets.get("disc_acc_max", 0.80),
+        ),
+    )
+
+
+def _parse_networks_config(config: Dict[str, Any]) -> NetworksConfig:
+    """Parse networks configuration from YAML dict."""
+    networks = config.get("networks", {})
+    actor = networks.get("actor", {})
+    critic = networks.get("critic", {})
+    disc = networks.get("discriminator", {})
+
+    return NetworksConfig(
+        actor=ActorNetworkConfig(
+            hidden_sizes=_parse_list_to_tuple(
+                actor.get("hidden_sizes"), (256, 256, 128)
+            ),
+            activation=actor.get("activation", "elu"),
+            log_std_init=actor.get("log_std_init", -1.0),
+            min_log_std=actor.get("min_log_std", -5.0),
+            max_log_std=actor.get("max_log_std", 2.0),
+        ),
+        critic=CriticNetworkConfig(
+            hidden_sizes=_parse_list_to_tuple(
+                critic.get("hidden_sizes"), (256, 256, 128)
+            ),
+            activation=critic.get("activation", "elu"),
+        ),
+        discriminator=DiscriminatorNetworkConfig(
+            hidden_sizes=_parse_list_to_tuple(disc.get("hidden_sizes"), (512, 256)),
+            activation=disc.get("activation", "relu"),
+        ),
+    )
+
+
+def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
+    """Parse reward weights from YAML dict."""
+    # Support both 'rewards:' (old) and 'reward_weights:' (new) format
+    rewards = config.get("reward_weights", config.get("rewards", {}))
+    return RewardWeightsConfig(
+        tracking_lin_vel=rewards.get("tracking_lin_vel", 2.0),
+        lateral_velocity=rewards.get("lateral_velocity", -0.5),
+        base_height=rewards.get("base_height", 0.5),
+        orientation=rewards.get("orientation", -0.5),
+        angular_velocity=rewards.get("angular_velocity", -0.05),
+        torque=rewards.get("torque", -0.001),
+        saturation=rewards.get("saturation", -0.1),
+        action_rate=rewards.get("action_rate", -0.01),
+        joint_velocity=rewards.get("joint_velocity", -0.001),
+        slip=rewards.get("slip", -0.5),
+        clearance=rewards.get("clearance", 0.1),
+        forward_velocity_scale=rewards.get("forward_velocity_scale", 4.0),
+    )
+
+
+def _parse_reward_composition_config(config: Dict[str, Any]) -> RewardCompositionConfig:
+    """Parse reward composition from YAML dict."""
+    reward = config.get("reward", {})
+
+    # Parse clip values (can be null or [min, max])
+    task_clip = reward.get("task_reward_clip")
+    amp_clip = reward.get("amp_reward_clip", [0.0, 1.0])
+
+    return RewardCompositionConfig(
+        task_weight=reward.get("task_weight", 1.0),
+        amp_weight=reward.get("amp_weight", 0.0),
+        task_reward_clip=tuple(task_clip) if task_clip else None,
+        amp_reward_clip=tuple(amp_clip) if amp_clip else None,
+    )
+
+
+def _parse_checkpoint_config(config: Dict[str, Any]) -> CheckpointConfig:
+    """Parse checkpoint configuration from YAML dict."""
+    ckpt = config.get("checkpoints", {})
+    return CheckpointConfig(
+        dir=ckpt.get("dir", "playground_amp/checkpoints"),
+        interval=ckpt.get("interval", 50),
+        keep_last_n=ckpt.get("keep_last_n", 5),
+    )
+
+
+def _parse_wandb_config(config: Dict[str, Any]) -> WandbConfig:
+    """Parse W&B configuration from YAML dict."""
+    wandb = config.get("wandb", {})
+    return WandbConfig(
+        enabled=wandb.get("enabled", True),
+        project=wandb.get("project", "wildrobot"),
+        mode=wandb.get("mode", "online"),
+        tags=wandb.get("tags", []),
+        entity=wandb.get("entity"),
+        name=wandb.get("name"),
+        log_frequency=wandb.get("log_frequency", 10),
+        log_dir=wandb.get("log_dir", "playground_amp/wandb"),
+    )
+
+
+def _parse_video_config(config: Dict[str, Any]) -> VideoConfig:
+    """Parse video configuration from YAML dict."""
+    video = config.get("video", {})
+    return VideoConfig(
+        enabled=video.get("enabled", False),
+        num_videos=video.get("num_videos", 1),
+        episode_length=video.get("episode_length", 500),
+        render_every=video.get("render_every", 2),
+        width=video.get("width", 640),
+        height=video.get("height", 480),
+        fps=video.get("fps", 25),
+        upload_to_wandb=video.get("upload_to_wandb", True),
+        output_subdir=video.get("output_subdir", "videos"),
+    )
+
+
+def load_training_config_from_dict(config: Dict[str, Any]) -> TrainingConfig:
+    """Create TrainingConfig from a parsed YAML dict.
+
+    Args:
+        config: Parsed YAML configuration dictionary
+
+    Returns:
+        TrainingConfig instance (mutable, call freeze() when ready)
     """
-
-    # Version tracking (see CHANGELOG.md)
-    version: str
-    version_name: str
-
-    # Environment
-    ctrl_dt: float
-    sim_dt: float
-    target_height: float
-    min_height: float
-    max_height: float
-    min_velocity: float
-    max_velocity: float
-    max_episode_steps: int
-    use_action_filter: bool
-    action_filter_alpha: float
-
-    # Composed mutable configs (supports direct modification)
-    ppo: MutablePPOConfig
-    amp: MutableAMPConfig
-    network: MutableNetworkConfig
-    training: MutableTrainingLoopConfig
-
-    # Paths and other settings
-    checkpoint_dir: str
-    ref_motion_path: Optional[str]
-
-    # v0.6.3: Feature Cleaning (removes discriminator cheats)
-    velocity_filter_alpha: float  # EMA filter for velocity smoothing (0=off)
-    ankle_offset: float  # Ankle pitch calibration offset (rad)
-
-    # Reward weights
-    reward_weights: Dict[str, float]
-
-    # W&B configuration
-    wandb: WandbConfig
-
-    # Raw config for additional access
-    raw_config: Dict[str, Any] = field(repr=False)
-
-    @classmethod
-    def from_yaml(cls, config_path: str | Path) -> "TrainingConfig":
-        """Load training configuration from YAML file.
-
-        Config format uses 'ppo:' section for PPO hyperparameters.
-
-        Args:
-            config_path: Path to training config YAML
-
-        Returns:
-            TrainingConfig instance
-        """
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        env = config.get("env", {})
-        networks = config.get("networks", {})
-        amp_cfg = config.get("amp", {})
-        ppo_cfg = config.get("ppo", {})
-
-        # Support both 'rewards:' (Stage 1) and 'reward_weights:' (AMP) format
-        rewards = config.get("rewards", config.get("reward_weights", {}))
-
-        # Create composed mutable configs
-        ppo = MutablePPOConfig(
-            learning_rate=ppo_cfg.get("learning_rate", 3e-4),
-            gamma=ppo_cfg.get("gamma", 0.99),
-            gae_lambda=ppo_cfg.get("gae_lambda", 0.95),
-            clip_epsilon=ppo_cfg.get("clip_epsilon", 0.2),
-            value_loss_coef=ppo_cfg.get("value_loss_coef", 0.5),
-            entropy_coef=ppo_cfg.get("entropy_coef", 0.01),
-            max_grad_norm=ppo_cfg.get("max_grad_norm", 0.5),
-            num_minibatches=ppo_cfg.get("num_minibatches", 4),
-            update_epochs=ppo_cfg.get("epochs", 4),
-        )
-
-        amp = MutableAMPConfig(
-            reward_weight=amp_cfg.get("weight", 1.0),
-            disc_learning_rate=amp_cfg.get("disc_lr", 1e-4),
-            disc_updates_per_iter=amp_cfg.get("update_steps", 2),
-            disc_batch_size=amp_cfg.get("batch_size", 512),
-            r1_gamma=amp_cfg.get("r1_gamma", 5.0),
-            disc_hidden_dims=tuple(
-                amp_cfg.get("discriminator_hidden", [1024, 512, 256])
-            ),
-            disc_input_noise_std=amp_cfg.get("disc_input_noise_std", 0.0),
-            use_estimated_contacts=amp_cfg.get("use_estimated_contacts", True),
-            use_finite_diff_vel=amp_cfg.get("use_finite_diff_vel", True),
-            contact_threshold_angle=amp_cfg.get("contact_threshold_angle", 0.1),
-            contact_knee_scale=amp_cfg.get("contact_knee_scale", 0.5),
-            contact_min_confidence=amp_cfg.get("contact_min_confidence", 0.3),
-            drop_contacts=amp_cfg.get("feature", {}).get("drop_contacts", False),
-            drop_height=amp_cfg.get("feature", {}).get("drop_height", False),
-            normalize_velocity=amp_cfg.get("feature", {}).get(
-                "normalize_velocity", False
-            ),
-        )
-
-        network = MutableNetworkConfig(
-            policy_hidden_dims=tuple(
-                networks.get("policy_hidden_dims", [512, 256, 128])
-            ),
-            value_hidden_dims=tuple(networks.get("value_hidden_dims", [512, 256, 128])),
-        )
-
-        training_loop = MutableTrainingLoopConfig(
-            num_envs=ppo_cfg.get("num_envs", 512),
-            num_steps=ppo_cfg.get("rollout_steps", 10),
-            total_iterations=ppo_cfg.get("iterations", 3000),
-            seed=ppo_cfg.get("seed", 42),
-            log_interval=ppo_cfg.get("log_interval", 10),
-        )
-
-        return cls(
-            # Version tracking
-            version=config.get("version", "0.0.0"),
-            version_name=config.get("version_name", "Unknown"),
-            # Environment
-            ctrl_dt=env.get("ctrl_dt", 0.02),
-            sim_dt=env.get("sim_dt", 0.002),
-            target_height=env.get("target_height", 0.45),
-            min_height=env.get("min_height", 0.2),
-            max_height=env.get("max_height", 0.7),
-            min_velocity=env.get("min_velocity", 0.5),
-            max_velocity=env.get("max_velocity", 1.0),
-            max_episode_steps=env.get("max_episode_steps", 500),
-            use_action_filter=env.get("use_action_filter", True),
-            action_filter_alpha=env.get("action_filter_alpha", 0.7),
-            # Composed configs
-            ppo=ppo,
-            amp=amp,
-            network=network,
-            training=training_loop,
-            # Paths
-            checkpoint_dir=config.get("checkpoints", {}).get(
-                "dir", "playground_amp/checkpoints"
-            ),
-            ref_motion_path=amp_cfg.get("dataset_path"),
-            # v0.6.3: Feature Cleaning
-            velocity_filter_alpha=amp_cfg.get("velocity_filter_alpha", 0.0),
-            ankle_offset=amp_cfg.get("ankle_offset", 0.18),
-            # Reward weights
-            reward_weights=rewards,
-            # W&B configuration
-            wandb=cls._parse_wandb_config(config.get("wandb", {})),
-            # Raw config
-            raw_config=config,
-        )
-
-    @staticmethod
-    def _parse_wandb_config(wandb_cfg: Dict[str, Any]) -> WandbConfig:
-        """Parse W&B configuration from YAML dict."""
-        return WandbConfig(
-            enabled=wandb_cfg.get("enabled", True),
-            project=wandb_cfg.get("project", "wildrobot-locomotion"),
-            entity=wandb_cfg.get("entity"),
-            name=wandb_cfg.get("name"),
-            tags=wandb_cfg.get("tags", []),
-            mode=wandb_cfg.get("mode", "online"),
-            log_frequency=wandb_cfg.get("log_frequency", 10),
-            log_dir=wandb_cfg.get("log_dir", "playground_amp/wandb"),
-        )
-
-    def to_runtime_config(self) -> TrainingRuntimeConfig:
-        """Create TrainingRuntimeConfig for JIT-compiled training.
-
-        Converts mutable composed configs to frozen versions for JIT.
-
-        Returns:
-            TrainingRuntimeConfig with all values needed for JIT compilation
-        """
-        # Get obs_dim and action_dim from RobotConfig
-        robot_config = get_robot_config()
-
-        return TrainingRuntimeConfig(
-            obs_dim=robot_config.observation_dim,
-            action_dim=robot_config.action_dim,
-            ppo=freeze_ppo(self.ppo),
-            amp=freeze_amp(self.amp),
-            network=freeze_network(self.network),
-            training=freeze_training_loop(self.training),
-        )
+    return TrainingConfig(
+        # Version
+        version=config.get("version", "0.11.1"),
+        version_name=config.get("version_name", "Unified PPO + AMP"),
+        # Global seed
+        seed=config.get("seed", 42),
+        # Composed configs
+        env=_parse_env_config(config),
+        ppo=_parse_ppo_config(config),
+        amp=_parse_amp_config(config),
+        networks=_parse_networks_config(config),
+        reward_weights=_parse_reward_weights_config(config),
+        reward=_parse_reward_composition_config(config),
+        checkpoints=_parse_checkpoint_config(config),
+        wandb=_parse_wandb_config(config),
+        video=_parse_video_config(config),
+        # Raw config for additional access
+        raw_config=config,
+    )
 
 
 # Cached training config
@@ -276,17 +320,28 @@ _training_config: Optional[TrainingConfig] = None
 
 
 def load_training_config(config_path: str | Path) -> TrainingConfig:
-    """Load training configuration.
+    """Load training configuration from YAML file.
+
+    The returned config is mutable. After making any modifications,
+    call config.freeze() to make it JIT-compatible.
 
     Args:
-        config_path: Path to training config YAML (required).
+        config_path: Path to training config YAML (required)
 
     Returns:
-        TrainingConfig instance
+        TrainingConfig instance (mutable)
+
+    Example:
+        config = load_training_config("configs/ppo_walking.yaml")
+        config.ppo.learning_rate = 1e-4  # Override via CLI
+        config.freeze()  # Freeze before training
     """
     global _training_config
 
-    _training_config = TrainingConfig.from_yaml(config_path)
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    _training_config = load_training_config_from_dict(config)
     return _training_config
 
 

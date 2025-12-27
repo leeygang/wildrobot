@@ -374,6 +374,8 @@ feet:
   sites:
   - left_foot_mimic
   - right_foot_mimic
+  left_foot_body: left_foot
+  right_foot_body: right_foot
   left_toe: left_toe
   left_heel: left_heel
   right_toe: right_toe

@@ -1,227 +1,374 @@
 """Runtime configuration for JIT-compiled training.
 
-This module contains shared config dataclasses that are used by both
-TrainingConfig (mutable, from YAML) and TrainingRuntimeConfig (frozen, for JIT).
-
-Design Principle: Define fields in both Mutable*Config and *Config classes.
-- Mutable versions are used in TrainingConfig for CLI overrides
-- Frozen versions are used in TrainingRuntimeConfig for JIT compilation
+This module provides a unified config system where:
+1. All configs start as mutable dataclasses for easy CLI overrides
+2. Call `freeze()` to create JIT-compatible frozen versions
+3. Single class definition - no duplicate mutable/frozen classes
 
 Usage:
     from playground_amp.configs.training_config import load_training_config
 
-    training_config = load_training_config("configs/ppo_amass_training.yaml")
+    config = load_training_config("configs/ppo_walking.yaml")
 
     # Modify via mutable configs
-    training_config.ppo.learning_rate = 1e-4
+    config.ppo.learning_rate = 1e-4
+    config.networks.actor.hidden_sizes = [512, 256]
 
-    # Convert to frozen for JIT
-    runtime_config = training_config.to_runtime_config()
+    # Freeze for JIT (call once before training)
+    config.freeze()
+
+    # After freeze, modifications raise FrozenInstanceError
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Tuple
+from dataclasses import dataclass, field, fields
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# =============================================================================
-# Mutable Config Classes (for TrainingConfig - supports CLI overrides)
-# =============================================================================
+class FrozenInstanceError(Exception):
+    """Raised when attempting to modify a frozen config instance."""
+
+    pass
 
 
-@dataclass
-class MutablePPOConfig:
-    """Mutable PPO hyperparameters for TrainingConfig."""
+class Freezable:
+    """Mixin that allows dataclasses to be frozen after initialization.
 
-    learning_rate: float = 3e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_epsilon: float = 0.2
-    value_loss_coef: float = 0.5
-    entropy_coef: float = 0.01
-    max_grad_norm: float = 0.5
-    num_minibatches: int = 4
-    update_epochs: int = 4
-
-
-@dataclass
-class MutableAMPConfig:
-    """Mutable AMP configuration for TrainingConfig."""
-
-    # Reward weighting
-    reward_weight: float = 0.5
-
-    # Discriminator training
-    disc_learning_rate: float = 1e-4
-    disc_updates_per_iter: int = 2
-    disc_batch_size: int = 256
-    r1_gamma: float = 10.0
-    disc_hidden_dims: Tuple[int, ...] = (512, 256)
-    disc_input_noise_std: float = 0.0
-
-    # v0.6.0: Policy Replay Buffer
-    replay_buffer_size: int = 0
-    replay_buffer_ratio: float = 0.5
-
-    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: bool = True
-    use_finite_diff_vel: bool = True
-    contact_threshold_angle: float = 0.1
-    contact_knee_scale: float = 0.5
-    contact_min_confidence: float = 0.3
-
-    # v0.8.0: Feature Dropping
-    drop_contacts: bool = False
-    drop_height: bool = False
-    normalize_velocity: bool = False
-
-
-@dataclass
-class MutableNetworkConfig:
-    """Mutable network architecture configuration for TrainingConfig."""
-
-    policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)
-    value_hidden_dims: Tuple[int, ...] = (512, 256, 128)
-
-
-@dataclass
-class MutableTrainingLoopConfig:
-    """Mutable training loop parameters for TrainingConfig."""
-
-    num_envs: int = 512
-    num_steps: int = 64  # rollout_steps
-    total_iterations: int = 1000
-    seed: int = 42
-    log_interval: int = 10
-
-
-# =============================================================================
-# Frozen Config Classes (for TrainingRuntimeConfig - JIT compatible)
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class PPOConfig:
-    """Frozen PPO hyperparameters for JIT compilation."""
-
-    learning_rate: float = 3e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_epsilon: float = 0.2
-    value_loss_coef: float = 0.5
-    entropy_coef: float = 0.01
-    max_grad_norm: float = 0.5
-    num_minibatches: int = 4
-    update_epochs: int = 4
-
-
-@dataclass(frozen=True)
-class AMPConfig:
-    """Frozen AMP configuration for JIT compilation."""
-
-    # Reward weighting
-    reward_weight: float = 0.5
-
-    # Discriminator training
-    disc_learning_rate: float = 1e-4
-    disc_updates_per_iter: int = 2
-    disc_batch_size: int = 256
-    r1_gamma: float = 10.0
-    disc_hidden_dims: Tuple[int, ...] = (512, 256)
-    disc_input_noise_std: float = 0.0
-
-    # v0.6.0: Policy Replay Buffer
-    replay_buffer_size: int = 0
-    replay_buffer_ratio: float = 0.5
-
-    # v0.6.2: Golden Rule Configuration (Mathematical Parity)
-    use_estimated_contacts: bool = True
-    use_finite_diff_vel: bool = True
-    contact_threshold_angle: float = 0.1
-    contact_knee_scale: float = 0.5
-    contact_min_confidence: float = 0.3
-
-    # v0.8.0: Feature Dropping
-    drop_contacts: bool = False
-    drop_height: bool = False
-    normalize_velocity: bool = False
-
-
-@dataclass(frozen=True)
-class NetworkConfig:
-    """Frozen network architecture configuration for JIT compilation."""
-
-    policy_hidden_dims: Tuple[int, ...] = (512, 256, 128)
-    value_hidden_dims: Tuple[int, ...] = (512, 256, 128)
-
-
-@dataclass(frozen=True)
-class TrainingLoopConfig:
-    """Frozen training loop parameters for JIT compilation."""
-
-    num_envs: int = 512
-    num_steps: int = 64  # rollout_steps
-    total_iterations: int = 1000
-    seed: int = 42
-    log_interval: int = 10
-
-
-# =============================================================================
-# Freeze Helpers (convert mutable → frozen)
-# =============================================================================
-
-
-def freeze_ppo(mutable: MutablePPOConfig) -> PPOConfig:
-    """Convert MutablePPOConfig to frozen PPOConfig."""
-    return PPOConfig(**asdict(mutable))
-
-
-def freeze_amp(mutable: MutableAMPConfig) -> AMPConfig:
-    """Convert MutableAMPConfig to frozen AMPConfig."""
-    return AMPConfig(**asdict(mutable))
-
-
-def freeze_network(mutable: MutableNetworkConfig) -> NetworkConfig:
-    """Convert MutableNetworkConfig to frozen NetworkConfig."""
-    return NetworkConfig(**asdict(mutable))
-
-
-def freeze_training_loop(mutable: MutableTrainingLoopConfig) -> TrainingLoopConfig:
-    """Convert MutableTrainingLoopConfig to frozen TrainingLoopConfig."""
-    return TrainingLoopConfig(**asdict(mutable))
-
-
-# =============================================================================
-# TrainingRuntimeConfig (composed from frozen configs)
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class TrainingRuntimeConfig:
-    """Runtime configuration for JIT-compiled AMP+PPO training.
-
-    This class composes frozen config objects for JIT compatibility.
-    All values must be static (known at compile time) for JIT.
-
-    NOTE: This class should only be created through TrainingConfig.to_runtime_config().
-
-    Usage:
-        config = training_cfg.to_runtime_config()
-
-        # Access via composed configs
-        config.ppo.learning_rate
-        config.amp.reward_weight
-        config.network.policy_hidden_dims
-        config.training.num_envs
+    After calling freeze(), all attribute assignments raise FrozenInstanceError.
+    This makes the config JIT-compatible while allowing initial mutations.
     """
 
-    # Environment dimensions (from RobotConfig)
-    obs_dim: int
-    action_dim: int
+    _frozen: bool = False
 
-    # Composed frozen configs
-    ppo: PPOConfig
-    amp: AMPConfig
-    network: NetworkConfig
-    training: TrainingLoopConfig
+    def freeze(self) -> None:
+        """Freeze this config and all nested Freezable configs.
+
+        After freezing:
+        - Attribute assignment raises FrozenInstanceError
+        - The config becomes JIT-compatible
+        """
+        object.__setattr__(self, "_frozen", True)
+
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, Freezable):
+                value.freeze()
+
+    def __setattr__(self, name: str, value) -> None:
+        if getattr(self, "_frozen", False):
+            raise FrozenInstanceError(
+                f"Cannot modify '{name}' on frozen config. "
+                "Call freeze() only after all modifications are complete."
+            )
+        object.__setattr__(self, name, value)
+
+    @property
+    def is_frozen(self) -> bool:
+        """Check if this config is frozen."""
+        return getattr(self, "_frozen", False)
+
+
+# =============================================================================
+# Environment Config
+# =============================================================================
+@dataclass
+class EnvConfig(Freezable):
+    """Environment configuration."""
+
+    model_path: str = "assets/scene_flat_terrain.xml"
+
+    # Timing
+    sim_dt: float = 0.002
+    ctrl_dt: float = 0.02
+
+    # Episode
+    max_episode_steps: int = 500
+
+    # Health / termination
+    target_height: float = 0.45
+    min_height: float = 0.20
+    max_height: float = 0.70
+    max_pitch: float = 0.8
+    max_roll: float = 0.8
+
+    # Commands
+    min_velocity: float = 0.0
+    max_velocity: float = 1.0
+
+    # Contacts
+    contact_threshold_force: float = 5.0
+    contact_scale: float = 10.0
+
+    # Action filtering
+    use_action_filter: bool = True
+    action_filter_alpha: float = 0.7
+
+
+# =============================================================================
+# PPO Config
+# =============================================================================
+@dataclass
+class PPOConfig(Freezable):
+    """PPO algorithm configuration."""
+
+    num_envs: int = 1024
+    rollout_steps: int = 128
+    iterations: int = 1000
+
+    learning_rate: float = 3e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+
+    clip_epsilon: float = 0.2
+    entropy_coef: float = 0.01
+    value_loss_coef: float = 0.5
+
+    epochs: int = 4
+    num_minibatches: int = 32
+    max_grad_norm: float = 0.5
+
+    log_interval: int = 10
+
+
+# =============================================================================
+# AMP Discriminator Training Config (NOT architecture)
+# =============================================================================
+@dataclass
+class DiscriminatorTrainingConfig(Freezable):
+    """Discriminator training hyperparameters (NOT architecture)."""
+
+    learning_rate: float = 8e-5
+    batch_size: int = 256
+    updates_per_ppo_update: int = 2
+    r1_gamma: float = 10.0
+    input_noise_std: float = 0.03
+
+
+@dataclass
+class AMPFeatureConfig(Freezable):
+    """AMP feature parity controls."""
+
+    use_finite_diff_vel: bool = True
+    use_estimated_contacts: bool = True
+    mask_waist: bool = False
+    enable_mirror_augmentation: bool = False
+
+
+@dataclass
+class AMPTargetsConfig(Freezable):
+    """AMP diagnostic targets for alerts/logging."""
+
+    disc_acc_min: float = 0.55
+    disc_acc_max: float = 0.80
+
+
+@dataclass
+class AMPConfig(Freezable):
+    """AMP (Adversarial Motion Prior) configuration."""
+
+    enabled: bool = False
+    dataset_path: Optional[str] = None
+    weight: float = 0.0
+
+    # Discriminator training config
+    discriminator: DiscriminatorTrainingConfig = field(
+        default_factory=DiscriminatorTrainingConfig
+    )
+
+    # Feature parity
+    feature_config: AMPFeatureConfig = field(default_factory=AMPFeatureConfig)
+
+    # Diagnostic targets
+    targets: AMPTargetsConfig = field(default_factory=AMPTargetsConfig)
+
+
+# =============================================================================
+# Network Configs (Option A: algorithm-agnostic)
+# =============================================================================
+@dataclass
+class ActorNetworkConfig(Freezable):
+    """Actor (policy) network configuration."""
+
+    hidden_sizes: Tuple[int, ...] = (256, 256, 128)
+    activation: str = "elu"
+    log_std_init: float = -1.0
+    min_log_std: float = -5.0
+    max_log_std: float = 2.0
+
+
+@dataclass
+class CriticNetworkConfig(Freezable):
+    """Critic (value) network configuration."""
+
+    hidden_sizes: Tuple[int, ...] = (256, 256, 128)
+    activation: str = "elu"
+
+
+@dataclass
+class DiscriminatorNetworkConfig(Freezable):
+    """Discriminator network configuration (architecture only)."""
+
+    hidden_sizes: Tuple[int, ...] = (512, 256)
+    activation: str = "relu"
+
+
+@dataclass
+class NetworksConfig(Freezable):
+    """All network configurations."""
+
+    actor: ActorNetworkConfig = field(default_factory=ActorNetworkConfig)
+    critic: CriticNetworkConfig = field(default_factory=CriticNetworkConfig)
+    discriminator: DiscriminatorNetworkConfig = field(
+        default_factory=DiscriminatorNetworkConfig
+    )
+
+
+# =============================================================================
+# Reward Configs
+# =============================================================================
+@dataclass
+class RewardWeightsConfig(Freezable):
+    """Task reward weights (environment-side)."""
+
+    # Primary objectives
+    tracking_lin_vel: float = 2.0
+    lateral_velocity: float = -0.5
+    base_height: float = 0.5
+    orientation: float = -0.5
+    angular_velocity: float = -0.05
+
+    # Effort and safety
+    torque: float = -0.001
+    saturation: float = -0.1
+
+    # Smoothness
+    action_rate: float = -0.01
+    joint_velocity: float = -0.001
+
+    # Foot stability
+    slip: float = -0.5
+    clearance: float = 0.1
+
+    # Shaping
+    forward_velocity_scale: float = 4.0
+
+
+@dataclass
+class RewardCompositionConfig(Freezable):
+    """Reward composition (trainer-side)."""
+
+    task_weight: float = 1.0
+    amp_weight: float = 0.0
+    task_reward_clip: Optional[Tuple[float, float]] = None
+    amp_reward_clip: Optional[Tuple[float, float]] = (0.0, 1.0)
+
+
+# =============================================================================
+# Checkpoint Config
+# =============================================================================
+@dataclass
+class CheckpointConfig(Freezable):
+    """Checkpoint configuration."""
+
+    dir: str = "playground_amp/checkpoints"
+    interval: int = 50
+    keep_last_n: int = 5
+
+
+# =============================================================================
+# Logging Configs
+# =============================================================================
+@dataclass
+class WandbConfig(Freezable):
+    """W&B experiment tracking configuration."""
+
+    enabled: bool = True
+    project: str = "wildrobot"
+    mode: str = "online"
+    tags: List[str] = field(default_factory=list)
+    entity: Optional[str] = None
+    name: Optional[str] = None
+    log_frequency: int = 10
+    log_dir: str = "playground_amp/wandb"
+
+
+@dataclass
+class VideoConfig(Freezable):
+    """Video generation configuration."""
+
+    enabled: bool = False
+    num_videos: int = 1
+    episode_length: int = 500
+    render_every: int = 2
+    width: int = 640
+    height: int = 480
+    fps: int = 25
+    upload_to_wandb: bool = True
+    output_subdir: str = "videos"
+
+
+# =============================================================================
+# Main Training Config
+# =============================================================================
+@dataclass
+class TrainingConfig(Freezable):
+    """Main training configuration.
+
+    Access pattern examples:
+        config.networks.actor.hidden_sizes  # [256, 256, 128]
+        config.ppo.learning_rate            # 3e-4
+        config.amp.discriminator.r1_gamma   # 10.0
+        config.reward_weights.tracking_lin_vel  # 2.0
+    """
+
+    # Version (from YAML config)
+    version: str = ""
+    version_name: str = ""
+
+    # Global seed
+    seed: int = 42
+
+    # Composed configs
+    env: EnvConfig = field(default_factory=EnvConfig)
+    ppo: PPOConfig = field(default_factory=PPOConfig)
+    amp: AMPConfig = field(default_factory=AMPConfig)
+    networks: NetworksConfig = field(default_factory=NetworksConfig)
+    reward_weights: RewardWeightsConfig = field(default_factory=RewardWeightsConfig)
+    reward: RewardCompositionConfig = field(default_factory=RewardCompositionConfig)
+    checkpoints: CheckpointConfig = field(default_factory=CheckpointConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
+    video: VideoConfig = field(default_factory=VideoConfig)
+
+    # Raw config for additional access (not frozen)
+    raw_config: Dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def apply_overrides(self, overrides: Dict[str, Any]) -> None:
+        """Apply nested overrides from a dict (e.g., quick_verify section).
+
+        The overrides dict follows the same schema as the main config.
+        Example: {"ppo": {"num_envs": 4}, "wandb": {"enabled": false}}
+
+        Call this before freeze() to apply overrides.
+        """
+        for key, value in overrides.items():
+            if hasattr(self, key):
+                target = getattr(self, key)
+                if isinstance(value, dict) and isinstance(target, Freezable):
+                    # Recursively apply nested overrides
+                    self._apply_nested_overrides(target, value)
+                else:
+                    # Direct value assignment
+                    setattr(self, key, value)
+
+    def _apply_nested_overrides(
+        self, target: Freezable, overrides: Dict[str, Any]
+    ) -> None:
+        """Recursively apply overrides to a nested Freezable config."""
+        for key, value in overrides.items():
+            if hasattr(target, key):
+                current = getattr(target, key)
+                if isinstance(value, dict) and isinstance(current, Freezable):
+                    self._apply_nested_overrides(current, value)
+                else:
+                    setattr(target, key, value)
