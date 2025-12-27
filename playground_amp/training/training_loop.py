@@ -130,6 +130,13 @@ class IterationMetrics(NamedTuple):
     episode_length: jnp.ndarray
     success_rate: jnp.ndarray
 
+    # v0.10.2: Termination diagnostics (fraction of episodes ending due to each cause)
+    term_height_low: jnp.ndarray
+    term_height_high: jnp.ndarray
+    term_pitch: jnp.ndarray
+    term_roll: jnp.ndarray
+    term_truncated: jnp.ndarray
+
 
 # =============================================================================
 # Feature Normalization
@@ -542,6 +549,21 @@ def make_train_iteration_fn(
             0.0,
         )
 
+        # v0.10.2: Termination diagnostics - compute fraction of episodes ending due to each cause
+        # Sum termination events across all steps and envs, then normalize by total terminations
+        total_term_height_low = jnp.sum(trajectory.term_height_low)
+        total_term_height_high = jnp.sum(trajectory.term_height_high)
+        total_term_pitch = jnp.sum(trajectory.term_pitch)
+        total_term_roll = jnp.sum(trajectory.term_roll)
+        total_term_truncated = jnp.sum(trajectory.term_truncated)
+
+        # Normalize by total done episodes (fraction of terminations by cause)
+        term_height_low_frac = jnp.where(total_done > 0, total_term_height_low / total_done, 0.0)
+        term_height_high_frac = jnp.where(total_done > 0, total_term_height_high / total_done, 0.0)
+        term_pitch_frac = jnp.where(total_done > 0, total_term_pitch / total_done, 0.0)
+        term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
+        term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
+
         new_state = TrainingState(
             policy_params=new_policy_params,
             value_params=new_value_params,
@@ -571,6 +593,12 @@ def make_train_iteration_fn(
             robot_height=robot_height,
             episode_length=episode_length,
             success_rate=success_rate,
+            # v0.10.2: Termination diagnostics
+            term_height_low=term_height_low_frac,
+            term_height_high=term_height_high_frac,
+            term_pitch=term_pitch_frac,
+            term_roll=term_roll_frac,
+            term_truncated=term_truncated_frac,
         )
 
         return new_state, new_env_state, metrics
@@ -771,6 +799,18 @@ def train(
                 f"height={float(metrics.robot_height):>4.2f}m | "
                 f"success={float(metrics.success_rate):>4.1%}"
             )
+
+            # v0.10.2: Third line - termination diagnostics (what's causing failures?)
+            # Only show if there are any terminations
+            term_sum = (float(metrics.term_height_low) + float(metrics.term_height_high) +
+                       float(metrics.term_pitch) + float(metrics.term_roll))
+            if term_sum > 0.01:  # Only show if significant terminations
+                print(
+                    f"  └─ term: h_low={float(metrics.term_height_low):>4.1%} | "
+                    f"h_high={float(metrics.term_height_high):>4.1%} | "
+                    f"pitch={float(metrics.term_pitch):>4.1%} | "
+                    f"roll={float(metrics.term_roll):>4.1%}"
+                )
 
             if amp_enabled:
                 print(

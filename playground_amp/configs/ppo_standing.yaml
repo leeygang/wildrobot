@@ -1,0 +1,196 @@
+# =============================================================================
+# WildRobot PPO Standing Config (v0.10.2)
+# =============================================================================
+# Stage 1: Robot-Native Standing Policy (No AMP)
+# v0.10.2: Basic Standing with Termination Diagnostics
+#
+# Goal: Robot maintains balance without falling for 500 steps
+# Exit Criteria: Fall rate < 5%, episode length > 400 steps
+#
+# Usage:
+#   uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml
+#
+# Total steps = iterations × num_envs × rollout_steps
+# Example: 200 × 1024 × 128 = 26M steps
+#
+# See: docs/learn_first_plan.md for roadmap
+# =============================================================================
+version: "0.10.2"
+version_name: "Basic Standing with Diagnostics (v0.10.2)"
+
+seed: 42
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  model_path: assets/scene_flat_terrain.xml
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.45
+  min_height: 0.20
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  # Commands - v0.10.2: Focus on standing/slow motion first
+  # Robot learns to balance at cmd≈0 before walking at cmd≈1
+  min_velocity: 0.0
+  max_velocity: 0.3    # Low velocity for standing phase (will increase in v0.10.3)
+
+  # Contacts
+  contact_threshold_force: 5.0
+
+  # Action filtering
+  use_action_filter: true
+  action_filter_alpha: 0.7
+
+# =============================================================================
+# PPO Algorithm (task learning)
+# =============================================================================
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 200       # Standing is simple - fast checkpoint (increase in v0.10.3)
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# AMP (disabled for Stage 1, enabled for Stage 3)
+# =============================================================================
+amp:
+  enabled: false
+
+  # Reference dataset (Stage 3 only)
+  dataset_path: null
+
+  # Global AMP reward mixing
+  weight: 0.0          # Stage 1 = 0.0, Stage 3 > 0
+
+  # Discriminator training (NOT architecture)
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+
+  # Feature parity controls
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+
+  # Diagnostics (for alerts/logging only)
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.80
+
+# =============================================================================
+# Networks (Option A: algorithm-agnostic)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  discriminator:
+    hidden_sizes: [512, 256]
+    activation: relu
+
+# =============================================================================
+# Task Reward Weights (Environment-side reward only)
+# v0.10.2: Emphasis on stability over velocity tracking
+# =============================================================================
+reward_weights:
+  # Primary objectives - v0.10.2: Prioritize staying upright
+  tracking_lin_vel: 1.0   # Reduced (was 2.0) - less important for standing
+  lateral_velocity: -0.5
+  base_height: 1.0        # Increased (was 0.5) - critical for standing
+  orientation: -1.0       # Increased penalty (was -0.5) - stay upright!
+  angular_velocity: -0.1  # Increased penalty (was -0.05) - minimize wobble
+
+  # Effort and safety
+  torque: -0.001
+  saturation: -0.1
+
+  # Smoothness
+  action_rate: -0.01
+  joint_velocity: -0.001
+
+  # Foot stability
+  slip: -0.5
+  clearance: 0.1
+
+  # Shaping
+  forward_velocity_scale: 4.0
+
+# =============================================================================
+# Reward Composition (Trainer-side)
+# =============================================================================
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0            # Alias of amp.weight (keep in sync)
+  task_reward_clip: null
+  amp_reward_clip: [0.0, 1.0]
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: playground_amp/checkpoints
+  interval: 50
+  keep_last_n: 5
+
+# =============================================================================
+# Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: online
+  tags: [ppo, stage1, standing, v0.10.2]
+
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+  amp:
+    enabled: false

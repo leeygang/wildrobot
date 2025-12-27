@@ -570,6 +570,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/lateral_vel": jp.zeros(()),
             "debug/left_force": left_force,
             "debug/right_force": right_force,
+            # v0.10.2: Termination diagnostics (initialized to zero at reset)
+            "term/height_low": jp.zeros(()),
+            "term/height_high": jp.zeros(()),
+            "term/pitch": jp.zeros(()),
+            "term/roll": jp.zeros(()),
+            "term/truncated": jp.zeros(()),
+            "term/pitch_val": pitch,
+            "term/roll_val": roll,
+            "term/height_val": height,
         }
 
         # Info - merge with base_info if provided (preserves wrapper fields during auto-reset)
@@ -692,8 +701,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos,
         )
 
-        # Check termination (get done, terminated, and truncated flags)
-        done, terminated, truncated = self._get_termination(data, step_count + 1)
+        # Check termination (get done, terminated, truncated, and diagnostics)
+        done, terminated, truncated, term_info = self._get_termination(data, step_count + 1)
 
         # Update metrics (before potential reset)
         height = self.get_floating_base_qpos(data.qpos)[2]
@@ -705,6 +714,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "forward_velocity": forward_vel,
             "reward/total": reward,
             **reward_components,
+            # v0.10.2: Termination diagnostics
+            **term_info,
         }
 
         # Update info with truncated flag for success rate tracking
@@ -1023,29 +1034,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def _get_termination(
         self, data: mjx.Data, step_count: int
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, Dict[str, jax.Array]]:
         """Check termination conditions.
 
-        v0.10.1: Added orientation termination (pitch/roll limits).
+        v0.10.2: Added termination diagnostics for debugging.
 
         Returns:
-            (done, terminated, truncated) where:
+            (done, terminated, truncated, termination_info) where:
             - done: True if episode ended (terminated OR truncated)
             - terminated: True if ended due to failure (falling or bad orientation)
             - truncated: True if ended due to time limit (success)
+            - termination_info: Dict with per-condition flags for diagnostics
         """
         height = self.get_floating_base_qpos(data.qpos)[2]
 
         # Height termination (failure - robot fell)
-        height_fail = (height < self._config.env.min_height) | (
-            height > self._config.env.max_height
-        )
+        height_too_low = height < self._config.env.min_height
+        height_too_high = height > self._config.env.max_height
+        height_fail = height_too_low | height_too_high
 
         # v0.10.1: Orientation termination (extreme pitch/roll)
         pitch, roll = self.get_pitch_roll(data)
-        orientation_fail = (jp.abs(pitch) > self._config.env.max_pitch) | (
-            jp.abs(roll) > self._config.env.max_roll
-        )
+        pitch_fail = jp.abs(pitch) > self._config.env.max_pitch
+        roll_fail = jp.abs(roll) > self._config.env.max_roll
+        orientation_fail = pitch_fail | roll_fail
 
         # Combined failure termination
         terminated = height_fail | orientation_fail
@@ -1056,10 +1068,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Combined done flag
         done = terminated | truncated
 
+        # v0.10.2: Termination diagnostics
+        termination_info = {
+            "term/height_low": jp.where(height_too_low, 1.0, 0.0),
+            "term/height_high": jp.where(height_too_high, 1.0, 0.0),
+            "term/pitch": jp.where(pitch_fail, 1.0, 0.0),
+            "term/roll": jp.where(roll_fail, 1.0, 0.0),
+            "term/truncated": jp.where(truncated, 1.0, 0.0),
+            # Raw values for debugging
+            "term/pitch_val": pitch,
+            "term/roll_val": roll,
+            "term/height_val": height,
+        }
+
         return (
             jp.where(done, 1.0, 0.0),
             jp.where(terminated, 1.0, 0.0),
             jp.where(truncated, 1.0, 0.0),
+            termination_info,
         )
 
     # =========================================================================

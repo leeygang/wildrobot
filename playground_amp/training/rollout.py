@@ -67,6 +67,13 @@ class TrajectoryBatch(NamedTuple):
         # Info fields for logging
         forward_velocities: Forward velocity at each step
         heights: Robot height at each step
+
+        # v0.10.2: Termination diagnostics
+        term_height_low: Height too low terminations
+        term_height_high: Height too high terminations
+        term_pitch: Pitch limit terminations
+        term_roll: Roll limit terminations
+        term_truncated: Successful truncations (max steps reached)
     """
     # Core PPO fields (always populated)
     obs: jnp.ndarray
@@ -87,6 +94,13 @@ class TrajectoryBatch(NamedTuple):
     # Info fields for logging
     forward_velocities: jnp.ndarray
     heights: jnp.ndarray
+
+    # v0.10.2: Termination diagnostics
+    term_height_low: jnp.ndarray
+    term_height_high: jnp.ndarray
+    term_pitch: jnp.ndarray
+    term_roll: jnp.ndarray
+    term_truncated: jnp.ndarray
 
 
 def collect_rollout(
@@ -156,6 +170,12 @@ def collect_rollout(
             # Info fields
             "forward_velocity": next_env_state.metrics.get("forward_velocity", jnp.zeros_like(next_env_state.done)),
             "height": next_env_state.metrics.get("height", jnp.zeros_like(next_env_state.done)),
+            # v0.10.2: Termination diagnostics
+            "term_height_low": next_env_state.metrics.get("term/height_low", jnp.zeros_like(next_env_state.done)),
+            "term_height_high": next_env_state.metrics.get("term/height_high", jnp.zeros_like(next_env_state.done)),
+            "term_pitch": next_env_state.metrics.get("term/pitch", jnp.zeros_like(next_env_state.done)),
+            "term_roll": next_env_state.metrics.get("term/roll", jnp.zeros_like(next_env_state.done)),
+            "term_truncated": next_env_state.metrics.get("term/truncated", jnp.zeros_like(next_env_state.done)),
             # AMP fields - always include but may be zeros if not used
             "foot_contact": next_env_state.info.get("foot_contacts", jnp.zeros((*next_env_state.done.shape, 4))),
             "root_height": next_env_state.info.get("root_height", jnp.zeros((*next_env_state.done.shape, 1))),
@@ -196,6 +216,12 @@ def collect_rollout(
         # Info fields
         forward_velocities=step_data["forward_velocity"],
         heights=step_data["height"],
+        # v0.10.2: Termination diagnostics
+        term_height_low=step_data["term_height_low"],
+        term_height_high=step_data["term_height_high"],
+        term_pitch=step_data["term_pitch"],
+        term_roll=step_data["term_roll"],
+        term_truncated=step_data["term_truncated"],
     )
 
     return final_env_state, trajectory
