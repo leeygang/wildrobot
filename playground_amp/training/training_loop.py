@@ -801,16 +801,13 @@ def train(
             )
 
             # v0.10.2: Third line - termination diagnostics (what's causing failures?)
-            # Only show if there are any terminations
-            term_sum = (float(metrics.term_height_low) + float(metrics.term_height_high) +
-                       float(metrics.term_pitch) + float(metrics.term_roll))
-            if term_sum > 0.01:  # Only show if significant terminations
-                print(
-                    f"  └─ term: h_low={float(metrics.term_height_low):>4.1%} | "
-                    f"h_high={float(metrics.term_height_high):>4.1%} | "
-                    f"pitch={float(metrics.term_pitch):>4.1%} | "
-                    f"roll={float(metrics.term_roll):>4.1%}"
-                )
+            # Always show termination breakdown for debugging
+            print(
+                f"  └─ term: h_low={float(metrics.term_height_low):>4.1%} | "
+                f"h_high={float(metrics.term_height_high):>4.1%} | "
+                f"pitch={float(metrics.term_pitch):>4.1%} | "
+                f"roll={float(metrics.term_roll):>4.1%}"
+            )
 
             if amp_enabled:
                 print(
