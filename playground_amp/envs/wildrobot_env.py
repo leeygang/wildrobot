@@ -1398,14 +1398,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # =========================================================================
 
     def _get_raw_foot_contact_by_geom(self, data: mjx.Data, geom_id: int) -> jax.Array:
-        """Get raw contact force for a single foot geom.
+        """Get raw contact normal force for a single foot geom.
+
+        Uses efc_force[efc_address] directly - the solver-native representation.
+        This is the industry standard approach (dm_control, OpenAI Gym, Meta
+        locomotion code, MJX/Brax pipelines).
+
+        Note: This does NOT match mj_contactForce() output, which reconstructs
+        forces in contact frame. For learning workloads, solver-native efc_force
+        is preferred because:
+        - It's deterministic and cheap
+        - Locomotion rewards need load heuristics, not exact wrenches
+        - It's what MJX exposes (no contactForce helper by design)
 
         Args:
             data: MJX simulation data
             geom_id: ID of the geom to query
 
         Returns:
-            Total normal force on the geom in Newtons
+            Sum of normal constraint forces on the geom (solver units)
         """
         geom1_match = data.contact.geom1 == geom_id
         geom2_match = data.contact.geom2 == geom_id
@@ -1413,7 +1424,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get normal forces from constraint solver
         # efc_address[i] is the index where contact i's forces start in efc_force
-        # The first element at each address is the normal force
+        # The first element at each address is the normal force component
         normal_forces = data.efc_force[data.contact.efc_address]
 
         # Sum forces for contacts involving this geom

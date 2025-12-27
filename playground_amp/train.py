@@ -519,7 +519,7 @@ def main():
     # Apply quick_verify first, then CLI overrides will take precedence
     quick_verify_section = training_cfg.raw_config.get("quick_verify", {})
     quick_verify_enabled = quick_verify_section.get("enabled", False) or args.verify
-    if quick_verify:
+    if quick_verify_enabled:
         training_cfg.apply_overrides(quick_verify_section)
         print("=" * 60)
         print("VERIFICATION MODE")
