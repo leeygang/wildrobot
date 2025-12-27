@@ -753,19 +753,41 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Auto-reset on termination
         # When done=True, reset physics state to initial keyframe but keep
         # done=True so the algorithm knows an episode ended.
+        # v0.10.2: Preserve termination metrics for diagnostics
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         reset_state = self._make_initial_state(
             self._init_qpos, velocity_cmd, base_info=state.info
         )
 
+        # v0.10.2: Preserve termination diagnostics in metrics even after reset
+        # The reset_state.metrics has all zeros for term/*, but we want to keep
+        # the actual termination reason for logging
+        preserved_metrics = {
+            **reset_state.metrics,
+            "term/height_low": metrics["term/height_low"],
+            "term/height_high": metrics["term/height_high"],
+            "term/pitch": metrics["term/pitch"],
+            "term/roll": metrics["term/roll"],
+            "term/truncated": metrics["term/truncated"],
+            "term/pitch_val": metrics["term/pitch_val"],
+            "term/roll_val": metrics["term/roll_val"],
+            "term/height_val": metrics["term/height_val"],
+        }
+
+        # v0.10.2: Also preserve truncated flag in info for success rate calculation
+        preserved_info = {
+            **reset_state.info,
+            "truncated": info["truncated"],  # Keep original truncated flag
+        }
+
         final_data, final_obs, final_metrics, final_info = jax.lax.cond(
             done > 0.5,
             lambda: (
                 reset_state.data,
                 reset_state.obs,
-                reset_state.metrics,
-                reset_state.info,  # Already has wrapper fields preserved via base_info
+                preserved_metrics,  # Use preserved metrics with term/* intact
+                preserved_info,     # Use preserved info with truncated intact
             ),
             lambda: (data, obs, metrics, info),
         )
