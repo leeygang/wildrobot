@@ -757,11 +757,19 @@ def train(
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
 
+            # Main metrics line
             print(
                 f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"vel={float(metrics.forward_velocity):>5.2f}m/s | "
                 f"steps/s={steps_per_sec:>8.0f}"
+            )
+
+            # Second line: standing/stability metrics (critical for v0.10.2)
+            print(
+                f"  └─ ep_len={float(metrics.episode_length):>5.0f} | "
+                f"height={float(metrics.robot_height):>4.2f}m | "
+                f"success={float(metrics.success_rate):>4.1%}"
             )
 
             if amp_enabled:
