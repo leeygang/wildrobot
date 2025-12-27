@@ -611,13 +611,19 @@ def train(
     amp_enabled = config.amp.weight > 0.0
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
+    # Get observation dimension from ObsLayout (single source of truth)
+    from playground_amp.envs.wildrobot_env import ObsLayout
+
+    obs_dim = ObsLayout.total_size()
+    robot_config = get_robot_config()
+    action_dim = robot_config.action_dim
+
     print("=" * 60)
     print(f"Unified Training ({mode_str})")
     print("=" * 60)
     print(f"Configuration:")
-    robot_config = get_robot_config()
-    print(f"  obs_dim: {robot_config.obs_dim}")
-    print(f"  action_dim: {robot_config.action_dim}")
+    print(f"  obs_dim: {obs_dim}")
+    print(f"  action_dim: {action_dim}")
     print(f"  num_envs: {config.ppo.num_envs}")
     print(f"  rollout_steps: {config.ppo.rollout_steps}")
     print(f"  iterations: {config.ppo.iterations}")
@@ -637,8 +643,8 @@ def train(
 
     # Create networks
     ppo_network = create_networks(
-        obs_dim=robot_config.obs_dim,
-        action_dim=robot_config.action_dim,
+        obs_dim=obs_dim,
+        action_dim=action_dim,
         policy_hidden_dims=config.networks.actor.hidden_sizes,
         value_hidden_dims=config.networks.critic.hidden_sizes,
     )
@@ -646,8 +652,8 @@ def train(
     # Initialize network parameters
     processor_params, policy_params, value_params = init_network_params(
         ppo_network,
-        robot_config.obs_dim,
-        robot_config.action_dim,
+        obs_dim,
+        action_dim,
         seed=int(init_rng[0]),
     )
 
