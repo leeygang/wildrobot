@@ -161,8 +161,11 @@ def analyze_policy_features():
             state = env.step(state, action)
 
             # Extract features
+            # Access via typed WR namespace
+            from playground_amp.envs.env_types import WR_INFO_KEY
             obs = state.obs
-            foot_contacts = state.info.get("foot_contacts", jnp.zeros(4))
+            wr_info = state.info[WR_INFO_KEY]
+            foot_contacts = wr_info.foot_contacts
 
             features = extract_amp_features(obs, amp_config, foot_contacts)
             features_list.append(np.array(features))

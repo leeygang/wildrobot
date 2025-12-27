@@ -46,6 +46,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
+from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
 
 
 # =============================================================================
@@ -581,29 +582,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "term/height_val": height,
         }
 
-        # Info - merge with base_info if provided (preserves wrapper fields during auto-reset)
+        # Info - use typed WildRobotInfo under "wr" namespace
+        # This separates algorithm-critical fields from wrapper-injected fields
         left_foot_pos, right_foot_pos = self.get_foot_positions(data)
-        env_info = {
-            "step_count": 0,
-            "prev_action": jp.zeros(self.action_size),
-            "truncated": jp.zeros(()),  # No truncation at reset
-            "foot_contacts": self.get_norm_foot_contacts(data),  # For AMP discriminator
-            "root_height": height,  # v0.6.1: Actual root height for AMP features
-            # v0.9.1: Track previous root pose for finite-diff velocity computation
-            # This aligns policy velocity with reference velocity (both finite-diff)
-            "prev_root_pos": self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
-            "prev_root_quat": self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
-            # v0.10.1: Track previous foot positions for slip computation
-            "prev_left_foot_pos": left_foot_pos,
-            "prev_right_foot_pos": right_foot_pos,
-        }
+        wr_info = WildRobotInfo(
+            step_count=jp.zeros(()),
+            prev_action=jp.zeros(self.action_size),
+            truncated=jp.zeros(()),  # No truncation at reset
+            prev_root_pos=self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
+            prev_root_quat=self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
+            prev_left_foot_pos=left_foot_pos,
+            prev_right_foot_pos=right_foot_pos,
+            foot_contacts=self.get_norm_foot_contacts(data),  # For AMP discriminator
+            root_height=height,  # Actual root height for AMP features
+        )
 
-        # Merge: base_info (wrapper fields) + env_info (env fields override)
+        # Merge: base_info (wrapper fields) + wr namespace (env fields)
         if base_info is not None:
             info = dict(base_info)
-            info.update(env_info)
+            info[WR_INFO_KEY] = wr_info
         else:
-            info = env_info
+            info = {WR_INFO_KEY: wr_info}
 
         return WildRobotEnvState(
             data=data,
@@ -659,8 +658,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             but done=True is still returned so the algorithm knows.
         """
         velocity_cmd = state.metrics["velocity_command"]
-        step_count = state.info["step_count"]
-        prev_action = state.info["prev_action"]
+
+        # Read from typed WildRobotInfo namespace (fail loudly if missing)
+        wr = state.info[WR_INFO_KEY]
+        step_count = wr.step_count
+        prev_action = wr.prev_action
 
         # Action filtering (low-pass)
         if self._config.env.use_action_filter:
@@ -680,16 +682,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data, _ = jax.lax.scan(substep_fn, data, None, length=n_substeps)
 
         # Compute observation with finite-diff velocities
-        # v0.9.1: Pass previous root pose for FD velocity computation
-        prev_root_pos = state.info["prev_root_pos"]
-        prev_root_quat = state.info["prev_root_quat"]
+        # Use previous root pose from WildRobotInfo for FD velocity computation
+        prev_root_pos = wr.prev_root_pos
+        prev_root_quat = wr.prev_root_quat
         obs = self._get_obs(
             data, filtered_action, velocity_cmd, prev_root_pos, prev_root_quat
         )
 
-        # v0.10.1: Get previous foot positions for slip computation
-        prev_left_foot_pos = state.info.get("prev_left_foot_pos", None)
-        prev_right_foot_pos = state.info.get("prev_right_foot_pos", None)
+        # Get previous foot positions for slip computation from WildRobotInfo
+        prev_left_foot_pos = wr.prev_left_foot_pos
+        prev_right_foot_pos = wr.prev_right_foot_pos
 
         # Compute reward
         reward, reward_components = self._get_reward(
@@ -718,36 +720,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
             **term_info,
         }
 
-        # Update info with truncated flag for success rate tracking
-        # v0.9.1: Update previous root pose for finite-diff velocity
+        # Compute current values for WildRobotInfo update
         curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
         curr_root_quat = self.get_floating_base_qpos(data.qpos)[3:7]
-
-        # v0.10.1: Track foot positions for slip computation
         curr_left_foot_pos, curr_right_foot_pos = self.get_foot_positions(data)
 
-        # v0.10.0: Preserve existing info fields from wrapper (Brax compatibility)
-        # The Brax training wrapper adds fields like 'truncation', 'episode_done',
-        # 'episode_metrics', 'first_obs', 'steps', 'first_state'. We need to preserve
-        # these to maintain pytree structure compatibility with jax.lax.scan.
-        info = dict(state.info)  # Copy existing fields
-        info.update(
-            {
-                "step_count": step_count + 1,
-                "prev_action": filtered_action,
-                "truncated": truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
-                "foot_contacts": self.get_norm_foot_contacts(
-                    data
-                ),  # For AMP discriminator
-                "root_height": height,  # v0.6.1: Actual root height for AMP features
-                # v0.9.1: Update previous root pose for finite-diff velocity
-                "prev_root_pos": curr_root_pos,
-                "prev_root_quat": curr_root_quat,
-                # v0.10.1: Update previous foot positions for slip computation
-                "prev_left_foot_pos": curr_left_foot_pos,
-                "prev_right_foot_pos": curr_right_foot_pos,
-            }
+        # Create new WildRobotInfo with updated values
+        new_wr_info = WildRobotInfo(
+            step_count=step_count + 1,
+            prev_action=filtered_action,
+            truncated=truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
+            prev_root_pos=curr_root_pos,
+            prev_root_quat=curr_root_quat,
+            prev_left_foot_pos=curr_left_foot_pos,
+            prev_right_foot_pos=curr_right_foot_pos,
+            foot_contacts=self.get_norm_foot_contacts(data),  # For AMP discriminator
+            root_height=height,  # Actual root height for AMP features
         )
+
+        # Preserve wrapper fields, update wr namespace
+        # The Brax training wrapper adds fields like 'truncation', 'episode_done',
+        # 'episode_metrics', 'first_obs', 'steps', 'first_state'. We preserve these.
+        info = dict(state.info)  # Copy existing wrapper fields
+        info[WR_INFO_KEY] = new_wr_info  # Update env-owned namespace
 
         # =================================================================
         # Auto-reset on termination
@@ -775,11 +770,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "term/height_val": metrics["term/height_val"],
         }
 
-        # v0.10.2: Also preserve truncated flag in info for success rate calculation
-        preserved_info = {
-            **reset_state.info,
-            "truncated": info["truncated"],  # Keep original truncated flag
-        }
+        # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
+        # We need to preserve the original wr_info.truncated (1.0 if success) through auto-reset
+        reset_wr_info = reset_state.info[WR_INFO_KEY]
+        preserved_wr_info = WildRobotInfo(
+            step_count=reset_wr_info.step_count,
+            prev_action=reset_wr_info.prev_action,
+            truncated=new_wr_info.truncated,  # Preserve original truncated flag
+            prev_root_pos=reset_wr_info.prev_root_pos,
+            prev_root_quat=reset_wr_info.prev_root_quat,
+            prev_left_foot_pos=reset_wr_info.prev_left_foot_pos,
+            prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
+            foot_contacts=reset_wr_info.foot_contacts,
+            root_height=reset_wr_info.root_height,
+        )
+        preserved_info = dict(reset_state.info)  # Copy wrapper fields
+        preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace
 
         final_data, final_obs, final_metrics, final_info = jax.lax.cond(
             done > 0.5,

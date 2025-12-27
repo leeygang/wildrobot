@@ -23,6 +23,8 @@ import numpy as np
 import yaml
 from ml_collections import config_dict
 
+from playground_amp.envs.env_types import WR_INFO_KEY
+
 
 def setup_environment():
     """Initialize environment for testing."""
@@ -56,16 +58,20 @@ def setup_environment():
 
 
 def test_1_env_returns_foot_contacts():
-    """Test 1: Environment returns foot_contacts in state.info."""
+    """Test 1: Environment returns foot_contacts in state.info["wr"]."""
     print("\n=== Test 1: Environment returns foot_contacts ===")
 
     env = setup_environment()
     rng = jax.random.PRNGKey(42)
     state = env.reset(rng)
 
-    # Check foot_contacts exists in state.info
-    assert "foot_contacts" in state.info, "foot_contacts missing from state.info"
-    foot_contacts = state.info["foot_contacts"]
+    # Check info["wr"] namespace exists
+    assert WR_INFO_KEY in state.info, f"'{WR_INFO_KEY}' namespace missing from state.info"
+    wr_info = state.info[WR_INFO_KEY]
+
+    # Check foot_contacts exists in wr_info
+    assert hasattr(wr_info, 'foot_contacts'), "foot_contacts missing from state.info['wr']"
+    foot_contacts = wr_info.foot_contacts
 
     # Check shape
     assert foot_contacts.shape == (
@@ -90,7 +96,7 @@ def test_2_foot_contacts_update_after_step():
     rng = jax.random.PRNGKey(42)
     state = env.reset(rng)
 
-    initial_contacts = state.info["foot_contacts"]
+    initial_contacts = state.info[WR_INFO_KEY].foot_contacts
 
     # Step environment multiple times
     action = jnp.zeros(env.action_size)
@@ -98,7 +104,7 @@ def test_2_foot_contacts_update_after_step():
 
     for i in range(10):
         state = env.step(state, action)
-        contacts_history.append(state.info["foot_contacts"])
+        contacts_history.append(state.info[WR_INFO_KEY].foot_contacts)
 
     # Check that contacts changed at some point
     contacts_array = jnp.stack(contacts_history)
@@ -259,7 +265,7 @@ def test_7_features_are_not_all_zeros():
 
     # Extract features
     obs = state.obs
-    foot_contacts = state.info["foot_contacts"]
+    foot_contacts = state.info[WR_INFO_KEY].foot_contacts
     features = extract_amp_features(obs, config, foot_contacts=foot_contacts)
 
     # Check features shape
@@ -298,7 +304,7 @@ def test_8_contact_distribution_not_zeros():
 
     for i in range(200):
         state = env.step(state, action)
-        all_contacts.append(state.info["foot_contacts"])
+        all_contacts.append(state.info[WR_INFO_KEY].foot_contacts)
 
     contacts_array = jnp.stack(all_contacts)  # (200, 4)
 

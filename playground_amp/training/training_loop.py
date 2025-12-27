@@ -67,6 +67,7 @@ from playground_amp.training.rollout import (
     compute_reward_total,
     TrajectoryBatch,
 )
+from playground_amp.envs.env_types import WR_INFO_KEY
 
 
 # =============================================================================
@@ -537,8 +538,8 @@ def make_train_iteration_fn(
         forward_velocity = jnp.mean(trajectory.forward_velocities)
         robot_height = jnp.mean(trajectory.heights)
 
-        # Episode length from env state
-        episode_length = jnp.mean(new_env_state.info["step_count"])
+        # Episode length from env state (access via typed wr namespace)
+        episode_length = jnp.mean(new_env_state.info[WR_INFO_KEY].step_count)
 
         # Success rate
         total_done = jnp.sum(trajectory.dones)

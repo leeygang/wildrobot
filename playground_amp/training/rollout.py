@@ -35,6 +35,7 @@ from playground_amp.training.ppo_core import (
     compute_values,
     sample_actions,
 )
+from playground_amp.envs.env_types import WR_INFO_KEY
 
 
 class TrajectoryBatch(NamedTuple):
@@ -157,6 +158,10 @@ def collect_rollout(
         # Joint positions are at indices 9-18 in observation (38-dim layout)
         current_joint_pos = obs[..., 9:18]
 
+        # Access typed WildRobotInfo namespace directly (fail loudly if missing)
+        # This replaces .get() with default zeros - required fields must exist
+        wr_info = next_env_state.info[WR_INFO_KEY]
+
         # Build step data - always include all fields for consistent pytree structure
         step_data = {
             "obs": obs,
@@ -165,9 +170,9 @@ def collect_rollout(
             "value": value,
             "task_reward": next_env_state.reward,
             "done": next_env_state.done,
-            "truncation": next_env_state.info.get("truncated", jnp.zeros_like(next_env_state.done)),
+            "truncation": wr_info.truncated,  # Required field from typed namespace
             "next_obs": next_env_state.obs,
-            # Info fields
+            # Info fields (metrics are still dict-based, can use .get())
             "forward_velocity": next_env_state.metrics.get("forward_velocity", jnp.zeros_like(next_env_state.done)),
             "height": next_env_state.metrics.get("height", jnp.zeros_like(next_env_state.done)),
             # v0.10.2: Termination diagnostics
@@ -176,9 +181,9 @@ def collect_rollout(
             "term_pitch": next_env_state.metrics.get("term/pitch", jnp.zeros_like(next_env_state.done)),
             "term_roll": next_env_state.metrics.get("term/roll", jnp.zeros_like(next_env_state.done)),
             "term_truncated": next_env_state.metrics.get("term/truncated", jnp.zeros_like(next_env_state.done)),
-            # AMP fields - always include but may be zeros if not used
-            "foot_contact": next_env_state.info.get("foot_contacts", jnp.zeros((*next_env_state.done.shape, 4))),
-            "root_height": next_env_state.info.get("root_height", jnp.zeros((*next_env_state.done.shape, 1))),
+            # AMP fields - required fields from typed namespace
+            "foot_contact": wr_info.foot_contacts,  # Required field (4,) per env
+            "root_height": wr_info.root_height,  # Required field scalar per env
             "prev_joint_pos": prev_joint_pos,
         }
 

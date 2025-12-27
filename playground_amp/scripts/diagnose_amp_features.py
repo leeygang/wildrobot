@@ -290,10 +290,13 @@ def collect_policy_features(num_samples=1000):
 
     # Get joint positions from observation (indices 9-18)
     prev_joint_pos = prev_state.obs[9:18]
+    # Access via typed WR namespace
+    from playground_amp.envs.env_types import WR_INFO_KEY
+    wr_info = state.info[WR_INFO_KEY]
     _ = extract_fn(
         state.obs,
-        state.info["foot_contacts"],
-        state.info["root_height"],
+        wr_info.foot_contacts,
+        wr_info.root_height,
         prev_joint_pos,
     )
     print("done")
@@ -327,10 +330,12 @@ def collect_policy_features(num_samples=1000):
         episode_steps += 1
 
         # Extract features with Golden Rule parameters
+        # Access via typed WR namespace
+        wr_info = state.info[WR_INFO_KEY]
         features = extract_fn(
             state.obs,
-            state.info["foot_contacts"],
-            state.info["root_height"],
+            wr_info.foot_contacts,
+            wr_info.root_height,
             prev_joint_pos,  # Previous step's joint positions
         )
         features_list.append(np.array(features))
