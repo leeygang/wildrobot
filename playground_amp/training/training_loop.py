@@ -351,7 +351,7 @@ def make_train_iteration_fn(
     using lax.cond for zero-overhead branching.
     """
     amp_feature_config = get_feature_config()
-    amp_enabled = config.amp.weight > 0.0
+    amp_enabled = config.amp.enabled
 
     @jax.jit
     def train_iteration(
@@ -608,7 +608,7 @@ def train(
     Returns:
         Final training state
     """
-    amp_enabled = config.amp.weight > 0.0
+    amp_enabled = config.amp.enabled
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
     # Get observation dimension from ObsLayout (single source of truth)
@@ -774,7 +774,7 @@ def train(
 
             if amp_enabled:
                 print(
-                    f"  └─ amp={float(metrics.amp_reward_mean):>6.4f} | "
+                    f" | amp={float(metrics.amp_reward_mean):>6.4f} | "
                     f"disc_acc={float(metrics.disc_accuracy):>5.2f}"
                 )
 

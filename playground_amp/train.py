@@ -530,6 +530,7 @@ def main():
         training_cfg.amp.enabled = False  # Sync config with CLI override
     else:
         use_amp = training_cfg.amp.enabled and training_cfg.amp.weight > 0
+        training_cfg.amp.enabled = use_amp
 
     # Freeze config after all overrides are applied
     training_cfg.freeze()
