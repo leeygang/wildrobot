@@ -96,6 +96,9 @@ class TrajectoryBatch(NamedTuple):
     forward_velocities: jnp.ndarray
     heights: jnp.ndarray
 
+    # v0.10.2: Episode step counts (for accurate ep_len calculation)
+    step_counts: jnp.ndarray
+
     # v0.10.2: Termination diagnostics
     term_height_low: jnp.ndarray
     term_height_high: jnp.ndarray
@@ -175,6 +178,8 @@ def collect_rollout(
             # Info fields (metrics are still dict-based, can use .get())
             "forward_velocity": next_env_state.metrics.get("forward_velocity", jnp.zeros_like(next_env_state.done)),
             "height": next_env_state.metrics.get("height", jnp.zeros_like(next_env_state.done)),
+            # v0.10.2: Episode length at termination (for accurate ep_len metric)
+            "step_count": wr_info.step_count,  # Current step count for this env
             # v0.10.2: Termination diagnostics
             "term_height_low": next_env_state.metrics.get("term/height_low", jnp.zeros_like(next_env_state.done)),
             "term_height_high": next_env_state.metrics.get("term/height_high", jnp.zeros_like(next_env_state.done)),
@@ -221,6 +226,8 @@ def collect_rollout(
         # Info fields
         forward_velocities=step_data["forward_velocity"],
         heights=step_data["height"],
+        # v0.10.2: Episode step counts (for accurate ep_len calculation)
+        step_counts=step_data["step_count"],
         # v0.10.2: Termination diagnostics
         term_height_low=step_data["term_height_low"],
         term_height_high=step_data["term_height_high"],

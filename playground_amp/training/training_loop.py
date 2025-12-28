@@ -67,7 +67,6 @@ from playground_amp.training.rollout import (
     compute_reward_total,
     TrajectoryBatch,
 )
-from playground_amp.envs.env_types import WR_INFO_KEY
 
 
 # =============================================================================
@@ -538,11 +537,19 @@ def make_train_iteration_fn(
         forward_velocity = jnp.mean(trajectory.forward_velocities)
         robot_height = jnp.mean(trajectory.heights)
 
-        # Episode length from env state (access via typed wr namespace)
-        episode_length = jnp.mean(new_env_state.info[WR_INFO_KEY].step_count)
+        # v0.10.2: Episode length = mean step count of COMPLETED episodes only
+        # Only count steps where done=1.0 (episode actually ended)
+        # This gives accurate avg episode length instead of snapshot of current step counts
+        completed_episode_lengths = trajectory.step_counts * trajectory.dones  # Zero out non-terminal steps
+        total_completed_length = jnp.sum(completed_episode_lengths)
+        total_done = jnp.sum(trajectory.dones)
+        episode_length = jnp.where(
+            total_done > 0,
+            total_completed_length / total_done,
+            0.0,  # No episodes completed this rollout
+        )
 
         # Success rate
-        total_done = jnp.sum(trajectory.dones)
         total_truncated = jnp.sum(trajectory.truncations)
         success_rate = jnp.where(
             total_done > 0,
