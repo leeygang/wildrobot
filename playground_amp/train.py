@@ -360,6 +360,10 @@ def start_training(
                 env_steps_per_sec=steps_per_sec,
                 forward_velocity=float(metrics.forward_velocity),
                 episode_length=float(metrics.episode_length),
+                # v0.10.3: Walking tracking metrics
+                velocity_cmd=float(metrics.velocity_cmd),
+                velocity_error=float(metrics.velocity_error),
+                max_torque=float(metrics.max_torque),
             )
             wandb_metrics["debug/task_reward_per_step"] = float(
                 metrics.task_reward_mean

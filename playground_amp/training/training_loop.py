@@ -137,6 +137,11 @@ class IterationMetrics(NamedTuple):
     term_roll: jnp.ndarray
     term_truncated: jnp.ndarray
 
+    # v0.10.3: Tracking metrics for walking exit criteria
+    velocity_cmd: jnp.ndarray  # Mean velocity command
+    velocity_error: jnp.ndarray  # Mean |forward_vel - velocity_cmd|
+    max_torque: jnp.ndarray  # Mean max normalized torque (peak % of limit)
+
 
 # =============================================================================
 # Feature Normalization
@@ -572,6 +577,11 @@ def make_train_iteration_fn(
         term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
 
+        # v0.10.3: Tracking metrics for walking exit criteria
+        mean_velocity_cmd = jnp.mean(trajectory.velocity_cmds)
+        mean_velocity_error = jnp.mean(trajectory.velocity_errors)
+        mean_max_torque = jnp.mean(trajectory.max_torques)
+
         new_state = TrainingState(
             policy_params=new_policy_params,
             value_params=new_value_params,
@@ -607,6 +617,10 @@ def make_train_iteration_fn(
             term_pitch=term_pitch_frac,
             term_roll=term_roll_frac,
             term_truncated=term_truncated_frac,
+            # v0.10.3: Tracking metrics for walking exit criteria
+            velocity_cmd=mean_velocity_cmd,
+            velocity_error=mean_velocity_error,
+            max_torque=mean_max_torque,
         )
 
         return new_state, new_env_state, metrics
@@ -793,19 +807,21 @@ def train(
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
 
-            # Main metrics line
+            # Main metrics line - v0.10.3: Include velocity command for walking
             print(
                 f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
-                f"vel={float(metrics.forward_velocity):>5.2f}m/s | "
+                f"vel={float(metrics.forward_velocity):>5.2f}m/s (cmd={float(metrics.velocity_cmd):>4.2f}) | "
                 f"steps/s={steps_per_sec:>8.0f}"
             )
 
-            # Second line: standing/stability metrics (critical for v0.10.2)
+            # Second line: episode metrics + v0.10.3 tracking metrics
             print(
                 f"  └─ ep_len={float(metrics.episode_length):>5.0f} | "
                 f"height={float(metrics.robot_height):>4.2f}m | "
-                f"success={float(metrics.success_rate):>4.1%}"
+                f"success={float(metrics.success_rate):>4.1%} | "
+                f"vel_err={float(metrics.velocity_error):>5.3f} | "
+                f"torque={float(metrics.max_torque):>4.1%}"
             )
 
             # v0.10.2: Third line - termination diagnostics (what's causing failures?)

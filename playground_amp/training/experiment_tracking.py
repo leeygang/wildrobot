@@ -440,6 +440,10 @@ def create_training_metrics(
     success_rate: float = 0.0,
     avg_torque: float = 0.0,
     episode_length: float = 0.0,
+    # v0.10.3: Walking tracking metrics
+    velocity_cmd: float = 0.0,
+    velocity_error: float = 0.0,
+    max_torque: float = 0.0,
     **extra_metrics,
 ) -> Dict[str, float]:
     """Create a flat dictionary of training metrics for logging.
@@ -450,6 +454,10 @@ def create_training_metrics(
     - topline/forward_velocity (target: 0.3-0.8 m/s)
     - topline/success_rate (target: >85%)
     - topline/avg_torque (target: <2.8 Nm)
+
+    v0.10.3 Walking Exit Criteria:
+    - topline/velocity_error: |forward_vel - velocity_cmd| (target: <0.2 m/s)
+    - topline/max_torque: Peak torque as fraction of limit (target: <0.8)
 
     Args:
         iteration: Current training iteration
@@ -469,6 +477,9 @@ def create_training_metrics(
         success_rate: Episode success rate (0-1)
         avg_torque: Average torque per joint (Nm)
         episode_length: Mean episode length (steps)
+        velocity_cmd: Mean commanded velocity (m/s) [v0.10.3]
+        velocity_error: Mean |forward_vel - velocity_cmd| (m/s) [v0.10.3]
+        max_torque: Mean max normalized torque (0-1) [v0.10.3]
         **extra_metrics: Additional metrics
 
     Returns:
@@ -488,6 +499,10 @@ def create_training_metrics(
         # Stability metrics
         "topline/episode_length": episode_length,       # Target: >400 steps
         "topline/disc_accuracy": disc_accuracy,         # Target: 0.4-0.7 (NOT 100%!)
+        # v0.10.3: Walking tracking metrics
+        "topline/velocity_cmd": velocity_cmd,           # Mean commanded velocity (m/s)
+        "topline/velocity_error": velocity_error,       # Target: <0.2 m/s
+        "topline/max_torque": max_torque,               # Target: <0.8 (80% of limit)
         # =====================================================================
 
         # Environment metrics
@@ -497,6 +512,10 @@ def create_training_metrics(
         "env/forward_velocity": forward_velocity,
         "env/success_rate": success_rate,
         "env/avg_torque": avg_torque,
+        # v0.10.3: Tracking metrics for walking exit criteria
+        "env/velocity_cmd": velocity_cmd,
+        "env/velocity_error": velocity_error,
+        "env/max_torque": max_torque,
 
         # PPO metrics
         "ppo/total_loss": ppo_loss,

@@ -2,21 +2,24 @@
 # WildRobot PPO + AMP Unified Config
 # =============================================================================
 # Stage 1: Robot-Native Walking Policy (No AMP)
-# v0.10.2: Basic Standing - Learn to balance before walking
+# v0.10.3: Forward Walking - Learn to walk at 0.5-1.0 m/s
 #
-# Goal: Robot maintains balance without falling for 500 steps
-# Exit Criteria: Fall rate < 5%, episode length > 400 steps
+# Goal: Robot walks forward with stable gait
+# Exit Criteria:
+#   - Episode length > 400 steps (8s survival)
+#   - Forward velocity 0.5-1.0 m/s with tracking error < 0.2 m/s
+#   - Fall rate < 5%
 #
 # Usage:
 #   uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml
 #
 # Total steps = iterations × num_envs × rollout_steps
-# Example: 500 × 1024 × 128 = 65M steps (reduced for standing)
+# Example: 500 × 1024 × 128 = 65M steps
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.10.2"
-version_name: "Basic Standing (v0.10.2)"
+version: "0.10.3"
+version_name: "Forward Walking (v0.10.3)"
 
 seed: 42
 
@@ -38,10 +41,10 @@ env:
   max_pitch: 0.8
   max_roll: 0.8
 
-  # Commands - v0.10.2: Focus on standing/slow motion first
-  # Robot learns to balance at cmd≈0 before walking at cmd≈1
-  min_velocity: 0.0
-  max_velocity: 0.3    # Low velocity for standing phase (will increase in v0.10.3)
+  # Commands - v0.10.3: Forward walking velocity range
+  # Robot learns to walk at commanded velocities
+  min_velocity: 0.3
+  max_velocity: 1.0    # Target walking speed range
 
   # Contacts
   contact_threshold_force: 5.0
@@ -56,7 +59,7 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 200       # Standing is simple - fast checkpoint (increase in v0.10.3)
+  iterations: 500       # More iterations for walking (vs 200 for standing)
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -125,15 +128,15 @@ networks:
 
 # =============================================================================
 # Task Reward Weights (Environment-side reward only)
-# v0.10.2: Emphasis on stability over velocity tracking
+# v0.10.3: Balance velocity tracking with stability
 # =============================================================================
 reward_weights:
-  # Primary objectives - v0.10.2: Prioritize staying upright
-  tracking_lin_vel: 1.0   # Reduced (was 2.0) - less important for standing
+  # Primary objectives - v0.10.3: Velocity tracking is now important
+  tracking_lin_vel: 2.0   # Increased for walking
   lateral_velocity: -0.5
-  base_height: 1.0        # Increased (was 0.5) - critical for standing
-  orientation: -1.0       # Increased penalty (was -0.5) - stay upright!
-  angular_velocity: -0.1  # Increased penalty (was -0.05) - minimize wobble
+  base_height: 0.5        # Reduced (was 1.0) - stability established
+  orientation: -0.5       # Reduced penalty (was -1.0) - allow some motion
+  angular_velocity: -0.05 # Reduced (was -0.1) - allow turning
 
   # Effort and safety
   torque: -0.001
@@ -174,7 +177,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, standing, v0.10.2]
+  tags: [ppo, stage1, walking, v0.10.3]
 
 video:
   enabled: true

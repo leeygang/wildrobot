@@ -580,6 +580,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "term/pitch_val": pitch,
             "term/roll_val": roll,
             "term/height_val": height,
+            # v0.10.3: Tracking metrics for walking exit criteria
+            "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
+            "tracking/max_torque": jp.zeros(()),  # No torque at reset
         }
 
         # Info - use typed WildRobotInfo under "wr" namespace
@@ -1033,6 +1036,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
         # REWARD COMPONENTS FOR LOGGING
         # =====================================================================
+
+        # v0.10.3: Compute tracking metrics for walking exit criteria
+        # Max normalized torque (peak torque as fraction of limit, across all actuators)
+        max_torque_ratio = jp.max(jp.abs(normalized_torques))
+
         components = {
             # Primary
             "reward/forward": forward_reward,
@@ -1056,6 +1064,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/lateral_vel": lateral_vel,
             "debug/left_force": left_force,
             "debug/right_force": right_force,
+            # v0.10.3: Tracking metrics for walking exit criteria
+            "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
+            "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)
         }
 
         return total, components

@@ -75,6 +75,11 @@ class TrajectoryBatch(NamedTuple):
         term_pitch: Pitch limit terminations
         term_roll: Roll limit terminations
         term_truncated: Successful truncations (max steps reached)
+
+        # v0.10.3: Tracking metrics for walking exit criteria
+        velocity_cmds: Velocity command at each step
+        velocity_errors: |forward_vel - velocity_cmd| tracking error
+        max_torques: Max normalized torque (peak torque / limit)
     """
     # Core PPO fields (always populated)
     obs: jnp.ndarray
@@ -105,6 +110,11 @@ class TrajectoryBatch(NamedTuple):
     term_pitch: jnp.ndarray
     term_roll: jnp.ndarray
     term_truncated: jnp.ndarray
+
+    # v0.10.3: Tracking metrics for walking exit criteria
+    velocity_cmds: jnp.ndarray
+    velocity_errors: jnp.ndarray
+    max_torques: jnp.ndarray
 
 
 def collect_rollout(
@@ -186,6 +196,10 @@ def collect_rollout(
             "term_pitch": next_env_state.metrics.get("term/pitch", jnp.zeros_like(next_env_state.done)),
             "term_roll": next_env_state.metrics.get("term/roll", jnp.zeros_like(next_env_state.done)),
             "term_truncated": next_env_state.metrics.get("term/truncated", jnp.zeros_like(next_env_state.done)),
+            # v0.10.3: Tracking metrics for walking exit criteria
+            "velocity_cmd": next_env_state.metrics.get("velocity_command", jnp.zeros_like(next_env_state.done)),
+            "velocity_error": next_env_state.metrics.get("tracking/vel_error", jnp.zeros_like(next_env_state.done)),
+            "max_torque": next_env_state.metrics.get("tracking/max_torque", jnp.zeros_like(next_env_state.done)),
             # AMP fields - required fields from typed namespace
             "foot_contact": wr_info.foot_contacts,  # Required field (4,) per env
             "root_height": wr_info.root_height,  # Required field scalar per env
@@ -234,6 +248,10 @@ def collect_rollout(
         term_pitch=step_data["term_pitch"],
         term_roll=step_data["term_roll"],
         term_truncated=step_data["term_truncated"],
+        # v0.10.3: Tracking metrics for walking exit criteria
+        velocity_cmds=step_data["velocity_cmd"],
+        velocity_errors=step_data["velocity_error"],
+        max_torques=step_data["max_torque"],
     )
 
     return final_env_state, trajectory
