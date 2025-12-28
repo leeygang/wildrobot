@@ -81,6 +81,12 @@ METRIC_SPECS: List[MetricSpec] = [
         topline=True,
         description="Commanded velocity in m/s",
     ),
+    # v0.10.4: Episode step count for accurate ep_len calculation
+    MetricSpec(
+        name="episode_step_count",
+        reducer=Reducer.MEAN,  # Will be weighted by dones in training_loop
+        description="Step count within episode (for ep_len)",
+    ),
 
     # =========================================================================
     # v0.10.3: Walking tracking metrics (indices 3-4)

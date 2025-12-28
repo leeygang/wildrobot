@@ -558,6 +558,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "velocity_command": velocity_cmd,
             "height": height,
             "forward_velocity": jp.zeros(()),  # Robot starts stationary
+            "episode_step_count": jp.zeros(()),  # v0.10.4: Starts at 0 for new episode
             "reward/total": total_reward,
             # Primary rewards
             "reward/forward": forward_reward,
@@ -730,10 +731,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         height = self.get_floating_base_qpos(data.qpos)[2]
         forward_vel = self.get_local_linvel(data)[0]
 
+        # v0.10.4: Store step count in metrics for episode length calculation
+        # This gets preserved through auto-reset, unlike wr_info.step_count which resets
+        episode_step_count = step_count + 1
+
         metrics = {
             "velocity_command": velocity_cmd,
             "height": height,
             "forward_velocity": forward_vel,
+            "episode_step_count": episode_step_count,  # v0.10.4: For ep_len logging
             "reward/total": reward,
             **reward_components,
             # v0.10.2: Termination diagnostics
@@ -782,8 +788,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.10.2: Preserve termination diagnostics in metrics even after reset
         # The reset_state.metrics has all zeros for term/*, but we want to keep
         # the actual termination reason for logging
+        # v0.10.4: Also preserve episode_step_count for accurate ep_len
+        # v0.10.4: Also preserve tracking metrics for accurate vel_err/torque logging
         preserved_metrics = {
             **reset_state.metrics,
+            "episode_step_count": metrics["episode_step_count"],  # Terminal step count for ep_len
+            # Tracking metrics (for topline monitoring)
+            "tracking/vel_error": metrics["tracking/vel_error"],
+            "tracking/max_torque": metrics["tracking/max_torque"],
+            # Core metrics (for logging)
+            "forward_velocity": metrics["forward_velocity"],
+            "velocity_command": metrics["velocity_command"],
+            # Termination diagnostics
             "term/height_low": metrics["term/height_low"],
             "term/height_high": metrics["term/height_high"],
             "term/pitch": metrics["term/pitch"],
@@ -796,12 +812,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
         # We need to preserve the original wr_info.truncated (1.0 if success) through auto-reset
-        # v0.10.5: Also preserve step_count for episode length logging
+        #
+        # v0.10.4 FIX: step_count must RESET to 0 for new episode, not accumulate!
+        # The terminal step count is passed separately for logging.
+        # Key insight: preserved_wr_info is what the NEXT episode sees, so step_count=0.
         reset_wr_info = reset_state.info[WR_INFO_KEY]
         preserved_wr_info = WildRobotInfo(
-            step_count=new_wr_info.step_count,  # Preserve step count at termination for ep_len
+            step_count=reset_wr_info.step_count,  # Reset to 0 for new episode (NOT new_wr_info.step_count!)
             prev_action=reset_wr_info.prev_action,
-            truncated=new_wr_info.truncated,  # Preserve original truncated flag
+            truncated=new_wr_info.truncated,  # Preserve original truncated flag for success rate
             velocity_cmd=reset_wr_info.velocity_cmd,  # New velocity for new episode
             prev_root_pos=reset_wr_info.prev_root_pos,
             prev_root_quat=reset_wr_info.prev_root_quat,

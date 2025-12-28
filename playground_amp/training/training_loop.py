@@ -112,7 +112,7 @@ class TrainingState(NamedTuple):
 class IterationMetrics(NamedTuple):
     """Metrics from one training iteration.
 
-    v0.10.5: Simplified to use aggregated env_metrics dict instead of
+    v0.10.4: Simplified to use aggregated env_metrics dict instead of
     individual fields. Training losses remain explicit.
 
     All fields are present for both PPO-only and AMP modes.
@@ -136,7 +136,7 @@ class IterationMetrics(NamedTuple):
     episode_length: jnp.ndarray
     success_rate: jnp.ndarray
 
-    # v0.10.5: Aggregated environment metrics from metrics_registry
+    # v0.10.4: Aggregated environment metrics from metrics_registry
     # Contains all metrics from METRIC_SPECS (forward_velocity, height, etc.)
     # Access via: env_metrics["forward_velocity"], env_metrics["tracking/vel_error"], etc.
     env_metrics: Dict[str, jnp.ndarray]
@@ -543,10 +543,12 @@ def make_train_iteration_fn(
         episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
         task_reward_mean = jnp.mean(trajectory.task_rewards)
 
-        # v0.10.2: Episode length = mean step count of COMPLETED episodes only
-        # Only count steps where done=1.0 (episode actually ended)
-        # This gives accurate avg episode length instead of snapshot of current step counts
-        completed_episode_lengths = trajectory.step_counts * trajectory.dones  # Zero out non-terminal steps
+        # v0.10.4: Episode length = mean step count of COMPLETED episodes only
+        # Use episode_step_count from metrics_vec (preserved through auto-reset)
+        # This is more reliable than wr_info.step_count which resets to 0
+        ep_step_idx = METRIC_INDEX["episode_step_count"]
+        episode_step_counts = trajectory.metrics_vec[..., ep_step_idx]  # (T, N)
+        completed_episode_lengths = episode_step_counts * trajectory.dones  # Zero out non-terminal steps
         total_completed_length = jnp.sum(completed_episode_lengths)
         total_done = jnp.sum(trajectory.dones)
         episode_length = jnp.where(
@@ -586,7 +588,7 @@ def make_train_iteration_fn(
         term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
 
-        # v0.10.5: Enrich agg_metrics with computed episode-level metrics
+        # v0.10.4: Enrich agg_metrics with computed episode-level metrics
         # This replaces individual field unpacking with a single dict
         agg_metrics["episode_length"] = episode_length
         agg_metrics["success_rate"] = success_rate
@@ -623,7 +625,7 @@ def make_train_iteration_fn(
             task_reward_mean=task_reward_mean,
             episode_length=episode_length,
             success_rate=success_rate,
-            # v0.10.5: All env metrics in single dict
+            # v0.10.4: All env metrics in single dict
             env_metrics=agg_metrics,
         )
 
