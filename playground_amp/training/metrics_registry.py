@@ -161,6 +161,12 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Swing foot clearance reward",
     ),
+    # v0.10.4: Standing penalty
+    MetricSpec(
+        name="reward/standing",
+        reducer=Reducer.MEAN,
+        description="Standing still penalty (1.0 when |vel| < threshold)",
+    ),
 
     # =========================================================================
     # Debug metrics (indices 17-22)

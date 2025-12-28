@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import functools
 import time
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -112,11 +112,14 @@ class TrainingState(NamedTuple):
 class IterationMetrics(NamedTuple):
     """Metrics from one training iteration.
 
+    v0.10.5: Simplified to use aggregated env_metrics dict instead of
+    individual fields. Training losses remain explicit.
+
     All fields are present for both PPO-only and AMP modes.
     AMP-specific fields are zero when amp_weight=0.
     """
 
-    # PPO losses
+    # PPO losses (computed in training loop)
     policy_loss: jnp.ndarray
     value_loss: jnp.ndarray
     entropy_loss: jnp.ndarray
@@ -127,25 +130,16 @@ class IterationMetrics(NamedTuple):
     disc_accuracy: jnp.ndarray
     amp_reward_mean: jnp.ndarray
 
-    # Episode metrics
+    # Episode-level metrics (computed from trajectory)
     episode_reward: jnp.ndarray
     task_reward_mean: jnp.ndarray
-    forward_velocity: jnp.ndarray
-    robot_height: jnp.ndarray
     episode_length: jnp.ndarray
     success_rate: jnp.ndarray
 
-    # v0.10.2: Termination diagnostics (fraction of episodes ending due to each cause)
-    term_height_low: jnp.ndarray
-    term_height_high: jnp.ndarray
-    term_pitch: jnp.ndarray
-    term_roll: jnp.ndarray
-    term_truncated: jnp.ndarray
-
-    # v0.10.3: Tracking metrics for walking exit criteria
-    velocity_cmd: jnp.ndarray  # Mean velocity command
-    velocity_error: jnp.ndarray  # Mean |forward_vel - velocity_cmd|
-    max_torque: jnp.ndarray  # Mean max normalized torque (peak % of limit)
+    # v0.10.5: Aggregated environment metrics from metrics_registry
+    # Contains all metrics from METRIC_SPECS (forward_velocity, height, etc.)
+    # Access via: env_metrics["forward_velocity"], env_metrics["tracking/vel_error"], etc.
+    env_metrics: Dict[str, jnp.ndarray]
 
 
 # =============================================================================
@@ -549,13 +543,6 @@ def make_train_iteration_fn(
         episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
         task_reward_mean = jnp.mean(trajectory.task_rewards)
 
-        # Access aggregated metrics by name (no more individual trajectory fields!)
-        forward_velocity = agg_metrics["forward_velocity"]
-        robot_height = agg_metrics["height"]
-        velocity_cmd = agg_metrics["velocity_command"]
-        velocity_error = agg_metrics["tracking/vel_error"]
-        max_torque = agg_metrics["tracking/max_torque"]
-
         # v0.10.2: Episode length = mean step count of COMPLETED episodes only
         # Only count steps where done=1.0 (episode actually ended)
         # This gives accurate avg episode length instead of snapshot of current step counts
@@ -599,6 +586,16 @@ def make_train_iteration_fn(
         term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
 
+        # v0.10.5: Enrich agg_metrics with computed episode-level metrics
+        # This replaces individual field unpacking with a single dict
+        agg_metrics["episode_length"] = episode_length
+        agg_metrics["success_rate"] = success_rate
+        agg_metrics["term_height_low_frac"] = term_height_low_frac
+        agg_metrics["term_height_high_frac"] = term_height_high_frac
+        agg_metrics["term_pitch_frac"] = term_pitch_frac
+        agg_metrics["term_roll_frac"] = term_roll_frac
+        agg_metrics["term_truncated_frac"] = term_truncated_frac
+
         new_state = TrainingState(
             policy_params=new_policy_params,
             value_params=new_value_params,
@@ -624,20 +621,10 @@ def make_train_iteration_fn(
             amp_reward_mean=jnp.mean(amp_rewards),
             episode_reward=episode_reward,
             task_reward_mean=task_reward_mean,
-            forward_velocity=forward_velocity,
-            robot_height=robot_height,
             episode_length=episode_length,
             success_rate=success_rate,
-            # v0.10.2: Termination diagnostics
-            term_height_low=term_height_low_frac,
-            term_height_high=term_height_high_frac,
-            term_pitch=term_pitch_frac,
-            term_roll=term_roll_frac,
-            term_truncated=term_truncated_frac,
-            # v0.10.3: Tracking metrics for walking exit criteria
-            velocity_cmd=velocity_cmd,
-            velocity_error=velocity_error,
-            max_torque=max_torque,
+            # v0.10.5: All env metrics in single dict
+            env_metrics=agg_metrics,
         )
 
         return new_state, new_env_state, metrics
@@ -824,30 +811,33 @@ def train(
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
 
+            # Access env metrics from dict
+            env = metrics.env_metrics
+
             # Main metrics line - v0.10.3: Include velocity command for walking
             print(
                 f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
-                f"vel={float(metrics.forward_velocity):>5.2f}m/s (cmd={float(metrics.velocity_cmd):>4.2f}) | "
+                f"vel={float(env['forward_velocity']):>5.2f}m/s (cmd={float(env['velocity_command']):>4.2f}) | "
                 f"steps/s={steps_per_sec:>8.0f}"
             )
 
             # Second line: episode metrics + v0.10.3 tracking metrics
             print(
                 f"  └─ ep_len={float(metrics.episode_length):>5.0f} | "
-                f"height={float(metrics.robot_height):>4.2f}m | "
+                f"height={float(env['height']):>4.2f}m | "
                 f"success={float(metrics.success_rate):>4.1%} | "
-                f"vel_err={float(metrics.velocity_error):>5.3f} | "
-                f"torque={float(metrics.max_torque):>4.1%}"
+                f"vel_err={float(env['tracking/vel_error']):>5.3f} | "
+                f"torque={float(env['tracking/max_torque']):>4.1%}"
             )
 
             # v0.10.2: Third line - termination diagnostics (what's causing failures?)
             # Always show termination breakdown for debugging
             print(
-                f"  └─ term: h_low={float(metrics.term_height_low):>4.1%} | "
-                f"h_high={float(metrics.term_height_high):>4.1%} | "
-                f"pitch={float(metrics.term_pitch):>4.1%} | "
-                f"roll={float(metrics.term_roll):>4.1%}"
+                f"  └─ term: h_low={float(env['term_height_low_frac']):>4.1%} | "
+                f"h_high={float(env['term_height_high_frac']):>4.1%} | "
+                f"pitch={float(env['term_pitch_frac']):>4.1%} | "
+                f"roll={float(env['term_roll_frac']):>4.1%}"
             )
 
             if amp_enabled:

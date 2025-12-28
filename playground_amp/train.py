@@ -358,17 +358,31 @@ def start_training(
                 clip_fraction=0.0,
                 approx_kl=0.0,
                 env_steps_per_sec=steps_per_sec,
-                forward_velocity=float(metrics.forward_velocity),
+                forward_velocity=float(metrics.env_metrics["forward_velocity"]),
                 episode_length=float(metrics.episode_length),
                 # v0.10.3: Walking tracking metrics
-                velocity_cmd=float(metrics.velocity_cmd),
-                velocity_error=float(metrics.velocity_error),
-                max_torque=float(metrics.max_torque),
+                velocity_cmd=float(metrics.env_metrics["velocity_command"]),
+                velocity_error=float(metrics.env_metrics["tracking/vel_error"]),
+                max_torque=float(metrics.env_metrics["tracking/max_torque"]),
             )
             wandb_metrics["debug/task_reward_per_step"] = float(
                 metrics.task_reward_mean
             )
-            wandb_metrics["debug/robot_height"] = float(metrics.robot_height)
+            wandb_metrics["debug/robot_height"] = float(metrics.env_metrics["height"])
+
+            # v0.10.4: Log reward breakdown for diagnostics
+            # This is critical for tuning reward weights
+            reward_terms = [
+                "reward/forward", "reward/lateral", "reward/healthy",
+                "reward/orientation", "reward/angvel", "reward/standing",
+                "reward/torque", "reward/saturation",
+                "reward/action_rate", "reward/joint_vel",
+                "reward/slip", "reward/clearance",
+            ]
+            for term in reward_terms:
+                if term in metrics.env_metrics:
+                    wandb_metrics[term] = float(metrics.env_metrics[term])
+
             wandb_tracker.log(wandb_metrics, step=int(state.total_steps))
 
         # Skip checkpoint tracking if disabled

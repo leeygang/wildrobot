@@ -2,13 +2,19 @@
 # WildRobot PPO + AMP Unified Config
 # =============================================================================
 # Stage 1: Robot-Native Walking Policy (No AMP)
-# v0.10.3: Forward Walking - Learn to walk at 0.5-1.0 m/s
+# v0.10.4: Forward Walking - Reward tuning for velocity incentive
 #
 # Goal: Robot walks forward with stable gait
 # Exit Criteria:
 #   - Episode length > 400 steps (8s survival)
 #   - Forward velocity 0.5-1.0 m/s with tracking error < 0.2 m/s
 #   - Fall rate < 5%
+#
+# v0.10.4 Changes:
+#   - Increased tracking_lin_vel: 2.0 -> 8.0 (dominant velocity incentive)
+#   - Increased forward_velocity_scale: 4.0 -> 6.0 (sharper tracking)
+#   - Added smooth velocity_standing_penalty with command gating
+#   - Reduced competing penalties (base_height, orientation, etc.)
 #
 # Usage:
 #   uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml
@@ -18,8 +24,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.10.3"
-version_name: "Forward Walking (v0.10.3)"
+version: "0.10.4"
+version_name: "Forward Walking - Velocity Incentive (v0.10.4)"
 
 seed: 42
 
@@ -128,30 +134,53 @@ networks:
 
 # =============================================================================
 # Task Reward Weights (Environment-side reward only)
-# v0.10.3: Balance velocity tracking with stability
+# v0.10.4: Strong velocity incentive to overcome standing-still local minimum
+#
+# Analysis: With v0.10.3 weights, standing still gave reward ~0.62 while
+# walking gave ~2.0 but with risk of falling. The reward structure made
+# stability more attractive than velocity tracking.
+#
+# Solution:
+#   1. Increase tracking_lin_vel from 2.0 -> 8.0 (dominant reward)
+#   2. INCREASE forward_velocity_scale from 4.0 -> 6.0 (SHARPER tracking)
+#      Formula: exp(-error * scale), higher = sharper penalty for error
+#   3. Add smooth standing penalty, command-gated
+#   4. Reduce competing stability rewards
+#
+# Reward budget (at cmd=0.65m/s):
+#   Standing (vel=0):  8.0 * exp(-0.65*6) = 0.16, penalty = -0.2
+#   Walking (vel=0.65): 8.0 * exp(0) = 8.0, penalty = 0
+#   Gap: ~8.0 (was 1.38 in v0.10.3)
 # =============================================================================
 reward_weights:
-  # Primary objectives - v0.10.3: Velocity tracking is now important
-  tracking_lin_vel: 2.0   # Increased for walking
-  lateral_velocity: -0.5
-  base_height: 0.5        # Reduced (was 1.0) - stability established
-  orientation: -0.5       # Reduced penalty (was -1.0) - allow some motion
-  angular_velocity: -0.05 # Reduced (was -0.1) - allow turning
+  # Primary objectives - v0.10.4: Dominant velocity tracking
+  tracking_lin_vel: 8.0   # 2.0 -> 8.0: DOMINANT reward for moving forward
+  lateral_velocity: -0.3  # Reduced: allow some lateral motion during walking
+  base_height: 0.2        # Reduced: velocity is primary, just need to stay upright
+  orientation: -0.2       # Reduced: allow body lean during walking
+  angular_velocity: -0.02 # Reduced: allow turning
 
-  # Effort and safety
-  torque: -0.001
-  saturation: -0.1
+  # Effort and safety (keep low to not block motion discovery)
+  torque: -0.0005         # Reduced: allow torque usage for walking emergence
+  saturation: -0.05       # Reduced: allow near-limit torques early
 
-  # Smoothness
-  action_rate: -0.01
-  joint_velocity: -0.001
+  # Smoothness (reduced to allow gait emergence)
+  action_rate: -0.005     # Reduced: allow faster action changes for walking
+  joint_velocity: -0.0003 # Reduced: walking requires joint motion
 
   # Foot stability
-  slip: -0.5
-  clearance: 0.1
+  slip: -0.2              # Reduced: some slip is okay during walking
+  clearance: 0.3          # Increased: strong reward for foot lift during swing
 
-  # Shaping
-  forward_velocity_scale: 4.0
+  # v0.10.4: Velocity shaping parameters
+  forward_velocity_scale: 6.0     # 4.0 -> 6.0: SHARPER (higher = steeper penalty)
+
+  # Smooth standing penalty (command-gated)
+  # Only applies when velocity_cmd > velocity_cmd_min
+  # Penalty = weight * relu(threshold - |vel|) / threshold
+  velocity_standing_penalty: 0.3  # Conservative start, can increase if needed
+  velocity_standing_threshold: 0.15  # Below this = standing still
+  velocity_cmd_min: 0.2           # Only penalize standing if cmd > this
 
 # =============================================================================
 # Reward Composition (Trainer-side)
@@ -177,7 +206,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, walking, v0.10.3]
+  tags: [ppo, stage1, walking, v0.10.4]
 
 video:
   enabled: true

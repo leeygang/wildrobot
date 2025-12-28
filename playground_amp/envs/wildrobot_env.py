@@ -574,6 +574,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Foot stability rewards
             "reward/slip": jp.zeros(()),
             "reward/clearance": jp.zeros(()),
+            # v0.10.4: Standing penalty
+            "reward/standing": jp.zeros(()),
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,
@@ -794,9 +796,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
         # We need to preserve the original wr_info.truncated (1.0 if success) through auto-reset
+        # v0.10.5: Also preserve step_count for episode length logging
         reset_wr_info = reset_state.info[WR_INFO_KEY]
         preserved_wr_info = WildRobotInfo(
-            step_count=reset_wr_info.step_count,
+            step_count=new_wr_info.step_count,  # Preserve step count at termination for ep_len
             prev_action=reset_wr_info.prev_action,
             truncated=new_wr_info.truncated,  # Preserve original truncated flag
             velocity_cmd=reset_wr_info.velocity_cmd,  # New velocity for new episode
@@ -1039,6 +1042,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Get weights from frozen config (type-safe access)
         weights = self._config.reward_weights
 
+        # v0.10.4: Smooth, command-gated standing penalty
+        # Only apply when |velocity_cmd| > velocity_cmd_min (don't penalize if asked to stop)
+        # Only apply when healthy (prevents noise during falling/recovery)
+        # Penalty is smooth: relu(threshold - |vel|) / threshold, ranges from 0 to 1
+        standing_threshold = weights.velocity_standing_threshold
+        standing_penalty_weight = weights.velocity_standing_penalty
+        velocity_cmd_min = weights.velocity_cmd_min
+
+        # Smooth penalty: how far below threshold (0 if at/above threshold)
+        velocity_deficit = jp.maximum(standing_threshold - jp.abs(forward_vel), 0.0)
+        standing_penalty_raw = velocity_deficit / (standing_threshold + 1e-6)
+
+        # Gate by command magnitude: only penalize if asked to move (supports future backward cmds)
+        cmd_gate = jp.where(jp.abs(velocity_cmd) > velocity_cmd_min, 1.0, 0.0)
+
+        # Gate by healthy: don't penalize during falling/recovery (prevents twitch behaviors)
+        healthy_gate = healthy
+
+        standing_penalty = standing_penalty_raw * cmd_gate * healthy_gate
+
         total = (
             # Primary (Tier 1)
             weights.tracking_lin_vel * forward_reward
@@ -1046,6 +1069,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.base_height * healthy
             + weights.orientation * orientation_penalty
             + weights.angular_velocity * angvel_penalty
+            # v0.10.4: Smooth standing penalty (negative reward for standing still)
+            - standing_penalty_weight * standing_penalty
             # Effort (Tier 1)
             + weights.torque * torque_penalty
             + weights.saturation * saturation_penalty
@@ -1072,6 +1097,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/healthy": healthy,
             "reward/orientation": orientation_penalty,
             "reward/angvel": angvel_penalty,
+            # v0.10.4: Standing penalty
+            "reward/standing": standing_penalty,
             # Effort
             "reward/torque": torque_penalty,
             "reward/saturation": saturation_penalty,

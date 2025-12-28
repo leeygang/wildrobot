@@ -253,6 +253,11 @@ class RewardWeightsConfig(Freezable):
     # Shaping
     forward_velocity_scale: float = 4.0
 
+    # v0.10.4: Standing penalty to discourage velocity=0
+    velocity_standing_penalty: float = 0.0  # Penalty for standing still
+    velocity_standing_threshold: float = 0.2  # Below this = standing still
+    velocity_cmd_min: float = 0.2  # Only apply standing penalty if cmd > this
+
 
 @dataclass
 class RewardCompositionConfig(Freezable):
