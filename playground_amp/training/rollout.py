@@ -8,6 +8,12 @@ The key design principle is that the rollout semantics (obs, actions, logp,
 values, task_reward) are IDENTICAL regardless of whether AMP features are
 collected. This ensures Stage 1 is a true subset of Stage 3.
 
+v0.10.4: Registry-based metrics
+- Replaced individual metric fields with single `metrics_vec` tensor
+- Uses metrics_registry for schema enforcement
+- No more .get() calls with silent fallbacks
+- Adding new metrics only requires registry + env changes
+
 Usage:
     # Stage 1: PPO-only
     traj = collect_rollout(env_step_fn, env_state, policy_params, ...,
@@ -36,6 +42,7 @@ from playground_amp.training.ppo_core import (
     sample_actions,
 )
 from playground_amp.envs.env_types import WR_INFO_KEY
+from playground_amp.training.metrics_registry import METRICS_VEC_KEY, NUM_METRICS
 
 
 class TrajectoryBatch(NamedTuple):
@@ -56,30 +63,20 @@ class TrajectoryBatch(NamedTuple):
         dones: Episode termination flags (1.0 if done)
         truncations: Truncation flags (1.0 if episode ended due to time limit)
         next_obs: Next observations (for bootstrapping)
+        bootstrap_value: Value estimate for final state (num_envs,)
+
+        # v0.10.4: Packed metrics vector (replaces individual metric fields)
+        # Shape: (num_steps, num_envs, NUM_METRICS)
+        # Use metrics_registry.unpack_metrics() to access by name
+        metrics_vec: All logging metrics in registry order
+
+        # Algorithm-critical fields (kept separate for explicit access)
+        step_counts: Episode step count at each step (for ep_len calculation)
 
         # Optional AMP fields (None if collect_amp_features=False)
         foot_contacts: Foot contact states for AMP features
         root_heights: Root heights for AMP features
         prev_joint_positions: Previous joint positions for finite diff velocity
-
-        # Bootstrap value for GAE computation
-        bootstrap_value: Value estimate for final state (num_envs,)
-
-        # Info fields for logging
-        forward_velocities: Forward velocity at each step
-        heights: Robot height at each step
-
-        # v0.10.2: Termination diagnostics
-        term_height_low: Height too low terminations
-        term_height_high: Height too high terminations
-        term_pitch: Pitch limit terminations
-        term_roll: Roll limit terminations
-        term_truncated: Successful truncations (max steps reached)
-
-        # v0.10.3: Tracking metrics for walking exit criteria
-        velocity_cmds: Velocity command at each step
-        velocity_errors: |forward_vel - velocity_cmd| tracking error
-        max_torques: Max normalized torque (peak torque / limit)
     """
     # Core PPO fields (always populated)
     obs: jnp.ndarray
@@ -92,29 +89,17 @@ class TrajectoryBatch(NamedTuple):
     next_obs: jnp.ndarray
     bootstrap_value: jnp.ndarray
 
+    # v0.10.4: Packed metrics vector (replaces individual metric fields)
+    # Shape: (num_steps, num_envs, NUM_METRICS)
+    metrics_vec: jnp.ndarray
+
+    # Algorithm-critical fields (kept separate for explicit access)
+    step_counts: jnp.ndarray
+
     # AMP feature fields (None if not collecting)
     foot_contacts: Optional[jnp.ndarray]
     root_heights: Optional[jnp.ndarray]
     prev_joint_positions: Optional[jnp.ndarray]
-
-    # Info fields for logging
-    forward_velocities: jnp.ndarray
-    heights: jnp.ndarray
-
-    # v0.10.2: Episode step counts (for accurate ep_len calculation)
-    step_counts: jnp.ndarray
-
-    # v0.10.2: Termination diagnostics
-    term_height_low: jnp.ndarray
-    term_height_high: jnp.ndarray
-    term_pitch: jnp.ndarray
-    term_roll: jnp.ndarray
-    term_truncated: jnp.ndarray
-
-    # v0.10.3: Tracking metrics for walking exit criteria
-    velocity_cmds: jnp.ndarray
-    velocity_errors: jnp.ndarray
-    max_torques: jnp.ndarray
 
 
 def collect_rollout(
@@ -134,6 +119,12 @@ def collect_rollout(
     The key invariant is that when collect_amp_features changes:
     - Core PPO fields (obs, actions, log_probs, values, task_rewards) are IDENTICAL
     - Only AMP-specific fields differ
+
+    v0.10.4: Uses state.metrics[METRICS_VEC_KEY] instead of .get() calls.
+    This ensures:
+    - Fixed pytree structure for lax.scan
+    - No silent fallbacks to zeros
+    - Schema enforcement via metrics_registry
 
     Args:
         env_step_fn: Batched environment step function
@@ -172,11 +163,11 @@ def collect_rollout(
         current_joint_pos = obs[..., 9:18]
 
         # Access typed WildRobotInfo namespace directly (fail loudly if missing)
-        # This replaces .get() with default zeros - required fields must exist
         wr_info = next_env_state.info[WR_INFO_KEY]
 
-        # Build step data - always include all fields for consistent pytree structure
+        # Build step data - minimal fields, metrics come from metrics[METRICS_VEC_KEY]
         step_data = {
+            # Core PPO fields
             "obs": obs,
             "action": raw_action,
             "log_prob": log_prob,
@@ -185,21 +176,10 @@ def collect_rollout(
             "done": next_env_state.done,
             "truncation": wr_info.truncated,  # Required field from typed namespace
             "next_obs": next_env_state.obs,
-            # Info fields (metrics are still dict-based, can use .get())
-            "forward_velocity": next_env_state.metrics.get("forward_velocity", jnp.zeros_like(next_env_state.done)),
-            "height": next_env_state.metrics.get("height", jnp.zeros_like(next_env_state.done)),
-            # v0.10.2: Episode length at termination (for accurate ep_len metric)
-            "step_count": wr_info.step_count,  # Current step count for this env
-            # v0.10.2: Termination diagnostics
-            "term_height_low": next_env_state.metrics.get("term/height_low", jnp.zeros_like(next_env_state.done)),
-            "term_height_high": next_env_state.metrics.get("term/height_high", jnp.zeros_like(next_env_state.done)),
-            "term_pitch": next_env_state.metrics.get("term/pitch", jnp.zeros_like(next_env_state.done)),
-            "term_roll": next_env_state.metrics.get("term/roll", jnp.zeros_like(next_env_state.done)),
-            "term_truncated": next_env_state.metrics.get("term/truncated", jnp.zeros_like(next_env_state.done)),
-            # v0.10.3: Tracking metrics for walking exit criteria
-            "velocity_cmd": next_env_state.metrics.get("velocity_command", jnp.zeros_like(next_env_state.done)),
-            "velocity_error": next_env_state.metrics.get("tracking/vel_error", jnp.zeros_like(next_env_state.done)),
-            "max_torque": next_env_state.metrics.get("tracking/max_torque", jnp.zeros_like(next_env_state.done)),
+            # v0.10.4: Packed metrics vector from metrics dict
+            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+            # Algorithm-critical fields (kept explicit)
+            "step_count": wr_info.step_count,
             # AMP fields - required fields from typed namespace
             "foot_contact": wr_info.foot_contacts,  # Required field (4,) per env
             "root_height": wr_info.root_height,  # Required field scalar per env
@@ -233,25 +213,14 @@ def collect_rollout(
         truncations=step_data["truncation"],
         next_obs=step_data["next_obs"],
         bootstrap_value=bootstrap_value,
+        # v0.10.4: Packed metrics vector
+        metrics_vec=step_data["metrics_vec"],
+        # Algorithm-critical fields
+        step_counts=step_data["step_count"],
         # AMP fields - set to None if not collecting (saves memory)
         foot_contacts=step_data["foot_contact"] if collect_amp_features else None,
         root_heights=step_data["root_height"] if collect_amp_features else None,
         prev_joint_positions=step_data["prev_joint_pos"] if collect_amp_features else None,
-        # Info fields
-        forward_velocities=step_data["forward_velocity"],
-        heights=step_data["height"],
-        # v0.10.2: Episode step counts (for accurate ep_len calculation)
-        step_counts=step_data["step_count"],
-        # v0.10.2: Termination diagnostics
-        term_height_low=step_data["term_height_low"],
-        term_height_high=step_data["term_height_high"],
-        term_pitch=step_data["term_pitch"],
-        term_roll=step_data["term_roll"],
-        term_truncated=step_data["term_truncated"],
-        # v0.10.3: Tracking metrics for walking exit criteria
-        velocity_cmds=step_data["velocity_cmd"],
-        velocity_errors=step_data["velocity_error"],
-        max_torques=step_data["max_torque"],
     )
 
     return final_env_state, trajectory

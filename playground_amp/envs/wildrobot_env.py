@@ -47,6 +47,12 @@ from mujoco_playground._src import mjx_env
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
 from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
+from playground_amp.training.metrics_registry import (
+    METRIC_NAMES,
+    METRICS_VEC_KEY,
+    NUM_METRICS,
+    build_metrics_vec,
+)
 
 
 # =============================================================================
@@ -255,8 +261,12 @@ def get_assets(root_path: Path) -> Dict[str, bytes]:
 class WildRobotEnvState(mjx_env.State):
     """WildRobot environment state with Brax compatibility.
 
-    Extends mujoco_playground's State to add pipeline_state field,
-    which is required by Brax's training wrapper.
+    Extends mujoco_playground's State to add:
+    - pipeline_state: Required by Brax's training wrapper
+
+    The packed metrics vector is stored in metrics[METRICS_VEC_KEY] following
+    the same pattern as info[WR_INFO_KEY]. This avoids adding new fields
+    to the state dataclass.
     """
 
     pipeline_state: mjx.Data = None
@@ -592,6 +602,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             step_count=jp.zeros(()),
             prev_action=jp.zeros(self.action_size),
             truncated=jp.zeros(()),  # No truncation at reset
+            velocity_cmd=velocity_cmd,  # Target velocity for this episode
             prev_root_pos=self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
             prev_root_quat=self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
             prev_left_foot_pos=left_foot_pos,
@@ -606,6 +617,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             info[WR_INFO_KEY] = wr_info
         else:
             info = {WR_INFO_KEY: wr_info}
+
+        # Build packed metrics vector and store in metrics dict
+        # This follows the same pattern as info[WR_INFO_KEY]
+        metrics_vec = build_metrics_vec(metrics)
+        metrics[METRICS_VEC_KEY] = metrics_vec
 
         return WildRobotEnvState(
             data=data,
@@ -660,10 +676,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             New WildRobotEnvState. If episode terminated, state is auto-reset
             but done=True is still returned so the algorithm knows.
         """
-        velocity_cmd = state.metrics["velocity_command"]
-
         # Read from typed WildRobotInfo namespace (fail loudly if missing)
         wr = state.info[WR_INFO_KEY]
+        velocity_cmd = wr.velocity_cmd
         step_count = wr.step_count
         prev_action = wr.prev_action
 
@@ -722,6 +737,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # v0.10.2: Termination diagnostics
             **term_info,
         }
+        # Add placeholder for metrics_vec (will be rebuilt after cond)
+        # This ensures pytree structure matches preserved_metrics
+        metrics[METRICS_VEC_KEY] = build_metrics_vec(metrics)
 
         # Compute current values for WildRobotInfo update
         curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
@@ -733,6 +751,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             step_count=step_count + 1,
             prev_action=filtered_action,
             truncated=truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
+            velocity_cmd=velocity_cmd,  # Preserved through episode
             prev_root_pos=curr_root_pos,
             prev_root_quat=curr_root_quat,
             prev_left_foot_pos=curr_left_foot_pos,
@@ -780,6 +799,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             step_count=reset_wr_info.step_count,
             prev_action=reset_wr_info.prev_action,
             truncated=new_wr_info.truncated,  # Preserve original truncated flag
+            velocity_cmd=reset_wr_info.velocity_cmd,  # New velocity for new episode
             prev_root_pos=reset_wr_info.prev_root_pos,
             prev_root_quat=reset_wr_info.prev_root_quat,
             prev_left_foot_pos=reset_wr_info.prev_left_foot_pos,
@@ -800,6 +820,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             lambda: (data, obs, metrics, info),
         )
+
+        # Build packed metrics vector and store in metrics dict
+        final_metrics_vec = build_metrics_vec(final_metrics)
+        final_metrics[METRICS_VEC_KEY] = final_metrics_vec
 
         return WildRobotEnvState(
             data=final_data,

@@ -48,6 +48,7 @@ try:
             step_count: Current step count in episode (0 at reset)
             prev_action: Action applied in this step (for action rate penalty)
             truncated: 1.0 if episode ended due to max steps (success metric)
+            velocity_cmd: Target velocity for this episode (scalar, m/s)
 
             # Finite-diff velocity computation (AMP feature parity)
             prev_root_pos: Root position after this step (3,)
@@ -65,6 +66,7 @@ try:
         step_count: jnp.ndarray  # shape=()
         prev_action: jnp.ndarray  # shape=(action_size,)
         truncated: jnp.ndarray  # shape=(), sticky through auto-reset
+        velocity_cmd: jnp.ndarray  # shape=(), target velocity for episode
 
         # Finite-diff velocity (post-step values)
         prev_root_pos: jnp.ndarray  # shape=(3,)
@@ -87,6 +89,7 @@ except ImportError:
         step_count: jnp.ndarray
         prev_action: jnp.ndarray
         truncated: jnp.ndarray
+        velocity_cmd: jnp.ndarray
         prev_root_pos: jnp.ndarray
         prev_root_quat: jnp.ndarray
         prev_left_foot_pos: jnp.ndarray
@@ -116,6 +119,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "step_count": (),
         "prev_action": (action_size,),
         "truncated": (),
+        "velocity_cmd": (),
         "prev_root_pos": (3,),
         "prev_root_quat": (4,),
         "prev_left_foot_pos": (3,),

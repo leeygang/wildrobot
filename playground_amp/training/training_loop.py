@@ -67,6 +67,11 @@ from playground_amp.training.rollout import (
     compute_reward_total,
     TrajectoryBatch,
 )
+from playground_amp.training.metrics_registry import (
+    aggregate_metrics,
+    METRIC_INDEX,
+    unpack_metrics,
+)
 
 
 # =============================================================================
@@ -536,11 +541,20 @@ def make_train_iteration_fn(
         # ================================================================
         env_steps = config.ppo.rollout_steps * config.ppo.num_envs
 
-        # Episode metrics
+        # v0.10.4: Use registry-based metrics aggregation
+        # Aggregate all metrics from packed vector using registry reducers
+        agg_metrics = aggregate_metrics(trajectory.metrics_vec, trajectory.dones)
+
+        # Episode metrics (computed from trajectory, not from metrics_vec)
         episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
         task_reward_mean = jnp.mean(trajectory.task_rewards)
-        forward_velocity = jnp.mean(trajectory.forward_velocities)
-        robot_height = jnp.mean(trajectory.heights)
+
+        # Access aggregated metrics by name (no more individual trajectory fields!)
+        forward_velocity = agg_metrics["forward_velocity"]
+        robot_height = agg_metrics["height"]
+        velocity_cmd = agg_metrics["velocity_command"]
+        velocity_error = agg_metrics["tracking/vel_error"]
+        max_torque = agg_metrics["tracking/max_torque"]
 
         # v0.10.2: Episode length = mean step count of COMPLETED episodes only
         # Only count steps where done=1.0 (episode actually ended)
@@ -563,12 +577,20 @@ def make_train_iteration_fn(
         )
 
         # v0.10.2: Termination diagnostics - compute fraction of episodes ending due to each cause
-        # Sum termination events across all steps and envs, then normalize by total terminations
-        total_term_height_low = jnp.sum(trajectory.term_height_low)
-        total_term_height_high = jnp.sum(trajectory.term_height_high)
-        total_term_pitch = jnp.sum(trajectory.term_pitch)
-        total_term_roll = jnp.sum(trajectory.term_roll)
-        total_term_truncated = jnp.sum(trajectory.term_truncated)
+        # Access term/* metrics from aggregated dict and normalize by total done episodes
+        # Note: aggregate_metrics uses MEAN reducer, but we need SUM then normalize
+        # So we access the raw metrics_vec and compute manually
+        term_idx_height_low = METRIC_INDEX["term/height_low"]
+        term_idx_height_high = METRIC_INDEX["term/height_high"]
+        term_idx_pitch = METRIC_INDEX["term/pitch"]
+        term_idx_roll = METRIC_INDEX["term/roll"]
+        term_idx_truncated = METRIC_INDEX["term/truncated"]
+
+        total_term_height_low = jnp.sum(trajectory.metrics_vec[..., term_idx_height_low])
+        total_term_height_high = jnp.sum(trajectory.metrics_vec[..., term_idx_height_high])
+        total_term_pitch = jnp.sum(trajectory.metrics_vec[..., term_idx_pitch])
+        total_term_roll = jnp.sum(trajectory.metrics_vec[..., term_idx_roll])
+        total_term_truncated = jnp.sum(trajectory.metrics_vec[..., term_idx_truncated])
 
         # Normalize by total done episodes (fraction of terminations by cause)
         term_height_low_frac = jnp.where(total_done > 0, total_term_height_low / total_done, 0.0)
@@ -576,11 +598,6 @@ def make_train_iteration_fn(
         term_pitch_frac = jnp.where(total_done > 0, total_term_pitch / total_done, 0.0)
         term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
-
-        # v0.10.3: Tracking metrics for walking exit criteria
-        mean_velocity_cmd = jnp.mean(trajectory.velocity_cmds)
-        mean_velocity_error = jnp.mean(trajectory.velocity_errors)
-        mean_max_torque = jnp.mean(trajectory.max_torques)
 
         new_state = TrainingState(
             policy_params=new_policy_params,
@@ -618,9 +635,9 @@ def make_train_iteration_fn(
             term_roll=term_roll_frac,
             term_truncated=term_truncated_frac,
             # v0.10.3: Tracking metrics for walking exit criteria
-            velocity_cmd=mean_velocity_cmd,
-            velocity_error=mean_velocity_error,
-            max_torque=mean_max_torque,
+            velocity_cmd=velocity_cmd,
+            velocity_error=velocity_error,
+            max_torque=max_torque,
         )
 
         return new_state, new_env_state, metrics
