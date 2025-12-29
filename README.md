@@ -1,84 +1,146 @@
 # WildRobot
 
-A humanoid robot locomotion project with training pipelines for both MuJoCo/Brax and IsaacLab frameworks.
+A humanoid robot locomotion project using MuJoCo/MJX with JAX-based PPO and Adversarial Motion Priors (AMP) training.
 
 ## Project Structure
 
 ```
 wildrobot/
-├── README.md                        # This file
-├── requirements.txt                 # Python dependencies
-├── setup.py                         # Optional: installable package config
+├── README.md                           # This file
+├── AGENTS.md                           # Agent guidelines
+├── CLAUDE.md                           # Claude AI guidelines
+├── pyproject.toml                      # Python package configuration (uv)
+├── assets/                             # Robot model files
+│   ├── wildrobot.xml                   # Main MuJoCo robot model
+│   ├── wildrobot.urdf                  # URDF version
+│   ├── scene_flat_terrain.xml          # Flat terrain scene
+│   ├── scene_rough_terrain.xml         # Rough terrain scene
+│   ├── joints_properties.xml           # Joint configuration
+│   ├── sensors.xml                     # Sensor definitions
+│   ├── robot_config.yaml               # Robot parameters
+│   ├── config.json                     # Onshape configuration
+│   ├── post_process.py                 # post-process during model generation
+│   ├── update_xml.sh                   # generate and update the wildrobot.xml/urdf from Onshape
+│   └── assets/                         # Generated Mesh files (STL)
+│       ├── *.stl                       # Robot part meshes
+│       └── *.part                      # Part definitions
 │
-├── assets/                          # Robot model files
-│   ├── mjcf/                       # MuJoCo model files
-│   │   ├── wildrobot.xml           # Main MuJoCo robot model
-│   │   ├── meshes/                 # STL/OBJ mesh files
-│   │   └── textures/               # Texture files (if any)
+├── playground_amp/                     # Main training codebase
+│   ├── train.py                        # Training entry point
+│   ├── CHANGELOG.md                    # Training Version history
 │   │
-│   └── usd/                        # USD format for IsaacLab
-│       ├── wildrobot.usd           # Converted USD robot model
-│       └── meshes/                 # USD mesh references
-│
-├── configs/                         # Configuration files
-│   ├── mujoco/                     # MuJoCo-specific configs
-│   │   └── train_config.yaml       # MuJoCo training hyperparameters
-│   └── isaaclab/                   # IsaacLab-specific configs
-│       ├── env_cfg.py              # IsaacLab environment configuration
-│       └── train_cfg.py            # IsaacLab training configuration
-│
-├── mujoco/                          # MuJoCo/Brax training pipeline
-│   ├── __init__.py
-│   ├── envs/                       # Environment implementations
+│   ├── amp/                            # Adversarial Motion Priors
+│   │   ├── discriminator.py            # AMP discriminator network
+│   │   ├── discriminator_diagnostics.py # Discriminator debugging
+│   │   ├── policy_features.py          # Policy feature extraction
+│   │   ├── ref_features.py             # Reference motion features
+│   │   ├── ref_buffer.py               # Reference motion buffer
+│   │   ├── replay_buffer.py            # Experience replay buffer
+│   │   └── amp_mirror.py               # Motion mirroring utilities
+│   │
+│   ├── configs/                        # Configuration system
 │   │   ├── __init__.py
-│   │   └── wildrobot_env.py        # MuJoCo environment wrapper
-│   ├── train.py                    # MuJoCo/Brax PPO training script
-│   └── evaluate.py                 # Model evaluation script
-│
-├── isaaclab/                        # IsaacLab training pipeline
-│   ├── __init__.py
-│   ├── envs/                       # Environment implementations
+│   │   ├── training_config.py          # Training config schema
+│   │   ├── training_runtime_config.py  # Runtime config
+│   │   ├── robot_config.py             # Robot config schema
+│   │   ├── feature_config.py           # Feature configuration
+│   │   ├── ppo_walking.yaml            # Walking task config
+│   │   └── ppo_standing.yaml           # Standing task config
+│   │
+│   ├── data/                           # Reference motion data
+│   │   ├── gmr/                        # GMR motion data
+│   │   ├── gmr_to_physics_ref_data.py  # Motion data conversion
+│   │   └── debug_gmr_physics.py        # Debug utilities
+│   │
+│   ├── docs/                           # Documentation
+│   │   ├── learn_first_plan.md         # Training guide
+│   │   ├── TRAINING_SYSTEM_DESIGN.md   # System architecture
+│   │
+│   ├── envs/                           # Environment implementation
+│   │   ├── wildrobot_env.py            # Main JAX environment
+│   │   └── env_types.py                # Type definitions
+│   │
+│   ├── training/                       # Training infrastructure
 │   │   ├── __init__.py
-│   │   └── wildrobot_env.py        # IsaacLab environment wrapper
-│   ├── tasks/                      # Task definitions
-│   │   ├── __init__.py
-│   │   └── locomotion.py           # Locomotion task configuration
-│   ├── train.py                    # IsaacLab training script
-│   └── evaluate.py                 # Model evaluation script
+│   │   ├── training_loop.py            # Main training loop
+│   │   ├── ppo_core.py                 # PPO algorithm implementation
+│   │   ├── rollout.py                  # Rollout collection
+│   │   ├── checkpoint.py               # Checkpoint save/load
+│   │   ├── metrics_registry.py         # Metrics tracking
+│   │   ├── experiment_tracking.py      # W&B integration
+│   │   ├── heading_math.py             # Heading computation utilities
+│   │   └── visualize_policy.py         # Policy visualization
+│   │
+│   ├── tests/                          # All tests (consolidated)
+│   │   ├── TEST_STRATEGY.md            # Comprehensive test strategy
+│   │   ├── conftest.py                 # Shared test fixtures
+│   │   ├── robot_schema.py             # Schema validation utilities
+│   │   ├── run_validation.py           # Validation runner
+│   │   │
+│   │   │ # Physics & Environment Tests
+│   │   ├── test_physics_validation.py  # Physics correctness
+│   │   ├── test_reward_components.py   # Reward computation
+│   │   ├── test_foot_contacts.py       # Contact force validation
+│   │   ├── test_env_info_schema.py     # Environment info schema
+│   │   │
+│   │   │ # Training Component Tests
+│   │   ├── test_training_components.py # Training infrastructure
+│   │   ├── test_trainer_invariance.py  # Training invariance
+│   │   ├── test_ppo_core.py            # PPO algorithm tests
+│   │   ├── test_amp_features.py        # AMP feature tests
+│   │   │
+│   │   │ # Math Utility Tests
+│   │   ├── test_quat_edges.py          # Quaternion edge cases
+│   │   ├── test_quat_normalize.py      # Quaternion normalization
+│   │   │
+│   │   │ # Environment State Tests
+│   │   ├── envs/                       # JAX environment tests
+│   │   │   ├── test_jax_env_fns.py
+│   │   │   ├── test_jax_equiv_small.py
+│   │   │   ├── test_jax_equiv_expanded.py
+│   │   │   ├── test_jax_fullstate_small.py
+│   │   │   ├── test_jax_contact_equiv.py
+│   │   │   └── test_termination_checks.py
+│   │   │
+│   │   └── debug_contact_forces.ipynb  # Contact force debugging
+│   │
+│   ├── scripts/                        # Debug & diagnostic scripts
+│   │   ├── debug_amp_features.py
+│   │   ├── diagnose_amp_features.py
+│   │   ├── diagnose_torque.py
+│   │   ├── mocap_retarget.py           # Motion capture retargeting
+│   │   └── test_actuator_range.py
+│   │
+│   ├── checkpoints/                    # Saved model checkpoints
+│   │   └── wildrobot_ppo_*/            # Training run checkpoints
+│   │
+│   └── wandb/                          # W&B experiment logs
 │
-├── shared/                          # Shared components across frameworks
-│   ├── __init__.py
-│   ├── rewards.py                  # Common reward functions
-│   ├── observations.py             # Common observation processing
-│   └── utils.py                    # Utility functions
+├── mujoco-brax/                        # Legacy mujoco brax training version.(reference only not used)
+│   ├── README.md
+│   ├── amp/                            # Reference AMP code
+│   ├── common/                         # Shared utilities
+│   ├── playground/                     # Experimental code
+│   └── runtime/                        # Runtime utilities
 │
-├── models/                          # Trained model checkpoints
-│   ├── mujoco/                     # MuJoCo/Brax trained models
-│   │   └── checkpoints/
-│   └── isaaclab/                   # IsaacLab trained models
-│       └── checkpoints/
+├── isaac/                              # IsaacLab integration (WIP, not used)
+│   ├── isaac_lab_strategy.md           # Integration strategy
+│   ├── assets/                         # USD assets
+│   └── scripts/                        # Conversion scripts
 │
-├── logs/                            # Training logs and metrics
-│   ├── mujoco/                     # MuJoCo training logs
-│   └── isaaclab/                   # IsaacLab training logs
-│
-├── scripts/                         # Utility scripts
-│   ├── convert_mjcf_to_usd.sh     # MJCF to USD conversion script
-│   ├── visualize.py                # Visualization utilities
-│   └── export_policy.py            # Policy export utilities
-│
-└── tests/                           # Unit tests
-    ├── test_mujoco_env.py
-    └── test_isaaclab_env.py
+└── scripts/                            # Project-level scripts
+    ├── scp_to_remote.sh                # Upload to remote server
+    └── scp_from_remote.sh              # Download from remote server
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.8+
-- MuJoCo (for MuJoCo/Brax training)
-- IsaacLab (for IsaacLab training) - should be installed at `../isaaclab/` relative to this project
+- Python 3.11+
+- [uv](https://github.com/astral-sh/uv) package manager
+- MuJoCo 3.x
+- JAX with GPU support (optional but recommended)
 
 ### Installation
 
@@ -87,81 +149,124 @@ wildrobot/
 git clone <your-repo-url>
 cd wildrobot
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies with uv
+uv sync
 
-# Optional: Install as editable package
-pip install -e .
+# Or install in development mode
+uv pip install -e .
 ```
 
-### Converting Robot Model
+### Running Tests
 
-Convert the MuJoCo model to USD format for IsaacLab:
+All tests are consolidated under `playground_amp/tests/`:
 
 ```bash
-# Run the conversion script
-bash scripts/convert_mjcf_to_usd.sh
+# Run all tests
+uv run pytest playground_amp/tests -v
 
-# Or manually:
-cd ../isaaclab
-./isaaclab.sh -p scripts/tools/convert_mjcf.py \
-  ../wildrobot/assets/mjcf/wildrobot.xml \
-  ../wildrobot/assets/usd/wildrobot.usd \
-  --import-sites \
-  --make-instanceable
+# Run specific test categories
+uv run pytest playground_amp/tests/test_physics_validation.py -v  # Physics tests
+uv run pytest playground_amp/tests/test_reward_components.py -v   # Reward tests
+uv run pytest playground_amp/tests/test_ppo_core.py -v            # PPO tests
+uv run pytest playground_amp/tests/envs/ -v                        # Environment tests
+
+# Run with coverage
+uv run pytest playground_amp/tests --cov=playground_amp --cov-report=html
 ```
 
 ## Training
 
-### MuJoCo/Brax Training
+### Walking Task (PPO + AMP)
 
 ```bash
-# Train with MuJoCo and Brax PPO
-python mujoco/train.py --config configs/mujoco/train_config.yaml
+# Start training with default config
+uv run python playground_amp/train.py
 
-# Evaluate trained model
-python mujoco/evaluate.py --checkpoint models/mujoco/checkpoints/best_model.pt
+# Train with specific config
+uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml
+
+# Resume from checkpoint
+uv run python playground_amp/train.py --resume playground_amp/checkpoints/<checkpoint_dir>
 ```
 
-### IsaacLab Training
+### Configuration
+
+Training is configured via YAML files in `playground_amp/configs/`:
+
+- `ppo_walking.yaml` - Walking locomotion task
+- `ppo_standing.yaml` - Standing balance task
+
+Key configuration options:
+
+```yaml
+# Training parameters
+training:
+  num_envs: 4096
+  rollout_steps: 32
+  num_iterations: 1000
+  learning_rate: 3e-4
+
+# Reward weights
+reward:
+  velocity_tracking: 1.0
+  orientation: 0.5
+  action_smoothness: 0.1
+
+# AMP settings
+amp:
+  enabled: true
+  reward_weight: 0.5
+```
+
+### Monitoring Training
+
+Training progress is logged to [Weights & Biases](https://wandb.ai/):
 
 ```bash
-# Train with IsaacLab
-python isaaclab/train.py --config configs/isaaclab/train_cfg.py
-
-# Evaluate trained model
-python isaaclab/evaluate.py --checkpoint models/isaaclab/checkpoints/best_model.pt
+# View live training metrics
+wandb login
+# Then check your W&B dashboard
 ```
 
 ## Visualization
 
 ```bash
 # Visualize trained policy
-python scripts/visualize.py --framework mujoco --checkpoint models/mujoco/checkpoints/best_model.pt
-python scripts/visualize.py --framework isaaclab --checkpoint models/isaaclab/checkpoints/best_model.pt
+uv run python playground_amp/training/visualize_policy.py \
+  --checkpoint playground_amp/checkpoints/<checkpoint_dir>
 ```
 
 ## Project Goals
 
 - Develop a bipedal humanoid robot capable of robust locomotion
-- Compare training efficiency and performance between MuJoCo/Brax and IsaacLab
-- Implement shared reward functions and observation spaces for fair comparison
-- Achieve stable walking across various terrains
-
-## Development Workflow
-
-1. **Robot Design**: Define robot model in `assets/mjcf/wildrobot.xml`
-2. **Conversion**: Convert to USD for IsaacLab using conversion script
-3. **Environment Setup**: Implement environments in both frameworks
-4. **Training**: Run parallel experiments with both simulators
-5. **Comparison**: Analyze results and iterate on design
+- Implement physics-based Adversarial Motion Priors (AMP)
+- Achieve stable walking across flat and rough terrains
+- Validate simulation accuracy with comprehensive test suite
 
 ## Key Features
 
-- **Dual Framework Support**: Train with both MuJoCo/Brax and IsaacLab
-- **Shared Components**: Common reward functions and observations for consistent comparison
-- **Modular Design**: Easy to extend with new tasks or environments
-- **Organized Checkpoints**: Separate storage for models from different frameworks
+- **JAX/MJX Acceleration**: Fast parallel simulation with JAX
+- **PPO + AMP Training**: Combines PPO with adversarial motion priors
+- **Comprehensive Testing**: 10-layer test strategy from schema contracts to integration
+- **Schema Contracts**: Prevents silent breakage from XML changes
+- **W&B Integration**: Full experiment tracking and visualization
+
+## Development Workflow
+
+1. **Robot Model**: Define/update robot in `assets/wildrobot.xml`
+2. **Configuration**: Adjust training params in `playground_amp/configs/`
+3. **Training**: Run experiments with `playground_amp/train.py`
+4. **Testing**: Validate with `pytest playground_amp/tests/`
+5. **Analysis**: Review metrics in W&B dashboard
+
+## Documentation
+
+Detailed documentation is available in `playground_amp/docs/`:
+
+- [Training Guide](playground_amp/docs/TRAINING_README.md) - How to train policies
+- [System Design](playground_amp/docs/TRAINING_SYSTEM_DESIGN.md) - Architecture overview
+- [Test Strategy](playground_amp/tests/TEST_STRATEGY.md) - Comprehensive test plan
+- [AMP Design](playground_amp/docs/AMP_FEATURE_PARITY_DESIGN.md) - AMP implementation details
 
 ## Contributing
 
@@ -173,6 +278,6 @@ Feel free to submit issues and enhancement requests!
 
 ## Acknowledgments
 
-- MuJoCo and Brax teams
-- NVIDIA Isaac Lab team
+- MuJoCo and MJX teams at DeepMind
+- JAX team at Google
 - [Any other acknowledgments]

@@ -169,7 +169,7 @@ class WandbTracker:
 
     def get_run_id(self) -> Optional[str]:
         """Get the wandb run ID (e.g., 'xw1fu3n6').
-        
+
         Returns:
             The 8-character wandb run ID, or None if not available.
         """
@@ -431,16 +431,16 @@ class WandbTracker:
         wandb_cfg: Any,
     ) -> "WandbTracker":
         """Create WandbTracker from training and wandb config objects.
-        
+
         Args:
             training_cfg: TrainingConfig object with version, ppo, amp, seed, etc.
             wandb_cfg: WandbConfig object with project, entity, name, tags, mode, etc.
-        
+
         Returns:
             Configured WandbTracker instance
         """
         use_amp = training_cfg.amp.enabled
-        
+
         # Build wandb config dict from training config
         config = {
             # Version tracking
@@ -458,7 +458,7 @@ class WandbTracker:
             "seed": training_cfg.seed,
             "mode": "amp+ppo" if use_amp else "ppo-only",
         }
-        
+
         return cls(
             project=wandb_cfg.project,
             entity=wandb_cfg.entity,
@@ -485,36 +485,36 @@ def generate_job_name(
     mode_suffix: str = "ppo",
 ) -> str:
     """Generate a training job name for checkpoint directory.
-    
+
     Format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
     Example: ppo_walking_v01005_20251228_205534-uf665cr6
-    
+
     Args:
         version: Version string (e.g., "0.10.5")
         config_name: Name of the config file without extension (e.g., "ppo_walking")
         wandb_tracker: Optional WandbTracker to get run ID from
         mode_suffix: Fallback suffix if config_name not provided (e.g., "amp" or "ppo")
-    
+
     Returns:
         Job name string for use as checkpoint subdirectory
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
     # Format version: "0.10.5" -> "v01005" (remove dots, pad with zeros)
     version_str = version.replace(".", "")
     version_formatted = f"v{version_str.zfill(5)}"
-    
+
     # Get wandb run ID if available (e.g., "uf665cr6")
     wandb_run_id = None
     if wandb_tracker is not None:
         wandb_run_id = wandb_tracker.get_run_id()
-    
+
     # Build run_id: timestamp-wandb_id or just timestamp
     if wandb_run_id:
         run_id = f"{timestamp}-{wandb_run_id}"
     else:
         run_id = timestamp
-    
+
     # Build job name: config_name_version_run_id
     # e.g., ppo_walking_v01005_20251228_205534-uf665cr6
     if config_name:
@@ -530,16 +530,16 @@ def create_training_metrics_from_iteration(
     use_amp: bool = True,
 ) -> Dict[str, float]:
     """Create training metrics dict from IterationMetrics object.
-    
+
     This is a convenience wrapper that extracts fields from the IterationMetrics
     dataclass returned by the training loop.
-    
+
     Args:
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
         steps_per_sec: Environment steps per second
         use_amp: Whether AMP is enabled
-        
+
     Returns:
         Flat dictionary of metrics with prefixes for W&B logging
     """

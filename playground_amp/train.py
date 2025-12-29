@@ -446,14 +446,14 @@ def start_training(
 
 def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Namespace) -> None:
     """Apply CLI argument overrides to training config.
-    
+
     CLI arguments have highest priority and override both config file values
     and quick_verify settings. Only non-None arguments are applied.
-    
+
     Args:
         training_cfg: Training configuration to modify in-place
         args: Parsed command-line arguments
-        
+
     Raises:
         ValueError: If AMP configuration is invalid (enabled but weight <= 0)
     """
@@ -474,13 +474,13 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
         training_cfg.ppo.entropy_coef = args.entropy_coef
     if args.log_interval is not None:
         training_cfg.ppo.log_interval = args.log_interval
-    
+
     # AMP parameters
     if args.disc_lr is not None:
         training_cfg.amp.discriminator.learning_rate = args.disc_lr
     if args.amp_data is not None:
         training_cfg.amp.dataset_path = args.amp_data
-    
+
     # Checkpoint parameters
     if args.checkpoint_dir is not None:
         training_cfg.checkpoints.dir = args.checkpoint_dir
@@ -575,7 +575,7 @@ def main():
     try:
         # Extract config name from config path (e.g., "ppo_walking" from "ppo_walking.yaml")
         config_name = config_path.stem if config_path else None
-        
+
         # Unified training for both PPO-only and AMP modes
         start_training(
             training_cfg=training_cfg,

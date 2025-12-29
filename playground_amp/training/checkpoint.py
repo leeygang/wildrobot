@@ -311,11 +311,11 @@ def save_window_best_checkpoint(
     keep_last_n: int = 5,
 ) -> bool:
     """Save the best checkpoint from the current window.
-    
+
     This function saves the best checkpoint tracked within a window of iterations,
     updates the global best reward if applicable, resets the window tracking state,
     and manages old checkpoints.
-    
+
     Args:
         window_best: Dict tracking the best state within current window with keys:
             - "reward": Best reward in this window
@@ -327,7 +327,7 @@ def save_window_best_checkpoint(
         config: Training configuration (TrainingConfig)
         checkpoint_dir: Directory to save checkpoints
         keep_last_n: Number of recent checkpoints to keep
-        
+
     Returns:
         True if a checkpoint was saved, False if window_best was empty
     """
@@ -372,5 +372,5 @@ def save_window_best_checkpoint(
     window_best["total_steps"] = 0
 
     manage_checkpoints(checkpoint_dir, keep_last_n)
-    
+
     return True
