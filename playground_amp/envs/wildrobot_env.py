@@ -583,6 +583,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Foot stability rewards
             "reward/slip": jp.zeros(()),
             "reward/clearance": jp.zeros(()),
+            "reward/gait_periodicity": jp.zeros(()),
             # v0.10.4: Standing penalty
             "reward/standing": jp.zeros(()),
             # Debug metrics

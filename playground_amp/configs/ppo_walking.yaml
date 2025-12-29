@@ -210,7 +210,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, walking, v0.10.4]
+  tags: [ppo, stage1, walking, v0.10.5]
 
 video:
   enabled: true

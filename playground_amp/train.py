@@ -233,6 +233,7 @@ def start_training(
     use_amp: bool = True,
     checkpoint_dir: Optional[str] = None,
     amp_data_path: Optional[str] = None,
+    resume_checkpoint_path: Optional[str] = None,
 ):
     """Unified training using training_loop.py for both PPO-only and AMP+PPO.
 
@@ -246,6 +247,7 @@ def start_training(
         use_amp: Whether to use AMP discriminator
         checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
         amp_data_path: Path to AMP reference data (overrides config if provided)
+        resume_checkpoint_path: Path to checkpoint to resume training from
     """
     import pickle
 
@@ -440,6 +442,12 @@ def start_training(
 
             manage_checkpoints(job_checkpoint_dir, keep_checkpoints)
 
+    # Load checkpoint for resuming if provided
+    resume_checkpoint = None
+    if resume_checkpoint_path is not None:
+        print(f"\nLoading checkpoint for resume: {resume_checkpoint_path}")
+        resume_checkpoint = load_checkpoint(resume_checkpoint_path)
+
     # Train using unified trainer
     mode_str = "AMP+PPO" if use_amp else "PPO-only (Stage 1)"
     print("\n" + "=" * 60)
@@ -452,6 +460,7 @@ def start_training(
         config=training_cfg,
         ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
+        resume_checkpoint=resume_checkpoint,
     )
 
     # Save final checkpoint
@@ -621,6 +630,7 @@ def main():
             use_amp=use_amp,
             checkpoint_dir=args.checkpoint_dir,
             amp_data_path=args.amp_data,
+            resume_checkpoint_path=args.resume,
         )
 
         elapsed = time.time() - start_time

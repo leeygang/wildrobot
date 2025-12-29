@@ -635,6 +635,144 @@ def make_train_iteration_fn(
 
 
 # =============================================================================
+# Resume Validation
+# =============================================================================
+
+
+def _validate_resume_checkpoint(
+    ckpt_metrics: Dict[str, Any],
+    ckpt_config: Dict[str, Any],
+    config: TrainingConfig,
+) -> None:
+    """Log checkpoint info and validate compatibility with current config.
+
+    Raises ValueError on hard mismatches.
+    """
+    hard_mismatch = []
+    warn_mismatch = []
+
+    def _format_metric(value: Any, fmt: str, suffix: str = "") -> str:
+        if isinstance(value, (int, float)):
+            return f"{value:{fmt}}{suffix}"
+        return f"N/A{suffix}"
+
+    if ckpt_metrics:
+        print(
+            f"  Checkpoint reward: "
+            f"{_format_metric(ckpt_metrics.get('episode_reward'), '.2f')}"
+        )
+        print(
+            f"  Checkpoint velocity: "
+            f"{_format_metric(ckpt_metrics.get('forward_velocity'), '.2f', ' m/s')}"
+        )
+        print(
+            f"  Checkpoint height: "
+            f"{_format_metric(ckpt_metrics.get('robot_height'), '.3f', ' m')}"
+        )
+        print(
+            f"  Checkpoint ep_len: "
+            f"{_format_metric(ckpt_metrics.get('episode_length'), '.0f')}"
+        )
+    if ckpt_config:
+        print(
+            f"  Original config: num_envs={ckpt_config.get('num_envs', 'N/A')}, "
+            f"lr={ckpt_config.get('learning_rate', 'N/A')}, "
+            f"amp_weight={ckpt_config.get('amp_weight', 'N/A')}"
+        )
+
+    def _check_mismatch(key: str, ckpt_value: Any, current_value: Any) -> None:
+        if ckpt_value != current_value:
+            hard_mismatch.append((key, ckpt_value, current_value))
+
+    _check_mismatch("num_envs", ckpt_config.get("num_envs"), config.ppo.num_envs)
+    _check_mismatch(
+        "rollout_steps", ckpt_config.get("rollout_steps"), config.ppo.rollout_steps
+    )
+    _check_mismatch(
+        "num_minibatches", ckpt_config.get("num_minibatches"), config.ppo.num_minibatches
+    )
+    _check_mismatch("epochs", ckpt_config.get("epochs"), config.ppo.epochs)
+    _check_mismatch(
+        "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate
+    )
+    _check_mismatch(
+        "clip_epsilon", ckpt_config.get("clip_epsilon"), config.ppo.clip_epsilon
+    )
+    _check_mismatch(
+        "value_loss_coef", ckpt_config.get("value_loss_coef"), config.ppo.value_loss_coef
+    )
+    _check_mismatch(
+        "entropy_coef", ckpt_config.get("entropy_coef"), config.ppo.entropy_coef
+    )
+    _check_mismatch(
+        "max_grad_norm", ckpt_config.get("max_grad_norm"), config.ppo.max_grad_norm
+    )
+    _check_mismatch("gamma", ckpt_config.get("gamma"), config.ppo.gamma)
+    _check_mismatch("gae_lambda", ckpt_config.get("gae_lambda"), config.ppo.gae_lambda)
+    _check_mismatch(
+        "actor_hidden_sizes",
+        ckpt_config.get("actor_hidden_sizes"),
+        config.networks.actor.hidden_sizes,
+    )
+    _check_mismatch(
+        "critic_hidden_sizes",
+        ckpt_config.get("critic_hidden_sizes"),
+        config.networks.critic.hidden_sizes,
+    )
+    _check_mismatch("amp_weight", ckpt_config.get("amp_weight"), config.amp.weight)
+    _check_mismatch(
+        "disc_hidden_sizes",
+        ckpt_config.get("disc_hidden_sizes"),
+        config.networks.discriminator.hidden_sizes,
+    )
+    _check_mismatch(
+        "disc_learning_rate",
+        ckpt_config.get("disc_learning_rate"),
+        config.amp.discriminator.learning_rate,
+    )
+    _check_mismatch(
+        "disc_updates_per_ppo_update",
+        ckpt_config.get("disc_updates_per_ppo_update"),
+        config.amp.discriminator.updates_per_ppo_update,
+    )
+    _check_mismatch(
+        "disc_batch_size",
+        ckpt_config.get("disc_batch_size"),
+        config.amp.discriminator.batch_size,
+    )
+    _check_mismatch(
+        "disc_r1_gamma",
+        ckpt_config.get("disc_r1_gamma"),
+        config.amp.discriminator.r1_gamma,
+    )
+    _check_mismatch(
+        "disc_input_noise_std",
+        ckpt_config.get("disc_input_noise_std"),
+        config.amp.discriminator.input_noise_std,
+    )
+
+    if ckpt_config:
+        if (
+            ckpt_config.get("actor_hidden_sizes") is None
+            or ckpt_config.get("critic_hidden_sizes") is None
+        ):
+            warn_mismatch.append("network_arch_missing_in_ckpt")
+
+    if hard_mismatch:
+        mismatch_lines = [
+            f"  - {key}: ckpt={ckpt_value}, current={current_value}"
+            for key, ckpt_value, current_value in hard_mismatch
+        ]
+        raise ValueError(
+            "Resume checkpoint config mismatch (hard):\n"
+            + "\n".join(mismatch_lines)
+            + "\nUse a compatible config or start from scratch."
+        )
+    if warn_mismatch:
+        print(f"  ⚠️  Resume config warning: {', '.join(warn_mismatch)}")
+
+
+# =============================================================================
 # Main Training Function
 # =============================================================================
 
@@ -647,6 +785,7 @@ def train(
     callback: Optional[
         Callable[[int, TrainingState, IterationMetrics, float], None]
     ] = None,
+    resume_checkpoint: Optional[Dict[str, Any]] = None,
 ) -> TrainingState:
     """Main training function for both PPO-only and AMP+PPO.
 
@@ -660,6 +799,7 @@ def train(
         config: Training configuration
         ref_motion_data: Reference motion features (required if amp_weight>0)
         callback: Optional callback for logging/checkpointing
+        resume_checkpoint: Optional checkpoint data to resume from (from load_checkpoint)
 
     Returns:
         Final training state
@@ -748,21 +888,56 @@ def train(
         feature_mean = jnp.zeros(amp_feature_dim)
         feature_var = jnp.ones(amp_feature_dim)
 
-    # Create initial training state
-    state = TrainingState(
-        policy_params=policy_params,
-        value_params=value_params,
-        processor_params=processor_params,
-        policy_opt_state=policy_opt_state,
-        value_opt_state=value_opt_state,
-        disc_params=disc_params,
-        disc_opt_state=disc_opt_state,
-        feature_mean=feature_mean,
-        feature_var=feature_var,
-        iteration=jnp.array(0, dtype=jnp.int32),
-        total_steps=jnp.array(0, dtype=jnp.int32),
-        rng=rng,
-    )
+    # Create initial training state or restore from checkpoint
+    start_iteration = 0
+    if resume_checkpoint is not None:
+        # Log checkpoint info
+        ckpt_iteration = resume_checkpoint.get("iteration", 0)
+        ckpt_steps = resume_checkpoint.get("total_steps", 0)
+        ckpt_metrics = resume_checkpoint.get("metrics", {})
+        ckpt_config = resume_checkpoint.get("config", {})
+
+        print("=" * 60)
+        print("RESUMING FROM CHECKPOINT")
+        print("=" * 60)
+        print(f"  Checkpoint iteration: {ckpt_iteration}")
+        print(f"  Checkpoint steps: {ckpt_steps:,}")
+        _validate_resume_checkpoint(ckpt_metrics, ckpt_config, config)
+        print("=" * 60)
+
+        # Restore state from checkpoint
+        state = TrainingState(
+            policy_params=resume_checkpoint["policy_params"],
+            value_params=resume_checkpoint["value_params"],
+            processor_params=resume_checkpoint.get("processor_params", processor_params),
+            policy_opt_state=resume_checkpoint["policy_opt_state"],
+            value_opt_state=resume_checkpoint["value_opt_state"],
+            disc_params=resume_checkpoint.get("disc_params", disc_params),
+            disc_opt_state=resume_checkpoint.get("disc_opt_state", disc_opt_state),
+            feature_mean=resume_checkpoint.get("feature_mean", feature_mean),
+            feature_var=resume_checkpoint.get("feature_var", feature_var),
+            iteration=jnp.array(ckpt_iteration, dtype=jnp.int32),
+            total_steps=jnp.array(ckpt_steps, dtype=jnp.int32),
+            rng=resume_checkpoint.get("rng", rng),
+        )
+        start_iteration = ckpt_iteration
+        print(f"✓ Restored training state from iteration {ckpt_iteration}")
+    else:
+        # Create fresh training state
+        state = TrainingState(
+            policy_params=policy_params,
+            value_params=value_params,
+            processor_params=processor_params,
+            policy_opt_state=policy_opt_state,
+            value_opt_state=value_opt_state,
+            disc_params=disc_params,
+            disc_opt_state=disc_opt_state,
+            feature_mean=feature_mean,
+            feature_var=feature_var,
+            iteration=jnp.array(0, dtype=jnp.int32),
+            total_steps=jnp.array(0, dtype=jnp.int32),
+            rng=rng,
+        )
 
     # Initialize environment
     env_state = env_reset_fn(env_rng)
@@ -788,18 +963,30 @@ def train(
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
     print("=" * 60)
 
-    print("Starting training...")
-    print(f"  Total iterations: {config.ppo.iterations:,}")
+    # Calculate target iteration (resume adds to checkpoint iteration)
+    target_iteration = start_iteration + config.ppo.iterations
+
+    if start_iteration > 0:
+        print(f"Resuming training from iteration {start_iteration}...")
+        print(f"  Target iterations: {target_iteration:,}")
+        print(f"  Iterations to run: {config.ppo.iterations:,}")
+        remaining_steps = (
+            config.ppo.iterations * config.ppo.num_envs * config.ppo.rollout_steps
+        )
+        print(f"  Remaining steps: {remaining_steps:,}")
+    else:
+        print("Starting training...")
+        print(f"  Total iterations: {config.ppo.iterations:,}")
     total_expected_steps = (
-        config.ppo.iterations * config.ppo.num_envs * config.ppo.rollout_steps
+        target_iteration * config.ppo.num_envs * config.ppo.rollout_steps
     )
-    print(f"  Total steps: {total_expected_steps:,}")
+    print(f"  Total steps target: {total_expected_steps:,}")
     print()
 
     # Training loop
     start_time = time.time()
 
-    for iteration in range(1, config.ppo.iterations + 1):
+    for iteration in range(start_iteration + 1, target_iteration + 1):
         iter_start = time.time()
 
         state, env_state, metrics = train_iteration_fn(state, env_state)
