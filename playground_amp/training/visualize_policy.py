@@ -6,7 +6,7 @@ using MuJoCo's native viewer.
 
 Usage:
     # On macOS, use mjpython (required for viewer):
-    mjpython playground_amp/training/visualize_policy.py
+    uv run mjpython playground_amp/training/visualize_policy.py
 
     # Or use headless mode to record video without display:
     uv run python playground_amp/training/visualize_policy.py --headless --record output.mp4
@@ -44,11 +44,11 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
-from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.envs.wildrobot_env import ObsLayout
 from playground_amp.training.heading_math import (
     heading_local_angvel_fd_from_quat_np,
@@ -62,7 +62,9 @@ from playground_amp.training.ppo_core import create_networks, sample_actions
 
 # Default paths (relative to project_root)
 DEFAULT_CONFIG_PATH = project_root / "playground_amp" / "configs" / "ppo_walking.yaml"
-DEFAULT_CHECKPOINT_PATH = project_root / "playground_amp" / "checkpoints" / "final_ppo_policy.pkl"
+DEFAULT_CHECKPOINT_PATH = (
+    project_root / "playground_amp" / "checkpoints" / "final_ppo_policy.pkl"
+)
 DEFAULT_ROBOT_CONFIG_PATH = project_root / "assets" / "robot_config.yaml"
 
 
@@ -183,7 +185,9 @@ def resolve_checkpoint_path(checkpoint_arg: str | None) -> Path | None:
 
     # Try relative to project root with playground_amp prefix stripped/added
     if str(path).startswith("playground_amp/"):
-        without_prefix = project_root / Path(str(path).replace("playground_amp/", "", 1))
+        without_prefix = project_root / Path(
+            str(path).replace("playground_amp/", "", 1)
+        )
         if without_prefix.exists():
             return without_prefix.resolve()
     else:
@@ -264,6 +268,7 @@ def main():
                 try:
                     mtime = p.stat().st_mtime
                     from datetime import datetime
+
                     mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
                 except:
                     mtime_str = "unknown"
@@ -354,8 +359,12 @@ def main():
     angvel_sensor_id = get_sensor_id(angvel_sensor_name)
     local_linvel_sensor_id = get_sensor_id(local_linvel_sensor_name)
 
-    print(f"Using sensors: gravity={gravity_sensor_name} (id={gravity_sensor_id}), angvel={angvel_sensor_name} (id={angvel_sensor_id})")
-    print(f"              local_linvel={local_linvel_sensor_name} (id={local_linvel_sensor_id})")
+    print(
+        f"Using sensors: gravity={gravity_sensor_name} (id={gravity_sensor_id}), angvel={angvel_sensor_name} (id={angvel_sensor_id})"
+    )
+    print(
+        f"              local_linvel={local_linvel_sensor_name} (id={local_linvel_sensor_id})"
+    )
 
     if gravity_sensor_id < 0 or angvel_sensor_id < 0:
         print(f"Warning: Could not find required sensors")
@@ -365,9 +374,15 @@ def main():
             print(f"  {i}: {name}")
 
     # Get sensor data addresses
-    gravity_adr = mj_model.sensor_adr[gravity_sensor_id] if gravity_sensor_id >= 0 else 0
+    gravity_adr = (
+        mj_model.sensor_adr[gravity_sensor_id] if gravity_sensor_id >= 0 else 0
+    )
     angvel_adr = mj_model.sensor_adr[angvel_sensor_id] if angvel_sensor_id >= 0 else 0
-    local_linvel_adr = mj_model.sensor_adr[local_linvel_sensor_id] if local_linvel_sensor_id >= 0 else 0
+    local_linvel_adr = (
+        mj_model.sensor_adr[local_linvel_sensor_id]
+        if local_linvel_sensor_id >= 0
+        else 0
+    )
 
     def get_forward_velocity(mj_data):
         """Get forward velocity from local_linvel sensor (body-local frame)."""
@@ -397,9 +412,11 @@ def main():
     # Track previous action
     prev_action = np.zeros(action_dim, dtype=np.float32)
 
-    def get_observation(mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt):
+    def get_observation(
+        mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt
+    ):
         """Compute observation vector using training logic (inference-faithful)."""
-        gravity = mj_data.sensordata[gravity_adr:gravity_adr + 3].copy()
+        gravity = mj_data.sensordata[gravity_adr : gravity_adr + 3].copy()
 
         if prev_root_pos is not None and prev_root_quat is not None:
             curr_root_pos = mj_data.qpos[0:3].copy()
@@ -411,7 +428,7 @@ def main():
                 curr_root_quat, prev_root_quat, dt
             )
         else:
-            angvel_world = mj_data.sensordata[angvel_adr:angvel_adr + 3].copy()
+            angvel_world = mj_data.sensordata[angvel_adr : angvel_adr + 3].copy()
             linvel_world = mj_data.qvel[0:3].copy()
             sin_yaw, cos_yaw = heading_sin_cos_from_quat_np(mj_data.qpos[3:7].copy())
             linvel = heading_local_from_world_np(linvel_world, sin_yaw, cos_yaw)
@@ -434,7 +451,9 @@ def main():
 
     # Action filtering configuration (match training)
     use_action_filter = training_cfg.env.use_action_filter
-    action_filter_alpha = training_cfg.env.action_filter_alpha if use_action_filter else 0.0
+    action_filter_alpha = (
+        training_cfg.env.action_filter_alpha if use_action_filter else 0.0
+    )
     print(f"Action filter: enabled={use_action_filter}, alpha={action_filter_alpha}")
 
     def apply_action(mj_data, action, prev_action_for_filter):
@@ -450,7 +469,10 @@ def main():
 
         # Apply action filtering (low-pass) if enabled
         if use_action_filter:
-            filtered_action = action_filter_alpha * prev_action_for_filter + (1.0 - action_filter_alpha) * action_np
+            filtered_action = (
+                action_filter_alpha * prev_action_for_filter
+                + (1.0 - action_filter_alpha) * action_np
+            )
         else:
             filtered_action = action_np
 
@@ -478,7 +500,9 @@ def main():
             mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
         else:
             mujoco.mj_resetData(mj_model, mj_data)
-        qpos = mj_model.key_qpos[0].copy() if mj_model.nkey > 0 else mj_model.qpos0.copy()
+        qpos = (
+            mj_model.key_qpos[0].copy() if mj_model.nkey > 0 else mj_model.qpos0.copy()
+        )
         qvel = np.zeros(mj_model.nv, dtype=np.float32)
 
         if apply_noise:
@@ -500,14 +524,18 @@ def main():
         pitch_fail = abs(pitch) > training_cfg.env.max_pitch
         roll_fail = abs(roll) > training_cfg.env.max_roll
         terminated = height_too_low or height_too_high or pitch_fail or roll_fail
-        truncated = (step_count >= training_cfg.env.max_episode_steps) and not terminated
+        truncated = (
+            step_count >= training_cfg.env.max_episode_steps
+        ) and not terminated
         return terminated or truncated
 
     fixed_velocity = (
         args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
     )
     if args.demo and fixed_velocity is None:
-        fixed_velocity = (training_cfg.env.min_velocity + training_cfg.env.max_velocity) / 2
+        fixed_velocity = (
+            training_cfg.env.min_velocity + training_cfg.env.max_velocity
+        ) / 2
 
     if fixed_velocity is not None:
         velocity_cmd = fixed_velocity
@@ -534,7 +562,9 @@ def main():
     print(f"{'=' * 60}")
     print(f"  Mode: {'Deterministic' if deterministic else 'Stochastic'}")
     print(f"  Render: {'Headless' if headless else 'Interactive viewer'}")
-    print(f"  Velocity range: [{training_cfg.env.min_velocity:.2f}, {training_cfg.env.max_velocity:.2f}] m/s")
+    print(
+        f"  Velocity range: [{training_cfg.env.min_velocity:.2f}, {training_cfg.env.max_velocity:.2f}] m/s"
+    )
     if args.velocity_cmd is not None:
         print(f"  Fixed velocity cmd: {args.velocity_cmd:.2f} m/s")
     print(f"  Control dt: {ctrl_dt}s ({1/ctrl_dt:.0f} Hz)")
@@ -552,7 +582,9 @@ def main():
     frames = []
     record_steps = int(args.record_duration / ctrl_dt) if args.record else 0
     if args.record:
-        print(f"Recording {args.record_duration}s ({record_steps} steps) to {args.record}")
+        print(
+            f"Recording {args.record_duration}s ({record_steps} steps) to {args.record}"
+        )
 
     # Determine number of episodes
     max_episodes = args.num_episodes
@@ -570,6 +602,7 @@ def main():
         renderer = None
         if args.record:
             import os
+
             # Try different rendering backends for headless mode
             original_backend = os.environ.get("MUJOCO_GL", None)
 
@@ -579,7 +612,9 @@ def main():
                     os.environ["MUJOCO_GL"] = backend
                     # Force reimport of mujoco to pick up new backend
                     import importlib
+
                     import mujoco as mj_reimport
+
                     importlib.reload(mj_reimport)
                     renderer = mj_reimport.Renderer(mj_model, 640, 480)
                     print(f"  Using {backend} backend for rendering")
@@ -592,16 +627,25 @@ def main():
                         else:
                             os.environ.pop("MUJOCO_GL", None)
                         print(f"  Warning: Could not initialize renderer ({e})")
-                        print(f"  Video recording disabled. Install osmesa or run on Linux for headless rendering.")
+                        print(
+                            f"  Video recording disabled. Install osmesa or run on Linux for headless rendering."
+                        )
                     continue
 
         print("\nRunning in headless mode (native MuJoCo - fast)...")
 
-        max_steps = record_steps if args.record else 10000  # Limit steps if not recording
+        max_steps = (
+            record_steps if args.record else 10000
+        )  # Limit steps if not recording
         while step_count < max_steps:
             # Get observation from native MuJoCo state
             obs = get_observation(
-                mj_data, velocity_cmd, prev_action, prev_root_pos, prev_root_quat, ctrl_dt
+                mj_data,
+                velocity_cmd,
+                prev_action,
+                prev_root_pos,
+                prev_root_quat,
+                ctrl_dt,
             )
             obs_jax = obs
 
@@ -633,9 +677,13 @@ def main():
             done = check_termination(mj_data, step_count)
             if done:
                 episode_count += 1
-                forward_vel = get_forward_velocity(mj_data)  # body-local forward velocity
+                forward_vel = get_forward_velocity(
+                    mj_data
+                )  # body-local forward velocity
                 height = mj_data.qpos[2]
-                print(f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m")
+                print(
+                    f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"
+                )
 
                 # Check if we've reached max episodes
                 if max_episodes and episode_count >= max_episodes:
@@ -656,8 +704,9 @@ def main():
         # Save video
         if args.record and frames:
             import imageio
+
             print(f"Saving video to {args.record}...")
-            imageio.mimsave(args.record, frames, fps=int(1/ctrl_dt))
+            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
             print(f"Done! Saved {len(frames)} frames.")
 
     else:
@@ -672,7 +721,9 @@ def main():
                 viewer.cam.azimuth = 135  # View from behind-right
                 viewer.cam.lookat[:] = [0, 0, 0.4]
 
-                print(f"Viewer started (native MuJoCo - fast). is_running={viewer.is_running()}")
+                print(
+                    f"Viewer started (native MuJoCo - fast). is_running={viewer.is_running()}"
+                )
 
                 # Main simulation loop
                 while viewer.is_running():
@@ -680,7 +731,12 @@ def main():
 
                     # Get observation from native MuJoCo state
                     obs = get_observation(
-                        mj_data, velocity_cmd, prev_action, prev_root_pos, prev_root_quat, ctrl_dt
+                        mj_data,
+                        velocity_cmd,
+                        prev_action,
+                        prev_root_pos,
+                        prev_root_quat,
+                        ctrl_dt,
                     )
                     obs_jax = obs
 
@@ -708,10 +764,14 @@ def main():
 
                     # Debug: Print progress every 50 steps
                     if step_count % 50 == 0:
-                        forward_vel = get_forward_velocity(mj_data)  # body-local forward velocity
+                        forward_vel = get_forward_velocity(
+                            mj_data
+                        )  # body-local forward velocity
                         height = mj_data.qpos[2]
                         action_sum = float(jnp.sum(jnp.abs(action)))
-                        print(f"  Step {step_count}: vel={forward_vel:.2f}m/s, height={height:.3f}m, pos=({robot_pos[0]:.1f}, {robot_pos[1]:.1f})")
+                        print(
+                            f"  Step {step_count}: vel={forward_vel:.2f}m/s, height={height:.3f}m, pos=({robot_pos[0]:.1f}, {robot_pos[1]:.1f})"
+                        )
 
                     # Recording (if enabled with viewer)
                     if args.record and step_count <= record_steps:
@@ -723,17 +783,22 @@ def main():
 
                         if step_count == record_steps:
                             import imageio
+
                             print(f"Saving video to {args.record}...")
-                            imageio.mimsave(args.record, frames, fps=int(1/ctrl_dt))
+                            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
                             print("Done!")
 
                     # Check for episode end (robot fell or max steps)
                     done = check_termination(mj_data, step_count)
                     if done:
                         episode_count += 1
-                        forward_vel = get_forward_velocity(mj_data)  # body-local forward velocity
+                        forward_vel = get_forward_velocity(
+                            mj_data
+                        )  # body-local forward velocity
                         height = mj_data.qpos[2]
-                        print(f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m")
+                        print(
+                            f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"
+                        )
 
                         # Check if we've reached max episodes
                         if max_episodes and episode_count >= max_episodes:
@@ -760,8 +825,12 @@ def main():
         except RuntimeError as e:
             if "mjpython" in str(e) and is_macos:
                 print(f"\n⚠️  macOS requires mjpython for the viewer.")
-                print("   Run with: uv run mjpython playground_amp/training/visualize_policy.py ...")
-                print("   Or use --headless mode: uv run python ... --headless --num-episodes 1")
+                print(
+                    "   Run with: uv run mjpython playground_amp/training/visualize_policy.py ..."
+                )
+                print(
+                    "   Or use --headless mode: uv run python ... --headless --num-episodes 1"
+                )
                 return 1
             raise
 
