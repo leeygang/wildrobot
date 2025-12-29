@@ -1004,12 +1004,21 @@ def train(
             env = metrics.env_metrics
 
             # Main metrics line - v0.10.3: Include velocity command for walking
-            print(
+            main_line = (
                 f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"vel={float(env['forward_velocity']):>5.2f}m/s (cmd={float(env['velocity_command']):>4.2f}) | "
                 f"steps/s={steps_per_sec:>8.0f}"
             )
+
+            # Print the main metrics line in yellow to make it stand out in logs
+            YELLOW = "\x1b[33m"
+            RESET = "\x1b[0m"
+            try:
+                print(f"{YELLOW}{main_line}{RESET}")
+            except Exception:
+                # Fallback to normal print if terminal doesn't support ANSI sequences
+                print(main_line)
 
             # Second line: episode metrics + v0.10.3 tracking metrics
             print(
