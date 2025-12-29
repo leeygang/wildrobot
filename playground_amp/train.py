@@ -374,6 +374,7 @@ def start_training(
                 "reward/torque", "reward/saturation",
                 "reward/action_rate", "reward/joint_vel",
                 "reward/slip", "reward/clearance", "reward/gait_periodicity",
+                "reward/hip_swing", "reward/knee_swing", "reward/flight_phase",
             ]
             for term in reward_terms:
                 if term in metrics.env_metrics:

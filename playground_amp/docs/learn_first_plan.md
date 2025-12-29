@@ -112,6 +112,8 @@ Exit: Consistent alternating gait, reasonable energy usage
 Notes:
 - v0.10.5 (current): added gait periodicity reward, reduced velocity dominance,
   increased orientation/torque/saturation penalties, shortened run to 400 iters.
+ - v0.10.6 (current): add swing-gated hip/knee rewards + flight penalty to reduce ankle-dominant gait.
+ - v0.10.6 failure gate: after 300 iters, abort if knee range <30% and flight phase >15%.
 
 Tasks:
 - [ ] Add push disturbances during training

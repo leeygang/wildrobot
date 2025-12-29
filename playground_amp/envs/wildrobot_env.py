@@ -405,17 +405,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids]
         )
 
+        # Cache hip/knee actuator indices for gait shaping rewards
+        self._left_hip_pitch_idx, self._right_hip_pitch_idx = (
+            self._robot_config.get_hip_pitch_indices()
+        )
+        self._left_knee_pitch_idx, self._right_knee_pitch_idx = (
+            self._robot_config.get_knee_pitch_indices()
+        )
+
         # Foot contact geom IDs (from robot_config.yaml)
         # These are used for computing foot contact features for AMP discriminator
         # v0.5.0: Use explicit keys instead of array indexing (no order assumptions)
-        feet_config = self._robot_config.raw_config.get("feet", {})
-
         # Get geom IDs using explicit config keys - order: [left_toe, left_heel, right_toe, right_heel]
-        # Explicit keys - clear semantic meaning, no array order dependency
-        left_toe_name = feet_config.get("left_toe", "left_toe")
-        left_heel_name = feet_config.get("left_heel", "left_heel")
-        right_toe_name = feet_config.get("right_toe", "right_toe")
-        right_heel_name = feet_config.get("right_heel", "right_heel")
+        left_toe_name, left_heel_name, right_toe_name, right_heel_name = (
+            self._robot_config.get_foot_geom_names()
+        )
 
         try:
             self._left_toe_geom_id = self._mj_model.geom(left_toe_name).id
@@ -584,6 +588,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/slip": jp.zeros(()),
             "reward/clearance": jp.zeros(()),
             "reward/gait_periodicity": jp.zeros(()),
+            "reward/hip_swing": jp.zeros(()),
+            "reward/knee_swing": jp.zeros(()),
+            "reward/flight_phase": jp.zeros(()),
             # v0.10.4: Standing penalty
             "reward/standing": jp.zeros(()),
             # Debug metrics
@@ -1075,6 +1082,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         right_loaded = right_force > contact_threshold
         gait_periodicity = jp.where(left_loaded ^ right_loaded, 1.0, 0.0)
 
+        # 13. Hip/knee swing (encourage leg articulation during swing)
+        joint_pos = self.get_actuator_joint_qpos(data.qpos)
+        left_hip_pitch = joint_pos[self._left_hip_pitch_idx]
+        right_hip_pitch = joint_pos[self._right_hip_pitch_idx]
+        left_knee_pitch = joint_pos[self._left_knee_pitch_idx]
+        right_knee_pitch = joint_pos[self._right_knee_pitch_idx]
+
+        hip_min = jp.maximum(weights.hip_swing_min, 1e-6)
+        knee_min = jp.maximum(weights.knee_swing_min, 1e-6)
+
+        def _swing_reward(angle: jax.Array, min_amp: jax.Array) -> jax.Array:
+            amp = jp.abs(angle)
+            return jp.clip((amp - min_amp) / min_amp, 0.0, 1.0)
+
+        hip_swing = 0.5 * (
+            _swing_reward(left_hip_pitch, hip_min) * left_swing
+            + _swing_reward(right_hip_pitch, hip_min) * right_swing
+        )
+        knee_swing = 0.5 * (
+            _swing_reward(left_knee_pitch, knee_min) * left_swing
+            + _swing_reward(right_knee_pitch, knee_min) * right_swing
+        )
+
+        # 14. Flight phase penalty (discourage hopping)
+        flight_phase = jp.where((~left_loaded) & (~right_loaded), 1.0, 0.0)
+
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
@@ -1121,6 +1154,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.slip * slip_penalty
             + weights.clearance * clearance_reward
             + weights.gait_periodicity * gait_periodicity
+            + weights.hip_swing * hip_swing
+            + weights.knee_swing * knee_swing
+            + weights.flight_phase_penalty * flight_phase
         )
 
         # =====================================================================
@@ -1150,6 +1186,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/slip": slip_penalty,
             "reward/clearance": clearance_reward,
             "reward/gait_periodicity": gait_periodicity,
+            "reward/hip_swing": hip_swing,
+            "reward/knee_swing": knee_swing,
+            "reward/flight_phase": flight_phase,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

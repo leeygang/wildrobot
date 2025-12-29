@@ -105,7 +105,7 @@ METRIC_SPECS: List[MetricSpec] = [
     ),
 
     # =========================================================================
-    # Reward components (indices 5-17)
+    # Reward components (indices 5-20)
     # =========================================================================
     MetricSpec(
         name="reward/total",
@@ -177,6 +177,21 @@ METRIC_SPECS: List[MetricSpec] = [
         name="reward/gait_periodicity",
         reducer=Reducer.MEAN,
         description="Alternating support reward (left XOR right contact)",
+    ),
+    MetricSpec(
+        name="reward/hip_swing",
+        reducer=Reducer.MEAN,
+        description="Hip swing amplitude reward",
+    ),
+    MetricSpec(
+        name="reward/knee_swing",
+        reducer=Reducer.MEAN,
+        description="Knee swing amplitude reward",
+    ),
+    MetricSpec(
+        name="reward/flight_phase",
+        reducer=Reducer.MEAN,
+        description="Flight phase penalty (both feet unloaded)",
     ),
 
     # =========================================================================

@@ -24,8 +24,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.10.5"
-version_name: "Forward Walking - Gait Shaping (v0.10.5)"
+version: "0.10.6"
+version_name: "Forward Walking - Hip/Knee Swing (v0.10.6)"
 
 seed: 42
 
@@ -65,7 +65,7 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 400       # v0.10.5: shorter run; extend if gait still improving
+  iterations: 300       # v0.10.6: shorter run; extend if gait still improving
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -138,6 +138,7 @@ networks:
 # v0.10.4 analysis (run xw1fu3n6): tracking met (vel_err ~0.085, ep_len ~460),
 # but gait is ankle-dominant with forward lean and high peak torque (~0.98).
 # v0.10.5: Rebalance toward gait shaping (periodicity + efficiency).
+# v0.10.6: Add swing-gated hip/knee rewards and flight penalty to reduce ankle-dominant hopping.
 #
 # Analysis: With v0.10.3 weights, standing still gave reward ~0.62 while
 # walking gave ~2.0 but with risk of falling. The reward structure made
@@ -175,6 +176,11 @@ reward_weights:
   slip: -0.2              # Reduced: some slip is okay during walking
   clearance: 0.3          # Increased: strong reward for foot lift during swing
   gait_periodicity: 0.2   # v0.10.5: encourage alternating support
+  hip_swing: 0.2          # v0.10.6: encourage hip pitch articulation (swing-only)
+  knee_swing: 0.3         # v0.10.6: encourage knee pitch articulation (swing-only)
+  hip_swing_min: 0.3      # v0.10.6: min hip swing (rad) for full reward
+  knee_swing_min: 0.3     # v0.10.6: min knee swing (rad) for full reward
+  flight_phase_penalty: -0.05  # v0.10.6: discourage hopping (both feet unloaded)
 
   # v0.10.4: Velocity shaping parameters
   forward_velocity_scale: 6.0     # 4.0 -> 6.0: SHARPER (higher = steeper penalty)
@@ -210,7 +216,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, walking, v0.10.5]
+  tags: [ppo, stage1, walking, v0.10.6]
 
 video:
   enabled: true

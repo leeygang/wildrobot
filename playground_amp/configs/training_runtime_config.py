@@ -251,6 +251,13 @@ class RewardWeightsConfig(Freezable):
     clearance: float = 0.1
     gait_periodicity: float = 0.0
 
+    # Gait shaping (v0.10.6)
+    hip_swing: float = 0.0
+    knee_swing: float = 0.0
+    hip_swing_min: float = 0.0
+    knee_swing_min: float = 0.0
+    flight_phase_penalty: float = 0.0
+
     # Shaping
     forward_velocity_scale: float = 4.0
 

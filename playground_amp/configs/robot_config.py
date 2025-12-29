@@ -135,6 +135,38 @@ class RobotConfig:
         """Get list of accelerometer sensor names."""
         return [s["name"] for s in self.sensors.get("accelerometer", [])]
 
+    def get_actuator_index(self, name: str) -> int:
+        """Get actuator index by name (order matches actuator_names)."""
+        try:
+            return self.actuator_names.index(name)
+        except ValueError as exc:
+            raise ValueError(
+                f"Actuator '{name}' not found in actuator_names: {self.actuator_names}"
+            ) from exc
+
+    def get_hip_pitch_indices(self) -> Tuple[int, int]:
+        """Get (left, right) hip pitch actuator indices."""
+        return (
+            self.get_actuator_index("left_hip_pitch"),
+            self.get_actuator_index("right_hip_pitch"),
+        )
+
+    def get_knee_pitch_indices(self) -> Tuple[int, int]:
+        """Get (left, right) knee pitch actuator indices."""
+        return (
+            self.get_actuator_index("left_knee_pitch"),
+            self.get_actuator_index("right_knee_pitch"),
+        )
+
+    def get_foot_geom_names(self) -> Tuple[str, str, str, str]:
+        """Get foot geom names as (left_toe, left_heel, right_toe, right_heel)."""
+        feet_config = self.raw_config.get("feet", {})
+        left_toe = feet_config.get("left_toe", "left_toe")
+        left_heel = feet_config.get("left_heel", "left_heel")
+        right_toe = feet_config.get("right_toe", "right_toe")
+        right_heel = feet_config.get("right_heel", "right_heel")
+        return left_toe, left_heel, right_toe, right_heel
+
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "RobotConfig":
         """Load robot configuration from YAML file.

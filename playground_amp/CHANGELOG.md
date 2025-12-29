@@ -5,6 +5,31 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.10.6] - 2025-12-28: Hip/Knee Swing Reward (Stage 1)
+
+### Config Updates
+- Added swing-gated hip/knee rewards to encourage leg articulation during swing.
+- Added small flight-phase penalty to discourage hopping.
+- Kept gait periodicity reward (alternating support).
+- Maintained v0.10.5 tuning for velocity/orientation/torque.
+
+### Base Checkpoint (v0.10.5)
+- `playground_amp/checkpoints/wildrobot_ppo_20251228_205536/checkpoint_520_68157440.pkl`
+
+### Training Results (v0.10.5 → v0.10.6 prep)
+- v0.10.5 best: reward ~566.42 (iter 520), vel ~0.63 m/s, ep_len ~452, torque ~97%.
+- Gait analysis: alternating support ~79–80%, flight phase ~18%, knees used ~22–27% of range.
+- Interpretation: ankle-dominant shuffle persists; add swing-gated knee/hip rewards + flight penalty.
+
+### Files Updated
+- `playground_amp/configs/ppo_walking.yaml`
+- `playground_amp/envs/wildrobot_env.py`
+- `playground_amp/configs/training_config.py`
+- `playground_amp/configs/training_runtime_config.py`
+- `playground_amp/training/metrics_registry.py`
+
+---
+
 ## [v0.10.5] - 2025-12-28: Gait Shaping Tune (Stage 1)
 
 ### Config Updates
@@ -13,12 +38,43 @@ This changelog tracks capability changes, configuration updates, and training re
 - Added gait periodicity reward (alternating support).
 - Shortened default training run to 400 iterations.
 
-### Files Updated
-- `playground_amp/configs/ppo_walking.yaml`
-- `playground_amp/envs/wildrobot_env.py`
-- `playground_amp/configs/training_config.py`
-- `playground_amp/configs/training_runtime_config.py`
-- `playground_amp/training/metrics_registry.py`
+### Notes
+- Resume-ready PPO run (best at iter 520) still ankle-dominant; used as base for v0.10.6.
+
+---
+
+## [v0.10.4] - 2025-12-28: Velocity Incentive (Stage 1)
+
+### Config Updates
+- Strong velocity tracking incentive to escape standing-still local minimum.
+- Reduced stability penalties to allow forward motion discovery.
+
+### Results Summary
+- Tracking met (vel_err ~0.085, ep_len ~460) but peak torque ~0.98 and forward-lean shuffle.
+
+---
+
+## [v0.10.3] - 2025-12-27: Forward Walking (Stage 1)
+
+### Config Updates
+- PPO walking config aligned to 0.5–1.0 m/s command range.
+- Enabled velocity tracking metrics and exit criteria logging.
+
+---
+
+## [v0.10.2] - 2025-12-27: Basic Standing (Stage 1)
+
+### Updates
+- Added termination diagnostics and reset preservation for accurate logging.
+- Standing training readiness (stability-focused PPO).
+
+---
+
+## [v0.10.1] - 2025-12-26: Config Schema Migration
+
+### Updates
+- Migrated to unified `TrainingConfig` with Freezable runtime config for JIT.
+- Simplified config loading and CLI override flow.
 
 ---
 
@@ -954,6 +1010,7 @@ amp:
 | 2024-12-22 | v0.2.0 | 300 | 0.72-0.95 | ~0.5 m/s | Healthy oscillation |
 | 2024-12-23 | v0.3.0 | TBD | TBD | TBD | Velocity normalized |
 | 2025-12-28 | v0.10.4 | 500 | 0.50 | 0.65 m/s | PPO-only; vel_err ~0.085; ep_len ~460; pitch fall ~10-17%; max torque ~0.98 |
+| 2025-12-28 | v0.10.5 | 400 | 0.50 | 0.63 m/s | PPO-only resume from v0.10.4; reward ~566; ankle-dominant gait persisted |
 
 ---
 
