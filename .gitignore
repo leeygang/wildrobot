@@ -30,7 +30,7 @@ env/
 *.log
 logs/
 training_logs/
-# checkpoints/
+**/checkpoints/wildrobot_*/
 
 # OS
 .DS_Store

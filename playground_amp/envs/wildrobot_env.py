@@ -46,6 +46,13 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
+from playground_amp.training.heading_math import (
+    heading_local_angvel_fd_from_quat_jax,
+    heading_local_from_world_jax,
+    heading_local_linvel_fd_from_pos_jax,
+    heading_sin_cos_from_quat_jax,
+    pitch_roll_from_quat_jax,
+)
 from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
 from playground_amp.training.metrics_registry import (
     METRIC_NAMES,
@@ -543,7 +550,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # v0.10.1: Initialize all metric keys to match step() for JAX pytree compatibility
         # At reset, robot is stationary so most values are zero
-        pitch, roll = self.get_pitch_roll(data)
+        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
+        pitch, roll = pitch_roll[0], pitch_roll[1]
         left_force, right_force = self.get_raw_foot_contacts(data)
 
         # Compute total reward with weights (from config)
@@ -907,8 +915,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # This is the key fix for AMP parity - matches reference data computation
         if prev_root_pos is not None and prev_root_quat is not None:
             # Finite-diff velocities (heading-local) - matches reference exactly
-            linvel = self.get_heading_local_linvel_fd(data, prev_root_pos, self.dt)
-            angvel = self.get_heading_local_angvel_fd(data, prev_root_quat, self.dt)
+            curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
+            curr_root_quat = self.get_root_quat(data)
+            linvel = heading_local_linvel_fd_from_pos_jax(
+                curr_root_pos, prev_root_pos, curr_root_quat, self.dt
+            )
+            angvel = heading_local_angvel_fd_from_quat_jax(
+                curr_root_quat, prev_root_quat, self.dt
+            )
         else:
             # qvel-based velocities (for reset when no previous state)
             # These will be zero at reset anyway
@@ -974,7 +988,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # 4. Orientation penalty (pitch² + roll²)
-        pitch, roll = self.get_pitch_roll(data)
+        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
+        pitch, roll = pitch_roll[0], pitch_roll[1]
         orientation_penalty = jp.square(pitch) + jp.square(roll)
 
         # 5. Angular velocity penalty (reduce body rotation)
@@ -1163,7 +1178,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         height_fail = height_too_low | height_too_high
 
         # v0.10.1: Orientation termination (extreme pitch/roll)
-        pitch, roll = self.get_pitch_roll(data)
+        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
+        pitch, roll = pitch_roll[0], pitch_roll[1]
         pitch_fail = jp.abs(pitch) > self._config.env.max_pitch
         roll_fail = jp.abs(roll) > self._config.env.max_roll
         orientation_fail = pitch_fail | roll_fail
@@ -1254,27 +1270,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             heading_sin_cos: (2,) array of [sin(yaw), cos(yaw)]
         """
-        # Get quaternion in wxyz format
         quat = self.get_root_quat(data)  # [w, x, y, z]
-
-        # v0.7.0: Normalize quaternion for numerical stability
-        # MuJoCo quaternions are typically normalized but can drift slightly
-        quat = quat / (jp.linalg.norm(quat) + 1e-8)
-
-        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
-
-        # Extract yaw (rotation around z-axis) from quaternion
-        # Using standard euler extraction formula for ZYX convention
-        # yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-
-        # Normalize to get sin/cos directly
-        norm = jp.sqrt(siny_cosp * siny_cosp + cosy_cosp * cosy_cosp + 1e-8)
-        sin_yaw = siny_cosp / norm
-        cos_yaw = cosy_cosp / norm
-
-        return jp.array([sin_yaw, cos_yaw])
+        return heading_sin_cos_from_quat_jax(quat)
 
     def get_heading_local_linvel(self, data: mjx.Data) -> jax.Array:
         """Get linear velocity in heading-local frame.
@@ -1302,12 +1299,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v_heading = R_z(-yaw) @ v_world
         vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
 
-        # R_z(-yaw) @ [vx, vy, vz]
-        vx_heading = cos_yaw * vx + sin_yaw * vy
-        vy_heading = -sin_yaw * vx + cos_yaw * vy
-        vz_heading = vz  # z component unchanged by z rotation
-
-        return jp.array([vx_heading, vy_heading, vz_heading])
+        return heading_local_from_world_jax(linvel_world, sin_yaw, cos_yaw)
 
     def get_heading_local_angvel(self, data: mjx.Data) -> jax.Array:
         """Get angular velocity in heading-local frame.
@@ -1330,195 +1322,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v_heading = R_z(-yaw) @ v_world
         wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
 
-        # R_z(-yaw) @ [wx, wy, wz]
-        wx_heading = cos_yaw * wx + sin_yaw * wy
-        wy_heading = -sin_yaw * wx + cos_yaw * wy
-        wz_heading = wz  # z component unchanged by z rotation
-
-        return jp.array([wx_heading, wy_heading, wz_heading])
-
-    # =========================================================================
-    # v0.9.1: Finite-Difference Velocity Computation for AMP Parity
-    # =========================================================================
-    # These methods compute velocities from finite differences of qpos,
-    # matching the reference data computation method exactly.
-    # This eliminates the distribution shift between:
-    # - Reference: finite-diff of root_pos (kinematic)
-    # - Policy (old): qvel from MuJoCo dynamics (different under contacts)
-    #
-    # Industry best practice: Use FD velocities for imitation features
-    # even if the controller uses qvel internally.
-
-    def get_heading_local_linvel_fd(
-        self,
-        data: mjx.Data,
-        prev_root_pos: jax.Array,
-        dt: float,
-    ) -> jax.Array:
-        """Get linear velocity via finite difference (heading-local frame).
-
-        v0.9.1: Computes velocity from position change, matching reference data.
-        This is the key fix for AMP feature parity.
-
-        Args:
-            data: Current MJX data
-            prev_root_pos: Previous root position (3,)
-            dt: Time step for finite difference (control_dt, e.g., 0.02s)
-
-        Returns:
-            linvel_heading: (3,) linear velocity in heading-local frame
-        """
-        # Current root position
-        curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
-
-        # Finite difference in world frame (same as reference)
-        linvel_world = (curr_root_pos - prev_root_pos) / dt
-
-        # Convert to heading-local frame
-        heading = self.get_heading_sin_cos(data)
-        sin_yaw, cos_yaw = heading[0], heading[1]
-
-        vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
-        vx_heading = cos_yaw * vx + sin_yaw * vy
-        vy_heading = -sin_yaw * vx + cos_yaw * vy
-        vz_heading = vz
-
-        return jp.array([vx_heading, vy_heading, vz_heading])
-
-    def get_heading_local_angvel_fd(
-        self,
-        data: mjx.Data,
-        prev_root_quat: jax.Array,
-        dt: float,
-    ) -> jax.Array:
-        """Get angular velocity via finite difference (heading-local frame).
-
-        v0.9.1: Computes angular velocity from quaternion change using axis-angle.
-        This matches the reference data computation method exactly.
-
-        Method: omega = (q_curr * q_prev^-1).as_rotvec() / dt
-        This gives world-frame angular velocity, then converted to heading-local.
-
-        Args:
-            data: Current MJX data
-            prev_root_quat: Previous root quaternion (4,) in wxyz format
-            dt: Time step for finite difference (control_dt, e.g., 0.02s)
-
-        Returns:
-            angvel_heading: (3,) angular velocity in heading-local frame
-        """
-        # Current quaternion (wxyz format from MuJoCo)
-        curr_quat = self.get_floating_base_qpos(data.qpos)[3:7]
-
-        # Compute relative rotation: R_delta = R_curr * R_prev^-1
-        # In quaternion: q_delta = q_curr * q_prev_conjugate
-        # For unit quaternions, conjugate = inverse
-
-        # Previous quaternion conjugate (wxyz format: [w, -x, -y, -z])
-        w_prev, x_prev, y_prev, z_prev = (
-            prev_root_quat[0],
-            prev_root_quat[1],
-            prev_root_quat[2],
-            prev_root_quat[3],
-        )
-        q_prev_conj = jp.array([w_prev, -x_prev, -y_prev, -z_prev])
-
-        # Quaternion multiplication: q_delta = q_curr * q_prev_conj
-        w_curr, x_curr, y_curr, z_curr = (
-            curr_quat[0],
-            curr_quat[1],
-            curr_quat[2],
-            curr_quat[3],
-        )
-
-        # Hamilton product (wxyz)
-        w_delta = (
-            w_curr * q_prev_conj[0]
-            - x_curr * q_prev_conj[1]
-            - y_curr * q_prev_conj[2]
-            - z_curr * q_prev_conj[3]
-        )
-        x_delta = (
-            w_curr * q_prev_conj[1]
-            + x_curr * q_prev_conj[0]
-            + y_curr * q_prev_conj[3]
-            - z_curr * q_prev_conj[2]
-        )
-        y_delta = (
-            w_curr * q_prev_conj[2]
-            - x_curr * q_prev_conj[3]
-            + y_curr * q_prev_conj[0]
-            + z_curr * q_prev_conj[1]
-        )
-        z_delta = (
-            w_curr * q_prev_conj[3]
-            + x_curr * q_prev_conj[2]
-            - y_curr * q_prev_conj[1]
-            + z_curr * q_prev_conj[0]
-        )
-
-        # Convert quaternion to rotation vector (axis * angle)
-        # For small rotations: rotvec ≈ 2 * [x, y, z] (when w ≈ 1)
-        # General formula: rotvec = 2 * acos(w) * [x, y, z] / |[x, y, z]|
-
-        # Vector part of quaternion
-        vec = jp.array([x_delta, y_delta, z_delta])
-        vec_norm = jp.linalg.norm(vec) + 1e-8
-
-        # Angle from quaternion: angle = 2 * acos(w)
-        # For numerical stability with w near ±1:
-        # angle = 2 * atan2(|vec|, w)
-        angle = 2.0 * jp.arctan2(vec_norm, jp.abs(w_delta))
-
-        # Handle sign of w (quaternion double cover)
-        angle = jp.where(w_delta < 0, -angle, angle)
-
-        # Rotation vector = angle * axis
-        axis = vec / vec_norm
-        rotvec = angle * axis
-
-        # Angular velocity = rotvec / dt (world frame)
-        angvel_world = rotvec / dt
-
-        # Convert to heading-local frame
-        heading = self.get_heading_sin_cos(data)
-        sin_yaw, cos_yaw = heading[0], heading[1]
-
-        wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
-        wx_heading = cos_yaw * wx + sin_yaw * wy
-        wy_heading = -sin_yaw * wx + cos_yaw * wy
-        wz_heading = wz
-
-        return jp.array([wx_heading, wy_heading, wz_heading])
+        return heading_local_from_world_jax(angvel_world, sin_yaw, cos_yaw)
 
     # =========================================================================
     # Reward Utility Methods
     # =========================================================================
-
-    def get_pitch_roll(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
-        """Get pitch and roll angles from root quaternion.
-
-        Uses ZYX Euler angle extraction from quaternion.
-        Pitch = rotation around Y axis (forward tilt)
-        Roll = rotation around X axis (sideways tilt)
-
-        Returns:
-            (pitch, roll): Tuple of scalar angles in radians
-        """
-        quat = self.get_root_quat(data)  # [w, x, y, z]
-        quat = quat / (jp.linalg.norm(quat) + 1e-8)  # Normalize
-        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
-
-        # Pitch (rotation around Y): atan2(2*(w*y - z*x), 1 - 2*(x*x + y*y))
-        sinp = 2.0 * (w * y - z * x)
-        pitch = jp.arcsin(jp.clip(sinp, -1.0, 1.0))
-
-        # Roll (rotation around X): atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
-        sinr_cosp = 2.0 * (w * x + y * z)
-        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-        roll = jp.arctan2(sinr_cosp, cosr_cosp)
-
-        return pitch, roll
 
     def get_actuator_torques(self, data: mjx.Data) -> jax.Array:
         """Get actuator forces/torques.

@@ -50,6 +50,13 @@ from playground_amp.configs.training_config import (
 )
 from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.envs.wildrobot_env import ObsLayout
+from playground_amp.training.heading_math import (
+    heading_local_angvel_fd_from_quat_np,
+    heading_local_from_world_np,
+    heading_local_linvel_fd_from_pos_np,
+    heading_sin_cos_from_quat_np,
+    pitch_roll_from_quat_np,
+)
 from playground_amp.training.ppo_core import create_networks, sample_actions
 
 
@@ -93,6 +100,22 @@ def parse_args():
         type=float,
         default=None,
         help="Fixed velocity command (default: random from config range)",
+    )
+    parser.add_argument(
+        "--fixed-velocity",
+        type=float,
+        default=None,
+        help="Alias for --velocity-cmd (fixed command for every episode)",
+    )
+    parser.add_argument(
+        "--no-reset-noise",
+        action="store_true",
+        help="Disable joint noise on reset (less faithful, more repeatable)",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Deterministic, fixed-velocity, no-noise demo mode",
     )
     parser.add_argument(
         "--speed",
@@ -205,6 +228,8 @@ def main():
 
     # Determine deterministic mode
     deterministic = not args.stochastic
+    if args.demo:
+        deterministic = True
 
     # Load robot config
     if DEFAULT_ROBOT_CONFIG_PATH.exists():
@@ -263,8 +288,8 @@ def main():
     mj_model = mujoco.MjModel.from_xml_path(str(model_path))
     mj_data = mujoco.MjData(mj_model)
 
-    # Get dimensions from model
-    obs_dim = 35  # Matches WildRobotEnv observation space
+    # Get dimensions from model/config
+    obs_dim = ObsLayout.total_size()
     action_dim = mj_model.nu  # Number of actuators
 
     print(f"Native MuJoCo: obs_dim={obs_dim}, action_dim={action_dim}")
@@ -306,13 +331,6 @@ def main():
     _ = get_action(dummy_obs, warmup_rng)
     print("JIT warmup complete.")
 
-    # Reset MuJoCo to initial state (use keyframe if available)
-    if mj_model.nkey > 0:
-        mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
-    else:
-        mujoco.mj_resetData(mj_model, mj_data)
-    mujoco.mj_forward(mj_model, mj_data)
-
     # Physics substeps per control step
     ctrl_dt = training_cfg.env.ctrl_dt
     sim_dt = mj_model.opt.timestep
@@ -320,7 +338,6 @@ def main():
     print(f"Control dt: {ctrl_dt}s, Sim dt: {sim_dt}s, Substeps: {n_substeps}")
 
     # Get sensor addresses for native MuJoCo using robot config
-    robot_cfg = get_robot_config()
 
     def get_sensor_id(name):
         """Get sensor ID by name."""
@@ -380,69 +397,40 @@ def main():
     # Track previous action
     prev_action = np.zeros(action_dim, dtype=np.float32)
 
-    def get_observation(mj_data, velocity_cmd, prev_action_in):
-        """Compute observation vector using ObsLayout from training code.
+    def get_observation(mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt):
+        """Compute observation vector using training logic (inference-faithful)."""
+        gravity = mj_data.sensordata[gravity_adr:gravity_adr + 3].copy()
 
-        This matches the exact format used by WildRobotEnv during training.
-        """
-        # Gravity from sensor (pelvis_upvector - z-axis in local frame)
-        gravity = mj_data.sensordata[gravity_adr:gravity_adr+3].copy()
+        if prev_root_pos is not None and prev_root_quat is not None:
+            curr_root_pos = mj_data.qpos[0:3].copy()
+            curr_root_quat = mj_data.qpos[3:7].copy()
+            linvel = heading_local_linvel_fd_from_pos_np(
+                curr_root_pos, prev_root_pos, curr_root_quat, dt
+            )
+            angvel = heading_local_angvel_fd_from_quat_np(
+                curr_root_quat, prev_root_quat, dt
+            )
+        else:
+            angvel_world = mj_data.sensordata[angvel_adr:angvel_adr + 3].copy()
+            linvel_world = mj_data.qvel[0:3].copy()
+            sin_yaw, cos_yaw = heading_sin_cos_from_quat_np(mj_data.qpos[3:7].copy())
+            linvel = heading_local_from_world_np(linvel_world, sin_yaw, cos_yaw)
+            angvel = heading_local_from_world_np(angvel_world, sin_yaw, cos_yaw)
 
-        # Angular velocity from sensor (world frame)
-        angvel_world = mj_data.sensordata[angvel_adr:angvel_adr+3].copy()
-
-        # Linear velocity from qvel (world frame)
-        linvel_world = mj_data.qvel[0:3].copy()
-
-        # Get heading (yaw) from quaternion for heading-local transform
-        quat = mj_data.qpos[3:7]  # w, x, y, z
-        w, x, y, z = quat
-
-        # Extract yaw from quaternion (ZYX convention) - same as WildRobotEnv
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        norm = np.sqrt(siny_cosp * siny_cosp + cosy_cosp * cosy_cosp + 1e-8)
-        sin_yaw = siny_cosp / norm
-        cos_yaw = cosy_cosp / norm
-
-        # Rotate to heading-local frame: R_z(-yaw) @ v_world
-        # linvel
-        vx, vy, vz = linvel_world
-        linvel = np.array([
-            cos_yaw * vx + sin_yaw * vy,
-            -sin_yaw * vx + cos_yaw * vy,
-            vz
-        ])
-
-        # angvel
-        wx, wy, wz = angvel_world
-        angvel = np.array([
-            cos_yaw * wx + sin_yaw * wy,
-            -sin_yaw * wx + cos_yaw * wy,
-            wz
-        ])
-
-        # Joint positions using same addresses as training
         joint_pos = mj_data.qpos[actuator_qpos_addrs].copy()
-
-        # Joint velocities using same addresses as training
         joint_vel = mj_data.qvel[actuator_qvel_addrs].copy()
 
-        # Use ObsLayout.build_obs to ensure exact format matching
-        # Note: ObsLayout.build_obs uses JAX arrays, so we build manually here
-        # to avoid JAX overhead in the visualization loop
-        obs = np.concatenate([
-            gravity,            # 3 - gravity vector
-            angvel,             # 3 - angular velocity (heading-local)
-            linvel,             # 3 - linear velocity (heading-local)
-            joint_pos,          # 8 - joint positions
-            joint_vel,          # 8 - joint velocities
-            prev_action_in,     # 8 - previous action
-            [velocity_cmd],     # 1 - velocity command
-            [0.0],              # 1 - padding
-        ])
+        obs = ObsLayout.build_obs(
+            gravity=jnp.array(gravity),
+            angvel=jnp.array(angvel),
+            linvel=jnp.array(linvel),
+            joint_pos=jnp.array(joint_pos),
+            joint_vel=jnp.array(joint_vel),
+            action=jnp.array(prev_action_in),
+            velocity_cmd=jnp.array(velocity_cmd),
+        )
 
-        return obs.astype(np.float32)
+        return obs
 
     # Action filtering configuration (match training)
     use_action_filter = training_cfg.env.use_action_filter
@@ -475,25 +463,61 @@ def main():
         for _ in range(n_substeps):
             mujoco.mj_step(mj_model, mj_data)
 
-    def reset_robot(mj_model, mj_data):
-        """Reset robot to initial state."""
+    rng_env = np.random.default_rng()
+
+    def sample_velocity_cmd():
+        return float(
+            rng_env.uniform(
+                training_cfg.env.min_velocity, training_cfg.env.max_velocity
+            )
+        )
+
+    def reset_robot(mj_model, mj_data, apply_noise=True):
+        """Reset robot to initial state (training parity)."""
         if mj_model.nkey > 0:
             mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
         else:
             mujoco.mj_resetData(mj_model, mj_data)
+        qpos = mj_model.key_qpos[0].copy() if mj_model.nkey > 0 else mj_model.qpos0.copy()
+        qvel = np.zeros(mj_model.nv, dtype=np.float32)
+
+        if apply_noise:
+            joint_noise = rng_env.uniform(-0.05, 0.05, size=action_dim)
+            qpos[7 : 7 + action_dim] = qpos[7 : 7 + action_dim] + joint_noise
+
+        mj_data.qpos[:] = qpos
+        mj_data.qvel[:] = qvel
+        mj_data.ctrl[:] = qpos[7 : 7 + action_dim]
         mujoco.mj_forward(mj_model, mj_data)
 
-    def check_termination(mj_data, min_height=0.15):
-        """Check if episode should terminate (robot fell)."""
+    def check_termination(mj_data, step_count):
+        """Check if episode should terminate (training parity)."""
         height = mj_data.qpos[2]
-        return height < min_height
+        height_too_low = height < training_cfg.env.min_height
+        height_too_high = height > training_cfg.env.max_height
+        pitch_roll = pitch_roll_from_quat_np(mj_data.qpos[3:7].copy())
+        pitch, roll = pitch_roll[0], pitch_roll[1]
+        pitch_fail = abs(pitch) > training_cfg.env.max_pitch
+        roll_fail = abs(roll) > training_cfg.env.max_roll
+        terminated = height_too_low or height_too_high or pitch_fail or roll_fail
+        truncated = (step_count >= training_cfg.env.max_episode_steps) and not terminated
+        return terminated or truncated
 
-    # Generate velocity command
-    if args.velocity_cmd is not None:
-        velocity_cmd = args.velocity_cmd
+    fixed_velocity = (
+        args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
+    )
+    if args.demo and fixed_velocity is None:
+        fixed_velocity = (training_cfg.env.min_velocity + training_cfg.env.max_velocity) / 2
+
+    if fixed_velocity is not None:
+        velocity_cmd = fixed_velocity
+        print(f"Fixed velocity command: {velocity_cmd:.2f} m/s")
     else:
-        velocity_cmd = (training_cfg.env.min_velocity + training_cfg.env.max_velocity) / 2
-    print(f"Velocity command: {velocity_cmd:.2f} m/s")
+        velocity_cmd = sample_velocity_cmd()
+        print(f"Sampled velocity command: {velocity_cmd:.2f} m/s")
+
+    apply_reset_noise = not args.no_reset_noise and not args.demo
+    reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
 
     # Control timing
     ctrl_dt = training_cfg.env.ctrl_dt
@@ -537,6 +561,8 @@ def main():
 
     step_count = 0
     episode_count = 0
+    prev_root_pos = None
+    prev_root_quat = None
 
     if headless:
         # Headless mode - run without viewer
@@ -572,16 +598,19 @@ def main():
         print("\nRunning in headless mode (native MuJoCo - fast)...")
 
         max_steps = record_steps if args.record else 10000  # Limit steps if not recording
-        max_episode_steps = int(training_cfg.env.episode_length / ctrl_dt) if hasattr(training_cfg.env, 'episode_length') else 500
-
         while step_count < max_steps:
             # Get observation from native MuJoCo state
-            obs = get_observation(mj_data, velocity_cmd, prev_action)
-            obs_jax = jnp.array(obs)
+            obs = get_observation(
+                mj_data, velocity_cmd, prev_action, prev_root_pos, prev_root_quat, ctrl_dt
+            )
+            obs_jax = obs
 
             # Get action from policy
             rng, action_rng = jax.random.split(rng)
             action = get_action(obs_jax, action_rng)
+
+            last_root_pos = mj_data.qpos[0:3].copy()
+            last_root_quat = mj_data.qpos[3:7].copy()
 
             # Apply action with filtering and step physics (native MuJoCo - FAST)
             filtered_action = apply_action(mj_data, action, prev_action)
@@ -589,6 +618,8 @@ def main():
 
             # Update previous action for next observation (use filtered action)
             prev_action = filtered_action
+            prev_root_pos = last_root_pos
+            prev_root_quat = last_root_quat
 
             step_count += 1
 
@@ -599,7 +630,7 @@ def main():
                 frames.append(frame)
 
             # Check for episode end (robot fell or max steps)
-            done = check_termination(mj_data) or (step_count >= max_episode_steps)
+            done = check_termination(mj_data, step_count)
             if done:
                 episode_count += 1
                 forward_vel = get_forward_velocity(mj_data)  # body-local forward velocity
@@ -611,8 +642,12 @@ def main():
                     break
 
                 # Reset environment
-                reset_robot(mj_model, mj_data)
+                if fixed_velocity is None:
+                    velocity_cmd = sample_velocity_cmd()
+                reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                 prev_action = np.zeros(action_dim, dtype=np.float32)
+                prev_root_pos = None
+                prev_root_quat = None
                 step_count = 0
 
         if renderer:
@@ -629,8 +664,6 @@ def main():
         # Interactive viewer mode (native MuJoCo - fast)
         # On macOS with mjpython, we need to use a different approach
         # The passive viewer runs in a separate thread, but we control the simulation
-        max_episode_steps = int(training_cfg.env.episode_length / ctrl_dt) if hasattr(training_cfg.env, 'episode_length') else 500
-
         try:
             with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
                 # Set viewer options
@@ -646,12 +679,17 @@ def main():
                     step_start = time.time()
 
                     # Get observation from native MuJoCo state
-                    obs = get_observation(mj_data, velocity_cmd, prev_action)
-                    obs_jax = jnp.array(obs)
+                    obs = get_observation(
+                        mj_data, velocity_cmd, prev_action, prev_root_pos, prev_root_quat, ctrl_dt
+                    )
+                    obs_jax = obs
 
                     # Get action from policy
                     rng, action_rng = jax.random.split(rng)
                     action = get_action(obs_jax, action_rng)
+
+                    last_root_pos = mj_data.qpos[0:3].copy()
+                    last_root_quat = mj_data.qpos[3:7].copy()
 
                     # Apply action with filtering and step physics (native MuJoCo - FAST)
                     filtered_action = apply_action(mj_data, action, prev_action)
@@ -659,6 +697,8 @@ def main():
 
                     # Update previous action for next observation (use filtered action)
                     prev_action = filtered_action
+                    prev_root_pos = last_root_pos
+                    prev_root_quat = last_root_quat
 
                     step_count += 1
 
@@ -688,7 +728,7 @@ def main():
                             print("Done!")
 
                     # Check for episode end (robot fell or max steps)
-                    done = check_termination(mj_data) or (step_count >= max_episode_steps)
+                    done = check_termination(mj_data, step_count)
                     if done:
                         episode_count += 1
                         forward_vel = get_forward_velocity(mj_data)  # body-local forward velocity
@@ -700,8 +740,12 @@ def main():
                             break
 
                         # Reset environment
-                        reset_robot(mj_model, mj_data)
+                        if fixed_velocity is None:
+                            velocity_cmd = sample_velocity_cmd()
+                        reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                         prev_action = np.zeros(action_dim, dtype=np.float32)
+                        prev_root_pos = None
+                        prev_root_quat = None
                         step_count = 0
 
                     # Sync viewer
