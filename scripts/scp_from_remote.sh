@@ -8,7 +8,7 @@
 #   ./scp_from_remote.sh [--public] --latest             # Copy latest checkpoint
 #   ./scp_from_remote.sh [--public] <checkpoint_name>    # Copy specific checkpoint folder
 #   ./scp_from_remote.sh [--public] --logs               # List available wandb runs
-#   ./scp_from_remote.sh [--public] --log <run_name>     # Copy specific wandb run folder
+#   ./scp_from_remote.sh [--public] --run <run_name>     # Copy both checkpoint and wandb log for a run
 #
 # Options:
 #   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
@@ -16,7 +16,7 @@
 # Examples:
 #   ./scp_from_remote.sh --public --checkpoints
 #   ./scp_from_remote.sh --public --latest
-#   ./scp_from_remote.sh --log run-20251222_191549-abc12xyz
+#   ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6
 
 set -e
 
@@ -64,11 +64,11 @@ list_logs() {
 
     ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^d' | grep 'run-' | head -20 || echo 'No wandb runs found'"
 
-    echo -e "\n${CYAN}To copy a wandb run:${NC}"
-    echo "  ./scp_from_remote.sh --log <run_name>"
+    echo -e "\n${CYAN}To copy a run (checkpoint + wandb log):${NC}"
+    echo "  ./scp_from_remote.sh --run <run_name>"
     echo ""
     echo -e "${CYAN}Example:${NC}"
-    echo "  ./scp_from_remote.sh --log run-20251222_191549-abc12xyz"
+    echo "  ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6"
 }
 
 get_latest_checkpoint() {
@@ -147,7 +147,7 @@ copy_checkpoint() {
     fi
 }
 
-copy_log() {
+copy_wandb_log() {
     local RUN_NAME="$1"
     local REMOTE_PATH="$REMOTE_BASE/playground_amp/wandb/$RUN_NAME"
     local LOCAL_PATH="playground_amp/wandb/$RUN_NAME"
@@ -163,9 +163,6 @@ copy_log() {
     # Check if the run exists on remote
     if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_PATH' ]" 2>/dev/null; then
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
-        echo ""
-        echo -e "${CYAN}Available runs:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^run-' | head -10"
         return 1
     fi
 
@@ -186,7 +183,6 @@ copy_log() {
         echo -e "${YELLOW}Run contents:${NC}"
         ls -lh "$LOCAL_PATH" 2>/dev/null | head -15
         echo ""
-
         echo -e "${CYAN}To sync with W&B:${NC}"
         echo "  wandb sync $LOCAL_PATH"
     else
@@ -195,16 +191,80 @@ copy_log() {
     fi
 }
 
+copy_run() {
+    local RUN_NAME="$1"
+
+    echo -e "\n${YELLOW}=== Copying Run: $RUN_NAME ===${NC}\n"
+
+    # Extract date pattern from run name (e.g., run-20251228_011308-xw1fu3n6 -> 20251228_011308)
+    local DATE_PATTERN=$(echo "$RUN_NAME" | grep -oE '[0-9]{8}_[0-9]{6}')
+
+    if [ -z "$DATE_PATTERN" ]; then
+        echo -e "${RED}✗ Could not extract date pattern from run name: $RUN_NAME${NC}"
+        echo "Expected format: run-YYYYMMDD_HHMMSS-xxxxxxxx"
+        return 1
+    fi
+
+    # Check if wandb run exists on remote
+    local WANDB_REMOTE="$REMOTE_BASE/playground_amp/wandb/$RUN_NAME"
+    if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$WANDB_REMOTE' ]" 2>/dev/null; then
+        echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
+        echo ""
+        echo -e "${CYAN}Available W&B runs:${NC}"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^run-' | head -10"
+        return 1
+    fi
+
+    # Find matching checkpoint folder based on the date pattern
+    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '$DATE_PATTERN' | head -1")
+
+    # Step 1: Copy wandb log
+    echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
+    echo ""
+    copy_wandb_log "$RUN_NAME"
+    WANDB_RESULT=$?
+
+    # Step 2: Copy checkpoint if found
+    echo ""
+    echo -e "${CYAN}Step 2/2: Copying checkpoint...${NC}"
+    echo ""
+
+    if [ -n "$CHECKPOINT_NAME" ]; then
+        copy_checkpoint "$CHECKPOINT_NAME"
+        CHECKPOINT_RESULT=$?
+    else
+        echo -e "${YELLOW}⚠ No matching checkpoint found for date pattern: $DATE_PATTERN${NC}"
+        echo -e "${CYAN}Available checkpoints:${NC}"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | head -10"
+        CHECKPOINT_RESULT=1
+    fi
+
+    # Summary
+    echo ""
+    echo -e "${YELLOW}=== Transfer Summary ===${NC}"
+    if [ $WANDB_RESULT -eq 0 ]; then
+        echo -e "${GREEN}✓ W&B Log: $RUN_NAME${NC}"
+    else
+        echo -e "${RED}✗ W&B Log: $RUN_NAME (failed)${NC}"
+    fi
+
+    if [ $CHECKPOINT_RESULT -eq 0 ]; then
+        echo -e "${GREEN}✓ Checkpoint: $CHECKPOINT_NAME${NC}"
+    else
+        echo -e "${YELLOW}⚠ Checkpoint: not found or failed${NC}"
+    fi
+}
+
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--checkpoints|--latest|--logs|--log <run>|checkpoint_name>"
+    echo "Usage: $0 <filename|--checkpoints|--latest|--logs|--run <name>|checkpoint_name>"
     echo ""
     echo "Options:"
     echo "  <filename>       Copy specific file or directory from remote"
     echo "  --checkpoints    List available checkpoints on remote"
     echo "  --latest         Copy the most recent checkpoint"
     echo "  --logs           List available W&B runs on remote"
-    echo "  --log <run>      Copy specific W&B run folder by name"
+    echo "  --run <name>     Copy both checkpoint and W&B log for a run"
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
     echo ""
     echo "Examples:"
@@ -213,7 +273,7 @@ if [ $# -eq 0 ]; then
     echo "  $0 --latest"
     echo "  $0 wildrobot_amp_20251220_180000"
     echo "  $0 --logs"
-    echo "  $0 --log run-20251222_191549-abc12xyz"
+    echo "  $0 --run run-20251228_011308-xw1fu3n6"
     exit 1
 fi
 
@@ -224,18 +284,18 @@ case "$1" in
     --logs)
         list_logs
         ;;
-    --log)
+    --run)
         if [ -z "$2" ]; then
-            echo -e "${RED}Error: --log requires a run name${NC}"
+            echo -e "${RED}Error: --run requires a run name${NC}"
             echo ""
-            echo "Usage: $0 --log <run_name>"
-            echo "Example: $0 --log run-20251222_191549-abc12xyz"
+            echo "Usage: $0 --run <run_name>"
+            echo "Example: $0 --run run-20251228_011308-xw1fu3n6"
             echo ""
-            echo "To list available logs:"
+            echo "To list available runs:"
             echo "  $0 --logs"
             exit 1
         fi
-        copy_log "$2"
+        copy_run "$2"
         ;;
     --latest)
         LATEST=$(get_latest_checkpoint)
