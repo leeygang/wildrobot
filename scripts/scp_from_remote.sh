@@ -196,11 +196,13 @@ copy_run() {
 
     echo -e "\n${YELLOW}=== Copying Run: $RUN_NAME ===${NC}\n"
 
-    # Extract date pattern from run name (e.g., run-20251228_011308-xw1fu3n6 -> 20251228_011308)
-    local DATE_PATTERN=$(echo "$RUN_NAME" | grep -oE '[0-9]{8}_[0-9]{6}')
+    # Extract run_id from wandb run name
+    # Format: run-YYYYMMDD_HHMMSS-xxxxxxxx -> YYYYMMDD_HHMMSS-xxxxxxxx
+    # Example: run-20251228_205534-uf665cr6 -> 20251228_205534-uf665cr6
+    local RUN_ID=$(echo "$RUN_NAME" | sed 's/^run-//')
 
-    if [ -z "$DATE_PATTERN" ]; then
-        echo -e "${RED}✗ Could not extract date pattern from run name: $RUN_NAME${NC}"
+    if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "$RUN_NAME" ]; then
+        echo -e "${RED}✗ Could not extract run_id from run name: $RUN_NAME${NC}"
         echo "Expected format: run-YYYYMMDD_HHMMSS-xxxxxxxx"
         return 1
     fi
@@ -215,8 +217,11 @@ copy_run() {
         return 1
     fi
 
-    # Find matching checkpoint folder based on the date pattern
-    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '$DATE_PATTERN' | head -1")
+    # Find matching checkpoint folder based on the run_id suffix
+    # New checkpoint format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
+    # Example: ppo_walking_v01005_20251228_205534-uf665cr6
+    # We match the suffix: 20251228_205534-uf665cr6
+    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '$RUN_ID$' | head -1")
 
     # Step 1: Copy wandb log
     echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
@@ -233,9 +238,18 @@ copy_run() {
         copy_checkpoint "$CHECKPOINT_NAME"
         CHECKPOINT_RESULT=$?
     else
-        echo -e "${YELLOW}⚠ No matching checkpoint found for date pattern: $DATE_PATTERN${NC}"
-        echo -e "${CYAN}Available checkpoints:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | head -10"
+        echo -e "${YELLOW}⚠ No matching checkpoint found for run_id: $RUN_ID${NC}"
+        echo ""
+        echo -e "${CYAN}This could mean:${NC}"
+        echo "  1. Training hasn't saved a checkpoint yet (not reached checkpoint interval)"
+        echo "  2. Training failed before saving a checkpoint"
+        echo "  3. Checkpoint was saved with a different naming scheme"
+        echo ""
+        echo -e "${CYAN}Available checkpoints (most recent first):${NC}"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | head -10"
+        echo ""
+        echo -e "${CYAN}To copy a specific checkpoint manually:${NC}"
+        echo "  ./scp_from_remote.sh <checkpoint_folder_name>"
         CHECKPOINT_RESULT=1
     fi
 

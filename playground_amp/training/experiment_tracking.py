@@ -167,6 +167,16 @@ class WandbTracker:
             print(f"⚠️ W&B initialization failed: {e}")
             self.enabled = False
 
+    def get_run_id(self) -> Optional[str]:
+        """Get the wandb run ID (e.g., 'xw1fu3n6').
+        
+        Returns:
+            The 8-character wandb run ID, or None if not available.
+        """
+        if self._wandb_run is not None:
+            return self._wandb_run.id
+        return None
+
     def _save_config_local(self):
         """Save configuration to local file (in wandb's run dir if available)."""
         # Use wandb's run dir if available, otherwise create our own folder
@@ -414,12 +424,145 @@ class WandbTracker:
         self.finish()
         return False
 
+    @classmethod
+    def from_config(
+        cls,
+        training_cfg: Any,
+        wandb_cfg: Any,
+    ) -> "WandbTracker":
+        """Create WandbTracker from training and wandb config objects.
+        
+        Args:
+            training_cfg: TrainingConfig object with version, ppo, amp, seed, etc.
+            wandb_cfg: WandbConfig object with project, entity, name, tags, mode, etc.
+        
+        Returns:
+            Configured WandbTracker instance
+        """
+        use_amp = training_cfg.amp.enabled
+        
+        # Build wandb config dict from training config
+        config = {
+            # Version tracking
+            "version": training_cfg.version,
+            "version_name": training_cfg.version_name,
+            # Training params
+            "iterations": training_cfg.ppo.iterations,
+            "num_envs": training_cfg.ppo.num_envs,
+            "learning_rate": training_cfg.ppo.learning_rate,
+            "gamma": training_cfg.ppo.gamma,
+            "clip_epsilon": training_cfg.ppo.clip_epsilon,
+            "entropy_coef": training_cfg.ppo.entropy_coef,
+            "amp_weight": training_cfg.amp.weight,
+            "disc_lr": training_cfg.amp.discriminator.learning_rate if use_amp else 0.0,
+            "seed": training_cfg.seed,
+            "mode": "amp+ppo" if use_amp else "ppo-only",
+        }
+        
+        return cls(
+            project=wandb_cfg.project,
+            entity=wandb_cfg.entity,
+            name=wandb_cfg.name,
+            config=config,
+            tags=wandb_cfg.tags,
+            mode=wandb_cfg.mode,
+            enabled=wandb_cfg.enabled,
+            log_dir=wandb_cfg.log_dir,
+        )
+
     @property
     def url(self) -> Optional[str]:
         """Get W&B run URL."""
         if self._wandb_run is not None:
             return self._wandb_run.url
         return None
+
+
+def generate_job_name(
+    version: str,
+    config_name: Optional[str] = None,
+    wandb_tracker: Optional[WandbTracker] = None,
+    mode_suffix: str = "ppo",
+) -> str:
+    """Generate a training job name for checkpoint directory.
+    
+    Format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
+    Example: ppo_walking_v01005_20251228_205534-uf665cr6
+    
+    Args:
+        version: Version string (e.g., "0.10.5")
+        config_name: Name of the config file without extension (e.g., "ppo_walking")
+        wandb_tracker: Optional WandbTracker to get run ID from
+        mode_suffix: Fallback suffix if config_name not provided (e.g., "amp" or "ppo")
+    
+    Returns:
+        Job name string for use as checkpoint subdirectory
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Format version: "0.10.5" -> "v01005" (remove dots, pad with zeros)
+    version_str = version.replace(".", "")
+    version_formatted = f"v{version_str.zfill(5)}"
+    
+    # Get wandb run ID if available (e.g., "uf665cr6")
+    wandb_run_id = None
+    if wandb_tracker is not None:
+        wandb_run_id = wandb_tracker.get_run_id()
+    
+    # Build run_id: timestamp-wandb_id or just timestamp
+    if wandb_run_id:
+        run_id = f"{timestamp}-{wandb_run_id}"
+    else:
+        run_id = timestamp
+    
+    # Build job name: config_name_version_run_id
+    # e.g., ppo_walking_v01005_20251228_205534-uf665cr6
+    if config_name:
+        return f"{config_name}_{version_formatted}_{run_id}"
+    else:
+        return f"wildrobot_{mode_suffix}_{version_formatted}_{run_id}"
+
+
+def create_training_metrics_from_iteration(
+    iteration: int,
+    metrics: Any,
+    steps_per_sec: float,
+    use_amp: bool = True,
+) -> Dict[str, float]:
+    """Create training metrics dict from IterationMetrics object.
+    
+    This is a convenience wrapper that extracts fields from the IterationMetrics
+    dataclass returned by the training loop.
+    
+    Args:
+        iteration: Current training iteration
+        metrics: IterationMetrics object from training loop
+        steps_per_sec: Environment steps per second
+        use_amp: Whether AMP is enabled
+        
+    Returns:
+        Flat dictionary of metrics with prefixes for W&B logging
+    """
+    return create_training_metrics(
+        iteration=iteration,
+        episode_reward=float(metrics.episode_reward),
+        ppo_loss=float(metrics.total_loss),
+        policy_loss=float(metrics.policy_loss),
+        value_loss=float(metrics.value_loss),
+        entropy_loss=float(metrics.entropy_loss),
+        disc_loss=float(metrics.disc_loss) if use_amp else 0.0,
+        disc_accuracy=float(metrics.disc_accuracy) if use_amp else 0.5,
+        amp_reward_mean=float(metrics.amp_reward_mean) if use_amp else 0.0,
+        amp_reward_std=0.0,
+        clip_fraction=0.0,
+        approx_kl=0.0,
+        env_steps_per_sec=steps_per_sec,
+        forward_velocity=float(metrics.env_metrics["forward_velocity"]),
+        episode_length=float(metrics.episode_length),
+        velocity_cmd=float(metrics.env_metrics["velocity_command"]),
+        velocity_error=float(metrics.env_metrics["tracking/vel_error"]),
+        max_torque=float(metrics.env_metrics["tracking/max_torque"]),
+    )
 
 
 def create_training_metrics(

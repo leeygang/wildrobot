@@ -301,3 +301,76 @@ def print_top_checkpoints_summary(checkpoint_dir: str, top_n: int = 3) -> None:
             f"{os.path.join(checkpoint_dir, best_filename)}"
         )
     print()
+
+
+def save_window_best_checkpoint(
+    window_best: Dict[str, Any],
+    best_reward: Dict[str, float],
+    config: Any,
+    checkpoint_dir: str,
+    keep_last_n: int = 5,
+) -> bool:
+    """Save the best checkpoint from the current window.
+    
+    This function saves the best checkpoint tracked within a window of iterations,
+    updates the global best reward if applicable, resets the window tracking state,
+    and manages old checkpoints.
+    
+    Args:
+        window_best: Dict tracking the best state within current window with keys:
+            - "reward": Best reward in this window
+            - "state": Training state (already on CPU via jax.device_get)
+            - "metrics": IterationMetrics for the best iteration
+            - "iteration": Iteration number of the best state
+            - "total_steps": Total steps at the best iteration
+        best_reward: Dict with "value" key tracking global best reward (mutated in place)
+        config: Training configuration (TrainingConfig)
+        checkpoint_dir: Directory to save checkpoints
+        keep_last_n: Number of recent checkpoints to keep
+        
+    Returns:
+        True if a checkpoint was saved, False if window_best was empty
+    """
+    if window_best["state"] is None:
+        return False
+
+    save_state = window_best["state"]
+    save_metrics = window_best["metrics"]
+    save_iteration = window_best["iteration"]
+    save_reward = window_best["reward"]
+
+    is_new_best = save_reward > best_reward["value"]
+    if is_new_best:
+        best_reward["value"] = save_reward
+
+    save_checkpoint_from_cpu(
+        state_cpu=save_state,
+        config=config,
+        iteration=save_iteration,
+        total_steps=window_best["total_steps"],
+        checkpoint_dir=checkpoint_dir,
+        is_best=is_new_best,
+        metrics=save_metrics,
+    )
+
+    if is_new_best:
+        print(
+            f"  💾 Checkpoint saved (window best, iter {save_iteration}) "
+            f"- NEW BEST: reward={save_reward:.2f}"
+        )
+    else:
+        print(
+            f"  💾 Checkpoint saved (window best, iter {save_iteration}, "
+            f"reward={save_reward:.2f})"
+        )
+
+    # Reset window tracking
+    window_best["reward"] = float("-inf")
+    window_best["state"] = None
+    window_best["metrics"] = None
+    window_best["iteration"] = 0
+    window_best["total_steps"] = 0
+
+    manage_checkpoints(checkpoint_dir, keep_last_n)
+    
+    return True
