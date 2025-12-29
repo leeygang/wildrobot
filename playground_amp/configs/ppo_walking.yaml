@@ -24,8 +24,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.10.4"
-version_name: "Forward Walking - Velocity Incentive (v0.10.4)"
+version: "0.10.5"
+version_name: "Forward Walking - Gait Shaping (v0.10.5)"
 
 seed: 42
 
@@ -65,7 +65,7 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 500       # More iterations for walking (vs 200 for standing)
+  iterations: 400       # v0.10.5: shorter run; extend if gait still improving
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -135,6 +135,9 @@ networks:
 # =============================================================================
 # Task Reward Weights (Environment-side reward only)
 # v0.10.4: Strong velocity incentive to overcome standing-still local minimum
+# v0.10.4 analysis (run xw1fu3n6): tracking met (vel_err ~0.085, ep_len ~460),
+# but gait is ankle-dominant with forward lean and high peak torque (~0.98).
+# v0.10.5: Rebalance toward gait shaping (periodicity + efficiency).
 #
 # Analysis: With v0.10.3 weights, standing still gave reward ~0.62 while
 # walking gave ~2.0 but with risk of falling. The reward structure made
@@ -154,15 +157,15 @@ networks:
 # =============================================================================
 reward_weights:
   # Primary objectives - v0.10.4: Dominant velocity tracking
-  tracking_lin_vel: 8.0   # 2.0 -> 8.0: DOMINANT reward for moving forward
+  tracking_lin_vel: 6.0   # v0.10.5: reduce velocity dominance to allow gait shaping
   lateral_velocity: -0.3  # Reduced: allow some lateral motion during walking
   base_height: 0.2        # Reduced: velocity is primary, just need to stay upright
-  orientation: -0.2       # Reduced: allow body lean during walking
+  orientation: -0.3       # v0.10.5: penalize excessive lean
   angular_velocity: -0.02 # Reduced: allow turning
 
   # Effort and safety (keep low to not block motion discovery)
-  torque: -0.0005         # Reduced: allow torque usage for walking emergence
-  saturation: -0.05       # Reduced: allow near-limit torques early
+  torque: -0.001          # v0.10.5: push away from torque-heavy shuffle
+  saturation: -0.08       # v0.10.5: discourage sustained saturation
 
   # Smoothness (reduced to allow gait emergence)
   action_rate: -0.005     # Reduced: allow faster action changes for walking
@@ -171,6 +174,7 @@ reward_weights:
   # Foot stability
   slip: -0.2              # Reduced: some slip is okay during walking
   clearance: 0.3          # Increased: strong reward for foot lift during swing
+  gait_periodicity: 0.2   # v0.10.5: encourage alternating support
 
   # v0.10.4: Velocity shaping parameters
   forward_velocity_scale: 6.0     # 4.0 -> 6.0: SHARPER (higher = steeper penalty)

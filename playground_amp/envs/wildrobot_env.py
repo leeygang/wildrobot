@@ -1069,6 +1069,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.where(right_swing, right_clearance, 0.0)
         ) * 10.0  # Scale up small clearance values
 
+        # 12. Gait periodicity (encourage alternating support)
+        left_loaded = left_force > contact_threshold
+        right_loaded = right_force > contact_threshold
+        gait_periodicity = jp.where(left_loaded ^ right_loaded, 1.0, 0.0)
+
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
@@ -1114,6 +1119,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Foot stability (Tier 2)
             + weights.slip * slip_penalty
             + weights.clearance * clearance_reward
+            + weights.gait_periodicity * gait_periodicity
         )
 
         # =====================================================================
@@ -1142,6 +1148,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Foot stability
             "reward/slip": slip_penalty,
             "reward/clearance": clearance_reward,
+            "reward/gait_periodicity": gait_periodicity,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

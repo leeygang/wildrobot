@@ -109,6 +109,10 @@ Exit: Consistent alternating gait, reasonable energy usage
 #### v0.10.5 - Robustness
 **Objective:** Policy handles perturbations
 
+Notes:
+- v0.10.5 (current): added gait periodicity reward, reduced velocity dominance,
+  increased orientation/torque/saturation penalties, shortened run to 400 iters.
+
 Tasks:
 - [ ] Add push disturbances during training
 - [ ] Add terrain variations (small bumps)

@@ -249,6 +249,7 @@ class RewardWeightsConfig(Freezable):
     # Foot stability
     slip: float = -0.5
     clearance: float = 0.1
+    gait_periodicity: float = 0.0
 
     # Shaping
     forward_velocity_scale: float = 4.0

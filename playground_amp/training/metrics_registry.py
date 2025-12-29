@@ -105,7 +105,7 @@ METRIC_SPECS: List[MetricSpec] = [
     ),
 
     # =========================================================================
-    # Reward components (indices 5-16)
+    # Reward components (indices 5-17)
     # =========================================================================
     MetricSpec(
         name="reward/total",
@@ -172,6 +172,11 @@ METRIC_SPECS: List[MetricSpec] = [
         name="reward/standing",
         reducer=Reducer.MEAN,
         description="Standing still penalty (1.0 when |vel| < threshold)",
+    ),
+    MetricSpec(
+        name="reward/gait_periodicity",
+        reducer=Reducer.MEAN,
+        description="Alternating support reward (left XOR right contact)",
     ),
 
     # =========================================================================

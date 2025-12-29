@@ -224,6 +224,7 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         joint_velocity=rewards.get("joint_velocity", -0.001),
         slip=rewards.get("slip", -0.5),
         clearance=rewards.get("clearance", 0.1),
+        gait_periodicity=rewards.get("gait_periodicity", 0.0),
         forward_velocity_scale=rewards.get("forward_velocity_scale", 4.0),
         velocity_standing_penalty=rewards.get("velocity_standing_penalty", 0.0),
         velocity_standing_threshold=rewards.get("velocity_standing_threshold", 0.2),

@@ -5,6 +5,23 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.10.5] - 2025-12-28: Gait Shaping Tune (Stage 1)
+
+### Config Updates
+- Reduced velocity dominance to allow gait shaping.
+- Increased orientation + torque/saturation penalties to curb forward-lean shuffle.
+- Added gait periodicity reward (alternating support).
+- Shortened default training run to 400 iterations.
+
+### Files Updated
+- `playground_amp/configs/ppo_walking.yaml`
+- `playground_amp/envs/wildrobot_env.py`
+- `playground_amp/configs/training_config.py`
+- `playground_amp/configs/training_runtime_config.py`
+- `playground_amp/training/metrics_registry.py`
+
+---
+
 ## [v0.8.0] - 2024-12-26: Feature Set Refactoring
 
 ### Major Change: Single Source of Truth Architecture
@@ -936,6 +953,7 @@ amp:
 | 2024-12-20 | v0.1.0 | 500 | 0.97-0.99 | ~0.3 m/s | Disc too strong |
 | 2024-12-22 | v0.2.0 | 300 | 0.72-0.95 | ~0.5 m/s | Healthy oscillation |
 | 2024-12-23 | v0.3.0 | TBD | TBD | TBD | Velocity normalized |
+| 2025-12-28 | v0.10.4 | 500 | 0.50 | 0.65 m/s | PPO-only; vel_err ~0.085; ep_len ~460; pitch fall ~10-17%; max torque ~0.98 |
 
 ---
 
