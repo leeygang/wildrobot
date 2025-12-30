@@ -31,6 +31,7 @@ env/
 logs/
 training_logs/
 **/checkpoints/wildrobot_*/
+**/checkpoints/ppo_warlking_*/
 
 # OS
 .DS_Store

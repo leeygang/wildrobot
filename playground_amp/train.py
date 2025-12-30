@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import os
 import pickle
 import sys
@@ -85,8 +86,9 @@ from playground_amp.training.checkpoint import (
 
 # Import W&B tracker
 from playground_amp.training.experiment_tracking import (
+    REWARD_TERM_KEYS,
+    build_wandb_metrics,
     create_training_metrics,
-    create_training_metrics_from_iteration,
     define_wandb_topline_metrics,
     generate_eval_video,
     generate_job_name,
@@ -345,6 +347,18 @@ def start_training(
         "iteration": 0,
         "total_steps": 0,
     }
+    metrics_log_path = None
+    if training_cfg.wandb.enabled:
+        run_dir = None
+        if wandb_tracker is not None and wandb_tracker._run_dir is not None:
+            run_dir = Path(wandb_tracker._run_dir)
+        if run_dir is None:
+            run_id = wandb_tracker.get_run_id() if wandb_tracker is not None else None
+            if run_id is None:
+                run_id = time.strftime("%Y%m%d_%H%M%S")
+            run_dir = Path(training_cfg.wandb.log_dir) / f"run-{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        metrics_log_path = run_dir / "metrics.jsonl"
 
     # Training callback for W&B logging and checkpoint management
     def callback(
@@ -355,32 +369,21 @@ def start_training(
     ):
         # W&B logging
         if wandb_tracker is not None:
-            wandb_metrics = create_training_metrics_from_iteration(
+            wandb_metrics, missing_terms = build_wandb_metrics(
                 iteration=iteration,
                 metrics=metrics,
                 steps_per_sec=steps_per_sec,
                 use_amp=training_cfg.amp.enabled,
+                reward_terms=REWARD_TERM_KEYS,
             )
-            wandb_metrics["debug/task_reward_per_step"] = float(
-                metrics.task_reward_mean
-            )
-            wandb_metrics["debug/robot_height"] = float(metrics.env_metrics["height"])
-
-            # v0.10.4: Log reward breakdown for diagnostics
-            # This is critical for tuning reward weights
-            reward_terms = [
-                "reward/forward", "reward/lateral", "reward/healthy",
-                "reward/orientation", "reward/angvel", "reward/standing",
-                "reward/torque", "reward/saturation",
-                "reward/action_rate", "reward/joint_vel",
-                "reward/slip", "reward/clearance", "reward/gait_periodicity",
-                "reward/hip_swing", "reward/knee_swing", "reward/flight_phase",
-            ]
-            for term in reward_terms:
-                if term in metrics.env_metrics:
-                    wandb_metrics[term] = float(metrics.env_metrics[term])
+            if iteration == 1 and missing_terms:
+                print(f"⚠️ Missing reward terms in env_metrics: {missing_terms}")
 
             wandb_tracker.log(wandb_metrics, step=int(state.total_steps))
+            if metrics_log_path is not None:
+                with metrics_log_path.open("a", encoding="utf-8") as f:
+                    json.dump(wandb_metrics, f, sort_keys=True)
+                    f.write("\n")
 
         # Skip checkpoint tracking if disabled
         if checkpoint_interval <= 0:

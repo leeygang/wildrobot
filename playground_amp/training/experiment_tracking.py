@@ -54,6 +54,24 @@ EXIT_CRITERIA_TARGETS = {
     "disc_accuracy": {"target_min": 0.4, "target_max": 0.7, "unit": ""},  # Should NOT be 100%
 }
 
+REWARD_TERM_KEYS = [
+    "reward/forward",
+    "reward/lateral",
+    "reward/healthy",
+    "reward/orientation",
+    "reward/angvel",
+    "reward/standing",
+    "reward/torque",
+    "reward/saturation",
+    "reward/action_rate",
+    "reward/joint_vel",
+    "reward/slip",
+    "reward/clearance",
+    "reward/gait_periodicity",
+    "reward/hip_swing",
+    "reward/knee_swing",
+    "reward/flight_phase",
+]
 
 # Import WandbConfig from config.py (single source of truth)
 # This prevents duplicate definitions and ensures consistency
@@ -563,6 +581,45 @@ def create_training_metrics_from_iteration(
         velocity_error=float(metrics.env_metrics["tracking/vel_error"]),
         max_torque=float(metrics.env_metrics["tracking/max_torque"]),
     )
+
+
+def build_wandb_metrics(
+    iteration: int,
+    metrics: Any,
+    steps_per_sec: float,
+    use_amp: bool = True,
+    reward_terms: Optional[List[str]] = None,
+) -> tuple[Dict[str, float], List[str]]:
+    """Create W&B metrics dict and return missing reward terms.
+
+    Args:
+        iteration: Current training iteration
+        metrics: IterationMetrics object from training loop
+        steps_per_sec: Environment steps per second
+        use_amp: Whether AMP is enabled
+        reward_terms: Optional list of reward term keys to include
+
+    Returns:
+        (wandb_metrics, missing_terms)
+    """
+    wandb_metrics = create_training_metrics_from_iteration(
+        iteration=iteration,
+        metrics=metrics,
+        steps_per_sec=steps_per_sec,
+        use_amp=use_amp,
+    )
+    wandb_metrics["debug/task_reward_per_step"] = float(metrics.task_reward_mean)
+    wandb_metrics["debug/robot_height"] = float(metrics.env_metrics["height"])
+
+    missing_terms: List[str] = []
+    reward_terms = reward_terms or REWARD_TERM_KEYS
+    for term in reward_terms:
+        if term in metrics.env_metrics:
+            wandb_metrics[term] = float(metrics.env_metrics[term])
+        else:
+            missing_terms.append(term)
+
+    return wandb_metrics, missing_terms
 
 
 def create_training_metrics(
