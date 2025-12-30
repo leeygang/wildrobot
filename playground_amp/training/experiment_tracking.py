@@ -51,7 +51,11 @@ EXIT_CRITERIA_TARGETS = {
     # Stability metrics
     "episode_length": {"target": 400, "min": 200, "unit": "steps"},
     "survival_rate": {"target": 0.95, "unit": "%"},
-    "disc_accuracy": {"target_min": 0.4, "target_max": 0.7, "unit": ""},  # Should NOT be 100%
+    "disc_accuracy": {
+        "target_min": 0.4,
+        "target_max": 0.7,
+        "unit": "",
+    },  # Should NOT be 100%
 }
 
 REWARD_TERM_KEYS = [
@@ -72,6 +76,217 @@ REWARD_TERM_KEYS = [
     "reward/knee_swing",
     "reward/flight_phase",
 ]
+
+
+# =============================================================================
+# Environment Metrics Schema (Single Source of Truth)
+# =============================================================================
+# This defines all metrics keys that the environment tracks.
+# Used by wildrobot_env.py to create initial metrics dict with JAX pytree compatibility.
+
+ENV_METRICS_KEYS = {
+    # Core state
+    "velocity_command": "Target velocity command for episode",
+    "height": "Root height above ground",
+    "forward_velocity": "Current forward velocity",
+    "episode_step_count": "Steps in current episode",
+    # Reward components
+    "reward/total": "Total weighted reward",
+    "reward/forward": "Forward velocity tracking reward",
+    "reward/lateral": "Lateral velocity penalty",
+    "reward/healthy": "Healthy/alive reward",
+    "reward/orientation": "Upright orientation reward",
+    "reward/angvel": "Angular velocity penalty",
+    "reward/torque": "Torque penalty",
+    "reward/saturation": "Actuator saturation penalty",
+    "reward/action_rate": "Action smoothness penalty",
+    "reward/joint_vel": "Joint velocity penalty",
+    "reward/slip": "Foot slip penalty",
+    "reward/clearance": "Foot clearance reward",
+    "reward/gait_periodicity": "Alternating gait reward",
+    "reward/hip_swing": "Hip swing during leg swing",
+    "reward/knee_swing": "Knee swing during leg swing",
+    "reward/flight_phase": "Flight phase penalty",
+    "reward/standing": "Standing still penalty",
+    # Debug metrics
+    "debug/pitch": "Root pitch angle",
+    "debug/roll": "Root roll angle",
+    "debug/forward_vel": "Debug: forward velocity",
+    "debug/lateral_vel": "Debug: lateral velocity",
+    "debug/left_force": "Left foot contact force",
+    "debug/right_force": "Right foot contact force",
+    # Termination diagnostics
+    "term/height_low": "Terminated: height too low",
+    "term/height_high": "Terminated: height too high",
+    "term/pitch": "Terminated: pitch exceeded",
+    "term/roll": "Terminated: roll exceeded",
+    "term/truncated": "Episode truncated (max steps)",
+    "term/pitch_val": "Pitch value at termination",
+    "term/roll_val": "Roll value at termination",
+    "term/height_val": "Height value at termination",
+    # Tracking metrics (v0.10.3+)
+    "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
+    "tracking/max_torque": "Max normalized torque (0-1)",
+}
+
+
+def get_initial_env_metrics(
+    velocity_cmd: float = 0.0,
+    height: float = 0.0,
+    pitch: float = 0.0,
+    roll: float = 0.0,
+    left_force: float = 0.0,
+    right_force: float = 0.0,
+    forward_reward: float = 0.0,
+    healthy_reward: float = 0.0,
+    action_rate: float = 0.0,
+    total_reward: float = 0.0,
+) -> Dict[str, Any]:
+    """Create initial environment metrics dictionary for reset().
+
+    This is the single source of truth for env metrics schema.
+    All metric keys must match between reset() and step() for JAX pytree compatibility.
+
+    Args:
+        velocity_cmd: Target velocity command for episode
+        height: Initial root height
+        pitch: Initial pitch angle
+        roll: Initial roll angle
+        left_force: Initial left foot force
+        right_force: Initial right foot force
+        forward_reward: Initial forward reward (usually 0 at reset)
+        healthy_reward: Initial healthy reward
+        action_rate: Initial action rate penalty (0 at reset)
+        total_reward: Initial total reward
+
+    Returns:
+        Dictionary with all metric keys initialized (most to zeros)
+
+    Note:
+        Import jax.numpy as jp before calling, or pass jp.zeros() values.
+        This function returns Python floats by default. The caller should
+        convert to JAX arrays as needed.
+    """
+    return {
+        # Core state
+        "velocity_command": velocity_cmd,
+        "height": height,
+        "forward_velocity": 0.0,  # Robot starts stationary
+        "episode_step_count": 0.0,  # Starts at 0 for new episode
+        # Reward components
+        "reward/total": total_reward,
+        "reward/forward": forward_reward,
+        "reward/lateral": 0.0,
+        "reward/healthy": healthy_reward,
+        "reward/orientation": 0.0,
+        "reward/angvel": 0.0,
+        "reward/torque": 0.0,
+        "reward/saturation": 0.0,
+        "reward/action_rate": action_rate,
+        "reward/joint_vel": 0.0,
+        "reward/slip": 0.0,
+        "reward/clearance": 0.0,
+        "reward/gait_periodicity": 0.0,
+        "reward/hip_swing": 0.0,
+        "reward/knee_swing": 0.0,
+        "reward/flight_phase": 0.0,
+        "reward/standing": 0.0,
+        # Debug metrics
+        "debug/pitch": pitch,
+        "debug/roll": roll,
+        "debug/forward_vel": 0.0,
+        "debug/lateral_vel": 0.0,
+        "debug/left_force": left_force,
+        "debug/right_force": right_force,
+        # Termination diagnostics (initialized to zero at reset)
+        "term/height_low": 0.0,
+        "term/height_high": 0.0,
+        "term/pitch": 0.0,
+        "term/roll": 0.0,
+        "term/truncated": 0.0,
+        "term/pitch_val": pitch,
+        "term/roll_val": roll,
+        "term/height_val": height,
+        # Tracking metrics (v0.10.3+)
+        "tracking/vel_error": 0.0,  # Starts at zero (stationary)
+        "tracking/max_torque": 0.0,  # No torque at reset
+    }
+
+
+def get_initial_env_metrics_jax(
+    velocity_cmd,
+    height,
+    pitch,
+    roll,
+    left_force,
+    right_force,
+    forward_reward,
+    healthy_reward,
+    action_rate,
+    total_reward,
+):
+    """Create initial environment metrics dictionary with JAX arrays.
+
+    This is the JAX-compatible version that preserves array types.
+    Use this in wildrobot_env.py reset() method.
+
+    Args:
+        All arguments should be JAX scalars (jp.zeros(), jp.array(), etc.)
+
+    Returns:
+        Dictionary with all metric keys as JAX arrays
+    """
+    import jax.numpy as jp
+
+    # Helper to ensure JAX scalar
+    def _scalar(x):
+        return x if hasattr(x, "shape") else jp.array(x)
+
+    return {
+        # Core state
+        "velocity_command": _scalar(velocity_cmd),
+        "height": _scalar(height),
+        "forward_velocity": jp.zeros(()),  # Robot starts stationary
+        "episode_step_count": jp.zeros(()),  # Starts at 0 for new episode
+        # Reward components
+        "reward/total": _scalar(total_reward),
+        "reward/forward": _scalar(forward_reward),
+        "reward/lateral": jp.zeros(()),
+        "reward/healthy": _scalar(healthy_reward),
+        "reward/orientation": jp.zeros(()),
+        "reward/angvel": jp.zeros(()),
+        "reward/torque": jp.zeros(()),
+        "reward/saturation": jp.zeros(()),
+        "reward/action_rate": _scalar(action_rate),
+        "reward/joint_vel": jp.zeros(()),
+        "reward/slip": jp.zeros(()),
+        "reward/clearance": jp.zeros(()),
+        "reward/gait_periodicity": jp.zeros(()),
+        "reward/hip_swing": jp.zeros(()),
+        "reward/knee_swing": jp.zeros(()),
+        "reward/flight_phase": jp.zeros(()),
+        "reward/standing": jp.zeros(()),
+        # Debug metrics
+        "debug/pitch": _scalar(pitch),
+        "debug/roll": _scalar(roll),
+        "debug/forward_vel": jp.zeros(()),
+        "debug/lateral_vel": jp.zeros(()),
+        "debug/left_force": _scalar(left_force),
+        "debug/right_force": _scalar(right_force),
+        # Termination diagnostics (initialized to zero at reset)
+        "term/height_low": jp.zeros(()),
+        "term/height_high": jp.zeros(()),
+        "term/pitch": jp.zeros(()),
+        "term/roll": jp.zeros(()),
+        "term/truncated": jp.zeros(()),
+        "term/pitch_val": _scalar(pitch),
+        "term/roll_val": _scalar(roll),
+        "term/height_val": _scalar(height),
+        # Tracking metrics (v0.10.3+)
+        "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
+        "tracking/max_torque": jp.zeros(()),  # No torque at reset
+    }
+
 
 # Import WandbConfig from config.py (single source of truth)
 # This prevents duplicate definitions and ensures consistency
@@ -251,6 +466,7 @@ class WandbTracker:
         if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
+
                 wandb.log(metrics, step=step)
             except Exception as e:
                 print(f"⚠️ W&B logging failed: {e}")
@@ -275,6 +491,7 @@ class WandbTracker:
 
         try:
             import wandb
+
             wandb.log({name: wandb.Histogram(values)}, step=step)
         except Exception as e:
             print(f"⚠️ W&B histogram logging failed: {e}")
@@ -309,6 +526,7 @@ class WandbTracker:
 
         try:
             import wandb
+
             wandb.log({name: wandb.Video(frames, fps=fps)}, step=step)
         except Exception as e:
             print(f"⚠️ W&B video logging failed: {e}")
@@ -333,6 +551,7 @@ class WandbTracker:
 
         try:
             import wandb
+
             wandb.log({name: wandb.Image(image)}, step=step)
         except Exception as e:
             print(f"⚠️ W&B image logging failed: {e}")
@@ -355,6 +574,7 @@ class WandbTracker:
 
         try:
             import wandb
+
             table = wandb.Table(columns=columns, data=data)
             wandb.log({name: table})
         except Exception as e:
@@ -369,6 +589,7 @@ class WandbTracker:
         if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
+
                 for key, value in metrics.items():
                     wandb.run.summary[key] = value
             except Exception as e:
@@ -405,6 +626,7 @@ class WandbTracker:
 
         try:
             import wandb
+
             artifact = wandb.Artifact(
                 name=name,
                 type=artifact_type,
@@ -430,6 +652,7 @@ class WandbTracker:
         if self.enabled and self._wandb_run is not None:
             try:
                 import wandb
+
                 wandb.finish()
                 print(f"✓ W&B run finished")
             except Exception as e:
@@ -690,21 +913,20 @@ def create_training_metrics(
         # TOPLINE METRICS (Section 3.2.4 Exit Criteria)
         # These are the key metrics to track training progress
         # =====================================================================
-        "topline/episode_reward": episode_reward,      # Target: >350
-        "topline/amp_reward": amp_reward_mean,          # Target: >0.7
-        "topline/forward_velocity": forward_velocity,   # Target: 0.3-0.8 m/s
-        "topline/success_rate": success_rate * 100,     # Target: >85%
-        "topline/avg_torque": avg_torque,               # Target: <2.8 Nm
-        "topline/steps_per_sec": env_steps_per_sec,     # Performance metric
+        "topline/episode_reward": episode_reward,  # Target: >350
+        "topline/amp_reward": amp_reward_mean,  # Target: >0.7
+        "topline/forward_velocity": forward_velocity,  # Target: 0.3-0.8 m/s
+        "topline/success_rate": success_rate * 100,  # Target: >85%
+        "topline/avg_torque": avg_torque,  # Target: <2.8 Nm
+        "topline/steps_per_sec": env_steps_per_sec,  # Performance metric
         # Stability metrics
-        "topline/episode_length": episode_length,       # Target: >400 steps
-        "topline/disc_accuracy": disc_accuracy,         # Target: 0.4-0.7 (NOT 100%!)
+        "topline/episode_length": episode_length,  # Target: >400 steps
+        "topline/disc_accuracy": disc_accuracy,  # Target: 0.4-0.7 (NOT 100%!)
         # v0.10.3: Walking tracking metrics
-        "topline/velocity_cmd": velocity_cmd,           # Mean commanded velocity (m/s)
-        "topline/velocity_error": velocity_error,       # Target: <0.2 m/s
-        "topline/max_torque": max_torque,               # Target: <0.8 (80% of limit)
+        "topline/velocity_cmd": velocity_cmd,  # Mean commanded velocity (m/s)
+        "topline/velocity_error": velocity_error,  # Target: <0.2 m/s
+        "topline/max_torque": max_torque,  # Target: <0.8 (80% of limit)
         # =====================================================================
-
         # Environment metrics
         "env/episode_reward": episode_reward,
         "env/episode_length": episode_length,
@@ -716,7 +938,6 @@ def create_training_metrics(
         "env/velocity_cmd": velocity_cmd,
         "env/velocity_error": velocity_error,
         "env/max_torque": max_torque,
-
         # PPO metrics
         "ppo/total_loss": ppo_loss,
         "ppo/policy_loss": policy_loss,
@@ -724,13 +945,11 @@ def create_training_metrics(
         "ppo/entropy_loss": entropy_loss,
         "ppo/clip_fraction": clip_fraction,
         "ppo/approx_kl": approx_kl,
-
         # AMP metrics
         "amp/disc_loss": disc_loss,
         "amp/disc_accuracy": disc_accuracy,
         "amp/reward_mean": amp_reward_mean,
         "amp/reward_std": amp_reward_std,
-
         # Progress
         "progress/iteration": iteration,
     }
@@ -798,29 +1017,35 @@ def define_wandb_topline_metrics():
         wandb.define_metric("topline/*", step_metric="progress/iteration")
 
         # Store targets in config for reference
-        wandb.config.update({
-            "exit_criteria": {
-                "episode_reward_target": 350,
-                "episode_reward_baseline": 250,
-                "amp_reward_target": 0.7,
-                "forward_velocity_min": 0.3,
-                "forward_velocity_max": 0.8,
-                "success_rate_target": 85,  # percentage
-                "avg_torque_target": 2.8,
-                "avg_torque_max": 4.0,
-            }
-        }, allow_val_change=True)
+        wandb.config.update(
+            {
+                "exit_criteria": {
+                    "episode_reward_target": 350,
+                    "episode_reward_baseline": 250,
+                    "amp_reward_target": 0.7,
+                    "forward_velocity_min": 0.3,
+                    "forward_velocity_max": 0.8,
+                    "success_rate_target": 85,  # percentage
+                    "avg_torque_target": 2.8,
+                    "avg_torque_max": 4.0,
+                }
+            },
+            allow_val_change=True,
+        )
 
         # Log target reference lines as constants (these appear as horizontal lines)
         # We log them once at step 0 with a special prefix
-        wandb.log({
-            "targets/episode_reward": 350,
-            "targets/amp_reward": 0.7,
-            "targets/forward_velocity_min": 0.3,
-            "targets/forward_velocity_max": 0.8,
-            "targets/success_rate": 85,
-            "targets/avg_torque": 2.8,
-        }, step=0)
+        wandb.log(
+            {
+                "targets/episode_reward": 350,
+                "targets/amp_reward": 0.7,
+                "targets/forward_velocity_min": 0.3,
+                "targets/forward_velocity_max": 0.8,
+                "targets/success_rate": 85,
+                "targets/avg_torque": 2.8,
+            },
+            step=0,
+        )
 
         print("✓ W&B topline metrics defined with exit criteria targets")
 
@@ -888,7 +1113,7 @@ def generate_eval_video(
             if step % render_every == 0:
                 try:
                     # Try to render using env's render method
-                    if hasattr(env, 'render'):
+                    if hasattr(env, "render"):
                         frame = env.render(state, height=height, width=width)
                         if frame is not None:
                             frames.append(np.array(frame))
@@ -899,7 +1124,7 @@ def generate_eval_video(
                     break
 
             # Stop if episode is done
-            if hasattr(state, 'done') and state.done:
+            if hasattr(state, "done") and state.done:
                 break
 
         if frames:
@@ -937,28 +1162,39 @@ def save_and_upload_video(
         # Try mediapy first (preferred)
         try:
             import mediapy as media
+
             media.write_video(filepath, video, fps=fps)
             print(f"✓ Video saved to: {filepath}")
         except ImportError:
             # Fallback to imageio
             try:
                 import imageio
+
                 imageio.mimsave(filepath, video, fps=fps)
                 print(f"✓ Video saved to: {filepath}")
             except ImportError:
                 print("⚠️ Neither mediapy nor imageio installed. Cannot save video.")
-                print("  Install with: pip install mediapy  OR  pip install imageio[ffmpeg]")
+                print(
+                    "  Install with: pip install mediapy  OR  pip install imageio[ffmpeg]"
+                )
                 return None
 
         # Upload to W&B
         if upload_to_wandb:
             try:
                 import wandb
+
                 if wandb.run is not None:
                     # W&B expects (time, channels, height, width) for Video
                     # Our video is (time, height, width, channels)
                     video_wandb = np.transpose(video, (0, 3, 1, 2))
-                    wandb.log({wandb_key: wandb.Video(video_wandb, fps=int(fps), format="mp4")})
+                    wandb.log(
+                        {
+                            wandb_key: wandb.Video(
+                                video_wandb, fps=int(fps), format="mp4"
+                            )
+                        }
+                    )
                     print(f"✓ Video uploaded to W&B as '{wandb_key}'")
             except Exception as e:
                 print(f"⚠️ W&B video upload failed: {e}")
@@ -1014,9 +1250,9 @@ def generate_and_upload_eval_videos(
         # This is a simplified inference - actual implementation depends on network architecture
         try:
             action_dist = policy_network.apply(policy_params, obs)
-            if hasattr(action_dist, 'sample'):
+            if hasattr(action_dist, "sample"):
                 return action_dist.sample(seed=rng)
-            elif hasattr(action_dist, 'mode'):
+            elif hasattr(action_dist, "mode"):
                 return action_dist.mode()
             else:
                 return action_dist  # Assume it's already the action

@@ -46,6 +46,8 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
+from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
+from playground_amp.training.experiment_tracking import get_initial_env_metrics_jax
 from playground_amp.training.heading_math import (
     heading_local_angvel_fd_from_quat_jax,
     heading_local_from_world_jax,
@@ -53,12 +55,11 @@ from playground_amp.training.heading_math import (
     heading_sin_cos_from_quat_jax,
     pitch_roll_from_quat_jax,
 )
-from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
 from playground_amp.training.metrics_registry import (
+    build_metrics_vec,
     METRIC_NAMES,
     METRICS_VEC_KEY,
     NUM_METRICS,
-    build_metrics_vec,
 )
 
 
@@ -566,53 +567,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.action_rate * action_rate
         )
 
-        metrics = {
-            "velocity_command": velocity_cmd,
-            "height": height,
-            "forward_velocity": jp.zeros(()),  # Robot starts stationary
-            "episode_step_count": jp.zeros(()),  # v0.10.4: Starts at 0 for new episode
-            "reward/total": total_reward,
-            # Primary rewards
-            "reward/forward": forward_reward,
-            "reward/lateral": jp.zeros(()),
-            "reward/healthy": healthy_reward,
-            "reward/orientation": jp.zeros(()),
-            "reward/angvel": jp.zeros(()),
-            # Effort rewards
-            "reward/torque": jp.zeros(()),
-            "reward/saturation": jp.zeros(()),
-            # Smoothness rewards
-            "reward/action_rate": action_rate,
-            "reward/joint_vel": jp.zeros(()),
-            # Foot stability rewards
-            "reward/slip": jp.zeros(()),
-            "reward/clearance": jp.zeros(()),
-            "reward/gait_periodicity": jp.zeros(()),
-            "reward/hip_swing": jp.zeros(()),
-            "reward/knee_swing": jp.zeros(()),
-            "reward/flight_phase": jp.zeros(()),
-            # v0.10.4: Standing penalty
-            "reward/standing": jp.zeros(()),
-            # Debug metrics
-            "debug/pitch": pitch,
-            "debug/roll": roll,
-            "debug/forward_vel": jp.zeros(()),
-            "debug/lateral_vel": jp.zeros(()),
-            "debug/left_force": left_force,
-            "debug/right_force": right_force,
-            # v0.10.2: Termination diagnostics (initialized to zero at reset)
-            "term/height_low": jp.zeros(()),
-            "term/height_high": jp.zeros(()),
-            "term/pitch": jp.zeros(()),
-            "term/roll": jp.zeros(()),
-            "term/truncated": jp.zeros(()),
-            "term/pitch_val": pitch,
-            "term/roll_val": roll,
-            "term/height_val": height,
-            # v0.10.3: Tracking metrics for walking exit criteria
-            "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
-            "tracking/max_torque": jp.zeros(()),  # No torque at reset
-        }
+        # v0.11.0: Use centralized metrics schema from experiment_tracking
+        # This is the single source of truth for env metrics keys
+        metrics = get_initial_env_metrics_jax(
+            velocity_cmd=velocity_cmd,
+            height=height,
+            pitch=pitch,
+            roll=roll,
+            left_force=left_force,
+            right_force=right_force,
+            forward_reward=forward_reward,
+            healthy_reward=healthy_reward,
+            action_rate=action_rate,
+            total_reward=total_reward,
+        )
 
         # Info - use typed WildRobotInfo under "wr" namespace
         # This separates algorithm-critical fields from wrapper-injected fields
@@ -741,7 +709,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
-        done, terminated, truncated, term_info = self._get_termination(data, step_count + 1)
+        done, terminated, truncated, term_info = self._get_termination(
+            data, step_count + 1
+        )
 
         # Update metrics (before potential reset)
         height = self.get_floating_base_qpos(data.qpos)[2]
@@ -808,7 +778,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.10.4: Also preserve tracking metrics for accurate vel_err/torque logging
         preserved_metrics = {
             **reset_state.metrics,
-            "episode_step_count": metrics["episode_step_count"],  # Terminal step count for ep_len
+            "episode_step_count": metrics[
+                "episode_step_count"
+            ],  # Terminal step count for ep_len
             # Tracking metrics (for topline monitoring)
             "tracking/vel_error": metrics["tracking/vel_error"],
             "tracking/max_torque": metrics["tracking/max_torque"],
@@ -854,7 +826,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 reset_state.data,
                 reset_state.obs,
                 preserved_metrics,  # Use preserved metrics with term/* intact
-                preserved_info,     # Use preserved info with truncated intact
+                preserved_info,  # Use preserved info with truncated intact
             ),
             lambda: (data, obs, metrics, info),
         )
