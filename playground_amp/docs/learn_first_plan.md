@@ -1,8 +1,8 @@
 # Learn First, Retarget Later: Robot-Native Walking Policy
 
-**Version:** v0.10.0
+**Version:** v0.11.0
 **Status:** Planning
-**Last Updated:** 2024-12-26
+**Last Updated:** 2024-12-30
 
 ## Overview
 
@@ -20,7 +20,68 @@ This approach discovers what the robot *can* do before trying to make it look hu
 
 ---
 
-## Stage 1: Robot-Native Walking Policy (v0.10.x)
+## Stage 1a: Control Abstraction Layer (v0.11.x) - NEW
+
+**Goal:** Implement CAL to decouple training from MuJoCo primitives.
+
+⚠️ **BREAKING CHANGE**: This requires retraining from scratch. Existing checkpoints are incompatible.
+
+### Exit Criteria
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| CAL unit tests | 100% pass | pytest test_cal.py |
+| Policy action semantics | Normalized [-1, 1] | Code review |
+| Symmetry correction | Verified | Left/right hip produce symmetric motion |
+| Config migration | Complete | actuated_joints in robot_config.yaml |
+
+### Value Delivered
+
+- Clear action semantics (policy actions vs physical angles)
+- Correct joint symmetry handling
+- Sim2Real ready architecture
+- Single source of truth for joint properties
+
+### Version Milestones
+
+#### v0.11.0 - CAL Infrastructure
+**Objective:** Implement Control Abstraction Layer core
+
+Tasks:
+- [ ] Create `playground_amp/control/` module
+- [ ] Implement `cal.py` with ControlAbstractionLayer class
+- [ ] Implement `specs.py` with JointSpec, ActuatorSpec, ControlCommand
+- [ ] Implement `types.py` with ActuatorType, VelocityProfile enums
+- [ ] Create `test_cal.py` unit tests
+- [ ] Create `assets/keyframes.xml` with home pose
+
+Exit: CAL module implemented and tested
+
+#### v0.11.1 - Environment Integration
+**Objective:** Integrate CAL into wildrobot_env.py
+
+Tasks:
+- [ ] Update `wildrobot_env.py` to use CAL
+- [ ] Update `robot_config.py` for actuated_joints support
+- [ ] Update `robot_config.yaml` with actuated_joints section
+- [ ] Update `post_process.py` with generate_actuated_joints_config()
+
+Exit: Environment uses CAL for all action/state conversion
+
+#### v0.11.2 - Validation
+**Objective:** Verify CAL works correctly end-to-end
+
+Tasks:
+- [ ] Run standing policy with CAL
+- [ ] Verify symmetric actions produce symmetric motion
+- [ ] Validate keyframe loading from MuJoCo
+- [ ] Update documentation
+
+Exit: CAL fully integrated and validated
+
+---
+
+## Stage 1b: Robot-Native Walking Policy (v0.10.x) - CURRENT
 
 **Goal:** Learn a stable, repeatable, controllable gait using task rewards only (no AMP, no reference motion).
 
@@ -124,7 +185,7 @@ Exit: Policy recovers from small pushes, handles velocity changes
 
 ---
 
-## Stage 2: Collect Robot-Native Reference Data (v0.11.x)
+## Stage 2: Collect Robot-Native Reference Data (v0.12.x)
 
 **Goal:** Generate high-quality reference motion dataset from trained policy.
 
@@ -146,7 +207,7 @@ Exit: Policy recovers from small pushes, handles velocity changes
 
 ### Version Milestones
 
-#### v0.11.0 - Rollout Collection Infrastructure
+#### v0.12.0 - Rollout Collection Infrastructure
 **Objective:** Automated rollout collection and storage
 
 Tasks:
@@ -161,7 +222,7 @@ Tasks:
 
 Exit: Can collect and save rollouts in correct format
 
-#### v0.11.1 - Quality Filtering
+#### v0.12.1 - Quality Filtering
 **Objective:** Filter out unstable segments
 
 Tasks:
@@ -172,7 +233,7 @@ Tasks:
 
 Exit: Clean dataset with 0% falls, consistent quality
 
-#### v0.11.2 - Dataset Validation
+#### v0.12.2 - Dataset Validation
 **Objective:** Verify dataset is suitable for AMP
 
 Tasks:
@@ -184,7 +245,7 @@ Exit: Dataset passes all validation checks
 
 ---
 
-## Stage 3: Self-Imitation AMP (v0.12.x)
+## Stage 3: Self-Imitation AMP (v0.13.x)
 
 **Goal:** Use robot-native rollouts as AMP reference to regularize gait.
 
@@ -206,7 +267,7 @@ Exit: Dataset passes all validation checks
 
 ### Version Milestones
 
-#### v0.12.0 - AMP with Robot Reference
+#### v0.13.0 - AMP with Robot Reference
 **Objective:** Train AMP using Stage 2 dataset
 
 Tasks:
@@ -216,7 +277,7 @@ Tasks:
 
 Exit: AMP training runs, discriminator is balanced
 
-#### v0.12.1 - Style Regularization
+#### v0.13.1 - Style Regularization
 **Objective:** Policy becomes more consistent
 
 Tasks:
@@ -226,7 +287,7 @@ Tasks:
 
 Exit: Measurable improvement in consistency/smoothness
 
-#### v0.12.2 - Performance Validation
+#### v0.13.2 - Performance Validation
 **Objective:** Ensure AMP didn't hurt task performance
 
 Tasks:
@@ -238,7 +299,7 @@ Exit: Performance >= 90% of Stage 1
 
 ---
 
-## Stage 4: Human Style Blending (v0.13.x)
+## Stage 4: Human Style Blending (v0.14.x)
 
 **Goal:** Gradually inject human motion characteristics while maintaining physical feasibility.
 
@@ -258,7 +319,7 @@ Exit: Performance >= 90% of Stage 1
 
 ### Version Milestones
 
-#### v0.13.0 - Mixed Dataset (Option A)
+#### v0.14.0 - Mixed Dataset (Option A)
 **Objective:** Blend robot + GMR reference data
 
 Tasks:
@@ -269,7 +330,7 @@ Tasks:
 
 Exit: Training runs with mixed dataset
 
-#### v0.13.1 - Feature-Level Bias (Option B)
+#### v0.14.1 - Feature-Level Bias (Option B)
 **Objective:** Use human data as soft constraints
 
 Tasks:
@@ -279,7 +340,7 @@ Tasks:
 
 Exit: Policy biased toward human-like posture
 
-#### v0.13.2 - Phase-Aligned Priors (Option C)
+#### v0.14.2 - Phase-Aligned Priors (Option C)
 **Objective:** Align human style to gait phase
 
 Tasks:
@@ -289,7 +350,7 @@ Tasks:
 
 Exit: Phase-aware human style injection
 
-#### v0.13.3 - Final Tuning
+#### v0.14.3 - Final Tuning
 **Objective:** Balance style and performance
 
 Tasks:
@@ -305,10 +366,11 @@ Exit: Deployment-ready policy
 
 | Stage | Version | Focus | Key Output |
 |-------|---------|-------|------------|
-| 1 | v0.10.x | Task rewards, PPO only | Walking policy |
-| 2 | v0.11.x | Data collection | Robot-native dataset |
-| 3 | v0.12.x | Self-imitation AMP | Regularized policy |
-| 4 | v0.13.x | Human style blend | Human-like policy |
+| 1a | v0.11.x | Control Abstraction Layer (CAL) | CAL module, action semantics |
+| 1b | v0.10.x | Task rewards, PPO only | Walking policy |
+| 2 | v0.12.x | Data collection | Robot-native dataset |
+| 3 | v0.13.x | Self-imitation AMP | Regularized policy |
+| 4 | v0.14.x | Human style blend | Human-like policy |
 
 ---
 
@@ -331,3 +393,4 @@ uv run python scripts/validate_training_setup.py
 - Training: `playground_amp/train.py --config configs/ppo_walking.yaml --no-amp`
 - Validation: `scripts/validate_training_setup.py`
 - Changelog: `playground_amp/CHANGELOG.md`
+- CAL Proposal: `playground_amp/docs/CONTROL_ABSTRACTION_LAYER_PROPOSAL.md`

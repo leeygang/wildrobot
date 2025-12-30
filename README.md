@@ -29,6 +29,12 @@ wildrobot/
 │   ├── train.py                        # Training entry point
 │   ├── CHANGELOG.md                    # Training Version history
 │   │
+│   ├── control/                        # v0.11.0: Control Abstraction Layer (CAL)
+│   │   ├── __init__.py                 # Export CAL, specs, types
+│   │   ├── cal.py                      # ControlAbstractionLayer class
+│   │   ├── specs.py                    # JointSpec, ActuatorSpec, ControlCommand
+│   │   └── types.py                    # ActuatorType, VelocityProfile enums
+│   │
 │   ├── amp/                            # Adversarial Motion Priors
 │   │   ├── discriminator.py            # AMP discriminator network
 │   │   ├── discriminator_diagnostics.py # Discriminator debugging

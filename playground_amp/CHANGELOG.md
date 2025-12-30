@@ -5,6 +5,115 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.11.0] - 2025-12-30: Control Abstraction Layer (CAL) - BREAKING CHANGE
+
+### Overview
+
+Major architectural change introducing a **Control Abstraction Layer (CAL)** to decouple high-level flows (training, testing, sim2real) from MuJoCo primitives.
+
+⚠️ **BREAKING CHANGE**: This version requires retraining from scratch. Existing checkpoints are incompatible due to action semantics changes.
+
+### Why CAL?
+
+The previous implementation had critical issues:
+1. **Direct MuJoCo Primitive Access**: Multiple layers directly manipulated `data.ctrl`, `data.qpos`, etc.
+2. **Ambiguous Actuator Semantics**: Policy outputs [-1, 1] were passed directly to MuJoCo ctrl (which expects radians)
+3. **Incorrect Symmetry Assumptions**: Left/right hip joints have mirrored ranges, but code didn't account for this
+4. **Training Learning Simulator Quirks**: Policies learned MuJoCo-specific behaviors instead of transferable motor skills
+
+### New Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      HIGH-LEVEL LAYER                           │
+│  Training Pipeline │ Test Suite │ Sim2Real │ Policy Inference   │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              CONTROL ABSTRACTION LAYER (CAL)                    │
+│                                                                 │
+│  • policy_action_to_ctrl() - normalized [-1,1] → radians        │
+│  • physical_angles_to_ctrl() - radians → ctrl (no normalization)│
+│  • get_normalized_joint_positions() - for policy observations   │
+│  • get_physical_joint_positions() - for logging/debugging       │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   LOW-LEVEL LAYER (MuJoCo)                      │
+│                  data.ctrl, data.qpos, data.qvel                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+#### Two-Method API Pattern
+- `policy_action_to_ctrl()`: For policy outputs [-1, 1], always applies symmetry correction
+- `physical_angles_to_ctrl()`: For GMR/mocap angles (radians), no symmetry correction
+
+#### Symmetry Correction
+- `mirror_sign` field handles joints with inverted ranges (e.g., left/right hip pitch)
+- Automatic correction ensures symmetric actions produce symmetric motion
+
+#### Sim2Real Ready
+- `ControlCommand` dataclass with target_position and target_velocity
+- `VelocityProfile` enum for trajectory generation (STEP, LINEAR, TRAPEZOIDAL, S_CURVE)
+- Clean separation between simulation and deployment
+
+#### Default Positions from MuJoCo
+- Home pose loaded from MuJoCo keyframe at runtime (single source of truth)
+- Recommendation: Use `keyframes.xml` for dedicated keyframe management
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `playground_amp/control/__init__.py` | Export CAL, specs, types |
+| `playground_amp/control/cal.py` | ControlAbstractionLayer class |
+| `playground_amp/control/specs.py` | JointSpec, ActuatorSpec, ControlCommand |
+| `playground_amp/control/types.py` | ActuatorType, VelocityProfile enums |
+| `playground_amp/tests/test_cal.py` | CAL unit tests |
+| `assets/keyframes.xml` | Dedicated keyframe file (home, t_pose) |
+
+### Files Updated
+
+| File | Change |
+|------|--------|
+| `playground_amp/envs/wildrobot_env.py` | Integrate CAL |
+| `playground_amp/configs/robot_config.py` | Add actuated_joints support |
+| `assets/robot_config.yaml` | Add actuated_joints section |
+| `assets/post_process.py` | Add generate_actuated_joints_config() |
+
+### Config Schema Update
+
+New `actuated_joints` section in `robot_config.yaml`:
+
+```yaml
+actuated_joints:
+  - name: left_hip_pitch
+    type: position
+    class: htd45hServo
+    range: [-0.087, 1.571]
+    symmetry_pair: right_hip_pitch
+    mirror_sign: 1.0
+    max_velocity: 10.0
+    # NOTE: default_pos loaded from MuJoCo keyframe at runtime
+```
+
+### Migration
+
+1. **Retrain from scratch** - existing checkpoints are incompatible
+2. Update `robot_config.yaml` with `actuated_joints` section
+3. Create `assets/keyframes.xml` with home pose
+4. Replace direct MuJoCo access with CAL methods
+
+### Documentation
+
+See `playground_amp/docs/CONTROL_ABSTRACTION_LAYER_PROPOSAL.md` for full design document.
+
+---
+
 ## [v0.10.6] - 2025-12-28: Hip/Knee Swing Reward (Stage 1)
 
 ### Config Updates
