@@ -135,7 +135,10 @@ def analyze_policy_features():
     print("POLICY FEATURE ANALYSIS (from random initial states)")
     print("=" * 70)
 
-    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
+    from playground_amp.amp.policy_features import (
+        extract_amp_features,
+        get_feature_config,
+    )
     from playground_amp.envs.wildrobot_env import EnvConfig, WildRobotEnv
 
     # Create environment
@@ -162,7 +165,8 @@ def analyze_policy_features():
 
             # Extract features
             # Access via typed WR namespace
-            from playground_amp.envs.env_types import WR_INFO_KEY
+            from playground_amp.envs.env_info import WR_INFO_KEY
+
             obs = state.obs
             wr_info = state.info[WR_INFO_KEY]
             foot_contacts = wr_info.foot_contacts

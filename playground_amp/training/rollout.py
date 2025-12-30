@@ -36,13 +36,10 @@ from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-
-from playground_amp.training.ppo_core import (
-    compute_values,
-    sample_actions,
-)
-from playground_amp.envs.env_types import WR_INFO_KEY
+from playground_amp.envs.env_info import WR_INFO_KEY
 from playground_amp.training.metrics_registry import METRICS_VEC_KEY, NUM_METRICS
+
+from playground_amp.training.ppo_core import compute_values, sample_actions
 
 
 class TrajectoryBatch(NamedTuple):
@@ -78,6 +75,7 @@ class TrajectoryBatch(NamedTuple):
         root_heights: Root heights for AMP features
         prev_joint_positions: Previous joint positions for finite diff velocity
     """
+
     # Core PPO fields (always populated)
     obs: jnp.ndarray
     actions: jnp.ndarray  # Raw actions for log_prob
@@ -220,7 +218,9 @@ def collect_rollout(
         # AMP fields - set to None if not collecting (saves memory)
         foot_contacts=step_data["foot_contact"] if collect_amp_features else None,
         root_heights=step_data["root_height"] if collect_amp_features else None,
-        prev_joint_positions=step_data["prev_joint_pos"] if collect_amp_features else None,
+        prev_joint_positions=(
+            step_data["prev_joint_pos"] if collect_amp_features else None
+        ),
     )
 
     return final_env_state, trajectory

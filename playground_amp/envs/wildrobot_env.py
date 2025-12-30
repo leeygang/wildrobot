@@ -46,7 +46,8 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
-from playground_amp.envs.env_types import WildRobotInfo, WR_INFO_KEY
+from playground_amp.control.cal import ControlAbstractionLayer
+from playground_amp.envs.env_info import WildRobotInfo, WR_INFO_KEY
 from playground_amp.training.experiment_tracking import get_initial_env_metrics_jax
 from playground_amp.training.heading_math import (
     heading_local_angvel_fd_from_quat_jax,
@@ -398,14 +399,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._mj_model.jnt(k).name for k in range(self._mj_model.njnt)
         ]
 
-        self.actuator_joint_ids = [self._get_joint_id(n) for n in self.actuator_names]
-        self.actuator_joint_qpos_addr = jp.array(
-            [self._mj_model.joint(n).qposadr for n in self.actuator_names]
-        )
-        self.actuator_qvel_addr = jp.array(
-            [self._mj_model.jnt_dofadr[jid] for jid in self.actuator_joint_ids]
-        )
-
         # Cache hip/knee actuator indices for gait shaping rewards
         self._left_hip_pitch_idx, self._right_hip_pitch_idx = (
             self._robot_config.get_hip_pitch_indices()
@@ -476,6 +469,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._floating_base_qvel_addr = self._mj_model.jnt_dofadr[
             jp.where(self._mj_model.jnt_type == 0)
         ][0]
+
+        # =====================================================================
+        # Initialize Control Abstraction Layer (CAL) - v0.11.0
+        # =====================================================================
+        # CAL provides the canonical action→ctrl transformation with:
+        # - Symmetry correction (mirror_sign) for left/right joints
+        # - Normalization from [-1, 1] to physical joint ranges
+        # - Single source of truth for joint specifications
+        actuated_joints_config = self._robot_config.actuated_joints
+        self._cal = ControlAbstractionLayer(self._mj_model, actuated_joints_config)
+        print(f"  CAL initialized with {self._cal.num_actuators} actuators")
 
         # Get initial qpos from model's keyframe or qpos0
         # MuJoCo stores keyframe qpos in key_qpos (shape: nkey x nq)
@@ -676,8 +680,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             filtered_action = action
 
-        # Apply action as control
-        data = state.data.replace(ctrl=filtered_action)
+        # =====================================================================
+        # Apply action as control via CAL (v0.11.0)
+        # =====================================================================
+        # CAL applies symmetry correction (mirror_sign) for left/right joints
+        # This ensures same action values produce symmetric motion on both sides
+        ctrl = self._cal.policy_action_to_ctrl(filtered_action)
+        data = state.data.replace(ctrl=ctrl)
 
         # Physics simulation (multiple substeps)
         def substep_fn(data, _):
@@ -909,9 +918,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             linvel = self.get_heading_local_linvel(data)
             angvel = self.get_heading_local_angvel(data)
 
-        # Joint positions and velocities (squeeze to handle vmap extra dims)
-        joint_pos = self.get_actuator_joint_qpos(data.qpos).squeeze()
-        joint_vel = self.get_actuator_joints_qvel(data.qvel).squeeze()
+        # Joint positions and velocities (normalized for NN input)
+        joint_pos = self._cal.get_joint_positions(data.qpos, normalize=True).squeeze()
+        joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True).squeeze()
 
         # Build observation using shared layout
         return ObsLayout.build_obs(
@@ -981,8 +990,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
 
         # 6. Torque penalty - penalize normalized torque usage
-        torques = self.get_actuator_torques(data)
-        normalized_torques = torques / (self._actuator_force_limit + 1e-6)
+        normalized_torques = self._cal.get_actuator_torques(
+            data.qfrc_actuator, normalize=True
+        )
         torque_penalty = jp.sum(jp.square(normalized_torques))
 
         # 7. Saturation penalty - penalize actuators near limits
@@ -997,8 +1007,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         action_diff = action - prev_action
         action_rate_penalty = jp.sum(jp.square(action_diff))
 
-        # 9. Joint velocity penalty (efficiency)
-        joint_vel = self.get_actuator_joints_qvel(data.qvel)
+        # 9. Joint velocity penalty (efficiency) - use normalized for consistent scaling
+        joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True)
         joint_vel_penalty = jp.sum(jp.square(joint_vel))
 
         # =====================================================================
@@ -1059,11 +1069,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         weights = self._config.reward_weights
 
         # 13. Hip/knee swing (encourage leg articulation during swing)
-        joint_pos = self.get_actuator_joint_qpos(data.qpos)
-        left_hip_pitch = joint_pos[self._left_hip_pitch_idx]
-        right_hip_pitch = joint_pos[self._right_hip_pitch_idx]
-        left_knee_pitch = joint_pos[self._left_knee_pitch_idx]
-        right_knee_pitch = joint_pos[self._right_knee_pitch_idx]
+        # Use normalized positions [-1, 1] for consistent scaling across joints
+        joint_pos_norm = self._cal.get_joint_positions(data.qpos, normalize=True)
+        left_hip_pitch = joint_pos_norm[self._left_hip_pitch_idx]
+        right_hip_pitch = joint_pos_norm[self._right_hip_pitch_idx]
+        left_knee_pitch = joint_pos_norm[self._left_knee_pitch_idx]
+        right_knee_pitch = joint_pos_norm[self._right_knee_pitch_idx]
 
         hip_min = jp.maximum(weights.hip_swing_min, 1e-6)
         knee_min = jp.maximum(weights.knee_swing_min, 1e-6)
@@ -1240,18 +1251,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # Robot Utilities (Joint/Sensor Access)
     # =========================================================================
 
-    def _get_joint_id(self, name: str) -> int:
-        """Get joint ID from name."""
-        return mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
-
-    def get_actuator_joint_qpos(self, qpos: jax.Array) -> jax.Array:
-        """Get joint positions for actuated joints."""
-        return qpos[self.actuator_joint_qpos_addr]
-
-    def get_actuator_joints_qvel(self, qvel: jax.Array) -> jax.Array:
-        """Get joint velocities for actuated joints."""
-        return qvel[self.actuator_qvel_addr]
-
     def get_floating_base_qpos(self, qpos: jax.Array) -> jax.Array:
         """Get floating base position (7D: 3 pos + 4 quat)."""
         return qpos[self._floating_base_qpos_addr : self._floating_base_qpos_addr + 7]
@@ -1346,18 +1345,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
 
         return heading_local_from_world_jax(angvel_world, sin_yaw, cos_yaw)
-
-    # =========================================================================
-    # Reward Utility Methods
-    # =========================================================================
-
-    def get_actuator_torques(self, data: mjx.Data) -> jax.Array:
-        """Get actuator forces/torques.
-
-        Returns:
-            actuator_force: (nu,) array of actuator forces in Nm
-        """
-        return data.qfrc_actuator[self.actuator_qvel_addr]
 
     # =========================================================================
     # Foot Utilities
@@ -1521,6 +1508,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
     @property
     def mjx_model(self) -> mjx.Model:
         return self._mjx_model
+
+    @property
+    def cal(self) -> ControlAbstractionLayer:
+        """Access the Control Abstraction Layer for joint/actuator operations."""
+        return self._cal
 
     @property
     def observation_size(self) -> int:

@@ -485,91 +485,82 @@ class ControlAbstractionLayer:
     # State Access (MuJoCo → Observations)
     # =========================================================================
     #
-    # DESIGN DECISION: Two explicit methods instead of boolean flag
+    # DESIGN DECISION: Single method with REQUIRED normalize parameter
     #
-    # Same pattern as action transformation:
-    # 1. Normalized: for policy observations (NN expects [-1, 1] or similar)
-    # 2. Physical: for logging, debugging, reference comparison, Sim2Real
+    # Since almost all state access needs both normalized and physical versions,
+    # we use a single method with a REQUIRED normalize parameter (no default)
+    # to force explicit intent at every call site:
+    # - normalize=True: for policy observations (NN expects [-1, 1] or similar)
+    # - normalize=False: for logging, debugging, reference comparison, Sim2Real
     # =========================================================================
 
-    def get_normalized_joint_positions(self, qpos: jax.Array) -> jax.Array:
-        """Get joint positions normalized to [-1, 1] based on joint limits.
-
-        USE FOR: Policy observations (NN input).
+    def get_joint_positions(
+        self,
+        qpos: jax.Array,
+        normalize: bool,  # REQUIRED - no default for consistency
+    ) -> jax.Array:
+        """Get joint positions.
 
         Args:
             qpos: Full qpos array from MuJoCo
+            normalize: REQUIRED. True for normalized [-1, 1] based on joint limits,
+                      False for physical positions (radians)
 
         Returns:
-            Normalized joint positions in [-1, 1], shape (num_actuators,)
-            -1 = joint at minimum limit
-             0 = joint at center of range
-            +1 = joint at maximum limit
+            Joint positions, shape (num_actuators,)
+            If normalized: -1 = min limit, 0 = center, +1 = max limit
+            If physical: radians
         """
         joint_pos = qpos[self._actuator_qpos_addrs]
-        return (joint_pos - self._joint_centers) / self._joint_spans
 
-    def get_physical_joint_positions(self, qpos: jax.Array) -> jax.Array:
-        """Get joint positions in physical units (radians).
+        if normalize:
+            return (joint_pos - self._joint_centers) / self._joint_spans
+        else:
+            return joint_pos
 
-        USE FOR: Logging, debugging, reference motion comparison, Sim2Real.
-
-        Args:
-            qpos: Full qpos array from MuJoCo
-
-        Returns:
-            Joint positions in radians, shape (num_actuators,)
-        """
-        return qpos[self._actuator_qpos_addrs]
-
-    def get_normalized_joint_velocities(self, qvel: jax.Array) -> jax.Array:
-        """Get joint velocities normalized by per-joint velocity limits.
-
-        USE FOR: Policy observations (NN input).
+    def get_joint_velocities(
+        self,
+        qvel: jax.Array,
+        normalize: bool,  # REQUIRED - no default for consistency
+    ) -> jax.Array:
+        """Get joint velocities.
 
         Args:
             qvel: Full qvel array from MuJoCo
+            normalize: REQUIRED. True for normalized by velocity limits (clipped to [-1, 1]),
+                      False for physical velocities (rad/s)
 
         Returns:
-            Normalized joint velocities, shape (num_actuators,)
-            Clipped to [-1, 1] range.
+            Joint velocities, shape (num_actuators,)
 
         Note:
             Velocity limits come from ActuatorSpec.max_velocity (motor specs).
             If not specified, defaults to 10.0 rad/s (~95 RPM).
         """
         joint_vel = qvel[self._actuator_qvel_addrs]
-        normalized = joint_vel / self._velocity_limits
-        return jnp.clip(normalized, -1.0, 1.0)
 
-    def get_physical_joint_velocities(self, qvel: jax.Array) -> jax.Array:
-        """Get joint velocities in physical units (rad/s).
-
-        USE FOR: Logging, debugging, reference motion comparison, Sim2Real.
-
-        Args:
-            qvel: Full qvel array from MuJoCo
-
-        Returns:
-            Joint velocities in rad/s, shape (num_actuators,)
-        """
-        return qvel[self._actuator_qvel_addrs]
+        if normalize:
+            normalized = joint_vel / self._velocity_limits
+            return jnp.clip(normalized, -1.0, 1.0)
+        else:
+            return joint_vel
 
     def get_actuator_torques(
         self,
-        data: mjx.Data,
-        normalize: bool = True,
+        qfrc_actuator: jax.Array,
+        normalize: bool,  # REQUIRED - no default for consistency
     ) -> jax.Array:
         """Get actuator torques/forces.
 
         Args:
-            data: MJX data
-            normalize: If True, normalize by force_range
+            qfrc_actuator: Full qfrc_actuator array from MuJoCo data
+            normalize: REQUIRED. True to normalize by force_range,
+                      False for raw torques (Nm)
 
         Returns:
             Actuator forces (num_actuators,), optionally normalized
         """
-        torques = data.qfrc_actuator[self._actuator_qvel_addrs]
+        torques = qfrc_actuator[self._actuator_qvel_addrs]
 
         if normalize:
             torques = torques / self._force_limits
@@ -1561,7 +1552,1137 @@ right_ankle_pitch    | -0.785     | 0.785      | 0.000     | 0.785    | +1 (same
 
 ---
 
-## 10. References
+## 10. Future Work: Extended State Abstraction
+
+### 10.1 Motivation
+
+The current CAL (v0.11.0) focuses on **actuator control** (action→ctrl) and **joint state** (qpos/qvel).
+However, the environment also accesses other robot state that should be abstracted:
+
+| Current Location | State Type | Used For |
+|------------------|------------|----------|
+| `wildrobot_env.py` | Foot contacts | AMP discriminator, gait rewards |
+| `wildrobot_env.py` | Foot positions | Slip/clearance rewards |
+| `wildrobot_env.py` | Foot velocities | Slip penalty |
+| `wildrobot_env.py` | Root quat/pos | Observations, AMP features |
+| `wildrobot_env.py` | Heading-local vel | Observations, rewards |
+| `wildrobot_env.py` | Gravity vector | Observations |
+
+**Problems with current approach:**
+1. **Scattered normalization**: Contact forces normalized in env, joint positions in CAL
+2. **Inconsistent patterns**: Some methods return normalized, some raw, some both
+3. **Methods scattered across env**: Body IDs resolved in env, should be in CAL
+4. **Hard to extend**: Adding a new body/sensor requires editing wildrobot_env.py
+
+### 10.2 Consolidation with robot_config
+
+**Key insight**: `robot_config.yaml` already contains all the necessary configuration:
+
+| Already in robot_config.yaml | Used For |
+|------------------------------|----------|
+| `feet.left_foot_body`, `feet.right_foot_body` | Foot body IDs |
+| `feet.left_toe`, `feet.left_heel`, etc. | Contact geom IDs |
+| `floating_base.name`, `floating_base.root_body` | Root body |
+| `sensors.velocimeter`, `sensors.framezaxis` | Sensor names |
+| `actuated_joints` | Already consumed by CAL v0.11.0 |
+
+**Strategy: CAL consumes robot_config, no new config files.**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          CONFIGURATION FLOW                                  │
+│                                                                              │
+│  ┌──────────────────────┐                                                   │
+│  │  robot_config.yaml   │  ← Single source of truth (generated by          │
+│  │                      │    post_process.py from MuJoCo XML)               │
+│  │  - actuated_joints   │                                                   │
+│  │  - feet              │                                                   │
+│  │  - floating_base     │                                                   │
+│  │  - sensors           │                                                   │
+│  └──────────┬───────────┘                                                   │
+│             │                                                                │
+│             ▼                                                                │
+│  ┌──────────────────────┐                                                   │
+│  │    RobotConfig       │  ← Python dataclass (robot_config.py)             │
+│  │                      │    Parses YAML, provides typed access             │
+│  └──────────┬───────────┘                                                   │
+│             │                                                                │
+│             ▼                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │              CONTROL ABSTRACTION LAYER (Extended)                     │   │
+│  │                                                                       │   │
+│  │  __init__(mj_model, robot_config)  ← Takes RobotConfig, not raw YAML │   │
+│  │                                                                       │   │
+│  │  Builds internal specs from robot_config:                            │   │
+│  │  - ActuatorSpec[] from robot_config.actuated_joints                  │   │
+│  │  - FootSpec[] from robot_config.feet.*                               │   │
+│  │  - RootSpec from robot_config.floating_base + sensors                │   │
+│  │                                                                       │   │
+│  │  Resolves MuJoCo IDs at init time:                                   │   │
+│  │  - body_id = mj_name2id(mj_model, body_name)                         │   │
+│  │  - geom_id = mj_name2id(mj_model, geom_name)                         │   │
+│  │  - sensor_id = mj_name2id(mj_model, sensor_name)                     │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.3 Internal Specs (Built from robot_config)
+
+These are **internal to CAL**, not exposed in config:
+
+```python
+from enum import Enum
+
+
+class CoordinateFrame(Enum):
+    """Coordinate frame for position/velocity queries.
+
+    WORLD: Global world frame (inertial, fixed)
+    LOCAL: Body-attached frame (rotates with root body)
+    HEADING_LOCAL: World frame rotated by -yaw (heading-invariant)
+                   Most common for RL observations and AMP features
+    """
+    WORLD = "world"
+    LOCAL = "local"
+    HEADING_LOCAL = "heading_local"
+
+
+# =========================================================================
+# Generic 3D Types (Reusable for root, feet, any body)
+# =========================================================================
+
+@dataclass(frozen=True)
+class Pose3D:
+    """General 3D pose with coordinate frame.
+
+    Self-documenting: frame is stored with the data.
+    Reusable for root, feet, or any body.
+
+    Example:
+        pose = cal.get_root_pose(data, frame=CoordinateFrame.WORLD)
+        height = pose.height
+        quat = pose.orientation
+        print(f"Position in {pose.frame.value}: {pose.position}")
+    """
+    position: jax.Array        # (3,) [x, y, z] in meters
+    orientation: jax.Array     # (4,) quaternion [qw, qx, qy, qz]
+    frame: CoordinateFrame     # Frame this pose is expressed in
+
+    @property
+    def height(self) -> jax.Array:
+        """Z position (convenience accessor)."""
+        return self.position[2]
+
+    @property
+    def xy(self) -> jax.Array:
+        """XY position (convenience accessor)."""
+        return self.position[:2]
+
+
+@dataclass(frozen=True)
+class Velocity3D:
+    """General 3D velocity with coordinate frame.
+
+    Self-documenting: frame is stored with the data.
+    Reusable for root, feet, or any body.
+
+    Example:
+        vel = cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        forward_speed = vel.linear[0]
+        yaw_rate = vel.angular[2]
+        assert vel.frame == CoordinateFrame.HEADING_LOCAL
+    """
+    linear: jax.Array          # (3,) [vx, vy, vz] in m/s
+    angular: jax.Array         # (3,) [wx, wy, wz] in rad/s
+    frame: CoordinateFrame     # Frame this velocity is expressed in
+
+
+# =========================================================================
+# Internal Specs (Built from robot_config at CAL init)
+# =========================================================================
+
+@dataclass(frozen=True)
+class FootSpec:
+    """Internal spec built from robot_config.feet at CAL init."""
+    name: str                    # e.g., "left_foot"
+    body_name: str               # From robot_config.left_foot_body (e.g., "left_foot")
+    body_id: int                 # Resolved via mj_name2id(body_name)
+    toe_geom_id: int             # Resolved from robot_config.feet.left_toe
+    heel_geom_id: int            # Resolved from robot_config.feet.left_heel
+    symmetry_pair: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RootSpec:
+    """Internal spec built from robot_config.floating_base at CAL init.
+
+    Uses chest_imu (BNO085) sensors which exist on the real robot:
+    - chest_imu_quat: framequat for orientation
+    - chest_imu_gyro: gyroscope for angular velocity
+    - chest_imu_accel: accelerometer (can derive gravity direction)
+
+    BNO085 is a 9-DOF IMU (gyro + accel + magnetometer) with onboard sensor fusion:
+    - Outputs stable framequat (orientation quaternion)
+    - Unlike 6-DOF IMUs (ICM45686), has magnetometer for absolute heading
+    - Onboard processor handles sensor fusion - no drift in orientation
+
+    IMU Mounting Position Note:
+        The BNO085 is mounted on the chest, not at the center of the root body.
+        For WildRobot: ~16.7cm above chest body origin (see wildrobot.xml site pos)
+
+        Effect on readings:
+        - Orientation (framequat): NOT affected
+          (orientation is same for all points on rigid body)
+        - Angular velocity (gyro): NOT affected
+          (angular velocity is body-invariant, same for all points)
+        - Linear acceleration (accel): SLIGHTLY affected by offset
+          - Centripetal: ω²r ≈ (5 rad/s)² × 0.167m ≈ 4.2 m/s²
+          - Tangential: α*r ≈ (50 rad/s²) × 0.167m ≈ 8.4 m/s²
+          - Compare to gravity (~10 m/s²) and motion (~20 m/s²)
+        - Gravity vector: NOT affected (derived from orientation)
+
+        Why it's OK for training:
+        1. Orientation/gyro: Body-invariant, no effect from offset
+        2. Gravity vector: Derived from orientation, not accelerometer
+        3. Accelerometer: Only used for gravity direction (via orientation),
+           not for velocity integration (which would accumulate drift)
+        4. Sim2Real: MuJoCo sensor site matches real hardware position
+    """
+    body_name: str               # From robot_config.floating_base.root_body
+    body_id: int                 # Resolved via mj_name2id
+    qpos_addr: int               # From mj_model.jnt_qposadr
+    qvel_addr: int               # From mj_model.jnt_dofadr
+    # Chest IMU sensors (BNO085 - real hardware)
+    orientation_sensor: str      # chest_imu_quat (framequat)
+    gyro_sensor: str             # chest_imu_gyro (angular velocity)
+    accel_sensor: str            # chest_imu_accel (can derive gravity)
+    # Pelvis sensors
+    local_linvel_sensor: str     # pelvis_local_linvel (velocimeter)
+
+
+@dataclass(frozen=True)
+class Imu6DoFSpec:
+    """Internal spec for 6-DOF IMU sensors (gyro + accelerometer).
+
+    Used for: knee IMUs, arm IMUs (future), or any other 6-DOF IMU.
+
+    6-DOF IMU provides:
+    - 3-axis gyroscope (angular velocity)
+    - 3-axis accelerometer (linear acceleration)
+
+    Does NOT provide (unlike 9-DOF IMU like BNO085):
+    - Magnetometer (no absolute heading reference)
+    - Onboard sensor fusion (no orientation quaternion)
+
+    Example sensors:
+    - ICM45686 (knee IMUs): Gyro noise ~0.003°/s/√Hz, Accel noise ~80μg/√Hz
+
+    IMU Mounting Position Note:
+        The IMU may not be exactly at the joint center. For WildRobot knee IMUs:
+        - Offset: ~2.6cm above knee joint center (see wildrobot.xml site pos)
+
+        Effect on readings:
+        - Gyroscope: NOT affected (angular velocity is same for all points on rigid body)
+        - Accelerometer: SLIGHTLY affected by offset
+          - Centripetal: ω²r ≈ (10 rad/s)² × 0.026m ≈ 2.6 m/s²
+          - Tangential: α*r ≈ (100 rad/s²) × 0.026m ≈ 2.6 m/s²
+          - Compare to gravity (~10 m/s²) and impacts (~30-50 m/s²)
+
+        Why it's OK for training:
+        1. Consistency: Fixed offset = consistent signal = policy can learn
+        2. Sim2Real: MuJoCo sensor site matches real hardware position
+        3. Signal quality: Offset contribution (~5 m/s²) is small vs signal (~50 m/s²)
+        4. Still informative: Captures impacts, swing phase, gravity direction
+
+    Potential uses:
+    - Ground impact detection (accelerometer spike = foot strike)
+    - Slip detection (unexpected lateral acceleration)
+    - Limb swing dynamics (gyro provides angular velocity)
+    - Terrain classification (vibration patterns)
+    """
+    name: str               # e.g., "left_knee", "left_elbow"
+    body_name: str          # Body this IMU is attached to
+    gyro_sensor: str        # e.g., "left_knee_imu_gyro"
+    accel_sensor: str       # e.g., "left_knee_imu_accel"
+    symmetry_pair: str      # e.g., "right_knee" or "right_elbow"
+```
+
+### 10.4 Extended CAL Interface
+
+```python
+class ControlAbstractionLayer:
+    """Extended CAL with body state access.
+
+    Consumes RobotConfig - no new config files needed.
+    """
+
+    def __init__(
+        self,
+        mj_model: mujoco.MjModel,
+        robot_config: RobotConfig,  # Single config source
+    ):
+        # Existing: build actuator specs from robot_config.actuated_joints
+        self._build_actuator_specs(robot_config.actuated_joints)
+
+        # NEW: build foot specs from robot_config.feet.*
+        self._build_foot_specs(robot_config)
+
+        # NEW: build root spec from robot_config.floating_base + sensors
+        self._build_root_spec(robot_config)
+
+    def _build_foot_specs(self, robot_config: RobotConfig) -> None:
+        """Build FootSpec from existing robot_config.feet section."""
+        self._foot_specs = [
+            FootSpec(
+                name="left_foot",
+                body_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_BODY,
+                    robot_config.left_foot_body
+                ),
+                toe_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM,
+                    robot_config.get_foot_geom_names()[0]  # left_toe
+                ),
+                heel_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM,
+                    robot_config.get_foot_geom_names()[1]  # left_heel
+                ),
+                symmetry_pair="right_foot",
+            ),
+            FootSpec(
+                name="right_foot",
+                body_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_BODY,
+                    robot_config.right_foot_body
+                ),
+                toe_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM,
+                    robot_config.get_foot_geom_names()[2]  # right_toe
+                ),
+                heel_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM,
+                    robot_config.get_foot_geom_names()[3]  # right_heel
+                ),
+                symmetry_pair="left_foot",
+            ),
+        ]
+
+    def _build_root_spec(self, robot_config: RobotConfig) -> None:
+        """Build RootSpec from existing robot_config sections.
+
+        Sensor names come from robot_config.yaml, not hardcoded.
+        """
+        root_body = robot_config.floating_base_body
+        self._root_spec = RootSpec(
+            body_name=root_body,
+            body_id=mujoco.mj_name2id(
+                self._mj_model, mujoco.mjtObj.mjOBJ_BODY, root_body
+            ),
+            qpos_addr=self._get_floating_base_qpos_addr(),
+            qvel_addr=self._get_floating_base_qvel_addr(),
+            # Chest IMU sensors from robot_config.yaml
+            orientation_sensor=robot_config.orientation_sensor,  # chest_imu_quat
+            gyro_sensor=robot_config.gyro_sensor,                # chest_imu_gyro
+            accel_sensor=robot_config.accel_sensor,              # chest_imu_accel
+            # Pelvis sensors from robot_config.yaml
+            local_linvel_sensor=robot_config.local_linvel_sensor,
+        )
+
+    # =========================================================================
+    # Foot State Access (NEW)
+    # =========================================================================
+    #
+    # DESIGN PATTERN: Single method with REQUIRED `normalize` parameter
+    #
+    # The `normalize` parameter is REQUIRED (no default) to:
+    # - Force explicit intent at call site
+    # - Prevent bugs from accidentally using wrong version
+    # - Make code self-documenting
+    #
+    # Convention:
+    # - normalize=True: For policy observations, AMP discriminator (NN input)
+    # - normalize=False: For rewards, debugging, Sim2Real (physical units)
+    # =========================================================================
+
+    def get_foot_contacts(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+    ) -> jax.Array:
+        """Get foot contact values.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True for tanh-normalized [0, 1],
+                      False for raw normal forces (Newtons)
+
+        Returns:
+            foot_contacts: (num_feet * 2,) - [toe, heel] for each foot
+        """
+        contacts = []
+        for foot in self._foot_specs:
+            toe_force = self._get_geom_contact_force(data, foot.toe_geom_id)
+            heel_force = self._get_geom_contact_force(data, foot.heel_geom_id)
+
+            if normalize:
+                toe_force = jnp.tanh(toe_force / self._contact_scale)
+                heel_force = jnp.tanh(heel_force / self._contact_scale)
+
+            contacts.extend([toe_force, heel_force])
+
+        return jnp.array(contacts)
+
+    def get_foot_positions(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> jax.Array:
+        """Get foot body positions.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by root height,
+                      False for raw positions (meters)
+            frame: Coordinate frame (WORLD or HEADING_LOCAL)
+
+        Returns:
+            positions: (num_feet, 3) foot positions
+        """
+        positions = []
+        for foot in self._foot_specs:
+            pos = data.xpos[foot.body_id]
+            if frame == CoordinateFrame.HEADING_LOCAL:
+                pos = self._world_to_heading_local(data, pos)
+            positions.append(pos)
+
+        result = jnp.stack(positions)
+
+        if normalize:
+            root_height = self.get_root_height(data)
+            result = result / (root_height + 1e-6)
+
+        return result
+
+    def get_foot_velocities(
+        self,
+        data: mjx.Data,
+        prev_positions: jax.Array,
+        dt: float,
+        normalize: bool,  # REQUIRED - no default
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+        max_foot_velocity: float = 5.0,
+    ) -> jax.Array:
+        """Get foot velocities via finite difference.
+
+        Args:
+            data: Current MJX data
+            prev_positions: Previous foot positions from get_foot_positions()
+            dt: Time step for finite difference
+            normalize: REQUIRED. True to normalize by max_foot_velocity to [-1, 1],
+                      False for raw velocities (m/s)
+            frame: Coordinate frame
+            max_foot_velocity: Max expected foot velocity for normalization
+
+        Returns:
+            velocities: (num_feet, 3) foot velocities
+        """
+        curr_positions = self.get_foot_positions(data, normalize=False, frame=frame)
+        velocities = (curr_positions - prev_positions) / dt
+
+        if normalize:
+            velocities = jnp.clip(velocities / max_foot_velocity, -1.0, 1.0)
+
+        return velocities
+
+    def get_foot_clearances(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+    ) -> jax.Array:
+        """Get foot height above ground (for swing phase rewards).
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by root height,
+                      False for raw height (meters)
+
+        Returns:
+            clearances: (num_feet,) height values
+        """
+        positions = self.get_foot_positions(data, normalize=False, frame=CoordinateFrame.WORLD)
+        clearances = positions[:, 2]  # Z coordinate
+
+        if normalize:
+            root_height = self.get_root_height(data)
+            clearances = clearances / (root_height + 1e-6)
+
+        return clearances
+
+    # =========================================================================
+    # Knee IMU State Access (NEW - Optional for Enhanced Proprioception)
+    # =========================================================================
+    #
+    # 6-DOF IMUs (ICM45686) provide additional proprioceptive feedback:
+    # - Ground impact detection (accelerometer spike = foot strike)
+    # - Slip detection (unexpected lateral acceleration)
+    # - Limb swing dynamics (gyro provides angular velocity)
+    # - Terrain classification (vibration patterns)
+    #
+    # These sensors exist on real hardware but are NOT currently used in training.
+    # An ablation study is recommended to measure their value.
+    # =========================================================================
+
+    def _build_6dof_imu_specs(self, robot_config: RobotConfig) -> None:
+        """Build Imu6DoFSpec from robot_config.knee_imus section.
+
+        Future: Can be extended to include arm IMUs when added.
+        """
+        knee_imus = robot_config.get("knee_imus", {})
+        self._6dof_imu_specs = [
+            Imu6DoFSpec(
+                name="left_knee",
+                body_name="left_knee",  # Body this IMU is attached to
+                gyro_sensor=knee_imus.get("left_gyro", "left_knee_imu_gyro"),
+                accel_sensor=knee_imus.get("left_accel", "left_knee_imu_accel"),
+                symmetry_pair="right_knee",
+            ),
+            Imu6DoFSpec(
+                name="right_knee",
+                body_name="right_knee",  # Body this IMU is attached to
+                gyro_sensor=knee_imus.get("right_gyro", "right_knee_imu_gyro"),
+                accel_sensor=knee_imus.get("right_accel", "right_knee_imu_accel"),
+                symmetry_pair="left_knee",
+            ),
+        ]
+
+        # Future: Add arm IMUs when available
+        # arm_imus = robot_config.get("arm_imus", {})
+        # if arm_imus:
+        #     self._6dof_imu_specs.extend([
+        #         Imu6DoFSpec(name="left_elbow", body_name="left_elbow", ...),
+        #         Imu6DoFSpec(name="right_elbow", body_name="right_elbow", ...),
+        #     ])
+
+    def get_knee_angular_velocities(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default for consistency
+        max_angular_velocity: float = 10.0,  # rad/s
+    ) -> jax.Array:
+        """Get knee angular velocities from IMU gyros.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by max_angular_velocity to [-1, 1],
+                      False for raw angular velocities (rad/s)
+            max_angular_velocity: Max expected angular velocity for normalization
+
+        Returns:
+            knee_angvel: (2, 3) angular velocities [wx, wy, wz] for [left, right]
+
+        Note - Why jax.Array instead of Velocity3D:
+            Velocity3D has .linear (m/s) and .angular (rad/s) fields.
+            The ICM45686 gyro outputs angular velocity directly, but the
+            accelerometer outputs linear ACCELERATION (m/s²), not velocity.
+            These are different physical quantities:
+
+            | Sensor | Measures              | Units  | Velocity3D field |
+            |--------|-----------------------|--------|------------------|
+            | Gyro   | Angular velocity      | rad/s  | .angular ✓       |
+            | Accel  | Linear ACCELERATION   | m/s²   | .linear ✗        |
+
+            To get linear velocity from acceleration would require integration,
+            which accumulates drift rapidly (unusable within seconds).
+
+        Note - Why no CoordinateFrame param:
+            IMUs are physically attached to knee bodies - they inherently measure
+            in LOCAL (sensor) frame. Transforming to world frame would require:
+            1. Knowing knee body's world orientation (extra computation)
+            2. Not useful for proprioception (local frame is what matters)
+
+        Note - Why no pose from ICM45686:
+            ICM45686 is a 6-DOF IMU (gyro + accel only, no magnetometer).
+            - Orientation: Could integrate gyro, but yaw drifts without magnetometer
+            - Position: Would need to double-integrate accel → huge drift (meters/sec)
+            Compare to BNO085 (chest IMU) which has magnetometer + onboard fusion
+            processor that outputs stable framequat.
+
+        Potential use cases:
+        - Leg swing phase detection
+        - Slip detection (unexpected rotation)
+        - More accurate joint velocity (vs finite-diff from encoders)
+        """
+        angvels = []
+        for spec in self._6dof_imu_specs:
+            angvel = mjx_env.get_sensor_data(
+                self._mj_model, data, spec.gyro_sensor
+            )
+            angvels.append(angvel)
+
+        result = jnp.stack(angvels)
+
+        if normalize:
+            result = jnp.clip(result / max_angular_velocity, -1.0, 1.0)
+
+        return result
+
+    def get_knee_accelerations(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default for consistency
+        max_acceleration: float = 50.0,  # m/s² (includes gravity ~10 + motion ~40)
+    ) -> jax.Array:
+        """Get knee accelerations from IMU accelerometers.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by max_acceleration to [-1, 1],
+                      False for raw accelerations (m/s²)
+            max_acceleration: Max expected acceleration for normalization
+
+        Returns:
+            knee_accel: (2, 3) accelerations [ax, ay, az] for [left, right]
+
+        Note - Why jax.Array instead of a dataclass:
+            Accelerometers measure linear ACCELERATION (m/s²), not velocity.
+            This is a fundamentally different physical quantity from Velocity3D:
+
+            | Field              | Physical Quantity | Units  | ICM45686 Output |
+            |--------------------|-------------------|--------|-----------------|
+            | Velocity3D.linear  | Linear velocity   | m/s    | ✗ Not measured  |
+            | Velocity3D.angular | Angular velocity  | rad/s  | From gyro ✓     |
+            | (this method)      | Linear accel      | m/s²   | From accel ✓    |
+
+            To get linear velocity from acceleration would require integration,
+            which accumulates drift rapidly (meters of error per second).
+
+        Note - Why no CoordinateFrame param:
+            IMUs are physically attached to knee bodies - they inherently measure
+            in LOCAL (sensor) frame. Transforming to world frame would require:
+            1. Knowing knee body's world orientation (extra computation)
+            2. Not useful for proprioception (local frame is what matters)
+
+        Note - Why no pose from ICM45686:
+            ICM45686 is a 6-DOF IMU (gyro + accel only, no magnetometer).
+            - Orientation: Could integrate gyro, but yaw drifts without magnetometer
+            - Position: Would need to double-integrate accel → huge drift (meters/sec)
+            Compare to BNO085 (chest IMU) which is 9-DOF with magnetometer +
+            onboard sensor fusion processor that outputs stable framequat.
+
+        Potential use cases:
+        - Ground impact detection (spike in Z when foot strikes)
+        - Slip detection (unexpected lateral acceleration)
+        - Terrain classification (vibration patterns differ by surface)
+        """
+        accels = []
+        for spec in self._6dof_imu_specs:
+            accel = mjx_env.get_sensor_data(
+                self._mj_model, data, spec.accel_sensor
+            )
+            accels.append(accel)
+
+        result = jnp.stack(accels)
+
+        if normalize:
+            result = jnp.clip(result / max_acceleration, -1.0, 1.0)
+
+        return result
+
+    # =========================================================================
+    # Root State Access (4 Core APIs using Pose3D/Velocity3D)
+    # =========================================================================
+    #
+    # Consolidated from 10 methods → 4 methods using generic 3D types.
+    # Frame is stored with the data for self-documentation.
+    #
+    # Derivable values (use utility functions on pose.orientation):
+    # - height: pose.height (property)
+    # - pitch/roll: pitch_roll_from_quat_jax(pose.orientation)
+    # - heading: heading_sin_cos_from_quat_jax(pose.orientation)
+    # =========================================================================
+
+    def get_root_pose(
+        self,
+        data: mjx.Data,
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> Pose3D:
+        """Get root body pose with named field access.
+
+        Args:
+            data: MJX simulation data
+            frame: Coordinate frame for position
+
+        Returns:
+            Pose3D with:
+                .position: (3,) [x, y, z] in meters
+                .orientation: (4,) quaternion [qw, qx, qy, qz]
+                .frame: CoordinateFrame
+                .height: scalar z (convenience property)
+                .xy: (2,) [x, y] (convenience property)
+
+        Example:
+            pose = cal.get_root_pose(data)
+            height = pose.height
+            quat = pose.orientation
+            pitch, roll = pitch_roll_from_quat_jax(pose.orientation)
+        """
+        position = data.qpos[self._root_spec.qpos_addr:self._root_spec.qpos_addr + 3]
+        orientation = data.qpos[self._root_spec.qpos_addr + 3:self._root_spec.qpos_addr + 7]
+
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            position = self._world_to_heading_local_vec(orientation, position)
+
+        return Pose3D(
+            position=position,
+            orientation=orientation,
+            frame=frame,
+        )
+
+    def get_root_velocity(
+        self,
+        data: mjx.Data,
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> Velocity3D:
+        """Get root body velocity with named field access.
+
+        Args:
+            data: MJX simulation data
+            frame: Coordinate frame (WORLD, LOCAL, or HEADING_LOCAL)
+
+        Returns:
+            Velocity3D with:
+                .linear: (3,) [vx, vy, vz] in m/s
+                .angular: (3,) [wx, wy, wz] in rad/s
+                .frame: CoordinateFrame
+
+        Example:
+            vel = cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+            forward_speed = vel.linear[0]
+            yaw_rate = vel.angular[2]
+        """
+        quat = data.qpos[self._root_spec.qpos_addr + 3:self._root_spec.qpos_addr + 7]
+
+        # Linear velocity
+        if self._root_spec.local_linvel_sensor and frame == CoordinateFrame.LOCAL:
+            linvel = mjx_env.get_sensor_data(
+                self._mj_model, data, self._root_spec.local_linvel_sensor
+            )
+        else:
+            linvel = data.qvel[self._root_spec.qvel_addr:self._root_spec.qvel_addr + 3]
+            if frame == CoordinateFrame.HEADING_LOCAL:
+                linvel = self._world_to_heading_local_vec(quat, linvel)
+            elif frame == CoordinateFrame.LOCAL:
+                linvel = self._world_to_local(data, linvel)
+
+        # Angular velocity
+        if self._root_spec.global_angvel_sensor and frame == CoordinateFrame.WORLD:
+            angvel = mjx_env.get_sensor_data(
+                self._mj_model, data, self._root_spec.global_angvel_sensor
+            )
+        else:
+            angvel = data.qvel[self._root_spec.qvel_addr + 3:self._root_spec.qvel_addr + 6]
+            if frame == CoordinateFrame.HEADING_LOCAL:
+                angvel = self._world_to_heading_local_vec(quat, angvel)
+            elif frame == CoordinateFrame.LOCAL:
+                angvel = self._world_to_local(data, angvel)
+
+        return Velocity3D(
+            linear=linvel,
+            angular=angvel,
+            frame=frame,
+        )
+
+    def get_root_velocity_fd(
+        self,
+        curr_pose: Pose3D,
+        prev_pose: Pose3D,
+        dt: float,
+        frame: CoordinateFrame = CoordinateFrame.HEADING_LOCAL,
+    ) -> Velocity3D:
+        """Compute root velocity via finite difference.
+
+        USE FOR: AMP parity (matches reference data computation).
+
+        Args:
+            curr_pose: Current root pose from get_root_pose()
+            prev_pose: Previous root pose
+            dt: Time step
+            frame: Coordinate frame (default HEADING_LOCAL for AMP)
+
+        Returns:
+            Velocity3D with finite-difference velocities in m/s and rad/s
+
+        Note:
+            Returns physical units to match reference data format.
+            No normalization - AMP discriminator expects physical scale.
+
+        Example:
+            curr_pose = cal.get_root_pose(data)
+            prev_pose = cal.get_root_pose(prev_data)
+            vel_fd = cal.get_root_velocity_fd(curr_pose, prev_pose, dt)
+            linvel = vel_fd.linear
+            angvel = vel_fd.angular
+        """
+        # Linear velocity via finite difference
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            linvel = heading_local_linvel_fd_from_pos_jax(
+                curr_pose.position, prev_pose.position, curr_pose.orientation, dt
+            )
+        else:
+            linvel = (curr_pose.position - prev_pose.position) / dt
+
+        # Angular velocity via finite difference
+        angvel = heading_local_angvel_fd_from_quat_jax(
+            curr_pose.orientation, prev_pose.orientation, dt
+        )
+
+        return Velocity3D(
+            linear=linvel,
+            angular=angvel,
+            frame=frame,
+        )
+
+    def get_gravity_vector(self, data: mjx.Data) -> jax.Array:
+        """Get gravity vector in local (body) frame.
+
+        Derived from chest_imu_quat (BNO085 orientation sensor).
+        This matches the real hardware which has no dedicated gravity sensor.
+
+        Returns:
+            gravity: (3,) gravity direction in local frame, normalized
+        """
+        # Get orientation from chest_imu_quat sensor (BNO085)
+        if self._root_spec.orientation_sensor:
+            quat = mjx_env.get_sensor_data(
+                self._mj_model, data, self._root_spec.orientation_sensor
+            )
+        else:
+            # Fallback to qpos quaternion
+            quat = data.qpos[self._root_spec.qpos_addr + 3:self._root_spec.qpos_addr + 7]
+
+        # Rotate world gravity [0, 0, -1] into local frame
+        # (normalized direction, not magnitude)
+        world_gravity = jnp.array([0.0, 0.0, -1.0])
+        return self._rotate_vector_by_quat_inverse(world_gravity, quat)
+
+    # =========================================================================
+    # Internal Helpers
+    # =========================================================================
+
+    def _world_to_heading_local_vec(
+        self,
+        quat: jax.Array,
+        vec: jax.Array,
+    ) -> jax.Array:
+        """Rotate world-frame vector to heading-local frame."""
+        sin_yaw, cos_yaw = heading_sin_cos_from_quat_jax(quat)
+        return heading_local_from_world_jax(vec, sin_yaw, cos_yaw)
+
+    def _rotate_vector_by_quat_inverse(
+        self,
+        vec: jax.Array,
+        quat: jax.Array,
+    ) -> jax.Array:
+        """Rotate a vector by the inverse of a quaternion.
+
+        Used to transform world-frame gravity [0, 0, -1] into local body frame.
+
+        Args:
+            vec: 3D vector to rotate
+            quat: Quaternion in wxyz format [w, x, y, z]
+
+        Returns:
+            Rotated vector in body frame
+
+        Note:
+            This is a JAX version of the function in mocap_retarget.py.
+            Should be moved to heading_math.py for shared use.
+        """
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Rotation matrix from quaternion (transposed for inverse)
+        r00 = 1 - 2 * (y * y + z * z)
+        r01 = 2 * (x * y + w * z)
+        r02 = 2 * (x * z - w * y)
+        r10 = 2 * (x * y - w * z)
+        r11 = 1 - 2 * (x * x + z * z)
+        r12 = 2 * (y * z + w * x)
+        r20 = 2 * (x * z + w * y)
+        r21 = 2 * (y * z - w * x)
+        r22 = 1 - 2 * (x * x + y * y)
+
+        # Apply transposed rotation (inverse)
+        vx, vy, vz = vec[0], vec[1], vec[2]
+        return jnp.array([
+            r00 * vx + r10 * vy + r20 * vz,
+            r01 * vx + r11 * vy + r21 * vz,
+            r02 * vx + r12 * vy + r22 * vz,
+        ])
+
+    def _get_geom_contact_force(
+        self,
+        data: mjx.Data,
+        geom_id: int,
+    ) -> jax.Array:
+        """Get normal contact force for a geom (solver-native efc_force)."""
+        geom1_match = data.contact.geom1 == geom_id
+        geom2_match = data.contact.geom2 == geom_id
+        is_our_contact = geom1_match | geom2_match
+
+        normal_forces = data.efc_force[data.contact.efc_address]
+        our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
+        return jnp.sum(our_forces)
+```
+
+### 10.5 What Stays in Training Config (ppo_walking.yaml)
+
+Normalization and threshold parameters that are **reward-specific** stay in training config, not robot_config:
+
+```yaml
+# ppo_walking.yaml - env section
+env:
+  contact_threshold_force: 5.0   # Force threshold for "loaded" detection (N)
+  contact_scale: 10.0            # tanh normalization divisor
+  min_height: 0.2                # Termination height (m)
+  max_height: 0.8
+  max_pitch: 0.6                 # Termination orientation (rad)
+  max_roll: 0.6
+```
+
+**Rationale**: These are tunable hyperparameters, not robot properties:
+- Different training runs may use different thresholds
+- Normalization scale affects reward shaping
+- Termination thresholds are training-specific
+
+**robot_config.yaml provides**: Body names, geom names, sensor names (static robot properties)
+**ppo_walking.yaml provides**: Thresholds, scales, limits (tunable training parameters)
+
+### 10.6 No New Config Files Needed
+
+| Data | Already In | CAL Reads From |
+|------|------------|----------------|
+| Foot body names | `robot_config.yaml` → `feet.left_foot_body` | `robot_config.left_foot_body` |
+| Foot geom names | `robot_config.yaml` → `feet.left_toe` etc. | `robot_config.get_foot_geom_names()` |
+| Root body | `robot_config.yaml` → `floating_base.root_body` | `robot_config.floating_base_body` |
+| Root IMU sensors | `robot_config.yaml` → `root_imu.*` | `robot_config.orientation_sensor` etc. |
+| Linvel sensor | `robot_config.yaml` → `root_imu.local_linvel_sensor` | `robot_config.local_linvel_sensor` |
+| Contact scale | `ppo_walking.yaml` → `env.contact_scale` | Passed to CAL or used in env |
+| Height limits | `ppo_walking.yaml` → `env.min_height` | Used in env termination |
+
+### 10.6.1 Required Addition to robot_config.yaml
+
+Add a `root_imu` section to specify which sensors to use for root state:
+
+```yaml
+# robot_config.yaml - NEW section to add
+root_imu:
+  # Chest IMU (BNO085) - real hardware sensors
+  orientation_sensor: chest_imu_quat    # framequat sensor for orientation
+  gyro_sensor: chest_imu_gyro           # gyro sensor for angular velocity
+  accel_sensor: chest_imu_accel         # accelerometer
+  # Pelvis sensors
+  local_linvel_sensor: pelvis_local_linvel  # velocimeter for local linear velocity
+```
+
+### 10.6.2 Required Properties in RobotConfig Class
+
+Add properties to `robot_config.py` to expose the root IMU sensors:
+
+```python
+# In playground_amp/configs/robot_config.py
+
+class RobotConfig:
+    # ... existing code ...
+
+    @property
+    def orientation_sensor(self) -> str:
+        """Get root orientation sensor name (framequat)."""
+        root_imu = self._config.get("root_imu", {})
+        return root_imu.get("orientation_sensor", "chest_imu_quat")
+
+    @property
+    def gyro_sensor(self) -> str:
+        """Get root angular velocity sensor name (gyro)."""
+        root_imu = self._config.get("root_imu", {})
+        return root_imu.get("gyro_sensor", "chest_imu_gyro")
+
+    @property
+    def accel_sensor(self) -> str:
+        """Get root accelerometer sensor name."""
+        root_imu = self._config.get("root_imu", {})
+        return root_imu.get("accel_sensor", "chest_imu_accel")
+
+    @property
+    def local_linvel_sensor(self) -> str:
+        """Get local linear velocity sensor name (velocimeter)."""
+        root_imu = self._config.get("root_imu", {})
+        return root_imu.get("local_linvel_sensor", "pelvis_local_linvel")
+```
+
+### 10.6.3 Update post_process.py
+
+Add generation of `root_imu` section to `post_process.py`:
+
+```python
+def generate_root_imu_config(sensors: dict) -> dict:
+    """Generate root_imu config from sensors section.
+
+    Auto-detects chest_imu sensors for real hardware compatibility.
+    """
+    root_imu = {}
+
+    # Find chest_imu orientation sensor (framequat)
+    framequat = sensors.get("framequat", [])
+    for s in framequat:
+        if "chest_imu" in s.get("name", "").lower():
+            root_imu["orientation_sensor"] = s["name"]
+            break
+
+    # Find chest_imu gyro sensor
+    gyro = sensors.get("gyro", [])
+    for s in gyro:
+        if "chest_imu" in s.get("name", "").lower():
+            root_imu["gyro_sensor"] = s["name"]
+            break
+
+    # Find chest_imu accelerometer
+    accel = sensors.get("accelerometer", [])
+    for s in accel:
+        if "chest_imu" in s.get("name", "").lower():
+            root_imu["accel_sensor"] = s["name"]
+            break
+
+    # Find pelvis velocimeter
+    velocimeter = sensors.get("velocimeter", [])
+    for s in velocimeter:
+        if "pelvis" in s.get("name", "").lower() and "linvel" in s.get("name", "").lower():
+            root_imu["local_linvel_sensor"] = s["name"]
+            break
+
+    return root_imu
+```
+
+### 10.6.4 Knee IMU Configuration (Optional Enhancement)
+
+Add `knee_imus` section to robot_config.yaml for additional proprioception:
+
+```yaml
+# robot_config.yaml - Optional section for knee IMUs
+knee_imus:
+  # Left knee IMU (ICM45686)
+  left_gyro: left_knee_imu_gyro
+  left_accel: left_knee_imu_accel
+  # Right knee IMU (ICM45686)
+  right_gyro: right_knee_imu_gyro
+  right_accel: right_knee_imu_accel
+```
+
+### 10.6.5 Ablation Study: Knee IMU Value
+
+**Hypothesis**: Knee IMUs improve policy performance for:
+1. Contact timing precision (accelerometer spike = foot strike)
+2. Slip recovery (faster detection via unexpected acceleration)
+3. Terrain adaptation (vibration patterns differ by surface)
+
+**Proposed Experiment**:
+
+| Experiment | Observation Dim | Description |
+|------------|-----------------|-------------|
+| Baseline | 35 | Current observations (no knee IMU) |
+| +Knee Gyro | 41 | Add 6D knee angular velocities |
+| +Knee Accel | 41 | Add 6D knee accelerations |
+| +Both | 47 | Add all 12D knee IMU data |
+
+**Metrics to Compare**:
+1. **Sample efficiency**: Timesteps to reach reward threshold
+2. **Final performance**: Asymptotic reward
+3. **Perturbation recovery**: Push recovery success rate
+4. **Slip detection**: Time to detect and recover from foot slip
+5. **Terrain transfer**: Performance on unseen terrains (grass, gravel, etc.)
+
+**Implementation Steps**:
+1. Add knee IMU observations to env (optional flag in config)
+2. Train 4 variants (baseline, +gyro, +accel, +both)
+3. Compare metrics at 10M, 50M, 100M timesteps
+4. Test perturbation recovery and slip scenarios
+5. Document findings
+
+**Observation Integration** (in ppo_walking.yaml):
+
+```yaml
+# ppo_walking.yaml
+env:
+  use_knee_imu: true  # Enable knee IMU observations
+  knee_imu_config:
+    use_gyro: true    # Include knee angular velocity
+    use_accel: true   # Include knee acceleration
+    max_angular_velocity: 10.0  # rad/s for normalization
+    max_acceleration: 50.0      # m/s² for normalization
+
+dimensions:
+  observation_dim: 47  # 35 base + 12 knee IMU
+  observation_breakdown:
+    # ... existing ...
+    knee_imu: 12  # [left_gyro(3), left_accel(3), right_gyro(3), right_accel(3)]
+```
+
+### 10.7 Migration Path
+
+**Phase 1: Add New Specs** (non-breaking)
+1. Add `FootSpec` and `RootSpec` to `specs.py`
+2. Add config loading in `robot_config.py`
+3. Existing env code continues to work
+
+**Phase 2: Add CAL Methods** (non-breaking)
+1. Add `get_foot_*` and `get_root_*` methods to CAL
+2. Add unit tests for new methods
+3. Existing env code continues to work
+
+**Phase 3: Migrate Env** (breaking within env only)
+1. Replace env's `get_foot_*` methods with `cal.get_foot_*()`
+2. Replace env's root state methods with `cal.get_root_*()`
+3. Remove duplicate code from env
+4. Verify tests pass
+
+**Phase 4: Cleanup**
+1. Remove deprecated env methods
+2. Update documentation
+3. Add migration guide
+
+### 10.7 Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| **Single source of truth** | All robot state access through CAL |
+| **Consistent normalization** | `normalize=True/False` pattern everywhere |
+| **Config-driven** | Adding new feet/bodies = config change only |
+| **Testable** | CAL methods can be unit-tested in isolation |
+| **Sim2Real ready** | Same interface for real robot sensors |
+| **AMP compatible** | Finite-diff velocities match reference data |
+
+### 10.8 Open Questions
+
+1. **Should foot contact thresholds be in CAL or reward config?**
+   - Current: `contact_threshold_force` in env config
+   - Option A: Move to FootSpec (CAL owns all sensing)
+   - Option B: Keep in reward config (threshold is reward-specific)
+   - **Recommendation**: Keep threshold in reward config, only normalization scale in CAL
+
+2. **Should heading_local be the default frame?**
+   - Current: Methods have `frame` parameter
+   - Option A: Default to `world`, explicit `heading_local`
+   - Option B: Default to `heading_local` (most common for RL)
+   - **Recommendation**: Default to `heading_local` for velocities, `world` for positions
+
+3. **Should we add head/torso state?**
+   - Could add `BodySpec` for arbitrary bodies
+   - Use case: head position for vision, torso for balance
+   - **Recommendation**: Future work - add when needed
+
+---
+
+## 11. References
 
 1. **D76312096**: [robot][mujoco] Fixed actuator of type position - Key insight on position actuator semantics
 2. **D77383084**: [robot][MuJoCo] Reworked JointState ingestion - Motor vs position actuator handling

@@ -391,3 +391,52 @@ feet:
   - left_heel
   - right_toe
   - right_heel
+actuated_joints:
+- name: left_hip_pitch
+  type: position
+  range: [-0.08726646259971647, 1.5707963267948966]
+  symmetry_pair: right_hip_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_hip_roll
+  type: position
+  range: [-1.5707963267948966, 0.17453292519943295]
+  symmetry_pair: right_hip_roll
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_knee_pitch
+  type: position
+  range: [0.0, 1.3962634015954636]
+  symmetry_pair: right_knee_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_ankle_pitch
+  type: position
+  range: [-0.7853981633974412, 0.7853981633974554]
+  symmetry_pair: right_ankle_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_hip_pitch
+  type: position
+  range: [-1.570796326794894, 0.08726646259971914]
+  symmetry_pair: left_hip_pitch
+  mirror_sign: -1.0
+  max_velocity: 10.0
+- name: right_hip_roll
+  type: position
+  range: [-0.17453292519943206, 1.5707963267948974]
+  symmetry_pair: left_hip_roll
+  mirror_sign: -1.0
+  max_velocity: 10.0
+- name: right_knee_pitch
+  type: position
+  range: [0.0, 1.3962634015954636]
+  symmetry_pair: left_knee_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_ankle_pitch
+  type: position
+  range: [-0.7853981633974385, 0.785398163397458]
+  symmetry_pair: left_ankle_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0

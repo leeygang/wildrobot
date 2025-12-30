@@ -178,8 +178,8 @@ reward_weights:
   gait_periodicity: 0.2   # v0.10.5: encourage alternating support
   hip_swing: 0.2          # v0.10.6: encourage hip pitch articulation (swing-only)
   knee_swing: 0.3         # v0.10.6: encourage knee pitch articulation (swing-only)
-  hip_swing_min: 0.3      # v0.10.6: min hip swing (rad) for full reward
-  knee_swing_min: 0.3     # v0.10.6: min knee swing (rad) for full reward
+  hip_swing_min: 0.3      # v0.11.0: min hip swing as fraction of joint range [-1,1] for full reward
+  knee_swing_min: 0.3     # v0.11.0: min knee swing as fraction of joint range [-1,1] for full reward
   flight_phase_penalty: -0.05  # v0.10.6: discourage hopping (both feet unloaded)
 
   # v0.10.4: Velocity shaping parameters

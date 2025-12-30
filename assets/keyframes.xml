@@ -1,0 +1,52 @@
+<!-- Robot keyframes (default poses) for WildRobot
+
+This file contains keyframes that define various robot poses:
+- home: Standing pose with slight knee bend (stable default, used for reset)
+- t_pose: T-pose for visualization/debugging (all joints at zero)
+
+These keyframes are used by:
+- CAL: default_pos loaded at runtime via _load_default_positions()
+- Environment: reset pose
+- Visualization: reference poses
+
+qpos layout for WildRobot (15 DOFs total):
+[0:3]   - root position (x, y, z) in meters
+[3:7]   - root orientation (quaternion: w, x, y, z)
+[7:15]  - actuated joints (8 DOFs) in radians:
+          left_hip_pitch, left_hip_roll, left_knee_pitch, left_ankle_pitch,
+          right_hip_pitch, right_hip_roll, right_knee_pitch, right_ankle_pitch
+
+Version: v0.11.0
+-->
+
+<mujoco>
+    <keyframe>
+        <!-- Standing pose with slight knee bend (stable default)
+             This is the pose the robot resets to at episode start.
+             Height ~0.47m with slight forward lean for stability.
+        -->
+        <key name="home"
+             qpos="-0.00669872 -0.000211667 0.469912
+                   0.999882 0.00198177 -0.00846523 -0.0126691
+                   -0.00513143 0.00469937 0.00609997 0.00672666
+                   -0.00524059 0.00264562 -0.000115484 -0.00199531"/>
+
+        <!-- T-pose for visualization/debugging
+             All joints at zero, robot standing upright at 0.5m height.
+        -->
+        <key name="t_pose"
+             qpos="0 0 0.5
+                   1 0 0 0
+                   0 0 0 0
+                   0 0 0 0"/>
+
+        <!-- Squat pose for sit-to-stand training (future use)
+             Lower height with bent knees.
+        -->
+        <key name="squat"
+             qpos="0 0 0.35
+                   1 0 0 0
+                   0.3 0 0.8 -0.5
+                   0.3 0 0.8 -0.5"/>
+    </keyframe>
+</mujoco>

@@ -22,12 +22,12 @@ import jax.numpy as jnp
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from playground_amp.envs.env_types import (
+from playground_amp.envs.env_info import (
+    get_expected_shapes,
+    validate_wildrobot_info,
+    WILDROBOT_INFO_NONZERO_FIELDS,
     WildRobotInfo,
     WR_INFO_KEY,
-    validate_wildrobot_info,
-    get_expected_shapes,
-    WILDROBOT_INFO_NONZERO_FIELDS,
 )
 
 
@@ -37,8 +37,8 @@ def test_reset_info_schema():
 
     from playground_amp.configs.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
-    from playground_amp.train import create_env_config
     from playground_amp.envs.wildrobot_env import WildRobotEnv
+    from playground_amp.train import create_env_config
 
     load_robot_config("assets/robot_config.yaml")
     training_cfg = load_training_config("playground_amp/configs/ppo_walking.yaml")
@@ -53,10 +53,14 @@ def test_reset_info_schema():
     wr_info = state.info[WR_INFO_KEY]
 
     # Check it's a WildRobotInfo instance
-    assert isinstance(wr_info, WildRobotInfo), f"Expected WildRobotInfo, got {type(wr_info)}"
+    assert isinstance(
+        wr_info, WildRobotInfo
+    ), f"Expected WildRobotInfo, got {type(wr_info)}"
 
     # Validate schema
-    errors = validate_wildrobot_info(wr_info, context="reset", action_size=env.action_size)
+    errors = validate_wildrobot_info(
+        wr_info, context="reset", action_size=env.action_size
+    )
     if errors:
         for e in errors:
             print(f"   ❌ {e}")
@@ -78,7 +82,9 @@ def test_step_info_schema(env, state):
     wr_info = next_state.info[WR_INFO_KEY]
 
     # Validate schema
-    errors = validate_wildrobot_info(wr_info, context="step", action_size=env.action_size)
+    errors = validate_wildrobot_info(
+        wr_info, context="step", action_size=env.action_size
+    )
     if errors:
         for e in errors:
             print(f"   ❌ {e}")
@@ -96,7 +102,9 @@ def test_multiple_steps_schema(env, state):
     for step_idx in range(10):
         state = env.step(state, action)
         wr_info = state.info[WR_INFO_KEY]
-        errors = validate_wildrobot_info(wr_info, context=f"step_{step_idx}", action_size=env.action_size)
+        errors = validate_wildrobot_info(
+            wr_info, context=f"step_{step_idx}", action_size=env.action_size
+        )
         if errors:
             for e in errors:
                 print(f"   ❌ {e}")
@@ -116,12 +124,16 @@ def test_autoreset_preserves_schema(env):
     terminated = False
     for step_idx in range(2000):
         rng, action_rng = jax.random.split(rng)
-        action = jax.random.uniform(action_rng, shape=(env.action_size,), minval=-1, maxval=1)
+        action = jax.random.uniform(
+            action_rng, shape=(env.action_size,), minval=-1, maxval=1
+        )
         state = env.step(state, action)
 
         # Always validate schema
         wr_info = state.info[WR_INFO_KEY]
-        errors = validate_wildrobot_info(wr_info, context=f"autoreset_step_{step_idx}", action_size=env.action_size)
+        errors = validate_wildrobot_info(
+            wr_info, context=f"autoreset_step_{step_idx}", action_size=env.action_size
+        )
         if errors:
             for e in errors:
                 print(f"   ❌ {e}")
@@ -146,8 +158,10 @@ def test_truncated_sticky_through_autoreset(env):
     state = env.reset(rng)
     wr_info = state.info[WR_INFO_KEY]
 
-    assert hasattr(wr_info, 'truncated'), "WildRobotInfo missing truncated field"
-    assert wr_info.truncated.shape == (), f"truncated wrong shape: {wr_info.truncated.shape}"
+    assert hasattr(wr_info, "truncated"), "WildRobotInfo missing truncated field"
+    assert (
+        wr_info.truncated.shape == ()
+    ), f"truncated wrong shape: {wr_info.truncated.shape}"
 
     print("   ✅ truncated field accessible with correct shape")
 
@@ -162,7 +176,9 @@ def print_schema_summary():
     print("Field shapes (action_size from robot_config):")
     expected_shapes = get_expected_shapes()  # Uses robot_config
     for field, shape in expected_shapes.items():
-        nonzero = " (MUST NOT be all zeros)" if field in WILDROBOT_INFO_NONZERO_FIELDS else ""
+        nonzero = (
+            " (MUST NOT be all zeros)" if field in WILDROBOT_INFO_NONZERO_FIELDS else ""
+        )
         print(f"  • {field}: {shape}{nonzero}")
 
 
@@ -183,6 +199,7 @@ def run_all_tests():
     except Exception as e:
         all_errors.append(str(e))
         import traceback
+
         traceback.print_exc()
 
     print_schema_summary()

@@ -23,12 +23,15 @@ import numpy as np
 import yaml
 from ml_collections import config_dict
 
-from playground_amp.envs.env_types import WR_INFO_KEY
+from playground_amp.envs.env_info import WR_INFO_KEY
 
 
 def setup_environment():
     """Initialize environment for testing."""
-    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
+    from playground_amp.configs.training_config import (
+        clear_config_cache,
+        load_robot_config,
+    )
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
@@ -66,11 +69,15 @@ def test_1_env_returns_foot_contacts():
     state = env.reset(rng)
 
     # Check info["wr"] namespace exists
-    assert WR_INFO_KEY in state.info, f"'{WR_INFO_KEY}' namespace missing from state.info"
+    assert (
+        WR_INFO_KEY in state.info
+    ), f"'{WR_INFO_KEY}' namespace missing from state.info"
     wr_info = state.info[WR_INFO_KEY]
 
     # Check foot_contacts exists in wr_info
-    assert hasattr(wr_info, 'foot_contacts'), "foot_contacts missing from state.info['wr']"
+    assert hasattr(
+        wr_info, "foot_contacts"
+    ), "foot_contacts missing from state.info['wr']"
     foot_contacts = wr_info.foot_contacts
 
     # Check shape
@@ -123,8 +130,14 @@ def test_3_amp_features_require_foot_contacts():
     """Test 3: extract_amp_features raises ValueError when foot_contacts=None."""
     print("\n=== Test 3: amp_features require foot_contacts ===")
 
-    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
-    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import (
+        extract_amp_features,
+        get_feature_config,
+    )
+    from playground_amp.configs.training_config import (
+        clear_config_cache,
+        load_robot_config,
+    )
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
@@ -147,7 +160,10 @@ def test_4_amp_features_use_foot_contacts():
     print("\n=== Test 4: amp_features use foot_contacts ===")
 
     from playground_amp.amp.policy_features import get_feature_config
-    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
+    from playground_amp.configs.training_config import (
+        clear_config_cache,
+        load_robot_config,
+    )
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
@@ -178,7 +194,10 @@ def test_5_batched_features_require_foot_contacts():
     print("\n=== Test 5: Batched features require foot_contacts ===")
 
     from playground_amp.amp.policy_features import get_feature_config
-    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
+    from playground_amp.configs.training_config import (
+        clear_config_cache,
+        load_robot_config,
+    )
     from playground_amp.training.trainer_jit import extract_amp_features_batched
 
     clear_config_cache()
@@ -246,8 +265,14 @@ def test_7_features_are_not_all_zeros():
     """Test 7: End-to-end test - features from env have non-zero contacts."""
     print("\n=== Test 7: End-to-end feature extraction (non-zero contacts) ===")
 
-    from playground_amp.amp.policy_features import extract_amp_features, get_feature_config
-    from playground_amp.configs.training_config import clear_config_cache, load_robot_config
+    from playground_amp.amp.policy_features import (
+        extract_amp_features,
+        get_feature_config,
+    )
+    from playground_amp.configs.training_config import (
+        clear_config_cache,
+        load_robot_config,
+    )
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")

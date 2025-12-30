@@ -616,8 +616,10 @@ class TestActuatorCorrectness:
         state = env.step(env_state, action)
 
         # Compute power for each actuator
-        torques = env.get_actuator_torques(state.data)
-        joint_vels = env.get_actuator_joints_qvel(state.data.qvel)
+        torques = env.cal.get_actuator_torques(
+            state.data.qfrc_actuator, normalize=False
+        )
+        joint_vels = env.cal.get_joint_velocities(state.data.qvel, normalize=False)
         power = torques * joint_vels
 
         # Power should be finite
@@ -625,8 +627,10 @@ class TestActuatorCorrectness:
 
         # At near-zero velocity, power should be near zero
         state_rest = env.reset(jax.random.PRNGKey(0))
-        torques_rest = env.get_actuator_torques(state_rest.data)
-        vels_rest = env.get_actuator_joints_qvel(state_rest.data.qvel)
+        torques_rest = env.cal.get_actuator_torques(
+            state_rest.data.qfrc_actuator, normalize=False
+        )
+        vels_rest = env.cal.get_joint_velocities(state_rest.data.qvel, normalize=False)
         power_rest = torques_rest * vels_rest
 
         max_power_rest = float(jnp.max(jnp.abs(power_rest)))
@@ -752,7 +756,9 @@ class TestContactForceCorrectness:
         print(f"  Robot mass: {robot_mass:.2f} kg")
         print(f"  Applied lateral force: {lateral_force:.1f} N")
         print(f"  Baseline: left={left_force_base:.2f}N, right={right_force_base:.2f}N")
-        print(f"  After perturbation: left={left_force_perturbed:.2f}N, right={right_force_perturbed:.2f}N")
+        print(
+            f"  After perturbation: left={left_force_perturbed:.2f}N, right={right_force_perturbed:.2f}N"
+        )
         print(f"  Left change: {left_change:+.2f} N")
         print(f"  Right change: {right_change:+.2f} N")
         print(f"  Total change: {total_change:.2f} N")
@@ -775,7 +781,9 @@ class TestContactForceCorrectness:
         if left_force_base > 1.0 and right_force_base > 1.0:
             # Only check sign if both feet had meaningful baseline contact
             signs_opposite = (left_change * right_change) < 0
-            print(f"  Load shift direction: {'correct (opposite signs)' if signs_opposite else 'same direction (unexpected)'}")
+            print(
+                f"  Load shift direction: {'correct (opposite signs)' if signs_opposite else 'same direction (unexpected)'}"
+            )
 
     def test_drop_impact_force(self, mj_model, mj_data):
         """Test 7.3: Dropping robot should produce force spike on impact."""
@@ -1015,7 +1023,7 @@ class TestMimicLeakagePrevention:
 
     def test_env_actuator_addresses_not_mimic(self, env, schema):
         """Actuator qvel addresses should not point to _mimic joints."""
-        for i, addr in enumerate(env.actuator_qvel_addr):
+        for i, addr in enumerate(env.cal.qvel_addresses):
             addr_int = int(addr)
 
             # Find which joint this address belongs to

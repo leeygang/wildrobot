@@ -291,7 +291,8 @@ def collect_policy_features(num_samples=1000):
     # Get joint positions from observation (indices 9-18)
     prev_joint_pos = prev_state.obs[9:18]
     # Access via typed WR namespace
-    from playground_amp.envs.env_types import WR_INFO_KEY
+    from playground_amp.envs.env_info import WR_INFO_KEY
+
     wr_info = state.info[WR_INFO_KEY]
     _ = extract_fn(
         state.obs,

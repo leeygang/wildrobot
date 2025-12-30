@@ -239,6 +239,108 @@ def add_common_includes(xml_file):
     tree.write(xml_file)
 
 
+def generate_actuated_joints_config(
+    root: ET.Element,
+    joints_details: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Generate actuated_joints configuration for CAL (Control Abstraction Layer).
+
+    This function produces the configuration needed by CAL to:
+    1. Map between policy actions and physical joint commands
+    2. Handle joint symmetry (left/right mirroring)
+    3. Normalize joint ranges for policy training
+
+    v0.11.0: Added for Control Abstraction Layer
+
+    Mirror Sign Convention:
+    - mirror_sign = +1.0: Joint range maps directly to action range
+        Example: left_hip_pitch [-0.087, 1.571] → action 0 = center
+    - mirror_sign = -1.0: Joint range is inverted relative to its pair
+        Example: right_hip_pitch [-1.571, 0.087] is flipped vs left
+        When policy outputs same action for L/R, we want symmetric motion
+
+    Args:
+        root: XML root element
+        joints_details: List of joint details from generate_robot_config
+
+    Returns:
+        List of actuated joint configs with mirror_sign and symmetry_pair
+    """
+    actuated_joints: List[Dict[str, Any]] = []
+
+    # Build name-to-joint map for joints with ranges (actuated joints)
+    actuated_joint_map = {
+        j["name"]: j for j in joints_details if j.get("name") and j.get("range")
+    }
+
+    # Define symmetry pairs (left ↔ right)
+    symmetry_pairs = {
+        "left_hip_pitch": "right_hip_pitch",
+        "left_hip_roll": "right_hip_roll",
+        "left_knee_pitch": "right_knee_pitch",
+        "left_ankle_pitch": "right_ankle_pitch",
+        "right_hip_pitch": "left_hip_pitch",
+        "right_hip_roll": "left_hip_roll",
+        "right_knee_pitch": "left_knee_pitch",
+        "right_ankle_pitch": "left_ankle_pitch",
+    }
+
+    # Process each actuated joint
+    for joint_name, joint_info in actuated_joint_map.items():
+        joint_range = joint_info.get("range", [-1.57, 1.57])
+        range_min, range_max = joint_range
+
+        # Determine mirror_sign by comparing with symmetry pair
+        symmetry_pair = symmetry_pairs.get(joint_name)
+        mirror_sign = 1.0
+
+        if symmetry_pair and symmetry_pair in actuated_joint_map:
+            pair_info = actuated_joint_map[symmetry_pair]
+            pair_range = pair_info.get("range", [-1.57, 1.57])
+            pair_min, pair_max = pair_range
+
+            # Check if ranges are inverted (mirrored)
+            # Inverted: one joint's max ≈ -1 * other joint's min
+            # Example: left_hip_pitch [−0.087, 1.571] vs right_hip_pitch [−1.571, 0.087]
+            range_center = (range_min + range_max) / 2
+            pair_center = (pair_min + pair_max) / 2
+
+            # If centers have opposite signs, ranges are mirrored
+            # Use a threshold to handle floating point imprecision
+            if abs(range_center + pair_center) < 0.1:  # Centers sum to ~0
+                # Ranges are inverted - determine which joint gets -1.0
+                # Convention: joints starting with "right_" get -1.0 if inverted
+                if joint_name.startswith("right_"):
+                    mirror_sign = -1.0
+
+        config = {
+            "name": joint_name,
+            "type": "position",  # All actuators are position-controlled
+            "range": [round(range_min, 6), round(range_max, 6)],
+            "symmetry_pair": symmetry_pair,
+            "mirror_sign": mirror_sign,
+            "max_velocity": 10.0,  # Conservative default for servos (rad/s)
+        }
+        actuated_joints.append(config)
+
+    # Sort by actuator order (left leg first, then right leg, by joint order)
+    joint_order = [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+    ]
+    actuated_joints.sort(
+        key=lambda x: joint_order.index(x["name"]) if x["name"] in joint_order else 999
+    )
+
+    return actuated_joints
+
+
 def generate_robot_config(
     xml_file: str, output_file: str = "robot_config.yaml"
 ) -> Dict[str, Any]:
@@ -361,6 +463,12 @@ def generate_robot_config(
         floating_base["qvel_dim"] = 6  # 3 linear + 3 angular
 
     config["floating_base"] = floating_base
+
+    # =========================================================================
+    # Generate Actuated Joints Config for CAL (v0.11.0)
+    # =========================================================================
+    actuated_joints = generate_actuated_joints_config(root, joints)
+    config["actuated_joints"] = actuated_joints
 
     # =========================================================================
     # Extract Sensors

@@ -77,6 +77,9 @@ class RobotConfig:
     left_foot_body: str
     right_foot_body: str
 
+    # v0.11.0: Actuated joints config for CAL (Control Abstraction Layer)
+    actuated_joints: List[Dict[str, Any]] = field(default_factory=list)
+
     raw_config: Dict[str, Any] = field(repr=False)
 
     # Sensor names (derived from sensors dict for convenience)
@@ -226,6 +229,9 @@ class RobotConfig:
         left_foot_body = feet.get("left_foot_body", "left_foot")
         right_foot_body = feet.get("right_foot_body", "right_foot")
 
+        # v0.11.0: Extract actuated joints config for CAL
+        actuated_joints = config.get("actuated_joints", [])
+
         return cls(
             robot_name=config.get("robot_name", "unknown"),
             actuator_names=actuator_names,
@@ -249,6 +255,7 @@ class RobotConfig:
             feet_all_geoms=feet_all_geoms,
             left_foot_body=left_foot_body,
             right_foot_body=right_foot_body,
+            actuated_joints=actuated_joints,
             raw_config=config,
         )
 

@@ -62,7 +62,9 @@ class TestRewardComponents:
 
     def test_actuator_torques_shape(self):
         """Actuator torques should have correct shape (nu,)."""
-        torques = self.env.get_actuator_torques(self.state.data)
+        torques = self.env.cal.get_actuator_torques(
+            self.state.data.qfrc_actuator, normalize=False
+        )
 
         assert torques.shape == (
             self.env.action_size,
@@ -70,7 +72,9 @@ class TestRewardComponents:
 
     def test_actuator_torques_at_rest(self):
         """At rest, actuator torques should be small (no movement)."""
-        torques = self.env.get_actuator_torques(self.state.data)
+        torques = self.env.cal.get_actuator_torques(
+            self.state.data.qfrc_actuator, normalize=False
+        )
 
         # At rest with no action, torques should be near zero or small
         # (some may be non-zero due to gravity compensation)
@@ -441,7 +445,7 @@ class TestMujocoDataConsistency:
 
     def test_actuator_addresses_are_valid(self):
         """Actuator qvel addresses should be valid indices."""
-        addresses = self.env.actuator_qvel_addr
+        addresses = self.env.cal.qvel_addresses
 
         assert (
             len(addresses) == self.env.action_size
