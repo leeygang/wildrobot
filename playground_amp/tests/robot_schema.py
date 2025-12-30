@@ -132,7 +132,14 @@ class GeomSchema:
     is_collision: bool
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # Explicitly convert numpy types to Python native types for JSON serialization
+        return {
+            "geom_name": self.geom_name,
+            "geom_id": int(self.geom_id),
+            "body_name": self.body_name,
+            "body_id": int(self.body_id),
+            "is_collision": bool(self.is_collision),
+        }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "GeomSchema":
@@ -150,7 +157,14 @@ class SensorSchema:
     site_name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # Explicitly convert numpy types to Python native types for JSON serialization
+        return {
+            "sensor_name": self.sensor_name,
+            "sensor_type": self.sensor_type,
+            "dimension": int(self.dimension),
+            "adr": int(self.adr),
+            "site_name": self.site_name,
+        }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SensorSchema":
