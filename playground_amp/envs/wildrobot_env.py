@@ -1081,6 +1081,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_loaded = left_force > contact_threshold
         right_loaded = right_force > contact_threshold
         gait_periodicity = jp.where(left_loaded ^ right_loaded, 1.0, 0.0)
+        gait_periodicity = jp.asarray(gait_periodicity).reshape(())
+
+        # Get weights from frozen config (type-safe access)
+        weights = self._config.reward_weights
 
         # 13. Hip/knee swing (encourage leg articulation during swing)
         joint_pos = self.get_actuator_joint_qpos(data.qpos)
@@ -1104,16 +1108,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             _swing_reward(left_knee_pitch, knee_min) * left_swing
             + _swing_reward(right_knee_pitch, knee_min) * right_swing
         )
+        hip_swing = jp.asarray(hip_swing).reshape(())
+        knee_swing = jp.asarray(knee_swing).reshape(())
 
         # 14. Flight phase penalty (discourage hopping)
         flight_phase = jp.where((~left_loaded) & (~right_loaded), 1.0, 0.0)
+        flight_phase = jp.asarray(flight_phase).reshape(())
 
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
-
-        # Get weights from frozen config (type-safe access)
-        weights = self._config.reward_weights
 
         # v0.10.4: Smooth, command-gated standing penalty
         # Only apply when |velocity_cmd| > velocity_cmd_min (don't penalize if asked to stop)
