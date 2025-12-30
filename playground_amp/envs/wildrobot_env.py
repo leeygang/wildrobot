@@ -44,18 +44,13 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
+from playground_amp.cal.cal import ControlAbstractionLayer
+from playground_amp.cal.specs import Pose3D
+from playground_amp.cal.types import CoordinateFrame
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
-from playground_amp.control.cal import ControlAbstractionLayer
 from playground_amp.envs.env_info import WildRobotInfo, WR_INFO_KEY
 from playground_amp.training.experiment_tracking import get_initial_env_metrics_jax
-from playground_amp.training.heading_math import (
-    heading_local_angvel_fd_from_quat_jax,
-    heading_local_from_world_jax,
-    heading_local_linvel_fd_from_pos_jax,
-    heading_sin_cos_from_quat_jax,
-    pitch_roll_from_quat_jax,
-)
 from playground_amp.training.metrics_registry import (
     build_metrics_vec,
     METRIC_NAMES,
@@ -342,8 +337,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._load_model()
 
         print(f"WildRobotEnv initialized:")
-        print(f"  Actuators: {len(self.actuator_names)}")
-        print(f"  Floating base: {self.floating_base_name}")
+        print(f"  Actuators: {self._mj_model.nu}")
+        print(f"  Floating base: {self._robot_config.floating_base_body}")
         print(f"  Control dt: {self.dt}s, Sim dt: {self.sim_dt}s")
 
     # =========================================================================
@@ -384,92 +379,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
 
-        # Get floating base info
-        self.floating_base_name = [
-            self._mj_model.jnt(k).name
-            for k in range(self._mj_model.njnt)
-            if self._mj_model.jnt(k).type == 0
-        ][0]
-
-        # Actuator and joint mappings
-        self.actuator_names = [
-            self._mj_model.actuator(k).name for k in range(self._mj_model.nu)
-        ]
-        self.joint_names = [
-            self._mj_model.jnt(k).name for k in range(self._mj_model.njnt)
-        ]
-
-        # Cache hip/knee actuator indices for gait shaping rewards
-        self._left_hip_pitch_idx, self._right_hip_pitch_idx = (
-            self._robot_config.get_hip_pitch_indices()
-        )
-        self._left_knee_pitch_idx, self._right_knee_pitch_idx = (
-            self._robot_config.get_knee_pitch_indices()
-        )
-
-        # Foot contact geom IDs (from robot_config.yaml)
-        # These are used for computing foot contact features for AMP discriminator
-        # v0.5.0: Use explicit keys instead of array indexing (no order assumptions)
-        # Get geom IDs using explicit config keys - order: [left_toe, left_heel, right_toe, right_heel]
-        left_toe_name, left_heel_name, right_toe_name, right_heel_name = (
-            self._robot_config.get_foot_geom_names()
-        )
-
-        try:
-            self._left_toe_geom_id = self._mj_model.geom(left_toe_name).id
-            self._left_heel_geom_id = self._mj_model.geom(left_heel_name).id
-            self._right_toe_geom_id = self._mj_model.geom(right_toe_name).id
-            self._right_heel_geom_id = self._mj_model.geom(right_heel_name).id
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not find foot geoms in MuJoCo model. "
-                f"Expected: {left_toe_name}, {left_heel_name}, {right_toe_name}, {right_heel_name}. "
-                f"Run 'cd assets && python post_process.py' to add foot geom names to XML. "
-                f"Original error: {e}"
-            )
-
-        self._foot_geom_ids = jp.array(
-            [
-                self._left_toe_geom_id,
-                self._left_heel_geom_id,
-                self._right_toe_geom_id,
-                self._right_heel_geom_id,
-            ]
-        )
-        print(
-            f"  Foot geom IDs: L_toe={self._left_toe_geom_id}, L_heel={self._left_heel_geom_id}, "
-            f"R_toe={self._right_toe_geom_id}, R_heel={self._right_heel_geom_id}"
-        )
-
-        # Contact detection parameters (from env config)
-        # contact_threshold: Minimum force (N) to consider contact (not currently used)
-        # contact_scale: Divisor for tanh normalization (10.0 means 10N → tanh(1) ≈ 0.76)
-        self._contact_threshold = self._config.env.contact_threshold_force
-        self._contact_scale = self._config.env.contact_scale
-
-        # v0.10.1: Foot body IDs for slip/clearance computation
-        # Use actual foot bodies (not *_mimic sites which are for GMR retargeting)
-        # Read from robot_config instead of hard-coding
-        self._left_foot_body_id = mujoco.mj_name2id(
-            self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._robot_config.left_foot_body
-        )
-        self._right_foot_body_id = mujoco.mj_name2id(
-            self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._robot_config.right_foot_body
-        )
-
-        # v0.10.1: Actuator force limits for torque penalty normalization
-        # MuJoCo stores force limits in actuator_forcerange (nu x 2)
-        self._actuator_force_limit = jp.array(
-            [self._mj_model.actuator_forcerange[i, 1] for i in range(self._mj_model.nu)]
-        )  # Take upper limit (positive)
-
-        self._floating_base_qpos_addr = self._mj_model.jnt_qposadr[
-            jp.where(self._mj_model.jnt_type == 0)
-        ][0]
-        self._floating_base_qvel_addr = self._mj_model.jnt_dofadr[
-            jp.where(self._mj_model.jnt_type == 0)
-        ][0]
-
         # =====================================================================
         # Initialize Control Abstraction Layer (CAL) - v0.11.0
         # =====================================================================
@@ -477,9 +386,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # - Symmetry correction (mirror_sign) for left/right joints
         # - Normalization from [-1, 1] to physical joint ranges
         # - Single source of truth for joint specifications
-        actuated_joints_config = self._robot_config.actuated_joints
-        self._cal = ControlAbstractionLayer(self._mj_model, actuated_joints_config)
-        print(f"  CAL initialized with {self._cal.num_actuators} actuators")
+        # - Extended state for foot, root, and knee IMU access
+        # - Contact scale is read from robot_config.feet.contact_scale
+        self._cal = ControlAbstractionLayer(self._mj_model, self._robot_config)
+        print(
+            f"  CAL initialized with {self._cal.num_actuators} actuators (extended state included)"
+        )
 
         # Get initial qpos from model's keyframe or qpos0
         # MuJoCo stores keyframe qpos in key_qpos (shape: nkey x nq)
@@ -491,14 +403,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             init_height = float(self._init_qpos[2])
             print(f"  Initial height from keyframe: {init_height:.4f}m")
         else:
-            # Fall back to qpos0 (default initial state)
+            # Fall back to qpos0 (model default)
             self._init_qpos = jp.array(self._mj_model.qpos0)
             print(f"  Using qpos0 from model")
             init_height = float(self._init_qpos[2])
             print(f"  Initial height from qpos0: {init_height:.4f}m")
 
-        # Extract joint-only qpos for control default (exclude floating base: first 7 values)
-        self._default_joint_qpos = self._init_qpos[7:]
+        # Extract joint-only qpos for control default from CAL (single source of truth)
+        self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
     # =========================================================================
     # MjxEnv Interface
@@ -537,8 +449,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward = jp.zeros(())
         done = jp.zeros(())
 
-        # Compute actual initial metrics (not zeros)
-        height = self.get_floating_base_qpos(data.qpos)[2]
+        # Cache root pose (used for height, pitch/roll, position, orientation)
+        root_pose = self._cal.get_root_pose(data)
+        height = root_pose.height
 
         # v0.10.1: Simplified initial reward (robot at rest, no slip/clearance yet)
         # Forward reward: robot is stationary (vel=0), so miss target by velocity_cmd
@@ -559,9 +472,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # v0.10.1: Initialize all metric keys to match step() for JAX pytree compatibility
         # At reset, robot is stationary so most values are zero
-        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
-        pitch, roll = pitch_roll[0], pitch_roll[1]
-        left_force, right_force = self.get_raw_foot_contacts(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
 
         # Compute total reward with weights (from config)
         weights = self._config.reward_weights
@@ -571,7 +483,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.action_rate * action_rate
         )
 
-        # v0.11.0: Use centralized metrics schema from experiment_tracking
         # This is the single source of truth for env metrics keys
         metrics = get_initial_env_metrics_jax(
             velocity_cmd=velocity_cmd,
@@ -588,18 +499,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Info - use typed WildRobotInfo under "wr" namespace
         # This separates algorithm-critical fields from wrapper-injected fields
-        left_foot_pos, right_foot_pos = self.get_foot_positions(data)
+        left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
+            data, normalize=False
+        )
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=jp.zeros(self.action_size),
             truncated=jp.zeros(()),  # No truncation at reset
             velocity_cmd=velocity_cmd,  # Target velocity for this episode
-            prev_root_pos=self.get_floating_base_qpos(data.qpos)[0:3],  # (3,)
-            prev_root_quat=self.get_floating_base_qpos(data.qpos)[3:7],  # (4,) wxyz
+            prev_root_pos=root_pose.position,  # (3,)
+            prev_root_quat=root_pose.orientation,  # (4,) wxyz
             prev_left_foot_pos=left_foot_pos,
             prev_right_foot_pos=right_foot_pos,
-            foot_contacts=self.get_norm_foot_contacts(data),  # For AMP discriminator
-            root_height=height,  # Actual root height for AMP features
+            foot_contacts=self._cal.get_geom_based_foot_contacts(
+                data, normalize=True
+            ),  # For AMP
+            root_height=root_pose.height,  # Actual root height for AMP features
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -673,12 +588,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         step_count = wr.step_count
         prev_action = wr.prev_action
 
-        # Action filtering (low-pass)
-        if self._config.env.use_action_filter:
-            alpha = self._config.env.action_filter_alpha
-            filtered_action = alpha * prev_action + (1.0 - alpha) * action
-        else:
-            filtered_action = action
+        # Action filtering (low-pass) - alpha=0 means no filtering (formula handles it)
+        alpha = self._config.env.action_filter_alpha
+        filtered_action = alpha * prev_action + (1.0 - alpha) * action
 
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
@@ -722,9 +634,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data, step_count + 1
         )
 
-        # Update metrics (before potential reset)
-        height = self.get_floating_base_qpos(data.qpos)[2]
-        forward_vel = self.get_local_linvel(data)[0]
+        # Cache root pose and velocity (used for metrics and WildRobotInfo update)
+        curr_root_pose = self._cal.get_root_pose(data)
+        forward_vel, _, _ = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.LOCAL
+        ).linear_xyz
 
         # v0.10.4: Store step count in metrics for episode length calculation
         # This gets preserved through auto-reset, unlike wr_info.step_count which resets
@@ -732,7 +646,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         metrics = {
             "velocity_command": velocity_cmd,
-            "height": height,
+            "height": curr_root_pose.height,
             "forward_velocity": forward_vel,
             "episode_step_count": episode_step_count,  # v0.10.4: For ep_len logging
             "reward/total": reward,
@@ -744,10 +658,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # This ensures pytree structure matches preserved_metrics
         metrics[METRICS_VEC_KEY] = build_metrics_vec(metrics)
 
-        # Compute current values for WildRobotInfo update
-        curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
-        curr_root_quat = self.get_floating_base_qpos(data.qpos)[3:7]
-        curr_left_foot_pos, curr_right_foot_pos = self.get_foot_positions(data)
+        # Compute current foot positions for WildRobotInfo update
+        curr_left_foot_pos, curr_right_foot_pos = self._cal.get_foot_positions(
+            data, normalize=False
+        )
 
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
@@ -755,12 +669,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_action=filtered_action,
             truncated=truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
             velocity_cmd=velocity_cmd,  # Preserved through episode
-            prev_root_pos=curr_root_pos,
-            prev_root_quat=curr_root_quat,
+            prev_root_pos=curr_root_pose.position,
+            prev_root_quat=curr_root_pose.orientation,
             prev_left_foot_pos=curr_left_foot_pos,
             prev_right_foot_pos=curr_right_foot_pos,
-            foot_contacts=self.get_norm_foot_contacts(data),  # For AMP discriminator
-            root_height=height,  # Actual root height for AMP features
+            foot_contacts=self._cal.get_geom_based_foot_contacts(
+                data, normalize=True
+            ),  # For AMP
+            root_height=curr_root_pose.height,  # Actual root height for AMP features
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -898,25 +814,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
             Observation vector (35,)
         """
         # Gravity in local frame (from sensor)
-        gravity = self.get_gravity(data)
+        gravity = self._cal.get_gravity_vector(data)
 
         # v0.9.1: Use finite-diff velocities when prev_root_* are available
         # This is the key fix for AMP parity - matches reference data computation
         if prev_root_pos is not None and prev_root_quat is not None:
             # Finite-diff velocities (heading-local) - matches reference exactly
-            curr_root_pos = self.get_floating_base_qpos(data.qpos)[0:3]
-            curr_root_quat = self.get_root_quat(data)
-            linvel = heading_local_linvel_fd_from_pos_jax(
-                curr_root_pos, prev_root_pos, curr_root_quat, self.dt
+            curr_pose = self._cal.get_root_pose(data)
+            prev_pose = Pose3D(
+                position=prev_root_pos,
+                orientation=prev_root_quat,
+                frame=CoordinateFrame.WORLD,
             )
-            angvel = heading_local_angvel_fd_from_quat_jax(
-                curr_root_quat, prev_root_quat, self.dt
-            )
+            fd_vel = curr_pose.velocity_fd(prev_pose, self.dt)
+            linvel = fd_vel.linear
+            angvel = fd_vel.angular
         else:
             # qvel-based velocities (for reset when no previous state)
             # These will be zero at reset anyway
-            linvel = self.get_heading_local_linvel(data)
-            angvel = self.get_heading_local_angvel(data)
+            vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+            linvel, angvel = vel.linear, vel.angular
 
         # Joint positions and velocities (normalized for NN input)
         joint_pos = self._cal.get_joint_positions(data.qpos, normalize=True).squeeze()
@@ -956,19 +873,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # PRIMARY REWARDS (Tier 1)
         # =====================================================================
 
+        # Cache root pose (used for height + orientation)
+        root_pose = self._cal.get_root_pose(data)
+
+        # Cache root velocity (used for forward/lateral vel + angular vel penalty)
+        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.LOCAL)
+
         # 1. Forward velocity tracking (exp shaping)
-        forward_vel = self.get_local_linvel(data)[0]
+        forward_vel, lateral_vel, _ = root_vel.linear_xyz
         vel_error = jp.abs(forward_vel - velocity_cmd)
         forward_reward = jp.exp(
             -vel_error * self._config.reward_weights.forward_velocity_scale
         )
 
         # 2. Lateral velocity penalty (penalize sideways drift)
-        lateral_vel = self.get_local_linvel(data)[1]
         lateral_penalty = jp.square(lateral_vel)
 
         # 3. Alive/healthy reward (height-based)
-        height = self.get_floating_base_qpos(data.qpos)[2]
+        height = root_pose.height
         healthy = jp.where(
             (height > self._config.env.min_height)
             & (height < self._config.env.max_height),
@@ -977,13 +899,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # 4. Orientation penalty (pitch² + roll²)
-        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
-        pitch, roll = pitch_roll[0], pitch_roll[1]
+        roll, pitch, _ = root_pose.euler_angles()
         orientation_penalty = jp.square(pitch) + jp.square(roll)
 
         # 5. Angular velocity penalty (reduce body rotation)
-        base_angvel = self.get_floating_base_qvel(data.qvel)[3:6]  # wx, wy, wz
-        angvel_penalty = jp.sum(jp.square(base_angvel))
+        # Note: Using cached root_vel (LOCAL frame) - reuse from above
+        _, _, angvel_z = root_vel.angular_xyz
+        # Only penalize yaw rate (z-axis rotation), not pitch/roll which are handled by orientation penalty
+        angvel_penalty = jp.square(angvel_z)
 
         # =====================================================================
         # EFFORT REWARDS (Tier 1 - critical for sim2real)
@@ -1016,8 +939,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
 
         # Get foot contact forces for slip/clearance gating
-        left_force, right_force = self.get_raw_foot_contacts(data)
-        left_pos, right_pos = self.get_foot_positions(data)
+        left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        total_force = float(left_force + right_force)
 
         # Robot weight for contact threshold (approximate: mass * gravity)
         # ~2kg robot * 9.81 ≈ 20N total, so ~5N per foot is "loaded"
@@ -1027,8 +950,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 10. Slip penalty (when foot is loaded, penalize tangential velocity)
         # Use finite-diff velocity if previous positions available
         if prev_left_foot_pos is not None and prev_right_foot_pos is not None:
-            left_vel, right_vel = self.get_foot_velocities(
-                data, prev_left_foot_pos, prev_right_foot_pos
+            left_vel, right_vel = self._cal.get_foot_velocities(
+                data,
+                prev_left_foot_pos,
+                prev_right_foot_pos,
+                self.dt,
+                normalize=False,
             )
             # Tangential (xy) velocity magnitude
             left_slip = jp.sqrt(jp.square(left_vel[0]) + jp.square(left_vel[1]))
@@ -1048,8 +975,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 11. Swing clearance reward (when foot is unloaded, reward height)
         # Reward foot height above ground during swing phase
         min_clearance = 0.02  # 2cm minimum clearance during swing
-        left_clearance = jp.clip(left_pos[2] - min_clearance, 0.0, 0.05)  # cap at 5cm
-        right_clearance = jp.clip(right_pos[2] - min_clearance, 0.0, 0.05)
+        left_clearance, right_clearance = self._cal.get_foot_clearances(
+            data, normalize=False
+        )
+        left_clearance = jp.clip(
+            left_clearance - min_clearance, 0.0, 0.05
+        )  # cap at 5cm
+        right_clearance = jp.clip(right_clearance - min_clearance, 0.0, 0.05)
 
         # Gate by NOT loaded (only reward clearance during swing)
         left_swing = left_force < contact_threshold
@@ -1069,12 +1001,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         weights = self._config.reward_weights
 
         # 13. Hip/knee swing (encourage leg articulation during swing)
-        # Use normalized positions [-1, 1] for consistent scaling across joints
-        joint_pos_norm = self._cal.get_joint_positions(data.qpos, normalize=True)
-        left_hip_pitch = joint_pos_norm[self._left_hip_pitch_idx]
-        right_hip_pitch = joint_pos_norm[self._right_hip_pitch_idx]
-        left_knee_pitch = joint_pos_norm[self._left_knee_pitch_idx]
-        right_knee_pitch = joint_pos_norm[self._right_knee_pitch_idx]
+        # Use CAL semantic accessors - joint names defined in robot_config (single source)
+        left_hip_pitch, right_hip_pitch = self._cal.get_hip_pitch_positions(
+            data.qpos, normalize=True
+        )
+        left_knee_pitch, right_knee_pitch = self._cal.get_knee_pitch_positions(
+            data.qpos, normalize=True
+        )
 
         hip_min = jp.maximum(weights.hip_swing_min, 1e-6)
         knee_min = jp.maximum(weights.knee_swing_min, 1e-6)
@@ -1204,7 +1137,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             - truncated: True if ended due to time limit (success)
             - termination_info: Dict with per-condition flags for diagnostics
         """
-        height = self.get_floating_base_qpos(data.qpos)[2]
+        # Cache root pose (used for height + orientation)
+        root_pose = self._cal.get_root_pose(data)
+        height = root_pose.height
 
         # Height termination (failure - robot fell)
         height_too_low = height < self._config.env.min_height
@@ -1212,8 +1147,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         height_fail = height_too_low | height_too_high
 
         # v0.10.1: Orientation termination (extreme pitch/roll)
-        pitch_roll = pitch_roll_from_quat_jax(self.get_root_quat(data))
-        pitch, roll = pitch_roll[0], pitch_roll[1]
+        roll, pitch, _ = root_pose.euler_angles()
         pitch_fail = jp.abs(pitch) > self._config.env.max_pitch
         roll_fail = jp.abs(roll) > self._config.env.max_roll
         orientation_fail = pitch_fail | roll_fail
@@ -1248,254 +1182,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
     # =========================================================================
-    # Robot Utilities (Joint/Sensor Access)
-    # =========================================================================
-
-    def get_floating_base_qpos(self, qpos: jax.Array) -> jax.Array:
-        """Get floating base position (7D: 3 pos + 4 quat)."""
-        return qpos[self._floating_base_qpos_addr : self._floating_base_qpos_addr + 7]
-
-    def get_floating_base_qvel(self, qvel: jax.Array) -> jax.Array:
-        """Get floating base velocity (6D: 3 lin + 3 ang)."""
-        return qvel[self._floating_base_qvel_addr : self._floating_base_qvel_addr + 6]
-
-    def get_gravity(self, data: mjx.Data) -> jax.Array:
-        """Get gravity vector in local frame."""
-        return mjx_env.get_sensor_data(
-            self._mj_model, data, self._robot_config.gravity_sensor
-        )
-
-    def get_global_angvel(self, data: mjx.Data) -> jax.Array:
-        """Get angular velocity in world frame."""
-        return mjx_env.get_sensor_data(
-            self._mj_model, data, self._robot_config.global_angvel_sensor
-        )
-
-    def get_local_linvel(self, data: mjx.Data) -> jax.Array:
-        """Get linear velocity in local frame."""
-        return mjx_env.get_sensor_data(
-            self._mj_model, data, self._robot_config.local_linvel_sensor
-        )
-
-    def get_root_quat(self, data: mjx.Data) -> jax.Array:
-        """Get root quaternion (wxyz format from MuJoCo qpos)."""
-        # MuJoCo qpos stores quaternion as [w, x, y, z] at indices 3-6
-        return self.get_floating_base_qpos(data.qpos)[3:7]
-
-    def get_heading_sin_cos(self, data: mjx.Data) -> jax.Array:
-        """Get heading (yaw) as sin/cos for observation.
-
-        Extracts yaw angle from root quaternion and returns [sin(yaw), cos(yaw)].
-        This allows the policy and AMP features to compute heading-local frame
-        velocities for rotation invariance.
-
-        Returns:
-            heading_sin_cos: (2,) array of [sin(yaw), cos(yaw)]
-        """
-        quat = self.get_root_quat(data)  # [w, x, y, z]
-        return heading_sin_cos_from_quat_jax(quat)
-
-    def get_heading_local_linvel(self, data: mjx.Data) -> jax.Array:
-        """Get linear velocity in heading-local frame.
-
-        v0.7.0: Heading-local = world frame rotated by -yaw.
-        This matches the reference data definition in GMR.
-
-        The heading-local frame provides:
-        - Invariance to global heading (yaw)
-        - Preserves forward/lateral velocity semantics
-
-        Returns:
-            linvel_heading: (3,) linear velocity in heading-local frame
-        """
-        # Get world-frame linear velocity from qvel (floating base)
-        # qvel[0:3] = world-frame linear velocity of floating base
-        linvel_world = self.get_floating_base_qvel(data.qvel)[0:3]
-
-        # Get heading sin/cos
-        heading = self.get_heading_sin_cos(data)  # [sin_yaw, cos_yaw]
-        sin_yaw, cos_yaw = heading[0], heading[1]
-
-        # Rotate world velocity to heading-local frame
-        # R_heading_from_world = R_z(-yaw)
-        # v_heading = R_z(-yaw) @ v_world
-        vx, vy, vz = linvel_world[0], linvel_world[1], linvel_world[2]
-
-        return heading_local_from_world_jax(linvel_world, sin_yaw, cos_yaw)
-
-    def get_heading_local_angvel(self, data: mjx.Data) -> jax.Array:
-        """Get angular velocity in heading-local frame.
-
-        Converts world-frame angular velocity to heading-local frame.
-        This provides rotation invariance for the AMP discriminator.
-
-        Returns:
-            angvel_heading: (3,) angular velocity in heading-local frame
-        """
-        # Get world-frame angular velocity
-        angvel_world = self.get_global_angvel(data)  # [wx, wy, wz] in world frame
-
-        # Get heading sin/cos
-        heading = self.get_heading_sin_cos(data)
-        sin_yaw, cos_yaw = heading[0], heading[1]
-
-        # Rotate world angular velocity to heading-local frame
-        # R_heading_from_world = R_z(-yaw)
-        # v_heading = R_z(-yaw) @ v_world
-        wx, wy, wz = angvel_world[0], angvel_world[1], angvel_world[2]
-
-        return heading_local_from_world_jax(angvel_world, sin_yaw, cos_yaw)
-
-    # =========================================================================
-    # Foot Utilities
-    # =========================================================================
-
-    def _get_raw_foot_contact_by_geom(self, data: mjx.Data, geom_id: int) -> jax.Array:
-        """Get raw contact normal force for a single foot geom.
-
-        Uses efc_force[efc_address] directly - the solver-native representation.
-        This is the industry standard approach (dm_control, OpenAI Gym, Meta
-        locomotion code, MJX/Brax pipelines).
-
-        Note: This does NOT match mj_contactForce() output, which reconstructs
-        forces in contact frame. For learning workloads, solver-native efc_force
-        is preferred because:
-        - It's deterministic and cheap
-        - Locomotion rewards need load heuristics, not exact wrenches
-        - It's what MJX exposes (no contactForce helper by design)
-
-        Args:
-            data: MJX simulation data
-            geom_id: ID of the geom to query
-
-        Returns:
-            Sum of normal constraint forces on the geom (solver units)
-        """
-        geom1_match = data.contact.geom1 == geom_id
-        geom2_match = data.contact.geom2 == geom_id
-        is_our_contact = geom1_match | geom2_match
-
-        # Get normal forces from constraint solver
-        # efc_address[i] is the index where contact i's forces start in efc_force
-        # The first element at each address is the normal force component
-        normal_forces = data.efc_force[data.contact.efc_address]
-
-        # Sum forces for contacts involving this geom
-        our_forces = jp.where(is_our_contact, jp.abs(normal_forces), 0.0)
-        return jp.sum(our_forces)
-
-    def get_foot_positions(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
-        """Get foot body positions in world frame.
-
-        Uses actual foot bodies (not *_mimic sites which are for GMR retargeting).
-
-        Returns:
-            (left_foot_pos, right_foot_pos): Each (3,) in world frame
-        """
-        left_pos = data.xpos[self._left_foot_body_id]
-        right_pos = data.xpos[self._right_foot_body_id]
-        return left_pos, right_pos
-
-    def get_foot_velocities(
-        self, data: mjx.Data, prev_left_pos: jax.Array, prev_right_pos: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        """Get foot velocities via finite difference.
-
-        Args:
-            data: Current MJX data
-            prev_left_pos: Previous left foot position (3,)
-            prev_right_pos: Previous right foot position (3,)
-
-        Returns:
-            (left_vel, right_vel): Each (3,) in world frame
-        """
-        left_pos, right_pos = self.get_foot_positions(data)
-        left_vel = (left_pos - prev_left_pos) / self.dt
-        right_vel = (right_pos - prev_right_pos) / self.dt
-        return left_vel, right_vel
-
-    def get_norm_foot_contacts(self, data: mjx.Data) -> jax.Array:
-        """Get normalized foot contact features for AMP discriminator.
-
-        Extracts contact forces from MJX and converts to soft-thresholded
-        contact values in range [0, 1] using tanh normalization.
-
-        This follows industry best practices (DeepMind, ETH Zurich, NVIDIA):
-        - Continuous values (not binary) for smoother gradients
-        - tanh normalization: tanh(force / scale)
-        - 4-dim output: [left_toe, left_heel, right_toe, right_heel]
-
-        Args:
-            data: MJX simulation data containing contact information
-
-        Returns:
-            foot_contacts: (4,) array of contact values in [0, 1]
-                [0] = left_toe (left_foot_btm_front)
-                [1] = left_heel (left_foot_btm_back)
-                [2] = right_toe (right_foot_btm_front)
-                [3] = right_heel (right_foot_btm_back)
-        """
-        # Get contact forces for each foot geom
-        left_toe_force = self._get_raw_foot_contact_by_geom(
-            data, self._left_toe_geom_id
-        )
-        left_heel_force = self._get_raw_foot_contact_by_geom(
-            data, self._left_heel_geom_id
-        )
-        right_toe_force = self._get_raw_foot_contact_by_geom(
-            data, self._right_toe_geom_id
-        )
-        right_heel_force = self._get_raw_foot_contact_by_geom(
-            data, self._right_heel_geom_id
-        )
-
-        # Soft thresholding with tanh: continuous value in [0, 1]
-        # scale=10.0 means: 10N → tanh(1) ≈ 0.76, 20N → tanh(2) ≈ 0.96
-        foot_contacts = jp.array(
-            [
-                jp.tanh(left_toe_force / self._contact_scale),
-                jp.tanh(left_heel_force / self._contact_scale),
-                jp.tanh(right_toe_force / self._contact_scale),
-                jp.tanh(right_heel_force / self._contact_scale),
-            ]
-        )
-
-        return foot_contacts
-
-    def get_raw_foot_contacts(self, data: mjx.Data) -> tuple[jax.Array, jax.Array]:
-        """Get raw foot contact forces (not normalized).
-
-        Returns normal forces for left and right feet (sum of toe + heel).
-        Used for reward computation where threshold comparison is needed.
-
-        Returns:
-            (left_force, right_force): Scalar normal forces in Newtons
-        """
-        left_toe_force = self._get_raw_foot_contact_by_geom(
-            data, self._left_toe_geom_id
-        )
-        left_heel_force = self._get_raw_foot_contact_by_geom(
-            data, self._left_heel_geom_id
-        )
-        right_toe_force = self._get_raw_foot_contact_by_geom(
-            data, self._right_toe_geom_id
-        )
-        right_heel_force = self._get_raw_foot_contact_by_geom(
-            data, self._right_heel_geom_id
-        )
-
-        left_force = left_toe_force + left_heel_force
-        right_force = right_toe_force + right_heel_force
-
-        return left_force, right_force
-
-    # =========================================================================
     # Properties (MjxEnv interface)
     # =========================================================================
 
     @property
     def xml_path(self) -> str:
-        return self._xml_path
+        """Path to the xml file for the environment (required by MjxEnv)."""
+        return str(self._model_path)
 
     @property
     def action_size(self) -> int:

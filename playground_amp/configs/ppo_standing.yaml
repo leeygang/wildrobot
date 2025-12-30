@@ -46,9 +46,8 @@ env:
   # Contacts
   contact_threshold_force: 5.0
 
-  # Action filtering
-  use_action_filter: true
-  action_filter_alpha: 0.7
+  # Action filtering (alpha=0 disables filtering)
+  action_filter_alpha: 0.3
 
 # =============================================================================
 # PPO Algorithm (task learning)

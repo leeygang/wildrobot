@@ -45,10 +45,8 @@ class RobotConfig:
         amp_feature_dim: AMP feature dimension
         floating_base_name: Name of the floating base joint
         floating_base_body: Name of the root body
-        joint_names: List of all joint names
         joint_limits: Dict mapping joint name to (min, max) limits
         observation_indices: Dict mapping observation component to (start, end) indices
-        sensors: Dict mapping sensor type to list of sensor info
     """
 
     robot_name: str
@@ -61,18 +59,14 @@ class RobotConfig:
     floating_base_body: Optional[str]
     floating_base_qpos_dim: int
     floating_base_qvel_dim: int
-    joint_names: List[str]
     joint_limits: Dict[str, Tuple[float, float]]
     observation_indices: Dict[str, Dict[str, int]]
     observation_breakdown: Dict[str, int]
     amp_feature_breakdown: Dict[str, int]
-    sensors: Dict[str, List[Dict[str, Any]]]
 
     # Feet configuration (for contact detection)
-    feet_sites: List[str]
     feet_left_geoms: List[str]
     feet_right_geoms: List[str]
-    feet_all_geoms: List[str]
     # Foot body names (for slip/clearance computation)
     left_foot_body: str
     right_foot_body: str
@@ -80,63 +74,54 @@ class RobotConfig:
     # v0.11.0: Actuated joints config for CAL (Control Abstraction Layer)
     actuated_joints: List[Dict[str, Any]] = field(default_factory=list)
 
-    raw_config: Dict[str, Any] = field(repr=False)
+    # Internal: raw YAML config for property access (not part of public API)
+    _raw_config: Dict[str, Any] = field(default_factory=dict, repr=False)
 
-    # Sensor names (derived from sensors dict for convenience)
+    # =========================================================================
+    # Root Sensor Properties (from root.sensors config - single source of truth)
+    # =========================================================================
+
+    def _get_root_sensor(self, key: str) -> str:
+        """Get a root sensor name, raising error if not configured."""
+        root = self._raw_config.get("root_spec")
+        if not root:
+            raise ValueError("robot_config.yaml missing 'root_spec' section")
+        sensors = root.get("sensors")
+        if not sensors:
+            raise ValueError("robot_config.yaml missing 'root_spec.sensors' section")
+        if key not in sensors:
+            raise ValueError(f"robot_config.yaml missing 'root_spec.sensors.{key}'")
+        return sensors[key]
+
     @property
     def gravity_sensor(self) -> str:
         """Get gravity/up-vector sensor name."""
-        framezaxis = self.sensors.get("framezaxis", [])
-        for s in framezaxis:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                or "upvector" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return framezaxis[0]["name"] if framezaxis else ""
-
-    @property
-    def global_linvel_sensor(self) -> str:
-        """Get global linear velocity sensor name."""
-        framelinvel = self.sensors.get("framelinvel", [])
-        for s in framelinvel:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                and "global" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return framelinvel[0]["name"] if framelinvel else ""
+        return self._get_root_sensor("gravity")
 
     @property
     def global_angvel_sensor(self) -> str:
         """Get global angular velocity sensor name."""
-        frameangvel = self.sensors.get("frameangvel", [])
-        for s in frameangvel:
-            if (
-                "pelvis" in s.get("name", "").lower()
-                and "global" in s.get("name", "").lower()
-            ):
-                return s["name"]
-        return frameangvel[0]["name"] if frameangvel else ""
+        return self._get_root_sensor("global_angvel")
 
     @property
     def local_linvel_sensor(self) -> str:
         """Get local linear velocity sensor name."""
-        velocimeter = self.sensors.get("velocimeter", [])
-        for s in velocimeter:
-            if "pelvis" in s.get("name", "").lower():
-                return s["name"]
-        return velocimeter[0]["name"] if velocimeter else ""
+        return self._get_root_sensor("local_linvel")
 
     @property
-    def gyro_sensor_names(self) -> List[str]:
-        """Get list of gyro sensor names."""
-        return [s["name"] for s in self.sensors.get("gyro", [])]
+    def orientation_sensor(self) -> str:
+        """Get root orientation sensor name (framequat from chest IMU)."""
+        return self._get_root_sensor("orientation")
 
     @property
-    def accelerometer_sensor_names(self) -> List[str]:
-        """Get list of accelerometer sensor names."""
-        return [s["name"] for s in self.sensors.get("accelerometer", [])]
+    def root_gyro_sensor(self) -> str:
+        """Get root angular velocity sensor name (gyro from chest IMU)."""
+        return self._get_root_sensor("gyro")
+
+    @property
+    def root_accel_sensor(self) -> str:
+        """Get root accelerometer sensor name (from chest IMU)."""
+        return self._get_root_sensor("accel")
 
     def get_actuator_index(self, name: str) -> int:
         """Get actuator index by name (order matches actuator_names)."""
@@ -161,14 +146,40 @@ class RobotConfig:
             self.get_actuator_index("right_knee_pitch"),
         )
 
+    def _get_foot_spec(self, side: str, key: str) -> str:
+        """Get a foot spec value, raising error if not configured."""
+        feet_config = self._raw_config.get("foot_specs")
+        if not feet_config:
+            raise ValueError("robot_config.yaml missing 'foot_specs' section")
+        foot = feet_config.get(side)
+        if not foot:
+            raise ValueError(f"robot_config.yaml missing 'foot_specs.{side}' section")
+        if key not in foot:
+            raise ValueError(f"robot_config.yaml missing 'foot_specs.{side}.{key}'")
+        return foot[key]
+
     def get_foot_geom_names(self) -> Tuple[str, str, str, str]:
         """Get foot geom names as (left_toe, left_heel, right_toe, right_heel)."""
-        feet_config = self.raw_config.get("feet", {})
-        left_toe = feet_config.get("left_toe", "left_toe")
-        left_heel = feet_config.get("left_heel", "left_heel")
-        right_toe = feet_config.get("right_toe", "right_toe")
-        right_heel = feet_config.get("right_heel", "right_heel")
-        return left_toe, left_heel, right_toe, right_heel
+        return (
+            self._get_foot_spec("left", "toe"),
+            self._get_foot_spec("left", "heel"),
+            self._get_foot_spec("right", "toe"),
+            self._get_foot_spec("right", "heel"),
+        )
+
+    @property
+    def contact_scale(self) -> float:
+        """Get contact force normalization scale for tanh.
+
+        Used by CAL to normalize foot contact forces: tanh(force / scale)
+        10.0 means: 10N → tanh(1) ≈ 0.76, 20N → tanh(2) ≈ 0.96
+        """
+        feet_config = self._raw_config.get("foot_specs")
+        if not feet_config:
+            raise ValueError("robot_config.yaml missing 'foot_specs' section")
+        if "contact_scale" not in feet_config:
+            raise ValueError("robot_config.yaml missing 'foot_specs.contact_scale'")
+        return feet_config["contact_scale"]
 
     @classmethod
     def from_yaml(cls, config_path: str | Path) -> "RobotConfig":
@@ -183,54 +194,61 @@ class RobotConfig:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        # Extract actuator info
-        actuators = config.get("actuators", {})
-        actuator_names = actuators.get("names", [])
-        actuator_joints = actuators.get("joints", [])
-        action_dim = actuators.get("count", len(actuator_names))
+        # v0.11.0: Extract actuated joints config (single source of truth)
+        actuated_joints = config.get("actuated_joint_specs", [])
 
-        # Extract dimensions
-        dims = config.get("dimensions", {})
-        observation_dim = dims.get("observation_dim", 38)
-        amp_feature_dim = dims.get("amp_feature_dim", 29)
+        # Derive actuator info from actuated_joints
+        actuator_names = [j["name"] for j in actuated_joints]
+        actuator_joints = actuator_names  # For position-controlled, name == joint
+        action_dim = len(actuated_joints)
 
-        # Extract floating base info
-        fb = config.get("floating_base", {}) or {}
-        floating_base_name = fb.get("name")
-        floating_base_body = fb.get("root_body")
-        floating_base_qpos_dim = fb.get("qpos_dim", 7)
-        floating_base_qvel_dim = fb.get("qvel_dim", 6)
+        # Extract breakdowns (source of truth)
+        observation_breakdown = config.get("observation_breakdown", {})
+        amp_feature_breakdown = config.get("amp_feature_breakdown", {})
 
-        # Extract joint info
-        joints = config.get("joints", {})
-        joint_names = [j for j in joints.get("names", []) if j is not None]
+        # Compute dimensions from breakdowns
+        observation_dim = (
+            sum(observation_breakdown.values()) if observation_breakdown else 38
+        )
+        amp_feature_dim = (
+            sum(amp_feature_breakdown.values()) if amp_feature_breakdown else 29
+        )
 
-        # Build joint limits dict
+        # Compute observation indices from breakdown
+        obs_idx = 0
+        observation_indices = {}
+        for key, size in observation_breakdown.items():
+            observation_indices[key] = {"start": obs_idx, "end": obs_idx + size}
+            obs_idx += size
+
+        # Extract root info (merged floating_base + root_imu)
+        root_config = config.get("root_spec", {}) or {}
+        floating_base_name = root_config.get("joint")
+        floating_base_body = root_config.get("body")
+        floating_base_qpos_dim = root_config.get("qpos_dim", 7)
+        floating_base_qvel_dim = root_config.get("qvel_dim", 6)
+
+        # Build joint limits dict from actuated_joints
         joint_limits = {}
-        for joint_detail in joints.get("details", []):
-            name = joint_detail.get("name")
-            if name and "range" in joint_detail:
-                joint_limits[name] = tuple(joint_detail["range"])
+        for joint in actuated_joints:
+            name = joint.get("name")
+            if name and "range" in joint:
+                joint_limits[name] = tuple(joint["range"])
 
-        # Extract observation indices
-        observation_indices = config.get("observation_indices", {})
-        observation_breakdown = dims.get("observation_breakdown", {})
-        amp_feature_breakdown = dims.get("amp_feature_breakdown", {})
+        # Extract feet configuration (split left/right)
+        feet = config.get("foot_specs", {})
+        left_foot = feet.get("left", {})
+        right_foot = feet.get("right", {})
 
-        # Extract sensors
-        sensors = config.get("sensors", {})
-
-        # Extract feet configuration
-        feet = config.get("feet", {})
-        feet_sites = feet.get("sites", [])
-        feet_left_geoms = feet.get("left_geoms", [])
-        feet_right_geoms = feet.get("right_geoms", [])
-        feet_all_geoms = feet.get("all_geoms", [])
-        left_foot_body = feet.get("left_foot_body", "left_foot")
-        right_foot_body = feet.get("right_foot_body", "right_foot")
-
+        # Build legacy fields for backward compatibility
+        left_foot_body = left_foot.get("body", "left_foot")
+        right_foot_body = right_foot.get("body", "right_foot")
+        feet_left_geoms = [left_foot.get("heel"), left_foot.get("toe")]
+        feet_left_geoms = [g for g in feet_left_geoms if g]
+        feet_right_geoms = [right_foot.get("toe"), right_foot.get("heel")]
+        feet_right_geoms = [g for g in feet_right_geoms if g]
         # v0.11.0: Extract actuated joints config for CAL
-        actuated_joints = config.get("actuated_joints", [])
+        actuated_joints = config.get("actuated_joint_specs", [])
 
         return cls(
             robot_name=config.get("robot_name", "unknown"),
@@ -243,44 +261,17 @@ class RobotConfig:
             floating_base_body=floating_base_body,
             floating_base_qpos_dim=floating_base_qpos_dim,
             floating_base_qvel_dim=floating_base_qvel_dim,
-            joint_names=joint_names,
             joint_limits=joint_limits,
             observation_indices=observation_indices,
             observation_breakdown=observation_breakdown,
             amp_feature_breakdown=amp_feature_breakdown,
-            sensors=sensors,
-            feet_sites=feet_sites,
             feet_left_geoms=feet_left_geoms,
             feet_right_geoms=feet_right_geoms,
-            feet_all_geoms=feet_all_geoms,
             left_foot_body=left_foot_body,
             right_foot_body=right_foot_body,
             actuated_joints=actuated_joints,
-            raw_config=config,
+            _raw_config=config,
         )
-
-    def get_obs_slice(self, component: str) -> slice:
-        """Get slice for extracting observation component.
-
-        Args:
-            component: Name of observation component (e.g., 'joint_positions')
-
-        Returns:
-            slice object for indexing into observation array
-        """
-        indices = self.observation_indices.get(component, {})
-        return slice(indices.get("start", 0), indices.get("end", 0))
-
-    def get_sensor_names(self, sensor_type: str) -> List[str]:
-        """Get list of sensor names for a given type.
-
-        Args:
-            sensor_type: Sensor type (e.g., 'gyro', 'accelerometer')
-
-        Returns:
-            List of sensor names
-        """
-        return [s["name"] for s in self.sensors.get(sensor_type, [])]
 
 
 # =============================================================================

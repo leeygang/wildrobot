@@ -1,8 +1,12 @@
-# Control Abstraction Layer (CAL) Proposal
+# Control Abstraction Layer (CAL)
 
 ## Executive Summary
 
-This document proposes introducing a **Control Abstraction Layer (CAL)** to decouple high-level flows (training, testing, sim2real) from MuJoCo primitives. This addresses the current issues of ambiguous actuator semantics, incorrect symmetry assumptions, and training pipelines learning simulator quirks.
+This document describes the **Control Abstraction Layer (CAL)** that decouples high-level flows (training, testing, sim2real) from MuJoCo primitives. This addresses the issues of ambiguous actuator semantics, incorrect symmetry assumptions, and training pipelines learning simulator quirks.
+
+**Current Version**: v0.11.0
+
+**Module Location**: `playground_amp/cal/`
 
 ---
 
@@ -1427,15 +1431,16 @@ This makes explicit `mirror_sign` config optional - CAL can infer it from ranges
 
 ## 6. File Structure
 
-### 6.1 New Files
+### 6.1 Module Files
 
 ```
 playground_amp/
-├── control/                        # NEW: CAL module
+├── cal/                            # CAL module
 │   ├── __init__.py                 # Export CAL, specs, types
 │   ├── cal.py                      # ControlAbstractionLayer class
-│   ├── specs.py                    # JointSpec, ActuatorSpec, ControlCommand
-│   └── types.py                    # ActuatorType, VelocityProfile enums
+│   ├── specs.py                    # JointSpec, ActuatorSpec, ControlCommand, Pose3D, Velocity3D
+│   ├── types.py                    # ActuatorType, VelocityProfile, CoordinateFrame enums
+│   └── cal.md                      # This documentation
 │
 ├── envs/
 │   └── wildrobot_env.py            # UPDATE: integrate CAL
@@ -1444,10 +1449,8 @@ playground_amp/
 │   └── robot_config.py             # UPDATE: add actuated_joints support
 │
 ├── tests/
-│   └── test_cal.py                 # NEW: CAL unit tests
-│
-└── docs/
-    └── CONTROL_ABSTRACTION_LAYER_PROPOSAL.md  # This document
+│   ├── test_cal.py                 # CAL unit tests
+│   └── test_physics_validation.py  # Physics validation tests
 
 assets/
 ├── keyframes.xml                   # NEW: dedicated keyframe file
@@ -1459,26 +1462,27 @@ assets/
 ### 6.2 File Descriptions
 
 | File | Location | Purpose |
-|------|----------|---------|
-| `cal.py` | `playground_amp/control/` | Main ControlAbstractionLayer class with all transformation methods |
-| `specs.py` | `playground_amp/control/` | JointSpec, ActuatorSpec, ControlCommand dataclasses |
-| `types.py` | `playground_amp/control/` | ActuatorType, VelocityProfile enums |
-| `__init__.py` | `playground_amp/control/` | Module exports |
+|------|----------|----------|
+| `cal.py` | `playground_amp/cal/` | Main ControlAbstractionLayer class with all transformation methods |
+| `specs.py` | `playground_amp/cal/` | JointSpec, ActuatorSpec, ControlCommand, Pose3D, Velocity3D, FootSpec, RootSpec |
+| `types.py` | `playground_amp/cal/` | ActuatorType, VelocityProfile, CoordinateFrame enums |
+| `__init__.py` | `playground_amp/cal/` | Module exports |
+| `cal.md` | `playground_amp/cal/` | This documentation |
 | `test_cal.py` | `playground_amp/tests/` | Unit tests for CAL |
 | `keyframes.xml` | `assets/` | Home pose, t-pose, squat keyframes |
 | `post_process.py` | `assets/` | Add `generate_actuated_joints_config()` function |
 | `robot_config.yaml` | `assets/` | Add `actuated_joints` section |
-| `wildrobot_env.py` | `playground_amp/envs/` | Replace direct ctrl access with CAL |
+| `wildrobot_env.py` | `playground_amp/envs/` | Uses CAL for all control and state access |
 | `robot_config.py` | `playground_amp/configs/` | Support new actuated_joints schema |
 
 ### 6.3 Implementation Order
 
 ```
-Phase 1: Create CAL Module
-├── 1. playground_amp/control/types.py      # Enums first (no dependencies)
-├── 2. playground_amp/control/specs.py      # Dataclasses (depends on types)
-├── 3. playground_amp/control/cal.py        # Main class (depends on specs)
-└── 4. playground_amp/control/__init__.py   # Exports
+Phase 1: Create CAL Module ✅ COMPLETE
+├── 1. playground_amp/cal/types.py          # Enums (CoordinateFrame, ActuatorType, VelocityProfile)
+├── 2. playground_amp/cal/specs.py          # Dataclasses (JointSpec, ActuatorSpec, Pose3D, Velocity3D, etc.)
+├── 3. playground_amp/cal/cal.py            # Main class (ControlAbstractionLayer)
+└── 4. playground_amp/cal/__init__.py       # Exports
 
 Phase 2: Create Keyframes
 └── 5. assets/keyframes.xml                 # Extract from scene_flat_terrain.xml
@@ -1653,48 +1657,209 @@ class CoordinateFrame(Enum):
 
 @dataclass(frozen=True)
 class Pose3D:
-    """General 3D pose with coordinate frame.
+    """General 3D pose with coordinate frame (JAX-native).
 
     Self-documenting: frame is stored with the data.
     Reusable for root, feet, or any body.
 
-    Example:
+    Array Type Design (Factory Pattern):
+        - Default: JAX arrays for JIT-compiled training
+        - Use from_numpy() for visualization with MuJoCo's NumPy arrays
+
+    Example (JAX - training):
         pose = cal.get_root_pose(data, frame=CoordinateFrame.WORLD)
         height = pose.height
-        quat = pose.orientation
-        print(f"Position in {pose.frame.value}: {pose.position}")
+        roll, pitch, yaw = pose.euler_angles()
+
+    Example (NumPy - visualization):
+        pose = Pose3D.from_numpy(
+            position=mj_data.qpos[:3],
+            orientation=mj_data.qpos[3:7],
+            frame=CoordinateFrame.WORLD,
+        )
+        sin_yaw, cos_yaw = pose.heading_sincos
     """
     position: jax.Array        # (3,) [x, y, z] in meters
     orientation: jax.Array     # (4,) quaternion [qw, qx, qy, qz]
     frame: CoordinateFrame     # Frame this pose is expressed in
 
+    @classmethod
+    def from_numpy(cls, position, orientation, frame) -> Pose3D:
+        """Create Pose3D from NumPy arrays (for visualization)."""
+        return cls(
+            position=jnp.array(position),
+            orientation=jnp.array(orientation),
+            frame=frame,
+        )
+
     @property
-    def height(self) -> jax.Array:
-        """Z position (convenience accessor)."""
+    def height(self) -> float:
+        """Z position (height above ground)."""
         return self.position[2]
 
     @property
-    def xy(self) -> jax.Array:
-        """XY position (convenience accessor)."""
-        return self.position[:2]
+    def xyz(self) -> tuple[float, float, float]:
+        """Position as (x, y, z) tuple for unpacking."""
+        return self.position[0], self.position[1], self.position[2]
+
+    def euler_angles(self) -> tuple[float, float, float]:
+        """Extract Euler angles (ZYX convention) from orientation quaternion.
+
+        Returns:
+            (roll, pitch, yaw) in radians
+            - roll: rotation around X-axis (body lean left/right)
+            - pitch: rotation around Y-axis (body lean forward/backward)
+            - yaw: rotation around Z-axis (heading direction)
+
+        Raises:
+            ValueError: If pose is not in WORLD frame
+
+        Note:
+            WORLD frame is required because pitch/roll have physical meaning
+            only when measured relative to gravity (world Z-up).
+        """
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(
+                f"euler_angles requires WORLD frame, got {self.frame}. "
+                f"Pitch/roll are only meaningful relative to gravity (world Z-up)."
+            )
+        # ... quaternion to euler conversion ...
+        return roll, pitch, yaw
+
+    @property
+    def heading_sincos(self) -> tuple[float, float]:
+        """Heading (yaw) angle as (sin, cos) components.
+
+        Returns sin/cos instead of angle because:
+        - Continuous (no discontinuity at ±π)
+        - Better for NN observations and frame transformations
+
+        Naming: "heading" for consistency with HEADING_LOCAL frame.
+        """
+        _, _, yaw = self.euler_angles()
+        return jnp.sin(yaw), jnp.cos(yaw)
+
+    def to_heading_local(self, vec_world: jax.Array) -> jax.Array:
+        """Transform a world-frame vector to heading-local frame."""
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(...)
+        sin_yaw, cos_yaw = self.heading_sincos
+        # ... rotation math ...
+        return rotated_vec
+
+    def linvel_fd(self, prev: Pose3D, dt: float, frame: CoordinateFrame) -> jax.Array:
+        """Compute finite-difference linear velocity."""
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(...)
+        linvel_world = (self.position - prev.position) / dt
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            return self.to_heading_local(linvel_world)
+        return linvel_world
+
+    def angvel_fd(self, prev: Pose3D, dt: float, frame: CoordinateFrame) -> jax.Array:
+        """Compute finite-difference angular velocity from quaternion change."""
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(...)
+        # ... quaternion derivative math ...
+        return angvel
+
+    def velocity_fd(
+        self,
+        prev: Pose3D,
+        dt: float,
+        frame: CoordinateFrame = CoordinateFrame.HEADING_LOCAL,
+    ) -> Velocity3D:
+        """Compute finite-difference velocity between two poses.
+
+        This is the PRIMARY method for computing velocity from pose history,
+        matching reference data computation for AMP parity.
+
+        Args:
+            prev: Previous pose (at time t - dt)
+            dt: Time step in seconds
+            frame: Coordinate frame for output velocity (default HEADING_LOCAL for AMP)
+
+        Returns:
+            Velocity3D with linear and angular velocity in specified frame
+
+        Example:
+            curr_pose = cal.get_root_pose(data)
+            prev_pose = Pose3D(prev_pos, prev_quat, CoordinateFrame.WORLD)
+            vel = curr_pose.velocity_fd(prev_pose, dt=0.02)
+        """
+        return Velocity3D(
+            linear=self.linvel_fd(prev, dt, frame),
+            angular=self.angvel_fd(prev, dt, frame),
+            frame=frame,
+        )
 
 
 @dataclass(frozen=True)
 class Velocity3D:
-    """General 3D velocity with coordinate frame.
+    """General 3D velocity with coordinate frame (JAX-native).
 
     Self-documenting: frame is stored with the data.
     Reusable for root, feet, or any body.
 
-    Example:
-        vel = cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
-        forward_speed = vel.linear[0]
-        yaw_rate = vel.angular[2]
-        assert vel.frame == CoordinateFrame.HEADING_LOCAL
+    Array Type Design (Factory Pattern):
+        - Default: JAX arrays for JIT-compiled training
+        - Use from_numpy() for visualization with MuJoCo's NumPy arrays
+
+    Example (JAX - training):
+        vel = cal.get_root_velocity(data, frame=CoordinateFrame.WORLD)
+        vel_local = vel.to_heading_local(pose)
+        assert vel_local.frame == CoordinateFrame.HEADING_LOCAL
+
+    Example (NumPy - visualization):
+        vel = Velocity3D.from_numpy(
+            linear=mj_data.qvel[:3],
+            angular=mj_data.qvel[3:6],
+            frame=CoordinateFrame.WORLD,
+        )
+        vel_local = vel.to_heading_local(pose)
     """
     linear: jax.Array          # (3,) [vx, vy, vz] in m/s
     angular: jax.Array         # (3,) [wx, wy, wz] in rad/s
     frame: CoordinateFrame     # Frame this velocity is expressed in
+
+    @classmethod
+    def from_numpy(cls, linear, angular, frame) -> Velocity3D:
+        """Create Velocity3D from NumPy arrays (for visualization)."""
+        return cls(
+            linear=jnp.array(linear),
+            angular=jnp.array(angular),
+            frame=frame,
+        )
+
+    @property
+    def linear_xyz(self) -> tuple[float, float, float]:
+        """Linear velocity as (vx, vy, vz) tuple for unpacking."""
+        return self.linear[0], self.linear[1], self.linear[2]
+
+    @property
+    def angular_xyz(self) -> tuple[float, float, float]:
+        """Angular velocity as (wx, wy, wz) tuple for unpacking."""
+        return self.angular[0], self.angular[1], self.angular[2]
+
+    def to_heading_local(self, pose: Pose3D) -> Velocity3D:
+        """Transform velocity from world frame to heading-local frame.
+
+        Args:
+            pose: Pose3D providing the heading direction (must have orientation)
+
+        Returns:
+            New Velocity3D in heading-local frame
+
+        Raises:
+            ValueError: If velocity is not in WORLD frame
+        """
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(...)
+        return Velocity3D(
+            linear=pose.to_heading_local(self.linear),
+            angular=pose.to_heading_local(self.angular),
+            frame=CoordinateFrame.HEADING_LOCAL,
+        )
 
 
 # =========================================================================
@@ -2394,10 +2559,6 @@ class ControlAbstractionLayer:
 
         Returns:
             Rotated vector in body frame
-
-        Note:
-            This is a JAX version of the function in mocap_retarget.py.
-            Should be moved to heading_math.py for shared use.
         """
         w, x, y, z = quat[0], quat[1], quat[2], quat[3]
 

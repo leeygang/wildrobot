@@ -114,7 +114,7 @@ def test_env_basics():
 
     # Get contact forces
     print("\n6. Checking contact forces...")
-    left_force, right_force = env.get_raw_foot_contacts(state2.data)
+    left_force, right_force = env._cal.get_aggregated_foot_contacts(state2.data)
     print(f"   Left foot force: {float(left_force):.2f} N")
     print(f"   Right foot force: {float(right_force):.2f} N")
 
@@ -123,7 +123,7 @@ def test_env_basics():
     for _ in range(100):
         state2 = env.step(state2, action)
 
-    left_force, right_force = env.get_raw_foot_contacts(state2.data)
+    left_force, right_force = env._cal.get_aggregated_foot_contacts(state2.data)
     total_force = float(left_force + right_force)
 
     # Estimate expected weight

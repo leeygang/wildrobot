@@ -1,442 +1,111 @@
 robot_name: WildRobotDev
 generated_from: wildrobot.xml
-actuators:
-  names:
-  - left_hip_pitch
-  - left_hip_roll
-  - left_knee_pitch
-  - left_ankle_pitch
-  - right_hip_pitch
-  - right_hip_roll
-  - right_knee_pitch
-  - right_ankle_pitch
-  joints:
-  - left_hip_pitch
-  - left_hip_roll
-  - left_knee_pitch
-  - left_ankle_pitch
-  - right_hip_pitch
-  - right_hip_roll
-  - right_knee_pitch
-  - right_ankle_pitch
-  count: 8
-  details:
-  - name: left_hip_pitch
-    joint: left_hip_pitch
-    type: position
-    class: htd45hServo
-  - name: left_hip_roll
-    joint: left_hip_roll
-    type: position
-    class: htd45hServo
-  - name: left_knee_pitch
-    joint: left_knee_pitch
-    type: position
-    class: htd45hServo
-  - name: left_ankle_pitch
-    joint: left_ankle_pitch
-    type: position
-    class: htd45hServo
-  - name: right_hip_pitch
-    joint: right_hip_pitch
-    type: position
-    class: htd45hServo
-  - name: right_hip_roll
-    joint: right_hip_roll
-    type: position
-    class: htd45hServo
-  - name: right_knee_pitch
-    joint: right_knee_pitch
-    type: position
-    class: htd45hServo
-  - name: right_ankle_pitch
-    joint: right_ankle_pitch
-    type: position
-    class: htd45hServo
-joints:
-  names:
-  - null
-  - null
-  - null
-  - left_hip_pitch
-  - left_hip_roll
-  - left_knee_pitch
-  - left_ankle_pitch
-  - right_hip_pitch
-  - right_hip_roll
-  - right_knee_pitch
-  - right_ankle_pitch
-  count: 11
-  details:
-  - name: null
-    type: hinge
-    axis: 0 0 1
-    class: null
-  - name: null
-    type: hinge
-    axis: 0 0 1
-    class: null
-  - name: null
-    type: hinge
-    axis: 0 0 1
-    class: null
-    range:
-    - -0.008726646259971648
-    - 0.008726646259971648
-  - name: left_hip_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -0.08726646259971647
-    - 1.5707963267948966
-  - name: left_hip_roll
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -1.5707963267948966
-    - 0.17453292519943295
-  - name: left_knee_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - 0.0
-    - 1.3962634015954636
-  - name: left_ankle_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -0.7853981633974412
-    - 0.7853981633974554
-  - name: right_hip_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -1.570796326794894
-    - 0.08726646259971914
-  - name: right_hip_roll
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -0.17453292519943206
-    - 1.5707963267948974
-  - name: right_knee_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - 0.0
-    - 1.3962634015954636
-  - name: right_ankle_pitch
-    type: hinge
-    axis: 0 0 1
-    class: htd45hServo
-    range:
-    - -0.7853981633974385
-    - 0.785398163397458
-floating_base:
-  name: waist_freejoint
-  type: free
-  root_body: waist
+root_spec:
+  body: waist
+  joint: waist_freejoint
   qpos_dim: 7
   qvel_dim: 6
-sensors:
-  gyro:
-  - name: chest_imu_gyro
-    site: chest_imu
-    objname: null
-    objtype: null
-  - name: left_knee_imu_gyro
-    site: left_knee_imu
-    objname: null
-    objtype: null
-  - name: right_knee_imu_gyro
-    site: right_knee_imu
-    objname: null
-    objtype: null
-  - name: pelvis_gyro
-    site: pelvis_mimic
-    objname: null
-    objtype: null
-  - name: right_hip_gyro
-    site: right_hip_mimic
-    objname: null
-    objtype: null
-  - name: right_knee_gyro
-    site: right_knee_mimic
-    objname: null
-    objtype: null
-  - name: right_foot_gyro
-    site: right_foot_mimic
-    objname: null
-    objtype: null
-  - name: left_hip_gyro
-    site: left_hip_mimic
-    objname: null
-    objtype: null
-  - name: left_knee_gyro
-    site: left_knee_mimic
-    objname: null
-    objtype: null
-  - name: left_foot_gyro
-    site: left_foot_mimic
-    objname: null
-    objtype: null
-  accelerometer:
-  - name: chest_imu_accel
-    site: chest_imu
-    objname: null
-    objtype: null
-  - name: left_knee_imu_accel
-    site: left_knee_imu
-    objname: null
-    objtype: null
-  - name: right_knee_imu_accel
-    site: right_knee_imu
-    objname: null
-    objtype: null
-  - name: pelvis_accel
-    site: pelvis_mimic
-    objname: null
-    objtype: null
-  - name: right_hip_accel
-    site: right_hip_mimic
-    objname: null
-    objtype: null
-  - name: right_knee_accel
-    site: right_knee_mimic
-    objname: null
-    objtype: null
-  - name: right_foot_accel
-    site: right_foot_mimic
-    objname: null
-    objtype: null
-  - name: left_hip_accel
-    site: left_hip_mimic
-    objname: null
-    objtype: null
-  - name: left_knee_accel
-    site: left_knee_mimic
-    objname: null
-    objtype: null
-  - name: left_foot_accel
-    site: left_foot_mimic
-    objname: null
-    objtype: null
-  magnetometer:
-  - name: chest_imu_mag
-    site: chest_imu
-    objname: null
-    objtype: null
-  framequat:
-  - name: chest_imu_quat
-    site: null
-    objname: chest_imu
-    objtype: site
-  - name: pelvis_quat
-    site: null
-    objname: pelvis_mimic
-    objtype: site
-  - name: right_hip_quat
-    site: null
-    objname: right_hip_mimic
-    objtype: site
-  - name: right_knee_quat
-    site: null
-    objname: right_knee_mimic
-    objtype: site
-  - name: right_foot_quat
-    site: null
-    objname: right_foot_mimic
-    objtype: site
-  - name: left_hip_quat
-    site: null
-    objname: left_hip_mimic
-    objtype: site
-  - name: left_knee_quat
-    site: null
-    objname: left_knee_mimic
-    objtype: site
-  - name: left_foot_quat
-    site: null
-    objname: left_foot_mimic
-    objtype: site
-  velocimeter:
-  - name: pelvis_local_linvel
-    site: pelvis_mimic
-    objname: null
-    objtype: null
-  framezaxis:
-  - name: pelvis_upvector
-    site: null
-    objname: pelvis_mimic
-    objtype: site
-  - name: right_foot_upvector
-    site: null
-    objname: right_foot_mimic
-    objtype: site
-  - name: left_foot_upvector
-    site: null
-    objname: left_foot_mimic
-    objtype: site
-  framexaxis:
-  - name: pelvis_forwardvector
-    site: null
-    objname: pelvis_mimic
-    objtype: site
-  framelinvel:
-  - name: pelvis_global_linvel
-    site: null
-    objname: pelvis_mimic
-    objtype: site
-  - name: right_knee_linvel
-    site: null
-    objname: right_knee_mimic
-    objtype: site
-  - name: right_foot_linvel
-    site: null
-    objname: right_foot_mimic
-    objtype: site
-  - name: left_knee_linvel
-    site: null
-    objname: left_knee_mimic
-    objtype: site
-  - name: left_foot_linvel
-    site: null
-    objname: left_foot_mimic
-    objtype: site
-  frameangvel:
-  - name: pelvis_global_angvel
-    site: null
-    objname: pelvis_mimic
-    objtype: site
-  - name: right_hip_angvel
-    site: null
-    objname: right_hip_mimic
-    objtype: site
-  - name: left_hip_angvel
-    site: null
-    objname: left_hip_mimic
-    objtype: site
-dimensions:
-  action_dim: 8
-  observation_dim: 35
-  amp_feature_dim: 27
-  num_actuated_joints: 8
-  num_total_joints: 11
-  observation_breakdown:
-    gravity_vector: 3
-    base_angular_velocity: 3
-    base_linear_velocity: 3
-    joint_positions: 8
-    joint_velocities: 8
-    previous_action: 8
-    velocity_command: 1
-    padding: 1
-  amp_feature_breakdown:
-    joint_positions: 8
-    joint_velocities: 8
-    root_linear_velocity: 3
-    root_angular_velocity: 3
-    root_height: 1
-    foot_contacts: 4
-observation_indices:
-  gravity_vector:
-    start: 0
-    end: 3
-  base_angular_velocity:
-    start: 3
-    end: 6
-  base_linear_velocity:
-    start: 6
-    end: 9
-  joint_positions:
-    start: 9
-    end: 17
-  joint_velocities:
-    start: 17
-    end: 25
-  previous_action:
-    start: 25
-    end: 33
-  velocity_command:
-    start: 33
-    end: 34
-  padding:
-    start: 34
-    end: 35
-feet:
-  sites:
-  - left_foot_mimic
-  - right_foot_mimic
-  left_foot_body: left_foot
-  right_foot_body: right_foot
-  left_toe: left_toe
-  left_heel: left_heel
-  right_toe: right_toe
-  right_heel: right_heel
-  left_geoms:
-  - left_heel
-  - left_toe
-  right_geoms:
-  - right_toe
-  - right_heel
-  all_geoms:
-  - left_toe
-  - left_heel
-  - right_toe
-  - right_heel
-actuated_joints:
+  sensors:
+    orientation: chest_imu_quat
+    gyro: chest_imu_gyro
+    accel: chest_imu_accel
+    local_linvel: pelvis_local_linvel
+    gravity: pelvis_upvector
+    global_angvel: pelvis_global_angvel
+actuated_joint_specs:
 - name: left_hip_pitch
   type: position
-  range: [-0.08726646259971647, 1.5707963267948966]
+  range:
+  - -0.087266
+  - 1.570796
   symmetry_pair: right_hip_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: left_hip_roll
   type: position
-  range: [-1.5707963267948966, 0.17453292519943295]
+  range:
+  - -1.570796
+  - 0.174533
   symmetry_pair: right_hip_roll
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: left_knee_pitch
   type: position
-  range: [0.0, 1.3962634015954636]
+  range:
+  - 0.0
+  - 1.396263
   symmetry_pair: right_knee_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: left_ankle_pitch
   type: position
-  range: [-0.7853981633974412, 0.7853981633974554]
+  range:
+  - -0.785398
+  - 0.785398
   symmetry_pair: right_ankle_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: right_hip_pitch
   type: position
-  range: [-1.570796326794894, 0.08726646259971914]
+  range:
+  - -1.570796
+  - 0.087266
   symmetry_pair: left_hip_pitch
   mirror_sign: -1.0
   max_velocity: 10.0
 - name: right_hip_roll
   type: position
-  range: [-0.17453292519943206, 1.5707963267948974]
+  range:
+  - -0.174533
+  - 1.570796
   symmetry_pair: left_hip_roll
   mirror_sign: -1.0
   max_velocity: 10.0
 - name: right_knee_pitch
   type: position
-  range: [0.0, 1.3962634015954636]
+  range:
+  - 0.0
+  - 1.396263
   symmetry_pair: left_knee_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: right_ankle_pitch
   type: position
-  range: [-0.7853981633974385, 0.785398163397458]
+  range:
+  - -0.785398
+  - 0.785398
   symmetry_pair: left_ankle_pitch
-  mirror_sign: 1.0
+  mirror_sign: -1.0
   max_velocity: 10.0
+foot_specs:
+  left:
+    body: left_foot
+    toe: left_toe
+    heel: left_heel
+    touch_sensors:
+    - left_toe_touch
+    - left_heel_touch
+  right:
+    body: right_foot
+    toe: right_toe
+    heel: right_heel
+    touch_sensors:
+    - right_toe_touch
+    - right_heel_touch
+  contact_scale: 10.0
+observation_breakdown:
+  gravity_vector: 3
+  base_angular_velocity: 3
+  base_linear_velocity: 3
+  joint_positions: 8
+  joint_velocities: 8
+  foot_contacts: 4
+  previous_action: 8
+  velocity_command: 1
+amp_feature_breakdown:
+  joint_positions: 8
+  joint_velocities: 8
+  root_linear_velocity: 3
+  root_angular_velocity: 3
+  root_height: 1
+  foot_contacts: 4

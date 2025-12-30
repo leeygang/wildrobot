@@ -8,14 +8,20 @@ Key Features:
 - Automatic joint symmetry handling
 - Clear action/ctrl naming convention
 - Sim2Real ready with ControlCommand trajectory support
+- Extended state access (foot, root)
 
 Usage:
-    from playground_amp.control import (
+    from playground_amp.cal import (
         ControlAbstractionLayer,
         JointSpec,
         ActuatorSpec,
         ControlCommand,
         ActuatorType,
+        CoordinateFrame,
+        Pose3D,
+        Velocity3D,
+        FootSpec,
+        RootSpec,
     )
 
     # Create CAL from MuJoCo model and config
@@ -29,20 +35,39 @@ Usage:
     # State observation
     joint_pos = cal.get_joint_positions(data.qpos, normalize=True)
 
+    # Extended state (after init_extended_state)
+    foot_contacts = cal.get_foot_contacts(data, normalize=True)
+    root_pose = cal.get_root_pose(data, frame=CoordinateFrame.WORLD)
+
 Version: v0.11.0
 """
 
-from playground_amp.control.cal import ControlAbstractionLayer
-from playground_amp.control.specs import ActuatorSpec, ControlCommand, JointSpec
-from playground_amp.control.types import ActuatorType
+from playground_amp.cal.cal import ControlAbstractionLayer
+from playground_amp.cal.specs import (
+    ActuatorSpec,
+    ControlCommand,
+    FootSpec,
+    JointSpec,
+    Pose3D,
+    RootSpec,
+    Velocity3D,
+)
+from playground_amp.cal.types import ActuatorType, CoordinateFrame
 
 __all__ = [
     # Main class
     "ControlAbstractionLayer",
-    # Dataclasses
+    # Dataclasses - Core
     "JointSpec",
     "ActuatorSpec",
     "ControlCommand",
+    # Dataclasses - 3D Types
+    "Pose3D",
+    "Velocity3D",
+    # Dataclasses - Extended State Specs
+    "FootSpec",
+    "RootSpec",
     # Enums
     "ActuatorType",
+    "CoordinateFrame",
 ]

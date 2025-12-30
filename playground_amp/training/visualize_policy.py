@@ -44,19 +44,13 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from playground_amp.cal.specs import CoordinateFrame, Pose3D
 from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
 from playground_amp.envs.wildrobot_env import ObsLayout
-from playground_amp.training.heading_math import (
-    heading_local_angvel_fd_from_quat_np,
-    heading_local_from_world_np,
-    heading_local_linvel_fd_from_pos_np,
-    heading_sin_cos_from_quat_np,
-    pitch_roll_from_quat_np,
-)
 from playground_amp.training.ppo_core import create_networks, sample_actions
 
 
@@ -418,29 +412,45 @@ def main():
         """Compute observation vector using training logic (inference-faithful)."""
         gravity = mj_data.sensordata[gravity_adr : gravity_adr + 3].copy()
 
+        curr_root_pos = mj_data.qpos[0:3].copy()
+        curr_root_quat = mj_data.qpos[3:7].copy()
+
+        # Create current pose using factory pattern (NumPy → JAX)
+        curr_pose = Pose3D.from_numpy(
+            position=curr_root_pos,
+            orientation=curr_root_quat,
+            frame=CoordinateFrame.WORLD,
+        )
+
         if prev_root_pos is not None and prev_root_quat is not None:
-            curr_root_pos = mj_data.qpos[0:3].copy()
-            curr_root_quat = mj_data.qpos[3:7].copy()
-            linvel = heading_local_linvel_fd_from_pos_np(
-                curr_root_pos, prev_root_pos, curr_root_quat, dt
+            # Create previous pose for finite-difference
+            prev_pose = Pose3D.from_numpy(
+                position=prev_root_pos,
+                orientation=prev_root_quat,
+                frame=CoordinateFrame.WORLD,
             )
-            angvel = heading_local_angvel_fd_from_quat_np(
-                curr_root_quat, prev_root_quat, dt
+            # Finite-difference velocity in heading-local frame
+            linvel = curr_pose.linvel_fd(
+                prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL
+            )
+            angvel = curr_pose.angvel_fd(
+                prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL
             )
         else:
+            # Fallback: use sensor data for first frame
             angvel_world = mj_data.sensordata[angvel_adr : angvel_adr + 3].copy()
             linvel_world = mj_data.qvel[0:3].copy()
-            sin_yaw, cos_yaw = heading_sin_cos_from_quat_np(mj_data.qpos[3:7].copy())
-            linvel = heading_local_from_world_np(linvel_world, sin_yaw, cos_yaw)
-            angvel = heading_local_from_world_np(angvel_world, sin_yaw, cos_yaw)
+            # Transform to heading-local using current pose
+            linvel = curr_pose.to_heading_local(jnp.array(linvel_world))
+            angvel = curr_pose.to_heading_local(jnp.array(angvel_world))
 
         joint_pos = mj_data.qpos[actuator_qpos_addrs].copy()
         joint_vel = mj_data.qvel[actuator_qvel_addrs].copy()
 
         obs = ObsLayout.build_obs(
             gravity=jnp.array(gravity),
-            angvel=jnp.array(angvel),
-            linvel=jnp.array(linvel),
+            angvel=angvel,
+            linvel=linvel,
             joint_pos=jnp.array(joint_pos),
             joint_vel=jnp.array(joint_vel),
             action=jnp.array(prev_action_in),
@@ -519,10 +529,15 @@ def main():
         height = mj_data.qpos[2]
         height_too_low = height < training_cfg.env.min_height
         height_too_high = height > training_cfg.env.max_height
-        pitch_roll = pitch_roll_from_quat_np(mj_data.qpos[3:7].copy())
-        pitch, roll = pitch_roll[0], pitch_roll[1]
-        pitch_fail = abs(pitch) > training_cfg.env.max_pitch
-        roll_fail = abs(roll) > training_cfg.env.max_roll
+        # Use Pose3D factory pattern for Euler angle extraction
+        pose = Pose3D.from_numpy(
+            position=mj_data.qpos[0:3].copy(),
+            orientation=mj_data.qpos[3:7].copy(),
+            frame=CoordinateFrame.WORLD,
+        )
+        roll, pitch, _ = pose.euler_angles()
+        pitch_fail = abs(float(pitch)) > training_cfg.env.max_pitch
+        roll_fail = abs(float(roll)) > training_cfg.env.max_roll
         terminated = height_too_low or height_too_high or pitch_fail or roll_fail
         truncated = (
             step_count >= training_cfg.env.max_episode_steps

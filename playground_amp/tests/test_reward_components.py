@@ -83,14 +83,15 @@ class TestRewardComponents:
 
     def test_foot_positions_shape(self):
         """Foot positions should be (3,) arrays."""
-        left_pos, right_pos = self.env.get_foot_positions(self.state.data)
+        left_pos, right_pos = self.env._cal.get_foot_positions(self.state.data, normalize=False)
 
         assert left_pos.shape == (3,), f"Left foot shape: {left_pos.shape}"
         assert right_pos.shape == (3,), f"Right foot shape: {right_pos.shape}"
 
     def test_foot_positions_reasonable_height(self):
         """Foot positions should be near ground level at reset."""
-        left_pos, right_pos = self.env.get_foot_positions(self.state.data)
+        positions = self.env._cal.get_foot_positions(self.state.data, normalize=False)
+        left_pos, right_pos = positions[0], positions[1]
 
         # Feet should be near ground (z close to 0, within ~10cm)
         assert left_pos[2] < 0.15, f"Left foot too high: z={left_pos[2]}"
@@ -100,7 +101,8 @@ class TestRewardComponents:
 
     def test_foot_positions_symmetric(self):
         """Feet should be roughly symmetric at reset."""
-        left_pos, right_pos = self.env.get_foot_positions(self.state.data)
+        positions = self.env._cal.get_foot_positions(self.state.data, normalize=False)
+        left_pos, right_pos = positions[0], positions[1]
 
         # Y coordinates should be opposite (left positive, right negative)
         # or at least symmetric around 0
@@ -111,7 +113,7 @@ class TestRewardComponents:
 
     def test_foot_contact_forces_at_rest(self):
         """At rest (standing), both feet should have contact forces."""
-        left_force, right_force = self.env.get_raw_foot_contacts(self.state.data)
+        left_force, right_force = self.env._cal.get_aggregated_foot_contacts(self.state.data)
 
         # At rest on ground, should have some contact force
         # Note: This may vary depending on initial pose

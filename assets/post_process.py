@@ -51,6 +51,85 @@ def add_collision_names(xml_file):
     tree.write(xml_file)
 
 
+def add_touch_sensors(xml_file):
+    """Add touch sensors for foot contact detection (SS-10G switches).
+
+    Hardware: 4x SS-10G micro switches (toe and heel on each foot)
+    These are binary contact sensors that detect ground contact.
+
+    In MuJoCo, we use 'touch' sensors which measure normal force at a site.
+    The force is thresholded in code to get binary on/off contact state.
+
+    This function:
+    1. Adds sites at toe/heel geom positions for touch sensing
+    2. Adds touch sensors referencing those sites
+
+    TODO(ygli): Update touch sensor site positions to match actual hardware
+    installation locations of SS-10G switches. Current positions are copied
+    from collision geom positions, but actual switch mounting may differ.
+    Measure physical sensor positions relative to foot frame and update
+    the site 'pos' attributes accordingly.
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    # Define touch sensor configurations
+    touch_configs = [
+        {"body": "left_foot", "geom": "left_toe", "site": "left_toe_touch", "sensor": "left_toe_touch"},
+        {"body": "left_foot", "geom": "left_heel", "site": "left_heel_touch", "sensor": "left_heel_touch"},
+        {"body": "right_foot", "geom": "right_toe", "site": "right_toe_touch", "sensor": "right_toe_touch"},
+        {"body": "right_foot", "geom": "right_heel", "site": "right_heel_touch", "sensor": "right_heel_touch"},
+    ]
+
+    # Add sites at geom positions
+    for config in touch_configs:
+        body = root.find(f".//body[@name='{config['body']}']")
+        if body is None:
+            continue
+
+        # Check if site already exists
+        existing_site = body.find(f"site[@name='{config['site']}']")
+        if existing_site is not None:
+            continue
+
+        # Find the geom to get its position
+        geom = body.find(f"geom[@name='{config['geom']}']")
+        if geom is None:
+            continue
+
+        # Create site at geom position
+        site = ET.Element("site")
+        site.set("name", config["site"])
+        site.set("pos", geom.get("pos", "0 0 0"))
+        site.set("quat", geom.get("quat", "1 0 0 0"))
+        site.set("group", "3")  # Same group as other sensing sites
+        site.set("size", "0.005")  # Small site for touch sensing
+
+        # Insert site after the geom
+        geom_index = list(body).index(geom)
+        body.insert(geom_index + 1, site)
+
+    # Add touch sensors to sensor section
+    sensor_section = root.find("sensor")
+    if sensor_section is None:
+        sensor_section = ET.SubElement(root, "sensor")
+
+    for config in touch_configs:
+        # Check if sensor already exists
+        existing_sensor = sensor_section.find(f"touch[@name='{config['sensor']}']")
+        if existing_sensor is not None:
+            continue
+
+        # Add touch sensor
+        touch = ET.SubElement(sensor_section, "touch")
+        touch.set("name", config["sensor"])
+        touch.set("site", config["site"])
+
+    ET.indent(tree, space="  ", level=0)
+    tree.write(xml_file)
+    print(f"Added {len(touch_configs)} touch sensors for foot contact detection")
+
+
 def ensure_root_body_pose(xml_file):
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -374,61 +453,11 @@ def generate_robot_config(
     }
 
     # =========================================================================
-    # Extract Actuators (these define the action space)
+    # Extract Floating Base Info (scan for freejoint)
     # =========================================================================
-    actuator_section = root.find("actuator")
-    actuators: List[Dict[str, Any]] = []
-    if actuator_section is not None:
-        for actuator in actuator_section:
-            act_info = {
-                "name": actuator.get("name"),
-                "joint": actuator.get("joint"),
-                "type": actuator.tag,  # e.g., "position", "motor", etc.
-                "class": actuator.get("class"),
-            }
-            actuators.append(act_info)
-
-    config["actuators"] = {
-        "names": [a["name"] for a in actuators],
-        "joints": [a["joint"] for a in actuators],
-        "count": len(actuators),
-        "details": actuators,
-    }
-
-    # =========================================================================
-    # Extract Joints (scan all bodies for joint definitions)
-    # =========================================================================
-    joints: List[Dict[str, Any]] = []
     floating_base: Optional[Dict[str, Any]] = None
 
-    for joint in root.findall(".//joint"):
-        joint_name = joint.get("name")
-        joint_type = joint.get("type", "hinge")  # Default is hinge
-
-        # Check if this is a freejoint (floating base)
-        if joint_type == "free" or joint.tag == "freejoint":
-            floating_base = {
-                "name": joint_name,
-                "type": "free",
-            }
-            continue
-
-        joint_info = {
-            "name": joint_name,
-            "type": joint_type,
-            "axis": joint.get("axis", "0 0 1"),
-            "class": joint.get("class"),
-        }
-
-        # Extract range if available
-        range_str = joint.get("range")
-        if range_str:
-            range_vals = [float(x) for x in range_str.split()]
-            joint_info["range"] = range_vals
-
-        joints.append(joint_info)
-
-    # Also check for freejoint elements (MuJoCo shorthand)
+    # Check for freejoint elements
     for freejoint in root.findall(".//freejoint"):
         if floating_base is None:
             floating_base = {
@@ -436,17 +465,17 @@ def generate_robot_config(
                 "type": "free",
             }
 
-    config["joints"] = {
-        "names": [j["name"] for j in joints],
-        "count": len(joints),
-        "details": joints,
-    }
+    # Also check joint elements with type="free"
+    for joint in root.findall(".//joint"):
+        joint_type = joint.get("type", "hinge")
+        if joint_type == "free":
+            floating_base = {
+                "name": joint.get("name"),
+                "type": "free",
+            }
 
-    # =========================================================================
-    # Extract Floating Base Info
-    # =========================================================================
+    # Find the body containing the floating base
     if floating_base:
-        # Find the body containing the floating base
         root_body = None
         for body in root.findall(".//body"):
             for child in body:
@@ -462,88 +491,54 @@ def generate_robot_config(
         floating_base["qpos_dim"] = 7  # 3 pos + 4 quat
         floating_base["qvel_dim"] = 6  # 3 linear + 3 angular
 
-    config["floating_base"] = floating_base
+    config["root_spec"] = {
+        # Body/joint info (from floating_base)
+        "body": floating_base["root_body"] if floating_base else "waist",
+        "joint": floating_base["name"] if floating_base else None,
+        "qpos_dim": 7,
+        "qvel_dim": 6,
+        # Sensors (from root_imu)
+        "sensors": {
+            "orientation": "chest_imu_quat",  # framequat for orientation
+            "gyro": "chest_imu_gyro",  # gyroscope for angular velocity
+            "accel": "chest_imu_accel",  # accelerometer
+            "local_linvel": "pelvis_local_linvel",  # velocimeter for local linear velocity
+            "gravity": "pelvis_upvector",  # framezaxis for gravity direction
+            "global_angvel": "pelvis_global_angvel",  # frameangvel for world angular velocity
+        },
+    }
+    joints: List[Dict[str, Any]] = []
+    for joint in root.findall(".//joint"):
+        joint_name = joint.get("name")
+        joint_type = joint.get("type", "hinge")
+
+        # Skip freejoint (handled above)
+        if joint_type == "free":
+            continue
+
+        joint_info = {
+            "name": joint_name,
+            "type": joint_type,
+            "class": joint.get("class"),
+        }
+
+        # Extract range if available
+        range_str = joint.get("range")
+        if range_str:
+            range_vals = [float(x) for x in range_str.split()]
+            joint_info["range"] = range_vals
+
+        joints.append(joint_info)
 
     # =========================================================================
     # Generate Actuated Joints Config for CAL (v0.11.0)
+    # Single source of truth for actuator names, joints, ranges, etc.
     # =========================================================================
     actuated_joints = generate_actuated_joints_config(root, joints)
-    config["actuated_joints"] = actuated_joints
+    config["actuated_joint_specs"] = actuated_joints
 
-    # =========================================================================
-    # Extract Sensors
-    # =========================================================================
-    sensor_section = root.find("sensor")
-    sensors: Dict[str, List[Dict[str, Any]]] = {}
-
-    if sensor_section is not None:
-        for sensor in sensor_section:
-            sensor_type = sensor.tag
-            sensor_info = {
-                "name": sensor.get("name"),
-                "site": sensor.get("site"),
-                "objname": sensor.get("objname"),
-                "objtype": sensor.get("objtype"),
-            }
-
-            if sensor_type not in sensors:
-                sensors[sensor_type] = []
-            sensors[sensor_type].append(sensor_info)
-
-    config["sensors"] = sensors
-
-    # =========================================================================
-    # Compute Dimensions
-    # =========================================================================
-    num_actuators = len(actuators)
+    num_actuators = len(actuated_joints)
     num_joints = len(joints)
-
-    # Observation dimension breakdown (matching wildrobot_env.py)
-    # This should match the actual observation construction
-    obs_breakdown = {
-        "gravity_vector": 3,
-        "base_angular_velocity": 3,
-        "base_linear_velocity": 3,
-        "joint_positions": num_actuators,
-        "joint_velocities": num_actuators,
-        "previous_action": num_actuators,
-        "velocity_command": 1,
-        "padding": 1,  # For alignment
-    }
-    obs_dim = sum(obs_breakdown.values())
-
-    # AMP feature dimension breakdown (matching amp_features.py)
-    amp_breakdown = {
-        "joint_positions": num_actuators,
-        "joint_velocities": num_actuators,
-        "root_linear_velocity": 3,
-        "root_angular_velocity": 3,
-        "root_height": 1,
-        "foot_contacts": 4,
-    }
-    amp_feature_dim = sum(amp_breakdown.values())
-
-    config["dimensions"] = {
-        "action_dim": num_actuators,
-        "observation_dim": obs_dim,
-        "amp_feature_dim": amp_feature_dim,
-        "num_actuated_joints": num_actuators,
-        "num_total_joints": num_joints,
-        "observation_breakdown": obs_breakdown,
-        "amp_feature_breakdown": amp_breakdown,
-    }
-
-    # =========================================================================
-    # Observation to AMP Feature Mapping (indices into observation vector)
-    # =========================================================================
-    # These indices allow AMP feature extraction from observations
-    obs_idx = 0
-    obs_indices = {}
-    for key, size in obs_breakdown.items():
-        obs_indices[key] = {"start": obs_idx, "end": obs_idx + size}
-        obs_idx += size
-
-    config["observation_indices"] = obs_indices
 
     # =========================================================================
     # Extract Feet Configuration (for contact detection)
@@ -586,22 +581,56 @@ def generate_robot_config(
         elif body_name == "right_foot":
             right_foot_body = body_name
 
-    # Build feet config with explicit keys (v0.5.0)
-    config["feet"] = {
-        "sites": feet_sites,
-        # Foot body names (for position/velocity tracking)
-        "left_foot_body": left_foot_body or "left_foot",
-        "right_foot_body": right_foot_body or "right_foot",
-        # Explicit semantic keys - no array order dependency
-        "left_toe": left_toe or "left_toe",
-        "left_heel": left_heel or "left_heel",
-        "right_toe": right_toe or "right_toe",
-        "right_heel": right_heel or "right_heel",
-        # Legacy array format (for backward compatibility)
-        "left_geoms": [g for g in [left_heel, left_toe] if g],
-        "right_geoms": [g for g in [right_toe, right_heel] if g],
-        "all_geoms": [g for g in [left_toe, left_heel, right_toe, right_heel] if g],
+    # Build feet config with separate left/right specs
+    config["foot_specs"] = {
+        "left": {
+            "body": left_foot_body or "left_foot",
+            "toe": left_toe or "left_toe",
+            "heel": left_heel or "left_heel",
+            "touch_sensors": ["left_toe_touch", "left_heel_touch"],
+        },
+        "right": {
+            "body": right_foot_body or "right_foot",
+            "toe": right_toe or "right_toe",
+            "heel": right_heel or "right_heel",
+            "touch_sensors": ["right_toe_touch", "right_heel_touch"],
+        },
+        # Contact detection parameters
+        "contact_scale": 10.0,  # Scaling factor for contact force normalization
     }
+
+    # =========================================================================
+    # Observation/Feature Structure (source of truth)
+    # Dimensions and indices are computed at load time in robot_config.py
+    # =========================================================================
+    # Observation breakdown (what policy sees - proprioception + command)
+    # Order: external references → internal state → contacts → history → command
+    obs_breakdown = {
+        "gravity_vector": 3,         # From IMU - body orientation reference
+        "base_angular_velocity": 3,  # From IMU/gyro
+        "base_linear_velocity": 3,   # From IMU/velocimeter
+        "joint_positions": num_actuators,
+        "joint_velocities": num_actuators,
+        "foot_contacts": 4,          # From touch sensors (SS-10G switches)
+        "previous_action": num_actuators,
+        "velocity_command": 1,
+    }
+
+    # AMP feature breakdown (what discriminator sees - motion signature)
+    # Order: pose → root motion → contacts (for gait pattern matching)
+    # Note: foot_contacts not in obs because policy infers contact from physics;
+    # AMP needs explicit contacts to distinguish gait patterns
+    amp_breakdown = {
+        "joint_positions": num_actuators,
+        "joint_velocities": num_actuators,
+        "root_linear_velocity": 3,
+        "root_angular_velocity": 3,
+        "root_height": 1,
+        "foot_contacts": 4,  # [left_toe, left_heel, right_toe, right_heel]
+    }
+
+    config["observation_breakdown"] = obs_breakdown
+    config["amp_feature_breakdown"] = amp_breakdown
 
     # =========================================================================
     # Save to YAML
@@ -612,10 +641,10 @@ def generate_robot_config(
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
     print(f"Generated robot config: {output_file}")
-    print(f"  Actuators: {num_actuators}")
-    print(f"  Joints: {num_joints}")
-    print(f"  Observation dim: {obs_dim}")
-    print(f"  AMP feature dim: {amp_feature_dim}")
+    print(f"  Actuated joints: {num_actuators}")
+    print(f"  Total joints (incl. passive): {num_joints}")
+    print(f"  Observation dim: {sum(obs_breakdown.values())}")
+    print(f"  AMP feature dim: {sum(amp_breakdown.values())}")
 
     return config
 
@@ -625,6 +654,7 @@ def main() -> None:
     print("start post process...")
     # add_common_includes(xml_file)
     add_collision_names(xml_file)
+    add_touch_sensors(xml_file)  # Add touch sensors for SS-10G switches
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
     merge_default_blocks(xml_file)

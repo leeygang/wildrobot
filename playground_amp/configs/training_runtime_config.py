@@ -100,8 +100,7 @@ class EnvConfig(Freezable):
     contact_threshold_force: float = 5.0
     contact_scale: float = 10.0
 
-    # Action filtering
-    use_action_filter: bool = True
+    # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
 
 

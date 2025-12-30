@@ -21,8 +21,16 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 
-from playground_amp.control.specs import ActuatorSpec, ControlCommand, JointSpec
-from playground_amp.control.types import ActuatorType
+from playground_amp.cal.specs import (
+    ActuatorSpec,
+    ControlCommand,
+    FootSpec,
+    JointSpec,
+    Pose3D,
+    RootSpec,
+    Velocity3D,
+)
+from playground_amp.cal.types import ActuatorType, CoordinateFrame
 
 
 class ControlAbstractionLayer:
@@ -58,17 +66,21 @@ class ControlAbstractionLayer:
     def __init__(
         self,
         mj_model: mujoco.MjModel,
-        actuated_joints_config: List[Dict[str, Any]],
+        robot_config: Any,
     ):
-        """Initialize CAL from MuJoCo model and config.
+        """Initialize CAL from MuJoCo model and robot config.
 
         Args:
             mj_model: MuJoCo model
-            actuated_joints_config: List of actuated joint configs from robot_config.yaml
-                Each entry should have: name, type, range, symmetry_pair, mirror_sign, max_velocity
+            robot_config: RobotConfig instance containing:
+                - actuated_joints: List of actuated joint configs
+                - feet configuration (including contact_scale) for foot state
+                - root_imu configuration for root state
         """
         self._mj_model = mj_model
-        self._actuated_joints_config = actuated_joints_config
+        self._robot_config = robot_config
+        self._contact_scale = robot_config.contact_scale
+        self._actuated_joints_config = robot_config.actuated_joints
 
         # Build specs from model and config
         self._joint_specs: List[JointSpec] = []
@@ -86,6 +98,10 @@ class ControlAbstractionLayer:
 
         # Precompute JAX arrays for efficient transforms
         self._precompute_arrays()
+
+        # Build extended state specs (foot, root)
+        self._build_foot_specs(robot_config)
+        self._build_root_spec(robot_config)
 
     def _build_specs(self) -> None:
         """Build JointSpec and ActuatorSpec from config and MuJoCo model."""
@@ -745,6 +761,53 @@ class ControlAbstractionLayer:
         """Get ActuatorSpec by name."""
         return self._actuator_specs_by_name.get(name)
 
+    # =========================================================================
+    # Semantic Joint Position Accessors (for gait shaping rewards)
+    # =========================================================================
+    # Joint names are defined in robot_config (single source of truth).
+    # These methods allow env to access specific joint positions without
+    # hardcoding joint names, maintaining flexibility for different robots.
+
+    def get_hip_pitch_positions(
+        self,
+        qpos: jax.Array,
+        normalize: bool = True,
+    ) -> tuple[float, float]:
+        """Get hip pitch positions (left, right).
+
+        Joint names are defined in robot_config (single source of truth).
+
+        Args:
+            qpos: Full qpos array from MJX data
+            normalize: If True, return normalized positions [-1, 1]
+
+        Returns:
+            (left_hip_pitch, right_hip_pitch) positions
+        """
+        joint_pos = self.get_joint_positions(qpos, normalize=normalize)
+        left_idx, right_idx = self._robot_config.get_hip_pitch_indices()
+        return joint_pos[left_idx], joint_pos[right_idx]
+
+    def get_knee_pitch_positions(
+        self,
+        qpos: jax.Array,
+        normalize: bool = True,
+    ) -> tuple[float, float]:
+        """Get knee pitch positions (left, right).
+
+        Joint names are defined in robot_config (single source of truth).
+
+        Args:
+            qpos: Full qpos array from MJX data
+            normalize: If True, return normalized positions [-1, 1]
+
+        Returns:
+            (left_knee_pitch, right_knee_pitch) positions
+        """
+        joint_pos = self.get_joint_positions(qpos, normalize=normalize)
+        left_idx, right_idx = self._robot_config.get_knee_pitch_indices()
+        return joint_pos[left_idx], joint_pos[right_idx]
+
     def print_specs(self) -> None:
         """Print all joint and actuator specs for debugging."""
         print("\nJoint Specifications:")
@@ -776,3 +839,486 @@ class ControlAbstractionLayer:
                 f"[{spec.ctrl_range[0]:>6.3f}, {spec.ctrl_range[1]:>6.3f}] "
                 f"{spec.max_velocity:>8.1f} {kp_str:>8} {kv_str:>8}"
             )
+
+    # =========================================================================
+    # Extended State: Internal Build Methods
+    # =========================================================================
+
+    def _build_foot_specs(self, robot_config: Any) -> None:
+        """Build FootSpec from robot_config.
+
+        Uses robot_config.get_foot_geom_names() for geom names (single source of truth).
+        """
+        # Get geom names from robot_config method (not raw_config)
+        left_toe, left_heel, right_toe, right_heel = robot_config.get_foot_geom_names()
+
+        # Get body names from robot_config properties
+        left_body = robot_config.left_foot_body
+        right_body = robot_config.right_foot_body
+
+        self._foot_specs = [
+            FootSpec(
+                name="left_foot",
+                body_name=left_body,
+                body_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_BODY, left_body
+                ),
+                toe_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, left_toe
+                ),
+                heel_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, left_heel
+                ),
+                symmetry_pair="right_foot",
+            ),
+            FootSpec(
+                name="right_foot",
+                body_name=right_body,
+                body_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_BODY, right_body
+                ),
+                toe_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, right_toe
+                ),
+                heel_geom_id=mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, right_heel
+                ),
+                symmetry_pair="left_foot",
+            ),
+        ]
+
+    def _build_root_spec(self, robot_config: Any) -> None:
+        """Build RootSpec from robot_config.
+
+        Uses robot_config properties (single source of truth):
+        - floating_base_name: Joint name
+        - floating_base_body: Body name
+        - orientation_sensor, root_gyro_sensor, etc.: Sensor names
+        """
+        root_body = robot_config.floating_base_body
+        fb_name = robot_config.floating_base_name
+
+        # Get joint id and addresses
+        joint_id = (
+            mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, fb_name)
+            if fb_name
+            else -1
+        )
+        qpos_addr = self._mj_model.jnt_qposadr[joint_id] if joint_id >= 0 else 0
+        qvel_addr = self._mj_model.jnt_dofadr[joint_id] if joint_id >= 0 else 0
+
+        # Get IMU sensor names from robot_config properties (single source of truth)
+        orientation_sensor = robot_config.orientation_sensor
+        gyro_sensor = robot_config.root_gyro_sensor
+        accel_sensor = robot_config.root_accel_sensor
+        local_linvel_sensor = robot_config.local_linvel_sensor
+
+        self._root_spec = RootSpec(
+            body_name=root_body,
+            body_id=mujoco.mj_name2id(
+                self._mj_model, mujoco.mjtObj.mjOBJ_BODY, root_body
+            ),
+            qpos_addr=qpos_addr,
+            qvel_addr=qvel_addr,
+            orientation_sensor=orientation_sensor,
+            gyro_sensor=gyro_sensor,
+            accel_sensor=accel_sensor,
+            local_linvel_sensor=local_linvel_sensor,
+        )
+
+    # =========================================================================
+    # Foot State Access
+    # =========================================================================
+
+    @property
+    def foot_specs(self) -> List[FootSpec]:
+        """List of foot specifications."""
+        return getattr(self, "_foot_specs", [])
+
+    def get_geom_based_foot_contacts(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+    ) -> jax.Array:
+        """Get foot contact values with per-geom granularity.
+
+        Use this for AMP features where per-contact-point detail matters.
+        For reward computation (per-foot totals), use get_aggregated_foot_contacts() instead.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True for tanh-normalized [0, 1],
+                      False for raw normal forces (Newtons)
+
+        Returns:
+            foot_contacts: (4,) - [left_toe, left_heel, right_toe, right_heel]
+        """
+        contacts = []
+        for foot in self._foot_specs:
+            toe_force = self._get_geom_contact_force(data, foot.toe_geom_id)
+            heel_force = self._get_geom_contact_force(data, foot.heel_geom_id)
+
+            if normalize:
+                toe_force = jnp.tanh(toe_force / self._contact_scale)
+                heel_force = jnp.tanh(heel_force / self._contact_scale)
+
+            contacts.extend([toe_force, heel_force])
+
+        return jnp.array(contacts)
+
+    def get_aggregated_foot_contacts(
+        self,
+        data: mjx.Data,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Get per-foot contact forces (aggregated toe + heel).
+
+        Use this for reward computation where you need per-foot totals
+        for threshold comparison (slip gating, clearance, gait periodicity).
+        For AMP features (per-geom detail), use get_geom_based_foot_contacts() instead.
+
+        Args:
+            data: MJX simulation data
+
+        Returns:
+            (left_force, right_force): Scalar normal forces in Newtons
+        """
+        # Reuse get_geom_based_foot_contacts to avoid duplication
+        # Order: [left_toe, left_heel, right_toe, right_heel]
+        raw_contacts = self.get_geom_based_foot_contacts(data, normalize=False)
+        left_force = raw_contacts[0] + raw_contacts[1]  # toe + heel
+        right_force = raw_contacts[2] + raw_contacts[3]  # toe + heel
+        return left_force, right_force
+
+    def get_foot_positions(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Get foot body positions.
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by root height,
+                      False for raw positions (meters)
+            frame: Coordinate frame (WORLD or HEADING_LOCAL)
+
+        Returns:
+            (left_foot_pos, right_foot_pos): Each (3,) position vector
+        """
+        left_foot = self._foot_specs[0]
+        right_foot = self._foot_specs[1]
+
+        left_pos = data.xpos[left_foot.body_id]
+        right_pos = data.xpos[right_foot.body_id]
+
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            quat = data.qpos[
+                self._root_spec.qpos_addr + 3 : self._root_spec.qpos_addr + 7
+            ]
+            left_pos = self._world_to_heading_local_vec(quat, left_pos)
+            right_pos = self._world_to_heading_local_vec(quat, right_pos)
+
+        if normalize:
+            root_height = self.get_root_height(data)
+            left_pos = left_pos / (root_height + 1e-6)
+            right_pos = right_pos / (root_height + 1e-6)
+
+        return left_pos, right_pos
+
+    def get_foot_velocities(
+        self,
+        data: mjx.Data,
+        prev_left_pos: jax.Array,
+        prev_right_pos: jax.Array,
+        dt: float,
+        normalize: bool,  # REQUIRED - no default
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+        max_foot_velocity: float = 5.0,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Get foot velocities via finite difference.
+
+        Args:
+            data: Current MJX data
+            prev_left_pos: Previous left foot position (3,)
+            prev_right_pos: Previous right foot position (3,)
+            dt: Time step for finite difference
+            normalize: REQUIRED. True to normalize by max_foot_velocity to [-1, 1],
+                      False for raw velocities (m/s)
+            frame: Coordinate frame
+            max_foot_velocity: Max expected foot velocity for normalization
+
+        Returns:
+            (left_vel, right_vel): Each (3,) velocity vector
+        """
+        curr_left_pos, curr_right_pos = self.get_foot_positions(
+            data, normalize=False, frame=frame
+        )
+
+        left_vel = (curr_left_pos - prev_left_pos) / dt
+        right_vel = (curr_right_pos - prev_right_pos) / dt
+
+        if normalize:
+            left_vel = jnp.clip(left_vel / max_foot_velocity, -1.0, 1.0)
+            right_vel = jnp.clip(right_vel / max_foot_velocity, -1.0, 1.0)
+
+        return left_vel, right_vel
+
+    def get_foot_clearances(
+        self,
+        data: mjx.Data,
+        normalize: bool,  # REQUIRED - no default
+    ) -> tuple[jax.Array, jax.Array]:
+        """Get foot height above ground (for swing phase rewards).
+
+        Args:
+            data: MJX simulation data
+            normalize: REQUIRED. True to normalize by root height,
+                      False for raw height (meters)
+
+        Returns:
+            (left_clearance, right_clearance): Scalar height values
+        """
+        left_pos, right_pos = self.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        left_clearance = left_pos[2]  # Z coordinate
+        right_clearance = right_pos[2]
+
+        if normalize:
+            root_height = self.get_root_height(data)
+            left_clearance = left_clearance / (root_height + 1e-6)
+            right_clearance = right_clearance / (root_height + 1e-6)
+
+        return left_clearance, right_clearance
+
+    def _get_geom_contact_force(
+        self,
+        data: mjx.Data,
+        geom_id: int,
+    ) -> jax.Array:
+        """Get normal contact force for a geom (solver-native efc_force)."""
+        # Use data._impl to avoid deprecation warnings
+        contact = data._impl.contact
+        geom1_match = contact.geom1 == geom_id
+        geom2_match = contact.geom2 == geom_id
+        is_our_contact = geom1_match | geom2_match
+
+        # efc_force contains constraint forces; contact.efc_address maps to them
+        normal_forces = data._impl.efc_force[contact.efc_address]
+        our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
+        return jnp.sum(our_forces)
+
+    # =========================================================================
+    # Root State Access (4 Core APIs using Pose3D/Velocity3D)
+    # =========================================================================
+
+    @property
+    def root_spec(self) -> Optional[RootSpec]:
+        """Root body specification."""
+        return getattr(self, "_root_spec", None)
+
+    def get_root_height(self, data: mjx.Data) -> jax.Array:
+        """Get root body height (Z position).
+
+        Args:
+            data: MJX simulation data
+
+        Returns:
+            height: Scalar height value in meters
+        """
+        return data.qpos[self._root_spec.qpos_addr + 2]
+
+    def get_root_pose(
+        self,
+        data: mjx.Data,
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> Pose3D:
+        """Get root body pose with named field access.
+
+        Args:
+            data: MJX simulation data
+            frame: Coordinate frame for position
+
+        Returns:
+            Pose3D with:
+                .position: (3,) [x, y, z] in meters
+                .orientation: (4,) quaternion [qw, qx, qy, qz]
+                .frame: CoordinateFrame
+                .height: scalar z (convenience property)
+                .xy: (2,) [x, y] (convenience property)
+        """
+        position = data.qpos[self._root_spec.qpos_addr : self._root_spec.qpos_addr + 3]
+        orientation = data.qpos[
+            self._root_spec.qpos_addr + 3 : self._root_spec.qpos_addr + 7
+        ]
+
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            position = self._world_to_heading_local_vec(orientation, position)
+
+        return Pose3D(
+            position=position,
+            orientation=orientation,
+            frame=frame,
+        )
+
+    def get_root_velocity(
+        self,
+        data: mjx.Data,
+        frame: CoordinateFrame = CoordinateFrame.WORLD,
+    ) -> Velocity3D:
+        """Get root body velocity with named field access.
+
+        Args:
+            data: MJX simulation data
+            frame: Coordinate frame (WORLD, LOCAL, or HEADING_LOCAL)
+
+        Returns:
+            Velocity3D with:
+                .linear: (3,) [vx, vy, vz] in m/s
+                .angular: (3,) [wx, wy, wz] in rad/s
+                .frame: CoordinateFrame
+        """
+        quat = data.qpos[self._root_spec.qpos_addr + 3 : self._root_spec.qpos_addr + 7]
+
+        # Linear velocity
+        if frame == CoordinateFrame.LOCAL and self._root_spec.local_linvel_sensor:
+            linvel = self._get_sensor_data(data, self._root_spec.local_linvel_sensor)
+        else:
+            linvel = data.qvel[
+                self._root_spec.qvel_addr : self._root_spec.qvel_addr + 3
+            ]
+            if frame == CoordinateFrame.HEADING_LOCAL:
+                linvel = self._world_to_heading_local_vec(quat, linvel)
+            elif frame == CoordinateFrame.LOCAL:
+                linvel = self._rotate_vector_by_quat_inverse(linvel, quat)
+
+        # Angular velocity
+        angvel = data.qvel[
+            self._root_spec.qvel_addr + 3 : self._root_spec.qvel_addr + 6
+        ]
+        if frame == CoordinateFrame.HEADING_LOCAL:
+            angvel = self._world_to_heading_local_vec(quat, angvel)
+        elif frame == CoordinateFrame.LOCAL:
+            angvel = self._rotate_vector_by_quat_inverse(angvel, quat)
+
+        return Velocity3D(
+            linear=linvel,
+            angular=angvel,
+            frame=frame,
+        )
+
+    def get_gravity_vector(self, data: mjx.Data) -> jax.Array:
+        """Get gravity vector in local (body) frame.
+
+        Derived from chest_imu_quat (BNO085 orientation sensor).
+        This matches the real hardware which has no dedicated gravity sensor.
+
+        Returns:
+            gravity: (3,) gravity direction in local frame, normalized
+        """
+        # Get orientation from chest_imu_quat sensor (BNO085) or qpos
+        if self._root_spec.orientation_sensor:
+            quat = self._get_sensor_data(data, self._root_spec.orientation_sensor)
+        else:
+            quat = data.qpos[
+                self._root_spec.qpos_addr + 3 : self._root_spec.qpos_addr + 7
+            ]
+
+        # Rotate world gravity [0, 0, -1] into local frame
+        world_gravity = jnp.array([0.0, 0.0, -1.0])
+        return self._rotate_vector_by_quat_inverse(world_gravity, quat)
+
+    # =========================================================================
+    # Internal Helpers
+    # =========================================================================
+
+    def _get_sensor_data(self, data: mjx.Data, sensor_name: str) -> jax.Array:
+        """Get sensor data by name.
+
+        Args:
+            data: MJX simulation data
+            sensor_name: Name of the sensor
+
+        Returns:
+            Sensor data array
+        """
+        sensor_id = mujoco.mj_name2id(
+            self._mj_model, mujoco.mjtObj.mjOBJ_SENSOR, sensor_name
+        )
+        if sensor_id < 0:
+            raise ValueError(f"Sensor '{sensor_name}' not found in MuJoCo model")
+
+        adr = self._mj_model.sensor_adr[sensor_id]
+        dim = self._mj_model.sensor_dim[sensor_id]
+        return data.sensordata[adr : adr + dim]
+
+    def _world_to_heading_local_vec(
+        self,
+        quat: jax.Array,
+        vec: jax.Array,
+    ) -> jax.Array:
+        """Rotate world-frame vector to heading-local frame.
+
+        Heading-local frame: world frame rotated by -yaw (heading direction is +X).
+
+        Args:
+            quat: Root quaternion [qw, qx, qy, qz]
+            vec: 3D vector in world frame
+
+        Returns:
+            Vector in heading-local frame
+        """
+        # Extract sin/cos of yaw from quaternion (inline for self-containment)
+        quat_norm = quat / (jnp.linalg.norm(quat) + 1e-8)
+        w, x, y, z = quat_norm[0], quat_norm[1], quat_norm[2], quat_norm[3]
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        norm = jnp.sqrt(siny_cosp * siny_cosp + cosy_cosp * cosy_cosp + 1e-8)
+        sin_yaw = siny_cosp / norm
+        cos_yaw = cosy_cosp / norm
+
+        # Rotate world vec into heading-local frame (R_z(-yaw))
+        vx, vy, vz = vec[0], vec[1], vec[2]
+        vx_heading = cos_yaw * vx + sin_yaw * vy
+        vy_heading = -sin_yaw * vx + cos_yaw * vy
+        return jnp.array([vx_heading, vy_heading, vz])
+
+    def _rotate_vector_by_quat_inverse(
+        self,
+        vec: jax.Array,
+        quat: jax.Array,
+    ) -> jax.Array:
+        """Rotate a vector by the inverse of a quaternion.
+
+        Used to transform world-frame vectors into local body frame.
+
+        Args:
+            vec: 3D vector to rotate
+            quat: Quaternion in wxyz format [w, x, y, z]
+
+        Returns:
+            Rotated vector in body frame
+        """
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Rotation matrix from quaternion (transposed for inverse)
+        r00 = 1 - 2 * (y * y + z * z)
+        r01 = 2 * (x * y + w * z)
+        r02 = 2 * (x * z - w * y)
+        r10 = 2 * (x * y - w * z)
+        r11 = 1 - 2 * (x * x + z * z)
+        r12 = 2 * (y * z + w * x)
+        r20 = 2 * (x * z + w * y)
+        r21 = 2 * (y * z - w * x)
+        r22 = 1 - 2 * (x * x + y * y)
+
+        # Apply transposed rotation (inverse)
+        vx, vy, vz = vec[0], vec[1], vec[2]
+        return jnp.array(
+            [
+                r00 * vx + r10 * vy + r20 * vz,
+                r01 * vx + r11 * vy + r21 * vz,
+                r02 * vx + r12 * vy + r22 * vz,
+            ]
+        )

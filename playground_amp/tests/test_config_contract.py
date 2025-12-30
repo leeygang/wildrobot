@@ -238,11 +238,11 @@ class TestRobotConfigConsistency:
         )
 
     @pytest.mark.unit
-    def test_robot_config_foot_geoms_exist(self, robot_config):
-        """
-        Purpose: Verify robot_config has foot geoms defined.
+    def test_robot_config_feet_geoms(self, robot_config):
+        """Test robot_config feet configuration.
 
-        Assertions:
+        Purpose: Verify robot_config has feet geoms defined.
+        Validates:
         - feet_left_geoms is defined
         - feet_right_geoms is defined
         """

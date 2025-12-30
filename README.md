@@ -29,11 +29,12 @@ wildrobot/
 │   ├── train.py                        # Training entry point
 │   ├── CHANGELOG.md                    # Training Version history
 │   │
-│   ├── control/                        # v0.11.0: Control Abstraction Layer (CAL)
+│   ├── cal/                            # v0.11.0: Control Abstraction Layer (CAL)
 │   │   ├── __init__.py                 # Export CAL, specs, types
 │   │   ├── cal.py                      # ControlAbstractionLayer class
-│   │   ├── specs.py                    # JointSpec, ActuatorSpec, ControlCommand
-│   │   └── types.py                    # ActuatorType, VelocityProfile enums
+│   │   ├── specs.py                    # JointSpec, ActuatorSpec, Pose3D, Velocity3D
+│   │   ├── types.py                    # ActuatorType, VelocityProfile, CoordinateFrame
+│   │   └── cal.md                      # CAL documentation
 │   │
 │   ├── amp/                            # Adversarial Motion Priors
 │   │   ├── discriminator.py            # AMP discriminator network
@@ -74,7 +75,6 @@ wildrobot/
 │   │   ├── checkpoint.py               # Checkpoint save/load
 │   │   ├── metrics_registry.py         # Metrics tracking
 │   │   ├── experiment_tracking.py      # W&B integration
-│   │   ├── heading_math.py             # Heading computation utilities
 │   │   └── visualize_policy.py         # Policy visualization
 │   │
 │   ├── tests/                          # All tests (consolidated)

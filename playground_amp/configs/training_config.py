@@ -122,7 +122,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         max_velocity=env.get("max_velocity", 1.0),
         contact_threshold_force=env.get("contact_threshold_force", 5.0),
         contact_scale=env.get("contact_scale", 10.0),
-        use_action_filter=env.get("use_action_filter", True),
+        # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
     )
 

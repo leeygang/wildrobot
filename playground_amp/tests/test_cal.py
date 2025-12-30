@@ -9,6 +9,7 @@ These tests verify:
 4. Normalized joint position/velocity getters
 5. Symmetry handling (mirror_sign)
 6. Command generation for Sim2Real
+7. Extended state (foot, root) - v0.11.0
 """
 
 from __future__ import annotations
@@ -20,15 +21,24 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
+from mujoco import mjx
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from playground_amp.control.cal import ControlAbstractionLayer
-from playground_amp.control.specs import ActuatorSpec, ControlCommand, JointSpec
-from playground_amp.control.types import ActuatorType
+from playground_amp.cal.cal import ControlAbstractionLayer
+from playground_amp.cal.specs import (
+    ActuatorSpec,
+    ControlCommand,
+    FootSpec,
+    JointSpec,
+    Pose3D,
+    RootSpec,
+    Velocity3D,
+)
+from playground_amp.cal.types import ActuatorType, CoordinateFrame
 
 
 # =============================================================================
@@ -39,8 +49,7 @@ from playground_amp.control.types import ActuatorType
 @pytest.fixture(scope="session")
 def cal_instance(mj_model, robot_config):
     """Create CAL instance for testing."""
-    actuated_joints_config = robot_config.actuated_joints
-    return ControlAbstractionLayer(mj_model, actuated_joints_config)
+    return ControlAbstractionLayer(mj_model, robot_config)
 
 
 # =============================================================================
@@ -381,3 +390,245 @@ class TestEdgeCases:
             # ctrl_span = (max - min) / 2
             expected_span = (spec.ctrl_range[1] - spec.ctrl_range[0]) / 2
             assert abs(spec.ctrl_span - expected_span) < 1e-10
+
+
+# =============================================================================
+# Extended State Tests (v0.11.0)
+# =============================================================================
+
+
+@pytest.fixture(scope="function")
+def cal_with_extended_state(mj_model, robot_config):
+    """Create CAL instance with extended state initialized.
+
+    Note: With v0.11.0, extended state is initialized in __init__,
+    and contact_scale is read from robot_config.feet.contact_scale.
+    """
+    return ControlAbstractionLayer(mj_model, robot_config)
+
+
+@pytest.fixture(scope="function")
+def mjx_data(mj_model):
+    """Create MJX data for testing extended state methods."""
+    mj_data = mujoco.MjData(mj_model)
+    mujoco.mj_resetData(mj_model, mj_data)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    # Convert to MJX
+    mjx_model = mjx.put_model(mj_model)
+    data = mjx.put_data(mj_model, mj_data)
+    return mjx.forward(mjx_model, data)
+
+
+class TestExtendedStateInit:
+    """Tests for extended state initialization."""
+
+    def test_init_extended_state_creates_foot_specs(self, cal_with_extended_state):
+        """init_extended_state should create FootSpec list."""
+        foot_specs = cal_with_extended_state.foot_specs
+        assert len(foot_specs) == 2  # left and right foot
+        assert all(isinstance(s, FootSpec) for s in foot_specs)
+
+    def test_foot_specs_have_correct_names(self, cal_with_extended_state):
+        """FootSpecs should have correct foot names."""
+        foot_specs = cal_with_extended_state.foot_specs
+        names = [s.name for s in foot_specs]
+        assert "left_foot" in names
+        assert "right_foot" in names
+
+    def test_foot_specs_have_symmetry_pairs(self, cal_with_extended_state):
+        """FootSpecs should have symmetry pair references."""
+        foot_specs = cal_with_extended_state.foot_specs
+        for spec in foot_specs:
+            assert spec.symmetry_pair is not None
+
+        # Left foot should pair with right foot
+        left_foot = next(s for s in foot_specs if s.name == "left_foot")
+        right_foot = next(s for s in foot_specs if s.name == "right_foot")
+        assert left_foot.symmetry_pair == "right_foot"
+        assert right_foot.symmetry_pair == "left_foot"
+
+    def test_init_extended_state_creates_root_spec(self, cal_with_extended_state):
+        """init_extended_state should create RootSpec."""
+        root_spec = cal_with_extended_state.root_spec
+        assert root_spec is not None
+        assert isinstance(root_spec, RootSpec)
+
+    def test_root_spec_has_sensor_names(self, cal_with_extended_state):
+        """RootSpec should have sensor names from config."""
+        root_spec = cal_with_extended_state.root_spec
+        assert root_spec.orientation_sensor is not None
+        assert root_spec.gyro_sensor is not None
+        assert root_spec.accel_sensor is not None
+
+
+class TestFootState:
+    """Tests for foot state access methods."""
+
+    def test_get_geom_based_foot_contacts_shape_normalized(
+        self, cal_with_extended_state, mjx_data
+    ):
+        """get_geom_based_foot_contacts(normalize=True) should return (4,) array."""
+        contacts = cal_with_extended_state.get_geom_based_foot_contacts(
+            mjx_data, normalize=True
+        )
+        assert contacts.shape == (4,)
+
+    def test_get_geom_based_foot_contacts_shape_raw(
+        self, cal_with_extended_state, mjx_data
+    ):
+        """get_geom_based_foot_contacts(normalize=False) should return (4,) array."""
+        contacts = cal_with_extended_state.get_geom_based_foot_contacts(
+            mjx_data, normalize=False
+        )
+        assert contacts.shape == (4,)
+
+    def test_get_geom_based_foot_contacts_normalized_range(
+        self, cal_with_extended_state, mjx_data
+    ):
+        """Normalized foot contacts should be in [0, 1] range."""
+        contacts = cal_with_extended_state.get_geom_based_foot_contacts(
+            mjx_data, normalize=True
+        )
+        # tanh output is in (-1, 1), but contact forces are positive, so [0, 1)
+        assert jnp.all(contacts >= 0.0)
+        assert jnp.all(contacts <= 1.0)
+
+    def test_get_foot_positions_shape(self, cal_with_extended_state, mjx_data):
+        """get_foot_positions should return tuple of (3,) arrays."""
+        left_pos, right_pos = cal_with_extended_state.get_foot_positions(
+            mjx_data, normalize=False
+        )
+        assert left_pos.shape == (3,)
+        assert right_pos.shape == (3,)
+
+    def test_get_foot_positions_world_frame(self, cal_with_extended_state, mjx_data):
+        """get_foot_positions in WORLD frame should return world coordinates."""
+        left_pos, right_pos = cal_with_extended_state.get_foot_positions(
+            mjx_data,
+            normalize=False,
+            frame=CoordinateFrame.WORLD,
+        )
+        # Positions should be finite
+        assert jnp.all(jnp.isfinite(left_pos))
+        assert jnp.all(jnp.isfinite(right_pos))
+
+    def test_get_foot_clearances_shape(self, cal_with_extended_state, mjx_data):
+        """get_foot_clearances should return tuple of scalar arrays."""
+        left_clearance, right_clearance = cal_with_extended_state.get_foot_clearances(
+            mjx_data, normalize=False
+        )
+        assert left_clearance.shape == ()
+        assert right_clearance.shape == ()
+
+    def test_get_foot_clearances_non_negative(self, cal_with_extended_state, mjx_data):
+        """Foot clearances should be non-negative (above ground)."""
+        left_clearance, right_clearance = cal_with_extended_state.get_foot_clearances(
+            mjx_data, normalize=False
+        )
+        # At rest, feet should be at or above ground level
+        # Allow small negative values due to contact penetration
+        assert left_clearance >= -0.01
+        assert right_clearance >= -0.01
+
+
+class TestRootState:
+    """Tests for root state access methods."""
+
+    def test_get_root_pose_returns_pose3d(self, cal_with_extended_state, mjx_data):
+        """get_root_pose should return Pose3D dataclass."""
+        pose = cal_with_extended_state.get_root_pose(mjx_data)
+        assert isinstance(pose, Pose3D)
+
+    def test_root_pose_has_position(self, cal_with_extended_state, mjx_data):
+        """Pose3D should have position (3,) array."""
+        pose = cal_with_extended_state.get_root_pose(mjx_data)
+        assert pose.position.shape == (3,)
+        assert jnp.all(jnp.isfinite(pose.position))
+
+    def test_root_pose_has_orientation(self, cal_with_extended_state, mjx_data):
+        """Pose3D should have orientation quaternion (4,) array."""
+        pose = cal_with_extended_state.get_root_pose(mjx_data)
+        assert pose.orientation.shape == (4,)
+        # Quaternion should be unit norm
+        norm = jnp.linalg.norm(pose.orientation)
+        assert jnp.abs(norm - 1.0) < 1e-5
+
+    def test_root_pose_has_frame(self, cal_with_extended_state, mjx_data):
+        """Pose3D should have frame attribute."""
+        pose = cal_with_extended_state.get_root_pose(
+            mjx_data, frame=CoordinateFrame.WORLD
+        )
+        assert pose.frame == CoordinateFrame.WORLD
+
+    def test_root_pose_height_property(self, cal_with_extended_state, mjx_data):
+        """Pose3D.height should return Z coordinate."""
+        pose = cal_with_extended_state.get_root_pose(mjx_data)
+        expected_height = pose.position[2]
+        assert pose.height == expected_height
+
+    def test_get_root_velocity_returns_velocity3d(
+        self, cal_with_extended_state, mjx_data
+    ):
+        """get_root_velocity should return Velocity3D dataclass."""
+        velocity = cal_with_extended_state.get_root_velocity(mjx_data)
+        assert isinstance(velocity, Velocity3D)
+
+    def test_root_velocity_has_linear(self, cal_with_extended_state, mjx_data):
+        """Velocity3D should have linear (3,) array."""
+        velocity = cal_with_extended_state.get_root_velocity(mjx_data)
+        assert velocity.linear.shape == (3,)
+        assert jnp.all(jnp.isfinite(velocity.linear))
+
+    def test_root_velocity_has_angular(self, cal_with_extended_state, mjx_data):
+        """Velocity3D should have angular (3,) array."""
+        velocity = cal_with_extended_state.get_root_velocity(mjx_data)
+        assert velocity.angular.shape == (3,)
+        assert jnp.all(jnp.isfinite(velocity.angular))
+
+    def test_get_gravity_vector_shape(self, cal_with_extended_state, mjx_data):
+        """get_gravity_vector should return (3,) array."""
+        gravity = cal_with_extended_state.get_gravity_vector(mjx_data)
+        assert gravity.shape == (3,)
+
+    def test_get_gravity_vector_normalized(self, cal_with_extended_state, mjx_data):
+        """Gravity vector should be approximately unit length."""
+        gravity = cal_with_extended_state.get_gravity_vector(mjx_data)
+        norm = jnp.linalg.norm(gravity)
+        # Should be close to 1.0 (normalized)
+        assert jnp.abs(norm - 1.0) < 0.1
+
+    def test_get_root_height_scalar(self, cal_with_extended_state, mjx_data):
+        """get_root_height should return scalar height value."""
+        height = cal_with_extended_state.get_root_height(mjx_data)
+        assert height.shape == ()  # scalar
+        assert jnp.isfinite(height)
+
+
+class TestCoordinateFrames:
+    """Tests for coordinate frame transformations."""
+
+    def test_root_pose_heading_local_frame(self, cal_with_extended_state, mjx_data):
+        """get_root_pose in HEADING_LOCAL should work."""
+        pose = cal_with_extended_state.get_root_pose(
+            mjx_data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        assert pose.frame == CoordinateFrame.HEADING_LOCAL
+        assert jnp.all(jnp.isfinite(pose.position))
+
+    def test_root_velocity_local_frame(self, cal_with_extended_state, mjx_data):
+        """get_root_velocity in LOCAL frame should work."""
+        velocity = cal_with_extended_state.get_root_velocity(
+            mjx_data, frame=CoordinateFrame.LOCAL
+        )
+        assert velocity.frame == CoordinateFrame.LOCAL
+        assert jnp.all(jnp.isfinite(velocity.linear))
+
+    def test_foot_positions_heading_local(self, cal_with_extended_state, mjx_data):
+        """get_foot_positions in HEADING_LOCAL should work."""
+        positions = cal_with_extended_state.get_foot_positions(
+            mjx_data,
+            normalize=False,
+            frame=CoordinateFrame.HEADING_LOCAL,
+        )
+        assert jnp.all(jnp.isfinite(positions))

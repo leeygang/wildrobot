@@ -28,13 +28,11 @@
     <accelerometer site="chest_imu" name="chest_imu_accel" noise="0.0015" cutoff="100" />
     <magnetometer site="chest_imu" name="chest_imu_mag" noise="0.3" />
     <framequat objtype="site" objname="chest_imu" name="chest_imu_quat" />
-    <gyro site="left_knee_imu" name="left_knee_imu_gyro" noise="0.00005" cutoff="200" />
-    <accelerometer site="left_knee_imu" name="left_knee_imu_accel" noise="0.0008" cutoff="200" />
-    <gyro site="right_knee_imu" name="right_knee_imu_gyro" noise="0.00005" cutoff="200" />
-    <accelerometer site="right_knee_imu" name="right_knee_imu_accel" noise="0.0008" cutoff="200" />
-    <gyro site="pelvis_mimic" name="pelvis_gyro" />
-    <accelerometer site="pelvis_mimic" name="pelvis_accel" />
     <velocimeter site="pelvis_mimic" name="pelvis_local_linvel" />
+    <touch name="left_toe_touch" site="left_toe_touch" />
+    <touch name="left_heel_touch" site="left_heel_touch" />
+    <touch name="right_toe_touch" site="right_toe_touch" />
+    <touch name="right_heel_touch" site="right_heel_touch" />
   </sensor>
   <worldbody>
     <body name="waist" pos="0 0 0.5" quat="1 0 0 0" childclass="WildRobotDev">
@@ -110,10 +108,12 @@
               <geom type="mesh" class="visual" pos="5.38428e-16 0.0732 0.0268" quat="0.5 0.5 -0.5 0.5" mesh="servo_bracket_top" material="servo_bracket_top_material" />
               <geom type="mesh" class="visual" pos="-8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" />
               <geom type="mesh" class="collision" pos="-8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" name="left_heel" />
+              <site name="left_heel_touch" pos="-8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" group="3" size="0.005" />
               <geom type="mesh" class="visual" pos="2.18873e-16 0.0435 0.0268" quat="0.5 0.5 -0.5 0.5" mesh="foot_side" material="foot_side_material" />
               <geom type="mesh" class="visual" pos="3.04688e-16 0.0435 0.0268" quat="0.5 0.5 -0.5 0.5" mesh="foot_main" material="foot_main_material" />
               <geom type="mesh" class="visual" pos="8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" />
               <geom type="mesh" class="collision" pos="8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" name="left_toe" />
+              <site name="left_toe_touch" pos="8.28427e-05 0.0432 0.0278" quat="0.5 0.5 -0.5 0.5" group="3" size="0.005" />
               <site group="3" name="left_foot_mimic" pos="4.89843e-16 0.066 0.0268" quat="0.707107 0.707107 -1.9301e-15 -2.82214e-15" />
               <body name="left_foot_mimic" pos="4.89843e-16 0.066 0.0268" quat="0.707107 0.707107 -1.9301e-15 -2.82214e-15">
                 <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
@@ -162,10 +162,12 @@
               <geom type="mesh" class="visual" pos="6.37511e-17 0.0435 0.1868" quat="0.5 0.5 -0.5 0.5" mesh="foot_main_right" material="foot_main_right_material" />
               <geom type="mesh" class="visual" pos="-8.28427e-05 0.0432 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" />
               <geom type="mesh" class="collision" pos="-8.28427e-05 0.0432 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_front" material="foot_btm_front_material" name="right_toe" />
+              <site name="right_toe_touch" pos="-8.28427e-05 0.0432 0.0258" quat="0.5 0.5 -0.5 0.5" group="3" size="0.005" />
               <geom type="mesh" class="visual" pos="-2.8089e-16 0.0732 0.0268" quat="0.5 0.5 -0.5 0.5" mesh="servo_bracket_top" material="servo_bracket_top_material" />
               <geom type="mesh" class="visual" pos="-6.75458e-17 0.0435 0.1868" quat="0.5 0.5 -0.5 0.5" mesh="foot_side_right" material="foot_side_right_material" />
               <geom type="mesh" class="visual" pos="-8.28427e-05 0.0412 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" />
               <geom type="mesh" class="collision" pos="-8.28427e-05 0.0412 0.0258" quat="0.5 0.5 -0.5 0.5" mesh="foot_btm_back" material="foot_btm_back_material" name="right_heel" />
+              <site name="right_heel_touch" pos="-8.28427e-05 0.0412 0.0258" quat="0.5 0.5 -0.5 0.5" group="3" size="0.005" />
               <site group="3" name="right_foot_mimic" pos="-2.54354e-16 0.066 0.0268" quat="0.707107 0.707107 2.71841e-15 -4.03138e-16" />
               <body name="right_foot_mimic" pos="-2.54354e-16 0.066 0.0268" quat="0.707107 0.707107 2.71841e-15 -4.03138e-16">
                 <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
@@ -177,36 +179,36 @@
     </body>
   </worldbody>
   <asset>
-    <mesh file="foot_main_right.stl" />
-    <mesh file="bno085.stl" />
-    <mesh file="rp_assemble.stl" />
-    <mesh file="foot_side.stl" />
-    <mesh file="trunk_bottom.stl" />
-    <mesh file="hip_servo_hook_right.stl" />
-    <mesh file="foot_main.stl" />
-    <mesh file="hip_servo_hook_left.stl" />
-    <mesh file="trunk_servo_connect.stl" />
-    <mesh file="up_leg_servo_connect.stl" />
-    <mesh file="cell.stl" />
-    <mesh file="waist_platform_2.stl" />
-    <mesh file="waist_platform.stl" />
     <mesh file="low_leg_right.stl" />
-    <mesh file="foot_btm_front.stl" />
-    <mesh file="batterybox.stl" />
-    <mesh file="hip_cover.stl" />
-    <mesh file="knee_ball_left.stl" />
-    <mesh file="htd_45h_1circle.stl" />
-    <mesh file="low_leg_left.stl" />
-    <mesh file="waist_trunk_support.stl" />
     <mesh file="servo_bracket_top.stl" />
-    <mesh file="foot_btm_back.stl" />
-    <mesh file="scroll_out.stl" />
-    <mesh file="knee_ball_right.stl" />
-    <mesh file="knee_ball_mid.stl" />
-    <mesh file="icm45686.stl" />
-    <mesh file="foot_side_right.stl" />
+    <mesh file="hip_servo_hook_left.stl" />
+    <mesh file="up_leg_servo_connect.stl" />
+    <mesh file="waist_platform.stl" />
+    <mesh file="hip_servo_hook_right.stl" />
+    <mesh file="trunk_servo_connect.stl" />
     <mesh file="up_leg.stl" />
+    <mesh file="foot_btm_front.stl" />
+    <mesh file="foot_main.stl" />
+    <mesh file="htd_45h_1circle.stl" />
+    <mesh file="knee_ball_left.stl" />
+    <mesh file="waist_trunk_support.stl" />
+    <mesh file="hip_cover.stl" />
+    <mesh file="batterybox.stl" />
+    <mesh file="trunk_bottom.stl" />
+    <mesh file="scroll_out.stl" />
+    <mesh file="waist_platform_2.stl" />
+    <mesh file="foot_side_right.stl" />
+    <mesh file="low_leg_left.stl" />
+    <mesh file="knee_ball_mid.stl" />
+    <mesh file="bno085.stl" />
+    <mesh file="foot_side.stl" />
     <mesh file="hip_trunk_connect.stl" />
+    <mesh file="foot_main_right.stl" />
+    <mesh file="rp_assemble.stl" />
+    <mesh file="icm45686.stl" />
+    <mesh file="knee_ball_right.stl" />
+    <mesh file="foot_btm_back.stl" />
+    <mesh file="cell.stl" />
     <material name="htd_45h_1circle_material" rgba="0.615686 0.811765 0.929412 1" />
     <material name="waist_trunk_support_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="trunk_bottom_material" rgba="0.301961 0.301961 0.301961 1" />

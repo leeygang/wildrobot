@@ -493,8 +493,14 @@ class TestVelocityCorrectness:
 
         # The heading-local velocities should be similar
         # (not exact due to simulation dynamics)
-        linvel1 = env.get_heading_local_linvel(state1_next.data)
-        linvel2 = env.get_heading_local_linvel(state2.data)
+        from playground_amp.cal.types import CoordinateFrame
+
+        linvel1 = env._cal.get_root_velocity(
+            state1_next.data, frame=CoordinateFrame.HEADING_LOCAL
+        ).linear
+        linvel2 = env._cal.get_root_velocity(
+            state2.data, frame=CoordinateFrame.HEADING_LOCAL
+        ).linear
 
         # At reset, both should be near zero (no motion yet)
         assert jnp.allclose(
@@ -669,7 +675,7 @@ class TestContactForceCorrectness:
             state = env.step(state, action)
 
         # Get foot contact forces (solver-native efc_force)
-        left_force, right_force = env.get_raw_foot_contacts(state.data)
+        left_force, right_force = env._cal.get_aggregated_foot_contacts(state.data)
         total_force = float(left_force + right_force)
 
         # Estimate robot weight
@@ -908,7 +914,7 @@ class TestRewardLayer:
             state = env.step(state, action)
 
         # Get reward with actual foot positions (should have slip penalty if moving)
-        left_pos, right_pos = env.get_foot_positions(state.data)
+        left_pos, right_pos = env._cal.get_foot_positions(state.data, normalize=False)
 
         # Simulate previous positions (slight offset to create "velocity")
         prev_left = left_pos - jnp.array([0.01, 0.0, 0.0])  # 1cm/dt slip
@@ -932,7 +938,7 @@ class TestRewardLayer:
         )
 
         # If robot has contact and we simulated slip, penalty should be non-zero
-        left_force, right_force = env.get_raw_foot_contacts(state.data)
+        left_force, right_force = env._cal.get_foot_forces(state.data)
         total_force = float(left_force + right_force)
 
         slip_with = float(components_with_slip["reward/slip"])
@@ -1117,7 +1123,7 @@ class TestMJXParity:
             state = env.step(state, action)
 
         # Get contact forces
-        left_force, right_force = env.get_raw_foot_contacts(state.data)
+        left_force, right_force = env._cal.get_foot_forces(state.data)
         total_force = float(left_force + right_force)
 
         # Forces should be positive and reasonable
