@@ -134,8 +134,9 @@ def main():
     linvel_adr = model.sensor_adr[linvel_sensor_id]
 
     # Action filter settings
-    use_action_filter = training_cfg.env.use_action_filter
+    # action_filter_alpha > 0 means filtering is enabled
     action_filter_alpha = training_cfg.env.action_filter_alpha
+    use_action_filter = action_filter_alpha > 0
     prev_action = np.zeros(action_dim, dtype=np.float32)
 
     # Physics substeps
@@ -146,6 +147,7 @@ def main():
     def get_observation(data, velocity_cmd, prev_action):
         quat = data.sensordata[orientation_adr:orientation_adr+4].copy()
         w, x, y, z = quat
+        # R is the rotation matrix from quaternion (body-from-world)
         r = np.array(
             [
                 [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
@@ -153,7 +155,8 @@ def main():
                 [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
             ]
         )
-        gravity = (r.T @ np.array([0.0, 0.0, -1.0])).astype(np.float32)
+        # R @ world_gravity transforms world gravity into body frame (matches CAL)
+        gravity = (r @ np.array([0.0, 0.0, -1.0])).astype(np.float32)
         angvel = data.qvel[3:6].copy()
         linvel = data.sensordata[linvel_adr:linvel_adr+3].copy()
         joint_pos = data.qpos[7:7+8].copy()

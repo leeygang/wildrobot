@@ -44,6 +44,7 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from playground_amp.cal.cal import ControlAbstractionLayer
 from playground_amp.cal.specs import CoordinateFrame, Pose3D
 from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.configs.training_config import (
@@ -287,6 +288,11 @@ def main():
     mj_model = mujoco.MjModel.from_xml_path(str(model_path))
     mj_data = mujoco.MjData(mj_model)
 
+    # Create Control Abstraction Layer (CAL) for action/observation transforms
+    # This is CRITICAL for training/inference parity (v0.11.0+)
+    cal = ControlAbstractionLayer(mj_model, robot_cfg)
+    print(f"  CAL initialized with {cal.num_actuators} actuators")
+
     # Get dimensions from model/config
     obs_dim = ObsLayout.total_size()
     action_dim = mj_model.nu  # Number of actuators
@@ -376,30 +382,30 @@ def main():
         else 0
     )
 
-    def get_forward_velocity(mj_data):
-        """Get forward velocity from local_linvel sensor (body-local frame)."""
-        return mj_data.sensordata[local_linvel_adr]  # x component = forward
+    def get_forward_velocity(mj_data, prev_root_pos, prev_root_quat, dt):
+        """Get forward velocity in heading-local frame (matches training).
 
-    # Get actuator joint addresses from robot config
-    # The actuator_qpos_addr and actuator_qvel_addr are the indices into qpos/qvel
-    actuator_names = robot_cfg.actuator_names
-    actuator_joints = robot_cfg.actuator_joints
+        Uses Pose3D finite-difference for consistency with observation computation.
+        Returns x-component (forward direction in heading-local frame).
+        """
+        if prev_root_pos is None or prev_root_quat is None:
+            # Fallback to sensor for first frame
+            return float(mj_data.sensordata[local_linvel_adr])
 
-    # Get joint qpos/qvel addresses
-    actuator_qpos_addrs = []
-    actuator_qvel_addrs = []
-    for joint_name in actuator_joints:
-        joint_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
-        if joint_id >= 0:
-            actuator_qpos_addrs.append(mj_model.jnt_qposadr[joint_id])
-            actuator_qvel_addrs.append(mj_model.jnt_dofadr[joint_id])
-        else:
-            print(f"Warning: Joint {joint_name} not found")
-            actuator_qpos_addrs.append(0)
-            actuator_qvel_addrs.append(0)
+        curr_pose = Pose3D.from_numpy(
+            position=mj_data.qpos[0:3].copy(),
+            orientation=mj_data.qpos[3:7].copy(),
+            frame=CoordinateFrame.WORLD,
+        )
+        prev_pose = Pose3D.from_numpy(
+            position=prev_root_pos,
+            orientation=prev_root_quat,
+            frame=CoordinateFrame.WORLD,
+        )
+        linvel = curr_pose.linvel_fd(prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL)
+        return float(linvel[0])  # x = forward in heading-local
 
-    actuator_qpos_addrs = np.array(actuator_qpos_addrs)
-    actuator_qvel_addrs = np.array(actuator_qvel_addrs)
+    # Note: Joint addresses now handled by CAL (get_joint_positions/velocities)
 
     # Track previous action
     prev_action = np.zeros(action_dim, dtype=np.float32)
@@ -407,25 +413,16 @@ def main():
     def get_observation(
         mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt
     ):
-        """Compute observation vector using training logic (inference-faithful)."""
-        # Gravity from orientation sensor (framequat)
-        quat = (
+        """Compute observation vector using training logic (inference-faithful).
+
+        v0.11.0: Uses CAL/Pose3D for all transforms to match training exactly.
+        """
+        curr_root_pos = mj_data.qpos[0:3].copy()
+        curr_root_quat = (
             mj_data.sensordata[orientation_adr : orientation_adr + 4].copy()
             if orientation_sensor_id >= 0
             else mj_data.qpos[3:7].copy()
         )
-        w, x, y, z = quat
-        r = np.array(
-            [
-                [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
-                [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
-                [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
-            ]
-        )
-        gravity = (r.T @ np.array([0.0, 0.0, -1.0])).astype(np.float32)
-
-        curr_root_pos = mj_data.qpos[0:3].copy()
-        curr_root_quat = mj_data.qpos[3:7].copy()
 
         # Create current pose using factory pattern (NumPy → JAX)
         curr_pose = Pose3D.from_numpy(
@@ -433,6 +430,9 @@ def main():
             orientation=curr_root_quat,
             frame=CoordinateFrame.WORLD,
         )
+
+        # Gravity vector in body frame (matches CAL.get_gravity_vector)
+        gravity = curr_pose.gravity_vector
 
         if prev_root_pos is not None and prev_root_quat is not None:
             # Create previous pose for finite-difference
@@ -456,15 +456,18 @@ def main():
             linvel = curr_pose.to_heading_local(jnp.array(linvel_world))
             angvel = curr_pose.to_heading_local(jnp.array(angvel_world))
 
-        joint_pos = mj_data.qpos[actuator_qpos_addrs].copy()
-        joint_vel = mj_data.qvel[actuator_qvel_addrs].copy()
+        # v0.11.0: Use CAL for normalized joint positions/velocities (training parity)
+        # CAL normalizes joint_pos to [-1, 1] based on joint limits
+        # CAL normalizes joint_vel by velocity limits and clips to [-1, 1]
+        joint_pos = cal.get_joint_positions(jnp.array(mj_data.qpos), normalize=True)
+        joint_vel = cal.get_joint_velocities(jnp.array(mj_data.qvel), normalize=True)
 
         obs = ObsLayout.build_obs(
             gravity=jnp.array(gravity),
             angvel=angvel,
             linvel=linvel,
-            joint_pos=jnp.array(joint_pos),
-            joint_vel=jnp.array(joint_vel),
+            joint_pos=joint_pos,
+            joint_vel=joint_vel,
             action=jnp.array(prev_action_in),
             velocity_cmd=jnp.array(velocity_cmd),
         )
@@ -472,18 +475,19 @@ def main():
         return obs
 
     # Action filtering configuration (match training)
-    use_action_filter = training_cfg.env.use_action_filter
-    action_filter_alpha = (
-        training_cfg.env.action_filter_alpha if use_action_filter else 0.0
-    )
+    # action_filter_alpha > 0 means filtering is enabled
+    action_filter_alpha = training_cfg.env.action_filter_alpha
+    use_action_filter = action_filter_alpha > 0
     print(f"Action filter: enabled={use_action_filter}, alpha={action_filter_alpha}")
 
     def apply_action(mj_data, action, prev_action_for_filter):
         """Apply action to MuJoCo model with optional low-pass filtering.
 
         In training, actions from policy (range [-1, 1] via tanh) are passed
-        through a low-pass filter before being set as ctrl.
-        MuJoCo then clamps to joint limits automatically.
+        through a low-pass filter, then transformed via CAL to physical ctrl values.
+
+        v0.11.0: Uses CAL.policy_action_to_ctrl() for training parity.
+        This applies mirror_sign correction and denormalizes [-1, 1] to joint angles.
 
         Returns filtered action for use as prev_action next step.
         """
@@ -498,8 +502,10 @@ def main():
         else:
             filtered_action = action_np
 
-        # Pass action directly - MuJoCo handles clamping to ctrlrange
-        mj_data.ctrl[:] = filtered_action
+        # Transform policy action [-1, 1] to physical ctrl via CAL (v0.11.0)
+        # This applies symmetry correction (mirror_sign) and denormalization
+        ctrl = cal.policy_action_to_ctrl(jnp.array(filtered_action))
+        mj_data.ctrl[:] = np.array(ctrl)
         return filtered_action
 
     def step_physics(mj_model, mj_data, n_substeps):
@@ -533,7 +539,8 @@ def main():
 
         mj_data.qpos[:] = qpos
         mj_data.qvel[:] = qvel
-        mj_data.ctrl[:] = qpos[7 : 7 + action_dim]
+        # Use CAL to get default pose ctrl (physical joint angles from keyframe)
+        mj_data.ctrl[:] = np.array(cal.get_ctrl_for_default_pose())
         mujoco.mj_forward(mj_model, mj_data)
 
     def check_termination(mj_data, step_count):
@@ -705,8 +712,8 @@ def main():
             if done:
                 episode_count += 1
                 forward_vel = get_forward_velocity(
-                    mj_data
-                )  # body-local forward velocity
+                    mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                )  # heading-local forward velocity
                 height = mj_data.qpos[2]
                 print(
                     f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"
@@ -792,8 +799,8 @@ def main():
                     # Debug: Print progress every 50 steps
                     if step_count % 50 == 0:
                         forward_vel = get_forward_velocity(
-                            mj_data
-                        )  # body-local forward velocity
+                            mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                        )  # heading-local forward velocity
                         height = mj_data.qpos[2]
                         action_sum = float(jnp.sum(jnp.abs(action)))
                         print(
@@ -820,8 +827,8 @@ def main():
                     if done:
                         episode_count += 1
                         forward_vel = get_forward_velocity(
-                            mj_data
-                        )  # body-local forward velocity
+                            mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                        )  # heading-local forward velocity
                         height = mj_data.qpos[2]
                         print(
                             f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"

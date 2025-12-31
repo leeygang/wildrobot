@@ -354,6 +354,47 @@ class Pose3D:
         _, _, yaw = self.euler_angles()
         return jnp.sin(yaw), jnp.cos(yaw)
 
+    @property
+    def gravity_vector(self) -> jnp.ndarray:
+        """Get gravity vector in body (local) frame.
+
+        Rotates world gravity [0, 0, -1] into the local body frame using
+        the pose's orientation quaternion. This matches CAL.get_gravity_vector().
+
+        Returns:
+            (3,) gravity direction in local frame, normalized
+
+        Raises:
+            ValueError: If pose is not in WORLD frame
+
+        Example:
+            pose = Pose3D.from_numpy(mj_data.qpos[:3], mj_data.qpos[3:7], CoordinateFrame.WORLD)
+            gravity = pose.gravity_vector  # e.g., [0.01, 0.0, -0.99]
+        """
+        if self.frame != CoordinateFrame.WORLD:
+            raise ValueError(
+                f"gravity_vector requires WORLD frame pose, got {self.frame}. "
+                f"Gravity is only meaningful relative to world Z-up."
+            )
+        # Rotate world gravity [0, 0, -1] into local frame using quat inverse
+        quat = self.orientation
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Rotation matrix from quaternion (transposed for inverse rotation)
+        # This matches CAL._rotate_vector_by_quat_inverse()
+        r00 = 1 - 2 * (y * y + z * z)
+        r01 = 2 * (x * y + w * z)
+        r02 = 2 * (x * z - w * y)
+        r10 = 2 * (x * y - w * z)
+        r11 = 1 - 2 * (x * x + z * z)
+        r12 = 2 * (y * z + w * x)
+        r20 = 2 * (x * z + w * y)
+        r21 = 2 * (y * z - w * x)
+        r22 = 1 - 2 * (x * x + y * y)
+
+        # world_gravity = [0, 0, -1], so we only need the third column
+        return jnp.array([r20 * (-1), r21 * (-1), r22 * (-1)])
+
     def to_heading_local(self, vec_world: jnp.ndarray) -> jnp.ndarray:
         """Transform a world-frame vector to heading-local frame.
 
