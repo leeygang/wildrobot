@@ -217,11 +217,13 @@ copy_run() {
         return 1
     fi
 
-    # Find matching checkpoint folder based on the run_id suffix
+    # Find matching checkpoint folder based on the wandb run ID suffix
     # New checkpoint format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
     # Example: ppo_walking_v01005_20251228_205534-uf665cr6
-    # We match the suffix: 20251228_205534-uf665cr6
-    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '$RUN_ID$' | head -1")
+    # The timestamp may differ slightly between wandb run and checkpoint, so we match
+    # only the wandb run ID suffix (e.g., -uf665cr6)
+    local WANDB_RUN_ID=$(echo "$RUN_ID" | sed 's/.*-//')  # Extract just the wandb ID (e.g., 8p2bv838)
+    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
 
     # Step 1: Copy wandb log
     echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
@@ -322,7 +324,11 @@ case "$1" in
         ;;
     *)
         # Check if it looks like a checkpoint folder name (contains date pattern)
-        if [[ "$1" =~ ^[a-zA-Z_]+[0-9]{8}_[0-9]{6}$ ]] || [[ "$1" =~ ^wildrobot ]]; then
+        # Old format: wildrobot_amp_YYYYMMDD_HHMMSS
+        # New format: {config_name}_v{version}_YYYYMMDD_HHMMSS-{wandb_run_id}
+        if [[ "$1" =~ ^[a-zA-Z_]+v[0-9]+_[0-9]{8}_[0-9]{6}-[a-zA-Z0-9]+$ ]] || \
+           [[ "$1" =~ ^[a-zA-Z_]+[0-9]{8}_[0-9]{6}$ ]] || \
+           [[ "$1" =~ ^wildrobot ]]; then
             # Check if it exists in checkpoints on remote
             if ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_BASE/playground_amp/checkpoints/$1' ]" 2>/dev/null; then
                 copy_checkpoint "$1"
