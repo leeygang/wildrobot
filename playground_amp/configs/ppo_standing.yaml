@@ -15,8 +15,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.11.0"
-version_name: "CLA implementation for Standing (v0.11.0)"
+version: "0.11.2"
+version_name: "Upright standing retrain (v0.11.2)"
 
 seed: 42
 
@@ -33,7 +33,7 @@ env:
 
   # Health / termination
   target_height: 0.45
-  min_height: 0.20
+  min_height: 0.40
   max_height: 0.70
   max_pitch: 0.8
   max_roll: 0.8
@@ -130,8 +130,8 @@ reward_weights:
   # Primary objectives - v0.10.2: Prioritize staying upright
   tracking_lin_vel: 1.0   # Reduced (was 2.0) - less important for standing
   lateral_velocity: -0.5
-  base_height: 1.0        # Increased (was 0.5) - critical for standing
-  orientation: -1.0       # Increased penalty (was -0.5) - stay upright!
+  base_height: 3.0        # Strong height enforcement to avoid squat posture
+  orientation: -2.0       # Stricter tilt penalty to keep upright posture
   angular_velocity: -0.1  # Increased penalty (was -0.05) - minimize wobble
 
   # Effort and safety
@@ -173,7 +173,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, standing, v0.11.0]
+  tags: [ppo, stage1, standing, v0.11.2]
 
 video:
   enabled: true

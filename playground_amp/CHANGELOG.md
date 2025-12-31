@@ -5,6 +5,35 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.11.2] - 2025-12-31: Upright Standing Retrain Plan
+
+### Plan
+1. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp --verify`
+2. `uv run python playground_amp/training/visualize_policy.py --headless --num-episodes 1 --config playground_amp/configs/ppo_standing.yaml --checkpoint <path>`
+3. Resume walking with new standing checkpoint:
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume <new_standing_checkpoint>`
+
+### Config Updates
+- `min_height`: 0.20 → 0.40 (terminate squat posture)
+- `reward_weights.base_height`: 1.0 → 3.0 (enforce upright height)
+- `reward_weights.orientation`: -1.0 → -2.0 (stricter tilt penalty)
+
+---
+
+## [v0.11.1] - 2025-12-31: CAL PPO Walking Smoke Test
+
+### Test Plan
+1. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume playground_amp/checkpoints/ppo_standing_v0110_170.pkl`
+2. `uv run python playground_amp/training/visualize_policy.py --headless --num-episodes 1 --config playground_amp/configs/ppo_walking.yaml --checkpoint <path>`
+
+### Results
+- Run: `playground_amp/wandb/run-20251231_003248-8p2bv838`
+- Best checkpoint: `playground_amp/checkpoints/ppo_walking_conservative_v00111_20251231_003249-8p2bv838/checkpoint_360_47185920.pkl`
+- Summary: reward ~426.79, ep_len ~491, success ~95.4%, vel ~0.33 m/s
+- Notes: stable but squat-biased posture inherited from standing checkpoint; hip swing limited
+
+---
+
 ## [v0.11.0] - 2025-12-30: Control Abstraction Layer (CAL) - BREAKING CHANGE
 
 ### Overview
@@ -119,16 +148,6 @@ See `playground_amp/docs/CONTROL_ABSTRACTION_LAYER_PROPOSAL.md` for full design 
 - Summary: ep_len ~484, height ~0.434 m, success ~89.8%, vel ~0.01 m/s
 - Notes: success rate below 95% target; height_low terminations ~10% late in training
 
-## [v0.11.1] - 2025-12-31: CAL PPO Walking Smoke Test
-
-### Test Plan
-1. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume playground_amp/checkpoints/ppo_standing_v0110_170.pkl`
-2. `uv run python playground_amp/training/visualize_policy.py --headless --num-episodes 1 --config playground_amp/configs/ppo_walking.yaml --checkpoint <path>`
-
-### Results
-- Status: pending
-
----
 
 ## [v0.10.6] - 2025-12-28: Hip/Knee Swing Reward (Stage 1)
 
