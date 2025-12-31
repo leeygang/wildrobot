@@ -36,7 +36,8 @@ class CoordinateFrame(Enum):
         - Rotates with the body
         - Used for: body-relative sensing (accelerometers, gyros)
 
-    HEADING_LOCAL: World frame rotated by -yaw (heading-invariant)
+    HEADING_LOCAL: Root-relative frame rotated by -yaw (heading-invariant)
+        - Origin at root body
         - XY plane aligned with heading direction
         - Z remains world-up
         - Used for: RL observations, AMP features, velocity commands

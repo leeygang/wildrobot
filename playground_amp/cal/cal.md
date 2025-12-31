@@ -971,6 +971,27 @@ action_corrected = action * self._mirror_signs
 # ctrl: -0.5 * 0.83 + (-0.74) = -1.16 rad (forward, matching left!)
 ```
 
+**Concrete Examples**
+
+Hip roll (mirrored ranges, mirror_sign flips):
+- left_hip_roll range: [-1.57, 0.17], center ≈ -0.70, span ≈ 0.87
+- right_hip_roll range: [-0.17, 1.57], center ≈ +0.70, span ≈ 0.87
+- mirror_sign: left = +1, right = -1
+
+Action = +0.5 for both:
+- left ctrl ≈ -0.70 + 0.5*0.87 = -0.26 rad
+- right ctrl ≈ +0.70 + (-0.5)*0.87 = +0.26 rad
+Result: equal magnitude, opposite sign (symmetric roll).
+
+Ankle pitch (identical ranges, no flip):
+- left_ankle_pitch range: [-0.785, 0.785], mirror_sign = +1
+- right_ankle_pitch range: [-0.785, 0.785], mirror_sign = +1
+
+Action = +0.5 for both:
+- left ctrl ≈ 0.5*0.785 = +0.393 rad
+- right ctrl ≈ 0.5*0.785 = +0.393 rad
+Result: same sign because ranges are identical.
+
 ### 5.2 Configuration Schema Refactoring
 
 The current `robot_config.yaml` should be refactored to align with CAL. Key changes:
@@ -1643,7 +1664,7 @@ class CoordinateFrame(Enum):
 
     WORLD: Global world frame (inertial, fixed)
     LOCAL: Body-attached frame (rotates with root body)
-    HEADING_LOCAL: World frame rotated by -yaw (heading-invariant)
+    HEADING_LOCAL: Root-relative frame rotated by -yaw (heading-invariant)
                    Most common for RL observations and AMP features
     """
     WORLD = "world"
@@ -1740,7 +1761,11 @@ class Pose3D:
         return jnp.sin(yaw), jnp.cos(yaw)
 
     def to_heading_local(self, vec_world: jax.Array) -> jax.Array:
-        """Transform a world-frame vector to heading-local frame."""
+        """Transform a world-frame vector to heading-local frame.
+
+        Note: This is a vector transform only. For positions, subtract the root
+        position before applying heading-local rotation.
+        """
         if self.frame != CoordinateFrame.WORLD:
             raise ValueError(...)
         sin_yaw, cos_yaw = self.heading_sincos
@@ -1843,6 +1868,8 @@ class Velocity3D:
 
     def to_heading_local(self, pose: Pose3D) -> Velocity3D:
         """Transform velocity from world frame to heading-local frame.
+
+        Note: This is a vector transform only; position origin does not apply.
 
         Args:
             pose: Pose3D providing the heading direction (must have orientation)
@@ -2109,16 +2136,17 @@ class ControlAbstractionLayer:
             data: MJX simulation data
             normalize: REQUIRED. True to normalize by root height,
                       False for raw positions (meters)
-            frame: Coordinate frame (WORLD or HEADING_LOCAL)
+            frame: Coordinate frame (WORLD or HEADING_LOCAL). HEADING_LOCAL is root-relative.
 
         Returns:
             positions: (num_feet, 3) foot positions
         """
+        root_pos = data.qpos[self._root_spec.qpos_addr : self._root_spec.qpos_addr + 3]
         positions = []
         for foot in self._foot_specs:
             pos = data.xpos[foot.body_id]
             if frame == CoordinateFrame.HEADING_LOCAL:
-                pos = self._world_to_heading_local(data, pos)
+                pos = self._world_to_heading_local(data, pos - root_pos)
             positions.append(pos)
 
         result = jnp.stack(positions)
@@ -2376,7 +2404,7 @@ class ControlAbstractionLayer:
 
         Args:
             data: MJX simulation data
-            frame: Coordinate frame for position
+            frame: Coordinate frame for position. HEADING_LOCAL is root-relative.
 
         Returns:
             Pose3D with:
@@ -2396,7 +2424,8 @@ class ControlAbstractionLayer:
         orientation = data.qpos[self._root_spec.qpos_addr + 3:self._root_spec.qpos_addr + 7]
 
         if frame == CoordinateFrame.HEADING_LOCAL:
-            position = self._world_to_heading_local_vec(orientation, position)
+            root_pos = position
+            position = self._world_to_heading_local_vec(orientation, position - root_pos)
 
         return Pose3D(
             position=position,
@@ -2540,7 +2569,11 @@ class ControlAbstractionLayer:
         quat: jax.Array,
         vec: jax.Array,
     ) -> jax.Array:
-        """Rotate world-frame vector to heading-local frame."""
+        """Rotate world-frame vector to heading-local frame.
+
+        Note: This is a vector transform only. For positions, subtract the root
+        position before applying heading-local rotation.
+        """
         sin_yaw, cos_yaw = heading_sin_cos_from_quat_jax(quat)
         return heading_local_from_world_jax(vec, sin_yaw, cos_yaw)
 

@@ -215,12 +215,14 @@ class TestRobotConfigConsistency:
         Purpose: Verify required sensors are defined in robot_config.
 
         Assertions:
-        - gravity_sensor is defined
-        - global_angvel_sensor is defined
+        - orientation_sensor is defined
+        - root_gyro_sensor is defined
+        - root_accel_sensor is defined
         - local_linvel_sensor is defined
         """
-        assert robot_config.gravity_sensor, "Missing gravity_sensor"
-        assert robot_config.global_angvel_sensor, "Missing global_angvel_sensor"
+        assert robot_config.orientation_sensor, "Missing orientation_sensor"
+        assert robot_config.root_gyro_sensor, "Missing root_gyro_sensor"
+        assert robot_config.root_accel_sensor, "Missing root_accel_sensor"
         assert robot_config.local_linvel_sensor, "Missing local_linvel_sensor"
 
     @pytest.mark.unit

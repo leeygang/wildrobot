@@ -412,6 +412,20 @@ class TestContactForces:
 class TestSensorReadings:
     """Tests for sensor reading correctness."""
 
+    @staticmethod
+    def _gravity_from_quat(quat):
+        """Compute local gravity direction from quaternion (wxyz)."""
+        w, x, y, z = quat
+        r = np.array(
+            [
+                [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
+                [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
+                [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
+            ]
+        )
+        world_gravity = np.array([0.0, 0.0, -1.0])
+        return r.T @ world_gravity
+
     @pytest.mark.sim
     def test_gravity_sensor_direction(self, mj_model, mj_data, robot_config):
         """
@@ -425,18 +439,19 @@ class TestSensorReadings:
         mujoco.mj_resetData(mj_model, mj_data)
         mujoco.mj_forward(mj_model, mj_data)
 
-        # Find gravity sensor
-        gravity_sensor_name = robot_config.gravity_sensor
-        gravity_sensor_id = None
+        # Compute gravity direction from orientation sensor quaternion
+        orientation_sensor_name = robot_config.orientation_sensor
+        sensor_id = None
         for i in range(mj_model.nsensor):
-            if mj_model.sensor(i).name == gravity_sensor_name:
-                gravity_sensor_id = i
+            if mj_model.sensor(i).name == orientation_sensor_name:
+                sensor_id = i
                 break
 
-        assert gravity_sensor_id is not None, f"Gravity sensor '{gravity_sensor_name}' not found"
+        assert sensor_id is not None, f"Orientation sensor '{orientation_sensor_name}' not found"
 
-        adr = mj_model.sensor_adr[gravity_sensor_id]
-        gravity = mj_data.sensordata[adr:adr+3]
+        adr = mj_model.sensor_adr[sensor_id]
+        quat = mj_data.sensordata[adr:adr+4]
+        gravity = self._gravity_from_quat(quat)
 
         # When upright, gravity in body frame should be [0, 0, -1]
         assert abs(gravity[2] - (-1.0)) < 0.1, (
@@ -474,8 +489,8 @@ class TestSensorReadings:
             linvel_mag = np.linalg.norm(linvel)
             assert linvel_mag < 0.1, f"Linear velocity should be ~0 at rest: {linvel_mag:.3f} m/s"
 
-        # Check angular velocity sensor
-        angvel_sensor_name = robot_config.global_angvel_sensor
+        # Check angular velocity sensor (gyro)
+        angvel_sensor_name = robot_config.root_gyro_sensor
         angvel_sensor_id = None
         for i in range(mj_model.nsensor):
             if mj_model.sensor(i).name == angvel_sensor_name:

@@ -283,6 +283,11 @@ class ControlAbstractionLayer:
             [spec.force_limit for spec in self._actuator_specs]
         )
 
+        # Actuator ids (index into qfrc_actuator)
+        self._actuator_ids = jnp.array(
+            [spec.actuator_id for spec in self._actuator_specs]
+        )
+
         # Build symmetry swap indices for get_symmetric_action
         self._symmetry_swap_indices = self._build_symmetry_swap_indices()
 
@@ -548,7 +553,7 @@ class ControlAbstractionLayer:
         Returns:
             Actuator forces (num_actuators,), optionally normalized
         """
-        torques = qfrc_actuator[self._actuator_qvel_addrs]
+        torques = qfrc_actuator[self._actuator_ids]
 
         if normalize:
             torques = torques / (self._force_limits + 1e-6)
@@ -1001,7 +1006,7 @@ class ControlAbstractionLayer:
             data: MJX simulation data
             normalize: REQUIRED. True to normalize by root height,
                       False for raw positions (meters)
-            frame: Coordinate frame (WORLD or HEADING_LOCAL)
+            frame: Coordinate frame (WORLD or HEADING_LOCAL). HEADING_LOCAL is root-relative.
 
         Returns:
             (left_foot_pos, right_foot_pos): Each (3,) position vector
@@ -1016,8 +1021,11 @@ class ControlAbstractionLayer:
             quat = data.qpos[
                 self._root_spec.qpos_addr + 3 : self._root_spec.qpos_addr + 7
             ]
-            left_pos = self._world_to_heading_local_vec(quat, left_pos)
-            right_pos = self._world_to_heading_local_vec(quat, right_pos)
+            root_pos = data.qpos[
+                self._root_spec.qpos_addr : self._root_spec.qpos_addr + 3
+            ]
+            left_pos = self._world_to_heading_local_vec(quat, left_pos - root_pos)
+            right_pos = self._world_to_heading_local_vec(quat, right_pos - root_pos)
 
         if normalize:
             root_height = self.get_root_height(data)
@@ -1138,7 +1146,7 @@ class ControlAbstractionLayer:
 
         Args:
             data: MJX simulation data
-            frame: Coordinate frame for position
+            frame: Coordinate frame for position. HEADING_LOCAL is root-relative.
 
         Returns:
             Pose3D with:
@@ -1154,7 +1162,8 @@ class ControlAbstractionLayer:
         ]
 
         if frame == CoordinateFrame.HEADING_LOCAL:
-            position = self._world_to_heading_local_vec(orientation, position)
+            root_pos = position
+            position = self._world_to_heading_local_vec(orientation, position - root_pos)
 
         return Pose3D(
             position=position,
@@ -1260,7 +1269,9 @@ class ControlAbstractionLayer:
     ) -> jax.Array:
         """Rotate world-frame vector to heading-local frame.
 
-        Heading-local frame: world frame rotated by -yaw (heading direction is +X).
+        Heading-local orientation: world frame rotated by -yaw (heading direction is +X).
+        Note: This is a vector transform only. For positions, subtract the root
+        position before applying heading-local rotation.
 
         Args:
             quat: Root quaternion [qw, qx, qy, qz]

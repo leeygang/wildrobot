@@ -46,6 +46,22 @@ from playground_amp.cal.types import ActuatorType, CoordinateFrame
 # =============================================================================
 
 
+def make_mjx_data_with_root_pose(
+    mj_model: mujoco.MjModel,
+    root_pos: jnp.ndarray,
+    root_quat: jnp.ndarray,
+) -> mjx.Data:
+    """Create MJX data with a specified root pose."""
+    mj_data = mujoco.MjData(mj_model)
+    mj_data.qpos[:] = mj_model.qpos0
+    mj_data.qpos[0:3] = np.array(root_pos)
+    mj_data.qpos[3:7] = np.array(root_quat)
+    mujoco.mj_forward(mj_model, mj_data)
+    mjx_model = mjx.put_model(mj_model)
+    data = mjx.put_data(mj_model, mj_data)
+    return mjx.forward(mjx_model, data)
+
+
 @pytest.fixture(scope="session")
 def cal_instance(mj_model, robot_config):
     """Create CAL instance for testing."""
@@ -197,17 +213,17 @@ class TestSymmetry:
             ctrl[right_hip_idx] - right_spec.range_center
         ) / right_spec.range_span
 
-        # For mirrored joint ranges, symmetric motion means:
-        # - Same action value (0.5) produces opposite normalized positions
-        # - left_normalized should equal -right_normalized
-        # This is because mirror_sign flips the action for mirrored joints
+        # Symmetric action should produce mirrored normalized positions when
+        # mirror_sign differs across the pair.
+        sign_ratio = left_spec.mirror_sign / right_spec.mirror_sign
         np.testing.assert_almost_equal(
             left_normalized,
-            -right_normalized,  # Explicitly verify signs are opposite
+            right_normalized * sign_ratio,
             decimal=5,
             err_msg=(
-                f"Symmetric action should produce opposite normalized positions. "
-                f"Expected left ({left_normalized}) == -right ({-right_normalized})"
+                f"Symmetric action should produce mirrored motion. "
+                f"Left normalized: {left_normalized}, Right normalized: {right_normalized}, "
+                f"sign_ratio: {sign_ratio}"
             ),
         )
 
@@ -220,6 +236,37 @@ class TestSymmetry:
                 f"Joint {joint_spec.name}: expected mirror_sign={expected_mirror_sign}, "
                 f"got {joint_spec.mirror_sign}"
             )
+
+    def test_ankle_pitch_symmetry_not_flipped(self, cal_instance, robot_config):
+        """Ankles with identical ranges should not be mirrored."""
+        left_idx = robot_config.get_actuator_index("left_ankle_pitch")
+        right_idx = robot_config.get_actuator_index("right_ankle_pitch")
+        left_spec = cal_instance.joint_specs[left_idx]
+        right_spec = cal_instance.joint_specs[right_idx]
+        assert left_spec.mirror_sign == 1.0
+        assert right_spec.mirror_sign == 1.0
+
+        action = jnp.zeros(cal_instance.num_actuators)
+        action = action.at[left_idx].set(0.5)
+        action = action.at[right_idx].set(0.5)
+        ctrl = cal_instance.policy_action_to_ctrl(action)
+
+        left_norm = (
+            ctrl[left_idx] - left_spec.range_center
+        ) / left_spec.range_span
+        right_norm = (
+            ctrl[right_idx] - right_spec.range_center
+        ) / right_spec.range_span
+        np.testing.assert_almost_equal(left_norm, right_norm, decimal=5)
+
+    def test_hip_pitch_symmetry_is_mirrored(self, cal_instance, robot_config):
+        """Hip pitch ranges are mirrored, so right should be flipped."""
+        left_idx = robot_config.get_actuator_index("left_hip_pitch")
+        right_idx = robot_config.get_actuator_index("right_hip_pitch")
+        left_spec = cal_instance.joint_specs[left_idx]
+        right_spec = cal_instance.joint_specs[right_idx]
+        assert left_spec.mirror_sign == 1.0
+        assert right_spec.mirror_sign == -1.0
 
     def test_get_symmetric_action_swaps_left_right(self, cal_instance, robot_config):
         """get_symmetric_action should swap left/right joint values."""
@@ -617,6 +664,13 @@ class TestCoordinateFrames:
         assert pose.frame == CoordinateFrame.HEADING_LOCAL
         assert jnp.all(jnp.isfinite(pose.position))
 
+    def test_root_pose_heading_local_is_origin(self, cal_with_extended_state, mjx_data):
+        """HEADING_LOCAL root pose should be root-relative (near origin)."""
+        pose = cal_with_extended_state.get_root_pose(
+            mjx_data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        assert jnp.allclose(pose.position, jnp.zeros(3), atol=1e-6)
+
     def test_root_velocity_local_frame(self, cal_with_extended_state, mjx_data):
         """get_root_velocity in LOCAL frame should work."""
         velocity = cal_with_extended_state.get_root_velocity(
@@ -634,3 +688,93 @@ class TestCoordinateFrames:
         )
         assert jnp.all(jnp.isfinite(left_pos))
         assert jnp.all(jnp.isfinite(right_pos))
+
+    def test_foot_positions_heading_local_root_relative(
+        self, cal_with_extended_state, mjx_data
+    ):
+        """HEADING_LOCAL foot positions should be root-relative and yaw-aligned."""
+        pose_world = cal_with_extended_state.get_root_pose(
+            mjx_data, frame=CoordinateFrame.WORLD
+        )
+        left_world, right_world = cal_with_extended_state.get_foot_positions(
+            mjx_data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        left_expected = pose_world.to_heading_local(left_world - pose_world.position)
+        right_expected = pose_world.to_heading_local(right_world - pose_world.position)
+
+        left_heading, right_heading = cal_with_extended_state.get_foot_positions(
+            mjx_data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+
+        assert jnp.allclose(left_heading, left_expected, atol=1e-6)
+        assert jnp.allclose(right_heading, right_expected, atol=1e-6)
+
+    def test_heading_local_root_relative_numeric(self):
+        """Root-relative heading-local transform should match known values."""
+        # Root pose at (1, 2, 3) with 90-deg yaw around Z.
+        yaw = jnp.pi / 2.0
+        quat = jnp.array(
+            [jnp.cos(yaw / 2.0), 0.0, 0.0, jnp.sin(yaw / 2.0)]
+        )  # wxyz
+        pose = Pose3D(
+            position=jnp.array([1.0, 2.0, 3.0]),
+            orientation=quat,
+            frame=CoordinateFrame.WORLD,
+        )
+
+        # World point is 1m in +X from root (same Z).
+        point_world = jnp.array([2.0, 2.0, 3.0])
+        rel = point_world - pose.position  # [1, 0, 0]
+
+        # With -90 deg rotation, x-axis maps to -Y.
+        expected = jnp.array([0.0, -1.0, 0.0])
+        got = pose.to_heading_local(rel)
+        assert jnp.allclose(got, expected, atol=1e-6)
+
+    def test_root_pose_heading_local_numeric(self, mj_model, cal_with_extended_state):
+        """HEADING_LOCAL root pose should be zero for a known root pose."""
+        yaw = jnp.pi / 2.0
+        root_pos = jnp.array([1.0, -2.0, 0.5])
+        root_quat = jnp.array([jnp.cos(yaw / 2.0), 0.0, 0.0, jnp.sin(yaw / 2.0)])
+        data = make_mjx_data_with_root_pose(mj_model, root_pos, root_quat)
+
+        pose = cal_with_extended_state.get_root_pose(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        assert jnp.allclose(pose.position, jnp.zeros(3), atol=1e-6)
+
+    def test_foot_positions_heading_local_numeric(
+        self, mj_model, cal_with_extended_state
+    ):
+        """HEADING_LOCAL foot positions should match manual yaw transform."""
+        yaw = jnp.pi / 2.0
+        root_pos = jnp.array([0.5, -1.0, 0.3])
+        root_quat = jnp.array([jnp.cos(yaw / 2.0), 0.0, 0.0, jnp.sin(yaw / 2.0)])
+        data = make_mjx_data_with_root_pose(mj_model, root_pos, root_quat)
+
+        left_world, right_world = cal_with_extended_state.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        left_heading, right_heading = cal_with_extended_state.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+
+        cos_yaw = jnp.cos(yaw)
+        sin_yaw = jnp.sin(yaw)
+
+        def manual_heading(pos_world):
+            rel = pos_world - root_pos
+            x, y, z = rel[0], rel[1], rel[2]
+            return jnp.array(
+                [
+                    cos_yaw * x + sin_yaw * y,
+                    -sin_yaw * x + cos_yaw * y,
+                    z,
+                ]
+            )
+
+        left_expected = manual_heading(left_world)
+        right_expected = manual_heading(right_world)
+
+        assert jnp.allclose(left_heading, left_expected, atol=1e-6)
+        assert jnp.allclose(right_heading, right_expected, atol=1e-6)

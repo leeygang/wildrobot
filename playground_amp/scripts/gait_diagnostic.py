@@ -122,12 +122,15 @@ def main():
                 return i
         return -1
 
-    gravity_sensor_id = get_sensor_id(robot_cfg.gravity_sensor)
-    angvel_sensor_id = get_sensor_id(robot_cfg.global_angvel_sensor)
+    orientation_sensor_id = get_sensor_id(robot_cfg.orientation_sensor)
     linvel_sensor_id = get_sensor_id(robot_cfg.local_linvel_sensor)
 
-    gravity_adr = model.sensor_adr[gravity_sensor_id]
-    angvel_adr = model.sensor_adr[angvel_sensor_id]
+    if orientation_sensor_id < 0:
+        raise ValueError("Missing required orientation sensor for gravity computation")
+    if linvel_sensor_id < 0:
+        raise ValueError("Missing required local_linvel sensor for observation")
+
+    orientation_adr = model.sensor_adr[orientation_sensor_id]
     linvel_adr = model.sensor_adr[linvel_sensor_id]
 
     # Action filter settings
@@ -141,8 +144,17 @@ def main():
     n_substeps = int(ctrl_dt / sim_dt)
 
     def get_observation(data, velocity_cmd, prev_action):
-        gravity = data.sensordata[gravity_adr:gravity_adr+3].copy()
-        angvel = data.sensordata[angvel_adr:angvel_adr+3].copy()
+        quat = data.sensordata[orientation_adr:orientation_adr+4].copy()
+        w, x, y, z = quat
+        r = np.array(
+            [
+                [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
+                [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
+                [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
+            ]
+        )
+        gravity = (r.T @ np.array([0.0, 0.0, -1.0])).astype(np.float32)
+        angvel = data.qvel[3:6].copy()
         linvel = data.sensordata[linvel_adr:linvel_adr+3].copy()
         joint_pos = data.qpos[7:7+8].copy()
         joint_vel = data.qvel[6:6+8].copy()

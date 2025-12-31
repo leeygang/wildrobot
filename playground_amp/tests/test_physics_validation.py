@@ -277,25 +277,25 @@ class TestKinematics:
         world_gravity = np.array([0, 0, -1])  # Normalized
         computed_local_gravity = R.T @ world_gravity
 
-        # Get gravity from sensor (pelvis_accel at rest ~ gravity)
-        # Or use framezaxis sensor
-        pelvis_upvector_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "pelvis_upvector"
+        # Get gravity direction from accelerometer (chest IMU)
+        accel_id = mujoco.mj_name2id(
+            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "chest_imu_accel"
         )
-        if pelvis_upvector_id >= 0:
-            sensor_adr = mj_model.sensor_adr[pelvis_upvector_id]
-            sensor_dim = mj_model.sensor_dim[pelvis_upvector_id]
-            sensor_upvector = mj_data.sensordata[sensor_adr : sensor_adr + sensor_dim]
+        if accel_id >= 0:
+            sensor_adr = mj_model.sensor_adr[accel_id]
+            sensor_dim = mj_model.sensor_dim[accel_id]
+            accel = mj_data.sensordata[sensor_adr : sensor_adr + sensor_dim]
+            accel_norm = np.linalg.norm(accel) + 1e-8
+            accel_dir = accel / accel_norm
 
-            # Upvector should be opposite of gravity direction in local frame
-            # At rest, upvector ≈ [0, 0, 1] in world, and local gravity ≈ [0, 0, -1]
-            cosine_sim = np.dot(computed_local_gravity, -sensor_upvector)
+            # Accelerometer should align with local gravity at rest
+            cosine_sim = abs(np.dot(computed_local_gravity, accel_dir))
 
             assert (
                 cosine_sim > 0.99
             ), f"Gravity consistency failed: cosine_sim={cosine_sim:.4f}"
             print(f"  Computed local gravity: {computed_local_gravity}")
-            print(f"  Sensor upvector: {sensor_upvector}")
+            print(f"  Accel dir: {accel_dir}")
             print(f"  Cosine similarity: {cosine_sim:.4f}")
 
     def test_pitched_gravity_consistency(self, mj_model, mj_data):
@@ -317,20 +317,22 @@ class TestKinematics:
         mujoco.mj_forward(mj_model, mj_data)
 
         # Check that gravity direction changed appropriately
-        pelvis_upvector_id = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "pelvis_upvector"
+        accel_id = mujoco.mj_name2id(
+            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "chest_imu_accel"
         )
-        if pelvis_upvector_id >= 0:
-            sensor_adr = mj_model.sensor_adr[pelvis_upvector_id]
-            sensor_dim = mj_model.sensor_dim[pelvis_upvector_id]
-            upvector = mj_data.sensordata[sensor_adr : sensor_adr + sensor_dim]
+        if accel_id >= 0:
+            sensor_adr = mj_model.sensor_adr[accel_id]
+            sensor_dim = mj_model.sensor_dim[accel_id]
+            accel = mj_data.sensordata[sensor_adr : sensor_adr + sensor_dim]
+            accel_norm = np.linalg.norm(accel) + 1e-8
+            accel_dir = accel / accel_norm
 
-            # After pitching forward 30°, the upvector z component should be ~cos(30°)
+            # After pitching forward 30°, gravity direction should rotate accordingly
             expected_z = np.cos(pitch_angle)
             assert (
-                np.abs(upvector[2] - expected_z) < 0.05
-            ), f"Upvector z after pitch: {upvector[2]:.3f}, expected ~{expected_z:.3f}"
-            print(f"  Upvector after 30° pitch: {upvector}")
+                np.abs(abs(accel_dir[2]) - expected_z) < 0.05
+            ), f"Accel |z| after pitch: {accel_dir[2]:.3f}, expected ~{expected_z:.3f}"
+            print(f"  Accel dir after 30° pitch: {accel_dir}")
 
     @staticmethod
     def _quat_multiply(q1, q2):

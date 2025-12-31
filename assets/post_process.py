@@ -378,19 +378,32 @@ def generate_actuated_joints_config(
             pair_range = pair_info.get("range", [-1.57, 1.57])
             pair_min, pair_max = pair_range
 
-            # Check if ranges are inverted (mirrored)
-            # Inverted: one joint's max ≈ -1 * other joint's min
-            # Example: left_hip_pitch [−0.087, 1.571] vs right_hip_pitch [−1.571, 0.087]
-            range_center = (range_min + range_max) / 2
-            pair_center = (pair_min + pair_max) / 2
+            # Explicit range checks for symmetry
+            tol = 1e-3
+            same_range = abs(range_min - pair_min) < tol and abs(range_max - pair_max) < tol
+            mirrored = (
+                abs(range_min + pair_max) < tol and abs(range_max + pair_min) < tol
+            )
 
-            # If centers have opposite signs, ranges are mirrored
-            # Use a threshold to handle floating point imprecision
-            if abs(range_center + pair_center) < 0.1:  # Centers sum to ~0
-                # Ranges are inverted - determine which joint gets -1.0
+            if not (mirrored or same_range):
+                raise ValueError(
+                    "Unexpected joint range mismatch for symmetry pair "
+                    f"'{joint_name}' ↔ '{symmetry_pair}': "
+                    f"{range_min:.6f},{range_max:.6f} vs {pair_min:.6f},{pair_max:.6f}. "
+                    "Update mirror detection or config."
+                )
+
+            if mirrored and not same_range:
                 # Convention: joints starting with "right_" get -1.0 if inverted
                 if joint_name.startswith("right_"):
                     mirror_sign = -1.0
+                elif joint_name.startswith("left_"):
+                    mirror_sign = 1.0
+                else:
+                    raise ValueError(
+                        "Mirrored joint range requires explicit left/right naming for "
+                        f"'{joint_name}' ↔ '{symmetry_pair}'."
+                    )
 
         config = {
             "name": joint_name,
@@ -503,8 +516,6 @@ def generate_robot_config(
             "gyro": "chest_imu_gyro",  # gyroscope for angular velocity
             "accel": "chest_imu_accel",  # accelerometer
             "local_linvel": "pelvis_local_linvel",  # velocimeter for local linear velocity
-            "gravity": "pelvis_upvector",  # framezaxis for gravity direction
-            "global_angvel": "pelvis_global_angvel",  # frameangvel for world angular velocity
         },
     }
     joints: List[Dict[str, Any]] = []

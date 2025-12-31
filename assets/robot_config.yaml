@@ -10,8 +10,6 @@ root_spec:
     gyro: chest_imu_gyro
     accel: chest_imu_accel
     local_linvel: pelvis_local_linvel
-    gravity: pelvis_upvector
-    global_angvel: pelvis_global_angvel
 actuated_joint_specs:
 - name: left_hip_pitch
   type: position
@@ -75,7 +73,7 @@ actuated_joint_specs:
   - -0.785398
   - 0.785398
   symmetry_pair: left_ankle_pitch
-  mirror_sign: -1.0
+  mirror_sign: 1.0
   max_velocity: 10.0
 foot_specs:
   left:

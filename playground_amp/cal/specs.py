@@ -357,7 +357,9 @@ class Pose3D:
     def to_heading_local(self, vec_world: jnp.ndarray) -> jnp.ndarray:
         """Transform a world-frame vector to heading-local frame.
 
-        Heading-local frame: world frame rotated by -yaw (heading direction is +X).
+        Heading-local orientation: world frame rotated by -yaw (heading direction is +X).
+        Note: This is a vector transform only. For positions, subtract the root
+        position before applying heading-local rotation.
 
         Args:
             vec_world: 3D vector in world frame (3,)
@@ -636,8 +638,9 @@ class Velocity3D:
     def to_heading_local(self, pose: Pose3D) -> Velocity3D:
         """Transform velocity from world frame to heading-local frame.
 
-        Heading-local frame: world frame rotated by -yaw (heading direction is +X).
+        Heading-local orientation: world frame rotated by -yaw (heading direction is +X).
         Uses the pose's orientation to determine the heading direction.
+        Note: This is a vector transform only; position origin does not apply.
 
         Args:
             pose: Pose3D providing the heading direction (must have orientation)

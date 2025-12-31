@@ -346,32 +346,30 @@ def main():
                 return i
         return -1
 
-    gravity_sensor_name = robot_cfg.gravity_sensor
-    angvel_sensor_name = robot_cfg.global_angvel_sensor
+    orientation_sensor_name = robot_cfg.orientation_sensor
     local_linvel_sensor_name = robot_cfg.local_linvel_sensor
-    gravity_sensor_id = get_sensor_id(gravity_sensor_name)
-    angvel_sensor_id = get_sensor_id(angvel_sensor_name)
+    orientation_sensor_id = get_sensor_id(orientation_sensor_name)
     local_linvel_sensor_id = get_sensor_id(local_linvel_sensor_name)
 
     print(
-        f"Using sensors: gravity={gravity_sensor_name} (id={gravity_sensor_id}), angvel={angvel_sensor_name} (id={angvel_sensor_id})"
+        "Using sensors: orientation="
+        f"{orientation_sensor_name} (id={orientation_sensor_id})"
     )
     print(
         f"              local_linvel={local_linvel_sensor_name} (id={local_linvel_sensor_id})"
     )
 
-    if gravity_sensor_id < 0 or angvel_sensor_id < 0:
-        print(f"Warning: Could not find required sensors")
+    if orientation_sensor_id < 0:
+        print("Warning: Could not find required orientation sensor")
         print("Available sensors:")
         for i in range(mj_model.nsensor):
             name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SENSOR, i)
             print(f"  {i}: {name}")
 
     # Get sensor data addresses
-    gravity_adr = (
-        mj_model.sensor_adr[gravity_sensor_id] if gravity_sensor_id >= 0 else 0
+    orientation_adr = (
+        mj_model.sensor_adr[orientation_sensor_id] if orientation_sensor_id >= 0 else 0
     )
-    angvel_adr = mj_model.sensor_adr[angvel_sensor_id] if angvel_sensor_id >= 0 else 0
     local_linvel_adr = (
         mj_model.sensor_adr[local_linvel_sensor_id]
         if local_linvel_sensor_id >= 0
@@ -410,7 +408,21 @@ def main():
         mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt
     ):
         """Compute observation vector using training logic (inference-faithful)."""
-        gravity = mj_data.sensordata[gravity_adr : gravity_adr + 3].copy()
+        # Gravity from orientation sensor (framequat)
+        quat = (
+            mj_data.sensordata[orientation_adr : orientation_adr + 4].copy()
+            if orientation_sensor_id >= 0
+            else mj_data.qpos[3:7].copy()
+        )
+        w, x, y, z = quat
+        r = np.array(
+            [
+                [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
+                [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
+                [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
+            ]
+        )
+        gravity = (r.T @ np.array([0.0, 0.0, -1.0])).astype(np.float32)
 
         curr_root_pos = mj_data.qpos[0:3].copy()
         curr_root_quat = mj_data.qpos[3:7].copy()
@@ -438,7 +450,7 @@ def main():
             )
         else:
             # Fallback: use sensor data for first frame
-            angvel_world = mj_data.sensordata[angvel_adr : angvel_adr + 3].copy()
+            angvel_world = mj_data.qvel[3:6].copy()
             linvel_world = mj_data.qvel[0:3].copy()
             # Transform to heading-local using current pose
             linvel = curr_pose.to_heading_local(jnp.array(linvel_world))

@@ -94,16 +94,6 @@ class RobotConfig:
         return sensors[key]
 
     @property
-    def gravity_sensor(self) -> str:
-        """Get gravity/up-vector sensor name."""
-        return self._get_root_sensor("gravity")
-
-    @property
-    def global_angvel_sensor(self) -> str:
-        """Get global angular velocity sensor name."""
-        return self._get_root_sensor("global_angvel")
-
-    @property
     def local_linvel_sensor(self) -> str:
         """Get local linear velocity sensor name."""
         return self._get_root_sensor("local_linvel")
