@@ -637,7 +637,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Cache root pose and velocity (used for metrics and WildRobotInfo update)
         curr_root_pose = self._cal.get_root_pose(data)
         forward_vel, _, _ = self._cal.get_root_velocity(
-            data, frame=CoordinateFrame.LOCAL
+            data, frame=CoordinateFrame.HEADING_LOCAL
         ).linear_xyz
 
         # v0.10.4: Store step count in metrics for episode length calculation
@@ -877,7 +877,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_pose = self._cal.get_root_pose(data)
 
         # Cache root velocity (used for forward/lateral vel + angular vel penalty)
-        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.LOCAL)
+        # HEADING_LOCAL: horizontal velocity in heading direction (robust to pitch/roll)
+        root_vel = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
 
         # 1. Forward velocity tracking (exp shaping)
         forward_vel, lateral_vel, _ = root_vel.linear_xyz
