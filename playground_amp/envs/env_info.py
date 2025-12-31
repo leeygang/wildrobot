@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from playground_amp.envs.disturbance import DisturbanceSchedule
+
 import jax.numpy as jnp
 
 # Use flax.struct for JAX-compatible dataclass with pytree registration
@@ -63,9 +65,7 @@ try:
             root_height: Root height after this step (scalar)
 
             # Disturbance pushes (episode-constant schedule)
-            push_start_step: Step index to begin external push
-            push_end_step: Step index to end external push
-            push_force_xy: Lateral push force (x, y) in Newtons
+            push_schedule: DisturbanceSchedule
         """
         # Core bookkeeping
         step_count: jnp.ndarray  # shape=()
@@ -84,9 +84,7 @@ try:
         # AMP features (post-step values)
         foot_contacts: jnp.ndarray  # shape=(4,)
         root_height: jnp.ndarray  # shape=()
-        push_start_step: jnp.ndarray  # shape=()
-        push_end_step: jnp.ndarray  # shape=()
-        push_force_xy: jnp.ndarray  # shape=(2,)
+        push_schedule: DisturbanceSchedule
 
 except ImportError:
     # Fallback to NamedTuple if flax not available
@@ -104,9 +102,7 @@ except ImportError:
         prev_right_foot_pos: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
-        push_start_step: jnp.ndarray
-        push_end_step: jnp.ndarray
-        push_force_xy: jnp.ndarray
+        push_schedule: DisturbanceSchedule
 
 
 # =============================================================================
@@ -137,9 +133,12 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_right_foot_pos": (3,),
         "foot_contacts": (4,),
         "root_height": (),
-        "push_start_step": (),
-        "push_end_step": (),
-        "push_force_xy": (2,),
+        "push_schedule": {
+            "start_step": (),
+            "end_step": (),
+            "force_xy": (2,),
+            "rng": (2,),
+        },
     }
 
 
@@ -183,11 +182,31 @@ def validate_wildrobot_info(
             errors.append(f"[{context}] Missing required field: '{field_name}'")
             continue
 
-        if value.shape != expected_shape:
-            errors.append(
-                f"[{context}] Field '{field_name}': expected shape {expected_shape}, "
-                f"got {value.shape}"
-            )
+        if field_name == "push_schedule":
+            if not isinstance(value, DisturbanceSchedule):
+                errors.append(
+                    f"[{context}] Field '{field_name}': expected DisturbanceSchedule, "
+                    f"got {type(value)}"
+                )
+                continue
+            for sub_name, sub_shape in expected_shape.items():
+                sub_value = getattr(value, sub_name, None)
+                if sub_value is None:
+                    errors.append(
+                        f"[{context}] Field '{field_name}.{sub_name}' is missing"
+                    )
+                    continue
+                if sub_value.shape != sub_shape:
+                    errors.append(
+                        f"[{context}] Field '{field_name}.{sub_name}': expected "
+                        f"shape {sub_shape}, got {sub_value.shape}"
+                    )
+        else:
+            if value.shape != expected_shape:
+                errors.append(
+                    f"[{context}] Field '{field_name}': expected shape {expected_shape}, "
+                    f"got {value.shape}"
+                )
 
         if field_name in WILDROBOT_INFO_NONZERO_FIELDS:
             if jnp.allclose(value, 0.0):

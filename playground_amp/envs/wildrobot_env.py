@@ -50,6 +50,11 @@ from playground_amp.cal.types import CoordinateFrame
 
 from playground_amp.configs.training_config import get_robot_config, TrainingConfig
 from playground_amp.envs.env_info import WildRobotInfo, WR_INFO_KEY
+from playground_amp.envs.disturbance import (
+    DisturbanceSchedule,
+    apply_push,
+    sample_push_schedule,
+)
 from playground_amp.training.experiment_tracking import get_initial_env_metrics_jax
 from playground_amp.training.metrics_registry import (
     build_metrics_vec,
@@ -274,6 +279,7 @@ class WildRobotEnvState(mjx_env.State):
     """
 
     pipeline_state: mjx.Data = None
+    rng: jp.ndarray = None
 
 
 # =============================================================================
@@ -432,9 +438,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos: jax.Array,
         velocity_cmd: jax.Array,
         base_info: dict | None = None,
-        push_start_step: jax.Array | None = None,
-        push_end_step: jax.Array | None = None,
-        push_force_xy: jax.Array | None = None,
+        push_schedule: DisturbanceSchedule | None = None,
     ) -> WildRobotEnvState:
         """Create initial environment state from qpos (shared by reset and auto-reset).
 
@@ -516,6 +520,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False
         )
+        if push_schedule is None:
+            push_schedule = DisturbanceSchedule(
+                start_step=jp.zeros(()),
+                end_step=jp.zeros(()),
+                force_xy=jp.zeros((2,)),
+                rng=jp.zeros((2,)),
+            )
+
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=jp.zeros(self.action_size),
@@ -529,9 +541,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=root_pose.height,  # Actual root height for AMP features
-            push_start_step=jp.zeros(()) if push_start_step is None else push_start_step,
-            push_end_step=jp.zeros(()) if push_end_step is None else push_end_step,
-            push_force_xy=jp.zeros((2,)) if push_force_xy is None else push_force_xy,
+            push_schedule=push_schedule,
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -554,6 +564,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             metrics=metrics,
             info=info,
             pipeline_state=data,
+            rng=push_schedule.rng,
         )
 
     def reset(self, rng: jax.Array) -> WildRobotEnvState:
@@ -565,7 +576,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Initial WildRobotEnvState.
         """
-        rng, key1, key2, key3, key4, key5 = jax.random.split(rng, 6)
+        rng, key1, key2, key3 = jax.random.split(rng, 4)
 
         # Sample velocity command
         velocity_cmd = jax.random.uniform(
@@ -586,36 +597,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._default_joint_qpos + joint_noise
         )
 
-        # Sample a single lateral push for this episode (if enabled)
-        if self._config.env.push_enabled:
-            start_step = jax.random.randint(
-                key3,
-                shape=(),
-                minval=self._config.env.push_start_step_min,
-                maxval=self._config.env.push_start_step_max + 1,
-            )
-            force_mag = jax.random.uniform(
-                key4,
-                shape=(),
-                minval=self._config.env.push_force_min,
-                maxval=self._config.env.push_force_max,
-            )
-            angle = jax.random.uniform(key5, shape=(), minval=0.0, maxval=2 * jp.pi)
-            push_force_xy = force_mag * jp.array([jp.cos(angle), jp.sin(angle)])
-            duration = jp.asarray(self._config.env.push_duration_steps)
-            push_start_step = jp.asarray(start_step)
-            push_end_step = push_start_step + duration
-        else:
-            push_start_step = jp.zeros(())
-            push_end_step = jp.zeros(())
-            push_force_xy = jp.zeros((2,))
+        schedule = sample_push_schedule(key3, self._config.env)
 
         return self._make_initial_state(
             qpos,
             velocity_cmd,
-            push_start_step=push_start_step,
-            push_end_step=push_end_step,
-            push_force_xy=push_force_xy,
+            push_schedule=schedule,
         )
 
     def step(self, state: WildRobotEnvState, action: jax.Array) -> WildRobotEnvState:
@@ -649,16 +636,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Apply external push disturbance (lateral force on body, if enabled)
         if self._config.env.push_enabled:
-            push_active = (step_count >= wr.push_start_step) & (
-                step_count < wr.push_end_step
-            )
-            push_force_xy = jp.where(push_active, wr.push_force_xy, 0.0)
-            xfrc_applied = jp.zeros_like(data.xfrc_applied)
-            push_force = jp.array(
-                [push_force_xy[0], push_force_xy[1], 0.0, 0.0, 0.0, 0.0]
-            )
-            xfrc_applied = xfrc_applied.at[self._push_body_id].set(push_force)
-            data = data.replace(xfrc_applied=xfrc_applied)
+            data = apply_push(data, wr.push_schedule, step_count, self._push_body_id)
 
         # Physics simulation (multiple substeps)
         def substep_fn(data, _):
@@ -737,9 +715,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
-            push_start_step=wr.push_start_step,
-            push_end_step=wr.push_end_step,
-            push_force_xy=wr.push_force_xy,
+            push_schedule=wr.push_schedule,
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -755,13 +731,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.10.2: Preserve termination metrics for diagnostics
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
+        reset_schedule = sample_push_schedule(state.rng, self._config.env)
         reset_state = self._make_initial_state(
             self._init_qpos,
             velocity_cmd,
             base_info=state.info,
-            push_start_step=wr.push_start_step,
-            push_end_step=wr.push_end_step,
-            push_force_xy=wr.push_force_xy,
+            push_schedule=reset_schedule,
         )
 
         # v0.10.2: Preserve termination diagnostics in metrics even after reset
@@ -809,22 +784,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
-            push_start_step=reset_wr_info.push_start_step,
-            push_end_step=reset_wr_info.push_end_step,
-            push_force_xy=reset_wr_info.push_force_xy,
+            push_schedule=reset_wr_info.push_schedule,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace
 
-        final_data, final_obs, final_metrics, final_info = jax.lax.cond(
+        final_data, final_obs, final_metrics, final_info, final_rng = jax.lax.cond(
             done > 0.5,
             lambda: (
                 reset_state.data,
                 reset_state.obs,
                 preserved_metrics,  # Use preserved metrics with term/* intact
                 preserved_info,  # Use preserved info with truncated intact
+                reset_state.rng,
             ),
-            lambda: (data, obs, metrics, info),
+            lambda: (data, obs, metrics, info, state.rng),
         )
 
         # Build packed metrics vector and store in metrics dict
@@ -839,6 +813,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             metrics=final_metrics,
             info=final_info,
             pipeline_state=final_data,
+            rng=final_rng,
         )
 
     # =========================================================================
