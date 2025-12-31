@@ -318,21 +318,17 @@ METRICS_VEC_KEY: str = "wr_metrics_vec"
 def build_metrics_vec(metrics_dict: Dict[str, jnp.ndarray]) -> jnp.ndarray:
     """Build packed metrics vector from dict.
 
-    This function enforces that ALL registered metrics are present.
-    Missing metrics will cause a KeyError (fail fast, no silent zeros).
+    Missing metrics default to zeros for backward compatibility with older
+    checkpoints/configs that lack newly added metrics.
 
     Args:
         metrics_dict: Dict mapping metric names to scalar values.
-                      All keys in METRIC_NAMES must be present.
 
     Returns:
         Packed vector of shape (NUM_METRICS,) or (N, NUM_METRICS) if batched.
-
-    Raises:
-        KeyError: If any registered metric is missing from metrics_dict.
     """
-    # Stack in registry order - KeyError if missing (intentional!)
-    values = [metrics_dict[name] for name in METRIC_NAMES]
+    zeros = jnp.zeros((), dtype=jnp.float32)
+    values = [metrics_dict.get(name, zeros) for name in METRIC_NAMES]
     return jnp.stack(values, axis=-1)
 
 

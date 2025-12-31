@@ -210,6 +210,7 @@ def get_initial_env_metrics(
         # Tracking metrics (v0.10.3+)
         "tracking/vel_error": 0.0,  # Starts at zero (stationary)
         "tracking/max_torque": 0.0,  # No torque at reset
+        "tracking/avg_torque": 0.0,  # No torque at reset
     }
 
 
@@ -285,6 +286,7 @@ def get_initial_env_metrics_jax(
         # Tracking metrics (v0.10.3+)
         "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
         "tracking/max_torque": jp.zeros(()),  # No torque at reset
+        "tracking/avg_torque": jp.zeros(()),  # No torque at reset
     }
 
 
