@@ -799,6 +799,8 @@ def create_training_metrics_from_iteration(
         approx_kl=0.0,
         env_steps_per_sec=steps_per_sec,
         forward_velocity=float(metrics.env_metrics["forward_velocity"]),
+        success_rate=float(metrics.success_rate),
+        avg_torque=float(metrics.env_metrics["tracking/avg_torque"]),
         episode_length=float(metrics.episode_length),
         velocity_cmd=float(metrics.env_metrics["velocity_command"]),
         velocity_error=float(metrics.env_metrics["tracking/vel_error"]),

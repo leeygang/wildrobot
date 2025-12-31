@@ -103,6 +103,11 @@ METRIC_SPECS: List[MetricSpec] = [
         topline=True,
         description="Peak torque as fraction of limit (0-1)",
     ),
+    MetricSpec(
+        name="tracking/avg_torque",
+        reducer=Reducer.MEAN,
+        description="Mean absolute actuator torque (Nm)",
+    ),
 
     # =========================================================================
     # Reward components (indices 5-20)

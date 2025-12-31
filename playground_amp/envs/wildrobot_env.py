@@ -1087,6 +1087,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.10.3: Compute tracking metrics for walking exit criteria
         # Max normalized torque (peak torque as fraction of limit, across all actuators)
         max_torque_ratio = jp.max(jp.abs(normalized_torques))
+        avg_torque = jp.mean(
+            jp.abs(self._cal.get_actuator_torques(data.qfrc_actuator, normalize=False))
+        )
 
         components = {
             # Primary
@@ -1120,6 +1123,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)
+            "tracking/avg_torque": avg_torque,  # mean(|torque|) in Nm
         }
 
         return total, components
