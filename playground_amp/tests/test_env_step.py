@@ -24,13 +24,15 @@ import pytest
 def env(training_config, robot_config):
     """Create WildRobot environment for testing."""
     from playground_amp.configs.robot_config import load_robot_config
-    from playground_amp.train import create_env_config
+    from playground_amp.configs.training_config import load_training_config
 
     load_robot_config("assets/robot_config.yaml")
-    env_config = create_env_config(training_config.raw_config)
+    training_cfg = load_training_config("playground_amp/configs/ppo_walking.yaml")
+    training_cfg.freeze()  # Freeze config for JIT compatibility
 
     from playground_amp.envs.wildrobot_env import WildRobotEnv
-    return WildRobotEnv(config=env_config)
+
+    return WildRobotEnv(config=training_cfg)
 
 
 # =============================================================================
@@ -54,9 +56,9 @@ class TestResetContract:
         state = env.reset(rng)
 
         # Check observation shape
-        assert state.obs.shape[-1] == env.observation_size, (
-            f"Observation shape mismatch: {state.obs.shape} vs ({env.observation_size},)"
-        )
+        assert (
+            state.obs.shape[-1] == env.observation_size
+        ), f"Observation shape mismatch: {state.obs.shape} vs ({env.observation_size},)"
 
         # Check all values are finite
         assert jnp.all(jnp.isfinite(state.obs)), "Observation contains NaN or Inf"
@@ -78,9 +80,9 @@ class TestResetContract:
         state1 = env.reset(rng1)
         state2 = env.reset(rng2)
 
-        assert jnp.allclose(state1.obs, state2.obs), (
-            "Reset not deterministic with same seed"
-        )
+        assert jnp.allclose(
+            state1.obs, state2.obs
+        ), "Reset not deterministic with same seed"
 
     @pytest.mark.sim
     def test_reset_different_with_different_seed(self, env):
@@ -133,7 +135,9 @@ class TestStepContract:
         assert new_state.obs.shape[-1] == env.observation_size
 
         # Check all values finite
-        assert jnp.all(jnp.isfinite(new_state.obs)), "Observation contains NaN after step"
+        assert jnp.all(
+            jnp.isfinite(new_state.obs)
+        ), "Observation contains NaN after step"
         assert jnp.isfinite(new_state.reward), "Reward contains NaN or Inf"
 
     @pytest.mark.sim
@@ -141,22 +145,33 @@ class TestStepContract:
         """
         Purpose: Verify robot remains stable with zero action.
 
+        A well-tuned bipedal robot should maintain balance when standing still
+        with zero action (holding the default/neutral pose).
+
         Procedure:
         1. Reset environment
         2. Step with zero action for 100 steps
 
         Assertions:
         - Robot should remain upright (not terminated)
-        - Height should remain approximately constant
+        - No NaN or Inf values during simulation
         """
         state = env.reset(rng)
 
-        for _ in range(100):
+        for i in range(100):
             action = jnp.zeros(env.action_size)
             state = env.step(state, action)
 
+            # Check numerical stability
+            assert jnp.all(jnp.isfinite(state.obs)), f"NaN/Inf detected at step {i}"
+            assert jnp.isfinite(state.reward), f"NaN/Inf reward at step {i}"
+
             if state.done:
-                pytest.fail("Robot fell with zero action within 100 steps")
+                pytest.fail(
+                    f"Robot fell with zero action at step {i}. "
+                    f"This indicates the robot's default pose or physics parameters "
+                    f"may need adjustment for stable standing."
+                )
 
     @pytest.mark.sim
     def test_step_state_changes(self, env, rng):
@@ -173,9 +188,9 @@ class TestStepContract:
         new_state = env.step(state, action)
 
         # Observation should change
-        assert not jnp.allclose(obs_before, new_state.obs), (
-            "Observation didn't change after step with action"
-        )
+        assert not jnp.allclose(
+            obs_before, new_state.obs
+        ), "Observation didn't change after step with action"
 
 
 # =============================================================================
@@ -216,8 +231,8 @@ class TestTermination:
         - Termination when |pitch| > max_pitch
         - Termination when |roll| > max_roll
         """
-        max_pitch = getattr(training_config.env, 'max_pitch', 0.5)
-        max_roll = getattr(training_config.env, 'max_roll', 0.5)
+        max_pitch = getattr(training_config.env, "max_pitch", 0.5)
+        max_roll = getattr(training_config.env, "max_roll", 0.5)
 
         def check_orientation_termination(pitch, roll, max_pitch, max_roll):
             return abs(pitch) > max_pitch or abs(roll) > max_roll
@@ -285,15 +300,13 @@ class TestActionHandling:
 
         # Should not cause NaN or Inf
         state_high = env.step(state, extreme_high)
-        assert jnp.all(jnp.isfinite(state_high.obs)), (
-            "Extreme high action caused NaN/Inf"
-        )
+        assert jnp.all(
+            jnp.isfinite(state_high.obs)
+        ), "Extreme high action caused NaN/Inf"
 
         state = env.reset(rng)
         state_low = env.step(state, extreme_low)
-        assert jnp.all(jnp.isfinite(state_low.obs)), (
-            "Extreme low action caused NaN/Inf"
-        )
+        assert jnp.all(jnp.isfinite(state_low.obs)), "Extreme low action caused NaN/Inf"
 
     @pytest.mark.sim
     def test_action_effect_direction(self, env, rng):
@@ -319,9 +332,9 @@ class TestActionHandling:
 
         # Joint positions should differ
         # (Exact indices depend on observation structure, so we just check obs differ)
-        assert not jnp.allclose(state_pos.obs, state_neg.obs), (
-            "Positive and negative actions should produce different observations"
-        )
+        assert not jnp.allclose(
+            state_pos.obs, state_neg.obs
+        ), "Positive and negative actions should produce different observations"
 
 
 # =============================================================================
@@ -350,12 +363,13 @@ class TestObservationConsistency:
         state = env.reset(rng)
         obs = state.obs
 
-        expected_dim = training_config.env.obs_dim
+        # Use env's observation_size property (canonical source of truth)
+        expected_dim = env.observation_size
         actual_dim = obs.shape[-1]
 
-        assert actual_dim == expected_dim, (
-            f"Observation dimension mismatch: {actual_dim} vs {expected_dim}"
-        )
+        assert (
+            actual_dim == expected_dim
+        ), f"Observation dimension mismatch: {actual_dim} vs {expected_dim}"
 
     @pytest.mark.sim
     def test_observation_bounds_reasonable(self, env, rng):
@@ -370,16 +384,13 @@ class TestObservationConsistency:
         # Run for some steps to get varied observations
         for _ in range(50):
             action = jax.random.uniform(
-                jax.random.PRNGKey(0), shape=(env.action_size,),
-                minval=-1, maxval=1
+                jax.random.PRNGKey(0), shape=(env.action_size,), minval=-1, maxval=1
             )
             state = env.step(state, action)
 
             # Check bounds
             max_val = jnp.max(jnp.abs(state.obs))
-            assert max_val < 100, (
-                f"Observation value too large: {max_val}"
-            )
+            assert max_val < 100, f"Observation value too large: {max_val}"
 
             if state.done:
                 break

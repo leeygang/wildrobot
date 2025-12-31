@@ -197,16 +197,17 @@ class TestSymmetry:
             ctrl[right_hip_idx] - right_spec.range_center
         ) / right_spec.range_span
 
-        # Both should produce the same normalized position (symmetric motion)
-        # The actual ctrl values will differ due to different ranges, but normalized
-        # positions should be equal
+        # For mirrored joint ranges, symmetric motion means:
+        # - Same action value (0.5) produces opposite normalized positions
+        # - left_normalized should equal -right_normalized
+        # This is because mirror_sign flips the action for mirrored joints
         np.testing.assert_almost_equal(
             left_normalized,
-            right_normalized,
+            -right_normalized,  # Explicitly verify signs are opposite
             decimal=5,
             err_msg=(
-                f"Symmetric action should produce symmetric motion. "
-                f"Left normalized: {left_normalized}, Right normalized: {right_normalized}"
+                f"Symmetric action should produce opposite normalized positions. "
+                f"Expected left ({left_normalized}) == -right ({-right_normalized})"
             ),
         )
 
@@ -626,9 +627,10 @@ class TestCoordinateFrames:
 
     def test_foot_positions_heading_local(self, cal_with_extended_state, mjx_data):
         """get_foot_positions in HEADING_LOCAL should work."""
-        positions = cal_with_extended_state.get_foot_positions(
+        left_pos, right_pos = cal_with_extended_state.get_foot_positions(
             mjx_data,
             normalize=False,
             frame=CoordinateFrame.HEADING_LOCAL,
         )
-        assert jnp.all(jnp.isfinite(positions))
+        assert jnp.all(jnp.isfinite(left_pos))
+        assert jnp.all(jnp.isfinite(right_pos))
