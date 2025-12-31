@@ -342,46 +342,6 @@ def main():
     n_substeps = int(ctrl_dt / sim_dt)
     print(f"Control dt: {ctrl_dt}s, Sim dt: {sim_dt}s, Substeps: {n_substeps}")
 
-    # Get sensor addresses for native MuJoCo using robot config
-
-    def get_sensor_id(name):
-        """Get sensor ID by name."""
-        for i in range(mj_model.nsensor):
-            sensor_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SENSOR, i)
-            if sensor_name == name:
-                return i
-        return -1
-
-    orientation_sensor_name = robot_cfg.orientation_sensor
-    local_linvel_sensor_name = robot_cfg.local_linvel_sensor
-    orientation_sensor_id = get_sensor_id(orientation_sensor_name)
-    local_linvel_sensor_id = get_sensor_id(local_linvel_sensor_name)
-
-    print(
-        "Using sensors: orientation="
-        f"{orientation_sensor_name} (id={orientation_sensor_id})"
-    )
-    print(
-        f"              local_linvel={local_linvel_sensor_name} (id={local_linvel_sensor_id})"
-    )
-
-    if orientation_sensor_id < 0:
-        print("Warning: Could not find required orientation sensor")
-        print("Available sensors:")
-        for i in range(mj_model.nsensor):
-            name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SENSOR, i)
-            print(f"  {i}: {name}")
-
-    # Get sensor data addresses
-    orientation_adr = (
-        mj_model.sensor_adr[orientation_sensor_id] if orientation_sensor_id >= 0 else 0
-    )
-    local_linvel_adr = (
-        mj_model.sensor_adr[local_linvel_sensor_id]
-        if local_linvel_sensor_id >= 0
-        else 0
-    )
-
     def get_forward_velocity(mj_data, prev_root_pos, prev_root_quat, dt):
         """Get forward velocity in heading-local frame (matches training).
 
@@ -389,8 +349,11 @@ def main():
         Returns x-component (forward direction in heading-local frame).
         """
         if prev_root_pos is None or prev_root_quat is None:
-            # Fallback to sensor for first frame
-            return float(mj_data.sensordata[local_linvel_adr])
+            # Fallback to qvel-based velocity for first frame (training parity)
+            return float(
+                cal.get_root_velocity(mj_data, frame=CoordinateFrame.HEADING_LOCAL)
+                .linear[0]
+            )
 
         curr_pose = Pose3D.from_numpy(
             position=mj_data.qpos[0:3].copy(),
@@ -418,11 +381,7 @@ def main():
         v0.11.0: Uses CAL/Pose3D for all transforms to match training exactly.
         """
         curr_root_pos = mj_data.qpos[0:3].copy()
-        curr_root_quat = (
-            mj_data.sensordata[orientation_adr : orientation_adr + 4].copy()
-            if orientation_sensor_id >= 0
-            else mj_data.qpos[3:7].copy()
-        )
+        curr_root_quat = mj_data.qpos[3:7].copy()
 
         # Create current pose using factory pattern (NumPy → JAX)
         curr_pose = Pose3D.from_numpy(
@@ -432,7 +391,7 @@ def main():
         )
 
         # Gravity vector in body frame (matches CAL.get_gravity_vector)
-        gravity = curr_pose.gravity_vector
+        gravity = cal.get_gravity_vector(mj_data)
 
         if prev_root_pos is not None and prev_root_quat is not None:
             # Create previous pose for finite-difference
@@ -449,12 +408,10 @@ def main():
                 prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL
             )
         else:
-            # Fallback: use sensor data for first frame
-            angvel_world = mj_data.qvel[3:6].copy()
-            linvel_world = mj_data.qvel[0:3].copy()
-            # Transform to heading-local using current pose
-            linvel = curr_pose.to_heading_local(jnp.array(linvel_world))
-            angvel = curr_pose.to_heading_local(jnp.array(angvel_world))
+            # Fallback: use qvel-based velocity for first frame (training parity)
+            vel = cal.get_root_velocity(mj_data, frame=CoordinateFrame.HEADING_LOCAL)
+            linvel = vel.linear
+            angvel = vel.angular
 
         # v0.11.0: Use CAL for normalized joint positions/velocities (training parity)
         # CAL normalizes joint_pos to [-1, 1] based on joint limits
