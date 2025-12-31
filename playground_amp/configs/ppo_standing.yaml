@@ -41,13 +41,22 @@ env:
   # Commands - v0.10.2: Focus on standing/slow motion first
   # Robot learns to balance at cmd≈0 before walking at cmd≈1
   min_velocity: 0.0
-  max_velocity: 0.3    # Low velocity for standing phase (will increase in v0.10.3)
+  max_velocity: 0.0    # Pure standing (no forward command)
 
   # Contacts
   contact_threshold_force: 5.0
 
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.3
+
+  # Disturbance pushes (standing robustness)
+  push_enabled: true
+  push_start_step_min: 20
+  push_start_step_max: 200
+  push_duration_steps: 10
+  push_force_min: 5.0
+  push_force_max: 15.0
+  push_body: waist
 
 # =============================================================================
 # PPO Algorithm (task learning)

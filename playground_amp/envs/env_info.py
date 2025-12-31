@@ -61,6 +61,11 @@ try:
             # AMP features
             foot_contacts: Normalized foot contact forces (4,)
             root_height: Root height after this step (scalar)
+
+            # Disturbance pushes (episode-constant schedule)
+            push_start_step: Step index to begin external push
+            push_end_step: Step index to end external push
+            push_force_xy: Lateral push force (x, y) in Newtons
         """
         # Core bookkeeping
         step_count: jnp.ndarray  # shape=()
@@ -79,6 +84,9 @@ try:
         # AMP features (post-step values)
         foot_contacts: jnp.ndarray  # shape=(4,)
         root_height: jnp.ndarray  # shape=()
+        push_start_step: jnp.ndarray  # shape=()
+        push_end_step: jnp.ndarray  # shape=()
+        push_force_xy: jnp.ndarray  # shape=(2,)
 
 except ImportError:
     # Fallback to NamedTuple if flax not available
@@ -96,6 +104,9 @@ except ImportError:
         prev_right_foot_pos: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
+        push_start_step: jnp.ndarray
+        push_end_step: jnp.ndarray
+        push_force_xy: jnp.ndarray
 
 
 # =============================================================================
@@ -126,6 +137,9 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_right_foot_pos": (3,),
         "foot_contacts": (4,),
         "root_height": (),
+        "push_start_step": (),
+        "push_end_step": (),
+        "push_force_xy": (2,),
     }
 
 

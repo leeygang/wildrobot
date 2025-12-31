@@ -17,6 +17,7 @@ This changelog tracks capability changes, configuration updates, and training re
 - `min_height`: 0.20 → 0.40 (terminate squat posture)
 - `reward_weights.base_height`: 1.0 → 3.0 (enforce upright height)
 - `reward_weights.orientation`: -1.0 → -2.0 (stricter tilt penalty)
+- Added standing push disturbances (random lateral force, short duration)
 
 ---
 

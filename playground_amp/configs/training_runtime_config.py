@@ -103,6 +103,15 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
 
+    # Disturbance pushes (disabled by default)
+    push_enabled: bool = False
+    push_start_step_min: int = 20
+    push_start_step_max: int = 200
+    push_duration_steps: int = 10
+    push_force_min: float = 0.0
+    push_force_max: float = 0.0
+    push_body: str = "waist"
+
 
 # =============================================================================
 # PPO Config

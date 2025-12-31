@@ -412,6 +412,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Extract joint-only qpos for control default from CAL (single source of truth)
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
+        # Disturbance configuration
+        self._push_body_id = -1
+        if self._config.env.push_enabled:
+            self._push_body_id = mujoco.mj_name2id(
+                self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._config.env.push_body
+            )
+            if self._push_body_id < 0:
+                raise ValueError(
+                    f"Push body '{self._config.env.push_body}' not found in model."
+                )
+
     # =========================================================================
     # MjxEnv Interface
     # =========================================================================
@@ -421,6 +432,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos: jax.Array,
         velocity_cmd: jax.Array,
         base_info: dict | None = None,
+        push_start_step: jax.Array | None = None,
+        push_end_step: jax.Array | None = None,
+        push_force_xy: jax.Array | None = None,
     ) -> WildRobotEnvState:
         """Create initial environment state from qpos (shared by reset and auto-reset).
 
@@ -515,6 +529,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=root_pose.height,  # Actual root height for AMP features
+            push_start_step=jp.zeros(()) if push_start_step is None else push_start_step,
+            push_end_step=jp.zeros(()) if push_end_step is None else push_end_step,
+            push_force_xy=jp.zeros((2,)) if push_force_xy is None else push_force_xy,
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -548,7 +565,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Initial WildRobotEnvState.
         """
-        rng, key1, key2 = jax.random.split(rng, 3)
+        rng, key1, key2, key3, key4, key5 = jax.random.split(rng, 6)
 
         # Sample velocity command
         velocity_cmd = jax.random.uniform(
@@ -569,7 +586,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._default_joint_qpos + joint_noise
         )
 
-        return self._make_initial_state(qpos, velocity_cmd)
+        # Sample a single lateral push for this episode (if enabled)
+        if self._config.env.push_enabled:
+            start_step = jax.random.randint(
+                key3,
+                shape=(),
+                minval=self._config.env.push_start_step_min,
+                maxval=self._config.env.push_start_step_max + 1,
+            )
+            force_mag = jax.random.uniform(
+                key4,
+                shape=(),
+                minval=self._config.env.push_force_min,
+                maxval=self._config.env.push_force_max,
+            )
+            angle = jax.random.uniform(key5, shape=(), minval=0.0, maxval=2 * jp.pi)
+            push_force_xy = force_mag * jp.array([jp.cos(angle), jp.sin(angle)])
+            duration = jp.asarray(self._config.env.push_duration_steps)
+            push_start_step = jp.asarray(start_step)
+            push_end_step = push_start_step + duration
+        else:
+            push_start_step = jp.zeros(())
+            push_end_step = jp.zeros(())
+            push_force_xy = jp.zeros((2,))
+
+        return self._make_initial_state(
+            qpos,
+            velocity_cmd,
+            push_start_step=push_start_step,
+            push_end_step=push_end_step,
+            push_force_xy=push_force_xy,
+        )
 
     def step(self, state: WildRobotEnvState, action: jax.Array) -> WildRobotEnvState:
         """Step environment forward with auto-reset on termination.
@@ -599,6 +646,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # This ensures same action values produce symmetric motion on both sides
         ctrl = self._cal.policy_action_to_ctrl(filtered_action)
         data = state.data.replace(ctrl=ctrl)
+
+        # Apply external push disturbance (lateral force on body, if enabled)
+        if self._config.env.push_enabled:
+            push_active = (step_count >= wr.push_start_step) & (
+                step_count < wr.push_end_step
+            )
+            push_force_xy = jp.where(push_active, wr.push_force_xy, 0.0)
+            xfrc_applied = jp.zeros_like(data.xfrc_applied)
+            push_force = jp.array(
+                [push_force_xy[0], push_force_xy[1], 0.0, 0.0, 0.0, 0.0]
+            )
+            xfrc_applied = xfrc_applied.at[self._push_body_id].set(push_force)
+            data = data.replace(xfrc_applied=xfrc_applied)
 
         # Physics simulation (multiple substeps)
         def substep_fn(data, _):
@@ -677,6 +737,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
+            push_start_step=wr.push_start_step,
+            push_end_step=wr.push_end_step,
+            push_force_xy=wr.push_force_xy,
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -693,7 +756,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         reset_state = self._make_initial_state(
-            self._init_qpos, velocity_cmd, base_info=state.info
+            self._init_qpos,
+            velocity_cmd,
+            base_info=state.info,
+            push_start_step=wr.push_start_step,
+            push_end_step=wr.push_end_step,
+            push_force_xy=wr.push_force_xy,
         )
 
         # v0.10.2: Preserve termination diagnostics in metrics even after reset
@@ -741,6 +809,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
+            push_start_step=reset_wr_info.push_start_step,
+            push_end_step=reset_wr_info.push_end_step,
+            push_force_xy=reset_wr_info.push_force_xy,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace

@@ -124,6 +124,13 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         contact_scale=env.get("contact_scale", 10.0),
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
+        push_enabled=env.get("push_enabled", False),
+        push_start_step_min=env.get("push_start_step_min", 20),
+        push_start_step_max=env.get("push_start_step_max", 200),
+        push_duration_steps=env.get("push_duration_steps", 10),
+        push_force_min=env.get("push_force_min", 0.0),
+        push_force_max=env.get("push_force_max", 0.0),
+        push_body=env.get("push_body", "waist"),
     )
 
 
