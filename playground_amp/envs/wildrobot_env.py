@@ -943,8 +943,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get foot contact forces for slip/clearance gating
         left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
-        total_force = float(left_force + right_force)
-
         # Robot weight for contact threshold (approximate: mass * gravity)
         # ~2kg robot * 9.81 ≈ 20N total, so ~5N per foot is "loaded"
         # v0.10.1: Read from config instead of hard-coding

@@ -24,8 +24,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.10.6"
-version_name: "Forward Walking - Hip/Knee Swing (v0.10.6)"
+version: "0.11.0"
+version_name: "CLA implementation for Walking (v0.11.0)"
 
 seed: 42
 
@@ -215,7 +215,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, walking, v0.10.6]
+  tags: [ppo, stage1, walking, v0.11.0]
 
 video:
   enabled: true
