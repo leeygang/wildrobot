@@ -1,0 +1,237 @@
+# =============================================================================
+# WildRobot PPO + AMP Unified Config
+# =============================================================================
+# Stage 1: Robot-Native Walking Policy (No AMP)
+# v0.10.4: Forward Walking - Reward tuning for velocity incentive
+#
+# Goal: Robot walks forward with stable gait
+# Exit Criteria:
+#   - Episode length > 400 steps (8s survival)
+#   - Forward velocity 0.5-1.0 m/s with tracking error < 0.2 m/s
+#   - Fall rate < 5%
+#
+# v0.10.4 Changes:
+#   - Increased tracking_lin_vel: 2.0 -> 8.0 (dominant velocity incentive)
+#   - Increased forward_velocity_scale: 4.0 -> 6.0 (sharper tracking)
+#   - Added smooth velocity_standing_penalty with command gating
+#   - Reduced competing penalties (base_height, orientation, etc.)
+#
+# Usage:
+#   uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml
+#
+# Total steps = iterations × num_envs × rollout_steps
+# Example: 500 × 1024 × 128 = 65M steps
+#
+# See: docs/learn_first_plan.md for roadmap
+# =============================================================================
+version: "0.11.1"
+version_name: "CAL PPO Walking Conservative (v0.11.1)"
+
+seed: 42
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  model_path: assets/scene_flat_terrain.xml
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.45
+  min_height: 0.20
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  # Commands - v0.10.3: Forward walking velocity range
+  # Robot learns to walk at commanded velocities
+  min_velocity: 0.1
+  max_velocity: 0.6    # Conservative walking speed range
+
+  # Contacts
+  contact_threshold_force: 5.0
+
+  # Action filtering (alpha=0 disables filtering)
+  action_filter_alpha: 0.5
+
+# =============================================================================
+# PPO Algorithm (task learning)
+# =============================================================================
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 300       # v0.10.6: shorter run; extend if gait still improving
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# AMP (disabled for Stage 1, enabled for Stage 3)
+# =============================================================================
+amp:
+  enabled: false
+
+  # Reference dataset (Stage 3 only)
+  dataset_path: null
+
+  # Global AMP reward mixing
+  weight: 0.0          # Stage 1 = 0.0, Stage 3 > 0
+
+  # Discriminator training (NOT architecture)
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+
+  # Feature parity controls
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+
+  # Diagnostics (for alerts/logging only)
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.80
+
+# =============================================================================
+# Networks (Option A: algorithm-agnostic)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  discriminator:
+    hidden_sizes: [512, 256]
+    activation: relu
+
+# =============================================================================
+# Task Reward Weights (Environment-side reward only)
+# v0.10.4: Strong velocity incentive to overcome standing-still local minimum
+# v0.10.4 analysis (run xw1fu3n6): tracking met (vel_err ~0.085, ep_len ~460),
+# but gait is ankle-dominant with forward lean and high peak torque (~0.98).
+# v0.10.5: Rebalance toward gait shaping (periodicity + efficiency).
+# v0.10.6: Add swing-gated hip/knee rewards and flight penalty to reduce ankle-dominant hopping.
+#
+# Analysis: With v0.10.3 weights, standing still gave reward ~0.62 while
+# walking gave ~2.0 but with risk of falling. The reward structure made
+# stability more attractive than velocity tracking.
+#
+# Solution:
+#   1. Increase tracking_lin_vel from 2.0 -> 8.0 (dominant reward)
+#   2. INCREASE forward_velocity_scale from 4.0 -> 6.0 (SHARPER tracking)
+#      Formula: exp(-error * scale), higher = sharper penalty for error
+#   3. Add smooth standing penalty, command-gated
+#   4. Reduce competing stability rewards
+#
+# Reward budget (at cmd=0.65m/s):
+#   Standing (vel=0):  8.0 * exp(-0.65*6) = 0.16, penalty = -0.2
+#   Walking (vel=0.65): 8.0 * exp(0) = 8.0, penalty = 0
+#   Gap: ~8.0 (was 1.38 in v0.10.3)
+# =============================================================================
+reward_weights:
+  # Primary objectives - v0.10.4: Dominant velocity tracking
+  tracking_lin_vel: 4.0   # Conservative velocity incentive
+  lateral_velocity: -0.3  # Reduced: allow some lateral motion during walking
+  base_height: 0.4        # Stronger stability emphasis
+  orientation: -0.5       # Penalize excessive lean
+  angular_velocity: -0.05 # Smoother angular motion
+
+  # Effort and safety (keep low to not block motion discovery)
+  torque: -0.001          # v0.10.5: push away from torque-heavy shuffle
+  saturation: -0.08       # v0.10.5: discourage sustained saturation
+
+  # Smoothness (reduced to allow gait emergence)
+  action_rate: -0.005     # Reduced: allow faster action changes for walking
+  joint_velocity: -0.0003 # Reduced: walking requires joint motion
+
+  # Foot stability
+  slip: -0.3              # Slightly stronger slip penalty
+  clearance: 0.2          # Moderate foot lift
+  gait_periodicity: 0.1   # Gentle alternating support
+  hip_swing: 0.1          # Reduced swing shaping
+  knee_swing: 0.15        # Reduced swing shaping
+  hip_swing_min: 0.2      # Lower swing threshold
+  knee_swing_min: 0.2     # Lower swing threshold
+  flight_phase_penalty: -0.02  # Milder hop penalty
+
+  # v0.10.4: Velocity shaping parameters
+  forward_velocity_scale: 4.0     # Softer tracking for conservative gait
+
+  # Smooth standing penalty (command-gated)
+  # Only applies when velocity_cmd > velocity_cmd_min
+  # Penalty = weight * relu(threshold - |vel|) / threshold
+  velocity_standing_penalty: 0.1  # Gentle push to move
+  velocity_standing_threshold: 0.1  # Below this = standing still
+  velocity_cmd_min: 0.15          # Only penalize standing if cmd > this
+
+# =============================================================================
+# Reward Composition (Trainer-side)
+# =============================================================================
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0            # Alias of amp.weight (keep in sync)
+  task_reward_clip: null
+  amp_reward_clip: [0.0, 1.0]
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: playground_amp/checkpoints
+  interval: 50
+  keep_last_n: 5
+
+# =============================================================================
+# Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: online
+  tags: [ppo, stage1, walking, conservative, v0.11.1]
+
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+  amp:
+    enabled: false

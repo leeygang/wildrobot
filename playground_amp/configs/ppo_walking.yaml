@@ -24,8 +24,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.11.0"
-version_name: "CLA implementation for Walking (v0.11.0)"
+version: "0.11.1"
+version_name: "CAL PPO Walking Test (v0.11.1)"
 
 seed: 42
 
@@ -215,7 +215,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, walking, v0.11.0]
+  tags: [ppo, stage1, walking, v0.11.1]
 
 video:
   enabled: true

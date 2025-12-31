@@ -112,6 +112,22 @@ actuated_joints:
 
 See `playground_amp/docs/CONTROL_ABSTRACTION_LAYER_PROPOSAL.md` for full design document.
 
+### Results (Standing PPO, v0.11.0)
+- Config: `playground_amp/configs/ppo_standing.yaml`
+- Run: `playground_amp/wandb/run-20251230_181458-27832na7`
+- Best checkpoint: `playground_amp/checkpoints/ppo_standing_v00110_20251230_181500-27832na7/checkpoint_170_22282240.pkl`
+- Summary: ep_len ~484, height ~0.434 m, success ~89.8%, vel ~0.01 m/s
+- Notes: success rate below 95% target; height_low terminations ~10% late in training
+
+## [v0.11.1] - 2025-12-31: CAL PPO Walking Smoke Test
+
+### Test Plan
+1. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume playground_amp/checkpoints/ppo_standing_v0110_170.pkl`
+2. `uv run python playground_amp/training/visualize_policy.py --headless --num-episodes 1 --config playground_amp/configs/ppo_walking.yaml --checkpoint <path>`
+
+### Results
+- Status: pending
+
 ---
 
 ## [v0.10.6] - 2025-12-28: Hip/Knee Swing Reward (Stage 1)
