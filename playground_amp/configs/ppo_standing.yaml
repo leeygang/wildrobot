@@ -65,7 +65,7 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 200       # Standing is simple - fast checkpoint (increase in v0.10.3)
+  iterations: 300      
 
   learning_rate: 3e-4
   gamma: 0.99

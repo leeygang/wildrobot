@@ -1125,14 +1125,21 @@ class ControlAbstractionLayer:
         geom_id: int,
     ) -> jax.Array:
         """Get normal contact force for a geom (solver-native efc_force)."""
-        # Use data._impl to avoid deprecation warnings
-        contact = data._impl.contact
+        # Handle both MJX data (has _impl) and native MuJoCo data
+        if hasattr(data, "_impl"):
+            # MJX data - use _impl to avoid deprecation warnings
+            contact = data._impl.contact
+            efc_force = data._impl.efc_force
+        else:
+            # Native MuJoCo data
+            contact = data.contact
+            efc_force = data.efc_force
         geom1_match = contact.geom1 == geom_id
         geom2_match = contact.geom2 == geom_id
         is_our_contact = geom1_match | geom2_match
 
         # efc_force contains constraint forces; contact.efc_address maps to them
-        normal_forces = data._impl.efc_force[contact.efc_address]
+        normal_forces = efc_force[contact.efc_address]
         our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
         return jnp.sum(our_forces)
 

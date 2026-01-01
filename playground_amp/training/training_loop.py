@@ -124,6 +124,8 @@ class IterationMetrics(NamedTuple):
     value_loss: jnp.ndarray
     entropy_loss: jnp.ndarray
     total_loss: jnp.ndarray
+    clip_fraction: jnp.ndarray
+    approx_kl: jnp.ndarray
 
     # AMP metrics (zero when amp_weight=0)
     disc_loss: jnp.ndarray
@@ -338,6 +340,8 @@ def ppo_update_scan(
         jnp.mean(all_metrics.value_loss),
         jnp.mean(all_metrics.entropy_loss),
         jnp.mean(all_metrics.total_loss),
+        jnp.mean(all_metrics.clip_fraction),
+        jnp.mean(all_metrics.approx_kl),
     )
 
 
@@ -508,6 +512,8 @@ def make_train_iteration_fn(
             value_loss,
             entropy_loss,
             total_loss,
+            clip_fraction,
+            approx_kl,
         ) = ppo_update_scan(
             policy_params=state.policy_params,
             value_params=state.value_params,
@@ -618,6 +624,8 @@ def make_train_iteration_fn(
             value_loss=value_loss,
             entropy_loss=entropy_loss,
             total_loss=total_loss,
+            clip_fraction=clip_fraction,
+            approx_kl=approx_kl,
             disc_loss=disc_loss,
             disc_accuracy=disc_acc,
             amp_reward_mean=jnp.mean(amp_rewards),

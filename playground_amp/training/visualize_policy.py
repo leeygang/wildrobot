@@ -525,6 +525,18 @@ def main():
         ) and not terminated
         return terminated or truncated
 
+    def get_yaw(mj_data):
+        pose = Pose3D.from_numpy(
+            position=mj_data.qpos[0:3].copy(),
+            orientation=mj_data.qpos[3:7].copy(),
+            frame=CoordinateFrame.WORLD,
+        )
+        _, _, yaw = pose.euler_angles()
+        return float(yaw)
+
+    def wrap_angle(angle):
+        return (angle + np.pi) % (2 * np.pi) - np.pi
+
     fixed_velocity = (
         args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
     )
@@ -542,6 +554,8 @@ def main():
 
     apply_reset_noise = not args.no_reset_noise and not args.demo
     reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
+    episode_start_pos = mj_data.qpos[0:3].copy()
+    episode_start_yaw = get_yaw(mj_data)
 
     # Control timing
     ctrl_dt = training_cfg.env.ctrl_dt
@@ -663,6 +677,31 @@ def main():
 
             step_count += 1
 
+            # Debug: Print progress every 50 steps
+            if step_count % 50 == 0:
+                forward_vel = get_forward_velocity(
+                    mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                )  # heading-local forward velocity
+                root_vel = cal.get_root_velocity(
+                    mj_data, frame=CoordinateFrame.HEADING_LOCAL
+                )
+                lateral_vel = float(root_vel.linear[1])
+                height = mj_data.qpos[2]
+                robot_pos = mj_data.qpos[0:3]
+                drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
+                drift_norm = float(np.linalg.norm(drift_xy))
+                yaw_delta = wrap_angle(get_yaw(mj_data) - episode_start_yaw)
+                print(
+                    "  Step "
+                    f"{step_count}: vel={forward_vel:.2f}m/s, "
+                    f"lat_vel={lateral_vel:.3f}m/s, "
+                    f"height={height:.3f}m, "
+                    f"pos=({robot_pos[0]:.3f}, {robot_pos[1]:.3f}), "
+                    f"drift=({drift_xy[0]:.3f}, {drift_xy[1]:.3f})m "
+                    f"(|d|={drift_norm:.3f}m), "
+                    f"yaw_d={yaw_delta:.3f}rad"
+                )
+
             # Recording
             if renderer and step_count <= record_steps:
                 renderer.update_scene(mj_data)
@@ -692,6 +731,8 @@ def main():
                 prev_action = np.zeros(action_dim, dtype=np.float32)
                 prev_root_pos = None
                 prev_root_quat = None
+                episode_start_pos = mj_data.qpos[0:3].copy()
+                episode_start_yaw = get_yaw(mj_data)
                 step_count = 0
 
         if renderer:
@@ -763,10 +804,23 @@ def main():
                         forward_vel = get_forward_velocity(
                             mj_data, prev_root_pos, prev_root_quat, ctrl_dt
                         )  # heading-local forward velocity
+                        root_vel = cal.get_root_velocity(
+                            mj_data, frame=CoordinateFrame.HEADING_LOCAL
+                        )
+                        lateral_vel = float(root_vel.linear[1])
                         height = mj_data.qpos[2]
-                        action_sum = float(jnp.sum(jnp.abs(action)))
+                        drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
+                        drift_norm = float(np.linalg.norm(drift_xy))
+                        yaw_delta = wrap_angle(get_yaw(mj_data) - episode_start_yaw)
                         print(
-                            f"  Step {step_count}: vel={forward_vel:.2f}m/s, height={height:.3f}m, pos=({robot_pos[0]:.1f}, {robot_pos[1]:.1f})"
+                            "  Step "
+                            f"{step_count}: vel={forward_vel:.2f}m/s, "
+                            f"lat_vel={lateral_vel:.3f}m/s, "
+                            f"height={height:.3f}m, "
+                            f"pos=({robot_pos[0]:.3f}, {robot_pos[1]:.3f}), "
+                            f"drift=({drift_xy[0]:.3f}, {drift_xy[1]:.3f})m "
+                            f"(|d|={drift_norm:.3f}m), "
+                            f"yaw_d={yaw_delta:.3f}rad"
                         )
 
                     # Recording (if enabled with viewer)
@@ -807,6 +861,8 @@ def main():
                         prev_action = np.zeros(action_dim, dtype=np.float32)
                         prev_root_pos = None
                         prev_root_quat = None
+                        episode_start_pos = mj_data.qpos[0:3].copy()
+                        episode_start_yaw = get_yaw(mj_data)
                         step_count = 0
 
                     # Sync viewer
