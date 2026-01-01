@@ -20,6 +20,7 @@ This changelog tracks capability changes, configuration updates, and training re
 - Added standing push disturbances (random lateral force, short duration)
 - Switched foot contact signals to boolean foot switches (toe/heel), obs dim now 39
 - Removed `*_touch` sites/sensors from `assets/wildrobot.xml`; switch signal derived from geom forces
+- Added height target shaping + stance width penalty to discourage squat posture
 
 ---
 

@@ -58,10 +58,10 @@ def estimate_foot_contacts_from_joints(
         Estimated foot contacts (4,) - [left_toe, left_heel, right_toe, right_heel]
     """
     # Joint indices from config (derived from robot_config.yaml actuator order)
-    left_hip_pitch = joint_pos[config.left_hip_pitch_idx]
-    left_knee = joint_pos[config.left_knee_pitch_idx]
-    right_hip_pitch = joint_pos[config.right_hip_pitch_idx]
-    right_knee = joint_pos[config.right_knee_pitch_idx]
+    left_hip_pitch = joint_pos[..., config.left_hip_pitch_idx]
+    left_knee = joint_pos[..., config.left_knee_pitch_idx]
+    right_hip_pitch = joint_pos[..., config.right_hip_pitch_idx]
+    right_knee = joint_pos[..., config.right_knee_pitch_idx]
 
     # Left foot contact estimation:
     # - Base contact: hip_pitch < threshold (leg behind body)
@@ -82,7 +82,9 @@ def estimate_foot_contacts_from_joints(
 
     # Return 4 contacts: [left_toe, left_heel, right_toe, right_heel]
     # Toe and heel share the same contact estimate for each foot
-    return jnp.array([left_contact, left_contact, right_contact, right_contact])
+    return jnp.stack(
+        [left_contact, left_contact, right_contact, right_contact], axis=-1
+    )
 
 
 def extract_amp_features(
@@ -176,7 +178,9 @@ def extract_amp_features(
         root_linvel_feat = root_linvel  # raw m/s
 
     # Root height: ensure shape is (N, 1) for concatenation
-    if root_height.ndim == 1:
+    if root_height.ndim == 0:
+        root_height_feat = root_height[None]
+    elif root_height.ndim == 1:
         root_height_feat = root_height[:, jnp.newaxis]
     else:
         root_height_feat = root_height
@@ -236,7 +240,6 @@ def extract_amp_features_batched(
         return extract_amp_features(
             obs_single,
             config=config,
-            foot_contacts=fc_single if not use_estimated_contacts else None,
             root_height=rh_single,
             prev_joint_pos=prev_jp_single,
             dt=dt,

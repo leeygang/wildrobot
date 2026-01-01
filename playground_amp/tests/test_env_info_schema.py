@@ -17,6 +17,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -31,22 +32,29 @@ from playground_amp.envs.env_info import (
 )
 
 
-def test_reset_info_schema():
-    """Verify reset() produces correct info schema."""
-    print("\n1. Testing reset() schema...")
-
+@pytest.fixture(scope="module")
+def env():
+    """Create WildRobot environment for schema tests."""
     from playground_amp.configs.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
     from playground_amp.envs.wildrobot_env import WildRobotEnv
-    from playground_amp.train import create_env_config
 
     load_robot_config("assets/robot_config.yaml")
     training_cfg = load_training_config("playground_amp/configs/ppo_walking.yaml")
-    env_config = create_env_config(training_cfg.raw_config)
-    env = WildRobotEnv(config=env_config)
+    training_cfg.freeze()
+    return WildRobotEnv(config=training_cfg)
 
+
+@pytest.fixture(scope="module")
+def state(env):
+    """Reset environment once for schema tests."""
     rng = jax.random.PRNGKey(0)
-    state = env.reset(rng)
+    return env.reset(rng)
+
+
+def test_reset_info_schema(env, state):
+    """Verify reset() produces correct info schema."""
+    print("\n1. Testing reset() schema...")
 
     # Check info["wr"] exists
     assert WR_INFO_KEY in state.info, f"Missing '{WR_INFO_KEY}' namespace in info"
@@ -67,7 +75,6 @@ def test_reset_info_schema():
         raise AssertionError(f"Schema validation failed with {len(errors)} errors")
 
     print("   ✅ reset() schema valid")
-    return env, state
 
 
 def test_step_info_schema(env, state):
@@ -91,7 +98,6 @@ def test_step_info_schema(env, state):
         raise AssertionError(f"Schema validation failed with {len(errors)} errors")
 
     print("   ✅ step() schema valid")
-    return next_state
 
 
 def test_multiple_steps_schema(env, state):
@@ -99,8 +105,10 @@ def test_multiple_steps_schema(env, state):
     print("\n3. Testing multiple steps schema consistency...")
 
     action = jnp.zeros(env.action_size)
+    step_fn = jax.jit(env.step)
+
     for step_idx in range(10):
-        state = env.step(state, action)
+        state = step_fn(state, action)
         wr_info = state.info[WR_INFO_KEY]
         errors = validate_wildrobot_info(
             wr_info, context=f"step_{step_idx}", action_size=env.action_size
@@ -111,7 +119,6 @@ def test_multiple_steps_schema(env, state):
             raise AssertionError(f"Schema validation failed at step {step_idx}")
 
     print("   ✅ Multiple steps schema consistent")
-    return state
 
 
 def test_autoreset_preserves_schema(env):
@@ -122,12 +129,13 @@ def test_autoreset_preserves_schema(env):
     state = env.reset(rng)
 
     terminated = False
+    step_fn = jax.jit(env.step)
     for step_idx in range(2000):
         rng, action_rng = jax.random.split(rng)
         action = jax.random.uniform(
             action_rng, shape=(env.action_size,), minval=-1, maxval=1
         )
-        state = env.step(state, action)
+        state = step_fn(state, action)
 
         # Always validate schema
         wr_info = state.info[WR_INFO_KEY]

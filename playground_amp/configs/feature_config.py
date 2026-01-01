@@ -152,12 +152,7 @@ class _FeatureLayout:
 
             # Validate dimension
             if arr.ndim == 1:
-                if expected_dim != 1:
-                    raise ValueError(
-                        f"Component '{name}' is 1D array but expected dim={expected_dim} ({dim_attr}). "
-                        f"Should be shape (N, {expected_dim})."
-                    )
-                actual_dim = 1
+                actual_dim = arr.shape[0]
             else:
                 actual_dim = arr.shape[-1]
 

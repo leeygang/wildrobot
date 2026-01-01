@@ -143,6 +143,11 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Angular velocity penalty",
     ),
     MetricSpec(
+        name="reward/height_target",
+        reducer=Reducer.MEAN,
+        description="Height target reward",
+    ),
+    MetricSpec(
         name="reward/torque",
         reducer=Reducer.MEAN,
         description="Torque penalty",
@@ -197,6 +202,11 @@ METRIC_SPECS: List[MetricSpec] = [
         name="reward/flight_phase",
         reducer=Reducer.MEAN,
         description="Flight phase penalty (both feet unloaded)",
+    ),
+    MetricSpec(
+        name="reward/stance_width_penalty",
+        reducer=Reducer.MEAN,
+        description="Stance width penalty",
     ),
 
     # =========================================================================

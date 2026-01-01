@@ -20,9 +20,6 @@ sys.path.insert(0, str(project_root))
 import jax
 import jax.numpy as jnp
 import numpy as np
-import yaml
-from ml_collections import config_dict
-
 from playground_amp.envs.env_info import WR_INFO_KEY
 
 
@@ -31,33 +28,18 @@ def setup_environment():
     from playground_amp.configs.training_config import (
         clear_config_cache,
         load_robot_config,
+        load_training_config,
     )
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
 
-    # Load training config
-    with open("playground_amp/configs/ppo_amass_training.yaml", "r") as f:
-        yaml_config = yaml.safe_load(f)
-
-    # Build complete env config
-    env_dict = yaml_config["env"].copy()
-
-    # Map YAML reward weight keys to env code keys
-    # YAML: tracking_lin_vel, base_height, action_rate
-    # ENV:  forward_velocity, healthy, action_rate, joint_velocity
-    yaml_rewards = yaml_config["reward_weights"]
-    env_dict["reward_weights"] = {
-        "forward_velocity": yaml_rewards.get("tracking_lin_vel", 5.0),
-        "healthy": yaml_rewards.get("base_height", 0.3),
-        "action_rate": yaml_rewards.get("action_rate", -0.01),
-        "joint_velocity": yaml_rewards.get("joint_velocity", 0.0),
-    }
-    env_config = config_dict.ConfigDict(env_dict)
+    training_cfg = load_training_config("playground_amp/configs/ppo_walking.yaml")
+    training_cfg.freeze()
 
     from playground_amp.envs.wildrobot_env import WildRobotEnv
 
-    return WildRobotEnv(config=env_config)
+    return WildRobotEnv(config=training_cfg)
 
 
 def test_1_env_returns_foot_contacts():
@@ -105,13 +87,16 @@ def test_2_foot_contacts_update_after_step():
 
     initial_contacts = state.info[WR_INFO_KEY].foot_contacts
 
-    # Step environment multiple times
+    # Step environment multiple times (scan for speed)
     action = jnp.zeros(env.action_size)
-    contacts_history = [initial_contacts]
 
-    for i in range(10):
-        state = env.step(state, action)
-        contacts_history.append(state.info[WR_INFO_KEY].foot_contacts)
+    def step_collect(s, _):
+        next_state = env.step(s, action)
+        return next_state, next_state.info[WR_INFO_KEY].foot_contacts
+
+    scan_fn = jax.jit(lambda s: jax.lax.scan(step_collect, s, None, length=10))
+    state, contacts = scan_fn(state)
+    contacts_history = [initial_contacts] + list(contacts)
 
     # Check that contacts changed at some point
     contacts_array = jnp.stack(contacts_history)
@@ -127,13 +112,11 @@ def test_2_foot_contacts_update_after_step():
 
 
 def test_3_amp_features_require_foot_contacts():
-    """Test 3: extract_amp_features raises ValueError when foot_contacts=None."""
-    print("\n=== Test 3: amp_features require foot_contacts ===")
+    """Test 3: extract_amp_features accepts no override and returns valid output."""
+    print("\n=== Test 3: amp_features accept missing override ===")
 
-    from playground_amp.amp.policy_features import (
-        extract_amp_features,
-        get_feature_config,
-    )
+    from playground_amp.amp.policy_features import extract_amp_features
+    from playground_amp.configs.feature_config import get_feature_config
     from playground_amp.configs.training_config import (
         clear_config_cache,
         load_robot_config,
@@ -143,23 +126,35 @@ def test_3_amp_features_require_foot_contacts():
     load_robot_config("assets/robot_config.yaml")
 
     config = get_feature_config()
-    fake_obs = jnp.zeros(38)
+    fake_obs = jnp.zeros((1, 39))
+    root_height = jnp.array([0.5])
+    prev_joint_pos = jnp.zeros((1, config.num_actuated_joints))
 
-    try:
-        features = extract_amp_features(fake_obs, config, foot_contacts=None)
-        print("  ✗ FAILED: Should have raised ValueError")
-        return False
-    except ValueError as e:
-        print(f"  ✓ Correctly raised ValueError")
-        print(f'    Message: "{str(e)[:70]}..."')
-        return True
+    features = extract_amp_features(
+        fake_obs,
+        config,
+        root_height=root_height,
+        prev_joint_pos=prev_joint_pos,
+        dt=0.02,
+    )
+
+    expected_dim = config.feature_dim
+    assert features.shape == (
+        1,
+        expected_dim,
+    ), f"Expected shape (1, {expected_dim}), got {features.shape}"
+    assert jnp.all(jnp.isfinite(features)), "Features contain NaN/Inf"
+
+    print(f"  ✓ Features shape: {features.shape}")
+    return True
 
 
 def test_4_amp_features_use_foot_contacts():
     """Test 4: extract_amp_features correctly uses foot_contacts."""
     print("\n=== Test 4: amp_features use foot_contacts ===")
 
-    from playground_amp.amp.policy_features import get_feature_config
+    from playground_amp.amp.policy_features import extract_amp_features
+    from playground_amp.configs.feature_config import get_feature_config
     from playground_amp.configs.training_config import (
         clear_config_cache,
         load_robot_config,
@@ -169,23 +164,35 @@ def test_4_amp_features_use_foot_contacts():
     load_robot_config("assets/robot_config.yaml")
 
     config = get_feature_config()
-    fake_obs = jnp.zeros(38)
+    fake_obs = jnp.zeros((1, 39))
+    root_height = jnp.array([0.5])
+    prev_joint_pos = jnp.zeros((1, config.num_actuated_joints))
 
     # Test with specific foot contact values
-    foot_contacts = jnp.array([0.1, 0.2, 0.3, 0.4])
-    features = extract_amp_features(fake_obs, config, foot_contacts=foot_contacts)
+    foot_contacts = jnp.array([[0.1, 0.2, 0.3, 0.4]])
+    features = extract_amp_features(
+        fake_obs,
+        config,
+        root_height=root_height,
+        prev_joint_pos=prev_joint_pos,
+        dt=0.02,
+        foot_contacts_override=foot_contacts,
+    )
 
-    # Features should be 29-dim
-    assert features.shape == (29,), f"Expected shape (29,), got {features.shape}"
+    expected_dim = config.feature_dim
+    assert features.shape == (
+        1,
+        expected_dim,
+    ), f"Expected shape (1, {expected_dim}), got {features.shape}"
 
     # Last 4 dims should be foot_contacts
-    extracted_contacts = features[25:29]
+    extracted_contacts = features[0, -4:]
     assert jnp.allclose(
-        extracted_contacts, foot_contacts
-    ), f"foot_contacts not at expected position: {extracted_contacts} vs {foot_contacts}"
+        extracted_contacts, foot_contacts[0]
+    ), f"foot_contacts not at expected position: {extracted_contacts} vs {foot_contacts[0]}"
 
     print(f"  ✓ Features shape: {features.shape}")
-    print(f"  ✓ Features[25:29] = {features[25:29]} (matches input foot_contacts)")
+    print(f"  ✓ Features[-4:] = {features[-4:]} (matches input foot_contacts)")
     return True
 
 
@@ -193,12 +200,12 @@ def test_5_batched_features_require_foot_contacts():
     """Test 5: extract_amp_features_batched requires foot_contacts."""
     print("\n=== Test 5: Batched features require foot_contacts ===")
 
-    from playground_amp.amp.policy_features import get_feature_config
+    from playground_amp.amp.policy_features import extract_amp_features_batched
+    from playground_amp.configs.feature_config import get_feature_config
     from playground_amp.configs.training_config import (
         clear_config_cache,
         load_robot_config,
     )
-    from playground_amp.training.trainer_jit import extract_amp_features_batched
 
     clear_config_cache()
     load_robot_config("assets/robot_config.yaml")
@@ -207,20 +214,31 @@ def test_5_batched_features_require_foot_contacts():
 
     # Create batch of observations (num_steps, num_envs, obs_dim)
     num_steps, num_envs = 5, 4
-    fake_obs = jnp.zeros((num_steps, num_envs, 38))
+    fake_obs = jnp.zeros((num_steps, num_envs, 39))
     fake_contacts = jnp.ones((num_steps, num_envs, 4)) * 0.5
+    fake_root_height = jnp.ones((num_steps, num_envs))
+    fake_prev_joint_pos = jnp.zeros((num_steps, num_envs, config.num_actuated_joints))
 
     # This should work with foot_contacts
-    features = extract_amp_features_batched(fake_obs, config, fake_contacts)
+    features = extract_amp_features_batched(
+        fake_obs,
+        config,
+        foot_contacts=fake_contacts,
+        root_height=fake_root_height,
+        prev_joint_pos=fake_prev_joint_pos,
+        dt=0.02,
+        use_estimated_contacts=False,
+        use_finite_diff_vel=True,
+    )
 
     assert features.shape == (
         num_steps,
         num_envs,
-        29,
-    ), f"Expected shape ({num_steps}, {num_envs}, 29), got {features.shape}"
+        config.feature_dim,
+    ), f"Expected shape ({num_steps}, {num_envs}, {config.feature_dim}), got {features.shape}"
 
     # Check that foot_contacts are in features
-    extracted_contacts = features[:, :, 25:29]
+    extracted_contacts = features[:, :, -4:]
     assert jnp.allclose(
         extracted_contacts, fake_contacts
     ), "foot_contacts not correctly extracted in batched version"
@@ -231,33 +249,42 @@ def test_5_batched_features_require_foot_contacts():
 
 
 def test_6_transition_has_foot_contacts():
-    """Test 6: Transition namedtuple includes foot_contacts field."""
-    print("\n=== Test 6: Transition has foot_contacts field ===")
+    """Test 6: TrajectoryBatch includes foot_contacts field."""
+    print("\n=== Test 6: TrajectoryBatch has foot_contacts field ===")
 
-    from playground_amp.training.trainer_jit import Transition
+    from playground_amp.training.metrics_registry import NUM_METRICS
+    from playground_amp.training.rollout import TrajectoryBatch
 
     # Check field exists
     assert (
-        "foot_contacts" in Transition._fields
-    ), "foot_contacts missing from Transition namedtuple"
+        "foot_contacts" in TrajectoryBatch._fields
+    ), "foot_contacts missing from TrajectoryBatch"
 
-    # Create a dummy transition
-    dummy_transition = Transition(
-        obs=jnp.zeros(38),
-        action=jnp.zeros(9),
-        reward=jnp.array(0.0),
-        done=jnp.array(0.0),
-        log_prob=jnp.array(0.0),
-        value=jnp.array(0.0),
-        next_obs=jnp.zeros(38),
-        truncated=jnp.array(0.0),
-        foot_contacts=jnp.array([0.1, 0.2, 0.3, 0.4]),
+    # Create a dummy trajectory
+    shape = (2, 3)
+    dummy_traj = TrajectoryBatch(
+        obs=jnp.zeros((*shape, 39)),
+        actions=jnp.zeros((*shape, 8)),
+        log_probs=jnp.zeros(shape),
+        values=jnp.zeros(shape),
+        task_rewards=jnp.zeros(shape),
+        dones=jnp.zeros(shape),
+        truncations=jnp.zeros(shape),
+        next_obs=jnp.zeros((*shape, 39)),
+        bootstrap_value=jnp.zeros((shape[1],)),
+        metrics_vec=jnp.zeros((*shape, NUM_METRICS)),
+        step_counts=jnp.zeros(shape),
+        foot_contacts=jnp.array([[[0.1, 0.2, 0.3, 0.4]] * shape[1]] * shape[0]),
+        root_heights=jnp.zeros((*shape, 1)),
+        prev_joint_positions=jnp.zeros((*shape, 8)),
     )
 
-    assert dummy_transition.foot_contacts.shape == (4,)
+    assert dummy_traj.foot_contacts.shape == (*shape, 4)
 
-    print(f"  ✓ Transition fields: {Transition._fields}")
-    print(f"  ✓ foot_contacts is field #{Transition._fields.index('foot_contacts')}")
+    print(f"  ✓ TrajectoryBatch fields: {TrajectoryBatch._fields}")
+    print(
+        f"  ✓ foot_contacts is field #{TrajectoryBatch._fields.index('foot_contacts')}"
+    )
     return True
 
 
@@ -265,10 +292,8 @@ def test_7_features_are_not_all_zeros():
     """Test 7: End-to-end test - features from env have non-zero contacts."""
     print("\n=== Test 7: End-to-end feature extraction (non-zero contacts) ===")
 
-    from playground_amp.amp.policy_features import (
-        extract_amp_features,
-        get_feature_config,
-    )
+    from playground_amp.amp.policy_features import extract_amp_features
+    from playground_amp.configs.feature_config import get_feature_config
     from playground_amp.configs.training_config import (
         clear_config_cache,
         load_robot_config,
@@ -285,23 +310,36 @@ def test_7_features_are_not_all_zeros():
 
     # Run for several steps to let robot settle
     action = jnp.zeros(env.action_size)
-    for _ in range(50):  # Let robot settle/make contact
-        state = env.step(state, action)
+    scan_fn = jax.jit(lambda s: jax.lax.fori_loop(0, 50, lambda _, st: env.step(st, action), s))
+    state = scan_fn(state)
 
     # Extract features
     obs = state.obs
     foot_contacts = state.info[WR_INFO_KEY].foot_contacts
-    features = extract_amp_features(obs, config, foot_contacts=foot_contacts)
+    root_height = state.info[WR_INFO_KEY].root_height
+    prev_joint_pos = obs[config.joint_pos_start : config.joint_pos_end][None, :]
+    features = extract_amp_features(
+        obs[None, :],
+        config,
+        root_height=root_height[None],
+        prev_joint_pos=prev_joint_pos,
+        dt=env.dt,
+        foot_contacts_override=foot_contacts[None, :],
+    )
 
     # Check features shape
-    assert features.shape == (29,), f"Expected shape (29,), got {features.shape}"
+    expected_dim = config.feature_dim
+    assert features.shape == (
+        1,
+        expected_dim,
+    ), f"Expected shape (1, {expected_dim}), got {features.shape}"
 
-    # Check foot contact portion of features
-    feature_contacts = features[25:29]
+    # Check foot contact portion of features (last 4 dims)
+    feature_contacts = features[0, -4:]
 
     print(f"  Observation shape: {obs.shape}")
     print(f"  Foot contacts from env: {foot_contacts}")
-    print(f"  Features[25:29]: {feature_contacts}")
+    print(f"  Features[-4:]: {feature_contacts}")
     print(
         f"  Features match env contacts: {jnp.allclose(feature_contacts, foot_contacts)}"
     )
@@ -327,11 +365,12 @@ def test_8_contact_distribution_not_zeros():
     action = jnp.zeros(env.action_size)
     all_contacts = []
 
-    for i in range(200):
-        state = env.step(state, action)
-        all_contacts.append(state.info[WR_INFO_KEY].foot_contacts)
+    def step_collect(s, _):
+        next_state = env.step(s, action)
+        return next_state, next_state.info[WR_INFO_KEY].foot_contacts
 
-    contacts_array = jnp.stack(all_contacts)  # (200, 4)
+    scan_fn = jax.jit(lambda s: jax.lax.scan(step_collect, s, None, length=200))
+    state, contacts_array = scan_fn(state)
 
     # Statistics
     mean_contacts = jnp.mean(contacts_array, axis=0)

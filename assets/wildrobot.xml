@@ -29,10 +29,6 @@
     <magnetometer site="chest_imu" name="chest_imu_mag" noise="0.3" />
     <framequat objtype="site" objname="chest_imu" name="chest_imu_quat" />
     <velocimeter site="pelvis_mimic" name="pelvis_local_linvel" />
-    <touch name="left_toe_touch" site="left_toe_touch" />
-    <touch name="left_heel_touch" site="left_heel_touch" />
-    <touch name="right_toe_touch" site="right_toe_touch" />
-    <touch name="right_heel_touch" site="right_heel_touch" />
   </sensor>
   <worldbody>
     <body name="waist" pos="0 0 0.5" quat="1 0 0 0" childclass="WildRobotDev">

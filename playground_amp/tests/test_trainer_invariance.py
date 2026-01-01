@@ -21,6 +21,7 @@ from playground_amp.training.rollout import (
     TrajectoryBatch,
     compute_reward_total,
 )
+from playground_amp.training.metrics_registry import NUM_METRICS
 from playground_amp.training.ppo_core import (
     compute_gae,
     compute_ppo_loss,
@@ -192,8 +193,8 @@ class TestRolloutFieldConsistency:
         """TrajectoryBatch should always have PPO fields."""
         # Create a minimal trajectory
         shape = (10, 4)  # (num_steps, num_envs)
-        obs_dim = 38
-        action_dim = 9
+        obs_dim = 39
+        action_dim = 8
 
         trajectory = TrajectoryBatch(
             obs=jnp.zeros((*shape, obs_dim)),
@@ -205,11 +206,11 @@ class TestRolloutFieldConsistency:
             truncations=jnp.zeros(shape),
             next_obs=jnp.zeros((*shape, obs_dim)),
             bootstrap_value=jnp.zeros((shape[1],)),
+            metrics_vec=jnp.zeros((*shape, NUM_METRICS)),
+            step_counts=jnp.zeros(shape),
             foot_contacts=None,  # AMP field can be None
             root_heights=None,
             prev_joint_positions=None,
-            forward_velocities=jnp.zeros(shape),
-            heights=jnp.zeros(shape),
         )
 
         # Core PPO fields must be present
@@ -224,8 +225,8 @@ class TestRolloutFieldConsistency:
     def test_trajectory_with_amp_fields(self):
         """TrajectoryBatch with AMP fields should work."""
         shape = (10, 4)
-        obs_dim = 38
-        action_dim = 9
+        obs_dim = 39
+        action_dim = 8
 
         trajectory = TrajectoryBatch(
             obs=jnp.zeros((*shape, obs_dim)),
@@ -237,11 +238,11 @@ class TestRolloutFieldConsistency:
             truncations=jnp.zeros(shape),
             next_obs=jnp.zeros((*shape, obs_dim)),
             bootstrap_value=jnp.zeros((shape[1],)),
+            metrics_vec=jnp.zeros((*shape, NUM_METRICS)),
+            step_counts=jnp.zeros(shape),
             foot_contacts=jnp.zeros((*shape, 4)),  # AMP fields populated
             root_heights=jnp.zeros((*shape, 1)),
-            prev_joint_positions=jnp.zeros((*shape, 9)),
-            forward_velocities=jnp.zeros(shape),
-            heights=jnp.zeros(shape),
+            prev_joint_positions=jnp.zeros((*shape, 8)),
         )
 
         # AMP fields should be present

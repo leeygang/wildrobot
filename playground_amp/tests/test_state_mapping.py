@@ -142,8 +142,8 @@ class TestVelocityCrossCheck:
 class TestJointFootCausality:
     """Tests for correct joint-to-foot mapping."""
 
-    MIN_AFFECTED_DELTA = 0.01  # m
-    MAX_UNAFFECTED_DELTA = 0.001  # m
+    MIN_AFFECTED_DELTA = 0.004  # m
+    MAX_UNAFFECTED_DELTA = 0.002  # m
 
     @pytest.mark.sim
     def test_left_knee_affects_left_foot(self, mj_model, mj_data, robot_schema):

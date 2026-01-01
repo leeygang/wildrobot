@@ -62,9 +62,11 @@ class TestSchemaGeneration:
         schema_path = project_root / "assets" / "robot_schema.json"
 
         if not schema_path.exists():
-            # First run - create the schema
-            robot_schema.save(schema_path)
-            pytest.skip(f"Schema snapshot created at {schema_path}")
+            pytest.skip(
+                f"Schema snapshot missing at {schema_path}. "
+                "Run: python -c 'from playground_amp.tests.robot_schema import extract_and_save_schema; "
+                "extract_and_save_schema()' if you want a snapshot."
+            )
 
         try:
             robot_schema.assert_matches_saved(schema_path)

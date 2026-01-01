@@ -472,9 +472,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
         data = mjx.forward(self._mjx_model, data)
 
-        # Build observation
-        action = jp.zeros(self.action_size)
-        obs = self._get_obs(data, action, velocity_cmd)
+        # Build observation using default pose action (matches ctrl at reset)
+        default_action = self._cal.ctrl_to_policy_action(self._default_joint_qpos)
+        obs = self._get_obs(data, default_action, velocity_cmd)
 
         # Initial reward and done
         reward = jp.zeros(())
@@ -550,7 +550,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
-            prev_action=jp.zeros(self.action_size),
+            prev_action=default_action,
             truncated=jp.zeros(()),  # No truncation at reset
             velocity_cmd=velocity_cmd,  # Target velocity for this episode
             prev_root_pos=root_pose.position,  # (3,)
@@ -1103,6 +1103,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         flight_phase = jp.where((~left_loaded) & (~right_loaded), 1.0, 0.0)
         flight_phase = jp.asarray(flight_phase).reshape(())
 
+        # 15. Height target shaping (encourage upright posture)
+        height_target = self._config.env.target_height
+        height_sigma = jp.maximum(weights.height_target_sigma, 1e-6)
+        height_error = (height - height_target) / height_sigma
+        height_target_reward = jp.exp(-jp.square(height_error))
+
+        # 16. Stance width penalty (discourage wide split stance)
+        left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        stance_width = jp.abs(left_foot_pos[1] - right_foot_pos[1])
+        stance_sigma = jp.maximum(weights.stance_width_sigma, 1e-6)
+        stance_excess = jp.maximum(stance_width - weights.stance_width_target, 0.0)
+        stance_width_penalty = jp.square(stance_excess / stance_sigma)
+
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
@@ -1149,6 +1164,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.hip_swing * hip_swing
             + weights.knee_swing * knee_swing
             + weights.flight_phase_penalty * flight_phase
+            + weights.height_target * height_target_reward
+            + weights.stance_width_penalty * stance_width_penalty
         )
 
         # =====================================================================
@@ -1188,6 +1205,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/hip_swing": hip_swing,
             "reward/knee_swing": knee_swing,
             "reward/flight_phase": flight_phase,
+            "reward/height_target": height_target_reward,
+            "reward/stance_width_penalty": stance_width_penalty,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

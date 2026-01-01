@@ -246,6 +246,8 @@ class RewardWeightsConfig(Freezable):
     base_height: float = 0.5
     orientation: float = -0.5
     angular_velocity: float = -0.05
+    height_target: float = 0.0
+    height_target_sigma: float = 0.05
 
     # Effort and safety
     torque: float = -0.001
@@ -266,6 +268,9 @@ class RewardWeightsConfig(Freezable):
     hip_swing_min: float = 0.0
     knee_swing_min: float = 0.0
     flight_phase_penalty: float = 0.0
+    stance_width_penalty: float = 0.0
+    stance_width_target: float = 0.10
+    stance_width_sigma: float = 0.05
 
     # Shaping
     forward_velocity_scale: float = 4.0

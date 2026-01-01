@@ -43,14 +43,13 @@ class TestPPOSmoke:
         - Training completes all iterations
         """
         from playground_amp.configs.robot_config import load_robot_config
-        from playground_amp.configs.training_config import load_training_config
-        from playground_amp.train import create_env_config
         from playground_amp.envs.wildrobot_env import WildRobotEnv
-        from playground_amp.training.ppo_core import create_networks
+        from playground_amp.training.ppo_core import create_networks, init_network_params
 
         # Load configs
         load_robot_config("assets/robot_config.yaml")
-        env_config = create_env_config(training_config.raw_config)
+        env_config = training_config
+        env_config.freeze()
 
         # Create minimal environment
         env = WildRobotEnv(config=env_config)
@@ -67,19 +66,24 @@ class TestPPOSmoke:
         )
 
         # Initialize parameters
-        rng = jax.random.PRNGKey(42)
-        rng, init_rng = jax.random.split(rng)
-
-        dummy_obs = jnp.zeros((1, obs_dim))
-        params = ppo_network.init(init_rng, dummy_obs)
+        processor_params, policy_params, value_params = init_network_params(
+            ppo_network, obs_dim=obs_dim, action_dim=action_dim, seed=42
+        )
 
         # Verify initialization
-        assert params is not None, "Network initialization failed"
-        assert isinstance(params, dict), "Params should be a dict"
+        assert policy_params is not None, "Policy params initialization failed"
+        assert value_params is not None, "Value params initialization failed"
 
         # Test forward pass
-        output = ppo_network.apply(params, dummy_obs)
-        assert output is not None, "Forward pass failed"
+        dummy_obs = jnp.zeros((1, obs_dim))
+        policy_out = ppo_network.policy_network.apply(
+            processor_params, policy_params, dummy_obs
+        )
+        value_out = ppo_network.value_network.apply(
+            processor_params, value_params, dummy_obs
+        )
+        assert policy_out is not None, "Policy forward pass failed"
+        assert value_out is not None, "Value forward pass failed"
 
     @pytest.mark.train
     def test_loss_computation_finite(self, training_config):
@@ -94,10 +98,11 @@ class TestPPOSmoke:
         from playground_amp.training.ppo_core import (
             create_networks,
             compute_ppo_loss,
+            init_network_params,
         )
 
         # Create dummy network
-        obs_dim = 35
+        obs_dim = 39
         action_dim = 8
         batch_size = 64
 
@@ -109,10 +114,6 @@ class TestPPOSmoke:
         )
 
         # Initialize
-        rng = jax.random.PRNGKey(42)
-        dummy_obs = jnp.zeros((batch_size, obs_dim))
-        params = ppo_network.init(rng, dummy_obs)
-
         # Create dummy batch
         batch = {
             "obs": jnp.zeros((batch_size, obs_dim)),
@@ -122,14 +123,27 @@ class TestPPOSmoke:
             "log_probs": jnp.zeros((batch_size,)),
         }
 
-        # Compute loss (if function exists)
-        try:
-            # This depends on actual implementation
-            # loss = compute_ppo_loss(params, ppo_network, batch)
-            # assert jnp.isfinite(loss), "Loss is not finite"
-            pass  # Skip if function signature differs
-        except Exception:
-            pass  # Function may have different signature
+        # Compute loss and assert finite
+        processor_params, policy_params, value_params = init_network_params(
+            ppo_network, obs_dim=obs_dim, action_dim=action_dim, seed=0
+        )
+        rng = jax.random.PRNGKey(0)
+        loss, metrics = compute_ppo_loss(
+            processor_params=processor_params,
+            policy_params=policy_params,
+            value_params=value_params,
+            ppo_network=ppo_network,
+            obs=batch["obs"],
+            actions=batch["actions"],
+            old_log_probs=batch["log_probs"],
+            advantages=batch["advantages"],
+            returns=batch["returns"],
+            rng=rng,
+        )
+        assert jnp.isfinite(loss), "Loss is not finite"
+        assert jnp.isfinite(metrics.policy_loss), "Policy loss is not finite"
+        assert jnp.isfinite(metrics.value_loss), "Value loss is not finite"
+        assert jnp.isfinite(metrics.entropy_loss), "Entropy loss is not finite"
 
 
 # =============================================================================
@@ -149,9 +163,9 @@ class TestNetworkArchitecture:
         - Policy output has action_dim
         - Value output has shape (batch, 1) or (batch,)
         """
-        from playground_amp.training.ppo_core import create_networks
+        from playground_amp.training.ppo_core import create_networks, init_network_params
 
-        obs_dim = 35
+        obs_dim = 39
         action_dim = 8
         batch_size = 16
 
@@ -162,15 +176,26 @@ class TestNetworkArchitecture:
             value_hidden_dims=(256, 256),
         )
 
-        rng = jax.random.PRNGKey(42)
+        processor_params, policy_params, value_params = init_network_params(
+            network, obs_dim=obs_dim, action_dim=action_dim, seed=42
+        )
         dummy_obs = jnp.ones((batch_size, obs_dim))
-        params = network.init(rng, dummy_obs)
 
         # Forward pass
-        output = network.apply(params, dummy_obs)
+        policy_out = network.policy_network.apply(
+            processor_params, policy_params, dummy_obs
+        )
+        value_out = network.value_network.apply(
+            processor_params, value_params, dummy_obs
+        )
 
-        # Check output shape (depends on network implementation)
-        assert output is not None, "Network forward pass returned None"
+        # Check output shape (policy logits and value estimate)
+        expected_policy_dim = network.parametric_action_distribution.param_size
+        assert policy_out.shape == (
+            batch_size,
+            expected_policy_dim,
+        ), f"Policy output shape mismatch: {policy_out.shape}"
+        assert value_out.shape[0] == batch_size, "Value output batch mismatch"
 
     @pytest.mark.train
     def test_network_deterministic_with_same_params(self):
@@ -180,9 +205,9 @@ class TestNetworkArchitecture:
         Assertions:
         - Two forward passes produce identical outputs
         """
-        from playground_amp.training.ppo_core import create_networks
+        from playground_amp.training.ppo_core import create_networks, init_network_params
 
-        obs_dim = 35
+        obs_dim = 39
         action_dim = 8
 
         network = create_networks(
@@ -192,12 +217,17 @@ class TestNetworkArchitecture:
             value_hidden_dims=(64, 64),
         )
 
-        rng = jax.random.PRNGKey(42)
+        processor_params, policy_params, _ = init_network_params(
+            network, obs_dim=obs_dim, action_dim=action_dim, seed=42
+        )
         dummy_obs = jnp.ones((4, obs_dim))
-        params = network.init(rng, dummy_obs)
 
-        output1 = network.apply(params, dummy_obs)
-        output2 = network.apply(params, dummy_obs)
+        output1 = network.policy_network.apply(
+            processor_params, policy_params, dummy_obs
+        )
+        output2 = network.policy_network.apply(
+            processor_params, policy_params, dummy_obs
+        )
 
         # Should be identical
         assert jnp.allclose(output1, output2), (
@@ -222,9 +252,9 @@ class TestGradientFlow:
         - All gradients are finite
         - Gradients are not all zero
         """
-        from playground_amp.training.ppo_core import create_networks
+        from playground_amp.training.ppo_core import create_networks, init_network_params
 
-        obs_dim = 35
+        obs_dim = 39
         action_dim = 8
 
         network = create_networks(
@@ -234,17 +264,20 @@ class TestGradientFlow:
             value_hidden_dims=(64, 64),
         )
 
-        rng = jax.random.PRNGKey(42)
+        processor_params, policy_params, _ = init_network_params(
+            network, obs_dim=obs_dim, action_dim=action_dim, seed=42
+        )
         dummy_obs = jnp.ones((4, obs_dim))
-        params = network.init(rng, dummy_obs)
 
         def loss_fn(params):
-            output = network.apply(params, dummy_obs)
+            output = network.policy_network.apply(
+                processor_params, params, dummy_obs
+            )
             # Simple loss for testing gradient flow
             return jnp.mean(output ** 2)
 
         # Compute gradients
-        grads = jax.grad(loss_fn)(params)
+        grads = jax.grad(loss_fn)(policy_params)
 
         # Check gradients are finite
         def check_finite(x):
@@ -290,7 +323,7 @@ class TestRollout:
 
         rollout_steps = 32
         num_envs = 64
-        obs_dim = 35
+        obs_dim = 39
         action_dim = 8
 
         # Expected shapes
@@ -346,6 +379,8 @@ class TestPPOAlgorithm:
         Assertions:
         - GAE reduces to TD(λ) with correct parameters
         """
+        from playground_amp.training.ppo_core import compute_gae
+
         gamma = 0.99
         gae_lambda = 0.95
 
@@ -355,20 +390,25 @@ class TestPPOAlgorithm:
         next_value = 10.0
         dones = jnp.array([0.0, 0.0, 0.0, 0.0])
 
-        # Compute GAE manually for verification
+        # Manual GAE computation
         deltas = rewards + gamma * jnp.append(values[1:], next_value) * (1 - dones) - values
-
-        # For constant rewards and values, advantages should be near zero
-        # (since V(s) already captures expected returns)
         advantages = jnp.zeros(4)
         gae = 0.0
         for t in reversed(range(4)):
             gae = deltas[t] + gamma * gae_lambda * (1 - dones[t]) * gae
             advantages = advantages.at[t].set(gae)
 
-        # With constant rewards/values, advantages should be small
-        assert jnp.all(jnp.abs(advantages) < 2.0), (
-            f"GAE values unexpectedly large: {advantages}"
+        # Compare against implementation
+        adv_impl, _ = compute_gae(
+            rewards[:, None],
+            values[:, None],
+            dones[:, None],
+            jnp.array([next_value]),
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+        )
+        assert jnp.allclose(adv_impl[:, 0], advantages), (
+            f"GAE mismatch: {adv_impl.squeeze()} vs {advantages}"
         )
 
     @pytest.mark.train
@@ -407,23 +447,23 @@ class TestCheckpointing:
         - Loaded params match saved params
         """
         import pickle
-        from playground_amp.training.ppo_core import create_networks
+        from playground_amp.training.ppo_core import create_networks, init_network_params
 
         # Create network and params
         network = create_networks(
-            obs_dim=35,
+            obs_dim=39,
             action_dim=8,
             policy_hidden_dims=(64, 64),
             value_hidden_dims=(64, 64),
         )
 
-        rng = jax.random.PRNGKey(42)
-        dummy_obs = jnp.ones((1, 35))
-        params = network.init(rng, dummy_obs)
+        processor_params, policy_params, _ = init_network_params(
+            network, obs_dim=39, action_dim=8, seed=42
+        )
 
         # Save checkpoint
         checkpoint = {
-            "policy_params": params,
+            "policy_params": policy_params,
             "iteration": 100,
             "metrics": {"reward": 500.0},
         }
@@ -446,6 +486,6 @@ class TestCheckpointing:
                 jax.tree_util.tree_map(lambda x, y: jnp.allclose(x, y), p1, p2)
             )
 
-        assert params_equal(loaded["policy_params"], params), (
+        assert params_equal(loaded["policy_params"], policy_params), (
             "Loaded params don't match saved params"
         )

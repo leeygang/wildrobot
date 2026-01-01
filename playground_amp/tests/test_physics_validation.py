@@ -47,6 +47,14 @@ from playground_amp.tests.robot_schema import WildRobotSchema
 # =============================================================================
 
 
+def _step_n(env, state, action, num_steps: int):
+    """Advance env.step in a single JAX loop for speed."""
+    def body(_, s):
+        return env.step(s, action)
+
+    return jax.lax.fori_loop(0, num_steps, body, state)
+
+
 @pytest.fixture(scope="module")
 def schema():
     """Load schema from XML once per module."""
@@ -312,7 +320,8 @@ class TestKinematics:
         # Apply rotation (quaternion multiply)
         original_quat = mj_data.qpos[3:7].copy()
         # q_new = q_pitch * q_original (for local rotation)
-        mj_data.qpos[3:7] = self._quat_multiply(pitch_quat, original_quat)
+        new_quat = self._quat_multiply(pitch_quat, original_quat)
+        mj_data.qpos[3:7] = new_quat
 
         mujoco.mj_forward(mj_model, mj_data)
 
@@ -327,12 +336,19 @@ class TestKinematics:
             accel_norm = np.linalg.norm(accel) + 1e-8
             accel_dir = accel / accel_norm
 
-            # After pitching forward 30°, gravity direction should rotate accordingly
-            expected_z = np.cos(pitch_angle)
-            assert (
-                np.abs(abs(accel_dir[2]) - expected_z) < 0.05
-            ), f"Accel |z| after pitch: {accel_dir[2]:.3f}, expected ~{expected_z:.3f}"
-            print(f"  Accel dir after 30° pitch: {accel_dir}")
+        # After pitching forward 30°, gravity direction should rotate accordingly.
+        # Compute expected gravity in the sensor frame using the site rotation.
+        site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, "chest_imu")
+        assert site_id >= 0, "Could not find chest_imu site"
+        site_xmat = mj_data.site_xmat[site_id].reshape(3, 3)
+        world_gravity = np.array([0.0, 0.0, -1.0])
+        expected_local = site_xmat.T @ world_gravity
+        cosine_sim = abs(np.dot(expected_local, accel_dir))
+        assert (
+            cosine_sim > 0.95
+        ), f"Accel dir mismatch after pitch: cosine_sim={cosine_sim:.4f}"
+        print(f"  Accel dir after 30° pitch: {accel_dir}")
+        print(f"  Expected local gravity: {expected_local}")
 
     @staticmethod
     def _quat_multiply(q1, q2):
@@ -347,6 +363,31 @@ class TestKinematics:
                 w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
             ]
         )
+
+    @staticmethod
+    def _quat_rotate_inverse(quat, vec):
+        """Rotate vector by inverse quaternion (wxyz)."""
+        w, x, y, z = quat
+        rot = np.array(
+            [
+                [
+                    1 - 2 * y * y - 2 * z * z,
+                    2 * x * y - 2 * w * z,
+                    2 * x * z + 2 * w * y,
+                ],
+                [
+                    2 * x * y + 2 * w * z,
+                    1 - 2 * x * x - 2 * z * z,
+                    2 * y * z - 2 * w * x,
+                ],
+                [
+                    2 * x * z - 2 * w * y,
+                    2 * y * z + 2 * w * x,
+                    1 - 2 * x * x - 2 * y * y,
+                ],
+            ]
+        )
+        return rot.T @ vec
 
 
 # =============================================================================
@@ -673,8 +714,8 @@ class TestContactForceCorrectness:
 
         # Let robot settle
         action = jnp.zeros(env.action_size)
-        for _ in range(200):
-            state = env.step(state, action)
+        step_fn = jax.jit(lambda s: _step_n(env, s, action, 200))
+        state = step_fn(state)
 
         # Get foot contact forces (solver-native efc_force)
         left_force, right_force = env._cal.get_aggregated_foot_contacts(state.data)
@@ -912,8 +953,8 @@ class TestRewardLayer:
 
         # Let robot settle to get contact
         action = jnp.zeros(env.action_size)
-        for _ in range(50):
-            state = env.step(state, action)
+        step_fn = jax.jit(lambda s: _step_n(env, s, action, 50))
+        state = step_fn(state)
 
         # Get reward with actual foot positions (should have slip penalty if moving)
         left_pos, right_pos = env._cal.get_foot_positions(state.data, normalize=False)
@@ -940,7 +981,7 @@ class TestRewardLayer:
         )
 
         # If robot has contact and we simulated slip, penalty should be non-zero
-        left_force, right_force = env._cal.get_foot_forces(state.data)
+        left_force, right_force = env._cal.get_aggregated_foot_contacts(state.data)
         total_force = float(left_force + right_force)
 
         slip_with = float(components_with_slip["reward/slip"])
@@ -971,7 +1012,7 @@ class TestRewardLayer:
         new_data = state.data.replace(qpos=new_qpos)
 
         # Check termination
-        done, terminated, truncated = env._get_termination(new_data, step_count=10)
+        done, terminated, truncated, _ = env._get_termination(new_data, step_count=10)
 
         assert (
             float(terminated) == 1.0
@@ -1012,11 +1053,13 @@ class TestMimicLeakagePrevention:
 
     def test_env_foot_body_ids_not_mimic(self, env):
         """Environment foot body IDs should not be _mimic bodies."""
+        left_body_id = env.cal.foot_specs[0].body_id
+        right_body_id = env.cal.foot_specs[1].body_id
         left_name = mujoco.mj_id2name(
-            env._mj_model, mujoco.mjtObj.mjOBJ_BODY, env._left_foot_body_id
+            env._mj_model, mujoco.mjtObj.mjOBJ_BODY, left_body_id
         )
         right_name = mujoco.mj_id2name(
-            env._mj_model, mujoco.mjtObj.mjOBJ_BODY, env._right_foot_body_id
+            env._mj_model, mujoco.mjtObj.mjOBJ_BODY, right_body_id
         )
 
         assert (
@@ -1094,15 +1137,16 @@ class TestMJXParity:
         rng = jax.random.PRNGKey(42)
         state = env.reset(rng)
 
-        # Take some steps
+        # Take some steps (scan for speed)
         action = jnp.zeros(env.action_size)
-        velocities = []
 
-        for _ in range(50):
-            state = env.step(state, action)
-            base_vel = state.data.qvel[0:3]
-            velocities.append(np.array(base_vel))
+        def scan_step(carry, _):
+            next_state = env.step(carry, action)
+            base_vel = next_state.data.qvel[0:3]
+            return next_state, base_vel
 
+        scan_fn = jax.jit(lambda s: jax.lax.scan(scan_step, s, None, length=50))
+        state, velocities = scan_fn(state)
         velocities = np.array(velocities)
 
         # Velocities should be finite
@@ -1121,11 +1165,11 @@ class TestMJXParity:
 
         # Let robot settle
         action = jnp.zeros(env.action_size)
-        for _ in range(100):
-            state = env.step(state, action)
+        step_fn = jax.jit(lambda s: _step_n(env, s, action, 100))
+        state = step_fn(state)
 
         # Get contact forces
-        left_force, right_force = env._cal.get_foot_forces(state.data)
+        left_force, right_force = env._cal.get_aggregated_foot_contacts(state.data)
         total_force = float(left_force + right_force)
 
         # Forces should be positive and reasonable

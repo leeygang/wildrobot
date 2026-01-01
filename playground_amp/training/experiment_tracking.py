@@ -64,6 +64,7 @@ REWARD_TERM_KEYS = [
     "reward/healthy",
     "reward/orientation",
     "reward/angvel",
+    "reward/height_target",
     "reward/standing",
     "reward/torque",
     "reward/saturation",
@@ -75,6 +76,7 @@ REWARD_TERM_KEYS = [
     "reward/hip_swing",
     "reward/knee_swing",
     "reward/flight_phase",
+    "reward/stance_width_penalty",
 ]
 
 
@@ -97,6 +99,7 @@ ENV_METRICS_KEYS = {
     "reward/healthy": "Healthy/alive reward",
     "reward/orientation": "Upright orientation reward",
     "reward/angvel": "Angular velocity penalty",
+    "reward/height_target": "Height target reward",
     "reward/torque": "Torque penalty",
     "reward/saturation": "Actuator saturation penalty",
     "reward/action_rate": "Action smoothness penalty",
@@ -107,6 +110,7 @@ ENV_METRICS_KEYS = {
     "reward/hip_swing": "Hip swing during leg swing",
     "reward/knee_swing": "Knee swing during leg swing",
     "reward/flight_phase": "Flight phase penalty",
+    "reward/stance_width_penalty": "Stance width penalty",
     "reward/standing": "Standing still penalty",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
@@ -192,6 +196,7 @@ def get_initial_env_metrics(
         "reward/healthy": healthy_reward,
         "reward/orientation": 0.0,
         "reward/angvel": 0.0,
+        "reward/height_target": 0.0,
         "reward/torque": 0.0,
         "reward/saturation": 0.0,
         "reward/action_rate": action_rate,
@@ -202,6 +207,7 @@ def get_initial_env_metrics(
         "reward/hip_swing": 0.0,
         "reward/knee_swing": 0.0,
         "reward/flight_phase": 0.0,
+        "reward/stance_width_penalty": 0.0,
         "reward/standing": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
@@ -276,6 +282,7 @@ def get_initial_env_metrics_jax(
         "reward/healthy": _scalar(healthy_reward),
         "reward/orientation": jp.zeros(()),
         "reward/angvel": jp.zeros(()),
+        "reward/height_target": jp.zeros(()),
         "reward/torque": jp.zeros(()),
         "reward/saturation": jp.zeros(()),
         "reward/action_rate": _scalar(action_rate),
@@ -286,6 +293,7 @@ def get_initial_env_metrics_jax(
         "reward/hip_swing": jp.zeros(()),
         "reward/knee_swing": jp.zeros(()),
         "reward/flight_phase": jp.zeros(()),
+        "reward/stance_width_penalty": jp.zeros(()),
         "reward/standing": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),

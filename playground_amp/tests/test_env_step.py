@@ -35,6 +35,24 @@ def env(training_config, robot_config):
     return WildRobotEnv(config=training_cfg)
 
 
+@pytest.fixture(scope="module")
+def standing_env(robot_config):
+    """Create a standing-specific environment with zero velocity command."""
+    from playground_amp.configs.robot_config import load_robot_config
+    from playground_amp.configs.training_config import load_training_config
+
+    load_robot_config("assets/robot_config.yaml")
+    training_cfg = load_training_config("playground_amp/configs/ppo_standing.yaml")
+    training_cfg.env.velocity_cmd_min = 0.0
+    training_cfg.env.velocity_cmd_max = 0.0
+    training_cfg.env.push_enabled = False
+    training_cfg.freeze()
+
+    from playground_amp.envs.wildrobot_env import WildRobotEnv
+
+    return WildRobotEnv(config=training_cfg)
+
+
 # =============================================================================
 # Test 5.1: Reset Contract
 # =============================================================================
@@ -107,6 +125,32 @@ class TestResetContract:
         if not is_different:
             pytest.skip("No randomization in reset - observations identical")
 
+    @pytest.mark.sim
+    def test_reset_prev_action_matches_ctrl(self, env, rng):
+        """
+        Purpose: Ensure reset prev_action matches the ctrl used for default pose.
+
+        Assertions:
+        - prev_action corresponds to data.ctrl at reset
+        - observation action slice matches prev_action
+        """
+        from playground_amp.envs.env_info import WR_INFO_KEY
+        from playground_amp.envs.wildrobot_env import ObsLayout
+
+        state = env.reset(rng)
+        wr_info = state.info[WR_INFO_KEY]
+
+        expected_action = env._cal.ctrl_to_policy_action(state.data.ctrl)
+        assert jnp.allclose(wr_info.prev_action, expected_action, atol=1e-6), (
+            "prev_action does not match ctrl-derived action at reset"
+        )
+
+        action_slice = ObsLayout.get_slices()["action"]
+        obs_action = state.obs[action_slice]
+        assert jnp.allclose(obs_action, wr_info.prev_action, atol=1e-6), (
+            "Observation action slice does not match prev_action at reset"
+        )
+
 
 # =============================================================================
 # Test 5.2: Step Contract
@@ -141,7 +185,7 @@ class TestStepContract:
         assert jnp.isfinite(new_state.reward), "Reward contains NaN or Inf"
 
     @pytest.mark.sim
-    def test_step_with_zero_action(self, env, rng):
+    def test_step_with_zero_action(self, standing_env, rng):
         """
         Purpose: Verify robot remains stable with zero action.
 
@@ -156,22 +200,28 @@ class TestStepContract:
         - Robot should remain upright (not terminated)
         - No NaN or Inf values during simulation
         """
-        state = env.reset(rng)
+        state = standing_env.reset(rng)
 
-        for i in range(100):
-            action = jnp.zeros(env.action_size)
-            state = env.step(state, action)
+        default_ctrl = standing_env._cal.get_ctrl_for_default_pose()
+        action = standing_env._cal.ctrl_to_policy_action(default_ctrl)
 
-            # Check numerical stability
-            assert jnp.all(jnp.isfinite(state.obs)), f"NaN/Inf detected at step {i}"
-            assert jnp.isfinite(state.reward), f"NaN/Inf reward at step {i}"
+        def step_collect(s, _):
+            next_state = standing_env.step(s, action)
+            return next_state, (next_state.obs, next_state.reward, next_state.done)
 
-            if state.done:
-                pytest.fail(
-                    f"Robot fell with zero action at step {i}. "
-                    f"This indicates the robot's default pose or physics parameters "
-                    f"may need adjustment for stable standing."
-                )
+        scan_fn = jax.jit(lambda s: jax.lax.scan(step_collect, s, None, length=100))
+        state, (obs_seq, reward_seq, done_flags) = scan_fn(state)
+
+        assert jnp.all(jnp.isfinite(obs_seq)), "NaN/Inf detected in obs sequence"
+        assert jnp.all(jnp.isfinite(reward_seq)), "NaN/Inf detected in reward sequence"
+
+        if jnp.any(done_flags > 0.5):
+            first_done = int(jnp.argmax(done_flags > 0.5))
+            pytest.fail(
+                f"Robot fell with zero action at step {first_done}. "
+                "This indicates the default standing pose or physics parameters "
+                "may need adjustment for stability."
+            )
 
     @pytest.mark.sim
     def test_step_state_changes(self, env, rng):
@@ -259,21 +309,20 @@ class TestTermination:
         # Force termination by applying extreme action repeatedly
         extreme_action = jnp.ones(env.action_size) * 2.0  # Max action
 
-        done_detected = False
-        for _ in range(500):
-            state = env.step(state, extreme_action)
-            if state.done:
-                done_detected = True
-                break
+        def step_collect(s, _):
+            next_state = env.step(s, extreme_action)
+            return next_state, next_state.done
 
-        if not done_detected:
+        scan_fn = jax.jit(lambda s: jax.lax.scan(step_collect, s, None, length=500))
+        state, done_flags = scan_fn(state)
+
+        if not jnp.any(done_flags > 0.5):
             pytest.skip("Robot didn't terminate within 500 steps")
 
-        # After termination, further steps should keep done=True
+        # After termination, take a few more steps to ensure no errors
+        step_fn = jax.jit(env.step)
         for _ in range(10):
-            state = env.step(state, jnp.zeros(env.action_size))
-            # Most envs auto-reset, but if not, done should stay True
-            # This depends on implementation details
+            state = step_fn(state, jnp.zeros(env.action_size))
 
 
 # =============================================================================
@@ -350,12 +399,13 @@ class TestObservationConsistency:
         """
         Purpose: Verify observation has expected structure.
 
-        WildRobot observation (35D):
+        WildRobot observation (39D):
         - gravity (3)
         - angvel (3)
         - linvel (3)
         - joint_pos (8)
         - joint_vel (8)
+        - foot_switches (4)
         - prev_action (8)
         - velocity_cmd (1)
         - padding (1)
@@ -381,19 +431,21 @@ class TestObservationConsistency:
         """
         state = env.reset(rng)
 
-        # Run for some steps to get varied observations
-        for _ in range(50):
+        # Run for some steps to get varied observations (scan for speed)
+        def step_collect(carry, _):
+            s, key = carry
+            key, subkey = jax.random.split(key)
             action = jax.random.uniform(
-                jax.random.PRNGKey(0), shape=(env.action_size,), minval=-1, maxval=1
+                subkey, shape=(env.action_size,), minval=-1, maxval=1
             )
-            state = env.step(state, action)
+            next_state = env.step(s, action)
+            max_val = jnp.max(jnp.abs(next_state.obs))
+            return (next_state, key), max_val
 
-            # Check bounds
-            max_val = jnp.max(jnp.abs(state.obs))
-            assert max_val < 100, f"Observation value too large: {max_val}"
-
-            if state.done:
-                break
+        scan_fn = jax.jit(lambda s, k: jax.lax.scan(step_collect, (s, k), None, length=50))
+        (_, _), max_vals = scan_fn(state, rng)
+        max_val = jnp.max(max_vals)
+        assert max_val < 100, f"Observation value too large: {max_val}"
 
     @pytest.mark.sim
     def test_prev_action_in_observation(self, env, rng):
@@ -401,20 +453,21 @@ class TestObservationConsistency:
         Purpose: Verify previous action is correctly included in observation.
 
         Assertions:
-        - After step, observation contains the action that was just applied
+        - After step, observation contains the filtered action that was applied
         """
+        from playground_amp.envs.wildrobot_env import ObsLayout
+
         state = env.reset(rng)
 
         # Apply known action
         action = jnp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
         new_state = env.step(state, action)
 
-        # The observation should contain prev_action
-        # Based on structure: obs[22:30] should be prev_action
-        # (gravity:3 + angvel:3 + linvel:3 + joint_pos:8 + joint_vel:8 = 25)
-        # Wait, structure says: 3+3+3+8+8 = 25, then prev_action at 25:33
-        # Actually obs_dim=35: 3+3+3+8+8+8+1+1 = 35
-        # prev_action would be at indices 25:33
-
-        # For now, just verify observation changed
-        # Exact indexing depends on implementation
+        # The observation should contain the filtered action
+        alpha = env._config.env.action_filter_alpha
+        expected_action = (1.0 - alpha) * action
+        action_slice = ObsLayout.get_slices()["action"]
+        obs_prev_action = new_state.obs[action_slice]
+        assert jnp.allclose(obs_prev_action, expected_action, atol=1e-6), (
+            f"prev_action slice mismatch: got {obs_prev_action}, expected {expected_action}"
+        )
