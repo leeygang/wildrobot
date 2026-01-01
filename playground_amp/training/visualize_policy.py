@@ -556,6 +556,12 @@ def main():
     reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
+    left_hip_pitch_idx, right_hip_pitch_idx = cal._robot_config.get_hip_pitch_indices()
+    left_knee_pitch_idx, right_knee_pitch_idx = cal._robot_config.get_knee_pitch_indices()
+    left_hip_roll_idx = cal._robot_config.get_actuator_index("left_hip_roll")
+    right_hip_roll_idx = cal._robot_config.get_actuator_index("right_hip_roll")
+    left_ankle_pitch_idx = cal._robot_config.get_actuator_index("left_ankle_pitch")
+    right_ankle_pitch_idx = cal._robot_config.get_actuator_index("right_ankle_pitch")
 
     # Control timing
     ctrl_dt = training_cfg.env.ctrl_dt
@@ -578,6 +584,28 @@ def main():
     if args.velocity_cmd is not None:
         print(f"  Fixed velocity cmd: {args.velocity_cmd:.2f} m/s")
     print(f"  Control dt: {ctrl_dt}s ({1/ctrl_dt:.0f} Hz)")
+    try:
+        left_toe, left_heel, right_toe, right_heel = (
+            cal._robot_config.get_foot_geom_names()
+        )
+        print("  Foot geom params:")
+        for geom_name in (left_toe, left_heel, right_toe, right_heel):
+            geom_id = mujoco.mj_name2id(
+                mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name
+            )
+            if geom_id < 0:
+                print(f"    {geom_name}: not found")
+                continue
+            geom_pos = mj_model.geom_pos[geom_id]
+            geom_size = mj_model.geom_size[geom_id]
+            geom_friction = mj_model.geom_friction[geom_id]
+            print(
+                f"    {geom_name}: pos=({geom_pos[0]:.4f}, {geom_pos[1]:.4f}, {geom_pos[2]:.4f}), "
+                f"size=({geom_size[0]:.4f}, {geom_size[1]:.4f}, {geom_size[2]:.4f}), "
+                f"friction=({geom_friction[0]:.3f}, {geom_friction[1]:.3f}, {geom_friction[2]:.3f})"
+            )
+    except Exception as exc:
+        print(f"  Foot geom params: unavailable ({exc})")
     if not headless:
         print(f"  Playback speed: {args.speed}x")
     print(f"{'=' * 60}")
@@ -691,6 +719,16 @@ def main():
                 drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
                 drift_norm = float(np.linalg.norm(drift_xy))
                 yaw_delta = wrap_angle(get_yaw(mj_data) - episode_start_yaw)
+                action_bias = (
+                    float(action[left_hip_pitch_idx] - action[right_hip_pitch_idx]),
+                    float(action[left_hip_roll_idx] - action[right_hip_roll_idx]),
+                    float(action[left_knee_pitch_idx] - action[right_knee_pitch_idx]),
+                    float(action[left_ankle_pitch_idx] - action[right_ankle_pitch_idx]),
+                )
+                contacts = cal.get_geom_based_foot_contacts(
+                    mj_data, normalize=False
+                )
+                contacts = np.asarray(contacts)
                 print(
                     "  Step "
                     f"{step_count}: vel={forward_vel:.2f}m/s, "
@@ -699,7 +737,11 @@ def main():
                     f"pos=({robot_pos[0]:.3f}, {robot_pos[1]:.3f}), "
                     f"drift=({drift_xy[0]:.3f}, {drift_xy[1]:.3f})m "
                     f"(|d|={drift_norm:.3f}m), "
-                    f"yaw_d={yaw_delta:.3f}rad"
+                    f"yaw_d={yaw_delta:.3f}rad, "
+                    f"act_d=({action_bias[0]:+.3f}, {action_bias[1]:+.3f}, "
+                    f"{action_bias[2]:+.3f}, {action_bias[3]:+.3f}), "
+                    f"foot_f=({contacts[0]:.1f}, {contacts[1]:.1f}, "
+                    f"{contacts[2]:.1f}, {contacts[3]:.1f})"
                 )
 
             # Recording
@@ -812,6 +854,24 @@ def main():
                         drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
                         drift_norm = float(np.linalg.norm(drift_xy))
                         yaw_delta = wrap_angle(get_yaw(mj_data) - episode_start_yaw)
+                        action_bias = (
+                            float(
+                                action[left_hip_pitch_idx] - action[right_hip_pitch_idx]
+                            ),
+                            float(action[left_hip_roll_idx] - action[right_hip_roll_idx]),
+                            float(
+                                action[left_knee_pitch_idx]
+                                - action[right_knee_pitch_idx]
+                            ),
+                            float(
+                                action[left_ankle_pitch_idx]
+                                - action[right_ankle_pitch_idx]
+                            ),
+                        )
+                        contacts = cal.get_geom_based_foot_contacts(
+                            mj_data, normalize=False
+                        )
+                        contacts = np.asarray(contacts)
                         print(
                             "  Step "
                             f"{step_count}: vel={forward_vel:.2f}m/s, "
@@ -820,7 +880,11 @@ def main():
                             f"pos=({robot_pos[0]:.3f}, {robot_pos[1]:.3f}), "
                             f"drift=({drift_xy[0]:.3f}, {drift_xy[1]:.3f})m "
                             f"(|d|={drift_norm:.3f}m), "
-                            f"yaw_d={yaw_delta:.3f}rad"
+                            f"yaw_d={yaw_delta:.3f}rad, "
+                            f"act_d=({action_bias[0]:+.3f}, {action_bias[1]:+.3f}, "
+                            f"{action_bias[2]:+.3f}, {action_bias[3]:+.3f}), "
+                            f"foot_f=({contacts[0]:.1f}, {contacts[1]:.1f}, "
+                            f"{contacts[2]:.1f}, {contacts[3]:.1f})"
                         )
 
                     # Recording (if enabled with viewer)
