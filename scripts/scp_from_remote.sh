@@ -137,10 +137,10 @@ copy_checkpoint() {
         ls -lh "$LOCAL_PATH" 2>/dev/null | head -10
         echo ""
         echo -e "${CYAN}To visualize the policy:${NC}"
-        echo "  python playground_amp/visualize_policy.py --checkpoint $LOCAL_PATH/final_amp_policy.pkl"
+        echo "  uv run mjpython playground_amp/training/visualize_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config playground_amp/configs/ppo_standing.yaml"
         echo ""
         echo -e "${CYAN}To test the policy:${NC}"
-        echo "  python playground_amp/test_policy.py --checkpoint $LOCAL_PATH/final_amp_policy.pkl"
+        echo "  uv run mjpython playground_amp/training/test_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config playground_amp/configs/ppo_standing.yaml"
     else
         echo -e "\n${RED}✗ Transfer failed!${NC}"
         return 1
