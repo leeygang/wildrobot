@@ -171,36 +171,36 @@
     </body>
   </worldbody>
   <asset>
-    <mesh file="cell.stl" />
     <mesh file="foot_btm_back.stl" />
-    <mesh file="low_leg_right.stl" />
-    <mesh file="low_leg_left.stl" />
-    <mesh file="scroll_out.stl" />
-    <mesh file="htd_45h_1circle.stl" />
-    <mesh file="trunk_servo_connect.stl" />
-    <mesh file="knee_ball_right.stl" />
-    <mesh file="foot_side_right.stl" />
-    <mesh file="hip_trunk_connect.stl" />
-    <mesh file="waist_trunk_support.stl" />
-    <mesh file="up_leg.stl" />
-    <mesh file="trunk_bottom.stl" />
-    <mesh file="waist_platform.stl" />
-    <mesh file="foot_side.stl" />
-    <mesh file="waist_platform_2.stl" />
-    <mesh file="foot_btm_front.stl" />
-    <mesh file="bno085.stl" />
-    <mesh file="hip_servo_hook_left.stl" />
-    <mesh file="servo_bracket_top.stl" />
-    <mesh file="knee_ball_left.stl" />
-    <mesh file="hip_servo_hook_right.stl" />
-    <mesh file="up_leg_servo_connect.stl" />
-    <mesh file="knee_ball_mid.stl" />
-    <mesh file="batterybox.stl" />
     <mesh file="icm45686.stl" />
     <mesh file="foot_main.stl" />
-    <mesh file="foot_main_right.stl" />
+    <mesh file="trunk_bottom.stl" />
+    <mesh file="foot_btm_front.stl" />
+    <mesh file="scroll_out.stl" />
+    <mesh file="hip_servo_hook_left.stl" />
+    <mesh file="up_leg.stl" />
     <mesh file="rp_assemble.stl" />
+    <mesh file="servo_bracket_top.stl" />
+    <mesh file="foot_side_right.stl" />
+    <mesh file="waist_platform.stl" />
+    <mesh file="knee_ball_mid.stl" />
+    <mesh file="knee_ball_left.stl" />
+    <mesh file="low_leg_left.stl" />
+    <mesh file="bno085.stl" />
+    <mesh file="batterybox.stl" />
+    <mesh file="hip_servo_hook_right.stl" />
+    <mesh file="trunk_servo_connect.stl" />
+    <mesh file="foot_side.stl" />
     <mesh file="hip_cover.stl" />
+    <mesh file="waist_platform_2.stl" />
+    <mesh file="knee_ball_right.stl" />
+    <mesh file="foot_main_right.stl" />
+    <mesh file="htd_45h_1circle.stl" />
+    <mesh file="cell.stl" />
+    <mesh file="hip_trunk_connect.stl" />
+    <mesh file="low_leg_right.stl" />
+    <mesh file="waist_trunk_support.stl" />
+    <mesh file="up_leg_servo_connect.stl" />
     <material name="htd_45h_1circle_material" rgba="0.615686 0.811765 0.929412 1" />
     <material name="waist_trunk_support_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="trunk_bottom_material" rgba="0.301961 0.301961 0.301961 1" />
