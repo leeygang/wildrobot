@@ -15,8 +15,8 @@
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.11.2"
-version_name: "Upright standing retrain (v0.11.2)"
+version: "0.11.3"
+version_name: "Foot switches + standing robustness (v0.11.3)"
 
 seed: 42
 
@@ -45,17 +45,18 @@ env:
 
   # Contacts
   contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.3
 
   # Disturbance pushes (standing robustness)
   push_enabled: true
-  push_start_step_min: 20
-  push_start_step_max: 200
-  push_duration_steps: 10
-  push_force_min: 5.0
-  push_force_max: 15.0
+  push_start_step_min: 40
+  push_start_step_max: 250
+  push_duration_steps: 6
+  push_force_min: 1.0
+  push_force_max: 3.0
   push_body: waist
 
 # =============================================================================
@@ -182,7 +183,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: online
-  tags: [ppo, stage1, standing, v0.11.2]
+  tags: [ppo, stage1, standing, v0.11.3]
 
 video:
   enabled: true

@@ -82,6 +82,7 @@ class ObsLayout:
         [6:9]   linvel       - Linear velocity (heading-local)
         [9:9+n] joint_pos    - Joint positions (n = num_actuators)
         [...]   joint_vel    - Joint velocities (n = num_actuators)
+        [...]   foot_switch  - Foot switches (4 = toe/heel L/R)
         [...]   action       - Previous action (n = num_actuators)
         [...]   velocity_cmd - Velocity command (1)
         [...]   padding      - Padding for alignment (1)
@@ -91,6 +92,7 @@ class ObsLayout:
     GRAVITY_DIM: int = 3
     ANGVEL_DIM: int = 3
     LINVEL_DIM: int = 3
+    FOOT_SWITCH_DIM: int = 4
     VELOCITY_CMD_DIM: int = 1
     PADDING_DIM: int = 1
 
@@ -113,6 +115,7 @@ class ObsLayout:
             cls.GRAVITY_DIM
             + cls.ANGVEL_DIM
             + cls.LINVEL_DIM
+            + cls.FOOT_SWITCH_DIM
             + cls.VELOCITY_CMD_DIM
             + cls.PADDING_DIM
         )
@@ -148,6 +151,9 @@ class ObsLayout:
         slices["joint_vel"] = slice(idx, idx + num_actuators)
         idx += num_actuators
 
+        slices["foot_switches"] = slice(idx, idx + cls.FOOT_SWITCH_DIM)
+        idx += cls.FOOT_SWITCH_DIM
+
         slices["action"] = slice(idx, idx + num_actuators)
         idx += num_actuators
 
@@ -166,6 +172,7 @@ class ObsLayout:
         linvel: jax.Array,
         joint_pos: jax.Array,
         joint_vel: jax.Array,
+        foot_switches: jax.Array,
         action: jax.Array,
         velocity_cmd: jax.Array,
     ) -> jax.Array:
@@ -180,6 +187,7 @@ class ObsLayout:
             linvel: Linear velocity, heading-local (3,)
             joint_pos: Joint positions (num_actuators,)
             joint_vel: Joint velocities (num_actuators,)
+            foot_switches: Foot switch states (4,)
             action: Previous action (num_actuators,)
             velocity_cmd: Velocity command scalar
 
@@ -204,6 +212,10 @@ class ObsLayout:
             raise ValueError(
                 f"linvel shape {linvel.shape} != expected ({cls.LINVEL_DIM},)"
             )
+        if foot_switches.shape != (cls.FOOT_SWITCH_DIM,):
+            raise ValueError(
+                f"foot_switches shape {foot_switches.shape} != expected ({cls.FOOT_SWITCH_DIM},)"
+            )
 
         # Validate dynamic dimensions
         if joint_pos.shape != (num_actuators,):
@@ -226,6 +238,7 @@ class ObsLayout:
                 linvel,
                 joint_pos,
                 joint_vel,
+                foot_switches,
                 action,
                 jp.atleast_1d(velocity_cmd),
                 jp.zeros(cls.PADDING_DIM),
@@ -492,6 +505,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # At reset, robot is stationary so most values are zero
         roll, pitch, _ = root_pose.euler_angles()
         left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        foot_switches = self._cal.get_foot_switches(
+            data, threshold=self._config.env.foot_switch_threshold
+        )
 
         # Compute total reward with weights (from config)
         weights = self._config.reward_weights
@@ -509,6 +525,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             roll=roll,
             left_force=left_force,
             right_force=right_force,
+            left_toe_switch=foot_switches[0],
+            left_heel_switch=foot_switches[1],
+            right_toe_switch=foot_switches[2],
+            right_heel_switch=foot_switches[3],
             forward_reward=forward_reward,
             healthy_reward=healthy_reward,
             action_rate=action_rate,
@@ -843,11 +863,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         - Base linear velocity (heading-local, from FD or qvel): 3
         - Joint positions (actuated): 8
         - Joint velocities (actuated): 8
+        - Foot switches (toe/heel L/R): 4
         - Previous action: 8
         - Velocity command: 1
         - Padding: 1
 
-        Total: 35
+        Total: 39
 
         Args:
             data: MJX simulation data
@@ -884,6 +905,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Joint positions and velocities (normalized for NN input)
         joint_pos = self._cal.get_joint_positions(data.qpos, normalize=True).squeeze()
         joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True).squeeze()
+        foot_switches = self._cal.get_foot_switches(
+            data, threshold=self._config.env.foot_switch_threshold
+        )
 
         # Build observation using shared layout
         return ObsLayout.build_obs(
@@ -892,6 +916,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             linvel=linvel,
             joint_pos=joint_pos,
             joint_vel=joint_vel,
+            foot_switches=foot_switches,
             action=action,
             velocity_cmd=velocity_cmd,
         )
@@ -1137,6 +1162,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.abs(self._cal.get_actuator_torques(data.qfrc_actuator, normalize=False))
         )
 
+        foot_switches = self._cal.get_foot_switches(
+            data, threshold=self._config.env.foot_switch_threshold
+        )
+
         components = {
             # Primary
             "reward/forward": forward_reward,
@@ -1166,6 +1195,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/lateral_vel": lateral_vel,
             "debug/left_force": left_force,
             "debug/right_force": right_force,
+            "debug/left_toe_switch": foot_switches[0],
+            "debug/left_heel_switch": foot_switches[1],
+            "debug/right_toe_switch": foot_switches[2],
+            "debug/right_heel_switch": foot_switches[3],
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)

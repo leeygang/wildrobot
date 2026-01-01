@@ -994,6 +994,25 @@ class ControlAbstractionLayer:
         right_force = raw_contacts[2] + raw_contacts[3]  # toe + heel
         return left_force, right_force
 
+    def get_foot_switches(
+        self,
+        data: mjx.Data,
+        threshold: jax.Array,
+    ) -> jax.Array:
+        """Get binary foot switch states from toe/heel contact forces.
+
+        Args:
+            data: MJX simulation data
+            threshold: Force threshold in Newtons for switch activation
+
+        Returns:
+            switches: (4,) array [left_toe, left_heel, right_toe, right_heel] with
+                1.0 if force > threshold, else 0.0
+        """
+        raw_contacts = self.get_geom_based_foot_contacts(data, normalize=False)
+        switches = jnp.where(raw_contacts > threshold, 1.0, 0.0)
+        return switches.astype(jnp.float32)
+
     def get_foot_positions(
         self,
         data: mjx.Data,

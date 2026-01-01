@@ -51,83 +51,6 @@ def add_collision_names(xml_file):
     tree.write(xml_file)
 
 
-def add_touch_sensors(xml_file):
-    """Add touch sensors for foot contact detection (SS-10G switches).
-
-    Hardware: 4x SS-10G micro switches (toe and heel on each foot)
-    These are binary contact sensors that detect ground contact.
-
-    In MuJoCo, we use 'touch' sensors which measure normal force at a site.
-    The force is thresholded in code to get binary on/off contact state.
-
-    This function:
-    1. Adds sites at toe/heel geom positions for touch sensing
-    2. Adds touch sensors referencing those sites
-
-    TODO(ygli): Update touch sensor site positions to match actual hardware
-    installation locations of SS-10G switches. Current positions are copied
-    from collision geom positions, but actual switch mounting may differ.
-    Measure physical sensor positions relative to foot frame and update
-    the site 'pos' attributes accordingly.
-    """
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-
-    # Define touch sensor configurations
-    touch_configs = [
-        {"body": "left_foot", "geom": "left_toe", "site": "left_toe_touch", "sensor": "left_toe_touch"},
-        {"body": "left_foot", "geom": "left_heel", "site": "left_heel_touch", "sensor": "left_heel_touch"},
-        {"body": "right_foot", "geom": "right_toe", "site": "right_toe_touch", "sensor": "right_toe_touch"},
-        {"body": "right_foot", "geom": "right_heel", "site": "right_heel_touch", "sensor": "right_heel_touch"},
-    ]
-
-    # Add sites at geom positions
-    for config in touch_configs:
-        body = root.find(f".//body[@name='{config['body']}']")
-        if body is None:
-            continue
-
-        # Check if site already exists
-        existing_site = body.find(f"site[@name='{config['site']}']")
-        if existing_site is not None:
-            continue
-
-        # Find the geom to get its position
-        geom = body.find(f"geom[@name='{config['geom']}']")
-        if geom is None:
-            continue
-
-        # Create site at geom position
-        site = ET.Element("site")
-        site.set("name", config["site"])
-        site.set("pos", geom.get("pos", "0 0 0"))
-        site.set("quat", geom.get("quat", "1 0 0 0"))
-        site.set("group", "3")  # Same group as other sensing sites
-        site.set("size", "0.005")  # Small site for touch sensing
-
-        # Insert site after the geom
-        geom_index = list(body).index(geom)
-        body.insert(geom_index + 1, site)
-
-    # Add touch sensors to sensor section
-    sensor_section = root.find("sensor")
-    if sensor_section is None:
-        sensor_section = ET.SubElement(root, "sensor")
-
-    for config in touch_configs:
-        # Check if sensor already exists
-        existing_sensor = sensor_section.find(f"touch[@name='{config['sensor']}']")
-        if existing_sensor is not None:
-            continue
-
-        # Add touch sensor
-        touch = ET.SubElement(sensor_section, "touch")
-        touch.set("name", config["sensor"])
-        touch.set("site", config["site"])
-
-    ET.indent(tree, space="  ", level=0)
-    tree.write(xml_file)
-    print(f"Added {len(touch_configs)} touch sensors for foot contact detection")
 
 
 def ensure_root_body_pose(xml_file):
@@ -598,13 +521,11 @@ def generate_robot_config(
             "body": left_foot_body or "left_foot",
             "toe": left_toe or "left_toe",
             "heel": left_heel or "left_heel",
-            "touch_sensors": ["left_toe_touch", "left_heel_touch"],
         },
         "right": {
             "body": right_foot_body or "right_foot",
             "toe": right_toe or "right_toe",
             "heel": right_heel or "right_heel",
-            "touch_sensors": ["right_toe_touch", "right_heel_touch"],
         },
         # Contact detection parameters
         "contact_scale": 10.0,  # Scaling factor for contact force normalization
@@ -622,9 +543,10 @@ def generate_robot_config(
         "base_linear_velocity": 3,   # From IMU/velocimeter
         "joint_positions": num_actuators,
         "joint_velocities": num_actuators,
-        "foot_contacts": 4,          # From touch sensors (SS-10G switches)
+        "foot_switches": 4,          # Derived from toe/heel contact forces
         "previous_action": num_actuators,
         "velocity_command": 1,
+        "padding": 1,
     }
 
     # AMP feature breakdown (what discriminator sees - motion signature)
@@ -665,7 +587,6 @@ def main() -> None:
     print("start post process...")
     # add_common_includes(xml_file)
     add_collision_names(xml_file)
-    add_touch_sensors(xml_file)  # Add touch sensors for SS-10G switches
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
     merge_default_blocks(xml_file)

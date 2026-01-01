@@ -80,16 +80,10 @@ foot_specs:
     body: left_foot
     toe: left_toe
     heel: left_heel
-    touch_sensors:
-    - left_toe_touch
-    - left_heel_touch
   right:
     body: right_foot
     toe: right_toe
     heel: right_heel
-    touch_sensors:
-    - right_toe_touch
-    - right_heel_touch
   contact_scale: 10.0
 observation_breakdown:
   gravity_vector: 3
@@ -97,9 +91,10 @@ observation_breakdown:
   base_linear_velocity: 3
   joint_positions: 8
   joint_velocities: 8
-  foot_contacts: 4
+  foot_switches: 4
   previous_action: 8
   velocity_command: 1
+  padding: 1
 amp_feature_breakdown:
   joint_positions: 8
   joint_velocities: 8

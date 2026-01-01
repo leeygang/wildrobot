@@ -200,7 +200,7 @@ METRIC_SPECS: List[MetricSpec] = [
     ),
 
     # =========================================================================
-    # Debug metrics (indices 17-22)
+    # Debug metrics
     # =========================================================================
     MetricSpec(
         name="debug/pitch",
@@ -237,6 +237,30 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="debug",
         description="Right foot contact force",
+    ),
+    MetricSpec(
+        name="debug/left_toe_switch",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Left toe switch state",
+    ),
+    MetricSpec(
+        name="debug/left_heel_switch",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Left heel switch state",
+    ),
+    MetricSpec(
+        name="debug/right_toe_switch",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Right toe switch state",
+    ),
+    MetricSpec(
+        name="debug/right_heel_switch",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Right heel switch state",
     ),
 
     # =========================================================================

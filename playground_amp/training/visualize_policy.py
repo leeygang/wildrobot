@@ -419,12 +419,17 @@ def main():
         joint_pos = cal.get_joint_positions(jnp.array(mj_data.qpos), normalize=True)
         joint_vel = cal.get_joint_velocities(jnp.array(mj_data.qvel), normalize=True)
 
+        foot_switches = cal.get_foot_switches(
+            mj_data, threshold=training_cfg.env.foot_switch_threshold
+        )
+
         obs = ObsLayout.build_obs(
             gravity=jnp.array(gravity),
             angvel=angvel,
             linvel=linvel,
             joint_pos=joint_pos,
             joint_vel=joint_vel,
+            foot_switches=foot_switches,
             action=jnp.array(prev_action_in),
             velocity_cmd=jnp.array(velocity_cmd),
         )

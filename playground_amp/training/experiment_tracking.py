@@ -115,6 +115,10 @@ ENV_METRICS_KEYS = {
     "debug/lateral_vel": "Debug: lateral velocity",
     "debug/left_force": "Left foot contact force",
     "debug/right_force": "Right foot contact force",
+    "debug/left_toe_switch": "Left toe switch state",
+    "debug/left_heel_switch": "Left heel switch state",
+    "debug/right_toe_switch": "Right toe switch state",
+    "debug/right_heel_switch": "Right heel switch state",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -137,6 +141,10 @@ def get_initial_env_metrics(
     roll: float = 0.0,
     left_force: float = 0.0,
     right_force: float = 0.0,
+    left_toe_switch: float = 0.0,
+    left_heel_switch: float = 0.0,
+    right_toe_switch: float = 0.0,
+    right_heel_switch: float = 0.0,
     forward_reward: float = 0.0,
     healthy_reward: float = 0.0,
     action_rate: float = 0.0,
@@ -154,6 +162,10 @@ def get_initial_env_metrics(
         roll: Initial roll angle
         left_force: Initial left foot force
         right_force: Initial right foot force
+        left_toe_switch: Initial left toe switch state
+        left_heel_switch: Initial left heel switch state
+        right_toe_switch: Initial right toe switch state
+        right_heel_switch: Initial right heel switch state
         forward_reward: Initial forward reward (usually 0 at reset)
         healthy_reward: Initial healthy reward
         action_rate: Initial action rate penalty (0 at reset)
@@ -198,6 +210,10 @@ def get_initial_env_metrics(
         "debug/lateral_vel": 0.0,
         "debug/left_force": left_force,
         "debug/right_force": right_force,
+        "debug/left_toe_switch": left_toe_switch,
+        "debug/left_heel_switch": left_heel_switch,
+        "debug/right_toe_switch": right_toe_switch,
+        "debug/right_heel_switch": right_heel_switch,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -221,6 +237,10 @@ def get_initial_env_metrics_jax(
     roll,
     left_force,
     right_force,
+    left_toe_switch,
+    left_heel_switch,
+    right_toe_switch,
+    right_heel_switch,
     forward_reward,
     healthy_reward,
     action_rate,
@@ -274,6 +294,10 @@ def get_initial_env_metrics_jax(
         "debug/lateral_vel": jp.zeros(()),
         "debug/left_force": _scalar(left_force),
         "debug/right_force": _scalar(right_force),
+        "debug/left_toe_switch": _scalar(left_toe_switch),
+        "debug/left_heel_switch": _scalar(left_heel_switch),
+        "debug/right_toe_switch": _scalar(right_toe_switch),
+        "debug/right_heel_switch": _scalar(right_heel_switch),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),

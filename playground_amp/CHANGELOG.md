@@ -5,6 +5,24 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.11.3] - 2025-12-31: Foot Switches + Standing Retrain Plan
+
+### Plan
+1. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp --verify`
+2. `uv run python playground_amp/training/visualize_policy.py --headless --num-episodes 1 --config playground_amp/configs/ppo_standing.yaml --checkpoint <path>`
+3. Resume walking with new standing checkpoint:
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume <new_standing_checkpoint>`
+
+### Config Updates
+- `min_height`: 0.20 → 0.40 (terminate squat posture)
+- `reward_weights.base_height`: 1.0 → 3.0 (enforce upright height)
+- `reward_weights.orientation`: -1.0 → -2.0 (stricter tilt penalty)
+- Added standing push disturbances (random lateral force, short duration)
+- Switched foot contact signals to boolean foot switches (toe/heel), obs dim now 39
+- Removed `*_touch` sites/sensors from `assets/wildrobot.xml`; switch signal derived from geom forces
+
+---
+
 ## [v0.11.2] - 2025-12-31: Upright Standing Retrain Plan
 
 ### Plan

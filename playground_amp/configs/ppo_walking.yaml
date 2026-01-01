@@ -54,6 +54,7 @@ env:
 
   # Contacts
   contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.7
