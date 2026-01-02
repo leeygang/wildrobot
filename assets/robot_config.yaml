@@ -1,5 +1,5 @@
 robot_name: WildRobotDev
-generated_from: wildrobot.xml
+generated_from: /home/leeygang/projects/wildrobot/assets/wildrobot.xml
 root_spec:
   body: waist
   joint: waist_freejoint
@@ -14,8 +14,8 @@ actuated_joint_specs:
 - name: left_hip_pitch
   type: position
   range:
-  - -0.087266
-  - 1.570796
+  - -0.087268
+  - 1.570794
   symmetry_pair: right_hip_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
@@ -38,7 +38,7 @@ actuated_joint_specs:
 - name: left_ankle_pitch
   type: position
   range:
-  - -0.785398
+  - -0.698132
   - 0.785398
   symmetry_pair: right_ankle_pitch
   mirror_sign: 1.0
@@ -46,7 +46,7 @@ actuated_joint_specs:
 - name: right_hip_pitch
   type: position
   range:
-  - -1.570796
+  - -1.570797
   - 0.087266
   symmetry_pair: left_hip_pitch
   mirror_sign: -1.0
@@ -70,7 +70,7 @@ actuated_joint_specs:
 - name: right_ankle_pitch
   type: position
   range:
-  - -0.785398
+  - -0.698132
   - 0.785398
   symmetry_pair: left_ankle_pitch
   mirror_sign: 1.0

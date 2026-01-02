@@ -31,21 +31,31 @@ def add_collision_names(xml_file):
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
-    # Find left_foot body and name collision geoms
-    # foot_btm_front = toe (front of foot)
-    # foot_btm_back = heel (back of foot)
-    for body in root.findall(".//body[@name='left_foot']"):
-        for geom in body.findall("geom[@mesh='foot_btm_front'][@class='collision']"):
-            geom.set("name", "left_toe")
-        for geom in body.findall("geom[@mesh='foot_btm_back'][@class='collision']"):
-            geom.set("name", "left_heel")
 
-    # Same for right foot
-    for body in root.findall(".//body[@name='right_foot']"):
-        for geom in body.findall("geom[@mesh='foot_btm_front'][@class='collision']"):
-            geom.set("name", "right_toe")
-        for geom in body.findall("geom[@mesh='foot_btm_back'][@class='collision']"):
-            geom.set("name", "right_heel")
+    # v0.11.x: Some newer exports use generic foot body names ("foot", "foot_2").
+    # Normalize to stable names used by training + robot_config.yaml.
+    body_names = {b.get("name") for b in root.findall(".//body") if b.get("name")}
+    if "left_foot" not in body_names and "foot" in body_names:
+        for body in root.findall(".//body[@name='foot']"):
+            body.set("name", "left_foot")
+    if "right_foot" not in body_names and "foot_2" in body_names:
+        for body in root.findall(".//body[@name='foot_2']"):
+            body.set("name", "right_foot")
+
+    # Map mesh names to semantic collision geom names per foot side.
+    # Use the simplified shared meshes from newer exports: toe_btm / heel_btm
+    mesh_to_name = {
+        "toe_btm": {"left": "left_toe", "right": "right_toe"},
+        "heel_btm": {"left": "left_heel", "right": "right_heel"},
+    }
+
+    for side in ("left", "right"):
+        body_name = f"{side}_foot"
+        for mesh, names in mesh_to_name.items():
+            desired = names[side]
+            xpath = f".//body[@name='{body_name}']/geom[@mesh='{mesh}'][@class='collision']"
+            for geom in root.findall(xpath):
+                geom.set("name", desired)
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
@@ -583,8 +593,10 @@ def generate_robot_config(
 
 
 def main() -> None:
-    xml_file = "wildrobot.xml"
-    print("start post process...")
+    # Allow optional XML path via CLI, otherwise default to the XML next to this script.
+    default_xml = Path(__file__).parent / "wildrobot.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else str(default_xml)
+    print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
     add_collision_names(xml_file)
     ensure_root_body_pose(xml_file)
