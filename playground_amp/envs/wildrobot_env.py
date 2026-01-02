@@ -644,10 +644,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Action filtering (low-pass) - alpha=0 means no filtering (formula handles it)
         alpha = self._config.env.action_filter_alpha
-        raw_action_abs = jp.abs(action)
-        raw_action_abs_max = jp.max(raw_action_abs)
-        raw_action_sat_frac = jp.mean((raw_action_abs > 0.95).astype(jp.float32))
-        filtered_action = alpha * prev_action + (1.0 - alpha) * action
+
+        raw_action = action
+        filtered_action = alpha * prev_action + (1.0 - alpha) * raw_action
 
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
@@ -684,6 +683,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward, reward_components = self._get_reward(
             data,
             filtered_action,
+            raw_action,
             prev_action,
             velocity_cmd,
             prev_left_foot_pos,
@@ -928,6 +928,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         data: mjx.Data,
         action: jax.Array,
+        raw_action: jax.Array,
         prev_action: jax.Array,
         velocity_cmd: jax.Array,
         prev_left_foot_pos: Optional[jax.Array] = None,
@@ -1010,6 +1011,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         action_abs = jp.abs(action)
         action_abs_max = jp.max(action_abs)
         action_sat_frac = jp.mean((action_abs > 0.95).astype(jp.float32))
+        raw_action_abs = jp.abs(raw_action)
+        raw_action_abs_max = jp.max(raw_action_abs)
+        raw_action_sat_frac = jp.mean((raw_action_abs > 0.95).astype(jp.float32))
 
         # 9. Joint velocity penalty (efficiency) - use normalized for consistent scaling
         joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True)
