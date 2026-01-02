@@ -59,6 +59,15 @@ env:
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.7
 
+  # Disturbance pushes (robustness) - start disabled for initial gait learning
+  push_enabled: false
+  push_start_step_min: 40
+  push_start_step_max: 250
+  push_duration_steps: 6
+  push_force_min: 1.0
+  push_force_max: 3.0
+  push_body: waist
+
 # =============================================================================
 # PPO Algorithm (task learning)
 # =============================================================================

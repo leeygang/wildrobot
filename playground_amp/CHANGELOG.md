@@ -3,6 +3,23 @@
 
 This changelog tracks capability changes, configuration updates, and training results for the WildRobot AMP training pipeline.
 
+**Ordering:** Newest releases first (reverse chronological order).
+
+---
+
+## [v0.11.4] - 2026-01-01: Walking Conservative Warm Start (v0.11.4)
+
+### Plan
+1. Validate assets + config:
+   `uv run python scripts/validate_training_setup.py`
+2. Walking warm-start (conservative range):
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --verify --resume playground_amp/checkpoints/ppo_standing_v00113_final.pkl`
+3. Full run:
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --resume playground_amp/checkpoints/ppo_standing_v00113_final.pkl`
+
+### Base Checkpoint
+- `playground_amp/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
+
 ---
 
 ## [v0.11.3] - 2025-12-31: Foot Switches + Standing Retrain Plan
@@ -21,6 +38,15 @@ This changelog tracks capability changes, configuration updates, and training re
 - Switched foot contact signals to boolean foot switches (toe/heel), obs dim now 39
 - Removed `*_touch` sites/sensors from `assets/wildrobot.xml`; switch signal derived from geom forces
 - Added height target shaping + stance width penalty to discourage squat posture
+
+### Results (Standing PPO, v0.11.3)
+- Run: `playground_amp/wandb/run-20260101_182859-2wsk4xt7`
+- Resumed from: `checkpoint_260_34078720.pkl` (reward=518.32, ep_len=498)
+- Best checkpoint: `playground_amp/checkpoints/ppo_standing_v00113_20260101_182901-2wsk4xt7/checkpoint_310_40632320.pkl`
+- Final checkpoint: `playground_amp/checkpoints/ppo_standing_v00113_20260101_182901-2wsk4xt7/checkpoint_360_47185920.pkl`
+- Summary (best @310): reward=574.31, ep_len=500, height=0.454m, vel=-0.02m/s (cmd=0.00), vel_err=0.076, torque~84.9%
+- Terminations: 0% across all categories at best window; stable 500-step episodes
+- Notes: Ready to warm-start walking with conservative velocity range
 
 ---
 
