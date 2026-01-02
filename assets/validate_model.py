@@ -304,11 +304,38 @@ def validate_model(
                 f"config=({cmin:.6f},{cmax:.6f})"
             )
 
+    print("Checks passed:")
+    print("  - scene include ↔ robot_config.generated_from")
+    print("  - toe/heel collision symmetry + mesh_pos sanity")
+    print("  - left/right body mass + inertia symmetry")
+    print("  - default reset contact sanity")
+    print("  - actuated joint range parity")
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate model symmetry and contact setup.")
-    parser.add_argument("--robot-config", type=Path, default=Path("assets/robot_config.yaml"))
-    parser.add_argument("--scene-xml", type=Path, default=Path("assets/scene_flat_terrain.xml"))
+    parser = argparse.ArgumentParser(
+        description="Validate model symmetry and asset/config consistency.",
+        epilog=(
+            "Examples:\n"
+            "  uv run python assets/validate_model.py\n"
+            "  uv run python assets/validate_model.py --scene-xml assets/scene_flat_terrain.xml\n"
+            "  uv run python assets/validate_model.py --robot-config assets/robot_config.yaml\n"
+            "  uv run python assets/validate_model.py --robot-xml assets/wildrobot.xml\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--robot-config",
+        type=Path,
+        default=Path("assets/robot_config.yaml"),
+        help="Path to generated robot_config.yaml.",
+    )
+    parser.add_argument(
+        "--scene-xml",
+        type=Path,
+        default=Path("assets/scene_flat_terrain.xml"),
+        help="Scene XML used for training (must include the robot XML).",
+    )
     parser.add_argument(
         "--robot-xml",
         type=Path,
