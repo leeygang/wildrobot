@@ -319,6 +319,39 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Height value at termination",
     ),
+    # =========================================================================
+    # v0.11.4+: Failure mode debugging (append-only)
+    # =========================================================================
+    MetricSpec(
+        name="debug/pitch_rate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Body pitch rate (heading-local angvel y)",
+    ),
+    MetricSpec(
+        name="debug/action_abs_max",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Max |action| across actuators (post-filter)",
+    ),
+    MetricSpec(
+        name="debug/action_sat_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Fraction of actuators with |action|>0.95 (post-filter)",
+    ),
+    MetricSpec(
+        name="debug/raw_action_abs_max",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Max |action| across actuators (pre-filter)",
+    ),
+    MetricSpec(
+        name="debug/raw_action_sat_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Fraction of actuators with |action|>0.95 (pre-filter)",
+    ),
 ]
 
 # =============================================================================

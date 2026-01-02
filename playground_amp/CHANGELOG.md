@@ -20,6 +20,17 @@ This changelog tracks capability changes, configuration updates, and training re
 ### Base Checkpoint
 - `playground_amp/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
 
+### Results (Walking PPO Conservative, v0.11.4)
+- Run: `playground_amp/wandb/run-20260101_215853-5e15gkam`
+- Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260101_215854-5e15gkam/`
+- Best checkpoint (reward): `checkpoint_430_56360960.pkl` (reward=440.31, vel=0.31 @ cmd=0.35, ep_len=466.4)
+- Topline (final @610): reward=431.74, ep_len=474.6, success=88.9%, vel=0.32 @ cmd=0.35, vel_err=0.079, max_torque=0.869
+- Notes: Good conservative walking found; next run should continue v0.11.4 (no config changes) from best checkpoint to push success rate toward 95%+
+
+### Next
+- Continue v0.11.4 from best:
+  `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --resume playground_amp/checkpoints/ppo_walking_conservative_v00114_20260101_215854-5e15gkam/checkpoint_430_56360960.pkl`
+
 ---
 
 ## [v0.11.3] - 2025-12-31: Foot Switches + Standing Retrain Plan

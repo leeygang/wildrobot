@@ -123,6 +123,11 @@ ENV_METRICS_KEYS = {
     "debug/left_heel_switch": "Left heel switch state",
     "debug/right_toe_switch": "Right toe switch state",
     "debug/right_heel_switch": "Right heel switch state",
+    "debug/pitch_rate": "Root pitch rate (heading-local angvel y)",
+    "debug/action_abs_max": "Max |action| across actuators (post-filter)",
+    "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter)",
+    "debug/raw_action_abs_max": "Max |action| across actuators (pre-filter)",
+    "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter)",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -220,6 +225,11 @@ def get_initial_env_metrics(
         "debug/left_heel_switch": left_heel_switch,
         "debug/right_toe_switch": right_toe_switch,
         "debug/right_heel_switch": right_heel_switch,
+        "debug/pitch_rate": 0.0,
+        "debug/action_abs_max": 0.0,
+        "debug/action_sat_frac": 0.0,
+        "debug/raw_action_abs_max": 0.0,
+        "debug/raw_action_sat_frac": 0.0,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -306,6 +316,11 @@ def get_initial_env_metrics_jax(
         "debug/left_heel_switch": _scalar(left_heel_switch),
         "debug/right_toe_switch": _scalar(right_toe_switch),
         "debug/right_heel_switch": _scalar(right_heel_switch),
+        "debug/pitch_rate": jp.zeros(()),
+        "debug/action_abs_max": jp.zeros(()),
+        "debug/action_sat_frac": jp.zeros(()),
+        "debug/raw_action_abs_max": jp.zeros(()),
+        "debug/raw_action_sat_frac": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),
@@ -877,6 +892,15 @@ def build_wandb_metrics(
             wandb_metrics[term] = float(metrics.env_metrics[term])
         else:
             missing_terms.append(term)
+
+    # Log selected env debug + termination diagnostics for failure-mode analysis.
+    # Keep this lightweight (scalars only).
+    for key, value in metrics.env_metrics.items():
+        if key.startswith("debug/") or key.startswith("term_"):
+            try:
+                wandb_metrics[key] = float(value)
+            except (TypeError, ValueError):
+                continue
 
     return wandb_metrics, missing_terms
 

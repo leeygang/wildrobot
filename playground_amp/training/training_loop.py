@@ -594,6 +594,118 @@ def make_train_iteration_fn(
         term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
 
+        # v0.11.4: Failure-mode debug metrics (condition on pitch terminations)
+        def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+            denom = jnp.sum(mask)
+            return jnp.where(denom > 0, jnp.sum(values * mask) / denom, 0.0)
+
+        def _masked_max(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+            masked = jnp.where(mask > 0, values, -jnp.inf)
+            m = jnp.max(masked)
+            return jnp.where(jnp.isfinite(m), m, 0.0)
+
+        pitch_term_mask = trajectory.metrics_vec[..., term_idx_pitch]
+        pitch_done_mask = trajectory.dones * pitch_term_mask
+        pitch_done_count = jnp.sum(pitch_done_mask)
+
+        pitch_val = trajectory.metrics_vec[..., METRIC_INDEX["term/pitch_val"]]
+        pitch_abs = jnp.abs(pitch_val)
+        pitch_rate_abs = jnp.abs(
+            trajectory.metrics_vec[..., METRIC_INDEX["debug/pitch_rate"]]
+        )
+        action_abs_max = trajectory.metrics_vec[..., METRIC_INDEX["debug/action_abs_max"]]
+        action_sat_frac = trajectory.metrics_vec[..., METRIC_INDEX["debug/action_sat_frac"]]
+        raw_action_abs_max = trajectory.metrics_vec[
+            ..., METRIC_INDEX["debug/raw_action_abs_max"]
+        ]
+        raw_action_sat_frac = trajectory.metrics_vec[
+            ..., METRIC_INDEX["debug/raw_action_sat_frac"]
+        ]
+        max_torque_ratio = trajectory.metrics_vec[..., METRIC_INDEX["tracking/max_torque"]]
+
+        agg_metrics["debug/pitch_term/count"] = pitch_done_count
+        agg_metrics["debug/pitch_term/pitch_abs_mean"] = _masked_mean(
+            pitch_abs, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/pitch_abs_max"] = _masked_max(
+            pitch_abs, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/pitch_rate_abs_mean"] = _masked_mean(
+            pitch_rate_abs, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/pitch_rate_abs_max"] = _masked_max(
+            pitch_rate_abs, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/max_torque_mean"] = _masked_mean(
+            max_torque_ratio, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/max_torque_max"] = _masked_max(
+            max_torque_ratio, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/action_abs_max_mean"] = _masked_mean(
+            action_abs_max, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/action_abs_max_max"] = _masked_max(
+            action_abs_max, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/action_sat_frac_mean"] = _masked_mean(
+            action_sat_frac, pitch_done_mask
+        )
+
+        # Contact state at pitch termination (toe/heel switches averaged over pitch-done steps)
+        lt = trajectory.metrics_vec[..., METRIC_INDEX["debug/left_toe_switch"]]
+        lh = trajectory.metrics_vec[..., METRIC_INDEX["debug/left_heel_switch"]]
+        rt = trajectory.metrics_vec[..., METRIC_INDEX["debug/right_toe_switch"]]
+        rh = trajectory.metrics_vec[..., METRIC_INDEX["debug/right_heel_switch"]]
+        agg_metrics["debug/pitch_term/left_toe_switch_mean"] = _masked_mean(
+            lt, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/left_heel_switch_mean"] = _masked_mean(
+            lh, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/right_toe_switch_mean"] = _masked_mean(
+            rt, pitch_done_mask
+        )
+        agg_metrics["debug/pitch_term/right_heel_switch_mean"] = _masked_mean(
+            rh, pitch_done_mask
+        )
+
+        # v0.11.4: "last-step" pitch termination metrics (no dones mask)
+        # These reflect the step where term/pitch is true (pre-reset snapshot).
+        agg_metrics["debug/pitch_term/last_pitch_abs"] = _masked_max(
+            pitch_abs, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_pitch_rate_abs"] = _masked_max(
+            pitch_rate_abs, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_max_torque"] = _masked_max(
+            max_torque_ratio, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_action_abs_max"] = _masked_max(
+            action_abs_max, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_action_sat_frac"] = _masked_max(
+            action_sat_frac, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_raw_action_abs_max"] = _masked_max(
+            raw_action_abs_max, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_raw_action_sat_frac"] = _masked_max(
+            raw_action_sat_frac, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_left_toe_switch"] = _masked_max(
+            lt, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_left_heel_switch"] = _masked_max(
+            lh, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_right_toe_switch"] = _masked_max(
+            rt, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_right_heel_switch"] = _masked_max(
+            rh, pitch_term_mask
+        )
+
         # v0.10.4: Enrich agg_metrics with computed episode-level metrics
         # This replaces individual field unpacking with a single dict
         agg_metrics["episode_length"] = episode_length

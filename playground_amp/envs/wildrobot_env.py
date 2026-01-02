@@ -644,6 +644,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Action filtering (low-pass) - alpha=0 means no filtering (formula handles it)
         alpha = self._config.env.action_filter_alpha
+        raw_action_abs = jp.abs(action)
+        raw_action_abs_max = jp.max(raw_action_abs)
+        raw_action_sat_frac = jp.mean((raw_action_abs > 0.95).astype(jp.float32))
         filtered_action = alpha * prev_action + (1.0 - alpha) * action
 
         # =====================================================================
@@ -978,9 +981,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # 5. Angular velocity penalty (reduce body rotation)
         # Note: Using cached root_vel (LOCAL frame) - reuse from above
-        _, _, angvel_z = root_vel.angular_xyz
+        angvel_x, angvel_y, angvel_z = root_vel.angular_xyz
         # Only penalize yaw rate (z-axis rotation), not pitch/roll which are handled by orientation penalty
         angvel_penalty = jp.square(angvel_z)
+        pitch_rate = angvel_y
 
         # =====================================================================
         # EFFORT REWARDS (Tier 1 - critical for sim2real)
@@ -1003,6 +1007,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 8. Action rate penalty (smoothness)
         action_diff = action - prev_action
         action_rate_penalty = jp.sum(jp.square(action_diff))
+        action_abs = jp.abs(action)
+        action_abs_max = jp.max(action_abs)
+        action_sat_frac = jp.mean((action_abs > 0.95).astype(jp.float32))
 
         # 9. Joint velocity penalty (efficiency) - use normalized for consistent scaling
         joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True)
@@ -1218,6 +1225,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/left_heel_switch": foot_switches[1],
             "debug/right_toe_switch": foot_switches[2],
             "debug/right_heel_switch": foot_switches[3],
+            "debug/pitch_rate": pitch_rate,
+            "debug/action_abs_max": action_abs_max,
+            "debug/action_sat_frac": action_sat_frac,
+            "debug/raw_action_abs_max": raw_action_abs_max,
+            "debug/raw_action_sat_frac": raw_action_sat_frac,
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)
