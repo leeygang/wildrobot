@@ -60,6 +60,123 @@ def add_collision_names(xml_file):
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
 
+def validate_foot_geoms(xml_file: str) -> None:
+    """Validate left/right toe/heel collision geoms exist and are symmetric.
+
+    This catches common export issues where mirrored parts end up with large
+    baked-in mesh offsets (e.g., one side having a huge mesh_pos), which can
+    look visually correct but produce asymmetric contacts and drift.
+
+    Validation is best-effort:
+    - Always performs XML-level presence checks.
+    - If `mujoco` is importable, compiles the model and validates poses/friction
+      and rejects pathological mesh reference offsets (mesh_pos).
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    body_names = {b.get("name") for b in root.findall(".//body") if b.get("name")}
+    missing_bodies = [b for b in ("left_foot", "right_foot") if b not in body_names]
+    if missing_bodies:
+        raise ValueError(f"Missing required foot bodies in XML: {missing_bodies}")
+
+    geom_names = {g.get("name") for g in root.findall(".//geom") if g.get("name")}
+    required_geoms = {"left_toe", "left_heel", "right_toe", "right_heel"}
+    missing_geoms = sorted(required_geoms - geom_names)
+    if missing_geoms:
+        raise ValueError(
+            f"Missing required named collision geoms in XML: {missing_geoms}. "
+            "Did add_collision_names() run?"
+        )
+
+    try:
+        import mujoco
+        import numpy as np
+    except Exception as exc:
+        print(
+            f"Warning: skipping compiled foot geom validation (mujoco import failed: {exc})."
+        )
+        print("  Tip: run via repo env: `uv run python assets/post_process.py`")
+        return
+
+    model = mujoco.MjModel.from_xml_path(str(Path(xml_file).resolve()))
+
+    def _id(obj_type, name: str) -> int:
+        return mujoco.mj_name2id(model, obj_type, name)
+
+    left_body = _id(mujoco.mjtObj.mjOBJ_BODY, "left_foot")
+    right_body = _id(mujoco.mjtObj.mjOBJ_BODY, "right_foot")
+    if left_body < 0 or right_body < 0:
+        raise ValueError("Compiled model missing left_foot/right_foot bodies.")
+
+    def _geom_info(name: str):
+        gid = _id(mujoco.mjtObj.mjOBJ_GEOM, name)
+        if gid < 0:
+            raise ValueError(f"Compiled model missing geom '{name}'.")
+        return {
+            "gid": gid,
+            "body": int(model.geom_bodyid[gid]),
+            "pos": model.geom_pos[gid].copy(),
+            "quat": model.geom_quat[gid].copy(),
+            "friction": model.geom_friction[gid].copy(),
+            "size": model.geom_size[gid].copy(),
+            "type": int(model.geom_type[gid]),
+            "dataid": int(model.geom_dataid[gid]),
+        }
+
+    lt = _geom_info("left_toe")
+    lh = _geom_info("left_heel")
+    rt = _geom_info("right_toe")
+    rh = _geom_info("right_heel")
+
+    if lt["body"] != left_body or lh["body"] != left_body:
+        raise ValueError(
+            f"Left toe/heel geoms not under left_foot body (got bodies {lt['body']}, {lh['body']})."
+        )
+    if rt["body"] != right_body or rh["body"] != right_body:
+        raise ValueError(
+            f"Right toe/heel geoms not under right_foot body (got bodies {rt['body']}, {rh['body']})."
+        )
+
+    tol = 1e-4
+    for key, a, b in (
+        ("toe geom_pos", lt["pos"], rt["pos"]),
+        ("heel geom_pos", lh["pos"], rh["pos"]),
+        ("toe geom_quat", lt["quat"], rt["quat"]),
+        ("heel geom_quat", lh["quat"], rh["quat"]),
+        ("toe geom_size", lt["size"], rt["size"]),
+        ("heel geom_size", lh["size"], rh["size"]),
+        ("toe geom_friction", lt["friction"], rt["friction"]),
+        ("heel geom_friction", lh["friction"], rh["friction"]),
+    ):
+        if not np.allclose(a, b, atol=tol, rtol=0.0):
+            raise ValueError(f"Foot symmetry check failed for {key}: {a} vs {b}")
+
+    # Mesh reference offsets: large values indicate bad part-local origins.
+    mesh_pos = getattr(model, "mesh_pos", None)
+    if mesh_pos is not None:
+        def _mesh_pos_for_geom(info):
+            if info["type"] != int(mujoco.mjtGeom.mjGEOM_MESH):
+                return None
+            mesh_id = info["dataid"]
+            if mesh_id < 0:
+                return None
+            return mesh_pos[mesh_id].copy()
+
+        mesh_origin_max = 0.10  # meters; toe/heel offsets are ~0.06
+        for label, mp in (
+            ("left_toe mesh_pos", _mesh_pos_for_geom(lt)),
+            ("left_heel mesh_pos", _mesh_pos_for_geom(lh)),
+            ("right_toe mesh_pos", _mesh_pos_for_geom(rt)),
+            ("right_heel mesh_pos", _mesh_pos_for_geom(rh)),
+        ):
+            if mp is None:
+                continue
+            if float(np.max(np.abs(mp))) > mesh_origin_max:
+                raise ValueError(f"{label} too large (bad mesh origin?): {mp}")
+
+    print("Foot geom validation OK")
+
 
 
 
@@ -599,6 +716,7 @@ def main() -> None:
     print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
     add_collision_names(xml_file)
+    validate_foot_geoms(xml_file)
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
     merge_default_blocks(xml_file)
@@ -608,6 +726,33 @@ def main() -> None:
     # Generate robot configuration from XML
     # This config is used by all Python training code
     generate_robot_config(xml_file, "robot_config.yaml")
+
+    # Optional deeper validation (requires MuJoCo + repo imports). This runs best under:
+    #   uv run python assets/post_process.py assets/wildrobot.xml
+    try:
+        import mujoco  # noqa: F401
+
+        # Import validator from assets/ (keeps model tooling near assets).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from validate_model import Thresholds, validate_model
+
+        validate_model(
+            robot_config_yaml=Path(__file__).parent / "robot_config.yaml",
+            scene_xml=Path(__file__).parent / "scene_flat_terrain.xml",
+            robot_xml=Path(xml_file),
+            thresholds=Thresholds(
+                pos_tol=1e-4,
+                quat_tol=1e-4,
+                friction_tol=1e-4,
+                size_tol=1e-4,
+                mass_rel_tol=0.05,
+                inertia_rel_tol=0.10,
+                mesh_pos_abs_max=0.10,
+                contact_penetration_tol=0.005,
+            ),
+        )
+    except Exception as exc:
+        print(f"Warning: skipping validate_model.py ({exc})")
 
     print("Post process completed")
 
