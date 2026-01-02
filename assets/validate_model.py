@@ -214,6 +214,86 @@ def _validate_mass_inertia_symmetry(model, thresholds: Thresholds) -> None:
             raise ValueError(f"Body inertia mismatch: {name}={i_left} vs {pair}={i_right}")
 
 
+def _validate_left_right_named_collision_geoms(model, thresholds: Thresholds) -> None:
+    """Validate left_* / right_* named collision geoms have matching parameters.
+
+    We intentionally do NOT enforce mirrored positions/orientations here, since
+    those depend on body frame conventions. Instead we enforce that physical
+    contact-relevant parameters match (type/size/friction/solref/solimp/condim).
+    """
+    import mujoco
+    import numpy as np
+
+    def geom_id(name: str) -> int:
+        return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+
+    # Collect all named geoms with left_/right_ prefix.
+    left_names = []
+    right_names = []
+    for gid in range(model.ngeom):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid)
+        if not name:
+            continue
+        if name.startswith("left_"):
+            left_names.append(name)
+        elif name.startswith("right_"):
+            right_names.append(name)
+
+    # Only validate collision geoms (group=3 in this project).
+    def is_collision(gid: int) -> bool:
+        return int(model.geom_group[gid]) == 3
+
+    checked = 0
+    for name in left_names:
+        pair = _pair_name(name)
+        if pair is None:
+            continue
+        gid_l = geom_id(name)
+        gid_r = geom_id(pair)
+        if gid_l < 0 or gid_r < 0:
+            continue
+        if not (is_collision(gid_l) and is_collision(gid_r)):
+            continue
+
+        checked += 1
+        # Contact-relevant parameters.
+        if int(model.geom_type[gid_l]) != int(model.geom_type[gid_r]):
+            raise ValueError(f"Collision geom type mismatch: {name} vs {pair}")
+        if not np.allclose(
+            model.geom_size[gid_l], model.geom_size[gid_r], atol=thresholds.size_tol, rtol=0.0
+        ):
+            raise ValueError(
+                f"Collision geom size mismatch: {name}={model.geom_size[gid_l]} vs {pair}={model.geom_size[gid_r]}"
+            )
+        if not np.allclose(
+            model.geom_friction[gid_l],
+            model.geom_friction[gid_r],
+            atol=thresholds.friction_tol,
+            rtol=0.0,
+        ):
+            raise ValueError(
+                f"Collision geom friction mismatch: {name}={model.geom_friction[gid_l]} vs {pair}={model.geom_friction[gid_r]}"
+            )
+        if int(model.geom_condim[gid_l]) != int(model.geom_condim[gid_r]):
+            raise ValueError(
+                f"Collision geom condim mismatch: {name}={int(model.geom_condim[gid_l])} vs {pair}={int(model.geom_condim[gid_r])}"
+            )
+        if not np.allclose(
+            model.geom_solref[gid_l], model.geom_solref[gid_r], atol=1e-6, rtol=0.0
+        ):
+            raise ValueError(
+                f"Collision geom solref mismatch: {name}={model.geom_solref[gid_l]} vs {pair}={model.geom_solref[gid_r]}"
+            )
+        if not np.allclose(
+            model.geom_solimp[gid_l], model.geom_solimp[gid_r], atol=1e-6, rtol=0.0
+        ):
+            raise ValueError(
+                f"Collision geom solimp mismatch: {name}={model.geom_solimp[gid_l]} vs {pair}={model.geom_solimp[gid_r]}"
+            )
+
+    print(f"  - left/right named collision geom parity ({checked} pairs)")
+
+
 def _validate_default_pose_contacts(
     scene_xml: Path,
     robot_config,
@@ -283,6 +363,7 @@ def validate_model(
 
     _validate_toe_heel(model, robot_config, thresholds)
     _validate_mass_inertia_symmetry(model, thresholds)
+    _validate_left_right_named_collision_geoms(model, thresholds)
 
     _validate_default_pose_contacts(scene_xml, robot_config, thresholds)
 
@@ -308,6 +389,7 @@ def validate_model(
     print("  - scene include ↔ robot_config.generated_from")
     print("  - toe/heel collision symmetry + mesh_pos sanity")
     print("  - left/right body mass + inertia symmetry")
+    print("  - left/right named collision geom parity")
     print("  - default reset contact sanity")
     print("  - actuated joint range parity")
 
