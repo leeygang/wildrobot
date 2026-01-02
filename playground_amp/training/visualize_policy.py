@@ -32,6 +32,7 @@ import argparse
 import pickle
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import jax
@@ -61,6 +62,13 @@ DEFAULT_CHECKPOINT_PATH = (
     project_root / "playground_amp" / "checkpoints" / "final_ppo_policy.pkl"
 )
 DEFAULT_ROBOT_CONFIG_PATH = project_root / "assets" / "robot_config.yaml"
+
+
+@dataclass(frozen=True)
+class PushSchedule:
+    start_step: int
+    end_step: int
+    force_xy: np.ndarray  # shape (2,)
 
 
 def parse_args():
@@ -108,6 +116,11 @@ def parse_args():
         "--no-reset-noise",
         action="store_true",
         help="Disable joint noise on reset (less faithful, more repeatable)",
+    )
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Disable push disturbances (overrides config push_enabled)",
     )
     parser.add_argument(
         "--demo",
@@ -501,6 +514,8 @@ def main():
 
         mj_data.qpos[:] = qpos
         mj_data.qvel[:] = qvel
+        if hasattr(mj_data, "xfrc_applied"):
+            mj_data.xfrc_applied[:] = 0.0
         # Use CAL to get default pose ctrl (physical joint angles from keyframe)
         mj_data.ctrl[:] = np.array(cal.get_ctrl_for_default_pose())
         mujoco.mj_forward(mj_model, mj_data)
@@ -569,6 +584,58 @@ def main():
     # Determine mode
     headless = args.headless
     is_macos = sys.platform == "darwin"
+
+    push_enabled = bool(training_cfg.env.push_enabled) and not args.no_push
+    push_body_id = -1
+    if push_enabled:
+        push_body_id = mujoco.mj_name2id(
+            mj_model, mujoco.mjtObj.mjOBJ_BODY, training_cfg.env.push_body
+        )
+        if push_body_id < 0:
+            raise ValueError(
+                f"Push body '{training_cfg.env.push_body}' not found in model."
+            )
+
+    def sample_push_schedule() -> PushSchedule:
+        if not push_enabled:
+            return PushSchedule(
+                start_step=0,
+                end_step=0,
+                force_xy=np.zeros((2,), dtype=np.float32),
+            )
+        start_step = int(
+            rng_env.integers(
+                training_cfg.env.push_start_step_min,
+                training_cfg.env.push_start_step_max + 1,
+            )
+        )
+        force_mag = float(
+            rng_env.uniform(training_cfg.env.push_force_min, training_cfg.env.push_force_max)
+        )
+        angle = float(rng_env.uniform(0.0, 2.0 * np.pi))
+        force_xy = np.array(
+            [force_mag * np.cos(angle), force_mag * np.sin(angle)], dtype=np.float32
+        )
+        end_step = start_step + int(training_cfg.env.push_duration_steps)
+        return PushSchedule(start_step=start_step, end_step=end_step, force_xy=force_xy)
+
+    push_schedule = sample_push_schedule()
+
+    def apply_push(step_count: int) -> bool:
+        if not push_enabled or push_body_id < 0:
+            return False
+        if not hasattr(mj_data, "xfrc_applied"):
+            return False
+        active = (step_count >= push_schedule.start_step) and (
+            step_count < push_schedule.end_step
+        )
+        mj_data.xfrc_applied[:] = 0.0
+        if active:
+            fx, fy = float(push_schedule.force_xy[0]), float(push_schedule.force_xy[1])
+            mj_data.xfrc_applied[push_body_id, :] = np.array(
+                [fx, fy, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+            )
+        return active
 
     # On macOS, we'll try to launch the viewer and catch the error if mjpython isn't being used
     # This is more reliable than trying to detect mjpython in advance
@@ -696,6 +763,7 @@ def main():
 
             # Apply action with filtering and step physics (native MuJoCo - FAST)
             filtered_action = apply_action(mj_data, action, prev_action)
+            push_active = apply_push(step_count)
             step_physics(mj_model, mj_data, n_substeps)
 
             # Update previous action for next observation (use filtered action)
@@ -729,6 +797,13 @@ def main():
                     mj_data, normalize=False
                 )
                 contacts = np.asarray(contacts)
+                push_str = ""
+                if push_enabled:
+                    push_str = (
+                        f", push={'1' if push_active else '0'}"
+                        f", push_f=({float(push_schedule.force_xy[0]):+.2f}, {float(push_schedule.force_xy[1]):+.2f})"
+                        f", push_win=[{push_schedule.start_step},{push_schedule.end_step})"
+                    )
                 print(
                     "  Step "
                     f"{step_count}: vel={forward_vel:.2f}m/s, "
@@ -742,6 +817,7 @@ def main():
                     f"{action_bias[2]:+.3f}, {action_bias[3]:+.3f}), "
                     f"foot_f=({contacts[0]:.1f}, {contacts[1]:.1f}, "
                     f"{contacts[2]:.1f}, {contacts[3]:.1f})"
+                    f"{push_str}"
                 )
 
             # Recording
@@ -770,6 +846,7 @@ def main():
                 if fixed_velocity is None:
                     velocity_cmd = sample_velocity_cmd()
                 reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
+                push_schedule = sample_push_schedule()
                 prev_action = np.zeros(action_dim, dtype=np.float32)
                 prev_root_pos = None
                 prev_root_quat = None
@@ -828,6 +905,7 @@ def main():
 
                     # Apply action with filtering and step physics (native MuJoCo - FAST)
                     filtered_action = apply_action(mj_data, action, prev_action)
+                    push_active = apply_push(step_count)
                     step_physics(mj_model, mj_data, n_substeps)
 
                     # Update previous action for next observation (use filtered action)
@@ -872,6 +950,13 @@ def main():
                             mj_data, normalize=False
                         )
                         contacts = np.asarray(contacts)
+                        push_str = ""
+                        if push_enabled:
+                            push_str = (
+                                f", push={'1' if push_active else '0'}"
+                                f", push_f=({float(push_schedule.force_xy[0]):+.2f}, {float(push_schedule.force_xy[1]):+.2f})"
+                                f", push_win=[{push_schedule.start_step},{push_schedule.end_step})"
+                            )
                         print(
                             "  Step "
                             f"{step_count}: vel={forward_vel:.2f}m/s, "
@@ -885,6 +970,7 @@ def main():
                             f"{action_bias[2]:+.3f}, {action_bias[3]:+.3f}), "
                             f"foot_f=({contacts[0]:.1f}, {contacts[1]:.1f}, "
                             f"{contacts[2]:.1f}, {contacts[3]:.1f})"
+                            f"{push_str}"
                         )
 
                     # Recording (if enabled with viewer)
@@ -922,6 +1008,7 @@ def main():
                         if fixed_velocity is None:
                             velocity_cmd = sample_velocity_cmd()
                         reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
+                        push_schedule = sample_push_schedule()
                         prev_action = np.zeros(action_dim, dtype=np.float32)
                         prev_root_pos = None
                         prev_root_quat = None
