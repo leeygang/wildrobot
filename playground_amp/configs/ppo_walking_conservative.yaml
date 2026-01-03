@@ -46,7 +46,9 @@ env:
   max_episode_steps: 500
 
   # Health / termination
-  target_height: 0.45
+  # Root/waist target height (m). Used by height shaping when reward_weights.height_target > 0.
+  # v0.11.4: Set to standing-height baseline; height shaping is one-sided (no penalty above target).
+  target_height: 0.46
   min_height: 0.20
   max_height: 0.70
   max_pitch: 0.8

@@ -20,6 +20,12 @@ This changelog tracks capability changes, configuration updates, and training re
 ### Base Checkpoint
 - `playground_amp/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
 
+### Plan Update (2026-01-03, v0.11.4 Height Shaping + Posture)
+- Goal: Reduce squat-walk while keeping conservative walking stable.
+- Keep: `env.linvel_mode: sim` (no Sim2Real masking for this run).
+- Change (code): height shaping is now one-sided (no penalty above `env.target_height`) in `playground_amp/envs/wildrobot_env.py`.
+- Change (config): set `env.target_height: 0.46` (waist/root height) in `playground_amp/configs/ppo_walking_conservative.yaml`.
+
 ### Status Update (2026-01-02, Walking PPO Conservative Resume, v0.11.4)
 - Run: `playground_amp/wandb/run-20260102_143302-xmislxx8/` (resumed from iter 590)
 - Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/`

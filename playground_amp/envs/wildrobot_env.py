@@ -1161,10 +1161,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         flight_phase = jp.asarray(flight_phase).reshape(())
 
         # 15. Height target shaping (encourage upright posture)
+        # One-sided shaping: don't penalize being above target height.
         height_target = self._config.env.target_height
         height_sigma = jp.maximum(weights.height_target_sigma, 1e-6)
-        height_error = (height - height_target) / height_sigma
-        height_target_reward = jp.exp(-jp.square(height_error))
+        height_deficit = jp.maximum(height_target - height, 0.0) / height_sigma
+        height_target_reward = jp.exp(-jp.square(height_deficit))
 
         # 16. Stance width penalty (discourage wide split stance)
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
