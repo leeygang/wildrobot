@@ -272,7 +272,6 @@ def _parse_checkpoint_config(config: Dict[str, Any]) -> CheckpointConfig:
     return CheckpointConfig(
         dir=ckpt.get("dir", "playground_amp/checkpoints"),
         interval=ckpt.get("interval", 50),
-        keep_last_n=ckpt.get("keep_last_n", 5),
     )
 
 

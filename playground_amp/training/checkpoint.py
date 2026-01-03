@@ -314,7 +314,6 @@ def save_window_best_checkpoint(
         best_reward: Dict with "value" key tracking global best reward (mutated in place)
         config: Training configuration (TrainingConfig)
         checkpoint_dir: Directory to save checkpoints
-        keep_last_n: Number of recent checkpoints to keep
 
     Returns:
         True if a checkpoint was saved, False if window_best was empty

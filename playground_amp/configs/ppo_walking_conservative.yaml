@@ -224,7 +224,6 @@ reward:
 checkpoints:
   dir: playground_amp/checkpoints
   interval: 50
-  keep_last_n: 5
 
 # =============================================================================
 # Logging
