@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wildrobot-runtime"
+version = "0.1.0"
+description = "Hardware runtime for WildRobot (Raspberry Ubuntu)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "onnxruntime>=1.16",
+  "pyserial>=3.5",
+  "adafruit-blinka>=8.0.0",
+  "adafruit-circuitpython-bno08x",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+wildrobot-run-policy = "wr_runtime.control.run_policy:main"
+
+[tool.setuptools]
+zip-safe = true
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wr_runtime*", "wildrobot_runtime*"]

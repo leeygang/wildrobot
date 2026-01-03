@@ -1,0 +1,1 @@
+"""Small pure-python utilities."""
