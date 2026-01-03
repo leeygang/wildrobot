@@ -300,7 +300,6 @@ class CheckpointConfig(Freezable):
 
     dir: str = "playground_amp/checkpoints"
     interval: int = 50
-    keep_last_n: int = 5
 
 
 # =============================================================================

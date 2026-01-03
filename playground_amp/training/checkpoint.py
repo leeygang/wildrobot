@@ -232,25 +232,14 @@ def get_top_checkpoints_by_reward(checkpoint_dir: str, top_n: int = 3) -> list:
     return checkpoints_with_metrics[:top_n]
 
 
-def manage_checkpoints(checkpoint_dir: str, keep_last_n: int = 5) -> None:
-    """Remove old checkpoints, keeping only the last N.
+def manage_checkpoints(checkpoint_dir: str) -> None:
+    """Placeholder for checkpoint management.
 
-    Args:
-        checkpoint_dir: Directory containing checkpoints
-        keep_last_n: Number of recent checkpoints to keep
+    Pruning of old checkpoints has been removed; this function is a no-op
+    to retain historical checkpoints.
     """
-    if not os.path.exists(checkpoint_dir):
-        return
-
-    # Clean up regular checkpoints (keep last N by iteration)
-    regular_checkpoints = list_checkpoints(checkpoint_dir)
-    if len(regular_checkpoints) > keep_last_n:
-        for iter_num, filename in regular_checkpoints[:-keep_last_n]:
-            filepath = os.path.join(checkpoint_dir, filename)
-            try:
-                os.remove(filepath)
-            except OSError:
-                pass
+    # No-op: keep all checkpoints
+    return
 
 
 def print_top_checkpoints_summary(checkpoint_dir: str, top_n: int = 3) -> None:
@@ -308,7 +297,6 @@ def save_window_best_checkpoint(
     best_reward: Dict[str, float],
     config: Any,
     checkpoint_dir: str,
-    keep_last_n: int = 5,
 ) -> bool:
     """Save the best checkpoint from the current window.
 
@@ -371,6 +359,6 @@ def save_window_best_checkpoint(
     window_best["iteration"] = 0
     window_best["total_steps"] = 0
 
-    manage_checkpoints(checkpoint_dir, keep_last_n)
+    manage_checkpoints(checkpoint_dir)
 
     return True

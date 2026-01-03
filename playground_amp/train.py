@@ -222,12 +222,6 @@ def parse_args():
         default=None,
         help="Save checkpoint every N iterations (default from config)",
     )
-    parser.add_argument(
-        "--keep-checkpoints",
-        type=int,
-        default=None,
-        help="Number of recent checkpoints to keep (default from config)",
-    )
 
     return parser.parse_args()
 
@@ -336,7 +330,6 @@ def start_training(
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
-    keep_checkpoints = training_cfg.checkpoints.keep_last_n
 
     # Checkpoint management state (captured by callback closure)
     best_reward = {"value": float("-inf")}
@@ -406,7 +399,6 @@ def start_training(
                 best_reward=best_reward,
                 config=training_cfg,
                 checkpoint_dir=job_checkpoint_dir,
-                keep_last_n=keep_checkpoints,
             )
 
     # Load checkpoint for resuming if provided
@@ -439,7 +431,6 @@ def start_training(
             best_reward=best_reward,
             config=training_cfg,
             checkpoint_dir=job_checkpoint_dir,
-            keep_last_n=keep_checkpoints,
         )
 
     # Print best checkpoints summary
@@ -488,6 +479,8 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     # Checkpoint parameters
     if args.checkpoint_dir is not None:
         training_cfg.checkpoints.dir = args.checkpoint_dir
+    if args.checkpoint_interval is not None:
+        training_cfg.checkpoints.interval = args.checkpoint_interval
 
     # Validate and set AMP enabled flag
     # --no-amp flag always disables AMP

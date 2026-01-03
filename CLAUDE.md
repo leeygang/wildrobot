@@ -16,10 +16,10 @@ We are implementing Stage 1: Learn stable walking using PPO task rewards only (n
 uv run python scripts/validate_training_setup.py
 
 # Stage 1: PPO-only training
-uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp
+uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml 
 
 # Quick smoke test
-uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp --verify
+uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml  --verify
 ```
 
 **Exit Criteria for Stage 1:**
@@ -44,10 +44,14 @@ The project implements the development roadmap outlined in `mujoco_playground_pl
 ### Core Components
 
 - **assets/**: Robot models (MJCF, USD) and CAD sources
-- **mujoco/**: MuJoCo training pipelines (MJX-accelerated + legacy AMP)
-- **scripts/**: Physics validation, model conversion, visualization utilities
-- **outputs/**: Training checkpoints and logs (gitignored)
-- **data/**: AMP motion datasets (gitignored)
+- **playground_amp/**: training pipelines
+- **playground_amp/wandb/**: training log
+- **playground_amp/checkpoints/**: Training checkpoints 
+- **playground_amp/configs/**: training configs
+- **playground_amp/CHANGELOG.md**: the changelog for training, log training changes, results, reverse chronical order!
+- **playground_amp/docs/learn_first_plan.md**: high level training roadmap and milestone
+- **playground_amp/cal/cal.md**: high level control abstraction layer design
+- **playground_amp/tests/test_plan.md**: test plan doc
 
 ## Key Commands
 

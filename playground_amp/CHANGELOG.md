@@ -20,16 +20,40 @@ This changelog tracks capability changes, configuration updates, and training re
 ### Base Checkpoint
 - `playground_amp/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
 
-### Results (Walking PPO Conservative, v0.11.4)
+### Status Update (2026-01-02, Walking PPO Conservative Resume, v0.11.4)
+- Run: `playground_amp/wandb/run-20260102_143302-xmislxx8/` (resumed from iter 590)
+- Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/`
+- Resumed from: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_083850-lq6k40oo/checkpoint_590_77332480.pkl`
+- Best checkpoint (reward): `checkpoint_640_83886080.pkl` (reward=490.65, vel=0.33 @ cmd=0.35, ep_len=468.5)
+- Topline (final @690): reward=476.46, ep_len=453.6, success=80.3%, vel=0.32 @ cmd=0.35, vel_err=0.057, max_torque=0.783
+- Terminations (final @690): truncated=80.3%, pitch=18.4%, roll=1.3%, height_low/high=0.0%
+
+### Analysis (v0.11.4)
+- Pitch failures are the dominant fall mode; pitch terminations occur near the configured threshold (`max_pitch=0.8`) and often coincide with near-limit actuator usage (`debug/pitch_term/max_torque_max ≈ 1.0`), suggesting insufficient recovery authority during foot strike.
+- Visual validation: gait is not straight (policy slowly turns) and is somewhat squat.
+  - Turning is consistent with using heading-local forward velocity tracking (policy can rotate heading while still earning forward reward); yaw-rate penalty is present but was previously weak.
+  - Squat is consistent with the reward structure: “healthy” is binary, so crouching can be a stable local optimum unless height shaping is enabled.
+
+### Config + Code Updates (post-run)
+- Reduced action lag for faster pitch correction: `env.action_filter_alpha: 0.5 → 0.2` in `playground_amp/configs/ppo_walking_conservative.yaml`
+- Prioritize straight + upright gait:
+  - `reward_weights.angular_velocity: -0.05 → -0.2` (stronger yaw-rate penalty)
+  - `reward_weights.orientation: -0.5 → -1.0` (stronger pitch/roll penalty)
+  - Added `reward_weights.height_target: 0.2` (reduce squat) with `height_target_sigma: 0.05`
+- Fix: resolved `NameError: raw_action_abs_max` by explicitly passing `raw_action` into `_get_reward()` for debug metrics (`playground_amp/envs/wildrobot_env.py`)
+
+### Next (v0.11.4)
+- Resume from best checkpoint with the updated config and run a short eval window:
+  `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --resume playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/checkpoint_640_83886080.pkl --iterations 50 --log-interval 10 --checkpoint-interval 10`
+- Re-visualize the updated policy for turning/squat reduction:
+  `uv run python playground_amp/visualize_policy.py --checkpoint playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/checkpoint_640_83886080.pkl`
+
+### Results (2026-01-01, Walking PPO Conservative Warm Start, v0.11.4)
 - Run: `playground_amp/wandb/run-20260101_215853-5e15gkam`
 - Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260101_215854-5e15gkam/`
 - Best checkpoint (reward): `checkpoint_430_56360960.pkl` (reward=440.31, vel=0.31 @ cmd=0.35, ep_len=466.4)
 - Topline (final @610): reward=431.74, ep_len=474.6, success=88.9%, vel=0.32 @ cmd=0.35, vel_err=0.079, max_torque=0.869
 - Notes: Good conservative walking found; next run should continue v0.11.4 (no config changes) from best checkpoint to push success rate toward 95%+
-
-### Next
-- Continue v0.11.4 from best:
-  `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --resume playground_amp/checkpoints/ppo_walking_conservative_v00114_20260101_215854-5e15gkam/checkpoint_430_56360960.pkl`
 
 ---
 

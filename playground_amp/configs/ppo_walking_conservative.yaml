@@ -62,7 +62,8 @@ env:
   foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
-  action_filter_alpha: 0.5
+  # Lower alpha = less lag, faster pitch correction (but can increase jitter)
+  action_filter_alpha: 0.2
 
   # Disturbance pushes (robustness) - start disabled for initial gait learning
   push_enabled: false
@@ -175,8 +176,10 @@ reward_weights:
   tracking_lin_vel: 4.0   # Conservative velocity incentive
   lateral_velocity: -0.3  # Reduced: allow some lateral motion during walking
   base_height: 0.4        # Stronger stability emphasis
-  orientation: -0.5       # Penalize excessive lean
-  angular_velocity: -0.05 # Smoother angular motion
+  orientation: -1.0       # Stronger upright (reduces pitch/roll failures)
+  angular_velocity: -0.2  # Stronger yaw-rate penalty (reduces turning)
+  height_target: 0.2      # Encourage less-squat posture around env.target_height
+  height_target_sigma: 0.05
 
   # Effort and safety (keep low to not block motion discovery)
   torque: -0.001          # v0.10.5: push away from torque-heavy shuffle
