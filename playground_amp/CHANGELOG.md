@@ -20,13 +20,68 @@ This changelog tracks capability changes, configuration updates, and training re
 ### Base Checkpoint
 - `playground_amp/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
 
-### Plan Update (2026-01-03, v0.11.4 Height Shaping + Posture)
-- Goal: Reduce squat-walk while keeping conservative walking stable.
-- Keep: `env.linvel_mode: sim` (no Sim2Real masking for this run).
-- Change (code): height shaping is now one-sided (no penalty above `env.target_height`) in `playground_amp/envs/wildrobot_env.py`.
-- Change (config): set `env.target_height: 0.46` (waist/root height) in `playground_amp/configs/ppo_walking_conservative.yaml`.
+### Final Results (2026-01-03, run-20260102_220919-xiqcenuh)
+- Run: `playground_amp/wandb/run-20260102_220919-xiqcenuh/`
+- Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_220920-xiqcenuh/`
+- Iterations: 690 → 880 (115M total steps)
 
-### Status Update (2026-01-02, Walking PPO Conservative Resume, v0.11.4)
+| Metric | Value | Target | Status |
+|--------|-------|--------|--------|
+| Episode Length | 474 ± 33 steps | > 400 | ✓ PASS |
+| Forward Velocity | 0.33 ± 0.01 m/s | 0.5-1.0 m/s | ✗ BELOW |
+| Velocity Tracking Error | ~0.03 m/s | < 0.2 m/s | ✓ PASS |
+| Robot Height | 0.458 m | ~0.46 m | ✓ PASS |
+| Fall Rate | ~5% | < 5% | Borderline |
+
+- Best checkpoints (99%+ survival):
+  - `checkpoint_720_94371840.pkl`: reward=498.2, ep_len=500, vel=0.32 m/s
+  - `checkpoint_700_91750400.pkl`: reward=495.8, ep_len=500, vel=0.32 m/s
+- Highest reward: `checkpoint_730_95682560.pkl` (reward=509.2, ep_len=457, vel=0.34 m/s)
+
+### Analysis (Final, 2026-01-03)
+
+**What Worked:**
+1. **Stable Conservative Walking**: Policy learned stable walking at ~0.33 m/s within velocity range [0.1, 0.6].
+2. **Upright Posture**: Height maintained at ~0.458m (target 0.46m), height shaping rewards effective.
+3. **Good Velocity Tracking**: Tracking error ~0.03 m/s when cmd≈0.35 m/s.
+
+**Issues Identified:**
+1. **Velocity Plateau**: Policy converged to ~0.33 m/s, below 0.5 m/s minimum target.
+   - Likely cause: conservative reward balance prioritizes stability over speed.
+2. **Stochastic Dependency**: Policy requires stochastic sampling for reliable deployment:
+   - `--stochastic`: 100% success (5/5 episodes)
+   - `--deterministic`: 20% success (1/5 episodes)
+   - Cause: Policy learned to use exploration noise for balance recovery.
+3. **Yaw Drift**: Episodes that fail often show significant heading drift before falling.
+4. **Visualization Bug Fixed**: `prev_action` was incorrectly initialized to zeros instead of default pose action in `visualize_policy.py`, causing early falls.
+
+### Code Fixes (2026-01-03)
+- Fixed `visualize_policy.py`: Initialize `prev_action` to `cal.ctrl_to_policy_action(cal.get_ctrl_for_default_pose())` instead of zeros.
+- Fixed `cal.py`: Handle both MJX and native MuJoCo data in `_get_geom_contact_force()`.
+
+### Visualization Commands
+```bash
+# Recommended (stochastic - matches training)
+uv run mjpython playground_amp/training/visualize_policy.py \
+  --checkpoint playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_220920-xiqcenuh/checkpoint_720_94371840.pkl \
+  --config playground_amp/configs/ppo_walking_conservative.yaml \
+  --stochastic
+
+# Deterministic (lower success rate)
+uv run mjpython playground_amp/training/visualize_policy.py \
+  --checkpoint playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_220920-xiqcenuh/checkpoint_720_94371840.pkl \
+  --config playground_amp/configs/ppo_walking_conservative.yaml
+```
+
+### Next Steps (v0.11.5)
+1. **Increase velocity**: Boost `tracking_lin_vel` weight or raise `min_velocity` to push past 0.33 m/s plateau.
+2. **Deterministic robustness**: Add entropy regularization or train with periodic deterministic evaluation.
+3. **Reduce yaw drift**: Increase `angular_velocity` penalty or add explicit heading tracking reward.
+4. **Curriculum learning**: Gradually increase velocity target during training.
+
+### Earlier Results (v0.11.4)
+
+#### Status Update (2026-01-02, Walking PPO Conservative Resume)
 - Run: `playground_amp/wandb/run-20260102_143302-xmislxx8/` (resumed from iter 590)
 - Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/`
 - Resumed from: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_083850-lq6k40oo/checkpoint_590_77332480.pkl`
@@ -34,13 +89,13 @@ This changelog tracks capability changes, configuration updates, and training re
 - Topline (final @690): reward=476.46, ep_len=453.6, success=80.3%, vel=0.32 @ cmd=0.35, vel_err=0.057, max_torque=0.783
 - Terminations (final @690): truncated=80.3%, pitch=18.4%, roll=1.3%, height_low/high=0.0%
 
-### Analysis (v0.11.4)
-- Pitch failures are the dominant fall mode; pitch terminations occur near the configured threshold (`max_pitch=0.8`) and often coincide with near-limit actuator usage (`debug/pitch_term/max_torque_max ≈ 1.0`), suggesting insufficient recovery authority during foot strike.
-- Visual validation: gait is not straight (policy slowly turns) and is somewhat squat.
-  - Turning is consistent with using heading-local forward velocity tracking (policy can rotate heading while still earning forward reward); yaw-rate penalty is present but was previously weak.
-  - Squat is consistent with the reward structure: “healthy” is binary, so crouching can be a stable local optimum unless height shaping is enabled.
+#### Plan Update (2026-01-03, Height Shaping + Posture)
+- Goal: Reduce squat-walk while keeping conservative walking stable.
+- Keep: `env.linvel_mode: sim` (no Sim2Real masking for this run).
+- Change (code): height shaping is now one-sided (no penalty above `env.target_height`) in `playground_amp/envs/wildrobot_env.py`.
+- Change (config): set `env.target_height: 0.46` (waist/root height) in `playground_amp/configs/ppo_walking_conservative.yaml`.
 
-### Config + Code Updates (post-run)
+#### Config + Code Updates (post-run)
 - Reduced action lag for faster pitch correction: `env.action_filter_alpha: 0.5 → 0.2` in `playground_amp/configs/ppo_walking_conservative.yaml`
 - Prioritize straight + upright gait:
   - `reward_weights.angular_velocity: -0.05 → -0.2` (stronger yaw-rate penalty)
@@ -48,13 +103,7 @@ This changelog tracks capability changes, configuration updates, and training re
   - Added `reward_weights.height_target: 0.2` (reduce squat) with `height_target_sigma: 0.05`
 - Fix: resolved `NameError: raw_action_abs_max` by explicitly passing `raw_action` into `_get_reward()` for debug metrics (`playground_amp/envs/wildrobot_env.py`)
 
-### Next (v0.11.4)
-- Resume from best checkpoint with the updated config and run a short eval window:
-  `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking_conservative.yaml --no-amp --resume playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/checkpoint_640_83886080.pkl --iterations 50 --log-interval 10 --checkpoint-interval 10`
-- Re-visualize the updated policy for turning/squat reduction:
-  `uv run python playground_amp/visualize_policy.py --checkpoint playground_amp/checkpoints/ppo_walking_conservative_v00114_20260102_143303-xmislxx8/checkpoint_640_83886080.pkl`
-
-### Results (2026-01-01, Walking PPO Conservative Warm Start, v0.11.4)
+#### Results (2026-01-01, Walking PPO Conservative Warm Start)
 - Run: `playground_amp/wandb/run-20260101_215853-5e15gkam`
 - Checkpoints: `playground_amp/checkpoints/ppo_walking_conservative_v00114_20260101_215854-5e15gkam/`
 - Best checkpoint (reward): `checkpoint_430_56360960.pkl` (reward=440.31, vel=0.31 @ cmd=0.35, ep_len=466.4)
