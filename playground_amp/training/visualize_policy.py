@@ -392,8 +392,15 @@ def main():
 
     # Note: Joint addresses now handled by CAL (get_joint_positions/velocities)
 
-    # Track previous action
-    prev_action = np.zeros(action_dim, dtype=np.float32)
+    # Track previous action (training parity).
+    # In training, the initial observation's action slice is the default pose action,
+    # not zeros. Using zeros can destabilize early steps due to action-filter history
+    # and observation mismatch.
+    default_ctrl = np.array(cal.get_ctrl_for_default_pose(), dtype=np.float32)
+    default_policy_action = np.array(
+        cal.ctrl_to_policy_action(jnp.array(default_ctrl)), dtype=np.float32
+    )
+    prev_action = default_policy_action.copy()
 
     def get_observation(
         mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt
@@ -582,6 +589,7 @@ def main():
 
     apply_reset_noise = not args.no_reset_noise and not args.demo
     reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
+    prev_action = default_policy_action.copy()
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
     left_hip_pitch_idx, right_hip_pitch_idx = cal._robot_config.get_hip_pitch_indices()
@@ -860,7 +868,7 @@ def main():
                     velocity_cmd = sample_velocity_cmd()
                 reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                 push_schedule = sample_push_schedule()
-                prev_action = np.zeros(action_dim, dtype=np.float32)
+                prev_action = default_policy_action.copy()
                 prev_root_pos = None
                 prev_root_quat = None
                 episode_start_pos = mj_data.qpos[0:3].copy()
@@ -1022,7 +1030,7 @@ def main():
                             velocity_cmd = sample_velocity_cmd()
                         reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                         push_schedule = sample_push_schedule()
-                        prev_action = np.zeros(action_dim, dtype=np.float32)
+                        prev_action = default_policy_action.copy()
                         prev_root_pos = None
                         prev_root_quat = None
                         episode_start_pos = mj_data.qpos[0:3].copy()
