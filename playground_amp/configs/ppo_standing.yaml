@@ -50,6 +50,11 @@ env:
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.3
 
+  # Sim2Real: real hardware may not have reliable base linvel
+  # Options: sim | zero | dropout (with linvel_dropout_prob)
+  linvel_mode: sim
+  linvel_dropout_prob: 0.0
+
   # Disturbance pushes (standing robustness)
   push_enabled: true
   push_start_step_min: 40

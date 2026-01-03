@@ -472,9 +472,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
         data = mjx.forward(self._mjx_model, data)
 
+        if push_schedule is None:
+            push_schedule = DisturbanceSchedule(
+                start_step=jp.zeros(()),
+                end_step=jp.zeros(()),
+                force_xy=jp.zeros((2,)),
+                rng=jp.zeros((2,)),
+            )
+
+        linvel_obs_mask, push_schedule = self._sample_linvel_obs_mask(push_schedule)
+
         # Build observation using default pose action (matches ctrl at reset)
         default_action = self._cal.ctrl_to_policy_action(self._default_joint_qpos)
-        obs = self._get_obs(data, default_action, velocity_cmd)
+        obs = self._get_obs(
+            data, default_action, velocity_cmd, linvel_obs_mask=linvel_obs_mask
+        )
 
         # Initial reward and done
         reward = jp.zeros(())
@@ -540,14 +552,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False
         )
-        if push_schedule is None:
-            push_schedule = DisturbanceSchedule(
-                start_step=jp.zeros(()),
-                end_step=jp.zeros(()),
-                force_xy=jp.zeros((2,)),
-                rng=jp.zeros((2,)),
-            )
-
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=default_action,
@@ -561,6 +565,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=root_pose.height,  # Actual root height for AMP features
+            linvel_obs_mask=linvel_obs_mask,
             push_schedule=push_schedule,
         )
 
@@ -641,6 +646,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd = wr.velocity_cmd
         step_count = wr.step_count
         prev_action = wr.prev_action
+        linvel_obs_mask = wr.linvel_obs_mask
 
         # Action filtering (low-pass) - alpha=0 means no filtering (formula handles it)
         alpha = self._config.env.action_filter_alpha
@@ -672,7 +678,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_root_pos = wr.prev_root_pos
         prev_root_quat = wr.prev_root_quat
         obs = self._get_obs(
-            data, filtered_action, velocity_cmd, prev_root_pos, prev_root_quat
+            data,
+            filtered_action,
+            velocity_cmd,
+            prev_root_pos,
+            prev_root_quat,
+            linvel_obs_mask=linvel_obs_mask,
         )
 
         # Get previous foot positions for slip computation from WildRobotInfo
@@ -738,6 +749,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
+            linvel_obs_mask=linvel_obs_mask,
             push_schedule=wr.push_schedule,
         )
 
@@ -807,6 +819,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
+            linvel_obs_mask=reset_wr_info.linvel_obs_mask,
             push_schedule=reset_wr_info.push_schedule,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
@@ -850,6 +863,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd: jax.Array,
         prev_root_pos: Optional[jax.Array] = None,
         prev_root_quat: Optional[jax.Array] = None,
+        linvel_obs_mask: Optional[jax.Array] = None,
     ) -> jax.Array:
         """Build observation vector.
 
@@ -905,6 +919,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
             linvel, angvel = vel.linear, vel.angular
 
+        if linvel_obs_mask is not None:
+            linvel = linvel * linvel_obs_mask
+
         # Joint positions and velocities (normalized for NN input)
         joint_pos = self._cal.get_joint_positions(data.qpos, normalize=True).squeeze()
         joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True).squeeze()
@@ -922,6 +939,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
             foot_switches=foot_switches,
             action=action,
             velocity_cmd=velocity_cmd,
+        )
+
+    def _sample_linvel_obs_mask(
+        self, push_schedule: DisturbanceSchedule
+    ) -> tuple[jax.Array, DisturbanceSchedule]:
+        """Sample per-episode linvel observation mask.
+
+        This is a Sim2Real helper: real hardware may not have a reliable base
+        linear velocity estimate, so we can train with linvel forced to zero
+        (or dropped out) while keeping the observation layout unchanged.
+        """
+        mode = self._config.env.linvel_mode
+        if mode == "sim":
+            return jp.ones(()), push_schedule
+        if mode == "zero":
+            return jp.zeros(()), push_schedule
+        if mode == "dropout":
+            p = jp.clip(self._config.env.linvel_dropout_prob, 0.0, 1.0)
+            rng, key = jax.random.split(push_schedule.rng)
+            keep = jax.random.bernoulli(key, p=1.0 - p).astype(jp.float32)
+            updated_schedule = DisturbanceSchedule(
+                start_step=push_schedule.start_step,
+                end_step=push_schedule.end_step,
+                force_xy=push_schedule.force_xy,
+                rng=rng,
+            )
+            return keep.reshape(()), updated_schedule
+        raise ValueError(
+            f"Unknown env.linvel_mode={mode!r} (expected: 'sim', 'zero', 'dropout')"
         )
 
     def _get_reward(

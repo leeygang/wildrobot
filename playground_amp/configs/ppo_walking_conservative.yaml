@@ -65,6 +65,11 @@ env:
   # Lower alpha = less lag, faster pitch correction (but can increase jitter)
   action_filter_alpha: 0.2
 
+  # Sim2Real: real hardware may not have reliable base linvel
+  # Options: sim | zero | dropout (with linvel_dropout_prob)
+  linvel_mode: sim
+  linvel_dropout_prob: 0.0
+
   # Disturbance pushes (robustness) - start disabled for initial gait learning
   push_enabled: false
   push_start_step_min: 40
@@ -198,6 +203,9 @@ reward_weights:
   hip_swing_min: 0.2      # Lower swing threshold
   knee_swing_min: 0.2     # Lower swing threshold
   flight_phase_penalty: -0.02  # Milder hop penalty
+  stance_width_penalty: -0.1   # Penalize overly wide stance (reduces squat-walk)
+  stance_width_target: 0.19    # Target lateral foot separation (m)
+  stance_width_sigma: 0.05     # Width tolerance (m)
 
   # v0.10.4: Velocity shaping parameters
   forward_velocity_scale: 4.0     # Softer tracking for conservative gait
