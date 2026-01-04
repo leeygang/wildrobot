@@ -12,6 +12,7 @@ dependencies = [
     "mujoco[mjpython]>=3.3.7",
     "numpy>=2.3.5",
     "onnx>=1.16.0",
+    "onnxruntime>=1.16.0",
     "onshape-to-robot>=1.7.9",
     "playground",
     "pymeshlab>=2025.7",

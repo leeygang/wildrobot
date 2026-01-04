@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import time
 from pathlib import Path
 
@@ -19,70 +18,20 @@ from ..hardware.foot_switches import FootSwitches
 from ..hardware.hiwonder_actuators import HiwonderBoardActuators
 from ..inference.onnx_policy import OnnxPolicy
 from ..utils.mjcf import load_mjcf_model_info
+from ..utils.frames import angvel_heading_local, gravity_local_from_quat
 from ..validation.startup_validator import validate_runtime_interface
-
-
-def _normalize_quat_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
-    quat = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)
-    n = float(np.linalg.norm(quat))
-    if n <= 1e-8:
-        return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-    return (quat / n).astype(np.float32)
-
-
-def _quat_conjugate(quat_xyzw: np.ndarray) -> np.ndarray:
-    x, y, z, w = [float(v) for v in quat_xyzw]
-    return np.array([-x, -y, -z, w], dtype=np.float32)
-
-
-def _rotate_vec_by_quat(quat_xyzw: np.ndarray, vec: np.ndarray) -> np.ndarray:
-    x, y, z, w = [float(v) for v in quat_xyzw]
-    vx, vy, vz = [float(v) for v in vec]
-
-    tx = 2.0 * (y * vz - z * vy)
-    ty = 2.0 * (z * vx - x * vz)
-    tz = 2.0 * (x * vy - y * vx)
-
-    vpx = vx + w * tx + (y * tz - z * ty)
-    vpy = vy + w * ty + (z * tx - x * tz)
-    vpz = vz + w * tz + (x * ty - y * tx)
-    return np.array([vpx, vpy, vpz], dtype=np.float32)
-
-
-def _quat_xyzw_to_gravity_local(quat_xyzw: np.ndarray) -> np.ndarray:
-    quat = _normalize_quat_xyzw(quat_xyzw)
-    quat_inv = _quat_conjugate(quat)
-    gravity_world = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-    return _rotate_vec_by_quat(quat_inv, gravity_world)
-
-
-def _yaw_from_quat_xyzw(quat_xyzw: np.ndarray) -> float:
-    x, y, z, w = [float(v) for v in quat_xyzw]
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
-def _world_to_heading_local(vec_world: np.ndarray, yaw: float) -> np.ndarray:
-    vx, vy, vz = [float(v) for v in vec_world]
-    c = math.cos(-yaw)
-    s = math.sin(-yaw)
-    hx = c * vx - s * vy
-    hy = s * vx + c * vy
-    return np.array([hx, hy, vz], dtype=np.float32)
-
-
-def _angvel_heading_local(gyro_body: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
-    quat = _normalize_quat_xyzw(quat_xyzw)
-    gyro_body = np.asarray(gyro_body, dtype=np.float32).reshape(3)
-    gyro_world = _rotate_vec_by_quat(quat, gyro_body)
-    yaw = _yaw_from_quat_xyzw(quat)
-    return _world_to_heading_local(gyro_world, yaw)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run WildRobot ONNX policy on hardware")
     parser.add_argument("--config", type=str, default=None, help="Path to runtime JSON (default: ~/wildrobot_config.json)")
+    parser.add_argument("--log-path", type=str, default=None, help="Optional .npz path to save replay logs on exit")
+    parser.add_argument(
+        "--log-steps",
+        type=int,
+        default=None,
+        help="Optional max steps to log before auto-stopping (default: run until Ctrl+C)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -144,6 +93,16 @@ def main() -> None:
     state = PolicyState.init(spec)
     last_time = time.time()
 
+    log_path = Path(args.log_path).expanduser() if args.log_path else None
+    log_steps = int(args.log_steps) if args.log_steps is not None else None
+
+    log_quat: list[np.ndarray] = []
+    log_gyro: list[np.ndarray] = []
+    log_joint_pos: list[np.ndarray] = []
+    log_joint_vel: list[np.ndarray] = []
+    log_foot: list[np.ndarray] = []
+    log_vel_cmd: list[np.ndarray] = []
+
     print(f"Running control loop at {cfg.control.hz} Hz with {len(joint_names)} actuators")
     print("Ctrl+C to stop")
 
@@ -155,8 +114,8 @@ def main() -> None:
 
             # Sensors
             imu_sample = imu.read()
-            gravity = _quat_xyzw_to_gravity_local(imu_sample.quat_xyzw)
-            angvel = _angvel_heading_local(imu_sample.gyro_rad_s, imu_sample.quat_xyzw)
+            gravity = gravity_local_from_quat(imu_sample.quat_xyzw)
+            angvel = angvel_heading_local(imu_sample.gyro_rad_s, imu_sample.quat_xyzw)
             linvel = np.zeros(3, dtype=np.float32)  # estimator TBD
 
             # Actuators feedback
@@ -188,6 +147,16 @@ def main() -> None:
             ctrl_targets = action_to_ctrl(spec=spec, action=action_post)
             actuators.set_targets_rad(ctrl_targets)
 
+            if log_path is not None:
+                log_quat.append(np.asarray(imu_sample.quat_xyzw, dtype=np.float32))
+                log_gyro.append(np.asarray(imu_sample.gyro_rad_s, dtype=np.float32))
+                log_joint_pos.append(np.asarray(joint_pos, dtype=np.float32))
+                log_joint_vel.append(np.asarray(joint_vel, dtype=np.float32))
+                log_foot.append(np.asarray(foot_switches, dtype=np.float32))
+                log_vel_cmd.append(np.asarray([cfg.control.velocity_cmd], dtype=np.float32))
+                if log_steps is not None and len(log_quat) >= log_steps:
+                    break
+
             # Timing
             period = 1.0 / cfg.control.hz
             elapsed = time.time() - loop_start
@@ -197,6 +166,17 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
+        if log_path is not None and log_quat:
+            np.savez(
+                log_path,
+                quat_xyzw=np.stack(log_quat, axis=0),
+                gyro_rad_s=np.stack(log_gyro, axis=0),
+                joint_pos_rad=np.stack(log_joint_pos, axis=0),
+                joint_vel_rad_s=np.stack(log_joint_vel, axis=0),
+                foot_switches=np.stack(log_foot, axis=0),
+                velocity_cmd=np.stack(log_vel_cmd, axis=0),
+            )
+            print(f"Saved replay log to {log_path}")
         try:
             foot.close()
         finally:

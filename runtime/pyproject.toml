@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 wildrobot-run-policy = "wr_runtime.control.run_policy:main"
+wildrobot-validate-bundle = "wr_runtime.validation.validate_bundle:main"
+wildrobot-replay-policy = "wr_runtime.validation.replay_policy:main"
 
 [tool.setuptools]
 zip-safe = true

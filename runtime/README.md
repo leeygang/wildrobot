@@ -80,3 +80,20 @@ wildrobot-run-policy --config ~/wildrobot_config.json
 ```
 
 Stop with Ctrl+C (runtime will unload servos).
+
+Optional: capture a replay log for offline policy replay:
+```bash
+wildrobot-run-policy --config ~/wildrobot_config.json --log-path signals_log.npz --log-steps 2000
+```
+
+## Bundle utilities
+
+Validate a policy bundle against MJCF + ONNX:
+```bash
+wildrobot-validate-bundle --config ~/wildrobot_config.json
+```
+
+Replay a bundle on logged signals (npz → obs/actions):
+```bash
+wildrobot-replay-policy --bundle ../policies/wildrobot_policy_bundle --input signals_log.npz --output replay_output.npz
+```

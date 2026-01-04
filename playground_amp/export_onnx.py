@@ -89,6 +89,25 @@ def _extract_mlp_layers(policy_params: Dict[str, Any]) -> List[Tuple[np.ndarray,
     return out
 
 
+def get_checkpoint_dims(checkpoint_path: Path) -> tuple[int, int]:
+    ckpt = pickle.loads(checkpoint_path.read_bytes())
+    if not isinstance(ckpt, dict):
+        raise ValueError(f"Checkpoint did not load as dict: {checkpoint_path}")
+
+    policy_params = ckpt.get("policy_params")
+    if not isinstance(policy_params, dict):
+        raise ValueError("Expected checkpoint['policy_params'] to be a dict.")
+
+    layers = _extract_mlp_layers(policy_params)
+
+    obs_dim = int(layers[0][0].shape[0])
+    logits_dim = int(layers[-1][1].shape[0])
+    if logits_dim % 2 != 0:
+        raise ValueError(f"Expected final logits_dim to be even (mean+scale), got {logits_dim}")
+    action_dim = logits_dim // 2
+    return obs_dim, action_dim
+
+
 def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
     try:
         import onnx
