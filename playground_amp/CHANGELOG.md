@@ -7,6 +7,19 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.11.5] - 2026-01-04: Standing Sim2Real Prep (v0.11.5)
+
+### Config Updates
+- `playground_amp/configs/ppo_standing.yaml`: bump training version to v0.11.5.
+- `playground_amp/configs/ppo_standing.yaml`: enable linvel dropout (`linvel_mode: dropout`, `linvel_dropout_prob: 0.2`) for hardware robustness.
+- `playground_amp/configs/ppo_standing.yaml`: document resume command for `playground_amp/checkpoints/ppo_standing_v00113_final.pkl`.
+
+### Plan
+1. `uv run python scripts/validate_training_setup.py`
+2. `uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp --resume playground_amp/checkpoints/ppo_standing_v00113_final.pkl`
+
+---
+
 ## [v0.11.4] - 2026-01-01: Walking Conservative Warm Start (v0.11.4)
 
 ### Plan
