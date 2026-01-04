@@ -44,8 +44,8 @@ Long-term, the goal is to **move contract semantics (CAL + ObsLayout) into `poli
     - maps to **physical control target angles (radians)** using joint centers/spans
 - Optional action filtering:
   - `filtered_action = alpha * prev_action + (1 - alpha) * raw_action`
-- Sim2real helper for linvel:
-  - training supports `env.linvel_mode = sim|zero|dropout` while keeping layout fixed
+- Sim2real helper for linvel (privileged signals):
+  - training may use `env.linvel_mode = sim|zero|dropout` internally, but the exported **policy contract always uses** `linvel_mode = "zero"` so the actor never depends on privileged linvel.
 
 ### Runtime today (risk)
 Runtime entrypoint (e.g. `runtime/wr_runtime/control/run_policy.py`) currently:
@@ -151,6 +151,29 @@ runtime/wr_runtime/control/run_policy.py
 ## 5) Policy Contract: What it Contains
 
 Think of this as the “ABI” of the policy.
+
+### 5.0 Frames and conventions (must be consistent everywhere)
+
+This contract assumes MuJoCo-style axes:
+- `+X` forward
+- `+Y` left (so “right” is `-Y`)
+- `+Z` up
+
+We use these frames:
+- **world (`W`)**: inertial frame, fixed axes (`+Z` up)
+- **local/body (`B`)**: body-attached frame (IMU/base frame); rotates with full orientation (yaw + pitch + roll)
+- **heading_local (`H`)**: yaw-only frame; rotates with yaw, but stays level:
+  - `H.z` is aligned with world up (`W.z`)
+  - `H.x` is the robot’s heading direction projected onto the ground plane
+  - `H.y` completes a right-handed basis in the ground plane
+
+“Remove yaw” means: rotate a world-frame vector by the inverse yaw rotation:
+- `v_H = Rz(-yaw) * v_W`
+
+Notes:
+- `gravity_local` is expressed in the local/body frame to capture roll/pitch tilt.
+- `linvel_heading_local` / `angvel_heading_local` are expressed in heading-local to be yaw-invariant and not tilt with the body.
+- Your IMU quaternion convention (body→world vs world→body) must be specified in code once (e.g., in `policy_contract/*/frames.py`) and then reused everywhere.
 
 ### 5.1 Contract versioning
 - `contract_name`: `"wildrobot_policy"`
@@ -324,6 +347,7 @@ Notes:
 - `model.format` refers to the **deployed inference artifact** inside the bundle (Stage 1 uses ONNX). Training can use a different format (e.g., a Brax PPO `.pkl` checkpoint); that belongs under `provenance.source_checkpoint`.
 - Only a subset of joints is shown under `robot.joints` above; in practice it must include **all** `actuator_names`.
 - Keep “behavior knobs” minimal and enumerated: `observation.layout_id`, `observation.linvel_mode`, `action.postprocess_id`, `action.mapping_id`.
+- `action.mapping_id = "pos_target_rad_v1"` means: clip → mirror_sign → scale to joint center/span in radians.
 - For `wr_obs_v1`, `prev_action` is required by definition and stored in `PolicyState` (initialized to zeros unless the contract version introduces another init mode).
 
 #### Deterministic mapping definitions (norms)
@@ -474,7 +498,7 @@ Stage 1 recommended minimal signals:
 - `joint_vel_rad_s` (N,) float32 (or zeros if not available)
 - `foot_switches` (4,) float32/bool
 
-Whether linear velocity is provided by an estimator or forced to zero is controlled by `observation.linvel_mode`.
+Linear velocity estimates can exist for logging or privileged training signals, but **the policy contract always uses `linvel_mode = "zero"`**, so `linvel_heading_local` is zeroed in the observation builder.
 
 ## 5.8 SimIO / HardwareIO API (IO boundary)
 
@@ -729,6 +753,11 @@ Instead of deploying only `policy.onnx`, deploy a folder (or zip/tar):
 
 Runtime loads a *bundle*, not a raw ONNX path.
 
+Runtime config should point to the bundle’s ONNX path (same folder as the spec):
+```
+"policy_onnx_path": "../policies/wildrobot_policy_bundle/policy.onnx"
+```
+
 ## 8) Runtime Design (bridging training logic cleanly)
 
 ### 8.1 Core interfaces
@@ -775,6 +804,64 @@ Add a single canonical exporter entry point:
 
 Stage 1 gate: exported bundle passes runtime validation + a short hardware smoke test.
 
+## 9.1 Training enforcement (avoid “last-minute” contract drift)
+
+Goal: ensure the exported `policy_spec.json` is not a last-minute interpretation layer, but a contract the policy has been trained against.
+
+### Principle: train against the contract
+
+Training should construct a `PolicySpec` (or a small set of spec fields) at startup and use it as the single source of truth for:
+- `obs_dim` and observation layout (`observation.layout_id`)
+- action semantics (`action.mapping_id`)
+- inference-time postprocessing (`action.postprocess_id` + params)
+
+Concretely, training should call the shared implementation:
+- `policy_contract/jax/obs.py:build_observation(...)`
+- `policy_contract/jax/calib.py:action_to_ctrl(...)`
+- `policy_contract/jax/action.py:postprocess_action(...)` (if filters are part of the contract)
+
+This ensures the policy is optimized for exactly the tensors and control semantics it will see on hardware.
+
+### Validations to add (cheap, fail-fast)
+
+At training startup (before long runs):
+- `validate_spec(spec)`
+- assert the policy network input dim == `spec.model.obs_dim`
+- assert the policy network output/action dim == `spec.model.action_dim`
+- assert env-reported `observation_size` matches `spec.model.obs_dim`
+
+At export time (before copying to robot):
+- `validate_spec(spec)` again
+- export ONNX
+- `validate_runtime_compat(...)` using:
+  - MJCF-derived actuator order
+  - ONNX input/output dims
+
+### Scope rule: what belongs in `PolicySpec` (and what does not)
+
+To keep the contract clean, treat `PolicySpec` as **only what the model expects at inference time**:
+- observation layout + dims + model-visible modes (for Stage 1: `linvel_mode = "zero"` in the contract)
+- action dims + postprocess + mapping semantics
+- actuator ordering and joint ranges needed for normalization/mapping
+
+Explicit non-goals for `PolicySpec`:
+- hardware calibration and device units (servo offsets, bus timing) → runtime config / HardwareIO
+- sim-only indexing (qpos/qvel addresses) → `training/sim_adapter`
+- safety supervision (watchdogs, tilt thresholds) → runtime safety layer
+
+With this scoping, the rule becomes simple:
+- **Everything in `PolicySpec` must be enforced consistently by training (JAX) and runtime (NumPy)** via `policy_contract`.
+
+### Curriculum + privileged signals (recommended pattern)
+
+If you want a curriculum (`sim → dropout → zero`) without changing the deployed contract:
+- Keep `PolicySpec.observation.linvel_mode = "zero"` (deployment contract).
+- In training, treat true linvel as **privileged**:
+  - still use it for rewards, diagnostics, or critic-only inputs,
+  - but the policy observation fed to the actor is constructed by `policy_contract` and thus always sees linvel as zero.
+
+This avoids “last-minute” drift and keeps sim metrics more predictive for hardware deployment.
+
 ## 10) Validation Strategy (what “seamless” means)
 
 ### 10.1 Parity tests (unit)
@@ -799,7 +886,7 @@ Stage 1 gate: exported bundle passes runtime validation + a short hardware smoke
 3) **Move runtime action mapping** to contract (mirror_sign + joint range mapping):
    - stop using `action_scale_rad * action` as “delta around zero” unless explicitly trained that way.
 4) **Add parity tests** so changes can’t regress silently.
-5) Optional: add `linvel_mode=zero` explicitly in the bundle spec for Stage 1 deployment.
+5) Keep `linvel_mode = "zero"` in the bundle spec for Stage 1 deployment (required).
 
 ## 12) Open Questions (to decide together)
 

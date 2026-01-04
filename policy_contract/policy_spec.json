@@ -1,0 +1,153 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 1,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 39,
+    "action_dim": 8
+  },
+  "robot": {
+    "robot_name": "WildRobotDev",
+    "actuator_names": [
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch"
+    ],
+    "joints": {
+      "left_hip_pitch": {
+        "range_min_rad": -0.087268,
+        "range_max_rad": 1.570794,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.570796,
+        "range_max_rad": 0.174533,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.396263,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.698132,
+        "range_max_rad": 0.785398,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.570797,
+        "range_max_rad": 0.087266,
+        "mirror_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.174533,
+        "range_max_rad": 1.570796,
+        "mirror_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.396263,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.698132,
+        "range_max_rad": 0.785398,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      }
+    }
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v1",
+    "linvel_mode": "zero",
+    "layout": [
+      {
+        "name": "gravity_local",
+        "size": 3,
+        "frame": "local",
+        "units": "unit_vector"
+      },
+      {
+        "name": "angvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "rad_s"
+      },
+      {
+        "name": "linvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "m_s"
+      },
+      {
+        "name": "joint_pos_normalized",
+        "size": 8,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "joint_vel_normalized",
+        "size": 8,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "foot_switches",
+        "size": 4,
+        "frame": null,
+        "units": "bool_as_float"
+      },
+      {
+        "name": "prev_action",
+        "size": 8,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "velocity_cmd",
+        "size": 1,
+        "frame": null,
+        "units": "m_s"
+      },
+      {
+        "name": "padding",
+        "size": 1,
+        "frame": null,
+        "units": "unused"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "lowpass_v1",
+    "postprocess_params": {
+      "alpha": 0.7
+    },
+    "mapping_id": "pos_target_rad_v1"
+  },
+  "provenance": {
+    "training_config": "playground_amp/configs/ppo_walking.yaml",
+    "robot_config": "assets/robot_config.yaml"
+  }
+}

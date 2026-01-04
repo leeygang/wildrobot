@@ -22,7 +22,7 @@ Minimal example:
 ```json
 {
   "mjcf_path": "../assets/wildrobot.xml",
-  "policy_onnx_path": "../policies/wildrobot_policy.onnx",
+  "policy_onnx_path": "../policies/wildrobot_policy/policy.onnx",
 
   "control_hz": 50,
   "action_scale_rad": 0.35,
@@ -69,6 +69,7 @@ Minimal example:
 
 Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
+- `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`hiwonder.servo_ids`).
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 

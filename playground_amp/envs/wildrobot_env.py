@@ -44,6 +44,19 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
+from policy_contract.jax.obs import build_observation_from_components
+from policy_contract.jax.action import postprocess_action
+from policy_contract.jax.calib import action_to_ctrl
+from policy_contract.jax.state import PolicyState
+from policy_contract.spec import (
+    ActionSpec,
+    JointSpec,
+    ModelSpec,
+    ObservationSpec,
+    ObsFieldSpec,
+    PolicySpec,
+    RobotSpec,
+)
 from playground_amp.cal.cal import ControlAbstractionLayer
 from playground_amp.cal.specs import Pose3D
 from playground_amp.cal.types import CoordinateFrame
@@ -397,6 +410,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
+        self._policy_spec = self._build_policy_spec()
 
         # =====================================================================
         # Initialize Control Abstraction Layer (CAL) - v0.11.0
@@ -648,18 +662,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_action = wr.prev_action
         linvel_obs_mask = wr.linvel_obs_mask
 
-        # Action filtering (low-pass) - alpha=0 means no filtering (formula handles it)
-        alpha = self._config.env.action_filter_alpha
-
         raw_action = action
-        filtered_action = alpha * prev_action + (1.0 - alpha) * raw_action
+        policy_state = PolicyState(prev_action=prev_action)
+        filtered_action, policy_state = postprocess_action(
+            spec=self._policy_spec,
+            state=policy_state,
+            action_raw=raw_action,
+        )
 
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
         # =====================================================================
         # CAL applies symmetry correction (mirror_sign) for left/right joints
         # This ensures same action values produce symmetric motion on both sides
-        ctrl = self._cal.policy_action_to_ctrl(filtered_action)
+        ctrl = action_to_ctrl(spec=self._policy_spec, action=filtered_action)
         data = state.data.replace(ctrl=ctrl)
 
         # Apply external push disturbance (lateral force on body, if enabled)
@@ -738,7 +754,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
             step_count=step_count + 1,
-            prev_action=filtered_action,
+            prev_action=policy_state.prev_action,
             truncated=truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
             velocity_cmd=velocity_cmd,  # Preserved through episode
             prev_root_pos=curr_root_pose.position,
@@ -930,14 +946,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # Build observation using shared layout
-        return ObsLayout.build_obs(
-            gravity=gravity,
-            angvel=angvel,
-            linvel=linvel,
-            joint_pos=joint_pos,
-            joint_vel=joint_vel,
+        return build_observation_from_components(
+            spec=self._policy_spec,
+            gravity_local=gravity,
+            angvel_heading_local=angvel,
+            linvel_heading_local=linvel,
+            joint_pos_normalized=joint_pos,
+            joint_vel_normalized=joint_vel,
             foot_switches=foot_switches,
-            action=action,
+            prev_action=action,
             velocity_cmd=velocity_cmd,
         )
 
@@ -1383,3 +1400,73 @@ class WildRobotEnv(mjx_env.MjxEnv):
         See ObsLayout class for component breakdown.
         """
         return ObsLayout.total_size()
+
+    def _build_policy_spec(self) -> PolicySpec:
+        action_dim = self._robot_config.action_dim
+
+        layout = [
+            ObsFieldSpec(name="gravity_local", size=ObsLayout.GRAVITY_DIM, frame="local", units="unit_vector"),
+            ObsFieldSpec(
+                name="angvel_heading_local", size=ObsLayout.ANGVEL_DIM, frame="heading_local", units="rad_s"
+            ),
+            ObsFieldSpec(
+                name="linvel_heading_local", size=ObsLayout.LINVEL_DIM, frame="heading_local", units="m_s"
+            ),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=ObsLayout.FOOT_SWITCH_DIM, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=ObsLayout.VELOCITY_CMD_DIM, units="m_s"),
+            ObsFieldSpec(name="padding", size=ObsLayout.PADDING_DIM, units="unused"),
+        ]
+
+        joints: dict[str, JointSpec] = {}
+        for item in self._robot_config.actuated_joints:
+            name = str(item.get("name"))
+            rng = item.get("range") or [0.0, 0.0]
+            if len(rng) != 2:
+                raise ValueError(f"Invalid range for joint '{name}': {rng}")
+            joints[name] = JointSpec(
+                range_min_rad=float(rng[0]),
+                range_max_rad=float(rng[1]),
+                mirror_sign=float(item.get("mirror_sign", 1.0)),
+                max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
+            )
+
+        postprocess_id = "lowpass_v1" if self._config.env.action_filter_alpha > 0.0 else "none"
+        postprocess_params = {}
+        if postprocess_id == "lowpass_v1":
+            postprocess_params["alpha"] = float(self._config.env.action_filter_alpha)
+
+        return PolicySpec(
+            contract_name="wildrobot_policy",
+            contract_version="1.0.0",
+            spec_version=1,
+            model=ModelSpec(
+                format="onnx",
+                input_name="observation",
+                output_name="action",
+                dtype="float32",
+                obs_dim=ObsLayout.total_size(),
+                action_dim=action_dim,
+            ),
+            robot=RobotSpec(
+                robot_name=self._robot_config.robot_name,
+                actuator_names=list(self._robot_config.actuator_names),
+                joints=joints,
+            ),
+            observation=ObservationSpec(
+                dtype="float32",
+                layout_id="wr_obs_v1",
+                linvel_mode=self._config.env.linvel_mode,
+                layout=layout,
+            ),
+            action=ActionSpec(
+                dtype="float32",
+                bounds={"min": -1.0, "max": 1.0},
+                postprocess_id=postprocess_id,
+                postprocess_params=postprocess_params,
+                mapping_id="pos_target_rad_v1",
+            ),
+            provenance=None,
+        )
