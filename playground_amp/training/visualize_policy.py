@@ -45,9 +45,9 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from assets.robot_config import get_robot_config
 from playground_amp.cal.cal import ControlAbstractionLayer
 from playground_amp.cal.specs import CoordinateFrame, Pose3D
-from playground_amp.configs.robot_config import get_robot_config
 from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
@@ -373,8 +373,9 @@ def main():
         if prev_root_pos is None or prev_root_quat is None:
             # Fallback to qvel-based velocity for first frame (training parity)
             return float(
-                cal.get_root_velocity(mj_data, frame=CoordinateFrame.HEADING_LOCAL)
-                .linear[0]
+                cal.get_root_velocity(
+                    mj_data, frame=CoordinateFrame.HEADING_LOCAL
+                ).linear[0]
             )
 
         curr_pose = Pose3D.from_numpy(
@@ -593,7 +594,9 @@ def main():
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
     left_hip_pitch_idx, right_hip_pitch_idx = cal._robot_config.get_hip_pitch_indices()
-    left_knee_pitch_idx, right_knee_pitch_idx = cal._robot_config.get_knee_pitch_indices()
+    left_knee_pitch_idx, right_knee_pitch_idx = (
+        cal._robot_config.get_knee_pitch_indices()
+    )
     left_hip_roll_idx = cal._robot_config.get_actuator_index("left_hip_roll")
     right_hip_roll_idx = cal._robot_config.get_actuator_index("right_hip_roll")
     left_ankle_pitch_idx = cal._robot_config.get_actuator_index("left_ankle_pitch")
@@ -631,7 +634,9 @@ def main():
             )
         )
         force_mag = float(
-            rng_env.uniform(training_cfg.env.push_force_min, training_cfg.env.push_force_max)
+            rng_env.uniform(
+                training_cfg.env.push_force_min, training_cfg.env.push_force_max
+            )
         )
         angle = float(rng_env.uniform(0.0, 2.0 * np.pi))
         force_xy = np.array(
@@ -678,9 +683,7 @@ def main():
         )
         print("  Foot geom params:")
         for geom_name in (left_toe, left_heel, right_toe, right_heel):
-            geom_id = mujoco.mj_name2id(
-                mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name
-            )
+            geom_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
             if geom_id < 0:
                 print(f"    {geom_name}: not found")
                 continue
@@ -814,9 +817,7 @@ def main():
                     float(action[left_knee_pitch_idx] - action[right_knee_pitch_idx]),
                     float(action[left_ankle_pitch_idx] - action[right_ankle_pitch_idx]),
                 )
-                contacts = cal.get_geom_based_foot_contacts(
-                    mj_data, normalize=False
-                )
+                contacts = cal.get_geom_based_foot_contacts(mj_data, normalize=False)
                 contacts = np.asarray(contacts)
                 push_str = ""
                 if push_enabled:
@@ -957,7 +958,9 @@ def main():
                             float(
                                 action[left_hip_pitch_idx] - action[right_hip_pitch_idx]
                             ),
-                            float(action[left_hip_roll_idx] - action[right_hip_roll_idx]),
+                            float(
+                                action[left_hip_roll_idx] - action[right_hip_roll_idx]
+                            ),
                             float(
                                 action[left_knee_pitch_idx]
                                 - action[right_knee_pitch_idx]

@@ -23,7 +23,7 @@ import pytest
 @pytest.fixture(scope="module")
 def env(training_config, robot_config):
     """Create WildRobot environment for testing."""
-    from playground_amp.configs.robot_config import load_robot_config
+    from assets.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
 
     load_robot_config("assets/robot_config.yaml")
@@ -38,7 +38,7 @@ def env(training_config, robot_config):
 @pytest.fixture(scope="module")
 def standing_env(robot_config):
     """Create a standing-specific environment with zero velocity command."""
-    from playground_amp.configs.robot_config import load_robot_config
+    from assets.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
 
     load_robot_config("assets/robot_config.yaml")
@@ -141,15 +141,15 @@ class TestResetContract:
         wr_info = state.info[WR_INFO_KEY]
 
         expected_action = env._cal.ctrl_to_policy_action(state.data.ctrl)
-        assert jnp.allclose(wr_info.prev_action, expected_action, atol=1e-6), (
-            "prev_action does not match ctrl-derived action at reset"
-        )
+        assert jnp.allclose(
+            wr_info.prev_action, expected_action, atol=1e-6
+        ), "prev_action does not match ctrl-derived action at reset"
 
         action_slice = ObsLayout.get_slices()["action"]
         obs_action = state.obs[action_slice]
-        assert jnp.allclose(obs_action, wr_info.prev_action, atol=1e-6), (
-            "Observation action slice does not match prev_action at reset"
-        )
+        assert jnp.allclose(
+            obs_action, wr_info.prev_action, atol=1e-6
+        ), "Observation action slice does not match prev_action at reset"
 
 
 # =============================================================================
@@ -442,7 +442,9 @@ class TestObservationConsistency:
             max_val = jnp.max(jnp.abs(next_state.obs))
             return (next_state, key), max_val
 
-        scan_fn = jax.jit(lambda s, k: jax.lax.scan(step_collect, (s, k), None, length=50))
+        scan_fn = jax.jit(
+            lambda s, k: jax.lax.scan(step_collect, (s, k), None, length=50)
+        )
         (_, _), max_vals = scan_fn(state, rng)
         max_val = jnp.max(max_vals)
         assert max_val < 100, f"Observation value too large: {max_val}"
@@ -468,6 +470,6 @@ class TestObservationConsistency:
         expected_action = (1.0 - alpha) * action
         action_slice = ObsLayout.get_slices()["action"]
         obs_prev_action = new_state.obs[action_slice]
-        assert jnp.allclose(obs_prev_action, expected_action, atol=1e-6), (
-            f"prev_action slice mismatch: got {obs_prev_action}, expected {expected_action}"
-        )
+        assert jnp.allclose(
+            obs_prev_action, expected_action, atol=1e-6
+        ), f"prev_action slice mismatch: got {obs_prev_action}, expected {expected_action}"

@@ -9,27 +9,31 @@ policy on real hardware. Configuration is loaded from a JSON file that specifies
 - Foot switch GPIO pins
 
 Usage:
-    from wr_runtime.config import WildRobotRuntimeConfig
+    from runtime.configs import WrRuntimeConfig
 
     # Load from default path (~/.wildrobot/config.json)
-    config = WildRobotRuntimeConfig.load()
+    config = WrRuntimeConfig.load()
 
     # Load from specific path
-    config = WildRobotRuntimeConfig.load("/path/to/config.json")
+    config = WrRuntimeConfig.load("/path/to/config.json")
 
     # Access nested config
     print(config.control.hz)  # 50.0
-    print(config.hiwonder.servo_ids["left_hip_pitch"])  # 1
+    print(config.hiwonder_controller.get_servo_id("left_hip_pitch"))  # 1
     print(config.bno085.i2c_address)  # 0x4A
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
+
+
+import yaml
 
 
 # =============================================================================
@@ -39,6 +43,7 @@ from typing import Dict, Optional
 HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
+DEFAULT_ROBOT_CONFIG_PATH = Path("assets/robot_config.yaml")
 
 
 # =============================================================================
@@ -67,49 +72,154 @@ class ControlConfig:
 
 
 @dataclass(frozen=True)
-class HiwonderConfig:
-    """Hiwonder servo board configuration.
+class ServoConfig:
+    """Configuration for a single servo.
+
+    Attributes:
+        id: Servo ID (1-254)
+        offset: Calibration offset in servo angle units (default: 0)
+        rad_range: Joint range in radians (min, max) from robot_config.yaml
+        max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
+        mirror_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
+    """
+
+    id: int
+    offset: int = 0
+    rad_range: Tuple[float, float] = (0.0, 0.0)
+    max_velocity: float = 10.0
+    mirror_sign: float = 1.0
+
+    @property
+    def ctrl_center(self) -> float:
+        """Center of joint range in radians."""
+        return (self.rad_range[0] + self.rad_range[1]) / 2
+
+    @property
+    def ctrl_span(self) -> float:
+        """Half-span of joint range in radians."""
+        return (self.rad_range[1] - self.rad_range[0]) / 2
+
+
+@dataclass(frozen=True)
+class HiwonderControllerConfig:
+    """Hiwonder servo controller board configuration.
 
     Attributes:
         port: Serial port for the Hiwonder board (e.g., "/dev/ttyUSB0")
         baudrate: Serial baudrate (default: 9600)
-        servo_ids: Mapping from joint name to servo ID (1-8)
-        joint_offsets_rad: Calibration offsets per joint in radians
+        servos: Mapping from joint name to ServoConfig
     """
 
     port: str = "/dev/ttyUSB0"
     baudrate: int = 9600
-    servo_ids: Dict[str, int] = field(default_factory=dict)
-    joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
+    servos: Dict[str, ServoConfig] = field(default_factory=dict)
 
-    # Joint ordering (matches training config actuated_joint_specs)
-    JOINT_ORDER = (
-        "left_hip_pitch",
-        "left_hip_roll",
-        "left_knee_pitch",
-        "left_ankle_pitch",
-        "right_hip_pitch",
-        "right_hip_roll",
-        "right_knee_pitch",
-        "right_ankle_pitch",
-    )
+    # HTD-45H servo constants
+    SERVO_MIN: int = 0
+    SERVO_MAX: int = 1000
+    SERVO_CENTER: int = 500  # Our zero point (physical 120 degrees)
+    DEG_TO_SERVO: float = 1000.0 / 240.0  # ~4.1667 servo units per degree
+
+    def get_servo(self, joint_name: str) -> ServoConfig:
+        """Get servo config for a joint, raising error if not configured."""
+        if joint_name not in self.servos:
+            raise KeyError(
+                f"Servo not configured for joint '{joint_name}'. "
+                f"Available joints: {list(self.servos.keys())}"
+            )
+        return self.servos[joint_name]
 
     def get_servo_id(self, joint_name: str) -> int:
         """Get servo ID for a joint, raising error if not configured."""
-        if joint_name not in self.servo_ids:
-            raise KeyError(
-                f"Servo ID not configured for joint '{joint_name}'. "
-                f"Available joints: {list(self.servo_ids.keys())}"
+        return self.get_servo(joint_name).id
+
+    def get_offset(self, joint_name: str) -> int:
+        """Get calibration offset for a joint (default: 0)."""
+        if joint_name not in self.servos:
+            return 0
+        return self.servos[joint_name].offset
+
+    @property
+    def joint_names(self) -> List[str]:
+        """Get list of joint names in order."""
+        return list(self.servos.keys())
+
+    def _policy_action_to_servo_pos(self, action: float, servo: ServoConfig) -> int:
+        """Convert single policy action [-1, 1] to servo position [0, 1000].
+
+        Conversion chain:
+            policy_action [-1, 1]
+            → corrected = action * mirror_sign
+            → ctrl_rad = corrected * ctrl_span + ctrl_center
+            → degrees = ctrl_rad * (180/π)
+            → servo_pos = 500 + degrees * DEG_TO_SERVO + offset
+        """
+        action_clipped = max(-1.0, min(1.0, action))
+        corrected = action_clipped * servo.mirror_sign
+        ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
+        degrees = math.degrees(ctrl_rad)
+        servo_pos = self.SERVO_CENTER + degrees * self.DEG_TO_SERVO + servo.offset
+        return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
+
+    def _servo_pos_to_policy_action(self, servo_pos: int, servo: ServoConfig) -> float:
+        """Convert servo position [0, 1000] to policy action [-1, 1].
+
+        Inverse of _policy_action_to_servo_pos.
+        """
+        degrees = (servo_pos - servo.offset - self.SERVO_CENTER) / self.DEG_TO_SERVO
+        ctrl_rad = math.radians(degrees)
+        corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
+        action = corrected / servo.mirror_sign
+        return max(-1.0, min(1.0, action))
+
+    def policy_action_to_servo_cmd(
+        self, actions: List[float]
+    ) -> List[Tuple[int, int]]:
+        """Convert policy actions to servo commands.
+
+        Args:
+            actions: List of policy actions in joint order (from robot_config.yaml)
+
+        Returns:
+            List of (servo_id, servo_position) tuples
+        """
+        joint_names = self.joint_names
+        if len(actions) != len(joint_names):
+            raise ValueError(
+                f"Expected {len(joint_names)} actions, got {len(actions)}"
             )
-        return self.servo_ids[joint_name]
 
-    def get_offset_rad(self, joint_name: str) -> float:
-        """Get calibration offset for a joint (default: 0.0)."""
-        return self.joint_offsets_rad.get(joint_name, 0.0)
+        commands = []
+        for i, joint_name in enumerate(joint_names):
+            servo = self.servos[joint_name]
+            servo_pos = self._policy_action_to_servo_pos(actions[i], servo)
+            commands.append((servo.id, servo_pos))
+        return commands
 
-    def get_ordered_servo_ids(self) -> list[int]:
-        """Get servo IDs in canonical joint order."""
-        return [self.get_servo_id(name) for name in self.JOINT_ORDER]
+    def servo_pos_to_policy_action(
+        self, positions: List[Tuple[int, int]]
+    ) -> List[float]:
+        """Convert servo positions to policy actions.
+
+        Args:
+            positions: List of (servo_id, servo_position) tuples from read_positions()
+
+        Returns:
+            List of policy actions in joint order
+        """
+        # Build servo_id -> position mapping
+        pos_by_id = {servo_id: pos for servo_id, pos in positions}
+
+        # Convert in joint order
+        actions = []
+        for joint_name in self.joint_names:
+            servo = self.servos[joint_name]
+            if servo.id not in pos_by_id:
+                raise ValueError(f"No position for servo ID {servo.id} ({joint_name})")
+            servo_pos = pos_by_id[servo.id]
+            action = self._servo_pos_to_policy_action(servo_pos, servo)
+            actions.append(action)
+        return actions
 
 
 @dataclass(frozen=True)
@@ -169,7 +279,7 @@ class FootSwitchConfig:
 
 
 @dataclass(frozen=True)
-class WildRobotRuntimeConfig:
+class WrRuntimeConfig:
     """Complete runtime configuration for WildRobot hardware deployment.
 
     This class provides a structured way to load and access all configuration
@@ -179,12 +289,12 @@ class WildRobotRuntimeConfig:
         mjcf_path: Path to MuJoCo XML model file
         policy_onnx_path: Path to exported ONNX policy file
         control: Control loop settings (hz, action_scale, velocity_cmd)
-        hiwonder: Hiwonder servo board settings
+        hiwonder_controller: Hiwonder servo controller settings
         bno085: BNO085 IMU settings
         foot_switches: Foot switch GPIO pin settings
 
     Example:
-        config = WildRobotRuntimeConfig.load("config.json")
+        config = WrRuntimeConfig.load("config.json")
 
         # Access paths
         model_path = config.mjcf_path
@@ -194,7 +304,7 @@ class WildRobotRuntimeConfig:
         dt = config.control.dt  # 0.02 for 50 Hz
 
         # Access hardware settings
-        servo_id = config.hiwonder.get_servo_id("left_hip_pitch")
+        servo_id = config.hiwonder_controller.get_servo_id("left_hip_pitch")
         imu_addr = config.bno085.i2c_address
         toe_pin = config.foot_switches.left_toe
     """
@@ -202,7 +312,7 @@ class WildRobotRuntimeConfig:
     mjcf_path: str
     policy_onnx_path: str
     control: ControlConfig
-    hiwonder: HiwonderConfig
+    hiwonder_controller: HiwonderControllerConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
 
@@ -234,16 +344,22 @@ class WildRobotRuntimeConfig:
         return self.resolve_path(self.policy_onnx_path)
 
     @classmethod
-    def load(cls, config_path: Optional[str | Path] = None) -> WildRobotRuntimeConfig:
+    def load(
+        cls,
+        config_path: Optional[str | Path] = None,
+        robot_config_path: Optional[str | Path] = None,
+    ) -> WrRuntimeConfig:
         """Load runtime configuration from JSON file.
 
         Args:
             config_path: Path to JSON config file. If None, searches for:
                 1. ~/.wildrobot/config.json
                 2. ~/wildrobot_config.json (legacy)
+            robot_config_path: Path to robot_config.yaml for joint specs.
+                If None, uses assets/robot_config.yaml relative to config_path.
 
         Returns:
-            WildRobotRuntimeConfig instance
+            WrRuntimeConfig instance
 
         Raises:
             FileNotFoundError: If config file not found
@@ -273,9 +389,31 @@ class WildRobotRuntimeConfig:
         # Load JSON
         data = json.loads(path.read_text())
 
+        # Resolve robot_config_path
+        if robot_config_path is None:
+            # Try relative to config dir, then default path
+            robot_config_path = config_dir / ".." / "assets" / "robot_config.yaml"
+            if not robot_config_path.exists():
+                robot_config_path = DEFAULT_ROBOT_CONFIG_PATH
+        robot_config_path = Path(robot_config_path)
+
+        # Load robot config for joint specs
+        joint_specs = {}
+        if robot_config_path.exists():
+            with open(robot_config_path, "r") as f:
+                robot_config = yaml.safe_load(f)
+            for joint in robot_config.get("actuated_joint_specs", []):
+                name = joint.get("name")
+                if name:
+                    joint_specs[name] = {
+                        "rad_range": tuple(joint.get("range", [0.0, 0.0])),
+                        "max_velocity": float(joint.get("max_velocity", 10.0)),
+                        "mirror_sign": float(joint.get("mirror_sign", 1.0)),
+                    }
+
         # Parse nested configs
         control = cls._parse_control_config(data)
-        hiwonder = cls._parse_hiwonder_config(data)
+        hiwonder = cls._parse_hiwonder_config(data, joint_specs)
         bno085 = cls._parse_bno085_config(data)
         foot_switches = cls._parse_foot_switch_config(data)
 
@@ -283,7 +421,7 @@ class WildRobotRuntimeConfig:
             mjcf_path=data["mjcf_path"],
             policy_onnx_path=data["policy_onnx_path"],
             control=control,
-            hiwonder=hiwonder,
+            hiwonder_controller=hiwonder,
             bno085=bno085,
             foot_switches=foot_switches,
             _config_dir=config_dir,
@@ -299,20 +437,34 @@ class WildRobotRuntimeConfig:
         )
 
     @staticmethod
-    def _parse_hiwonder_config(data: dict) -> HiwonderConfig:
-        """Parse Hiwonder configuration from JSON data."""
-        hiw = data.get("hiwonder", {})
+    def _parse_hiwonder_config(
+        data: dict, joint_specs: Dict[str, dict]
+    ) -> HiwonderControllerConfig:
+        """Parse Hiwonder controller configuration from JSON data.
 
-        servo_ids = {str(k): int(v) for k, v in hiw.get("servo_ids", {}).items()}
-        joint_offsets = {
-            str(k): float(v) for k, v in hiw.get("joint_offsets_rad", {}).items()
-        }
+        Args:
+            data: JSON config data
+            joint_specs: Joint specs from robot_config.yaml with rad_range and max_velocity
+        """
+        hiw = data.get("Hiwonder_controller", {})
 
-        return HiwonderConfig(
+        # Parse servos - each servo has "id" and "offset" fields
+        # Merge with joint_specs for rad_range, max_velocity, mirror_sign
+        servos = {}
+        for joint_name, servo_data in hiw.get("servos", {}).items():
+            joint_spec = joint_specs.get(joint_name, {})
+            servos[str(joint_name)] = ServoConfig(
+                id=int(servo_data["id"]),
+                offset=int(servo_data.get("offset", 0)),
+                rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
+                max_velocity=joint_spec.get("max_velocity", 10.0),
+                mirror_sign=joint_spec.get("mirror_sign", 1.0),
+            )
+
+        return HiwonderControllerConfig(
             port=hiw.get("port", "/dev/ttyUSB0"),
             baudrate=int(hiw.get("baudrate", 9600)),
-            servo_ids=servo_ids,
-            joint_offsets_rad=joint_offsets,
+            servos=servos,
         )
 
     @staticmethod
@@ -344,17 +496,24 @@ class WildRobotRuntimeConfig:
 
     def to_dict(self) -> dict:
         """Convert config back to a dictionary (for serialization)."""
+        # Build servos dict in new format
+        servos_dict = {}
+        for joint_name, servo in self.hiwonder_controller.servos.items():
+            servos_dict[joint_name] = {
+                "id": servo.id,
+                "offset": servo.offset,
+            }
+
         return {
             "mjcf_path": self.mjcf_path,
             "policy_onnx_path": self.policy_onnx_path,
             "control_hz": self.control.hz,
             "action_scale_rad": self.control.action_scale_rad,
             "velocity_cmd": self.control.velocity_cmd,
-            "hiwonder": {
-                "port": self.hiwonder.port,
-                "baudrate": self.hiwonder.baudrate,
-                "servo_ids": self.hiwonder.servo_ids,
-                "joint_offsets_rad": self.hiwonder.joint_offsets_rad,
+            "Hiwonder_controller": {
+                "port": self.hiwonder_controller.port,
+                "baudrate": self.hiwonder_controller.baudrate,
+                "servos": servos_dict,
             },
             "bno085": {
                 "i2c_address": hex(self.bno085.i2c_address),
@@ -379,18 +538,19 @@ class WildRobotRuntimeConfig:
 # =============================================================================
 
 # Alias for backward compatibility
-RuntimeConfig = WildRobotRuntimeConfig
+RuntimeConfig = WrRuntimeConfig
+WildRobotRuntimeConfig = WrRuntimeConfig  # Legacy alias
 
 
-def load_config(config_path: Optional[str] = None) -> WildRobotRuntimeConfig:
+def load_config(config_path: Optional[str] = None) -> WrRuntimeConfig:
     """Load runtime configuration (legacy function).
 
-    Deprecated: Use WildRobotRuntimeConfig.load() instead.
+    Deprecated: Use WrRuntimeConfig.load() instead.
 
     Args:
         config_path: Path to config file (optional)
 
     Returns:
-        WildRobotRuntimeConfig instance
+        WrRuntimeConfig instance
     """
-    return WildRobotRuntimeConfig.load(config_path)
+    return WrRuntimeConfig.load(config_path)

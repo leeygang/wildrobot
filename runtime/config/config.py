@@ -9,7 +9,7 @@ policy on real hardware. Configuration is loaded from a JSON file that specifies
 - Foot switch GPIO pins
 
 Usage:
-    from wr_runtime.config import WildRobotRuntimeConfig
+    from runtime.config import WildRobotRuntimeConfig
 
     # Load from default path (~/.wildrobot/config.json)
     config = WildRobotRuntimeConfig.load()

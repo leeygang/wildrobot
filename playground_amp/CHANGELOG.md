@@ -259,7 +259,7 @@ The previous implementation had critical issues:
 | File | Change |
 |------|--------|
 | `playground_amp/envs/wildrobot_env.py` | Integrate CAL |
-| `playground_amp/configs/robot_config.py` | Add actuated_joints support |
+| `assets/robot_config.py` | Robot configuration management (moved from playground_amp/configs/) |
 | `assets/robot_config.yaml` | Add actuated_joints section |
 | `assets/post_process.py` | Add generate_actuated_joints_config() |
 

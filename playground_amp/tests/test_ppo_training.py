@@ -42,9 +42,12 @@ class TestPPOSmoke:
         - Policy parameters change
         - Training completes all iterations
         """
-        from playground_amp.configs.robot_config import load_robot_config
+        from assets.robot_config import load_robot_config
         from playground_amp.envs.wildrobot_env import WildRobotEnv
-        from playground_amp.training.ppo_core import create_networks, init_network_params
+        from playground_amp.training.ppo_core import (
+            create_networks,
+            init_network_params,
+        )
 
         # Load configs
         load_robot_config("assets/robot_config.yaml")
@@ -96,8 +99,8 @@ class TestPPOSmoke:
         - Entropy loss is finite
         """
         from playground_amp.training.ppo_core import (
-            create_networks,
             compute_ppo_loss,
+            create_networks,
             init_network_params,
         )
 
@@ -163,7 +166,10 @@ class TestNetworkArchitecture:
         - Policy output has action_dim
         - Value output has shape (batch, 1) or (batch,)
         """
-        from playground_amp.training.ppo_core import create_networks, init_network_params
+        from playground_amp.training.ppo_core import (
+            create_networks,
+            init_network_params,
+        )
 
         obs_dim = 39
         action_dim = 8
@@ -205,7 +211,10 @@ class TestNetworkArchitecture:
         Assertions:
         - Two forward passes produce identical outputs
         """
-        from playground_amp.training.ppo_core import create_networks, init_network_params
+        from playground_amp.training.ppo_core import (
+            create_networks,
+            init_network_params,
+        )
 
         obs_dim = 39
         action_dim = 8
@@ -230,9 +239,9 @@ class TestNetworkArchitecture:
         )
 
         # Should be identical
-        assert jnp.allclose(output1, output2), (
-            "Network not deterministic with same params"
-        )
+        assert jnp.allclose(
+            output1, output2
+        ), "Network not deterministic with same params"
 
 
 # =============================================================================
@@ -252,7 +261,10 @@ class TestGradientFlow:
         - All gradients are finite
         - Gradients are not all zero
         """
-        from playground_amp.training.ppo_core import create_networks, init_network_params
+        from playground_amp.training.ppo_core import (
+            create_networks,
+            init_network_params,
+        )
 
         obs_dim = 39
         action_dim = 8
@@ -270,11 +282,9 @@ class TestGradientFlow:
         dummy_obs = jnp.ones((4, obs_dim))
 
         def loss_fn(params):
-            output = network.policy_network.apply(
-                processor_params, params, dummy_obs
-            )
+            output = network.policy_network.apply(processor_params, params, dummy_obs)
             # Simple loss for testing gradient flow
-            return jnp.mean(output ** 2)
+            return jnp.mean(output**2)
 
         # Compute gradients
         grads = jax.grad(loss_fn)(policy_params)
@@ -293,8 +303,7 @@ class TestGradientFlow:
             return jnp.any(x != 0)
 
         has_nonzero = jax.tree_util.tree_reduce(
-            lambda x, y: x or y,
-            jax.tree_util.tree_map(check_nonzero, grads)
+            lambda x, y: x or y, jax.tree_util.tree_map(check_nonzero, grads)
         )
         assert has_nonzero, "All gradients are zero"
 
@@ -391,7 +400,9 @@ class TestPPOAlgorithm:
         dones = jnp.array([0.0, 0.0, 0.0, 0.0])
 
         # Manual GAE computation
-        deltas = rewards + gamma * jnp.append(values[1:], next_value) * (1 - dones) - values
+        deltas = (
+            rewards + gamma * jnp.append(values[1:], next_value) * (1 - dones) - values
+        )
         advantages = jnp.zeros(4)
         gae = 0.0
         for t in reversed(range(4)):
@@ -407,9 +418,9 @@ class TestPPOAlgorithm:
             gamma=gamma,
             gae_lambda=gae_lambda,
         )
-        assert jnp.allclose(adv_impl[:, 0], advantages), (
-            f"GAE mismatch: {adv_impl.squeeze()} vs {advantages}"
-        )
+        assert jnp.allclose(
+            adv_impl[:, 0], advantages
+        ), f"GAE mismatch: {adv_impl.squeeze()} vs {advantages}"
 
     @pytest.mark.train
     def test_clip_ratio(self):
@@ -447,7 +458,11 @@ class TestCheckpointing:
         - Loaded params match saved params
         """
         import pickle
-        from playground_amp.training.ppo_core import create_networks, init_network_params
+
+        from playground_amp.training.ppo_core import (
+            create_networks,
+            init_network_params,
+        )
 
         # Create network and params
         network = create_networks(
@@ -486,6 +501,6 @@ class TestCheckpointing:
                 jax.tree_util.tree_map(lambda x, y: jnp.allclose(x, y), p1, p2)
             )
 
-        assert params_equal(loaded["policy_params"], policy_params), (
-            "Loaded params don't match saved params"
-        )
+        assert params_equal(
+            loaded["policy_params"], policy_params
+        ), "Loaded params don't match saved params"

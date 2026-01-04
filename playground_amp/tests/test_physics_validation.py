@@ -35,9 +35,9 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
-from mujoco import mjx
 
-from playground_amp.configs.robot_config import load_robot_config
+from assets.robot_config import load_robot_config
+from mujoco import mjx
 from playground_amp.configs.training_config import load_training_config
 from playground_amp.tests.robot_schema import WildRobotSchema
 
@@ -49,6 +49,7 @@ from playground_amp.tests.robot_schema import WildRobotSchema
 
 def _step_n(env, state, action, num_steps: int):
     """Advance env.step in a single JAX loop for speed."""
+
     def body(_, s):
         return env.step(s, action)
 

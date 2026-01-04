@@ -69,7 +69,7 @@ def test_env_basics():
     import jax.numpy as jnp
     import mujoco
 
-    from playground_amp.configs.robot_config import load_robot_config
+    from assets.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
     from playground_amp.envs.wildrobot_env import WildRobotEnv
 

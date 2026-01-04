@@ -8,7 +8,7 @@ Call config.freeze() after CLI overrides to make configs JIT-compatible.
 
 Usage:
     from playground_amp.configs.training_config import load_training_config
-    from playground_amp.configs.robot_config import load_robot_config
+    from assets.robot_config import load_robot_config
 
     # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")
@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 # Re-export robot config utilities
-from playground_amp.configs.robot_config import (  # noqa: F401
+from assets.robot_config import (  # noqa: F401
     clear_robot_config_cache,
     get_obs_indices,
     get_robot_config,

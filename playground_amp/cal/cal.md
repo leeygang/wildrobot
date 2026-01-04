@@ -2684,7 +2684,7 @@ root_imu:
 Add properties to `robot_config.py` to expose the root IMU sensors:
 
 ```python
-# In playground_amp/configs/robot_config.py
+# In assets/robot_config.py
 
 class RobotConfig:
     # ... existing code ...

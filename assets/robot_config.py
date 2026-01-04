@@ -7,7 +7,7 @@ All other modules should import robot configuration through this module instead 
 hardcoding robot-specific values.
 
 Usage:
-    from playground_amp.configs.robot_config import load_robot_config, get_robot_config, RobotConfig
+    from assets.robot_config import load_robot_config, get_robot_config, RobotConfig
 
     # Load robot config (path passed from train.py)
     robot_config = load_robot_config("assets/robot_config.yaml")

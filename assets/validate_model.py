@@ -49,7 +49,7 @@ def _max_rel_diff_vec(a, b) -> float:
 
 def _load_robot_config(robot_config_yaml: Path):
     sys.path.insert(0, str(_repo_root()))
-    from playground_amp.configs.robot_config import clear_robot_config_cache, load_robot_config
+    from assets.robot_config import clear_robot_config_cache, load_robot_config
 
     clear_robot_config_cache()
     return load_robot_config(robot_config_yaml)
@@ -106,8 +106,12 @@ def _validate_toe_heel(
     import mujoco
     import numpy as np
 
-    left_foot = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, robot_config.left_foot_body)
-    right_foot = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, robot_config.right_foot_body)
+    left_foot = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, robot_config.left_foot_body
+    )
+    right_foot = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, robot_config.right_foot_body
+    )
     if left_foot < 0 or right_foot < 0:
         raise ValueError(
             f"Foot bodies not found: left='{robot_config.left_foot_body}', right='{robot_config.right_foot_body}'"
@@ -145,25 +149,41 @@ def _validate_toe_heel(
         )
 
     if not np.allclose(lt["pos"], rt["pos"], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(f"Toe geom_pos mismatch: {left_toe} {lt['pos']} vs {right_toe} {rt['pos']}")
+        raise ValueError(
+            f"Toe geom_pos mismatch: {left_toe} {lt['pos']} vs {right_toe} {rt['pos']}"
+        )
     if not np.allclose(lh["pos"], rh["pos"], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(f"Heel geom_pos mismatch: {left_heel} {lh['pos']} vs {right_heel} {rh['pos']}")
+        raise ValueError(
+            f"Heel geom_pos mismatch: {left_heel} {lh['pos']} vs {right_heel} {rh['pos']}"
+        )
 
     if not np.allclose(lt["quat"], rt["quat"], atol=thresholds.quat_tol, rtol=0.0):
-        raise ValueError(f"Toe geom_quat mismatch: {left_toe} {lt['quat']} vs {right_toe} {rt['quat']}")
+        raise ValueError(
+            f"Toe geom_quat mismatch: {left_toe} {lt['quat']} vs {right_toe} {rt['quat']}"
+        )
     if not np.allclose(lh["quat"], rh["quat"], atol=thresholds.quat_tol, rtol=0.0):
-        raise ValueError(f"Heel geom_quat mismatch: {left_heel} {lh['quat']} vs {right_heel} {rh['quat']}")
+        raise ValueError(
+            f"Heel geom_quat mismatch: {left_heel} {lh['quat']} vs {right_heel} {rh['quat']}"
+        )
 
     if not np.allclose(lt["size"], rt["size"], atol=thresholds.size_tol, rtol=0.0):
-        raise ValueError(f"Toe geom_size mismatch: {left_toe} {lt['size']} vs {right_toe} {rt['size']}")
+        raise ValueError(
+            f"Toe geom_size mismatch: {left_toe} {lt['size']} vs {right_toe} {rt['size']}"
+        )
     if not np.allclose(lh["size"], rh["size"], atol=thresholds.size_tol, rtol=0.0):
-        raise ValueError(f"Heel geom_size mismatch: {left_heel} {lh['size']} vs {right_heel} {rh['size']}")
+        raise ValueError(
+            f"Heel geom_size mismatch: {left_heel} {lh['size']} vs {right_heel} {rh['size']}"
+        )
 
-    if not np.allclose(lt["friction"], rt["friction"], atol=thresholds.friction_tol, rtol=0.0):
+    if not np.allclose(
+        lt["friction"], rt["friction"], atol=thresholds.friction_tol, rtol=0.0
+    ):
         raise ValueError(
             f"Toe geom_friction mismatch: {left_toe} {lt['friction']} vs {right_toe} {rt['friction']}"
         )
-    if not np.allclose(lh["friction"], rh["friction"], atol=thresholds.friction_tol, rtol=0.0):
+    if not np.allclose(
+        lh["friction"], rh["friction"], atol=thresholds.friction_tol, rtol=0.0
+    ):
         raise ValueError(
             f"Heel geom_friction mismatch: {left_heel} {lh['friction']} vs {right_heel} {rh['friction']}"
         )
@@ -211,7 +231,9 @@ def _validate_mass_inertia_symmetry(model, thresholds: Thresholds) -> None:
         i_left = model.body_inertia[body_id]
         i_right = model.body_inertia[pair_id]
         if _max_rel_diff_vec(i_left, i_right) > thresholds.inertia_rel_tol:
-            raise ValueError(f"Body inertia mismatch: {name}={i_left} vs {pair}={i_right}")
+            raise ValueError(
+                f"Body inertia mismatch: {name}={i_left} vs {pair}={i_right}"
+            )
 
 
 def _validate_left_right_named_collision_geoms(model, thresholds: Thresholds) -> None:
@@ -260,7 +282,10 @@ def _validate_left_right_named_collision_geoms(model, thresholds: Thresholds) ->
         if int(model.geom_type[gid_l]) != int(model.geom_type[gid_r]):
             raise ValueError(f"Collision geom type mismatch: {name} vs {pair}")
         if not np.allclose(
-            model.geom_size[gid_l], model.geom_size[gid_r], atol=thresholds.size_tol, rtol=0.0
+            model.geom_size[gid_l],
+            model.geom_size[gid_r],
+            atol=thresholds.size_tol,
+            rtol=0.0,
         ):
             raise ValueError(
                 f"Collision geom size mismatch: {name}={model.geom_size[gid_l]} vs {pair}={model.geom_size[gid_r]}"
@@ -328,9 +353,13 @@ def _validate_default_pose_contacts(
     rh = data.geom_xpos[geom_ids[right_heel]].copy()
 
     if not np.allclose(lt[2], rt[2], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(f"Default pose toe height mismatch: {left_toe} z={lt[2]} vs {right_toe} z={rt[2]}")
+        raise ValueError(
+            f"Default pose toe height mismatch: {left_toe} z={lt[2]} vs {right_toe} z={rt[2]}"
+        )
     if not np.allclose(lh[2], rh[2], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(f"Default pose heel height mismatch: {left_heel} z={lh[2]} vs {right_heel} z={rh[2]}")
+        raise ValueError(
+            f"Default pose heel height mismatch: {left_heel} z={lh[2]} vs {right_heel} z={rh[2]}"
+        )
 
     # Contact penetration check (best-effort): reject very deep contacts.
     max_pen = 0.0
@@ -339,7 +368,9 @@ def _validate_default_pose_contacts(
         # dist < 0 means penetration
         max_pen = min(max_pen, float(c.dist))
     if max_pen < -thresholds.contact_penetration_tol:
-        raise ValueError(f"Excessive penetration at reset: min contact.dist={max_pen:.6f}m")
+        raise ValueError(
+            f"Excessive penetration at reset: min contact.dist={max_pen:.6f}m"
+        )
 
 
 def validate_model(

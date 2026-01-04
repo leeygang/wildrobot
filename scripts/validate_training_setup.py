@@ -21,7 +21,7 @@ def _validate_mujoco_load(scene_xml: Path) -> None:
 
 def _validate_robot_config(scene_xml: Path, robot_config_yaml: Path) -> None:
     import mujoco
-    from playground_amp.configs.robot_config import clear_robot_config_cache, load_robot_config
+    from assets.robot_config import clear_robot_config_cache, load_robot_config
 
     clear_robot_config_cache()
     robot_config = load_robot_config(robot_config_yaml)
@@ -62,7 +62,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    paths = ValidationPaths(scene_xml=args.scene_xml, robot_config_yaml=args.robot_config)
+    paths = ValidationPaths(
+        scene_xml=args.scene_xml, robot_config_yaml=args.robot_config
+    )
 
     if not paths.scene_xml.exists():
         raise FileNotFoundError(paths.scene_xml)

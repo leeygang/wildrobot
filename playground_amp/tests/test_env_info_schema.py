@@ -35,7 +35,7 @@ from playground_amp.envs.env_info import (
 @pytest.fixture(scope="module")
 def env():
     """Create WildRobot environment for schema tests."""
-    from playground_amp.configs.robot_config import load_robot_config
+    from assets.robot_config import load_robot_config
     from playground_amp.configs.training_config import load_training_config
     from playground_amp.envs.wildrobot_env import WildRobotEnv
 

@@ -1,0 +1,59 @@
+{
+  "mjcf_path": "../assets/wildrobot.xml",
+  "policy_onnx_path": "../policies/wildrobot_policy.onnx",
+
+  "control_hz": 50,
+  "action_scale_rad": 0.35,
+  "velocity_cmd": 0.0,
+
+  "Hiwonder_controller": {
+    "port": "/dev/ttyUSB0",
+    "baudrate": 9600,
+    "servos": {
+      "left_hip_pitch": {
+        "id": 1,
+        "offset": 0
+      },
+      "left_hip_roll": {
+        "id": 2,
+        "offset": 0
+      },
+      "left_knee_pitch": {
+        "id": 3,
+        "offset": 0
+      },
+      "left_ankle_pitch": {
+        "id": 4,
+        "offset": 0
+      },
+      "right_hip_pitch": {
+        "id": 5,
+        "offset": 0
+      },
+      "right_hip_roll": {
+        "id": 6,
+        "offset": 0
+      },
+      "right_knee_pitch": {
+        "id": 7,
+        "offset": 0
+      },
+      "right_ankle_pitch": {
+        "id": 8,
+        "offset": 0
+      }
+    }
+  },
+
+  "bno085": {
+    "i2c_address": "0x4A",
+    "upside_down": false
+  },
+
+  "foot_switches": {
+    "left_toe": "D5",
+    "left_heel": "D6",
+    "right_toe": "D13",
+    "right_heel": "D19"
+  }
+}

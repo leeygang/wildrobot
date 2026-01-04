@@ -1,21 +1,47 @@
+"""Hiwonder Bus Servo Controller board interface.
+
+This module provides low-level serial communication with the Hiwonder
+servo controller board using the board-level protocol.
+
+Usage:
+    from runtime.configs import WrRuntimeConfig
+    from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
+
+    config = WrRuntimeConfig.load("runtime/configs/wr_runtime_config.json")
+    controller = HiwonderBoardController(config.hiwonder_controller)
+
+    # Convert policy actions to servo commands and move
+    actions = [0.0] * 8  # Policy outputs
+    servo_cmds = config.hiwonder_controller.policy_action_to_servo_cmd(actions)
+    time_ms = int(config.control.dt * 1000)  # e.g., 20ms at 50Hz
+    controller.move_servos(servo_cmds, time_ms)
+
+    # Read servo positions and convert back to policy actions
+    servo_ids = [s.id for s in config.hiwonder_controller.servos.values()]
+    positions = controller.read_servo_positions(servo_ids)
+    actions = config.hiwonder_controller.servo_pos_to_policy_action(positions)
+"""
+
 from __future__ import annotations
 
 import serial
 import time
 from typing import List, Optional, Tuple
 
+from runtime.configs.config import HiwonderControllerConfig
+
 
 class HiwonderBoardController:
     """Hiwonder Bus Servo Controller board interface.
 
-    This is a minimal, MJCF-runtime-friendly copy of the controller logic.
+    This is a minimal, MJCF-runtime-friendly controller for Hiwonder servo boards.
 
     Frame format (per Hiwonder protocol):
-      [0x55][0x55][Length][Command][...params...]
+        [0x55][0x55][Length][Command][...params...]
 
     Notes:
-    - This controller uses board-level commands (not per-servo LX-16A style).
-    - Velocity feedback is not available via this protocol.
+        - This controller uses board-level commands (not per-servo LX-16A style).
+        - Velocity feedback is not available via this protocol.
     """
 
     CMD_SERVO_MOVE = 0x03
@@ -25,7 +51,29 @@ class HiwonderBoardController:
 
     HEADER = bytes([0x55, 0x55])
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 9600, timeout: float = 0.5):
+    def __init__(
+        self,
+        config: Optional[HiwonderControllerConfig] = None,
+        port: Optional[str] = None,
+        baudrate: Optional[int] = None,
+        timeout: float = 0.5,
+    ):
+        """Initialize the Hiwonder board controller.
+
+        Args:
+            config: HiwonderControllerConfig with port/baudrate settings.
+                If provided, port and baudrate args are ignored.
+            port: Serial port (e.g., "/dev/ttyUSB0"). Used if config is None.
+            baudrate: Serial baudrate (default: 9600). Used if config is None.
+            timeout: Serial read timeout in seconds.
+        """
+        if config is not None:
+            port = config.port
+            baudrate = config.baudrate
+        else:
+            port = port or "/dev/ttyUSB0"
+            baudrate = baudrate or 9600
+
         self.serial = serial.Serial(
             port=port,
             baudrate=baudrate,
@@ -39,12 +87,14 @@ class HiwonderBoardController:
         self.serial.reset_output_buffer()
 
     def close(self) -> None:
+        """Close the serial connection."""
         try:
             self.serial.close()
         except Exception:
             pass
 
-    def _send(self, command: int, params: List[int] | None = None) -> None:
+    def _send(self, command: int, params: Optional[List[int]] = None) -> None:
+        """Send a command packet to the board."""
         if params is None:
             params = []
         length = 2 + len(params)
@@ -56,6 +106,7 @@ class HiwonderBoardController:
         self.serial.flush()
 
     def _read_response(self, timeout: Optional[float] = None) -> Optional[List[int]]:
+        """Read a response packet from the board."""
         old_timeout = None
         if timeout is not None:
             old_timeout = self.serial.timeout
@@ -89,6 +140,16 @@ class HiwonderBoardController:
                 self.serial.timeout = old_timeout
 
     def move_servos(self, servo_commands: List[Tuple[int, int]], time_ms: int) -> bool:
+        """Move multiple servos to specified positions.
+
+        Args:
+            servo_commands: List of (servo_id, position) tuples.
+                Position is in range [0, 1000].
+            time_ms: Movement time in milliseconds.
+
+        Returns:
+            True if command was sent successfully.
+        """
         params: List[int] = [len(servo_commands), time_ms & 0xFF, (time_ms >> 8) & 0xFF]
         for servo_id, position in servo_commands:
             params.append(int(servo_id))
@@ -98,11 +159,24 @@ class HiwonderBoardController:
         return True
 
     def unload_servos(self, servo_ids: List[int]) -> bool:
+        """Unload (disable torque) for specified servos.
+
+        Args:
+            servo_ids: List of servo IDs to unload.
+
+        Returns:
+            True if command was sent successfully.
+        """
         params = [len(servo_ids)] + [int(i) for i in servo_ids]
         self._send(self.CMD_MULT_SERVO_UNLOAD, params)
         return True
 
     def get_battery_voltage(self) -> Optional[float]:
+        """Read the battery voltage.
+
+        Returns:
+            Battery voltage in volts, or None if read failed.
+        """
         self._send(self.CMD_GET_BATTERY_VOLTAGE)
         resp = self._read_response(timeout=1.0)
         if not resp or resp[1] != self.CMD_GET_BATTERY_VOLTAGE or resp[0] != 4:
@@ -110,7 +184,17 @@ class HiwonderBoardController:
         mv = resp[2] | (resp[3] << 8)
         return mv / 1000.0
 
-    def read_servo_positions(self, servo_ids: List[int]) -> Optional[List[Tuple[int, int]]]:
+    def read_servo_positions(
+        self, servo_ids: List[int]
+    ) -> Optional[List[Tuple[int, int]]]:
+        """Read current positions of specified servos.
+
+        Args:
+            servo_ids: List of servo IDs to read.
+
+        Returns:
+            List of (servo_id, position) tuples, or None if read failed.
+        """
         params = [len(servo_ids)] + [int(i) for i in servo_ids]
         self._send(self.CMD_MULT_SERVO_POS_READ, params)
         resp = self._read_response(timeout=1.0)
