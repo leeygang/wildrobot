@@ -104,13 +104,6 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
 
-    # Observation: linear velocity (linvel) availability
-    # - "sim": use simulated linvel (default)
-    # - "zero": force linvel to zeros (hardware-safe when no estimator exists)
-    # - "dropout": randomly zero linvel per-episode with probability linvel_dropout_prob
-    linvel_mode: str = "sim"
-    linvel_dropout_prob: float = 0.0  # Probability of zeroing linvel when mode="dropout"
-
     # Disturbance pushes (disabled by default)
     push_enabled: bool = False
     push_start_step_min: int = 20

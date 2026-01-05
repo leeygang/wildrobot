@@ -2,7 +2,7 @@
 """Export a policy bundle: policy.onnx + policy_spec.json + checksums.
 
 Usage:
-  uv run python playground_amp/export_policy_bundle.py \
+  uv run python playground_amp/exports/export_policy_bundle.py \
     --checkpoint playground_amp/checkpoints/policy_latest.pkl \
     --config playground_amp/configs/ppo_walking.yaml \
     --output-dir playground_amp/checkpoints/wildrobot_policy_bundle
@@ -30,7 +30,7 @@ from policy_contract.spec import (
     validate_spec,
 )
 
-from playground_amp.export_onnx import export_checkpoint_to_onnx, get_checkpoint_dims
+from playground_amp.exports.export_onnx import export_checkpoint_to_onnx, get_checkpoint_dims
 
 
 def export_policy_bundle(
@@ -116,7 +116,6 @@ def _build_policy_spec(
         observation=ObservationSpec(
             dtype="float32",
             layout_id="wr_obs_v1",
-            linvel_mode="zero",
             layout=layout,
         ),
         action=ActionSpec(
@@ -141,7 +140,6 @@ def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:
     return [
         ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
         ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
         ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),

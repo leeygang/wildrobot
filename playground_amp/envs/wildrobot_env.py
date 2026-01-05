@@ -50,15 +50,7 @@ from policy_contract.calib import JaxCalibOps
 from policy_contract.jax.state import PolicyState
 from policy_contract.layout import get_slices as get_obs_slices
 from playground_amp.sim_adapter.mjx_signals import MjxSignalsAdapter
-from policy_contract.spec import (
-    ActionSpec,
-    JointSpec,
-    ModelSpec,
-    ObservationSpec,
-    ObsFieldSpec,
-    PolicySpec,
-    RobotSpec,
-)
+from policy_contract.spec import PolicySpec
 from playground_amp.cal.cal import ControlAbstractionLayer
 from playground_amp.cal.specs import Pose3D
 from playground_amp.cal.types import CoordinateFrame
@@ -77,6 +69,7 @@ from playground_amp.training.metrics_registry import (
     METRICS_VEC_KEY,
     NUM_METRICS,
 )
+from playground_amp.policy_contract.spec_builder import build_policy_spec
 
 
 # =============================================================================
@@ -229,7 +222,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
-        self._policy_spec = self._build_policy_spec()
+        self._policy_spec = build_policy_spec(self._config, self._robot_config)
         self._signals_adapter = MjxSignalsAdapter(
             self._mj_model,
             self._robot_config,
@@ -318,16 +311,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 rng=jp.zeros((2,)),
             )
 
-        linvel_obs_mask, push_schedule = self._sample_linvel_obs_mask(push_schedule)
-
         # Build observation using default pose action (matches ctrl at reset)
         default_action = JaxCalibOps.ctrl_to_policy_action(
             spec=self._policy_spec,
             ctrl_rad=self._default_joint_qpos,
         )
-        obs = self._get_obs(
-            data, default_action, velocity_cmd, linvel_obs_mask=linvel_obs_mask
-        )
+        obs = self._get_obs(data, default_action, velocity_cmd)
 
         # Initial reward and done
         reward = jp.zeros(())
@@ -406,7 +395,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=root_pose.height,  # Actual root height for AMP features
-            linvel_obs_mask=linvel_obs_mask,
             push_schedule=push_schedule,
         )
 
@@ -487,7 +475,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd = wr.velocity_cmd
         step_count = wr.step_count
         prev_action = wr.prev_action
-        linvel_obs_mask = wr.linvel_obs_mask
 
         raw_action = action
         policy_state = PolicyState(prev_action=prev_action)
@@ -526,7 +513,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd,
             prev_root_pos,
             prev_root_quat,
-            linvel_obs_mask=linvel_obs_mask,
         )
 
         # Get previous foot positions for slip computation from WildRobotInfo
@@ -592,7 +578,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
-            linvel_obs_mask=linvel_obs_mask,
             push_schedule=wr.push_schedule,
         )
 
@@ -662,7 +647,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
-            linvel_obs_mask=reset_wr_info.linvel_obs_mask,
             push_schedule=reset_wr_info.push_schedule,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
@@ -706,18 +690,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd: jax.Array,
         prev_root_pos: Optional[jax.Array] = None,
         prev_root_quat: Optional[jax.Array] = None,
-        linvel_obs_mask: Optional[jax.Array] = None,
     ) -> jax.Array:
         """Build observation vector.
 
         v0.12.x: Policy observations now come from contract Signals + frame helpers.
         Angular velocity is derived from the IMU gyro sensor (hardware-consistent).
-        Linear velocity is forced to zero in the policy contract (privileged in sim).
+        Linear velocity is privileged-only (sim reward/metrics), not part of the actor observation.
 
         Observation includes:
         - Base orientation (gravity vector in local frame): 3
         - Base angular velocity (heading-local, from FD or qvel): 3
-        - Base linear velocity (heading-local, from FD or qvel): 3
         - Joint positions (actuated): 8
         - Joint velocities (actuated): 8
         - Foot switches (toe/heel L/R): 4
@@ -725,7 +707,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         - Velocity command: 1
         - Padding: 1
 
-        Total: 39
+        Total: 36
 
         Args:
             data: MJX simulation data
@@ -735,7 +717,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_root_quat: Previous root quaternion for FD velocity (optional)
 
         Returns:
-            Observation vector (39,)
+            Observation vector (36,)
         """
         signals = self._signals_adapter.read(data)
         policy_state = PolicyState(prev_action=action)
@@ -744,35 +726,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             state=policy_state,
             signals=signals,
             velocity_cmd=velocity_cmd,
-        )
-
-    def _sample_linvel_obs_mask(
-        self, push_schedule: DisturbanceSchedule
-    ) -> tuple[jax.Array, DisturbanceSchedule]:
-        """Sample per-episode linvel observation mask.
-
-        This is a Sim2Real helper: real hardware may not have a reliable base
-        linear velocity estimate, so we can train with linvel forced to zero
-        (or dropped out) while keeping the observation layout unchanged.
-        """
-        mode = self._config.env.linvel_mode
-        if mode == "sim":
-            return jp.ones(()), push_schedule
-        if mode == "zero":
-            return jp.zeros(()), push_schedule
-        if mode == "dropout":
-            p = jp.clip(self._config.env.linvel_dropout_prob, 0.0, 1.0)
-            rng, key = jax.random.split(push_schedule.rng)
-            keep = jax.random.bernoulli(key, p=1.0 - p).astype(jp.float32)
-            updated_schedule = DisturbanceSchedule(
-                start_step=push_schedule.start_step,
-                end_step=push_schedule.end_step,
-                force_xy=push_schedule.force_xy,
-                rng=rng,
-            )
-            return keep.reshape(()), updated_schedule
-        raise ValueError(
-            f"Unknown env.linvel_mode={mode!r} (expected: 'sim', 'zero', 'dropout')"
         )
 
     def _get_reward(
@@ -1188,69 +1141,3 @@ class WildRobotEnv(mjx_env.MjxEnv):
         See ObsLayout class for component breakdown.
         """
         return self._policy_spec.model.obs_dim
-
-    def _build_policy_spec(self) -> PolicySpec:
-        action_dim = self._robot_config.action_dim
-
-        layout = [
-            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
-            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-            ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
-            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
-            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
-            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
-            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
-            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
-            ObsFieldSpec(name="padding", size=1, units="unused"),
-        ]
-
-        joints: dict[str, JointSpec] = {}
-        for item in self._robot_config.actuated_joints:
-            name = str(item.get("name"))
-            rng = item.get("range") or [0.0, 0.0]
-            if len(rng) != 2:
-                raise ValueError(f"Invalid range for joint '{name}': {rng}")
-            joints[name] = JointSpec(
-                range_min_rad=float(rng[0]),
-                range_max_rad=float(rng[1]),
-                mirror_sign=float(item.get("mirror_sign", 1.0)),
-                max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
-            )
-
-        postprocess_id = "lowpass_v1" if self._config.env.action_filter_alpha > 0.0 else "none"
-        postprocess_params = {}
-        if postprocess_id == "lowpass_v1":
-            postprocess_params["alpha"] = float(self._config.env.action_filter_alpha)
-
-        return PolicySpec(
-            contract_name="wildrobot_policy",
-            contract_version="1.0.0",
-            spec_version=1,
-            model=ModelSpec(
-                format="onnx",
-                input_name="observation",
-                output_name="action",
-                dtype="float32",
-                obs_dim=sum(field.size for field in layout),
-                action_dim=action_dim,
-            ),
-            robot=RobotSpec(
-                robot_name=self._robot_config.robot_name,
-                actuator_names=list(self._robot_config.actuator_names),
-                joints=joints,
-            ),
-            observation=ObservationSpec(
-                dtype="float32",
-                layout_id="wr_obs_v1",
-                linvel_mode="zero",
-                layout=layout,
-            ),
-            action=ActionSpec(
-                dtype="float32",
-                bounds={"min": -1.0, "max": 1.0},
-                postprocess_id=postprocess_id,
-                postprocess_params=postprocess_params,
-                mapping_id="pos_target_rad_v1",
-            ),
-            provenance=None,
-        )

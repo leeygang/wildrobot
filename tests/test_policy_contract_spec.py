@@ -41,7 +41,6 @@ def _valid_spec_dict() -> dict:
         "observation": {
             "dtype": "float32",
             "layout_id": "wr_obs_v1",
-            "linvel_mode": "zero",
             "layout": [
                 {"name": "gravity_local", "size": 3, "frame": "local", "units": "unit_vector"},
                 {"name": "angvel_heading_local", "size": 3, "frame": "heading_local", "units": "rad_s"},
@@ -88,12 +87,6 @@ def test_unknown_ids_raise() -> None:
     data["observation"]["layout_id"] = "bad_layout"
     spec = PolicySpec.from_json(json.dumps(data))
     with pytest.raises(ValueError, match="layout_id"):
-        validate_spec(spec)
-
-    data = _valid_spec_dict()
-    data["observation"]["linvel_mode"] = "bad_linvel"
-    spec = PolicySpec.from_json(json.dumps(data))
-    with pytest.raises(ValueError, match="linvel_mode"):
         validate_spec(spec)
 
     data = _valid_spec_dict()

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 
 SUPPORTED_LAYOUT_IDS = {"wr_obs_v1"}
-SUPPORTED_LINVEL_MODES = {"zero", "sim", "dropout"}
 SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
@@ -49,7 +49,6 @@ class ObsFieldSpec:
 class ObservationSpec:
     dtype: str
     layout_id: str
-    linvel_mode: str
     layout: List[ObsFieldSpec] = field(default_factory=list)
 
 
@@ -107,7 +106,6 @@ class PolicySpec:
             "observation": {
                 "dtype": self.observation.dtype,
                 "layout_id": self.observation.layout_id,
-                "linvel_mode": self.observation.linvel_mode,
                 "layout": [
                     {
                         "name": field.name,
@@ -127,6 +125,18 @@ class PolicySpec:
             },
             "provenance": self.provenance,
         }
+
+
+def canonical_json_dumps(value: Any) -> str:
+    """Serialize JSON in a stable, hashable form."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def policy_spec_hash(spec: Union[PolicySpec, Dict[str, Any]]) -> str:
+    """Stable fingerprint for a PolicySpec (used to prevent resume drift)."""
+    spec_dict = spec.to_json_dict() if isinstance(spec, PolicySpec) else spec
+    payload = canonical_json_dumps(spec_dict).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -252,12 +262,29 @@ def _validate_robot(robot: RobotSpec) -> None:
 def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
     if obs.layout_id not in SUPPORTED_LAYOUT_IDS:
         raise ValueError(f"observation.layout_id unsupported: {obs.layout_id}")
-    if obs.linvel_mode not in SUPPORTED_LINVEL_MODES:
-        raise ValueError(f"observation.linvel_mode unsupported: {obs.linvel_mode}")
     if not isinstance(obs.dtype, str) or not obs.dtype:
         raise ValueError("observation.dtype must be a non-empty string")
     if not obs.layout:
         raise ValueError("observation.layout must be a non-empty list")
+
+    if obs.layout_id == "wr_obs_v1":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v1':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
 
     total = 0
     for idx, field in enumerate(obs.layout):
@@ -370,7 +397,6 @@ def _parse_observation(data: Dict[str, Any]) -> ObservationSpec:
     return ObservationSpec(
         dtype=_require_str(data, "dtype", context="observation"),
         layout_id=_require_str(data, "layout_id", context="observation"),
-        linvel_mode=_require_str(data, "linvel_mode", context="observation"),
         layout=layout,
     )
 

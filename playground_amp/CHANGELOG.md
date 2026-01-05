@@ -7,11 +7,32 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.12.1] - 2026-01-05: Standing policy_contract Baseline (v0.12.1)
+
+### Contract Migration
+- Actor observation/action semantics now flow through `policy_contract` (shared JAX/NumPy implementation + parity tests).
+- Resume is now guarded by a `policy_spec_hash` stored in checkpoints to prevent silently resuming with a different policy contract.
+
+### Config Updates
+- `playground_amp/configs/ppo_standing.yaml`: bump training version to v0.12.1.
+- `policy_contract`: remove actor linvel from `wr_obs_v1` (linvel stays privileged-only for reward/metrics).
+- `playground_amp/configs/*.yaml`: remove `env.linvel_mode` / `env.linvel_dropout_prob` (no actor linvel to mask).
+- `playground_amp/configs/ppo_standing.yaml`: set `wandb.mode: offline` by default (switch to `online` when desired).
+
+### Plan
+1. Validate assets + environment:
+   `uv run python scripts/validate_training_setup.py`
+2. Quick smoke test (no resume):
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp --verify`
+3. Full standing run from scratch (no resume):
+   `uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp`
+
+---
+
 ## [v0.11.5] - 2026-01-04: Standing Sim2Real Prep (v0.11.5)
 
 ### Config Updates
 - `playground_amp/configs/ppo_standing.yaml`: bump training version to v0.11.5.
-- `playground_amp/configs/ppo_standing.yaml`: enable linvel dropout (`linvel_mode: dropout`, `linvel_dropout_prob: 0.2`) for hardware robustness.
 - `playground_amp/configs/ppo_standing.yaml`: document resume command for `playground_amp/checkpoints/ppo_standing_v00113_final.pkl`.
 
 ### Plan
@@ -104,7 +125,7 @@ uv run mjpython playground_amp/training/visualize_policy.py \
 
 #### Plan Update (2026-01-03, Height Shaping + Posture)
 - Goal: Reduce squat-walk while keeping conservative walking stable.
-- Keep: `env.linvel_mode: sim` (no Sim2Real masking for this run).
+- (Historical) used sim linvel; actor masking was not applied in this run.
 - Change (code): height shaping is now one-sided (no penalty above `env.target_height`) in `playground_amp/envs/wildrobot_env.py`.
 - Change (config): set `env.target_height: 0.46` (waist/root height) in `playground_amp/configs/ppo_walking_conservative.yaml`.
 

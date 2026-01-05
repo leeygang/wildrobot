@@ -18,7 +18,7 @@ def _valid_spec_dict() -> dict:
             "input_name": "observation",
             "output_name": "action",
             "dtype": "float32",
-            "obs_dim": 39,
+            "obs_dim": 36,
             "action_dim": 8,
         },
         "robot": {
@@ -87,11 +87,9 @@ def _valid_spec_dict() -> dict:
         "observation": {
             "dtype": "float32",
             "layout_id": "wr_obs_v1",
-            "linvel_mode": "zero",
             "layout": [
                 {"name": "gravity_local", "size": 3, "frame": "local", "units": "unit_vector"},
                 {"name": "angvel_heading_local", "size": 3, "frame": "heading_local", "units": "rad_s"},
-                {"name": "linvel_heading_local", "size": 3, "frame": "heading_local", "units": "m_s"},
                 {"name": "joint_pos_normalized", "size": 8, "units": "normalized_-1_1"},
                 {"name": "joint_vel_normalized", "size": 8, "units": "normalized_-1_1"},
                 {"name": "foot_switches", "size": 4, "units": "bool_as_float"},
@@ -169,7 +167,6 @@ def test_build_observation_parity(spec: PolicySpec) -> None:
     rng = np.random.RandomState(2)
     gravity = rng.uniform(-1.0, 1.0, size=(3,)).astype(np.float32)
     angvel = rng.uniform(-2.0, 2.0, size=(3,)).astype(np.float32)
-    linvel = rng.uniform(-1.0, 1.0, size=(3,)).astype(np.float32)
     joint_pos = rng.uniform(-1.0, 1.0, size=(spec.model.action_dim,)).astype(np.float32)
     joint_vel = rng.uniform(-1.0, 1.0, size=(spec.model.action_dim,)).astype(np.float32)
     foot = rng.uniform(0.0, 1.0, size=(4,)).astype(np.float32)
@@ -180,7 +177,6 @@ def test_build_observation_parity(spec: PolicySpec) -> None:
         spec=spec,
         gravity_local=gravity,
         angvel_heading_local=angvel,
-        linvel_heading_local=linvel,
         joint_pos_normalized=joint_pos,
         joint_vel_normalized=joint_vel,
         foot_switches=foot,
@@ -192,7 +188,6 @@ def test_build_observation_parity(spec: PolicySpec) -> None:
         spec=spec,
         gravity_local=jax.asarray(gravity),
         angvel_heading_local=jax.asarray(angvel),
-        linvel_heading_local=jax.asarray(linvel),
         joint_pos_normalized=jax.asarray(joint_pos),
         joint_vel_normalized=jax.asarray(joint_vel),
         foot_switches=jax.asarray(foot),

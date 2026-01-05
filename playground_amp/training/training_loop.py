@@ -763,6 +763,8 @@ def _validate_resume_checkpoint(
     ckpt_metrics: Dict[str, Any],
     ckpt_config: Dict[str, Any],
     config: TrainingConfig,
+    *,
+    current_policy_spec_hash: str,
 ) -> None:
     """Log checkpoint info and validate compatibility with current config.
 
@@ -878,6 +880,22 @@ def _validate_resume_checkpoint(
         ):
             warn_mismatch.append("network_arch_missing_in_ckpt")
 
+    # Policy contract / observation-action semantics guard:
+    # If the policy contract changed, resuming will silently break behavior.
+    ckpt_policy_spec_hash = ckpt_config.get("policy_spec_hash")
+    if not ckpt_policy_spec_hash:
+        raise ValueError(
+            "Resume checkpoint is missing policy_contract fingerprint (policy_spec_hash).\n"
+            "This checkpoint was created before the policy_contract migration, so resuming is unsafe.\n"
+            "Start a fresh run (no --resume) to train under the current contract."
+        )
+    if ckpt_policy_spec_hash != current_policy_spec_hash:
+        raise ValueError(
+            "Resume checkpoint policy_contract mismatch (hard):\n"
+            f"  - policy_spec_hash: ckpt={ckpt_policy_spec_hash}, current={current_policy_spec_hash}\n"
+            "Start a fresh run (no --resume) to train under the current contract."
+        )
+
     if hard_mismatch:
         mismatch_lines = [
             f"  - {key}: ckpt={ckpt_value}, current={current_value}"
@@ -927,12 +945,15 @@ def train(
     amp_enabled = config.amp.enabled
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
-    # Get observation dimension from ObsLayout (single source of truth)
-    from playground_amp.envs.wildrobot_env import ObsLayout
+    from playground_amp.policy_contract.spec_builder import build_policy_spec
 
-    obs_dim = ObsLayout.total_size()
     robot_config = get_robot_config()
-    action_dim = robot_config.action_dim
+    spec = build_policy_spec(config, robot_config)
+    obs_dim = spec.model.obs_dim
+    action_dim = spec.model.action_dim
+    from policy_contract.spec import policy_spec_hash
+
+    current_spec_hash = policy_spec_hash(spec)
 
     print("=" * 60)
     print(f"Unified Training ({mode_str})")
@@ -1022,7 +1043,12 @@ def train(
         print("=" * 60)
         print(f"  Checkpoint iteration: {ckpt_iteration}")
         print(f"  Checkpoint steps: {ckpt_steps:,}")
-        _validate_resume_checkpoint(ckpt_metrics, ckpt_config, config)
+        _validate_resume_checkpoint(
+            ckpt_metrics,
+            ckpt_config,
+            config,
+            current_policy_spec_hash=current_spec_hash,
+        )
         print("=" * 60)
 
         # Restore state from checkpoint

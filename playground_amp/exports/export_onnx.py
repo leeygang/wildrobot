@@ -12,7 +12,7 @@ The exported ONNX model implements *deterministic* action selection:
 That matches Brax's `NormalTanhDistribution.mode()` for deterministic inference.
 
 Usage:
-  uv run python playground_amp/export_onnx.py \
+  uv run python playground_amp/exports/export_onnx.py \
     --checkpoint playground_amp/checkpoints/ppo_standing_v00113_final.pkl \
     --output playground_amp/checkpoints/ppo_standing_v00113_final.onnx
 

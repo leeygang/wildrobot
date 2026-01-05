@@ -108,12 +108,6 @@ def _parse_list_to_tuple(value: Any, default: Tuple) -> Tuple[int, ...]:
 def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
-    # Require explicit linvel_mode in configs for clarity/compatibility
-    if "linvel_mode" not in env:
-        raise KeyError(
-            "training config error: 'env.linvel_mode' is required. "
-            "Valid values: 'sim', 'zero', 'dropout'."
-        )
 
     return EnvConfig(
         model_path=env.get("model_path", "assets/scene_flat_terrain.xml"),
@@ -132,8 +126,6 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         foot_switch_threshold=env.get("foot_switch_threshold", 2.0),
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
-        linvel_mode=env.get("linvel_mode"),
-        linvel_dropout_prob=env.get("linvel_dropout_prob", 0.0),
         push_enabled=env.get("push_enabled", False),
         push_start_step_min=env.get("push_start_step_min", 20),
         push_start_step_max=env.get("push_start_step_max", 200),

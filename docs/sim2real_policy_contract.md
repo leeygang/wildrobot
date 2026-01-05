@@ -11,9 +11,9 @@ Sim2real failures in legged RL are often *interface* failures, not “RL failure
 - Asset/joint order drift (actuator ordering between MJCF, training, runtime)
 - Hidden runtime changes (different filters, clamps, delays) invalidate a trained policy
 
-In this repo, training already has an explicit contract in code (`ObsLayout`, `ControlAbstractionLayer`), but the hardware runtime currently reconstructs those semantics manually, which risks mismatch.
+In this repo, the policy-facing contract now lives in `policy_contract/`, and both training + runtime import it. The remaining risk is any ad-hoc runtime logic outside the contract (filters, clamps, timing) that can still drift.
 
-Long-term, the goal is to **move contract semantics (CAL + ObsLayout) into `policy_contract/`** and leave training with a MuJoCo-specific **sim adapter** (not a second copy of the contract).
+Long-term, keep training with a MuJoCo-specific **sim adapter** (not a second copy of the contract) and progressively shrink sim-only helpers (legacy CAL usage) to reward/termination/metrics only.
 
 ## 2) Goals / Non‑Goals
 
@@ -32,7 +32,7 @@ Long-term, the goal is to **move contract semantics (CAL + ObsLayout) into `poli
 ## 3) Current Repo Reality (what we must match)
 
 ### Training semantics (canonical)
-- Observations are built by `playground_amp.envs.wildrobot_env.ObsLayout` and `_get_obs()`.
+- Actor observations are built via `policy_contract` (shared JAX/NumPy) from a `Signals` struct.
 - Joint positions/velocities in observations are **normalized**:
   - `joint_pos = cal.get_joint_positions(..., normalize=True)` → ~[-1, 1] based on joint ranges
   - `joint_vel = cal.get_joint_velocities(..., normalize=True)` → clipped/normalized by velocity limits
@@ -44,11 +44,10 @@ Long-term, the goal is to **move contract semantics (CAL + ObsLayout) into `poli
     - maps to **physical control target angles (radians)** using joint centers/spans
 - Optional action filtering:
   - `filtered_action = alpha * prev_action + (1 - alpha) * raw_action`
-- Sim2real helper for linvel (privileged signals):
-  - training may use `env.linvel_mode = sim|zero|dropout` internally, but the exported **policy contract always uses** `linvel_mode = "zero"` so the actor never depends on privileged linvel.
+- Linear velocity (linvel) is treated as **privileged-only** (reward/metrics/critic). It is not part of the actor observation contract.
 - IMU sensors in sim (available in MJCF):
   - `chest_imu_quat` (MuJoCo `framequat`) and `chest_imu_gyro` (MuJoCo `gyro`) exist in `assets/wildrobot.xml`.
-  - **Current training code** uses `chest_imu_quat` for gravity, but uses finite-difference / `qvel` for angular velocity and linear velocity.
+  - **Current training code** uses `chest_imu_quat` for gravity, and uses the gyro sensor path for actor-facing angular velocity.
   - **Migration goal** is to use the gyro sensor path for actor-facing angular velocity to match hardware semantics (BNO085 gyro) and reduce sim↔real drift.
 
 ### Runtime today (risk)
@@ -86,7 +85,7 @@ Training owns learning. Runtime owns hardware integration. The contract is the b
 │             ▲                 │                     │                 │
 │             │                 ▼                     ▼                 │
 │        ctrl (rad)     Policy Contract (shared)   Export Pipeline       │
-│             │     (ObsLayout + CAL semantics)  (ONNX + policy_spec)    │
+│             │     (frames + calib + layout)    (ONNX + policy_spec)    │
 └─────────────┼───────────────────────────────────────────┬─────────────┘
               │                                           │
               │                           Policy Bundle Artifact
@@ -176,7 +175,7 @@ We use these frames:
 
 Notes:
 - `gravity_local` is expressed in the local/body frame to capture roll/pitch tilt.
-- `linvel_heading_local` / `angvel_heading_local` are expressed in heading-local to be yaw-invariant and not tilt with the body.
+- `angvel_heading_local` is expressed in heading-local to be yaw-invariant and not tilt with the body.
 - Your IMU quaternion convention (body→world vs world→body) must be specified in code once (e.g., in `policy_contract/*/frames.py`) and then reused everywhere.
 
 ### 5.1 Contract versioning
@@ -216,7 +215,6 @@ Each observation component must declare:
 For Stage 1, the canonical layout is:
 - gravity_local (3) (unit-ish vector)
 - angvel_heading_local (3)
-- linvel_heading_local (3) (often zero on hardware)
 - joint_pos_normalized (N)
 - joint_vel_normalized (N)
 - foot_switches (4)
@@ -318,11 +316,9 @@ This is an example shape; values shown are illustrative.
   "observation": {
     "dtype": "float32",
     "layout_id": "wr_obs_v1",
-    "linvel_mode": "zero",
     "layout": [
       {"name": "gravity_local", "size": 3, "frame": "local", "units": "unit_vector"},
       {"name": "angvel_heading_local", "size": 3, "frame": "heading_local", "units": "rad_s"},
-      {"name": "linvel_heading_local", "size": 3, "frame": "heading_local", "units": "m_s"},
       {"name": "joint_pos_normalized", "size": 8, "units": "normalized_-1_1"},
       {"name": "joint_vel_normalized", "size": 8, "units": "normalized_-1_1"},
       {"name": "foot_switches", "size": 4, "units": "bool_as_float"},
@@ -355,7 +351,7 @@ This is an example shape; values shown are illustrative.
 Notes:
 - `model.format` refers to the **deployed inference artifact** inside the bundle (Stage 1 uses ONNX). Training can use a different format (e.g., a Brax PPO `.pkl` checkpoint); that belongs under `provenance.source_checkpoint`.
 - Only a subset of joints is shown under `robot.joints` above; in practice it must include **all** `actuator_names`.
-- Keep “behavior knobs” minimal and enumerated: `observation.layout_id`, `observation.linvel_mode`, `action.postprocess_id`, `action.mapping_id`.
+- Keep “behavior knobs” minimal and enumerated: `observation.layout_id`, `action.postprocess_id`, `action.mapping_id`.
 - `action.mapping_id = "pos_target_rad_v1"` means: clip → mirror_sign → scale to joint center/span in radians.
 - For `wr_obs_v1`, `prev_action` is required by definition and stored in `PolicyState` (initialized to zeros unless the contract version introduces another init mode).
 
@@ -441,7 +437,6 @@ def build_observation(
 ```
 
 Behavior is determined by spec enums, not ad-hoc runtime logic:
-- If `observation.linvel_mode == "zero"`, the builder injects zeros for the `linvel_heading_local` slice.
 - If `observation.layout_id == "wr_obs_v1"`, the builder requires `state.prev_action` and includes it in the `prev_action` slice.
 
 Backends:
@@ -494,7 +489,7 @@ Minimum required checks:
 - `spec.robot.actuator_names == mjcf_actuator_names`
 - `spec.model.obs_dim == onnx_input_dim`
 - `spec.model.action_dim == onnx_output_dim`
-- supported enums/ids for `observation.layout_id`, `observation.linvel_mode`, `action.postprocess_id`, `action.mapping_id`
+- supported enums/ids for `observation.layout_id`, `action.postprocess_id`, `action.mapping_id`
 
 ### 5.7.6 Signals interface (IO boundary)
 
@@ -507,7 +502,7 @@ Stage 1 recommended minimal signals:
 - `joint_vel_rad_s` (N,) float32 (or zeros if not available)
 - `foot_switches` (4,) float32/bool
 
-Linear velocity estimates can exist for logging or privileged training signals, but **the policy contract always uses `linvel_mode = "zero"`**, so `linvel_heading_local` is zeroed in the observation builder.
+Linear velocity estimates can exist for logging or privileged training signals, but they are intentionally **outside** the actor policy contract.
 
 ## 5.8 SimIO / HardwareIO API (IO boundary)
 
@@ -548,7 +543,7 @@ class Signals:
 
 Notes:
 - `Signals` is intentionally raw/physical. `policy_contract` converts it to normalized observation features.
-- If `observation.linvel_mode == "zero"`, `Signals` does not need to carry linear velocity.
+  - Linear velocity is privileged-only, so `Signals` does not need to carry linvel for Stage 1.
 
 ### 5.8.3 SimIO vs HardwareIO differences
 
@@ -568,13 +563,13 @@ Proposed module layout:
   - `PolicySpec`, `RobotSpec`, `ObsSpec`, `ActionSpec`
   - JSON schema + load/save + validation
 - `policy_contract/numpy/obs.py`
-  - `build_observation(...)` matching training’s `ObsLayout.build_obs`
+  - `build_observation(...)` implementing the actor observation contract
   - frame transforms helpers (quat→gravity, heading_local transforms)
 - `policy_contract/numpy/calib.py`
   - “CAL-lite”: reads joint ranges + mirror_sign + velocity limits from `robot_config.yaml`
   - `normalize_joint_pos/vel`, `policy_action_to_ctrl`
 - `policy_contract/jax/obs.py`
-  - JAX-native implementation used by training (thin wrapper around existing `ObsLayout` semantics)
+  - JAX-native implementation used by training (same semantics as NumPy builder)
 - `policy_contract/jax/calib.py`
   - JAX-native action→ctrl mapping (can delegate to training CAL initially)
 - `policy_contract/tests/` (fast, deterministic)
@@ -597,7 +592,7 @@ wildrobot/
 │  └─ robot_config.yaml
 ├─ training/
 │  ├─ envs/
-│  │  └─ wildrobot_env.py                 # canonical ObsLayout + training semantics
+│  │  └─ wildrobot_env.py                 # env (reward/termination/metrics) calls policy_contract for actor obs/actions
 │  ├─ sim_adapter/
 │  │  ├─ mujoco_extract.py                # MuJoCo/MJX → raw signals for policy_contract
 │  │  └─ indexing.py                      # model indexing (qpos/qvel addrs, ids)
@@ -701,7 +696,7 @@ This section defines the concrete “seams” between training, export, and runt
   - `policy_action_to_ctrl(action) -> ctrl_targets_rad`
 - `policy_contract/numpy/obs.py` (NumPy backend)
   - `build_observation(...) -> obs (float32, shape (obs_dim,))`
-  - should be a 1:1 semantic mirror of training’s `ObsLayout.build_obs` + `_get_obs` conventions
+  - should be a 1:1 semantic mirror of the JAX builder used in training (`policy_contract/jax/obs.py`)
 - `policy_contract/jax/*` (JAX backend)
   - used by training and parity tests; should not be imported by runtime
 
@@ -807,8 +802,8 @@ Add a single canonical exporter entry point:
   - exports deterministic ONNX (reuse `playground_amp/export_onnx.py`)
   - generates `policy_spec.json` from:
     - `assets/robot_config.yaml`
-    - `ObsLayout` breakdown
-    - training env knobs that affect inference (action_filter_alpha, linvel_mode expectation, etc.)
+    - policy_contract observation layout breakdown
+    - training env knobs that affect inference (action_filter_alpha, etc.)
   - writes bundle folder
 
 Stage 1 gate: exported bundle passes runtime validation + a short hardware smoke test.
@@ -849,7 +844,7 @@ At export time (before copying to robot):
 ### Scope rule: what belongs in `PolicySpec` (and what does not)
 
 To keep the contract clean, treat `PolicySpec` as **only what the model expects at inference time**:
-- observation layout + dims + model-visible modes (for Stage 1: `linvel_mode = "zero"` in the contract)
+- observation layout + dims
 - action dims + postprocess + mapping semantics
 - actuator ordering and joint ranges needed for normalization/mapping
 
@@ -861,15 +856,11 @@ Explicit non-goals for `PolicySpec`:
 With this scoping, the rule becomes simple:
 - **Everything in `PolicySpec` must be enforced consistently by training (JAX) and runtime (NumPy)** via `policy_contract`.
 
-### Curriculum + privileged signals (recommended pattern)
+### Privileged signals (recommended pattern)
 
-If you want a curriculum (`sim → dropout → zero`) without changing the deployed contract:
-- Keep `PolicySpec.observation.linvel_mode = "zero"` (deployment contract).
-- In training, treat true linvel as **privileged**:
-  - still use it for rewards, diagnostics, or critic-only inputs,
-  - but the policy observation fed to the actor is constructed by `policy_contract` and thus always sees linvel as zero.
-
-This avoids “last-minute” drift and keeps sim metrics more predictive for hardware deployment.
+If you want to use additional simulator state (including linvel), treat it as **privileged**:
+- still use it for rewards, diagnostics, or critic-only inputs
+- do not feed it into the actor observation tensor defined by `PolicySpec`
 
 ## 9.1) Human-like walking (AMP + AMASS): contract discipline
 
@@ -894,7 +885,7 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 
 ### 10.1 Parity tests (unit)
 - Generate deterministic synthetic inputs and assert:
-  - `build_observation_numpy(...)` matches training’s `ObsLayout.build_obs(...)`
+  - `policy_contract/numpy/obs.build_observation(...)` matches `policy_contract/jax/obs.build_observation(...)`
   - numpy CAL-lite `policy_action_to_ctrl(...)` matches training CAL on the same robot_config
 
 ### 10.2 Integration test (sim playback)
@@ -914,7 +905,6 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 3) **Move runtime action mapping** to contract (mirror_sign + joint range mapping):
    - stop using `action_scale_rad * action` as “delta around zero” unless explicitly trained that way.
 4) **Add parity tests** so changes can’t regress silently.
-5) Keep `linvel_mode = "zero"` in the bundle spec for Stage 1 deployment (required).
 
 ## 12) Open Questions (to decide together)
 

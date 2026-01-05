@@ -43,11 +43,6 @@ def main() -> None:
     bundle = PolicyBundle.load(Path(cfg.policy_resolved_path).parent)
     spec = bundle.spec
     validate_spec(spec)
-    if spec.observation.linvel_mode != "zero":
-        raise ValueError(
-            "Runtime requires linvel_mode='zero' until a hardware estimator is available. "
-            f"Found: {spec.observation.linvel_mode}"
-        )
 
     policy = OnnxPolicy(
         str(bundle.model_path),

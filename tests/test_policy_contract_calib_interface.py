@@ -20,7 +20,7 @@ def test_numpy_calib_interface() -> None:
                 "input_name": "observation",
                 "output_name": "action",
                 "dtype": "float32",
-                "obs_dim": 39,
+                "obs_dim": 15,
                 "action_dim": 1,
             },
             "robot": {
@@ -38,11 +38,9 @@ def test_numpy_calib_interface() -> None:
             "observation": {
                 "dtype": "float32",
                 "layout_id": "wr_obs_v1",
-                "linvel_mode": "zero",
                 "layout": [
                     {"name": "gravity_local", "size": 3},
                     {"name": "angvel_heading_local", "size": 3},
-                    {"name": "linvel_heading_local", "size": 3},
                     {"name": "joint_pos_normalized", "size": 1},
                     {"name": "joint_vel_normalized", "size": 1},
                     {"name": "foot_switches", "size": 4},
@@ -85,7 +83,7 @@ def test_jax_calib_interface() -> None:
                 "input_name": "observation",
                 "output_name": "action",
                 "dtype": "float32",
-                "obs_dim": 39,
+                "obs_dim": 15,
                 "action_dim": 1,
             },
             "robot": {
@@ -103,11 +101,9 @@ def test_jax_calib_interface() -> None:
             "observation": {
                 "dtype": "float32",
                 "layout_id": "wr_obs_v1",
-                "linvel_mode": "zero",
                 "layout": [
                     {"name": "gravity_local", "size": 3},
                     {"name": "angvel_heading_local", "size": 3},
-                    {"name": "linvel_heading_local", "size": 3},
                     {"name": "joint_pos_normalized", "size": 1},
                     {"name": "joint_vel_normalized", "size": 1},
                     {"name": "foot_switches", "size": 4},

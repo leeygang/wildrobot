@@ -64,9 +64,6 @@ try:
             foot_contacts: Normalized foot contact forces (4,)
             root_height: Root height after this step (scalar)
 
-            # Observation masking (Sim2Real)
-            linvel_obs_mask: 1.0 if linvel is valid, 0.0 if forced to zero
-
             # Disturbance pushes (episode-constant schedule)
             push_schedule: DisturbanceSchedule
         """
@@ -87,7 +84,6 @@ try:
         # AMP features (post-step values)
         foot_contacts: jnp.ndarray  # shape=(4,)
         root_height: jnp.ndarray  # shape=()
-        linvel_obs_mask: jnp.ndarray  # shape=()
         push_schedule: DisturbanceSchedule
 
 except ImportError:
@@ -106,7 +102,6 @@ except ImportError:
         prev_right_foot_pos: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
-        linvel_obs_mask: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -138,7 +133,6 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_right_foot_pos": (3,),
         "foot_contacts": (4,),
         "root_height": (),
-        "linvel_obs_mask": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

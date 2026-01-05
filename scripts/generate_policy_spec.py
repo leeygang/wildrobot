@@ -43,7 +43,6 @@ def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:
     return [
         ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
         ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
         ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
@@ -81,7 +80,6 @@ def generate_policy_spec(*, config_path: Path, robot_config_path: Path) -> Polic
     robot_cfg = _get_robot_config(_load_yaml(robot_config_path))
 
     action_filter_alpha = float(env.get("action_filter_alpha", 0.0))
-    linvel_mode = "zero"
 
     joints = _build_joints(robot_cfg)
     actuator_names = list(joints.keys())
@@ -114,7 +112,6 @@ def generate_policy_spec(*, config_path: Path, robot_config_path: Path) -> Polic
         observation=ObservationSpec(
             dtype="float32",
             layout_id="wr_obs_v1",
-            linvel_mode=linvel_mode,
             layout=layout,
         ),
         action=ActionSpec(

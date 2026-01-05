@@ -22,6 +22,8 @@ from typing import Any, Dict, Optional
 
 import jax
 
+from policy_contract.spec import canonical_json_dumps, policy_spec_hash
+
 
 def save_checkpoint(
     state: Any,
@@ -30,6 +32,7 @@ def save_checkpoint(
     checkpoint_dir: str,
     is_best: bool = False,
     metrics: Optional[Any] = None,
+    policy_spec: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Save training checkpoint.
 
@@ -55,6 +58,7 @@ def save_checkpoint(
         checkpoint_dir=checkpoint_dir,
         is_best=is_best,
         metrics=metrics,
+        policy_spec=policy_spec,
     )
 
 
@@ -66,6 +70,7 @@ def save_checkpoint_from_cpu(
     checkpoint_dir: str,
     is_best: bool = False,
     metrics: Optional[Any] = None,
+    policy_spec: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Save training checkpoint from pre-copied CPU state.
 
@@ -103,10 +108,18 @@ def save_checkpoint_from_cpu(
         }
 
     # state_cpu is already on CPU, no need for jax.device_get
+    policy_spec_json = None
+    policy_spec_fingerprint = None
+    if policy_spec is not None:
+        # Store both for debugging: json for humans, hash for strict resume checks
+        policy_spec_json = canonical_json_dumps(policy_spec)
+        policy_spec_fingerprint = policy_spec_hash(policy_spec)
+
     checkpoint_data = {
         "iteration": iteration,
         "total_steps": total_steps,
         "metrics": metrics_dict,
+        "policy_spec_json": policy_spec_json,
         "policy_params": state_cpu.policy_params,
         "value_params": state_cpu.value_params,
         "processor_params": state_cpu.processor_params,
@@ -140,6 +153,7 @@ def save_checkpoint_from_cpu(
             "disc_input_noise_std": config.amp.discriminator.input_noise_std,
             "iterations": config.ppo.iterations,
             "seed": config.seed,
+            "policy_spec_hash": policy_spec_fingerprint,
         },
     }
 
@@ -297,6 +311,7 @@ def save_window_best_checkpoint(
     best_reward: Dict[str, float],
     config: Any,
     checkpoint_dir: str,
+    policy_spec: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Save the best checkpoint from the current window.
 
@@ -338,6 +353,7 @@ def save_window_best_checkpoint(
         checkpoint_dir=checkpoint_dir,
         is_best=is_new_best,
         metrics=save_metrics,
+        policy_spec=policy_spec,
     )
 
     if is_new_best:

@@ -98,7 +98,6 @@ def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> P
     layout = [
         ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
         ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
         ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
         ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
@@ -143,7 +142,6 @@ def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> P
         observation=ObservationSpec(
             dtype="float32",
             layout_id="wr_obs_v1",
-            linvel_mode="zero",
             layout=layout,
         ),
         action=ActionSpec(
@@ -209,11 +207,6 @@ def parse_args():
         "--no-push",
         action="store_true",
         help="Disable push disturbances (overrides config push_enabled)",
-    )
-    parser.add_argument(
-        "--zero-linvel",
-        action="store_true",
-        help="Force linvel observation to zeros (Sim2Real mode, matches runtime)",
     )
     parser.add_argument(
         "--action-filter-alpha",
@@ -355,10 +348,6 @@ def main():
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
-    if args.zero_linvel:
-        training_cfg.env.linvel_mode = "zero"
-        training_cfg.env.linvel_dropout_prob = 0.0
-        print("linvel_mode overridden: 'zero' (--zero-linvel)")
 
     # Resolve checkpoint path (tries multiple locations)
     checkpoint_path = resolve_checkpoint_path(args.checkpoint)

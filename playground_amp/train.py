@@ -254,6 +254,9 @@ def start_training(
     import jax.numpy as jnp
     import numpy as np
 
+    from playground_amp.configs.training_config import get_robot_config
+    from playground_amp.policy_contract.spec_builder import build_policy_spec
+
     # Check JAX backend
     print(f"\n{'=' * 60}")
     print("JAX Configuration")
@@ -317,6 +320,11 @@ def start_training(
     print(
         f"✓ Environment functions created (vmapped for {training_cfg.ppo.num_envs} envs)"
     )
+
+    # Policy contract fingerprint (stored in checkpoints to prevent silent resume drift).
+    robot_cfg = get_robot_config()
+    policy_spec = build_policy_spec(training_cfg, robot_cfg)
+    policy_spec_dict = policy_spec.to_json_dict()
 
     # Create vmapped environment functions
     def batched_step_fn(state, action):
@@ -399,6 +407,7 @@ def start_training(
                 best_reward=best_reward,
                 config=training_cfg,
                 checkpoint_dir=job_checkpoint_dir,
+                policy_spec=policy_spec_dict,
             )
 
     # Load checkpoint for resuming if provided
@@ -431,6 +440,7 @@ def start_training(
             best_reward=best_reward,
             config=training_cfg,
             checkpoint_dir=job_checkpoint_dir,
+            policy_spec=policy_spec_dict,
         )
 
     # Print best checkpoints summary

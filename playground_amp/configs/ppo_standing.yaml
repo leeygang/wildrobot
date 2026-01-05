@@ -1,25 +1,24 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.10.2)
+# WildRobot PPO Standing Config (v0.12.1)
 # =============================================================================
 # Stage 1: Robot-Native Standing Policy (No AMP)
-# v0.10.2: Basic Standing with Termination Diagnostics
+# v0.12.1: policy_contract baseline (gyro-based angvel, privileged-only linvel)
 #
 # Goal: Robot maintains balance without falling for 500 steps
 # Exit Criteria: Fall rate < 5%, episode length > 400 steps
 #
 # Usage:
 #   uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml
-# Resume from the v0.11.3 standing checkpoint:
-#   uv run python playground_amp/train.py --config playground_amp/configs/ppo_standing.yaml --no-amp \
-#     --resume playground_amp/checkpoints/ppo_standing_v00113_final.pkl
+# NOTE: Do not resume from pre-policy_contract checkpoints. Resume is guarded by
+# a policy_spec fingerprint and will fail fast if the contract differs.
 #
 # Total steps = iterations × num_envs × rollout_steps
 # Example: 200 × 1024 × 128 = 26M steps
 #
 # See: docs/learn_first_plan.md for roadmap
 # =============================================================================
-version: "0.11.5"
-version_name: "Standing sim2real prep (v0.11.5)"
+version: "0.12.1"
+version_name: "Standing policy_contract baseline (v0.12.1)"
 
 seed: 42
 
@@ -52,11 +51,6 @@ env:
 
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.9
-
-  # Sim2Real: real hardware may not have reliable base linvel
-  # Options: sim | zero | dropout (with linvel_dropout_prob)
-  linvel_mode: dropout
-  linvel_dropout_prob: 0.2
 
   # Disturbance pushes (standing robustness)
   push_enabled: true
@@ -194,8 +188,9 @@ checkpoints:
 wandb:
   enabled: true
   project: wildrobot-ppo
-  mode: online
-  tags: [ppo, stage1, standing, v0.11.5]
+  # Use "online" when network access is available.
+  mode: offline
+  tags: [ppo, stage1, standing, v0.12.1]
 
 video:
   enabled: true
