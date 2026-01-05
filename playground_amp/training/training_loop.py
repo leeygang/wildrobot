@@ -924,6 +924,8 @@ def train(
         Callable[[int, TrainingState, IterationMetrics, float], None]
     ] = None,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
+    *,
+    policy_init_action: Optional[jnp.ndarray] = None,
 ) -> TrainingState:
     """Main training function for both PPO-only and AMP+PPO.
 
@@ -992,6 +994,7 @@ def train(
         obs_dim,
         action_dim,
         seed=int(init_rng[0]),
+        policy_init_action=policy_init_action,
     )
 
     # Create discriminator (always created, may be unused)

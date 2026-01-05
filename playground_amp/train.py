@@ -256,6 +256,7 @@ def start_training(
 
     from playground_amp.configs.training_config import get_robot_config
     from playground_amp.policy_contract.spec_builder import build_policy_spec
+    from policy_contract.calib import JaxCalibOps
 
     # Check JAX backend
     print(f"\n{'=' * 60}")
@@ -429,6 +430,12 @@ def start_training(
         ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
         resume_checkpoint=resume_checkpoint,
+        policy_init_action=JaxCalibOps.ctrl_to_policy_action(
+            spec=policy_spec,
+            ctrl_rad=jnp.asarray(env._default_joint_qpos, dtype=jnp.float32),
+        )
+        if resume_checkpoint is None
+        else None,
     )
 
     # Save any remaining best checkpoint from the final window

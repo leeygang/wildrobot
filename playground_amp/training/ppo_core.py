@@ -32,6 +32,7 @@ Use ppo_network.parametric_action_distribution to convert logits to actions/log_
 
 from __future__ import annotations
 
+import importlib.util
 from typing import Any, Callable, NamedTuple, Optional, Tuple
 
 import jax
@@ -47,6 +48,14 @@ from brax.training.agents.ppo import networks as ppo_networks
 # Use Brax's network factory directly
 make_ppo_networks = ppo_networks.make_ppo_networks
 make_inference_fn = ppo_networks.make_inference_fn
+
+_HAS_FLAX = importlib.util.find_spec("flax") is not None
+if _HAS_FLAX:
+    from flax.core import freeze as _flax_freeze  # type: ignore[import-not-found]
+    from flax.core import unfreeze as _flax_unfreeze  # type: ignore[import-not-found]
+else:
+    _flax_freeze = None
+    _flax_unfreeze = None
 
 
 def create_networks(
@@ -92,6 +101,9 @@ def init_network_params(
     obs_dim: int,
     action_dim: int,
     seed: int = 0,
+    *,
+    policy_init_action: Optional[jnp.ndarray] = None,
+    policy_init_std: float = 0.10,
 ):
     """Initialize network parameters.
 
@@ -116,6 +128,15 @@ def init_network_params(
 
     # Initialize policy
     policy_params = ppo_network.policy_network.init(policy_rng)
+    if policy_init_action is not None:
+        policy_params = _init_policy_output_bias(
+            ppo_network=ppo_network,
+            policy_params=policy_params,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            policy_init_action=policy_init_action,
+            policy_init_std=policy_init_std,
+        )
 
     # Initialize value
     value_params = ppo_network.value_network.init(value_rng)
@@ -124,6 +145,101 @@ def init_network_params(
     processor_params = ()
 
     return processor_params, policy_params, value_params
+
+
+def _inv_softplus(x: jnp.ndarray) -> jnp.ndarray:
+    # Numerically stable inverse of softplus for x>0.
+    return jnp.log(jnp.expm1(x))
+
+
+def _init_policy_output_bias(
+    *,
+    ppo_network: Any,
+    policy_params: Any,
+    obs_dim: int,
+    action_dim: int,
+    policy_init_action: jnp.ndarray,
+    policy_init_std: float,
+) -> Any:
+    """Bias-initialize policy outputs so tanh(loc) ~= policy_init_action.
+
+    This prevents a freshly initialized policy (which typically outputs near 0)
+    from immediately driving the robot away from a stable reset pose.
+
+    Brax uses NormalTanhDistribution with parameters split as:
+      parameters = concat([loc, scale_param])
+      scale = softplus(scale_param) + min_std
+      action = tanh(sample Normal(loc, scale))
+    """
+    init_action = jnp.asarray(policy_init_action, dtype=jnp.float32).reshape((action_dim,))
+    eps = jnp.float32(1e-5)
+    init_action = jnp.clip(init_action, -1.0 + eps, 1.0 - eps)
+    loc_bias = jnp.arctanh(init_action)
+
+    dist = getattr(ppo_network, "parametric_action_distribution", None)
+    min_std = jnp.float32(getattr(dist, "_min_std", 0.001)) if dist is not None else jnp.float32(0.001)
+    var_scale = jnp.float32(getattr(dist, "_var_scale", 1.0)) if dist is not None else jnp.float32(1.0)
+
+    target_scale = jnp.float32(policy_init_std)
+    # Solve: target_scale = (softplus(param) + min_std) * var_scale
+    softplus_target = jnp.maximum(target_scale / var_scale - min_std, jnp.float32(1e-6))
+    scale_param_bias = _inv_softplus(softplus_target) * jnp.ones((action_dim,), dtype=jnp.float32)
+
+    desired_logits = jnp.concatenate([loc_bias, scale_param_bias], axis=-1)
+
+    # Compute the current output at a reference observation and shift the final
+    # layer bias so the reference output matches desired_logits exactly.
+    ref_obs = jnp.zeros((int(obs_dim),), dtype=jnp.float32)
+    base_logits = ppo_network.policy_network.apply((), policy_params, ref_obs)
+    base_logits = jnp.asarray(base_logits, dtype=jnp.float32).reshape((2 * action_dim,))
+    delta = desired_logits - base_logits
+
+    params = policy_params.get("params") if isinstance(policy_params, dict) else None
+    if params is None:
+        raise ValueError("Unexpected policy_params structure: expected dict with key 'params'")
+
+    freezer = None
+    params_mut = params
+    if _flax_unfreeze is not None and _flax_freeze is not None:
+        # Flax commonly wraps params in FrozenDict; unwrap to a plain dict for mutation.
+        # Use feature-detection (not exceptions) to keep control flow explicit.
+        if hasattr(params, "unfreeze") and callable(getattr(params, "unfreeze")):
+            params_mut = _flax_unfreeze(params)  # type: ignore[misc]
+            freezer = _flax_freeze
+
+    # Prefer a structured update: Brax names MLP layers hidden_0..hidden_k, where
+    # hidden_k is the output layer.
+    if isinstance(params_mut, dict):
+        hidden_keys = [k for k in params_mut.keys() if isinstance(k, str) and k.startswith("hidden_")]
+    else:
+        hidden_keys = []
+
+    updated = False
+    if hidden_keys:
+        try:
+            last_idx = max(int(k.split("_", 1)[1]) for k in hidden_keys)
+            out_key = f"hidden_{last_idx}"
+            out_layer = params_mut.get(out_key)
+            if isinstance(out_layer, dict) and "bias" in out_layer:
+                bias = jnp.asarray(out_layer["bias"], dtype=jnp.float32)
+                if tuple(bias.shape) != (2 * action_dim,):
+                    raise ValueError(
+                        f"Unexpected output bias shape at params['{out_key}']['bias']: "
+                        f"got {tuple(bias.shape)}, expected ({2 * action_dim},)"
+                    )
+                out_layer["bias"] = bias + delta
+                params_mut[out_key] = out_layer
+                updated = True
+        except Exception:
+            updated = False
+
+    if not updated:
+        raise ValueError(
+            "Failed to bias-initialize policy output layer. "
+            "Unexpected params structure (expected params['hidden_k']['bias'])."
+        )
+
+    return {**policy_params, "params": freezer(params_mut) if freezer is not None else params_mut}
 
 
 # ============================================================================

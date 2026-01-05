@@ -50,7 +50,7 @@ env:
   foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
-  action_filter_alpha: 0.9
+  action_filter_alpha: 0.6
 
   # Disturbance pushes (standing robustness)
   push_enabled: true

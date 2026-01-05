@@ -12,12 +12,18 @@ This changelog tracks capability changes, configuration updates, and training re
 ### Contract Migration
 - Actor observation/action semantics now flow through `policy_contract` (shared JAX/NumPy implementation + parity tests).
 - Resume is now guarded by a `policy_spec_hash` stored in checkpoints to prevent silently resuming with a different policy contract.
+- PPO actor initialization is biased to the **home keyframe pose** (prevents early drift/falls before learning).
 
 ### Config Updates
 - `playground_amp/configs/ppo_standing.yaml`: bump training version to v0.12.1.
 - `policy_contract`: remove actor linvel from `wr_obs_v1` (linvel stays privileged-only for reward/metrics).
 - `playground_amp/configs/*.yaml`: remove `env.linvel_mode` / `env.linvel_dropout_prob` (no actor linvel to mask).
 - `playground_amp/configs/ppo_standing.yaml`: set `wandb.mode: offline` by default (switch to `online` when desired).
+- `playground_amp/configs/ppo_standing.yaml`: lower `env.action_filter_alpha` to `0.6` (faster corrections, less lag).
+
+### Notes
+- Expected `obs_dim` for v0.12.1 standing: `36` (actor linvel removed from `wr_obs_v1`).
+- Fresh runs only: resuming from pre-contract checkpoints is blocked by `policy_spec_hash`.
 
 ### Plan
 1. Validate assets + environment:
