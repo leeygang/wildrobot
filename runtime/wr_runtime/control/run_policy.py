@@ -7,8 +7,9 @@ from pathlib import Path
 import numpy as np
 
 from policy_contract.numpy.action import postprocess_action
-from policy_contract.numpy.calib import action_to_ctrl, normalize_joint_pos, normalize_joint_vel
-from policy_contract.numpy.obs import build_observation_from_components
+from policy_contract.calib import NumpyCalibOps
+from policy_contract.numpy.obs import build_observation
+from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 
@@ -16,9 +17,9 @@ from ..config import load_config
 from ..hardware.bno085 import BNO085IMU
 from ..hardware.foot_switches import FootSwitches
 from ..hardware.hiwonder_actuators import HiwonderBoardActuators
+from ..hardware.robot_io import HardwareRobotIO
 from ..inference.onnx_policy import OnnxPolicy
 from ..utils.mjcf import load_mjcf_model_info
-from ..utils.frames import angvel_heading_local, gravity_local_from_quat
 from ..validation.startup_validator import validate_runtime_interface
 
 
@@ -90,6 +91,14 @@ def main() -> None:
 
     foot = FootSwitches(cfg.foot_switches.get_all_pins())
 
+    robot_io = HardwareRobotIO(
+        actuator_names=joint_names,
+        control_dt=1.0 / cfg.control.hz,
+        actuators=actuators,
+        imu=imu,
+        foot_switches=foot,
+    )
+
     state = PolicyState.init(spec)
     last_time = time.time()
 
@@ -113,46 +122,26 @@ def main() -> None:
             last_time = loop_start
 
             # Sensors
-            imu_sample = imu.read()
-            gravity = gravity_local_from_quat(imu_sample.quat_xyzw)
-            angvel = angvel_heading_local(imu_sample.gyro_rad_s, imu_sample.quat_xyzw)
-            linvel = np.zeros(3, dtype=np.float32)  # estimator TBD
+            signals = robot_io.read()
 
-            # Actuators feedback
-            joint_pos = actuators.get_positions_rad()
-            if joint_pos is None:
-                joint_pos = np.zeros(len(joint_names), dtype=np.float32)
-            joint_vel = actuators.estimate_velocities_rad_s(dt)
-
-            foot_sample = foot.read()
-            foot_switches = np.array(foot_sample.switches, dtype=np.float32)
-
-            joint_pos_norm = normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos)
-            joint_vel_norm = normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel)
-
-            obs = build_observation_from_components(
+            obs = build_observation(
                 spec=spec,
-                gravity_local=gravity,
-                angvel_heading_local=angvel,
-                linvel_heading_local=linvel,
-                joint_pos_normalized=joint_pos_norm,
-                joint_vel_normalized=joint_vel_norm,
-                foot_switches=foot_switches,
-                prev_action=state.prev_action,
+                state=state,
+                signals=signals,
                 velocity_cmd=np.array([cfg.control.velocity_cmd], dtype=np.float32),
             )
 
             action_raw = policy.predict(obs)
             action_post, state = postprocess_action(spec=spec, state=state, action_raw=action_raw)
-            ctrl_targets = action_to_ctrl(spec=spec, action=action_post)
-            actuators.set_targets_rad(ctrl_targets)
+            ctrl_targets = NumpyCalibOps.action_to_ctrl(spec=spec, action=action_post)
+            robot_io.write_ctrl(ctrl_targets)
 
             if log_path is not None:
-                log_quat.append(np.asarray(imu_sample.quat_xyzw, dtype=np.float32))
-                log_gyro.append(np.asarray(imu_sample.gyro_rad_s, dtype=np.float32))
-                log_joint_pos.append(np.asarray(joint_pos, dtype=np.float32))
-                log_joint_vel.append(np.asarray(joint_vel, dtype=np.float32))
-                log_foot.append(np.asarray(foot_switches, dtype=np.float32))
+                log_quat.append(np.asarray(signals.quat_xyzw, dtype=np.float32))
+                log_gyro.append(np.asarray(signals.gyro_rad_s, dtype=np.float32))
+                log_joint_pos.append(np.asarray(signals.joint_pos_rad, dtype=np.float32))
+                log_joint_vel.append(np.asarray(signals.joint_vel_rad_s, dtype=np.float32))
+                log_foot.append(np.asarray(signals.foot_switches, dtype=np.float32))
                 log_vel_cmd.append(np.asarray([cfg.control.velocity_cmd], dtype=np.float32))
                 if log_steps is not None and len(log_quat) >= log_steps:
                     break
@@ -177,14 +166,7 @@ def main() -> None:
                 velocity_cmd=np.stack(log_vel_cmd, axis=0),
             )
             print(f"Saved replay log to {log_path}")
-        try:
-            foot.close()
-        finally:
-            try:
-                imu.close()
-            finally:
-                actuators.disable()
-                actuators.close()
+        robot_io.close()
 
 
 if __name__ == "__main__":

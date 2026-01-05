@@ -44,10 +44,12 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
-from policy_contract.jax.obs import build_observation_from_components
+from policy_contract.jax.obs import build_observation
 from policy_contract.jax.action import postprocess_action
-from policy_contract.jax.calib import action_to_ctrl
+from policy_contract.calib import JaxCalibOps
 from policy_contract.jax.state import PolicyState
+from policy_contract.layout import get_slices as get_obs_slices
+from playground_amp.sim_adapter.mjx_signals import MjxSignalsAdapter
 from policy_contract.spec import (
     ActionSpec,
     JointSpec,
@@ -75,189 +77,6 @@ from playground_amp.training.metrics_registry import (
     METRICS_VEC_KEY,
     NUM_METRICS,
 )
-
-
-# =============================================================================
-# Observation Layout
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class ObsLayout:
-    """Defines the observation vector structure.
-
-    This is the single source of truth for observation dimensions.
-    Used by both _get_obs() and observation_size property.
-
-    Layout:
-        [0:3]   gravity      - Gravity vector in local frame
-        [3:6]   angvel       - Angular velocity (heading-local)
-        [6:9]   linvel       - Linear velocity (heading-local)
-        [9:9+n] joint_pos    - Joint positions (n = num_actuators)
-        [...]   joint_vel    - Joint velocities (n = num_actuators)
-        [...]   foot_switch  - Foot switches (4 = toe/heel L/R)
-        [...]   action       - Previous action (n = num_actuators)
-        [...]   velocity_cmd - Velocity command (1)
-        [...]   padding      - Padding for alignment (1)
-    """
-
-    # Fixed dimensions (independent of robot)
-    GRAVITY_DIM: int = 3
-    ANGVEL_DIM: int = 3
-    LINVEL_DIM: int = 3
-    FOOT_SWITCH_DIM: int = 4
-    VELOCITY_CMD_DIM: int = 1
-    PADDING_DIM: int = 1
-
-    @classmethod
-    def _get_num_actuators(cls) -> int:
-        """Get number of actuators from robot config (single source of truth)."""
-        return get_robot_config().action_dim
-
-    @classmethod
-    def total_size(cls) -> int:
-        """Compute total observation size.
-
-        Number of actuators is read from robot_config.
-
-        Returns:
-            Total observation dimension
-        """
-        num_actuators = cls._get_num_actuators()
-        fixed = (
-            cls.GRAVITY_DIM
-            + cls.ANGVEL_DIM
-            + cls.LINVEL_DIM
-            + cls.FOOT_SWITCH_DIM
-            + cls.VELOCITY_CMD_DIM
-            + cls.PADDING_DIM
-        )
-        dynamic = 3 * num_actuators  # joint_pos + joint_vel + action
-        return fixed + dynamic
-
-    @classmethod
-    def get_slices(cls) -> Dict[str, slice]:
-        """Get named slices for each observation component.
-
-        Useful for debugging or extracting specific components.
-        Number of actuators is read from robot_config.
-
-        Returns:
-            Dict mapping component names to slice objects
-        """
-        num_actuators = cls._get_num_actuators()
-        idx = 0
-        slices = {}
-
-        slices["gravity"] = slice(idx, idx + cls.GRAVITY_DIM)
-        idx += cls.GRAVITY_DIM
-
-        slices["angvel"] = slice(idx, idx + cls.ANGVEL_DIM)
-        idx += cls.ANGVEL_DIM
-
-        slices["linvel"] = slice(idx, idx + cls.LINVEL_DIM)
-        idx += cls.LINVEL_DIM
-
-        slices["joint_pos"] = slice(idx, idx + num_actuators)
-        idx += num_actuators
-
-        slices["joint_vel"] = slice(idx, idx + num_actuators)
-        idx += num_actuators
-
-        slices["foot_switches"] = slice(idx, idx + cls.FOOT_SWITCH_DIM)
-        idx += cls.FOOT_SWITCH_DIM
-
-        slices["action"] = slice(idx, idx + num_actuators)
-        idx += num_actuators
-
-        slices["velocity_cmd"] = slice(idx, idx + cls.VELOCITY_CMD_DIM)
-        idx += cls.VELOCITY_CMD_DIM
-
-        slices["padding"] = slice(idx, idx + cls.PADDING_DIM)
-
-        return slices
-
-    @classmethod
-    def build_obs(
-        cls,
-        gravity: jax.Array,
-        angvel: jax.Array,
-        linvel: jax.Array,
-        joint_pos: jax.Array,
-        joint_vel: jax.Array,
-        foot_switches: jax.Array,
-        action: jax.Array,
-        velocity_cmd: jax.Array,
-    ) -> jax.Array:
-        """Build observation vector from components.
-
-        This is the canonical way to construct observations, ensuring
-        the layout matches get_slices() and total_size().
-
-        Args:
-            gravity: Gravity vector in local frame (3,)
-            angvel: Angular velocity, heading-local (3,)
-            linvel: Linear velocity, heading-local (3,)
-            joint_pos: Joint positions (num_actuators,)
-            joint_vel: Joint velocities (num_actuators,)
-            foot_switches: Foot switch states (4,)
-            action: Previous action (num_actuators,)
-            velocity_cmd: Velocity command scalar
-
-        Returns:
-            Observation vector (total_size,) as float32
-
-        Raises:
-            ValueError: If input dimensions don't match expected layout
-        """
-        num_actuators = cls._get_num_actuators()
-
-        # Validate fixed dimensions
-        if gravity.shape != (cls.GRAVITY_DIM,):
-            raise ValueError(
-                f"gravity shape {gravity.shape} != expected ({cls.GRAVITY_DIM},)"
-            )
-        if angvel.shape != (cls.ANGVEL_DIM,):
-            raise ValueError(
-                f"angvel shape {angvel.shape} != expected ({cls.ANGVEL_DIM},)"
-            )
-        if linvel.shape != (cls.LINVEL_DIM,):
-            raise ValueError(
-                f"linvel shape {linvel.shape} != expected ({cls.LINVEL_DIM},)"
-            )
-        if foot_switches.shape != (cls.FOOT_SWITCH_DIM,):
-            raise ValueError(
-                f"foot_switches shape {foot_switches.shape} != expected ({cls.FOOT_SWITCH_DIM},)"
-            )
-
-        # Validate dynamic dimensions
-        if joint_pos.shape != (num_actuators,):
-            raise ValueError(
-                f"joint_pos shape {joint_pos.shape} != expected ({num_actuators},)"
-            )
-        if joint_vel.shape != (num_actuators,):
-            raise ValueError(
-                f"joint_vel shape {joint_vel.shape} != expected ({num_actuators},)"
-            )
-        if action.shape != (num_actuators,):
-            raise ValueError(
-                f"action shape {action.shape} != expected ({num_actuators},)"
-            )
-
-        obs = jp.concatenate(
-            [
-                gravity,
-                angvel,
-                linvel,
-                joint_pos,
-                joint_vel,
-                foot_switches,
-                action,
-                jp.atleast_1d(velocity_cmd),
-                jp.zeros(cls.PADDING_DIM),
-            ]
-        )
-        return obs.astype(jp.float32)
 
 
 # =============================================================================
@@ -411,6 +230,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
         self._policy_spec = self._build_policy_spec()
+        self._signals_adapter = MjxSignalsAdapter(
+            self._mj_model,
+            self._robot_config,
+            foot_switch_threshold=self._config.env.foot_switch_threshold,
+        )
 
         # =====================================================================
         # Initialize Control Abstraction Layer (CAL) - v0.11.0
@@ -497,7 +321,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         linvel_obs_mask, push_schedule = self._sample_linvel_obs_mask(push_schedule)
 
         # Build observation using default pose action (matches ctrl at reset)
-        default_action = self._cal.ctrl_to_policy_action(self._default_joint_qpos)
+        default_action = JaxCalibOps.ctrl_to_policy_action(
+            spec=self._policy_spec,
+            ctrl_rad=self._default_joint_qpos,
+        )
         obs = self._get_obs(
             data, default_action, velocity_cmd, linvel_obs_mask=linvel_obs_mask
         )
@@ -675,7 +502,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
         # CAL applies symmetry correction (mirror_sign) for left/right joints
         # This ensures same action values produce symmetric motion on both sides
-        ctrl = action_to_ctrl(spec=self._policy_spec, action=filtered_action)
+        ctrl = JaxCalibOps.action_to_ctrl(spec=self._policy_spec, action=filtered_action)
         data = state.data.replace(ctrl=ctrl)
 
         # Apply external push disturbance (lateral force on body, if enabled)
@@ -883,12 +710,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ) -> jax.Array:
         """Build observation vector.
 
-        v0.9.1: CRITICAL FIX - Use finite-diff velocities for AMP parity.
-        When prev_root_pos/quat are provided, velocities are computed from
-        position changes (matching reference data). Otherwise, use qvel (for reset).
-
-        v0.7.0: All velocities are now in heading-local frame for AMP parity.
-        This is done transparently - the observation layout remains the same.
+        v0.12.x: Policy observations now come from contract Signals + frame helpers.
+        Angular velocity is derived from the IMU gyro sensor (hardware-consistent).
+        Linear velocity is forced to zero in the policy contract (privileged in sim).
 
         Observation includes:
         - Base orientation (gravity vector in local frame): 3
@@ -911,50 +735,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_root_quat: Previous root quaternion for FD velocity (optional)
 
         Returns:
-            Observation vector (35,)
+            Observation vector (39,)
         """
-        # Gravity in local frame (from sensor)
-        gravity = self._cal.get_gravity_vector(data)
-
-        # v0.9.1: Use finite-diff velocities when prev_root_* are available
-        # This is the key fix for AMP parity - matches reference data computation
-        if prev_root_pos is not None and prev_root_quat is not None:
-            # Finite-diff velocities (heading-local) - matches reference exactly
-            curr_pose = self._cal.get_root_pose(data)
-            prev_pose = Pose3D(
-                position=prev_root_pos,
-                orientation=prev_root_quat,
-                frame=CoordinateFrame.WORLD,
-            )
-            fd_vel = curr_pose.velocity_fd(prev_pose, self.dt)
-            linvel = fd_vel.linear
-            angvel = fd_vel.angular
-        else:
-            # qvel-based velocities (for reset when no previous state)
-            # These will be zero at reset anyway
-            vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
-            linvel, angvel = vel.linear, vel.angular
-
-        if linvel_obs_mask is not None:
-            linvel = linvel * linvel_obs_mask
-
-        # Joint positions and velocities (normalized for NN input)
-        joint_pos = self._cal.get_joint_positions(data.qpos, normalize=True).squeeze()
-        joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=True).squeeze()
-        foot_switches = self._cal.get_foot_switches(
-            data, threshold=self._config.env.foot_switch_threshold
-        )
-
-        # Build observation using shared layout
-        return build_observation_from_components(
+        signals = self._signals_adapter.read(data)
+        policy_state = PolicyState(prev_action=action)
+        return build_observation(
             spec=self._policy_spec,
-            gravity_local=gravity,
-            angvel_heading_local=angvel,
-            linvel_heading_local=linvel,
-            joint_pos_normalized=joint_pos,
-            joint_vel_normalized=joint_vel,
-            foot_switches=foot_switches,
-            prev_action=action,
+            state=policy_state,
+            signals=signals,
             velocity_cmd=velocity_cmd,
         )
 
@@ -1399,25 +1187,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         See ObsLayout class for component breakdown.
         """
-        return ObsLayout.total_size()
+        return self._policy_spec.model.obs_dim
 
     def _build_policy_spec(self) -> PolicySpec:
         action_dim = self._robot_config.action_dim
 
         layout = [
-            ObsFieldSpec(name="gravity_local", size=ObsLayout.GRAVITY_DIM, frame="local", units="unit_vector"),
-            ObsFieldSpec(
-                name="angvel_heading_local", size=ObsLayout.ANGVEL_DIM, frame="heading_local", units="rad_s"
-            ),
-            ObsFieldSpec(
-                name="linvel_heading_local", size=ObsLayout.LINVEL_DIM, frame="heading_local", units="m_s"
-            ),
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
             ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
             ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
-            ObsFieldSpec(name="foot_switches", size=ObsLayout.FOOT_SWITCH_DIM, units="bool_as_float"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
             ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
-            ObsFieldSpec(name="velocity_cmd", size=ObsLayout.VELOCITY_CMD_DIM, units="m_s"),
-            ObsFieldSpec(name="padding", size=ObsLayout.PADDING_DIM, units="unused"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
         ]
 
         joints: dict[str, JointSpec] = {}
@@ -1447,7 +1231,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 input_name="observation",
                 output_name="action",
                 dtype="float32",
-                obs_dim=ObsLayout.total_size(),
+                obs_dim=sum(field.size for field in layout),
                 action_dim=action_dim,
             ),
             robot=RobotSpec(
@@ -1458,7 +1242,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             observation=ObservationSpec(
                 dtype="float32",
                 layout_id="wr_obs_v1",
-                linvel_mode=self._config.env.linvel_mode,
+                linvel_mode="zero",
                 layout=layout,
             ),
             action=ActionSpec(

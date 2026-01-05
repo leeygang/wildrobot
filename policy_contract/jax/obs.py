@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
+from policy_contract.calib import JaxCalibOps
+from policy_contract.jax.frames import angvel_heading_local, gravity_local_from_quat
+from policy_contract.jax.signals import Signals
+from policy_contract.jax.state import PolicyState
 from policy_contract.spec import PolicySpec
 
 
@@ -42,3 +46,30 @@ def build_observation_from_components(
         ]
     )
     return obs.astype(jnp.float32)
+
+
+def build_observation(
+    *,
+    spec: PolicySpec,
+    state: PolicyState,
+    signals: Signals,
+    velocity_cmd: jnp.ndarray,
+) -> jnp.ndarray:
+    gravity = gravity_local_from_quat(signals.quat_xyzw)
+    angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
+    linvel = jnp.zeros((3,), dtype=jnp.float32)
+
+    joint_pos_norm = JaxCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=signals.joint_pos_rad)
+    joint_vel_norm = JaxCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=signals.joint_vel_rad_s)
+
+    return build_observation_from_components(
+        spec=spec,
+        gravity_local=gravity,
+        angvel_heading_local=angvel,
+        linvel_heading_local=linvel,
+        joint_pos_normalized=joint_pos_norm,
+        joint_vel_normalized=joint_vel_norm,
+        foot_switches=signals.foot_switches,
+        prev_action=state.prev_action,
+        velocity_cmd=velocity_cmd,
+    )

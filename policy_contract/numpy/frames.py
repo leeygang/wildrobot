@@ -1,10 +1,28 @@
 from __future__ import annotations
 
 import math
-from typing import Tuple
 
 import numpy as np
 
+from policy_contract.frames import FrameOps
+
+
+class NumpyFrameOps(FrameOps):
+    @staticmethod
+    def normalize_quat_xyzw(quat_xyzw):
+        return normalize_quat_xyzw(quat_xyzw)
+
+    @staticmethod
+    def rotate_vec_by_quat(quat_xyzw, vec):
+        return rotate_vec_by_quat(quat_xyzw, vec)
+
+    @staticmethod
+    def gravity_local_from_quat(quat_xyzw):
+        return gravity_local_from_quat(quat_xyzw)
+
+    @staticmethod
+    def angvel_heading_local(gyro_body, quat_xyzw):
+        return angvel_heading_local(gyro_body, quat_xyzw)
 
 def normalize_quat_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
     quat = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)

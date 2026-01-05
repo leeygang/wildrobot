@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from policy_contract.spec import PolicySpec
 
 
-def action_to_ctrl(*, spec: PolicySpec, action: jnp.ndarray) -> jnp.ndarray:
+def _action_to_ctrl(*, spec: PolicySpec, action: jnp.ndarray) -> jnp.ndarray:
     if spec.action.mapping_id != "pos_target_rad_v1":
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
@@ -16,14 +16,26 @@ def action_to_ctrl(*, spec: PolicySpec, action: jnp.ndarray) -> jnp.ndarray:
     return ctrl.astype(jnp.float32)
 
 
-def normalize_joint_pos(*, spec: PolicySpec, joint_pos_rad: jnp.ndarray) -> jnp.ndarray:
+def _ctrl_to_policy_action(*, spec: PolicySpec, ctrl_rad: jnp.ndarray) -> jnp.ndarray:
+    if spec.action.mapping_id != "pos_target_rad_v1":
+        raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
+
+    centers, spans, mirror_signs = _get_joint_params(spec)
+    ctrl = jnp.asarray(ctrl_rad, dtype=jnp.float32)
+    corrected = (ctrl - centers) / (spans + 1e-6)
+    action = corrected * mirror_signs
+    action = jnp.clip(action, -1.0, 1.0)
+    return action.astype(jnp.float32)
+
+
+def _normalize_joint_pos(*, spec: PolicySpec, joint_pos_rad: jnp.ndarray) -> jnp.ndarray:
     """Normalize joint positions to [-1, 1] for logging/replay/debug tools."""
     centers, spans, _ = _get_joint_params(spec)
     normalized = (joint_pos_rad - centers) / (spans + 1e-6)
     return normalized.astype(jnp.float32)
 
 
-def normalize_joint_vel(*, spec: PolicySpec, joint_vel_rad_s: jnp.ndarray) -> jnp.ndarray:
+def _normalize_joint_vel(*, spec: PolicySpec, joint_vel_rad_s: jnp.ndarray) -> jnp.ndarray:
     """Normalize joint velocities to [-1, 1] for logging/replay/debug tools."""
     limits = _get_velocity_limits(spec)
     normalized = joint_vel_rad_s / limits

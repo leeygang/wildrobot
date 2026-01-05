@@ -7,13 +7,13 @@ from typing import Optional
 import numpy as np
 
 from policy_contract.numpy.action import postprocess_action
-from policy_contract.numpy.calib import action_to_ctrl, normalize_joint_pos, normalize_joint_vel
-from policy_contract.numpy.obs import build_observation_from_components
+from policy_contract.calib import NumpyCalibOps
+from policy_contract.numpy.obs import build_observation
+from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 
 from ..inference.onnx_policy import OnnxPolicy
-from ..utils.frames import angvel_heading_local, gravity_local_from_quat
 
 
 def _load_npz(path: Path) -> dict[str, np.ndarray]:
@@ -79,28 +79,24 @@ def replay_policy(
     state = PolicyState.init(spec)
 
     for t in range(T):
-        gravity = gravity_local_from_quat(quat_xyzw[t])
-        angvel = angvel_heading_local(gyro_rad_s[t], quat_xyzw[t])
-        linvel = np.zeros(3, dtype=np.float32)
-
-        joint_pos_norm = normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos_rad[t])
-        joint_vel_norm = normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel_rad_s[t])
-
-        obs = build_observation_from_components(
-            spec=spec,
-            gravity_local=gravity,
-            angvel_heading_local=angvel,
-            linvel_heading_local=linvel,
-            joint_pos_normalized=joint_pos_norm,
-            joint_vel_normalized=joint_vel_norm,
+        signals = Signals(
+            quat_xyzw=quat_xyzw[t],
+            gyro_rad_s=gyro_rad_s[t],
+            joint_pos_rad=joint_pos_rad[t],
+            joint_vel_rad_s=joint_vel_rad_s[t],
             foot_switches=foot_switches[t],
-            prev_action=state.prev_action,
+        )
+
+        obs = build_observation(
+            spec=spec,
+            state=state,
+            signals=signals,
             velocity_cmd=velocity_cmd[t],
         )
 
         action_raw = policy.predict(obs)
         action_post, state = postprocess_action(spec=spec, state=state, action_raw=action_raw)
-        ctrl = action_to_ctrl(spec=spec, action=action_post)
+        ctrl = NumpyCalibOps.action_to_ctrl(spec=spec, action=action_post)
 
         obs_out[t] = obs
         action_raw_out[t] = action_raw

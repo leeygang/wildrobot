@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from policy_contract.calib import NumpyCalibOps
+from policy_contract.numpy.frames import angvel_heading_local, gravity_local_from_quat
+from policy_contract.numpy.signals import Signals
+from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicySpec
 
 
@@ -41,3 +45,30 @@ def build_observation_from_components(
         ]
     )
     return obs.astype(np.float32)
+
+
+def build_observation(
+    *,
+    spec: PolicySpec,
+    state: PolicyState,
+    signals: Signals,
+    velocity_cmd: np.ndarray,
+) -> np.ndarray:
+    gravity = gravity_local_from_quat(signals.quat_xyzw)
+    angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
+    linvel = np.zeros((3,), dtype=np.float32)
+
+    joint_pos_norm = NumpyCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=signals.joint_pos_rad)
+    joint_vel_norm = NumpyCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=signals.joint_vel_rad_s)
+
+    return build_observation_from_components(
+        spec=spec,
+        gravity_local=gravity,
+        angvel_heading_local=angvel,
+        linvel_heading_local=linvel,
+        joint_pos_normalized=joint_pos_norm,
+        joint_vel_normalized=joint_vel_norm,
+        foot_switches=signals.foot_switches,
+        prev_action=state.prev_action,
+        velocity_cmd=velocity_cmd,
+    )

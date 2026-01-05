@@ -46,13 +46,26 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from assets.robot_config import get_robot_config
+from policy_contract.numpy.action import postprocess_action
+from policy_contract.calib import NumpyCalibOps
+from policy_contract.numpy.obs import build_observation
+from policy_contract.numpy.signals import Signals
+from policy_contract.numpy.state import PolicyState
+from policy_contract.spec import (
+    ActionSpec,
+    JointSpec,
+    ModelSpec,
+    ObservationSpec,
+    ObsFieldSpec,
+    PolicySpec,
+    RobotSpec,
+)
 from playground_amp.cal.cal import ControlAbstractionLayer
 from playground_amp.cal.specs import CoordinateFrame, Pose3D
 from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
-from playground_amp.envs.wildrobot_env import ObsLayout
 from playground_amp.training.ppo_core import create_networks, sample_actions
 
 
@@ -69,6 +82,81 @@ class PushSchedule:
     start_step: int
     end_step: int
     force_xy: np.ndarray  # shape (2,)
+
+
+def _read_sensor(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, name: str, fallback: np.ndarray) -> np.ndarray:
+    sensor_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+    if sensor_id < 0:
+        return np.asarray(fallback, dtype=np.float32)
+    adr = int(mj_model.sensor_adr[sensor_id])
+    dim = int(mj_model.sensor_dim[sensor_id])
+    return np.asarray(mj_data.sensordata[adr : adr + dim], dtype=np.float32)
+
+
+def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
+    action_dim = robot_cfg.action_dim
+    layout = [
+        ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+        ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+        ObsFieldSpec(name="linvel_heading_local", size=3, frame="heading_local", units="m_s"),
+        ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+        ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+        ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+        ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+        ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+        ObsFieldSpec(name="padding", size=1, units="unused"),
+    ]
+
+    joints = {}
+    for item in robot_cfg.actuated_joints:
+        name = str(item.get("name"))
+        rng = item.get("range") or [0.0, 0.0]
+        joints[name] = JointSpec(
+            range_min_rad=float(rng[0]),
+            range_max_rad=float(rng[1]),
+            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
+        )
+
+    postprocess_id = "lowpass_v1" if action_filter_alpha > 0.0 else "none"
+    postprocess_params = {}
+    if postprocess_id == "lowpass_v1":
+        postprocess_params["alpha"] = float(action_filter_alpha)
+
+    return PolicySpec(
+        contract_name="wildrobot_policy",
+        contract_version="1.0.0",
+        spec_version=1,
+        model=ModelSpec(
+            format="onnx",
+            input_name="observation",
+            output_name="action",
+            dtype="float32",
+            obs_dim=sum(field.size for field in layout),
+            action_dim=action_dim,
+        ),
+        robot=RobotSpec(
+            robot_name=robot_cfg.robot_name,
+            actuator_names=list(robot_cfg.actuator_names),
+            joints=joints,
+        ),
+        observation=ObservationSpec(
+            dtype="float32",
+            layout_id="wr_obs_v1",
+            linvel_mode="zero",
+            layout=layout,
+        ),
+        action=ActionSpec(
+            dtype="float32",
+            bounds={"min": -1.0, "max": 1.0},
+            postprocess_id=postprocess_id,
+            postprocess_params=postprocess_params,
+            mapping_id="pos_target_rad_v1",
+        ),
+        provenance={
+            "training_config": str(training_cfg.config_path) if hasattr(training_cfg, "config_path") else "<runtime>",
+        },
+    )
 
 
 def parse_args():
@@ -126,6 +214,12 @@ def parse_args():
         "--zero-linvel",
         action="store_true",
         help="Force linvel observation to zeros (Sim2Real mode, matches runtime)",
+    )
+    parser.add_argument(
+        "--action-filter-alpha",
+        type=float,
+        default=None,
+        help="Override env.action_filter_alpha from the config (0 disables filtering)",
     )
     parser.add_argument(
         "--demo",
@@ -315,9 +409,18 @@ def main():
     cal = ControlAbstractionLayer(mj_model, robot_cfg)
     print(f"  CAL initialized with {cal.num_actuators} actuators")
 
+    # Action filtering configuration (match training unless overridden)
+    action_filter_alpha = (
+        float(args.action_filter_alpha)
+        if args.action_filter_alpha is not None
+        else float(training_cfg.env.action_filter_alpha)
+    )
+
+    policy_spec = _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha)
+
     # Get dimensions from model/config
-    obs_dim = ObsLayout.total_size()
-    action_dim = mj_model.nu  # Number of actuators
+    obs_dim = policy_spec.model.obs_dim
+    action_dim = policy_spec.model.action_dim
 
     print(f"Native MuJoCo: obs_dim={obs_dim}, action_dim={action_dim}")
 
@@ -399,108 +502,54 @@ def main():
     # and observation mismatch.
     default_ctrl = np.array(cal.get_ctrl_for_default_pose(), dtype=np.float32)
     default_policy_action = np.array(
-        cal.ctrl_to_policy_action(jnp.array(default_ctrl)), dtype=np.float32
+        NumpyCalibOps.ctrl_to_policy_action(spec=policy_spec, ctrl_rad=default_ctrl),
+        dtype=np.float32,
     )
     prev_action = default_policy_action.copy()
 
-    def get_observation(
-        mj_data, velocity_cmd, prev_action_in, prev_root_pos, prev_root_quat, dt
-    ):
-        """Compute observation vector using training logic (inference-faithful).
-
-        v0.11.0: Uses CAL/Pose3D for all transforms to match training exactly.
-        """
-        curr_root_pos = mj_data.qpos[0:3].copy()
-        curr_root_quat = mj_data.qpos[3:7].copy()
-
-        # Create current pose using factory pattern (NumPy → JAX)
-        curr_pose = Pose3D.from_numpy(
-            position=curr_root_pos,
-            orientation=curr_root_quat,
-            frame=CoordinateFrame.WORLD,
+    def get_observation(mj_data, velocity_cmd, prev_action_in):
+        """Compute observation via policy_contract (hardware-aligned)."""
+        quat = _read_sensor(
+            mj_model, mj_data, robot_cfg.orientation_sensor, fallback=mj_data.qpos[3:7]
+        )
+        gyro = _read_sensor(
+            mj_model, mj_data, robot_cfg.root_gyro_sensor, fallback=mj_data.qvel[3:6]
         )
 
-        # Gravity vector in body frame (matches CAL.get_gravity_vector)
-        gravity = cal.get_gravity_vector(mj_data)
+        joint_pos = mj_data.qpos[joint_qpos_idx]
+        joint_vel = mj_data.qvel[joint_qvel_idx]
+        foot_switches = np.zeros((4,), dtype=np.float32)
 
-        if prev_root_pos is not None and prev_root_quat is not None:
-            # Create previous pose for finite-difference
-            prev_pose = Pose3D.from_numpy(
-                position=prev_root_pos,
-                orientation=prev_root_quat,
-                frame=CoordinateFrame.WORLD,
-            )
-            # Finite-difference velocity in heading-local frame
-            linvel = curr_pose.linvel_fd(
-                prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL
-            )
-            angvel = curr_pose.angvel_fd(
-                prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL
-            )
-        else:
-            # Fallback: use qvel-based velocity for first frame (training parity)
-            vel = cal.get_root_velocity(mj_data, frame=CoordinateFrame.HEADING_LOCAL)
-            linvel = vel.linear
-            angvel = vel.angular
-
-        linvel_mode = training_cfg.env.linvel_mode
-        if linvel_mode == "zero":
-            linvel = jnp.zeros_like(linvel)
-
-        # v0.11.0: Use CAL for normalized joint positions/velocities (training parity)
-        # CAL normalizes joint_pos to [-1, 1] based on joint limits
-        # CAL normalizes joint_vel by velocity limits and clips to [-1, 1]
-        joint_pos = cal.get_joint_positions(jnp.array(mj_data.qpos), normalize=True)
-        joint_vel = cal.get_joint_velocities(jnp.array(mj_data.qvel), normalize=True)
-
-        foot_switches = cal.get_foot_switches(
-            mj_data, threshold=training_cfg.env.foot_switch_threshold
+        signals = Signals(
+            quat_xyzw=np.asarray(quat, dtype=np.float32),
+            gyro_rad_s=np.asarray(gyro, dtype=np.float32),
+            joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
+            joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),
+            foot_switches=np.asarray(foot_switches, dtype=np.float32),
         )
 
-        obs = ObsLayout.build_obs(
-            gravity=jnp.array(gravity),
-            angvel=angvel,
-            linvel=linvel,
-            joint_pos=joint_pos,
-            joint_vel=joint_vel,
-            foot_switches=foot_switches,
-            action=jnp.array(prev_action_in),
-            velocity_cmd=jnp.array(velocity_cmd),
+        obs = build_observation(
+            spec=policy_spec,
+            state=PolicyState(prev_action=np.asarray(prev_action_in, dtype=np.float32)),
+            signals=signals,
+            velocity_cmd=np.array(velocity_cmd, dtype=np.float32),
         )
 
         return obs
 
-    # Action filtering configuration (match training)
-    # action_filter_alpha > 0 means filtering is enabled
-    action_filter_alpha = training_cfg.env.action_filter_alpha
     use_action_filter = action_filter_alpha > 0
     print(f"Action filter: enabled={use_action_filter}, alpha={action_filter_alpha}")
 
     def apply_action(mj_data, action, prev_action_for_filter):
-        """Apply action to MuJoCo model with optional low-pass filtering.
-
-        In training, actions from policy (range [-1, 1] via tanh) are passed
-        through a low-pass filter, then transformed via CAL to physical ctrl values.
-
-        v0.11.0: Uses CAL.policy_action_to_ctrl() for training parity.
-        This applies mirror_sign correction and denormalizes [-1, 1] to joint angles.
-
-        Returns filtered action for use as prev_action next step.
-        """
+        """Apply action to MuJoCo model via policy_contract semantics."""
         action_np = np.array(action)
-
-        # Apply action filtering (low-pass) if enabled
-        if use_action_filter:
-            filtered_action = (
-                action_filter_alpha * prev_action_for_filter
-                + (1.0 - action_filter_alpha) * action_np
-            )
-        else:
-            filtered_action = action_np
-
-        # Transform policy action [-1, 1] to physical ctrl via CAL (v0.11.0)
-        # This applies symmetry correction (mirror_sign) and denormalization
-        ctrl = cal.policy_action_to_ctrl(jnp.array(filtered_action))
+        state = PolicyState(prev_action=np.asarray(prev_action_for_filter, dtype=np.float32))
+        filtered_action, _ = postprocess_action(
+            spec=policy_spec,
+            state=state,
+            action_raw=action_np,
+        )
+        ctrl = NumpyCalibOps.action_to_ctrl(spec=policy_spec, action=filtered_action)
         mj_data.ctrl[:] = np.array(ctrl)
         return filtered_action
 
@@ -768,15 +817,8 @@ def main():
         )  # Limit steps if not recording
         while step_count < max_steps:
             # Get observation from native MuJoCo state
-            obs = get_observation(
-                mj_data,
-                velocity_cmd,
-                prev_action,
-                prev_root_pos,
-                prev_root_quat,
-                ctrl_dt,
-            )
-            obs_jax = obs
+            obs = get_observation(mj_data, velocity_cmd, prev_action)
+            obs_jax = jnp.asarray(obs)
 
             # Get action from policy
             rng, action_rng = jax.random.split(rng)
@@ -908,15 +950,8 @@ def main():
                     step_start = time.time()
 
                     # Get observation from native MuJoCo state
-                    obs = get_observation(
-                        mj_data,
-                        velocity_cmd,
-                        prev_action,
-                        prev_root_pos,
-                        prev_root_quat,
-                        ctrl_dt,
-                    )
-                    obs_jax = obs
+                    obs = get_observation(mj_data, velocity_cmd, prev_action)
+                    obs_jax = jnp.asarray(obs)
 
                     # Get action from policy
                     rng, action_rng = jax.random.split(rng)

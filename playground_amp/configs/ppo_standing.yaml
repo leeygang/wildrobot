@@ -51,7 +51,7 @@ env:
   foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
-  action_filter_alpha: 0.3
+  action_filter_alpha: 0.9
 
   # Sim2Real: real hardware may not have reliable base linvel
   # Options: sim | zero | dropout (with linvel_dropout_prob)

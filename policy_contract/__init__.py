@@ -14,6 +14,7 @@ from .spec import (
     validate_spec,
     validate_runtime_compat,
 )
+from .layout import get_slices
 
 __all__ = [
     "PolicySpec",
@@ -26,4 +27,5 @@ __all__ = [
     "PolicyBundle",
     "validate_spec",
     "validate_runtime_compat",
+    "get_slices",
 ]

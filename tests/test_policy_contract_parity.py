@@ -119,34 +119,43 @@ def spec() -> PolicySpec:
 
 def test_action_to_ctrl_parity(spec: PolicySpec) -> None:
     jax = pytest.importorskip("jax.numpy")
-    from policy_contract.jax.calib import action_to_ctrl as action_to_ctrl_jax
-    from policy_contract.numpy.calib import action_to_ctrl as action_to_ctrl_np
+    from policy_contract.calib import JaxCalibOps, NumpyCalibOps
 
     rng = np.random.RandomState(0)
     action = rng.uniform(-1.2, 1.2, size=(spec.model.action_dim,)).astype(np.float32)
 
-    out_np = action_to_ctrl_np(spec=spec, action=action)
-    out_jax = action_to_ctrl_jax(spec=spec, action=jax.asarray(action))
+    out_np = NumpyCalibOps.action_to_ctrl(spec=spec, action=action)
+    out_jax = JaxCalibOps.action_to_ctrl(spec=spec, action=jax.asarray(action))
+
+    np.testing.assert_allclose(out_np, np.asarray(out_jax), rtol=1e-6, atol=1e-6)
+
+
+def test_ctrl_to_action_parity(spec: PolicySpec) -> None:
+    jax = pytest.importorskip("jax.numpy")
+    from policy_contract.calib import JaxCalibOps, NumpyCalibOps
+
+    rng = np.random.RandomState(4)
+    ctrl = rng.uniform(-0.5, 0.5, size=(spec.model.action_dim,)).astype(np.float32)
+
+    out_np = NumpyCalibOps.ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl)
+    out_jax = JaxCalibOps.ctrl_to_policy_action(spec=spec, ctrl_rad=jax.asarray(ctrl))
 
     np.testing.assert_allclose(out_np, np.asarray(out_jax), rtol=1e-6, atol=1e-6)
 
 
 def test_normalization_parity(spec: PolicySpec) -> None:
     jax = pytest.importorskip("jax.numpy")
-    from policy_contract.jax.calib import normalize_joint_pos as normalize_joint_pos_jax
-    from policy_contract.jax.calib import normalize_joint_vel as normalize_joint_vel_jax
-    from policy_contract.numpy.calib import normalize_joint_pos as normalize_joint_pos_np
-    from policy_contract.numpy.calib import normalize_joint_vel as normalize_joint_vel_np
+    from policy_contract.calib import JaxCalibOps, NumpyCalibOps
 
     rng = np.random.RandomState(1)
     joint_pos = rng.uniform(-1.0, 1.0, size=(spec.model.action_dim,)).astype(np.float32)
     joint_vel = rng.uniform(-5.0, 5.0, size=(spec.model.action_dim,)).astype(np.float32)
 
-    out_pos_np = normalize_joint_pos_np(spec=spec, joint_pos_rad=joint_pos)
-    out_pos_jax = normalize_joint_pos_jax(spec=spec, joint_pos_rad=jax.asarray(joint_pos))
+    out_pos_np = NumpyCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos)
+    out_pos_jax = JaxCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=jax.asarray(joint_pos))
 
-    out_vel_np = normalize_joint_vel_np(spec=spec, joint_vel_rad_s=joint_vel)
-    out_vel_jax = normalize_joint_vel_jax(spec=spec, joint_vel_rad_s=jax.asarray(joint_vel))
+    out_vel_np = NumpyCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel)
+    out_vel_jax = JaxCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=jax.asarray(joint_vel))
 
     np.testing.assert_allclose(out_pos_np, np.asarray(out_pos_jax), rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(out_vel_np, np.asarray(out_vel_jax), rtol=1e-6, atol=1e-6)
@@ -188,6 +197,53 @@ def test_build_observation_parity(spec: PolicySpec) -> None:
         joint_vel_normalized=jax.asarray(joint_vel),
         foot_switches=jax.asarray(foot),
         prev_action=jax.asarray(prev_action),
+        velocity_cmd=jax.asarray(velocity_cmd),
+    )
+
+    np.testing.assert_allclose(obs_np, np.asarray(obs_jax), rtol=1e-6, atol=1e-6)
+
+
+def test_build_observation_signals_parity(spec: PolicySpec) -> None:
+    jax = pytest.importorskip("jax.numpy")
+    from policy_contract.jax.obs import build_observation as build_obs_jax
+    from policy_contract.jax.signals import Signals as SignalsJax
+    from policy_contract.jax.state import PolicyState as PolicyStateJax
+    from policy_contract.numpy.obs import build_observation as build_obs_np
+    from policy_contract.numpy.signals import Signals as SignalsNp
+    from policy_contract.numpy.state import PolicyState as PolicyStateNp
+
+    rng = np.random.RandomState(3)
+    quat = rng.uniform(-1.0, 1.0, size=(4,)).astype(np.float32)
+    gyro = rng.uniform(-2.0, 2.0, size=(3,)).astype(np.float32)
+    joint_pos = rng.uniform(-1.0, 1.0, size=(spec.model.action_dim,)).astype(np.float32)
+    joint_vel = rng.uniform(-2.0, 2.0, size=(spec.model.action_dim,)).astype(np.float32)
+    foot = rng.uniform(0.0, 1.0, size=(4,)).astype(np.float32)
+    prev_action = rng.uniform(-1.0, 1.0, size=(spec.model.action_dim,)).astype(np.float32)
+    velocity_cmd = np.array([0.5], dtype=np.float32)
+
+    signals_np = SignalsNp(
+        quat_xyzw=quat,
+        gyro_rad_s=gyro,
+        joint_pos_rad=joint_pos,
+        joint_vel_rad_s=joint_vel,
+        foot_switches=foot,
+    )
+    state_np = PolicyStateNp(prev_action=prev_action)
+
+    signals_jax = SignalsJax(
+        quat_xyzw=jax.asarray(quat),
+        gyro_rad_s=jax.asarray(gyro),
+        joint_pos_rad=jax.asarray(joint_pos),
+        joint_vel_rad_s=jax.asarray(joint_vel),
+        foot_switches=jax.asarray(foot),
+    )
+    state_jax = PolicyStateJax(prev_action=jax.asarray(prev_action))
+
+    obs_np = build_obs_np(spec=spec, state=state_np, signals=signals_np, velocity_cmd=velocity_cmd)
+    obs_jax = build_obs_jax(
+        spec=spec,
+        state=state_jax,
+        signals=signals_jax,
         velocity_cmd=jax.asarray(velocity_cmd),
     )
 

@@ -46,6 +46,10 @@ Long-term, the goal is to **move contract semantics (CAL + ObsLayout) into `poli
   - `filtered_action = alpha * prev_action + (1 - alpha) * raw_action`
 - Sim2real helper for linvel (privileged signals):
   - training may use `env.linvel_mode = sim|zero|dropout` internally, but the exported **policy contract always uses** `linvel_mode = "zero"` so the actor never depends on privileged linvel.
+- IMU sensors in sim (available in MJCF):
+  - `chest_imu_quat` (MuJoCo `framequat`) and `chest_imu_gyro` (MuJoCo `gyro`) exist in `assets/wildrobot.xml`.
+  - **Current training code** uses `chest_imu_quat` for gravity, but uses finite-difference / `qvel` for angular velocity and linear velocity.
+  - **Migration goal** is to use the gyro sensor path for actor-facing angular velocity to match hardware semantics (BNO085 gyro) and reduce sim↔real drift.
 
 ### Runtime today (risk)
 Runtime entrypoint (e.g. `runtime/wr_runtime/control/run_policy.py`) currently:
@@ -235,6 +239,11 @@ Optional runtime shaping (must be declared if used):
 - action low-pass: alpha
 - action rate limiting
 - ctrl clamping to joint range
+
+**Policy on `alpha` (recommended for this repo):**
+- Treat `alpha` as a *training-selected hyperparameter* that is **exported** into the bundle (`policy_spec.json`) and honored by runtime.
+- Runtime should not override `alpha` ad-hoc; changing it changes inference-time semantics and invalidates parity.
+- Practically: training configs can sweep/tune `env.action_filter_alpha`; the exporter writes the chosen value into `spec.action.postprocess_params.alpha`.
 
 ### 5.5 `policy_spec.json` interface (concrete schema)
 
@@ -862,6 +871,25 @@ If you want a curriculum (`sim → dropout → zero`) without changing the deplo
 
 This avoids “last-minute” drift and keeps sim metrics more predictive for hardware deployment.
 
+## 9.1) Human-like walking (AMP + AMASS): contract discipline
+
+When introducing AMP (and later AMASS-derived reference motion), the most common failure mode is not “AMP math” but **feature and interface drift**. Recommended policy for this repo:
+
+- **Keep the actor contract hardware-realizable.** The deployed policy observation must remain limited to signals available on the robot (IMU quat/gyro, joint pos/vel (or estimated), foot switches, prev_action, command). Do not add sim-only channels to the actor just because they are convenient in sim.
+- **Use asymmetric training.**
+  - **Actor**: consumes only `PolicySpec` observations produced by `policy_contract` (deployment contract).
+  - **Critic and AMP discriminator**: may consume richer sim state (`qpos/qvel`, root velocities, site positions) as *privileged training-only* features.
+  - This preserves sim2real while still giving AMP a clean learning signal.
+- **Version and test AMP feature definitions.**
+  - Treat AMP feature construction as an ABI: frame conventions, ordering, normalization, and masking must be stable and versioned.
+  - Add deterministic parity tests for AMP features (JAX vs NumPy where applicable) and “golden” vectors so refactors cannot silently change semantics.
+- **Separate feasibility from style.**
+  - Stage 1 learns a robot-native gait manifold (feasible locomotion) using task rewards.
+  - AMP/AMASS should be introduced as a *style prior* layered on top of a feasible controller, not as the primary feasibility signal.
+- **Prefer invariant frames.**
+  - Compute reference features in yaw-invariant frames (e.g., heading-local) and explicitly document frame transforms in `policy_contract`.
+  - If contact estimation differs between sim and hardware, avoid making discriminator hinge on brittle contact edges; prefer robust kinematic/pose features and smooth contact proxies.
+
 ## 10) Validation Strategy (what “seamless” means)
 
 ### 10.1 Parity tests (unit)
@@ -893,6 +921,9 @@ This avoids “last-minute” drift and keeps sim metrics more predictive for ha
 - Do we want runtime to compute `heading_local` exactly, or retrain with body-frame gyro/vel to simplify?
 - Do we want a “reference pose” offset (e.g., keyframe pose) baked into ctrl mapping, or pure joint-range mapping only?
 - Should runtime drive servos in (radians) or in native servo units? (Contract should stay in radians; the hardware adapter can convert.)
+- For angular velocity in the contract, should sim derive it from:
+  - `chest_imu_gyro` sensor (preferred; matches hardware IMU gyro semantics), or
+  - finite-difference of base orientation / `qvel` (convenient but can drift vs hardware)?
 
 ---
 
