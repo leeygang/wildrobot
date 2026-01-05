@@ -17,6 +17,7 @@
 #   ./scp_from_remote.sh --public --checkpoints
 #   ./scp_from_remote.sh --public --latest
 #   ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6
+#   ./scp_from_remote.sh --run offline-run-20260104_213603-ajmyd9zz
 
 set -e
 
@@ -62,13 +63,14 @@ list_checkpoints() {
 list_logs() {
     echo -e "\n${YELLOW}=== Available W&B Runs on Remote ===${NC}\n"
 
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^d' | grep 'run-' | head -20 || echo 'No wandb runs found'"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^d' | grep -E '(run-|offline-run-)' | head -20 || echo 'No wandb runs found'"
 
     echo -e "\n${CYAN}To copy a run (checkpoint + wandb log):${NC}"
     echo "  ./scp_from_remote.sh --run <run_name>"
     echo ""
     echo -e "${CYAN}Example:${NC}"
     echo "  ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6"
+    echo "  ./scp_from_remote.sh --run offline-run-20260104_213603-ajmyd9zz"
 }
 
 get_latest_checkpoint() {
@@ -197,13 +199,14 @@ copy_run() {
     echo -e "\n${YELLOW}=== Copying Run: $RUN_NAME ===${NC}\n"
 
     # Extract run_id from wandb run name
-    # Format: run-YYYYMMDD_HHMMSS-xxxxxxxx -> YYYYMMDD_HHMMSS-xxxxxxxx
-    # Example: run-20251228_205534-uf665cr6 -> 20251228_205534-uf665cr6
-    local RUN_ID=$(echo "$RUN_NAME" | sed 's/^run-//')
+    # Format:
+    #   run-YYYYMMDD_HHMMSS-xxxxxxxx -> YYYYMMDD_HHMMSS-xxxxxxxx
+    #   offline-run-YYYYMMDD_HHMMSS-xxxxxxxx -> YYYYMMDD_HHMMSS-xxxxxxxx
+    local RUN_ID=$(echo "$RUN_NAME" | sed -E 's/^(offline-)?run-//')
 
     if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "$RUN_NAME" ]; then
         echo -e "${RED}✗ Could not extract run_id from run name: $RUN_NAME${NC}"
-        echo "Expected format: run-YYYYMMDD_HHMMSS-xxxxxxxx"
+        echo "Expected format: run-YYYYMMDD_HHMMSS-xxxxxxxx or offline-run-YYYYMMDD_HHMMSS-xxxxxxxx"
         return 1
     fi
 
@@ -213,7 +216,7 @@ copy_run() {
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
         echo ""
         echo -e "${CYAN}Available W&B runs:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^run-' | head -10"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
         return 1
     fi
 
