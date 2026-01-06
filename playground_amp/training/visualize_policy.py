@@ -49,7 +49,6 @@ from assets.robot_config import get_robot_config
 from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.obs import build_observation
-from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import (
     ActionSpec,
@@ -66,6 +65,7 @@ from playground_amp.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
+from playground_amp.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from playground_amp.training.ppo_core import create_networks, sample_actions
 
 
@@ -82,15 +82,6 @@ class PushSchedule:
     start_step: int
     end_step: int
     force_xy: np.ndarray  # shape (2,)
-
-
-def _read_sensor(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, name: str, fallback: np.ndarray) -> np.ndarray:
-    sensor_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SENSOR, name)
-    if sensor_id < 0:
-        return np.asarray(fallback, dtype=np.float32)
-    adr = int(mj_model.sensor_adr[sensor_id])
-    dim = int(mj_model.sensor_dim[sensor_id])
-    return np.asarray(mj_data.sensordata[adr : adr + dim], dtype=np.float32)
 
 
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
@@ -407,6 +398,13 @@ def main():
 
     policy_spec = _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha)
 
+    signals_adapter = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        policy_spec=policy_spec,
+        foot_switch_threshold=training_cfg.env.foot_switch_threshold,
+    )
+
     # Get dimensions from model/config
     obs_dim = policy_spec.model.obs_dim
     action_dim = policy_spec.model.action_dim
@@ -498,24 +496,7 @@ def main():
 
     def get_observation(mj_data, velocity_cmd, prev_action_in):
         """Compute observation via policy_contract (hardware-aligned)."""
-        quat = _read_sensor(
-            mj_model, mj_data, robot_cfg.orientation_sensor, fallback=mj_data.qpos[3:7]
-        )
-        gyro = _read_sensor(
-            mj_model, mj_data, robot_cfg.root_gyro_sensor, fallback=mj_data.qvel[3:6]
-        )
-
-        joint_pos = mj_data.qpos[joint_qpos_idx]
-        joint_vel = mj_data.qvel[joint_qvel_idx]
-        foot_switches = np.zeros((4,), dtype=np.float32)
-
-        signals = Signals(
-            quat_xyzw=np.asarray(quat, dtype=np.float32),
-            gyro_rad_s=np.asarray(gyro, dtype=np.float32),
-            joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
-            joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),
-            foot_switches=np.asarray(foot_switches, dtype=np.float32),
-        )
+        signals = signals_adapter.read(mj_data)
 
         obs = build_observation(
             spec=policy_spec,

@@ -8,6 +8,11 @@ import mujoco
 from mujoco import mjx
 
 from assets.robot_config import RobotConfig
+from playground_amp.sim_adapter.foot_switches import (
+    contact_forces_from_mjx,
+    resolve_foot_geom_ids,
+    switches_from_forces_jax,
+)
 from policy_contract.io import SignalsProvider
 from policy_contract.jax.signals import Signals
 
@@ -16,11 +21,6 @@ from policy_contract.jax.signals import Signals
 class _SensorInfo:
     adr: int
     dim: int
-
-
-@dataclass(frozen=True)
-class _FootGeomInfo:
-    geom_id: int
 
 
 class MjxSignalsAdapter(SignalsProvider[Signals]):
@@ -39,7 +39,7 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         self._gyro_sensor = _find_sensor(mj_model, robot_config.root_gyro_sensor)
 
         foot_geom_names = robot_config.get_foot_geom_names()
-        self._foot_geoms = [_find_geom(mj_model, name) for name in foot_geom_names]
+        self._foot_geom_ids = resolve_foot_geom_ids(mj_model, foot_geom_names)
         self._foot_switch_threshold = float(foot_switch_threshold)
 
         self._joint_qpos = []
@@ -68,8 +68,9 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         joint_pos = jnp.take(data.qpos, self._joint_qpos_idx)
         joint_vel = jnp.take(data.qvel, self._joint_qvel_idx)
 
-        foot_switches = _get_foot_switches(
-            data, self._foot_geoms, self._foot_switch_threshold
+        foot_forces = contact_forces_from_mjx(data, self._foot_geom_ids)
+        foot_switches = switches_from_forces_jax(
+            foot_forces, self._foot_switch_threshold
         )
 
         return Signals(
@@ -90,42 +91,7 @@ def _find_sensor(mj_model: mujoco.MjModel, name: str) -> Optional[_SensorInfo]:
     return _SensorInfo(adr=adr, dim=dim)
 
 
-def _find_geom(mj_model: mujoco.MjModel, name: str) -> _FootGeomInfo:
-    geom_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, name)
-    if geom_id < 0:
-        raise ValueError(f"Geom '{name}' not found in MJCF")
-    return _FootGeomInfo(geom_id=int(geom_id))
-
-
 def _read_sensor_or_none(data: mjx.Data, sensor: Optional[_SensorInfo]) -> Optional[jnp.ndarray]:
     if sensor is None:
         return None
     return data.sensordata[sensor.adr : sensor.adr + sensor.dim]
-
-
-def _get_geom_contact_force(data: mjx.Data, geom_id: int) -> jnp.ndarray:
-    if hasattr(data, "_impl"):
-        contact = data._impl.contact
-        efc_force = data._impl.efc_force
-    else:
-        contact = data.contact
-        efc_force = data.efc_force
-
-    geom1_match = contact.geom1 == geom_id
-    geom2_match = contact.geom2 == geom_id
-    is_our_contact = geom1_match | geom2_match
-
-    normal_forces = efc_force[contact.efc_address]
-    our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
-    return jnp.sum(our_forces)
-
-
-def _get_foot_switches(
-    data: mjx.Data,
-    foot_geoms: list[_FootGeomInfo],
-    threshold: float,
-) -> jnp.ndarray:
-    forces = [ _get_geom_contact_force(data, g.geom_id) for g in foot_geoms ]
-    raw = jnp.stack(forces)
-    switches = jnp.where(raw > threshold, 1.0, 0.0)
-    return switches.astype(jnp.float32)
