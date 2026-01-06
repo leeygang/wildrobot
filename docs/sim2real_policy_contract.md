@@ -897,6 +897,13 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
   - clamps + very small action_scale (or direct ctrl mapping with tight ranges)
   - immediate e-stop on excessive tilt, servo comms loss, or loop deadline misses
 
+## 10.4 Runtime safety notes (must-haves)
+
+- **Clamps:** runtime should clamp control targets to joint limits (or tighter safety limits) before sending to actuators.
+- **Action filter:** if `spec.action.postprocess_id` declares a low-pass filter, runtime must apply it exactly as specified.
+- **E-stop:** runtime should stop and unload actuators on excessive tilt, comms loss, or missed deadlines.
+- **No overrides:** runtime must never override the exported `lowpass_v1.alpha`. Changing it changes inference-time semantics and invalidates parity.
+
 ## 11) Migration Plan (incremental, low risk)
 
 1) **Introduce PolicySpec + bundle format** (no runtime behavior change yet).

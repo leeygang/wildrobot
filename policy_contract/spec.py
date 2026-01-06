@@ -35,6 +35,7 @@ class RobotSpec:
     robot_name: str
     actuator_names: List[str]
     joints: Dict[str, JointSpec]
+    home_ctrl_rad: Optional[List[float]] = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,11 @@ class PolicySpec:
                     }
                     for name, joint in self.robot.joints.items()
                 },
+                **(
+                    {"home_ctrl_rad": list(self.robot.home_ctrl_rad)}
+                    if self.robot.home_ctrl_rad is not None
+                    else {}
+                ),
             },
             "observation": {
                 "dtype": self.observation.dtype,
@@ -258,6 +264,25 @@ def _validate_robot(robot: RobotSpec) -> None:
                 f"robot.joints['{name}'] max_velocity_rad_s must be > 0, got {joint.max_velocity_rad_s}"
             )
 
+    if robot.home_ctrl_rad is not None:
+        if not isinstance(robot.home_ctrl_rad, list):
+            raise ValueError("robot.home_ctrl_rad must be a list if provided")
+        if len(robot.home_ctrl_rad) != len(robot.actuator_names):
+            raise ValueError(
+                "robot.home_ctrl_rad length must match actuator_names: "
+                f"{len(robot.home_ctrl_rad)} != {len(robot.actuator_names)}"
+            )
+        for idx, value in enumerate(robot.home_ctrl_rad):
+            if not isinstance(value, (int, float)):
+                raise ValueError(f"robot.home_ctrl_rad[{idx}] must be a number")
+            name = robot.actuator_names[idx]
+            joint = robot.joints[name]
+            if value < joint.range_min_rad or value > joint.range_max_rad:
+                raise ValueError(
+                    f"robot.home_ctrl_rad[{idx}]={value} out of range "
+                    f"[{joint.range_min_rad}, {joint.range_max_rad}] for joint '{name}'"
+                )
+
 
 def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
     if obs.layout_id not in SUPPORTED_LAYOUT_IDS:
@@ -377,7 +402,24 @@ def _parse_robot(data: Dict[str, Any]) -> RobotSpec:
         robot_name=_require_str(data, "robot_name", context="robot"),
         actuator_names=[_require_str({"_": name}, "_", context="robot.actuator_names") for name in actuator_names],
         joints=joints,
+        home_ctrl_rad=_parse_optional_float_list(data, "home_ctrl_rad", context="robot"),
     )
+
+
+def _parse_optional_float_list(
+    data: Dict[str, Any], key: str, *, context: str
+) -> Optional[List[float]]:
+    if key not in data:
+        return None
+    value = data[key]
+    if not isinstance(value, list):
+        raise ValueError(f"{context}.{key} must be a list if provided")
+    out = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, (int, float)):
+            raise ValueError(f"{context}.{key}[{idx}] must be a number")
+        out.append(float(item))
+    return out
 
 
 def _parse_observation(data: Dict[str, Any]) -> ObservationSpec:

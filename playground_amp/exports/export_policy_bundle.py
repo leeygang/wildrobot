@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+import mujoco
 import yaml
 
 from policy_contract.spec import (
@@ -88,6 +89,8 @@ def _build_policy_spec(
 
     joints = _build_joints(robot_cfg)
     actuator_names = list(joints.keys())
+    home_ctrl_rad = _get_home_ctrl_from_mjcf(config_path, actuator_names=actuator_names)
+    home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
     action_dim = len(actuator_names)
     layout = _build_obs_layout(action_dim)
 
@@ -112,6 +115,7 @@ def _build_policy_spec(
             robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
             actuator_names=actuator_names,
             joints=joints,
+            home_ctrl_rad=home_ctrl_rad,
         ),
         observation=ObservationSpec(
             dtype="float32",
@@ -134,6 +138,64 @@ def _build_policy_spec(
     )
     validate_spec(spec)
     return spec
+
+
+def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> list[float]:
+    config = _load_yaml(config_path)
+    env = _require_dict(config, "env", context="config")
+    model_path = env.get("model_path", "assets/scene_flat_terrain.xml")
+    xml_path = Path(model_path)
+    if not xml_path.is_absolute():
+        xml_path = (Path(__file__).parent.parent.parent / xml_path).resolve()
+
+    mj_model = mujoco.MjModel.from_xml_path(str(xml_path))
+    mj_data = mujoco.MjData(mj_model)
+
+    key_id = 0
+    if mj_model.nkey > 0:
+        try:
+            key_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        except Exception:
+            key_id = 0
+        if key_id < 0:
+            key_id = 0
+        mujoco.mj_resetDataKeyframe(mj_model, mj_data, key_id)
+    else:
+        mujoco.mj_resetData(mj_model, mj_data)
+
+    home_ctrl = []
+    for name in actuator_names:
+        act_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+        if act_id < 0:
+            raise ValueError(f"Actuator '{name}' not found in MJCF for home pose")
+        trn_type = mj_model.actuator_trntype[act_id]
+        if trn_type != mujoco.mjtTrn.mjTRN_JOINT:
+            raise ValueError(
+                f"Actuator '{name}' does not target a joint (trntype={int(trn_type)})"
+            )
+        joint_id = int(mj_model.actuator_trnid[act_id][0])
+        qpos_adr = int(mj_model.jnt_qposadr[joint_id])
+        home_ctrl.append(float(mj_data.qpos[qpos_adr]))
+
+    return home_ctrl
+
+
+def _clamp_home_ctrl(
+    home_ctrl: list[float],
+    joints: Dict[str, JointSpec],
+    actuator_names: list[str],
+) -> list[float]:
+    clipped = []
+    clipped_any = False
+    for name, value in zip(actuator_names, home_ctrl):
+        joint = joints[name]
+        clamped = min(max(float(value), joint.range_min_rad), joint.range_max_rad)
+        if clamped != float(value):
+            clipped_any = True
+        clipped.append(clamped)
+    if clipped_any:
+        print("Warning: home_ctrl_rad clamped to joint limits for export bundle")
+    return clipped
 
 
 def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:

@@ -20,50 +20,50 @@ class CalibOps(Protocol):
 class NumpyCalibOps(CalibOps):
     @staticmethod
     def action_to_ctrl(*, spec, action):
-        from policy_contract.numpy.calib import _action_to_ctrl
+        from policy_contract.numpy.calib import action_to_ctrl
 
-        return _action_to_ctrl(spec=spec, action=action)
+        return action_to_ctrl(spec=spec, action=action)
 
     @staticmethod
     def ctrl_to_policy_action(*, spec, ctrl_rad):
-        from policy_contract.numpy.calib import _ctrl_to_policy_action
+        from policy_contract.numpy.calib import ctrl_to_policy_action
 
-        return _ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl_rad)
+        return ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl_rad)
 
     @staticmethod
     def normalize_joint_pos(*, spec, joint_pos_rad):
-        from policy_contract.numpy.calib import _normalize_joint_pos
+        from policy_contract.numpy.calib import normalize_joint_pos
 
-        return _normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos_rad)
+        return normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos_rad)
 
     @staticmethod
     def normalize_joint_vel(*, spec, joint_vel_rad_s):
-        from policy_contract.numpy.calib import _normalize_joint_vel
+        from policy_contract.numpy.calib import normalize_joint_vel
 
-        return _normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel_rad_s)
+        return normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel_rad_s)
 
 
 class JaxCalibOps(CalibOps):
     @staticmethod
     def action_to_ctrl(*, spec, action):
-        from policy_contract.jax.calib import _action_to_ctrl
+        from policy_contract.jax.calib import action_to_ctrl
 
-        return _action_to_ctrl(spec=spec, action=action)
+        return action_to_ctrl(spec=spec, action=action)
 
     @staticmethod
     def ctrl_to_policy_action(*, spec, ctrl_rad):
-        from policy_contract.jax.calib import _ctrl_to_policy_action
+        from policy_contract.jax.calib import ctrl_to_policy_action
 
-        return _ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl_rad)
+        return ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl_rad)
 
     @staticmethod
     def normalize_joint_pos(*, spec, joint_pos_rad):
-        from policy_contract.jax.calib import _normalize_joint_pos
+        from policy_contract.jax.calib import normalize_joint_pos
 
-        return _normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos_rad)
+        return normalize_joint_pos(spec=spec, joint_pos_rad=joint_pos_rad)
 
     @staticmethod
     def normalize_joint_vel(*, spec, joint_vel_rad_s):
-        from policy_contract.jax.calib import _normalize_joint_vel
+        from policy_contract.jax.calib import normalize_joint_vel
 
-        return _normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel_rad_s)
+        return normalize_joint_vel(spec=spec, joint_vel_rad_s=joint_vel_rad_s)
