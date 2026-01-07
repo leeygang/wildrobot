@@ -69,28 +69,34 @@ wildrobot/
 │   │
 │   ├── exports/                        # Export utilities
 │   │   ├── export_onnx.py              # Checkpoint → ONNX
-│   │   └── export_policy_bundle.py     # Bundle writer
+│   │   ├── export_policy_bundle.py     # Bundle writer (library)
+│   │   └── export_policy_bundle_cli.py # Bundle export CLI
 │   │
 │   ├── policy_contract/                # Training-side spec helpers
 │   │   └── spec_builder.py             # Build PolicySpec for export
 │   │
-│   ├── scripts/                        # Analysis/eval/export scripts
+│   ├── eval/                           # Evaluation tools
 │   │   ├── eval_policy.py              # Headless evaluation
-│   │   └── export_policy_bundle.py     # Export entrypoint
+│   │   └── visualize_policy.py         # MuJoCo viewer playback
+│   │
+│   ├── scripts/                        # Analysis scripts
 │   │
 │   ├── sim_adapter/                    # Sim signal extraction
 │   │   ├── mjx_signals.py              # MJX Signals adapter
 │   │   └── mujoco_signals.py           # Native MuJoCo Signals adapter
 │   │
-│   ├── training/                       # Training infrastructure
+│   ├── core/                           # Training infrastructure (loop/rollout/metrics)
 │   │   ├── __init__.py
 │   │   ├── training_loop.py            # Main training loop
-│   │   ├── ppo_core.py                 # PPO algorithm implementation
 │   │   ├── rollout.py                  # Rollout collection
 │   │   ├── checkpoint.py               # Checkpoint save/load
 │   │   ├── metrics_registry.py         # Metrics tracking
-│   │   ├── experiment_tracking.py      # W&B integration
-│   │   └── visualize_policy.py         # Policy visualization
+│   │   └── experiment_tracking.py      # W&B integration
+│   │
+│   ├── algos/                          # Algorithm components
+│   │   └── ppo/                         # PPO-specific core
+│   │       ├── __init__.py
+│   │       └── ppo_core.py              # PPO networks/losses/GAE
 │   │
 │   ├── tests/                          # All tests (consolidated)
 │   │   ├── TEST_STRATEGY.md            # Comprehensive test strategy
@@ -253,7 +259,7 @@ wandb login
 
 ```bash
 # Visualize trained policy
-uv run python training/training/visualize_policy.py \
+uv run python training/eval/visualize_policy.py \
   --checkpoint training/checkpoints/<checkpoint_dir>
 ```
 

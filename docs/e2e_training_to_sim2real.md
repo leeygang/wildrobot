@@ -43,7 +43,7 @@ uv run python training/train.py --config training/configs/ppo_walking.yaml --no-
 ---------------------------
 Quantitative gate (deterministic by default):
 ```
-uv run python training/scripts/eval_policy.py \
+uv run python training/eval/eval_policy.py \
   --checkpoint <checkpoint.pkl> \
   --config training/configs/ppo_standing.yaml \
   --num-steps 500 \
@@ -58,14 +58,14 @@ Notes:
 -----------------------------------
 Interactive:
 ```
-uv run mjpython training/training/visualize_policy.py \
+uv run mjpython training/eval/visualize_policy.py \
   --checkpoint <checkpoint.pkl> \
   --config training/configs/ppo_standing.yaml
 ```
 
 Headless (single episode):
 ```
-uv run python training/training/visualize_policy.py \
+uv run python training/eval/visualize_policy.py \
   --headless --num-episodes 1 \
   --checkpoint <checkpoint.pkl> \
   --config training/configs/ppo_standing.yaml
@@ -74,7 +74,7 @@ uv run python training/training/visualize_policy.py \
 4) Export Runtime Bundle (ONNX + Spec)
 --------------------------------------
 ```
-uv run python training/scripts/export_policy_bundle.py \
+uv run python training/exports/export_policy_bundle_cli.py \
   --checkpoint <checkpoint.pkl> \
   --config training/configs/ppo_standing.yaml \
   --output-dir training/checkpoints/wildrobot_policy_bundle

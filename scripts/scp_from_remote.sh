@@ -139,10 +139,10 @@ copy_checkpoint() {
         ls -lh "$LOCAL_PATH" 2>/dev/null | head -10
         echo ""
         echo -e "${CYAN}To visualize the policy:${NC}"
-        echo "  uv run mjpython training/training/visualize_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml"
+        echo "  uv run mjpython training/eval/visualize_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml"
         echo ""
-        echo -e "${CYAN}To test the policy:${NC}"
-        echo "  uv run mjpython training/training/test_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml"
+        echo -e "${CYAN}To evaluate the policy:${NC}"
+        echo "  uv run python training/eval/eval_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml --num-steps 500"
     else
         echo -e "\n${RED}✗ Transfer failed!${NC}"
         return 1

@@ -598,7 +598,8 @@ wildrobot/
 │  │  └─ indexing.py                      # model indexing (qpos/qvel addrs, ids)
 │  ├─ export/
 │  │  ├─ export_onnx.py                   # checkpoint → deterministic onnx
-│  │  └─ export_policy_bundle.py          # bundle writer (onnx + policy_spec.json + checksums)
+│  │  ├─ export_policy_bundle.py          # bundle writer (onnx + policy_spec.json + checksums)
+│  │  └─ export_policy_bundle_cli.py      # CLI entrypoint
 │  ├─ configs/
 │  ├─ train.py
 │  └─ visualize_policy.py
@@ -738,7 +739,7 @@ This keeps `calib.py` stable, testable, and shareable across sim, runtime, and v
   - Applies: clamps, rate limiting, timeouts, tilt thresholds
   - Optional hooks for future fallback/recovery (MPC/recovery state machine)
 
-#### Training export (`training/export_policy_bundle.py`)
+#### Training export (`training/exports/export_policy_bundle.py`)
 
 - `export_policy_bundle(checkpoint_path, output_dir, training_cfg, robot_config_path)`
   - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`
@@ -797,7 +798,8 @@ This is what lets you do “playback in sim” and reproduce issues.
 ## 9) Training-side Changes (export pipeline)
 
 Add a single canonical exporter entry point:
-- `training/export_policy_bundle.py`
+- `training/exports/export_policy_bundle.py` (library)
+- `training/exports/export_policy_bundle_cli.py` (CLI)
   - loads checkpoint
   - exports deterministic ONNX (reuse `training/export_onnx.py`)
   - generates `policy_spec.json` from:
