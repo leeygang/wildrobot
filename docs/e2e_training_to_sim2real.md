@@ -73,6 +73,15 @@ uv run python training/eval/visualize_policy.py \
 
 4) Export Runtime Bundle (ONNX + Spec)
 --------------------------------------
+Preferred (task_v<semver> naming):
+```
+uv run python training/exports/export_policy_bundle_cli.py \
+  --checkpoint <checkpoint.pkl> \
+  --config training/configs/ppo_standing.yaml \
+  --bundle-name standing_v0.12.1
+```
+
+Explicit output directory:
 ```
 uv run python training/exports/export_policy_bundle_cli.py \
   --checkpoint <checkpoint.pkl> \
