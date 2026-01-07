@@ -33,4 +33,4 @@ jobs:
           python -m pytest -q tests/envs
       - name: Run training stub
         run: |
-          python playground_amp/train_jax.py
+          python training/train_jax.py

@@ -136,7 +136,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="playground_amp/configs/ppo_walking.yaml",
+        default="training/configs/ppo_walking.yaml",
         help="Path to training config YAML",
     )
     parser.add_argument(

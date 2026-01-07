@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current Execution Plan
 
-**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `playground_amp/docs/learn_first_plan.md`. This is the active execution plan for training a walking policy.
+**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `training/docs/learn_first_plan.md`. This is the active execution plan for training a walking policy.
 
 ### Current Stage: v0.10.x - Robot-Native Walking Policy
 
@@ -16,10 +16,10 @@ We are implementing Stage 1: Learn stable walking using PPO task rewards only (n
 uv run python scripts/validate_training_setup.py
 
 # Stage 1: PPO-only training
-uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml 
+uv run python training/train.py --config training/configs/ppo_walking.yaml 
 
 # Quick smoke test
-uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml  --verify
+uv run python training/train.py --config training/configs/ppo_walking.yaml  --verify
 ```
 
 **Exit Criteria for Stage 1:**
@@ -28,7 +28,7 @@ uv run python playground_amp/train.py --config playground_amp/configs/ppo_walkin
 - Fall rate < 5%
 - Visible alternating gait
 
-See `playground_amp/docs/learn_first_plan.md` for full roadmap including Stage 2 (data collection), Stage 3 (self-imitation AMP), and Stage 4 (human style blending).
+See `training/docs/learn_first_plan.md` for full roadmap including Stage 2 (data collection), Stage 3 (self-imitation AMP), and Stage 4 (human style blending).
 
 ## Project Overview
 
@@ -44,14 +44,14 @@ The project implements the development roadmap outlined in `mujoco_playground_pl
 ### Core Components
 
 - **assets/**: Robot models (MJCF, USD) and CAD sources
-- **playground_amp/**: training pipelines
-- **playground_amp/wandb/**: training log
-- **playground_amp/checkpoints/**: Training checkpoints 
-- **playground_amp/configs/**: training configs
-- **playground_amp/CHANGELOG.md**: the changelog for training, log training changes, results, reverse chronical order!
-- **playground_amp/docs/learn_first_plan.md**: high level training roadmap and milestone
-- **playground_amp/cal/cal.md**: high level control abstraction layer design
-- **playground_amp/tests/test_plan.md**: test plan doc
+- **training/**: training pipelines
+- **training/wandb/**: training log
+- **training/checkpoints/**: Training checkpoints 
+- **training/configs/**: training configs
+- **training/CHANGELOG.md**: the changelog for training, log training changes, results, reverse chronical order!
+- **training/docs/learn_first_plan.md**: high level training roadmap and milestone
+- **training/cal/cal.md**: high level control abstraction layer design
+- **training/tests/test_plan.md**: test plan doc
 
 ## Key Commands
 
@@ -377,7 +377,7 @@ python scripts/smplx_to_robot.py \
 
 ## AMP Training Changelog
 
-**IMPORTANT**: Keep `playground_amp/CHANGELOG.md` synced with all AMP training changes!
+**IMPORTANT**: Keep `training/CHANGELOG.md` synced with all AMP training changes!
 
 ### When to Update CHANGELOG.md
 

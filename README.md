@@ -25,9 +25,9 @@ wildrobot/
 │       ├── *.stl                       # Robot part meshes
 │       └── *.part                      # Part definitions
 │
-├── playground_amp/                     # Main training codebase
+├── training/                          # Main training codebase
 │   ├── train.py                        # Training entry point
-│   ├── CHANGELOG.md                    # Training Version history
+│   ├── CHANGELOG.md                    # Training version history
 │   │
 │   ├── cal/                            # v0.11.0: Control Abstraction Layer (CAL)
 │   │   ├── __init__.py                 # Export CAL, specs, types
@@ -49,7 +49,6 @@ wildrobot/
 │   │   ├── __init__.py
 │   │   ├── training_config.py          # Training config schema
 │   │   ├── training_runtime_config.py  # Runtime config
-│   │   ├── robot_config.py             # Robot config schema
 │   │   ├── feature_config.py           # Feature configuration
 │   │   ├── ppo_walking.yaml            # Walking task config
 │   │   └── ppo_standing.yaml           # Standing task config
@@ -59,13 +58,29 @@ wildrobot/
 │   │   ├── gmr_to_physics_ref_data.py  # Motion data conversion
 │   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
-│   ├── docs/                           # Documentation
+│   ├── docs/                           # Training documentation
 │   │   ├── learn_first_plan.md         # Training guide
 │   │   ├── TRAINING_SYSTEM_DESIGN.md   # System architecture
 │   │
 │   ├── envs/                           # Environment implementation
 │   │   ├── wildrobot_env.py            # Main JAX environment
-│   │   └── env_types.py                # Type definitions
+│   │   ├── env_info.py                 # Typed info + metrics schema
+│   │   └── disturbance.py              # Push disturbance utilities
+│   │
+│   ├── exports/                        # Export utilities
+│   │   ├── export_onnx.py              # Checkpoint → ONNX
+│   │   └── export_policy_bundle.py     # Bundle writer
+│   │
+│   ├── policy_contract/                # Training-side spec helpers
+│   │   └── spec_builder.py             # Build PolicySpec for export
+│   │
+│   ├── scripts/                        # Analysis/eval/export scripts
+│   │   ├── eval_policy.py              # Headless evaluation
+│   │   └── export_policy_bundle.py     # Export entrypoint
+│   │
+│   ├── sim_adapter/                    # Sim signal extraction
+│   │   ├── mjx_signals.py              # MJX Signals adapter
+│   │   └── mujoco_signals.py           # Native MuJoCo Signals adapter
 │   │
 │   ├── training/                       # Training infrastructure
 │   │   ├── __init__.py
@@ -164,20 +179,20 @@ uv pip install -e .
 
 ### Running Tests
 
-All tests are consolidated under `playground_amp/tests/`:
+All tests are consolidated under `training/tests/`:
 
 ```bash
 # Run all tests
-uv run pytest playground_amp/tests -v
+uv run pytest training/tests -v
 
 # Run specific test categories
-uv run pytest playground_amp/tests/test_physics_validation.py -v  # Physics tests
-uv run pytest playground_amp/tests/test_reward_components.py -v   # Reward tests
-uv run pytest playground_amp/tests/test_ppo_core.py -v            # PPO tests
-uv run pytest playground_amp/tests/envs/ -v                        # Environment tests
+uv run pytest training/tests/test_physics_validation.py -v  # Physics tests
+uv run pytest training/tests/test_reward_components.py -v   # Reward tests
+uv run pytest training/tests/test_ppo_core.py -v            # PPO tests
+uv run pytest training/tests/envs/ -v                        # Environment tests
 
 # Run with coverage
-uv run pytest playground_amp/tests --cov=playground_amp --cov-report=html
+uv run pytest training/tests --cov=training --cov-report=html
 ```
 
 ## Training
@@ -186,18 +201,18 @@ uv run pytest playground_amp/tests --cov=playground_amp --cov-report=html
 
 ```bash
 # Start training with default config
-uv run python playground_amp/train.py
+uv run python training/train.py
 
 # Train with specific config
-uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml
+uv run python training/train.py --config training/configs/ppo_walking.yaml
 
 # Resume from checkpoint
-uv run python playground_amp/train.py --resume playground_amp/checkpoints/<checkpoint_dir>
+uv run python training/train.py --resume training/checkpoints/<checkpoint_dir>
 ```
 
 ### Configuration
 
-Training is configured via YAML files in `playground_amp/configs/`:
+Training is configured via YAML files in `training/configs/`:
 
 - `ppo_walking.yaml` - Walking locomotion task
 - `ppo_standing.yaml` - Standing balance task
@@ -238,8 +253,8 @@ wandb login
 
 ```bash
 # Visualize trained policy
-uv run python playground_amp/training/visualize_policy.py \
-  --checkpoint playground_amp/checkpoints/<checkpoint_dir>
+uv run python training/training/visualize_policy.py \
+  --checkpoint training/checkpoints/<checkpoint_dir>
 ```
 
 ## Project Goals
@@ -260,19 +275,20 @@ uv run python playground_amp/training/visualize_policy.py \
 ## Development Workflow
 
 1. **Robot Model**: Define/update robot in `assets/wildrobot.xml`
-2. **Configuration**: Adjust training params in `playground_amp/configs/`
-3. **Training**: Run experiments with `playground_amp/train.py`
-4. **Testing**: Validate with `pytest playground_amp/tests/`
+2. **Configuration**: Adjust training params in `training/configs/`
+3. **Training**: Run experiments with `training/train.py`
+4. **Testing**: Validate with `pytest training/tests/`
 5. **Analysis**: Review metrics in W&B dashboard
 
 ## Documentation
 
-Detailed documentation is available in `playground_amp/docs/`:
+Detailed documentation is available in `training/docs/`:
 
-- [Training Guide](playground_amp/docs/TRAINING_README.md) - How to train policies
-- [System Design](playground_amp/docs/TRAINING_SYSTEM_DESIGN.md) - Architecture overview
-- [Test Strategy](playground_amp/tests/TEST_STRATEGY.md) - Comprehensive test plan
-- [AMP Design](playground_amp/docs/AMP_FEATURE_PARITY_DESIGN.md) - AMP implementation details
+- [Training Guide](training/docs/TRAINING_README.md) - How to train policies
+- [System Design](training/docs/TRAINING_SYSTEM_DESIGN.md) - Architecture overview
+- [Test Strategy](training/tests/TEST_STRATEGY.md) - Comprehensive test plan
+- [AMP Design](training/docs/AMP_FEATURE_PARITY_DESIGN.md) - AMP implementation details
+- [E2E Runbook](docs/e2e_training_to_sim2real.md) - Train → eval → export → sim2real
 
 ## Contributing
 

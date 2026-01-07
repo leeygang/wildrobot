@@ -13,7 +13,7 @@
 #
 # Examples:
 #   ./scp_to_remote.sh --public --code
-#   ./scp_to_remote.sh --public playground_amp/train.py
+#   ./scp_to_remote.sh --public training/train.py
 #   ./scp_to_remote.sh --all                    # Uses linux-pc.local
 
 set -e
@@ -115,9 +115,9 @@ sync_data() {
         sync_file "assets/motions"
     fi
 
-    # AMP formatted data - in playground_amp/data
-    if [ -d "playground_amp/data" ]; then
-        sync_file "playground_amp/data"
+    # AMP formatted data - in training/data
+    if [ -d "training/data" ]; then
+        sync_file "training/data"
     fi
 
     echo -e "\n${GREEN}✓ Data sync complete${NC}"
@@ -133,39 +133,39 @@ sync_code() {
     sync_file "assets/scene_flat_terrain.xml"
 
     # Training scripts
-    sync_file "playground_amp/train.py"
+    sync_file "training/train.py"
 
     # Training modules (exclude __pycache__)
-    if [ -d "playground_amp/training" ]; then
-        sync_dir_no_cache "playground_amp/training"
+    if [ -d "training/training" ]; then
+        sync_dir_no_cache "training/training"
     fi
 
     # AMP modules (exclude __pycache__)
-    if [ -d "playground_amp/amp" ]; then
-        sync_dir_no_cache "playground_amp/amp"
+    if [ -d "training/amp" ]; then
+        sync_dir_no_cache "training/amp"
     fi
 
     # Environment (exclude __pycache__)
-    if [ -d "playground_amp/envs" ]; then
-        sync_dir_no_cache "playground_amp/envs"
+    if [ -d "training/envs" ]; then
+        sync_dir_no_cache "training/envs"
     fi
 
     # Configs (exclude __pycache__)
-    if [ -d "playground_amp/configs" ]; then
-        sync_dir_no_cache "playground_amp/configs"
+    if [ -d "training/configs" ]; then
+        sync_dir_no_cache "training/configs"
     fi
 
     # Utils (exclude __pycache__)
-    if [ -d "playground_amp/utils" ]; then
-        sync_dir_no_cache "playground_amp/utils"
+    if [ -d "training/utils" ]; then
+        sync_dir_no_cache "training/utils"
     fi
 
     # Documentation
-    if [ -f "playground_amp/phase3_rl_training_plan.md" ]; then
-        sync_file "playground_amp/phase3_rl_training_plan.md"
+    if [ -f "training/phase3_rl_training_plan.md" ]; then
+        sync_file "training/phase3_rl_training_plan.md"
     fi
-    if [ -f "playground_amp/reference_data_generation.md" ]; then
-        sync_file "playground_amp/reference_data_generation.md"
+    if [ -f "training/reference_data_generation.md" ]; then
+        sync_file "training/reference_data_generation.md"
     fi
 
     echo -e "\n${GREEN}✓ Code sync complete${NC}"
@@ -186,7 +186,7 @@ sync_all() {
     echo -e "\n${YELLOW}To start training on Ubuntu:${NC}"
     echo "  ssh $REMOTE_USER@$REMOTE_HOST"
     echo "  cd ~/projects/wildrobot"
-    echo "  uv run python playground_amp/train.py"
+    echo "  uv run python training/train.py"
 }
 
 # Main
@@ -200,7 +200,7 @@ if [ $# -eq 0 ]; then
     echo "  --code       Sync only code files"
     echo ""
     echo "Examples:"
-    echo "  $0 playground_amp/train.py"
+    echo "  $0 training/train.py"
     echo "  $0 data/amp/walking_motions_merged.pkl"
     echo "  $0 --all"
     exit 1

@@ -60,7 +60,7 @@ def build_observation(
     prev_action: np.ndarray,
     velocity_cmd: float,
 ) -> np.ndarray:
-    # Layout must match playground_amp.envs.wildrobot_env.ObsLayout
+    # Layout must match training.envs.wildrobot_env.ObsLayout
     obs = np.concatenate(
         [
             gravity.astype(np.float32).reshape(3),

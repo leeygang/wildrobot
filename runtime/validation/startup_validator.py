@@ -120,7 +120,7 @@ def _load_robot_config_yaml(path: Path) -> RobotConfigInfo:
     if isinstance(breakdown, dict) and breakdown:
         obs_dim = int(sum(int(v) for v in breakdown.values()))
     else:
-        # Match playground_amp.envs.wildrobot_env.ObsLayout
+        # Match training.envs.wildrobot_env.ObsLayout
         fixed = 3 + 3 + 3 + 4 + 1 + 1
         obs_dim = fixed + 3 * action_dim
 

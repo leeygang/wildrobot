@@ -6,7 +6,7 @@ import pytest
 def test_policy_init_action_bias_sets_mean_near_target() -> None:
     jnp = pytest.importorskip("jax.numpy")
 
-    from playground_amp.training.ppo_core import create_networks, init_network_params
+    from training.training.ppo_core import create_networks, init_network_params
 
     obs_dim = 36
     action_dim = 8

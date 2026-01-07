@@ -53,7 +53,7 @@ cd "$SCRIPT_DIR/.."
 list_checkpoints() {
     echo -e "\n${YELLOW}=== Available Checkpoints on Remote ===${NC}\n"
 
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null || echo 'No checkpoints directory found'"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/training/checkpoints/ 2>/dev/null || echo 'No checkpoints directory found'"
 
     echo -e "\n${CYAN}To copy a checkpoint:${NC}"
     echo "  ./scp_from_remote.sh <checkpoint_folder_name>"
@@ -63,7 +63,7 @@ list_checkpoints() {
 list_logs() {
     echo -e "\n${YELLOW}=== Available W&B Runs on Remote ===${NC}\n"
 
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep '^d' | grep -E '(run-|offline-run-)' | head -20 || echo 'No wandb runs found'"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/training/wandb/ 2>/dev/null | grep '^d' | grep -E '(run-|offline-run-)' | head -20 || echo 'No wandb runs found'"
 
     echo -e "\n${CYAN}To copy a run (checkpoint + wandb log):${NC}"
     echo "  ./scp_from_remote.sh --run <run_name>"
@@ -75,7 +75,7 @@ list_logs() {
 
 get_latest_checkpoint() {
     # Get the most recent checkpoint directory
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -t $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | head -1"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -1"
 }
 
 copy_file() {
@@ -110,11 +110,11 @@ copy_file() {
 
 copy_checkpoint() {
     local CHECKPOINT_NAME="$1"
-    local REMOTE_PATH="$REMOTE_BASE/playground_amp/checkpoints/$CHECKPOINT_NAME"
-    local LOCAL_PATH="playground_amp/checkpoints/$CHECKPOINT_NAME"
+    local REMOTE_PATH="$REMOTE_BASE/training/checkpoints/$CHECKPOINT_NAME"
+    local LOCAL_PATH="training/checkpoints/$CHECKPOINT_NAME"
 
     # Create local checkpoints directory
-    mkdir -p playground_amp/checkpoints
+    mkdir -p training/checkpoints
 
     echo -e "${YELLOW}Copying checkpoint folder:${NC} $CHECKPOINT_NAME"
     echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
@@ -139,10 +139,10 @@ copy_checkpoint() {
         ls -lh "$LOCAL_PATH" 2>/dev/null | head -10
         echo ""
         echo -e "${CYAN}To visualize the policy:${NC}"
-        echo "  uv run mjpython playground_amp/training/visualize_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config playground_amp/configs/ppo_standing.yaml"
+        echo "  uv run mjpython training/training/visualize_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml"
         echo ""
         echo -e "${CYAN}To test the policy:${NC}"
-        echo "  uv run mjpython playground_amp/training/test_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config playground_amp/configs/ppo_standing.yaml"
+        echo "  uv run mjpython training/training/test_policy.py --checkpoint $LOCAL_PATH/<checkpoint_file>.pkl --config training/configs/ppo_standing.yaml"
     else
         echo -e "\n${RED}✗ Transfer failed!${NC}"
         return 1
@@ -151,11 +151,11 @@ copy_checkpoint() {
 
 copy_wandb_log() {
     local RUN_NAME="$1"
-    local REMOTE_PATH="$REMOTE_BASE/playground_amp/wandb/$RUN_NAME"
-    local LOCAL_PATH="playground_amp/wandb/$RUN_NAME"
+    local REMOTE_PATH="$REMOTE_BASE/training/wandb/$RUN_NAME"
+    local LOCAL_PATH="training/wandb/$RUN_NAME"
 
     # Create local wandb directory
-    mkdir -p playground_amp/wandb
+    mkdir -p training/wandb
 
     echo -e "${YELLOW}Copying W&B run folder:${NC} $RUN_NAME"
     echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
@@ -175,7 +175,7 @@ copy_wandb_log() {
         RESULT=$?
     else
         echo -e "${CYAN}Using scp (rsync not found)...${NC}"
-        scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" playground_amp/wandb/
+        scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" training/wandb/
         RESULT=$?
     fi
 
@@ -211,12 +211,12 @@ copy_run() {
     fi
 
     # Check if wandb run exists on remote
-    local WANDB_REMOTE="$REMOTE_BASE/playground_amp/wandb/$RUN_NAME"
+    local WANDB_REMOTE="$REMOTE_BASE/training/wandb/$RUN_NAME"
     if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$WANDB_REMOTE' ]" 2>/dev/null; then
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
         echo ""
         echo -e "${CYAN}Available W&B runs:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/playground_amp/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
         return 1
     fi
 
@@ -226,7 +226,7 @@ copy_run() {
     # The timestamp may differ slightly between wandb run and checkpoint, so we match
     # only the wandb run ID suffix (e.g., -uf665cr6)
     local WANDB_RUN_ID=$(echo "$RUN_ID" | sed 's/.*-//')  # Extract just the wandb ID (e.g., 8p2bv838)
-    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
+    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
 
     # Step 1: Copy wandb log
     echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
@@ -251,7 +251,7 @@ copy_run() {
         echo "  3. Checkpoint was saved with a different naming scheme"
         echo ""
         echo -e "${CYAN}Available checkpoints (most recent first):${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/playground_amp/checkpoints/ 2>/dev/null | head -10"
+        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -10"
         echo ""
         echo -e "${CYAN}To copy a specific checkpoint manually:${NC}"
         echo "  ./scp_from_remote.sh <checkpoint_folder_name>"
@@ -287,7 +287,7 @@ if [ $# -eq 0 ]; then
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
     echo ""
     echo "Examples:"
-    echo "  $0 playground_amp/checkpoints/wildrobot_amp_20251220_180000/final_amp_policy.pkl"
+    echo "  $0 training/checkpoints/wildrobot_amp_20251220_180000/final_amp_policy.pkl"
     echo "  $0 --checkpoints"
     echo "  $0 --latest"
     echo "  $0 wildrobot_amp_20251220_180000"
@@ -333,7 +333,7 @@ case "$1" in
            [[ "$1" =~ ^[a-zA-Z_]+[0-9]{8}_[0-9]{6}$ ]] || \
            [[ "$1" =~ ^wildrobot ]]; then
             # Check if it exists in checkpoints on remote
-            if ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_BASE/playground_amp/checkpoints/$1' ]" 2>/dev/null; then
+            if ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_BASE/training/checkpoints/$1' ]" 2>/dev/null; then
                 copy_checkpoint "$1"
             else
                 # Try as regular file path

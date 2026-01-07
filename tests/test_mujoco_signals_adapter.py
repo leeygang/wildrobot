@@ -7,7 +7,7 @@ import pytest
 
 from assets.robot_config import load_robot_config
 from policy_contract.spec import PolicySpec
-from playground_amp.sim_adapter.mujoco_signals import MujocoSignalsAdapter
+from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 
 
 def _load_assets():

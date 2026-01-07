@@ -190,7 +190,7 @@ We implement a custom training loop using Brax's building blocks, but owning the
 ### File Structure
 
 ```
-playground_amp/
+training/
 ├── training/
 │   ├── __init__.py              # Module exports
 │   ├── transitions.py           # AMPTransition dataclass
@@ -337,19 +337,19 @@ class AMPPPOConfig:
 
 ```bash
 # Quick smoke test (10 iterations)
-python playground_amp/train.py --verify
+python training/train.py --verify
 
 # Full training with AMP
-python playground_amp/train.py \
+python training/train.py \
     --iterations 3000 \
     --num-envs 32 \
     --amp-weight 1.0
 
 # Training without AMP (pure PPO baseline)
-python playground_amp/train_amp.py --no-amp
+python training/train_amp.py --no-amp
 
 # Custom discriminator settings
-python playground_amp/train_amp.py \
+python training/train_amp.py \
     --amp-weight 1.5 \
     --disc-updates 3 \
     --disc-lr 5e-5

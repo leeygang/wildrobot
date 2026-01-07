@@ -656,17 +656,17 @@ Notes:
 
 #### Mapping from today → ultimate (incremental, low-risk)
 
-Today, your training stack lives under `playground_amp/`. The clean end state above uses `training/` for readability, but we should migrate without breaking imports/tests/scripts:
+Today, your training stack lives under `training/`. The clean end state above uses `training/` for readability, but we should migrate without breaking imports/tests/scripts:
 
-- **Phase 0 (no behavior change):** keep Python import package name `playground_amp` as-is.
-- **Phase 1 (structure alignment):** introduce a top-level `training/` *folder* that contains wrappers/docs/export scripts, but internally calls into `playground_amp.*`.
+- **Phase 0 (no behavior change):** keep Python import package name `training` as-is.
+- **Phase 1 (structure alignment):** introduce a top-level `training/` *folder* that contains wrappers/docs/export scripts, but internally calls into `training.*`.
 - **Phase 2 (optional full rename):** rename the Python package to `training` only once:
   - all internal imports are updated,
   - all tests pass,
-  - and external users (runtime/tools) no longer import `playground_amp`.
+  - and external users (runtime/tools) no longer import `training`.
 
 If Phase 2 is desired, the common safe pattern is a temporary compatibility shim:
-- keep a `playground_amp/` package that re-exports `training/` for one release and warns on import.
+- keep a `training/` package that re-exports `training/` for one release and warns on import.
 
 ### 6.2 File/class structure (interfaces and responsibilities)
 
@@ -738,7 +738,7 @@ This keeps `calib.py` stable, testable, and shareable across sim, runtime, and v
   - Applies: clamps, rate limiting, timeouts, tilt thresholds
   - Optional hooks for future fallback/recovery (MPC/recovery state machine)
 
-#### Training export (`playground_amp/export_policy_bundle.py`)
+#### Training export (`training/export_policy_bundle.py`)
 
 - `export_policy_bundle(checkpoint_path, output_dir, training_cfg, robot_config_path)`
   - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`
@@ -797,9 +797,9 @@ This is what lets you do “playback in sim” and reproduce issues.
 ## 9) Training-side Changes (export pipeline)
 
 Add a single canonical exporter entry point:
-- `playground_amp/export_policy_bundle.py`
+- `training/export_policy_bundle.py`
   - loads checkpoint
-  - exports deterministic ONNX (reuse `playground_amp/export_onnx.py`)
+  - exports deterministic ONNX (reuse `training/export_onnx.py`)
   - generates `policy_spec.json` from:
     - `assets/robot_config.yaml`
     - policy_contract observation layout breakdown
@@ -928,4 +928,4 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 
 - `assets/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `mirror_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
 - Runtime should have a startup validator (e.g. `runtime/wr_runtime/validation/startup_validator.py`) that checks dims and order; extend it to also validate **semantic knobs** from `policy_spec.json` (frames, normalization declared, action mapping type, filter alpha).
-- Training currently uses CAL (`playground_amp/cal/cal.py`) as the “truth”; long-term, move those semantics into `policy_contract/` and keep training’s MuJoCo-specific logic in `training/sim_adapter/`.
+- Training currently uses CAL (`training/cal/cal.py`) as the “truth”; long-term, move those semantics into `policy_contract/` and keep training’s MuJoCo-specific logic in `training/sim_adapter/`.

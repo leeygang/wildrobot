@@ -6,14 +6,14 @@ import pytest
 
 from policy_contract.spec import PolicySpec, validate_runtime_compat, validate_spec
 from assets.robot_config import load_robot_config
-from playground_amp.configs.training_config import load_training_config
-from playground_amp.envs.wildrobot_env import WildRobotEnv
+from training.configs.training_config import load_training_config
+from training.envs.wildrobot_env import WildRobotEnv
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 
 
 def test_env_observation_size_matches_contract() -> None:
     load_robot_config("assets/robot_config.yaml")
-    config = load_training_config("playground_amp/configs/ppo_walking.yaml")
+    config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)
 
@@ -35,13 +35,13 @@ def test_bundle_validates_against_mjcf() -> None:
 
 
 def test_sim_foot_switches_nonzero() -> None:
-    from playground_amp.configs.training_config import load_training_config
-    from playground_amp.envs.wildrobot_env import WildRobotEnv
+    from training.configs.training_config import load_training_config
+    from training.envs.wildrobot_env import WildRobotEnv
     import jax
     import jax.numpy as jnp
 
     load_robot_config("assets/robot_config.yaml")
-    config = load_training_config("playground_amp/configs/ppo_walking.yaml")
+    config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)
 

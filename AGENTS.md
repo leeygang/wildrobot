@@ -1,11 +1,11 @@
 # Repository Guidelines
 
 ## Active Plan (AI Quickstart)
-- Follow the execution plan in `playground_amp/docs/learn_first_plan.md`; current focus is Stage 1 (PPO-only walking with task rewards, no AMP). Align experiments and changes with the stated stage gates and metrics.
+- Follow the execution plan in `training/docs/learn_first_plan.md`; current focus is Stage 1 (PPO-only walking with task rewards, no AMP). Align experiments and changes with the stated stage gates and metrics.
 - Use the commands in `CLAUDE.md` as the canonical entry points (validation, PPO training, visualization). Keep new scripts/configs consistent with that flow.
 
 ## Project Structure & Module Organization
-- `playground_amp/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
+- `training/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
 - `assets/`: Robot definitions and generated configs; keep `assets/robot_config.yaml` in sync when updating MJCF/CAD assets.
 - `scripts/`: Validation and one-off tooling (e.g., parity checks, PD tuning, feature verification).
 - `tests/`: Fast regression/consistency tests; `tests/envs/` covers env parity, root-level tests cover AMP features and quaternion math.
@@ -14,14 +14,14 @@
 ## Build, Test, and Development Commands
 - Environment: `uv sync` to create/update `.venv` (Python 3.12+). Run tools with `uv run ...` to ensure the repo env is used.
 - Validate training setup before long runs: `uv run python scripts/validate_training_setup.py`.
-- Stage 1 PPO walking (current focus): `uv run python playground_amp/train.py --config playground_amp/configs/ppo_walking.yaml --no-amp`; add `--verify` for a quick smoke test.
-- Visualize a checkpoint: `uv run python playground_amp/visualize_policy.py --checkpoint <path>`.
+- Stage 1 PPO walking (current focus): `uv run python training/train.py --config training/configs/ppo_walking.yaml --no-amp`; add `--verify` for a quick smoke test.
+- Visualize a checkpoint: `uv run python training/visualize_policy.py --checkpoint <path>`.
 - Fast deterministic checks: `uv run python scripts/run_unit_tests.py`. Full suite: `uv run pytest tests`.
 
 ## Coding Style & Naming Conventions
 - Python-first codebase; follow PEP 8 (4-space indent, snake_case for functions/vars, PascalCase for classes). Add type hints on new/changed functions.
 - Keep modules importable as scripts (tests rely on `sys.path` manipulation); avoid hard-coded working directories.
-- Prefer small, pure helpers in `playground_amp/utils` and reuse existing math helpers before adding new dependencies.
+- Prefer small, pure helpers in `training/utils` and reuse existing math helpers before adding new dependencies.
 - When touching configs, document required assets (e.g., regenerated `robot_config.yaml`) and default values inline.
 
 ## Testing Guidelines

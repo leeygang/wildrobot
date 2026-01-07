@@ -140,7 +140,7 @@
     "mapping_id": "pos_target_rad_v1"
   },
   "provenance": {
-    "training_config": "playground_amp/configs/ppo_walking.yaml",
+    "training_config": "training/configs/ppo_walking.yaml",
     "robot_config": "assets/robot_config.yaml"
   }
 }
