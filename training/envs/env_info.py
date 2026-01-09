@@ -31,6 +31,10 @@ from training.envs.disturbance import DisturbanceSchedule
 
 import jax.numpy as jnp
 
+# Fixed maximum latency for IMU history buffers (must match EnvConfig.imu_max_latency_steps)
+IMU_MAX_LATENCY = 4
+IMU_HIST_LEN = IMU_MAX_LATENCY + 1
+
 # Use flax.struct for JAX-compatible dataclass with pytree registration
 # Falls back to NamedTuple if flax not available
 try:
@@ -81,6 +85,11 @@ try:
         prev_left_foot_pos: jnp.ndarray  # shape=(3,)
         prev_right_foot_pos: jnp.ndarray  # shape=(3,)
 
+        # IMU history buffers (fixed-size: IMU_MAX_LATENCY + 1)
+        # Most-recent IMU at index 0; older entries follow.
+        imu_quat_hist: jnp.ndarray  # shape=(IMU_MAX_LATENCY+1, 4)
+        imu_gyro_hist: jnp.ndarray  # shape=(IMU_MAX_LATENCY+1, 3)
+
         # AMP features (post-step values)
         foot_contacts: jnp.ndarray  # shape=(4,)
         root_height: jnp.ndarray  # shape=()
@@ -100,6 +109,8 @@ except ImportError:
         prev_root_quat: jnp.ndarray
         prev_left_foot_pos: jnp.ndarray
         prev_right_foot_pos: jnp.ndarray
+        imu_quat_hist: jnp.ndarray
+        imu_gyro_hist: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
         push_schedule: DisturbanceSchedule
@@ -131,6 +142,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_root_quat": (4,),
         "prev_left_foot_pos": (3,),
         "prev_right_foot_pos": (3,),
+        "imu_quat_hist": (IMU_HIST_LEN, 4),
+        "imu_gyro_hist": (IMU_HIST_LEN, 3),
         "foot_contacts": (4,),
         "root_height": (),
         "push_schedule": {

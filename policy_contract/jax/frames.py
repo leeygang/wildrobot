@@ -11,6 +11,14 @@ class JaxFrameOps(FrameOps):
         return normalize_quat_xyzw(quat_xyzw)
 
     @staticmethod
+    def quat_mul(quat_a, quat_b):
+        return quat_mul(quat_a, quat_b)
+
+    @staticmethod
+    def axis_angle_to_quat(axis, angle):
+        return axis_angle_to_quat(axis, angle)
+
+    @staticmethod
     def rotate_vec_by_quat(quat_xyzw, vec):
         return rotate_vec_by_quat(quat_xyzw, vec)
 
@@ -36,6 +44,26 @@ def normalize_quat_xyzw(quat_xyzw: jnp.ndarray) -> jnp.ndarray:
 def _quat_conjugate(quat_xyzw: jnp.ndarray) -> jnp.ndarray:
     x, y, z, w = quat_xyzw
     return jnp.array([-x, -y, -z, w], dtype=jnp.float32)
+
+
+def quat_mul(quat_a: jnp.ndarray, quat_b: jnp.ndarray) -> jnp.ndarray:
+    """Quaternion multiply (wxyz)."""
+    w1, x1, y1, z1 = quat_a[0], quat_a[1], quat_a[2], quat_a[3]
+    w2, x2, y2, z2 = quat_b[0], quat_b[1], quat_b[2], quat_b[3]
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    return jnp.array([w, x, y, z], dtype=jnp.float32)
+
+
+def axis_angle_to_quat(axis: jnp.ndarray, angle: jnp.ndarray) -> jnp.ndarray:
+    """Convert axis-angle (axis, angle) to quaternion (wxyz)."""
+    axis_norm = axis / (jnp.linalg.norm(axis) + 1e-12)
+    half = angle / 2.0
+    w = jnp.cos(half)
+    xyz = axis_norm * jnp.sin(half)
+    return jnp.concatenate([w[None], xyz]).astype(jnp.float32)
 
 
 def rotate_vec_by_quat(quat_xyzw: jnp.ndarray, vec: jnp.ndarray) -> jnp.ndarray:

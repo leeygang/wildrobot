@@ -35,6 +35,23 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.12.2] - 2026-01-05: Standing robustness (moderate pushes)
+
+### Config Updates
+- `training/configs/ppo_standing.yaml`: bump training version to v0.12.2.
+- `training/configs/ppo_standing.yaml`: increase push forces to 2–5 N and keep 6-step pushes.
+- `training/configs/training_runtime_config.py`: add IMU noise + latency knobs (training-only).
+
+### Code Updates
+- `training/envs/wildrobot_env.py`: apply IMU noise + latency before observation build (training-only).
+
+### Plan
+1. `uv run python scripts/validate_training_setup.py`
+2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
+3. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp`
+
+---
+
 ## [v0.11.5] - 2026-01-04: Standing Sim2Real Prep (v0.11.5)
 
 ### Config Updates

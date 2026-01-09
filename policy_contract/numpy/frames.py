@@ -13,6 +13,14 @@ class NumpyFrameOps(FrameOps):
         return normalize_quat_xyzw(quat_xyzw)
 
     @staticmethod
+    def quat_mul(quat_a, quat_b):
+        return quat_mul(quat_a, quat_b)
+
+    @staticmethod
+    def axis_angle_to_quat(axis, angle):
+        return axis_angle_to_quat(axis, angle)
+
+    @staticmethod
     def rotate_vec_by_quat(quat_xyzw, vec):
         return rotate_vec_by_quat(quat_xyzw, vec)
 
@@ -23,6 +31,7 @@ class NumpyFrameOps(FrameOps):
     @staticmethod
     def angvel_heading_local(gyro_body, quat_xyzw):
         return angvel_heading_local(gyro_body, quat_xyzw)
+
 
 def normalize_quat_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
     quat = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)
@@ -35,6 +44,28 @@ def normalize_quat_xyzw(quat_xyzw: np.ndarray) -> np.ndarray:
 def _quat_conjugate(quat_xyzw: np.ndarray) -> np.ndarray:
     x, y, z, w = [float(v) for v in quat_xyzw]
     return np.array([-x, -y, -z, w], dtype=np.float32)
+
+
+def quat_mul(quat_a: np.ndarray, quat_b: np.ndarray) -> np.ndarray:
+    """Quaternion multiply (wxyz)."""
+    w1, x1, y1, z1 = [float(v) for v in quat_a]
+    w2, x2, y2, z2 = [float(v) for v in quat_b]
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    return np.array([w, x, y, z], dtype=np.float32)
+
+
+def axis_angle_to_quat(axis: np.ndarray, angle: float | np.ndarray) -> np.ndarray:
+    """Convert axis-angle (axis, angle) to quaternion (wxyz)."""
+    axis = np.asarray(axis, dtype=np.float32).reshape(3)
+    axis_norm = axis / (np.linalg.norm(axis) + 1e-12)
+    half = float(angle) / 2.0
+    w = math.cos(half)
+    s = math.sin(half)
+    xyz = axis_norm * s
+    return np.array([w, xyz[0], xyz[1], xyz[2]], dtype=np.float32)
 
 
 def rotate_vec_by_quat(quat_xyzw: np.ndarray, vec: np.ndarray) -> np.ndarray:

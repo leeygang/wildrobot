@@ -11,6 +11,8 @@ def test_numpy_frames_interface() -> None:
     vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
     assert np_frames.normalize_quat_xyzw(quat).shape == (4,)
+    assert np_frames.quat_mul(quat, quat).shape == (4,)
+    assert np_frames.axis_angle_to_quat(np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0).shape == (4,)
     assert np_frames.rotate_vec_by_quat(quat, vec).shape == (3,)
     assert np_frames.gravity_local_from_quat(quat).shape == (3,)
     assert np_frames.angvel_heading_local(vec, quat).shape == (3,)
@@ -27,6 +29,8 @@ def test_jax_frames_interface() -> None:
     vec = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
 
     assert jax_frames.normalize_quat_xyzw(quat).shape == (4,)
+    assert jax_frames.quat_mul(quat, quat).shape == (4,)
+    assert jax_frames.axis_angle_to_quat(jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), 0.0).shape == (4,)
     assert jax_frames.rotate_vec_by_quat(quat, vec).shape == (3,)
     assert jax_frames.gravity_local_from_quat(quat).shape == (3,)
     assert jax_frames.angvel_heading_local(vec, quat).shape == (3,)

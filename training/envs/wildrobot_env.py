@@ -44,6 +44,7 @@ from ml_collections import config_dict
 from mujoco import mjx
 
 from mujoco_playground._src import mjx_env
+from policy_contract.jax import frames as jax_frames
 from policy_contract.jax.obs import build_observation
 from policy_contract.jax.action import postprocess_action
 from policy_contract.calib import JaxCalibOps
@@ -56,7 +57,12 @@ from training.cal.specs import Pose3D
 from training.cal.types import CoordinateFrame
 
 from training.configs.training_config import get_robot_config, TrainingConfig
-from training.envs.env_info import WildRobotInfo, WR_INFO_KEY
+from training.envs.env_info import (
+    IMU_HIST_LEN,
+    IMU_MAX_LATENCY,
+    WildRobotInfo,
+    WR_INFO_KEY,
+)
 from training.envs.disturbance import (
     DisturbanceSchedule,
     apply_push,
@@ -70,6 +76,79 @@ from training.core.metrics_registry import (
     NUM_METRICS,
 )
 from training.policy_contract.spec_builder import build_policy_spec
+
+
+# =============================================================================
+# Helper utilities
+# =============================================================================
+
+
+def _apply_imu_noise_and_delay(signals, rng: jax.Array, cfg, prev_hist_quat, prev_hist_gyro):
+    """
+    Apply IMU noise and latency using RNG and env config.
+    Returns: (signals_override, new_quat_hist, new_gyro_hist, next_rng)
+
+    Note: Avoid consuming RNG when noise/latency are disabled.
+    """
+    imu_std = float(cfg.env.imu_gyro_noise_std)
+    quat_deg = float(cfg.env.imu_quat_noise_deg)
+    latency = int(cfg.env.imu_latency_steps)
+    max_latency = IMU_MAX_LATENCY
+    hist_len = IMU_HIST_LEN
+
+    # Read current raw sensors
+    curr_quat = signals.quat_xyzw
+    curr_gyro = signals.gyro_rad_s
+
+    use_noise = (imu_std != 0.0) or (quat_deg != 0.0)
+    rng_out = rng
+
+    if use_noise:
+        rng_out, rng_noise, rng_a, rng_axis = jax.random.split(rng, 4)
+        # Sample gyro noise
+        gyro_noise = jax.random.normal(rng_noise, shape=curr_gyro.shape) * imu_std
+        noisy_gyro = curr_gyro + gyro_noise
+
+        # Sample small random rotation for quaternion noise
+        angle_std = quat_deg * (jp.pi / 180.0)
+        angle = jax.random.normal(rng_a, shape=()) * angle_std
+        axis = jax.random.normal(rng_axis, shape=(3,))
+        noise_quat = jax_frames.axis_angle_to_quat(axis, angle)
+
+        # Apply noise: noisy_quat = noise_quat * curr_quat
+        noisy_quat = jax_frames.quat_mul(noise_quat, curr_quat)
+        # Normalize
+        norm = jp.linalg.norm(noisy_quat)
+        noisy_quat = noisy_quat / (norm + 1e-12)
+    else:
+        noisy_gyro = curr_gyro
+        noisy_quat = curr_quat
+
+    # Build new histories (most-recent at index 0)
+    if prev_hist_quat is None:
+        prev_q_hist = jp.repeat(noisy_quat[None, :], hist_len, axis=0)
+        prev_g_hist = jp.repeat(noisy_gyro[None, :], hist_len, axis=0)
+    else:
+        # Roll: put new entry at index 0, drop last
+        q_head = noisy_quat[None, :]
+        g_head = noisy_gyro[None, :]
+        q_rest = prev_hist_quat[: hist_len - 1]
+        g_rest = prev_hist_gyro[: hist_len - 1]
+        prev_q_hist = jp.concatenate([q_head, q_rest], axis=0)
+        prev_g_hist = jp.concatenate([g_head, g_rest], axis=0)
+
+    # Clip latency into valid range and select delayed sample
+    latency = jp.clip(latency, 0, max_latency)
+    delayed_quat = prev_q_hist[latency]
+    delayed_gyro = prev_g_hist[latency]
+
+    # Replace signals with delayed/noisy readings
+    signals_override = signals.replace(
+        quat_xyzw=delayed_quat.astype(jp.float32),
+        gyro_rad_s=delayed_gyro.astype(jp.float32),
+    )
+
+    return signals_override, prev_q_hist, prev_g_hist, rng_out
 
 
 # =============================================================================
@@ -168,6 +247,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Store frozen runtime config directly - no extraction needed!
         # All values accessed via self._config.env.*, self._config.ppo.*, etc.
         self._config = config
+
+        # Ensure IMU history buffer length matches compile-time constant in env_info
+        if int(self._config.env.imu_max_latency_steps) != int(IMU_MAX_LATENCY):
+            raise ValueError(
+                f"Config mismatch: env.imu_max_latency_steps ({self._config.env.imu_max_latency_steps}) "
+                f"must equal IMU_MAX_LATENCY ({IMU_MAX_LATENCY}) compiled into env_info.py. "
+                "Adjust your config or the code to use a different fixed max latency."
+            )
 
         # Model path (required - must be in config)
         if not config.env.model_path:
@@ -308,7 +395,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 start_step=jp.zeros(()),
                 end_step=jp.zeros(()),
                 force_xy=jp.zeros((2,)),
-                rng=jp.zeros((2,)),
+                rng=jp.zeros((2,), dtype=jp.uint32),
             )
 
         # Build observation using default pose action (matches ctrl at reset)
@@ -316,7 +403,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             spec=self._policy_spec,
             ctrl_rad=self._default_joint_qpos,
         )
-        obs = self._get_obs(data, default_action, velocity_cmd)
+
+        # Read raw sensors and initialize IMU history using push_schedule.rng
+        raw_signals = self._signals_adapter.read(data)
+        signals_override, imu_quat_hist, imu_gyro_hist, next_rng = _apply_imu_noise_and_delay(
+            raw_signals, push_schedule.rng, self._config, None, None
+        )
+
+        obs = self._get_obs(data, default_action, velocity_cmd, signals=signals_override)
 
         # Initial reward and done
         reward = jp.zeros(())
@@ -391,6 +485,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_root_quat=root_pose.orientation,  # (4,) wxyz
             prev_left_foot_pos=left_foot_pos,
             prev_right_foot_pos=right_foot_pos,
+            imu_quat_hist=imu_quat_hist,
+            imu_gyro_hist=imu_gyro_hist,
             foot_contacts=self._cal.get_geom_based_foot_contacts(
                 data, normalize=True
             ),  # For AMP
@@ -418,7 +514,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             metrics=metrics,
             info=info,
             pipeline_state=data,
-            rng=push_schedule.rng,
+            rng=next_rng,
         )
 
     def reset(self, rng: jax.Array) -> WildRobotEnvState:
@@ -507,12 +603,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Use previous root pose from WildRobotInfo for FD velocity computation
         prev_root_pos = wr.prev_root_pos
         prev_root_quat = wr.prev_root_quat
+
+        # IMU noise + latency handling (training-only). Use state.rng for determinism.
+        raw_signals = self._signals_adapter.read(data)
+        signals_override, new_imu_quat_hist, new_imu_gyro_hist, rng_after = _apply_imu_noise_and_delay(
+            raw_signals, state.rng, self._config, wr.imu_quat_hist, wr.imu_gyro_hist
+        )
+        # Build observation using possibly delayed/noisy IMU signals
         obs = self._get_obs(
             data,
             filtered_action,
             velocity_cmd,
             prev_root_pos,
             prev_root_quat,
+            signals=signals_override,
         )
 
         # Get previous foot positions for slip computation from WildRobotInfo
@@ -574,6 +678,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_root_quat=curr_root_pose.orientation,
             prev_left_foot_pos=curr_left_foot_pos,
             prev_right_foot_pos=curr_right_foot_pos,
+            imu_quat_hist=new_imu_quat_hist,
+            imu_gyro_hist=new_imu_gyro_hist,
             foot_contacts=self._cal.get_geom_based_foot_contacts(
                 data, normalize=True
             ),  # For AMP
@@ -594,7 +700,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.10.2: Preserve termination metrics for diagnostics
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
-        reset_schedule = sample_push_schedule(state.rng, self._config.env)
+        # Use updated RNG after consuming IMU noise
+        reset_schedule = sample_push_schedule(rng_after, self._config.env)
         reset_state = self._make_initial_state(
             self._init_qpos,
             velocity_cmd,
@@ -645,6 +752,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_root_quat=reset_wr_info.prev_root_quat,
             prev_left_foot_pos=reset_wr_info.prev_left_foot_pos,
             prev_right_foot_pos=reset_wr_info.prev_right_foot_pos,
+            imu_quat_hist=reset_wr_info.imu_quat_hist,
+            imu_gyro_hist=reset_wr_info.imu_gyro_hist,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
             push_schedule=reset_wr_info.push_schedule,
@@ -661,7 +770,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 preserved_info,  # Use preserved info with truncated intact
                 reset_state.rng,
             ),
-            lambda: (data, obs, metrics, info, state.rng),
+            lambda: (data, obs, metrics, info, rng_after),
         )
 
         # Build packed metrics vector and store in metrics dict
@@ -690,6 +799,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd: jax.Array,
         prev_root_pos: Optional[jax.Array] = None,
         prev_root_quat: Optional[jax.Array] = None,
+        signals=None,
     ) -> jax.Array:
         """Build observation vector.
 
@@ -719,7 +829,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Observation vector (36,)
         """
-        signals = self._signals_adapter.read(data)
+        if signals is None:
+            signals = self._signals_adapter.read(data)
         policy_state = PolicyState(prev_action=action)
         return build_observation(
             spec=self._policy_spec,

@@ -1,24 +1,18 @@
 # =============================================================================
 # WildRobot PPO Standing Config (v0.12.2)
 # =============================================================================
-# Stage 1: Robot-Native Standing Policy (No AMP)
-# v0.12.2: standing robustness with moderate push disturbances
+# Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
-# Goal: Robot maintains balance without falling for 500 steps
-# Exit Criteria: Fall rate < 5%, episode length > 400 steps
+# Goal: Robot maintains balance under stronger lateral pushes.
+# Exit Criteria: Fall rate < 10%, episode length > 350 steps
 #
 # Usage:
-#   uv run python training/train.py --config training/configs/ppo_standing.yaml
-# NOTE: Do not resume from pre-policy_contract checkpoints. Resume is guarded by
-# a policy_spec fingerprint and will fail fast if the contract differs.
+#   uv run python training/train.py --config training/configs/ppo_standing_push.yaml
 #
 # Total steps = iterations × num_envs × rollout_steps
-# Example: 200 × 1024 × 128 = 26M steps
-#
-# See: docs/learn_first_plan.md for roadmap
 # =============================================================================
 version: "0.12.2"
-version_name: "Standing robustness (moderate pushes)"
+version_name: "Standing robustness (strong pushes)"
 
 seed: 42
 
@@ -40,10 +34,9 @@ env:
   max_pitch: 0.8
   max_roll: 0.8
 
-  # Commands - v0.10.2: Focus on standing/slow motion first
-  # Robot learns to balance at cmd≈0 before walking at cmd≈1
+  # Commands - standing only
   min_velocity: 0.0
-  max_velocity: 0.0    # Pure standing (no forward command)
+  max_velocity: 0.0
 
   # Contacts
   contact_threshold_force: 5.0
@@ -52,13 +45,13 @@ env:
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.6
 
-  # Disturbance pushes (standing robustness)
+  # Disturbance pushes (strong)
   push_enabled: true
-  push_start_step_min: 40
-  push_start_step_max: 250
-  push_duration_steps: 6
-  push_force_min: 2.0
-  push_force_max: 5.0
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 8
+  push_force_min: 3.0
+  push_force_max: 7.0
   push_body: waist
 
 # =============================================================================
@@ -67,7 +60,7 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 300      
+  iterations: 300
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -89,13 +82,9 @@ ppo:
 amp:
   enabled: false
 
-  # Reference dataset (Stage 3 only)
   dataset_path: null
+  weight: 0.0
 
-  # Global AMP reward mixing
-  weight: 0.0          # Stage 1 = 0.0, Stage 3 > 0
-
-  # Discriminator training (NOT architecture)
   discriminator:
     learning_rate: 8e-5
     batch_size: 256
@@ -103,14 +92,12 @@ amp:
     r1_gamma: 10.0
     input_noise_std: 0.03
 
-  # Feature parity controls
   feature_config:
     use_finite_diff_vel: true
     use_estimated_contacts: true
     mask_waist: false
     enable_mirror_augmentation: false
 
-  # Diagnostics (for alerts/logging only)
   targets:
     disc_acc_min: 0.55
     disc_acc_max: 0.80
@@ -122,9 +109,6 @@ networks:
   actor:
     hidden_sizes: [256, 256, 128]
     activation: elu
-    log_std_init: -1.0
-    min_log_std: -5.0
-    max_log_std: 2.0
 
   critic:
     hidden_sizes: [256, 256, 128]
@@ -136,34 +120,27 @@ networks:
 
 # =============================================================================
 # Task Reward Weights (Environment-side reward only)
-# v0.10.2: Emphasis on stability over velocity tracking
 # =============================================================================
 reward_weights:
-  # Primary objectives - v0.10.2: Prioritize staying upright
-  tracking_lin_vel: 1.0   # Reduced (was 2.0) - less important for standing
+  tracking_lin_vel: 1.0
   lateral_velocity: -0.5
-  base_height: 3.0        # Strong height enforcement to avoid squat posture
-  orientation: -2.0       # Stricter tilt penalty to keep upright posture
-  height_target: 1.0      # Encourage staying near target_height
+  base_height: 3.0
+  orientation: -2.0
+  height_target: 1.0
   height_target_sigma: 0.04
-  angular_velocity: -0.1  # Increased penalty (was -0.05) - minimize wobble
+  angular_velocity: -0.1
 
-  # Effort and safety
   torque: -0.001
   saturation: -0.1
-
-  # Smoothness
   action_rate: -0.01
   joint_velocity: -0.001
 
-  # Foot stability
   slip: -0.5
   clearance: 0.1
-  stance_width_penalty: -0.5      # Penalize excessive foot separation
+  stance_width_penalty: -0.5
   stance_width_target: 0.19
   stance_width_sigma: 0.05
 
-  # Shaping
   forward_velocity_scale: 4.0
 
 # =============================================================================
@@ -171,7 +148,7 @@ reward_weights:
 # =============================================================================
 reward:
   task_weight: 1.0
-  amp_weight: 0.0            # Alias of amp.weight (keep in sync)
+  amp_weight: 0.0
   task_reward_clip: null
   amp_reward_clip: [0.0, 1.0]
 
@@ -188,25 +165,4 @@ checkpoints:
 wandb:
   enabled: true
   project: wildrobot-ppo
-  # Use "online" when network access is available.
   mode: offline
-  tags: [ppo, stage1, standing, v0.12.1]
-
-video:
-  enabled: true
-  episode_length: 500
-  width: 640
-  height: 480
-  fps: 25
-
-# =============================================================================
-# Quick Verify (Smoke Test)
-# =============================================================================
-quick_verify:
-  enabled: false
-  ppo:
-    num_envs: 4
-    rollout_steps: 8
-    iterations: 3
-  amp:
-    enabled: false

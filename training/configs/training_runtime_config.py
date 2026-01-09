@@ -113,6 +113,12 @@ class EnvConfig(Freezable):
     push_force_max: float = 0.0
     push_body: str = "waist"
 
+    # IMU observation noise and latency (training-only)
+    imu_gyro_noise_std: float = 0.0  # Additive Gaussian noise (rad/s)
+    imu_quat_noise_deg: float = 0.0  # Small rotation noise in degrees (std)
+    imu_latency_steps: int = 0  # Number of steps delay to apply to IMU readings
+    imu_max_latency_steps: int = 4  # Fixed-size history buffer (max latency)
+
 
 # =============================================================================
 # PPO Config
