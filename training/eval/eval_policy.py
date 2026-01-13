@@ -364,15 +364,13 @@ def _print_comparison(
     if train_metrics is None:
         train_metrics = _read_last_metrics_line(metrics_path)
         iteration = None
-    mapping = {
-        "reward_sum": "env/episode_reward",
-        "episode_length": "env/episode_length",
-        "success_rate": "env/success_rate",
-        "term_height_low_frac": "env/term_height_low_frac",
-        "term_height_high_frac": "env/term_height_high_frac",
-        "term_pitch_frac": "env/term_pitch_frac",
-        "term_roll_frac": "env/term_roll_frac",
-    }
+
+    def _get_train_value(*keys: str) -> float | None:
+        for k in keys:
+            v = train_metrics.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+        return None
 
     header = "last line"
     if iteration is not None:
@@ -383,30 +381,76 @@ def _print_comparison(
     else:
         print(f"Using progress/iteration={iteration} from {metrics_path}")
     print("=" * 60)
-    train_reward = train_metrics.get("env/episode_reward")
-    if train_reward is not None and rollout_steps > 0:
-        train_per_step = train_reward / float(rollout_steps)
-        eval_per_step = eval_metrics.get("reward_per_step", float("nan"))
-        delta = eval_per_step - train_per_step
+    # Training logs may report episode reward in different units depending on how
+    # rollouts are aggregated. Prefer a direct "reward per step" metric if present.
+    train_per_step = _get_train_value(
+        "env/reward_per_step",
+        "debug/task_reward_per_step",
+    )
+    if train_per_step is None:
+        train_reward_sum = _get_train_value("env/episode_reward")
+        if train_reward_sum is not None and rollout_steps > 0:
+            train_per_step = train_reward_sum / float(rollout_steps)
+
+    eval_per_step = eval_metrics.get("reward_per_step")
+    if eval_per_step is not None and train_per_step is not None:
+        delta = float(eval_per_step) - float(train_per_step)
         print(
             f"  {'reward_per_step':20s} eval={_format_metric(eval_per_step, '.6f')} | "
             f"train={_format_metric(train_per_step, '.6f')} | "
             f"delta={_format_metric(delta, '.6f')}"
         )
 
-    for eval_key, train_key in mapping.items():
-        if train_key not in train_metrics:
+    # Compare common scalars with flexible key fallback (wandb naming changed over time).
+    comparisons: list[tuple[str, float | None, float | None]] = [
+        (
+            "reward_sum",
+            eval_metrics.get("episode_reward"),
+            _get_train_value("env/episode_reward"),
+        ),
+        (
+            "episode_length",
+            eval_metrics.get("episode_length"),
+            _get_train_value("env/episode_length"),
+        ),
+        (
+            "success_rate",
+            eval_metrics.get("success_rate"),
+            _get_train_value("env/success_rate"),
+        ),
+        (
+            "term_height_low_frac",
+            eval_metrics.get("term_height_low_frac"),
+            _get_train_value("env/term_height_low_frac", "term_height_low_frac"),
+        ),
+        (
+            "term_height_high_frac",
+            eval_metrics.get("term_height_high_frac"),
+            _get_train_value("env/term_height_high_frac", "term_height_high_frac"),
+        ),
+        (
+            "term_pitch_frac",
+            eval_metrics.get("term_pitch_frac"),
+            _get_train_value("env/term_pitch_frac", "term_pitch_frac"),
+        ),
+        (
+            "term_roll_frac",
+            eval_metrics.get("term_roll_frac"),
+            _get_train_value("env/term_roll_frac", "term_roll_frac"),
+        ),
+        (
+            "term_truncated_frac",
+            eval_metrics.get("term_truncated_frac"),
+            _get_train_value("env/term_truncated_frac", "term_truncated_frac"),
+        ),
+    ]
+
+    for name, eval_val, train_val in comparisons:
+        if eval_val is None or train_val is None:
             continue
-        if eval_key == "reward_sum":
-            eval_val = eval_metrics.get("episode_reward")
-        else:
-            eval_val = eval_metrics.get(eval_key)
-        if eval_val is None:
-            continue
-        train_val = train_metrics[train_key]
-        delta = eval_val - train_val
+        delta = float(eval_val) - float(train_val)
         print(
-            f"  {eval_key:20s} eval={_format_metric(eval_val, '.4f')} | "
+            f"  {name:20s} eval={_format_metric(eval_val, '.4f')} | "
             f"train={_format_metric(train_val, '.4f')} | "
             f"delta={_format_metric(delta, '.4f')}"
         )
