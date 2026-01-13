@@ -3,13 +3,15 @@
 # Sync wildrobot files from Mac to Ubuntu GPU machine
 #
 # Usage:
-#   ./scp_to_remote.sh [--public] <filename>    # Sync single file/directory
-#   ./scp_to_remote.sh [--public] --all         # Sync all essential training files
-#   ./scp_to_remote.sh [--public] --data        # Sync only data files (motions, AMP)
-#   ./scp_to_remote.sh [--public] --code        # Sync only code files
+#   ./scp_to_remote.sh [--public|--wrdev|--host <name>] <filename>    # Sync single file/directory
+#   ./scp_to_remote.sh [--public|--wrdev|--host <name>] --all         # Sync all essential training files
+#   ./scp_to_remote.sh [--public|--wrdev|--host <name>] --data        # Sync only data files (motions, AMP)
+#   ./scp_to_remote.sh [--public|--wrdev|--host <name>] --code        # Sync only code files
 #
 # Options:
-#   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --public         Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --wrdev          Use wrdev.local
+#   --host <name>    Override hostname (e.g., 192.168.1.10)
 #
 # Examples:
 #   ./scp_to_remote.sh --public --code
@@ -29,16 +31,35 @@ REMOTE_USER="leeygang"
 REMOTE_HOST="linux-pc.local"  # Default
 REMOTE_BASE="~/projects/wildrobot"
 
-# Parse --public option
-if [[ "$1" == "--public" ]]; then
-    if [ -z "$LINUX_PUBLIC_IP" ]; then
-        echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
-        echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
-        exit 1
-    fi
-    REMOTE_HOST="$LINUX_PUBLIC_IP"
-    shift
-fi
+# Parse options
+while [[ "$1" == --* ]]; do
+    case "$1" in
+        --public)
+            if [ -z "$LINUX_PUBLIC_IP" ]; then
+                echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
+                echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
+                exit 1
+            fi
+            REMOTE_HOST="$LINUX_PUBLIC_IP"
+            shift
+            ;;
+        --wrdev)
+            REMOTE_HOST="wrdev.local"
+            shift
+            ;;
+        --host)
+            if [ -z "$2" ]; then
+                echo -e "${RED}Error: --host requires a hostname${NC}"
+                exit 1
+            fi
+            REMOTE_HOST="$2"
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
 
@@ -191,13 +212,16 @@ sync_all() {
 
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--all|--data|--code>"
+    echo "Usage: $0 [--public|--wrdev|--host <name>] <filename|--all|--data|--code>"
     echo ""
     echo "Options:"
     echo "  <filename>   Sync specific file or directory"
     echo "  --all        Sync all essential training files"
     echo "  --data       Sync only data files (motions, AMP)"
     echo "  --code       Sync only code files"
+    echo "  --wrdev      Use wrdev.local"
+    echo "  --host       Override hostname (e.g., 192.168.1.10)"
+    echo "  --public     Use \$LINUX_PUBLIC_IP"
     echo ""
     echo "Examples:"
     echo "  $0 training/train.py"

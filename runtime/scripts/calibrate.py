@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import shutil
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -18,7 +17,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from runtime.configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
-from runtime.hardware.hiwonder_board_controller import HiwonderBoardController  # noqa: E402
 
 RANGE_RAD = 4.1887902047863905
 UNITS_MIN = 0
@@ -27,9 +25,10 @@ UNITS_CENTER = 500
 UNITS_PER_RAD = UNITS_MAX / RANGE_RAD
 DEFAULT_MOVE_MS = 300
 DEFAULT_STEP_UNITS = 5
-DEFAULT_DELTA_RAD = 0.1
+DEFAULT_DELTA_RAD = 0.5
 VERIFY_TOL_RAD = 0.05
 PANIC_KEY = "q"
+DEFAULT_PAUSE_S = 3.0
 
 POSITIVE_HINTS = {
     "left_hip_pitch": "left leg swings forward",
@@ -88,7 +87,7 @@ def units_to_rad(
     return float(direction) * (units - UNITS_CENTER - offset) * (RANGE_RAD / UNITS_MAX)
 
 
-def read_position(controller: HiwonderBoardController, servo_id: int) -> Optional[int]:
+def read_position(controller, servo_id: int) -> Optional[int]:
     resp = controller.read_servo_positions([servo_id])
     if not resp:
         return None
@@ -96,13 +95,21 @@ def read_position(controller: HiwonderBoardController, servo_id: int) -> Optiona
 
 
 def move_and_wait(
-    controller: HiwonderBoardController,
+    controller,
     servo_id: int,
     target_units: int,
     move_ms: int,
 ) -> None:
     controller.move_servos([(servo_id, target_units)], move_ms)
     time.sleep(move_ms / 1000.0 + 0.05)
+
+
+def announce_and_pause(message: str, pause_s: float) -> None:
+    if message:
+        print(message)
+    if pause_s > 0:
+        print(f"Pausing {pause_s:.1f}s...")
+        time.sleep(pause_s)
 
 
 def yes_no(prompt: str, default: bool = False) -> bool:
@@ -199,7 +206,7 @@ def resolve_home_ctrl(args: argparse.Namespace, joint_names: List[str]) -> List[
     return [0.0] * len(joint_names)
 
 
-def panic_and_exit(controller: HiwonderBoardController, servo_ids: Iterable[int]) -> None:
+def panic_and_exit(controller, servo_ids: Iterable[int]) -> None:
     try:
         controller.unload_servos(list(servo_ids))
     finally:
@@ -218,7 +225,7 @@ def direction_prompt(joint: str, hint: str, delta_rad: float) -> str:
 
 
 def calibrate_direction(
-    controller: HiwonderBoardController,
+    controller,
     servo: ServoConfig,
     joint: str,
     state: JointState,
@@ -229,9 +236,9 @@ def calibrate_direction(
     delta_units: Optional[int],
     move_ms: int,
     center_units: int,
+    pause_s: float,
 ) -> int:
     print(f"\n-- Direction calibration for {joint} (servo {servo.id}) --")
-    move_and_wait(controller, servo.id, center_units, move_ms)
     delta_rad_used = (
         float(delta_units) / UNITS_PER_RAD if delta_units is not None else float(delta_rad)
     )
@@ -239,28 +246,41 @@ def calibrate_direction(
         delta_rad_used = DEFAULT_DELTA_RAD
 
     while True:
+        # Always start the direction test from center to make the "first move" unambiguous.
+        announce_and_pause(
+            f"Step: move {joint} to center units ({center_units})",
+            pause_s,
+        )
+        move_and_wait(controller, servo.id, center_units, move_ms)
         plus_units = rad_to_units(
             servo,
             delta_rad_used,
             direction_override=1,
             offset_override=state.offset,
         )
-        minus_units = rad_to_units(
-            servo,
-            -delta_rad_used,
-            direction_override=1,
-            offset_override=state.offset,
+        announce_and_pause(
+            f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing direction)",
+            pause_s,
         )
         move_and_wait(controller, servo.id, plus_units, move_ms)
-        move_and_wait(controller, servo.id, minus_units, move_ms)
         resp = input(direction_prompt(joint, hint, delta_rad_used) + "\n> ").strip().lower()
         if resp == PANIC_KEY:
             panic_and_exit(controller, all_servo_ids)
         if resp.startswith("y"):
             print("Direction set to +1")
+            announce_and_pause(
+                f"Step: return {joint} to center units ({center_units})",
+                pause_s,
+            )
+            move_and_wait(controller, servo.id, center_units, move_ms)
             return 1
         if resp.startswith("n"):
             print("Direction set to -1")
+            announce_and_pause(
+                f"Step: return {joint} to center units ({center_units})",
+                pause_s,
+            )
+            move_and_wait(controller, servo.id, center_units, move_ms)
             return -1
         if resp.startswith("r"):
             try:
@@ -274,13 +294,14 @@ def calibrate_direction(
 
 
 def calibrate_offset(
-    controller: HiwonderBoardController,
+    controller,
     servo: ServoConfig,
     joint: str,
     state: JointState,
     all_servo_ids: Iterable[int],
     move_ms: int,
     step_units: int,
+    pause_s: float,
 ) -> int:
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
     target_units = rad_to_units(
@@ -288,6 +309,10 @@ def calibrate_offset(
         0.0,
         direction_override=state.direction,
         offset_override=state.offset,
+    )
+    announce_and_pause(
+        f"Step: move {joint} to target_rad=0.0 using calibrated direction/offset -> units {target_units}",
+        pause_s,
     )
     move_and_wait(controller, servo.id, target_units, move_ms)
     print(
@@ -329,17 +354,22 @@ def calibrate_offset(
 
 
 def verify_zero(
-    controller: HiwonderBoardController,
+    controller,
     servo: ServoConfig,
     joint: str,
     state: JointState,
     move_ms: int,
+    pause_s: float,
 ) -> None:
     target_units = rad_to_units(
         servo,
         0.0,
         direction_override=state.direction,
         offset_override=state.offset,
+    )
+    announce_and_pause(
+        f"Step: verify {joint} at target_rad=0.0 -> units {target_units}",
+        pause_s,
     )
     move_and_wait(controller, servo.id, target_units, move_ms)
     pos = read_position(controller, servo.id)
@@ -391,6 +421,12 @@ def main() -> None:
     parser.add_argument("--scene-xml", help="Scene XML path (requires MuJoCo installed)")
     parser.add_argument("--keyframes-xml", help="keyframes.xml path for home pose (actuator count must be 8)")
     parser.add_argument("--go-home", action="store_true", help="Move to home pose before calibration")
+    parser.add_argument(
+        "--pause-s",
+        type=float,
+        default=DEFAULT_PAUSE_S,
+        help="Seconds to pause before each commanded move (set 0 to disable)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -461,6 +497,8 @@ def main() -> None:
         print(f"Would write updates to: {output_path}")
         return
 
+    from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
+
     controller = HiwonderBoardController(config.hiwonder_controller)
     try:
         if args.go_home:
@@ -479,6 +517,10 @@ def main() -> None:
                         offset_override=state.offset,
                     )
                     cmds.append((servo.id, units))
+                announce_and_pause(
+                    f"Step: move all joints to home pose (duration {max(args.move_ms, 800)} ms)",
+                    float(args.pause_s),
+                )
                 controller.move_servos(cmds, max(args.move_ms, 800))
                 time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
 
@@ -498,6 +540,7 @@ def main() -> None:
                 delta_units=args.delta_units,
                 move_ms=args.move_ms,
                 center_units=center_units,
+                pause_s=float(args.pause_s),
             )
             states[joint].direction = new_dir
             new_offset = calibrate_offset(
@@ -508,16 +551,12 @@ def main() -> None:
                 all_servo_ids=servo_ids,
                 move_ms=args.move_ms,
                 step_units=args.step_units,
+                pause_s=float(args.pause_s),
             )
             states[joint].offset = new_offset
-            verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms)
+            verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
 
         output_path = Path(args.output) if args.output else config_path
-        if args.output is None:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup_path = output_path.with_suffix(output_path.suffix + f".bak-{timestamp}")
-            shutil.copy2(output_path, backup_path)
-            print(f"Created backup at {backup_path}")
         write_config(raw_config, output_path, {j: states[j] for j in selected})
         print(f"Wrote updated calibration to {output_path}")
     finally:
