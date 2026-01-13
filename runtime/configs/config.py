@@ -78,6 +78,7 @@ class ServoConfig:
     Attributes:
         id: Servo ID (1-254)
         offset: Calibration offset in servo angle units (default: 0)
+        direction: Hardware direction correction (+1 or -1, default: +1)
         rad_range: Joint range in radians (min, max) from robot_config.yaml
         max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
         mirror_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
@@ -85,9 +86,15 @@ class ServoConfig:
 
     id: int
     offset: int = 0
+    direction: int = 1
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
     mirror_sign: float = 1.0
+
+    @property
+    def effective_sign(self) -> float:
+        """Sign applied to ctrl_rad<->servo conversion (hardware direction only)."""
+        return float(self.direction)
 
     @property
     def ctrl_center(self) -> float:
@@ -152,13 +159,13 @@ class HiwonderControllerConfig:
             → corrected = action * mirror_sign
             → ctrl_rad = corrected * ctrl_span + ctrl_center
             → degrees = ctrl_rad * (180/π)
-            → servo_pos = 500 + degrees * DEG_TO_SERVO + offset
+            → servo_pos = 500 + direction * degrees * DEG_TO_SERVO + offset
         """
         action_clipped = max(-1.0, min(1.0, action))
         corrected = action_clipped * servo.mirror_sign
         ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
         degrees = math.degrees(ctrl_rad)
-        servo_pos = self.SERVO_CENTER + degrees * self.DEG_TO_SERVO + servo.offset
+        servo_pos = self.SERVO_CENTER + servo.direction * degrees * self.DEG_TO_SERVO + servo.offset
         return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
 
     def _servo_pos_to_policy_action(self, servo_pos: int, servo: ServoConfig) -> float:
@@ -167,7 +174,7 @@ class HiwonderControllerConfig:
         Inverse of _policy_action_to_servo_pos.
         """
         degrees = (servo_pos - servo.offset - self.SERVO_CENTER) / self.DEG_TO_SERVO
-        ctrl_rad = math.radians(degrees)
+        ctrl_rad = math.radians(degrees) / servo.direction
         corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
         action = corrected / servo.mirror_sign
         return max(-1.0, min(1.0, action))
@@ -448,14 +455,20 @@ class WrRuntimeConfig:
         """
         hiw = data.get("Hiwonder_controller", {})
 
-        # Parse servos - each servo has "id" and "offset" fields
+        # Parse servos - each servo has "id", "offset", and optional "direction" fields
         # Merge with joint_specs for rad_range, max_velocity, mirror_sign
         servos = {}
         for joint_name, servo_data in hiw.get("servos", {}).items():
             joint_spec = joint_specs.get(joint_name, {})
+            direction = int(servo_data.get("direction", 1))
+            if direction not in (-1, 1):
+                raise ValueError(
+                    f"Invalid direction for servo '{joint_name}': {direction} (expected +1 or -1)"
+                )
             servos[str(joint_name)] = ServoConfig(
                 id=int(servo_data["id"]),
                 offset=int(servo_data.get("offset", 0)),
+                direction=direction,
                 rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
                 max_velocity=joint_spec.get("max_velocity", 10.0),
                 mirror_sign=joint_spec.get("mirror_sign", 1.0),
@@ -502,6 +515,7 @@ class WrRuntimeConfig:
             servos_dict[joint_name] = {
                 "id": servo.id,
                 "offset": servo.offset,
+                "direction": servo.direction,
             }
 
         return {
