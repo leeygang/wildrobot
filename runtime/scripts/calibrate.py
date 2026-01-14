@@ -8,7 +8,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 # Ensure repo root is on sys.path when running as a script (e.g. `python3 runtime/scripts/calibrate.py ...`).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,16 +49,6 @@ class JointState:
 
 def clamp_units(value: float) -> int:
     return int(max(UNITS_MIN, min(UNITS_MAX, round(value))))
-
-
-def parse_hint_override(value: str) -> Tuple[str, str]:
-    if "=" not in value:
-        raise argparse.ArgumentTypeError("Hint override must be in the form joint=hint")
-    joint, hint = value.split("=", 1)
-    joint = joint.strip()
-    if not joint:
-        raise argparse.ArgumentTypeError("Joint name in hint override is empty")
-    return joint, hint.strip()
 
 
 def prompt_select_joints(joint_names: List[str]) -> List[str]:
@@ -347,18 +337,12 @@ def calibrate_direction(
     hint: str,
     *,
     all_servo_ids: Iterable[int],
-    delta_rad: float,
-    delta_units: Optional[int],
     move_ms: int,
     center_units: int,
     pause_s: float,
 ) -> int:
     print(f"\n-- Direction calibration for {joint} (servo {servo.id}) --")
-    delta_rad_used = (
-        float(delta_units) / UNITS_PER_RAD if delta_units is not None else float(delta_rad)
-    )
-    if delta_rad_used == 0:
-        delta_rad_used = DEFAULT_DELTA_RAD
+    delta_rad_used = DEFAULT_DELTA_RAD
 
     while True:
         # Always start the direction test from center to make the "first move" unambiguous.
@@ -433,7 +417,7 @@ def calibrate_offset(
     move_and_wait(controller, servo.id, target_units, move_ms)
     commands_msg = (
         "Jog the joint until it matches your neutral pose. Commands:"
-        "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm;"
+        "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm; q = quit joint;"
         "\n  m = enter offset manually (units);"
     )
     if record_pos:
@@ -442,7 +426,7 @@ def calibrate_offset(
     print(commands_msg)
     read_failures = 0
     while True:
-        cmd = input("(a/d/A/D/c/m/p/enter) > ").strip()
+        cmd = input("(a/d/A/D/c/m/p/q/enter) > ").strip()
         if not cmd or cmd.lower() == "c":
             pos = read_position(controller, servo.id)
             if pos is None:
@@ -470,6 +454,9 @@ def calibrate_offset(
                 continue
             print(f"Using manual offset {offset_units} (units).")
             return offset_units
+        if cmd.lower() == "q":
+            print(f"Aborted offset calibration for {joint}; keeping previous offset {state.offset}.")
+            return state.offset
         if record_pos and cmd.lower() == "p":
             print_all_joint_positions(
                 controller,
@@ -559,8 +546,8 @@ Examples (copy/paste):
   # Move robot to home pose only (no calibration), then wait until you press 'q' to unload
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --go-home --keyframes-xml assets/keyframes.xml
 
-  # Record current hardware pose as runtime home_ctrl_rad (press 'c' to save, 'q' to unload)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-home
+    # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
+    uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
 
   # Calibrate one joint (explicit)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --joints left_hip_pitch
@@ -593,23 +580,21 @@ Examples (copy/paste):
         const="__PROMPT__",
         help="Comma-separated joint list to calibrate. If provided without a value, prompts with a numbered list.",
     )
+    parser.add_argument(
+        "--offset",
+        action="store_true",
+        help="Offset-only mode: optionally center all servos, then select joints to calibrate offsets",
+    )
     parser.add_argument("--step-units", type=int, default=DEFAULT_STEP_UNITS, help="Jog step size in servo units")
     parser.add_argument("--move-ms", type=int, default=DEFAULT_MOVE_MS, help="Move duration in milliseconds")
-    parser.add_argument("--delta-rad", type=float, default=DEFAULT_DELTA_RAD, help="Delta radians for direction test")
-    parser.add_argument("--delta-units", type=int, help="Override delta in servo units for direction test")
     parser.add_argument("--bundle", help="Policy bundle directory containing policy_spec.json")
     parser.add_argument("--scene-xml", help="Scene XML path (requires MuJoCo installed)")
     parser.add_argument("--keyframes-xml", help="keyframes.xml path for home pose (actuator count must be 8)")
     parser.add_argument("--go-home", action="store_true", help="Move to home pose before calibration")
     parser.add_argument(
-        "--record-home",
-        action="store_true",
-        help="Record current pose as Hiwonder_controller.home_ctrl_rad in the runtime config",
-    )
-    parser.add_argument(
         "--record-pos",
         action="store_true",
-        help="Enable 'p' during offset calibration to print all joint positions (id/name) to console",
+        help="Enable pose inspection: 'p' to print positions during calibration, 'c' to record current pose as home_ctrl_rad",
     )
     parser.add_argument(
         "--pause-s",
@@ -621,12 +606,6 @@ Examples (copy/paste):
         "--dry-run",
         action="store_true",
         help="Do not connect to hardware; print planned moves and config writes only",
-    )
-    parser.add_argument(
-        "--hint",
-        action="append",
-        type=parse_hint_override,
-        help="Override positive motion hint per joint (joint=hint)",
     )
     args = parser.parse_args()
 
@@ -640,25 +619,22 @@ Examples (copy/paste):
     joint_names = list(servo_cfgs.keys())
 
     selected: List[str] = []
+    selection_prompt_deferred = False
     if args.joints == "__PROMPT__":
-        try:
-            selected = prompt_select_joints(joint_names)
-        except ValueError as exc:
-            sys.exit(str(exc))
+        selection_prompt_deferred = True
     elif args.joints:
         selected = [j.strip() for j in str(args.joints).split(",") if j.strip()]
     elif args.all:
         selected = list(joint_names)
-    elif not (args.go_home or args.record_home):
-        parser.error("Must specify calibration joints (--all or --joints), or use --go-home/--record-home.")
+    elif args.offset:
+        selection_prompt_deferred = True
+    elif not (args.go_home or args.record_pos):
+        parser.error("Must specify calibration joints (--all or --joints), or use --go-home/--record-pos/--offset.")
     for j in selected:
         if j not in servo_cfgs:
             sys.exit(f"Joint {j} not found in config; available: {joint_names}")
 
     hints = dict(POSITIVE_HINTS)
-    if args.hint:
-        for joint, hint in args.hint:
-            hints[joint] = hint
 
     states: Dict[str, JointState] = {
         j: JointState(offset=servo_cfgs[j].offset, direction=servo_cfgs[j].direction)
@@ -694,9 +670,6 @@ Examples (copy/paste):
                 )
             output_path = Path(args.output) if args.output else config_path
             print(f"Would write updates to: {output_path}")
-        if args.record_home:
-            output_path = Path(args.output) if args.output else config_path
-            print(f"Would record current pose as home_ctrl_rad into: {output_path}")
         return
 
     from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
@@ -726,17 +699,47 @@ Examples (copy/paste):
                 controller.move_servos(cmds, max(args.move_ms, 800))
                 time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
 
-        if args.record_home:
+        if args.offset:
+            if yes_no("Reset all servos to adjusted center (uses current offsets/directions)?", default=False):
+                cmds = []
+                for joint in joint_names:
+                    servo = servo_cfgs[joint]
+                    state = states[joint]
+                    units = rad_to_units(
+                        servo,
+                        0.0,
+                        direction_override=state.direction,
+                        offset_override=state.offset,
+                    )
+                    cmds.append((servo.id, units))
+                announce_and_pause(
+                    f"Step: move all joints to adjusted center (duration {max(args.move_ms, 400)} ms)",
+                    float(args.pause_s),
+                )
+                controller.move_servos(cmds, max(args.move_ms, 400))
+                time.sleep(max(args.move_ms, 400) / 1000.0 + 0.2)
+
+        if selection_prompt_deferred and not selected:
+            try:
+                selected = prompt_select_joints(joint_names)
+            except ValueError as exc:
+                sys.exit(str(exc))
+            for j in selected:
+                if j not in servo_cfgs:
+                    sys.exit(f"Joint {j} not found in config; available: {joint_names}")
+
+        if args.record_pos:
             print(
-                "\n-- Record Home Pose --\n"
+                "\n-- Pose Inspection --\n"
                 "Adjust the robot physically/joints as needed.\n"
                 "Commands:\n"
                 "  p = print all joint positions (units + ctrl_rad)\n"
-                "  c = record current pose to config and exit\n"
+                "  c = record current pose as home_ctrl_rad\n"
+                f"  Enter = continue{' to calibration' if selected else ''}\n"
                 f"  {PANIC_KEY} = unload and exit\n"
             )
             while True:
-                cmd = input("(p/c/q) > ").strip().lower()
+                cmd = input("(p/c/enter/q) > ").strip().lower()
                 if cmd == PANIC_KEY:
                     panic_and_exit(controller, servo_ids)
                 if cmd == "p":
@@ -758,17 +761,15 @@ Examples (copy/paste):
                     output_path = Path(args.output) if args.output else config_path
                     write_config(raw_config, output_path, {}, home_ctrl_rad=home_ctrl)
                     print(f"Wrote home_ctrl_rad to {output_path}")
-                    wait_until_unload(
-                        controller,
-                        servo_ids,
-                        prompt=(
-                            "Home pose recorded. Servos remain loaded.\n"
-                            f"Press '{PANIC_KEY}' then Enter to unload and exit (Ctrl+C also unloads)."
-                        ),
-                    )
-                print("Unknown input; use p, c, or q.")
+                    continue
+                if cmd == "":
+                    break
+                print("Unknown input; use p, c, Enter, or q.")
 
-        if not selected:
+        if args.record_pos and not selected:
+            return
+
+        if not selected and not args.record_pos:
             wait_until_unload(
                 controller,
                 servo_ids,
@@ -778,45 +779,63 @@ Examples (copy/paste):
                 ),
             )
 
-        for joint in selected:
-            servo = servo_cfgs[joint]
-            state = states[joint]
-            center_units = clamp_units(UNITS_CENTER + state.offset)
-            hint = hints.get(joint, "positive motion")
-            new_dir = calibrate_direction(
-                controller,
-                servo,
-                joint,
-                state,
-                hint,
-                all_servo_ids=servo_ids,
-                delta_rad=args.delta_rad,
-                delta_units=args.delta_units,
-                move_ms=args.move_ms,
-                center_units=center_units,
-                pause_s=float(args.pause_s),
-            )
-            states[joint].direction = new_dir
-            new_offset = calibrate_offset(
-                controller,
-                servo,
-                joint,
-                states[joint],
-                all_servo_ids=servo_ids,
-                move_ms=args.move_ms,
-                step_units=args.step_units,
-                pause_s=float(args.pause_s),
-                record_pos=bool(args.record_pos),
-                all_joint_names=joint_names,
-                all_servo_cfgs=servo_cfgs,
-                all_states=states,
-            )
-            states[joint].offset = new_offset
-            verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
+        calibrated: List[str] = []
+        current_selection = list(selected)
 
-        output_path = Path(args.output) if args.output else config_path
-        write_config(raw_config, output_path, {j: states[j] for j in selected})
-        print(f"Wrote updated calibration to {output_path}")
+        while current_selection:
+            for joint in current_selection:
+                servo = servo_cfgs[joint]
+                state = states[joint]
+                center_units = clamp_units(UNITS_CENTER + state.offset)
+                hint = hints.get(joint, "positive motion")
+                if not args.offset:
+                    new_dir = calibrate_direction(
+                        controller,
+                        servo,
+                        joint,
+                        state,
+                        hint,
+                        all_servo_ids=servo_ids,
+                        move_ms=args.move_ms,
+                        center_units=center_units,
+                        pause_s=float(args.pause_s),
+                    )
+                    states[joint].direction = new_dir
+                new_offset = calibrate_offset(
+                    controller,
+                    servo,
+                    joint,
+                    states[joint],
+                    all_servo_ids=servo_ids,
+                    move_ms=args.move_ms,
+                    step_units=args.step_units,
+                    pause_s=float(args.pause_s),
+                    record_pos=bool(args.record_pos),
+                    all_joint_names=joint_names,
+                    all_servo_cfgs=servo_cfgs,
+                    all_states=states,
+                )
+                states[joint].offset = new_offset
+                verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
+                if joint not in calibrated:
+                    calibrated.append(joint)
+
+            if not args.offset:
+                break
+            if not yes_no("Calibrate another joint?", default=False):
+                break
+            try:
+                current_selection = prompt_select_joints(joint_names)
+            except ValueError as exc:
+                sys.exit(str(exc))
+            for j in current_selection:
+                if j not in servo_cfgs:
+                    sys.exit(f"Joint {j} not found in config; available: {joint_names}")
+
+        if calibrated:
+            output_path = Path(args.output) if args.output else config_path
+            write_config(raw_config, output_path, {j: states[j] for j in calibrated})
+            print(f"Wrote updated calibration to {output_path}")
     finally:
         try:
             try:
