@@ -28,6 +28,7 @@ DEFAULT_DELTA_RAD = 0.5
 VERIFY_TOL_RAD = 0.05
 PANIC_KEY = "q"
 DEFAULT_PAUSE_S = 3.0
+RANGE_TEST_MS = 3000
 
 POSITIVE_HINTS = {
     "left_hip_pitch": "left leg swings forward",
@@ -406,7 +407,8 @@ def calibrate_offset(
     all_joint_names: List[str],
     all_servo_cfgs: Dict[str, ServoConfig],
     all_states: Dict[str, JointState],
-) -> int:
+) -> Optional[int]:
+    """Calibrate offset for a joint. Returns new offset, or None to skip (keep original)."""
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
     # Offset calibration should not depend on any existing offset value.
     target_units = UNITS_CENTER
@@ -417,7 +419,8 @@ def calibrate_offset(
     move_and_wait(controller, servo.id, target_units, move_ms)
     commands_msg = (
         "Jog the joint until it matches your neutral pose. Commands:"
-        "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm; q = quit joint;"
+        "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm;"
+        "\n  s = skip offset (save direction only); q = quit joint;"
         "\n  m = enter offset manually (units);"
     )
     if record_pos:
@@ -426,7 +429,7 @@ def calibrate_offset(
     print(commands_msg)
     read_failures = 0
     while True:
-        cmd = input("(a/d/A/D/c/m/p/q/enter) > ").strip()
+        cmd = input("(a/d/A/D/c/s/m/p/q/enter) > ").strip()
         if not cmd or cmd.lower() == "c":
             pos = read_position(controller, servo.id)
             if pos is None:
@@ -457,6 +460,9 @@ def calibrate_offset(
         if cmd.lower() == "q":
             print(f"Aborted offset calibration for {joint}; keeping previous offset {state.offset}.")
             return state.offset
+        if cmd.lower() == "s":
+            print(f"Skipping offset calibration for {joint}; direction will be saved, offset unchanged.")
+            return None
         if record_pos and cmd.lower() == "p":
             print_all_joint_positions(
                 controller,
@@ -474,7 +480,7 @@ def calibrate_offset(
         elif cmd in ("d", "D"):
             delta = step_units * (5 if cmd == "D" else 1)
         else:
-            print("Unknown command; use a/d/A/D or confirm.")
+            print("Unknown command; use a/d/A/D to jog, c to confirm, s to skip.")
             continue
         target_units = clamp_units(target_units + delta)
         move_and_wait(controller, servo.id, target_units, move_ms)
@@ -517,6 +523,56 @@ def verify_zero(
     print(f"Verify zero: {pos} units => {pos_rad:.4f} rad ({status})")
 
 
+def range_test_joint(
+    controller,
+    servo: ServoConfig,
+    joint: str,
+) -> None:
+    """Run a joint through its full range: center -> min -> max -> min -> center."""
+    print(f"\n-- Range test for {joint} (servo {servo.id}) --")
+
+    # Calculate positions using current calibration and joint limits from robot_config
+    center_units = rad_to_units(servo, 0.0)
+    min_rad, max_rad = servo.rad_range
+    min_units = rad_to_units(servo, min_rad)
+    max_units = rad_to_units(servo, max_rad)
+
+    print(f"  Center: {center_units} units (0.0 rad)")
+    print(f"  Min: {min_units} units ({min_rad:.3f} rad)")
+    print(f"  Max: {max_units} units ({max_rad:.3f} rad)")
+    print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
+
+    input("Press Enter to start range test (or Ctrl+C to abort)...")
+
+    try:
+        # Move to min
+        print(f"Moving to min ({min_units} units)...")
+        controller.move_servos([(servo.id, min_units)], RANGE_TEST_MS)
+        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+
+        # Move to max
+        print(f"Moving to max ({max_units} units)...")
+        controller.move_servos([(servo.id, max_units)], RANGE_TEST_MS)
+        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+
+        # Move back to min
+        print(f"Moving back to min ({min_units} units)...")
+        controller.move_servos([(servo.id, min_units)], RANGE_TEST_MS)
+        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+
+        # Move back to center
+        print(f"Moving back to center ({center_units} units)...")
+        controller.move_servos([(servo.id, center_units)], RANGE_TEST_MS)
+        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+
+        print(f"Range test for {joint} complete.")
+
+    except KeyboardInterrupt:
+        print("\nRange test interrupted. Moving to center...")
+        controller.move_servos([(servo.id, center_units)], RANGE_TEST_MS)
+        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+
+
 def write_config(
     base_data: dict,
     output_path: Path,
@@ -557,6 +613,9 @@ Examples (copy/paste):
 
   # Calibrate all joints, and go to home first
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --all --go-home --keyframes-xml assets/keyframes.xml
+
+  # Test range of motion for joints interactively
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --range
 """.strip()
 
     parser = argparse.ArgumentParser(
@@ -584,6 +643,11 @@ Examples (copy/paste):
         "--offset",
         action="store_true",
         help="Offset-only mode: optionally center all servos, then select joints to calibrate offsets",
+    )
+    parser.add_argument(
+        "--range",
+        action="store_true",
+        help="Range test mode: reset to center, then interactively test each joint's full range of motion",
     )
     parser.add_argument("--step-units", type=int, default=DEFAULT_STEP_UNITS, help="Jog step size in servo units")
     parser.add_argument("--move-ms", type=int, default=DEFAULT_MOVE_MS, help="Move duration in milliseconds")
@@ -628,8 +692,10 @@ Examples (copy/paste):
         selected = list(joint_names)
     elif args.offset:
         selection_prompt_deferred = True
+    elif args.range:
+        pass  # Range mode handles its own joint selection
     elif not (args.go_home or args.record_pos):
-        parser.error("Must specify calibration joints (--all or --joints), or use --go-home/--record-pos/--offset.")
+        parser.error("Must specify calibration joints (--all or --joints), or use --go-home/--record-pos/--offset/--range.")
     for j in selected:
         if j not in servo_cfgs:
             sys.exit(f"Joint {j} not found in config; available: {joint_names}")
@@ -670,6 +736,17 @@ Examples (copy/paste):
                 )
             output_path = Path(args.output) if args.output else config_path
             print(f"Would write updates to: {output_path}")
+        if args.range:
+            print("Range test mode (dry run):")
+            print("  Available joints:")
+            for idx, joint in enumerate(joint_names, start=1):
+                servo = servo_cfgs[joint]
+                min_rad, max_rad = servo.rad_range
+                center_units = rad_to_units(servo, 0.0)
+                min_units = rad_to_units(servo, min_rad)
+                max_units = rad_to_units(servo, max_rad)
+                print(f"    #{idx}: {joint} (servo_id={servo.id}, center={center_units}, min={min_units} [{min_rad:.3f} rad], max={max_units} [{max_rad:.3f} rad])")
+            print(f"  Range test duration: {RANGE_TEST_MS}ms per segment (min->max->min->center)")
         return
 
     from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
@@ -680,7 +757,7 @@ Examples (copy/paste):
             home_ctrl = resolve_home_ctrl(args, joint_names)
             if len(home_ctrl) != len(joint_names):
                 raise ValueError("home_ctrl_rad length mismatch with joints")
-            if yes_no("Move all servos to home pose now?", default=False):
+            if yes_no("Move all servos to home pose now?", default=True):
                 cmds = []
                 for joint, rad in zip(joint_names, home_ctrl):
                     servo = servo_cfgs[joint]
@@ -718,6 +795,41 @@ Examples (copy/paste):
                 )
                 controller.move_servos(cmds, max(args.move_ms, 400))
                 time.sleep(max(args.move_ms, 400) / 1000.0 + 0.2)
+
+        if args.range:
+            # Range test mode: reset to center, then interactively test joints
+            print("\n-- Range Test Mode --")
+            if yes_no("Reset all servos to adjusted center (0.0 rad) before testing?", default=True):
+                cmds = [(servo_cfgs[j].id, rad_to_units(servo_cfgs[j], 0.0)) for j in joint_names]
+                announce_and_pause(
+                    "Step: move all joints to adjusted center (0.0 rad, duration 800 ms)",
+                    float(args.pause_s),
+                )
+                controller.move_servos(cmds, 800)
+                time.sleep(0.9)
+
+            while True:
+                print("\n" + "-" * 40)
+                try:
+                    range_selected = prompt_select_joints(joint_names)
+                except ValueError as exc:
+                    print(str(exc))
+                    continue
+
+                for joint in range_selected:
+                    if joint not in servo_cfgs:
+                        print(f"Joint {joint} not found; skipping.")
+                        continue
+                    servo = servo_cfgs[joint]
+                    range_test_joint(controller, servo, joint)
+
+
+            # Return all joints to adjusted center before exiting
+            if yes_no("Return all joints to adjusted center before exiting?", default=True):
+                cmds = [(servo_cfgs[j].id, rad_to_units(servo_cfgs[j], 0.0)) for j in joint_names]
+                controller.move_servos(cmds, 800)
+                time.sleep(0.9)
+            return
 
         if selection_prompt_deferred and not selected:
             try:
@@ -815,14 +927,13 @@ Examples (copy/paste):
                     all_servo_cfgs=servo_cfgs,
                     all_states=states,
                 )
-                states[joint].offset = new_offset
-                verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
+                if new_offset is not None:
+                    states[joint].offset = new_offset
+                    verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
                 if joint not in calibrated:
                     calibrated.append(joint)
 
             if not args.offset:
-                break
-            if not yes_no("Calibrate another joint?", default=False):
                 break
             try:
                 current_selection = prompt_select_joints(joint_names)
