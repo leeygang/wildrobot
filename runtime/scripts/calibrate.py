@@ -17,11 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from runtime.configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
 
-RANGE_RAD = 4.1887902047863905
-UNITS_MIN = 0
-UNITS_MAX = 1000
-UNITS_CENTER = 500
-UNITS_PER_RAD = UNITS_MAX / RANGE_RAD
+# Calibration constants (use ServoConfig constants for conversion)
 DEFAULT_MOVE_MS = 300
 DEFAULT_STEP_UNITS = 5
 DEFAULT_DELTA_RAD = 0.5
@@ -31,14 +27,23 @@ DEFAULT_PAUSE_S = 3.0
 RANGE_TEST_MS = 3000
 
 POSITIVE_HINTS = {
+    # These hints describe what POSITIVE MuJoCo radians look like physically.
+    # For joints with inverted ranges (mirror_sign=-1), the positive direction
+    # is OPPOSITE to the symmetric motion direction.
+    #
+    # Left leg (mirror_sign=1.0): positive rad = "natural" direction
     "left_hip_pitch": "left leg swings forward",
-    "right_hip_pitch": "right leg swings forward",
-    "left_knee_pitch": "left knee bends (foot moves backward toward the body)",
-    "right_knee_pitch": "right knee bends (foot moves backward toward the body)",
+    "left_hip_roll": "left leg moves inward (toward body midline)",
+    "left_knee_pitch": "left knee bends (foot moves backward)",
     "left_ankle_pitch": "left toes go up (dorsiflex)",
-    "right_ankle_pitch": "right toes go up (dorsiflex)",
-    "left_hip_roll": "left leg moves outward (to the left, away from body midline)",
-    "right_hip_roll": "right leg moves outward (to the right, away from body midline)",
+    #
+    # Right leg: check mirror_sign to determine positive direction
+    # - mirror_sign=-1.0 (hip_pitch, hip_roll): positive rad = OPPOSITE of left
+    # - mirror_sign=1.0 (knee, ankle): positive rad = SAME as left
+    "right_hip_pitch": "right leg swings backward",  # inverted range
+    "right_hip_roll": "right leg moves outward (away from body midline)",  # inverted range
+    "right_knee_pitch": "right knee bends (foot moves backward)",  # same as left
+    "right_ankle_pitch": "right toes go up (dorsiflex)",  # same as left
 }
 
 
@@ -46,10 +51,6 @@ POSITIVE_HINTS = {
 class JointState:
     offset: int
     direction: int
-
-
-def clamp_units(value: float) -> int:
-    return int(max(UNITS_MIN, min(UNITS_MAX, round(value))))
 
 
 def prompt_select_joints(joint_names: List[str]) -> List[str]:
@@ -83,31 +84,6 @@ def prompt_select_joints(joint_names: List[str]) -> List[str]:
         seen.add(idx)
         selected.append(joint_names[idx - 1])
     return selected
-
-
-def rad_to_units(
-    servo: ServoConfig,
-    target_rad: float,
-    *,
-    direction_override: Optional[int] = None,
-    offset_override: Optional[int] = None,
-) -> int:
-    direction = direction_override if direction_override is not None else servo.direction
-    offset = offset_override if offset_override is not None else servo.offset
-    units = UNITS_CENTER + float(direction) * target_rad * UNITS_PER_RAD + offset
-    return clamp_units(units)
-
-
-def units_to_rad(
-    servo: ServoConfig,
-    units: int,
-    *,
-    direction_override: Optional[int] = None,
-    offset_override: Optional[int] = None,
-) -> float:
-    direction = direction_override if direction_override is not None else servo.direction
-    offset = offset_override if offset_override is not None else servo.offset
-    return float(direction) * (units - UNITS_CENTER - offset) * (RANGE_RAD / UNITS_MAX)
 
 
 def read_position(controller, servo_id: int, *, retries: int = 5, retry_delay_s: float = 0.1) -> Optional[int]:
@@ -170,7 +146,7 @@ def print_all_joint_positions(
             continue
         if include_rad:
             st = states[joint]
-            pos_rad = units_to_rad(servo, units, direction_override=st.direction, offset_override=st.offset)
+            pos_rad = servo.units_to_rad_for_calibrate(units, direction=st.direction, offset=st.offset)
             print(f"  {joint}: id={servo.id} units={units} ctrl_rad={pos_rad:+.4f}")
         else:
             print(f"  {joint}: id={servo.id} units={units}")
@@ -197,7 +173,7 @@ def read_all_home_ctrl_rad(
             missing.append(joint)
             continue
         st = states[joint]
-        home_ctrl.append(units_to_rad(servo, units, direction_override=st.direction, offset_override=st.offset))
+        home_ctrl.append(servo.units_to_rad_for_calibrate(units, direction=st.direction, offset=st.offset))
     if missing:
         raise RuntimeError(f"Missing readback for joints: {missing}")
     return home_ctrl
@@ -352,11 +328,10 @@ def calibrate_direction(
             pause_s,
         )
         move_and_wait(controller, servo.id, center_units, move_ms)
-        plus_units = rad_to_units(
-            servo,
+        plus_units = servo.rad_to_units_for_calibrate(
             delta_rad_used,
-            direction_override=1,
-            offset_override=state.offset,
+            direction=1,
+            offset=state.offset,
         )
         announce_and_pause(
             f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing direction)",
@@ -411,7 +386,7 @@ def calibrate_offset(
     """Calibrate offset for a joint. Returns new offset, or None to skip (keep original)."""
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
     # Offset calibration should not depend on any existing offset value.
-    target_units = UNITS_CENTER
+    target_units = ServoConfig.UNITS_CENTER
     announce_and_pause(
         f"Step: move {joint} to raw center units ({target_units})",
         pause_s,
@@ -445,7 +420,7 @@ def calibrate_offset(
                         "If this persists, check servo ID/wiring or use 'm' to enter offset manually."
                     )
                 continue
-            offset_units = pos - UNITS_CENTER
+            offset_units = pos - ServoConfig.UNITS_CENTER
             print(f"Captured offset {offset_units} (units), raw position {pos}")
             return offset_units
         if cmd.lower() == "m":
@@ -482,11 +457,11 @@ def calibrate_offset(
         else:
             print("Unknown command; use a/d/A/D to jog, c to confirm, s to skip.")
             continue
-        target_units = clamp_units(target_units + delta)
+        target_units = max(ServoConfig.UNITS_MIN, min(ServoConfig.UNITS_MAX, target_units + delta))
         move_and_wait(controller, servo.id, target_units, move_ms)
         pos = read_position(controller, servo.id)
         if pos is not None:
-            pos_rad = units_to_rad(servo, pos, direction_override=state.direction, offset_override=0)
+            pos_rad = servo.units_to_rad_for_calibrate(pos, direction=state.direction, offset=0)
             print(f"Moved to {pos} units (~{pos_rad:.3f} rad, offset assumed 0).")
 
 
@@ -498,11 +473,10 @@ def verify_zero(
     move_ms: int,
     pause_s: float,
 ) -> None:
-    target_units = rad_to_units(
-        servo,
+    target_units = servo.rad_to_units_for_calibrate(
         0.0,
-        direction_override=state.direction,
-        offset_override=state.offset,
+        direction=state.direction,
+        offset=state.offset,
     )
     announce_and_pause(
         f"Step: verify {joint} at target_rad=0.0 -> units {target_units}",
@@ -513,11 +487,10 @@ def verify_zero(
     if pos is None:
         print("Verification readback failed.")
         return
-    pos_rad = units_to_rad(
-        servo,
+    pos_rad = servo.units_to_rad_for_calibrate(
         pos,
-        direction_override=state.direction,
-        offset_override=state.offset,
+        direction=state.direction,
+        offset=state.offset,
     )
     status = "OK" if abs(pos_rad) <= VERIFY_TOL_RAD else "drift"
     print(f"Verify zero: {pos} units => {pos_rad:.4f} rad ({status})")
@@ -531,11 +504,11 @@ def range_test_joint(
     """Run a joint through its full range: center -> min -> max -> min -> center."""
     print(f"\n-- Range test for {joint} (servo {servo.id}) --")
 
-    # Calculate positions using current calibration and joint limits from robot_config
-    center_units = rad_to_units(servo, 0.0)
+    # Calculate positions using current calibration (direction + offset) and joint limits
+    center_units = servo.rad_to_units(0.0)
     min_rad, max_rad = servo.rad_range
-    min_units = rad_to_units(servo, min_rad)
-    max_units = rad_to_units(servo, max_rad)
+    min_units = servo.rad_to_units(min_rad)
+    max_units = servo.rad_to_units(max_rad)
 
     print(f"  Center: {center_units} units (0.0 rad)")
     print(f"  Min: {min_units} units ({min_rad:.3f} rad)")
@@ -597,22 +570,16 @@ def main() -> None:
     examples = """
 Examples (copy/paste):
   # Dry-run: show planned moves only (no serial required)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --all --dry-run
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --dry-run
 
   # Move robot to home pose only (no calibration), then wait until you press 'q' to unload
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --go-home --keyframes-xml assets/keyframes.xml
 
-    # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
-    uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
+  # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
 
-  # Calibrate one joint (explicit)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --joints left_hip_pitch
-
-  # Calibrate via interactive joint picker
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --joints
-
-  # Calibrate all joints, and go to home first
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --all --go-home --keyframes-xml assets/keyframes.xml
+  # Interactive calibration mode (select joints and choose direction or offset calibration)
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate
 
   # Test range of motion for joints interactively
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --range
@@ -631,18 +598,10 @@ Examples (copy/paste):
         help="Input runtime config path",
     )
     parser.add_argument("--output", help="Optional output path; default is in-place update with backup")
-    group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("--all", action="store_true", help="Calibrate all joints in config order")
-    group.add_argument(
-        "--joints",
-        nargs="?",
-        const="__PROMPT__",
-        help="Comma-separated joint list to calibrate. If provided without a value, prompts with a numbered list.",
-    )
     parser.add_argument(
-        "--offset",
+        "--calibrate",
         action="store_true",
-        help="Offset-only mode: optionally center all servos, then select joints to calibrate offsets",
+        help="Interactive calibration mode: select joints and choose direction or offset calibration",
     )
     parser.add_argument(
         "--range",
@@ -682,23 +641,8 @@ Examples (copy/paste):
     servo_cfgs = config.hiwonder_controller.servos
     joint_names = list(servo_cfgs.keys())
 
-    selected: List[str] = []
-    selection_prompt_deferred = False
-    if args.joints == "__PROMPT__":
-        selection_prompt_deferred = True
-    elif args.joints:
-        selected = [j.strip() for j in str(args.joints).split(",") if j.strip()]
-    elif args.all:
-        selected = list(joint_names)
-    elif args.offset:
-        selection_prompt_deferred = True
-    elif args.range:
-        pass  # Range mode handles its own joint selection
-    elif not (args.go_home or args.record_pos):
-        parser.error("Must specify calibration joints (--all or --joints), or use --go-home/--record-pos/--offset/--range.")
-    for j in selected:
-        if j not in servo_cfgs:
-            sys.exit(f"Joint {j} not found in config; available: {joint_names}")
+    if not (args.calibrate or args.range or args.go_home or args.record_pos or args.dry_run):
+        parser.error("Must specify a mode: --calibrate, --range, --go-home, or --record-pos")
 
     hints = dict(POSITIVE_HINTS)
 
@@ -716,35 +660,29 @@ Examples (copy/paste):
             for joint, rad in zip(joint_names, home_ctrl, strict=True):
                 servo = servo_cfgs[joint]
                 state = states[joint]
-                units = rad_to_units(
-                    servo,
+                units = servo.rad_to_units_for_calibrate(
                     rad,
-                    direction_override=state.direction,
-                    offset_override=state.offset,
+                    direction=state.direction,
+                    offset=state.offset,
                 )
                 print(f"  {joint}: rad={rad:+.4f} -> servo_id={servo.id} units={units}")
-        if selected:
-            print("Planned calibration targets:")
-            for joint in selected:
+        if args.calibrate:
+            print("Calibration mode (dry run):")
+            print("  Available joints:")
+            for idx, joint in enumerate(joint_names, start=1):
                 servo = servo_cfgs[joint]
                 state = states[joint]
-                center_units = clamp_units(UNITS_CENTER + state.offset)
                 hint = hints.get(joint, "positive motion")
-                print(
-                    f"  {joint}: servo_id={servo.id} offset={state.offset} direction={state.direction} "
-                    f"center_units={center_units} hint='{hint}'"
-                )
-            output_path = Path(args.output) if args.output else config_path
-            print(f"Would write updates to: {output_path}")
+                print(f"    #{idx}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, hint='{hint}')")
         if args.range:
             print("Range test mode (dry run):")
             print("  Available joints:")
             for idx, joint in enumerate(joint_names, start=1):
                 servo = servo_cfgs[joint]
                 min_rad, max_rad = servo.rad_range
-                center_units = rad_to_units(servo, 0.0)
-                min_units = rad_to_units(servo, min_rad)
-                max_units = rad_to_units(servo, max_rad)
+                center_units = servo.rad_to_units(0.0)
+                min_units = servo.rad_to_units(min_rad)
+                max_units = servo.rad_to_units(max_rad)
                 print(f"    #{idx}: {joint} (servo_id={servo.id}, center={center_units}, min={min_units} [{min_rad:.3f} rad], max={max_units} [{max_rad:.3f} rad])")
             print(f"  Range test duration: {RANGE_TEST_MS}ms per segment (min->max->min->center)")
         return
@@ -762,11 +700,10 @@ Examples (copy/paste):
                 for joint, rad in zip(joint_names, home_ctrl):
                     servo = servo_cfgs[joint]
                     state = states[joint]
-                    units = rad_to_units(
-                        servo,
+                    units = servo.rad_to_units_for_calibrate(
                         rad,
-                        direction_override=state.direction,
-                        offset_override=state.offset,
+                        direction=state.direction,
+                        offset=state.offset,
                     )
                     cmds.append((servo.id, units))
                 announce_and_pause(
@@ -776,31 +713,11 @@ Examples (copy/paste):
                 controller.move_servos(cmds, max(args.move_ms, 800))
                 time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
 
-        if args.offset:
-            if yes_no("Reset all servos to adjusted center (uses current offsets/directions)?", default=False):
-                cmds = []
-                for joint in joint_names:
-                    servo = servo_cfgs[joint]
-                    state = states[joint]
-                    units = rad_to_units(
-                        servo,
-                        0.0,
-                        direction_override=state.direction,
-                        offset_override=state.offset,
-                    )
-                    cmds.append((servo.id, units))
-                announce_and_pause(
-                    f"Step: move all joints to adjusted center (duration {max(args.move_ms, 400)} ms)",
-                    float(args.pause_s),
-                )
-                controller.move_servos(cmds, max(args.move_ms, 400))
-                time.sleep(max(args.move_ms, 400) / 1000.0 + 0.2)
-
         if args.range:
             # Range test mode: reset to center, then interactively test joints
             print("\n-- Range Test Mode --")
             if yes_no("Reset all servos to adjusted center (0.0 rad) before testing?", default=True):
-                cmds = [(servo_cfgs[j].id, rad_to_units(servo_cfgs[j], 0.0)) for j in joint_names]
+                cmds = [(servo_cfgs[j].id, servo_cfgs[j].rad_to_units(0.0)) for j in joint_names]
                 announce_and_pause(
                     "Step: move all joints to adjusted center (0.0 rad, duration 800 ms)",
                     float(args.pause_s),
@@ -823,35 +740,19 @@ Examples (copy/paste):
                     servo = servo_cfgs[joint]
                     range_test_joint(controller, servo, joint)
 
+            # Note: unreachable due to infinite loop above; user exits via Ctrl+C or 'q'
 
-            # Return all joints to adjusted center before exiting
-            if yes_no("Return all joints to adjusted center before exiting?", default=True):
-                cmds = [(servo_cfgs[j].id, rad_to_units(servo_cfgs[j], 0.0)) for j in joint_names]
-                controller.move_servos(cmds, 800)
-                time.sleep(0.9)
-            return
-
-        if selection_prompt_deferred and not selected:
-            try:
-                selected = prompt_select_joints(joint_names)
-            except ValueError as exc:
-                sys.exit(str(exc))
-            for j in selected:
-                if j not in servo_cfgs:
-                    sys.exit(f"Joint {j} not found in config; available: {joint_names}")
-
-        if args.record_pos:
+        if args.record_pos and not args.calibrate:
             print(
                 "\n-- Pose Inspection --\n"
                 "Adjust the robot physically/joints as needed.\n"
                 "Commands:\n"
                 "  p = print all joint positions (units + ctrl_rad)\n"
                 "  c = record current pose as home_ctrl_rad\n"
-                f"  Enter = continue{' to calibration' if selected else ''}\n"
                 f"  {PANIC_KEY} = unload and exit\n"
             )
             while True:
-                cmd = input("(p/c/enter/q) > ").strip().lower()
+                cmd = input("(p/c/q) > ").strip().lower()
                 if cmd == PANIC_KEY:
                     panic_and_exit(controller, servo_ids)
                 if cmd == "p":
@@ -874,14 +775,9 @@ Examples (copy/paste):
                     write_config(raw_config, output_path, {}, home_ctrl_rad=home_ctrl)
                     print(f"Wrote home_ctrl_rad to {output_path}")
                     continue
-                if cmd == "":
-                    break
-                print("Unknown input; use p, c, Enter, or q.")
+                print("Unknown input; use p, c, or q.")
 
-        if args.record_pos and not selected:
-            return
-
-        if not selected and not args.record_pos:
+        if args.go_home and not args.calibrate and not args.record_pos:
             wait_until_unload(
                 controller,
                 servo_ids,
@@ -891,68 +787,125 @@ Examples (copy/paste):
                 ),
             )
 
-        calibrated: List[str] = []
-        current_selection = list(selected)
+        if args.calibrate:
+            # Unified calibration mode
+            print("\n-- Calibration Mode --")
+            print("Flow: center all joints → select joint → choose action → calibrate → repeat")
 
-        while True:
-            if not current_selection:
-                # No more joints in current batch, prompt for more
-                resp = input("\nCalibrate another joint? (y/n): ").strip().lower()
-                if resp != "y":
-                    break
-                try:
-                    current_selection = prompt_select_joints(joint_names)
-                except ValueError as exc:
-                    print(str(exc))
-                    continue
-                for j in current_selection:
-                    if j not in servo_cfgs:
-                        print(f"Joint {j} not found; skipping.")
-                        current_selection.remove(j)
-                continue
-
-            joint = current_selection.pop(0)
-            servo = servo_cfgs[joint]
-            state = states[joint]
-            center_units = clamp_units(UNITS_CENTER + state.offset)
-            hint = hints.get(joint, "positive motion")
-            if not args.offset:
-                new_dir = calibrate_direction(
-                    controller,
-                    servo,
-                    joint,
-                    state,
-                    hint,
-                    all_servo_ids=servo_ids,
-                    move_ms=args.move_ms,
-                    center_units=center_units,
-                    pause_s=float(args.pause_s),
+            # Step 0: Move all joints to adjusted center (0.0 rad with current offsets)
+            if yes_no("Move all joints to adjusted center (0.0 rad) before calibrating?", default=True):
+                cmds = []
+                for joint in joint_names:
+                    servo = servo_cfgs[joint]
+                    state = states[joint]
+                    units = servo.rad_to_units_for_calibrate(
+                        0.0,
+                        direction=state.direction,
+                        offset=state.offset,
+                    )
+                    cmds.append((servo.id, units))
+                announce_and_pause(
+                    f"Step: move all joints to adjusted center (duration {max(args.move_ms, 800)} ms)",
+                    float(args.pause_s),
                 )
-                states[joint].direction = new_dir
-            new_offset = calibrate_offset(
-                controller,
-                servo,
-                joint,
-                states[joint],
-                all_servo_ids=servo_ids,
-                move_ms=args.move_ms,
-                step_units=args.step_units,
-                pause_s=float(args.pause_s),
-                record_pos=bool(args.record_pos),
-                all_joint_names=joint_names,
-                all_servo_cfgs=servo_cfgs,
-                all_states=states,
-            )
-            if new_offset is not None:
-                states[joint].offset = new_offset
-                verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
-            if joint not in calibrated:
-                calibrated.append(joint)
+                controller.move_servos(cmds, max(args.move_ms, 800))
+                time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
 
-        if calibrated:
-            output_path = Path(args.output) if args.output else config_path
-            write_config(raw_config, output_path, {j: states[j] for j in calibrated})
-            print(f"Wrote updated calibration to {output_path}")
+            calibrated: Dict[str, JointState] = {}
+
+            while True:
+                # Step 1: List joints with current status
+                print("\n" + "=" * 50)
+                print("Available joints:")
+                for idx, joint in enumerate(joint_names, start=1):
+                    state = states[joint]
+                    servo = servo_cfgs[joint]
+                    hint = hints.get(joint, "")
+                    print(f"  #{idx}: {joint} (id={servo.id}, dir={state.direction:+d}, offset={state.offset:+d})")
+                print(f"\n  q = quit and save")
+
+                # Step 2: User selects joint
+                raw = input("\nSelect joint # (or 'q' to quit): ").strip().lower()
+                if raw == PANIC_KEY or raw == "q":
+                    break
+
+                try:
+                    idx = int(raw.lstrip("#"))
+                    if idx < 1 or idx > len(joint_names):
+                        print(f"Invalid index. Enter 1-{len(joint_names)}.")
+                        continue
+                    joint = joint_names[idx - 1]
+                except ValueError:
+                    print("Invalid input. Enter a number or 'q'.")
+                    continue
+
+                servo = servo_cfgs[joint]
+                state = states[joint]
+                hint = hints.get(joint, "positive motion")
+
+                # Step 3: Ask which action to take
+                print(f"\nSelected: {joint}")
+                print(f"  Current: direction={state.direction:+d}, offset={state.offset:+d}")
+                print(f"  Hint (positive MuJoCo rad): {hint}")
+                print("\nAction:")
+                print("  d = calibrate direction")
+                print("  o = calibrate offset")
+                print("  b = both (direction first, then offset)")
+                print("  s = skip (go back to list)")
+
+                action = input("Choose action (d/o/b/s): ").strip().lower()
+
+                if action == "s" or not action:
+                    continue
+
+                # Step 4: Perform calibration
+                center_units = servo.rad_to_units_for_calibrate(0.0, direction=1, offset=state.offset)
+
+                if action in ("d", "b"):
+                    new_dir = calibrate_direction(
+                        controller,
+                        servo,
+                        joint,
+                        state,
+                        hint,
+                        all_servo_ids=servo_ids,
+                        move_ms=args.move_ms,
+                        center_units=center_units,
+                        pause_s=float(args.pause_s),
+                    )
+                    states[joint].direction = new_dir
+                    calibrated[joint] = states[joint]
+
+                if action in ("o", "b"):
+                    new_offset = calibrate_offset(
+                        controller,
+                        servo,
+                        joint,
+                        states[joint],
+                        all_servo_ids=servo_ids,
+                        move_ms=args.move_ms,
+                        step_units=args.step_units,
+                        pause_s=float(args.pause_s),
+                        record_pos=bool(args.record_pos),
+                        all_joint_names=joint_names,
+                        all_servo_cfgs=servo_cfgs,
+                        all_states=states,
+                    )
+                    if new_offset is not None:
+                        states[joint].offset = new_offset
+                        verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
+                    calibrated[joint] = states[joint]
+
+                # Loop back to step 1
+
+            # Save calibrated joints
+            if calibrated:
+                output_path = Path(args.output) if args.output else config_path
+                write_config(raw_config, output_path, calibrated)
+                print(f"Wrote updated calibration to {output_path}")
+            else:
+                print("No changes made.")
+
     finally:
         try:
             try:

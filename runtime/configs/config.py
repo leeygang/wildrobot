@@ -77,7 +77,7 @@ class ServoConfig:
 
     Attributes:
         id: Servo ID (1-254)
-        offset: Calibration offset in servo angle units (default: 0)
+        offset: Calibration offset in servo units (default: 0)
         direction: Hardware direction correction (+1 or -1, default: +1)
         rad_range: Joint range in radians (min, max) from robot_config.yaml
         max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
@@ -90,6 +90,89 @@ class ServoConfig:
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
     mirror_sign: float = 1.0
+
+    # Servo conversion constants
+    # Hiwonder HTD-45H: 240° range = 4.1887902 rad, units [0, 1000], center at 500
+    UNITS_MIN: int = 0
+    UNITS_MAX: int = 1000
+    UNITS_CENTER: int = 500
+    RANGE_RAD: float = 4.1887902047863905  # 240 degrees in radians
+    UNITS_PER_RAD: float = 1000.0 / 4.1887902047863905  # ~238.73
+
+    def rad_to_units(self, target_rad: float) -> int:
+        """Convert MuJoCo radians to servo units.
+
+        Applies hardware calibration:
+        - direction: corrects for servo installation orientation (+1 or -1)
+        - offset: corrects for neutral position alignment (in servo units)
+
+        Args:
+            target_rad: Joint target in MuJoCo radians (mirror_sign already applied
+                        by policy_contract if coming from policy output)
+
+        Returns:
+            Servo position in units [0, 1000]
+        """
+        units = self.UNITS_CENTER + self.direction * target_rad * self.UNITS_PER_RAD + self.offset
+        return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
+
+    def rad_to_units_for_calibrate(
+        self,
+        target_rad: float,
+        *,
+        direction: int,
+        offset: int,
+    ) -> int:
+        """Convert MuJoCo radians to servo units with overridden calibration values.
+
+        Used during calibration when testing different direction/offset values.
+
+        Args:
+            target_rad: Joint target in MuJoCo radians
+            direction: Direction to use (+1 or -1)
+            offset: Offset to use (in servo units)
+
+        Returns:
+            Servo position in units [0, 1000]
+        """
+        units = self.UNITS_CENTER + direction * target_rad * self.UNITS_PER_RAD + offset
+        return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
+
+    def units_to_rad(self, units: int) -> float:
+        """Convert servo units to MuJoCo radians.
+
+        Inverse of rad_to_units. Applies hardware calibration:
+        - direction: corrects for servo installation orientation
+        - offset: corrects for neutral position alignment
+
+        Args:
+            units: Servo position in units [0, 1000]
+
+        Returns:
+            Joint position in MuJoCo radians
+        """
+        return self.direction * (units - self.UNITS_CENTER - self.offset) / self.UNITS_PER_RAD
+
+    def units_to_rad_for_calibrate(
+        self,
+        units: int,
+        *,
+        direction: int,
+        offset: int,
+    ) -> float:
+        """Convert servo units to MuJoCo radians with overridden calibration values.
+
+        Used during calibration when testing different direction/offset values.
+
+        Args:
+            units: Servo position in units [0, 1000]
+            direction: Direction to use (+1 or -1)
+            offset: Offset to use (in servo units)
+
+        Returns:
+            Joint position in MuJoCo radians
+        """
+        return direction * (units - self.UNITS_CENTER - offset) / self.UNITS_PER_RAD
 
     @property
     def effective_sign(self) -> float:
