@@ -894,54 +894,60 @@ Examples (copy/paste):
         calibrated: List[str] = []
         current_selection = list(selected)
 
-        while current_selection:
-            for joint in current_selection:
-                servo = servo_cfgs[joint]
-                state = states[joint]
-                center_units = clamp_units(UNITS_CENTER + state.offset)
-                hint = hints.get(joint, "positive motion")
-                if not args.offset:
-                    new_dir = calibrate_direction(
-                        controller,
-                        servo,
-                        joint,
-                        state,
-                        hint,
-                        all_servo_ids=servo_ids,
-                        move_ms=args.move_ms,
-                        center_units=center_units,
-                        pause_s=float(args.pause_s),
-                    )
-                    states[joint].direction = new_dir
-                new_offset = calibrate_offset(
+        while True:
+            if not current_selection:
+                # No more joints in current batch, prompt for more
+                resp = input("\nCalibrate another joint? (y/n): ").strip().lower()
+                if resp != "y":
+                    break
+                try:
+                    current_selection = prompt_select_joints(joint_names)
+                except ValueError as exc:
+                    print(str(exc))
+                    continue
+                for j in current_selection:
+                    if j not in servo_cfgs:
+                        print(f"Joint {j} not found; skipping.")
+                        current_selection.remove(j)
+                continue
+
+            joint = current_selection.pop(0)
+            servo = servo_cfgs[joint]
+            state = states[joint]
+            center_units = clamp_units(UNITS_CENTER + state.offset)
+            hint = hints.get(joint, "positive motion")
+            if not args.offset:
+                new_dir = calibrate_direction(
                     controller,
                     servo,
                     joint,
-                    states[joint],
+                    state,
+                    hint,
                     all_servo_ids=servo_ids,
                     move_ms=args.move_ms,
-                    step_units=args.step_units,
+                    center_units=center_units,
                     pause_s=float(args.pause_s),
-                    record_pos=bool(args.record_pos),
-                    all_joint_names=joint_names,
-                    all_servo_cfgs=servo_cfgs,
-                    all_states=states,
                 )
-                if new_offset is not None:
-                    states[joint].offset = new_offset
-                    verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
-                if joint not in calibrated:
-                    calibrated.append(joint)
-
-            if not args.offset:
-                break
-            try:
-                current_selection = prompt_select_joints(joint_names)
-            except ValueError as exc:
-                sys.exit(str(exc))
-            for j in current_selection:
-                if j not in servo_cfgs:
-                    sys.exit(f"Joint {j} not found in config; available: {joint_names}")
+                states[joint].direction = new_dir
+            new_offset = calibrate_offset(
+                controller,
+                servo,
+                joint,
+                states[joint],
+                all_servo_ids=servo_ids,
+                move_ms=args.move_ms,
+                step_units=args.step_units,
+                pause_s=float(args.pause_s),
+                record_pos=bool(args.record_pos),
+                all_joint_names=joint_names,
+                all_servo_cfgs=servo_cfgs,
+                all_states=states,
+            )
+            if new_offset is not None:
+                states[joint].offset = new_offset
+                verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
+            if joint not in calibrated:
+                calibrated.append(joint)
 
         if calibrated:
             output_path = Path(args.output) if args.output else config_path
