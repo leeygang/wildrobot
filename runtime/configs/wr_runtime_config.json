@@ -16,12 +16,12 @@
       "left_hip_roll": {
         "id": 2,
         "offset": 20,
-        "direction": 1
+        "direction": -1
       },
       "left_knee_pitch": {
         "id": 3,
         "offset": 18,
-        "direction": 1
+        "direction": -1
       },
       "left_ankle_pitch": {
         "id": 4,
@@ -31,17 +31,17 @@
       "right_hip_pitch": {
         "id": 5,
         "offset": 0,
-        "direction": 1
+        "direction": -1
       },
       "right_hip_roll": {
         "id": 6,
         "offset": 21,
-        "direction": 1
+        "direction": -1
       },
       "right_knee_pitch": {
         "id": 7,
         "offset": -14,
-        "direction": 1
+        "direction": -1
       },
       "right_ankle_pitch": {
         "id": 8,

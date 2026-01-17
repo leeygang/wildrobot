@@ -14,6 +14,9 @@ from typing import Dict, Iterable, List, Optional
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_RUNTIME_ROOT = _REPO_ROOT / "runtime"
+if _RUNTIME_ROOT.exists() and str(_RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(_RUNTIME_ROOT))
 
 from runtime.configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
 
@@ -515,7 +518,6 @@ def range_test_joint(
     print(f"  Max: {max_units} units ({max_rad:.3f} rad)")
     print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
 
-    input("Press Enter to start range test (or Ctrl+C to abort)...")
 
     try:
         # Move to min
@@ -687,7 +689,7 @@ Examples (copy/paste):
             print(f"  Range test duration: {RANGE_TEST_MS}ms per segment (min->max->min->center)")
         return
 
-    from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
+    from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
 
     controller = HiwonderBoardController(config.hiwonder_controller)
     try:
