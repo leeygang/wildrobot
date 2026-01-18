@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 
 from policy_contract.io import RobotIO
+from policy_contract.numpy.frames import normalize_quat_xyzw
 from policy_contract.numpy.signals import Signals
 
 from .actuators import Actuators
@@ -35,13 +36,15 @@ class HardwareRobotIO(RobotIO[Signals]):
         joint_vel = self.actuators.estimate_velocities_rad_s(self.control_dt)
         foot_sample = self.foot_switches.read()
         foot = np.array(foot_sample.switches, dtype=np.float32)
+        quat_xyzw = normalize_quat_xyzw(np.asarray(imu_sample.quat_xyzw, dtype=np.float32))
 
         return Signals(
-            quat_xyzw=np.asarray(imu_sample.quat_xyzw, dtype=np.float32),
+            quat_xyzw=quat_xyzw,
             gyro_rad_s=np.asarray(imu_sample.gyro_rad_s, dtype=np.float32),
             joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
             joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),
             foot_switches=foot,
+            timestamp_s=float(getattr(imu_sample, "timestamp_s", 0.0)),
         )
 
     def write_ctrl(self, ctrl_targets_rad) -> None:

@@ -835,9 +835,8 @@ wildrobot/
 │     │  ├─ hiwonder_board_controller.py   # low-level servo bus serial protocol
 │     │  ├─ bno085.py                      # BNO085 IMU driver (I2C)
 │     │  └─ foot_switches.py               # GPIO foot switch driver
-│     ├─ io/
-│     │  ├─ __init__.py
-│     │  └─ hardware_io.py                 # SignalPacket protocol stub
+│     ├─ io/                               # (optional) deprecated stubs; prefer `hardware/robot_io.py`
+│     │  └─ __init__.py
 │     ├─ validation/
 │     │  ├─ __init__.py
 │     │  └─ startup_validator.py           # validates bundle + robot_config + mjcf order

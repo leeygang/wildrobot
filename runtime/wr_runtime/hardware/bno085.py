@@ -12,6 +12,7 @@ import numpy as np
 class ImuSample:
     quat_xyzw: np.ndarray  # (4,) float32
     gyro_rad_s: np.ndarray  # (3,) float32
+    timestamp_s: float  # monotonic seconds
 
 
 class BNO085IMU:
@@ -24,10 +25,19 @@ class BNO085IMU:
     Runs a tiny background thread to keep latest reading available.
     """
 
-    def __init__(self, i2c_address: int = 0x4A, upside_down: bool = False, sampling_hz: int = 50):
+    def __init__(
+        self,
+        i2c_address: int = 0x4A,
+        upside_down: bool = False,
+        sampling_hz: int = 50,
+        *,
+        suppress_debug: bool = True,
+        max_quat_norm_deviation: float = 0.1,
+    ):
         self.i2c_address = int(i2c_address)
         self.upside_down = bool(upside_down)
         self.sampling_hz = int(sampling_hz)
+        self.max_quat_norm_deviation = float(max_quat_norm_deviation)
 
         # Lazy imports so this module can be imported on non-RPi machines.
         import board
@@ -42,10 +52,13 @@ class BNO085IMU:
         self._imu = BNO08X_I2C(i2c, address=self.i2c_address)
         self._imu.enable_feature(BNO_REPORT_ROTATION_VECTOR)
         self._imu.enable_feature(BNO_REPORT_GYROSCOPE)
+        if suppress_debug:
+            self._try_disable_debug()
 
         self._latest: ImuSample = ImuSample(
             quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
+            timestamp_s=0.0,
         )
 
         self._q: Queue[ImuSample] = Queue(maxsize=1)
@@ -68,6 +81,27 @@ class BNO085IMU:
         except Exception:
             pass
         return self._latest
+
+    def _try_disable_debug(self) -> None:
+        """Best-effort: disable noisy debug prints from the Adafruit BNO08X stack."""
+        for attr in ("debug", "_debug", "DEBUG", "_DEBUG"):
+            try:
+                if hasattr(self._imu, attr):
+                    setattr(self._imu, attr, False)
+            except Exception:
+                pass
+
+        try:
+            import adafruit_bno08x.adafruit_bno08x as core  # type: ignore
+
+            for attr in ("debug", "_debug", "DEBUG", "_DEBUG"):
+                try:
+                    if hasattr(core, attr):
+                        setattr(core, attr, False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _loop(self) -> None:
         import time
@@ -95,7 +129,21 @@ class BNO085IMU:
                     quat_xyzw = np.array([quat_xyzw[0], -quat_xyzw[1], -quat_xyzw[2], quat_xyzw[3]], dtype=np.float32)
                     gyro_rad_s = np.array([gyro_rad_s[0], -gyro_rad_s[1], -gyro_rad_s[2]], dtype=np.float32)
 
-                sample = ImuSample(quat_xyzw=quat_xyzw, gyro_rad_s=gyro_rad_s)
+                # Reject pathological quaternion samples (keep last-good).
+                # Quaternion normalization is applied at the RobotIO boundary (policy-facing).
+                raw_norm = float(np.linalg.norm(quat_xyzw))
+                if not np.isfinite(raw_norm) or raw_norm < 1e-6:
+                    quat_out = self._latest.quat_xyzw
+                elif abs(raw_norm - 1.0) > self.max_quat_norm_deviation:
+                    quat_out = self._latest.quat_xyzw
+                else:
+                    quat_out = quat_xyzw
+
+                sample = ImuSample(
+                    quat_xyzw=quat_out,
+                    gyro_rad_s=gyro_rad_s,
+                    timestamp_s=time.monotonic(),
+                )
 
                 try:
                     if self._q.full():
