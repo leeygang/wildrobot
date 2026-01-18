@@ -645,6 +645,50 @@ class Actuators(Protocol):
         ...
 ```
 
+#### Timing semantics (Hiwonder `time_ms`)
+
+Some actuator transports (including the Hiwonder board protocol) require a per-command move duration (`time_ms`).
+To keep this explicit and avoid hidden timing drift, pick one of the following patterns:
+
+- **Preferred (explicit per-call):** extend the interface to accept a move duration:
+  - `set_targets_rad(targets, *, move_time_ms: int) -> None`
+  - `run_policy.py` passes `int(control_dt * 1000)` (or another explicitly chosen value).
+- **Acceptable (implicit in actuator instance):** `Actuators` is constructed with `control_dt` and always uses `int(control_dt * 1000)` when
+  sending commands.
+  - If you choose this, treat `control_dt` as part of runtime compatibility validation (startup validator should fail if bundle/run config
+    expects a different control rate).
+
+#### Reliability: retry + fail-fast
+
+Servo bus communication is the most failure-prone part of the runtime stack. Best practice is:
+
+- **Retries live in the hardware layer** (inside the concrete `Actuators` implementation, not in `HardwareRobotIO`), so calibration tools,
+  validators, and the policy loop all share the same reliability behavior.
+- **Read retry**: `get_positions_rad()` should retry **2–3 times** on transient failures (timeout/CRC/serial exceptions) with a short backoff
+  (e.g., 1–5 ms). If all retries fail, return `None` (or raise a typed exception) so the control loop can trip safety.
+- **Write retry**: `set_targets_rad(...)` should retry **2–3 times** if the transport reports a failure (serial write exception, explicit NACK
+  if available). If the protocol is fire-and-forget (no ACK), retries only apply to detected transport errors; add a separate **readback
+  watchdog** (below).
+- **Safety reaction**: the control loop should treat repeated read/write failures as a hard fault and immediately:
+  - stop issuing new commands,
+  - `disable()` actuators (unload torque),
+  - and optionally trigger an e-stop latch / require operator intervention to resume.
+
+This keeps `Signals` semantics clean (no “silent zeros”) and makes comms failures visible and actionable.
+
+#### Readback failures (avoid “silent zeros”)
+
+Do **not** mask actuator readback failures by substituting zeros into `Signals.joint_pos_rad`/`Signals.joint_vel_rad_s`.
+That can cause the policy to receive nonsensical observations while the robot is still being commanded.
+
+Recommended patterns:
+- `get_positions_rad()` returns `None` on failure; `HardwareRobotIO.read()` either:
+  - raises (letting the control loop trip safety), or
+  - returns last-known positions and increments an internal failure counter, and the control loop trips safety after a small budget of
+    consecutive failures.
+
+If you want to keep `Signals` minimal, keep validity/failure counters *out of the contract* and implement them in runtime safety logic.
+
 #### Conversion responsibility
 
 The `Actuators` implementation is responsible for:
@@ -669,14 +713,17 @@ class ServoConfig:
     offset: int       # in servo units
     direction: int    # +1 or -1
 
-    # Conversion constants (Hiwonder HTD-45H)
+    # Servo model parameters (should be config-driven if hardware varies)
+    # Defaults match Hiwonder HTD-45H: units in [0..1000], center at 500, ~240° total travel.
+    UNITS_MIN: int = 0
+    UNITS_MAX: int = 1000
     UNITS_CENTER: int = 500
     UNITS_PER_RAD: float = 238.73  # 1000 / (240° in rad)
 
     def rad_to_units(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units with calibration."""
         units = self.UNITS_CENTER + self.direction * target_rad * self.UNITS_PER_RAD + self.offset
-        return clamp(units, 0, 1000)
+        return clamp(units, self.UNITS_MIN, self.UNITS_MAX)
 
     def units_to_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians with calibration."""
@@ -704,6 +751,16 @@ This ensures conversion logic is shared between:
 | `HiwonderActuators` | Hiwonder HTD-45H bus servos | Uses `HiwonderBoardController` for serial protocol |
 | `DynamixelActuators` | Dynamixel servos | Future: Protocol v2 |
 | `SimActuators` | MuJoCo (testing) | For hardware-in-the-loop testing without real servos |
+
+#### Naming/structure note (Hiwonder actuator implementation)
+
+This doc uses `HiwonderActuators` / `HiwonderBoardActuators` as placeholders for the concrete implementation that talks to the
+Hiwonder servo controller board. The important design point is:
+- `HardwareRobotIO` depends on the `Actuators` protocol (not a specific class name),
+- the Hiwonder implementation owns the retry policy, timing (`time_ms`), and unit conversion.
+
+If the repo uses both a legacy stack (`runtime/configs` + `runtime/hardware`) and a newer package (`runtime/wr_runtime`), prefer to have a
+single canonical implementation under `runtime/wr_runtime/hardware/` and keep any legacy modules as thin wrappers.
 
 ## 6) Shared Implementation Package (what both sides import)
 

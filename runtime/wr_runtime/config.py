@@ -74,13 +74,15 @@ class HiwonderConfig:
         port: Serial port for the Hiwonder board (e.g., "/dev/ttyUSB0")
         baudrate: Serial baudrate (default: 9600)
         servo_ids: Mapping from joint name to servo ID (1-8)
-        joint_offsets_rad: Calibration offsets per joint in radians
-    """
+         joint_offsets_rad: Calibration offsets per joint in radians (applied before rad→servo units conversion)
+         joint_directions: Per-joint sign (+1 or -1) to handle mechanical reversals
+     """
 
     port: str = "/dev/ttyUSB0"
     baudrate: int = 9600
     servo_ids: Dict[str, int] = field(default_factory=dict)
     joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
+    joint_directions: Dict[str, float] = field(default_factory=dict)
 
     # Joint ordering (matches training config actuated_joint_specs)
     JOINT_ORDER = (
@@ -307,12 +309,23 @@ class WildRobotRuntimeConfig:
         joint_offsets = {
             str(k): float(v) for k, v in hiw.get("joint_offsets_rad", {}).items()
         }
+        joint_directions = {str(k): float(v) for k, v in hiw.get("joint_directions", {}).items()}
+        if joint_directions:
+            invalid = {
+                k: v for k, v in joint_directions.items() if abs(abs(v) - 1.0) > 1e-3
+            }
+            if invalid:
+                raise ValueError(
+                    "joint_directions must be +/-1.0 (tolerance 1e-3); invalid entries: "
+                    + ", ".join(f"{k}={v}" for k, v in invalid.items())
+                )
 
         return HiwonderConfig(
             port=hiw.get("port", "/dev/ttyUSB0"),
             baudrate=int(hiw.get("baudrate", 9600)),
             servo_ids=servo_ids,
             joint_offsets_rad=joint_offsets,
+            joint_directions=joint_directions,
         )
 
     @staticmethod
@@ -355,6 +368,7 @@ class WildRobotRuntimeConfig:
                 "baudrate": self.hiwonder.baudrate,
                 "servo_ids": self.hiwonder.servo_ids,
                 "joint_offsets_rad": self.hiwonder.joint_offsets_rad,
+                "joint_directions": self.hiwonder.joint_directions,
             },
             "bno085": {
                 "i2c_address": hex(self.bno085.i2c_address),

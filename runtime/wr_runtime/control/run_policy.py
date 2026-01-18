@@ -14,9 +14,9 @@ from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 
 from ..config import load_config
+from ..hardware.actuators import HiwonderBoardActuators
 from ..hardware.bno085 import BNO085IMU
 from ..hardware.foot_switches import FootSwitches
-from ..hardware.hiwonder_actuators import HiwonderBoardActuators
 from ..hardware.robot_io import HardwareRobotIO
 from ..inference.onnx_policy import OnnxPolicy
 from ..utils.mjcf import load_mjcf_model_info
@@ -69,13 +69,15 @@ def main() -> None:
         f"actuators={robot_cfg.actuator_names}"
     )
 
+    control_dt = 1.0 / cfg.control.hz
     actuators = HiwonderBoardActuators(
-        joint_names=joint_names,
+        actuator_names=spec.robot.actuator_names,
         servo_ids=cfg.hiwonder.servo_ids,
         joint_offsets_rad=cfg.hiwonder.joint_offsets_rad,
+        joint_directions=cfg.hiwonder.joint_directions,
         port=cfg.hiwonder.port,
         baudrate=cfg.hiwonder.baudrate,
-        default_move_duration_ms=int(1000.0 / cfg.control.hz),
+        default_move_time_ms=int(control_dt * 1000.0),
     )
 
     imu = BNO085IMU(
@@ -87,8 +89,8 @@ def main() -> None:
     foot = FootSwitches(cfg.foot_switches.get_all_pins())
 
     robot_io = HardwareRobotIO(
-        actuator_names=joint_names,
-        control_dt=1.0 / cfg.control.hz,
+        actuator_names=spec.robot.actuator_names,
+        control_dt=control_dt,
         actuators=actuators,
         imu=imu,
         foot_switches=foot,
@@ -116,20 +118,24 @@ def main() -> None:
             dt = loop_start - last_time
             last_time = loop_start
 
-            # Sensors
-            signals = robot_io.read()
+            try:
+                signals = robot_io.read()
 
-            obs = build_observation(
-                spec=spec,
-                state=state,
-                signals=signals,
-                velocity_cmd=np.array([cfg.control.velocity_cmd], dtype=np.float32),
-            )
+                obs = build_observation(
+                    spec=spec,
+                    state=state,
+                    signals=signals,
+                    velocity_cmd=np.array([cfg.control.velocity_cmd], dtype=np.float32),
+                )
 
-            action_raw = policy.predict(obs)
-            action_post, state = postprocess_action(spec=spec, state=state, action_raw=action_raw)
-            ctrl_targets = NumpyCalibOps.action_to_ctrl(spec=spec, action=action_post)
-            robot_io.write_ctrl(ctrl_targets)
+                action_raw = policy.predict(obs)
+                action_post, state = postprocess_action(spec=spec, state=state, action_raw=action_raw)
+                ctrl_targets = NumpyCalibOps.action_to_ctrl(spec=spec, action=action_post)
+                robot_io.write_ctrl(ctrl_targets)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Runtime error in control loop: {exc}")
+                actuators.disable()
+                raise
 
             if log_path is not None:
                 log_quat.append(np.asarray(signals.quat_xyzw, dtype=np.float32))
@@ -141,7 +147,6 @@ def main() -> None:
                 if log_steps is not None and len(log_quat) >= log_steps:
                     break
 
-            # Timing
             period = 1.0 / cfg.control.hz
             elapsed = time.time() - loop_start
             if elapsed < period:

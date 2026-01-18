@@ -50,6 +50,16 @@ Minimal example:
       "right_hip_roll": 0.0,
       "right_knee_pitch": 0.0,
       "right_ankle_pitch": 0.0
+    },
+    "joint_directions": {
+      "left_hip_pitch": 1.0,
+      "left_hip_roll": 1.0,
+      "left_knee_pitch": 1.0,
+      "left_ankle_pitch": 1.0,
+      "right_hip_pitch": 1.0,
+      "right_hip_roll": 1.0,
+      "right_knee_pitch": 1.0,
+      "right_ankle_pitch": 1.0
     }
   },
 
@@ -71,6 +81,8 @@ Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
 - `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`hiwonder.servo_ids`).
+- `hiwonder.joint_offsets_rad` is a per-joint calibration offset (radians) applied at the hardware boundary (before rad→servo conversion).
+- `hiwonder.joint_directions` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 
 ## Run
