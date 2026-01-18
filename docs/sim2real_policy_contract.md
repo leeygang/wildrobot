@@ -554,6 +554,157 @@ Notes:
   - reads from physical sensors (IMU, servo readback, GPIO switches)
   - converts `ctrl_targets_rad` into device commands (e.g., servo units) and applies calibration
 
+### 5.8.4 HardwareIO internal components
+
+`HardwareIO` is composed of internal driver components. The control loop only interacts with
+the unified `RobotIO` interface (`read()` / `write_ctrl()`), while hardware-specific details
+are encapsulated in internal components:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Control Loop (run_policy.py)                                   │
+│    signals = robot_io.read()        # All sensors               │
+│    obs = build_observation(signals) # policy_contract           │
+│    action = policy.predict(obs)                                 │
+│    ctrl = action_to_ctrl(action)    # policy_contract           │
+│    robot_io.write_ctrl(ctrl)        # All actuators             │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  HardwareRobotIO (implements RobotIO)                           │
+│    - Composes: Actuators, IMU, FootSwitches                     │
+│    - read() aggregates all sensor data into Signals             │
+│    - write_ctrl() delegates to Actuators                        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+┌─────────────────┐ ┌─────────────┐ ┌─────────────────┐
+│ Actuators       │ │ IMU         │ │ FootSwitches    │
+│ (Protocol)      │ │ (BNO085)    │ │ (GPIO)          │
+└─────────────────┘ └─────────────┘ └─────────────────┘
+```
+
+#### Actuators interface (internal to HardwareIO)
+
+The `Actuators` protocol abstracts hardware-specific actuator implementations (Hiwonder servos,
+Dynamixel, etc.) from the `HardwareRobotIO` layer:
+
+```python
+class Actuators(Protocol):
+    """Internal actuator interface used by HardwareRobotIO.
+
+    All positions/velocities are in radians in actuator_names order.
+    Hardware-specific details (servo units, IDs, protocols) are hidden.
+    """
+
+    @property
+    def actuator_names(self) -> list[str]:
+        """Canonical joint names in policy order."""
+        ...
+
+    @property
+    def num_actuators(self) -> int:
+        """Number of actuators."""
+        ...
+
+    def set_targets_rad(self, targets: ArrayLike) -> None:
+        """Command position targets in radians.
+
+        Args:
+            targets: Shape (num_actuators,), in actuator_names order.
+        """
+        ...
+
+    def get_positions_rad(self) -> Optional[np.ndarray]:
+        """Read current positions in radians.
+
+        Returns:
+            Shape (num_actuators,) float32, or None if read fails.
+        """
+        ...
+
+    def estimate_velocities_rad_s(self, dt: float) -> np.ndarray:
+        """Estimate velocities via finite-difference.
+
+        Args:
+            dt: Time since last position reading (seconds).
+
+        Returns:
+            Shape (num_actuators,) float32. Zeros if unavailable.
+        """
+        ...
+
+    def disable(self) -> None:
+        """Disable torque / unload all actuators (safe state)."""
+        ...
+
+    def close(self) -> None:
+        """Release hardware resources."""
+        ...
+```
+
+#### Conversion responsibility
+
+The `Actuators` implementation is responsible for:
+- **Unit conversion**: radians ↔ device units (e.g., servo units [0-1000])
+- **Calibration**: applying per-joint `direction` (+1/-1) and `offset` (in device units)
+- **Joint ordering**: mapping `actuator_names` to hardware IDs
+- **Velocity estimation**: finite-difference from position readings (if hardware lacks velocity feedback)
+
+**Design decision**: Conversion logic lives in `ServoConfig` (Option 1 - co-located with calibration data).
+
+Rationale:
+- `ServoConfig` already holds `offset` and `direction` needed for conversion
+- Calibration tools (`calibrate.py`) can use the same methods directly
+- Simple and avoids extra abstraction layers
+- If multi-hardware support is needed later, can migrate to a utility class
+
+```python
+# ServoConfig owns conversion (single source of truth)
+@dataclass
+class ServoConfig:
+    id: int
+    offset: int       # in servo units
+    direction: int    # +1 or -1
+
+    # Conversion constants (Hiwonder HTD-45H)
+    UNITS_CENTER: int = 500
+    UNITS_PER_RAD: float = 238.73  # 1000 / (240° in rad)
+
+    def rad_to_units(self, target_rad: float) -> int:
+        """Convert MuJoCo radians to servo units with calibration."""
+        units = self.UNITS_CENTER + self.direction * target_rad * self.UNITS_PER_RAD + self.offset
+        return clamp(units, 0, 1000)
+
+    def units_to_rad(self, units: int) -> float:
+        """Convert servo units to MuJoCo radians with calibration."""
+        return self.direction * (units - self.UNITS_CENTER - self.offset) / self.UNITS_PER_RAD
+
+# HiwonderActuators delegates to ServoConfig (no conversion logic here)
+class HiwonderActuators(Actuators):
+    def set_targets_rad(self, targets: np.ndarray) -> None:
+        for i, name in enumerate(self._names):
+            cfg = self._servo_configs[name]
+            units = cfg.rad_to_units(targets[i])  # delegate
+            commands.append((cfg.id, units))
+        self._controller.move_servos(commands, self._move_ms)
+```
+
+This ensures conversion logic is shared between:
+- Runtime actuator implementation (`HiwonderActuators`)
+- Calibration tooling (`calibrate.py`)
+- Any visualization/debugging tools
+
+#### Concrete implementations
+
+| Implementation | Hardware | Notes |
+|----------------|----------|-------|
+| `HiwonderActuators` | Hiwonder HTD-45H bus servos | Uses `HiwonderBoardController` for serial protocol |
+| `DynamixelActuators` | Dynamixel servos | Future: Protocol v2 |
+| `SimActuators` | MuJoCo (testing) | For hardware-in-the-loop testing without real servos |
+
 ## 6) Shared Implementation Package (what both sides import)
 
 Create a small Python package intended to be imported by both training and runtime:
@@ -606,26 +757,30 @@ wildrobot/
 ├─ runtime/
 │  ├─ pyproject.toml                       # packaging + console scripts
 │  ├─ README.md
-│  ├─ configs/                             # example JSON/YAML for the robot
+│  ├─ configs/                             # runtime JSON configs
+│  │  ├─ config.py                         # WrRuntimeConfig + ServoConfig (with rad_to_units)
+│  │  └─ wr_runtime_config.json            # per-robot calibration (servo IDs, offsets, direction)
+│  ├─ scripts/
+│  │  └─ calibrate.py                      # interactive servo calibration tool
 │  └─ wr_runtime/                          # ONLY importable runtime package (deploys to robot)
 │     ├─ __init__.py
-│     ├─ config.py
+│     ├─ config.py                         # legacy config loader (delegates to runtime/configs)
 │     ├─ control/
 │     │  ├─ __init__.py
-│     │  └─ run_policy.py                  # CLI entry (calls PolicyRunner)
+│     │  └─ run_policy.py                  # CLI entry (control loop using HardwareRobotIO)
 │     ├─ inference/
 │     │  ├─ __init__.py
 │     │  └─ onnx_policy.py                 # ONNX backend
-│     ├─ hardware_io/
+│     ├─ hardware/                         # sensor/actuator drivers
 │     │  ├─ __init__.py
-│     │  ├─ io.py                           # HardwareIO: sensors/actuators → contract signals
-│     │  └─ calibration.py                  # servo offsets, sign corrections, scaling (non-contract)
-│     ├─ drivers/
+│     │  ├─ robot_io.py                    # HardwareRobotIO: implements RobotIO protocol
+│     │  ├─ actuators.py                   # Actuators protocol + HiwonderActuators implementation
+│     │  ├─ hiwonder_board_controller.py   # low-level servo bus serial protocol
+│     │  ├─ bno085.py                      # BNO085 IMU driver (I2C)
+│     │  └─ foot_switches.py               # GPIO foot switch driver
+│     ├─ io/
 │     │  ├─ __init__.py
-│     │  ├─ bno085.py                       # direct IMU driver
-│     │  ├─ hiwonder_board.py               # direct servo bus driver
-│     │  ├─ hiwonder_actuators.py           # actuator convenience wrapper
-│     │  └─ foot_switches.py                # GPIO switches driver
+│     │  └─ hardware_io.py                 # SignalPacket protocol stub
 │     ├─ validation/
 │     │  ├─ __init__.py
 │     │  └─ startup_validator.py           # validates bundle + robot_config + mjcf order
