@@ -28,6 +28,7 @@ VERIFY_TOL_RAD = 0.05
 PANIC_KEY = "q"
 DEFAULT_PAUSE_S = 3.0
 RANGE_TEST_MS = 3000
+DEFAULT_IMU_SAMPLES = 100
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
@@ -567,6 +568,90 @@ def write_config(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(base_data, indent=2))
 
+def write_bno_config(
+    base_data: dict,
+    output_path: Path,
+    *,
+    i2c_address: Optional[int] = None,
+    upside_down: Optional[bool] = None,
+) -> None:
+    bno = base_data.setdefault("bno085", {})
+    if i2c_address is not None:
+        bno["i2c_address"] = hex(int(i2c_address))
+    if upside_down is not None:
+        bno["upside_down"] = bool(upside_down)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(base_data, indent=2))
+
+
+def _apply_upside_down_quat(quat_xyzw: List[float]) -> List[float]:
+    # Must match runtime/wr_runtime/hardware/bno085.py behavior.
+    x, y, z, w = [float(v) for v in quat_xyzw]
+    return [x, -y, -z, w]
+
+
+def calibrate_imu_upside_down(
+    *,
+    config: WrRuntimeConfig,
+    raw_config: dict,
+    output_path: Path,
+    samples: int,
+) -> None:
+    """Calibrate BNO08X `upside_down` using a simple gravity sanity check.
+
+    This does not solve arbitrary mounting rotations; it only helps detect an inverted mount.
+    """
+    try:
+        from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
+        from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    except Exception as exc:
+        raise RuntimeError(
+            "IMU calibration requires runtime IMU deps on the target (Adafruit Blinka + BNO08X). "
+            "Install them on the Pi and re-run."
+        ) from exc
+
+    imu = BNO085IMU(i2c_address=config.bno085.i2c_address, upside_down=False, sampling_hz=50)
+    try:
+        time.sleep(0.2)
+        g_normal = []
+        g_flipped = []
+        for _ in range(max(1, int(samples))):
+            s = imu.read()
+            q = normalize_quat_xyzw(np.asarray(s.quat_xyzw, dtype=np.float32))
+            g0 = gravity_local_from_quat(q)
+            g1 = gravity_local_from_quat(
+                normalize_quat_xyzw(np.asarray(_apply_upside_down_quat(q.tolist()), dtype=np.float32))
+            )
+            g_normal.append(g0)
+            g_flipped.append(g1)
+            time.sleep(0.01)
+
+        g0_mean = np.mean(np.stack(g_normal, axis=0), axis=0)
+        g1_mean = np.mean(np.stack(g_flipped, axis=0), axis=0)
+
+        print("\n-- IMU Upside-Down Calibration --")
+        print("Place the robot IMU/base upright and still (standing pose).")
+        print("We compare expected gravity_local ≈ [0, 0, -1].\n")
+        print(f"Current (upside_down=false) gravity_local mean: {g0_mean}")
+        print(f"Flipped  (upside_down=true)  gravity_local mean: {g1_mean}\n")
+
+        score0 = abs(float(g0_mean[2]) + 1.0)
+        score1 = abs(float(g1_mean[2]) + 1.0)
+        recommended = bool(score1 < score0)
+
+        print(f"Recommended upside_down: {recommended} (z-error false={score0:.3f}, true={score1:.3f})")
+        if not yes_no(f"Write bno085.upside_down={recommended} to config?", default=True):
+            print("Not writing config.")
+            return
+
+        write_bno_config(raw_config, output_path, upside_down=recommended)
+        print(f"Wrote IMU config to {output_path}")
+    finally:
+        try:
+            imu.close()
+        except Exception:
+            pass
+
 
 def main() -> None:
     examples = """
@@ -585,6 +670,9 @@ Examples (copy/paste):
 
   # Test range of motion for joints interactively
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --range
+
+  # Calibrate IMU upside_down (simple inversion check using gravity vector)
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-imu
 """.strip()
 
     parser = argparse.ArgumentParser(
@@ -604,6 +692,17 @@ Examples (copy/paste):
         "--calibrate",
         action="store_true",
         help="Interactive calibration mode: select joints and choose direction or offset calibration",
+    )
+    parser.add_argument(
+        "--calibrate-imu",
+        action="store_true",
+        help="Calibrate BNO08X IMU mounting inversion (writes bno085.upside_down)",
+    )
+    parser.add_argument(
+        "--imu-samples",
+        type=int,
+        default=DEFAULT_IMU_SAMPLES,
+        help="Number of IMU samples to average during calibration",
     )
     parser.add_argument(
         "--range",
@@ -643,8 +742,18 @@ Examples (copy/paste):
     servo_cfgs = config.hiwonder_controller.servos
     joint_names = list(servo_cfgs.keys())
 
-    if not (args.calibrate or args.range or args.go_home or args.record_pos or args.dry_run):
+    if not (args.calibrate or args.calibrate_imu or args.range or args.go_home or args.record_pos or args.dry_run):
         parser.error("Must specify a mode: --calibrate, --range, --go-home, or --record-pos")
+
+    if args.calibrate_imu:
+        output_path = Path(args.output) if args.output else config_path
+        calibrate_imu_upside_down(
+            config=config,
+            raw_config=raw_config,
+            output_path=output_path,
+            samples=int(args.imu_samples),
+        )
+        return
 
     hints = dict(POSITIVE_HINTS)
 

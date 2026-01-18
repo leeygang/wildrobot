@@ -64,7 +64,7 @@ Minimal example:
   },
 
   "bno085": {
-    "i2c_address": "0x4A",
+    "i2c_address": "0x4B",
     "upside_down": false
   },
 
