@@ -15,7 +15,7 @@ pip install -e .
 
 The runtime reads a JSON config. By default it looks at `~/wildrobot_config.json`.
 
-You can start from the example file at `runtime/configs/wildrobot_config.example.json` and copy it to `~/wildrobot_config.json` (or pass `--config`).
+You can start from the sample at `runtime/configs/wr_runtime_config.json` and copy it to `~/wildrobot_config.json` (or pass `--config`).
 
 Minimal example:
 
@@ -28,38 +28,19 @@ Minimal example:
   "action_scale_rad": 0.35,
   "velocity_cmd": 0.0,
 
-  "hiwonder": {
+  "servo_controller": {
+    "type": "hiwonder",
     "port": "/dev/ttyUSB0",
     "baudrate": 9600,
-    "servo_ids": {
-      "left_hip_pitch": 1,
-      "left_hip_roll": 2,
-      "left_knee_pitch": 3,
-      "left_ankle_pitch": 4,
-      "right_hip_pitch": 5,
-      "right_hip_roll": 6,
-      "right_knee_pitch": 7,
-      "right_ankle_pitch": 8
-    },
-    "joint_offsets_rad": {
-      "left_hip_pitch": 0.0,
-      "left_hip_roll": 0.0,
-      "left_knee_pitch": 0.0,
-      "left_ankle_pitch": 0.0,
-      "right_hip_pitch": 0.0,
-      "right_hip_roll": 0.0,
-      "right_knee_pitch": 0.0,
-      "right_ankle_pitch": 0.0
-    },
-    "joint_directions": {
-      "left_hip_pitch": 1.0,
-      "left_hip_roll": 1.0,
-      "left_knee_pitch": 1.0,
-      "left_ankle_pitch": 1.0,
-      "right_hip_pitch": 1.0,
-      "right_hip_roll": 1.0,
-      "right_knee_pitch": 1.0,
-      "right_ankle_pitch": 1.0
+    "servos": {
+      "left_hip_pitch":  { "id": 1, "offset_unit": 0, "direction": 1 },
+      "left_hip_roll":   { "id": 2, "offset_unit": 0, "direction": 1 },
+      "left_knee_pitch": { "id": 3, "offset_unit": 0, "direction": 1 },
+      "left_ankle_pitch": { "id": 4, "offset_unit": 0, "direction": 1 },
+      "right_hip_pitch": { "id": 5, "offset_unit": 0, "direction": 1 },
+      "right_hip_roll":  { "id": 6, "offset_unit": 0, "direction": 1 },
+      "right_knee_pitch":{ "id": 7, "offset_unit": 0, "direction": 1 },
+      "right_ankle_pitch": { "id": 8, "offset_unit": 0, "direction": 1 }
     }
   },
 
@@ -81,9 +62,9 @@ Minimal example:
 Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
 - `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
-- **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`hiwonder.servo_ids`).
-- `hiwonder.joint_offsets_rad` is a per-joint calibration offset (radians) applied at the hardware boundary (before rad→servo conversion).
-- `hiwonder.joint_directions` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
+- **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
+- `servo_controller.servos.<joint>.offset_unit` is a per-joint calibration offset in **servo units** relative to center (500). Values can be positive or negative. Use the calibration script to write these.
+- `servo_controller.servos.<joint>.direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 
 ## Run

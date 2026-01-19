@@ -55,7 +55,7 @@ The implementation target is a new interactive script `calibrate.py` (exact loca
 
 ### Legacy stack (`runtime/configs` + `runtime/hardware`)
 
-In `runtime/configs/config.py` (`HiwonderControllerConfig`), mapping is effectively:
+In `runtime/configs/config.py` (`ServoControllerConfig`), mapping is effectively:
 
 - servo units are `[0..1000]` with `500` as center
 - runtime composes:
@@ -190,7 +190,7 @@ Inputs:
 For each joint, print:
 - joint name
 - servo ID
-- current `sign` and `offset_rad` (if any)
+- current `sign` and `offset_unit` (legacy `offset_rad` is accepted but interpreted as the same servo-unit value)
 
 ### Step B: Determine direction sign
 

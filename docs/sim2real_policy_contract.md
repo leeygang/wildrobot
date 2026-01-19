@@ -38,7 +38,7 @@ Long-term, keep training with a MuJoCo-specific **sim adapter** (not a second co
   - `joint_vel = cal.get_joint_velocities(..., normalize=True)` → clipped/normalized by velocity limits
 - Action semantics:
   - Policy output is normalized `action ∈ [-1, 1]`
-  - Environment converts with `cal.policy_action_to_ctrl(action)`:
+- Environment converts with `cal.action_to_ctrl(action)`:
     - clips action
     - applies `mirror_sign` symmetry correction
     - maps to **physical control target angles (radians)** using joint centers/spans
@@ -124,13 +124,13 @@ training/train.py
   └─ training/envs/wildrobot_env.py
      ├─ step/reset/reward/termination (env logic)
      ├─ SimIO (MuJoCo/MJX → raw signals)
-     │   └─ training/sim_adapter/mujoco_extract.py
-     │        └─ extract_signals(mjx.Data, mjx.Model, ...) -> SignalPacket
+     │   └─ training/sim_adapter/mjx_signals.py
+     │        └─ read_signals(mjx.Data, mjx.Model, ...) -> Signals
      ├─ policy_contract (raw signals → obs; action → ctrl)
      │   ├─ policy_contract/jax/obs.py
      │   │    └─ build_observation(signal_packet, prev_action, velocity_cmd, ...) -> obs
      │   └─ policy_contract/jax/calib.py
-     │        └─ policy_action_to_ctrl(action_normalized, robot_spec) -> ctrl_targets_rad
+     │        └─ action_to_ctrl(spec, action_normalized) -> ctrl_targets_rad
      └─ mjx: apply ctrl_targets_rad and step physics
 ```
 
@@ -138,18 +138,20 @@ training/train.py
 
 ```
 runtime/wr_runtime/control/run_policy.py
-  ├─ HardwareIO (hardware IO → raw signals; ctrl → hardware commands)
-  │   └─ runtime/wr_runtime/hardware_io/io.py
-  │        ├─ read() -> SignalPacket (joint_pos_rad, gyro_rad_s, foot switches, ...)
+  ├─ HardwareRobotIO (hardware IO → Signals; ctrl → hardware commands)
+  │   └─ runtime/wr_runtime/hardware/robot_io.py
+  │        ├─ read() -> Signals (quat_xyzw, gyro_rad_s, joint_pos/vel, foot switches, ...)
   │        └─ write_ctrl(ctrl_targets_rad) -> sends to actuators (drivers)
   ├─ policy_contract (raw signals → obs; action → ctrl)
   │   ├─ policy_contract/numpy/obs.py
   │   │    └─ build_observation(...) -> obs
   │   └─ policy_contract/numpy/calib.py
-  │        └─ policy_action_to_ctrl(...) -> ctrl_targets_rad
+  │        └─ action_to_ctrl(spec, action) -> ctrl_targets_rad
   └─ runtime/wr_runtime/inference/onnx_policy.py
        └─ predict(obs) -> action_normalized
 ```
+
+IMU data path (runtime): `BNO085IMU` (body-frame gyro + quat with `upside_down`/`axis_map` applied) → `HardwareRobotIO.read()` → `policy_contract.numpy.obs.build_observation(...)`. Configure via `bno085` in the runtime JSON (`i2c_address`, `upside_down`, `axis_map`, `suppress_debug`, `i2c_frequency_hz`, `init_retries`). A pre-loop sanity check can verify `|quat| ≈ 1`, `gravity_local.z ≈ -1`, and small gyro before any motors move.
 
 ## 5) Policy Contract: What it Contains
 
@@ -228,7 +230,7 @@ The policy output is:
 
 The contract must define the mapping to **control targets**:
 - `ctrl_type = position_target_rad`
-- `policy_action_to_ctrl`:
+- `action_to_ctrl`:
   - `action_clipped`
   - `corrected = action_clipped * mirror_sign`
   - `ctrl = corrected * ctrl_span + ctrl_center`
@@ -762,6 +764,124 @@ Hiwonder servo controller board. The important design point is:
 If the repo uses both a legacy stack (`runtime/configs` + `runtime/hardware`) and a newer package (`runtime/wr_runtime`), prefer to have a
 single canonical implementation under `runtime/wr_runtime/hardware/` and keep any legacy modules as thin wrappers.
 
+### 5.8.5 IMU integration (end-to-end plan)
+
+This section describes the recommended end-to-end path to bring a physical IMU online in runtime while keeping observation semantics
+aligned with training and enforced by `policy_contract`.
+
+#### Contract expectation (what the policy sees)
+
+The actor observation contract assumes the IMU signals are expressed in the **robot body frame**:
+- `Signals.quat_xyzw`: quaternion in `xyzw` order, representing the robot body attitude in a convention compatible with
+  `policy_contract.*.frames.gravity_local_from_quat(quat_xyzw)` (upright → gravity_local ≈ `[0, 0, -1]`).
+- `Signals.gyro_rad_s`: angular velocity `[wx, wy, wz]` in rad/s about body X/Y/Z.
+  - yaw-left should yield `wz > 0`, pitch-up should yield `wy > 0`, roll-right should yield `wx > 0`.
+
+`policy_contract` (NumPy/JAX) is responsible for converting these raw signals into the model observation features
+(e.g., `gravity_local`, `angvel_heading_local`, normalization, layout packing).
+
+#### Where calibration lives (and why)
+
+Runtime should treat IMU mounting corrections as **hardware/driver calibration**, not policy logic:
+- `bno085.upside_down` and `bno085.axis_map` belong in runtime config and are applied in the IMU driver.
+- The driver returns body-frame IMU outputs (`quat_xyzw_body`, `gyro_body`) so every consumer (policy loop, calibration tools, loggers)
+  sees consistent body-frame semantics.
+- `HardwareRobotIO.read()` should remain an aggregator: it packages already-calibrated device outputs into `Signals`.
+
+This mirrors the actuator design: servo offsets/directions are applied in the actuator layer, not in the policy contract.
+
+#### Recommended bring-up sequence
+
+1) **Electrical + OS bring-up**
+   - Ensure I2C is enabled and the device address is visible (`i2cdetect`).
+   - Use `runtime/docs/bno08x_rpi_install_and_test.md` to install dependencies and validate basic reads.
+
+2) **Set runtime config basics**
+   - In `runtime/configs/wr_runtime_config.json`, set:
+     - `bno085.i2c_address`
+     - `bno085.upside_down` (initial guess is fine; calibration can update it)
+
+3) **Calibrate mount inversion and axis signs**
+   - Run the interactive tool: `runtime/scripts/calibrate.py --calibrate-imu`.
+   - Prefer the “sign-only” flow if you believe the board axes are aligned with the robot body axes:
+     - Calibrate `body_z` (yaw-left), `body_y` (pitch-up), `body_x` (roll-right).
+   - The tool enforces two gates:
+     - **motion magnitude**: rotation angle must exceed a minimum threshold (prevents accidental “no-motion” acceptance)
+     - **axis alignment**: dominant axis must align with the expected axis (guards against silent X/Y swaps due to messy motion or rotated mounting)
+
+4) **Sanity checks (must pass before motors)**
+   - Upright and still:
+     - `gravity_local_from_quat(quat_xyzw)` should be close to `[0, 0, -1]`.
+     - `gyro_rad_s` should be near zero (small noise OK).
+   - Small manual motions:
+     - yaw-left → `gyro_z` positive and dominant
+     - pitch-up → `gyro_y` positive and dominant
+     - roll-right → `gyro_x` positive and dominant
+
+5) **Policy loop integration**
+   - `HardwareRobotIO.read()` returns `Signals` containing the calibrated IMU outputs and joint/foot signals.
+   - `run_policy.py` builds observations via:
+     - `obs = policy_contract.numpy.obs.build_observation(spec, state, signals, velocity_cmd)`
+   - Runtime then runs inference and applies action→ctrl mapping, without any IMU-specific special cases.
+
+#### IMU integration architecture (data flow)
+
+```
+                        ┌─────────────────────────────────────────────┐
+                        │          runtime/configs/*.json              │
+                        │  bno085: { i2c_address, upside_down, axis_map }
+                        └───────────────────────┬─────────────────────┘
+                                                │
+                                                ▼
+┌───────────────────────┐   raw board-frame   ┌───────────────────────┐
+│   Physical BNO08x      │  quat/gyro over I2C │   BNO085 IMU Driver    │
+│  (mounted on robot)    ├────────────────────►│ runtime/.../bno085.py  │
+└───────────────────────┘                      │  - retries/suppress    │
+                                               │  - applies upside_down │
+                                               │  - applies axis_map    │
+                                               │  => body-frame IMU     │
+                                               └───────────┬───────────┘
+                                                           │
+                                                           ▼
+                                               ┌───────────────────────┐
+                                               │   HardwareRobotIO      │
+                                               │ runtime/.../robot_io.py │
+                                               │  - read(): aggregates  │
+                                               │    IMU + joints + feet │
+                                               │  => policy_contract.Signals
+                                               └───────────┬───────────┘
+                                                           │
+                                                           ▼
+                                               ┌───────────────────────┐
+                                               │   policy_contract      │
+                                               │ numpy/obs.py           │
+                                               │  - gravity_local       │
+                                               │  - angvel_heading_local│
+                                               │  - normalize + pack    │
+                                               └───────────┬───────────┘
+                                                           │
+                                                           ▼
+                                               ┌───────────────────────┐
+                                               │   Inference + Control  │
+                                               │ run_policy.py          │
+                                               │  obs -> onnx -> action │
+                                               │  action -> ctrl -> HW  │
+                                               └───────────────────────┘
+```
+
+Key boundary:
+- **IMU driver boundary** is where board-frame → body-frame conversion happens.
+- `policy_contract` only consumes **body-frame** `Signals` and never needs to know mounting details.
+
+#### Validation gates (recommended)
+
+Add (or keep) lightweight “bring-up” checks that fail fast:
+- **IMU contract gate**: in runtime startup, validate that `Signals.quat_xyzw` has unit norm (within tolerance) and produces reasonable
+  `gravity_local` when upright.
+- **Sign gate**: optional runtime “diagnostic mode” that prints dominant gyro axis/sign during manual yaw/pitch/roll motions.
+
+These gates prevent “silent drift” where the policy sees a plausible-looking observation vector with incorrect semantics.
+
 ## 6) Shared Implementation Package (what both sides import)
 
 Create a small Python package intended to be imported by both training and runtime:
@@ -775,7 +895,7 @@ Proposed module layout:
   - frame transforms helpers (quat→gravity, heading_local transforms)
 - `policy_contract/numpy/calib.py`
   - “CAL-lite”: reads joint ranges + mirror_sign + velocity limits from `robot_config.yaml`
-  - `normalize_joint_pos/vel`, `policy_action_to_ctrl`
+  - `normalize_joint_pos/vel`, `action_to_ctrl`
 - `policy_contract/jax/obs.py`
   - JAX-native implementation used by training (same semantics as NumPy builder)
 - `policy_contract/jax/calib.py`
@@ -802,8 +922,8 @@ wildrobot/
 │  ├─ envs/
 │  │  └─ wildrobot_env.py                 # env (reward/termination/metrics) calls policy_contract for actor obs/actions
 │  ├─ sim_adapter/
-│  │  ├─ mujoco_extract.py                # MuJoCo/MJX → raw signals for policy_contract
-│  │  └─ indexing.py                      # model indexing (qpos/qvel addrs, ids)
+│  │  ├─ mjx_signals.py                   # MJX (training) → Signals for policy_contract
+│  │  └─ mujoco_signals.py                # native MuJoCo (visualization) → Signals for policy_contract
 │  ├─ export/
 │  │  ├─ export_onnx.py                   # checkpoint → deterministic onnx
 │  │  ├─ export_policy_bundle.py          # bundle writer (onnx + policy_spec.json + checksums)
@@ -899,13 +1019,13 @@ This section defines the concrete “seams” between training, export, and runt
   - `obs_dim: int` (derived) and `breakdown` (optional)
 - `ActionSpec`
   - `action_dim: int`
-  - `mapping: Literal["policy_action_to_ctrl_v1"]` (or similar)
+  - `mapping: Literal["action_to_ctrl_v1"]` (or similar)
   - any declared filters (alpha, rate limits) that must be reproduced in runtime
 - `policy_contract/numpy/calib.py` (NumPy backend)
   - Constructed from `RobotSpec` (or directly from `robot_config.yaml`)
   - `normalize_joint_pos_rad(qpos_rad) -> np.ndarray`
   - `normalize_joint_vel_rad_s(qvel_rad_s) -> np.ndarray`
-  - `policy_action_to_ctrl(action) -> ctrl_targets_rad`
+  - `action_to_ctrl(spec, action) -> ctrl_targets_rad`
 - `policy_contract/numpy/obs.py` (NumPy backend)
   - `build_observation(...) -> obs (float32, shape (obs_dim,))`
   - should be a 1:1 semantic mirror of the JAX builder used in training (`policy_contract/jax/obs.py`)
@@ -938,17 +1058,21 @@ This keeps `calib.py` stable, testable, and shareable across sim, runtime, and v
 
 #### Runtime (`runtime/wr_runtime/`)
 
-- `HardwareIO` (in `runtime/wr_runtime/hardware_io/io.py`)
-  - `read() -> SensorSample` (raw sensor units, timestamped)
-  - `write_ctrl(ctrl_targets_rad: np.ndarray) -> None` (contract ctrl targets in radians)
-- `SensorSample`
-  - `quat_xyzw`, `gyro_rad_s`, `joint_pos_rad`, `joint_vel_rad_s` (or `None` if not available), `foot_switches`, timestamps
-- `PolicyRunner` (in `runtime/wr_runtime/policy_runner.py`)
-  - Owns: `PolicySpec`, `CalibNumpy`, `ObsBuilderNumpy`, `OnnxPolicy`, `SafetySupervisor`, `RobotIO`
-  - Implements: the control loop, logging, watchdogs, clean shutdown
-- `SafetySupervisor` (in `runtime/wr_runtime/safety.py`)
-  - Applies: clamps, rate limiting, timeouts, tilt thresholds
-  - Optional hooks for future fallback/recovery (MPC/recovery state machine)
+- `HardwareRobotIO` (in `runtime/wr_runtime/hardware/robot_io.py`)
+  - implements the shared `RobotIO` interface (`read()` / `write_ctrl()` / `close()`)
+  - composes device drivers (IMU/actuators/foot switches) and returns contract-friendly `Signals`
+- `Signals` (in `policy_contract/numpy/signals.py`)
+  - `quat_xyzw`, `gyro_rad_s`, `joint_pos_rad`, `joint_vel_rad_s`, `foot_switches`, `timestamp_s`
+- `run_policy.py` (in `runtime/wr_runtime/control/run_policy.py`)
+  - CLI control loop: `Signals` → `policy_contract.numpy.obs.build_observation` → ONNX inference → `policy_contract.calib.action_to_ctrl`
+  - fail-fast validation via `runtime/wr_runtime/validation/startup_validator.py`
+- `OnnxPolicy` (in `runtime/wr_runtime/inference/onnx_policy.py`)
+  - minimal ONNX runtime wrapper (input/output name + predict)
+- `validate_runtime_interface` (in `runtime/wr_runtime/validation/startup_validator.py`)
+  - checks policy bundle dims + MJCF actuator order + runtime config completeness
+
+Note: A dedicated `SafetySupervisor` layer is recommended long-term (clamps, watchdogs, tilt thresholds, e-stop handling), but the current
+runtime loop already fail-fast disables actuators on exceptions. Treat safety as an incremental layer on top of the contract pipeline.
 
 #### Training export (`training/exports/export_policy_bundle.py`)
 
@@ -1099,7 +1223,7 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 ### 10.1 Parity tests (unit)
 - Generate deterministic synthetic inputs and assert:
   - `policy_contract/numpy/obs.build_observation(...)` matches `policy_contract/jax/obs.build_observation(...)`
-  - numpy CAL-lite `policy_action_to_ctrl(...)` matches training CAL on the same robot_config
+  - numpy CAL-lite `action_to_ctrl(...)` matches training CAL on the same robot_config
 
 ### 10.2 Integration test (sim playback)
 - Record a short trajectory on hardware (sensors + actions)

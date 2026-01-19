@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from policy_contract.spec import PolicySpec, validate_runtime_compat
 
-from ..config import WildRobotRuntimeConfig
+from runtime.configs import WildRobotRuntimeConfig
 from ..utils.mjcf import MjcfModelInfo
 
 
@@ -33,13 +33,13 @@ def validate_runtime_interface(
     )
 
     missing_servo_ids = [
-        name for name in spec.robot.actuator_names if name not in (cfg.hiwonder.servo_ids or {})
+        name for name in spec.robot.actuator_names if name not in (cfg.servo_controller.servo_ids or {})
     ]
     if missing_servo_ids:
         raise ValueError(
             "Runtime config missing servo_ids for actuators: "
             + ", ".join(missing_servo_ids)
-            + ". Update your runtime JSON under hiwonder.servo_ids."
+            + ". Update your runtime JSON under servo_controller.servos.<joint>.id."
         )
 
     return RuntimeInterfaceInfo(

@@ -7,12 +7,14 @@ from runtime.configs.config import (
     BNO085Config,
     ControlConfig,
     FootSwitchConfig,
-    HiwonderControllerConfig,
+    ServoControllerConfig,
     ServoConfig,
+    ServoSpec,
     load_config,
     RuntimeConfig,
     WildRobotRuntimeConfig,
     WrRuntimeConfig,
+    HiwonderControllerConfig,
 )
 
 __all__ = [
@@ -20,8 +22,10 @@ __all__ = [
     "WildRobotRuntimeConfig",  # Legacy alias
     "RuntimeConfig",
     "ControlConfig",
-    "HiwonderControllerConfig",
+    "ServoControllerConfig",
+    "HiwonderControllerConfig",  # Legacy alias
     "ServoConfig",
+    "ServoSpec",
     "BNO085Config",
     "FootSwitchConfig",
     "load_config",

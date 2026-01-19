@@ -28,7 +28,7 @@ import serial
 import time
 from typing import List, Optional, Tuple
 
-from runtime.configs.config import HiwonderControllerConfig
+from runtime.configs.config import ServoControllerConfig
 
 
 class HiwonderBoardController:
@@ -53,7 +53,7 @@ class HiwonderBoardController:
 
     def __init__(
         self,
-        config: Optional[HiwonderControllerConfig] = None,
+        config: Optional[ServoControllerConfig] = None,
         port: Optional[str] = None,
         baudrate: Optional[int] = None,
         timeout: float = 0.5,
@@ -61,7 +61,7 @@ class HiwonderBoardController:
         """Initialize the Hiwonder board controller.
 
         Args:
-            config: HiwonderControllerConfig with port/baudrate settings.
+            config: ServoControllerConfig with port/baudrate settings.
                 If provided, port and baudrate args are ignored.
             port: Serial port (e.g., "/dev/ttyUSB0"). Used if config is None.
             baudrate: Serial baudrate (default: 9600). Used if config is None.

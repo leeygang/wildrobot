@@ -6,7 +6,7 @@ from typing import Optional
 
 from policy_contract.spec import PolicyBundle, validate_runtime_compat, validate_spec
 
-from ..config import WildRobotRuntimeConfig
+from runtime.configs import WildRobotRuntimeConfig
 from ..inference.onnx_policy import OnnxPolicy
 from ..utils.mjcf import load_mjcf_model_info
 

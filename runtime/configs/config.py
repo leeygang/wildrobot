@@ -4,7 +4,7 @@ This module provides a structured configuration class for running the WildRobot
 policy on real hardware. Configuration is loaded from a JSON file that specifies:
 - Policy and model paths
 - Control loop parameters
-- Hiwonder servo board settings (port, servo IDs, joint offsets)
+- Servo controller settings (port, servo IDs, joint offsets)
 - BNO085 IMU settings
 - Foot switch GPIO pins
 
@@ -86,7 +86,7 @@ class ServoConfig:
 
     id: int
     offset: int = 0
-    direction: int = 1
+    direction: float = 1.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
     mirror_sign: float = 1.0
@@ -98,6 +98,10 @@ class ServoConfig:
     UNITS_CENTER: int = 500
     RANGE_RAD: float = 4.1887902047863905  # 240 degrees in radians
     UNITS_PER_RAD: float = 1000.0 / 4.1887902047863905  # ~238.73
+
+    @property
+    def offset_unit(self) -> int:
+        return int(self.offset)
 
     def rad_to_units(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
@@ -191,24 +195,79 @@ class ServoConfig:
 
 
 @dataclass(frozen=True)
-class HiwonderControllerConfig:
-    """Hiwonder servo controller board configuration.
+class ServoSpec:
+    """Minimal servo specification used by canonical configs and legacy tests."""
+
+    id: int
+    offset_unit: int = 0
+    direction: float = 1.0
+
+    def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
+        joint_spec = joint_spec or {}
+        return ServoConfig(
+            id=int(self.id),
+            offset=int(self.offset_unit),
+            direction=float(self.direction),
+            rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
+            max_velocity=joint_spec.get("max_velocity", 10.0),
+            mirror_sign=joint_spec.get("mirror_sign", 1.0),
+        )
+
+
+@dataclass(frozen=True)
+class ServoControllerConfig:
+    """Servo controller board configuration (Hiwonder-compatible).
 
     Attributes:
+        type: Controller type (e.g., "hiwonder")
         port: Serial port for the Hiwonder board (e.g., "/dev/ttyUSB0")
         baudrate: Serial baudrate (default: 9600)
         servos: Mapping from joint name to ServoConfig
+        default_move_time_ms: Optional default move time for commands
     """
 
+    type: str = "hiwonder"
     port: str = "/dev/ttyUSB0"
     baudrate: int = 9600
     servos: Dict[str, ServoConfig] = field(default_factory=dict)
+    default_move_time_ms: Optional[int] = None
 
     # HTD-45H servo constants
     SERVO_MIN: int = 0
     SERVO_MAX: int = 1000
     SERVO_CENTER: int = 500  # Our zero point (physical 120 degrees)
     DEG_TO_SERVO: float = 1000.0 / 240.0  # ~4.1667 servo units per degree
+
+    def __post_init__(self) -> None:
+        if not self.servos:
+            return
+        if all(isinstance(s, ServoConfig) for s in self.servos.values()):
+            return
+
+        normalized: Dict[str, ServoConfig] = {}
+        for name, servo in self.servos.items():
+            if isinstance(servo, ServoConfig):
+                normalized[name] = servo
+            elif isinstance(servo, ServoSpec):
+                normalized[name] = servo.to_servo_config()
+            else:
+                raise TypeError(
+                    f"servo_controller.servos['{name}'] must be ServoConfig or ServoSpec, got {type(servo)!r}"
+                )
+
+        object.__setattr__(self, "servos", normalized)
+
+    @property
+    def servo_ids(self) -> Dict[str, int]:
+        return {k: v.id for k, v in self.servos.items()}
+
+    @property
+    def joint_offset_units(self) -> Dict[str, int]:
+        return {k: int(v.offset_unit) for k, v in self.servos.items()}
+
+    @property
+    def joint_directions(self) -> Dict[str, float]:
+        return {k: float(v.direction) for k, v in self.servos.items()}
 
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
@@ -314,20 +373,14 @@ class HiwonderControllerConfig:
 
 @dataclass(frozen=True)
 class BNO085Config:
-    """BNO085 IMU configuration.
-
-    The BNO085 is a 9-DOF IMU with onboard sensor fusion that provides:
-    - Orientation quaternion (framequat)
-    - Angular velocity (gyro)
-    - Linear acceleration (accelerometer)
-
-    Attributes:
-        i2c_address: I2C address (default: 0x4A, alternative: 0x4B)
-        upside_down: Whether the IMU is mounted upside-down (flips orientation)
-    """
+    """BNO085 IMU configuration (runtime-facing fields)."""
 
     i2c_address: int = 0x4A
     upside_down: bool = False
+    suppress_debug: bool = True
+    axis_map: Optional[list[str]] = None
+    i2c_frequency_hz: int = 100_000
+    init_retries: int = 3
 
 
 @dataclass(frozen=True)
@@ -379,7 +432,7 @@ class WrRuntimeConfig:
         mjcf_path: Path to MuJoCo XML model file
         policy_onnx_path: Path to exported ONNX policy file
         control: Control loop settings (hz, action_scale, velocity_cmd)
-        hiwonder_controller: Hiwonder servo controller settings
+        servo_controller: Servo controller settings
         bno085: BNO085 IMU settings
         foot_switches: Foot switch GPIO pin settings
 
@@ -402,7 +455,7 @@ class WrRuntimeConfig:
     mjcf_path: str
     policy_onnx_path: str
     control: ControlConfig
-    hiwonder_controller: HiwonderControllerConfig
+    servo_controller: ServoControllerConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
 
@@ -503,7 +556,7 @@ class WrRuntimeConfig:
 
         # Parse nested configs
         control = cls._parse_control_config(data)
-        hiwonder = cls._parse_hiwonder_config(data, joint_specs)
+        servo_controller = cls._parse_servo_controller_config(data, joint_specs)
         bno085 = cls._parse_bno085_config(data)
         foot_switches = cls._parse_foot_switch_config(data)
 
@@ -511,7 +564,7 @@ class WrRuntimeConfig:
             mjcf_path=data["mjcf_path"],
             policy_onnx_path=data["policy_onnx_path"],
             control=control,
-            hiwonder_controller=hiwonder,
+            servo_controller=servo_controller,
             bno085=bno085,
             foot_switches=foot_switches,
             _config_dir=config_dir,
@@ -527,41 +580,131 @@ class WrRuntimeConfig:
         )
 
     @staticmethod
-    def _parse_hiwonder_config(
+    def _parse_servo_controller_config(
         data: dict, joint_specs: Dict[str, dict]
-    ) -> HiwonderControllerConfig:
-        """Parse Hiwonder controller configuration from JSON data.
+    ) -> ServoControllerConfig:
+        """Parse servo controller configuration with canonical and legacy blocks."""
 
-        Args:
-            data: JSON config data
-            joint_specs: Joint specs from robot_config.yaml with rad_range and max_velocity
-        """
-        hiw = data.get("Hiwonder_controller", {})
+        def _parse_block(block: dict, key_path: str) -> ServoControllerConfig:
+            servos: Dict[str, ServoConfig] = {}
+            for joint_name, servo_data in block.get("servos", {}).items():
+                joint_spec = joint_specs.get(joint_name, {})
+                direction_val = float(servo_data.get("direction", 1.0))
+                WrRuntimeConfig._validate_directions({joint_name: direction_val})
 
-        # Parse servos - each servo has "id", "offset", and optional "direction" fields
-        # Merge with joint_specs for rad_range, max_velocity, mirror_sign
-        servos = {}
-        for joint_name, servo_data in hiw.get("servos", {}).items():
-            joint_spec = joint_specs.get(joint_name, {})
-            direction = int(servo_data.get("direction", 1))
-            if direction not in (-1, 1):
-                raise ValueError(
-                    f"Invalid direction for servo '{joint_name}': {direction} (expected +1 or -1)"
+                offset_unit = servo_data.get("offset_unit")
+                legacy_offset = servo_data.get("offset")
+                legacy_offset_rad = servo_data.get("offset_rad")
+                if offset_unit is not None:
+                    chosen_offset = int(offset_unit)
+                    if legacy_offset is not None and int(legacy_offset) != chosen_offset:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.offset_unit={chosen_offset} conflicts with offset={legacy_offset}"
+                        )
+                    if legacy_offset_rad is not None and int(legacy_offset_rad) != chosen_offset:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.offset_unit={chosen_offset} conflicts with offset_rad={legacy_offset_rad}"
+                        )
+                elif legacy_offset is not None:
+                    chosen_offset = int(legacy_offset)
+                elif legacy_offset_rad is not None:
+                    chosen_offset = int(legacy_offset_rad)
+                    print(
+                        f"WARNING: {key_path}.{joint_name}.offset_rad found; treating value as servo units (naming bug). Please rename to offset_unit."
+                    )
+                else:
+                    chosen_offset = 0
+
+                servos[str(joint_name)] = ServoConfig(
+                    id=int(servo_data["id"]),
+                    offset=int(chosen_offset),
+                    direction=direction_val,
+                    rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
+                    max_velocity=joint_spec.get("max_velocity", 10.0),
+                    mirror_sign=joint_spec.get("mirror_sign", 1.0),
                 )
-            servos[str(joint_name)] = ServoConfig(
-                id=int(servo_data["id"]),
-                offset=int(servo_data.get("offset", 0)),
-                direction=direction,
-                rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
-                max_velocity=joint_spec.get("max_velocity", 10.0),
-                mirror_sign=joint_spec.get("mirror_sign", 1.0),
+
+            return ServoControllerConfig(
+                type=str(block.get("type", "hiwonder")),
+                port=str(block.get("port", "/dev/ttyUSB0")),
+                baudrate=int(block.get("baudrate", 9600)),
+                servos=servos,
+                default_move_time_ms=int(block["default_move_time_ms"]) if "default_move_time_ms" in block else None,
             )
 
-        return HiwonderControllerConfig(
-            port=hiw.get("port", "/dev/ttyUSB0"),
-            baudrate=int(hiw.get("baudrate", 9600)),
-            servos=servos,
+        def _parse_legacy_hiwonder_block(block: dict) -> ServoControllerConfig:
+            servos: Dict[str, ServoConfig] = {}
+            servo_ids = block.get("servo_ids", {})
+            joint_offsets = block.get("joint_offsets_rad", {})
+            joint_directions = block.get("joint_directions", {})
+            for joint, sid in servo_ids.items():
+                direction_val = float(joint_directions.get(joint, 1.0))
+                WrRuntimeConfig._validate_directions({joint: direction_val})
+                servos[str(joint)] = ServoConfig(
+                    id=int(sid),
+                    offset=int(joint_offsets.get(joint, 0)),
+                    direction=direction_val,
+                    rad_range=joint_specs.get(joint, {}).get("rad_range", (0.0, 0.0)),
+                    max_velocity=joint_specs.get(joint, {}).get("max_velocity", 10.0),
+                    mirror_sign=joint_specs.get(joint, {}).get("mirror_sign", 1.0),
+                )
+            return ServoControllerConfig(
+                type="hiwonder",
+                port=str(block.get("port", "/dev/ttyUSB0")),
+                baudrate=int(block.get("baudrate", 9600)),
+                servos=servos,
+            )
+
+        canonical_block = data.get("servo_controller")
+        legacy_controller_block = data.get("Hiwonder_controller")
+        legacy_hiwonder_block = data.get("hiwonder")
+
+        parsed_canonical = (
+            _parse_block(canonical_block, "servo_controller.servos")
+            if canonical_block is not None
+            else None
         )
+        parsed_legacy_controller = (
+            _parse_block(legacy_controller_block, "Hiwonder_controller.servos")
+            if legacy_controller_block is not None
+            else None
+        )
+        parsed_legacy_hiwonder = (
+            _parse_legacy_hiwonder_block(legacy_hiwonder_block)
+            if legacy_hiwonder_block is not None
+            else None
+        )
+
+        definitions = [cfg for cfg in (parsed_canonical, parsed_legacy_controller, parsed_legacy_hiwonder) if cfg]
+        if len(definitions) > 1:
+            first = definitions[0]
+            for other in definitions[1:]:
+                if other != first:
+                    raise ValueError(
+                        "Conflicting servo controller definitions: found both canonical and legacy blocks with different values."
+                    )
+            return first
+
+        if parsed_canonical:
+            return parsed_canonical
+        if parsed_legacy_controller:
+            return parsed_legacy_controller
+        if parsed_legacy_hiwonder:
+            return parsed_legacy_hiwonder
+
+        raise KeyError(
+            "Servo controller config missing. Provide 'servo_controller' with fields {type, port, baudrate, servos}. "
+            "Legacy keys 'hiwonder' or 'Hiwonder_controller' are also accepted for now."
+        )
+
+    @staticmethod
+    def _validate_directions(directions: Dict[str, float]) -> None:
+        invalid = {k: v for k, v in directions.items() if abs(abs(v) - 1.0) > 1e-3}
+        if invalid:
+            raise ValueError(
+                "servo_controller.servos.direction must be +/-1.0 (tolerance 1e-3); invalid entries: "
+                + ", ".join(f"{k}={v}" for k, v in invalid.items())
+            )
 
     @staticmethod
     def _parse_bno085_config(data: dict) -> BNO085Config:
@@ -573,9 +716,33 @@ class WrRuntimeConfig:
         if isinstance(i2c_addr, str):
             i2c_addr = int(i2c_addr, 0)  # Handles "0x4A" format
 
+        axis_map_raw = bno.get("axis_map")
+        axis_map = None
+        if axis_map_raw is not None:
+            if not isinstance(axis_map_raw, list) or len(axis_map_raw) != 3:
+                raise ValueError("bno085.axis_map must be a list of 3 strings like ['+X','-Y','+Z']")
+            normalized: list[str] = []
+            allowed = {"X", "Y", "Z"}
+            seen: set[str] = set()
+            for entry in axis_map_raw:
+                s = str(entry).strip().upper()
+                if len(s) != 2 or s[0] not in {"+", "-"} or s[1] not in allowed:
+                    raise ValueError(
+                        f"Invalid bno085.axis_map entry: {entry!r} (expected entries like '+X', '-Y', '+Z')"
+                    )
+                if s[1] in seen:
+                    raise ValueError(f"Duplicate axis in bno085.axis_map: {axis_map_raw}")
+                seen.add(s[1])
+                normalized.append(s)
+            axis_map = normalized
+
         return BNO085Config(
             i2c_address=i2c_addr,
             upside_down=bool(bno.get("upside_down", False)),
+            suppress_debug=bool(bno.get("suppress_debug", True)),
+            axis_map=axis_map,
+            i2c_frequency_hz=int(bno.get("i2c_frequency_hz", 100_000)),
+            init_retries=int(bno.get("init_retries", 3)),
         )
 
     @staticmethod
@@ -593,31 +760,43 @@ class WrRuntimeConfig:
     def to_dict(self) -> dict:
         """Convert config back to a dictionary (for serialization)."""
         # Build servos dict in new format
-        servos_dict = {}
-        for joint_name, servo in self.hiwonder_controller.servos.items():
-            servos_dict[joint_name] = {
+        servos_dict = {
+            joint_name: {
                 "id": servo.id,
-                "offset": servo.offset,
+                "offset_unit": servo.offset_unit,
                 "direction": servo.direction,
             }
+            for joint_name, servo in self.servo_controller.servos.items()
+        }
 
-        return {
+        out = {
             "mjcf_path": self.mjcf_path,
             "policy_onnx_path": self.policy_onnx_path,
             "control_hz": self.control.hz,
             "action_scale_rad": self.control.action_scale_rad,
             "velocity_cmd": self.control.velocity_cmd,
-            "Hiwonder_controller": {
-                "port": self.hiwonder_controller.port,
-                "baudrate": self.hiwonder_controller.baudrate,
+            "servo_controller": {
+                "type": self.servo_controller.type,
+                "port": self.servo_controller.port,
+                "baudrate": self.servo_controller.baudrate,
                 "servos": servos_dict,
+                **(
+                    {"default_move_time_ms": self.servo_controller.default_move_time_ms}
+                    if self.servo_controller.default_move_time_ms is not None
+                    else {}
+                ),
             },
             "bno085": {
                 "i2c_address": hex(self.bno085.i2c_address),
                 "upside_down": self.bno085.upside_down,
+                "suppress_debug": self.bno085.suppress_debug,
+                "i2c_frequency_hz": int(self.bno085.i2c_frequency_hz),
+                "init_retries": int(self.bno085.init_retries),
+                **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
         }
+        return out
 
     def save(self, config_path: str | Path) -> None:
         """Save configuration to JSON file.
@@ -629,10 +808,18 @@ class WrRuntimeConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=2))
 
+    @property
+    def hiwonder_controller(self) -> ServoControllerConfig:
+        """Legacy attribute alias for servo_controller."""
+        return self.servo_controller
+
 
 # =============================================================================
 # Legacy Compatibility
 # =============================================================================
+
+# Legacy alias (previous class name)
+HiwonderControllerConfig = ServoControllerConfig
 
 # Alias for backward compatibility
 RuntimeConfig = WrRuntimeConfig

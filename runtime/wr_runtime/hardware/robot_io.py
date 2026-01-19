@@ -10,8 +10,8 @@ from policy_contract.numpy.frames import normalize_quat_xyzw
 from policy_contract.numpy.signals import Signals
 
 from .actuators import Actuators
-from .bno085 import BNO085IMU
 from .foot_switches import FootSwitches
+from .imu import Imu
 
 
 @dataclass
@@ -19,11 +19,13 @@ class HardwareRobotIO(RobotIO[Signals]):
     actuator_names: List[str]
     control_dt: float
     actuators: Actuators
-    imu: BNO085IMU
+    imu: Imu
     foot_switches: FootSwitches
 
     def read(self) -> Signals:
         imu_sample = self.imu.read()
+        if not getattr(imu_sample, "valid", True):
+            raise RuntimeError("IMU reported invalid sample (valid=False); aborting for safety")
         joint_pos = self.actuators.get_positions_rad()
         if joint_pos is None:
             port = getattr(self.actuators, "port", "unknown")
@@ -44,13 +46,11 @@ class HardwareRobotIO(RobotIO[Signals]):
             joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
             joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),
             foot_switches=foot,
-            timestamp_s=float(getattr(imu_sample, "timestamp_s", 0.0)),
+            timestamp_s=float(getattr(imu_sample, "timestamp_s", 0.0) or 0.0),
         )
 
     def write_ctrl(self, ctrl_targets_rad) -> None:
-        self.actuators.set_targets_rad(
-            np.asarray(ctrl_targets_rad, dtype=np.float32), move_time_ms=int(self.control_dt * 1000.0)
-        )
+        self.actuators.set_targets_rad(np.asarray(ctrl_targets_rad, dtype=np.float32), move_time_ms=None)
 
     def close(self) -> None:
         try:

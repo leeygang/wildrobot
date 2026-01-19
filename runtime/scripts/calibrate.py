@@ -607,15 +607,30 @@ def write_config(
     *,
     home_ctrl_rad: Optional[List[float]] = None,
 ) -> None:
-    hiw = base_data.setdefault("Hiwonder_controller", {})
-    servos = hiw.setdefault("servos", {})
+    # Canonical block
+    servo_block = base_data.setdefault("servo_controller", {})
+    servo_block.setdefault("type", "hiwonder")
+    servos = servo_block.setdefault("servos", {})
     for joint, state in updates.items():
         if joint not in servos:
             servos[joint] = {}
-        servos[joint]["offset"] = int(state.offset)
+        servos[joint]["offset_unit"] = int(state.offset)
         servos[joint]["direction"] = int(state.direction)
-    if home_ctrl_rad is not None:
-        hiw["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
+
+    # Legacy block (only if present already)
+    if "Hiwonder_controller" in base_data:
+        hiw = base_data.setdefault("Hiwonder_controller", {})
+        legacy_servos = hiw.setdefault("servos", {})
+        for joint, state in updates.items():
+            if joint not in legacy_servos:
+                legacy_servos[joint] = {}
+            legacy_servos[joint]["offset_unit"] = int(state.offset)
+            legacy_servos[joint]["direction"] = int(state.direction)
+        if home_ctrl_rad is not None:
+            hiw["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
+    elif home_ctrl_rad is not None:
+        servo_block["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
+
     _write_json_with_retries(output_path, base_data)
 
 def write_bno_config(

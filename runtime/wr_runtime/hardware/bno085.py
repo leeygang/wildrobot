@@ -1,28 +1,23 @@
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass
 import io
 from queue import Queue
 from threading import Thread
 from typing import Optional
 
 import numpy as np
+from .imu import Imu, ImuSample
 
 
-@dataclass(frozen=True)
-class ImuSample:
-    quat_xyzw: np.ndarray  # (4,) float32
-    gyro_rad_s: np.ndarray  # (3,) float32
-    timestamp_s: float  # monotonic seconds
-
-
-class BNO085IMU:
+class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
     Designed to be compatible with the observation layout used in training:
     - quaternion (xyzw)
     - gyro (rad/s)
+
+    read() returns body-frame quat/gyro with upside_down and axis_map already applied.
 
     Runs a tiny background thread to keep latest reading available.
     """
@@ -175,18 +170,21 @@ class BNO085IMU:
     def _read_sample_once(self) -> ImuSample:
         import time
 
+        valid = True
         with self._maybe_silence_debug_output():
             quat = self._imu.quaternion
             gyro = self._imu.gyro
 
         if quat is None:
             quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            valid = False
         else:
             # adafruit_bno08x returns quaternion as (i, j, k, real)
             quat_xyzw = np.array([quat[0], quat[1], quat[2], quat[3]], dtype=np.float32)
 
         if gyro is None:
             gyro_rad_s = np.zeros(3, dtype=np.float32)
+            valid = False
         else:
             gyro_rad_s = np.array(gyro, dtype=np.float32)
 
@@ -203,8 +201,10 @@ class BNO085IMU:
         raw_norm = float(np.linalg.norm(quat_xyzw))
         if not np.isfinite(raw_norm) or raw_norm < 1e-6:
             quat_out = self._latest.quat_xyzw
+            valid = False
         elif abs(raw_norm - 1.0) > self.max_quat_norm_deviation:
             quat_out = self._latest.quat_xyzw
+            valid = False
         else:
             quat_out = quat_xyzw
 
@@ -212,6 +212,7 @@ class BNO085IMU:
             quat_xyzw=quat_out,
             gyro_rad_s=gyro_rad_s,
             timestamp_s=time.monotonic(),
+            valid=bool(valid),
         )
 
     def _loop(self) -> None:

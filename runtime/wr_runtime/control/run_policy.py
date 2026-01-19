@@ -12,15 +12,69 @@ from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
+from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
 
-from ..config import load_config
+from runtime.configs import load_config
 from ..hardware.actuators import HiwonderBoardActuators
 from ..hardware.bno085 import BNO085IMU
 from ..hardware.foot_switches import FootSwitches
+from ..hardware.imu import Imu
 from ..hardware.robot_io import HardwareRobotIO
 from ..inference.onnx_policy import OnnxPolicy
 from ..utils.mjcf import load_mjcf_model_info
 from ..validation.startup_validator import validate_runtime_interface
+
+
+def _imu_sanity_check(
+    imu: Imu,
+    *,
+    samples: int,
+    gravity_z_tol: float,
+    gyro_norm_tol: float,
+    sleep_s: float,
+) -> None:
+    """Fail fast if IMU outputs look wrong before commanding motors.
+
+    Checks:
+      - quat norms are close to 1
+      - gravity_local z is near -1 when upright
+      - gyro norm is small when still
+    """
+
+    quats = []
+    gyro_norms: list[float] = []
+    gravities = []
+    for _ in range(max(1, int(samples))):
+        s = imu.read()
+        if not getattr(s, "valid", True):
+            raise RuntimeError("IMU sanity check failed: sample marked invalid (valid=False)")
+        q = normalize_quat_xyzw(np.asarray(s.quat_xyzw, dtype=np.float32))
+        quats.append(q)
+        g = gravity_local_from_quat(q)
+        gravities.append(g)
+        gyro = np.asarray(s.gyro_rad_s, dtype=np.float32)
+        gyro_norms.append(float(np.linalg.norm(gyro)))
+        time.sleep(max(0.0, float(sleep_s)))
+
+    quats_arr = np.stack(quats, axis=0)
+    norms = np.linalg.norm(quats_arr, axis=1)
+    norm_dev = float(np.max(np.abs(norms - 1.0)))
+
+    g_local_mean = np.mean(np.stack(gravities, axis=0), axis=0)
+    g_z_err = abs(float(g_local_mean[2]) + 1.0)
+
+    gyro_mean_norm = float(np.mean(gyro_norms))
+
+    if norm_dev > 0.05:
+        raise RuntimeError(f"IMU sanity check failed: quat norm deviation {norm_dev:.3f} > 0.05")
+    if g_z_err > gravity_z_tol:
+        raise RuntimeError(
+            f"IMU sanity check failed: gravity z error {g_z_err:.3f} > {gravity_z_tol:.3f} (sensor upright?)"
+        )
+    if gyro_mean_norm > gyro_norm_tol:
+        raise RuntimeError(
+            f"IMU sanity check failed: mean gyro norm {gyro_mean_norm:.3f} rad/s > {gyro_norm_tol:.3f} (sensor should be still)"
+        )
 
 
 def main() -> None:
@@ -32,6 +86,35 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional max steps to log before auto-stopping (default: run until Ctrl+C)",
+    )
+    parser.add_argument(
+        "--skip-imu-check",
+        action="store_true",
+        help="Skip IMU sanity check before enabling control loop (not recommended)",
+    )
+    parser.add_argument(
+        "--imu-check-samples",
+        type=int,
+        default=20,
+        help="Number of IMU samples to average for sanity check",
+    )
+    parser.add_argument(
+        "--imu-gravity-z-tol",
+        type=float,
+        default=0.25,
+        help="Allowed error for gravity_local z vs -1 (abs error)",
+    )
+    parser.add_argument(
+        "--imu-gyro-norm-tol",
+        type=float,
+        default=1.0,
+        help="Allowed mean gyro norm (rad/s) during sanity check",
+    )
+    parser.add_argument(
+        "--imu-check-sleep-s",
+        type=float,
+        default=0.02,
+        help="Sleep between IMU samples during sanity check",
     )
     args = parser.parse_args()
 
@@ -70,20 +153,50 @@ def main() -> None:
     )
 
     control_dt = 1.0 / cfg.control.hz
-    actuators = HiwonderBoardActuators(
-        actuator_names=spec.robot.actuator_names,
-        servo_ids=cfg.hiwonder.servo_ids,
-        joint_offsets_rad=cfg.hiwonder.joint_offsets_rad,
-        joint_directions=cfg.hiwonder.joint_directions,
-        port=cfg.hiwonder.port,
-        baudrate=cfg.hiwonder.baudrate,
-        default_move_time_ms=int(control_dt * 1000.0),
-    )
-
     imu = BNO085IMU(
         i2c_address=cfg.bno085.i2c_address,
         upside_down=cfg.bno085.upside_down,
+        axis_map=cfg.bno085.axis_map,
+        suppress_debug=cfg.bno085.suppress_debug,
+        i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
+        init_retries=cfg.bno085.init_retries,
         sampling_hz=int(cfg.control.hz),
+    )
+
+    print(
+        "IMU config: "
+        f"addr=0x{cfg.bno085.i2c_address:02X} upside_down={cfg.bno085.upside_down} "
+        f"axis_map={cfg.bno085.axis_map if cfg.bno085.axis_map is not None else ['+X','+Y','+Z']} "
+        f"freq={cfg.bno085.i2c_frequency_hz}Hz retries={cfg.bno085.init_retries}"
+    )
+
+    if args.skip_imu_check:
+        print("Skipping IMU sanity check (requested).")
+    else:
+        print("Running IMU sanity check (no motors commanded)...")
+        _imu_sanity_check(
+            imu,
+            samples=args.imu_check_samples,
+            gravity_z_tol=args.imu_gravity_z_tol,
+            gyro_norm_tol=args.imu_gyro_norm_tol,
+            sleep_s=args.imu_check_sleep_s,
+        )
+        print("IMU sanity check passed.")
+
+    move_time_ms = (
+        cfg.servo_controller.default_move_time_ms
+        if cfg.servo_controller.default_move_time_ms is not None
+        else int(control_dt * 1000.0)
+    )
+
+    actuators = HiwonderBoardActuators(
+        actuator_names=spec.robot.actuator_names,
+        servo_ids=cfg.servo_controller.servo_ids,
+        joint_offset_units=cfg.servo_controller.joint_offset_units,
+        joint_directions=cfg.servo_controller.joint_directions,
+        port=cfg.servo_controller.port,
+        baudrate=cfg.servo_controller.baudrate,
+        default_move_time_ms=move_time_ms,
     )
 
     foot = FootSwitches(cfg.foot_switches.get_all_pins())
