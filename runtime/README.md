@@ -65,7 +65,8 @@ Minimal example:
 
   "bno085": {
     "i2c_address": "0x4B",
-    "upside_down": false
+    "upside_down": false,
+    "axis_map": ["+X", "+Y", "+Z"]
   },
 
   "foot_switches": {

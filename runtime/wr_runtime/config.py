@@ -126,10 +126,15 @@ class BNO085Config:
     Attributes:
         i2c_address: I2C address (default: 0x4A, alternative: 0x4B)
         upside_down: Whether the IMU is mounted upside-down (flips orientation)
+        axis_map: Optional axis remap from IMU frame -> robot body frame.
+            Format: ["+X", "-Y", "+Z"] meaning:
+              body_x = +imu_x, body_y = -imu_y, body_z = +imu_z
+            This supports only axis permutation + sign (no arbitrary rotation).
     """
 
     i2c_address: int = 0x4A
     upside_down: bool = False
+    axis_map: Optional[list[str]] = None
 
 
 @dataclass(frozen=True)
@@ -338,9 +343,16 @@ class WildRobotRuntimeConfig:
         if isinstance(i2c_addr, str):
             i2c_addr = int(i2c_addr, 0)  # Handles "0x4A" format
 
+        axis_map = bno.get("axis_map", None)
+        if axis_map is not None:
+            if not isinstance(axis_map, list) or len(axis_map) != 3:
+                raise ValueError("bno085.axis_map must be a list of 3 strings like ['+X','-Y','+Z']")
+            axis_map = [str(x) for x in axis_map]
+
         return BNO085Config(
             i2c_address=i2c_addr,
             upside_down=bool(bno.get("upside_down", False)),
+            axis_map=axis_map,
         )
 
     @staticmethod
@@ -373,6 +385,7 @@ class WildRobotRuntimeConfig:
             "bno085": {
                 "i2c_address": hex(self.bno085.i2c_address),
                 "upside_down": self.bno085.upside_down,
+                **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
         }

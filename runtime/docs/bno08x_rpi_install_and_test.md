@@ -153,7 +153,10 @@ Practical checks:
 - Roll right/left: a third axis should spike.
 
 If axes are swapped/negated due to mounting, update the remap in:
-- `runtime/wr_runtime/hardware/bno085.py` (currently only supports a simple `upside_down` flip; you may need a full axis remap).
+- `runtime/wr_runtime/hardware/bno085.py`:
+  - `upside_down` handles a simple inverted mount.
+  - `axis_map` handles permutation + sign (e.g., `["+X", "-Y", "+Z"]`) and can be calibrated interactively via
+    `runtime/scripts/calibrate.py --calibrate-imu`.
 
 ## 7) Troubleshooting
 
@@ -177,4 +180,3 @@ If axes are swapped/negated due to mounting, update the remap in:
 - First verify stable power and reliable reads.
 - Then verify mounting orientation; set `upside_down` if mounted inverted.
 - If still wrong, implement an explicit axis remap (recommended over stacking ad-hoc sign flips).
-
