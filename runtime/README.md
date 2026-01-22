@@ -91,3 +91,8 @@ Replay a bundle on logged signals (npz → obs/actions):
 ```bash
 wildrobot-replay-policy --bundle ../policies/wildrobot_policy_bundle --input signals_log.npz --output replay_output.npz
 ```
+
+Inspect a signals log (quick health summary):
+```bash
+wildrobot-inspect-log --input signals_log.npz
+```

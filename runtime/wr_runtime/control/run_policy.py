@@ -277,6 +277,8 @@ def main() -> None:
     log_joint_vel: list[np.ndarray] = []
     log_foot: list[np.ndarray] = []
     log_vel_cmd: list[np.ndarray] = []
+    log_timestamp_s: list[np.ndarray] = []
+    log_dt_s: list[np.ndarray] = []
 
     print(f"Running control loop at {cfg.control.hz} Hz with {len(joint_names)} actuators")
     print("Ctrl+C to stop")
@@ -313,6 +315,8 @@ def main() -> None:
                 log_joint_vel.append(np.asarray(signals.joint_vel_rad_s, dtype=np.float32))
                 log_foot.append(np.asarray(signals.foot_switches, dtype=np.float32))
                 log_vel_cmd.append(np.asarray([cfg.control.velocity_cmd], dtype=np.float32))
+                log_timestamp_s.append(np.asarray([signals.timestamp_s], dtype=np.float64))
+                log_dt_s.append(np.asarray([dt], dtype=np.float64))
                 if log_steps is not None and len(log_quat) >= log_steps:
                     break
 
@@ -333,6 +337,8 @@ def main() -> None:
                 joint_vel_rad_s=np.stack(log_joint_vel, axis=0),
                 foot_switches=np.stack(log_foot, axis=0),
                 velocity_cmd=np.stack(log_vel_cmd, axis=0),
+                timestamp_s=np.concatenate(log_timestamp_s, axis=0),
+                dt_s=np.concatenate(log_dt_s, axis=0),
             )
             print(f"Saved replay log to {log_path}")
         robot_io.close()
