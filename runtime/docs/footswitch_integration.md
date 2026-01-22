@@ -109,6 +109,16 @@ Expected:
 - With no switches pressed: `[False, False, False, False]`
 - Pressing each switch toggles its corresponding entry to `True`
 
+Alternative (interactive):
+
+```bash
+uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-footswitch
+```
+
+This will:
+- list the selectable targets (`left_toe`, `left_heel`, `right_toe`, `right_heel`, `left_foot`, `right_foot`)
+- print their live pressed/open status until you quit
+
 ## 7) Runtime behavior (where the signals go)
 
 When running `wildrobot-run-policy`, foot switches are read every control tick and included in the `Signals` struct:

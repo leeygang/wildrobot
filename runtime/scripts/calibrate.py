@@ -110,6 +110,198 @@ def prompt_select_joints(joint_names: List[str]) -> List[str]:
     return selected
 
 
+_FOOTSWITCH_TARGETS_ORDER = (
+    "left_toe",
+    "left_heel",
+    "right_toe",
+    "right_heel",
+    "left_foot",
+    "right_foot",
+)
+
+
+def prompt_select_footswitch_targets() -> List[str]:
+    print("Available footswitch targets:")
+    for idx, name in enumerate(_FOOTSWITCH_TARGETS_ORDER, start=1):
+        print(f"  #{idx}: {name}")
+    raw = (
+        input(
+            "Select targets by number or name (e.g. 1 3 or left_toe,right_foot), 'all', or 'q' to quit: "
+        )
+        .strip()
+        .lower()
+    )
+    if not raw:
+        raise ValueError("No footswitch targets selected")
+    if raw in {"q", "quit", "exit"}:
+        return []
+    if raw == "all":
+        return list(_FOOTSWITCH_TARGETS_ORDER)
+
+    tokens = [t for t in raw.replace(",", " ").split() if t]
+    indices: List[int] = []
+    names: List[str] = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        if token.startswith("#"):
+            token = token[1:]
+        if token.isdigit():
+            indices.append(int(token))
+        else:
+            names.append(token)
+
+    selected: List[str] = []
+    seen: set[str] = set()
+
+    for idx in indices:
+        if idx < 1 or idx > len(_FOOTSWITCH_TARGETS_ORDER):
+            raise ValueError(
+                f"Target index out of range: {idx} (valid: 1..{len(_FOOTSWITCH_TARGETS_ORDER)})"
+            )
+        name = _FOOTSWITCH_TARGETS_ORDER[idx - 1]
+        if name not in seen:
+            seen.add(name)
+            selected.append(name)
+
+    allowed = {n for n in _FOOTSWITCH_TARGETS_ORDER}
+    for name in names:
+        if name not in allowed:
+            raise ValueError(f"Unknown footswitch target: {name!r} (allowed: {sorted(allowed)})")
+        if name not in seen:
+            seen.add(name)
+            selected.append(name)
+
+    if not selected:
+        raise ValueError("No footswitch targets selected")
+    return selected
+
+
+def _footswitch_status_from_sample(switches: List[bool]) -> Dict[str, bool]:
+    if len(switches) != 4:
+        raise ValueError(f"Expected 4 foot switch values, got {len(switches)}")
+    left_toe, left_heel, right_toe, right_heel = [bool(x) for x in switches]
+    return {
+        "left_toe": left_toe,
+        "left_heel": left_heel,
+        "right_toe": right_toe,
+        "right_heel": right_heel,
+        "left_foot": bool(left_toe or left_heel),
+        "right_foot": bool(right_toe or right_heel),
+    }
+
+
+def _poll_footswitch_control_token(buf: str) -> tuple[str, str]:
+    """Non-blocking stdin poll for quit tokens.
+
+    Returns (new_buf, action) where action is one of: 'none', 'back', 'exit'.
+    """
+    if not sys.stdin.isatty():
+        return buf, "none"
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], 0.0)
+    except Exception:
+        return buf, "none"
+    if not r:
+        return buf, "none"
+
+    try:
+        chunk = sys.stdin.read(1)
+    except Exception:
+        return buf, "none"
+    if chunk == "":
+        return buf, "exit"
+    if chunk in {"\n", "\r"}:
+        token = buf.strip().lower()
+        buf = ""
+        if token in {"q"}:
+            return buf, "back"
+        if token in {"quit", "exit"}:
+            return buf, "exit"
+        return buf, "none"
+    return buf + chunk, "none"
+
+
+def calibrate_footswitches(*, config: WrRuntimeConfig) -> None:
+    print("\n== Foot Switch Calibration/Test ==", flush=True)
+    print(
+        "This mode prints live footswitch status for the selected signals.\n"
+        "Expected electrical behavior (per runtime docs):\n"
+        "  - Not pressed: GPIO reads HIGH -> runtime reports False\n"
+        "  - Pressed (short to GND): GPIO reads LOW -> runtime reports True\n",
+        flush=True,
+    )
+
+    # Outer loop: select targets; inner loop: live readout.
+
+    try:
+        from runtime.wr_runtime.hardware.foot_switches import FootSwitches
+    except Exception as exc:
+        print(
+            "Failed to import FootSwitches driver. If you're on a Raspberry Pi, install Blinka: 'pip install adafruit-blinka'.",
+            flush=True,
+        )
+        raise
+
+    pins = config.foot_switches.get_all_pins()
+    try:
+        foot = FootSwitches(pins)
+    except Exception as exc:
+        print("Failed to initialize foot switches. Check wiring and config 'foot_switches' pins.", flush=True)
+        raise
+
+    try:
+        while True:
+            selected = prompt_select_footswitch_targets()
+            if not selected:
+                return
+            print(f"Selected targets: {', '.join(selected)}", flush=True)
+
+            print("\nLive readout starting.", flush=True)
+            print("- Press 'q' then Enter to go back to target selection.", flush=True)
+            print("- Press 'exit' then Enter to exit this mode.", flush=True)
+            print("- '1' means pressed/contact closed; '0' means open.", flush=True)
+
+            buf = ""
+            last: Optional[Dict[str, bool]] = None
+            last_print_s = 0.0
+            while True:
+                buf, action = _poll_footswitch_control_token(buf)
+                if action == "back":
+                    print("(back to selection)", flush=True)
+                    break
+                if action == "exit":
+                    return
+
+                sample = foot.read()
+                status = _footswitch_status_from_sample(sample.switches)
+                now = time.monotonic()
+
+                changed = False
+                if last is None:
+                    changed = True
+                else:
+                    for k in selected:
+                        if bool(status[k]) != bool(last.get(k, False)):
+                            changed = True
+                            break
+
+                heartbeat = (now - last_print_s) >= 1.0
+                if changed or heartbeat:
+                    line = " ".join(f"{k}={1 if status[k] else 0}" for k in selected)
+                    print(line, flush=True)
+                    last = {k: bool(status[k]) for k in selected}
+                    last_print_s = now
+
+                time.sleep(0.02)
+    finally:
+        try:
+            foot.close()
+        except Exception:
+            pass
+
+
 def read_position(controller, servo_id: int, *, retries: int = 5, retry_delay_s: float = 0.1) -> Optional[int]:
     for attempt in range(1, retries + 1):
         try:
@@ -2013,6 +2205,9 @@ Examples (copy/paste):
 
   # Calibrate IMU upside_down (simple inversion check using gravity vector)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-imu
+
+    # Footswitch calibration/test: select which switch signals to display, then press the switches to verify wiring
+    uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-footswitch
 """.strip()
 
     parser = argparse.ArgumentParser(
@@ -2037,6 +2232,11 @@ Examples (copy/paste):
         "--calibrate-imu",
         action="store_true",
         help="Interactive IMU calibration: upside_down (mount inversion) + axis_map (frame remap)",
+    )
+    parser.add_argument(
+        "--calibrate-footswitch",
+        action="store_true",
+        help="Interactive footswitch test: select signals and print live pressed/open status",
     )
     parser.add_argument(
         "--imu-samples",
@@ -2082,8 +2282,18 @@ Examples (copy/paste):
     servo_cfgs = config.hiwonder_controller.servos
     joint_names = list(servo_cfgs.keys())
 
-    if not (args.calibrate or args.calibrate_imu or args.range or args.go_home or args.record_pos or args.dry_run):
-        parser.error("Must specify a mode: --calibrate, --range, --go-home, or --record-pos")
+    if not (
+        args.calibrate
+        or args.calibrate_imu
+        or args.calibrate_footswitch
+        or args.range
+        or args.go_home
+        or args.record_pos
+        or args.dry_run
+    ):
+        parser.error(
+            "Must specify a mode: --calibrate, --calibrate-imu, --calibrate-footswitch, --range, --go-home, or --record-pos"
+        )
 
     if args.calibrate_imu:
         output_path = Path(args.output) if args.output else config_path
@@ -2155,6 +2365,13 @@ Examples (copy/paste):
             return
 
         print("Invalid choice.", flush=True)
+        return
+
+    if args.calibrate_footswitch:
+        try:
+            calibrate_footswitches(config=config)
+        except KeyboardInterrupt:
+            print("\nInterrupted.", flush=True)
         return
 
     hints = dict(POSITIVE_HINTS)

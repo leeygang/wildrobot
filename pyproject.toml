@@ -19,6 +19,7 @@ dependencies = [
     "playground",
     "pymeshlab>=2025.7",
     "pyserial>=3.5",
+    "pyyaml>=6.0",
     "rpi-gpio>=0.7.1",
     "wandb>=0.23.0",
 ]
