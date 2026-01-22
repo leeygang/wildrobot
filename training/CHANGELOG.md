@@ -22,6 +22,19 @@ This changelog tracks capability changes, configuration updates, and training re
 2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
 3. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp`
 
+### Results (Standing PPO, v0.12.2)
+- Run: `training/wandb/offline-run-20260108_212208-r9wr2rq5/`
+- Checkpoints: `training/checkpoints/ppo_standing_v00122_20260108_212209-r9wr2rq5/`
+- Best checkpoint (reward): `training/checkpoints/ppo_standing_v00122_20260108_212209-r9wr2rq5/checkpoint_50_6553600.pkl`
+- Run length: 330 iterations (final step: 43,253,760)
+
+| Metric | Value (best @ iter 50) |
+|--------|-------------------------|
+| Episode Reward | 635.17 |
+| Episode Length | 500.0 |
+| Forward Velocity (cmd=0.00) | -0.00 m/s |
+| Robot Height | 0.468 m |
+
 ---
 
 ## [v0.12.1] - 2026-01-05: Standing policy_contract Baseline (v0.12.1)

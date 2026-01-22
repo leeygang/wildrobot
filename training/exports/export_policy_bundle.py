@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -20,16 +21,8 @@ from typing import Any, Dict, List
 import mujoco
 import yaml
 
-from policy_contract.spec import (
-    ActionSpec,
-    JointSpec,
-    ModelSpec,
-    ObservationSpec,
-    ObsFieldSpec,
-    PolicySpec,
-    RobotSpec,
-    validate_spec,
-)
+from policy_contract.spec import JointSpec, PolicySpec, validate_spec
+from policy_contract.spec_builder import build_policy_spec
 
 from training.exports.export_onnx import export_checkpoint_to_onnx, get_checkpoint_dims
 
@@ -74,6 +67,39 @@ def export_policy_bundle(
     checksums = _build_checksums([onnx_path, spec_path, robot_snapshot_path])
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
+    _export_runtime_config(output_dir=output_dir)
+
+
+def _export_runtime_config(
+    *,
+    output_dir: Path,
+) -> None:
+    """Generate a runtime config JSON colocated with the exported bundle.
+
+    Source of truth for hardware settings is `runtime/configs/wr_runtime_config.json`.
+    The generated config patches:
+      - `policy_onnx_path` -> `./policy.onnx`
+      - `mjcf_path` -> repo-relative `assets/wildrobot.xml` (relative to the bundle dir)
+    """
+    project_root = Path(__file__).parent.parent.parent
+    base_path = project_root / "runtime" / "configs" / "wr_runtime_config.json"
+
+    if not base_path.exists():
+        raise FileNotFoundError(f"Runtime config base not found: {base_path}")
+
+    data = json.loads(base_path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"Runtime config base is not a JSON object: {base_path}")
+
+    data["policy_onnx_path"] = "./policy.onnx"
+
+    assets_mjcf = project_root / "assets" / "wildrobot.xml"
+    if assets_mjcf.exists():
+        data["mjcf_path"] = os.path.relpath(assets_mjcf, output_dir)
+
+    out_path = output_dir / "wildrobot_config.json"
+    out_path.write_text(json.dumps(data, indent=2) + "\n")
+
 
 def _build_policy_spec(
     *,
@@ -91,44 +117,16 @@ def _build_policy_spec(
     actuator_names = list(joints.keys())
     home_ctrl_rad = _get_home_ctrl_from_mjcf(config_path, actuator_names=actuator_names)
     home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
-    action_dim = len(actuator_names)
-    layout = _build_obs_layout(action_dim)
 
-    postprocess_id = "lowpass_v1" if action_filter_alpha > 0.0 else "none"
-    postprocess_params: Dict[str, Any] = {}
-    if postprocess_id == "lowpass_v1":
-        postprocess_params["alpha"] = action_filter_alpha
+    actuated_joint_specs = robot_cfg.get("actuated_joint_specs")
+    if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
+        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
 
-    spec = PolicySpec(
-        contract_name="wildrobot_policy",
-        contract_version="1.0.0",
-        spec_version=1,
-        model=ModelSpec(
-            format="onnx",
-            input_name="observation",
-            output_name="action",
-            dtype="float32",
-            obs_dim=sum(field.size for field in layout),
-            action_dim=action_dim,
-        ),
-        robot=RobotSpec(
-            robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
-            actuator_names=actuator_names,
-            joints=joints,
-            home_ctrl_rad=home_ctrl_rad,
-        ),
-        observation=ObservationSpec(
-            dtype="float32",
-            layout_id="wr_obs_v1",
-            layout=layout,
-        ),
-        action=ActionSpec(
-            dtype="float32",
-            bounds={"min": -1.0, "max": 1.0},
-            postprocess_id=postprocess_id,
-            postprocess_params=postprocess_params,
-            mapping_id="pos_target_rad_v1",
-        ),
+    return build_policy_spec(
+        robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
+        actuated_joint_specs=actuated_joint_specs,
+        action_filter_alpha=action_filter_alpha,
+        home_ctrl_rad=home_ctrl_rad,
         provenance={
             "created_at": datetime.now(timezone.utc).isoformat(),
             "training_config": str(config_path),
@@ -136,8 +134,6 @@ def _build_policy_spec(
             "robot_config": str(robot_config_path),
         },
     )
-    validate_spec(spec)
-    return spec
 
 
 def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> list[float]:
@@ -196,19 +192,6 @@ def _clamp_home_ctrl(
     if clipped_any:
         print("Warning: home_ctrl_rad clamped to joint limits for export bundle")
     return clipped
-
-
-def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:
-    return [
-        ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
-        ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
-        ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
-        ObsFieldSpec(name="padding", size=1, units="unused"),
-    ]
 
 
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:

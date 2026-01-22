@@ -947,10 +947,14 @@ def train(
     amp_enabled = config.amp.enabled
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
-    from training.policy_contract.spec_builder import build_policy_spec
+    from policy_contract.spec_builder import build_policy_spec
 
     robot_config = get_robot_config()
-    spec = build_policy_spec(config, robot_config)
+    spec = build_policy_spec(
+        robot_name=robot_config.robot_name,
+        actuated_joint_specs=robot_config.actuated_joints,
+        action_filter_alpha=float(config.env.action_filter_alpha),
+    )
     obs_dim = spec.model.obs_dim
     action_dim = spec.model.action_dim
     from policy_contract.spec import policy_spec_hash

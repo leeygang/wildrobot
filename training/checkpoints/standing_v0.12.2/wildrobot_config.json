@@ -1,0 +1,72 @@
+{
+  "mjcf_path": "../../../assets/wildrobot.xml",
+  "policy_onnx_path": "./policy.onnx",
+  "control_hz": 50,
+  "action_scale_rad": 0.35,
+  "velocity_cmd": 0.0,
+  "servo_controller": {
+    "type": "hiwonder",
+    "port": "/dev/ttyUSB0",
+    "baudrate": 9600,
+    "servos": {
+      "left_hip_pitch": {
+        "id": 1,
+        "offset_unit": -38,
+        "direction": -1
+      },
+      "left_hip_roll": {
+        "id": 2,
+        "offset_unit": 20,
+        "direction": -1
+      },
+      "left_knee_pitch": {
+        "id": 3,
+        "offset_unit": 18,
+        "direction": -1
+      },
+      "left_ankle_pitch": {
+        "id": 4,
+        "offset_unit": 26,
+        "direction": 1
+      },
+      "right_hip_pitch": {
+        "id": 5,
+        "offset_unit": 0,
+        "direction": -1
+      },
+      "right_hip_roll": {
+        "id": 6,
+        "offset_unit": 21,
+        "direction": -1
+      },
+      "right_knee_pitch": {
+        "id": 7,
+        "offset_unit": -14,
+        "direction": -1
+      },
+      "right_ankle_pitch": {
+        "id": 8,
+        "offset_unit": 23,
+        "direction": 1
+      }
+    }
+  },
+  "bno085": {
+    "i2c_address": "0x4B",
+    "upside_down": false,
+    "suppress_debug": true,
+    "i2c_frequency_hz": 100000,
+    "init_retries": 3,
+    "axis_map": [
+      "+X",
+      "-Y",
+      "+Z"
+    ]
+  },
+  "foot_switches": {
+    "left_toe": "D5",
+    "left_heel": "D6",
+    "right_toe": "D13",
+    "right_heel": "D19"
+  }
+}

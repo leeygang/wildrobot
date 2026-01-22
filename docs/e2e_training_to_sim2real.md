@@ -94,6 +94,7 @@ This produces:
 - `policy_spec.json`
 - `checksums.json`
 - `robot_config.yaml` snapshot
+- `wildrobot_config.json` (generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`)
 
 5) Validate Bundle (Static Pose Check)
 --------------------------------------

@@ -72,9 +72,6 @@ wildrobot/
 │   │   ├── export_policy_bundle.py     # Bundle writer (library)
 │   │   └── export_policy_bundle_cli.py # Bundle export CLI
 │   │
-│   ├── policy_contract/                # Training-side spec helpers
-│   │   └── spec_builder.py             # Build PolicySpec for export
-│   │
 │   ├── eval/                           # Evaluation tools
 │   │   ├── eval_policy.py              # Headless evaluation
 │   │   └── visualize_policy.py         # MuJoCo viewer playback
@@ -142,6 +139,18 @@ wildrobot/
 │   │   └── wildrobot_ppo_*/            # Training run checkpoints
 │   │
 │   └── wandb/                          # W&B experiment logs
+│
+├── policy_contract/                    # Shared sim2real contract (spec + JAX/NumPy implementations)
+│   ├── spec.py                         # PolicySpec schema + validators + bundle loader
+│   ├── spec_builder.py                 # Canonical PolicySpec builder (used by training + export + eval)
+│   ├── jax/                            # JAX backend (training)
+│   └── numpy/                          # NumPy backend (runtime + tooling)
+│
+├── runtime/                            # Hardware runtime (Raspberry Pi / Ubuntu)
+│   ├── README.md                       # Runtime install + run instructions
+│   ├── configs/                        # Runtime JSON config templates (hardware calibration source of truth)
+│   ├── scripts/                        # Calibration tools (IMU/servo/footswitch)
+│   └── wr_runtime/                     # Importable runtime package + CLIs (wildrobot-run-policy, etc.)
 │
 ├── mujoco-brax/                        # Legacy mujoco brax training version.(reference only not used)
 │   ├── README.md

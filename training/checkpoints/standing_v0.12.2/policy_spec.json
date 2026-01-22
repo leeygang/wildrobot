@@ -150,11 +150,11 @@
     "mapping_id": "pos_target_rad_v1"
   },
   "provenance": {
-    "created_at": "2026-01-07T05:34:14.486258+00:00",
+    "created_at": "2026-01-22T04:08:51.436465+00:00",
     "training_config": "training/configs/ppo_standing.yaml",
     "source_checkpoint": {
       "format": "pkl",
-      "path": "training/checkpoints/ppo_standing_v00121_20260104_213604-ajmyd9zz/checkpoint_30_3932160.pkl"
+      "path": "training/checkpoints/ppo_standing_v00122_20260108_212209-r9wr2rq5/checkpoint_50_6553600.pkl"
     },
     "robot_config": "assets/robot_config.yaml"
   }

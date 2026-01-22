@@ -255,7 +255,7 @@ def start_training(
     import numpy as np
 
     from training.configs.training_config import get_robot_config
-    from training.policy_contract.spec_builder import build_policy_spec
+    from policy_contract.spec_builder import build_policy_spec
     from policy_contract.calib import JaxCalibOps
 
     # Check JAX backend
@@ -324,7 +324,11 @@ def start_training(
 
     # Policy contract fingerprint (stored in checkpoints to prevent silent resume drift).
     robot_cfg = get_robot_config()
-    policy_spec = build_policy_spec(training_cfg, robot_cfg)
+    policy_spec = build_policy_spec(
+        robot_name=robot_cfg.robot_name,
+        actuated_joint_specs=robot_cfg.actuated_joints,
+        action_filter_alpha=float(training_cfg.env.action_filter_alpha),
+    )
     policy_spec_dict = policy_spec.to_json_dict()
 
     # Create vmapped environment functions

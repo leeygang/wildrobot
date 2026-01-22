@@ -59,6 +59,7 @@ from policy_contract.spec import (
     PolicySpec,
     RobotSpec,
 )
+from policy_contract.spec_builder import build_policy_spec as build_policy_spec_contract
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.specs import CoordinateFrame, Pose3D
 from training.configs.training_config import (
@@ -85,63 +86,10 @@ class PushSchedule:
 
 
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
-    action_dim = robot_cfg.action_dim
-    layout = [
-        ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
-        ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
-        ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
-        ObsFieldSpec(name="padding", size=1, units="unused"),
-    ]
-
-    joints = {}
-    for item in robot_cfg.actuated_joints:
-        name = str(item.get("name"))
-        rng = item.get("range") or [0.0, 0.0]
-        joints[name] = JointSpec(
-            range_min_rad=float(rng[0]),
-            range_max_rad=float(rng[1]),
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
-            max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
-        )
-
-    postprocess_id = "lowpass_v1" if action_filter_alpha > 0.0 else "none"
-    postprocess_params = {}
-    if postprocess_id == "lowpass_v1":
-        postprocess_params["alpha"] = float(action_filter_alpha)
-
-    return PolicySpec(
-        contract_name="wildrobot_policy",
-        contract_version="1.0.0",
-        spec_version=1,
-        model=ModelSpec(
-            format="onnx",
-            input_name="observation",
-            output_name="action",
-            dtype="float32",
-            obs_dim=sum(field.size for field in layout),
-            action_dim=action_dim,
-        ),
-        robot=RobotSpec(
-            robot_name=robot_cfg.robot_name,
-            actuator_names=list(robot_cfg.actuator_names),
-            joints=joints,
-        ),
-        observation=ObservationSpec(
-            dtype="float32",
-            layout_id="wr_obs_v1",
-            layout=layout,
-        ),
-        action=ActionSpec(
-            dtype="float32",
-            bounds={"min": -1.0, "max": 1.0},
-            postprocess_id=postprocess_id,
-            postprocess_params=postprocess_params,
-            mapping_id="pos_target_rad_v1",
-        ),
+    return build_policy_spec_contract(
+        robot_name=robot_cfg.robot_name,
+        actuated_joint_specs=robot_cfg.actuated_joints,
+        action_filter_alpha=float(action_filter_alpha),
         provenance={
             "training_config": str(training_cfg.config_path) if hasattr(training_cfg, "config_path") else "<runtime>",
         },

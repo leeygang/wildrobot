@@ -75,7 +75,7 @@ from training.core.metrics_registry import (
     METRICS_VEC_KEY,
     NUM_METRICS,
 )
-from training.policy_contract.spec_builder import build_policy_spec
+from policy_contract.spec_builder import build_policy_spec
 
 
 # =============================================================================
@@ -309,7 +309,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
-        self._policy_spec = build_policy_spec(self._config, self._robot_config)
+        self._policy_spec = build_policy_spec(
+            robot_name=self._robot_config.robot_name,
+            actuated_joint_specs=self._robot_config.actuated_joints,
+            action_filter_alpha=float(self._config.env.action_filter_alpha),
+        )
         self._signals_adapter = MjxSignalsAdapter(
             self._mj_model,
             self._robot_config,

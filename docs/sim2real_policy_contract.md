@@ -890,6 +890,8 @@ Proposed module layout:
 - `policy_contract/spec.py`
   - `PolicySpec`, `RobotSpec`, `ObsSpec`, `ActionSpec`
   - JSON schema + load/save + validation
+- `policy_contract/spec_builder.py`
+  - canonical `build_policy_spec(...)` used by training + export + eval to prevent spec drift
 - `policy_contract/numpy/obs.py`
   - `build_observation(...)` implementing the actor observation contract
   - frame transforms helpers (quat→gravity, heading_local transforms)
@@ -1076,9 +1078,10 @@ runtime loop already fail-fast disables actuators on exceptions. Treat safety as
 
 #### Training export (`training/exports/export_policy_bundle.py`)
 
-- `export_policy_bundle(checkpoint_path, output_dir, training_cfg, robot_config_path)`
-  - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`
-  - Ensures: `policy_spec.obs_dim/action_dim` match exported ONNX and `assets/robot_config.yaml`
+- `export_policy_bundle(checkpoint_path, config_path, output_dir, robot_config_path)`
+  - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`, `wildrobot_config.json`
+  - `wildrobot_config.json` is generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`
+  - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/robot_config.yaml`
 
 ## 7) Policy Bundle Artifact (what gets deployed)
 
@@ -1089,6 +1092,7 @@ Instead of deploying only `policy.onnx`, deploy a folder (or zip/tar):
 - `policy_spec.json`  ← versioned contract + all semantic knobs used in training
 - `robot_config.yaml` ← snapshot used to train/export (optional but recommended)
 - `checksums.json`    ← sha256 of the above for integrity
+- `wildrobot_config.json` ← runtime JSON seeded from `runtime/configs/wr_runtime_config.json` (hardware settings)
 - `README.md`         ← quick provenance + expected runtime command
 
 Runtime loads a *bundle*, not a raw ONNX path.
@@ -1096,6 +1100,11 @@ Runtime loads a *bundle*, not a raw ONNX path.
 Runtime config should point to the bundle’s ONNX path (same folder as the spec):
 ```
 "policy_onnx_path": "../policies/wildrobot_policy_bundle/policy.onnx"
+```
+
+If you use the generated `wildrobot_config.json` colocated with the bundle, it uses:
+```
+"policy_onnx_path": "./policy.onnx"
 ```
 
 ## 8) Runtime Design (bridging training logic cleanly)
