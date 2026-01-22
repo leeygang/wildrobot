@@ -33,7 +33,7 @@ seed: 42
 # Environment
 # =============================================================================
 env:
-  model_path: assets/scene_flat_terrain.xml
+  assets_root: assets/v2
 
   sim_dt: 0.002
   ctrl_dt: 0.02

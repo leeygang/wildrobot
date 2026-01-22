@@ -257,12 +257,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
 
         # Model path (required - must be in config)
-        if not config.env.model_path:
+        if not config.env.scene_xml_path:
             raise ValueError(
-                "model_path is required in config.env. "
-                "Add 'model_path: assets/scene_flat_terrain.xml' to your config."
+                "scene_xml_path is required in config.env. "
+                "Set env.assets_root or env.scene_xml_path in your config."
             )
-        self._model_path = Path(config.env.model_path)
+        self._model_path = Path(config.env.scene_xml_path)
 
         # Load model and setup robot infrastructure
         self._load_model()

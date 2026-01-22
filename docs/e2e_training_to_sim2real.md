@@ -24,12 +24,12 @@ uv run python scripts/validate_training_setup.py
 
 1) Train (Stage 1 PPO)
 ----------------------
-Standing:
+Standing (choose variant via assets_root in config):
 ```
 uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp
 ```
 
-Walking (after standing is stable):
+Walking (choose variant via assets_root in config):
 ```
 uv run python training/train.py --config training/configs/ppo_walking.yaml --no-amp
 ```
@@ -78,24 +78,26 @@ Preferred (task_v<semver> naming):
 uv run python training/exports/export_policy_bundle_cli.py \
   --checkpoint <checkpoint.pkl> \
   --config training/configs/ppo_standing.yaml \
-  --bundle-name standing_v0.12.1
+  --bundle-name standing_<tag> \
+  --asset v1  # optional override; should match assets_root
 ```
 
 Explicit output directory:
 ```
 uv run python training/exports/export_policy_bundle_cli.py \
   --checkpoint <checkpoint.pkl> \
-  --config training/configs/ppo_standing.yaml \
+  --config training/configs/ppo_walking.yaml \
+  --asset v2  # optional override; should match assets_root
   --output-dir training/checkpoints/wildrobot_policy_bundle
 ```
 
-This produces:
+This produces (variant-specific, self-contained):
 - `policy.onnx`
 - `policy_spec.json`
 - `checksums.json`
-- `robot_config.yaml` snapshot
-- `wildrobot_config.json` (generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`)
-- `wildrobot.xml` (MJCF snapshot for self-contained bundle validation)
+- `robot_config.yaml` snapshot from the variant config
+- `wildrobot_config.json` (generated with `policy_onnx_path=./policy.onnx`, `mjcf_path=./wildrobot.xml`)
+- `wildrobot.xml` snapshot from the variant assets
 
 5) Validate Bundle (Static Pose Check)
 --------------------------------------

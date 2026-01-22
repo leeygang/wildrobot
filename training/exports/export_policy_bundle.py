@@ -25,6 +25,7 @@ from policy_contract.spec import JointSpec, PolicySpec, validate_spec
 from policy_contract.spec_builder import build_policy_spec
 
 from training.exports.export_onnx import export_checkpoint_to_onnx, get_checkpoint_dims
+from training.configs.asset_paths import resolve_env_asset_paths
 
 
 def export_policy_bundle(
@@ -64,15 +65,21 @@ def export_policy_bundle(
     if robot_config_path.exists():
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
-    mjcf_snapshot_path = _export_mjcf_snapshot(output_dir=output_dir)
-
-    checksums = _build_checksums([onnx_path, spec_path, robot_snapshot_path])
-    (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
+    mjcf_snapshot_path = _export_mjcf_snapshot(
+        output_dir=output_dir, config_path=config_path
+    )
 
     _export_runtime_config(output_dir=output_dir)
 
-    # Update checksums after adding runtime config + mjcf snapshot
-    checksums = _build_checksums([onnx_path, spec_path, robot_snapshot_path, mjcf_snapshot_path, output_dir / "wildrobot_config.json"])
+    checksums = _build_checksums(
+        [
+            onnx_path,
+            spec_path,
+            robot_snapshot_path,
+            mjcf_snapshot_path,
+            output_dir / "wildrobot_config.json",
+        ]
+    )
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
 
@@ -85,7 +92,7 @@ def _export_runtime_config(
     Source of truth for hardware settings is `runtime/configs/wr_runtime_config.json`.
     The generated config patches:
       - `policy_onnx_path` -> `./policy.onnx`
-      - `mjcf_path` -> repo-relative `assets/wildrobot.xml` (relative to the bundle dir)
+      - `mjcf_path` -> `./wildrobot.xml` (bundle-local snapshot)
     """
     project_root = Path(__file__).parent.parent.parent
     base_path = project_root / "runtime" / "configs" / "wr_runtime_config.json"
@@ -104,19 +111,28 @@ def _export_runtime_config(
     out_path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def _export_mjcf_snapshot(*, output_dir: Path) -> Path:
+def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
     """Snapshot the runtime MJCF into the bundle for self-contained validation.
 
     Runtime uses MJCF primarily for actuator order validation; this snapshot allows
     `wildrobot-validate-bundle` to run using only files inside the bundle folder.
     """
-    project_root = Path(__file__).parent.parent.parent
-    src = project_root / "assets" / "wildrobot.xml"
-    if not src.exists():
-        raise FileNotFoundError(f"MJCF snapshot source not found: {src}")
+    src = _resolve_mjcf_path(config_path)
     dst = output_dir / "wildrobot.xml"
     dst.write_text(src.read_text())
     return dst
+
+
+def _resolve_mjcf_path(config_path: Path) -> Path:
+    config = _load_yaml(config_path)
+    env = _require_dict(config, "env", context="config")
+    resolved = resolve_env_asset_paths(env)
+    src = Path(resolved.mjcf_path)
+    if not src.is_absolute():
+        src = (Path(__file__).parent.parent.parent / src).resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"MJCF snapshot source not found: {src}")
+    return src
 
 
 def _build_policy_spec(
@@ -157,8 +173,8 @@ def _build_policy_spec(
 def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> list[float]:
     config = _load_yaml(config_path)
     env = _require_dict(config, "env", context="config")
-    model_path = env.get("model_path", "assets/scene_flat_terrain.xml")
-    xml_path = Path(model_path)
+    resolved = resolve_env_asset_paths(env)
+    xml_path = Path(resolved.model_path)
     if not xml_path.is_absolute():
         xml_path = (Path(__file__).parent.parent.parent / xml_path).resolve()
 
@@ -272,16 +288,29 @@ def main() -> None:
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/robot_config.yaml",
-        help="Path to robot_config.yaml",
+        default=None,
+        help="Path to robot_config.yaml (defaults to env.robot_config_path from config)",
     )
     args = parser.parse_args()
 
+    config_path = Path(args.config)
+    env_section = _require_dict(_load_yaml(config_path), "env", context="config")
+    resolved = resolve_env_asset_paths(env_section)
+    robot_config_default = Path(resolved.robot_config_path)
+    if not robot_config_default.is_absolute():
+        robot_config_default = (Path(__file__).parent.parent.parent / robot_config_default).resolve()
+    if args.robot_config:
+        robot_config_path = Path(args.robot_config)
+        if not robot_config_path.is_absolute():
+            robot_config_path = (Path(__file__).parent.parent.parent / robot_config_path).resolve()
+    else:
+        robot_config_path = robot_config_default
+
     export_policy_bundle(
         checkpoint_path=Path(args.checkpoint),
-        config_path=Path(args.config),
+        config_path=config_path,
         output_dir=Path(args.output_dir),
-        robot_config_path=Path(args.robot_config),
+        robot_config_path=robot_config_path,
     )
 
 

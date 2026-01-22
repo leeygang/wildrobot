@@ -76,6 +76,10 @@ class Freezable:
 class EnvConfig(Freezable):
     """Environment configuration."""
 
+    assets_root: str = "assets"
+    scene_xml_path: str = "assets/scene_flat_terrain.xml"
+    robot_config_path: str = "assets/robot_config.yaml"
+    mjcf_path: str = "assets/wildrobot.xml"
     model_path: str = "assets/scene_flat_terrain.xml"
 
     # Timing
@@ -374,6 +378,7 @@ class TrainingConfig(Freezable):
 
     # Raw config for additional access (not frozen)
     raw_config: Dict[str, Any] = field(default_factory=dict, repr=False)
+    config_path: str | None = None
 
     def apply_overrides(self, overrides: Dict[str, Any]) -> None:
         """Apply nested overrides from a dict (e.g., quick_verify section).

@@ -65,6 +65,7 @@ from training.configs.training_runtime_config import (
     VideoConfig,
     WandbConfig,
 )
+from training.configs.asset_paths import resolve_env_asset_paths
 
 
 __all__ = [
@@ -108,9 +109,14 @@ def _parse_list_to_tuple(value: Any, default: Tuple) -> Tuple[int, ...]:
 def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
+    resolved = resolve_env_asset_paths(env)
 
     return EnvConfig(
-        model_path=env.get("model_path", "assets/scene_flat_terrain.xml"),
+        assets_root=resolved.assets_root,
+        scene_xml_path=resolved.scene_xml_path,
+        robot_config_path=resolved.robot_config_path,
+        mjcf_path=resolved.mjcf_path,
+        model_path=resolved.model_path,
         sim_dt=env.get("sim_dt", 0.002),
         ctrl_dt=env.get("ctrl_dt", 0.02),
         max_episode_steps=env.get("max_episode_steps", 500),
