@@ -70,14 +70,14 @@ Notes:
 ## Run
 
 ```bash
-wildrobot-run-policy --config ~/wildrobot_config.json
+wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
 ```
 
 Stop with Ctrl+C (runtime will unload servos).
 
 Optional: capture a replay log for offline policy replay:
 ```bash
-wildrobot-run-policy --config ~/wildrobot_config.json --log-path signals_log.npz --log-steps 2000
+wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --log-path signals_log.npz --log-steps 2000
 ```
 
 ## Bundle utilities

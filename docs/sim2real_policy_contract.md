@@ -1113,6 +1113,11 @@ Bundle validation can be run directly on the bundle folder:
 wildrobot-validate-bundle --bundle <bundle_dir>
 ```
 
+Policy execution should also be bundle-oriented:
+```
+wildrobot-run-policy --bundle <bundle_dir>
+```
+
 ## 8) Runtime Design (bridging training logic cleanly)
 
 ### 8.1 Core interfaces

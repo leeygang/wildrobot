@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_RUNTIME_ROOT = _REPO_ROOT / "runtime"
+for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
@@ -13,7 +20,7 @@ from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 
-from ..inference.onnx_policy import OnnxPolicy
+from wr_runtime.inference.onnx_policy import OnnxPolicy
 
 
 def _load_npz(path: Path) -> dict[str, np.ndarray]:

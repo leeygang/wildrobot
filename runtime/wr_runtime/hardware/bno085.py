@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
+import traceback
 from queue import Queue
 from threading import Thread
 from typing import Optional
@@ -50,11 +52,37 @@ class BNO085IMU(Imu):
         import board
         import busio
         import time
-        from adafruit_bno08x import (
-            BNO_REPORT_ROTATION_VECTOR,
-            BNO_REPORT_GYROSCOPE,
-        )
+        from adafruit_bno08x import BNO_REPORT_GYROSCOPE, BNO_REPORT_ROTATION_VECTOR
         from adafruit_bno08x.i2c import BNO08X_I2C
+
+        try:
+            # Newer adafruit_bno08x exposes GAME_ROTATION_VECTOR (mag-free quaternion).
+            from adafruit_bno08x import BNO_REPORT_GAME_ROTATION_VECTOR as _GAME_QUAT_REPORT  # type: ignore
+        except Exception:
+            _GAME_QUAT_REPORT = None
+        self._use_game_quat = _GAME_QUAT_REPORT is not None
+
+        def _enable_feature_best_effort(imu, report_id: int) -> None:
+            # Different adafruit_bno08x versions accept different arguments for report interval.
+            # Try a couple of common patterns; fall back to default interval.
+            interval_us = int(1_000_000 / max(1, self.sampling_hz))
+            for kwargs in (
+                {"report_interval_us": interval_us},
+                {"report_interval": interval_us},
+                {"report_interval_ms": max(1, int(1000 / max(1, self.sampling_hz)))},
+            ):
+                try:
+                    imu.enable_feature(report_id, **kwargs)
+                    return
+                except TypeError:
+                    pass
+            for args in ((report_id, interval_us), (report_id,)):
+                try:
+                    imu.enable_feature(*args)
+                    return
+                except TypeError:
+                    pass
+            imu.enable_feature(report_id)
 
         # The Adafruit driver occasionally throws IndexError during enable_feature() if the
         # I2C stream returns a corrupted/partial packet (common on marginal wiring/power).
@@ -67,10 +95,16 @@ class BNO085IMU(Imu):
                 i2c = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
                 imu = BNO08X_I2C(i2c, address=self.i2c_address)
                 with self._maybe_silence_debug_output():
-                    imu.enable_feature(BNO_REPORT_ROTATION_VECTOR)
-                    imu.enable_feature(BNO_REPORT_GYROSCOPE)
+                    # Always enable ROTATION_VECTOR because the library's `.quaternion` accessor
+                    # expects that report. If GAME_ROTATION_VECTOR is available, enable it too
+                    # and prefer `.game_quaternion` at read time (mag-free, typically more robust).
+                    _enable_feature_best_effort(imu, BNO_REPORT_ROTATION_VECTOR)
+                    if _GAME_QUAT_REPORT is not None:
+                        _enable_feature_best_effort(imu, _GAME_QUAT_REPORT)
+                    _enable_feature_best_effort(imu, BNO_REPORT_GYROSCOPE)
                 self._i2c = i2c
                 self._imu = imu
+                time.sleep(0.05)
                 break
             except Exception as exc:
                 last_exc = exc
@@ -91,17 +125,39 @@ class BNO085IMU(Imu):
         self._latest: ImuSample = ImuSample(
             quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
-            timestamp_s=0.0,
+            timestamp_s=None,
+            valid=False,
         )
 
         self._q: Optional[Queue[ImuSample]] = None
         self._running = False
         self._worker: Optional[Thread] = None
+        self._error_count = 0
+        self._last_error: Optional[str] = None
+        self._last_traceback: Optional[str] = None
+        self._diag: dict[str, object] = {}
         if not self.polling_mode:
             self._q = Queue(maxsize=1)
             self._running = True
             self._worker = Thread(target=self._loop, daemon=True)
             self._worker.start()
+
+    @property
+    def error_count(self) -> int:
+        return int(self._error_count)
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._last_error
+
+    @property
+    def last_traceback(self) -> Optional[str]:
+        return self._last_traceback
+
+    @property
+    def diag(self) -> dict[str, object]:
+        # Shallow copy for safe external printing.
+        return dict(self._diag)
 
     def close(self) -> None:
         try:
@@ -171,22 +227,63 @@ class BNO085IMU(Imu):
         import time
 
         valid = True
+        diag: dict[str, object] = {"quat_source": None, "quat_exception": False, "gyro_exception": False}
         with self._maybe_silence_debug_output():
-            quat = self._imu.quaternion
-            gyro = self._imu.gyro
+            quat = None
+            gyro = None
+
+            # The Adafruit driver raises RuntimeError if a report isn't available yet.
+            # Treat that as an invalid sample rather than crashing the reader loop.
+            try:
+                if self._use_game_quat and hasattr(self._imu, "game_quaternion"):
+                    quat = self._imu.game_quaternion
+                    diag["quat_source"] = "game_quaternion"
+            except Exception:
+                diag["quat_exception"] = True
+                quat = None
+
+            if quat is None:
+                try:
+                    quat = self._imu.quaternion
+                    diag["quat_source"] = "quaternion"
+                except Exception:
+                    diag["quat_exception"] = True
+                    quat = None
+
+            try:
+                gyro = self._imu.gyro
+            except Exception:
+                diag["gyro_exception"] = True
+                gyro = None
 
         if quat is None:
             quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
             valid = False
+            diag["quat_status"] = "missing"
         else:
             # adafruit_bno08x returns quaternion as (i, j, k, real)
             quat_xyzw = np.array([quat[0], quat[1], quat[2], quat[3]], dtype=np.float32)
+            diag["quat_status"] = "raw"
 
         if gyro is None:
             gyro_rad_s = np.zeros(3, dtype=np.float32)
             valid = False
+            diag["gyro_status"] = "missing"
         else:
             gyro_rad_s = np.array(gyro, dtype=np.float32)
+            diag["gyro_status"] = "raw"
+
+        raw_norm = float(np.linalg.norm(quat_xyzw))
+        diag["quat_norm"] = raw_norm
+
+        # Always renormalize quaternions if they are finite and non-zero.
+        # Some BNO08X report paths (or library versions) can yield non-unit quats.
+        if np.isfinite(raw_norm) and raw_norm > 1e-6:
+            quat_xyzw = (quat_xyzw / raw_norm).astype(np.float32)
+            diag["quat_status"] = "normalized"
+        else:
+            valid = False
+            diag["quat_status"] = "bad_norm"
 
         if self.upside_down:
             quat_xyzw = np.array([quat_xyzw[0], -quat_xyzw[1], -quat_xyzw[2], quat_xyzw[3]], dtype=np.float32)
@@ -198,16 +295,9 @@ class BNO085IMU(Imu):
             r_wb = r_ws @ self._r_bs.T
             quat_xyzw = _rotmat_to_quat_xyzw(r_wb)
 
-        raw_norm = float(np.linalg.norm(quat_xyzw))
-        if not np.isfinite(raw_norm) or raw_norm < 1e-6:
-            quat_out = self._latest.quat_xyzw
-            valid = False
-        elif abs(raw_norm - 1.0) > self.max_quat_norm_deviation:
-            quat_out = self._latest.quat_xyzw
-            valid = False
-        else:
-            quat_out = quat_xyzw
+        quat_out = quat_xyzw if valid else self._latest.quat_xyzw
 
+        self._diag = diag
         return ImuSample(
             quat_xyzw=quat_out,
             gyro_rad_s=gyro_rad_s,
@@ -231,7 +321,26 @@ class BNO085IMU(Imu):
                     pass
             except Exception:
                 # Keep running; hardware IO can be flaky at boot.
-                pass
+                # Surface the failure to callers by emitting an invalid sample instead of
+                # leaving a stale "valid=True" reading in place.
+                try:
+                    self._error_count += 1
+                    self._last_error = "BNO085IMU._read_sample_once failed"
+                    self._last_traceback = traceback.format_exc()
+                    if os.environ.get("WR_BNO085_DEBUG_EXCEPTIONS", "").strip() not in ("", "0", "false", "False"):
+                        print(self._last_traceback, flush=True)
+                    sample = ImuSample(
+                        quat_xyzw=self._latest.quat_xyzw,
+                        gyro_rad_s=self._latest.gyro_rad_s,
+                        timestamp_s=time.monotonic(),
+                        valid=False,
+                    )
+                    if self._q is not None:
+                        if self._q.full():
+                            self._q.get_nowait()
+                        self._q.put_nowait(sample)
+                except Exception:
+                    pass
 
             time.sleep(period)
 

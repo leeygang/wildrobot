@@ -127,6 +127,11 @@ Expected: round-trip error << 1e-4 rad.
 2) Low-torque ground contact:
    - Verify balance without drift; enable e-stop.
 
+Suggested command (prefer bundle-based run):
+```
+wildrobot-run-policy --bundle training/checkpoints/wildrobot_policy_bundle --log-path signals_log.npz --log-steps 2000
+```
+
 Common Troubleshooting
 ----------------------
 - `ModuleNotFoundError` on scripts: ensure you run from repo root with `uv run ...`.

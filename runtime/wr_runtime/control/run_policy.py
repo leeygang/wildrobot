@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_RUNTIME_ROOT = _REPO_ROOT / "runtime"
+for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
@@ -15,14 +22,14 @@ from policy_contract.spec import PolicyBundle, validate_spec
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
 
 from runtime.configs import load_config
-from ..hardware.actuators import HiwonderBoardActuators
-from ..hardware.bno085 import BNO085IMU
-from ..hardware.foot_switches import FootSwitches
-from ..hardware.imu import Imu
-from ..hardware.robot_io import HardwareRobotIO
-from ..inference.onnx_policy import OnnxPolicy
-from ..utils.mjcf import load_mjcf_model_info
-from ..validation.startup_validator import validate_runtime_interface
+from wr_runtime.hardware.actuators import HiwonderBoardActuators
+from wr_runtime.hardware.bno085 import BNO085IMU
+from wr_runtime.hardware.foot_switches import FootSwitches
+from wr_runtime.hardware.imu import Imu
+from wr_runtime.hardware.robot_io import HardwareRobotIO
+from wr_runtime.inference.onnx_policy import OnnxPolicy
+from wr_runtime.utils.mjcf import load_mjcf_model_info
+from wr_runtime.validation.startup_validator import validate_runtime_interface
 
 
 def _imu_sanity_check(
@@ -41,20 +48,45 @@ def _imu_sanity_check(
       - gyro norm is small when still
     """
 
+    target = max(1, int(samples))
     quats = []
     gyro_norms: list[float] = []
     gravities = []
-    for _ in range(max(1, int(samples))):
+    invalid = 0
+
+    # Some BNO08X stacks can return None/invalid for a short warm-up period even after
+    # enable_feature(). Prefer waiting for enough valid samples over failing instantly.
+    max_attempts = max(target * 10, 50)
+    for _ in range(max_attempts):
         s = imu.read()
         if not getattr(s, "valid", True):
-            raise RuntimeError("IMU sanity check failed: sample marked invalid (valid=False)")
+            invalid += 1
+            time.sleep(max(0.0, float(sleep_s)))
+            continue
+
         q = normalize_quat_xyzw(np.asarray(s.quat_xyzw, dtype=np.float32))
         quats.append(q)
         g = gravity_local_from_quat(q)
         gravities.append(g)
         gyro = np.asarray(s.gyro_rad_s, dtype=np.float32)
         gyro_norms.append(float(np.linalg.norm(gyro)))
+
+        if len(quats) >= target:
+            break
         time.sleep(max(0.0, float(sleep_s)))
+
+    if len(quats) < target:
+        extra = ""
+        if hasattr(imu, "error_count") and hasattr(imu, "last_error"):
+            try:
+                extra = f" (error_count={getattr(imu, 'error_count')}, last_error={getattr(imu, 'last_error')})"
+            except Exception:
+                extra = ""
+        raise RuntimeError(
+            "IMU sanity check failed: insufficient valid samples. "
+            f"valid={len(quats)}/{target}, invalid={invalid}, max_attempts={max_attempts}{extra}. "
+            "Check I2C address, wiring/power integrity, and BNO08X bring-up."
+        )
 
     quats_arr = np.stack(quats, axis=0)
     norms = np.linalg.norm(quats_arr, axis=1)
@@ -79,7 +111,18 @@ def _imu_sanity_check(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run WildRobot ONNX policy on hardware")
-    parser.add_argument("--config", type=str, default=None, help="Path to runtime JSON (default: ~/wildrobot_config.json)")
+    parser.add_argument(
+        "--bundle",
+        type=str,
+        default=None,
+        help="Bundle directory (contains wildrobot_config.json + policy_spec.json + policy.onnx)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="(Deprecated) Path to runtime JSON (default: ~/wildrobot_config.json). Prefer --bundle.",
+    )
     parser.add_argument("--log-path", type=str, default=None, help="Optional .npz path to save replay logs on exit")
     parser.add_argument(
         "--log-steps",
@@ -118,7 +161,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    if args.bundle and args.config:
+        raise SystemExit("Provide only one of --bundle or --config.")
+
+    config_path: str | None
+    if args.bundle:
+        bundle_dir = Path(args.bundle)
+        cfg_path = bundle_dir / "wildrobot_config.json"
+        if not cfg_path.exists():
+            raise SystemExit(f"Bundle missing wildrobot_config.json: {cfg_path}")
+        config_path = str(cfg_path)
+    else:
+        config_path = args.config
+
+    cfg = load_config(config_path)
 
     mjcf_info = load_mjcf_model_info(Path(cfg.mjcf_resolved_path))
     joint_names = mjcf_info.actuator_names

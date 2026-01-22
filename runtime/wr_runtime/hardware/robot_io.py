@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+import time
+from typing import List, Optional
 
 import numpy as np
 
@@ -21,11 +22,43 @@ class HardwareRobotIO(RobotIO[Signals]):
     actuators: Actuators
     imu: Imu
     foot_switches: FootSwitches
+    max_consecutive_invalid_imu: int = 5
+
+    _imu_invalid_consecutive: int = 0
+    _last_valid_imu_sample: Optional[object] = None
+    _last_imu_warn_time_s: float = 0.0
 
     def read(self) -> Signals:
         imu_sample = self.imu.read()
         if not getattr(imu_sample, "valid", True):
-            raise RuntimeError("IMU reported invalid sample (valid=False); aborting for safety")
+            self._imu_invalid_consecutive += 1
+            if self._last_valid_imu_sample is None:
+                raise RuntimeError("IMU reported invalid sample before any valid sample was observed; aborting for safety")
+            if self._imu_invalid_consecutive > int(self.max_consecutive_invalid_imu):
+                extra = ""
+                if hasattr(self.imu, "error_count") and hasattr(self.imu, "last_error"):
+                    try:
+                        extra = f" (imu_error_count={getattr(self.imu, 'error_count')}, last_error={getattr(self.imu, 'last_error')})"
+                    except Exception:
+                        extra = ""
+                raise RuntimeError(
+                    "IMU reported invalid sample for too long; aborting for safety. "
+                    f"invalid_consecutive={self._imu_invalid_consecutive} max={self.max_consecutive_invalid_imu}{extra}"
+                )
+
+            now = time.monotonic()
+            if now - self._last_imu_warn_time_s > 1.0:
+                self._last_imu_warn_time_s = now
+                print(
+                    "Warning: IMU sample invalid; reusing last valid sample "
+                    f"(invalid_consecutive={self._imu_invalid_consecutive}/{self.max_consecutive_invalid_imu}).",
+                    flush=True,
+                )
+            imu_sample = self._last_valid_imu_sample
+        else:
+            self._imu_invalid_consecutive = 0
+            self._last_valid_imu_sample = imu_sample
+
         joint_pos = self.actuators.get_positions_rad()
         if joint_pos is None:
             port = getattr(self.actuators, "port", "unknown")
