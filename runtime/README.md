@@ -84,7 +84,7 @@ wildrobot-run-policy --config ~/wildrobot_config.json --log-path signals_log.npz
 
 Validate a policy bundle against MJCF + ONNX:
 ```bash
-wildrobot-validate-bundle --config ~/wildrobot_config.json
+wildrobot-validate-bundle --bundle ../policies/wildrobot_policy_bundle
 ```
 
 Replay a bundle on logged signals (npz → obs/actions):

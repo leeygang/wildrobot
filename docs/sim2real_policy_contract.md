@@ -1093,6 +1093,7 @@ Instead of deploying only `policy.onnx`, deploy a folder (or zip/tar):
 - `robot_config.yaml` ← snapshot used to train/export (optional but recommended)
 - `checksums.json`    ← sha256 of the above for integrity
 - `wildrobot_config.json` ← runtime JSON seeded from `runtime/configs/wr_runtime_config.json` (hardware settings)
+- `wildrobot.xml` ← MJCF snapshot for actuator order validation
 - `README.md`         ← quick provenance + expected runtime command
 
 Runtime loads a *bundle*, not a raw ONNX path.
@@ -1105,6 +1106,11 @@ Runtime config should point to the bundle’s ONNX path (same folder as the spec
 If you use the generated `wildrobot_config.json` colocated with the bundle, it uses:
 ```
 "policy_onnx_path": "./policy.onnx"
+```
+
+Bundle validation can be run directly on the bundle folder:
+```
+wildrobot-validate-bundle --bundle <bundle_dir>
 ```
 
 ## 8) Runtime Design (bridging training logic cleanly)

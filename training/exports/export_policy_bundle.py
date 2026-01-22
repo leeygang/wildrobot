@@ -64,10 +64,16 @@ def export_policy_bundle(
     if robot_config_path.exists():
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
+    mjcf_snapshot_path = _export_mjcf_snapshot(output_dir=output_dir)
+
     checksums = _build_checksums([onnx_path, spec_path, robot_snapshot_path])
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
     _export_runtime_config(output_dir=output_dir)
+
+    # Update checksums after adding runtime config + mjcf snapshot
+    checksums = _build_checksums([onnx_path, spec_path, robot_snapshot_path, mjcf_snapshot_path, output_dir / "wildrobot_config.json"])
+    (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
 
 def _export_runtime_config(
@@ -92,13 +98,25 @@ def _export_runtime_config(
         raise ValueError(f"Runtime config base is not a JSON object: {base_path}")
 
     data["policy_onnx_path"] = "./policy.onnx"
-
-    assets_mjcf = project_root / "assets" / "wildrobot.xml"
-    if assets_mjcf.exists():
-        data["mjcf_path"] = os.path.relpath(assets_mjcf, output_dir)
+    data["mjcf_path"] = "./wildrobot.xml"
 
     out_path = output_dir / "wildrobot_config.json"
     out_path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _export_mjcf_snapshot(*, output_dir: Path) -> Path:
+    """Snapshot the runtime MJCF into the bundle for self-contained validation.
+
+    Runtime uses MJCF primarily for actuator order validation; this snapshot allows
+    `wildrobot-validate-bundle` to run using only files inside the bundle folder.
+    """
+    project_root = Path(__file__).parent.parent.parent
+    src = project_root / "assets" / "wildrobot.xml"
+    if not src.exists():
+        raise FileNotFoundError(f"MJCF snapshot source not found: {src}")
+    dst = output_dir / "wildrobot.xml"
+    dst.write_text(src.read_text())
+    return dst
 
 
 def _build_policy_spec(
