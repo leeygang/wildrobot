@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "9f0b9493f2753174c4e787a6",
+    "elementId": "c0ece913c3564a9f34cbc816",
+    "fullConfiguration": "default",
+    "id": "MvmqZRBPBnyZKFTcI",
+    "isStandardContent": false,
+    "name": "knee_ball_servo_connect_1 <1>",
+    "partId": "RCBD",
+    "suppressed": false,
+    "type": "Part"
+}

@@ -141,6 +141,6 @@
   },
   "provenance": {
     "training_config": "training/configs/ppo_walking.yaml",
-    "robot_config": "assets/robot_config.yaml"
+    "robot_config": "assets/v1/robot_config.yaml"
   }
 }

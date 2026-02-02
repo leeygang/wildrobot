@@ -19,7 +19,7 @@ def test_schema():
 
     # Extract schema from XML
     print("\n1. Extracting schema from XML...")
-    schema = WildRobotSchema.from_xml("assets/scene_flat_terrain.xml")
+    schema = WildRobotSchema.from_xml("assets/v1/scene_flat_terrain.xml")
     print(f"   Model: nq={schema.nq}, nv={schema.nv}, nu={schema.nu}")
 
     # Validate
@@ -75,7 +75,7 @@ def test_env_basics():
 
     # Load configs
     print("\n1. Loading configs...")
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()  # Freeze config for JIT compatibility
 

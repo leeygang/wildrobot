@@ -11,7 +11,7 @@ Usage:
     from assets.robot_config import load_robot_config
 
     # Load robot config (path passed from train.py)
-    robot_config = load_robot_config("assets/robot_config.yaml")
+    robot_config = load_robot_config("assets/v1/robot_config.yaml")
 
     # Load training config
     config = load_training_config("configs/ppo_walking.yaml")

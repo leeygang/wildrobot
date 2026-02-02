@@ -710,8 +710,8 @@ def generate_robot_config(
 
 
 def main() -> None:
-    # Allow optional XML path via CLI, otherwise default to the XML next to this script.
-    default_xml = Path(__file__).parent / "wildrobot.xml"
+    # Allow optional XML path via CLI, otherwise default to v1 model.
+    default_xml = Path(__file__).parent / "v1" / "wildrobot.xml"
     xml_file = sys.argv[1] if len(sys.argv) > 1 else str(default_xml)
     print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
@@ -723,12 +723,14 @@ def main() -> None:
     fix_collision_default_geom(xml_file)
     add_mimic_bodies(xml_file)  # Add dummy bodies for GMR compatibility
 
-    # Generate robot configuration from XML
-    # This config is used by all Python training code
-    generate_robot_config(xml_file, "robot_config.yaml")
+    # Generate robot configuration next to the MJCF.
+    # This avoids overwriting other variants (assets/v1 vs assets/v2).
+    xml_path = Path(xml_file)
+    out_yaml = str(xml_path.with_name("robot_config.yaml"))
+    generate_robot_config(xml_file, out_yaml)
 
     # Optional deeper validation (requires MuJoCo + repo imports). This runs best under:
-    #   uv run python assets/post_process.py assets/wildrobot.xml
+    #   uv run python assets/post_process.py assets/v1/wildrobot.xml
     try:
         import mujoco  # noqa: F401
 
@@ -737,8 +739,8 @@ def main() -> None:
         from validate_model import Thresholds, validate_model
 
         validate_model(
-            robot_config_yaml=Path(__file__).parent / "robot_config.yaml",
-            scene_xml=Path(__file__).parent / "scene_flat_terrain.xml",
+            robot_config_yaml=Path(out_yaml),
+            scene_xml=xml_path.with_name("scene_flat_terrain.xml"),
             robot_xml=Path(xml_file),
             thresholds=Thresholds(
                 pos_tol=1e-4,

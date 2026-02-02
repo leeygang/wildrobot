@@ -6,7 +6,7 @@
 
 ## Project Structure & Module Organization
 - `training/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
-- `assets/`: Robot definitions and generated configs; keep `assets/robot_config.yaml` in sync when updating MJCF/CAD assets.
+- `assets/`: Robot definitions and generated configs. Use variant folders (`assets/v1`, `assets/v2`, ...). Keep the variant `robot_config.yaml` in sync with its MJCF (e.g., `assets/v1/robot_config.yaml`).
 - `scripts/`: Validation and one-off tooling (e.g., parity checks, PD tuning, feature verification).
 - `tests/`: Fast regression/consistency tests; `tests/envs/` covers env parity, root-level tests cover AMP features and quaternion math.
 - `mujoco-brax/` and `isaac/`: Alternate runtimes/notes; coordinate before modifying these experimental paths.
@@ -25,7 +25,7 @@
 - When touching configs, document required assets (e.g., regenerated `robot_config.yaml`) and default values inline.
 
 ## Testing Guidelines
-- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/robot_config.yaml`, regenerate via `cd assets && python post_process.py` before running.
+- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/v1/robot_config.yaml`, regenerate via `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` before running.
 - For new features, add pytest cases mirroring existing patterns; favor deterministic inputs over random seeds.
 - Capture expected output shapes/thresholds in assertions rather than printouts; keep prints only for helpful debugging context.
 

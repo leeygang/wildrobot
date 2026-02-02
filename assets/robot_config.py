@@ -10,7 +10,7 @@ Usage:
     from assets.robot_config import load_robot_config, get_robot_config, RobotConfig
 
     # Load robot config (path passed from train.py)
-    robot_config = load_robot_config("assets/robot_config.yaml")
+    robot_config = load_robot_config("assets/v1/robot_config.yaml")
 
     # Access robot properties
     print(robot_config.action_dim)  # 9

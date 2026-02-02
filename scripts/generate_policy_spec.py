@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/robot_config.yaml",
+        default="assets/v1/robot_config.yaml",
         help="Path to robot_config.yaml",
     )
     parser.add_argument(

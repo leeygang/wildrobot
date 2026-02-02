@@ -215,7 +215,7 @@ def main() -> int:
     compare_rollout_steps = int(training_cfg.ppo.rollout_steps)
 
     # Load robot config (required for env init)
-    robot_cfg_path = Path("assets/robot_config.yaml")
+    robot_cfg_path = Path("assets/v1/robot_config.yaml")
     load_robot_config(robot_cfg_path)
 
     training_cfg.ppo.num_envs = int(args.num_envs)

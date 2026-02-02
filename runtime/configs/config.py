@@ -43,7 +43,7 @@ import yaml
 HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_ROBOT_CONFIG_PATH = Path("assets/robot_config.yaml")
+DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v1/robot_config.yaml")
 
 
 # =============================================================================
@@ -499,7 +499,7 @@ class WrRuntimeConfig:
                 1. ~/.wildrobot/config.json
                 2. ~/wildrobot_config.json (legacy)
             robot_config_path: Path to robot_config.yaml for joint specs.
-                If None, uses assets/robot_config.yaml relative to config_path.
+                If None, uses assets/v1/robot_config.yaml relative to repo root.
 
         Returns:
             WrRuntimeConfig instance

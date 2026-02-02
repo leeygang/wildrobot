@@ -1,0 +1,45 @@
+{
+    // v1 (leg-only) Onshape export config.
+    // Source assembly: WildRobotDev
+    //
+    // This file is consumed by the Onshape → MJCF pipeline (onshape-to-robot).
+    // Run exports from inside `assets/v1/` so the output lands in this variant folder.
+    //
+    // NOTE: This is JSONC (comments). Keep format consistent with onshape-to-robot.
+    "url":"https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/5c6acb3ff696b03bdf018f3b", 
+    "outputFormat": "mujoco",
+    "assemblyName": "WildRobot",
+    "robot_name": "WildRobot",
+    "output_filename": "wildrobot",
+    "simplify_stls": true,
+    "max_stl_size": 0.1,
+    "ignore": {
+        "heel_top*": "visual",
+        "toe_top*": "visual",
+        "knee_ball_servo_*": "visual",
+        "low_leg_servo_connect": "visual",
+        "HTD-45H*": "visual",
+        "ICM45686": "visual",
+        "hip_gear": "visual",
+        "hip_servo_gear": "visual",
+        "battery_hook": "visual",
+        "BNO085": "visual",
+        "HiwonderBoard": "visual",
+        "PCA9548A": "visual",
+        "battery_servo_connect": "visual",
+        "scroll_inner": "visual",
+        "*": "collision",
+        "!toe_btm": "collision",
+        "!heel_btm": "collision"
+    },
+    "joint_properties": {
+        "default": {
+            "class": "htd45hServo"
+        }
+    },
+    "additional_xml": [
+        "sensors.xml",
+        "joints_properties.xml"
+    ]
+}
+

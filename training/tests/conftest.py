@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 
 # Project paths
-ASSETS_PATH = PROJECT_ROOT / "assets"
+ASSETS_PATH = PROJECT_ROOT / "assets" / "v1"
 SCENE_XML_PATH = ASSETS_PATH / "scene_flat_terrain.xml"
 ROBOT_XML_PATH = ASSETS_PATH / "wildrobot.xml"
 ROBOT_CONFIG_PATH = ASSETS_PATH / "robot_config.yaml"

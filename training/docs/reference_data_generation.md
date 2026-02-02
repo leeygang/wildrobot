@@ -36,7 +36,7 @@ uv sync  # Install dependencies
 ### 3. WildRobot Model
 Ensure the robot URDF/XML is configured in GMR:
 - Robot config: `~/projects/GMR/GMR/robot_configs/wildrobot.yaml`
-- URDF: `~/projects/wildrobot/assets/wildrobot.xml`
+- URDF: `~/projects/wildrobot/assets/v1/wildrobot.xml`
 
 ---
 
@@ -84,14 +84,14 @@ cd ~/projects/GMR
 uv run python scripts/convert_to_amp_format.py \
     --input ~/projects/wildrobot/assets/motions/walking_slow01.pkl \
     --output ~/projects/wildrobot/training/data/walking_slow01_amp.pkl \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
     --target_fps 50
 ```
 
 ### Batch Convert All Motions
 ```bash
 uv run python scripts/batch_convert_to_amp.py \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
     --input-dir ~/projects/wildrobot/assets/motions \
     --output-dir ~/projects/wildrobot/training/data \
     --target_fps 50
@@ -230,7 +230,7 @@ uv run python scripts/batch_retarget_walking.py
 
 # 2. Convert to AMP format (joint order from robot_config.yaml)
 uv run python scripts/batch_convert_to_amp.py \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
     --input-dir ~/projects/wildrobot/assets/motions \
     --output-dir ~/projects/wildrobot/training/data \
     --merged-output walking_motions_merged.pkl
@@ -244,7 +244,7 @@ uv run python -c "
 import pickle, yaml
 with open('training/data/walking_motions_normalized_vel.pkl', 'rb') as f:
     ref = pickle.load(f)
-with open('assets/robot_config.yaml', 'r') as f:
+with open('assets/v1/robot_config.yaml', 'r') as f:
     cfg = yaml.safe_load(f)
 assert ref['joint_names'] == cfg['actuators']['joints'], 'Joint order mismatch!'
 print('✓ Joint order verified')
@@ -295,7 +295,7 @@ uv run python training/train.py
 | Robot motions | `~/projects/wildrobot/assets/motions/` | Retargeted `.pkl` |
 | AMP data | `~/projects/wildrobot/training/data/` | Training-ready features |
 | Training config | `training/configs/ppo_amass_training.yaml` | Points to dataset |
-| Robot config | `assets/robot_config.yaml` | Feature dimensions |
+| Robot config | `assets/v1/robot_config.yaml` | Feature dimensions |
 
 ---
 

@@ -72,7 +72,7 @@ def resample_motion(motion_data, target_fps: float):
 
 def run_physics_test(
     motion_path: str,
-    model_path: str = "assets/scene_flat_terrain.xml",
+    model_path: str = "assets/v1/scene_flat_terrain.xml",
     render: bool = False,
     harness_mode: str = "capped",  # "none", "capped", "full"
     harness_cap: float = 0.15,  # fraction of mg
@@ -473,7 +473,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="assets/scene_flat_terrain.xml",
+        default="assets/v1/scene_flat_terrain.xml",
         help="Path to MuJoCo scene XML",
     )
     parser.add_argument(

@@ -1313,13 +1313,13 @@ def main():
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/robot_config.yaml",
+        default="assets/v1/robot_config.yaml",
         help="Robot config YAML",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="assets/scene_flat_terrain.xml",
+        default="assets/v1/scene_flat_terrain.xml",
         help="MuJoCo scene XML",
     )
     # Tier 0+ thresholds

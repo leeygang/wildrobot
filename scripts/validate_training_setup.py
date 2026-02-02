@@ -51,13 +51,13 @@ def main() -> int:
     parser.add_argument(
         "--scene-xml",
         type=Path,
-        default=Path("assets/scene_flat_terrain.xml"),
+        default=Path("assets/v1/scene_flat_terrain.xml"),
         help="Path to MuJoCo scene XML.",
     )
     parser.add_argument(
         "--robot-config",
         type=Path,
-        default=Path("assets/robot_config.yaml"),
+        default=Path("assets/v1/robot_config.yaml"),
         help="Path to assets robot_config.yaml.",
     )
     args = parser.parse_args()

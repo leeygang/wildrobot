@@ -1045,7 +1045,7 @@ python training/train.py \
 
 **Reference Files:**
 - IK Config: `~/projects/GMR/general_motion_retargeting/ik_configs/smplx_to_wildrobot.json`
-- Robot Path: `~/projects/wildrobot/assets/scene_flat_terrain.xml`
+- Robot Path: `~/projects/wildrobot/assets/v1/scene_flat_terrain.xml`
 - Guidance Doc: `~/projects/wildrobot/WildRobot_Guidance.md`
 
 #### 3.2.2: Implement AMP Discriminator

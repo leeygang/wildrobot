@@ -1,0 +1,104 @@
+robot_name: WildRobotDev
+generated_from: assets/v1/wildrobot.xml
+root_spec:
+  body: waist
+  joint: waist_freejoint
+  qpos_dim: 7
+  qvel_dim: 6
+  sensors:
+    orientation: chest_imu_quat
+    gyro: chest_imu_gyro
+    accel: chest_imu_accel
+    local_linvel: pelvis_local_linvel
+actuated_joint_specs:
+- name: left_hip_pitch
+  type: position
+  range:
+  - -0.087268
+  - 1.570794
+  symmetry_pair: right_hip_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_hip_roll
+  type: position
+  range:
+  - -1.570796
+  - 0.174533
+  symmetry_pair: right_hip_roll
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_knee_pitch
+  type: position
+  range:
+  - 0.0
+  - 1.396263
+  symmetry_pair: right_knee_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_ankle_pitch
+  type: position
+  range:
+  - -0.698132
+  - 0.785398
+  symmetry_pair: right_ankle_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_hip_pitch
+  type: position
+  range:
+  - -1.570797
+  - 0.087266
+  symmetry_pair: left_hip_pitch
+  mirror_sign: -1.0
+  max_velocity: 10.0
+- name: right_hip_roll
+  type: position
+  range:
+  - -0.174533
+  - 1.570796
+  symmetry_pair: left_hip_roll
+  mirror_sign: -1.0
+  max_velocity: 10.0
+- name: right_knee_pitch
+  type: position
+  range:
+  - 0.0
+  - 1.396263
+  symmetry_pair: left_knee_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_ankle_pitch
+  type: position
+  range:
+  - -0.698132
+  - 0.785398
+  symmetry_pair: left_ankle_pitch
+  mirror_sign: 1.0
+  max_velocity: 10.0
+foot_specs:
+  left:
+    body: left_foot
+    toe: left_toe
+    heel: left_heel
+  right:
+    body: right_foot
+    toe: right_toe
+    heel: right_heel
+  contact_scale: 10.0
+observation_breakdown:
+  gravity_vector: 3
+  base_angular_velocity: 3
+  base_linear_velocity: 3
+  joint_positions: 8
+  joint_velocities: 8
+  foot_switches: 4
+  previous_action: 8
+  velocity_command: 1
+  padding: 1
+amp_feature_breakdown:
+  joint_positions: 8
+  joint_velocities: 8
+  root_linear_velocity: 3
+  root_angular_velocity: 3
+  root_height: 1
+  foot_contacts: 4

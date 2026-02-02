@@ -8,7 +8,7 @@ Prerequisites
 -------------
 - Python 3.12+
 - `uv` installed
-- `assets/robot_config.yaml` generated (run `cd assets && python post_process.py` if needed)
+- `assets/v1/robot_config.yaml` generated (run `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` if needed)
 
 0) Environment Setup
 --------------------

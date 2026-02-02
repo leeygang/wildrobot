@@ -26,7 +26,7 @@ def env(training_config, robot_config):
     from assets.robot_config import load_robot_config
     from training.configs.training_config import load_training_config
 
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()  # Freeze config for JIT compatibility
 
@@ -41,7 +41,7 @@ def standing_env(robot_config):
     from assets.robot_config import load_robot_config
     from training.configs.training_config import load_training_config
 
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     training_cfg = load_training_config("training/configs/ppo_standing.yaml")
     training_cfg.env.velocity_cmd_min = 0.0
     training_cfg.env.velocity_cmd_max = 0.0

@@ -19,7 +19,7 @@ import numpy as np
 # Load robot config first
 from training.configs.training_config import load_robot_config
 
-robot_config_path = Path("assets/robot_config.yaml")
+robot_config_path = Path("assets/v1/robot_config.yaml")
 load_robot_config(robot_config_path)
 
 from training.amp.policy_features import get_feature_config

@@ -12,7 +12,7 @@ from wr_runtime.utils.mjcf import load_mjcf_model_info
 
 
 def test_env_observation_size_matches_contract() -> None:
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)
@@ -25,7 +25,7 @@ def test_bundle_validates_against_mjcf() -> None:
     spec = PolicySpec.from_json(spec_path)
     validate_spec(spec)
 
-    mjcf_info = load_mjcf_model_info(Path("assets/wildrobot.xml"))
+    mjcf_info = load_mjcf_model_info(Path("assets/v1/wildrobot.xml"))
     validate_runtime_compat(
         spec=spec,
         mjcf_actuator_names=mjcf_info.actuator_names,
@@ -40,7 +40,7 @@ def test_sim_foot_switches_nonzero() -> None:
     import jax
     import jax.numpy as jnp
 
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)

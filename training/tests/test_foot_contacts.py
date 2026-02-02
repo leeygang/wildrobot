@@ -32,7 +32,7 @@ def setup_environment():
     )
 
     clear_config_cache()
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
 
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()
@@ -123,7 +123,7 @@ def test_3_amp_features_require_foot_contacts():
     )
 
     clear_config_cache()
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
 
     config = get_feature_config()
     fake_obs = jnp.zeros((1, 39))
@@ -161,7 +161,7 @@ def test_4_amp_features_use_foot_contacts():
     )
 
     clear_config_cache()
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
 
     config = get_feature_config()
     fake_obs = jnp.zeros((1, 39))
@@ -208,7 +208,7 @@ def test_5_batched_features_require_foot_contacts():
     )
 
     clear_config_cache()
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
 
     config = get_feature_config()
 
@@ -300,7 +300,7 @@ def test_7_features_are_not_all_zeros():
     )
 
     clear_config_cache()
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
 
     env = setup_environment()
     config = get_feature_config()

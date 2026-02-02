@@ -59,7 +59,7 @@ In `runtime/configs/config.py` (`ServoControllerConfig`), mapping is effectively
 
 - servo units are `[0..1000]` with `500` as center
 - runtime composes:
-  - a policy/action convention sign (`mirror_sign` from `assets/robot_config.yaml`)
+  - a policy/action convention sign (`mirror_sign` from `assets/v1/robot_config.yaml` or the selected variant)
   - a per-robot hardware direction (`direction`, stored in the JSON)
   - a servo center offset (`offset`, stored in the JSON as an integer)
 
@@ -154,7 +154,7 @@ Add a calibrator option to set the robot to that home pose before per-joint cali
 
 - CLI: `--go-home` (move all joints once, then proceed)
 - CLI: `--bundle <path>` (folder containing `policy_spec.json`)
-- CLI: `--scene-xml <path>` (MuJoCo scene XML; e.g. `assets/scene_flat_terrain.xml`)
+- CLI: `--scene-xml <path>` (MuJoCo scene XML; e.g. `assets/v1/scene_flat_terrain.xml`)
 - CLI: `--keyframes-xml <path>` (direct `keyframes.xml`; e.g. `assets/keyframes.xml`)
 
 Home pose source precedence:

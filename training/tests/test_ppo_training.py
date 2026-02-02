@@ -50,7 +50,7 @@ class TestPPOSmoke:
         )
 
         # Load configs
-        load_robot_config("assets/robot_config.yaml")
+        load_robot_config("assets/v1/robot_config.yaml")
         env_config = training_config
         env_config.freeze()
 

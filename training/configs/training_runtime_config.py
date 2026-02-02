@@ -76,11 +76,11 @@ class Freezable:
 class EnvConfig(Freezable):
     """Environment configuration."""
 
-    assets_root: str = "assets"
-    scene_xml_path: str = "assets/scene_flat_terrain.xml"
-    robot_config_path: str = "assets/robot_config.yaml"
-    mjcf_path: str = "assets/wildrobot.xml"
-    model_path: str = "assets/scene_flat_terrain.xml"
+    assets_root: str = "assets/v1"
+    scene_xml_path: str = "assets/v1/scene_flat_terrain.xml"
+    robot_config_path: str = "assets/v1/robot_config.yaml"
+    mjcf_path: str = "assets/v1/wildrobot.xml"
+    model_path: str = "assets/v1/scene_flat_terrain.xml"
 
     # Timing
     sim_dt: float = 0.002

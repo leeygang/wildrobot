@@ -1,16 +1,17 @@
 {
-    // NEED TO WRAP all in a body named "base" and add site 
-    // <site name="imu" pos="-0.08 -0.0 0.05"/>
-    // and comment the default kp frictionloss etc
-    // "documentId": "ba106cac193c0e2253e1958f",
+    // v1 (leg-only) Onshape export config.
+    // Source assembly: WildRobotDev
+    //
+    // This file is consumed by the Onshape → MJCF pipeline (onshape-to-robot).
+    // Run exports from inside `assets/v1/` so the output lands in this variant folder.
+    //
+    // NOTE: This is JSONC (comments). Keep format consistent with onshape-to-robot.
     "url": "https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/c90fb7b3175cb93a0ac0750b",
     "outputFormat": "mujoco",
     "assemblyName": "WildRobotDev",
     "robot_name": "WildRobotDev",
     "output_filename": "wildrobot",
-    // Simplify STL meshes (default: false)
     "simplify_stls": true,
-    // "Max size of the STL files in MB (default: 3)"
     "max_stl_size": 0.1,
     "ignore": {
         "heel_top*": "visual",
@@ -25,15 +26,11 @@
         "BNO085": "visual",
         "HiwonderBoard": "visual",
         "PCA9548A": "visual",
-        // "RP_assemble": "visual",
         "battery_servo_connect": "visual",
         "scroll_inner": "visual",
-
         "*": "collision",
-
         "!toe_btm": "collision",
         "!heel_btm": "collision"
-
     },
     "joint_properties": {
         "default": {
@@ -45,3 +42,4 @@
         "joints_properties.xml"
     ]
 }
+

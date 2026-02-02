@@ -1,5 +1,5 @@
-robot_name: WildRobotDev
-generated_from: /home/leeygang/projects/wildrobot/assets/wildrobot.xml
+robot_name: WildRobot
+generated_from: wildrobot.xml
 root_spec:
   body: waist
   joint: waist_freejoint
@@ -75,6 +75,62 @@ actuated_joint_specs:
   symmetry_pair: left_ankle_pitch
   mirror_sign: 1.0
   max_velocity: 10.0
+- name: waist_yaw
+  type: position
+  range:
+  - -0.523599
+  - 0.523599
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_shoulder_pitch
+  type: position
+  range:
+  - -3.140968
+  - 0.87329
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_shoulder_pitch
+  type: position
+  range:
+  - -0.87205
+  - 3.142207
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_shoulder_roll
+  type: position
+  range:
+  - -2.090373
+  - 0.004023
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_shoulder_roll
+  type: position
+  range:
+  - -0.001739
+  - 2.092656
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: right_albow_pitch
+  type: position
+  range:
+  - 0.0
+  - 2.094395
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
+- name: left_albow_pitch
+  type: position
+  range:
+  - 0.0
+  - 2.094395
+  symmetry_pair: null
+  mirror_sign: 1.0
+  max_velocity: 10.0
 foot_specs:
   left:
     body: left_foot
@@ -89,15 +145,15 @@ observation_breakdown:
   gravity_vector: 3
   base_angular_velocity: 3
   base_linear_velocity: 3
-  joint_positions: 8
-  joint_velocities: 8
+  joint_positions: 15
+  joint_velocities: 15
   foot_switches: 4
-  previous_action: 8
+  previous_action: 15
   velocity_command: 1
   padding: 1
 amp_feature_breakdown:
-  joint_positions: 8
-  joint_velocities: 8
+  joint_positions: 15
+  joint_velocities: 15
   root_linear_velocity: 3
   root_angular_velocity: 3
   root_height: 1

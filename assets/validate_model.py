@@ -431,22 +431,22 @@ def main() -> int:
         epilog=(
             "Examples:\n"
             "  uv run python assets/validate_model.py\n"
-            "  uv run python assets/validate_model.py --scene-xml assets/scene_flat_terrain.xml\n"
-            "  uv run python assets/validate_model.py --robot-config assets/robot_config.yaml\n"
-            "  uv run python assets/validate_model.py --robot-xml assets/wildrobot.xml\n"
+            "  uv run python assets/validate_model.py --scene-xml assets/v1/scene_flat_terrain.xml\n"
+            "  uv run python assets/validate_model.py --robot-config assets/v1/robot_config.yaml\n"
+            "  uv run python assets/validate_model.py --robot-xml assets/v1/wildrobot.xml\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--robot-config",
         type=Path,
-        default=Path("assets/robot_config.yaml"),
+        default=Path("assets/v1/robot_config.yaml"),
         help="Path to generated robot_config.yaml.",
     )
     parser.add_argument(
         "--scene-xml",
         type=Path,
-        default=Path("assets/scene_flat_terrain.xml"),
+        default=Path("assets/v1/scene_flat_terrain.xml"),
         help="Scene XML used for training (must include the robot XML).",
     )
     parser.add_argument(

@@ -1,0 +1,16 @@
+  <sensor>
+    <!-- Chest IMU (BNO085) - 9-DOF sensor with realistic noise -->
+    <!-- Datasheet specs: Gyro ~0.014°/s/√Hz, Accel ~150μg/√Hz, Mag ~0.3μT -->
+    <gyro site="chest_imu" name="chest_imu_gyro" noise="0.0002" cutoff="100" />
+    <accelerometer site="chest_imu" name="chest_imu_accel" noise="0.0015" cutoff="100" />
+    <magnetometer site="chest_imu" name="chest_imu_mag" noise="0.3" />
+    <framequat objtype="site" objname="chest_imu" name="chest_imu_quat" />
+
+    <!--
+      Velocimeter (simulation-only sensor):
+      - Observations use FD → Policy learns with the same velocity computation it will see on real hardware
+      - Rewards use velocimeter → Clean, instantaneous reward signal (rewards don't need Sim2Real)
+      - AMP discriminator sees FD → Matches reference data features exactly
+    -->
+    <velocimeter site="pelvis_mimic" name="pelvis_local_linvel" />
+  </sensor>

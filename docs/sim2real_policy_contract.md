@@ -46,7 +46,7 @@ Long-term, keep training with a MuJoCo-specific **sim adapter** (not a second co
   - `filtered_action = alpha * prev_action + (1 - alpha) * raw_action`
 - Linear velocity (linvel) is treated as **privileged-only** (reward/metrics/critic). It is not part of the actor observation contract.
 - IMU sensors in sim (available in MJCF):
-  - `chest_imu_quat` (MuJoCo `framequat`) and `chest_imu_gyro` (MuJoCo `gyro`) exist in `assets/wildrobot.xml`.
+  - `chest_imu_quat` (MuJoCo `framequat`) and `chest_imu_gyro` (MuJoCo `gyro`) exist in `assets/v1/wildrobot.xml` (or the selected variant MJCF).
   - **Current training code** uses `chest_imu_quat` for gravity, and uses the gyro sensor path for actor-facing angular velocity.
   - **Migration goal** is to use the gyro sensor path for actor-facing angular velocity to match hardware semantics (BNO085 gyro) and reduce sim↔real drift.
 
@@ -192,7 +192,7 @@ Policy contract version bumps:
 - **MAJOR**: any semantic change (layout reorder, new normalization, new frames, etc.)
 
 ### 5.2 Robot specification (identity + ordering)
-Source of truth is `assets/robot_config.yaml` (already in this repo).
+Source of truth is the variant `robot_config.yaml` (e.g., `assets/v1/robot_config.yaml`).
 Contract records:
 - `actuator_names` in **policy action order**
 - per-actuator:
@@ -1081,7 +1081,7 @@ runtime loop already fail-fast disables actuators on exceptions. Treat safety as
 - `export_policy_bundle(checkpoint_path, config_path, output_dir, robot_config_path)`
   - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`, `wildrobot_config.json`
   - `wildrobot_config.json` is generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`
-  - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/robot_config.yaml`
+  - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/v1/robot_config.yaml` (or the selected variant config)
 
 ## 7) Policy Bundle Artifact (what gets deployed)
 
@@ -1158,7 +1158,7 @@ Add a single canonical exporter entry point:
   - loads checkpoint
   - exports deterministic ONNX (reuse `training/export_onnx.py`)
   - generates `policy_spec.json` from:
-    - `assets/robot_config.yaml`
+    - `assets/v1/robot_config.yaml`
     - policy_contract observation layout breakdown
     - training env knobs that affect inference (action_filter_alpha, etc.)
   - writes bundle folder
@@ -1283,6 +1283,6 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 
 ## Appendix: Practical Implementation Notes for This Repo
 
-- `assets/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `mirror_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
+- `assets/v1/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `mirror_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
 - Runtime should have a startup validator (e.g. `runtime/wr_runtime/validation/startup_validator.py`) that checks dims and order; extend it to also validate **semantic knobs** from `policy_spec.json` (frames, normalization declared, action mapping type, filter alpha).
 - Training currently uses CAL (`training/cal/cal.py`) as the “truth”; long-term, move those semantics into `policy_contract/` and keep training’s MuJoCo-specific logic in `training/sim_adapter/`.

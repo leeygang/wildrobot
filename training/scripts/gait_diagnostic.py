@@ -32,7 +32,7 @@ from training.configs.training_config import load_training_config, load_robot_co
 
 DEFAULT_CHECKPOINT = "training/checkpoints/wildrobot_ppo_20251228_205536/checkpoint_520_68157440.pkl"
 DEFAULT_CONFIG = "training/configs/ppo_walking.yaml"
-MODEL_PATH = "assets/scene_flat_terrain.xml"
+MODEL_PATH = "assets/v1/scene_flat_terrain.xml"
 NUM_STEPS = 500  # 10 seconds at 50Hz
 VELOCITY_CMD = 0.65
 CONTACT_THRESHOLD = 5.0  # N

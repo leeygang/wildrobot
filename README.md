@@ -18,7 +18,8 @@ wildrobot/
 │   ├── joints_properties.xml           # Joint configuration
 │   ├── sensors.xml                     # Sensor definitions
 │   ├── robot_config.yaml               # Robot parameters
-│   ├── config.json                     # Onshape configuration
+│   ├── v1/config.json                  # Onshape configuration (v1)
+│   ├── v2/config.json                  # Onshape configuration (v2)
 │   ├── post_process.py                 # post-process during model generation
 │   ├── update_xml.sh                   # generate and update the wildrobot.xml/urdf from Onshape
 │   └── assets/                         # Generated Mesh files (STL)
@@ -289,7 +290,7 @@ uv run python training/eval/visualize_policy.py \
 
 ## Development Workflow
 
-1. **Robot Model**: Define/update robot in `assets/wildrobot.xml`
+1. **Robot Model**: Define/update robot in `assets/v1/wildrobot.xml` (default) or `assets/v2/wildrobot.xml` (variant)
 2. **Configuration**: Adjust training params in `training/configs/`
 3. **Training**: Run experiments with `training/train.py`
 4. **Testing**: Validate with `pytest training/tests/`

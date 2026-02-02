@@ -1,0 +1,11 @@
+<!-- Placeholder keyframes for WildRobot v2.
+
+Replace/extend after the real MJCF is imported (poses and qpos dim will change
+once arms are added).
+-->
+<mujoco>
+  <keyframe>
+    <key name="home" qpos="0 0 0.5  1 0 0 0" />
+  </keyframe>
+</mujoco>
+

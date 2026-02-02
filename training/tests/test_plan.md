@@ -56,8 +56,8 @@ A test is not "nice to have." It is a gate for moving to the next stage:
 ## Scope and artifacts under test
 
 **Inputs**
-- `assets/wildrobot.xml` (MuJoCo model), referenced meshes and materials
-- environment scene XML (e.g. `assets/scene_flat_terrain.xml`)
+- `assets/v1/wildrobot.xml` (MuJoCo model), referenced meshes and materials
+- environment scene XML (e.g. `assets/v1/scene_flat_terrain.xml`)
 - training config (`training/configs/ppo_walking.yaml`)
 - training and rollout code (`training/*`)
 
@@ -109,8 +109,8 @@ def test_deterministic_generation(self):
     Assertions:
     - Byte-identical or semantically identical output
     """
-    config1 = generate_robot_config("assets/wildrobot.xml")
-    config2 = generate_robot_config("assets/wildrobot.xml")
+    config1 = generate_robot_config("assets/v1/wildrobot.xml")
+    config2 = generate_robot_config("assets/v1/wildrobot.xml")
     assert config1 == config2, "Generation not deterministic"
 ```
 
@@ -127,8 +127,8 @@ def test_snapshot_consistency(self):
     Assertions:
     - Any difference fails with actionable diff message
     """
-    regenerated = generate_robot_config("assets/wildrobot.xml")
-    committed = load_yaml("assets/robot_config.yaml")
+    regenerated = generate_robot_config("assets/v1/wildrobot.xml")
+    committed = load_yaml("assets/v1/robot_config.yaml")
     assert regenerated == committed, (
         "Schema mismatch! XML has changed. "
         "Run `python scripts/generate_config.py` if intentional."
@@ -154,7 +154,7 @@ def test_provenance_fields(self, robot_config):
 
 ### 0.2 Contract Content (Minimum Required)
 
-Derived from MuJoCo `MjModel` created from `assets/wildrobot.xml`:
+Derived from MuJoCo `MjModel` created from `assets/v1/wildrobot.xml`:
 
 #### 0.2.1 Joints (Real Joints Only)
 
@@ -1371,7 +1371,7 @@ def robot_schema():
 @pytest.fixture(scope="session")
 def mj_model():
     """Load MuJoCo model once per session."""
-    return mujoco.MjModel.from_xml_path("assets/scene_flat_terrain.xml")
+    return mujoco.MjModel.from_xml_path("assets/v1/scene_flat_terrain.xml")
 
 @pytest.fixture(scope="function")
 def mj_data(mj_model):

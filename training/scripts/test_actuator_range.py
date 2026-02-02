@@ -9,7 +9,7 @@ import numpy as np
 import time
 
 # Load model
-model_path = "assets/scene_flat_terrain.xml"
+model_path = "assets/v1/scene_flat_terrain.xml"
 model = mujoco.MjModel.from_xml_path(model_path)
 data = mujoco.MjData(model)
 

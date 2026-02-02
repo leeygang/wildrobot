@@ -39,7 +39,7 @@ def env():
     from training.configs.training_config import load_training_config
     from training.envs.wildrobot_env import WildRobotEnv
 
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()
     return WildRobotEnv(config=training_cfg)

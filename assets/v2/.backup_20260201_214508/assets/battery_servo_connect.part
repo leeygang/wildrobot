@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "9f0b9493f2753174c4e787a6",
+    "elementId": "b1b4e1b245352303182c15d5",
+    "fullConfiguration": "default",
+    "id": "M7/93zpH6/CSBGgbG",
+    "isStandardContent": false,
+    "name": "battery_servo_connect <1>",
+    "partId": "JHD",
+    "suppressed": false,
+    "type": "Part"
+}

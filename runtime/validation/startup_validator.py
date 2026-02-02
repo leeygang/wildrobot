@@ -34,7 +34,7 @@ def validate_runtime_interface(
     """Fail-fast startup validator.
 
     Validates that:
-    - `assets/robot_config.yaml` actuator_names/action_dim/obs_dim match the ONNX model
+    - `assets/v1/robot_config.yaml` actuator_names/action_dim/obs_dim match the ONNX model (or bundle snapshot)
     - MJCF-derived actuator order matches `robot_config.yaml` actuator_names
     - Runtime config has servo_ids for all actuators
 
@@ -87,7 +87,7 @@ def _resolve_robot_config_path(cfg: RuntimeConfig, robot_config_path: Optional[s
             raise FileNotFoundError(f"robot_config.yaml not found at: {path}")
         return path
 
-    # Common layout: assets/wildrobot.xml and assets/robot_config.yaml in same directory.
+    # Common layout: assets/v1/wildrobot.xml and assets/v1/robot_config.yaml in same directory.
     mjcf_path = Path(cfg.mjcf_path).expanduser()
     candidate = mjcf_path.with_name("robot_config.yaml")
     if candidate.exists():

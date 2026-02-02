@@ -15,12 +15,12 @@ Industry best practice: Never hardcode qpos/qvel indices, geom IDs, etc.
 Usage:
     from training.tests.robot_schema import WildRobotSchema
 
-    schema = WildRobotSchema.from_xml("assets/scene_flat_terrain.xml")
+    schema = WildRobotSchema.from_xml("assets/v1/scene_flat_terrain.xml")
     schema.validate()
     schema.save("assets/robot_schema.json")
 
     # Or load and verify against saved schema
-    schema = WildRobotSchema.from_xml("assets/scene_flat_terrain.xml")
+    schema = WildRobotSchema.from_xml("assets/v1/scene_flat_terrain.xml")
     schema.assert_matches_saved("assets/robot_schema.json")
 """
 
@@ -218,7 +218,7 @@ class WildRobotSchema:
         """Extract schema from MuJoCo XML file.
 
         Args:
-            xml_path: Path to the MuJoCo XML file (e.g., "assets/scene_flat_terrain.xml")
+            xml_path: Path to the MuJoCo XML file (e.g., "assets/v1/scene_flat_terrain.xml")
 
         Returns:
             WildRobotSchema with all components extracted
@@ -728,7 +728,7 @@ class WildRobotSchema:
 
 
 def extract_and_save_schema(
-    xml_path: str = "assets/scene_flat_terrain.xml",
+    xml_path: str = "assets/v1/scene_flat_terrain.xml",
     output_path: str = "assets/robot_schema.json",
 ) -> WildRobotSchema:
     """Extract schema from XML and save to JSON.

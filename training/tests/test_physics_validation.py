@@ -59,7 +59,7 @@ def _step_n(env, state, action, num_steps: int):
 @pytest.fixture(scope="module")
 def schema():
     """Load schema from XML once per module."""
-    return WildRobotSchema.from_xml("assets/scene_flat_terrain.xml")
+    return WildRobotSchema.from_xml("assets/v1/scene_flat_terrain.xml")
 
 
 @pytest.fixture(scope="module")
@@ -89,7 +89,7 @@ def mj_data(mj_model):
 @pytest.fixture(scope="module")
 def env():
     """Create WildRobot environment once per module."""
-    load_robot_config("assets/robot_config.yaml")
+    load_robot_config("assets/v1/robot_config.yaml")
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()  # Freeze config for JIT compatibility
 
