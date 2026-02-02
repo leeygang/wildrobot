@@ -49,8 +49,6 @@ fi
 update_variant() {
     local variant="$1"
     local variant_dir="${SCRIPT_DIR}/${variant}"
-    local ts
-    ts="$(date +%Y%m%d_%H%M%S)"
 
     if [[ ! -d "$variant_dir" ]]; then
         echo "Error: variant directory not found: $variant_dir"
@@ -67,13 +65,6 @@ update_variant() {
     echo "=============================="
 
     pushd "$variant_dir" >/dev/null
-
-    # Backup existing generated outputs (keep hand-authored XML like keyframes/sensors).
-    local backup_dir=".backup_${ts}"
-    mkdir -p "$backup_dir"
-    if [[ -f wildrobot.xml ]]; then mv wildrobot.xml "$backup_dir/" ; fi
-    if [[ -f wildrobot.urdf ]]; then mv wildrobot.urdf "$backup_dir/" ; fi
-    if [[ -d assets ]]; then mv assets "$backup_dir/assets" ; fi
 
     # Step 1: Run onshape-to-robot (reads ./config.json)
     echo ""
