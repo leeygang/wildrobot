@@ -110,8 +110,8 @@ actuated_joint_specs:
 - name: right_shoulder_roll
   type: position
   range:
-  - -0.001739
-  - 2.092656
+  - 0.0
+  - 2.094395
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
