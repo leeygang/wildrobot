@@ -9,14 +9,21 @@
     "port": "/dev/ttyUSB0",
     "baudrate": 9600,
     "servos": {
-      "left_hip_pitch": { "id": 1, "offset_unit": -38, "direction": -1 },
-      "left_hip_roll": { "id": 2, "offset_unit": 20, "direction": -1 },
-      "left_knee_pitch": { "id": 3, "offset_unit": 18, "direction": -1 },
-      "left_ankle_pitch": { "id": 4, "offset_unit": 26, "direction": 1 },
-      "right_hip_pitch": { "id": 5, "offset_unit": 0, "direction": -1 },
-      "right_hip_roll": { "id": 6, "offset_unit": 21, "direction": -1 },
-      "right_knee_pitch": { "id": 7, "offset_unit": -14, "direction": -1 },
-      "right_ankle_pitch": { "id": 8, "offset_unit": 23, "direction": 1 }
+      "left_hip_pitch": { "id": 1, "offset_unit": -38, "direction": -1, "center_deg": 0 },
+      "left_hip_roll": { "id": 2, "offset_unit": 20, "direction": -1, "center_deg": 0 },
+      "left_knee_pitch": { "id": 3, "offset_unit": 18, "direction": -1, "center_deg": 0 },
+      "left_ankle_pitch": { "id": 4, "offset_unit": 26, "direction": 1, "center_deg": 0 },
+      "right_hip_pitch": { "id": 5, "offset_unit": 0, "direction": -1, "center_deg": 0 },
+      "right_hip_roll": { "id": 6, "offset_unit": 21, "direction": -1, "center_deg": 0 },
+      "right_knee_pitch": { "id": 7, "offset_unit": -14, "direction": -1, "center_deg": 0 },
+      "right_ankle_pitch": { "id": 8, "offset_unit": 23, "direction": 1, "center_deg": 0 },
+      "waist_yaw": { "id": 40, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_shoulder_pitch": { "id": 21, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_shoulder_roll": { "id": 22, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_elbow_pitch": { "id": 23, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_shoulder_pitch": { "id": 31, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_shoulder_roll": { "id": 32, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_elbow_pitch": { "id": 33, "offset_unit": 0, "direction": 1, "center_deg": 0 }
     }
   },
   "bno085": {

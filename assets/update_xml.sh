@@ -84,6 +84,15 @@ update_variant() {
         exit 1
     fi
 
+    # Step 1.5: Enforce canonical actuator order (v2 only)
+    if [[ "$variant" != "v1" ]]; then
+        echo ""
+        echo "Reordering actuators to canonical order (v2)..."
+        $PYTHON_CMD "${SCRIPT_DIR}/reorder_actuators.py" \
+            --xml "${variant_dir}/wildrobot.xml" \
+            --order "${variant_dir}/actuator_order.txt"
+    fi
+
     # Step 2: Run post-process to regenerate robot_config.yaml next to the MJCF
     echo ""
     echo "Running post_process.py..."

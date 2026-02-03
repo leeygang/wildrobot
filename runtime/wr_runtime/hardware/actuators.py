@@ -40,9 +40,11 @@ def rad_to_servo_units(
     targets_rad: np.ndarray,
     offsets_unit: np.ndarray,
     directions: np.ndarray,
+    centers_rad: np.ndarray,
     servo_model: ServoModel,
 ) -> np.ndarray:
-    units = servo_model.units_center + directions * targets_rad * servo_model.units_per_rad + offsets_unit
+    delta = targets_rad - centers_rad
+    units = servo_model.units_center + offsets_unit + directions * (delta * servo_model.units_per_rad)
     return np.clip(units, servo_model.units_min, servo_model.units_max)
 
 
@@ -50,9 +52,11 @@ def servo_units_to_rad(
     units: np.ndarray,
     offsets_unit: np.ndarray,
     directions: np.ndarray,
+    centers_rad: np.ndarray,
     servo_model: ServoModel,
 ) -> np.ndarray:
-    return directions * (units - servo_model.units_center - offsets_unit) / servo_model.units_per_rad
+    delta_units = units - servo_model.units_center - offsets_unit
+    return centers_rad + directions * (delta_units / servo_model.units_per_rad)
 
 
 class HiwonderBoardActuators(Actuators):
@@ -67,6 +71,7 @@ class HiwonderBoardActuators(Actuators):
         default_move_time_ms: Optional[int],
         joint_offset_units: Dict[str, int],
         joint_directions: Optional[Dict[str, float]] = None,
+        joint_center_deg: Optional[Dict[str, float]] = None,
         servo_model: ServoModel | None = None,
         max_retries: int = 3,
         retry_backoff_s: float = 0.002,
@@ -83,16 +88,20 @@ class HiwonderBoardActuators(Actuators):
         self.servo_ids_list: List[int] = []
         offsets: List[int] = []
         directions: List[float] = []
+        centers_rad: List[float] = []
         joint_directions = joint_directions or {}
+        joint_center_deg = joint_center_deg or {}
         for name in self.actuator_names:
             if name not in servo_ids:
                 raise KeyError(f"Servo ID missing for joint '{name}'")
             self.servo_ids_list.append(int(servo_ids[name]))
             offsets.append(int(joint_offset_units.get(name, 0)))
             directions.append(float(joint_directions.get(name, 1.0)))
+            centers_rad.append(float(np.deg2rad(joint_center_deg.get(name, 0.0))))
 
         self.offsets_unit = np.asarray(offsets, dtype=np.float32)
         self.directions = np.asarray(directions, dtype=np.float32)
+        self.centers_rad = np.asarray(centers_rad, dtype=np.float32)
 
         self.controller = controller or HiwonderBoardController(port=port, baudrate=baudrate)
         self._last_positions: Optional[np.ndarray] = None
@@ -108,7 +117,13 @@ class HiwonderBoardActuators(Actuators):
         if move_time is None:
             raise ValueError("move_time_ms must be provided when no default_move_time_ms is set")
 
-        units = rad_to_servo_units(targets, self.offsets_unit, self.directions, self.servo_model)
+        units = rad_to_servo_units(
+            targets,
+            self.offsets_unit,
+            self.directions,
+            self.centers_rad,
+            self.servo_model,
+        )
         commands = list(zip(self.servo_ids_list, np.rint(units).astype(int).tolist()))
 
         last_err: Optional[Exception] = None
@@ -151,9 +166,13 @@ class HiwonderBoardActuators(Actuators):
                 time.sleep(self.retry_backoff_s)
                 continue
 
-            radians = servo_units_to_rad(units, self.offsets_unit, self.directions, self.servo_model).astype(
-                np.float32
-            )
+            radians = servo_units_to_rad(
+                units,
+                self.offsets_unit,
+                self.directions,
+                self.centers_rad,
+                self.servo_model,
+            ).astype(np.float32)
             self._prev_positions = self._last_positions
             self._last_positions = radians
             self._last_error = None

@@ -79,6 +79,7 @@ class ServoConfig:
         id: Servo ID (1-254)
         offset: Calibration offset in servo units (default: 0)
         direction: Hardware direction correction (+1 or -1, default: +1)
+        center_deg: MuJoCo angle (deg) that maps to servo center (500)
         rad_range: Joint range in radians (min, max) from robot_config.yaml
         max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
         mirror_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
@@ -87,6 +88,7 @@ class ServoConfig:
     id: int
     offset: int = 0
     direction: float = 1.0
+    center_deg: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
     mirror_sign: float = 1.0
@@ -103,6 +105,10 @@ class ServoConfig:
     def offset_unit(self) -> int:
         return int(self.offset)
 
+    @property
+    def center_rad(self) -> float:
+        return math.radians(float(self.center_deg))
+
     def rad_to_units(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
 
@@ -117,7 +123,8 @@ class ServoConfig:
         Returns:
             Servo position in units [0, 1000]
         """
-        units = self.UNITS_CENTER + self.direction * target_rad * self.UNITS_PER_RAD + self.offset
+        delta = float(target_rad) - self.center_rad
+        units = self.UNITS_CENTER + self.offset + self.direction * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
     def rad_to_units_for_calibrate(
@@ -139,7 +146,8 @@ class ServoConfig:
         Returns:
             Servo position in units [0, 1000]
         """
-        units = self.UNITS_CENTER + direction * target_rad * self.UNITS_PER_RAD + offset
+        delta = float(target_rad) - self.center_rad
+        units = self.UNITS_CENTER + offset + direction * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
     def units_to_rad(self, units: int) -> float:
@@ -155,7 +163,8 @@ class ServoConfig:
         Returns:
             Joint position in MuJoCo radians
         """
-        return self.direction * (units - self.UNITS_CENTER - self.offset) / self.UNITS_PER_RAD
+        delta_units = float(units) - self.UNITS_CENTER - self.offset
+        return self.center_rad + self.direction * (delta_units / self.UNITS_PER_RAD)
 
     def units_to_rad_for_calibrate(
         self,
@@ -176,7 +185,8 @@ class ServoConfig:
         Returns:
             Joint position in MuJoCo radians
         """
-        return direction * (units - self.UNITS_CENTER - offset) / self.UNITS_PER_RAD
+        delta_units = float(units) - self.UNITS_CENTER - offset
+        return self.center_rad + direction * (delta_units / self.UNITS_PER_RAD)
 
     @property
     def effective_sign(self) -> float:
@@ -201,6 +211,7 @@ class ServoSpec:
     id: int
     offset_unit: int = 0
     direction: float = 1.0
+    center_deg: float = 0.0
 
     def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
         joint_spec = joint_spec or {}
@@ -208,6 +219,7 @@ class ServoSpec:
             id=int(self.id),
             offset=int(self.offset_unit),
             direction=float(self.direction),
+            center_deg=float(self.center_deg),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
             mirror_sign=joint_spec.get("mirror_sign", 1.0),
@@ -269,6 +281,10 @@ class ServoControllerConfig:
     def joint_directions(self) -> Dict[str, float]:
         return {k: float(v.direction) for k, v in self.servos.items()}
 
+    @property
+    def joint_center_deg(self) -> Dict[str, float]:
+        return {k: float(v.center_deg) for k, v in self.servos.items()}
+
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
         if joint_name not in self.servos:
@@ -300,14 +316,12 @@ class ServoControllerConfig:
             policy_action [-1, 1]
             → corrected = action * mirror_sign
             → ctrl_rad = corrected * ctrl_span + ctrl_center
-            → degrees = ctrl_rad * (180/π)
-            → servo_pos = 500 + direction * degrees * DEG_TO_SERVO + offset
+            → servo_pos = servo.rad_to_units(ctrl_rad)  (applies center_deg, direction, offset)
         """
         action_clipped = max(-1.0, min(1.0, action))
         corrected = action_clipped * servo.mirror_sign
         ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
-        degrees = math.degrees(ctrl_rad)
-        servo_pos = self.SERVO_CENTER + servo.direction * degrees * self.DEG_TO_SERVO + servo.offset
+        servo_pos = servo.rad_to_units(ctrl_rad)
         return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
 
     def _servo_pos_to_policy_action(self, servo_pos: int, servo: ServoConfig) -> float:
@@ -315,8 +329,7 @@ class ServoControllerConfig:
 
         Inverse of _policy_action_to_servo_pos.
         """
-        degrees = (servo_pos - servo.offset - self.SERVO_CENTER) / self.DEG_TO_SERVO
-        ctrl_rad = math.radians(degrees) / servo.direction
+        ctrl_rad = servo.units_to_rad(servo_pos)
         corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
         action = corrected / servo.mirror_sign
         return max(-1.0, min(1.0, action))
@@ -592,6 +605,15 @@ class WrRuntimeConfig:
                 direction_val = float(servo_data.get("direction", 1.0))
                 WrRuntimeConfig._validate_directions({joint_name: direction_val})
 
+                center_deg = float(servo_data.get("center_deg", 0.0))
+                rad_range = joint_spec.get("rad_range", (0.0, 0.0))
+                WrRuntimeConfig._validate_center_deg(
+                    center_deg=center_deg,
+                    rad_range=rad_range,
+                    joint_name=joint_name,
+                    key_path=key_path,
+                )
+
                 offset_unit = servo_data.get("offset_unit")
                 legacy_offset = servo_data.get("offset")
                 legacy_offset_rad = servo_data.get("offset_rad")
@@ -619,7 +641,8 @@ class WrRuntimeConfig:
                     id=int(servo_data["id"]),
                     offset=int(chosen_offset),
                     direction=direction_val,
-                    rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
+                    center_deg=center_deg,
+                    rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
                     mirror_sign=joint_spec.get("mirror_sign", 1.0),
                 )
@@ -640,11 +663,19 @@ class WrRuntimeConfig:
             for joint, sid in servo_ids.items():
                 direction_val = float(joint_directions.get(joint, 1.0))
                 WrRuntimeConfig._validate_directions({joint: direction_val})
+                rad_range = joint_specs.get(joint, {}).get("rad_range", (0.0, 0.0))
+                WrRuntimeConfig._validate_center_deg(
+                    center_deg=0.0,
+                    rad_range=rad_range,
+                    joint_name=str(joint),
+                    key_path="hiwonder.servo_ids",
+                )
                 servos[str(joint)] = ServoConfig(
                     id=int(sid),
                     offset=int(joint_offsets.get(joint, 0)),
                     direction=direction_val,
-                    rad_range=joint_specs.get(joint, {}).get("rad_range", (0.0, 0.0)),
+                    center_deg=0.0,
+                    rad_range=rad_range,
                     max_velocity=joint_specs.get(joint, {}).get("max_velocity", 10.0),
                     mirror_sign=joint_specs.get(joint, {}).get("mirror_sign", 1.0),
                 )
@@ -707,6 +738,26 @@ class WrRuntimeConfig:
             )
 
     @staticmethod
+    def _validate_center_deg(
+        *,
+        center_deg: float,
+        rad_range: Tuple[float, float],
+        joint_name: str,
+        key_path: str,
+    ) -> None:
+        range_min, range_max = float(rad_range[0]), float(rad_range[1])
+        if abs(range_min) < 1e-12 and abs(range_max) < 1e-12:
+            return
+        if range_min > range_max:
+            range_min, range_max = range_max, range_min
+        center_rad = math.radians(float(center_deg))
+        if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
+            raise ValueError(
+                f"{key_path}.{joint_name}.center_deg={center_deg} maps to {center_rad:.6f} rad, "
+                f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad"
+            )
+
+    @staticmethod
     def _parse_bno085_config(data: dict) -> BNO085Config:
         """Parse BNO085 configuration from JSON data."""
         bno = data.get("bno085", {})
@@ -765,6 +816,7 @@ class WrRuntimeConfig:
                 "id": servo.id,
                 "offset_unit": servo.offset_unit,
                 "direction": servo.direction,
+                "center_deg": servo.center_deg,
             }
             for joint_name, servo in self.servo_controller.servos.items()
         }

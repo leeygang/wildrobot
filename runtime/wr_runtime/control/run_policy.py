@@ -250,6 +250,7 @@ def main() -> None:
         servo_ids=cfg.servo_controller.servo_ids,
         joint_offset_units=cfg.servo_controller.joint_offset_units,
         joint_directions=cfg.servo_controller.joint_directions,
+        joint_center_deg=cfg.servo_controller.joint_center_deg,
         port=cfg.servo_controller.port,
         baudrate=cfg.servo_controller.baudrate,
         default_move_time_ms=move_time_ms,

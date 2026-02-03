@@ -33,14 +33,14 @@ Minimal example:
     "port": "/dev/ttyUSB0",
     "baudrate": 9600,
     "servos": {
-      "left_hip_pitch":  { "id": 1, "offset_unit": 0, "direction": 1 },
-      "left_hip_roll":   { "id": 2, "offset_unit": 0, "direction": 1 },
-      "left_knee_pitch": { "id": 3, "offset_unit": 0, "direction": 1 },
-      "left_ankle_pitch": { "id": 4, "offset_unit": 0, "direction": 1 },
-      "right_hip_pitch": { "id": 5, "offset_unit": 0, "direction": 1 },
-      "right_hip_roll":  { "id": 6, "offset_unit": 0, "direction": 1 },
-      "right_knee_pitch":{ "id": 7, "offset_unit": 0, "direction": 1 },
-      "right_ankle_pitch": { "id": 8, "offset_unit": 0, "direction": 1 }
+      "left_hip_pitch":  { "id": 1, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_hip_roll":   { "id": 2, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_knee_pitch": { "id": 3, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_ankle_pitch": { "id": 4, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_hip_pitch": { "id": 5, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_hip_roll":  { "id": 6, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_knee_pitch":{ "id": 7, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_ankle_pitch": { "id": 8, "offset_unit": 0, "direction": 1, "center_deg": 0 }
     }
   },
 
@@ -63,8 +63,9 @@ Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
 - `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
-- `servo_controller.servos.<joint>.offset_unit` is a per-joint calibration offset in **servo units** relative to center (500). Values can be positive or negative. Use the calibration script to write these.
-- `servo_controller.servos.<joint>.direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
+- `servo_controller.servos.<joint>.center_deg` defines the MuJoCo angle (deg) that maps to servo center (500). Use $+90$ or $-90$ for shoulder pitch/roll as needed.
+- `servo_controller.servos.<joint>.offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
+- `servo_controller.servos.<joint>.direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign. Direction is applied after subtracting the center.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 
 ## Run

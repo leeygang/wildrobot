@@ -24,3 +24,14 @@ uv run python ../post_process.py wildrobot.xml
 ```
 
 This writes `assets/v2/robot_config.yaml` next to the MJCF and (if available) runs a basic validation.
+
+## Actuator order (ABI)
+
+The actuator order in `wildrobot.xml` must be deterministic for policy/action index stability.
+
+- Canonical order lives in `assets/v2/actuator_order.txt` (one name per line).
+- After Onshape export, run:
+  - `python3 ../reorder_actuators.py --xml wildrobot.xml --order actuator_order.txt`
+  - then `python3 ../post_process.py wildrobot.xml`
+
+The repo `assets/update_xml.sh --version v2` does this automatically.
