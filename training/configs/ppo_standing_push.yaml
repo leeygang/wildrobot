@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.12.2)
+# WildRobot PPO Standing Config (v0.13.1)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -11,7 +11,7 @@
 #
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
-version: "0.12.2"
+version: "0.13.1"
 version_name: "Standing robustness (strong pushes)"
 
 seed: 42
@@ -20,7 +20,7 @@ seed: 42
 # Environment
 # =============================================================================
 env:
-  assets_root: assets/v1
+  assets_root: assets/v2
 
   sim_dt: 0.002
   ctrl_dt: 0.02

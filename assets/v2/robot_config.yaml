@@ -86,24 +86,24 @@ actuated_joint_specs:
 - name: right_shoulder_pitch
   type: position
   range:
-  - -3.140968
-  - 0.87329
+  - -3.141593
+  - 0.523599
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: left_shoulder_pitch
   type: position
   range:
-  - -0.87205
-  - 3.142207
+  - -0.523599
+  - 3.141593
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
 - name: left_shoulder_roll
   type: position
   range:
-  - -2.090373
-  - 0.004023
+  - -3.141593
+  - 0.0
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
@@ -111,11 +111,11 @@ actuated_joint_specs:
   type: position
   range:
   - 0.0
-  - 2.094395
+  - 3.141593
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
-- name: right_albow_pitch
+- name: right_elbow_pitch
   type: position
   range:
   - 0.0
@@ -123,7 +123,7 @@ actuated_joint_specs:
   symmetry_pair: null
   mirror_sign: 1.0
   max_velocity: 10.0
-- name: left_albow_pitch
+- name: left_elbow_pitch
   type: position
   range:
   - 0.0

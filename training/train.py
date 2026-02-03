@@ -6,17 +6,17 @@ using PPO with optional Adversarial Motion Priors (AMP) for natural motion learn
 
 Training Modes:
     1. PPO-only (Stage 1): Learn robot-native walking without reference motion
-       python train.py --config configs/ppo_walking.yaml --no-amp
+       python train.py --config configs/ppo_walking.yaml
 
     2. AMP+PPO (default): Use human motion priors for natural-looking gait
        python train.py --config configs/ppo_amass_training.yaml
 
 Usage Examples:
     # Stage 1: PPO-only training (robot-native walking)
-    python train.py --config training/configs/ppo_walking.yaml --no-amp
+    python train.py --config training/configs/ppo_walking.yaml
 
     # Stage 1: Quick smoke test
-    python train.py --config training/configs/ppo_walking.yaml --no-amp --verify
+    python train.py --config training/configs/ppo_walking.yaml --verify
 
     # AMP+PPO training with human motion priors
     python train.py --config training/configs/ppo_amass_training.yaml
@@ -27,7 +27,7 @@ Usage Examples:
 Architecture:
     This script supports two training modes:
 
-    1. PPO-only (--no-amp): Stage 1 training for discovering robot's natural gait.
+    1. PPO-only (amp.enabled=False): Stage 1 training for discovering robot's natural gait.
        Uses Brax's PPO trainer with mujoco_playground wrapper. No reference motion.
 
     2. AMP+PPO (default): Uses custom JIT-compiled training loop that integrates
@@ -60,7 +60,7 @@ sys.path.insert(0, str(project_root))
 
 # Default config paths
 DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking.yaml"
-DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "robot_config.yaml"
+DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v1" / "robot_config.yaml"
 
 # Import config loaders from configs module
 from training.configs.training_config import (
@@ -177,11 +177,6 @@ def parse_args():
         type=float,
         default=None,
         help="Discriminator learning rate (default from config)",
-    )
-    parser.add_argument(
-        "--no-amp",
-        action="store_true",
-        help="Disable AMP (pure PPO training)",
     )
 
     # Logging and checkpoints
@@ -501,15 +496,11 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     if args.checkpoint_interval is not None:
         training_cfg.checkpoints.interval = args.checkpoint_interval
 
-    # Validate and set AMP enabled flag
-    # --no-amp flag always disables AMP
-    # Otherwise, validate that enabled configs have weight > 0
-    if args.no_amp:
-        training_cfg.amp.enabled = False
-    elif training_cfg.amp.enabled and training_cfg.amp.weight <= 0:
+    # Validate AMP configuration (if enabled)
+    if training_cfg.amp.enabled and training_cfg.amp.weight <= 0:
         raise ValueError(
             f"Invalid AMP configuration: amp.enabled=True but amp.weight={training_cfg.amp.weight}. "
-            "Either set amp.weight > 0 or disable AMP with --no-amp or amp.enabled=False in config."
+            "Either set amp.weight > 0 or set amp.enabled=False in config."
         )
 
 
@@ -529,7 +520,8 @@ def main():
         robot_config_path = Path(__file__).parent.parent / robot_config_path
     if not robot_config_path.exists():
         print(f"Warning: Robot config not found at {robot_config_path}")
-        print("Run 'cd assets && python post_process.py' to generate it.")
+        print("Generate it via:")
+        print("  cd assets/v1 && uv run python ../post_process.py wildrobot.xml")
     else:
         robot_cfg = load_robot_config(robot_config_path)
         print(

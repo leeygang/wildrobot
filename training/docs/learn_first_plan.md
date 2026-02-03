@@ -109,7 +109,7 @@ Exit: CAL fully integrated and validated
 
 Tasks:
 - [x] Create `ppo_walking.yaml` config (PPO-only, no AMP section)
-- [x] Verify train.py works with `--no-amp` flag
+- [x] Verify train.py works with AMP disabled via config
 - [x] Validate simulation setup passes all checks
 - [x] Smoke test: 10 iterations, policy updates without errors
 - [x] Unified trainer: `trainer_unified.py` supports both PPO-only and AMP modes
@@ -122,7 +122,7 @@ Exit: Training loop runs, loss decreases, no crashes
 - Created `trainer_unified.py` - single trainer for Stage 1 and Stage 3
 - Created `rollout.py` - unified rollout collector
 - Added 11 invariance tests in `test_trainer_invariance.py`
-- Verified `--no-amp` smoke test passes
+- Verified smoke test passes with AMP disabled via config
 
 #### v0.10.1 - Reward Shaping
 **Objective:** Design rewards that encourage stable walking
@@ -390,7 +390,7 @@ uv run python scripts/validate_training_setup.py
 ## Related Files
 
 - Config: `training/configs/ppo_walking.yaml`
-- Training: `training/train.py --config configs/ppo_walking.yaml --no-amp`
+- Training: `training/train.py --config configs/ppo_walking.yaml`
 - Validation: `scripts/validate_training_setup.py`
 - Changelog: `training/CHANGELOG.md`
 - CAL Proposal: `training/docs/CONTROL_ABSTRACTION_LAYER_PROPOSAL.md`

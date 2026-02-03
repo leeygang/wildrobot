@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
@@ -10,6 +11,11 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 SUPPORTED_LAYOUT_IDS = {"wr_obs_v1"}
 SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
+
+# Joint range validation:
+# We allow arbitrary absolute offsets (export pose-dependent "zero"), but limit
+# the total motion window for safety/compatibility.
+_MAX_RANGE_WINDOW_RAD = 4.0 * math.pi / 3.0  # 240 deg
 
 
 @dataclass(frozen=True)
@@ -252,16 +258,17 @@ def _validate_robot(robot: RobotSpec) -> None:
             raise ValueError(f"robot.joints['{name}'] must be a JointSpec")
         if joint.range_min_rad >= joint.range_max_rad:
             raise ValueError(
-                f"robot.joints['{name}'] invalid range: {joint.range_min_rad} >= {joint.range_max_rad}"
+                f"robot.joints[{name!r}] invalid range: {joint.range_min_rad} >= {joint.range_max_rad}"
             )
-        if joint.range_min_rad < -2.094395102 or joint.range_max_rad > 2.094395102:
+        range_window = joint.range_max_rad - joint.range_min_rad
+        if range_window > _MAX_RANGE_WINDOW_RAD + 1e-9:
             raise ValueError(
-                "robot.joints['{name}'] range must be within [-2.094395102, 2.094395102] rad, "
-                f"got [{joint.range_min_rad}, {joint.range_max_rad}]"
+                f"robot.joints[{name!r}] range window must be <= {_MAX_RANGE_WINDOW_RAD} rad (240 deg), "
+                f"got [{joint.range_min_rad}, {joint.range_max_rad}] (window={range_window})"
             )
         if joint.max_velocity_rad_s <= 0:
             raise ValueError(
-                f"robot.joints['{name}'] max_velocity_rad_s must be > 0, got {joint.max_velocity_rad_s}"
+                f"robot.joints[{name!r}] max_velocity_rad_s must be > 0, got {joint.max_velocity_rad_s}"
             )
 
     if robot.home_ctrl_rad is not None:

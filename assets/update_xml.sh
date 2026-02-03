@@ -66,15 +66,33 @@ update_variant() {
 
     pushd "$variant_dir" >/dev/null
 
+    # Clean meshes folder to avoid stale assets after export.
+    # onshape-to-robot will re-create/populate this folder as needed.
+    rm -rf assets
+    mkdir -p assets
+
+    # Ensure generated top-level outputs are refreshed (avoid silently reusing stale files).
+    rm -f wildrobot.xml wildrobot.urdf robot_config.yaml
+
     # Step 1: Run onshape-to-robot (reads ./config.json)
     echo ""
     echo "Running onshape-to-robot in ${variant_dir}..."
     onshape-to-robot .
 
+    if [[ ! -f wildrobot.xml ]]; then
+        echo "Error: onshape-to-robot did not produce wildrobot.xml in ${variant_dir}"
+        exit 1
+    fi
+
     # Step 2: Run post-process to regenerate robot_config.yaml next to the MJCF
     echo ""
     echo "Running post_process.py..."
+    rm -f robot_config.yaml
     $PYTHON_CMD "${SCRIPT_DIR}/post_process.py" "wildrobot.xml"
+    if [[ ! -f robot_config.yaml ]]; then
+        echo "Error: post_process did not produce robot_config.yaml in ${variant_dir}"
+        exit 1
+    fi
 
     echo ""
     echo "✓ Updated assets/${variant}"

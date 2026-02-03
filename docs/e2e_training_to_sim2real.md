@@ -26,17 +26,17 @@ uv run python scripts/validate_training_setup.py
 ----------------------
 Standing (choose variant via assets_root in config):
 ```
-uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp
+uv run python training/train.py --config training/configs/ppo_standing.yaml
 ```
 
 Walking (choose variant via assets_root in config):
 ```
-uv run python training/train.py --config training/configs/ppo_walking.yaml --no-amp
+uv run python training/train.py --config training/configs/ppo_walking.yaml
 ```
 
 Quick smoke test:
 ```
-uv run python training/train.py --config training/configs/ppo_walking.yaml --no-amp --verify
+uv run python training/train.py --config training/configs/ppo_walking.yaml --verify
 ```
 
 2) Evaluate (Headless, MJX)

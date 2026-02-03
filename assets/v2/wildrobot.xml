@@ -128,58 +128,58 @@
         </body>
       </body>
       <body name="upperbody" pos="1.97751e-05 4.17458e-05 0.0482" quat="0.000704463 0.707107 0.707106 0.000120096">
-        <joint axis="0 0 1" name="waist_yaw" type="hinge" range="-0.523598775598297 0.5235987755983006" class="htd45hServo" />
-        <inertial pos="-0.000237163 -0.000467045 -0.0974641" mass="0.38302" fullinertia="0.00131669 0.0022023 0.00104256 -2.02207e-07 -3.10842e-07 3.22773e-06" />
-        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0735796" quat="1.54685e-17 -0.707107 -0.707107 -1.22231e-17" mesh="waist_platform" material="waist_platform_material" />
-        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0814" quat="7.22263e-17 -0.707107 0.707107 -6.87029e-17" mesh="shoulder_connect_deck" material="shoulder_connect_deck_material" />
-        <geom type="mesh" class="visual" pos="-0.000246304 0.027 -0.0732" quat="0.707107 5.0581e-15 0.707107 -5.32907e-15" mesh="part_118" material="part_118_material" />
-        <geom type="mesh" class="visual" pos="-4.63042e-05 -0.0003 -0.0814" quat="4.35525e-16 -0.707107 0.707107 -4.58853e-16" mesh="servo_support" material="servo_support_material" />
-        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0814" quat="6.87859e-17 0.707107 0.707107 7.22516e-17" mesh="body_box" material="body_box_material" />
-        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0814" quat="6.87475e-17 0.707107 0.707107 7.22132e-17" mesh="shoulder_connect_deck" material="shoulder_connect_deck_material" />
-        <geom type="mesh" class="visual" pos="-0.000446304 -0.0003 -0.0814" quat="3.05989e-16 -0.707107 -0.707107 3.02524e-16" mesh="servo_support" material="servo_support_material" />
-        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0735796" quat="1.55069e-17 -0.707107 -0.707107 -1.22231e-17" mesh="waist_platform_2" material="waist_platform_2_material" />
-        <site group="3" name="chest_imu" pos="1.49565e-05 -0.0003 -0.1302" quat="8.16744e-17 0.707107 0.707107 1.03876e-16" />
-        <body name="shoulder" pos="-0.0816463 -0.000258254 -0.13748" quat="0.500498 0.499915 0.499502 0.500085">
-          <joint axis="0 0 1" name="right_shoulder_pitch" type="hinge" range="-3.1409677411758645 0.8732895384110934" class="htd45hServo" />
-          <inertial pos="0.000585464 0.000146801 -0.0460385" mass="0.10784" fullinertia="4.43733e-05 4.30029e-05 2.71749e-05 -4.32734e-08 -1.30473e-08 5.88947e-08" />
-          <geom type="mesh" class="visual" pos="3.49951e-05 0.056 0.0824" quat="0.707107 0.707107 -0.00022094 -0.00022094" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
-          <geom type="mesh" class="visual" pos="-0.000314864 0.0562252 0.0813" quat="0.707107 0.707107 -0.00022094 -0.00022094" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
-          <geom type="mesh" class="visual" pos="-0.000114864 0.0562251 0.0813" quat="0.707107 0.707107 -0.00022094 -0.00022094" mesh="shoulder_mid" material="shoulder_mid_material" />
-          <geom type="mesh" class="visual" pos="8.51357e-05 0.056225 0.0813" quat="0.707107 0.707107 -0.00022094 -0.00022094" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
+        <joint axis="0 0 1" name="waist_yaw" type="hinge" range="-0.5235987755982926 0.523598775598305" class="htd45hServo" />
+        <inertial pos="-0.00149016 0.00828913 -0.0957464" mass="0.53402" fullinertia="0.00155112 0.00236591 0.00118613 1.70072e-05 -5.18143e-06 -3.01654e-05" />
+        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0755796" quat="1.62735e-17 -0.707107 -0.707107 -9.69319e-18" mesh="waist_platform" material="waist_platform_material" />
+        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0834" quat="8.04677e-17 -0.707107 0.707107 -7.8286e-17" mesh="shoulder_connect_deck" material="shoulder_connect_deck_material" />
+        <geom type="mesh" class="visual" pos="-0.000246304 0.027 -0.0752" quat="0.707107 -2.1575e-15 0.707107 2.23779e-15" mesh="rp_assemble" material="rp_assemble_material" />
+        <geom type="mesh" class="visual" pos="-4.63042e-05 -0.0003 -0.0834" quat="4.55358e-16 -0.707107 0.707107 -4.52831e-16" mesh="servo_support" material="servo_support_material" />
+        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0834" quat="7.79856e-17 0.707107 0.707107 8.02247e-17" mesh="body_box" material="body_box_material" />
+        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0834" quat="7.82539e-17 0.707107 0.707107 8.0033e-17" mesh="shoulder_connect_deck" material="shoulder_connect_deck_material" />
+        <geom type="mesh" class="visual" pos="-0.000446304 -0.0003 -0.0834" quat="2.96368e-16 -0.707107 -0.707107 2.94589e-16" mesh="servo_support" material="servo_support_material" />
+        <geom type="mesh" class="visual" pos="-0.000246304 -0.0003 -0.0755796" quat="2.68916e-17 -0.707107 -0.707107 5.41545e-19" mesh="waist_platform_2" material="waist_platform_2_material" />
+        <site group="3" name="chest_imu" pos="1.49565e-05 -0.0003 -0.1322" quat="7.62223e-17 0.707107 0.707107 8.57062e-17" />
+        <body name="shoulder" pos="-0.0816463 -0.000258254 -0.13948" quat="0.500498 0.499915 0.499502 0.500085">
+          <joint axis="0 0 1" name="right_shoulder_pitch" type="hinge" range="-3.141592653589793 0.5235987755982988" class="htd45hServo" />
+          <inertial pos="0.000585372 0.000147167 -0.0460385" mass="0.10784" fullinertia="4.43733e-05 4.30028e-05 2.71749e-05 -4.2417e-08 -1.30841e-08 5.88866e-08" />
+          <geom type="mesh" class="visual" pos="-1.0842e-19 0.056 0.0824" quat="0.707107 0.707107 0 -1.11684e-19" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
+          <geom type="mesh" class="visual" pos="-0.00035 0.056225 0.0813" quat="0.707107 0.707107 2.22045e-16 2.36453e-16" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
+          <geom type="mesh" class="visual" pos="-0.00015 0.056225 0.0813" quat="0.707107 0.707107 2.22045e-16 9.39097e-17" mesh="shoulder_mid" material="shoulder_mid_material" />
+          <geom type="mesh" class="visual" pos="5e-05 0.056225 0.0813" quat="0.707107 0.707107 -0 1.03093e-16" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
         </body>
-        <body name="shoulder_2" pos="0.0811537 -0.000341746 -0.13748" quat="0.500085 0.499502 -0.499915 -0.500498">
-          <joint axis="0 0 1" name="left_shoulder_pitch" type="hinge" range="-0.8720498722220295 3.1422074073649284" class="htd45hServo" />
-          <inertial pos="-0.000585462 -0.000146807 -0.0460385" mass="0.10784" fullinertia="4.43733e-05 4.30029e-05 2.71749e-05 -4.32595e-08 1.30479e-08 -5.88946e-08" />
-          <geom type="mesh" class="visual" pos="-3.44262e-05 -0.056 0.0824" quat="0.000217348 0.000217348 0.707107 0.707107" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
-          <geom type="mesh" class="visual" pos="0.000315435 -0.0562252 0.0813" quat="0.000217348 0.000217348 0.707107 0.707107" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
-          <geom type="mesh" class="visual" pos="0.000115435 -0.0562251 0.0813" quat="0.000217348 0.000217348 0.707107 0.707107" mesh="shoulder_mid" material="shoulder_mid_material" />
-          <geom type="mesh" class="visual" pos="-8.45645e-05 -0.056225 0.0813" quat="0.000217348 0.000217348 0.707107 0.707107" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
-          <body name="upper_arm" pos="-0.02447 -0.00032587 -0.0531165" quat="0.499748 -0.503833 0.500226 -0.496163">
-            <joint axis="0 0 1" name="left_shoulder_roll" type="hinge" range="-2.090372598285786 0.0040225041074091195" class="htd45hServo" />
-            <inertial pos="-0.0848396 -0.134647 0.0242879" mass="0.147771" fullinertia="0.00275557 0.000546134 0.00324518 -2.11088e-06 1.22703e-05 -1.05886e-05" />
-            <geom type="mesh" class="visual" pos="-0.0550596 0.134822 0.0256018" quat="0.707105 0.00142293 0.707105 -0.0014134" mesh="uparm" material="uparm_material" />
-            <geom type="mesh" class="visual" pos="-0.0562658 -0.134994 0.0262549" quat="0.701981 0.00493636 0.712148 0.00658547" mesh="back_ball_connector" material="back_ball_connector_material" />
-            <geom type="mesh" class="visual" pos="-0.0562658 -0.134994 0.0262549" quat="0.701981 0.00493636 0.712148 0.00658547" mesh="uparm" material="uparm_material" />
-            <geom type="mesh" class="visual" pos="-0.0561395 -0.134375 0.0255982" quat="0.0014134 0.707105 -0.00142293 0.707105" mesh="albow_servo_bracket" material="albow_servo_bracket_material" />
-            <geom type="mesh" class="visual" pos="-0.0562658 -0.134994 0.0262549" quat="0.701981 0.00493636 0.712148 0.00658547" mesh="front_ball_connector" material="front_ball_connector_material" />
-            <geom type="mesh" class="visual" pos="-0.0554581 0.134824 0.0254" quat="0.707105 0.00142217 0.707105 -0.00142217" mesh="front_ball_connector" material="front_ball_connector_material" />
-            <geom type="mesh" class="visual" pos="-0.0562658 -0.134994 0.0262549" quat="0.701981 0.00493636 0.712148 0.00658547" mesh="albow_servo_bracket" material="albow_servo_bracket_material" />
-            <geom type="mesh" class="visual" pos="-0.0554581 0.134824 0.0254" quat="0.707105 0.00142217 0.707105 -0.00142217" mesh="back_ball_connector" material="back_ball_connector_material" />
-            <body name="shoulder_3" pos="-0.000339253 -0.269025 -0.00213843" quat="0.00718877 0.0011661 -0.99994 -0.00814717">
-              <joint axis="0 0 1" name="right_shoulder_roll" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
-              <inertial pos="-7.30683e-06 0.00727241 -0.0238268" mass="0.10784" fullinertia="4.30036e-05 2.71762e-05 4.43712e-05 5.95243e-08 -5.26287e-08 -1.52734e-07" />
-              <geom type="mesh" class="visual" pos="0.0558475 0.135708 -0.0229296" quat="0.704335 0.00287166 -0.709856 -0.00288939" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
-              <geom type="mesh" class="visual" pos="0.0560753 0.134611 -0.0232868" quat="0.704335 0.00287166 -0.709856 -0.00288939" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
-              <geom type="mesh" class="visual" pos="0.0560737 0.134609 -0.0230868" quat="0.704335 0.00287166 -0.709856 -0.00288939" mesh="shoulder_mid" material="shoulder_mid_material" />
-              <geom type="mesh" class="visual" pos="0.0560721 0.134608 -0.0228868" quat="0.704335 0.00287166 -0.709856 -0.00288939" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
+        <body name="shoulder_2" pos="0.0811537 -0.000341746 -0.13948" quat="0.500498 -0.499915 -0.499502 0.500085">
+          <joint axis="0 0 1" name="left_shoulder_pitch" type="hinge" range="-0.5235987755982979 3.141592653589794" class="htd45hServo" />
+          <inertial pos="0.000585372 0.000147167 -0.0460385" mass="0.10784" fullinertia="4.43733e-05 4.30028e-05 2.71749e-05 -4.2417e-08 -1.30841e-08 5.88866e-08" />
+          <geom type="mesh" class="visual" pos="-2.71051e-20 0.056 0.0824" quat="0.707107 0.707107 0 4.90833e-20" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
+          <geom type="mesh" class="visual" pos="-0.00035 0.056225 0.0813" quat="0.707107 0.707107 0 7.16234e-17" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
+          <geom type="mesh" class="visual" pos="-0.00015 0.056225 0.0813" quat="0.707107 0.707107 0 6.16458e-17" mesh="shoulder_mid" material="shoulder_mid_material" />
+          <geom type="mesh" class="visual" pos="5e-05 0.056225 0.0813" quat="0.707107 0.707107 -2.22045e-16 -2.12391e-16" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
+          <body name="upper_arm" pos="0.0244698 0.000340913 -0.0531165" quat="0.00275156 0.709976 0.00276929 -0.704215">
+            <joint axis="0 0 1" name="left_shoulder_roll" type="hinge" range="-3.141592653589793 0.0" class="htd45hServo" />
+            <inertial pos="-0.134818 0.0848391 0.0243406" mass="0.147771" fullinertia="0.000546133 0.00274879 0.00323839 3.05653e-06 -9.50615e-06 -1.25755e-05" />
+            <geom type="mesh" class="visual" pos="0.1346 0.0556015 0.0256018" quat="0.500006 0.500001 0.499999 -0.499994" mesh="uparm" material="uparm_material" />
+            <geom type="mesh" class="visual" pos="-0.134994 0.0562622 0.0263245" quat="0.50072 0.507363 0.500382 -0.491407" mesh="back_ball_connector" material="back_ball_connector_material" />
+            <geom type="mesh" class="visual" pos="-0.134994 0.0562622 0.0263245" quat="0.50072 0.507363 0.500382 -0.491407" mesh="uparm" material="uparm_material" />
+            <geom type="mesh" class="visual" pos="-0.1346 0.0555985 0.0255982" quat="0.499994 0.499999 -0.500001 0.500006" mesh="albow_servo_bracket" material="albow_servo_bracket_material" />
+            <geom type="mesh" class="visual" pos="-0.134994 0.0562622 0.0263245" quat="0.50072 0.507363 0.500382 -0.491407" mesh="front_ball_connector" material="front_ball_connector_material" />
+            <geom type="mesh" class="visual" pos="0.1346 0.056 0.0254" quat="0.5 0.5 0.5 -0.5" mesh="front_ball_connector" material="front_ball_connector_material" />
+            <geom type="mesh" class="visual" pos="-0.134994 0.0562622 0.0263245" quat="0.50072 0.507363 0.500382 -0.491407" mesh="albow_servo_bracket" material="albow_servo_bracket_material" />
+            <geom type="mesh" class="visual" pos="0.1346 0.056 0.0254" quat="0.5 0.5 0.5 -0.5" mesh="back_ball_connector" material="back_ball_connector_material" />
+            <body name="shoulder_3" pos="-0.269025 0.000369553 -0.00213798" quat="0.00780859 -0.999936 -0.0011661 -0.00814713">
+              <joint axis="0 0 1" name="right_shoulder_roll" type="hinge" range="0.0 3.141592653589793" class="htd45hServo" />
+              <inertial pos="0.00727241 7.30683e-06 -0.0238268" mass="0.10784" fullinertia="2.71762e-05 4.30036e-05 4.43712e-05 -5.95243e-08 -1.52734e-07 5.26287e-08" />
+              <geom type="mesh" class="visual" pos="0.135708 -0.0558475 -0.0229296" quat="0.495997 -0.499913 -0.503975 -0.500083" mesh="shouder_connect_servo" material="shouder_connect_servo_material" />
+              <geom type="mesh" class="visual" pos="0.134611 -0.0560753 -0.0232868" quat="0.495997 -0.499913 -0.503975 -0.500083" mesh="shoulder_front_ball" material="shoulder_front_ball_material" />
+              <geom type="mesh" class="visual" pos="0.134609 -0.0560737 -0.0230868" quat="0.495997 -0.499913 -0.503975 -0.500083" mesh="shoulder_mid" material="shoulder_mid_material" />
+              <geom type="mesh" class="visual" pos="0.134608 -0.0560721 -0.0228868" quat="0.495997 -0.499913 -0.503975 -0.500083" mesh="shoulder_back_ball" material="shoulder_back_ball_material" />
             </body>
-            <body name="fore_arm" pos="-0.169902 -0.293952 0.0253033" quat="0.498908 0.508221 -0.499866 0.492885">
-              <joint axis="0 0 1" name="right_albow_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
-              <inertial pos="-0.000112778 0.0325657 -0.023611" mass="0.0901921" fullinertia="0.000244561 1.3442e-05 0.000240676 3.33534e-07 -1.99507e-08 6.00183e-06" />
-              <geom type="mesh" class="visual" pos="-0.000159815 -0.113816 -0.161098" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
+            <body name="fore_arm" pos="-0.293953 0.169898 0.025514" quat="0.00469695 -0.712822 -0.00634606 0.7013">
+              <joint axis="0 0 1" name="right_elbow_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
+              <inertial pos="0.000112778 -0.0325657 -0.024011" mass="0.0901921" fullinertia="0.000244561 1.3442e-05 0.000240676 3.33534e-07 1.99507e-08 -6.00183e-06" />
+              <geom type="mesh" class="visual" pos="0.000159815 0.113816 -0.161498" quat="0.706694 -0.707519 0.000292013 0.000292354" mesh="forearm" material="forearm_material" />
             </body>
-            <body name="fore_arm_2" pos="-0.169695 -0.023419 0.0255997" quat="0.500998 0.499 -0.501005 0.498993">
-              <joint axis="0 0 1" name="left_albow_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
+            <body name="fore_arm_2" pos="-0.0241014 0.1696 0.0255997" quat="0.707102 3.99965e-06 -0.707112 4.00325e-06">
+              <joint axis="0 0 1" name="left_elbow_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
               <inertial pos="-0.000112778 0.0325657 -0.024011" mass="0.0901921" fullinertia="0.000244561 1.3442e-05 0.000240676 3.33534e-07 -1.99507e-08 6.00183e-06" />
               <geom type="mesh" class="visual" pos="-0.000159815 -0.113816 -0.161498" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
             </body>
@@ -189,40 +189,40 @@
     </body>
   </worldbody>
   <asset>
-    <mesh file="uparm.stl" />
+    <mesh file="hip_trunk_connect.stl" />
+    <mesh file="hip_cover.stl" />
+    <mesh file="servo_bracket_top.stl" />
+    <mesh file="up_leg_servo_connect.stl" />
     <mesh file="hip_servo_hook_left.stl" />
-    <mesh file="shoulder_connect_deck.stl" />
-    <mesh file="scroll_out.stl" />
-    <mesh file="waist_trunk_support.stl" />
     <mesh file="low_leg_right.stl" />
     <mesh file="up_leg.stl" />
-    <mesh file="hip_servo_hook_right.stl" />
-    <mesh file="knee_ball_left.stl" />
-    <mesh file="foot_main.stl" />
-    <mesh file="toe_btm.stl" />
+    <mesh file="shoulder_back_ball.stl" />
     <mesh file="forearm.stl" />
-    <mesh file="up_leg_servo_connect.stl" />
-    <mesh file="low_leg_left.stl" />
     <mesh file="shouder_connect_servo.stl" />
-    <mesh file="servo_support.stl" />
-    <mesh file="knee_ball_mid.stl" />
+    <mesh file="waist_trunk_support.stl" />
+    <mesh file="scroll_out.stl" />
+    <mesh file="knee_ball_right.stl" />
+    <mesh file="waist_platform_2.stl" />
+    <mesh file="shoulder_connect_deck.stl" />
+    <mesh file="hip_servo_hook_right.stl" />
+    <mesh file="toe_btm.stl" />
+    <mesh file="waist_platform.stl" />
+    <mesh file="knee_ball_left.stl" />
+    <mesh file="shoulder_mid.stl" />
+    <mesh file="heel_btm.stl" />
+    <mesh file="body_box.stl" />
+    <mesh file="shoulder_front_ball.stl" />
+    <mesh file="front_ball_connector.stl" />
     <mesh file="trunk_bottom.stl" />
     <mesh file="albow_servo_bracket.stl" />
-    <mesh file="part_118.stl" />
-    <mesh file="waist_platform.stl" />
-    <mesh file="shoulder_front_ball.stl" />
-    <mesh file="shoulder_mid.stl" />
-    <mesh file="knee_ball_right.stl" />
-    <mesh file="front_ball_connector.stl" />
-    <mesh file="trunk_servo_connect.stl" />
-    <mesh file="hip_cover.stl" />
-    <mesh file="body_box.stl" />
-    <mesh file="waist_platform_2.stl" />
-    <mesh file="hip_trunk_connect.stl" />
-    <mesh file="heel_btm.stl" />
     <mesh file="back_ball_connector.stl" />
-    <mesh file="shoulder_back_ball.stl" />
-    <mesh file="servo_bracket_top.stl" />
+    <mesh file="trunk_servo_connect.stl" />
+    <mesh file="rp_assemble.stl" />
+    <mesh file="foot_main.stl" />
+    <mesh file="servo_support.stl" />
+    <mesh file="uparm.stl" />
+    <mesh file="low_leg_left.stl" />
+    <mesh file="knee_ball_mid.stl" />
     <material name="waist_trunk_support_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="trunk_bottom_material" rgba="0.301961 0.301961 0.301961 1" />
     <material name="trunk_servo_connect_material" rgba="0.647059 0.647059 0.647059 1" />
@@ -244,7 +244,7 @@
     <material name="hip_servo_hook_right_material" rgba="0.972549 0.529412 0.00392157 1" />
     <material name="waist_platform_material" rgba="0.231373 0.380392 0.705882 1" />
     <material name="shoulder_connect_deck_material" rgba="0.615686 0.811765 0.929412 1" />
-    <material name="part_118_material" rgba="0.372549 0.654902 0.239216 1" />
+    <material name="rp_assemble_material" rgba="0.513725 0.737255 0.407843 1" />
     <material name="servo_support_material" rgba="0.498039 0.498039 0.498039 1" />
     <material name="body_box_material" rgba="0.768627 0.886275 0.952941 1" />
     <material name="waist_platform_2_material" rgba="0.231373 0.380392 0.705882 1" />
@@ -272,8 +272,8 @@
     <position class="htd45hServo" name="left_shoulder_pitch" joint="left_shoulder_pitch" inheritrange="1" />
     <position class="htd45hServo" name="left_shoulder_roll" joint="left_shoulder_roll" inheritrange="1" />
     <position class="htd45hServo" name="right_shoulder_roll" joint="right_shoulder_roll" inheritrange="1" />
-    <position class="htd45hServo" name="right_albow_pitch" joint="right_albow_pitch" inheritrange="1" />
-    <position class="htd45hServo" name="left_albow_pitch" joint="left_albow_pitch" inheritrange="1" />
+    <position class="htd45hServo" name="right_elbow_pitch" joint="right_elbow_pitch" inheritrange="1" />
+    <position class="htd45hServo" name="left_elbow_pitch" joint="left_elbow_pitch" inheritrange="1" />
   </actuator>
   <equality />
 </mujoco>

@@ -14,7 +14,7 @@
 ## Build, Test, and Development Commands
 - Environment: `uv sync` to create/update `.venv` (Python 3.12+). Run tools with `uv run ...` to ensure the repo env is used.
 - Validate training setup before long runs: `uv run python scripts/validate_training_setup.py`.
-- Stage 1 PPO walking (current focus): `uv run python training/train.py --config training/configs/ppo_walking.yaml --no-amp`; add `--verify` for a quick smoke test.
+- Stage 1 PPO walking (current focus): `uv run python training/train.py --config training/configs/ppo_walking.yaml`; add `--verify` for a quick smoke test.
 - Visualize a checkpoint: `uv run python training/visualize_policy.py --checkpoint <path>`.
 - Fast deterministic checks: `uv run python scripts/run_unit_tests.py`. Full suite: `uv run pytest tests`.
 

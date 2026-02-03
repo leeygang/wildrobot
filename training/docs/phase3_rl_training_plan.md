@@ -283,7 +283,7 @@ python training/train.py --verify
 python training/train.py --iterations 3000 --num-envs 32 --amp-weight 1.0
 
 # Training without AMP (pure PPO baseline)
-python training/train.py --no-amp
+python training/train.py
 ```
 
 **Value Delivered:**
@@ -291,7 +291,7 @@ python training/train.py --no-amp
 - ✅ Solves Brax v2 impedance mismatch cleanly
 - ✅ All components tested and validated
 - ✅ Comprehensive documentation in `mujoco_playground_plan.md`
-- ✅ Can train with or without AMP (--no-amp flag)
+- ✅ Can train with or without AMP (via config: `amp.enabled`)
 - ✅ Checkpoint saving/loading implemented
 - ✅ Ready for full training runs on GPU
 

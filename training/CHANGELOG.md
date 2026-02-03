@@ -19,8 +19,8 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ### Plan
 1. `uv run python scripts/validate_training_setup.py`
-2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
-3. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp`
+2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --verify`
+3. `uv run python training/train.py --config training/configs/ppo_standing.yaml`
 
 ### Results (Standing PPO, v0.12.2)
 - Run: `training/wandb/offline-run-20260108_212208-r9wr2rq5/`
@@ -59,9 +59,9 @@ This changelog tracks capability changes, configuration updates, and training re
 1. Validate assets + environment:
    `uv run python scripts/validate_training_setup.py`
 2. Quick smoke test (no resume):
-   `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
+   `uv run python training/train.py --config training/configs/ppo_standing.yaml --verify`
 3. Full standing run from scratch (no resume):
-   `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp`
+   `uv run python training/train.py --config training/configs/ppo_standing.yaml`
 
 ---
 
@@ -73,7 +73,7 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ### Plan
 1. `uv run python scripts/validate_training_setup.py`
-2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --resume training/checkpoints/ppo_standing_v00113_final.pkl`
+2. `uv run python training/train.py --config training/configs/ppo_standing.yaml --resume training/checkpoints/ppo_standing_v00113_final.pkl`
 
 ---
 
@@ -83,9 +83,9 @@ This changelog tracks capability changes, configuration updates, and training re
 1. Validate assets + config:
    `uv run python scripts/validate_training_setup.py`
 2. Walking warm-start (conservative range):
-   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --no-amp --verify --resume training/checkpoints/ppo_standing_v00113_final.pkl`
+   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --verify --resume training/checkpoints/ppo_standing_v00113_final.pkl`
 3. Full run:
-   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --no-amp --resume training/checkpoints/ppo_standing_v00113_final.pkl`
+   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --resume training/checkpoints/ppo_standing_v00113_final.pkl`
 
 ### Base Checkpoint
 - `training/checkpoints/ppo_standing_v00113_final.pkl` (v0.11.3 standing best @ iter 310)
@@ -185,10 +185,10 @@ uv run mjpython training/eval/visualize_policy.py \
 ## [v0.11.3] - 2025-12-31: Foot Switches + Standing Retrain Plan
 
 ### Plan
-1. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
+1. `uv run python training/train.py --config training/configs/ppo_standing.yaml --verify`
 2. `uv run python training/eval/visualize_policy.py --headless --num-episodes 1 --config training/configs/ppo_standing.yaml --checkpoint <path>`
 3. Resume walking with new standing checkpoint:
-   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --no-amp --verify --resume <new_standing_checkpoint>`
+   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --verify --resume <new_standing_checkpoint>`
 
 ### Config Updates
 - `min_height`: 0.20 → 0.40 (terminate squat posture)
@@ -213,10 +213,10 @@ uv run mjpython training/eval/visualize_policy.py \
 ## [v0.11.2] - 2025-12-31: Upright Standing Retrain Plan
 
 ### Plan
-1. `uv run python training/train.py --config training/configs/ppo_standing.yaml --no-amp --verify`
+1. `uv run python training/train.py --config training/configs/ppo_standing.yaml --verify`
 2. `uv run python training/eval/visualize_policy.py --headless --num-episodes 1 --config training/configs/ppo_standing.yaml --checkpoint <path>`
 3. Resume walking with new standing checkpoint:
-   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --no-amp --verify --resume <new_standing_checkpoint>`
+   `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --verify --resume <new_standing_checkpoint>`
 
 ### Config Updates
 - `min_height`: 0.20 → 0.40 (terminate squat posture)
@@ -229,7 +229,7 @@ uv run mjpython training/eval/visualize_policy.py \
 ## [v0.11.1] - 2025-12-31: CAL PPO Walking Smoke Test
 
 ### Test Plan
-1. `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --no-amp --verify --resume training/checkpoints/ppo_standing_v0110_170.pkl`
+1. `uv run python training/train.py --config training/configs/ppo_walking_conservative.yaml --verify --resume training/checkpoints/ppo_standing_v0110_170.pkl`
 2. `uv run python training/eval/visualize_policy.py --headless --num-episodes 1 --config training/configs/ppo_walking.yaml --checkpoint <path>`
 
 ### Results
