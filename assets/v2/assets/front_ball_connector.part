@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "65f56c9de8f75b7778d8eaf7",
+    "documentMicroversion": "a829498f702c75bbcc36bb90",
     "elementId": "eed32dd76ad6e0d510784b1c",
     "fullConfiguration": "default",
-    "id": "MrODKWFu3cMTy6PSL",
+    "id": "Mk7yHZmAe/tPEIPLF",
     "isStandardContent": false,
-    "name": "front_ball_connector <2>",
-    "partId": "R6BT",
+    "name": "front_ball_connector <1>",
+    "partId": "R7BD",
     "suppressed": false,
     "type": "Part"
 }

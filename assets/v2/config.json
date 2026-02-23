@@ -6,7 +6,7 @@
     // Run exports from inside `assets/v1/` so the output lands in this variant folder.
     //
     // NOTE: This is JSONC (comments). Keep format consistent with onshape-to-robot.
-    "url":"https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/5c6acb3ff696b03bdf018f3b", 
+    "url":"https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/09cfe82abf86880a1925d040/e/5c6acb3ff696b03bdf018f3b", 
     "outputFormat": "mujoco",
     "assemblyName": "WildRobot",
     "robot_name": "WildRobot",

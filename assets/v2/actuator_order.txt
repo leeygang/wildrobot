@@ -12,6 +12,10 @@ waist_yaw
 left_shoulder_pitch
 left_shoulder_roll
 left_elbow_pitch
+left_wrist_yaw
+left_wrist_pitch
 right_shoulder_pitch
 right_shoulder_roll
 right_elbow_pitch
+right_wrist_yaw
+right_wrist_pitch
