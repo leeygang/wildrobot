@@ -1,0 +1,249 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 1,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 69,
+    "action_dim": 19
+  },
+  "robot": {
+    "robot_name": "WildRobot",
+    "actuator_names": [
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "waist_yaw",
+      "right_shoulder_pitch",
+      "right_shoulder_roll",
+      "right_elbow_pitch",
+      "right_wrist_yaw",
+      "right_wrist_pitch",
+      "left_shoulder_pitch",
+      "left_shoulder_roll",
+      "left_elbow_pitch",
+      "left_wrist_yaw",
+      "left_wrist_pitch"
+    ],
+    "joints": {
+      "left_hip_pitch": {
+        "range_min_rad": -0.087266,
+        "range_max_rad": 1.570796,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.570796,
+        "range_max_rad": 0.174533,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.396263,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.698132,
+        "range_max_rad": 0.785398,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.570796,
+        "range_max_rad": 0.087266,
+        "mirror_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.174533,
+        "range_max_rad": 1.570796,
+        "mirror_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.396263,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.698132,
+        "range_max_rad": 0.785398,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "waist_yaw": {
+        "range_min_rad": -0.523599,
+        "range_max_rad": 0.523599,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_pitch": {
+        "range_min_rad": -3.141593,
+        "range_max_rad": 0.523599,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_roll": {
+        "range_min_rad": -0.523599,
+        "range_max_rad": 3.054326,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.570796,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_wrist_yaw": {
+        "range_min_rad": -1.570898,
+        "range_max_rad": 1.570694,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_wrist_pitch": {
+        "range_min_rad": -0.087266,
+        "range_max_rad": 0.0,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_pitch": {
+        "range_min_rad": -0.523599,
+        "range_max_rad": 3.141593,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_roll": {
+        "range_min_rad": -3.054326,
+        "range_max_rad": 0.523599,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_elbow_pitch": {
+        "range_min_rad": -1e-06,
+        "range_max_rad": 1.570795,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_wrist_yaw": {
+        "range_min_rad": -1.570695,
+        "range_max_rad": 1.570898,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_wrist_pitch": {
+        "range_min_rad": -0.08725,
+        "range_max_rad": 1.7e-05,
+        "mirror_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      }
+    },
+    "home_ctrl_rad": [
+      0.000312985,
+      5.25144e-05,
+      0.0,
+      -0.000594914,
+      -0.000344585,
+      -0.00209672,
+      0.0,
+      -0.000582818,
+      -9.11277e-07,
+      -0.000555522,
+      -0.00379795,
+      0.000286301,
+      7.59758e-06,
+      0.0,
+      0.000483019,
+      0.00423369,
+      0.000257574,
+      -6.74139e-06,
+      1.7e-05
+    ]
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v1",
+    "layout": [
+      {
+        "name": "gravity_local",
+        "size": 3,
+        "frame": "local",
+        "units": "unit_vector"
+      },
+      {
+        "name": "angvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "rad_s"
+      },
+      {
+        "name": "joint_pos_normalized",
+        "size": 19,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "joint_vel_normalized",
+        "size": 19,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "foot_switches",
+        "size": 4,
+        "frame": null,
+        "units": "bool_as_float"
+      },
+      {
+        "name": "prev_action",
+        "size": 19,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "velocity_cmd",
+        "size": 1,
+        "frame": null,
+        "units": "m_s"
+      },
+      {
+        "name": "padding",
+        "size": 1,
+        "frame": null,
+        "units": "unused"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "lowpass_v1",
+    "postprocess_params": {
+      "alpha": 0.6
+    },
+    "mapping_id": "pos_target_rad_v1"
+  },
+  "provenance": {
+    "created_at": "2026-02-26T05:06:00.506029+00:00",
+    "training_config": "training/configs/ppo_standing_push.yaml",
+    "source_checkpoint": {
+      "format": "pkl",
+      "path": "training/checkpoints/ppo_standing_push_v00134_20260225_041715-qjaqsdy7/checkpoint_1270_10403840.pkl"
+    },
+    "robot_config": "/home/leeygang/projects/wildrobot/assets/v2/robot_config.yaml"
+  }
+}

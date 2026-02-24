@@ -13,7 +13,11 @@
     "output_filename": "wildrobot",
     "simplify_stls": "collision",
     "max_stl_size": 0.03,
+<<<<<<< HEAD
     "convex_decomposition": true,
+=======
+    "convex_decomposition": false,
+>>>>>>> b734666 (prepare for v0.13.2 training)
     "ignore": {
         "heel_top*": "visual",
         "toe_top*": "visual",
@@ -33,15 +37,9 @@
         "!toe_btm": "collision",
         "!heel_btm": "collision",
         "!forearm": "collision",
-        "!finger*": "collision",
-        "!palm_*": "collision",
-        "!hip_servo_hook*": "collision",
+        "!finger": "collision",
         "!HTD-45H-Collision": "collision",
-        "!upper_leg*": "collision",
-        "!low_leg_left": "collision",
-        "!low_leg_right": "collision",
-        "!knee_ball_left": "collision",
-        "!knee_ball_right": "collision"
+        "!upper_leg*": "collision"
     },
     "joint_properties": {
         "default": {

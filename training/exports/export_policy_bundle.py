@@ -14,12 +14,17 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import mujoco
 import yaml
+
+# Add project root to import path (exports/ -> training/ -> project_root/)
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from policy_contract.spec import JointSpec, PolicySpec, validate_spec
 from policy_contract.spec_builder import build_policy_spec

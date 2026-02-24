@@ -75,7 +75,6 @@ DEFAULT_CONFIG_PATH = project_root / "training" / "configs" / "ppo_walking.yaml"
 DEFAULT_CHECKPOINT_PATH = (
     project_root / "training" / "checkpoints" / "final_ppo_policy.pkl"
 )
-DEFAULT_ROBOT_CONFIG_PATH = project_root / "assets" / "robot_config.yaml"
 
 
 @dataclass(frozen=True)
@@ -274,19 +273,25 @@ def main():
     if args.demo:
         deterministic = True
 
-    # Load robot config
-    if DEFAULT_ROBOT_CONFIG_PATH.exists():
-        robot_cfg = load_robot_config(DEFAULT_ROBOT_CONFIG_PATH)
-        print(f"Loaded robot config: {robot_cfg.robot_name}")
-    else:
-        print(f"Error: Robot config not found at {DEFAULT_ROBOT_CONFIG_PATH}")
-        print("Run 'cd assets && python post_process.py' to generate it.")
-        return 1
-
     # Load training config
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
+
+    # Load robot config (variant-aware via training config)
+    robot_cfg_path = Path(training_cfg.env.robot_config_path)
+    if not robot_cfg_path.is_absolute():
+        robot_cfg_path = project_root / robot_cfg_path
+    if robot_cfg_path.exists():
+        robot_cfg = load_robot_config(robot_cfg_path)
+        print(f"Loaded robot config: {robot_cfg.robot_name}")
+    else:
+        print(f"Error: Robot config not found at {robot_cfg_path}")
+        print(
+            "Check env.assets_root or env.robot_config_path in the config, "
+            "then regenerate robot_config.yaml if needed."
+        )
+        return 1
 
     # Resolve checkpoint path (tries multiple locations)
     checkpoint_path = resolve_checkpoint_path(args.checkpoint)

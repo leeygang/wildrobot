@@ -69,6 +69,7 @@
         <geom type="mesh" class="collision" pos="0.0252688 -0.0063813 0.0667393" quat="0.000116219 -0.707107 0.000116219 0.707107" mesh="htd_45h_collision_00014" material="htd_45h_collision_00014_material" />
         <geom type="mesh" class="collision" pos="0.0252688 -0.0063813 0.0667393" quat="0.000116219 -0.707107 0.000116219 0.707107" mesh="htd_45h_collision_00015" material="htd_45h_collision_00015_material" />
         <geom type="mesh" class="visual" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left" material="hip_servo_hook_left_material" />
+<<<<<<< HEAD
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00000" material="hip_servo_hook_left_00000_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00001" material="hip_servo_hook_left_00001_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00002" material="hip_servo_hook_left_00002_material" />
@@ -85,6 +86,8 @@
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00013" material="hip_servo_hook_left_00013_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00014" material="hip_servo_hook_left_00014_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 0.5 -0.5" mesh="hip_servo_hook_left_00015" material="hip_servo_hook_left_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
         <body name="upper_leg" pos="-0.0269 -0.000166429 -0.0365475" quat="0.707399 -0.000412109 0.706814 0.00041245">
           <joint axis="0 0 1" name="left_hip_roll" type="hinge" range="-1.5707963267948966 0.17453292519943295" class="htd45hServo" />
           <inertial pos="-0.001125 0.15766 0.0267064" mass="0.230628" fullinertia="0.00095984 0.000124721 0.000952693 1.08972e-05 -1.17027e-08 1.05232e-06" />
@@ -123,6 +126,7 @@
           <geom type="mesh" class="collision" pos="-0.095 1.38778e-17 0.0267" quat="0.707107 0.707107 0 7.10636e-17" mesh="upper_leg_00014" material="upper_leg_00014_material" />
           <geom type="mesh" class="collision" pos="-0.095 1.38778e-17 0.0267" quat="0.707107 0.707107 0 7.10636e-17" mesh="upper_leg_00015" material="upper_leg_00015_material" />
           <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 1.11022e-16 6.20901e-17" mesh="knee_ball_left" material="knee_ball_left_material" />
+<<<<<<< HEAD
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 1.11022e-16 6.20901e-17" mesh="knee_ball_left_00000" material="knee_ball_left_00000_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 1.11022e-16 6.20901e-17" mesh="knee_ball_left_00001" material="knee_ball_left_00001_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 1.11022e-16 6.20901e-17" mesh="knee_ball_left_00002" material="knee_ball_left_00002_material" />
@@ -157,6 +161,10 @@
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 0 5.10554e-17" mesh="knee_ball_right_00013" material="knee_ball_right_00013_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 0 5.10554e-17" mesh="knee_ball_right_00014" material="knee_ball_right_00014_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 0 5.10554e-17" mesh="knee_ball_right_00015" material="knee_ball_right_00015_material" />
+=======
+          <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 0 4.88566e-17" mesh="knee_ball_mid" material="knee_ball_mid_material" />
+          <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 0 5.10554e-17" mesh="knee_ball_right" material="knee_ball_right_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
           <site group="3" name="left_knee_mimic" pos="0.000138461 0.192701 0.0266255" quat="0.49875 0.501659 0.498338 -0.501244" />
           <body name="left_knee_mimic" pos="0.000138461 0.192701 0.0266255" quat="0.49875 0.501659 0.498338 -0.501244">
             <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
@@ -166,6 +174,7 @@
             <joint axis="0 0 1" name="left_knee_pitch" type="hinge" range="0.0 1.3962634015954636" class="htd45hServo" />
             <inertial pos="-0.000528557 -0.102714 0.0267452" mass="0.375475" fullinertia="0.00172108 0.00066678 0.0016354 1.9152e-05 9.36419e-08 -2.40247e-05" />
             <geom type="mesh" class="visual" pos="-2.23674e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right" material="low_leg_right_material" />
+<<<<<<< HEAD
             <geom type="mesh" class="collision" pos="-2.23674e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_00000" material="low_leg_right_00000_material" />
             <geom type="mesh" class="collision" pos="-2.23674e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_00001" material="low_leg_right_00001_material" />
             <geom type="mesh" class="collision" pos="-2.23674e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_00002" material="low_leg_right_00002_material" />
@@ -199,6 +208,9 @@
             <geom type="mesh" class="collision" pos="-2.46439e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_00013" material="low_leg_left_00013_material" />
             <geom type="mesh" class="collision" pos="-2.46439e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_00014" material="low_leg_left_00014_material" />
             <geom type="mesh" class="collision" pos="-2.46439e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_00015" material="low_leg_left_00015_material" />
+=======
+            <geom type="mesh" class="visual" pos="-2.46439e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left" material="low_leg_left_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
             <site group="3" name="left_ankle_mimic" pos="4.95231e-05 -0.179866 0.0276306" quat="7.39339e-15 -7.14012e-15 -0.704634 -0.709571" />
             <body name="left_ankle_mimic" pos="4.95231e-05 -0.179866 0.0276306" quat="7.39339e-15 -7.14012e-15 -0.704634 -0.709571">
               <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
@@ -245,6 +257,7 @@
         <geom type="mesh" class="collision" pos="-0.0260688 -0.00604509 -0.139745" quat="0.000116219 -0.707107 -0.000116219 -0.707107" mesh="htd_45h_collision_2_00014" material="htd_45h_collision_2_00014_material" />
         <geom type="mesh" class="collision" pos="-0.0260688 -0.00604509 -0.139745" quat="0.000116219 -0.707107 -0.000116219 -0.707107" mesh="htd_45h_collision_2_00015" material="htd_45h_collision_2_00015_material" />
         <geom type="mesh" class="visual" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right" material="hip_servo_hook_right_material" />
+<<<<<<< HEAD
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00000" material="hip_servo_hook_right_00000_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00001" material="hip_servo_hook_right_00001_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00002" material="hip_servo_hook_right_00002_material" />
@@ -261,10 +274,13 @@
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00013" material="hip_servo_hook_right_00013_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00014" material="hip_servo_hook_right_00014_material" />
         <geom type="mesh" class="collision" pos="-0.0001 -0.03359 0.0566" quat="0.5 0.5 -0.5 0.5" mesh="hip_servo_hook_right_00015" material="hip_servo_hook_right_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
         <body name="knee" pos="0.0261 0.000169775 -0.0364583" quat="0.706814 -0.00041245 -0.707399 -0.000412109">
           <joint axis="0 0 1" name="right_hip_roll" type="hinge" range="-0.17453292519943028 1.5707963267948992" class="htd45hServo" />
           <inertial pos="-0.001125 0.15766 0.0267064" mass="0.230628" fullinertia="0.00095984 0.000124721 0.000952693 1.08972e-05 -1.17027e-08 1.05232e-06" />
           <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -2.22045e-16 -7.75637e-16" mesh="knee_ball_left" material="knee_ball_left_material" />
+<<<<<<< HEAD
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -2.22045e-16 -7.75637e-16" mesh="knee_ball_left_2_00000" material="knee_ball_left_2_00000_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -2.22045e-16 -7.75637e-16" mesh="knee_ball_left_2_00001" material="knee_ball_left_2_00001_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -2.22045e-16 -7.75637e-16" mesh="knee_ball_left_2_00002" material="knee_ball_left_2_00002_material" />
@@ -299,6 +315,10 @@
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -5.55112e-16 -7.58616e-16" mesh="knee_ball_right_2_00013" material="knee_ball_right_2_00013_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -5.55112e-16 -7.58616e-16" mesh="knee_ball_right_2_00014" material="knee_ball_right_2_00014_material" />
           <geom type="mesh" class="collision" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -5.55112e-16 -7.58616e-16" mesh="knee_ball_right_2_00015" material="knee_ball_right_2_00015_material" />
+=======
+          <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 1.11022e-16 -1.18023e-15" mesh="knee_ball_mid" material="knee_ball_mid_material" />
+          <geom type="mesh" class="visual" pos="-0.095 -0.0002 0.0267" quat="0.707107 0.707107 -5.55112e-16 -7.58616e-16" mesh="knee_ball_right" material="knee_ball_right_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
           <geom type="mesh" class="visual" pos="-0.095 1.31839e-16 0.0267" quat="0.707107 0.707107 -4.44089e-16 -5.42293e-16" mesh="upper_leg_servo_connect" material="upper_leg_servo_connect_material" />
           <geom type="mesh" class="collision" pos="-0.095 1.31839e-16 0.0267" quat="0.707107 0.707107 -4.44089e-16 -5.42293e-16" mesh="upper_leg_servo_connect_2_00000" material="upper_leg_servo_connect_2_00000_material" />
           <geom type="mesh" class="collision" pos="-0.095 1.31839e-16 0.0267" quat="0.707107 0.707107 -4.44089e-16 -5.42293e-16" mesh="upper_leg_servo_connect_2_00001" material="upper_leg_servo_connect_2_00001_material" />
@@ -342,6 +362,7 @@
             <joint axis="0 0 1" name="right_knee_pitch" type="hinge" range="0.0 1.3962634015954636" class="htd45hServo" />
             <inertial pos="-0.000528557 -0.102714 0.0267452" mass="0.375475" fullinertia="0.00172108 0.00066678 0.0016354 1.9152e-05 9.36419e-08 -2.40247e-05" />
             <geom type="mesh" class="visual" pos="-2.1529e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right" material="low_leg_right_material" />
+<<<<<<< HEAD
             <geom type="mesh" class="collision" pos="-2.1529e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_2_00000" material="low_leg_right_2_00000_material" />
             <geom type="mesh" class="collision" pos="-2.1529e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_2_00001" material="low_leg_right_2_00001_material" />
             <geom type="mesh" class="collision" pos="-2.1529e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right_2_00002" material="low_leg_right_2_00002_material" />
@@ -375,6 +396,9 @@
             <geom type="mesh" class="collision" pos="-2.21286e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_2_00013" material="low_leg_left_2_00013_material" />
             <geom type="mesh" class="collision" pos="-2.21286e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_2_00014" material="low_leg_left_2_00014_material" />
             <geom type="mesh" class="collision" pos="-2.21286e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left_2_00015" material="low_leg_left_2_00015_material" />
+=======
+            <geom type="mesh" class="visual" pos="-2.21286e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left" material="low_leg_left_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
             <site group="3" name="right_ankle_mimic" pos="4.95231e-05 -0.179866 0.0276306" quat="1.27676e-15 -1.77715e-15 -0.704634 -0.709571" />
             <body name="right_ankle_mimic" pos="4.95231e-05 -0.179866 0.0276306" quat="1.27676e-15 -1.77715e-15 -0.704634 -0.709571">
               <inertial pos="0 0 0" mass="0.001" diaginertia="0.000001 0.000001 0.000001" />
@@ -430,6 +454,7 @@
               <joint axis="0 0 1" name="right_elbow_pitch" type="hinge" range="0.0 1.5707963267948966" class="htd45hServo" />
               <inertial pos="0.00317971 0.0664224 -0.0258005" mass="0.249555" fullinertia="0.00057701 0.000152143 0.000594926 -2.63615e-05 8.65069e-07 1.48239e-05" />
               <geom type="mesh" class="visual" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm" material="forearm_material" />
+<<<<<<< HEAD
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_00000" material="forearm_00000_material" />
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_00001" material="forearm_00001_material" />
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_00002" material="forearm_00002_material" />
@@ -463,6 +488,11 @@
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_2_00013" material="forearm_2_00013_material" />
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_2_00014" material="forearm_2_00014_material" />
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_2_00015" material="forearm_2_00015_material" />
+=======
+              <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm" material="forearm_material" />
+              <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
+              <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
               <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="wrist_rotation2" material="wrist_rotation2_material" />
               <geom type="mesh" class="visual" pos="8.60045e-05 -0.0942282 -0.16151" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_side_conn" material="forearm_side_conn_material" />
               <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="wrist_servo_conn" material="wrist_servo_conn_material" />
@@ -473,6 +503,7 @@
                 <joint axis="0 0 1" name="right_wrist_yaw" type="hinge" range="-1.5708983493114526 1.5706943042783406" class="htd45hServo" />
                 <inertial pos="-0.00602769 -0.00287607 -0.0437887" mass="0.105296" fullinertia="0.000109052 0.000123136 3.80914e-05 2.26611e-06 -2.40527e-05 2.44206e-06" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn" material="palm_claw_conn_material" />
+<<<<<<< HEAD
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00000" material="palm_claw_conn_00000_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00001" material="palm_claw_conn_00001_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00002" material="palm_claw_conn_00002_material" />
@@ -489,6 +520,8 @@
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00013" material="palm_claw_conn_00013_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00014" material="palm_claw_conn_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 4.48082e-17 -5.55112e-17 4.94396e-16" mesh="palm_claw_conn_00015" material="palm_claw_conn_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                 <geom type="mesh" class="visual" pos="-2.90566e-17 0.1346 0.220451" quat="1 0 -0 -0" mesh="wrist_conn" material="wrist_conn_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134157 0.21985" quat="1 -6.97689e-18 -4.85723e-17 -1.17961e-16" mesh="wrist_palm_sevo_conn" material="wrist_palm_sevo_conn_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 -0.135143 0.21985" quat="1.94289e-16 6.66118e-17 -1.11022e-16 -1" mesh="finger" material="finger_material" />
@@ -509,6 +542,7 @@
                 <geom type="mesh" class="collision" pos="-8e-05 -0.135143 0.21985" quat="1.94289e-16 6.66118e-17 -1.11022e-16 -1" mesh="finger_00014" material="finger_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 -0.135143 0.21985" quat="1.94289e-16 6.66118e-17 -1.11022e-16 -1" mesh="finger_00015" material="finger_00015_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket" material="palm_servo_bracket_material" />
+<<<<<<< HEAD
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00000" material="palm_servo_bracket_00000_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00001" material="palm_servo_bracket_00001_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00002" material="palm_servo_bracket_00002_material" />
@@ -525,10 +559,13 @@
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00013" material="palm_servo_bracket_00013_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00014" material="palm_servo_bracket_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 3.71484e-17 -1.11022e-16 4.02456e-16" mesh="palm_servo_bracket_00015" material="palm_servo_bracket_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                 <body name="finger" pos="0.0101536 -0.0273432 -0.0336025" quat="0.499502 -0.500498 -0.499915 -0.500085">
                   <joint axis="0 0 1" name="right_wrist_pitch" type="hinge" range="-0.08726646259971647 0.0" class="htd45hServo" />
                   <inertial pos="-0.0467343 0.013632 0.024244" mass="0.0292438" fullinertia="1.01252e-05 4.12521e-05 4.11698e-05 -3.31894e-07 -1.96841e-07 5.74169e-08" />
                   <geom type="mesh" class="visual" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket" material="finger_servo_bracket_material" />
+<<<<<<< HEAD
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00000" material="finger_servo_bracket_00000_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00001" material="finger_servo_bracket_00001_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00002" material="finger_servo_bracket_00002_material" />
@@ -545,6 +582,8 @@
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00013" material="finger_servo_bracket_00013_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00014" material="finger_servo_bracket_00014_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_servo_bracket_00015" material="finger_servo_bracket_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                   <geom type="mesh" class="visual" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger" material="finger_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_2_00000" material="finger_2_00000_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.01 0.1587" quat="0.5 0.5 0.5 0.5" mesh="finger_2_00001" material="finger_2_00001_material" />
@@ -584,6 +623,7 @@
               <joint axis="0 0 1" name="left_elbow_pitch" type="hinge" range="-1.1450895222144507e-06 1.5707951817053742" class="htd45hServo" />
               <inertial pos="0.00317971 0.0664224 -0.0258005" mass="0.249555" fullinertia="0.00057701 0.000152143 0.000594926 -2.63615e-05 8.65069e-07 1.48239e-05" />
               <geom type="mesh" class="visual" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm" material="forearm_material" />
+<<<<<<< HEAD
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_3_00000" material="forearm_3_00000_material" />
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_3_00001" material="forearm_3_00001_material" />
               <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm_3_00002" material="forearm_3_00002_material" />
@@ -617,6 +657,11 @@
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_4_00013" material="forearm_4_00013_material" />
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_4_00014" material="forearm_4_00014_material" />
               <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_4_00015" material="forearm_4_00015_material" />
+=======
+              <geom type="mesh" class="collision" pos="-0.000136633 -0.0945423 0.10789" quat="0.706694 0.707519 -0.000292013 0.000292354" mesh="forearm" material="forearm_material" />
+              <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
+              <geom type="mesh" class="collision" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm" material="forearm_material" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
               <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="wrist_rotation2" material="wrist_rotation2_material" />
               <geom type="mesh" class="visual" pos="8.60045e-05 -0.0942282 -0.16151" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="forearm_side_conn" material="forearm_side_conn_material" />
               <geom type="mesh" class="visual" pos="8.61698e-05 -0.0942279 -0.16171" quat="0.000292354 0.000292013 0.707519 -0.706694" mesh="wrist_servo_conn" material="wrist_servo_conn_material" />
@@ -627,6 +672,7 @@
                 <joint axis="0 0 1" name="left_wrist_yaw" type="hinge" range="-1.5706946947870257 1.5708979588027674" class="htd45hServo" />
                 <inertial pos="-0.00602769 -0.00287607 -0.0437887" mass="0.105296" fullinertia="0.000109052 0.000123136 3.80914e-05 2.26611e-06 -2.40527e-05 2.44206e-06" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn" material="palm_claw_conn_material" />
+<<<<<<< HEAD
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00000" material="palm_claw_conn_2_00000_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00001" material="palm_claw_conn_2_00001_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00002" material="palm_claw_conn_2_00002_material" />
@@ -643,6 +689,8 @@
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00013" material="palm_claw_conn_2_00013_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00014" material="palm_claw_conn_2_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.996e-16 -0 -1.17636e-17" mesh="palm_claw_conn_2_00015" material="palm_claw_conn_2_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                 <geom type="mesh" class="visual" pos="-2.92057e-17 0.1346 0.220451" quat="1 -0 -0 3.46945e-18" mesh="wrist_conn" material="wrist_conn_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134157 0.21985" quat="1 -3.747e-16 3.33067e-16 4.42354e-17" mesh="wrist_palm_sevo_conn" material="wrist_palm_sevo_conn_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 -0.135143 0.21985" quat="1.66533e-16 8.50747e-17 -2.22045e-16 -1" mesh="finger" material="finger_material" />
@@ -663,6 +711,7 @@
                 <geom type="mesh" class="collision" pos="-8e-05 -0.135143 0.21985" quat="1.66533e-16 8.50747e-17 -2.22045e-16 -1" mesh="finger_3_00014" material="finger_3_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 -0.135143 0.21985" quat="1.66533e-16 8.50747e-17 -2.22045e-16 -1" mesh="finger_3_00015" material="finger_3_00015_material" />
                 <geom type="mesh" class="visual" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket" material="palm_servo_bracket_material" />
+<<<<<<< HEAD
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00000" material="palm_servo_bracket_2_00000_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00001" material="palm_servo_bracket_2_00001_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00002" material="palm_servo_bracket_2_00002_material" />
@@ -679,10 +728,13 @@
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00013" material="palm_servo_bracket_2_00013_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00014" material="palm_servo_bracket_2_00014_material" />
                 <geom type="mesh" class="collision" pos="-8e-05 0.134057 0.21985" quat="1 -4.44089e-16 -5.55112e-16 8.87826e-17" mesh="palm_servo_bracket_2_00015" material="palm_servo_bracket_2_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                 <body name="finger_2" pos="0.0101536 -0.0273432 -0.0336025" quat="0.499502 -0.500498 -0.499915 -0.500085">
                   <joint axis="0 0 1" name="left_wrist_pitch" type="hinge" range="-0.0872495197327333 1.694286698317171e-05" class="htd45hServo" />
                   <inertial pos="-0.0467341 0.0136328 0.024244" mass="0.0292438" fullinertia="1.01252e-05 4.12521e-05 4.11698e-05 -3.31366e-07 -1.9684e-07 5.74202e-08" />
                   <geom type="mesh" class="visual" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket" material="finger_servo_bracket_material" />
+<<<<<<< HEAD
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00000" material="finger_servo_bracket_2_00000_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00001" material="finger_servo_bracket_2_00001_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00002" material="finger_servo_bracket_2_00002_material" />
@@ -699,6 +751,8 @@
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00013" material="finger_servo_bracket_2_00013_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00014" material="finger_servo_bracket_2_00014_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_servo_bracket_2_00015" material="finger_servo_bracket_2_00015_material" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
                   <geom type="mesh" class="visual" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger" material="finger_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_4_00000" material="finger_4_00000_material" />
                   <geom type="mesh" class="collision" pos="0.2535 -0.0100043 0.1587" quat="0.500004 0.500004 0.499996 0.499996" mesh="finger_4_00001" material="finger_4_00001_material" />
@@ -725,6 +779,7 @@
     </body>
   </worldbody>
   <asset>
+<<<<<<< HEAD
     <mesh file="convex_decomposition/upper_leg_00001.stl" />
     <mesh file="convex_decomposition/low_leg_left_00015.stl" />
     <mesh file="convex_decomposition/finger_00003.stl" />
@@ -1272,6 +1327,54 @@
     <mesh file="convex_decomposition/upper_leg_servo_connect_2_00006.stl" />
     <mesh file="shoulder_mid.stl" />
     <mesh file="convex_decomposition/finger_00006.stl" />
+=======
+    <mesh file="shoulder_mid.stl" />
+    <mesh file="toe_btm.stl" />
+    <mesh file="upper_leg.stl" />
+    <mesh file="servo_support.stl" />
+    <mesh file="shoulder_ball_connector.stl" />
+    <mesh file="wrist_rotation1.stl" />
+    <mesh file="hip_servo_hook_right.stl" />
+    <mesh file="shouder_connect_servo.stl" />
+    <mesh file="finger.stl" />
+    <mesh file="palm_claw_conn.stl" />
+    <mesh file="front_ball_connector2.stl" />
+    <mesh file="waist_platform.stl" />
+    <mesh file="knee_ball_left.stl" />
+    <mesh file="trunk_bottom.stl" />
+    <mesh file="hip_trunk_connect.stl" />
+    <mesh file="upper_leg_servo_connect.stl" />
+    <mesh file="trunk_servo_connect.stl" />
+    <mesh file="servo_bracket_top.stl" />
+    <mesh file="foot_main.stl" />
+    <mesh file="hip_cover.stl" />
+    <mesh file="waist_platform_2.stl" />
+    <mesh file="waist_trunk_support.stl" />
+    <mesh file="htd_45h_collision.stl" />
+    <mesh file="forearm_side_conn.stl" />
+    <mesh file="body_box.stl" />
+    <mesh file="shoulder_connect_deck.stl" />
+    <mesh file="finger_servo_bracket.stl" />
+    <mesh file="forearm_side_conn2.stl" />
+    <mesh file="low_leg_right.stl" />
+    <mesh file="scroll_out.stl" />
+    <mesh file="heel_btm.stl" />
+    <mesh file="forearm.stl" />
+    <mesh file="forearm_servo_conn.stl" />
+    <mesh file="knee_ball_mid.stl" />
+    <mesh file="knee_ball_right.stl" />
+    <mesh file="wrist_servo_conn.stl" />
+    <mesh file="uparm.stl" />
+    <mesh file="albow_servo_bracket.stl" />
+    <mesh file="wrist_conn.stl" />
+    <mesh file="hip_servo_hook_left.stl" />
+    <mesh file="front_ball_connector.stl" />
+    <mesh file="low_leg_left.stl" />
+    <mesh file="wrist_palm_sevo_conn.stl" />
+    <mesh file="rp_assemble.stl" />
+    <mesh file="wrist_rotation2.stl" />
+    <mesh file="palm_servo_bracket.stl" />
+>>>>>>> b734666 (prepare for v0.13.2 training)
     <material name="waist_trunk_support_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="trunk_bottom_material" rgba="0.301961 0.301961 0.301961 1" />
     <material name="trunk_servo_connect_material" rgba="0.647059 0.647059 0.647059 1" />
@@ -1583,6 +1686,7 @@
     <material name="uparm_material" rgba="0.917647 0.917647 0.917647 1" />
     <material name="albow_servo_bracket_material" rgba="0.615686 0.811765 0.929412 1" />
     <material name="forearm_material" rgba="0.917647 0.917647 0.917647 1" />
+<<<<<<< HEAD
     <material name="forearm_00000_material" rgba="0.917647 0.917647 0.917647 1" />
     <material name="forearm_00001_material" rgba="0.917647 0.917647 0.917647 1" />
     <material name="forearm_00002_material" rgba="0.917647 0.917647 0.917647 1" />
@@ -1615,6 +1719,8 @@
     <material name="forearm_2_00013_material" rgba="0.917647 0.917647 0.917647 1" />
     <material name="forearm_2_00014_material" rgba="0.917647 0.917647 0.917647 1" />
     <material name="forearm_2_00015_material" rgba="0.917647 0.917647 0.917647 1" />
+=======
+>>>>>>> b734666 (prepare for v0.13.2 training)
     <material name="wrist_rotation2_material" rgba="0.980392 0.713725 0.00392157 1" />
     <material name="forearm_side_conn_material" rgba="0.647059 0.647059 0.647059 1" />
     <material name="wrist_servo_conn_material" rgba="0.615686 0.811765 0.929412 1" />

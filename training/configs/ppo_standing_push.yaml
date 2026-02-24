@@ -11,8 +11,13 @@
 #
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
+<<<<<<< HEAD
 version: "0.13.2"
 version_name: "Standing robustness (strong pushes)"
+=======
+version: "0.13.4"
+version_name: "Standing robustness (strong pushes, longer run)"
+>>>>>>> b734666 (prepare for v0.13.2 training)
 
 seed: 42
 
@@ -45,7 +50,7 @@ env:
   # Action filtering (alpha=0 disables filtering)
   action_filter_alpha: 0.6
 
-  # Disturbance pushes (strong)
+  # Disturbance pushes (strong, single-stage)
   push_enabled: true
   push_start_step_min: 30
   push_start_step_max: 300
@@ -58,9 +63,15 @@ env:
 # PPO Algorithm (task learning)
 # =============================================================================
 ppo:
+<<<<<<< HEAD
   num_envs: 516
   rollout_steps: 128
   iterations: 100
+=======
+  num_envs: 128
+  rollout_steps: 64 
+  iterations: 1200
+>>>>>>> b734666 (prepare for v0.13.2 training)
 
   learning_rate: 3e-4
   gamma: 0.99

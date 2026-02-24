@@ -1,5 +1,5 @@
 {
-  "mjcf_path": "../assets/v1/wildrobot.xml",
+  "mjcf_path": "../assets/v2/wildrobot.xml",
   "policy_onnx_path": "../policies/wildrobot_policy.onnx",
   "control_hz": 50,
   "action_scale_rad": 0.35,
@@ -21,9 +21,13 @@
       "left_shoulder_pitch": { "id": 21, "offset_unit": 0, "direction": 1, "center_deg": 0 },
       "left_shoulder_roll": { "id": 22, "offset_unit": 0, "direction": 1, "center_deg": 0 },
       "left_elbow_pitch": { "id": 23, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_wrist_yaw": { "id": 24, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "left_wrist_pitch": { "id": 25, "offset_unit": 0, "direction": 1, "center_deg": 0 },
       "right_shoulder_pitch": { "id": 31, "offset_unit": 0, "direction": 1, "center_deg": 0 },
       "right_shoulder_roll": { "id": 32, "offset_unit": 0, "direction": 1, "center_deg": 0 },
-      "right_elbow_pitch": { "id": 33, "offset_unit": 0, "direction": 1, "center_deg": 0 }
+      "right_elbow_pitch": { "id": 33, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_wrist_yaw": { "id": 34, "offset_unit": 0, "direction": 1, "center_deg": 0 },
+      "right_wrist_pitch": { "id": 35, "offset_unit": 0, "direction": 1, "center_deg": 0 }
     }
   },
   "bno085": {
