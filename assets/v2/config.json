@@ -11,8 +11,9 @@
     "assemblyName": "WildRobot",
     "robot_name": "WildRobot",
     "output_filename": "wildrobot",
-    "simplify_stls": true,
-    "max_stl_size": 0.1,
+    "simplify_stls": "collision",
+    "max_stl_size": 0.03,
+    "convex_decomposition": true,
     "ignore": {
         "heel_top*": "visual",
         "toe_top*": "visual",
@@ -52,4 +53,3 @@
         "joints_properties.xml"
     ]
 }
-

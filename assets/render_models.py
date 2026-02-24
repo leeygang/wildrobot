@@ -23,6 +23,27 @@ def _resolve_scene_file(scene_file: str | Path) -> Path:
     return repo_relative.resolve()
 
 
+def _find_root_qpos_addr(model: mujoco.MjModel) -> int:
+    """Match training convention: root height = qpos[root_qpos_addr + 2]."""
+    root_joint_name = "waist_freejoint"
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, root_joint_name)
+    if joint_id >= 0:
+        return int(model.jnt_qposadr[joint_id])
+
+    # Fallback: first free joint in model
+    for jid in range(model.njnt):
+        if int(model.jnt_type[jid]) == int(mujoco.mjtJoint.mjJNT_FREE):
+            return int(model.jnt_qposadr[jid])
+
+    # Final fallback for floating-base robots where root is at qpos[0:7]
+    return 0
+
+
+def _get_training_height(model: mujoco.MjModel, data: mujoco.MjData) -> float:
+    qpos_addr = _find_root_qpos_addr(model)
+    return float(data.qpos[qpos_addr + 2])
+
+
 def _format_qpos(qpos: list[float] | tuple[float, ...] | object) -> str:
     return " ".join(f"{float(value):.8g}" for value in qpos)
 
@@ -36,7 +57,9 @@ def _find_home_key_id(model: mujoco.MjModel) -> int:
     return -1
 
 
-def _print_home_from_model(model: mujoco.MjModel, scene_path: Path) -> None:
+def _print_home_from_model(
+    model: mujoco.MjModel, data: mujoco.MjData, scene_path: Path
+) -> None:
     key_id = _find_home_key_id(model)
     if key_id < 0:
         print(f"[render_models] no keyframe found in scene: {scene_path}")
@@ -44,6 +67,7 @@ def _print_home_from_model(model: mujoco.MjModel, scene_path: Path) -> None:
     key_name = "home" if key_id == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home") else "key_0"
     qpos = model.key_qpos[key_id]
     print("[render_models] home frame from model:")
+    print(f"[render_models] measured height (training convention qpos[root+2]): {_get_training_height(model, data):.6g}")
     print(f'<key name="{key_name}" qpos="{_format_qpos(qpos)}" />')
     print("[render_models] press H in viewer to print current pose as home keyframe")
 
@@ -62,15 +86,15 @@ def main() -> int:
     scene_path = _resolve_scene_file(args.scene_file)
     if not scene_path.exists():
         raise FileNotFoundError(f"scene file not found: {scene_path}")
-
     model = mujoco.MjModel.from_xml_path(str(scene_path))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
-    _print_home_from_model(model, scene_path)
+    _print_home_from_model(model, data, scene_path)
 
     def on_key(keycode: int) -> None:
         if keycode == ord("H"):
             print("[render_models] current pose as home frame:")
+            print(f"[render_models] measured height (training convention qpos[root+2]): {_get_training_height(model, data):.6g}")
             print(f'<key name="home" qpos="{_format_qpos(data.qpos)}" />')
 
     with mujoco.viewer.launch_passive(model, data, key_callback=on_key) as viewer:

@@ -170,10 +170,17 @@ def get_assets(root_path: Path) -> Dict[str, bytes]:
     # Load XML files
     mjx_env.update_assets(assets, root_path, "*.xml")
 
-    # Load STL meshes from assets/assets subdirectory
+    # Load STL meshes from assets/assets subdirectory.
+    # NOTE: update_assets is non-recursive, so convex_decomposition/* would be
+    # missed unless we add recursive loading below.
     meshes_path = root_path / "assets"
     if meshes_path.exists():
         mjx_env.update_assets(assets, meshes_path, "*.stl")
+        for stl_path in meshes_path.rglob("*.stl"):
+            # Support both plain mesh names ("foo.stl") and nested references
+            # produced by convex decomposition ("convex_decomposition/foo.stl").
+            rel_from_meshdir = stl_path.relative_to(meshes_path).as_posix()
+            assets[rel_from_meshdir] = stl_path.read_bytes()
 
     return assets
 

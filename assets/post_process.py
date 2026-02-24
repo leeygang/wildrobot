@@ -42,20 +42,38 @@ def add_collision_names(xml_file):
         for body in root.findall(".//body[@name='foot_2']"):
             body.set("name", "right_foot")
 
-    # Map mesh names to semantic collision geom names per foot side.
-    # Use the simplified shared meshes from newer exports: toe_btm / heel_btm
-    mesh_to_name = {
+    # Map mesh prefixes to semantic collision geom names per foot side.
+    # Supports both:
+    # - direct meshes: toe_btm / heel_btm
+    # - convex decomposition meshes: toe_btm_00000, heel_btm_00001, ...
+    mesh_prefix_to_name = {
         "toe_btm": {"left": "left_toe", "right": "right_toe"},
         "heel_btm": {"left": "left_heel", "right": "right_heel"},
     }
 
     for side in ("left", "right"):
         body_name = f"{side}_foot"
-        for mesh, names in mesh_to_name.items():
+        foot_body = root.find(f".//body[@name='{body_name}']")
+        if foot_body is None:
+            continue
+
+        collision_geoms = [
+            g for g in foot_body.findall("geom") if g.get("class") == "collision"
+        ]
+
+        for mesh_prefix, names in mesh_prefix_to_name.items():
             desired = names[side]
-            xpath = f".//body[@name='{body_name}']/geom[@mesh='{mesh}'][@class='collision']"
-            for geom in root.findall(xpath):
-                geom.set("name", desired)
+            # Pick one deterministic collision geom for each semantic toe/heel marker.
+            # Keep a single named geom so downstream lookups remain stable.
+            matches = [
+                g
+                for g in collision_geoms
+                if (g.get("mesh") or "").startswith(mesh_prefix)
+            ]
+            if not matches:
+                continue
+            matches.sort(key=lambda g: g.get("mesh") or "")
+            matches[0].set("name", desired)
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)

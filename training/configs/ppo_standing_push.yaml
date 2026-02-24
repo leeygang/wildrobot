@@ -11,7 +11,7 @@
 #
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
-version: "0.13.1"
+version: "0.13.2"
 version_name: "Standing robustness (strong pushes)"
 
 seed: 42
@@ -58,9 +58,9 @@ env:
 # PPO Algorithm (task learning)
 # =============================================================================
 ppo:
-  num_envs: 1024
+  num_envs: 516
   rollout_steps: 128
-  iterations: 300
+  iterations: 100
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -166,3 +166,10 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  ppo:
+    num_envs: 8
