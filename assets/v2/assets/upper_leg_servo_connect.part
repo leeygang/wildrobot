@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "a829498f702c75bbcc36bb90",
+    "documentMicroversion": "d4d241a17fdd589ddaf04574",
     "elementId": "c0ece913c3564a9f34cbc816",
     "fullConfiguration": "default",
-    "id": "MnE4YnV6Urw5c5L+Z",
+    "id": "M+WHdNBLNspPl3CxH",
     "isStandardContent": false,
-    "name": "up_leg <1>",
-    "partId": "JgD",
+    "name": "upper_leg_servo_connect <1>",
+    "partId": "JJD",
     "suppressed": false,
     "type": "Part"
 }

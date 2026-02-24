@@ -30,7 +30,17 @@
         "scroll_inner": "visual",
         "*": "collision",
         "!toe_btm": "collision",
-        "!heel_btm": "collision"
+        "!heel_btm": "collision",
+        "!forearm": "collision",
+        "!finger*": "collision",
+        "!palm_*": "collision",
+        "!hip_servo_hook*": "collision",
+        "!HTD-45H-Collision": "collision",
+        "!upper_leg*": "collision",
+        "!low_leg_left": "collision",
+        "!low_leg_right": "collision",
+        "!knee_ball_left": "collision",
+        "!knee_ball_right": "collision"
     },
     "joint_properties": {
         "default": {
