@@ -71,7 +71,7 @@
       },
       "left_shoulder_roll": {
         "id": 22,
-        "offset_unit": -5,
+        "offset_unit": -26,
         "direction": 1,
         "center_deg_offset": 85
       },
