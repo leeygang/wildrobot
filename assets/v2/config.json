@@ -13,11 +13,7 @@
     "output_filename": "wildrobot",
     "simplify_stls": "collision",
     "max_stl_size": 0.03,
-<<<<<<< HEAD
-    "convex_decomposition": true,
-=======
     "convex_decomposition": false,
->>>>>>> b734666 (prepare for v0.13.2 training)
     "ignore": {
         "heel_top*": "visual",
         "toe_top*": "visual",

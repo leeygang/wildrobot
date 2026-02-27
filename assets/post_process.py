@@ -426,10 +426,14 @@ def generate_actuated_joints_config(
         "left_hip_roll": "right_hip_roll",
         "left_knee_pitch": "right_knee_pitch",
         "left_ankle_pitch": "right_ankle_pitch",
+        "left_shoulder_pitch": "right_shoulder_pitch",
+        "left_shoulder_roll": "right_shoulder_roll",
         "right_hip_pitch": "left_hip_pitch",
         "right_hip_roll": "left_hip_roll",
         "right_knee_pitch": "left_knee_pitch",
         "right_ankle_pitch": "left_ankle_pitch",
+        "right_shoulder_pitch": "left_shoulder_pitch",
+        "right_shoulder_roll": "left_shoulder_roll",
     }
 
     # Process each actuated joint

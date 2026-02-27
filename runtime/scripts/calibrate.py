@@ -91,6 +91,15 @@ class JointState:
     direction: int
 
 
+def normalize_joint_state(offset: float | int, direction: float | int) -> JointState:
+    offset_int = int(round(float(offset)))
+    direction_f = float(direction)
+    direction_int = int(round(direction_f))
+    if direction_int not in (-1, 1):
+        direction_int = 1 if direction_f >= 0 else -1
+    return JointState(offset=offset_int, direction=direction_int)
+
+
 def prompt_select_joints(joint_names: List[str]) -> List[str]:
     print("Available joints:")
     for idx, name in enumerate(joint_names, start=1):
@@ -2394,7 +2403,7 @@ Examples (copy/paste):
     hints = dict(POSITIVE_HINTS)
 
     states: Dict[str, JointState] = {
-        j: JointState(offset=servo_cfgs[j].offset, direction=servo_cfgs[j].direction)
+        j: normalize_joint_state(offset=servo_cfgs[j].offset, direction=servo_cfgs[j].direction)
         for j in joint_names
     }
     servo_ids = [servo_cfgs[j].id for j in joint_names]
@@ -2416,11 +2425,11 @@ Examples (copy/paste):
         if args.calibrate:
             print("Calibration mode (dry run):")
             print("  Available joints:")
-            for idx, joint in enumerate(joint_names, start=1):
+            for joint in joint_names:
                 servo = servo_cfgs[joint]
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
-                print(f"    #{idx}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, hint='{hint}')")
+                print(f"    #{servo.id}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, hint='{hint}')")
         if args.range:
             print("Range test mode (dry run):")
             print("  Available joints:")
@@ -2564,24 +2573,26 @@ Examples (copy/paste):
                 # Step 1: List joints with current status
                 print("\n" + "=" * 50)
                 print("Available joints:")
-                for idx, joint in enumerate(joint_names, start=1):
+                servo_id_to_joint: Dict[int, str] = {}
+                for joint in joint_names:
                     state = states[joint]
                     servo = servo_cfgs[joint]
-                    hint = hints.get(joint, "")
-                    print(f"  #{idx}: {joint} (id={servo.id}, dir={state.direction:+d}, offset={state.offset:+d})")
+                    servo_id_to_joint[servo.id] = joint
+                    print(f"  #{servo.id}: {joint} (id={servo.id}, dir={state.direction:+d}, offset={state.offset:+d})")
                 print(f"\n  q = quit and save")
 
                 # Step 2: User selects joint
-                raw = input("\nSelect joint # (or 'q' to quit): ").strip().lower()
+                raw = input("\nSelect servo # (or 'q' to quit): ").strip().lower()
                 if raw == PANIC_KEY or raw == "q":
                     break
 
                 try:
-                    idx = int(raw.lstrip("#"))
-                    if idx < 1 or idx > len(joint_names):
-                        print(f"Invalid index. Enter 1-{len(joint_names)}.")
+                    servo_id = int(raw.lstrip("#"))
+                    joint = servo_id_to_joint.get(servo_id)
+                    if joint is None:
+                        valid_servo_ids = ", ".join(str(servo_cfgs[j].id) for j in joint_names)
+                        print(f"Invalid servo ID. Enter one of: {valid_servo_ids}.")
                         continue
-                    joint = joint_names[idx - 1]
                 except ValueError:
                     print("Invalid input. Enter a number or 'q'.")
                     continue
