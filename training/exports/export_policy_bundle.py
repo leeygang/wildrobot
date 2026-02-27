@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,9 @@ def export_policy_bundle(
 
     onnx_path = output_dir / "policy.onnx"
     export_checkpoint_to_onnx(checkpoint_path=checkpoint_path, output_path=onnx_path)
+    checkpoint_snapshot_path = _export_checkpoint_snapshot(
+        checkpoint_path=checkpoint_path, output_dir=output_dir
+    )
 
     spec = _build_policy_spec(
         checkpoint_path=checkpoint_path,
@@ -79,6 +83,7 @@ def export_policy_bundle(
     checksums = _build_checksums(
         [
             onnx_path,
+            checkpoint_snapshot_path,
             spec_path,
             robot_snapshot_path,
             mjcf_snapshot_path,
@@ -125,6 +130,16 @@ def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
     src = _resolve_mjcf_path(config_path)
     dst = output_dir / "wildrobot.xml"
     dst.write_text(src.read_text())
+    return dst
+
+
+def _export_checkpoint_snapshot(*, checkpoint_path: Path, output_dir: Path) -> Path:
+    """Copy source checkpoint into the bundle for traceability/re-export."""
+    src = checkpoint_path
+    if not src.exists():
+        raise FileNotFoundError(f"Checkpoint source not found: {src}")
+    dst = output_dir / "checkpoint.pkl"
+    shutil.copy2(src, dst)
     return dst
 
 

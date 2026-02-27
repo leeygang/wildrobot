@@ -68,6 +68,20 @@ POSITIVE_HINTS = {
     "right_hip_roll": "right leg moves outward (away from body midline)",  # inverted range
     "right_knee_pitch": "right knee bends (foot moves backward)",  # same as left
     "right_ankle_pitch": "right toes go up (dorsiflex)",  # same as left
+    # Torso
+    "waist_yaw": "torso turns left (counter-clockwise viewed from above)",
+    # Left arm
+    "left_shoulder_pitch": "left upper arm lifts forward",
+    "left_shoulder_roll": "left upper arm lifts outward (away from torso)",
+    "left_elbow_pitch": "left elbow bends",
+    "left_wrist_yaw": "left forearm rotates outward",
+    "left_wrist_pitch": "left hand tilts upward",
+    # Right arm
+    "right_shoulder_pitch": "right upper arm lifts forward",
+    "right_shoulder_roll": "right upper arm lifts outward (away from torso)",
+    "right_elbow_pitch": "right elbow bends",
+    "right_wrist_yaw": "right forearm rotates outward",
+    "right_wrist_pitch": "right hand tilts upward",
 }
 
 
@@ -449,8 +463,6 @@ def load_home_from_bundle(bundle_dir: Path, joint_count: int) -> List[float]:
 
 
 def load_home_from_keyframes_xml(path: Path, joint_count: int) -> List[float]:
-    if joint_count != 8:
-        raise ValueError("keyframes.xml path only supported when actuator count is 8")
     tree = ET.parse(path)
     root = tree.getroot()
     key_elem = None
@@ -470,7 +482,9 @@ def load_home_from_keyframes_xml(path: Path, joint_count: int) -> List[float]:
     start = 7
     end = start + joint_count
     if len(values) < end:
-        raise ValueError("Keyframe qpos shorter than expected")
+        raise ValueError(
+            f"Keyframe qpos shorter than expected (need at least {end} values for root+{joint_count} joints, got {len(values)})"
+        )
     return values[start:end]
 
 
@@ -2192,7 +2206,7 @@ Examples (copy/paste):
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --dry-run
 
   # Move robot to home pose only (no calibration), then wait until you press 'q' to unload
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --go-home --keyframes-xml assets/keyframes.xml
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --go-home --keyframes-xml assets/v2/keyframes.xml
 
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
@@ -2253,7 +2267,10 @@ Examples (copy/paste):
     parser.add_argument("--move-ms", type=int, default=DEFAULT_MOVE_MS, help="Move duration in milliseconds")
     parser.add_argument("--bundle", help="Policy bundle directory containing policy_spec.json")
     parser.add_argument("--scene-xml", help="Scene XML path (requires MuJoCo installed)")
-    parser.add_argument("--keyframes-xml", help="keyframes.xml path for home pose (actuator count must be 8)")
+    parser.add_argument(
+        "--keyframes-xml",
+        help="keyframes.xml path for home pose (supports arbitrary actuator count; uses qpos[7:7+num_actuators])",
+    )
     parser.add_argument("--go-home", action="store_true", help="Move to home pose before calibration")
     parser.add_argument(
         "--record-pos",
