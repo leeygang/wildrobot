@@ -29,8 +29,8 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
             "baudrate": 9600,
             "default_move_time_ms": 900,
             "servos": {
-                "left_hip_pitch": {"id": 1, "offset_unit": 10, "direction": 1, "center_deg": 0},
-                "right_hip_pitch": {"id": 2, "offset_unit": -20, "direction": -1, "center_deg": 90},
+                "left_hip_pitch": {"id": 1, "offset_unit": 10, "direction": 1, "center_deg_offset": 0},
+                "right_hip_pitch": {"id": 2, "offset_unit": -20, "direction": -1, "center_deg_offset": 90},
             },
         }
     }

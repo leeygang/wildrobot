@@ -79,7 +79,7 @@ class ServoConfig:
         id: Servo ID (1-254)
         offset: Calibration offset in servo units (default: 0)
         direction: Hardware direction correction (+1 or -1, default: +1)
-        center_deg: MuJoCo angle (deg) that maps to servo center (500)
+        center_deg_offset: MuJoCo angle (deg) that maps to servo center (500)
         rad_range: Joint range in radians (min, max) from robot_config.yaml
         max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
         mirror_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
@@ -88,7 +88,7 @@ class ServoConfig:
     id: int
     offset: int = 0
     direction: float = 1.0
-    center_deg: float = 0.0
+    center_deg_offset: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
     mirror_sign: float = 1.0
@@ -106,8 +106,13 @@ class ServoConfig:
         return int(self.offset)
 
     @property
+    def center_deg(self) -> float:
+        """Backward-compatible alias for center_deg_offset."""
+        return float(self.center_deg_offset)
+
+    @property
     def center_rad(self) -> float:
-        return math.radians(float(self.center_deg))
+        return math.radians(float(self.center_deg_offset))
 
     def rad_to_units(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
@@ -211,7 +216,12 @@ class ServoSpec:
     id: int
     offset_unit: int = 0
     direction: float = 1.0
-    center_deg: float = 0.0
+    center_deg_offset: float = 0.0
+
+    @property
+    def center_deg(self) -> float:
+        """Backward-compatible alias for center_deg_offset."""
+        return float(self.center_deg_offset)
 
     def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
         joint_spec = joint_spec or {}
@@ -219,7 +229,7 @@ class ServoSpec:
             id=int(self.id),
             offset=int(self.offset_unit),
             direction=float(self.direction),
-            center_deg=float(self.center_deg),
+            center_deg_offset=float(self.center_deg_offset),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
             mirror_sign=joint_spec.get("mirror_sign", 1.0),
@@ -282,8 +292,13 @@ class ServoControllerConfig:
         return {k: float(v.direction) for k, v in self.servos.items()}
 
     @property
+    def joint_center_deg_offset(self) -> Dict[str, float]:
+        return {k: float(v.center_deg_offset) for k, v in self.servos.items()}
+
+    @property
     def joint_center_deg(self) -> Dict[str, float]:
-        return {k: float(v.center_deg) for k, v in self.servos.items()}
+        """Backward-compatible alias for joint_center_deg_offset."""
+        return self.joint_center_deg_offset
 
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
@@ -316,7 +331,7 @@ class ServoControllerConfig:
             policy_action [-1, 1]
             → corrected = action * mirror_sign
             → ctrl_rad = corrected * ctrl_span + ctrl_center
-            → servo_pos = servo.rad_to_units(ctrl_rad)  (applies center_deg, direction, offset)
+            → servo_pos = servo.rad_to_units(ctrl_rad)  (applies center_deg_offset, direction, offset)
         """
         action_clipped = max(-1.0, min(1.0, action))
         corrected = action_clipped * servo.mirror_sign
@@ -605,10 +620,24 @@ class WrRuntimeConfig:
                 direction_val = float(servo_data.get("direction", 1.0))
                 WrRuntimeConfig._validate_directions({joint_name: direction_val})
 
-                center_deg = float(servo_data.get("center_deg", 0.0))
+                center_deg_offset_raw = servo_data.get("center_deg_offset")
+                center_deg_legacy_raw = servo_data.get("center_deg")
+                if center_deg_offset_raw is not None and center_deg_legacy_raw is not None:
+                    center_deg_offset = float(center_deg_offset_raw)
+                    center_deg_legacy = float(center_deg_legacy_raw)
+                    if abs(center_deg_offset - center_deg_legacy) > 1e-9:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.center_deg_offset={center_deg_offset} conflicts with center_deg={center_deg_legacy}"
+                        )
+                elif center_deg_offset_raw is not None:
+                    center_deg_offset = float(center_deg_offset_raw)
+                elif center_deg_legacy_raw is not None:
+                    center_deg_offset = float(center_deg_legacy_raw)
+                else:
+                    center_deg_offset = 0.0
                 rad_range = joint_spec.get("rad_range", (0.0, 0.0))
-                WrRuntimeConfig._validate_center_deg(
-                    center_deg=center_deg,
+                WrRuntimeConfig._validate_center_deg_offset(
+                    center_deg_offset=center_deg_offset,
                     rad_range=rad_range,
                     joint_name=joint_name,
                     key_path=key_path,
@@ -641,7 +670,7 @@ class WrRuntimeConfig:
                     id=int(servo_data["id"]),
                     offset=int(chosen_offset),
                     direction=direction_val,
-                    center_deg=center_deg,
+                    center_deg_offset=center_deg_offset,
                     rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
                     mirror_sign=joint_spec.get("mirror_sign", 1.0),
@@ -664,8 +693,8 @@ class WrRuntimeConfig:
                 direction_val = float(joint_directions.get(joint, 1.0))
                 WrRuntimeConfig._validate_directions({joint: direction_val})
                 rad_range = joint_specs.get(joint, {}).get("rad_range", (0.0, 0.0))
-                WrRuntimeConfig._validate_center_deg(
-                    center_deg=0.0,
+                WrRuntimeConfig._validate_center_deg_offset(
+                    center_deg_offset=0.0,
                     rad_range=rad_range,
                     joint_name=str(joint),
                     key_path="hiwonder.servo_ids",
@@ -674,7 +703,7 @@ class WrRuntimeConfig:
                     id=int(sid),
                     offset=int(joint_offsets.get(joint, 0)),
                     direction=direction_val,
-                    center_deg=0.0,
+                    center_deg_offset=0.0,
                     rad_range=rad_range,
                     max_velocity=joint_specs.get(joint, {}).get("max_velocity", 10.0),
                     mirror_sign=joint_specs.get(joint, {}).get("mirror_sign", 1.0),
@@ -738,9 +767,9 @@ class WrRuntimeConfig:
             )
 
     @staticmethod
-    def _validate_center_deg(
+    def _validate_center_deg_offset(
         *,
-        center_deg: float,
+        center_deg_offset: float,
         rad_range: Tuple[float, float],
         joint_name: str,
         key_path: str,
@@ -750,10 +779,10 @@ class WrRuntimeConfig:
             return
         if range_min > range_max:
             range_min, range_max = range_max, range_min
-        center_rad = math.radians(float(center_deg))
+        center_rad = math.radians(float(center_deg_offset))
         if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
             raise ValueError(
-                f"{key_path}.{joint_name}.center_deg={center_deg} maps to {center_rad:.6f} rad, "
+                f"{key_path}.{joint_name}.center_deg_offset={center_deg_offset} maps to {center_rad:.6f} rad, "
                 f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad"
             )
 
@@ -816,7 +845,7 @@ class WrRuntimeConfig:
                 "id": servo.id,
                 "offset_unit": servo.offset_unit,
                 "direction": servo.direction,
-                "center_deg": servo.center_deg,
+                "center_deg_offset": servo.center_deg_offset,
             }
             for joint_name, servo in self.servo_controller.servos.items()
         }

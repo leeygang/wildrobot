@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco
@@ -57,18 +59,109 @@ def _find_home_key_id(model: mujoco.MjModel) -> int:
     return -1
 
 
+def _read_home_qpos_from_keyframes_xml(keyframes_xml: Path) -> list[float] | None:
+    if not keyframes_xml.exists():
+        return None
+    root = ET.parse(keyframes_xml).getroot()
+    key = root.find('./keyframe/key[@name="home"]')
+    if key is None:
+        return None
+    qpos_str = key.attrib.get("qpos", "")
+    if not qpos_str.strip():
+        return None
+    return [float(x) for x in qpos_str.split()]
+
+
+def _load_home_qpos(model: mujoco.MjModel, scene_path: Path) -> tuple[str, list[float]] | None:
+    """Return (source, qpos) for the home keyframe.
+
+    Prefer keyframes embedded in the loaded MuJoCo model; fall back to a sibling
+    keyframes.xml next to the scene/variant if present.
+    """
+    key_id = _find_home_key_id(model)
+    if key_id >= 0:
+        return ("model.key_qpos", [float(x) for x in model.key_qpos[key_id]])
+
+    # Typical layout: assets/v2/scene_flat_terrain.xml + assets/v2/keyframes.xml
+    fallback = scene_path.with_name("keyframes.xml")
+    qpos = _read_home_qpos_from_keyframes_xml(fallback)
+    if qpos is None:
+        return None
+    if len(qpos) != int(model.nq):
+        return None
+    return (str(fallback), qpos)
+
+
+def _quat_wxyz_to_yaw_deg(w: float, x: float, y: float, z: float) -> float:
+    """Yaw (Z) from quaternion in MuJoCo freejoint qpos order (w,x,y,z)."""
+    # Standard yaw extraction (assuming right-handed, Z-up).
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return math.degrees(math.atan2(siny_cosp, cosy_cosp))
+
+
+def _print_home_joint_table(model: mujoco.MjModel, home_qpos: list[float]) -> None:
+    """Print hinge joints: name, home deg, range deg, with left/right pairs adjacent."""
+    root_qpos_addr = _find_root_qpos_addr(model)
+    height_m = float(home_qpos[root_qpos_addr + 2])
+    qw, qx, qy, qz = (float(home_qpos[root_qpos_addr + i]) for i in range(3, 7))
+    yaw_deg = _quat_wxyz_to_yaw_deg(qw, qx, qy, qz)
+
+    rad2deg = 180.0 / math.pi
+    hinge: dict[str, tuple[float, float, float]] = {}
+    for jid in range(model.njnt):
+        if int(model.jnt_type[jid]) != int(mujoco.mjtJoint.mjJNT_HINGE):
+            continue
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if not name:
+            continue
+        adr = int(model.jnt_qposadr[jid])
+        home_deg = float(home_qpos[adr]) * rad2deg
+        rmin, rmax = map(float, model.jnt_range[jid])
+        hinge[name] = (home_deg, rmin * rad2deg, rmax * rad2deg)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for name in sorted(hinge):
+        if name in seen:
+            continue
+        if name.startswith("left_"):
+            pair = "right_" + name[len("left_") :]
+            if pair in hinge:
+                ordered.append(name)
+                ordered.append(pair)
+                seen.add(name)
+                seen.add(pair)
+                continue
+        if name.startswith("right_"):
+            pair = "left_" + name[len("right_") :]
+            if pair in hinge:
+                continue
+        ordered.append(name)
+        seen.add(name)
+
+    print("[render_models] home joint table:")
+    print(f"[render_models] home height_m={height_m:.6f} init_yaw_deg={yaw_deg:.6f}")
+    print("joint_name | home (deg) | range (deg)")
+    for name in ordered:
+        home_deg, rmin_deg, rmax_deg = hinge[name]
+        print(f"{name} | {home_deg:.6f} | {rmin_deg:.6f}..{rmax_deg:.6f}")
+
+
 def _print_home_from_model(
     model: mujoco.MjModel, data: mujoco.MjData, scene_path: Path
 ) -> None:
-    key_id = _find_home_key_id(model)
-    if key_id < 0:
-        print(f"[render_models] no keyframe found in scene: {scene_path}")
+    loaded = _load_home_qpos(model, scene_path)
+    if loaded is None:
+        print(f"[render_models] no home keyframe found (model or {scene_path.with_name('keyframes.xml')})")
         return
-    key_name = "home" if key_id == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home") else "key_0"
-    qpos = model.key_qpos[key_id]
+    source, qpos = loaded
+    key_name = "home"
     print("[render_models] home frame from model:")
     print(f"[render_models] measured height (training convention qpos[root+2]): {_get_training_height(model, data):.6g}")
     print(f'<key name="{key_name}" qpos="{_format_qpos(qpos)}" />')
+    print(f"[render_models] home qpos source: {source}")
+    _print_home_joint_table(model, qpos)
     print("[render_models] press H in viewer to print current pose as home keyframe")
 
 
