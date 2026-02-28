@@ -573,11 +573,24 @@ class WrRuntimeConfig:
         if robot_config_path.exists():
             with open(robot_config_path, "r") as f:
                 robot_config = yaml.safe_load(f)
+            range_unit = str(robot_config.get("joint_range_unit", "rad")).lower()
+            if range_unit not in {"rad", "deg"}:
+                raise ValueError(
+                    "robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'"
+                )
             for joint in robot_config.get("actuated_joint_specs", []):
                 name = joint.get("name")
                 if name:
+                    range_vals = joint.get("range", [0.0, 0.0])
+                    if not isinstance(range_vals, list) or len(range_vals) != 2:
+                        raise ValueError(f"Invalid range for joint '{name}': {range_vals}")
+                    range_min = float(range_vals[0])
+                    range_max = float(range_vals[1])
+                    if range_unit == "deg":
+                        range_min = math.radians(range_min)
+                        range_max = math.radians(range_max)
                     joint_specs[name] = {
-                        "rad_range": tuple(joint.get("range", [0.0, 0.0])),
+                        "rad_range": (range_min, range_max),
                         "max_velocity": float(joint.get("max_velocity", 10.0)),
                         "mirror_sign": float(joint.get("mirror_sign", 1.0)),
                     }

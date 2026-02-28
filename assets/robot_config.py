@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -184,8 +185,28 @@ class RobotConfig:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
+        range_unit = str(config.get("joint_range_unit", "rad")).lower()
+        if range_unit not in {"rad", "deg"}:
+            raise ValueError(
+                "robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'"
+            )
+
         # v0.11.0: Extract actuated joints config (single source of truth)
-        actuated_joints = config.get("actuated_joint_specs", [])
+        raw_actuated_joints = config.get("actuated_joint_specs", [])
+        actuated_joints: List[Dict[str, Any]] = []
+        for joint in raw_actuated_joints:
+            if not isinstance(joint, dict):
+                continue
+            normalized_joint = dict(joint)
+            joint_range = normalized_joint.get("range")
+            if isinstance(joint_range, list) and len(joint_range) == 2:
+                min_val = float(joint_range[0])
+                max_val = float(joint_range[1])
+                if range_unit == "deg":
+                    min_val = math.radians(min_val)
+                    max_val = math.radians(max_val)
+                normalized_joint["range"] = [min_val, max_val]
+            actuated_joints.append(normalized_joint)
 
         # Derive actuator info from actuated_joints
         actuator_names = [j["name"] for j in actuated_joints]
@@ -237,9 +258,6 @@ class RobotConfig:
         feet_left_geoms = [g for g in feet_left_geoms if g]
         feet_right_geoms = [right_foot.get("toe"), right_foot.get("heel")]
         feet_right_geoms = [g for g in feet_right_geoms if g]
-        # v0.11.0: Extract actuated joints config for CAL
-        actuated_joints = config.get("actuated_joint_specs", [])
-
         return cls(
             robot_name=config.get("robot_name", "unknown"),
             actuator_names=actuator_names,

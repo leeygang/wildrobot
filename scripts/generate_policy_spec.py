@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 from pathlib import Path
 from typing import Any, Dict, List
@@ -56,6 +57,9 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
     specs = robot_cfg.get("actuated_joint_specs")
     if not isinstance(specs, list) or not specs:
         raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+    range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
+    if range_unit not in {"rad", "deg"}:
+        raise ValueError("robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'")
 
     joints: Dict[str, JointSpec] = {}
     for item in specs:
@@ -65,9 +69,14 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
         rng = item.get("range") or [0.0, 0.0]
         if not isinstance(rng, list) or len(rng) != 2:
             raise ValueError(f"Invalid range for joint '{name}': {rng}")
+        range_min = float(rng[0])
+        range_max = float(rng[1])
+        if range_unit == "deg":
+            range_min = math.radians(range_min)
+            range_max = math.radians(range_max)
         joints[name] = JointSpec(
-            range_min_rad=float(rng[0]),
-            range_max_rad=float(rng[1]),
+            range_min_rad=range_min,
+            range_max_rad=range_max,
             mirror_sign=float(item.get("mirror_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )

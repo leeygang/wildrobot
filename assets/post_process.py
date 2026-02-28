@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -480,7 +481,10 @@ def generate_actuated_joints_config(
         config = {
             "name": joint_name,
             "type": "position",  # All actuators are position-controlled
-            "range": [round(range_min, 6), round(range_max, 6)],
+            "range": [
+                int(round(math.degrees(range_min))),
+                int(round(math.degrees(range_max))),
+            ],
             "symmetry_pair": symmetry_pair,
             "mirror_sign": mirror_sign,
             "max_velocity": 10.0,  # Conservative default for servos (rad/s)
@@ -535,6 +539,7 @@ def generate_robot_config(
     config: Dict[str, Any] = {
         "robot_name": root.get("model", "unknown"),
         "generated_from": xml_file,
+        "joint_range_unit": "deg",
     }
 
     # =========================================================================

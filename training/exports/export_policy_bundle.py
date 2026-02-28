@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -172,7 +173,7 @@ def _build_policy_spec(
     home_ctrl_rad = _get_home_ctrl_from_mjcf(config_path, actuator_names=actuator_names)
     home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
 
-    actuated_joint_specs = robot_cfg.get("actuated_joint_specs")
+    actuated_joint_specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
         raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
 
@@ -249,7 +250,7 @@ def _clamp_home_ctrl(
 
 
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
-    specs = robot_cfg.get("actuated_joint_specs")
+    specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(specs, list) or not specs:
         raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
 
@@ -268,6 +269,34 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
     return joints
+
+
+def _normalize_actuated_joint_specs_to_rad(robot_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    specs = robot_cfg.get("actuated_joint_specs")
+    if not isinstance(specs, list):
+        return []
+
+    range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
+    if range_unit not in {"rad", "deg"}:
+        raise ValueError("robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'")
+
+    normalized_specs: List[Dict[str, Any]] = []
+    for item in specs:
+        if not isinstance(item, dict):
+            raise ValueError(f"Invalid joint spec entry: {item!r}")
+        normalized_item = dict(item)
+        rng = normalized_item.get("range") or [0.0, 0.0]
+        if not isinstance(rng, list) or len(rng) != 2:
+            raise ValueError(f"Invalid range for joint '{item.get('name')}': {rng}")
+        range_min = float(rng[0])
+        range_max = float(rng[1])
+        if range_unit == "deg":
+            range_min = math.radians(range_min)
+            range_max = math.radians(range_max)
+        normalized_item["range"] = [range_min, range_max]
+        normalized_specs.append(normalized_item)
+
+    return normalized_specs
 
 
 def _build_checksums(paths: List[Path]) -> Dict[str, str]:
