@@ -2,14 +2,32 @@
 
 Lightweight hardware runtime for running WildRobot ONNX policies on Raspberry Ubuntu.
 
+Implementation lives in `runtime/wr_runtime/` (this is what the installed CLIs use).
+
+Breaking change: the legacy modules under `runtime/control`, `runtime/inference`, `runtime/utils`, and `runtime/validation`
+were removed. Use the console scripts (`wildrobot-run-policy`, `wildrobot-validate-bundle`, ...) or import from `wr_runtime.*`.
+
 ## Install (on robot)
 
 From the `wildrobot/` repo root:
 
 ```bash
 cd runtime
-pip install -e .
+
+# Create/update the runtime virtualenv from uv.lock
+uv sync
 ```
+
+Alternative (explicit editable install):
+```bash
+cd runtime
+uv venv
+uv pip install -e .
+```
+
+Why editable (`-e`) matters: it installs the `wildrobot-*` console scripts while still running
+your live checked-out source. If you `git pull` frequently on the device, you usually do *not*
+need to reinstall (unless dependencies changed — then rerun `uv sync`).
 
 ## Configuration
 
@@ -73,6 +91,34 @@ Notes:
 ```bash
 wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
 ```
+
+## Run a bundle from `training/checkpoints/` (on the WildRobot device)
+
+Assumptions:
+- You have the `wildrobot/` repo synced on the WildRobot device.
+- The bundle directory exists under `training/checkpoints/` (exported via `training/exports/export_policy_bundle_cli.py`).
+
+Example bundle (already in this repo layout):
+- `training/checkpoints/standing_push_v0.13.4_ckpt20/`
+
+From the repo root on the device:
+```bash
+cd ~/wildrobot
+
+# Run using the runtime uv environment (no manual venv activation needed)
+cd runtime
+
+# Validate the bundle is self-consistent (policy_spec + ONNX dims + actuator order)
+uv run wildrobot-validate-bundle --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
+
+# Run the control loop (Ctrl+C to stop; runtime disables actuators on exit)
+uv run wildrobot-run-policy --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
+```
+
+Notes:
+- The bundle contains its own `wildrobot_config.json` (hardware settings) and `wildrobot.xml` (actuator order snapshot).
+- If this device/robot has different servo IDs, offsets, IMU axis map, or footswitch pins, edit:
+  `training/checkpoints/standing_push_v0.13.4_ckpt20/wildrobot_config.json` before running.
 
 Stop with Ctrl+C (runtime will unload servos).
 
