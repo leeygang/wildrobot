@@ -109,6 +109,9 @@ cd ~/wildrobot
 # Run using the runtime uv environment (no manual venv activation needed)
 cd runtime
 
+# (Recommended) sanity-check Hiwonder serial comms before starting control loop
+uv run python scripts/test_hiwonder_board.py --port /dev/ttyUSB0 --baudrate 9600 --servo-ids 1,2,3
+
 # Validate the bundle is self-consistent (policy_spec + ONNX dims + actuator order)
 uv run wildrobot-validate-bundle --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
 
@@ -122,6 +125,11 @@ Notes:
   `training/checkpoints/standing_push_v0.13.4_ckpt20/wildrobot_config.json` before running.
 
 Stop with Ctrl+C (runtime will unload servos).
+
+If you see `Servo position response missing or incomplete`:
+- Confirm the board is powered and servos have external power.
+- Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match your board (9600 is common).
+- Try smaller `--servo-ids` lists in `scripts/test_hiwonder_board.py` (some links are unreliable with large multi-servo reads).
 
 Optional: capture a replay log for offline policy replay:
 ```bash

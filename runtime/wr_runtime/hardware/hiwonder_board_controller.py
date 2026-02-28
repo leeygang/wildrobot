@@ -50,6 +50,7 @@ class HiwonderBoardController:
     CMD_MULT_SERVO_POS_READ = 0x15
 
     HEADER = bytes([0x55, 0x55])
+    BOARD_ID = 0xFE
 
     def __init__(
         self,
@@ -93,10 +94,13 @@ class HiwonderBoardController:
         except Exception:
             pass
 
-    def _send(self, command: int, params: Optional[List[int]] = None) -> None:
-        """Send a command packet to the board."""
-        if params is None:
-            params = []
+    @staticmethod
+    def _checksum_official(board_id: int, length: int, command: int, params: List[int]) -> int:
+        total = int(board_id) + int(length) + int(command) + sum(int(p) for p in params)
+        return (~total) & 0xFF
+
+    def _send_short(self, command: int, params: List[int]) -> None:
+        """Send the short frame format: [55 55][Len][Cmd][Params...]"""
         length = 2 + len(params)
         pkt = bytearray(self.HEADER)
         pkt.append(length)
@@ -105,8 +109,42 @@ class HiwonderBoardController:
         self.serial.write(pkt)
         self.serial.flush()
 
+    def _send_official(self, command: int, params: List[int]) -> None:
+        """Send the official frame format (some boards):
+
+        [55 55][0xFE][Len][Cmd][Params...][Checksum]
+
+        Len counts bytes from ID to Checksum (inclusive).
+        """
+        length = 4 + len(params)  # ID + Len + Cmd + Params + Checksum
+        checksum = self._checksum_official(self.BOARD_ID, length, command, params)
+        pkt = bytearray(self.HEADER)
+        pkt.append(self.BOARD_ID)
+        pkt.append(length)
+        pkt.append(command)
+        pkt.extend(params)
+        pkt.append(checksum)
+        self.serial.write(pkt)
+        self.serial.flush()
+
+    def _send(self, command: int, params: Optional[List[int]] = None) -> None:
+        """Send a command packet.
+
+        We default to the short format (widely used), but callers may retry with
+        the official format if the board never responds.
+        """
+        self._send_short(command, list(params or []))
+
     def _read_response(self, timeout: Optional[float] = None) -> Optional[List[int]]:
-        """Read a response packet from the board."""
+        """Read a response packet from the board.
+
+        Supports both:
+          - short format:     [55 55][Len][Cmd][Params...]
+          - official format:  [55 55][0xFE][Len][Cmd][Params...][Checksum]
+
+        Returns a normalized list: [Len, Cmd, Param1, ..., ParamN]
+        (board ID and checksum, if present, are stripped).
+        """
         old_timeout = None
         if timeout is not None:
             old_timeout = self.serial.timeout
@@ -123,17 +161,44 @@ class HiwonderBoardController:
                     if b2 == b"\x55":
                         break
 
-            meta = self.serial.read(2)
-            if len(meta) != 2:
+            b0 = self.serial.read(1)
+            if len(b0) != 1:
                 return None
-            length = meta[0]
-            command = meta[1]
 
-            remaining = length - 2
+            # Official format includes board ID 0xFE after header.
+            if b0 == bytes([self.BOARD_ID]):
+                meta = self.serial.read(2)
+                if len(meta) != 2:
+                    return None
+                length = meta[0]
+                command = meta[1]
+
+                remaining = int(length) - 3  # ID + Len + Cmd already consumed
+                if remaining < 1:
+                    return None
+                data = self.serial.read(remaining)
+                if len(data) != remaining:
+                    return None
+
+                params = list(data[:-1])
+                checksum = int(data[-1])
+                expected = self._checksum_official(self.BOARD_ID, int(length), int(command), params)
+                if checksum != expected:
+                    return None
+                return [int(length), int(command), *params]
+
+            # Short format: b0 is length, then one byte command, then params
+            length = int(b0[0])
+            cmd_b = self.serial.read(1)
+            if len(cmd_b) != 1:
+                return None
+            command = int(cmd_b[0])
+            remaining = int(length) - 2
+            if remaining < 0:
+                return None
             data = self.serial.read(remaining)
             if len(data) != remaining:
                 return None
-
             return [length, command, *list(data)]
         finally:
             if timeout is not None and old_timeout is not None:
@@ -177,12 +242,20 @@ class HiwonderBoardController:
         Returns:
             Battery voltage in volts, or None if read failed.
         """
-        self._send(self.CMD_GET_BATTERY_VOLTAGE)
-        resp = self._read_response(timeout=1.0)
-        if not resp or resp[1] != self.CMD_GET_BATTERY_VOLTAGE or resp[0] != 4:
-            return None
-        mv = resp[2] | (resp[3] << 8)
-        return mv / 1000.0
+        # Try short first, then official.
+        for send_mode in ("short", "official"):
+            if send_mode == "short":
+                self._send_short(self.CMD_GET_BATTERY_VOLTAGE, [])
+            else:
+                self._send_official(self.CMD_GET_BATTERY_VOLTAGE, [])
+            resp = self._read_response(timeout=1.0)
+            if not resp or len(resp) < 4:
+                continue
+            if int(resp[1]) != self.CMD_GET_BATTERY_VOLTAGE:
+                continue
+            mv = int(resp[2]) | (int(resp[3]) << 8)
+            return mv / 1000.0
+        return None
 
     def read_servo_positions(
         self, servo_ids: List[int]
@@ -196,9 +269,18 @@ class HiwonderBoardController:
             List of (servo_id, position) tuples, or None if read failed.
         """
         params = [len(servo_ids)] + [int(i) for i in servo_ids]
-        self._send(self.CMD_MULT_SERVO_POS_READ, params)
-        resp = self._read_response(timeout=1.0)
-        if not resp or resp[1] != self.CMD_MULT_SERVO_POS_READ:
+
+        resp: Optional[List[int]] = None
+        for send_mode in ("short", "official"):
+            if send_mode == "short":
+                self._send_short(self.CMD_MULT_SERVO_POS_READ, params)
+            else:
+                self._send_official(self.CMD_MULT_SERVO_POS_READ, params)
+            resp = self._read_response(timeout=1.0)
+            if resp and int(resp[1]) == self.CMD_MULT_SERVO_POS_READ:
+                break
+
+        if not resp or int(resp[1]) != self.CMD_MULT_SERVO_POS_READ:
             return None
 
         count = resp[2]

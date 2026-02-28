@@ -154,9 +154,22 @@ class HiwonderBoardActuators(Actuators):
                 continue
 
             if resp is None or len(resp) != len(self.servo_ids_list):
-                last_err = RuntimeError("Servo position response missing or incomplete")
-                time.sleep(self.retry_backoff_s)
-                continue
+                # Some boards/links get flaky with larger ID lists; retry using chunks.
+                if len(self.servo_ids_list) > 8:
+                    try:
+                        resp = self._read_positions_chunked(chunk_size=8)
+                    except Exception as exc:
+                        last_err = exc
+                        time.sleep(self.retry_backoff_s)
+                        continue
+
+                if resp is None or len(resp) != len(self.servo_ids_list):
+                    got = 0 if resp is None else len(resp)
+                    last_err = RuntimeError(
+                        f"Servo position response missing or incomplete (got {got}/{len(self.servo_ids_list)})"
+                    )
+                    time.sleep(self.retry_backoff_s)
+                    continue
 
             try:
                 pos_map = {sid: pos for sid, pos in resp}
@@ -180,6 +193,18 @@ class HiwonderBoardActuators(Actuators):
 
         self._last_error = last_err
         return None
+
+    def _read_positions_chunked(self, *, chunk_size: int) -> Optional[List[tuple[int, int]]]:
+        chunk = max(1, int(chunk_size))
+        out: List[tuple[int, int]] = []
+        ids = list(self.servo_ids_list)
+        for i in range(0, len(ids), chunk):
+            group = ids[i : i + chunk]
+            resp = self.controller.read_servo_positions(group)
+            if resp is None or len(resp) != len(group):
+                return None
+            out.extend(resp)
+        return out
 
     def estimate_velocities_rad_s(self, dt: float) -> np.ndarray:
         if self._last_positions is None or self._prev_positions is None or dt <= 0.0:
