@@ -145,35 +145,48 @@ class HiwonderBoardActuators(Actuators):
     def get_positions_rad(self) -> Optional[np.ndarray]:
         last_err: Optional[Exception] = None
         self._last_error = None
-        for _ in range(self.max_retries):
+        for attempt in range(self.max_retries):
             try:
-                resp = self.controller.read_servo_positions(self.servo_ids_list)
+                resp = self._read_positions_complete()
             except Exception as exc:
                 last_err = exc
                 time.sleep(self.retry_backoff_s)
                 continue
 
-            if resp is None or len(resp) != len(self.servo_ids_list):
-                # Some boards/links get flaky with larger ID lists; retry using chunks.
-                if len(self.servo_ids_list) > 8:
-                    try:
-                        resp = self._read_positions_chunked(chunk_size=8)
-                    except Exception as exc:
-                        last_err = exc
-                        time.sleep(self.retry_backoff_s)
-                        continue
+            if resp is None:
+                last_err = RuntimeError(
+                    f"Servo position response missing or incomplete (got 0/{len(self.servo_ids_list)})"
+                )
+                time.sleep(self.retry_backoff_s)
+                continue
 
-                if resp is None or len(resp) != len(self.servo_ids_list):
-                    got = 0 if resp is None else len(resp)
-                    last_err = RuntimeError(
-                        f"Servo position response missing or incomplete (got {got}/{len(self.servo_ids_list)})"
-                    )
-                    time.sleep(self.retry_backoff_s)
-                    continue
+            pos_map: dict[int, int]
+            try:
+                pos_map = {int(sid): int(pos) for sid, pos in resp}
+            except Exception as exc:
+                last_err = exc
+                time.sleep(self.retry_backoff_s)
+                continue
+
+            missing = [int(sid) for sid in self.servo_ids_list if int(sid) not in pos_map]
+            if missing:
+                # On the final attempt, run a quick diagnostic to pinpoint which IDs respond at all.
+                diag = ""
+                if attempt >= self.max_retries - 1:
+                    try:
+                        responding, not_responding = self._diagnose_individual_ids()
+                        diag = f"; responding_ids={responding}; nonresponding_ids={not_responding}"
+                    except Exception as exc:
+                        diag = f"; diagnose_error={repr(exc)}"
+                last_err = RuntimeError(
+                    "Servo position response missing or incomplete "
+                    f"(got {len(pos_map)}/{len(self.servo_ids_list)}; missing_ids={missing}){diag}"
+                )
+                time.sleep(self.retry_backoff_s)
+                continue
 
             try:
-                pos_map = {sid: pos for sid, pos in resp}
-                units = np.asarray([pos_map[sid] for sid in self.servo_ids_list], dtype=np.float32)
+                units = np.asarray([pos_map[int(sid)] for sid in self.servo_ids_list], dtype=np.float32)
             except Exception as exc:
                 last_err = exc
                 time.sleep(self.retry_backoff_s)
@@ -194,17 +207,62 @@ class HiwonderBoardActuators(Actuators):
         self._last_error = last_err
         return None
 
-    def _read_positions_chunked(self, *, chunk_size: int) -> Optional[List[tuple[int, int]]]:
-        chunk = max(1, int(chunk_size))
-        out: List[tuple[int, int]] = []
-        ids = list(self.servo_ids_list)
-        for i in range(0, len(ids), chunk):
-            group = ids[i : i + chunk]
-            resp = self.controller.read_servo_positions(group)
-            if resp is None or len(resp) != len(group):
-                return None
-            out.extend(resp)
-        return out
+    def _read_positions_complete(self) -> Optional[List[tuple[int, int]]]:
+        """Read all requested servo IDs, tolerating partial replies.
+
+        Many boards/links will sometimes reply with only a subset of IDs.
+        We merge whatever we got, then retry only the missing IDs.
+        """
+        ids = [int(x) for x in self.servo_ids_list]
+        results: dict[int, int] = {}
+
+        # First try: request all IDs at once.
+        resp = self.controller.read_servo_positions(ids)
+        if resp:
+            for sid, units in resp:
+                results[int(sid)] = int(units)
+
+        missing = [sid for sid in ids if sid not in results]
+        if not missing:
+            return [(sid, results[sid]) for sid in ids]
+
+        # Retry only missing IDs (no proactive batching). Some boards respond on a second try.
+        for _ in range(2):
+            time.sleep(self.retry_backoff_s)
+            resp2 = self.controller.read_servo_positions(missing)
+            if resp2:
+                for sid, units in resp2:
+                    results[int(sid)] = int(units)
+            missing = [sid for sid in ids if sid not in results]
+            if not missing:
+                return [(sid, results[sid]) for sid in ids]
+
+        # Last resort: single-ID reads for whatever is still missing.
+        for sid in list(missing):
+            time.sleep(self.retry_backoff_s)
+            resp3 = self.controller.read_servo_positions([sid])
+            if resp3 and len(resp3) == 1:
+                results[int(resp3[0][0])] = int(resp3[0][1])
+
+        missing = [sid for sid in ids if sid not in results]
+        if missing:
+            return [(sid, results[sid]) for sid in ids if sid in results]
+        return [(sid, results[sid]) for sid in ids]
+
+    def _diagnose_individual_ids(self) -> tuple[List[int], List[int]]:
+        responding: List[int] = []
+        not_responding: List[int] = []
+        for sid in self.servo_ids_list:
+            try:
+                resp = self.controller.read_servo_positions([int(sid)])
+            except Exception:
+                resp = None
+            if resp and len(resp) == 1:
+                responding.append(int(sid))
+            else:
+                not_responding.append(int(sid))
+            time.sleep(self.retry_backoff_s)
+        return responding, not_responding
 
     def estimate_velocities_rad_s(self, dt: float) -> np.ndarray:
         if self._last_positions is None or self._prev_positions is None or dt <= 0.0:

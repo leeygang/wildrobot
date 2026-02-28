@@ -32,9 +32,21 @@ def main() -> None:
         pos = ctrl.read_servo_positions(servo_ids)
         if not pos:
             raise SystemExit("Failed to read servo positions (no/invalid response)")
+
+        returned_ids = [int(sid) for sid, _ in pos]
+        returned_set = set(returned_ids)
+        requested_set = set(int(sid) for sid in servo_ids)
+        missing = sorted(requested_set - returned_set)
+
+        if missing:
+            print(f"Warning: missing {len(missing)}/{len(servo_ids)} requested IDs: {missing}")
+
         print(f"Read {len(pos)} positions:")
         for sid, units in pos:
             print(f"  id={sid}: {units}")
+
+        if missing:
+            raise SystemExit("Partial response: not all requested servo IDs returned")
     finally:
         ctrl.close()
 
