@@ -89,7 +89,8 @@ Notes:
 ## Run
 
 ```bash
-wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
+cd runtime
+uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
 ```
 
 ## Run a bundle from `training/checkpoints/` (on the WildRobot device)
@@ -124,22 +125,23 @@ Stop with Ctrl+C (runtime will unload servos).
 
 Optional: capture a replay log for offline policy replay:
 ```bash
-wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --log-path signals_log.npz --log-steps 2000
+uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --log-path signals_log.npz --log-steps 2000
 ```
 
 ## Bundle utilities
 
 Validate a policy bundle against MJCF + ONNX:
 ```bash
-wildrobot-validate-bundle --bundle ../policies/wildrobot_policy_bundle
+cd runtime
+uv run wildrobot-validate-bundle --bundle ../policies/wildrobot_policy_bundle
 ```
 
 Replay a bundle on logged signals (npz → obs/actions):
 ```bash
-wildrobot-replay-policy --bundle ../policies/wildrobot_policy_bundle --input signals_log.npz --output replay_output.npz
+uv run wildrobot-replay-policy --bundle ../policies/wildrobot_policy_bundle --input signals_log.npz --output replay_output.npz
 ```
 
 Inspect a signals log (quick health summary):
 ```bash
-wildrobot-inspect-log --input signals_log.npz
+uv run wildrobot-inspect-log --input signals_log.npz
 ```
