@@ -77,8 +77,8 @@
       },
       "left_elbow_pitch": {
         "id": 23,
-        "offset_unit": 0,
-        "direction": 1,
+        "offset_unit": 4,
+        "direction": -1,
         "center_deg_offset": 0
       },
       "left_wrist_yaw": {
@@ -101,14 +101,14 @@
       },
       "right_shoulder_roll": {
         "id": 32,
-        "offset_unit": -9,
+        "offset_unit": -22,
         "direction": -1,
-        "center_deg_offset": -85
+        "center_deg_offset": 85
       },
       "right_elbow_pitch": {
         "id": 33,
-        "offset_unit": 0,
-        "direction": 1,
+        "offset_unit": -10,
+        "direction": -1,
         "center_deg_offset": 0
       },
       "right_wrist_yaw": {

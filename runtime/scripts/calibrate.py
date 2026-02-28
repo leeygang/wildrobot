@@ -585,7 +585,6 @@ def calibrate_direction(
     *,
     all_servo_ids: Iterable[int],
     move_ms: int,
-    center_units: int,
     pause_s: float,
 ) -> int:
     print(f"\n-- Direction calibration for {joint} (servo {servo.id}) --")
@@ -593,16 +592,19 @@ def calibrate_direction(
 
     while True:
         # Always start the direction test from center to make the "first move" unambiguous.
+        center_units = ServoConfig.UNITS_CENTER
         announce_and_pause(
             f"Step: move {joint} to center units ({center_units})",
             pause_s,
         )
         move_and_wait(controller, servo.id, center_units, move_ms)
-        plus_units = servo.rad_to_units_for_calibrate(
-            delta_rad_used,
-            direction=1,
-            offset=state.offset,
-        )
+        # Direction calibration should be done in raw servo unit space:
+        # start from mechanical center (500) and move +units. This avoids coupling
+        # direction detection to center_deg_offset or any current offset.
+        delta_units = int(round(float(delta_rad_used) * float(servo.UNITS_PER_RAD)))
+        if delta_units == 0:
+            delta_units = 1
+        plus_units = max(ServoConfig.UNITS_MIN, min(ServoConfig.UNITS_MAX, center_units + delta_units))
         announce_and_pause(
             f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing direction)",
             pause_s,
@@ -2429,7 +2431,10 @@ Examples (copy/paste):
                 servo = servo_cfgs[joint]
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
-                print(f"    #{servo.id}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, hint='{hint}')")
+                print(
+                    f"    #{servo.id}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, "
+                    f"center_deg_offset={float(servo.center_deg_offset):+.3g}, hint='{hint}')"
+                )
         if args.range:
             print("Range test mode (dry run):")
             print("  Available joints:")
@@ -2578,7 +2583,10 @@ Examples (copy/paste):
                     state = states[joint]
                     servo = servo_cfgs[joint]
                     servo_id_to_joint[servo.id] = joint
-                    print(f"  #{servo.id}: {joint} (id={servo.id}, dir={state.direction:+d}, offset={state.offset:+d})")
+                    print(
+                        f"  #{servo.id}: {joint} (id={servo.id}, dir={state.direction:+d}, "
+                        f"offset={state.offset:+d}, center_deg_offset={float(servo.center_deg_offset):+.3g})"
+                    )
                 print(f"\n  q = quit and save")
 
                 # Step 2: User selects joint
@@ -2603,7 +2611,10 @@ Examples (copy/paste):
 
                 # Step 3: Ask which action to take
                 print(f"\nSelected: {joint}")
-                print(f"  Current: direction={state.direction:+d}, offset={state.offset:+d}")
+                print(
+                    f"  Current: direction={state.direction:+d}, offset={state.offset:+d}, "
+                    f"center_deg_offset={float(servo.center_deg_offset):+.3g}"
+                )
                 print(f"  Hint (positive MuJoCo rad): {hint}")
                 print("\nAction:")
                 print("  d = calibrate direction")
@@ -2616,9 +2627,6 @@ Examples (copy/paste):
                 if action == "s" or not action:
                     continue
 
-                # Step 4: Perform calibration
-                center_units = servo.rad_to_units_for_calibrate(0.0, direction=1, offset=state.offset)
-
                 if action in ("d", "b"):
                     new_dir = calibrate_direction(
                         controller,
@@ -2628,7 +2636,6 @@ Examples (copy/paste):
                         hint,
                         all_servo_ids=servo_ids,
                         move_ms=args.move_ms,
-                        center_units=center_units,
                         pause_s=float(args.pause_s),
                     )
                     states[joint].direction = new_dir
