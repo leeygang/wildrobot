@@ -1,0 +1,8 @@
+{
+  "policy.onnx": "d4a917178d017f020ebf05615d537bfebc637f19886b8b94b7b9550fb9361ebc",
+  "checkpoint.pkl": "29477ac485ee27f29b23f08a52da237aa0aa3bd73196f45b5db51650431f3d1d",
+  "policy_spec.json": "2e3d4c9e9de6730a421eeec4b77ad9d20fefb20d3b4aee354746a66f5ae5c62a",
+  "robot_config.yaml": "b630481be865e9f6de39e8837bc1cd19cbabd8848ac28e11a5f84dd9b9e7bc4a",
+  "wildrobot.xml": "2a2c7381ebe6c16672665cfa54456a0a0c96b27b16f1fb8993c555032286090b",
+  "wildrobot_config.json": "558fb61339d906c2b0f340e0f4630f2e652c5514861f469b260af441282953a4"
+}

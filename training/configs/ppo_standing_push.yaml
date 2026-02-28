@@ -11,13 +11,9 @@
 #
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
-<<<<<<< HEAD
-version: "0.13.2"
-version_name: "Standing robustness (strong pushes)"
-=======
+
 version: "0.13.4"
 version_name: "Standing robustness (strong pushes, longer run)"
->>>>>>> b734666 (prepare for v0.13.2 training)
 
 seed: 42
 
@@ -63,15 +59,10 @@ env:
 # PPO Algorithm (task learning)
 # =============================================================================
 ppo:
-<<<<<<< HEAD
-  num_envs: 516
-  rollout_steps: 128
-  iterations: 100
-=======
-  num_envs: 128
-  rollout_steps: 64 
+
+  num_envs: 512
+  rollout_steps: 128 
   iterations: 1200
->>>>>>> b734666 (prepare for v0.13.2 training)
 
   learning_rate: 3e-4
   gamma: 0.99
