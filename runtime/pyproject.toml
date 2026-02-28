@@ -29,5 +29,5 @@ zip-safe = true
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["wr_runtime*", "wildrobot_runtime*"]
+where = [".", ".."]
+include = ["wr_runtime*", "wildrobot_runtime*", "configs*", "policy_contract*"]

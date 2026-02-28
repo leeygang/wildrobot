@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -76,7 +77,21 @@ def export_policy_bundle(
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
     mjcf_snapshot_path = _export_mjcf_snapshot(
-        output_dir=output_dir, config_path=config_path
+        output_dir=output_dir,
+        config_path=config_path,
+        actuator_names=spec.robot.actuator_names,
+    )
+
+    # Fail-fast: ensure the bundle is self-consistent for the hardware runtime.
+    # (This is the same interface check `wildrobot-validate-bundle` performs.)
+    mjcf_actuator_names = _load_mjcf_actuator_names(mjcf_snapshot_path)
+    from policy_contract.spec import validate_runtime_compat
+
+    validate_runtime_compat(
+        spec=spec,
+        mjcf_actuator_names=mjcf_actuator_names,
+        onnx_obs_dim=obs_dim,
+        onnx_action_dim=action_dim,
     )
 
     _export_runtime_config(output_dir=output_dir)
@@ -122,7 +137,12 @@ def _export_runtime_config(
     out_path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
+def _export_mjcf_snapshot(
+    *,
+    output_dir: Path,
+    config_path: Path,
+    actuator_names: list[str] | None = None,
+) -> Path:
     """Snapshot the runtime MJCF into the bundle for self-contained validation.
 
     Runtime uses MJCF primarily for actuator order validation; this snapshot allows
@@ -130,8 +150,98 @@ def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
     """
     src = _resolve_mjcf_path(config_path)
     dst = output_dir / "wildrobot.xml"
-    dst.write_text(src.read_text())
+    text = src.read_text()
+    if actuator_names is not None:
+        text = _rewrite_mjcf_actuator_order(text, actuator_names)
+    dst.write_text(text)
     return dst
+
+
+def _load_mjcf_actuator_names(xml_path: Path) -> list[str]:
+    """Return MJCF actuator names in runtime order.
+
+    Runtime treats `<actuator><position name=...>` element ordering as the action order.
+    This avoids needing MuJoCo to parse the XML (and avoids mesh/asset resolution).
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(xml_path).getroot()
+    actuator = root.find("actuator")
+    if actuator is None:
+        raise ValueError(f"MJCF missing <actuator>: {xml_path}")
+
+    names: list[str] = []
+    for pos_act in actuator.findall("position"):
+        name = pos_act.get("name")
+        if name:
+            names.append(str(name))
+
+    if not names:
+        raise ValueError(f"No <actuator><position name=...> found in: {xml_path}")
+    return names
+
+
+_ACTUATOR_NAME_RE = re.compile(r"\bname=\"([^\"]+)\"")
+
+
+def _rewrite_mjcf_actuator_order(xml_text: str, actuator_names: list[str]) -> str:
+    """Rewrite the <actuator> block to match `actuator_names` ordering.
+
+    Why: runtime requires `policy_spec.robot.actuator_names` to match the MJCF actuator order.
+    MuJoCo actuator order is defined by the order of children inside the <actuator> element.
+
+    This rewrite preserves the file text outside the <actuator> block and keeps each actuator
+    line intact (no XML reformatting) under the assumption actuators are one-per-line (as in
+    our generated MJCFs).
+    """
+    if not actuator_names:
+        raise ValueError("actuator_names must be a non-empty list")
+
+    lines = xml_text.splitlines(True)  # keep line endings
+    start_idx = None
+    end_idx = None
+    for i, line in enumerate(lines):
+        if start_idx is None and "<actuator" in line and line.strip().startswith("<actuator"):
+            start_idx = i
+            continue
+        if start_idx is not None and line.strip().startswith("</actuator"):
+            end_idx = i
+            break
+
+    if start_idx is None or end_idx is None or end_idx <= start_idx:
+        raise ValueError("MJCF missing <actuator> block")
+
+    inner = lines[start_idx + 1 : end_idx]
+    by_name: dict[str, str] = {}
+    passthrough: list[str] = []
+
+    for line in inner:
+        m = _ACTUATOR_NAME_RE.search(line)
+        if m and line.strip().startswith("<") and line.strip().endswith("/>"):
+            name = m.group(1)
+            if name in by_name:
+                raise ValueError(f"Duplicate actuator name in MJCF: {name}")
+            by_name[name] = line
+        else:
+            passthrough.append(line)
+
+    missing = [name for name in actuator_names if name not in by_name]
+    if missing:
+        raise ValueError(f"MJCF actuator block missing names required by spec: {missing}")
+
+    # Rebuild inner actuator lines: desired order first, then any remaining named actuators.
+    ordered: list[str] = [by_name[name] for name in actuator_names]
+    remaining = [
+        line
+        for name, line in by_name.items()
+        if name not in set(actuator_names)
+    ]
+
+    new_inner = ordered + remaining
+    # Keep any non-actuator lines (whitespace/comments) at the end.
+    new_inner.extend(passthrough)
+
+    return "".join(lines[: start_idx + 1] + new_inner + lines[end_idx:])
 
 
 def _export_checkpoint_snapshot(*, checkpoint_path: Path, output_dir: Path) -> Path:

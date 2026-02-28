@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from policy_contract.spec import PolicySpec, validate_runtime_compat
 
-from runtime.configs import WildRobotRuntimeConfig
+from configs import WildRobotRuntimeConfig
 from ..utils.mjcf import MjcfModelInfo
 
 

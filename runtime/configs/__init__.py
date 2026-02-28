@@ -3,7 +3,7 @@
 Provides structured configuration classes for hardware deployment.
 """
 
-from runtime.configs.config import (
+from configs.config import (
     BNO085Config,
     ControlConfig,
     FootSwitchConfig,

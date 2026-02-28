@@ -21,7 +21,7 @@ from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
 
-from runtime.configs import load_config
+from configs import load_config
 from wr_runtime.hardware.actuators import HiwonderBoardActuators
 from wr_runtime.hardware.bno085 import BNO085IMU
 from wr_runtime.hardware.foot_switches import FootSwitches

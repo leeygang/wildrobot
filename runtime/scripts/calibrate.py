@@ -26,7 +26,7 @@ _RUNTIME_ROOT = _REPO_ROOT / "runtime"
 if _RUNTIME_ROOT.exists() and str(_RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(_RUNTIME_ROOT))
 
-from runtime.configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
+from configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
 
 # Calibration constants (use ServoConfig constants for conversion)
 DEFAULT_MOVE_MS = 300

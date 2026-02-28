@@ -4,7 +4,7 @@ This module provides low-level serial communication with the Hiwonder
 servo controller board using the board-level protocol.
 
 Usage:
-    from runtime.configs import WrRuntimeConfig
+    from configs import WrRuntimeConfig
     from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
 
     config = WrRuntimeConfig.load("runtime/configs/wr_runtime_config.json")
@@ -28,7 +28,7 @@ import serial
 import time
 from typing import List, Optional, Tuple
 
-from runtime.configs.config import ServoControllerConfig
+from configs.config import ServoControllerConfig
 
 
 class HiwonderBoardController:
