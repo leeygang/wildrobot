@@ -274,6 +274,219 @@ def fix_collision_default_geom(xml_file):
     tree.write(xml_file)
 
 
+def replace_upper_leg_collision_with_capsule(
+    xml_file: str,
+    radius: float = 0.02,
+    half_length: float = 0.060188,
+) -> None:
+    """Replace upper_leg mesh collision geoms with capsule geoms.
+
+    This targets only collision geoms where mesh="upper_leg" and keeps
+    visual meshes untouched. The function is idempotent.
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    replaced = 0
+    size_str = f"{radius:.6f} {half_length:.6f}"
+    # Match the resolved mesh frame for `upper_leg` so capsule overlaps visual.
+    # Values come from compiled MuJoCo geom pose for the upper_leg mesh.
+    pos_str = "0.000000029 0.099411835 0.026699927"
+    quat_str = "0.5 0.5 -0.5 0.5"
+
+    for geom in root.findall(".//geom[@class='collision']"):
+        if geom.get("mesh") != "upper_leg":
+            continue
+        geom.set("type", "capsule")
+        geom.set("size", size_str)
+        geom.set("pos", pos_str)
+        geom.set("quat", quat_str)
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            "Replaced upper_leg collision meshes with capsules: "
+            f"{replaced} geoms (pos={pos_str}, size={size_str})"
+        )
+
+
+def replace_forearm_collision_with_box(xml_file: str) -> None:
+    """Replace forearm mesh collision geoms with aligned box geoms.
+
+    The forearm mesh is used twice per arm with different local frames.
+    We map each source frame to a resolved primitive frame to keep overlap.
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    # Resolved box half extents from compiled forearm mesh geom_size.
+    size_str = "0.021754 0.042512 0.064691"
+    pose_a = {
+        "pos": "-0.000012244 0.082012300 -0.046051151",
+        "quat": "0.509179290 0.490187470 -0.490663870 0.509609330",
+    }
+    pose_b = {
+        "pos": "-0.000038559 0.081967005 -0.007357287",
+        "quat": "0.490069430 0.510180960 0.509751350 -0.489592590",
+    }
+
+    replaced = 0
+    for geom in root.findall(".//geom[@class='collision']"):
+        if geom.get("mesh") != "forearm":
+            continue
+
+        # Two forearm collision entries are distinguished by original z sign.
+        pos_vals = [float(x) for x in geom.get("pos", "0 0 0").split()]
+        target = pose_a if pos_vals[2] >= 0.0 else pose_b
+
+        geom.set("type", "box")
+        geom.set("size", size_str)
+        geom.set("pos", target["pos"])
+        geom.set("quat", target["quat"])
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            "Replaced forearm collision meshes with boxes: "
+            f"{replaced} geoms (size={size_str})"
+        )
+
+
+def replace_htd_45h_collision_with_box(xml_file: str) -> None:
+    """Replace HTD-45H collision mesh geoms with aligned box geoms."""
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    size_str = "0.010095 0.026704 0.030001"
+    # Keep original export orientation (quat), but use resolved mesh-centered
+    # positions so the primitive does not shift after removing mesh offsets.
+    left_pose = {
+        "pos": "-0.001295800 -0.008225190 -0.036494360",
+        "quat": "0.000116219 -0.707107 0.000116219 0.707107",
+    }
+    right_pose = {
+        "pos": "0.000495800 -0.007888980 -0.036511340",
+        "quat": "0.000116219 -0.707107 -0.000116219 -0.707107",
+    }
+
+    replaced = 0
+    for geom in root.findall(".//geom[@class='collision']"):
+        if geom.get("mesh") != "htd_45h_collision":
+            continue
+
+        # Source export uses +x for left, -x for right for this mesh geom.
+        pos_vals = [float(x) for x in geom.get("pos", "0 0 0").split()]
+        target = left_pose if pos_vals[0] >= 0.0 else right_pose
+
+        geom.set("type", "box")
+        geom.set("size", size_str)
+        geom.set("pos", target["pos"])
+        geom.set("quat", target["quat"])
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            "Replaced HTD-45H collision meshes with boxes: "
+            f"{replaced} geoms (size={size_str})"
+        )
+
+
+def replace_upper_leg_servo_connect_collision_with_box(xml_file: str) -> None:
+    """Replace upper_leg_servo_connect collision mesh geoms with aligned box geoms."""
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    size_str = "0.022780 0.033799 0.030266"
+    pose = {
+        "pos": "0.000000001 0.020521142 0.026090017",
+        "quat": "-0.004637314 0.999989248 0.000000000 0.000000000",
+    }
+
+    replaced = 0
+    for geom in root.findall(".//geom[@class='collision']"):
+        if geom.get("mesh") != "upper_leg_servo_connect":
+            continue
+
+        geom.set("type", "box")
+        geom.set("size", size_str)
+        geom.set("pos", pose["pos"])
+        geom.set("quat", pose["quat"])
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            "Replaced upper_leg_servo_connect collision meshes with boxes: "
+            f"{replaced} geoms (size={size_str})"
+        )
+
+
+def replace_foot_bottom_collision_with_box(xml_file: str) -> None:
+    """Replace toe/heel bottom collision mesh geoms with aligned box geoms."""
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    toe_size_str = "0.002040 0.037100 0.045000"
+    heel_size_str = "0.002062 0.021100 0.045000"
+
+    toe_pose = {
+        "pos": "0.056816350 0.060460060 0.026800000",
+        "quat": "-0.707107 0.000000 0.000000 0.707107",
+    }
+    heel_pose = {
+        "pos": "-0.032749720 0.060437950 0.026800000",
+        "quat": "-0.707107 0.000000 0.000000 0.707107",
+    }
+
+    replaced_toe = 0
+    replaced_heel = 0
+    for geom in root.findall(".//geom[@class='collision']"):
+        mesh_name = geom.get("mesh") or ""
+        if mesh_name.startswith("toe_btm"):
+            geom.set("type", "box")
+            geom.set("size", toe_size_str)
+            geom.set("pos", toe_pose["pos"])
+            geom.set("quat", toe_pose["quat"])
+            geom.attrib.pop("mesh", None)
+            geom.attrib.pop("material", None)
+            replaced_toe += 1
+            continue
+
+        if mesh_name.startswith("heel_btm"):
+            geom.set("type", "box")
+            geom.set("size", heel_size_str)
+            geom.set("pos", heel_pose["pos"])
+            geom.set("quat", heel_pose["quat"])
+            geom.attrib.pop("mesh", None)
+            geom.attrib.pop("material", None)
+            replaced_heel += 1
+
+    replaced = replaced_toe + replaced_heel
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            "Replaced foot bottom collision meshes with boxes: "
+            f"toe={replaced_toe}, heel={replaced_heel} "
+            f"(toe_size={toe_size_str}, heel_size={heel_size_str})"
+        )
+
+
 def add_mimic_bodies(xml_file):
     """Add dummy bodies at site positions for sites ending with '_mimic'.
 
@@ -748,6 +961,11 @@ def main() -> None:
     add_option(xml_file)
     merge_default_blocks(xml_file)
     fix_collision_default_geom(xml_file)
+    replace_upper_leg_collision_with_capsule(xml_file)
+    replace_forearm_collision_with_box(xml_file)
+    replace_htd_45h_collision_with_box(xml_file)
+    replace_upper_leg_servo_connect_collision_with_box(xml_file)
+    replace_foot_bottom_collision_with_box(xml_file)
     add_mimic_bodies(xml_file)  # Add dummy bodies for GMR compatibility
 
     # Generate robot configuration next to the MJCF.
