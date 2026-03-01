@@ -133,6 +133,45 @@ def prompt_select_joints(joint_names: List[str]) -> List[str]:
     return selected
 
 
+def prompt_select_joints_by_servo_id(
+    joint_names: List[str],
+    *,
+    servo_cfgs: Dict[str, ServoConfig],
+) -> List[str]:
+    print("Available joints:")
+    servo_id_to_joint: Dict[int, str] = {}
+    for joint in joint_names:
+        servo = servo_cfgs[joint]
+        min_rad, max_rad = float(servo.rad_range[0]), float(servo.rad_range[1])
+        min_deg = float(np.rad2deg(min_rad))
+        max_deg = float(np.rad2deg(max_rad))
+        servo_id_to_joint[int(servo.id)] = str(joint)
+        print(f"  #{int(servo.id)}: {joint}: deg range: {min_deg:.1f}, {max_deg:.1f}")
+
+    raw = input("Select joints by servo id (e.g. #21,#23 or 21 23), or 'all': ").strip().lower()
+    if not raw:
+        raise ValueError("No joints selected")
+    if raw == "all":
+        return list(joint_names)
+
+    tokens = [t for t in raw.replace(",", " ").split() if t]
+    selected: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        token = token.lstrip("#")
+        if not token.isdigit():
+            raise ValueError(f"Invalid servo id selector: '{token}'")
+        sid = int(token)
+        joint = servo_id_to_joint.get(sid)
+        if joint is None:
+            valid = ", ".join(str(servo_cfgs[j].id) for j in joint_names)
+            raise ValueError(f"Unknown servo id: {sid}. Valid IDs: {valid}")
+        if joint not in seen:
+            seen.add(joint)
+            selected.append(joint)
+    return selected
+
+
 _FOOTSWITCH_TARGETS_ORDER = (
     "left_toe",
     "left_heel",
@@ -2438,13 +2477,18 @@ Examples (copy/paste):
         if args.range:
             print("Range test mode (dry run):")
             print("  Available joints:")
-            for idx, joint in enumerate(joint_names, start=1):
+            for joint in joint_names:
                 servo = servo_cfgs[joint]
                 min_rad, max_rad = servo.rad_range
+                min_deg = float(np.rad2deg(float(min_rad)))
+                max_deg = float(np.rad2deg(float(max_rad)))
                 center_units = servo.rad_to_units(0.0)
                 min_units = servo.rad_to_units(min_rad)
                 max_units = servo.rad_to_units(max_rad)
-                print(f"    #{idx}: {joint} (servo_id={servo.id}, center={center_units}, min={min_units} [{min_rad:.3f} rad], max={max_units} [{max_rad:.3f} rad])")
+                print(
+                    f"    #{int(servo.id)}: {joint}: deg range: {min_deg:.1f}, {max_deg:.1f} "
+                    f"(center={center_units}, min={min_units} [{min_rad:.3f} rad], max={max_units} [{max_rad:.3f} rad])"
+                )
             print(f"  Range test duration: {RANGE_TEST_MS}ms per segment (min->max->min->center)")
         return
 
@@ -2489,7 +2533,7 @@ Examples (copy/paste):
             while True:
                 print("\n" + "-" * 40)
                 try:
-                    range_selected = prompt_select_joints(joint_names)
+                    range_selected = prompt_select_joints_by_servo_id(joint_names, servo_cfgs=servo_cfgs)
                 except ValueError as exc:
                     print(str(exc))
                     continue
