@@ -77,8 +77,8 @@ POSITIVE_HINTS = {
     "left_wrist_yaw": "left forearm rotates outward",
     "left_wrist_pitch": "left hand tilts upward",
     # Right arm
-    "right_shoulder_pitch": "right upper arm lifts forward",
-    "right_shoulder_roll": "right upper arm lifts outward (away from torso)",
+    "right_shoulder_pitch": "right upper arm lifts backward",  # inverted range
+    "right_shoulder_roll": "right upper arm lifts inward (toward torso)",  # inverted range
     "right_elbow_pitch": "right elbow bends",
     "right_wrist_yaw": "right forearm rotates outward",
     "right_wrist_pitch": "right hand tilts upward",
@@ -837,8 +837,23 @@ def range_test_joint(
     min_deg = float(np.rad2deg(float(min_rad)))
     max_deg = float(np.rad2deg(float(max_rad)))
 
+    # Show effective mapping and reachable ctrl range given servo unit limits.
+    reachable_min_rad = float(servo.units_to_rad(int(servo.UNITS_MIN)))
+    reachable_max_rad = float(servo.units_to_rad(int(servo.UNITS_MAX)))
+    reachable_min_deg = float(np.rad2deg(reachable_min_rad))
+    reachable_max_deg = float(np.rad2deg(reachable_max_rad))
+
     print(f"  Center: {center_units} units (0.0 rad)")
     print(f"  Deg range: {min_deg:.1f} to {max_deg:.1f}")
+    print(
+        "  Calibration: "
+        f"center_deg_offset={float(servo.center_deg_offset):+.1f} "
+        f"direction={float(servo.direction):+.0f} offset_unit={int(servo.offset)}"
+    )
+    print(
+        "  Reachable (by servo limits): "
+        f"units {int(servo.UNITS_MIN)}..{int(servo.UNITS_MAX)} => ctrl {reachable_min_deg:+.1f}..{reachable_max_deg:+.1f} deg"
+    )
     print(f"  Min: {min_units} units ({min_rad:.3f} rad)")
     print(f"  Max: {max_units} units ({max_rad:.3f} rad)")
     print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
