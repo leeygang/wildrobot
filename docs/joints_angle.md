@@ -192,8 +192,8 @@ Vectorized (the runtime hardware path):
 
 Scalar/per-joint (handy for calibration tooling and debugging):
 - `runtime/configs/config.py` (`ServoConfig`)
-  - `rad_to_units(target_rad) -> int`
-  - `units_to_rad(units) -> float`
+  - `joint_target_rad_to_elect_unit(target_rad) -> int`
+  - `servo_elect_units_to_joint_target_rad(units) -> float`
 
 End-to-end helper (policy action list → `(servo_id, pos)` commands):
 - `runtime/configs/config.py` (`ServoControllerConfig.policy_action_to_servo_cmd`)

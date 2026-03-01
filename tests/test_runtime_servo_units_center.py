@@ -26,12 +26,12 @@ def test_rad_to_units_center_uses_center_rad_not_joint_range_mid() -> None:
     assert servo.center_rad == 0.0
     assert servo.ctrl_center == 0.5
 
-    units_at_center_rad = servo.rad_to_units(servo.center_rad)
+    units_at_center_rad = servo.joint_target_rad_to_elect_unit(servo.center_rad)
     assert units_at_center_rad == ServoConfig.UNITS_CENTER + servo.offset
 
     # But the joint-range midpoint (ctrl_center) is a different angle, so it should
     # generally NOT map to 500 (unless by coincidence).
-    units_at_ctrl_center = servo.rad_to_units(servo.ctrl_center)
+    units_at_ctrl_center = servo.joint_target_rad_to_elect_unit(servo.ctrl_center)
     assert units_at_ctrl_center != ServoConfig.UNITS_CENTER + servo.offset
 
 

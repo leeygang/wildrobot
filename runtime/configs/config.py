@@ -113,7 +113,7 @@ class ServoConfig:
     def center_rad(self) -> float:
         return math.radians(float(self.motor_center_mujoco_deg))
 
-    def rad_to_units(self, target_rad: float) -> int:
+    def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
 
         Applies hardware calibration:
@@ -131,7 +131,7 @@ class ServoConfig:
         units = self.UNITS_CENTER + self.offset + self.motor_sign * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
-    def rad_to_units_for_calibrate(
+    def joint_target_rad_to_elect_unit_for_calibrate(
         self,
         target_rad: float,
         *,
@@ -154,10 +154,10 @@ class ServoConfig:
         units = self.UNITS_CENTER + offset + motor_sign * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
-    def units_to_rad(self, units: int) -> float:
+    def servo_elect_units_to_joint_target_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians.
 
-        Inverse of rad_to_units. Applies hardware calibration:
+        Inverse of joint_target_rad_to_elect_unit. Applies hardware calibration:
         - motor_sign: corrects for servo installation orientation
         - offset: corrects for neutral position alignment
 
@@ -170,7 +170,7 @@ class ServoConfig:
         delta_units = float(units) - self.UNITS_CENTER - self.offset
         return self.center_rad + self.motor_sign * (delta_units / self.UNITS_PER_RAD)
 
-    def units_to_rad_for_calibrate(
+    def servo_elect_units_to_joint_target_rad_for_calibrate(
         self,
         units: int,
         *,
@@ -320,12 +320,12 @@ class ServoControllerConfig:
             policy_action [-1, 1]
             → corrected = action * policy_action_sign
             → ctrl_rad = corrected * ctrl_span + ctrl_center
-            → servo_pos = servo.rad_to_units(ctrl_rad)  (applies motor_center_mujoco_deg, motor_sign, offset)
+            → servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)  (applies motor_center_mujoco_deg, motor_sign, offset)
         """
         action_clipped = max(-1.0, min(1.0, action))
         corrected = action_clipped * servo.policy_action_sign
         ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
-        servo_pos = servo.rad_to_units(ctrl_rad)
+        servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)
         return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
 
     def _servo_pos_to_policy_action(
@@ -335,7 +335,7 @@ class ServoControllerConfig:
 
         Inverse of _policy_action_to_servo_pos.
         """
-        ctrl_rad = servo.units_to_rad(servo_pos)
+        ctrl_rad = servo.servo_elect_units_to_joint_target_rad(servo_pos)
         if abs(float(servo.ctrl_span)) < 1e-9:
             raise ValueError(
                 "Cannot invert servo_pos->policy_action with degenerate joint range "

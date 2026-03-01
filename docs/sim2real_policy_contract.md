@@ -723,13 +723,13 @@ class ServoConfig:
     UNITS_CENTER: int = 500
     UNITS_PER_RAD: float = 238.73  # 1000 / (240° in rad)
 
-    def rad_to_units(self, target_rad: float) -> int:
+    def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units with calibration."""
       center_rad = math.radians(self.motor_center_mujoco_deg)
       units = self.UNITS_CENTER + self.offset_unit + self.motor_sign * ((target_rad - center_rad) * self.UNITS_PER_RAD)
         return clamp(units, self.UNITS_MIN, self.UNITS_MAX)
 
-    def units_to_rad(self, units: int) -> float:
+    def servo_elect_units_to_joint_target_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians with calibration."""
       center_rad = math.radians(self.motor_center_mujoco_deg)
       return center_rad + self.motor_sign * (units - self.UNITS_CENTER - self.offset_unit) / self.UNITS_PER_RAD
@@ -739,7 +739,7 @@ class HiwonderActuators(Actuators):
     def set_targets_rad(self, targets: np.ndarray) -> None:
         for i, name in enumerate(self._names):
             cfg = self._servo_configs[name]
-            units = cfg.rad_to_units(targets[i])  # delegate
+            units = cfg.joint_target_rad_to_elect_unit(targets[i])  # delegate
             commands.append((cfg.id, units))
         self._controller.move_servos(commands, self._move_ms)
 ```
