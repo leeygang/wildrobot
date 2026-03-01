@@ -71,9 +71,9 @@
       },
       "left_shoulder_roll": {
         "id": 22,
-        "offset_unit": -26,
-        "direction": 1,
-        "center_deg_offset": 85
+        "offset_unit": -30,
+        "direction": -1,
+        "center_deg_offset": -85
       },
       "left_elbow_pitch": {
         "id": 23,
