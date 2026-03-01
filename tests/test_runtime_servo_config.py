@@ -4,8 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from runtime.configs import WildRobotRuntimeConfig, ServoControllerConfig, ServoSpec
-from runtime.wr_runtime.hardware.actuators import ServoModel, rad_to_servo_units, servo_units_to_rad
+from runtime.configs import WildRobotRuntimeConfig, ServoConfig, ServoControllerConfig, ServoSpec
+from runtime.wr_runtime.hardware.actuators import (
+    ServoModel,
+    joint_target_rad_to_servo_pos_elec_units,
+    servo_pos_elect_units_to_joint_target_rad,
+)
 
 
 def _write_config(tmp_path: Path, payload: dict) -> Path:
@@ -110,8 +114,8 @@ def test_rad_units_round_trip_with_offset_unit() -> None:
     centers_rad = np.array([0.0], dtype=np.float32)
     target_rad = np.array([0.2], dtype=np.float32)
 
-    units = rad_to_servo_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
-    back = servo_units_to_rad(units, offsets, motor_signs, centers_rad, servo_model)
+    units = joint_target_rad_to_servo_pos_elec_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
+    back = servo_pos_elect_units_to_joint_target_rad(units, offsets, motor_signs, centers_rad, servo_model)
 
     np.testing.assert_allclose(back, target_rad, atol=1e-6)
 
@@ -123,10 +127,10 @@ def test_center_deg_maps_to_servo_center() -> None:
     centers_rad = np.array([np.deg2rad(90.0)], dtype=np.float32)
     target_rad = np.array([np.pi / 2], dtype=np.float32)
 
-    units = rad_to_servo_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
+    units = joint_target_rad_to_servo_pos_elec_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
     assert np.allclose(units, np.array([servo_model.units_center], dtype=np.float32), atol=1e-3)
 
-    back = servo_units_to_rad(units, offsets, motor_signs, centers_rad, servo_model)
+    back = servo_pos_elect_units_to_joint_target_rad(units, offsets, motor_signs, centers_rad, servo_model)
     np.testing.assert_allclose(back, target_rad, atol=1e-6)
 
 
@@ -139,8 +143,8 @@ def test_shoulder_center_deg_units_endpoints() -> None:
     target_max = np.array([np.deg2rad(30.0)], dtype=np.float32)
     target_min = np.array([np.deg2rad(-180.0)], dtype=np.float32)
 
-    units_max = rad_to_servo_units(target_max, offsets, motor_signs, centers_rad, servo_model)
-    units_min = rad_to_servo_units(target_min, offsets, motor_signs, centers_rad, servo_model)
+    units_max = joint_target_rad_to_servo_pos_elec_units(target_max, offsets, motor_signs, centers_rad, servo_model)
+    units_min = joint_target_rad_to_servo_pos_elec_units(target_min, offsets, motor_signs, centers_rad, servo_model)
 
     np.testing.assert_allclose(units_max, np.array([1000.0], dtype=np.float32), atol=1e-3)
     np.testing.assert_allclose(units_min, np.array([125.0], dtype=np.float32), atol=1e-3)
@@ -170,3 +174,68 @@ def test_offset_rad_migrates_to_unit_and_serializes(tmp_path: Path) -> None:
     assert cfg.servo_controller.joint_offset_units["left"] == 7
     out = cfg.to_dict()
     assert out["servo_controller"]["servos"]["left"]["offset_unit"] == 7
+
+
+def test_policy_action_to_servo_cmd_and_inverse_round_trip() -> None:
+    controller = ServoControllerConfig(
+        servos={
+            "left": ServoConfig(
+                id=1,
+                offset=10,
+                motor_sign=1.0,
+                motor_center_mujoco_deg=0.0,
+                rad_range=(-1.0, 1.0),
+                policy_action_sign=1.0,
+            ),
+            "right": ServoConfig(
+                id=2,
+                offset=-20,
+                motor_sign=-1.0,
+                motor_center_mujoco_deg=90.0,
+                rad_range=(-0.5, 1.5),
+                policy_action_sign=-1.0,
+            ),
+        }
+    )
+
+    actions_in = [0.25, -0.4]
+    commands = controller.policy_action_to_servo_cmd(actions_in)
+    assert [sid for sid, _ in commands] == [1, 2]
+
+    actions_out = controller.servo_pos_to_policy_action(commands)
+    np.testing.assert_allclose(actions_out, actions_in, atol=0.02)
+
+
+def test_policy_action_to_servo_cmd_length_mismatch_raises() -> None:
+    controller = ServoControllerConfig(
+        servos={
+            "left": ServoConfig(id=1, rad_range=(-1.0, 1.0)),
+            "right": ServoConfig(id=2, rad_range=(-1.0, 1.0)),
+        }
+    )
+
+    with pytest.raises(ValueError):
+        controller.policy_action_to_servo_cmd([0.1])
+
+
+def test_servo_pos_to_policy_action_missing_servo_id_raises() -> None:
+    controller = ServoControllerConfig(
+        servos={
+            "left": ServoConfig(id=1, rad_range=(-1.0, 1.0)),
+            "right": ServoConfig(id=2, rad_range=(-1.0, 1.0)),
+        }
+    )
+
+    with pytest.raises(ValueError):
+        controller.servo_pos_to_policy_action([(1, 500)])
+
+
+def test_servo_pos_to_policy_action_degenerate_range_raises() -> None:
+    controller = ServoControllerConfig(
+        servos={
+            "left": ServoConfig(id=1, rad_range=(0.0, 0.0)),
+        }
+    )
+
+    with pytest.raises(ValueError):
+        controller.servo_pos_to_policy_action([(1, 500)])

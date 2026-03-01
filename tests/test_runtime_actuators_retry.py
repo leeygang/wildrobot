@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from runtime.wr_runtime.hardware.actuators import HiwonderBoardActuators, ServoModel, servo_units_to_rad
+from runtime.wr_runtime.hardware.actuators import (
+    HiwonderBoardActuators,
+    ServoModel,
+    servo_pos_elect_units_to_joint_target_rad,
+)
 
 
 class FakeController:
@@ -81,7 +85,7 @@ def test_get_positions_retries_then_succeeds():
     positions = actuators.get_positions_rad()
     assert controller.read_calls == 3
     assert positions is not None
-    expected = servo_units_to_rad(
+    expected = servo_pos_elect_units_to_joint_target_rad(
         np.array([600, 400], dtype=np.float32),
         offsets_unit=np.zeros(2, dtype=np.float32),
         motor_signs=np.ones(2, dtype=np.float32),

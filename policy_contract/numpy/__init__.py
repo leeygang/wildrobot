@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from .action import postprocess_action
 from .calib import (
-    action_to_ctrl,
-    ctrl_to_policy_action,
+    action_to_joint_target_rad,
+    joint_target_rad_to_action,
     normalize_joint_pos,
     normalize_joint_vel,
 )
@@ -16,8 +16,8 @@ __all__ = [
     "PolicyState",
     "build_observation_from_components",
     "postprocess_action",
-    "action_to_ctrl",
-    "ctrl_to_policy_action",
+    "action_to_joint_target_rad",
+    "joint_target_rad_to_action",
     "normalize_joint_pos",
     "normalize_joint_vel",
 ]

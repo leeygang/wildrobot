@@ -18,6 +18,9 @@ This doc describes the servo calibration model and the operator workflow for per
 2) center offset in servo units
 3) optional joint center angle (`motor_center_mujoco_deg`) used in the rad↔units mapping
 
+For a consolidated reference on coordinate definitions and the end-to-end conversion chain
+(`policy_action ∈ [-1, 1]` ↔ `target_rad` ↔ servo units), see `docs/joints_angle.md`.
+
 ## Goals
 
 - Calibrate each servo’s **zero/center offset** so that a chosen physical “neutral pose” corresponds to `joint_pos_rad == 0.0` in runtime.
@@ -34,116 +37,16 @@ This doc describes the servo calibration model and the operator workflow for per
 
 ## Terminology
 
-- `target_rad`: the *MuJoCo joint angle target* in radians.
-  - This is the value the runtime ultimately wants the joint to take in the MuJoCo model’s joint coordinate (the same coordinate used for joint `range_min_rad`/`range_max_rad`).
-  - In the runtime code paths, `target_rad` is the input to the rad↔units conversion.
-  - If you start from a policy action, then conceptually:
-    - `corrected_action = action * policy_action_sign`
-    - `target_rad = corrected_action * (0.5 * (range_max_rad - range_min_rad)) + (0.5 * (range_min_rad + range_max_rad))`
-  - `target_rad` is **not** a servo-unit quantity; it is always in radians.
+This section is intentionally minimal; the detailed coordinate definitions, sign composition, and
+worked examples live in `docs/joints_angle.md`.
 
-- `motor_center_mujoco_deg` (config field): MuJoCo joint angle in degrees that corresponds to the *contract-space* center `servo_unit == 500`.
-  - In radians, this same “motor center” angle is `deg2rad(motor_center_mujoco_deg)`.
-  - Because `offset_unit` relates `servo_unit` and `servo_electrical_unit` as:
-    - `servo_electrical_unit = servo_unit + offset_unit`
-    - `servo_unit = servo_electrical_unit - offset_unit`
-    the statement “`target_rad == deg2rad(motor_center_mujoco_deg)` maps to `servo_unit == 500`” is equivalent to:
-    - “`target_rad == deg2rad(motor_center_mujoco_deg)` maps to `servo_electrical_unit == 500 + offset_unit`”.
-  - Concrete example:
-    - Suppose `motor_center_mujoco_deg = 45`.
-    - If `offset_unit = +10`, then commanding `target_rad = deg2rad(45°)` yields:
-      - `servo_unit_cmd ≈ 500`
-      - `servo_electrical_unit_cmd ≈ 510`.
-
-- `servo_electrical_unit` (a.k.a. `u_elec`): the raw Hiwonder board servo position in `[0..1000]`.
-  - This is what you directly read/write over the bus.
-- `servo_unit` (a.k.a. `u`): a *conceptual* servo position in `[0..1000]` after applying the per-joint unit offset.
-  - This is the “contract-space” unit that is easiest to reason about for calibration math.
-- `servo_unit_offset` (config field `offset_unit`): the per-joint integer stored at `servo_controller.servos.<joint>.offset_unit`.
-  - Relationship:
-    - `servo_unit = servo_electrical_unit - servo_unit_offset`
-    - `servo_electrical_unit = servo_unit + servo_unit_offset`
-- Example (matches current implementation):
-  - If the joint needs “+10 units” added at the electrical layer to make the *contract* center line up, set `servo_unit_offset = +10`.
-  - Then `servo_unit == 500` corresponds to `servo_electrical_unit == 510`.
-    - Readback: if the board reports `servo_electrical_unit_read = 510`, the runtime interprets `servo_unit_read = 510 - 10 = 500`.
-    - Command: if the runtime wants to command `servo_unit_cmd = 500`, it sends `servo_electrical_unit_cmd = 500 + 10 = 510`.
-- `servo_unit_center`: the *contract-space* center in units (`servo_unit == 500`).
-- `motor_sign` (config field) / `s` (math symbol): per-joint sign in `{+1, -1}` stored at `servo_controller.servos.<joint>.motor_sign`.
-  - Meaning: it decides whether “positive MuJoCo/control radians” corresponds to increasing or decreasing servo units.
-  - In the runtime conversion (see equations below), it multiplies the angle delta:
-    - `servo_electrical_unit_cmd` changes by `motor_sign * (+Δrad) * (1000 / range_rad)`.
-  - Intuition:
-    - `motor_sign = +1`: increasing `target_rad` increases `servo_electrical_unit_cmd` (and also increases `servo_unit_cmd`).
-    - `motor_sign = -1`: increasing `target_rad` decreases `servo_electrical_unit_cmd` (flips the joint).
-  - Tiny example (assuming `motor_center_mujoco_deg=0` and `offset_unit=0`):
-    - If `motor_sign=+1`, then `target_rad=+0.1` commands a value **greater than** 500.
-    - If `motor_sign=-1`, then `target_rad=+0.1` commands a value **less than** 500.
-  - Concrete example (hip roll, `+Δrad` test):
-    - Suppose the MuJoCo convention for `left_hip_roll` is: `+Δrad` means “left leg moves outward (to the left)”.
-    - During calibration, pick a small delta like `delta_rad = 0.10` and command two targets around center:
-      - `target_rad_plus  = deg2rad(motor_center_mujoco_deg) + 0.10`
-      - `target_rad_minus = deg2rad(motor_center_mujoco_deg) - 0.10`
-    - Observe the servo’s *electrical units* while applying those two commands:
-      - If `target_rad_plus` yields a **higher** `servo_electrical_unit_cmd` than `target_rad_minus` and the joint moves outward as expected, set `motor_sign = +1`.
-      - If `target_rad_plus` yields a **lower** `servo_electrical_unit_cmd` than `target_rad_minus` (and/or the joint moves inward for `+Δrad`), set `motor_sign = -1`.
-    - This is exactly what the mapping enforces:
-      - `servo_electrical_unit_cmd(target_rad_plus) - servo_electrical_unit_cmd(target_rad_minus)` is proportional to `motor_sign * (target_rad_plus - target_rad_minus)`.
-- `policy_action_sign` (policy-contract field): per-joint sign in `{+1, -1}` stored in `assets/v2/robot_config.yaml` and typically exported into `policy_contract/policy_spec.json` under `robot.joints.<joint>.policy_action_sign`.
-  - Meaning: it decides whether a *positive policy action* should produce a positive or negative *control* (radians) delta for that joint, so that “same action value on left/right” yields symmetric motion.
-  - Where it is applied (conceptual):
-    - `corrected_action = action * policy_action_sign`
-    - `target_rad = corrected_action * (0.5 * (range_max_rad - range_min_rad)) + (0.5 * (range_min_rad + range_max_rad))`
-  - What it is *not*: it is **not** part of servo calibration. Servo calibration only uses `motor_sign`, `offset_unit`, and optionally `motor_center_mujoco_deg`.
-  - Relationship to `motor_sign`:
-    - `policy_action_sign` is a model/policy convention (action-space → control-space).
-    - `motor_sign` is a hardware polarity convention (control-space ↔ servo-units).
-    - The physical direction you see for a given `+action` depends on both layers.
-  - Concrete example (left/right hip roll symmetry):
-    - A common convention is:
-      - `left_hip_roll.policy_action_sign = +1`
-      - `right_hip_roll.policy_action_sign = -1`
-    - Pick concrete numbers for a single timestep:
-      - Policy outputs the same action value for both hips: `action = +0.30`.
-      - Assume (for illustration) the hip-roll joint range midpoint is `0.00 rad` and the half-range is `0.35 rad`.
-    - Then the runtime computes a *target control angle* (this doc’s `target_rad`) per joint:
-      - Left: `target_rad = (+0.30 * +1) * 0.35 + 0.00 = +0.105 rad`
-      - Right: `target_rad = (+0.30 * -1) * 0.35 + 0.00 = -0.105 rad`
-    - Those opposite-signed `target_rad` values are what typically creates symmetric left/right roll motion (e.g., “both legs roll outward”), once each joint’s `motor_sign` is calibrated so that `+target_rad` corresponds to the MuJoCo-positive physical direction for that joint.
-- `motor_center_mujoco_deg`: MuJoCo angle in degrees that corresponds to `servo_unit == 500`.
-  - If `motor_center_mujoco_deg == 0` (most common), then `servo_unit == 500` corresponds to MuJoCo `0°`.
-
-## Two Different “Ranges” (Servo Range vs Joint Range)
-
-There are **two distinct ranges** involved, and they serve different purposes:
-
-1) Servo range (hardware model / scaling)
-- This is the servo’s assumed full travel span: `[-120°, +120°]` (240° total) mapped onto `units ∈ [0..1000]`.
-- In this doc and the runtime conversion, this is represented by `range_rad`.
-- It defines the slope: `(1000 / range_rad)` units per radian.
-
-2) Joint range (MuJoCo/model limit)
-- This is the *allowed joint angle range* for a specific joint in the robot model.
-- It is defined in `assets/v2/robot_config.yaml` (and/or can be parsed from MJCF joint `range=` depending on the tool).
-- In code (e.g. the calibrator), this typically appears as `min_rad, max_rad` for each joint.
-
-How they interact:
-- The **conversion math** uses the *servo range* (`range_rad`) to turn angle deltas into unit deltas.
-- The **controller / policy target** should respect the *joint range* (min/max radians) to avoid commanding angles outside what the model (and likely the mechanism) intends.
-- Even if the joint range is respected, your current `(offset_unit, motor_center_mujoco_deg, motor_sign)` can still push commands beyond servo unit limits; the final `servo_electrical_unit_cmd` is clamped to `[0..1000]`.
-  - This clamp is a safety behavior, but it also means “requested radian targets” may clip and become unreachable at the hardware layer.
-
-Important nuance about “`500` is center”:
-- `500` is the center of the **contract-space** unit (`servo_unit`).
-- Electrical center depends on offset: `servo_electrical_unit == 500 + servo_unit_offset`.
-- In **radians**, `servo_unit == 500` corresponds to `target_rad == deg2rad(motor_center_mujoco_deg)`.
-- Therefore, “`500` corresponds to `target_rad == 0`” is only true when `motor_center_mujoco_deg == 0`.
-- Separately, the **joint-range midpoint** is `(min_rad + max_rad) / 2`, and it generally does *not* equal `deg2rad(motor_center_mujoco_deg)`.
-
-Concrete equivalences from the command mapping (see below):
-- Commanding `target_rad = deg2rad(motor_center_mujoco_deg)` yields `servo_unit_cmd ≈ 500`.
-- If `servo_unit_offset == 0`, the same command yields `servo_electrical_unit_cmd ≈ 500`.
-- If `motor_center_mujoco_deg == 0`, then commanding `target_rad = 0` yields `servo_unit_cmd ≈ 500`.
+- `target_rad`: MuJoCo joint target in radians (runtime commands/readbacks use radians).
+- `servo_electrical_unit` (`u_elec`): raw servo position units in `[0..1000]` read/written over the bus.
+- `offset_unit`: per-joint integer offset between conceptual units and electrical units:
+  - `u = u_elec - offset_unit`
+  - conceptual center is `u = 500`
+- `motor_center_mujoco_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
+- `motor_sign ∈ {+1, -1}`: hardware sign correction for the rad↔units mapping.
 
 ## Runtime Mapping Model
 
@@ -151,7 +54,7 @@ The runtime uses the mapping implemented in `runtime/wr_runtime/hardware/actuato
 
 Per joint, calibration values are:
 - `motor_sign ∈ {+1, -1}`
-- `offset_unit ∈ ℤ` (a.k.a. `servo_unit_offset`)
+- `offset_unit ∈ ℤ`
 - `motor_center_mujoco_deg` (optional; default `0`)
 
 ## Config Shape
@@ -188,142 +91,37 @@ Defaults:
 
 For each joint:
 - `motor_sign` from JSON in `{+1, -1}`
-- `offset_unit` (aka `servo_unit_offset`) from JSON (int)
+- `offset_unit` from JSON (int)
 
 Note:
-- `policy_action_sign` is **not** part of the servo calibration mapping. It is only used when mapping policy actions → control targets.
+- `policy_action_sign` is **not** part of the servo calibration mapping. It is only used when mapping policy actions → control targets (see `docs/joints_angle.md` for the full action↔rad mapping and worked examples).
 
 Command (radians → *electrical* units):
 ```
 servo_electrical_unit_cmd = clamp_0_1000(
   units_center
-  + servo_unit_offset
+  + offset_unit
   + motor_sign * (target_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
 )
 ```
 
-### Worked Example: Hip Roll (Left + Right)
-
-This example shows the full chain:
-`action` → `target_rad` (policy convention) → `servo_electrical_unit_cmd` (hardware command).
-
-Assumptions (taken from typical v2 joint ranges):
-- `left_hip_roll` range: `range_min_rad = -1.570796` (-90°), `range_max_rad = +0.174533` (+10°)
-- `right_hip_roll` range: `range_min_rad = -0.174533` (-10°), `range_max_rad = +1.570796` (+90°)
-- `policy_action_sign(left_hip_roll) = +1`, `policy_action_sign(right_hip_roll) = -1`
-
-Step 1 — action → target_rad
-
-Use:
-- `half_range = 0.5 * (range_max_rad - range_min_rad)`
-- `mid_range  = 0.5 * (range_min_rad + range_max_rad)`
-- `corrected_action = action * policy_action_sign`
-- `target_rad = corrected_action * half_range + mid_range`
-
-Pick a concrete policy output: `action = +0.30`.
-
-- Left hip roll:
-  - `half_range = 0.5 * (0.174533 - (-1.570796)) = 0.872665`
-  - `mid_range  = 0.5 * (-1.570796 + 0.174533) = -0.698132`
-  - `corrected_action = +0.30 * (+1) = +0.30`
-  - `target_rad = (+0.30)*0.872665 + (-0.698132) = -0.436332` (≈ -25°)
-
-- Right hip roll:
-  - `half_range = 0.872665`
-  - `mid_range  = 0.5 * (-0.174533 + 1.570796) = +0.698132`
-  - `corrected_action = +0.30 * (-1) = -0.30`
-  - `target_rad = (-0.30)*0.872665 + (0.698132) = +0.436332` (≈ +25°)
-
-These opposite-signed `target_rad` values are what make “same action on left/right” produce symmetric hip-roll motion.
-
-Step 2 — target_rad → servo_electrical_unit_cmd
-
-Now pick an illustrative hardware calibration (these numbers match the *shape* of runtime configs; your robot’s values may differ):
-- `units_center = 500`
-- `range_rad = 4.188790` (240°)
-- `motor_center_mujoco_deg = 0` (so `deg2rad(...) = 0`)
-- `left_hip_roll: offset_unit = +20, motor_sign = -1`
-- `right_hip_roll: offset_unit = +21, motor_sign = -1`
-
-Compute the scale once:
-- `units_per_rad = 1000 / range_rad ≈ 238.732`
-
-- Left hip roll:
-  - `delta_rad = target_rad - 0 = -0.436332`
-  - `delta_units = motor_sign * delta_rad * units_per_rad = (-1)*(-0.436332)*238.732 ≈ +104.1`
-  - `servo_electrical_unit_cmd ≈ 500 + 20 + 104.1 ≈ 624`
-
-- Right hip roll:
-  - `delta_rad = +0.436332`
-  - `delta_units = (-1)*(+0.436332)*238.732 ≈ -104.1`
-  - `servo_electrical_unit_cmd ≈ 500 + 21 - 104.1 ≈ 417`
-
-Finally, clamp to `[0..1000]` (not needed for these values).
-
-### Worked Example: Shoulder Roll (Non-zero `motor_center_mujoco_deg`)
-
-This example highlights the effect of a non-zero `motor_center_mujoco_deg` in:
-`(target_rad - deg2rad(motor_center_mujoco_deg))`.
-
-Assumptions (illustrative):
-- `left_shoulder_roll` range: `range_min_rad = -1.221730` (-70°), `range_max_rad = +1.221730` (+70°)
-- `policy_action_sign(left_shoulder_roll) = +1`
-
-Step 1 — action → target_rad
-
-Pick `action = +0.25`.
-
-- `half_range = 0.5 * (1.221730 - (-1.221730)) = 1.221730`
-- `mid_range  = 0.5 * (-1.221730 + 1.221730) = 0`
-- `corrected_action = +0.25 * (+1) = +0.25`
-- `target_rad = (+0.25)*1.221730 + 0 = 0.305433` (≈ +17.5°)
-
-Step 2 — target_rad → servo_electrical_unit_cmd
-
-Assume this joint’s servo calibration is (matching the common `left_shoulder_roll` case in `runtime/configs/wr_runtime_config.json`):
-- `units_center = 500`
-- `range_rad = 4.188790` (240°)
-- `motor_center_mujoco_deg = -85` (so `deg2rad(...) ≈ -1.483530`)
-- `offset_unit = -30`
-- `motor_sign = -1`
-
-Compute the scale:
-- `units_per_rad = 1000 / 4.188790 ≈ 238.732`
-
-Now compute the command:
-- `delta_rad = target_rad - deg2rad(motor_center_mujoco_deg) = 0.305433 - (-1.483530) = 1.7890`
-- `delta_units = motor_sign * delta_rad * units_per_rad = (-1)*1.7890*238.732 ≈ -427.1`
-- `servo_electrical_unit_cmd ≈ 500 + (-30) + (-427.1) ≈ 43`
-
-Sanity check (what “center” means):
-- If `target_rad == deg2rad(motor_center_mujoco_deg)` (here, `≈ -1.483530`), then `delta_rad = 0` and
-  `servo_electrical_unit_cmd == units_center + offset_unit == 500 - 30 == 470`.
-
-Equivalently, in contract-space units (subtracting the offset):
-```
-servo_unit_cmd = servo_electrical_unit_cmd - servo_unit_offset
-             ≈ units_center + motor_sign * (target_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
-```
-
 Readback (electrical units → radians):
 ```
-servo_unit_read = servo_electrical_unit_read - servo_unit_offset
-pos_rad = deg2rad(motor_center_mujoco_deg) + motor_sign * (servo_unit_read - units_center) * (range_rad / 1000)
+pos_rad = deg2rad(motor_center_mujoco_deg)
+          + motor_sign * ((servo_electrical_unit_read - units_center - offset_unit) * (range_rad / 1000))
 ```
 
-This preserves the meaning of `offset_unit` as “what runtime adds to electrical units after the centered conversion”, while allowing sign flips and an optional shift of the rad↔units center.
-
-### Computing `servo_unit_offset` in the presence of `motor_center_mujoco_deg`
+### Computing `offset_unit` in the presence of `motor_center_mujoco_deg`
 
 If you want a particular reference joint angle `target_ref_rad` to match a measured readback `servo_electrical_unit_read`, rearrange the command equation:
 
 $$
-servo\_unit\_offset = servo\_electrical\_unit\_read - units\_center - motor\_sign\cdot (target\_ref\_rad - center\_rad)\cdot (1000 / range\_rad)
+offset\_unit = servo\_electrical\_unit\_read - units\_center - motor\_sign\cdot (target\_ref\_rad - deg2rad(motor\_center\_mujoco\_deg))\cdot (1000 / range\_rad)
 $$
 
 Two common special cases:
-- If `motor_center_mujoco_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `servo_unit_offset = servo_electrical_unit_read - 500`.
-- If you choose `motor_center_mujoco_deg` such that `target_ref_rad == deg2rad(motor_center_mujoco_deg)` for your neutral pose, this reduces to `servo_unit_offset = servo_electrical_unit_read - 500`.
+- If `motor_center_mujoco_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
+- If you choose `motor_center_mujoco_deg` such that `target_ref_rad == deg2rad(motor_center_mujoco_deg)` for your neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
 
 ## Calibration UX Overview
 
@@ -342,26 +140,11 @@ Important: calibrate `motor_sign` *before* `offset_unit`, because the “motor_s
 
 ## How `policy_action_sign` Impacts Calibration (and What It Does *Not* Change)
 
-`policy_action_sign` comes from `assets/v2/robot_config.yaml` (and is typically exported into the policy bundle/spec). It is a **policy/model convention** for mapping *policy actions* into *control targets*.
+`policy_action_sign` is a **policy/model convention** used only in the `action ∈ [-1, 1]` ↔ `target_rad` mapping (see `docs/joints_angle.md`).
 
-Conceptually:
-- Policy produces `action ∈ [-1, 1]`.
-- Runtime computes a control target in radians:
-  - `corrected = action * policy_action_sign`
-  - `target_rad = corrected * (0.5 * (range_max_rad - range_min_rad)) + (0.5 * (range_min_rad + range_max_rad))`
-
-Key implications:
-- `policy_action_sign` **does not appear** in the servo calibration mapping (`motor_sign`, `offset_unit`, `motor_center_mujoco_deg`).
-- `policy_action_sign` **does affect your intuition** for what “positive action” does on mirrored joints.
-
-Practical guidance:
-- When calibrating `motor_sign`, always interpret prompts in terms of **positive MuJoCo/control radians** (`target_rad` increasing), not in terms of “positive policy action”.
-- When calibrating `offset_unit` and `motor_center_mujoco_deg`, you are aligning the servo unit readback to a chosen **reference control angle** (`target_ref_rad`). This choice is independent of `policy_action_sign`.
-
-Example:
-- Suppose `right_hip_pitch` has `policy_action_sign = -1`.
-  - A *positive* policy action produces a *negative* `target_rad` delta around the joint-range midpoint.
-  - But the calibration question “did `+delta_rad` move toward the positive-motion hint?” is still about `+delta_rad` in **control radians**, regardless of `policy_action_sign`.
+Calibration guidance:
+- `policy_action_sign` does **not** change the runtime servo calibration mapping (`motor_sign`, `offset_unit`, `motor_center_mujoco_deg`).
+- When calibrating `motor_sign`, reason in terms of **positive `target_rad`** (MuJoCo/control radians increasing), not “positive policy action”.
 
 ## Calibration Procedure (per joint)
 
@@ -482,7 +265,7 @@ The script should:
 3) compute offset:
 
 ```
-servo_unit_offset = servo_electrical_unit_read - units_center - motor_sign * (target_ref_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
+offset_unit = servo_electrical_unit_read - units_center - motor_sign * (target_ref_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
 ```
 
 Rationale: we want the chosen reference pose (at `target_ref_rad`) to be consistent with the mapping, so that commanding `target_ref_rad` returns to the same physical alignment.
@@ -492,7 +275,7 @@ If you specifically want the neutral pose to correspond to `target_ref_rad == 0`
 ### Step D: Persist and verify
 
 Persist:
-- update `hiwonder.joint_signs[joint]` and `hiwonder.joint_offsets_rad[joint]` in the JSON config
+- update `servo_controller.servos.<joint>.motor_sign` and `servo_controller.servos.<joint>.offset_unit` in the JSON config
 - write to disk with:
   - an explicit output path option (recommended), OR
   - in-place update with an automatic timestamped backup

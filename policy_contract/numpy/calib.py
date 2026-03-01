@@ -5,24 +5,24 @@ import numpy as np
 from policy_contract.spec import PolicySpec
 
 
-def action_to_ctrl(*, spec: PolicySpec, action: np.ndarray) -> np.ndarray:
+def action_to_joint_target_rad(*, spec: PolicySpec, action: np.ndarray) -> np.ndarray:
     if spec.action.mapping_id != "pos_target_rad_v1":
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
     centers, spans, policy_action_signs = _get_joint_params(spec)
     action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
     corrected = action * policy_action_signs
-    ctrl = corrected * spans + centers
-    return ctrl.astype(np.float32)
+    joint_target_rad = corrected * spans + centers
+    return joint_target_rad.astype(np.float32)
 
 
-def ctrl_to_policy_action(*, spec: PolicySpec, ctrl_rad: np.ndarray) -> np.ndarray:
+def joint_target_rad_to_action(*, spec: PolicySpec, joint_target_rad: np.ndarray) -> np.ndarray:
     if spec.action.mapping_id != "pos_target_rad_v1":
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
     centers, spans, policy_action_signs = _get_joint_params(spec)
-    ctrl = np.asarray(ctrl_rad, dtype=np.float32)
-    corrected = (ctrl - centers) / (spans + 1e-6)
+    joint_target = np.asarray(joint_target_rad, dtype=np.float32)
+    corrected = (joint_target - centers) / (spans + 1e-6)
     action = corrected * policy_action_signs
     action = np.clip(action, -1.0, 1.0)
     return action.astype(np.float32)

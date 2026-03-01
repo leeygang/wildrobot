@@ -2,8 +2,8 @@ import numpy as np
 
 from runtime.wr_runtime.hardware.actuators import (
     ServoModel,
-    rad_to_servo_units,
-    servo_units_to_rad,
+    joint_target_rad_to_servo_pos_elec_units,
+    servo_pos_elect_units_to_joint_target_rad,
 )
 
 
@@ -14,7 +14,7 @@ def test_rad_to_units_and_back_identity():
     centers_rad = np.array([0.0, 0.0], dtype=np.float32)
     targets_rad = np.array([0.0, 0.2], dtype=np.float32)
 
-    units = rad_to_servo_units(
+    units = joint_target_rad_to_servo_pos_elec_units(
         targets_rad,
         offsets_unit,
         motor_signs,
@@ -26,7 +26,7 @@ def test_rad_to_units_and_back_identity():
     )
     np.testing.assert_allclose(units, expected_units, atol=1e-6)
 
-    recovered = servo_units_to_rad(
+    recovered = servo_pos_elect_units_to_joint_target_rad(
         units,
         offsets_unit,
         motor_signs,
@@ -43,6 +43,6 @@ def test_rad_to_units_clamps_to_limits():
     centers_rad = np.zeros(2, dtype=np.float32)
     targets_rad = np.array([100.0, -100.0], dtype=np.float32)
 
-    units = rad_to_servo_units(targets_rad, offsets_unit, motor_signs, centers_rad, servo_model)
+    units = joint_target_rad_to_servo_pos_elec_units(targets_rad, offsets_unit, motor_signs, centers_rad, servo_model)
     assert units[0] == servo_model.units_max
     assert units[1] == servo_model.units_min

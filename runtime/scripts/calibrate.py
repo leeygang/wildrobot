@@ -846,10 +846,76 @@ def verify_zero(
     print(f"Verify zero: {pos} units => {pos_rad:.4f} rad ({status})")
 
 
+def _action_from_joint_target_rad(servo: ServoConfig, target_rad: float) -> float:
+    if abs(float(servo.ctrl_span)) < 1e-9:
+        raise ValueError("Degenerate joint range: ctrl_span is zero")
+    if abs(float(servo.policy_action_sign)) < 1e-9:
+        raise ValueError("Invalid policy_action_sign: near zero")
+    corrected = (float(target_rad) - float(servo.ctrl_center)) / float(servo.ctrl_span)
+    return corrected / float(servo.policy_action_sign)
+
+
+def _joint_target_rad_from_action(servo: ServoConfig, action: float) -> float:
+    corrected = float(action) * float(servo.policy_action_sign)
+    return corrected * float(servo.ctrl_span) + float(servo.ctrl_center)
+
+
+def _move_ms_for_speed_20deg_per_s(current_deg: float, target_deg: float) -> int:
+    delta_deg = abs(float(target_deg) - float(current_deg))
+    if delta_deg <= 1e-6:
+        return 100
+    return max(100, int(round((delta_deg / 20.0) * 1000.0)))
+
+
+def print_joint_calibration_state(
+    controller,
+    *,
+    joint: str,
+    servo: ServoConfig,
+    state: JointState,
+) -> None:
+    min_deg = float(np.rad2deg(float(servo.rad_range[0])))
+    max_deg = float(np.rad2deg(float(servo.rad_range[1])))
+    pos_units = read_position(controller, int(servo.id))
+
+    print(f"\n-- Joint state: {joint} (servo {int(servo.id)}) --")
+    print(f"  ctrl_range_deg: [{min_deg:.3f}, {max_deg:.3f}]")
+    print(f"  policy_action_sign: {float(servo.policy_action_sign):+.3f}")
+    print(f"  offset_unit: {int(state.offset):+d}")
+    print(f"  motor_sign: {int(state.motor_sign):+d}")
+    print(f"  motor_center_mujoco_deg: {float(servo.motor_center_mujoco_deg):+.3f}")
+
+    if pos_units is None:
+        print("  current_servo_elect_unit: <read failed>")
+        return
+
+    conceptual_units = int(pos_units) - int(state.offset)
+    joint_target_rad = servo.units_to_rad_for_calibrate(
+        int(pos_units),
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
+    )
+    try:
+        policy_action = _action_from_joint_target_rad(servo, joint_target_rad)
+    except ValueError as exc:
+        print(f"  current_servo_elect_unit: {int(pos_units)}")
+        print(f"  current_servo_conceptual_unit: {int(conceptual_units)}")
+        print(f"  calculated_joint_target_rad: {joint_target_rad:+.6f}")
+        print(f"  calculated_policy_action: <error: {exc}>")
+        return
+
+    print(f"  current_servo_elect_unit: {int(pos_units)}")
+    print(f"  current_servo_conceptual_unit: {int(conceptual_units)}")
+    print(f"  calculated_policy_action: {float(policy_action):+.6f}")
+    print(f"  calculated_joint_target_rad: {float(joint_target_rad):+.6f}")
+
+
 def range_test_joint(
     controller,
     servo: ServoConfig,
     joint: str,
+    *,
+    speed_deg_per_s: Optional[float] = None,
 ) -> None:
     """Run a joint through its full range: center -> min -> max -> min -> center."""
     print(f"\n-- Range test for {joint} (servo {servo.id}) --")
@@ -895,7 +961,10 @@ def range_test_joint(
     )
     print(f"  Min: {min_units} units ({min_rad:.3f} rad)")
     print(f"  Max: {max_units} units ({max_rad:.3f} rad)")
-    print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
+    if speed_deg_per_s is None:
+        print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
+    else:
+        print(f"  Move speed: {float(speed_deg_per_s):.3f} deg/s")
 
     clipped = []
     if min_units_raw < servo.UNITS_MIN - 1e-6 or min_units_raw > servo.UNITS_MAX + 1e-6:
@@ -911,10 +980,21 @@ def range_test_joint(
 
 
     try:
+        start_deg: Optional[float] = None
+        current_pos = read_position(controller, int(servo.id))
+        if current_pos is not None:
+            start_deg = float(np.rad2deg(float(servo.units_to_rad(int(current_pos)))))
+
         def _move_and_report(label: str, target_units: int) -> None:
+            nonlocal start_deg
+            target_deg_cmd = float(np.rad2deg(float(servo.units_to_rad(int(target_units)))))
+            if speed_deg_per_s is None or float(speed_deg_per_s) <= 0.0 or start_deg is None:
+                move_ms = int(RANGE_TEST_MS)
+            else:
+                move_ms = _move_ms_for_speed_20deg_per_s(start_deg, target_deg_cmd)
             print(f"Moving to {label} ({target_units} units)...")
-            controller.move_servos([(servo.id, int(target_units))], RANGE_TEST_MS)
-            time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+            controller.move_servos([(servo.id, int(target_units))], int(move_ms))
+            time.sleep(int(move_ms) / 1000.0 + 0.1)
             pos = read_position(controller, servo.id)
             if pos is None:
                 print("  Readback: failed")
@@ -922,6 +1002,7 @@ def range_test_joint(
             pos_rad = servo.units_to_rad(int(pos))
             pos_deg = float(np.rad2deg(float(pos_rad)))
             print(f"  Readback: {int(pos)} units => {pos_rad:+.3f} rad ({pos_deg:+.1f} deg)")
+            start_deg = pos_deg
 
         # Move to min
         _move_and_report("min", min_units)
@@ -2337,7 +2418,7 @@ Examples (copy/paste):
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
 
-    # Interactive calibration mode (select joints and choose motor_sign or offset calibration)
+        # Interactive calibration mode (per-joint submenu: p/q/a/r/d/o/b/s/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate
 
   # Test range of motion for joints interactively
@@ -2366,7 +2447,10 @@ Examples (copy/paste):
     parser.add_argument(
         "--calibrate",
         action="store_true",
-        help="Interactive calibration mode: select joints and choose motor_sign or offset calibration",
+        help=(
+            "Interactive calibration mode: select a joint, then use submenu "
+            "p(print state)/q(target deg)/a(policy action)/r(range test)/d/o/b calibration."
+        ),
     )
     parser.add_argument(
         "--calibrate-imu",
@@ -2676,6 +2760,11 @@ Examples (copy/paste):
             # Unified calibration mode
             print("\n-- Calibration Mode --")
             print("Flow: center all joints → select joint → choose action → calibrate → repeat")
+            print(
+                "Per-joint submenu:\n"
+                "  p=print state, q=target deg evaluator, a=policy action evaluator, r=single-joint range test (20 deg/s),\n"
+                "  d=calibrate motor_sign, o=calibrate offset, b=both, s=back to joint list, x=panic unload"
+            )
 
             # Step 0: Move all joints to adjusted center (0.0 rad with current offsets)
             if yes_no("Move all joints to adjusted center (0.0 rad) before calibrating?", default=True):
@@ -2739,57 +2828,186 @@ Examples (copy/paste):
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
 
-                # Step 3: Ask which action to take
                 print(f"\nSelected: {joint}")
-                print(
-                    f"  Current: motor_sign={state.motor_sign:+d}, offset={state.offset:+d}, "
-                    f"motor_center_mujoco_deg={float(servo.motor_center_mujoco_deg):+.3g}"
-                )
                 print(f"  Hint (positive MuJoCo rad): {hint}")
-                print("\nAction:")
-                print("  d = calibrate motor_sign")
-                print("  o = calibrate offset")
-                print("  b = both (motor_sign first, then offset)")
-                print("  s = skip (go back to list)")
 
-                action = input("Choose action (d/o/b/s): ").strip().lower()
+                while True:
+                    current_state = states[joint]
+                    print("\nJoint menu:")
+                    print("  p = print state")
+                    print("  q = evaluate target joint deg")
+                    print("  a = evaluate policy action")
+                    print("  r = run range test for this joint")
+                    print("  d = calibrate motor_sign")
+                    print("  o = calibrate offset")
+                    print("  b = both (motor_sign first, then offset)")
+                    print("  s = back to joint list")
+                    print("  x = panic unload and exit")
 
-                if action == "s" or not action:
-                    continue
+                    action = input("Choose action (p/q/a/r/d/o/b/s/x): ").strip().lower()
 
-                if action in ("d", "b"):
-                    new_motor_sign = calibrate_motor_sign(
-                        controller,
-                        servo,
-                        joint,
-                        state,
-                        hint,
-                        all_servo_ids=servo_ids,
-                        move_ms=args.move_ms,
-                        pause_s=float(args.pause_s),
-                    )
-                    states[joint].motor_sign = new_motor_sign
-                    calibrated[joint] = states[joint]
+                    if action == "x":
+                        panic_and_exit(controller, servo_ids)
 
-                if action in ("o", "b"):
-                    new_offset = calibrate_offset(
-                        controller,
-                        servo,
-                        joint,
-                        states[joint],
-                        all_servo_ids=servo_ids,
-                        move_ms=args.move_ms,
-                        step_units=args.step_units,
-                        pause_s=float(args.pause_s),
-                        record_pos=bool(args.record_pos),
-                        all_joint_names=joint_names,
-                        all_servo_cfgs=servo_cfgs,
-                        all_states=states,
-                    )
-                    if new_offset is not None:
-                        states[joint].offset = new_offset
-                        verify_zero(controller, servo, joint, states[joint], move_ms=args.move_ms, pause_s=float(args.pause_s))
-                    calibrated[joint] = states[joint]
+                    if action == "s" or not action:
+                        break
+
+                    if action == "p":
+                        print_joint_calibration_state(
+                            controller,
+                            joint=joint,
+                            servo=servo,
+                            state=current_state,
+                        )
+                        continue
+
+                    if action == "q":
+                        raw_deg = input("Enter target joint deg: ").strip()
+                        try:
+                            target_deg = float(raw_deg)
+                        except ValueError:
+                            print("Invalid number.")
+                            continue
+
+                        target_rad = float(np.deg2rad(target_deg))
+                        target_units = servo.rad_to_units_for_calibrate(
+                            target_rad,
+                            motor_sign=int(current_state.motor_sign),
+                            offset=int(current_state.offset),
+                        )
+                        conceptual_units = int(target_units) - int(current_state.offset)
+                        try:
+                            policy_action = _action_from_joint_target_rad(servo, target_rad)
+                        except ValueError as exc:
+                            print(f"Error computing policy action: {exc}")
+                            continue
+
+                        is_legit = -1.0 <= float(policy_action) <= 1.0
+                        print(f"  target_joint_deg: {target_deg:+.4f}")
+                        print(f"  target_joint_rad: {target_rad:+.6f}")
+                        print(f"  motor_elect_unit: {int(target_units)}")
+                        print(f"  motor_conceptual_unit: {int(conceptual_units)}")
+                        print(f"  policy_action: {float(policy_action):+.6f}")
+                        print(f"  policy_action_in_range[-1,1]: {is_legit}")
+
+                        if is_legit and yes_no("Move motor to this target?", default=False):
+                            current_units = read_position(controller, int(servo.id))
+                            if current_units is not None:
+                                current_rad = servo.units_to_rad_for_calibrate(
+                                    int(current_units),
+                                    motor_sign=int(current_state.motor_sign),
+                                    offset=int(current_state.offset),
+                                )
+                                current_deg = float(np.rad2deg(float(current_rad)))
+                                move_ms = _move_ms_for_speed_20deg_per_s(current_deg, target_deg)
+                            else:
+                                move_ms = int(max(args.move_ms, 100))
+                                print("Current position read failed; using fallback move time.")
+                            move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+                            pos = read_position(controller, int(servo.id))
+                            if pos is not None:
+                                print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
+                        continue
+
+                    if action == "a":
+                        raw_action = input("Enter policy action value: ").strip()
+                        try:
+                            policy_action = float(raw_action)
+                        except ValueError:
+                            print("Invalid number.")
+                            continue
+
+                        target_rad = _joint_target_rad_from_action(servo, policy_action)
+                        target_deg = float(np.rad2deg(float(target_rad)))
+                        target_units = servo.rad_to_units_for_calibrate(
+                            target_rad,
+                            motor_sign=int(current_state.motor_sign),
+                            offset=int(current_state.offset),
+                        )
+                        conceptual_units = int(target_units) - int(current_state.offset)
+                        is_legit = -1.0 <= float(policy_action) <= 1.0
+
+                        print(f"  policy_action: {float(policy_action):+.6f}")
+                        print(f"  target_joint_deg: {target_deg:+.4f}")
+                        print(f"  target_joint_rad: {target_rad:+.6f}")
+                        print(f"  motor_elect_unit: {int(target_units)}")
+                        print(f"  motor_conceptual_unit: {int(conceptual_units)}")
+                        print(f"  policy_action_in_range[-1,1]: {is_legit}")
+
+                        if is_legit and yes_no("Move motor to this target?", default=False):
+                            current_units = read_position(controller, int(servo.id))
+                            if current_units is not None:
+                                current_rad = servo.units_to_rad_for_calibrate(
+                                    int(current_units),
+                                    motor_sign=int(current_state.motor_sign),
+                                    offset=int(current_state.offset),
+                                )
+                                current_deg = float(np.rad2deg(float(current_rad)))
+                                move_ms = _move_ms_for_speed_20deg_per_s(current_deg, target_deg)
+                            else:
+                                move_ms = int(max(args.move_ms, 100))
+                                print("Current position read failed; using fallback move time.")
+                            move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+                            pos = read_position(controller, int(servo.id))
+                            if pos is not None:
+                                print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
+                        continue
+
+                    if action == "r":
+                        range_test_joint(
+                            controller,
+                            servo,
+                            joint,
+                            speed_deg_per_s=20.0,
+                        )
+                        continue
+
+                    if action in ("d", "b"):
+                        new_motor_sign = calibrate_motor_sign(
+                            controller,
+                            servo,
+                            joint,
+                            current_state,
+                            hint,
+                            all_servo_ids=servo_ids,
+                            move_ms=args.move_ms,
+                            pause_s=float(args.pause_s),
+                        )
+                        states[joint].motor_sign = new_motor_sign
+                        calibrated[joint] = states[joint]
+                        current_state = states[joint]
+
+                    if action in ("o", "b"):
+                        new_offset = calibrate_offset(
+                            controller,
+                            servo,
+                            joint,
+                            states[joint],
+                            all_servo_ids=servo_ids,
+                            move_ms=args.move_ms,
+                            step_units=args.step_units,
+                            pause_s=float(args.pause_s),
+                            record_pos=bool(args.record_pos),
+                            all_joint_names=joint_names,
+                            all_servo_cfgs=servo_cfgs,
+                            all_states=states,
+                        )
+                        if new_offset is not None:
+                            states[joint].offset = new_offset
+                            verify_zero(
+                                controller,
+                                servo,
+                                joint,
+                                states[joint],
+                                move_ms=args.move_ms,
+                                pause_s=float(args.pause_s),
+                            )
+                        calibrated[joint] = states[joint]
+
+                    if action in ("d", "o", "b"):
+                        continue
+
+                    print("Unknown action. Use p/q/a/r/d/o/b/s/x.")
 
                 # Loop back to step 1
 

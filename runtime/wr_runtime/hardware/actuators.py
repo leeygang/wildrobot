@@ -36,7 +36,7 @@ class ServoModel:
     units_per_rad: float = 500.0 / np.deg2rad(120.0)  # ~238.732
 
 
-def rad_to_servo_units(
+def joint_target_rad_to_servo_pos_elec_units(
     targets_rad: np.ndarray,
     offsets_unit: np.ndarray,
     motor_signs: np.ndarray,
@@ -48,7 +48,7 @@ def rad_to_servo_units(
     return np.clip(units, servo_model.units_min, servo_model.units_max)
 
 
-def servo_units_to_rad(
+def servo_pos_elect_units_to_joint_target_rad(
     units: np.ndarray,
     offsets_unit: np.ndarray,
     motor_signs: np.ndarray,
@@ -119,7 +119,7 @@ class HiwonderBoardActuators(Actuators):
         if move_time is None:
             raise ValueError("move_time_ms must be provided when no default_move_time_ms is set")
 
-        units = rad_to_servo_units(
+        units = joint_target_rad_to_servo_pos_elec_units(
             targets,
             self.offsets_unit,
             self.motor_signs,
@@ -194,7 +194,7 @@ class HiwonderBoardActuators(Actuators):
                 time.sleep(self.retry_backoff_s)
                 continue
 
-            radians = servo_units_to_rad(
+            radians = servo_pos_elect_units_to_joint_target_rad(
                 units,
                 self.offsets_unit,
                 self.motor_signs,
