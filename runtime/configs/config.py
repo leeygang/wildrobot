@@ -43,7 +43,10 @@ import yaml
 HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v1/robot_config.yaml")
+
+# Default robot_config.yaml path (joint ranges, mirror signs, etc.)
+# Current assets layout is v2.
+DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v2/robot_config.yaml")
 
 
 # =============================================================================
@@ -527,7 +530,7 @@ class WrRuntimeConfig:
                 1. ~/.wildrobot/config.json
                 2. ~/wildrobot_config.json (legacy)
             robot_config_path: Path to robot_config.yaml for joint specs.
-                If None, uses assets/v1/robot_config.yaml relative to repo root.
+                If None, uses a best-effort search (prefers assets/v2/robot_config.yaml).
 
         Returns:
             WrRuntimeConfig instance
@@ -561,12 +564,38 @@ class WrRuntimeConfig:
         data = json.loads(path.read_text())
 
         # Resolve robot_config_path
+        # Priority:
+        #   1) explicit argument `robot_config_path`
+        #   2) JSON key `robot_config_path` (resolved relative to config file dir)
+        #   3) repo-relative assets/v2/robot_config.yaml
+        #   4) cwd-relative assets/v2/robot_config.yaml
         if robot_config_path is None:
-            # Try relative to config dir, then default path
-            robot_config_path = config_dir / ".." / "assets" / "robot_config.yaml"
-            if not robot_config_path.exists():
-                robot_config_path = DEFAULT_ROBOT_CONFIG_PATH
-        robot_config_path = Path(robot_config_path)
+            json_robot_cfg = data.get("robot_config_path")
+            if isinstance(json_robot_cfg, str) and json_robot_cfg.strip():
+                robot_config_path = (config_dir / json_robot_cfg).resolve()
+
+        candidate_paths: List[Path] = []
+        if robot_config_path is not None:
+            candidate_paths.append(Path(robot_config_path))
+
+        repo_root = Path(__file__).resolve().parents[2]
+        candidate_paths.extend(
+            [
+                (repo_root / "assets" / "v2" / "robot_config.yaml"),
+                Path(DEFAULT_ROBOT_CONFIG_PATH),
+            ]
+        )
+
+        resolved_robot_cfg: Optional[Path] = None
+        for p in candidate_paths:
+            try:
+                pp = p.expanduser()
+            except Exception:
+                pp = p
+            if pp.exists():
+                resolved_robot_cfg = pp
+                break
+        robot_config_path = resolved_robot_cfg if resolved_robot_cfg is not None else Path(candidate_paths[0])
 
         # Load robot config for joint specs
         joint_specs = {}
@@ -794,9 +823,14 @@ class WrRuntimeConfig:
             range_min, range_max = range_max, range_min
         center_rad = math.radians(float(center_deg_offset))
         if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
-            raise ValueError(
+            # This is usually a config mistake (it reduces available range before servo saturation),
+            # but it does not necessarily prevent safe operation. Keep it as a warning so
+            # configs can still load and be debugged with calibration tools.
+            print(
+                "WARNING: "
                 f"{key_path}.{joint_name}.center_deg_offset={center_deg_offset} maps to {center_rad:.6f} rad, "
-                f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad"
+                f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad",
+                flush=True,
             )
 
     @staticmethod

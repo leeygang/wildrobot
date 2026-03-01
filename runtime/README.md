@@ -39,7 +39,7 @@ Minimal example:
 
 ```json
 {
-  "mjcf_path": "../assets/v1/wildrobot.xml",
+  "mjcf_path": "../assets/v2/wildrobot.xml",
   "policy_onnx_path": "../policies/wildrobot_policy/policy.onnx",
 
   "control_hz": 50,
