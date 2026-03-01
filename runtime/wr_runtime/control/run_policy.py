@@ -121,7 +121,11 @@ def main() -> None:
         "--config",
         type=str,
         default=None,
-        help="(Deprecated) Path to runtime JSON (default: ~/wildrobot_config.json). Prefer --bundle.",
+        help=(
+            "Optional runtime JSON with *hardware calibration* (default: ~/.wildrobot/config.json). "
+            "If used together with --bundle, the bundle provides policy/model/spec assets and --config "
+            "provides servo/IMU/foot-switch settings."
+        ),
     )
     parser.add_argument("--log-path", type=str, default=None, help="Optional .npz path to save replay logs on exit")
     parser.add_argument(
@@ -161,27 +165,48 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.bundle and args.config:
-        raise SystemExit("Provide only one of --bundle or --config.")
+    bundle_dir: Path | None = Path(args.bundle) if args.bundle else None
 
+    # Config selection:
+    # - If user provides --config, treat it as the hardware-calibration source of truth.
+    # - Else, if --bundle is provided, fall back to bundle-local wildrobot_config.json.
+    # - Else, rely on default config search in configs.load_config().
     config_path: str | None
-    if args.bundle:
-        bundle_dir = Path(args.bundle)
+    if args.config is not None:
+        config_path = args.config
+    elif bundle_dir is not None:
         cfg_path = bundle_dir / "wildrobot_config.json"
         if not cfg_path.exists():
-            raise SystemExit(f"Bundle missing wildrobot_config.json: {cfg_path}")
+            raise SystemExit(
+                f"Bundle missing wildrobot_config.json: {cfg_path}. "
+                "Either add it to the bundle or pass --config pointing to your hardware config JSON."
+            )
         config_path = str(cfg_path)
+        print(
+            "Using bundle-local wildrobot_config.json for hardware calibration. "
+            "If joints move incorrectly, pass --config ~/.wildrobot/config.json (or your calibrated file)."
+        )
     else:
-        config_path = args.config
+        config_path = None
 
     cfg = load_config(config_path)
 
-    mjcf_info = load_mjcf_model_info(Path(cfg.mjcf_resolved_path))
-    joint_names = mjcf_info.actuator_names
+    # Bundle selection:
+    # - If --bundle is provided, always load policy assets from it.
+    # - Else, infer bundle location from cfg.policy_onnx_path.
+    if bundle_dir is None:
+        bundle_dir = Path(cfg.policy_resolved_path).parent
 
-    bundle = PolicyBundle.load(Path(cfg.policy_resolved_path).parent)
+    bundle = PolicyBundle.load(bundle_dir)
     spec = bundle.spec
     validate_spec(spec)
+
+    # MJCF selection:
+    # - If --bundle is provided, prefer bundle-local wildrobot.xml for consistent actuator ordering.
+    # - Else, fall back to cfg.mjcf_path.
+    mjcf_path = (bundle_dir / "wildrobot.xml") if (bundle_dir / "wildrobot.xml").exists() else Path(cfg.mjcf_resolved_path)
+    mjcf_info = load_mjcf_model_info(mjcf_path)
+    joint_names = mjcf_info.actuator_names
 
     policy = OnnxPolicy(
         str(bundle.model_path),

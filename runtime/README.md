@@ -93,6 +93,13 @@ cd runtime
 uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
 ```
 
+If your robot has calibrated servo IDs/offsets/directions in a local config (recommended), run:
+
+```bash
+cd runtime
+uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --config ~/.wildrobot/config.json
+```
+
 ## Run a bundle from `training/checkpoints/` (on the WildRobot device)
 
 Assumptions:
@@ -117,12 +124,14 @@ uv run wildrobot-validate-bundle --bundle ../training/checkpoints/standing_push_
 
 # Run the control loop (Ctrl+C to stop; runtime disables actuators on exit)
 uv run wildrobot-run-policy --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
+
+# If the bundle's wildrobot_config.json doesn't match your robot, override hardware settings:
+uv run wildrobot-run-policy --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20 --config ~/.wildrobot/config.json
 ```
 
 Notes:
-- The bundle contains its own `wildrobot_config.json` (hardware settings) and `wildrobot.xml` (actuator order snapshot).
-- If this device/robot has different servo IDs, offsets, IMU axis map, or footswitch pins, edit:
-  `training/checkpoints/standing_push_v0.13.4_ckpt20/wildrobot_config.json` before running.
+- The bundle contains its own `wildrobot_config.json` (often a template) and `wildrobot.xml` (actuator order snapshot).
+- If this device/robot has different servo IDs, offsets, IMU axis map, or footswitch pins, prefer passing `--config ~/.wildrobot/config.json` (or your calibrated JSON) rather than editing the bundle.
 
 Stop with Ctrl+C (runtime will unload servos).
 
