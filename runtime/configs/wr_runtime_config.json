@@ -95,9 +95,9 @@
       },
       "right_shoulder_pitch": {
         "id": 31,
-        "offset_unit": 16,
-        "direction": 1,
-        "center_deg_offset": 90
+        "offset_unit": 42,
+        "direction": -1,
+        "center_deg_offset": -90
       },
       "right_shoulder_roll": {
         "id": 32,
