@@ -72,13 +72,13 @@ POSITIVE_HINTS = {
     "waist_yaw": "torso turns left (counter-clockwise viewed from above)",
     # Left arm
     "left_shoulder_pitch": "left upper arm lifts forward",
-    "left_shoulder_roll": "left upper arm lifts outward (away from torso)",
+    "left_shoulder_roll": "left upper arm lifts inward (toward torso)",
     "left_elbow_pitch": "left elbow bends",
     "left_wrist_yaw": "left forearm rotates outward",
     "left_wrist_pitch": "left hand tilts upward",
     # Right arm
     "right_shoulder_pitch": "right upper arm lifts backward",  # inverted range
-    "right_shoulder_roll": "right upper arm lifts inward (toward torso)",  # inverted range
+    "right_shoulder_roll": "right upper arm lifts outward (away from torso)",  # inverted range
     "right_elbow_pitch": "right elbow bends",
     "right_wrist_yaw": "right forearm rotates outward",
     "right_wrist_pitch": "right hand tilts upward",
