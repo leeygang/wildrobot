@@ -148,9 +148,13 @@ def prompt_select_joints_by_servo_id(
         servo_id_to_joint[int(servo.id)] = str(joint)
         print(f"  #{int(servo.id)}: {joint}: deg range: {min_deg:.1f}, {max_deg:.1f}")
 
-    raw = input("Select joints by servo id (e.g. #21,#23 or 21 23), or 'all': ").strip().lower()
+    raw = input(
+        "Select joints by servo id (e.g. #21,#23 or 21 23), 'all', or 'q' to quit: "
+    ).strip().lower()
     if not raw:
         raise ValueError("No joints selected")
+    if raw in {"q", "quit", "exit"}:
+        return []
     if raw == "all":
         return list(joint_names)
 
@@ -815,38 +819,67 @@ def range_test_joint(
     """Run a joint through its full range: center -> min -> max -> min -> center."""
     print(f"\n-- Range test for {joint} (servo {servo.id}) --")
 
-    # Calculate positions using current calibration (direction + offset) and joint limits
+    # Calculate positions using current calibration and joint limits.
+    # Note: servo.rad_to_units() clamps to [0, 1000]. If your MuJoCo joint range requires
+    # more than the servo can physically cover (240deg total), targets will clip.
     center_units = servo.rad_to_units(0.0)
     min_rad, max_rad = servo.rad_range
+
+    def _raw_units(target_rad: float) -> float:
+        delta = float(target_rad) - float(servo.center_rad)
+        return float(servo.UNITS_CENTER) + float(servo.offset) + float(servo.direction) * (delta * float(servo.UNITS_PER_RAD))
+
+    min_units_raw = _raw_units(float(min_rad))
+    max_units_raw = _raw_units(float(max_rad))
     min_units = servo.rad_to_units(min_rad)
     max_units = servo.rad_to_units(max_rad)
 
+    min_deg = float(np.rad2deg(float(min_rad)))
+    max_deg = float(np.rad2deg(float(max_rad)))
+
     print(f"  Center: {center_units} units (0.0 rad)")
+    print(f"  Deg range: {min_deg:.1f} to {max_deg:.1f}")
     print(f"  Min: {min_units} units ({min_rad:.3f} rad)")
     print(f"  Max: {max_units} units ({max_rad:.3f} rad)")
     print(f"  Move duration: {RANGE_TEST_MS}ms per segment")
 
+    clipped = []
+    if min_units_raw < servo.UNITS_MIN - 1e-6 or min_units_raw > servo.UNITS_MAX + 1e-6:
+        clipped.append(f"min_raw={min_units_raw:.1f}")
+    if max_units_raw < servo.UNITS_MIN - 1e-6 or max_units_raw > servo.UNITS_MAX + 1e-6:
+        clipped.append(f"max_raw={max_units_raw:.1f}")
+    if clipped:
+        print(
+            "WARNING: requested joint range clips to servo limits (0..1000 units): "
+            + ", ".join(clipped)
+            + ". This usually means center_deg_offset/direction/offset needs adjustment, or the MuJoCo range exceeds servo capability."
+        )
+
 
     try:
+        def _move_and_report(label: str, target_units: int) -> None:
+            print(f"Moving to {label} ({target_units} units)...")
+            controller.move_servos([(servo.id, int(target_units))], RANGE_TEST_MS)
+            time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+            pos = read_position(controller, servo.id)
+            if pos is None:
+                print("  Readback: failed")
+                return
+            pos_rad = servo.units_to_rad(int(pos))
+            pos_deg = float(np.rad2deg(float(pos_rad)))
+            print(f"  Readback: {int(pos)} units => {pos_rad:+.3f} rad ({pos_deg:+.1f} deg)")
+
         # Move to min
-        print(f"Moving to min ({min_units} units)...")
-        controller.move_servos([(servo.id, min_units)], RANGE_TEST_MS)
-        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+        _move_and_report("min", min_units)
 
         # Move to max
-        print(f"Moving to max ({max_units} units)...")
-        controller.move_servos([(servo.id, max_units)], RANGE_TEST_MS)
-        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+        _move_and_report("max", max_units)
 
         # Move back to min
-        print(f"Moving back to min ({min_units} units)...")
-        controller.move_servos([(servo.id, min_units)], RANGE_TEST_MS)
-        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+        _move_and_report("min", min_units)
 
         # Move back to center
-        print(f"Moving back to center ({center_units} units)...")
-        controller.move_servos([(servo.id, center_units)], RANGE_TEST_MS)
-        time.sleep(RANGE_TEST_MS / 1000.0 + 0.1)
+        _move_and_report("center", center_units)
 
         print(f"Range test for {joint} complete.")
 
@@ -2537,6 +2570,10 @@ Examples (copy/paste):
                 except ValueError as exc:
                     print(str(exc))
                     continue
+
+                if not range_selected:
+                    print("Exiting range test.")
+                    break
 
                 for joint in range_selected:
                     if joint not in servo_cfgs:
