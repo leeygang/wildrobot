@@ -135,6 +135,9 @@ Notes:
 
 Stop with Ctrl+C (runtime will unload servos).
 
+If Ctrl+C drops your SSH session (common when running via a one-line `ssh host <command>`), use:
+- Type `q` then Enter to stop the loop cleanly.
+
 If you see `Servo position response missing or incomplete`:
 - Confirm the board is powered and servos have external power.
 - Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match your board (9600 is common).

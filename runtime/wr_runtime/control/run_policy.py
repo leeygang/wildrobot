@@ -5,6 +5,8 @@ import sys
 import time
 from pathlib import Path
 
+import select
+
 import numpy as np
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -30,6 +32,38 @@ from wr_runtime.hardware.robot_io import HardwareRobotIO
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 from wr_runtime.validation.startup_validator import validate_runtime_interface
+
+
+def _poll_stop_token(buf: str) -> tuple[str, bool]:
+    """Non-blocking stdin poll for stop tokens.
+
+    Returns (new_buf, should_stop).
+
+    Supported stop tokens (entered then newline): q, quit, exit.
+    """
+    if not sys.stdin.isatty():
+        return buf, False
+    try:
+        r, _, _ = select.select([sys.stdin], [], [], 0.0)
+    except Exception:
+        return buf, False
+    if not r:
+        return buf, False
+
+    try:
+        chunk = sys.stdin.read(1)
+    except Exception:
+        return buf, False
+    if chunk == "":
+        # stdin closed
+        return buf, True
+    if chunk in {"\n", "\r"}:
+        token = buf.strip().lower()
+        buf = ""
+        if token in {"q", "quit", "exit"}:
+            return buf, True
+        return buf, False
+    return buf + chunk, False
 
 
 def _imu_sanity_check(
@@ -189,6 +223,11 @@ def main() -> None:
     else:
         config_path = None
 
+    resolved_config_path = str(Path(config_path).expanduser().resolve()) if config_path else "<default search>"
+    resolved_bundle_path = str(bundle_dir.expanduser().resolve()) if bundle_dir is not None else "<from config>"
+    print(f"Resolved config: {resolved_config_path}")
+    print(f"Resolved bundle: {resolved_bundle_path}")
+
     cfg = load_config(config_path)
 
     # Bundle selection:
@@ -196,6 +235,8 @@ def main() -> None:
     # - Else, infer bundle location from cfg.policy_onnx_path.
     if bundle_dir is None:
         bundle_dir = Path(cfg.policy_resolved_path).parent
+
+    bundle_dir = bundle_dir.expanduser().resolve()
 
     bundle = PolicyBundle.load(bundle_dir)
     spec = bundle.spec
@@ -205,6 +246,8 @@ def main() -> None:
     # - If --bundle is provided, prefer bundle-local wildrobot.xml for consistent actuator ordering.
     # - Else, fall back to cfg.mjcf_path.
     mjcf_path = (bundle_dir / "wildrobot.xml") if (bundle_dir / "wildrobot.xml").exists() else Path(cfg.mjcf_resolved_path)
+    mjcf_path = mjcf_path.expanduser().resolve()
+    print(f"Resolved MJCF: {mjcf_path}")
     mjcf_info = load_mjcf_model_info(mjcf_path)
     joint_names = mjcf_info.actuator_names
 
@@ -307,13 +350,19 @@ def main() -> None:
     log_dt_s: list[np.ndarray] = []
 
     print(f"Running control loop at {cfg.control.hz} Hz with {len(joint_names)} actuators")
+    print("Type 'q' then Enter to stop (recommended over Ctrl+C for some SSH setups)")
     print("Ctrl+C to stop")
 
     try:
+        stop_buf = ""
         while True:
             loop_start = time.time()
             dt = loop_start - last_time
             last_time = loop_start
+
+            stop_buf, should_stop = _poll_stop_token(stop_buf)
+            if should_stop:
+                break
 
             try:
                 signals = robot_io.read()

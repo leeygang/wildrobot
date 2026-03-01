@@ -2573,6 +2573,7 @@ Examples (copy/paste):
                 time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
 
             calibrated: Dict[str, JointState] = {}
+            save_on_exit = False
 
             while True:
                 # Step 1: List joints with current status
@@ -2587,11 +2588,16 @@ Examples (copy/paste):
                         f"  #{servo.id}: {joint} (id={servo.id}, dir={state.direction:+d}, "
                         f"offset={state.offset:+d}, center_deg_offset={float(servo.center_deg_offset):+.3g})"
                     )
-                print(f"\n  q = quit and save")
+                print("\n  q = quit (discard changes)")
+                print("  s = save and quit")
 
                 # Step 2: User selects joint
-                raw = input("\nSelect servo # (or 'q' to quit): ").strip().lower()
-                if raw == PANIC_KEY or raw == "q":
+                raw = input("\nSelect servo # (or 'q' to quit, 's' to save+quit): ").strip().lower()
+                if raw == "q" or raw == PANIC_KEY:
+                    save_on_exit = False
+                    break
+                if raw == "s":
+                    save_on_exit = True
                     break
 
                 try:
@@ -2602,7 +2608,7 @@ Examples (copy/paste):
                         print(f"Invalid servo ID. Enter one of: {valid_servo_ids}.")
                         continue
                 except ValueError:
-                    print("Invalid input. Enter a number or 'q'.")
+                    print("Invalid input. Enter a number, 'q', or 's'.")
                     continue
 
                 servo = servo_cfgs[joint]
@@ -2663,13 +2669,15 @@ Examples (copy/paste):
 
                 # Loop back to step 1
 
-            # Save calibrated joints
-            if calibrated:
+            # Save calibrated joints only if explicitly requested.
+            if not calibrated:
+                print("No changes made.")
+            elif save_on_exit:
                 output_path = Path(args.output) if args.output else config_path
                 write_config(raw_config, output_path, calibrated)
                 print(f"Wrote updated calibration to {output_path}")
             else:
-                print("No changes made.")
+                print("Discarded calibration changes (not saved).")
 
     finally:
         try:
