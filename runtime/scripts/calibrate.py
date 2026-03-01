@@ -701,7 +701,16 @@ def calibrate_offset(
     """Calibrate offset for a joint. Returns new offset, or None to skip (keep original)."""
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
     # Offset calibration should not depend on any existing offset value.
+    # Important: `offset` in ServoConfig is applied *in addition to* center_deg_offset
+    # and direction in rad<->units conversion. When the user confirms their neutral pose,
+    # we want that pose to correspond to target_rad=0.0 (MuJoCo), so we must compute
+    # offset relative to units(target_rad=0, offset=0) under the chosen direction.
     target_units = ServoConfig.UNITS_CENTER
+    zero_units_no_offset = servo.rad_to_units_for_calibrate(
+        0.0,
+        direction=state.direction,
+        offset=0,
+    )
     announce_and_pause(
         f"Step: move {joint} to raw center units ({target_units})",
         pause_s,
@@ -735,11 +744,18 @@ def calibrate_offset(
                         "If this persists, check servo ID/wiring or use 'm' to enter offset manually."
                     )
                 continue
-            offset_units = pos - ServoConfig.UNITS_CENTER
-            print(f"Captured offset {offset_units} (units), raw position {pos}")
+            # Compute offset so that target_rad=0 maps to the confirmed physical pose.
+            # Formula: pos == units(target_rad=0, offset=offset_units)
+            # => offset_units = pos - units(target_rad=0, offset=0)
+            offset_units = int(pos) - int(zero_units_no_offset)
+            print(
+                f"Captured offset {offset_units} (units), raw position {pos} (target_rad=0 @ offset=0 -> {zero_units_no_offset} units)"
+            )
             return offset_units
         if cmd.lower() == "m":
-            raw = input("Enter offset in servo units (offset = current_pos - 500): ").strip()
+            raw = input(
+                f"Enter offset in servo units (offset = current_pos - {zero_units_no_offset}; this makes target_rad=0 land at current_pos): "
+            ).strip()
             try:
                 offset_units = int(raw)
             except ValueError:
