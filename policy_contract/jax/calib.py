@@ -9,9 +9,9 @@ def action_to_ctrl(*, spec: PolicySpec, action: jnp.ndarray) -> jnp.ndarray:
     if spec.action.mapping_id != "pos_target_rad_v1":
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
-    centers, spans, mirror_signs = _get_joint_params(spec)
+    centers, spans, policy_action_signs = _get_joint_params(spec)
     action = jnp.clip(action, -1.0, 1.0)
-    corrected = action * mirror_signs
+    corrected = action * policy_action_signs
     ctrl = corrected * spans + centers
     return ctrl.astype(jnp.float32)
 
@@ -20,10 +20,10 @@ def ctrl_to_policy_action(*, spec: PolicySpec, ctrl_rad: jnp.ndarray) -> jnp.nda
     if spec.action.mapping_id != "pos_target_rad_v1":
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
-    centers, spans, mirror_signs = _get_joint_params(spec)
+    centers, spans, policy_action_signs = _get_joint_params(spec)
     ctrl = jnp.asarray(ctrl_rad, dtype=jnp.float32)
     corrected = (ctrl - centers) / (spans + 1e-6)
-    action = corrected * mirror_signs
+    action = corrected * policy_action_signs
     action = jnp.clip(action, -1.0, 1.0)
     return action.astype(jnp.float32)
 
@@ -46,18 +46,18 @@ def normalize_joint_vel(*, spec: PolicySpec, joint_vel_rad_s: jnp.ndarray) -> jn
 def _get_joint_params(spec: PolicySpec) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     centers = []
     spans = []
-    mirror = []
+    policy_action_signs = []
     for name in spec.robot.actuator_names:
         joint = spec.robot.joints[name]
         center = (joint.range_min_rad + joint.range_max_rad) / 2.0
         span = (joint.range_max_rad - joint.range_min_rad) / 2.0
         centers.append(center)
         spans.append(span)
-        mirror.append(joint.mirror_sign)
+        policy_action_signs.append(joint.policy_action_sign)
     return (
         jnp.asarray(centers, dtype=jnp.float32),
         jnp.asarray(spans, dtype=jnp.float32),
-        jnp.asarray(mirror, dtype=jnp.float32),
+        jnp.asarray(policy_action_signs, dtype=jnp.float32),
     )
 
 

@@ -52,7 +52,7 @@ class JointSpec:
         range_min: Minimum joint angle in radians
         range_max: Maximum joint angle in radians
         default_pos: Default position (from keyframe or qpos0)
-        mirror_sign: +1.0 for same-sign joints, -1.0 for inverted (mirrored) ranges
+        policy_action_sign: +1.0 for same-sign joints, -1.0 for inverted (mirrored) ranges
         symmetry_pair: Name of paired joint (e.g., "right_hip_pitch" for "left_hip_pitch")
     """
 
@@ -69,7 +69,7 @@ class JointSpec:
     default_pos: float
 
     # Symmetry handling
-    mirror_sign: float = 1.0  # +1.0 for same-sign, -1.0 for inverted
+    policy_action_sign: float = 1.0  # +1.0 for same-sign, -1.0 for inverted
     symmetry_pair: Optional[str] = None  # e.g., "left_hip_pitch" ↔ "right_hip_pitch"
 
     @property

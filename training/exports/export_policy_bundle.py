@@ -375,7 +375,7 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
         joints[name] = JointSpec(
             range_min_rad=float(rng[0]),
             range_max_rad=float(rng[1]),
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
     return joints

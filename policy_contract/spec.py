@@ -32,7 +32,7 @@ class ModelSpec:
 class JointSpec:
     range_min_rad: float
     range_max_rad: float
-    mirror_sign: float
+    policy_action_sign: float
     max_velocity_rad_s: float
 
 
@@ -104,7 +104,7 @@ class PolicySpec:
                     name: {
                         "range_min_rad": joint.range_min_rad,
                         "range_max_rad": joint.range_max_rad,
-                        "mirror_sign": joint.mirror_sign,
+                        "policy_action_sign": joint.policy_action_sign,
                         "max_velocity_rad_s": joint.max_velocity_rad_s,
                     }
                     for name, joint in self.robot.joints.items()
@@ -401,7 +401,9 @@ def _parse_robot(data: Dict[str, Any]) -> RobotSpec:
         joints[name] = JointSpec(
             range_min_rad=_require_float(spec, "range_min_rad", context=f"robot.joints['{name}']"),
             range_max_rad=_require_float(spec, "range_max_rad", context=f"robot.joints['{name}']"),
-            mirror_sign=_require_float(spec, "mirror_sign", context=f"robot.joints['{name}']"),
+            policy_action_sign=_require_float(
+                spec, "policy_action_sign", context=f"robot.joints['{name}']"
+            ),
             max_velocity_rad_s=_require_float(spec, "max_velocity_rad_s", context=f"robot.joints['{name}']"),
         )
 

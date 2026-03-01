@@ -137,7 +137,7 @@ class ControlAbstractionLayer:
                 range_min=joint_range[0],
                 range_max=joint_range[1],
                 default_pos=0.0,  # Will be updated from keyframe
-                mirror_sign=entry.get("mirror_sign", 1.0),
+                policy_action_sign=entry.get("policy_action_sign", 1.0),
                 symmetry_pair=entry.get("symmetry_pair"),
             )
 
@@ -228,7 +228,7 @@ class ControlAbstractionLayer:
                 range_min=joint_spec.range_min,
                 range_max=joint_spec.range_max,
                 default_pos=float(self._default_qpos[i]),
-                mirror_sign=joint_spec.mirror_sign,
+                policy_action_sign=joint_spec.policy_action_sign,
                 symmetry_pair=joint_spec.symmetry_pair,
             )
 
@@ -262,8 +262,10 @@ class ControlAbstractionLayer:
         )
         self._ctrl_spans = jnp.array([spec.ctrl_span for spec in self._actuator_specs])
 
-        # Mirror signs for symmetry correction
-        self._mirror_signs = jnp.array([spec.mirror_sign for spec in self._joint_specs])
+        # Policy action signs for symmetry correction
+        self._policy_action_signs = jnp.array(
+            [spec.policy_action_sign for spec in self._joint_specs]
+        )
 
         # qpos and qvel addresses
         self._actuator_qpos_addrs = jnp.array(
@@ -389,7 +391,7 @@ class ControlAbstractionLayer:
 
         This method:
         1. Clips action to [-1, 1] range (defensive - NN can exceed bounds)
-        2. Applies symmetry correction (mirror_sign) for mirrored joint ranges
+        2. Applies symmetry correction (policy_action_sign) for mirrored joint ranges
         3. Denormalizes from [-1, 1] to physical ctrl range
 
         Args:
@@ -412,7 +414,7 @@ class ControlAbstractionLayer:
         action = jnp.clip(action, -1.0, 1.0)
 
         # Apply symmetry correction for mirrored joint ranges
-        corrected = action * self._mirror_signs
+        corrected = action * self._policy_action_signs
 
         # Denormalize: [-1, 1] → actual control range
         ctrl = corrected * self._ctrl_spans + self._ctrl_centers
@@ -456,8 +458,8 @@ class ControlAbstractionLayer:
         """
         # Normalize to [-1, 1]
         normalized = (ctrl - self._ctrl_centers) / (self._ctrl_spans + 1e-6)
-        # Reverse mirror correction
-        return normalized * self._mirror_signs
+        # Reverse symmetry correction (signs are +/-1, so multiply again)
+        return normalized * self._policy_action_signs
 
     def ctrl_to_physical_angles(self, ctrl: jax.Array) -> jax.Array:
         """Extract physical joint angles from MuJoCo ctrl.
@@ -819,14 +821,14 @@ class ControlAbstractionLayer:
         print("-" * 80)
         print(
             f"{'Name':<20} {'Range':<20} {'Center':>8} {'Span':>8} "
-            f"{'Mirror':>7} {'Default':>8}"
+            f"{'ActSign':>7} {'Default':>8}"
         )
         print("-" * 80)
         for spec in self._joint_specs:
             print(
                 f"{spec.name:<20} [{spec.range_min:>6.3f}, {spec.range_max:>6.3f}] "
                 f"{spec.range_center:>8.3f} {spec.range_span:>8.3f} "
-                f"{spec.mirror_sign:>7.1f} {spec.default_pos:>8.4f}"
+                f"{spec.policy_action_sign:>7.1f} {spec.default_pos:>8.4f}"
             )
 
         print("\nActuator Specifications:")

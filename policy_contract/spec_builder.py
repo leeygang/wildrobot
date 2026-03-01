@@ -23,7 +23,7 @@ def build_policy_spec(
     provenance: Optional[Dict[str, Any]] = None,
     contract_name: str = "wildrobot_policy",
     contract_version: str = "1.0.0",
-    spec_version: int = 1,
+    spec_version: int = 2,
     layout_id: str = "wr_obs_v1",
     model_input_name: str = "observation",
     model_output_name: str = "action",
@@ -54,7 +54,7 @@ def build_policy_spec(
         joints[name] = JointSpec(
             range_min_rad=float(rng[0]),
             range_max_rad=float(rng[1]),
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
 
@@ -116,4 +116,3 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
         ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
         ObsFieldSpec(name="padding", size=1, units="unused"),
     ]
-

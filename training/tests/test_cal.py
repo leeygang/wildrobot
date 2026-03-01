@@ -7,7 +7,7 @@ These tests verify:
 2. Policy action to ctrl transformation (with symmetry correction)
 3. Physical angles to ctrl (passthrough)
 4. Normalized joint position/velocity getters
-5. Symmetry handling (mirror_sign)
+5. Symmetry handling (policy_action_sign)
 6. Command generation for Sim2Real
 7. Extended state (foot, root) - v0.11.0
 """
@@ -130,20 +130,20 @@ class TestActionTransformation:
             ), f"Joint {spec.name}: expected center {expected_center}, got {ctrl[i]}"
 
     def test_policy_action_plus_one_maps_to_max(self, cal_instance):
-        """Action=+1 should map to max of ctrl range (for mirror_sign=+1 joints)."""
+        """Action=+1 should map to max of ctrl range (for policy_action_sign=+1 joints)."""
         action = jnp.ones(cal_instance.num_actuators)
         ctrl = cal_instance.policy_action_to_ctrl(action)
 
         for i, spec in enumerate(cal_instance.actuator_specs):
             joint_spec = cal_instance.joint_specs[i]
-            if joint_spec.mirror_sign > 0:
-                # For positive mirror_sign, action=+1 → ctrl_max
+            if joint_spec.policy_action_sign > 0:
+                # For positive policy_action_sign, action=+1 → ctrl_max
                 expected = spec.ctrl_range[1]
                 assert (
                     jnp.abs(ctrl[i] - expected) < 1e-5
                 ), f"Joint {spec.name}: expected max {expected}, got {ctrl[i]}"
             else:
-                # For negative mirror_sign, action=+1 → ctrl_min
+                # For negative policy_action_sign, action=+1 → ctrl_min
                 expected = spec.ctrl_range[0]
                 assert (
                     jnp.abs(ctrl[i] - expected) < 1e-5
@@ -176,17 +176,17 @@ class TestActionTransformation:
 
 
 class TestSymmetry:
-    """Tests for symmetry handling (mirror_sign)."""
+    """Tests for symmetry handling (policy_action_sign)."""
 
     def test_left_right_symmetry_with_same_action(self, cal_instance, robot_config):
         """Same action for left/right should produce symmetric physical motion.
 
-        This is the key test for mirror_sign correctness:
+        This is the key test for policy_action_sign correctness:
         - When policy outputs action[left_hip]=0.5 and action[right_hip]=0.5
         - The physical ctrl values should be symmetric (same physical motion)
 
         For joints with inverted ranges (e.g., left_hip_pitch vs right_hip_pitch),
-        the mirror_sign correction should handle this automatically.
+        the policy_action_sign correction should handle this automatically.
         """
         # Create action with same value for left and right hip pitch
         action = jnp.zeros(cal_instance.num_actuators)
@@ -214,8 +214,8 @@ class TestSymmetry:
         ) / right_spec.range_span
 
         # Symmetric action should produce mirrored normalized positions when
-        # mirror_sign differs across the pair.
-        sign_ratio = left_spec.mirror_sign / right_spec.mirror_sign
+        # policy_action_sign differs across the pair.
+        sign_ratio = left_spec.policy_action_sign / right_spec.policy_action_sign
         np.testing.assert_almost_equal(
             left_normalized,
             right_normalized * sign_ratio,

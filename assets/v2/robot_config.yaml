@@ -18,7 +18,7 @@ actuated_joint_specs:
   - -5
   - 90
   symmetry_pair: right_hip_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_hip_roll
   type: position
@@ -26,7 +26,7 @@ actuated_joint_specs:
   - -90
   - 10
   symmetry_pair: right_hip_roll
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_knee_pitch
   type: position
@@ -34,7 +34,7 @@ actuated_joint_specs:
   - 0
   - 80
   symmetry_pair: right_knee_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_ankle_pitch
   type: position
@@ -42,7 +42,7 @@ actuated_joint_specs:
   - -40
   - 45
   symmetry_pair: right_ankle_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: right_hip_pitch
   type: position
@@ -50,7 +50,7 @@ actuated_joint_specs:
   - -90
   - 5
   symmetry_pair: left_hip_pitch
-  mirror_sign: -1.0
+  policy_action_sign: -1.0
   max_velocity: 10.0
 - name: right_hip_roll
   type: position
@@ -58,7 +58,7 @@ actuated_joint_specs:
   - -10
   - 90
   symmetry_pair: left_hip_roll
-  mirror_sign: -1.0
+  policy_action_sign: -1.0
   max_velocity: 10.0
 - name: right_knee_pitch
   type: position
@@ -66,7 +66,7 @@ actuated_joint_specs:
   - 0
   - 80
   symmetry_pair: left_knee_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: right_ankle_pitch
   type: position
@@ -74,7 +74,7 @@ actuated_joint_specs:
   - -40
   - 45
   symmetry_pair: left_ankle_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: waist_yaw
   type: position
@@ -82,7 +82,7 @@ actuated_joint_specs:
   - -30
   - 30
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: right_shoulder_pitch
   type: position
@@ -90,7 +90,7 @@ actuated_joint_specs:
   - -180
   - 30
   symmetry_pair: left_shoulder_pitch
-  mirror_sign: -1.0
+  policy_action_sign: -1.0
   max_velocity: 10.0
 - name: right_shoulder_roll
   type: position
@@ -98,7 +98,7 @@ actuated_joint_specs:
   - -30
   - 175
   symmetry_pair: left_shoulder_roll
-  mirror_sign: -1.0
+  policy_action_sign: -1.0
   max_velocity: 10.0
 - name: right_elbow_pitch
   type: position
@@ -106,7 +106,7 @@ actuated_joint_specs:
   - 0
   - 90
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: right_wrist_yaw
   type: position
@@ -114,7 +114,7 @@ actuated_joint_specs:
   - -90
   - 90
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: right_wrist_pitch
   type: position
@@ -122,7 +122,7 @@ actuated_joint_specs:
   - -5
   - 0
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_shoulder_pitch
   type: position
@@ -130,7 +130,7 @@ actuated_joint_specs:
   - -30
   - 180
   symmetry_pair: right_shoulder_pitch
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_shoulder_roll
   type: position
@@ -138,7 +138,7 @@ actuated_joint_specs:
   - -175
   - 30
   symmetry_pair: right_shoulder_roll
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_elbow_pitch
   type: position
@@ -146,7 +146,7 @@ actuated_joint_specs:
   - 0
   - 90
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_wrist_yaw
   type: position
@@ -154,7 +154,7 @@ actuated_joint_specs:
   - -90
   - 90
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 - name: left_wrist_pitch
   type: position
@@ -162,7 +162,7 @@ actuated_joint_specs:
   - -5
   - 0
   symmetry_pair: null
-  mirror_sign: 1.0
+  policy_action_sign: 1.0
   max_velocity: 10.0
 foot_specs:
   left:

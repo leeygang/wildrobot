@@ -29,8 +29,8 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
             "baudrate": 9600,
             "default_move_time_ms": 900,
             "servos": {
-                "left_hip_pitch": {"id": 1, "offset_unit": 10, "direction": 1, "center_deg_offset": 0},
-                "right_hip_pitch": {"id": 2, "offset_unit": -20, "direction": -1, "center_deg_offset": 90},
+                "left_hip_pitch": {"id": 1, "offset_unit": 10, "motor_sign": 1, "motor_center_mujoco_deg": 0},
+                "right_hip_pitch": {"id": 2, "offset_unit": -20, "motor_sign": -1, "motor_center_mujoco_deg": 90},
             },
         }
     }
@@ -42,8 +42,8 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     assert cfg.servo_controller.default_move_time_ms == 900
     assert cfg.servo_controller.servo_ids == {"left_hip_pitch": 1, "right_hip_pitch": 2}
     assert cfg.servo_controller.joint_offset_units["left_hip_pitch"] == 10
-    assert cfg.servo_controller.joint_directions["right_hip_pitch"] == -1
-    assert cfg.servo_controller.joint_center_deg["right_hip_pitch"] == 90.0
+    assert cfg.servo_controller.joint_motor_signs["right_hip_pitch"] == -1.0
+    assert cfg.servo_controller.joint_motor_center_mujoco_deg["right_hip_pitch"] == 90.0
 
 
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
@@ -52,8 +52,8 @@ def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
         port="/dev/ttyUSB0",
         baudrate=9600,
         servos={
-            "left": ServoSpec(id=1, offset_unit=0, direction=1),
-            "right": ServoSpec(id=2, offset_unit=5, direction=-1),
+            "left": ServoSpec(id=1, offset_unit=0, motor_sign=1),
+            "right": ServoSpec(id=2, offset_unit=5, motor_sign=-1),
         },
     )
 
@@ -67,22 +67,22 @@ def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
         }
     }
 
-    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, legacy_hiwonder_cfg))
-    assert cfg.servo_controller == canonical
+    with pytest.raises(KeyError):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, legacy_hiwonder_cfg))
 
     legacy_controller_cfg = _base_config() | {
         "Hiwonder_controller": {
             "port": canonical.port,
             "baudrate": canonical.baudrate,
             "servos": {
-                "left": {"id": 1, "offset": 0, "direction": 1},
-                "right": {"id": 2, "offset_rad": 5, "direction": -1},
+                "left": {"id": 1, "offset": 0, "motor_sign": 1},
+                "right": {"id": 2, "offset_rad": 5, "motor_sign": -1},
             },
         }
     }
 
-    cfg2 = WildRobotRuntimeConfig.load(_write_config(tmp_path, legacy_controller_cfg))
-    assert cfg2.servo_controller == canonical
+    with pytest.raises(KeyError):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, legacy_controller_cfg))
 
 
 def test_conflicting_servo_definitions_raise(tmp_path: Path) -> None:
@@ -106,12 +106,12 @@ def test_conflicting_servo_definitions_raise(tmp_path: Path) -> None:
 def test_rad_units_round_trip_with_offset_unit() -> None:
     servo_model = ServoModel()
     offsets = np.array([10.0], dtype=np.float32)
-    directions = np.array([1.0], dtype=np.float32)
+    motor_signs = np.array([1.0], dtype=np.float32)
     centers_rad = np.array([0.0], dtype=np.float32)
     target_rad = np.array([0.2], dtype=np.float32)
 
-    units = rad_to_servo_units(target_rad, offsets, directions, centers_rad, servo_model)
-    back = servo_units_to_rad(units, offsets, directions, centers_rad, servo_model)
+    units = rad_to_servo_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
+    back = servo_units_to_rad(units, offsets, motor_signs, centers_rad, servo_model)
 
     np.testing.assert_allclose(back, target_rad, atol=1e-6)
 
@@ -119,28 +119,28 @@ def test_rad_units_round_trip_with_offset_unit() -> None:
 def test_center_deg_maps_to_servo_center() -> None:
     servo_model = ServoModel()
     offsets = np.array([0.0], dtype=np.float32)
-    directions = np.array([1.0], dtype=np.float32)
+    motor_signs = np.array([1.0], dtype=np.float32)
     centers_rad = np.array([np.deg2rad(90.0)], dtype=np.float32)
     target_rad = np.array([np.pi / 2], dtype=np.float32)
 
-    units = rad_to_servo_units(target_rad, offsets, directions, centers_rad, servo_model)
+    units = rad_to_servo_units(target_rad, offsets, motor_signs, centers_rad, servo_model)
     assert np.allclose(units, np.array([servo_model.units_center], dtype=np.float32), atol=1e-3)
 
-    back = servo_units_to_rad(units, offsets, directions, centers_rad, servo_model)
+    back = servo_units_to_rad(units, offsets, motor_signs, centers_rad, servo_model)
     np.testing.assert_allclose(back, target_rad, atol=1e-6)
 
 
 def test_shoulder_center_deg_units_endpoints() -> None:
     servo_model = ServoModel()
     offsets = np.array([0.0], dtype=np.float32)
-    directions = np.array([1.0], dtype=np.float32)
+    motor_signs = np.array([1.0], dtype=np.float32)
     centers_rad = np.array([np.deg2rad(-90.0)], dtype=np.float32)
 
     target_max = np.array([np.deg2rad(30.0)], dtype=np.float32)
     target_min = np.array([np.deg2rad(-180.0)], dtype=np.float32)
 
-    units_max = rad_to_servo_units(target_max, offsets, directions, centers_rad, servo_model)
-    units_min = rad_to_servo_units(target_min, offsets, directions, centers_rad, servo_model)
+    units_max = rad_to_servo_units(target_max, offsets, motor_signs, centers_rad, servo_model)
+    units_min = rad_to_servo_units(target_min, offsets, motor_signs, centers_rad, servo_model)
 
     np.testing.assert_allclose(units_max, np.array([1000.0], dtype=np.float32), atol=1e-3)
     np.testing.assert_allclose(units_min, np.array([125.0], dtype=np.float32), atol=1e-3)

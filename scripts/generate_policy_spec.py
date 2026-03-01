@@ -77,7 +77,7 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
         joints[name] = JointSpec(
             range_min_rad=range_min,
             range_max_rad=range_max,
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
     return joints
@@ -104,7 +104,7 @@ def generate_policy_spec(*, config_path: Path, robot_config_path: Path) -> Polic
     spec = PolicySpec(
         contract_name="wildrobot_policy",
         contract_version="1.0.0",
-        spec_version=1,
+        spec_version=2,
         model=ModelSpec(
             format="onnx",
             input_name="observation",
@@ -151,7 +151,7 @@ def main() -> None:
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/v1/robot_config.yaml",
+        default="assets/v2/robot_config.yaml",
         help="Path to robot_config.yaml",
     )
     parser.add_argument(

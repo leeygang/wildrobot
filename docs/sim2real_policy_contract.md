@@ -40,7 +40,7 @@ Long-term, keep training with a MuJoCo-specific **sim adapter** (not a second co
   - Policy output is normalized `action ∈ [-1, 1]`
 - Environment converts with `cal.action_to_ctrl(action)`:
     - clips action
-    - applies `mirror_sign` symmetry correction
+  - applies `policy_action_sign` symmetry correction
     - maps to **physical control target angles (radians)** using joint centers/spans
 - Optional action filtering:
   - `filtered_action = alpha * prev_action + (1 - alpha) * raw_action`
@@ -197,7 +197,7 @@ Contract records:
 - `actuator_names` in **policy action order**
 - per-actuator:
   - `range_min/max` (rad)
-  - `mirror_sign`
+  - `policy_action_sign`
   - `max_velocity` (rad/s)
 - `observation_breakdown` (named counts) and computed `obs_dim`
 
@@ -232,7 +232,7 @@ The contract must define the mapping to **control targets**:
 - `ctrl_type = position_target_rad`
 - `action_to_ctrl`:
   - `action_clipped`
-  - `corrected = action_clipped * mirror_sign`
+  - `corrected = action_clipped * policy_action_sign`
   - `ctrl = corrected * ctrl_span + ctrl_center`
 
 Optional runtime shaping (must be declared if used):
@@ -256,7 +256,7 @@ Optional runtime shaping (must be declared if used):
 
 - `contract_name: str` (e.g., `"wildrobot_policy"`)
 - `contract_version: str` (semver, e.g., `"1.0.0"`)
-- `spec_version: int` (schema version, start with `1`)
+- `spec_version: int` (schema version, current is `2`)
 - `model: {format, input_name, output_name, obs_dim, action_dim, dtype}`
 - `robot: {robot_name, actuator_names, joints}`
 - `observation: {dtype, layout}`
@@ -264,7 +264,7 @@ Optional runtime shaping (must be declared if used):
 
 Where:
 - `robot.joints` maps each actuator/joint name to the fields needed for normalization and action→ctrl mapping:
-  - `range_min_rad`, `range_max_rad`, `mirror_sign`, `max_velocity_rad_s`
+  - `range_min_rad`, `range_max_rad`, `policy_action_sign`, `max_velocity_rad_s`
 - `observation.layout` is an ordered list of fields; the concatenation order is the canonical obs order.
 - `action.mapping` declares the *meaning* of policy outputs and how to map to control targets.
 
@@ -276,7 +276,7 @@ This is an example shape; values shown are illustrative.
 {
   "contract_name": "wildrobot_policy",
   "contract_version": "1.0.0",
-  "spec_version": 1,
+  "spec_version": 2,
 
   "model": {
     "format": "onnx",
@@ -303,13 +303,13 @@ This is an example shape; values shown are illustrative.
       "left_hip_pitch": {
         "range_min_rad": -0.087268,
         "range_max_rad": 1.570794,
-        "mirror_sign": 1.0,
+        "policy_action_sign": 1.0,
         "max_velocity_rad_s": 10.0
       },
       "right_hip_pitch": {
         "range_min_rad": -1.570797,
         "range_max_rad": 0.087266,
-        "mirror_sign": -1.0,
+        "policy_action_sign": -1.0,
         "max_velocity_rad_s": 10.0
       }
     }
@@ -354,7 +354,7 @@ Notes:
 - `model.format` refers to the **deployed inference artifact** inside the bundle (Stage 1 uses ONNX). Training can use a different format (e.g., a Brax PPO `.pkl` checkpoint); that belongs under `provenance.source_checkpoint`.
 - Only a subset of joints is shown under `robot.joints` above; in practice it must include **all** `actuator_names`.
 - Keep “behavior knobs” minimal and enumerated: `observation.layout_id`, `action.postprocess_id`, `action.mapping_id`.
-- `action.mapping_id = "pos_target_rad_v1"` means: clip → mirror_sign → scale to joint center/span in radians.
+- `action.mapping_id = "pos_target_rad_v1"` means: clip → policy_action_sign → scale to joint center/span in radians.
 - For `wr_obs_v1`, `prev_action` is required by definition and stored in `PolicyState` (initialized to zeros unless the contract version introduces another init mode).
 
 #### Deterministic mapping definitions (norms)
@@ -364,7 +364,7 @@ To remove ambiguity, the spec implies these reference formulas:
 - `center = (range_min_rad + range_max_rad) / 2`
 - `span   = (range_max_rad - range_min_rad) / 2`
 - `action_clipped = clip(action, -1, 1)`
-- `corrected = action_clipped * mirror_sign`
+- `corrected = action_clipped * policy_action_sign`
 - `ctrl_target_rad = corrected * span + center`
 - `joint_pos_normalized = (joint_pos_rad - center) / (span + 1e-6)`
 - `joint_vel_normalized = clip(joint_vel_rad_s / max_velocity_rad_s, -1, 1)`
@@ -695,14 +695,14 @@ If you want to keep `Signals` minimal, keep validity/failure counters *out of th
 
 The `Actuators` implementation is responsible for:
 - **Unit conversion**: radians ↔ device units (e.g., servo units [0-1000])
-- **Calibration**: applying per-joint `direction` (+1/-1) and `offset` (in device units)
+- **Calibration**: applying per-joint `motor_sign` (+1/-1) and `offset_unit` (in device units)
 - **Joint ordering**: mapping `actuator_names` to hardware IDs
 - **Velocity estimation**: finite-difference from position readings (if hardware lacks velocity feedback)
 
 **Design decision**: Conversion logic lives in `ServoConfig` (Option 1 - co-located with calibration data).
 
 Rationale:
-- `ServoConfig` already holds `offset` and `direction` needed for conversion
+- `ServoConfig` already holds `offset_unit` and `motor_sign` needed for conversion
 - Calibration tools (`calibrate.py`) can use the same methods directly
 - Simple and avoids extra abstraction layers
 - If multi-hardware support is needed later, can migrate to a utility class
@@ -712,9 +712,9 @@ Rationale:
 @dataclass
 class ServoConfig:
     id: int
-    offset: int       # in servo units
-    direction: int    # +1 or -1
-  center_deg: float # MuJoCo angle (deg) that maps to servo center (500)
+    offset_unit: int             # in servo units
+    motor_sign: int              # +1 or -1
+    motor_center_mujoco_deg: float  # MuJoCo angle (deg) that maps to servo center (500)
 
     # Servo model parameters (should be config-driven if hardware varies)
     # Defaults match Hiwonder HTD-45H: units in [0..1000], center at 500, ~240° total travel.
@@ -725,14 +725,14 @@ class ServoConfig:
 
     def rad_to_units(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units with calibration."""
-      center_rad = math.radians(self.center_deg)
-      units = self.UNITS_CENTER + self.offset + self.direction * ((target_rad - center_rad) * self.UNITS_PER_RAD)
+      center_rad = math.radians(self.motor_center_mujoco_deg)
+      units = self.UNITS_CENTER + self.offset_unit + self.motor_sign * ((target_rad - center_rad) * self.UNITS_PER_RAD)
         return clamp(units, self.UNITS_MIN, self.UNITS_MAX)
 
     def units_to_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians with calibration."""
-      center_rad = math.radians(self.center_deg)
-      return center_rad + self.direction * (units - self.UNITS_CENTER - self.offset) / self.UNITS_PER_RAD
+      center_rad = math.radians(self.motor_center_mujoco_deg)
+      return center_rad + self.motor_sign * (units - self.UNITS_CENTER - self.offset_unit) / self.UNITS_PER_RAD
 
 # HiwonderActuators delegates to ServoConfig (no conversion logic here)
 class HiwonderActuators(Actuators):
@@ -899,7 +899,7 @@ Proposed module layout:
   - `build_observation(...)` implementing the actor observation contract
   - frame transforms helpers (quat→gravity, heading_local transforms)
 - `policy_contract/numpy/calib.py`
-  - “CAL-lite”: reads joint ranges + mirror_sign + velocity limits from `robot_config.yaml`
+  - “CAL-lite”: reads joint ranges + policy_action_sign + velocity limits from `robot_config.yaml`
   - `normalize_joint_pos/vel`, `action_to_ctrl`
 - `policy_contract/jax/obs.py`
   - JAX-native implementation used by training (same semantics as NumPy builder)
@@ -941,7 +941,7 @@ wildrobot/
 │  ├─ README.md
 │  ├─ configs/                             # runtime JSON configs
 │  │  ├─ config.py                         # WrRuntimeConfig + ServoConfig (with rad_to_units)
-│  │  └─ wr_runtime_config.json            # per-robot calibration (servo IDs, offsets, direction)
+│  │  └─ wr_runtime_config.json            # per-robot calibration (servo IDs, offsets, motor_sign)
 │  ├─ scripts/
 │  │  └─ calibrate.py                      # interactive servo calibration tool
 │  └─ wr_runtime/                          # ONLY importable runtime package (deploys to robot)
@@ -1017,7 +1017,7 @@ This section defines the concrete “seams” between training, export, and runt
 - `RobotSpec`
   - `actuator_names: list[str]`
   - `joint_ranges_rad: dict[str, tuple[float, float]]`
-  - `mirror_sign: dict[str, float]`
+  - `policy_action_sign: dict[str, float]`
   - `max_velocity_rad_s: dict[str, float]`
 - `ObsSpec`
   - `layout: list[ObsFieldSpec]` where each field has `name,size,units,frame,normalization`
@@ -1044,7 +1044,7 @@ This section defines the concrete “seams” between training, export, and runt
 **Required (Stage 1)**
 - `action_to_ctrl(spec, action) -> ctrl_targets_rad`
   - implements `action.mapping_id == "pos_target_rad_v1"`
-  - uses `robot.joints[*].range_min/max` and `mirror_sign`
+  - uses `robot.joints[*].range_min/max` and `policy_action_sign`
 - `normalize_joint_pos(spec, joint_pos_rad) -> joint_pos_normalized`
   - uses joint range centers/spans (same formula as training)
 - `normalize_joint_vel(spec, joint_vel_rad_s) -> joint_vel_normalized`
@@ -1269,7 +1269,7 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 1) **Introduce PolicySpec + bundle format** (no runtime behavior change yet).
 2) **Move runtime obs building** to shared contract builder:
    - implement normalized joint pos/vel and declared frames.
-3) **Move runtime action mapping** to contract (mirror_sign + joint range mapping):
+3) **Move runtime action mapping** to contract (policy_action_sign + joint range mapping):
    - stop using `action_scale_rad * action` as “delta around zero” unless explicitly trained that way.
 4) **Add parity tests** so changes can’t regress silently.
 
@@ -1286,6 +1286,6 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 
 ## Appendix: Practical Implementation Notes for This Repo
 
-- `assets/v2/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `mirror_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
+- `assets/v2/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `policy_action_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
 - Runtime should have a startup validator (e.g. `runtime/wr_runtime/validation/startup_validator.py`) that checks dims and order; extend it to also validate **semantic knobs** from `policy_spec.json` (frames, normalization declared, action mapping type, filter alpha).
 - Training currently uses CAL (`training/cal/cal.py`) as the “truth”; long-term, move those semantics into `policy_contract/` and keep training’s MuJoCo-specific logic in `training/sim_adapter/`.

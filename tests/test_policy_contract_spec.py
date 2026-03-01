@@ -11,7 +11,7 @@ def _valid_spec_dict() -> dict:
     return {
         "contract_name": "wildrobot_policy",
         "contract_version": "1.0.0",
-        "spec_version": 1,
+        "spec_version": 2,
         "model": {
             "format": "onnx",
             "input_name": "observation",
@@ -27,13 +27,13 @@ def _valid_spec_dict() -> dict:
                 "joint_a": {
                     "range_min_rad": -0.5,
                     "range_max_rad": 0.5,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 10.0,
                 },
                 "joint_b": {
                     "range_min_rad": -1.0,
                     "range_max_rad": 1.0,
-                    "mirror_sign": -1.0,
+                    "policy_action_sign": -1.0,
                     "max_velocity_rad_s": 12.0,
                 },
             },

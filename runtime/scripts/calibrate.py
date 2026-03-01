@@ -52,18 +52,18 @@ DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
-    # For joints with inverted ranges (mirror_sign=-1), the positive direction
+    # For joints with inverted ranges (policy_action_sign=-1), the positive motion
     # is OPPOSITE to the symmetric motion direction.
     #
-    # Left leg (mirror_sign=1.0): positive rad = "natural" direction
+    # Left leg (policy_action_sign=1.0): positive rad = "natural" motion direction
     "left_hip_pitch": "left leg swings forward",
     "left_hip_roll": "left leg moves inward (toward body midline)",
     "left_knee_pitch": "left knee bends (foot moves backward)",
     "left_ankle_pitch": "left toes go up (dorsiflex)",
     #
-    # Right leg: check mirror_sign to determine positive direction
-    # - mirror_sign=-1.0 (hip_pitch, hip_roll): positive rad = OPPOSITE of left
-    # - mirror_sign=1.0 (knee, ankle): positive rad = SAME as left
+    # Right leg: check policy_action_sign to determine positive motion direction
+    # - policy_action_sign=-1.0 (hip_pitch, hip_roll): positive rad = OPPOSITE of left
+    # - policy_action_sign=1.0 (knee, ankle): positive rad = SAME as left
     "right_hip_pitch": "right leg swings backward",  # inverted range
     "right_hip_roll": "right leg moves outward (away from body midline)",  # inverted range
     "right_knee_pitch": "right knee bends (foot moves backward)",  # same as left
@@ -88,16 +88,16 @@ POSITIVE_HINTS = {
 @dataclass
 class JointState:
     offset: int
-    direction: int
+    motor_sign: int
 
 
-def normalize_joint_state(offset: float | int, direction: float | int) -> JointState:
+def normalize_joint_state(offset: float | int, motor_sign: float | int) -> JointState:
     offset_int = int(round(float(offset)))
-    direction_f = float(direction)
-    direction_int = int(round(direction_f))
-    if direction_int not in (-1, 1):
-        direction_int = 1 if direction_f >= 0 else -1
-    return JointState(offset=offset_int, direction=direction_int)
+    motor_sign_f = float(motor_sign)
+    motor_sign_int = int(round(motor_sign_f))
+    if motor_sign_int not in (-1, 1):
+        motor_sign_int = 1 if motor_sign_f >= 0 else -1
+    return JointState(offset=offset_int, motor_sign=motor_sign_int)
 
 
 def prompt_select_joints(joint_names: List[str]) -> List[str]:
@@ -428,7 +428,11 @@ def print_all_joint_positions(
             continue
         if include_rad:
             st = states[joint]
-            pos_rad = servo.units_to_rad_for_calibrate(units, direction=st.direction, offset=st.offset)
+            pos_rad = servo.units_to_rad_for_calibrate(
+                units,
+                motor_sign=st.motor_sign,
+                offset=st.offset,
+            )
             print(f"  {joint}: id={servo.id} units={units} ctrl_rad={pos_rad:+.4f}")
         else:
             print(f"  {joint}: id={servo.id} units={units}")
@@ -455,7 +459,13 @@ def read_all_home_ctrl_rad(
             missing.append(joint)
             continue
         st = states[joint]
-        home_ctrl.append(servo.units_to_rad_for_calibrate(units, direction=st.direction, offset=st.offset))
+        home_ctrl.append(
+            servo.units_to_rad_for_calibrate(
+                units,
+                motor_sign=st.motor_sign,
+                offset=st.offset,
+            )
+        )
     if missing:
         raise RuntimeError(f"Missing readback for joints: {missing}")
     return home_ctrl
@@ -609,17 +619,17 @@ def wait_until_unload(controller, servo_ids: Iterable[int], *, prompt: str) -> N
         print(f"Unknown input '{resp}'. Press '{PANIC_KEY}' then Enter to unload.")
 
 
-def direction_prompt(joint: str, hint: str, delta_rad: float) -> str:
+def motor_sign_prompt(joint: str, hint: str, delta_rad: float) -> str:
     return (
         f"I will command +{delta_rad:.3f} rad on {joint}. Did the joint move toward: {hint}?\n"
-        "  y = yes (direction = +1)\n"
-        "  n = no  (direction = -1)\n"
+        "  y = yes (motor_sign = +1)\n"
+        "  n = no  (motor_sign = -1)\n"
         "  r = repeat with a different delta\n"
         f"  {PANIC_KEY} = panic unload"
     )
 
 
-def calibrate_direction(
+def calibrate_motor_sign(
     controller,
     servo: ServoConfig,
     joint: str,
@@ -630,34 +640,34 @@ def calibrate_direction(
     move_ms: int,
     pause_s: float,
 ) -> int:
-    print(f"\n-- Direction calibration for {joint} (servo {servo.id}) --")
+    print(f"\n-- Motor sign calibration for {joint} (servo {servo.id}) --")
     delta_rad_used = DEFAULT_DELTA_RAD
 
     while True:
-        # Always start the direction test from center to make the "first move" unambiguous.
+        # Always start the motor_sign test from center to make the "first move" unambiguous.
         center_units = ServoConfig.UNITS_CENTER
         announce_and_pause(
             f"Step: move {joint} to center units ({center_units})",
             pause_s,
         )
         move_and_wait(controller, servo.id, center_units, move_ms)
-        # Direction calibration should be done in raw servo unit space:
+        # motor_sign calibration should be done in raw servo unit space:
         # start from mechanical center (500) and move +units. This avoids coupling
-        # direction detection to center_deg_offset or any current offset.
+        # motor_sign detection to any current motor_center_mujoco_deg or offset.
         delta_units = int(round(float(delta_rad_used) * float(servo.UNITS_PER_RAD)))
         if delta_units == 0:
             delta_units = 1
         plus_units = max(ServoConfig.UNITS_MIN, min(ServoConfig.UNITS_MAX, center_units + delta_units))
         announce_and_pause(
-            f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing direction)",
+            f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing motor_sign)",
             pause_s,
         )
         move_and_wait(controller, servo.id, plus_units, move_ms)
-        resp = input(direction_prompt(joint, hint, delta_rad_used) + "\n> ").strip().lower()
+        resp = input(motor_sign_prompt(joint, hint, delta_rad_used) + "\n> ").strip().lower()
         if resp == PANIC_KEY:
             panic_and_exit(controller, all_servo_ids)
         if resp.startswith("y"):
-            print("Direction set to +1")
+            print("motor_sign set to +1")
             announce_and_pause(
                 f"Step: return {joint} to center units ({center_units})",
                 pause_s,
@@ -665,7 +675,7 @@ def calibrate_direction(
             move_and_wait(controller, servo.id, center_units, move_ms)
             return 1
         if resp.startswith("n"):
-            print("Direction set to -1")
+            print("motor_sign set to -1")
             announce_and_pause(
                 f"Step: return {joint} to center units ({center_units})",
                 pause_s,
@@ -701,16 +711,7 @@ def calibrate_offset(
     """Calibrate offset for a joint. Returns new offset, or None to skip (keep original)."""
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
     # Offset calibration should not depend on any existing offset value.
-    # Important: `offset` in ServoConfig is applied *in addition to* center_deg_offset
-    # and direction in rad<->units conversion. When the user confirms their neutral pose,
-    # we want that pose to correspond to target_rad=0.0 (MuJoCo), so we must compute
-    # offset relative to units(target_rad=0, offset=0) under the chosen direction.
     target_units = ServoConfig.UNITS_CENTER
-    zero_units_no_offset = servo.rad_to_units_for_calibrate(
-        0.0,
-        direction=state.direction,
-        offset=0,
-    )
     announce_and_pause(
         f"Step: move {joint} to raw center units ({target_units})",
         pause_s,
@@ -719,7 +720,7 @@ def calibrate_offset(
     commands_msg = (
         "Jog the joint until it matches your neutral pose. Commands:"
         "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm;"
-        "\n  s = skip offset (save direction only); q = quit joint;"
+        "\n  s = skip offset (save motor_sign only); q = quit joint;"
         "\n  m = enter offset manually (units);"
     )
     if record_pos:
@@ -745,14 +746,26 @@ def calibrate_offset(
                     )
                 continue
             # Compute offset so that target_rad=0 maps to the confirmed physical pose.
+            # Note: this includes motor_center_mujoco_deg via ServoConfig.center_rad.
             # Formula: pos == units(target_rad=0, offset=offset_units)
             # => offset_units = pos - units(target_rad=0, offset=0)
+            zero_units_no_offset = servo.rad_to_units_for_calibrate(
+                0.0,
+                motor_sign=state.motor_sign,
+                offset=0,
+            )
             offset_units = int(pos) - int(zero_units_no_offset)
             print(
-                f"Captured offset {offset_units} (units), raw position {pos} (target_rad=0 @ offset=0 -> {zero_units_no_offset} units)"
+                f"Captured offset {offset_units} (units), raw position {pos} "
+                f"(target_rad=0 @ offset=0 -> {zero_units_no_offset} units)"
             )
             return offset_units
         if cmd.lower() == "m":
+            zero_units_no_offset = servo.rad_to_units_for_calibrate(
+                0.0,
+                motor_sign=state.motor_sign,
+                offset=0,
+            )
             raw = input(
                 f"Enter offset in servo units (offset = current_pos - {zero_units_no_offset}; this makes target_rad=0 land at current_pos): "
             ).strip()
@@ -767,7 +780,9 @@ def calibrate_offset(
             print(f"Aborted offset calibration for {joint}; keeping previous offset {state.offset}.")
             return state.offset
         if cmd.lower() == "s":
-            print(f"Skipping offset calibration for {joint}; direction will be saved, offset unchanged.")
+            print(
+                f"Skipping offset calibration for {joint}; motor_sign will be saved, offset unchanged."
+            )
             return None
         if record_pos and cmd.lower() == "p":
             print_all_joint_positions(
@@ -792,7 +807,11 @@ def calibrate_offset(
         move_and_wait(controller, servo.id, target_units, move_ms)
         pos = read_position(controller, servo.id)
         if pos is not None:
-            pos_rad = servo.units_to_rad_for_calibrate(pos, direction=state.direction, offset=0)
+            pos_rad = servo.units_to_rad_for_calibrate(
+                pos,
+                motor_sign=state.motor_sign,
+                offset=0,
+            )
             print(f"Moved to {pos} units (~{pos_rad:.3f} rad, offset assumed 0).")
 
 
@@ -806,7 +825,7 @@ def verify_zero(
 ) -> None:
     target_units = servo.rad_to_units_for_calibrate(
         0.0,
-        direction=state.direction,
+        motor_sign=state.motor_sign,
         offset=state.offset,
     )
     announce_and_pause(
@@ -820,7 +839,7 @@ def verify_zero(
         return
     pos_rad = servo.units_to_rad_for_calibrate(
         pos,
-        direction=state.direction,
+        motor_sign=state.motor_sign,
         offset=state.offset,
     )
     status = "OK" if abs(pos_rad) <= VERIFY_TOL_RAD else "drift"
@@ -843,7 +862,11 @@ def range_test_joint(
 
     def _raw_units(target_rad: float) -> float:
         delta = float(target_rad) - float(servo.center_rad)
-        return float(servo.UNITS_CENTER) + float(servo.offset) + float(servo.direction) * (delta * float(servo.UNITS_PER_RAD))
+        return (
+            float(servo.UNITS_CENTER)
+            + float(servo.offset)
+            + float(servo.motor_sign) * (delta * float(servo.UNITS_PER_RAD))
+        )
 
     min_units_raw = _raw_units(float(min_rad))
     max_units_raw = _raw_units(float(max_rad))
@@ -863,8 +886,8 @@ def range_test_joint(
     print(f"  Deg range: {min_deg:.1f} to {max_deg:.1f}")
     print(
         "  Calibration: "
-        f"center_deg_offset={float(servo.center_deg_offset):+.1f} "
-        f"direction={float(servo.direction):+.0f} offset_unit={int(servo.offset)}"
+        f"motor_center_mujoco_deg={float(servo.motor_center_mujoco_deg):+.1f} "
+        f"motor_sign={float(servo.motor_sign):+.0f} offset_unit={int(servo.offset)}"
     )
     print(
         "  Reachable (by servo limits): "
@@ -883,7 +906,7 @@ def range_test_joint(
         print(
             "WARNING: requested joint range clips to servo limits (0..1000 units): "
             + ", ".join(clipped)
-            + ". This usually means center_deg_offset/direction/offset needs adjustment, or the MuJoCo range exceeds servo capability."
+            + ". This usually means motor_center_mujoco_deg/motor_sign/offset needs adjustment, or the MuJoCo range exceeds servo capability."
         )
 
 
@@ -935,20 +958,9 @@ def write_config(
         if joint not in servos:
             servos[joint] = {}
         servos[joint]["offset_unit"] = int(state.offset)
-        servos[joint]["direction"] = int(state.direction)
+        servos[joint]["motor_sign"] = int(state.motor_sign)
 
-    # Legacy block (only if present already)
-    if "Hiwonder_controller" in base_data:
-        hiw = base_data.setdefault("Hiwonder_controller", {})
-        legacy_servos = hiw.setdefault("servos", {})
-        for joint, state in updates.items():
-            if joint not in legacy_servos:
-                legacy_servos[joint] = {}
-            legacy_servos[joint]["offset_unit"] = int(state.offset)
-            legacy_servos[joint]["direction"] = int(state.direction)
-        if home_ctrl_rad is not None:
-            hiw["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
-    elif home_ctrl_rad is not None:
+    if home_ctrl_rad is not None:
         servo_block["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
 
     _write_json_with_retries(output_path, base_data)
@@ -2325,7 +2337,7 @@ Examples (copy/paste):
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
 
-  # Interactive calibration mode (select joints and choose direction or offset calibration)
+    # Interactive calibration mode (select joints and choose motor_sign or offset calibration)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate
 
   # Test range of motion for joints interactively
@@ -2339,7 +2351,7 @@ Examples (copy/paste):
 """.strip()
 
     parser = argparse.ArgumentParser(
-        description="Interactive servo calibration (offset + direction)",
+        description="Interactive servo calibration (offset + motor_sign)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=examples,
     )
@@ -2354,7 +2366,7 @@ Examples (copy/paste):
     parser.add_argument(
         "--calibrate",
         action="store_true",
-        help="Interactive calibration mode: select joints and choose direction or offset calibration",
+        help="Interactive calibration mode: select joints and choose motor_sign or offset calibration",
     )
     parser.add_argument(
         "--calibrate-imu",
@@ -2508,7 +2520,7 @@ Examples (copy/paste):
     hints = dict(POSITIVE_HINTS)
 
     states: Dict[str, JointState] = {
-        j: normalize_joint_state(offset=servo_cfgs[j].offset, direction=servo_cfgs[j].direction)
+        j: normalize_joint_state(offset=servo_cfgs[j].offset, motor_sign=servo_cfgs[j].motor_sign)
         for j in joint_names
     }
     servo_ids = [servo_cfgs[j].id for j in joint_names]
@@ -2523,7 +2535,7 @@ Examples (copy/paste):
                 state = states[joint]
                 units = servo.rad_to_units_for_calibrate(
                     rad,
-                    direction=state.direction,
+                    motor_sign=state.motor_sign,
                     offset=state.offset,
                 )
                 print(f"  {joint}: rad={rad:+.4f} -> servo_id={servo.id} units={units}")
@@ -2535,8 +2547,8 @@ Examples (copy/paste):
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
                 print(
-                    f"    #{servo.id}: {joint} (servo_id={servo.id}, offset={state.offset}, direction={state.direction}, "
-                    f"center_deg_offset={float(servo.center_deg_offset):+.3g}, hint='{hint}')"
+                    f"    #{servo.id}: {joint} (servo_id={servo.id}, offset={state.offset}, motor_sign={state.motor_sign}, "
+                    f"motor_center_mujoco_deg={float(servo.motor_center_mujoco_deg):+.3g}, hint='{hint}')"
                 )
         if args.range:
             print("Range test mode (dry run):")
@@ -2571,7 +2583,7 @@ Examples (copy/paste):
                     state = states[joint]
                     units = servo.rad_to_units_for_calibrate(
                         rad,
-                        direction=state.direction,
+                        motor_sign=state.motor_sign,
                         offset=state.offset,
                     )
                     cmds.append((servo.id, units))
@@ -2673,7 +2685,7 @@ Examples (copy/paste):
                     state = states[joint]
                     units = servo.rad_to_units_for_calibrate(
                         0.0,
-                        direction=state.direction,
+                        motor_sign=state.motor_sign,
                         offset=state.offset,
                     )
                     cmds.append((servo.id, units))
@@ -2697,8 +2709,8 @@ Examples (copy/paste):
                     servo = servo_cfgs[joint]
                     servo_id_to_joint[servo.id] = joint
                     print(
-                        f"  #{servo.id}: {joint} (id={servo.id}, dir={state.direction:+d}, "
-                        f"offset={state.offset:+d}, center_deg_offset={float(servo.center_deg_offset):+.3g})"
+                        f"  #{servo.id}: {joint} (id={servo.id}, motor_sign={state.motor_sign:+d}, "
+                        f"offset={state.offset:+d}, motor_center_mujoco_deg={float(servo.motor_center_mujoco_deg):+.3g})"
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
@@ -2730,14 +2742,14 @@ Examples (copy/paste):
                 # Step 3: Ask which action to take
                 print(f"\nSelected: {joint}")
                 print(
-                    f"  Current: direction={state.direction:+d}, offset={state.offset:+d}, "
-                    f"center_deg_offset={float(servo.center_deg_offset):+.3g}"
+                    f"  Current: motor_sign={state.motor_sign:+d}, offset={state.offset:+d}, "
+                    f"motor_center_mujoco_deg={float(servo.motor_center_mujoco_deg):+.3g}"
                 )
                 print(f"  Hint (positive MuJoCo rad): {hint}")
                 print("\nAction:")
-                print("  d = calibrate direction")
+                print("  d = calibrate motor_sign")
                 print("  o = calibrate offset")
-                print("  b = both (direction first, then offset)")
+                print("  b = both (motor_sign first, then offset)")
                 print("  s = skip (go back to list)")
 
                 action = input("Choose action (d/o/b/s): ").strip().lower()
@@ -2746,7 +2758,7 @@ Examples (copy/paste):
                     continue
 
                 if action in ("d", "b"):
-                    new_dir = calibrate_direction(
+                    new_motor_sign = calibrate_motor_sign(
                         controller,
                         servo,
                         joint,
@@ -2756,7 +2768,7 @@ Examples (copy/paste):
                         move_ms=args.move_ms,
                         pause_s=float(args.pause_s),
                     )
-                    states[joint].direction = new_dir
+                    states[joint].motor_sign = new_motor_sign
                     calibrated[joint] = states[joint]
 
                 if action in ("o", "b"):
