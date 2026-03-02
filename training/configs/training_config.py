@@ -139,6 +139,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         push_force_min=env.get("push_force_min", 0.0),
         push_force_max=env.get("push_force_max", 0.0),
         push_body=env.get("push_body", "waist"),
+        push_bodies=list(env.get("push_bodies", [])),
         imu_gyro_noise_std=env.get("imu_gyro_noise_std", 0.0),
         imu_quat_noise_deg=env.get("imu_quat_noise_deg", 0.0),
         imu_latency_steps=env.get("imu_latency_steps", 0),

@@ -361,15 +361,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
         # Disturbance configuration
-        self._push_body_id = -1
+        self._push_body_ids = jp.asarray([-1], dtype=jp.int32)
         if self._config.env.push_enabled:
-            self._push_body_id = mujoco.mj_name2id(
-                self._mj_model, mujoco.mjtObj.mjOBJ_BODY, self._config.env.push_body
-            )
-            if self._push_body_id < 0:
-                raise ValueError(
-                    f"Push body '{self._config.env.push_body}' not found in model."
+            push_body_names = list(self._config.env.push_bodies)
+            if not push_body_names:
+                push_body_names = [self._config.env.push_body]
+
+            push_body_ids = []
+            for body_name in push_body_names:
+                body_id = mujoco.mj_name2id(
+                    self._mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name
                 )
+                if body_id < 0:
+                    raise ValueError(f"Push body '{body_name}' not found in model.")
+                push_body_ids.append(int(body_id))
+            self._push_body_ids = jp.asarray(push_body_ids, dtype=jp.int32)
 
     # =========================================================================
     # MjxEnv Interface
@@ -406,6 +412,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 start_step=jp.zeros(()),
                 end_step=jp.zeros(()),
                 force_xy=jp.zeros((2,)),
+                body_id=jp.asarray(-1, dtype=jp.int32),
                 rng=jp.zeros((2,), dtype=jp.uint32),
             )
 
@@ -558,7 +565,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._default_joint_qpos + joint_noise
         )
 
-        schedule = sample_push_schedule(key3, self._config.env)
+        schedule = sample_push_schedule(key3, self._config.env, self._push_body_ids)
 
         return self._make_initial_state(
             qpos,
@@ -601,7 +608,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Apply external push disturbance (lateral force on body, if enabled)
         if self._config.env.push_enabled:
-            data = apply_push(data, wr.push_schedule, step_count, self._push_body_id)
+            data = apply_push(data, wr.push_schedule, step_count)
 
         # Physics simulation (multiple substeps)
         def substep_fn(data, _):
@@ -712,7 +719,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         # Use updated RNG after consuming IMU noise
-        reset_schedule = sample_push_schedule(rng_after, self._config.env)
+        reset_schedule = sample_push_schedule(
+            rng_after, self._config.env, self._push_body_ids
+        )
         reset_state = self._make_initial_state(
             self._init_qpos,
             velocity_cmd,

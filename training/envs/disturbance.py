@@ -19,6 +19,7 @@ try:
         start_step: jp.ndarray  # shape=()
         end_step: jp.ndarray  # shape=()
         force_xy: jp.ndarray  # shape=(2,)
+        body_id: jp.ndarray  # shape=()
         rng: jp.ndarray  # shape=(2,)
 
 except ImportError:
@@ -28,21 +29,28 @@ except ImportError:
         start_step: jp.ndarray
         end_step: jp.ndarray
         force_xy: jp.ndarray
+        body_id: jp.ndarray
         rng: jp.ndarray
 
 
-def sample_push_schedule(rng: jax.Array, cfg: EnvConfig) -> DisturbanceSchedule:
+def sample_push_schedule(
+    rng: jax.Array, cfg: EnvConfig, push_body_ids: jp.ndarray | None = None
+) -> DisturbanceSchedule:
     """Sample a single lateral push schedule for an episode."""
+    if push_body_ids is None:
+        push_body_ids = jp.asarray([-1], dtype=jp.int32)
+
     if not cfg.push_enabled:
         _, next_rng = jax.random.split(rng)
         return DisturbanceSchedule(
             start_step=jp.zeros(()),
             end_step=jp.zeros(()),
             force_xy=jp.zeros((2,)),
+            body_id=jp.asarray(-1, dtype=jp.int32),
             rng=next_rng,
         )
 
-    rng, key_start, key_force, key_angle, next_rng = jax.random.split(rng, 5)
+    rng, key_start, key_force, key_angle, key_body, next_rng = jax.random.split(rng, 6)
     start_step = jax.random.randint(
         key_start,
         shape=(),
@@ -60,10 +68,18 @@ def sample_push_schedule(rng: jax.Array, cfg: EnvConfig) -> DisturbanceSchedule:
     duration = jp.asarray(cfg.push_duration_steps)
     start_step = jp.asarray(start_step)
     end_step = start_step + duration
+    body_idx = jax.random.randint(
+        key_body,
+        shape=(),
+        minval=0,
+        maxval=int(push_body_ids.shape[0]),
+    )
+    body_id = push_body_ids[body_idx]
     return DisturbanceSchedule(
         start_step=start_step,
         end_step=end_step,
         force_xy=force_xy,
+        body_id=body_id,
         rng=next_rng,
     )
 
@@ -72,17 +88,17 @@ def apply_push(
     data,
     schedule: DisturbanceSchedule,
     step_count: jp.ndarray,
-    body_id: int,
 ):
     """Apply push force to the specified body for the active window."""
-    if body_id < 0:
-        return data
-
+    body_id = schedule.body_id.astype(jp.int32)
+    valid_body = body_id >= 0
     push_active = (step_count >= schedule.start_step) & (step_count < schedule.end_step)
     push_force_xy = jp.where(push_active, schedule.force_xy, 0.0)
     xfrc_applied = jp.zeros_like(data.xfrc_applied)
     push_force = jp.array(
         [push_force_xy[0], push_force_xy[1], 0.0, 0.0, 0.0, 0.0]
     )
-    xfrc_applied = xfrc_applied.at[body_id].set(push_force)
+    safe_body_id = jp.where(valid_body, body_id, 0).astype(jp.int32)
+    push_force = jp.where(valid_body, push_force, 0.0)
+    xfrc_applied = xfrc_applied.at[safe_body_id].set(push_force)
     return data.replace(xfrc_applied=xfrc_applied)

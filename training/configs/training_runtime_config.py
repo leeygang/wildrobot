@@ -116,6 +116,7 @@ class EnvConfig(Freezable):
     push_force_min: float = 0.0
     push_force_max: float = 0.0
     push_body: str = "waist"
+    push_bodies: List[str] = field(default_factory=list)
 
     # IMU observation noise and latency (training-only)
     imu_gyro_noise_std: float = 0.0  # Additive Gaussian noise (rad/s)

@@ -12,7 +12,7 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.4"
+version: "0.13.5"
 version_name: "Standing robustness (strong pushes, longer run)"
 
 seed: 42
@@ -29,7 +29,7 @@ env:
   max_episode_steps: 500
 
   # Health / termination
-  target_height: 0.46
+  target_height: 0.44
   min_height: 0.40
   max_height: 0.70
   max_pitch: 0.8
@@ -50,10 +50,10 @@ env:
   push_enabled: true
   push_start_step_min: 30
   push_start_step_max: 300
-  push_duration_steps: 8
+  push_duration_steps: 10
   push_force_min: 3.0
-  push_force_max: 7.0
-  push_body: waist
+  push_force_max: 6.0
+  push_bodies: [waist, upperbody]
 
 # =============================================================================
 # PPO Algorithm (task learning)
@@ -61,8 +61,8 @@ env:
 ppo:
 
   num_envs: 512
-  rollout_steps: 128 
-  iterations: 1200
+  rollout_steps: 256 
+  iterations: 200
 
   learning_rate: 3e-4
   gamma: 0.99

@@ -25,11 +25,14 @@ def test_sample_push_schedule_ranges():
         push_force_max=9.0,
         push_body="waist",
     )
-    schedule = sample_push_schedule(jax.random.PRNGKey(0), cfg)
+    schedule = sample_push_schedule(
+        jax.random.PRNGKey(0), cfg, jp.asarray([3, 7], dtype=jp.int32)
+    )
     assert 5 <= int(schedule.start_step) <= 15
     assert int(schedule.end_step) == int(schedule.start_step) + 7
     force_mag = float(jp.linalg.norm(schedule.force_xy))
     assert 3.0 <= force_mag <= 9.0
+    assert int(schedule.body_id) in {3, 7}
     assert schedule.rng.shape == (2,)
 
 
@@ -39,6 +42,7 @@ def test_sample_push_schedule_disabled():
     assert float(schedule.start_step) == 0.0
     assert float(schedule.end_step) == 0.0
     assert jp.allclose(schedule.force_xy, 0.0)
+    assert int(schedule.body_id) == -1
     assert schedule.rng.shape == (2,)
 
 
@@ -52,13 +56,14 @@ def test_apply_push_applies_force(mj_model):
         start_step=jp.asarray(5),
         end_step=jp.asarray(8),
         force_xy=jp.asarray([3.0, -4.0]),
+        body_id=jp.asarray(waist_id, dtype=jp.int32),
         rng=jp.zeros((2,)),
     )
 
-    active_data = apply_push(data, schedule, jp.asarray(5), waist_id)
+    active_data = apply_push(data, schedule, jp.asarray(5))
     active_force = active_data.xfrc_applied[waist_id][:2]
     assert jp.allclose(active_force, schedule.force_xy)
 
-    inactive_data = apply_push(data, schedule, jp.asarray(8), waist_id)
+    inactive_data = apply_push(data, schedule, jp.asarray(8))
     inactive_force = inactive_data.xfrc_applied[waist_id][:2]
     assert jp.allclose(inactive_force, 0.0)

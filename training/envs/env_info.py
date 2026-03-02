@@ -150,6 +150,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
             "start_step": (),
             "end_step": (),
             "force_xy": (2,),
+            "body_id": (),
             "rng": (2,),
         },
     }
