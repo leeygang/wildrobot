@@ -26,10 +26,10 @@ import numpy as np
 import pytest
 
 # Project paths
-ASSETS_PATH = PROJECT_ROOT / "assets" / "v1"
+ASSETS_PATH = PROJECT_ROOT / "assets" / "v2"
 SCENE_XML_PATH = ASSETS_PATH / "scene_flat_terrain.xml"
 ROBOT_XML_PATH = ASSETS_PATH / "wildrobot.xml"
-ROBOT_CONFIG_PATH = ASSETS_PATH / "robot_config.yaml"
+ROBOT_CONFIG_PATH = ASSETS_PATH / "mujoco_robot_config.json"
 TRAINING_CONFIG_PATH = PROJECT_ROOT / "training" / "configs" / "ppo_walking.yaml"
 SCHEMA_PATH = ASSETS_PATH / "robot_schema.json"
 

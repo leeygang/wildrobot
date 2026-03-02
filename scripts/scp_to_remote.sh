@@ -148,7 +148,7 @@ sync_code() {
     echo -e "\n${YELLOW}=== Syncing Code Files ===${NC}\n"
 
     # Robot config (critical - code depends on this)
-    sync_file "assets/v1/robot_config.yaml"
+    sync_file "assets/v2/mujoco_robot_config.json"
 
     # Scene/model files
     sync_file "assets/v1/scene_flat_terrain.xml"

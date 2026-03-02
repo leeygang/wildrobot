@@ -60,7 +60,7 @@ sys.path.insert(0, str(project_root))
 
 # Default config paths
 DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking.yaml"
-DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v1" / "robot_config.yaml"
+DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v2" / "mujoco_robot_config.json"
 
 # Import config loaders from configs module
 from training.configs.training_config import (

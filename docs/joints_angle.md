@@ -20,7 +20,7 @@ It is an abstraction of the mapping described in `runtime/docs/servo_calibration
 
 ### B. Policy action coordinate (`action ∈ [-1, 1]`)
 - The policy outputs `action` in `[-1, 1]` per joint (in actuator order).
-- `policy_action_sign ∈ {+1, -1}` is a **model/policy convention** (from `assets/v2/robot_config.yaml`) used to flip actions so that “same action on symmetric joints” can mean “symmetric motion”.
+- `policy_action_sign ∈ {+1, -1}` is a **model/policy convention** (from `assets/v2/mujoco_robot_config.json`) used to flip actions so that “same action on symmetric joints” can mean “symmetric motion”.
 - `policy_action_sign` is applied **only** in the mapping between `action` and `target_rad` (it is *not* a servo calibration parameter).
 
 ### C. Servo electrical units (`u_elec ∈ [0, 1000]`)
@@ -61,7 +61,7 @@ Inverse (MuJoCo → policy):
 - `action = clip(corrected * policy_action_sign, -1, 1)`
 
 Important nuance:
-- `ctrl_center` / `ctrl_span` come from the **joint’s modeled range** (from `assets/v2/robot_config.yaml` and exported into the policy spec).
+- `ctrl_center` / `ctrl_span` come from the **joint’s modeled range** (from `assets/v2/mujoco_robot_config.json` and exported into the policy spec).
 - `motor_center_mujoco_deg` is a **separate** center used only for the **rad ↔ servo** mapping.
 
 ## 3) Conversion: MuJoCo target radians ↔ servo units
@@ -96,7 +96,7 @@ But `motor_center_mujoco_deg` and `ctrl_center` are different centers, so always
 ## 5) Concrete numerical examples (forward + inverse)
 
 The numbers below are taken from:
-- Joint ranges + `policy_action_sign`: `assets/v2/robot_config.yaml` (unless noted)
+- Joint ranges + `policy_action_sign`: `assets/v2/mujoco_robot_config.json` (unless noted)
 - Servo calibration: `runtime/configs/wr_runtime_config.json` (unless noted)
 
 Assume the policy outputs the same action for each example:

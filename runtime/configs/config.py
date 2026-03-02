@@ -44,9 +44,9 @@ HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 
-# Default robot_config.yaml path (joint ranges, mirror signs, etc.)
+# Default robot_config path (joint ranges, mirror signs, etc.)
 # Current assets layout is v2.
-DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v2/robot_config.yaml")
+DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v2/mujoco_robot_config.json")
 
 
 # =============================================================================
@@ -84,9 +84,9 @@ class ServoConfig:
         motor_sign: Hardware motor sign correction (+1 or -1, default: +1)
         motor_center_mujoco_deg: MuJoCo angle (deg) that maps to the servo-unit center
             (servo_unit == 500) when offset==0.
-        rad_range: Joint range in radians (min, max) from robot_config.yaml
-        max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
-        policy_action_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
+        rad_range: Joint range in radians (min, max) from mujoco_robot_config.json
+        max_velocity: Maximum joint velocity in rad/s from mujoco_robot_config.json
+        policy_action_sign: +1.0 or -1.0 for action direction correction from mujoco_robot_config.json
     """
 
     id: int
@@ -339,7 +339,7 @@ class ServoControllerConfig:
         if abs(float(servo.ctrl_span)) < 1e-9:
             raise ValueError(
                 "Cannot invert servo_pos->policy_action with degenerate joint range "
-                f"(ctrl_span={float(servo.ctrl_span)}). Joint '{joint_name}' likely missing range in robot_config.yaml."
+                f"(ctrl_span={float(servo.ctrl_span)}). Joint '{joint_name}' likely missing range in mujoco_robot_config.json."
             )
         corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
         action = corrected / servo.policy_action_sign
@@ -351,7 +351,7 @@ class ServoControllerConfig:
         """Convert policy actions to servo commands.
 
         Args:
-            actions: List of policy actions in joint order (from robot_config.yaml)
+            actions: List of policy actions in joint order (from mujoco_robot_config.json)
 
         Returns:
             List of (servo_id, servo_position) tuples
@@ -522,8 +522,8 @@ class WrRuntimeConfig:
             config_path: Path to JSON config file. If None, searches for:
                 1. ~/.wildrobot/config.json
                 2. ~/wildrobot_config.json (legacy)
-            robot_config_path: Path to robot_config.yaml for joint specs.
-                If None, uses a best-effort search (prefers assets/v2/robot_config.yaml).
+            robot_config_path: Path to robot_config.(json|yaml) for joint specs.
+                If None, uses a best-effort search (prefers assets/v2/mujoco_robot_config.json).
 
         Returns:
             WrRuntimeConfig instance
@@ -560,8 +560,8 @@ class WrRuntimeConfig:
         # Priority:
         #   1) explicit argument `robot_config_path`
         #   2) JSON key `robot_config_path` (resolved relative to config file dir)
-        #   3) repo-relative assets/v2/robot_config.yaml
-        #   4) cwd-relative assets/v2/robot_config.yaml
+        #   3) repo-relative assets/v2/mujoco_robot_config.json
+        #   4) cwd-relative assets/v2/mujoco_robot_config.json
         if robot_config_path is None:
             json_robot_cfg = data.get("robot_config_path")
             if isinstance(json_robot_cfg, str) and json_robot_cfg.strip():
@@ -574,7 +574,7 @@ class WrRuntimeConfig:
         repo_root = Path(__file__).resolve().parents[2]
         candidate_paths.extend(
             [
-                (repo_root / "assets" / "v2" / "robot_config.yaml"),
+                (repo_root / "assets" / "v2" / "mujoco_robot_config.json"),
                 Path(DEFAULT_ROBOT_CONFIG_PATH),
             ]
         )
@@ -598,7 +598,7 @@ class WrRuntimeConfig:
             range_unit = str(robot_config.get("joint_range_unit", "rad")).lower()
             if range_unit not in {"rad", "deg"}:
                 raise ValueError(
-                    "robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'"
+                    "mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'"
                 )
             for joint in robot_config.get("actuated_joint_specs", []):
                 name = joint.get("name")

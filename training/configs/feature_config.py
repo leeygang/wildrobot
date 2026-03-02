@@ -4,7 +4,7 @@ This module defines the feature layout used by both:
 - policy_features.py (online JAX extraction from policy observations)
 - ref_features.py (offline NumPy extraction from reference data)
 
-Configuration is derived from robot_config.yaml.
+Configuration is derived from mujoco_robot_config.json.
 
 IMPORTANT: The FeatureLayout class is the SINGLE SOURCE OF TRUTH for feature
 ordering and dimensions. Both online and offline extraction must use this
@@ -181,7 +181,7 @@ class FeatureConfig(NamedTuple):
     """Configuration for AMP feature extraction.
 
     Defines which parts of the observation to use for discriminator.
-    Indices are derived from robot_config.yaml observation_indices.
+    Indices are derived from mujoco_robot_config.json observation_indices.
 
     NOTE: Root linear velocity uses RAW values (m/s), NOT normalized.
     v0.6.6 fix: Both policy and reference must use raw velocity for

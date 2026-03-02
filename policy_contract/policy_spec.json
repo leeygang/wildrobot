@@ -218,6 +218,6 @@
   },
   "provenance": {
     "training_config": "training/configs/ppo_walking.yaml",
-    "robot_config": "assets/v2/robot_config.yaml"
+    "robot_config": "assets/v2/mujoco_robot_config.json"
   }
 }

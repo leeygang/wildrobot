@@ -53,7 +53,6 @@ class JointSpec:
         range_max: Maximum joint angle in radians
         default_pos: Default position (from keyframe or qpos0)
         policy_action_sign: +1.0 for same-sign joints, -1.0 for inverted (mirrored) ranges
-        symmetry_pair: Name of paired joint (e.g., "right_hip_pitch" for "left_hip_pitch")
     """
 
     name: str
@@ -70,7 +69,6 @@ class JointSpec:
 
     # Symmetry handling
     policy_action_sign: float = 1.0  # +1.0 for same-sign, -1.0 for inverted
-    symmetry_pair: Optional[str] = None  # e.g., "left_hip_pitch" ↔ "right_hip_pitch"
 
     @property
     def range_center(self) -> float:
@@ -723,7 +721,6 @@ class FootSpec:
         body_id: Resolved MuJoCo body ID
         toe_geom_id: Resolved MuJoCo geom ID for toe contact
         heel_geom_id: Resolved MuJoCo geom ID for heel contact
-        symmetry_pair: Name of paired foot (e.g., "right_foot" for "left_foot")
     """
 
     name: str  # e.g., "left_foot"
@@ -731,7 +728,6 @@ class FootSpec:
     body_id: int  # Resolved via mj_name2id
     toe_geom_id: int  # Resolved from robot_config.feet.left_toe
     heel_geom_id: int  # Resolved from robot_config.feet.left_heel
-    symmetry_pair: Optional[str] = None
 
 
 @dataclass(frozen=True)

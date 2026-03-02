@@ -43,7 +43,7 @@ import numpy as np
 # Load robot config first
 from training.configs.training_config import load_robot_config
 
-robot_config_path = project_root / "assets" / "robot_config.yaml"
+robot_config_path = project_root / "assets" / "v2" / "mujoco_robot_config.json"
 load_robot_config(robot_config_path)
 
 # Feature names for 27-dim AMP features (v0.6.3: waist masked)

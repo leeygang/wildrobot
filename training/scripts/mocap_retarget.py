@@ -8,7 +8,7 @@ This module provides:
 2. Loading pre-retargeted motion data (from GMR output)
 3. Converting motion to AMP observation format
 
-Robot configuration is loaded from robot_config.yaml via get_robot_config().
+Robot configuration is loaded from mujoco_robot_config.json via get_robot_config().
 The config must be loaded by the caller before using these utilities.
 """
 
@@ -342,7 +342,7 @@ def motion_to_amp_observations(
     """Convert retargeted motion to AMP observation format.
 
     Creates observation vectors matching WildRobotEnv's observation space.
-    Uses observation indices from robot_config.yaml.
+    Uses observation indices from mujoco_robot_config.json.
 
     Requires: Robot config must be loaded via load_robot_config() before calling.
 
@@ -461,7 +461,7 @@ if __name__ == "__main__":
         "--robot-config",
         type=str,
         required=True,
-        help="Path to robot_config.yaml",
+        help="Path to mujoco_robot_config.json",
     )
     # Common parameters
     parser.add_argument(

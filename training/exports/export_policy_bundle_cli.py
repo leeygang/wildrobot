@@ -74,9 +74,9 @@ def _resolve_robot_config_path(
                 "must match the selected asset to avoid mixed MJCF/robot_config. "
                 "Update the config or remove --asset."
             )
-        robot_path = Path(f"assets/{asset}/robot_config.yaml")
+        robot_path = Path(f"assets/{asset}/mujoco_robot_config.json")
     else:
-        default_path = env.get("robot_config_path") or f"{env.get('assets_root', 'assets')}/robot_config.yaml"
+        default_path = env.get("robot_config_path") or f"{env.get('assets_root', 'assets')}/mujoco_robot_config.json"
         robot_path = Path(default_path)
 
     return _resolve_repo_relative(robot_path)
@@ -109,13 +109,13 @@ def main() -> None:
         type=str,
         choices=["v1", "v2"],
         default=None,
-        help="Asset variant (sets robot_config to assets/<asset>/robot_config.yaml and validates assets_root)",
+        help="Asset variant (sets robot_config to assets/<asset>/mujoco_robot_config.json and validates assets_root)",
     )
     parser.add_argument(
         "--robot-config",
         type=str,
         default=None,
-        help="Path to robot_config.yaml (mutually exclusive with --asset; otherwise config-derived)",
+        help="Path to mujoco_robot_config.json (mutually exclusive with --asset; otherwise config-derived)",
     )
     args = parser.parse_args()
 

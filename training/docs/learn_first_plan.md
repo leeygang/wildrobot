@@ -33,7 +33,7 @@ This approach discovers what the robot *can* do before trying to make it look hu
 | CAL unit tests | 100% pass | pytest test_cal.py |
 | Policy action semantics | Normalized [-1, 1] | Code review |
 | Symmetry correction | Verified | Left/right hip produce symmetric motion |
-| Config migration | Complete | actuated_joints in robot_config.yaml |
+| Config migration | Complete | actuated_joints in mujoco_robot_config.json |
 
 ### Value Delivered
 
@@ -63,7 +63,7 @@ Exit: CAL module implemented and tested
 Tasks:
 - [ ] Update `wildrobot_env.py` to use CAL
 - [ ] Update `robot_config.py` for actuated_joints support
-- [ ] Update `robot_config.yaml` with actuated_joints section
+- [ ] Update `mujoco_robot_config.json` with actuated_joints section
 - [ ] Update `post_process.py` with generate_actuated_joints_config()
 
 Exit: Environment uses CAL for all action/state conversion

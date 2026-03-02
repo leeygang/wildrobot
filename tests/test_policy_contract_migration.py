@@ -12,7 +12,7 @@ from wr_runtime.utils.mjcf import load_mjcf_model_info
 
 
 def test_env_observation_size_matches_contract() -> None:
-    load_robot_config("assets/v2/robot_config.yaml")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
     config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)
@@ -40,7 +40,7 @@ def test_sim_foot_switches_nonzero() -> None:
     import jax
     import jax.numpy as jnp
 
-    load_robot_config("assets/v2/robot_config.yaml")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
     config = load_training_config("training/configs/ppo_walking.yaml")
     config.freeze()
     env = WildRobotEnv(config)

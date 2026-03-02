@@ -4,19 +4,19 @@
 
 This document defines a comprehensive, stage-gated test strategy for the WildRobot project, enabling confident progression from MuJoCo model design through PPO + AMP training and ultimately sim-to-real deployment.
 
-This version explicitly introduces **robot_config.yaml as the single runtime source of truth**, generated deterministically from `wildrobot.xml`, and defines mandatory **XML ↔ robot_config consistency contracts**.
+This version explicitly introduces **mujoco_robot_config.json as the single runtime source of truth**, generated deterministically from `wildrobot.xml`, and defines mandatory **XML ↔ robot_config consistency contracts**.
 
 ---
 
 ## Core Principles
 
 1. **Single Source of Truth at Runtime**
-   - All product code and test code MUST consume `robot_config.yaml`
+   - All product code and test code MUST consume `mujoco_robot_config.json`
    - Direct parsing of `wildrobot.xml` is only allowed inside the generator and its tests
 
 2. **Authoritative Authoring Artifact**
    - `wildrobot.xml` is the authoritative model definition
-   - Any semantic change to the robot must flow through regeneration of `robot_config.yaml`
+   - Any semantic change to the robot must flow through regeneration of `mujoco_robot_config.json`
 
 3. **Fail Fast on Structural Drift**
    - XML/config inconsistencies are treated as hard errors
@@ -92,7 +92,7 @@ Recommended pytest markers:
 ## Layer 0: Schema Contract (Foundation)
 
 ### Objective
-Guarantee consistency between `wildrobot.xml` and `robot_config.yaml` and enforce config-only runtime access.
+Guarantee consistency between `wildrobot.xml` and `mujoco_robot_config.json` and enforce config-only runtime access.
 
 ### 0.1 Generation and Snapshot Tests
 
@@ -103,7 +103,7 @@ def test_deterministic_generation(self):
     Purpose: Verify schema generation is deterministic.
 
     Procedure:
-    1. Generate robot_config.yaml twice from the same XML
+    1. Generate mujoco_robot_config.json twice from the same XML
     2. Compare outputs
 
     Assertions:
@@ -122,13 +122,13 @@ def test_snapshot_consistency(self):
 
     Procedure:
     1. Regenerate config from current XML
-    2. Diff against committed robot_config.yaml
+    2. Diff against committed mujoco_robot_config.json
 
     Assertions:
     - Any difference fails with actionable diff message
     """
     regenerated = generate_robot_config("assets/v1/wildrobot.xml")
-    committed = load_yaml("assets/v1/robot_config.yaml")
+    committed = load_yaml("assets/v1/mujoco_robot_config.json")
     assert regenerated == committed, (
         "Schema mismatch! XML has changed. "
         "Run `python scripts/generate_config.py` if intentional."

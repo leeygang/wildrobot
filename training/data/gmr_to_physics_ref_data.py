@@ -1313,8 +1313,8 @@ def main():
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/v1/robot_config.yaml",
-        help="Robot config YAML",
+        default="assets/v2/mujoco_robot_config.json",
+        help="Robot config JSON",
     )
     parser.add_argument(
         "--model",

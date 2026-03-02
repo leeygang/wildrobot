@@ -19,7 +19,7 @@ def resolve_env_asset_paths(env: Mapping[str, Any]) -> ResolvedAssetPaths:
     # env.assets_root explicitly (e.g., assets/v2).
     assets_root = str(env.get("assets_root", "assets/v1"))
     scene_xml_path = env.get("scene_xml_path") or f"{assets_root}/scene_flat_terrain.xml"
-    robot_config_path = env.get("robot_config_path") or f"{assets_root}/robot_config.yaml"
+    robot_config_path = env.get("robot_config_path") or f"{assets_root}/mujoco_robot_config.json"
     mjcf_path = env.get("mjcf_path") or f"{assets_root}/wildrobot.xml"
     model_path = env.get("model_path") or scene_xml_path
     return ResolvedAssetPaths(

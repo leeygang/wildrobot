@@ -331,7 +331,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Initialize Control Abstraction Layer (CAL) - v0.11.0
         # =====================================================================
         # CAL provides the canonical action→ctrl transformation with:
-        # - Symmetry correction (mirror_sign) for left/right joints
+        # - Symmetry correction (policy_action_sign) for left/right joints
         # - Normalization from [-1, 1] to physical joint ranges
         # - Single source of truth for joint specifications
         # - Extended state for foot, root, and knee IMU access
@@ -594,7 +594,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
         # =====================================================================
-        # CAL applies symmetry correction (mirror_sign) for left/right joints
+        # CAL applies symmetry correction (policy_action_sign) for left/right joints
         # This ensures same action values produce symmetric motion on both sides
         ctrl = JaxCalibOps.action_to_ctrl(spec=self._policy_spec, action=filtered_action)
         data = state.data.replace(ctrl=ctrl)

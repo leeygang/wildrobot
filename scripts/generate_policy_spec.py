@@ -36,7 +36,7 @@ def _get_env_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _get_robot_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
-        raise ValueError("robot_config.yaml must be a dict")
+        raise ValueError("mujoco_robot_config.json must be a dict")
     return cfg
 
 
@@ -56,10 +56,10 @@ def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
     specs = robot_cfg.get("actuated_joint_specs")
     if not isinstance(specs, list) or not specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
     range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
     if range_unit not in {"rad", "deg"}:
-        raise ValueError("robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'")
+        raise ValueError("mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'")
 
     joints: Dict[str, JointSpec] = {}
     for item in specs:
@@ -151,8 +151,8 @@ def main() -> None:
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/v2/robot_config.yaml",
-        help="Path to robot_config.yaml",
+        default="assets/v2/mujoco_robot_config.json",
+        help="Path to mujoco_robot_config.json",
     )
     parser.add_argument(
         "--output",

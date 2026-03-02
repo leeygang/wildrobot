@@ -84,14 +84,14 @@ cd ~/projects/GMR
 uv run python scripts/convert_to_amp_format.py \
     --input ~/projects/wildrobot/assets/motions/walking_slow01.pkl \
     --output ~/projects/wildrobot/training/data/walking_slow01_amp.pkl \
-    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/mujoco_robot_config.json \
     --target_fps 50
 ```
 
 ### Batch Convert All Motions
 ```bash
 uv run python scripts/batch_convert_to_amp.py \
-    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/mujoco_robot_config.json \
     --input-dir ~/projects/wildrobot/assets/motions \
     --output-dir ~/projects/wildrobot/training/data \
     --target_fps 50
@@ -208,11 +208,11 @@ amp:
   dataset_path: training/data/walking_motions_normalized_vel.pkl
 ```
 
-**Critical:** The reference data joint order MUST match `robot_config.yaml`. This is ensured by:
+**Critical:** The reference data joint order MUST match `mujoco_robot_config.json`. This is ensured by:
 - GMR's `convert_to_amp_format.py` reads joint order from `--robot-config`
 - No hardcoded joint names anywhere in the pipeline
 
-And verify `robot_config.yaml` has correct dimension:
+And verify `mujoco_robot_config.json` has correct dimension:
 
 ```yaml
 dimensions:
@@ -228,9 +228,9 @@ dimensions:
 cd ~/projects/GMR
 uv run python scripts/batch_retarget_walking.py
 
-# 2. Convert to AMP format (joint order from robot_config.yaml)
+# 2. Convert to AMP format (joint order from mujoco_robot_config.json)
 uv run python scripts/batch_convert_to_amp.py \
-    --robot-config ~/projects/wildrobot/assets/v1/robot_config.yaml \
+    --robot-config ~/projects/wildrobot/assets/v1/mujoco_robot_config.json \
     --input-dir ~/projects/wildrobot/assets/motions \
     --output-dir ~/projects/wildrobot/training/data \
     --merged-output walking_motions_merged.pkl
@@ -244,7 +244,7 @@ uv run python -c "
 import pickle, yaml
 with open('training/data/walking_motions_normalized_vel.pkl', 'rb') as f:
     ref = pickle.load(f)
-with open('assets/v1/robot_config.yaml', 'r') as f:
+with open('assets/v1/mujoco_robot_config.json', 'r') as f:
     cfg = yaml.safe_load(f)
 assert ref['joint_names'] == cfg['actuators']['joints'], 'Joint order mismatch!'
 print('✓ Joint order verified')
@@ -295,7 +295,7 @@ uv run python training/train.py
 | Robot motions | `~/projects/wildrobot/assets/motions/` | Retargeted `.pkl` |
 | AMP data | `~/projects/wildrobot/training/data/` | Training-ready features |
 | Training config | `training/configs/ppo_amass_training.yaml` | Points to dataset |
-| Robot config | `assets/v1/robot_config.yaml` | Feature dimensions |
+| Robot config | `assets/v1/mujoco_robot_config.json` | Feature dimensions |
 
 ---
 

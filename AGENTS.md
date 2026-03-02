@@ -6,7 +6,7 @@
 
 ## Project Structure & Module Organization
 - `training/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
-- `assets/`: Robot definitions and generated configs. Use variant folders (`assets/v1`, `assets/v2`, ...). Keep the variant `robot_config.yaml` in sync with its MJCF (e.g., `assets/v1/robot_config.yaml`).
+- `assets/`: Robot definitions and generated configs. Use variant folders (`assets/v1`, `assets/v2`, ...). Keep the variant `mujoco_robot_config.json` in sync with its MJCF (e.g., `assets/v1/mujoco_robot_config.json`).
 - `scripts/`: Validation and one-off tooling (e.g., parity checks, PD tuning, feature verification).
 - `tests/`: Fast regression/consistency tests; `tests/envs/` covers env parity, root-level tests cover AMP features and quaternion math.
 - `mujoco-brax/` and `isaac/`: Alternate runtimes/notes; coordinate before modifying these experimental paths.
@@ -22,10 +22,10 @@
 - Python-first codebase; follow PEP 8 (4-space indent, snake_case for functions/vars, PascalCase for classes). Add type hints on new/changed functions.
 - Keep modules importable as scripts (tests rely on `sys.path` manipulation); avoid hard-coded working directories.
 - Prefer small, pure helpers in `training/utils` and reuse existing math helpers before adding new dependencies.
-- When touching configs, document required assets (e.g., regenerated `robot_config.yaml`) and default values inline.
+- When touching configs, document required assets (e.g., regenerated `mujoco_robot_config.json`) and default values inline.
 
 ## Testing Guidelines
-- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/v1/robot_config.yaml`, regenerate via `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` before running.
+- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/v1/mujoco_robot_config.json`, regenerate via `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` before running.
 - For new features, add pytest cases mirroring existing patterns; favor deterministic inputs over random seeds.
 - Capture expected output shapes/thresholds in assertions rather than printouts; keep prints only for helpful debugging context.
 

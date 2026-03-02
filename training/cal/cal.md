@@ -25,7 +25,7 @@ Multiple layers directly interact with MuJoCo primitives:
 | `debug_gmr_physics.py:170-260` | `mj_data.qpos[...]`, `mj_data.qvel[...]` | Raw state access |
 
 #### Ambiguous Actuator Semantics
-From `robot_config.yaml`, all actuators are `type: position`:
+From `mujoco_robot_config.json`, all actuators are `type: position`:
 ```yaml
 actuators:
   details:
@@ -41,7 +41,7 @@ actuators:
 - Policy outputs are typically in `[-1, 1]` range (Gaussian distribution)
 
 #### Incorrect Symmetry Assumptions (Joint Range Mirroring)
-From `robot_config.yaml`:
+From `mujoco_robot_config.json`:
 ```yaml
 joints:
   details:
@@ -758,7 +758,7 @@ class ControlAbstractionLayer:
         Returns:
             Maximum angular velocity (rad/s) for each actuator
         """
-        # TODO: Load from robot_config.yaml or motor specs
+        # TODO: Load from mujoco_robot_config.json or motor specs
         # Default: conservative limit based on typical servos
         default_max_vel = 5.0  # rad/s (approx 50 RPM)
         return jnp.full(len(self._actuator_specs), default_max_vel)
@@ -994,7 +994,7 @@ Result: same sign because ranges are identical.
 
 ### 5.2 Configuration Schema Refactoring
 
-The current `robot_config.yaml` should be refactored to align with CAL. Key changes:
+The current `mujoco_robot_config.json` should be refactored to align with CAL. Key changes:
 1. **Merge joint + actuator** - Single definition since they're 1:1 mapped
 2. **Add symmetry fields** - `symmetry_pair` and `mirror_sign`
 3. **Add motor specs** - `max_velocity` for Sim2Real
@@ -1149,7 +1149,7 @@ class ControlAbstractionLayer:
         2. qpos0 (model default)
 
         This is the SINGLE SOURCE OF TRUTH for default pose.
-        No duplication in robot_config.yaml.
+        No duplication in mujoco_robot_config.json.
         """
         mj_model = self._mj_model
 
@@ -1197,7 +1197,7 @@ def generate_actuated_joints_config(
         robot_xml: Path to robot definition (e.g., wildrobot.xml)
 
     Returns:
-        List of actuated joint configs for robot_config.yaml
+        List of actuated joint configs for mujoco_robot_config.json
     """
     import xml.etree.ElementTree as ET
     import numpy as np
@@ -1299,7 +1299,7 @@ def generate_actuated_joints_config(
 
 def generate_robot_config(
     xml_file: str,
-    output_file: str = "robot_config.yaml",
+    output_file: str = "mujoco_robot_config.json",
 ) -> Dict[str, Any]:
     """Generate robot configuration from MuJoCo XML.
 
@@ -1413,7 +1413,7 @@ def main() -> None:
     generate_robot_config(
         xml_file,
         keyframe_file=keyframe_file,
-        output_file="robot_config.yaml"
+        output_file="mujoco_robot_config.json"
     )
 
     print("Post process completed")
@@ -1476,7 +1476,7 @@ training/
 assets/
 ├── keyframes.xml                   # NEW: dedicated keyframe file
 ├── post_process.py                 # UPDATE: add generate_actuated_joints_config()
-├── robot_config.yaml               # UPDATE: add actuated_joints section
+├── mujoco_robot_config.json               # UPDATE: add actuated_joints section
 └── ...
 ```
 
@@ -1492,7 +1492,7 @@ assets/
 | `test_cal.py` | `training/tests/` | Unit tests for CAL |
 | `keyframes.xml` | `assets/` | Home pose, t-pose, squat keyframes |
 | `post_process.py` | `assets/` | Add `generate_actuated_joints_config()` function |
-| `robot_config.yaml` | `assets/` | Add `actuated_joints` section |
+| `mujoco_robot_config.json` | `assets/` | Add `actuated_joints` section |
 | `wildrobot_env.py` | `training/envs/` | Uses CAL for all control and state access |
 | `robot_config.py` | `training/configs/` | Support new actuated_joints schema |
 
@@ -1510,7 +1510,7 @@ Phase 2: Create Keyframes
 
 Phase 3: Update Config Generation
 ├── 6. assets/post_process.py               # Add generate_actuated_joints_config()
-└── 7. assets/robot_config.yaml             # Regenerate with actuated_joints
+└── 7. assets/mujoco_robot_config.json             # Regenerate with actuated_joints
 
 Phase 4: Environment Integration
 └── 8. training/envs/wildrobot_env.py # Integrate CAL
@@ -1526,7 +1526,7 @@ Phase 5: Tests
 ### Phase 1: Foundation (Week 1)
 1. Create `ControlAbstractionLayer` class
 2. Create `JointSpec` and `ActuatorSpec` dataclasses
-3. Add symmetry configuration to `robot_config.yaml`
+3. Add symmetry configuration to `mujoco_robot_config.json`
 4. Unit tests for CAL transforms
 
 ### Phase 2: Environment Integration (Week 2)
@@ -1601,9 +1601,9 @@ However, the environment also accesses other robot state that should be abstract
 
 ### 10.2 Consolidation with robot_config
 
-**Key insight**: `robot_config.yaml` already contains all the necessary configuration:
+**Key insight**: `mujoco_robot_config.json` already contains all the necessary configuration:
 
-| Already in robot_config.yaml | Used For |
+| Already in mujoco_robot_config.json | Used For |
 |------------------------------|----------|
 | `feet.left_foot_body`, `feet.right_foot_body` | Foot body IDs |
 | `feet.left_toe`, `feet.left_heel`, etc. | Contact geom IDs |
@@ -1618,7 +1618,7 @@ However, the environment also accesses other robot state that should be abstract
 │                          CONFIGURATION FLOW                                  │
 │                                                                              │
 │  ┌──────────────────────┐                                                   │
-│  │  robot_config.yaml   │  ← Single source of truth (generated by          │
+│  │  mujoco_robot_config.json   │  ← Single source of truth (generated by          │
 │  │                      │    post_process.py from MuJoCo XML)               │
 │  │  - actuated_joints   │                                                   │
 │  │  - feet              │                                                   │
@@ -2062,7 +2062,7 @@ class ControlAbstractionLayer:
     def _build_root_spec(self, robot_config: RobotConfig) -> None:
         """Build RootSpec from existing robot_config sections.
 
-        Sensor names come from robot_config.yaml, not hardcoded.
+        Sensor names come from mujoco_robot_config.json, not hardcoded.
         """
         root_body = robot_config.floating_base_body
         self._root_spec = RootSpec(
@@ -2072,11 +2072,11 @@ class ControlAbstractionLayer:
             ),
             qpos_addr=self._get_floating_base_qpos_addr(),
             qvel_addr=self._get_floating_base_qvel_addr(),
-            # Chest IMU sensors from robot_config.yaml
+            # Chest IMU sensors from mujoco_robot_config.json
             orientation_sensor=robot_config.orientation_sensor,  # chest_imu_quat
             gyro_sensor=robot_config.gyro_sensor,                # chest_imu_gyro
             accel_sensor=robot_config.accel_sensor,              # chest_imu_accel
-            # Pelvis sensors from robot_config.yaml
+            # Pelvis sensors from mujoco_robot_config.json
             local_linvel_sensor=robot_config.local_linvel_sensor,
         )
 
@@ -2649,27 +2649,27 @@ env:
 - Normalization scale affects reward shaping
 - Termination thresholds are training-specific
 
-**robot_config.yaml provides**: Body names, geom names, sensor names (static robot properties)
+**mujoco_robot_config.json provides**: Body names, geom names, sensor names (static robot properties)
 **ppo_walking.yaml provides**: Thresholds, scales, limits (tunable training parameters)
 
 ### 10.6 No New Config Files Needed
 
 | Data | Already In | CAL Reads From |
 |------|------------|----------------|
-| Foot body names | `robot_config.yaml` → `feet.left_foot_body` | `robot_config.left_foot_body` |
-| Foot geom names | `robot_config.yaml` → `feet.left_toe` etc. | `robot_config.get_foot_geom_names()` |
-| Root body | `robot_config.yaml` → `floating_base.root_body` | `robot_config.floating_base_body` |
-| Root IMU sensors | `robot_config.yaml` → `root_imu.*` | `robot_config.orientation_sensor` etc. |
-| Linvel sensor | `robot_config.yaml` → `root_imu.local_linvel_sensor` | `robot_config.local_linvel_sensor` |
+| Foot body names | `mujoco_robot_config.json` → `feet.left_foot_body` | `robot_config.left_foot_body` |
+| Foot geom names | `mujoco_robot_config.json` → `feet.left_toe` etc. | `robot_config.get_foot_geom_names()` |
+| Root body | `mujoco_robot_config.json` → `floating_base.root_body` | `robot_config.floating_base_body` |
+| Root IMU sensors | `mujoco_robot_config.json` → `root_imu.*` | `robot_config.orientation_sensor` etc. |
+| Linvel sensor | `mujoco_robot_config.json` → `root_imu.local_linvel_sensor` | `robot_config.local_linvel_sensor` |
 | Contact scale | `ppo_walking.yaml` → `env.contact_scale` | Passed to CAL or used in env |
 | Height limits | `ppo_walking.yaml` → `env.min_height` | Used in env termination |
 
-### 10.6.1 Required Addition to robot_config.yaml
+### 10.6.1 Required Addition to mujoco_robot_config.json
 
 Add a `root_imu` section to specify which sensors to use for root state:
 
 ```yaml
-# robot_config.yaml - NEW section to add
+# mujoco_robot_config.json - NEW section to add
 root_imu:
   # Chest IMU (BNO085) - real hardware sensors
   orientation_sensor: chest_imu_quat    # framequat sensor for orientation
@@ -2759,10 +2759,10 @@ def generate_root_imu_config(sensors: dict) -> dict:
 
 ### 10.6.4 Knee IMU Configuration (Optional Enhancement)
 
-Add `knee_imus` section to robot_config.yaml for additional proprioception:
+Add `knee_imus` section to mujoco_robot_config.json for additional proprioception:
 
 ```yaml
-# robot_config.yaml - Optional section for knee IMUs
+# mujoco_robot_config.json - Optional section for knee IMUs
 knee_imus:
   # Left knee IMU (ICM45686)
   left_gyro: left_knee_imu_gyro

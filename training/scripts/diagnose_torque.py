@@ -35,7 +35,7 @@ def main():
 
     # Load configs
     training_cfg = load_training_config(args.config)
-    robot_cfg = load_robot_config(project_root / "assets" / "robot_config.yaml")
+    robot_cfg = load_robot_config(project_root / "assets" / "v2" / "mujoco_robot_config.json")
 
     # Load model
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)

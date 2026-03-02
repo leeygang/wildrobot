@@ -17,7 +17,7 @@ wildrobot/
 │   ├── scene_rough_terrain.xml         # Rough terrain scene
 │   ├── joints_properties.xml           # Joint configuration
 │   ├── sensors.xml                     # Sensor definitions
-│   ├── robot_config.yaml               # Robot parameters
+│   ├── mujoco_robot_config.json               # Robot parameters
 │   ├── v1/config.json                  # Onshape configuration (v1)
 │   ├── v2/config.json                  # Onshape configuration (v2)
 │   ├── post_process.py                 # post-process during model generation

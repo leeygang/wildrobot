@@ -13,8 +13,8 @@ from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 def _load_assets():
     mujoco = pytest.importorskip("mujoco")
     root = Path(__file__).resolve().parents[1]
-    xml_path = root / "assets" / "wildrobot.xml"
-    cfg_path = root / "assets" / "robot_config.yaml"
+    xml_path = root / "assets" / "v2" / "wildrobot.xml"
+    cfg_path = root / "assets" / "v2" / "mujoco_robot_config.json"
     policy_path = root / "policy_contract" / "policy_spec.json"
 
     mj_model = mujoco.MjModel.from_xml_path(str(xml_path))

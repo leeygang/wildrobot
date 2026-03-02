@@ -11,10 +11,10 @@ This folder is the **v2** robot asset variant (full body with arms).
 - `config.json` (Onshape export config for v2; JSONC)
 - `scene_flat_terrain.xml` (training scene; includes `wildrobot.xml`)
 - `keyframes.xml` (poses; included by scene)
-- `robot_config.yaml` (generated; do not hand-edit)
+- `mujoco_robot_config.json` (generated; do not hand-edit)
 - `assets/` (meshes; referenced by `wildrobot.xml` compiler `meshdir="assets"`)
 
-## How to (re)generate robot_config.yaml
+## How to (re)generate mujoco_robot_config.json
 
 From repo root:
 
@@ -23,7 +23,7 @@ cd assets/v2
 uv run python ../post_process.py wildrobot.xml
 ```
 
-This writes `assets/v2/robot_config.yaml` next to the MJCF and (if available) runs a basic validation.
+This writes `assets/v2/mujoco_robot_config.json` next to the MJCF and (if available) runs a basic validation.
 
 ## Actuator order (ABI)
 

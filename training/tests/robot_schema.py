@@ -384,7 +384,7 @@ class WildRobotSchema:
 
     def _extract_foot_geoms(self, model: mujoco.MjModel) -> None:
         """Extract foot contact geoms (collision-enabled, non-_mimic bodies)."""
-        # Known foot geom names from robot_config.yaml
+        # Known foot geom names from mujoco_robot_config.json
         left_foot_names = ["left_toe", "left_heel"]
         right_foot_names = ["right_toe", "right_heel"]
 

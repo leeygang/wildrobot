@@ -8,7 +8,7 @@
 #
 # Notes:
 # - Runs `onshape-to-robot` inside `assets/<version>/` using that folder's config.json.
-# - Runs `assets/post_process.py` to regenerate `robot_config.yaml` next to the MJCF.
+# - Runs `assets/post_process.py` to regenerate `mujoco_robot_config.json` next to the MJCF.
 
 set -euo pipefail
 
@@ -46,6 +46,51 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
+UPDATED_VARIANTS=()
+
+print_joint_summary() {
+    local variant="$1"
+    local robot_cfg_path="$2"
+
+    if [[ ! -f "$robot_cfg_path" ]]; then
+        echo "[joint-summary] Missing robot config: $robot_cfg_path"
+        return
+    fi
+
+    "$PYTHON_CMD" - "$variant" "$robot_cfg_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+variant = sys.argv[1]
+cfg_path = Path(sys.argv[2])
+data = json.loads(cfg_path.read_text())
+specs = data.get("actuated_joint_specs", [])
+
+def sort_key(entry):
+    name = str(entry.get("name", ""))
+    if name.startswith("left_"):
+        base = name[len("left_"):]
+        side_order = 0
+    elif name.startswith("right_"):
+        base = name[len("right_"):]
+        side_order = 1
+    else:
+        base = name
+        side_order = 2
+    return (base, side_order, name)
+
+ordered = sorted(specs, key=sort_key)
+
+print(f"\nJoint summary (assets/{variant}):")
+for joint in ordered:
+    name = str(joint.get("name", "unknown"))
+    rng = joint.get("range", ["?", "?"])
+    sign = float(joint.get("policy_action_sign", 1.0))
+    print(f"  {name}: range[{rng[0]}, {rng[1]}], policy_action_sign: {sign:+.1f}")
+PY
+}
+
 update_variant() {
     local variant="$1"
     local variant_dir="${SCRIPT_DIR}/${variant}"
@@ -71,8 +116,10 @@ update_variant() {
     rm -rf assets
     mkdir -p assets
 
-    # Ensure generated top-level outputs are refreshed (avoid silently reusing stale files).
-    rm -f wildrobot.xml wildrobot.urdf robot_config.yaml
+    # Ensure generated model outputs are refreshed (avoid silently reusing stale files).
+    # Keep existing mujoco_robot_config.json until post_process succeeds to avoid losing
+    # the last valid config if generation fails midway.
+    rm -f wildrobot.xml wildrobot.urdf
 
     # Step 1: Run onshape-to-robot (reads ./config.json)
     echo ""
@@ -93,18 +140,20 @@ update_variant() {
             --order "${variant_dir}/actuator_order.txt"
     fi
 
-    # Step 2: Run post-process to regenerate robot_config.yaml next to the MJCF
+    # Step 2: Run post-process to regenerate mujoco_robot_config.json next to the MJCF
     echo ""
     echo "Running post_process.py..."
-    rm -f robot_config.yaml
     $PYTHON_CMD "${SCRIPT_DIR}/post_process.py" "wildrobot.xml"
-    if [[ ! -f robot_config.yaml ]]; then
-        echo "Error: post_process did not produce robot_config.yaml in ${variant_dir}"
+    if [[ ! -f mujoco_robot_config.json ]]; then
+        echo "Error: post_process did not produce mujoco_robot_config.json in ${variant_dir}"
         exit 1
     fi
 
+    print_joint_summary "$variant" "mujoco_robot_config.json"
+
     echo ""
     echo "✓ Updated assets/${variant}"
+    UPDATED_VARIANTS+=("$variant")
 
     popd >/dev/null
 }
@@ -125,3 +174,11 @@ esac
 
 echo ""
 echo "✓ Pipeline completed successfully!"
+
+if [[ ${#UPDATED_VARIANTS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Render commands (copy/paste):"
+    for variant in "${UPDATED_VARIANTS[@]}"; do
+        echo "  ${PYTHON_CMD} assets/render_models.py --scene-file assets/${variant}/scene_flat_terrain.xml"
+    done
+fi

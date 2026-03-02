@@ -34,7 +34,7 @@ def add_collision_names(xml_file):
     root = tree.getroot()
 
     # v0.11.x: Some newer exports use generic foot body names ("foot", "foot_2").
-    # Normalize to stable names used by training + robot_config.yaml.
+    # Normalize to stable names used by training + mujoco_robot_config.json.
     body_names = {b.get("name") for b in root.findall(".//body") if b.get("name")}
     if "left_foot" not in body_names and "foot" in body_names:
         for body in root.findall(".//body[@name='foot']"):
@@ -603,29 +603,28 @@ def add_common_includes(xml_file):
 def generate_actuated_joints_config(
     root: ET.Element,
     joints_details: List[Dict[str, Any]],
+    existing_joint_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """Generate actuated_joints configuration for CAL (Control Abstraction Layer).
 
     This function produces the configuration needed by CAL to:
     1. Map between policy actions and physical joint commands
-    2. Handle joint symmetry (left/right mirroring)
-    3. Normalize joint ranges for policy training
+    2. Normalize joint ranges for policy training
 
     v0.11.0: Added for Control Abstraction Layer
 
-    Mirror Sign Convention:
-    - mirror_sign = +1.0: Joint range maps directly to action range
-        Example: left_hip_pitch [-0.087, 1.571] → action 0 = center
-    - mirror_sign = -1.0: Joint range is inverted relative to its pair
-        Example: right_hip_pitch [-1.571, 0.087] is flipped vs left
-        When policy outputs same action for L/R, we want symmetric motion
+    Policy Action Sign Convention:
+    - policy_action_sign = +1.0: Joint range maps directly to action range
+    - policy_action_sign = -1.0: Joint range is inverted relative to paired limb motion
 
     Args:
         root: XML root element
         joints_details: List of joint details from generate_robot_config
+        existing_joint_overrides: Optional per-joint overrides loaded from existing
+            mujoco_robot_config.json, keyed by joint name.
 
     Returns:
-        List of actuated joint configs with mirror_sign and symmetry_pair
+        List of actuated joint configs with policy_action_sign
     """
     actuated_joints: List[Dict[str, Any]] = []
 
@@ -634,20 +633,12 @@ def generate_actuated_joints_config(
         j["name"]: j for j in joints_details if j.get("name") and j.get("range")
     }
 
-    # Define symmetry pairs (left ↔ right)
-    symmetry_pairs = {
-        "left_hip_pitch": "right_hip_pitch",
-        "left_hip_roll": "right_hip_roll",
-        "left_knee_pitch": "right_knee_pitch",
-        "left_ankle_pitch": "right_ankle_pitch",
-        "left_shoulder_pitch": "right_shoulder_pitch",
-        "left_shoulder_roll": "right_shoulder_roll",
-        "right_hip_pitch": "left_hip_pitch",
-        "right_hip_roll": "left_hip_roll",
-        "right_knee_pitch": "left_knee_pitch",
-        "right_ankle_pitch": "left_ankle_pitch",
-        "right_shoulder_pitch": "left_shoulder_pitch",
-        "right_shoulder_roll": "left_shoulder_roll",
+    # Default policy-action sign configuration.
+    explicit_policy_action_signs: Dict[str, float] = {
+        "right_hip_pitch": -1.0,
+        "right_hip_roll": -1.0,
+        "right_shoulder_pitch": -1.0,
+        "right_shoulder_roll": -1.0,
     }
 
     # Process each actuated joint
@@ -655,80 +646,85 @@ def generate_actuated_joints_config(
         joint_range = joint_info.get("range", [-1.57, 1.57])
         range_min, range_max = joint_range
 
-        # Determine mirror_sign by comparing with symmetry pair
-        symmetry_pair = symmetry_pairs.get(joint_name)
-        mirror_sign = 1.0
-
-        if symmetry_pair and symmetry_pair in actuated_joint_map:
-            pair_info = actuated_joint_map[symmetry_pair]
-            pair_range = pair_info.get("range", [-1.57, 1.57])
-            pair_min, pair_max = pair_range
-
-            # Explicit range checks for symmetry
-            tol = 1e-3
-            same_range = abs(range_min - pair_min) < tol and abs(range_max - pair_max) < tol
-            mirrored = (
-                abs(range_min + pair_max) < tol and abs(range_max + pair_min) < tol
+        existing_joint = (existing_joint_overrides or {}).get(joint_name, {})
+        policy_action_sign = float(
+            existing_joint.get(
+                "policy_action_sign",
+                explicit_policy_action_signs.get(joint_name, 1.0),
             )
-
-            if not (mirrored or same_range):
-                raise ValueError(
-                    "Unexpected joint range mismatch for symmetry pair "
-                    f"'{joint_name}' ↔ '{symmetry_pair}': "
-                    f"{range_min:.6f},{range_max:.6f} vs {pair_min:.6f},{pair_max:.6f}. "
-                    "Update mirror detection or config."
-                )
-
-            if mirrored and not same_range:
-                # Convention: joints starting with "right_" get -1.0 if inverted
-                if joint_name.startswith("right_"):
-                    mirror_sign = -1.0
-                elif joint_name.startswith("left_"):
-                    mirror_sign = 1.0
-                else:
-                    raise ValueError(
-                        "Mirrored joint range requires explicit left/right naming for "
-                        f"'{joint_name}' ↔ '{symmetry_pair}'."
-                    )
+        )
+        if abs(abs(policy_action_sign) - 1.0) > 1e-6:
+            raise ValueError(
+                f"Invalid policy_action_sign for '{joint_name}': {policy_action_sign} (must be +/-1.0)"
+            )
 
         config = {
             "name": joint_name,
-            "type": "position",  # All actuators are position-controlled
             "range": [
                 int(round(math.degrees(range_min))),
                 int(round(math.degrees(range_max))),
             ],
-            "symmetry_pair": symmetry_pair,
-            "mirror_sign": mirror_sign,
-            "max_velocity": 10.0,  # Conservative default for servos (rad/s)
+            "policy_action_sign": policy_action_sign,
+            "max_velocity": float(existing_joint.get("max_velocity", 10.0)),
         }
         actuated_joints.append(config)
 
-    # Sort by actuator order (left leg first, then right leg, by joint order)
+    # Sort by paired left/right order.
+    # Unpaired joints keep their original discovery order.
     joint_order = [
         "left_hip_pitch",
-        "left_hip_roll",
-        "left_knee_pitch",
-        "left_ankle_pitch",
         "right_hip_pitch",
+        "left_hip_roll",
         "right_hip_roll",
+        "left_knee_pitch",
         "right_knee_pitch",
+        "left_ankle_pitch",
         "right_ankle_pitch",
+        "left_shoulder_pitch",
+        "right_shoulder_pitch",
+        "left_shoulder_roll",
+        "right_shoulder_roll",
+        "left_elbow_pitch",
+        "right_elbow_pitch",
+        "left_wrist_yaw",
+        "right_wrist_yaw",
+        "left_wrist_pitch",
+        "right_wrist_pitch",
     ]
+    original_order = {name: idx for idx, name in enumerate(actuated_joint_map.keys())}
+
     actuated_joints.sort(
-        key=lambda x: joint_order.index(x["name"]) if x["name"] in joint_order else 999
+        key=lambda x: (
+            joint_order.index(x["name"])
+            if x["name"] in joint_order
+            else 1000 + original_order.get(x["name"], 999)
+        )
     )
 
     return actuated_joints
 
 
+def _write_robot_config_file(config: Dict[str, Any], output_file: str) -> None:
+    out_path = Path(output_file)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = out_path.suffix.lower()
+    if suffix == ".json":
+        out_path.write_text(json.dumps(config, indent=2))
+        return
+
+    import yaml
+
+    with open(out_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
 def generate_robot_config(
-    xml_file: str, output_file: str = "robot_config.yaml"
+    xml_file: str, output_file: str = "mujoco_robot_config.json"
 ) -> Dict[str, Any]:
     """Generate robot configuration from MuJoCo XML.
 
     This function extracts all robot-specific information from the XML and
-    saves it to a YAML config file. This config is then used by all Python
+    saves it to a config file. This config is then used by all Python
     training code to avoid hardcoding robot specifications.
 
     Extracts:
@@ -741,7 +737,7 @@ def generate_robot_config(
 
     Args:
         xml_file: Path to the MuJoCo XML file
-        output_file: Output YAML file path
+        output_file: Output config file path
 
     Returns:
         Dictionary containing the robot configuration
@@ -835,7 +831,29 @@ def generate_robot_config(
     # Generate Actuated Joints Config for CAL (v0.11.0)
     # Single source of truth for actuator names, joints, ranges, etc.
     # =========================================================================
-    actuated_joints = generate_actuated_joints_config(root, joints)
+    existing_joint_overrides: Dict[str, Dict[str, float]] = {}
+    out_path = Path(output_file)
+    if out_path.exists() and out_path.suffix.lower() == ".json":
+        try:
+            existing_config = json.loads(out_path.read_text())
+            for entry in existing_config.get("actuated_joint_specs", []):
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name:
+                    continue
+                existing_joint_overrides[str(name)] = {
+                    "policy_action_sign": float(entry.get("policy_action_sign", 1.0)),
+                    "max_velocity": float(entry.get("max_velocity", 10.0)),
+                }
+        except Exception as exc:
+            print(f"Warning: failed to read existing {output_file} overrides: {exc}")
+
+    actuated_joints = generate_actuated_joints_config(
+        root,
+        joints,
+        existing_joint_overrides=existing_joint_overrides,
+    )
     config["actuated_joint_specs"] = actuated_joints
 
     num_actuators = len(actuated_joints)
@@ -933,12 +951,9 @@ def generate_robot_config(
     config["amp_feature_breakdown"] = amp_breakdown
 
     # =========================================================================
-    # Save to YAML
+    # Save to JSON/YAML by extension
     # =========================================================================
-    import yaml
-
-    with open(output_file, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    _write_robot_config_file(config, output_file)
 
     print(f"Generated robot config: {output_file}")
     print(f"  Actuated joints: {num_actuators}")
@@ -969,10 +984,10 @@ def main() -> None:
     add_mimic_bodies(xml_file)  # Add dummy bodies for GMR compatibility
 
     # Generate robot configuration next to the MJCF.
-    # This avoids overwriting other variants (assets/v1 vs assets/v2).
+    # Primary artifact: mujoco_robot_config.json (human-readable + strict format).
     xml_path = Path(xml_file)
-    out_yaml = str(xml_path.with_name("robot_config.yaml"))
-    generate_robot_config(xml_file, out_yaml)
+    out_json = str(xml_path.with_name("mujoco_robot_config.json"))
+    generate_robot_config(xml_file, out_json)
 
     # Optional deeper validation (requires MuJoCo + repo imports). This runs best under:
     #   uv run python assets/post_process.py assets/v1/wildrobot.xml
@@ -984,7 +999,7 @@ def main() -> None:
         from validate_model import Thresholds, validate_model
 
         validate_model(
-            robot_config_yaml=Path(out_yaml),
+            robot_config_yaml=Path(out_json),
             scene_xml=xml_path.with_name("scene_flat_terrain.xml"),
             robot_xml=Path(xml_file),
             thresholds=Thresholds(

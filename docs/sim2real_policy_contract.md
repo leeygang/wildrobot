@@ -192,7 +192,7 @@ Policy contract version bumps:
 - **MAJOR**: any semantic change (layout reorder, new normalization, new frames, etc.)
 
 ### 5.2 Robot specification (identity + ordering)
-Source of truth is the variant `robot_config.yaml` (e.g., `assets/v2/robot_config.yaml`).
+Source of truth is the variant `mujoco_robot_config.json` (e.g., `assets/v2/mujoco_robot_config.json`).
 Contract records:
 - `actuator_names` in **policy action order**
 - per-actuator:
@@ -380,7 +380,7 @@ The shared package (`policy_contract/spec.py`) should expose a small, stable API
 Runtime should load a **bundle** (folder or zip) that contains at least:
 - `policy.onnx`
 - `policy_spec.json`
-- optional `robot_config.yaml` snapshot + `checksums.json`
+- optional `mujoco_robot_config.json` snapshot + `checksums.json`
 
 Recommended loader shape:
 - `PolicyBundle.load(bundle_path) -> (spec: PolicySpec, model_path: Path, extra_paths: dict[str, Path])`
@@ -899,7 +899,7 @@ Proposed module layout:
   - `build_observation(...)` implementing the actor observation contract
   - frame transforms helpers (quat→gravity, heading_local transforms)
 - `policy_contract/numpy/calib.py`
-  - “CAL-lite”: reads joint ranges + policy_action_sign + velocity limits from `robot_config.yaml`
+  - “CAL-lite”: reads joint ranges + policy_action_sign + velocity limits from `mujoco_robot_config.json`
   - `normalize_joint_pos/vel`, `action_to_ctrl`
 - `policy_contract/jax/obs.py`
   - JAX-native implementation used by training (same semantics as NumPy builder)
@@ -922,7 +922,7 @@ We can migrate to it incrementally (see §11), but it helps to agree on the dest
 wildrobot/
 ├─ assets/
 │  ├─ wildrobot.xml
-│  └─ robot_config.yaml
+│  └─ mujoco_robot_config.json
 ├─ training/
 │  ├─ envs/
 │  │  └─ wildrobot_env.py                 # env (reward/termination/metrics) calls policy_contract for actor obs/actions
@@ -1027,7 +1027,7 @@ This section defines the concrete “seams” between training, export, and runt
   - `mapping: Literal["action_to_ctrl_v1"]` (or similar)
   - any declared filters (alpha, rate limits) that must be reproduced in runtime
 - `policy_contract/numpy/calib.py` (NumPy backend)
-  - Constructed from `RobotSpec` (or directly from `robot_config.yaml`)
+  - Constructed from `RobotSpec` (or directly from `mujoco_robot_config.json`)
   - `normalize_joint_pos_rad(qpos_rad) -> np.ndarray`
   - `normalize_joint_vel_rad_s(qvel_rad_s) -> np.ndarray`
   - `action_to_ctrl(spec, action) -> ctrl_targets_rad`
@@ -1082,9 +1082,9 @@ runtime loop already fail-fast disables actuators on exceptions. Treat safety as
 #### Training export (`training/exports/export_policy_bundle.py`)
 
 - `export_policy_bundle(checkpoint_path, config_path, output_dir, robot_config_path)`
-  - Writes: `policy.onnx`, `policy_spec.json`, `robot_config.yaml` snapshot, `checksums.json`, `wildrobot_config.json`
+  - Writes: `policy.onnx`, `policy_spec.json`, `mujoco_robot_config.json` snapshot, `checksums.json`, `wildrobot_config.json`
   - `wildrobot_config.json` is generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`
-  - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/v2/robot_config.yaml` (or the selected variant config)
+  - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/v2/mujoco_robot_config.json` (or the selected variant config)
 
 ## 7) Policy Bundle Artifact (what gets deployed)
 
@@ -1093,7 +1093,7 @@ Instead of deploying only `policy.onnx`, deploy a folder (or zip/tar):
 `wildrobot_policy_bundle/`
 - `policy.onnx`
 - `policy_spec.json`  ← versioned contract + all semantic knobs used in training
-- `robot_config.yaml` ← snapshot used to train/export (optional but recommended)
+- `mujoco_robot_config.json` ← snapshot used to train/export (optional but recommended)
 - `checksums.json`    ← sha256 of the above for integrity
 - `wildrobot_config.json` ← runtime JSON seeded from `runtime/configs/wr_runtime_config.json` (hardware settings)
 - `wildrobot.xml` ← MJCF snapshot for actuator order validation
@@ -1161,7 +1161,7 @@ Add a single canonical exporter entry point:
   - loads checkpoint
   - exports deterministic ONNX (reuse `training/export_onnx.py`)
   - generates `policy_spec.json` from:
-    - `assets/v2/robot_config.yaml`
+    - `assets/v2/mujoco_robot_config.json`
     - policy_contract observation layout breakdown
     - training env knobs that affect inference (action_filter_alpha, etc.)
   - writes bundle folder
@@ -1286,6 +1286,6 @@ When introducing AMP (and later AMASS-derived reference motion), the most common
 
 ## Appendix: Practical Implementation Notes for This Repo
 
-- `assets/v2/robot_config.yaml` already contains `observation_breakdown`, joint ranges, `policy_action_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
+- `assets/v2/mujoco_robot_config.json` already contains `observation_breakdown`, joint ranges, `policy_action_sign`, and `max_velocity`. That is enough to define the contract for Stage 1.
 - Runtime should have a startup validator (e.g. `runtime/wr_runtime/validation/startup_validator.py`) that checks dims and order; extend it to also validate **semantic knobs** from `policy_spec.json` (frames, normalization declared, action mapping type, filter alpha).
 - Training currently uses CAL (`training/cal/cal.py`) as the “truth”; long-term, move those semantics into `policy_contract/` and keep training’s MuJoCo-specific logic in `training/sim_adapter/`.

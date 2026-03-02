@@ -317,12 +317,12 @@ The previous implementation had critical issues:
 |------|--------|
 | `training/envs/wildrobot_env.py` | Integrate CAL |
 | `assets/robot_config.py` | Robot configuration management (moved from training/configs/) |
-| `assets/robot_config.yaml` | Add actuated_joints section |
+| `assets/mujoco_robot_config.json` | Add actuated_joints section |
 | `assets/post_process.py` | Add generate_actuated_joints_config() |
 
 ### Config Schema Update
 
-New `actuated_joints` section in `robot_config.yaml`:
+New `actuated_joints` section in `mujoco_robot_config.json`:
 
 ```yaml
 actuated_joints:
@@ -339,7 +339,7 @@ actuated_joints:
 ### Migration
 
 1. **Retrain from scratch** - existing checkpoints are incompatible
-2. Update `robot_config.yaml` with `actuated_joints` section
+2. Update `mujoco_robot_config.json` with `actuated_joints` section
 3. Create `assets/keyframes.xml` with home pose
 4. Replace direct MuJoCo access with CAL methods
 
@@ -796,7 +796,7 @@ Once `disc_acc` stabilizes in 0.55-0.75 range:
 
 ### Problem
 The v0.6.1 Golden Rule fixes had hardcoded values that should be configurable:
-1. **Hardcoded joint indices**: `left_hip_pitch=1`, `left_knee_pitch=3`, etc. were hardcoded instead of derived from `robot_config.yaml`
+1. **Hardcoded joint indices**: `left_hip_pitch=1`, `left_knee_pitch=3`, etc. were hardcoded instead of derived from `mujoco_robot_config.json`
 2. **Magic numbers unexplained**: Contact estimation used unexplained values (0.5, 0.3, 1.0)
 3. **Parameters as defaults**: `use_estimated_contacts`, `use_finite_diff_vel`, and contact params had defaults instead of being required from training config
 
@@ -871,7 +871,7 @@ version_name: "Golden Rule Configuration"
 ```
 
 ### Key Principle
-**"No hardcoding, everything from config"** — All parameters that affect feature extraction now come from `ppo_amass_training.yaml` and `robot_config.yaml`. Joint indices are derived from actuator names, not hardcoded.
+**"No hardcoding, everything from config"** — All parameters that affect feature extraction now come from `ppo_amass_training.yaml` and `mujoco_robot_config.json`. Joint indices are derived from actuator names, not hardcoded.
 
 ### Migration
 If upgrading from v0.6.1, add these fields to your training config:
@@ -1005,8 +1005,8 @@ amp:
 | File | Change |
 |------|--------|
 | `assets/post_process.py` | Renamed geoms: `left_toe/left_heel` (was `left_foot_btm_front/back`) |
-| `assets/post_process.py` | Added explicit config keys to `robot_config.yaml` |
-| `assets/robot_config.yaml` | Added `left_toe`, `left_heel`, `right_toe`, `right_heel` keys |
+| `assets/post_process.py` | Added explicit config keys to `mujoco_robot_config.json` |
+| `assets/mujoco_robot_config.json` | Added `left_toe`, `left_heel`, `right_toe`, `right_heel` keys |
 | `assets/wildrobot.xml` | Updated geom names via post_process.py |
 
 #### Temporal Context Infrastructure (P3 - Prepared, Not Enabled)
@@ -1141,7 +1141,7 @@ Joint order mismatch between reference data and policy features. GMR's `convert_
 | Component | Expected | Bug |
 |-----------|----------|-----|
 | MuJoCo qpos | `waist_yaw` at index 0 | ✅ Correct |
-| `robot_config.yaml` | `waist_yaw` at index 0 | ✅ Correct |
+| `mujoco_robot_config.json` | `waist_yaw` at index 0 | ✅ Correct |
 | GMR hardcoded | `left_hip_pitch` at index 0 | ❌ Wrong |
 
 ### Changes
@@ -1157,7 +1157,7 @@ Joint order mismatch between reference data and policy features. GMR's `convert_
 |------|--------|
 | `amp/amp_features.py` | Fixed NamedTuple field order (defaults must come last) |
 | `envs/wildrobot_env.py` | Fixed `_init_qpos` access before initialization, added `_mjx_model` creation |
-| `scripts/scp_to_remote.sh` | Exclude cache files (`__pycache__`, `*.pyc`), include `robot_config.yaml` |
+| `scripts/scp_to_remote.sh` | Exclude cache files (`__pycache__`, `*.pyc`), include `mujoco_robot_config.json` |
 
 #### Cleanup
 - Deleted workaround scripts: `fix_reference_data.py`, `reorder_reference_data.py`
@@ -1170,7 +1170,7 @@ Joint order mismatch between reference data and policy features. GMR's `convert_
 cd ~/projects/GMR
 uv run python scripts/batch_retarget_walking.py
 uv run python scripts/batch_convert_to_amp.py \
-    --robot-config ~/projects/wildrobot/assets/robot_config.yaml
+    --robot-config ~/projects/wildrobot/assets/mujoco_robot_config.json
 
 cd ~/projects/wildrobot
 uv run python scripts/convert_ref_data_normalized_velocity.py
@@ -1178,14 +1178,14 @@ uv run python scripts/convert_ref_data_normalized_velocity.py
 
 ### Validation
 ```
-✅ Joint order: ['waist_yaw', 'left_hip_pitch', ...] matches robot_config.yaml
+✅ Joint order: ['waist_yaw', 'left_hip_pitch', ...] matches mujoco_robot_config.json
 ✅ Features shape: (3407, 29)
 ✅ Velocity normalized: True
 ✅ 12 motions, 68.19s total duration
 ```
 
 ### Key Principle
-**"Fail fast, no silent defaults"** - Joint order now comes from `robot_config.yaml`, never hardcoded. Missing config raises immediate error.
+**"Fail fast, no silent defaults"** - Joint order now comes from `mujoco_robot_config.json`, never hardcoded. Missing config raises immediate error.
 
 ### Status
 🔄 Ready to train - code synced to remote

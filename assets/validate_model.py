@@ -92,7 +92,7 @@ def _validate_robot_config_matches_scene(
         raise ValueError(f"{robot_config_yaml} missing 'generated_from'")
     if Path(generated_from).name != robot_xml.name:
         raise ValueError(
-            "robot_config.yaml does not match scene include: "
+            "mujoco_robot_config.json does not match scene include: "
             f"generated_from={generated_from} but scene includes {robot_xml.name} "
             f"(scene={scene_xml})"
         )
@@ -398,7 +398,7 @@ def validate_model(
 
     _validate_default_pose_contacts(scene_xml, robot_config, thresholds)
 
-    # Joint range consistency: robot_config.yaml must match compiled model joints.
+    # Joint range consistency: mujoco_robot_config.json must match compiled model joints.
     import mujoco
     import numpy as np
 
@@ -432,7 +432,7 @@ def main() -> int:
             "Examples:\n"
             "  uv run python assets/validate_model.py\n"
             "  uv run python assets/validate_model.py --scene-xml assets/v1/scene_flat_terrain.xml\n"
-            "  uv run python assets/validate_model.py --robot-config assets/v1/robot_config.yaml\n"
+            "  uv run python assets/validate_model.py --robot-config assets/v2/mujoco_robot_config.json\n"
             "  uv run python assets/validate_model.py --robot-xml assets/v1/wildrobot.xml\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -440,8 +440,8 @@ def main() -> int:
     parser.add_argument(
         "--robot-config",
         type=Path,
-        default=Path("assets/v1/robot_config.yaml"),
-        help="Path to generated robot_config.yaml.",
+        default=Path("assets/v2/mujoco_robot_config.json"),
+        help="Path to generated mujoco_robot_config.json.",
     )
     parser.add_argument(
         "--scene-xml",

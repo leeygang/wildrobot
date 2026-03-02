@@ -39,7 +39,7 @@ def estimate_foot_contacts_from_joints(
     - When knee is more bent, contact confidence decreases
 
     v0.6.2: All parameters are now configurable from training config.
-    Joint indices are derived from robot_config.yaml.
+    Joint indices are derived from mujoco_robot_config.json.
 
     Args:
         joint_pos: Joint positions (9,)
@@ -57,7 +57,7 @@ def estimate_foot_contacts_from_joints(
     Returns:
         Estimated foot contacts (4,) - [left_toe, left_heel, right_toe, right_heel]
     """
-    # Joint indices from config (derived from robot_config.yaml actuator order)
+    # Joint indices from config (derived from mujoco_robot_config.json actuator order)
     left_hip_pitch = joint_pos[..., config.left_hip_pitch_idx]
     left_knee = joint_pos[..., config.left_knee_pitch_idx]
     right_hip_pitch = joint_pos[..., config.right_hip_pitch_idx]

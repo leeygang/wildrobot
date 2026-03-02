@@ -72,7 +72,7 @@ def export_policy_bundle(
     spec_path = output_dir / "policy_spec.json"
     spec_path.write_text(json.dumps(spec.to_json_dict(), indent=2))
 
-    robot_snapshot_path = output_dir / "robot_config.yaml"
+    robot_snapshot_path = output_dir / "mujoco_robot_config.json"
     if robot_config_path.exists():
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
@@ -285,7 +285,7 @@ def _build_policy_spec(
 
     actuated_joint_specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
 
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
@@ -362,7 +362,7 @@ def _clamp_home_ctrl(
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
     specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(specs, list) or not specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
 
     joints: Dict[str, JointSpec] = {}
     for item in specs:
@@ -388,7 +388,7 @@ def _normalize_actuated_joint_specs_to_rad(robot_cfg: Dict[str, Any]) -> List[Di
 
     range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
     if range_unit not in {"rad", "deg"}:
-        raise ValueError("robot_config.yaml 'joint_range_unit' must be 'rad' or 'deg'")
+        raise ValueError("mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'")
 
     normalized_specs: List[Dict[str, Any]] = []
     for item in specs:
@@ -448,7 +448,7 @@ def main() -> None:
         "--robot-config",
         type=str,
         default=None,
-        help="Path to robot_config.yaml (defaults to env.robot_config_path from config)",
+        help="Path to mujoco_robot_config.json (defaults to env.robot_config_path from config)",
     )
     args = parser.parse_args()
 

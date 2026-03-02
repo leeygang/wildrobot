@@ -207,7 +207,7 @@ class TestConfigConsistency:
 
 
 class TestRobotConfigConsistency:
-    """Tests for robot_config.yaml consistency."""
+    """Tests for mujoco_robot_config.json consistency."""
 
     @pytest.mark.unit
     def test_robot_config_sensors_exist(self, robot_config):

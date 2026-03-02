@@ -78,7 +78,7 @@ class EnvConfig(Freezable):
 
     assets_root: str = "assets/v1"
     scene_xml_path: str = "assets/v1/scene_flat_terrain.xml"
-    robot_config_path: str = "assets/v1/robot_config.yaml"
+    robot_config_path: str = "assets/v2/mujoco_robot_config.json"
     mjcf_path: str = "assets/v1/wildrobot.xml"
     model_path: str = "assets/v1/scene_flat_terrain.xml"
 

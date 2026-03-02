@@ -75,7 +75,7 @@ def test_env_basics():
 
     # Load configs
     print("\n1. Loading configs...")
-    load_robot_config("assets/v1/robot_config.yaml")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
     training_cfg = load_training_config("training/configs/ppo_walking.yaml")
     training_cfg.freeze()  # Freeze config for JIT compatibility
 

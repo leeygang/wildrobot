@@ -289,7 +289,7 @@ def main():
         print(f"Error: Robot config not found at {robot_cfg_path}")
         print(
             "Check env.assets_root or env.robot_config_path in the config, "
-            "then regenerate robot_config.yaml if needed."
+            "then regenerate mujoco_robot_config.json if needed."
         )
         return 1
 
