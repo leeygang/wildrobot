@@ -30,6 +30,9 @@ env:
 
   # Health / termination
   target_height: 0.44
+  # Encourage exploring a lower stance by rewarding height near target_height
+  # (two-sided shaping instead of the default one-sided "only penalize too low").
+  height_target_two_sided: true
   min_height: 0.40
   max_height: 0.70
   max_pitch: 0.8
@@ -64,15 +67,18 @@ ppo:
   rollout_steps: 256 
   iterations: 200
 
-  learning_rate: 3e-4
+  # Stabilize PPO updates (reduce late-training regressions)
+  learning_rate: 1e-4
   gamma: 0.99
   gae_lambda: 0.95
 
-  clip_epsilon: 0.2
-  entropy_coef: 0.01
+  # More conservative PPO trust region for stability under pushes.
+  # Note: smaller epsilon may increase the *reported* clip_fraction, but usually reduces destructive updates.
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
   value_loss_coef: 0.5
 
-  epochs: 4
+  epochs: 2
   num_minibatches: 32
   max_grad_norm: 0.5
 

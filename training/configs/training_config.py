@@ -121,6 +121,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ctrl_dt=env.get("ctrl_dt", 0.02),
         max_episode_steps=env.get("max_episode_steps", 500),
         target_height=env.get("target_height", 0.45),
+        height_target_two_sided=bool(env.get("height_target_two_sided", False)),
         min_height=env.get("min_height", 0.20),
         max_height=env.get("max_height", 0.70),
         max_pitch=env.get("max_pitch", 0.8),

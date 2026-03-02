@@ -91,6 +91,7 @@ class EnvConfig(Freezable):
 
     # Health / termination
     target_height: float = 0.45
+    height_target_two_sided: bool = False
     min_height: float = 0.20
     max_height: float = 0.70
     max_pitch: float = 0.8
