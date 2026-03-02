@@ -71,7 +71,8 @@ def _print_joint_debug(
     spec,
     cfg,
     actuators: HiwonderBoardActuators,
-    action_request: np.ndarray,
+    action_raw: np.ndarray,
+    action_post: np.ndarray,
     ctrl_targets_rad: np.ndarray,
     joint_pos_rad: np.ndarray,
     joint_pos_norm: np.ndarray,
@@ -96,7 +97,8 @@ def _print_joint_debug(
 
     control_headers = [
         "Joint(servo_id)",
-        "action_req",
+        "action_raw",
+        "action_post",
         "target_deg",
         "motor unit",
         "obs_elect",
@@ -129,7 +131,8 @@ def _print_joint_debug(
             offset_unit = int(servo.offset_unit) if servo is not None else 0
             motor_center_deg = float(servo.motor_center_mujoco_deg) if servo is not None else 0.0
 
-            req_action = float(action_request[idx])
+            raw_action = float(action_raw[idx])
+            post_action = float(action_post[idx])
             target_rad = float(ctrl_targets_rad[idx])
             target_deg = float(np.rad2deg(target_rad))
             target_elec_unit = int(np.rint(float(target_elec[idx])))
@@ -148,7 +151,8 @@ def _print_joint_debug(
             control_rows.append(
                 [
                     joint_label,
-                    f"{req_action:+.2f}",
+                    f"{raw_action:+.2f}",
+                    f"{post_action:+.2f}",
                     f"{target_deg:+.2f}",
                     f"{target_conceptual_unit:+d}/{target_elec_unit:d}",
                     f"{obs_elec_unit:d}",
@@ -652,7 +656,8 @@ def main() -> None:
                             spec=spec,
                             cfg=cfg,
                             actuators=actuators,
-                            action_request=np.asarray(action_raw, dtype=np.float32),
+                            action_raw=np.asarray(action_raw, dtype=np.float32),
+                            action_post=np.asarray(action_post, dtype=np.float32),
                             ctrl_targets_rad=np.asarray(ctrl_targets, dtype=np.float32),
                             joint_pos_rad=np.asarray(signals.joint_pos_rad, dtype=np.float32),
                             joint_pos_norm=np.asarray(joint_pos_norm, dtype=np.float32),
