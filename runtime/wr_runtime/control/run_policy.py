@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from pathlib import Path
 
 import select
 
 import numpy as np
+
+
+class _TeeStream:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self._streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self._streams)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _RUNTIME_ROOT = _REPO_ROOT / "runtime"
@@ -24,7 +42,10 @@ from policy_contract.spec import PolicyBundle, validate_spec
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
 
 from configs import load_config
-from wr_runtime.hardware.actuators import HiwonderBoardActuators
+from wr_runtime.hardware.actuators import (
+    HiwonderBoardActuators,
+    joint_target_rad_to_servo_pos_elec_units,
+)
 from wr_runtime.hardware.bno085 import BNO085IMU
 from wr_runtime.hardware.foot_switches import FootSwitches
 from wr_runtime.hardware.imu import Imu
@@ -32,6 +53,140 @@ from wr_runtime.hardware.robot_io import HardwareRobotIO
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 from wr_runtime.validation.startup_validator import validate_runtime_interface
+_DEBUG_JOINT_GROUPS: list[tuple[str, list[str]]] = [
+    ("shoulder_pitch", ["left_shoulder_pitch", "right_shoulder_pitch"]),
+    ("shoulder_roll", ["left_shoulder_roll", "right_shoulder_roll"]),
+    ("elbow_pitch", ["left_elbow_pitch", "right_elbow_pitch"]),
+    ("waist_yaw", ["waist_yaw"]),
+    ("hip_pitch", ["left_hip_pitch", "right_hip_pitch"]),
+    ("hip_roll", ["left_hip_roll", "right_hip_roll"]),
+    ("knee_pitch", ["left_knee_pitch", "right_knee_pitch"]),
+    ("ankle_pitch", ["left_ankle_pitch", "right_ankle_pitch"]),
+    ("wrist_pitch", ["left_wrist_pitch", "right_wrist_pitch"]),
+]
+
+
+def _print_joint_debug(
+    *,
+    spec,
+    cfg,
+    actuators: HiwonderBoardActuators,
+    action_request: np.ndarray,
+    ctrl_targets_rad: np.ndarray,
+    joint_pos_rad: np.ndarray,
+    joint_pos_norm: np.ndarray,
+) -> None:
+    actuator_names = list(spec.robot.actuator_names)
+    name_to_idx = {name: index for index, name in enumerate(actuator_names)}
+
+    target_elec = joint_target_rad_to_servo_pos_elec_units(
+        np.asarray(ctrl_targets_rad, dtype=np.float32),
+        actuators.offsets_unit,
+        actuators.motor_signs,
+        actuators.centers_rad,
+        actuators.servo_model,
+    )
+    obs_elec = joint_target_rad_to_servo_pos_elec_units(
+        np.asarray(joint_pos_rad, dtype=np.float32),
+        actuators.offsets_unit,
+        actuators.motor_signs,
+        actuators.centers_rad,
+        actuators.servo_model,
+    )
+
+    control_headers = [
+        "Joint(servo_id)",
+        "action_req",
+        "target_deg",
+        "motor unit",
+        "obs_elect",
+        "obs_deg",
+        "obs_to_model",
+    ]
+    metadata_headers = [
+        "Joint(servo_id)",
+        "target_deg_range",
+        "policy_action_sign",
+        "offset_unit",
+        "motor_center_deg",
+    ]
+    control_rows: list[list[str]] = []
+    metadata_rows: list[list[str]] = []
+
+    for group_name, group_candidates in _DEBUG_JOINT_GROUPS:
+        present_names = [joint_name for joint_name in group_candidates if joint_name in name_to_idx]
+        if not present_names:
+            missing_label = f"{group_name}(<not present>)"
+            control_rows.append([missing_label, "-", "-", "-", "-", "-", "-"])
+            metadata_rows.append([missing_label, "-", "-", "-", "-"])
+            continue
+
+        for joint_name in present_names:
+            idx = name_to_idx[joint_name]
+            joint_spec = spec.robot.joints[joint_name]
+            servo = cfg.servo_controller.servos.get(joint_name)
+            servo_id = int(servo.id) if servo is not None else -1
+            offset_unit = int(servo.offset_unit) if servo is not None else 0
+            motor_center_deg = float(servo.motor_center_mujoco_deg) if servo is not None else 0.0
+
+            req_action = float(action_request[idx])
+            target_rad = float(ctrl_targets_rad[idx])
+            target_deg = float(np.rad2deg(target_rad))
+            target_elec_unit = int(np.rint(float(target_elec[idx])))
+            target_conceptual_unit = int(target_elec_unit - offset_unit)
+
+            obs_rad = float(joint_pos_rad[idx])
+            obs_deg = float(np.rad2deg(obs_rad))
+            obs_elec_unit = int(np.rint(float(obs_elec[idx])))
+            obs_to_model = float(joint_pos_norm[idx])
+
+            range_min_deg = float(np.rad2deg(float(joint_spec.range_min_rad)))
+            range_max_deg = float(np.rad2deg(float(joint_spec.range_max_rad)))
+            policy_action_sign = float(joint_spec.policy_action_sign)
+
+            joint_label = f"{joint_name}({servo_id})"
+            control_rows.append(
+                [
+                    joint_label,
+                    f"{req_action:+.2f}",
+                    f"{target_deg:+.2f}",
+                    f"{target_conceptual_unit:+d}/{target_elec_unit:d}",
+                    f"{obs_elec_unit:d}",
+                    f"{obs_deg:+.2f}",
+                    f"{obs_to_model:+.2f}",
+                ]
+            )
+            metadata_rows.append(
+                [
+                    joint_label,
+                    f"[{range_min_deg:+.2f},{range_max_deg:+.2f}]",
+                    f"{policy_action_sign:+.2f}",
+                    f"{offset_unit:+d}",
+                    f"{motor_center_deg:+.2f}",
+                ]
+            )
+
+    def _print_table(title: str, headers: list[str], rows: list[list[str]]) -> None:
+        widths = [len(header) for header in headers]
+        for row in rows:
+            for index, cell in enumerate(row):
+                widths[index] = max(widths[index], len(cell))
+
+        def _row_text(values: list[str]) -> str:
+            padded = [f"{value:<{widths[index]}}" for index, value in enumerate(values)]
+            return "[debug] | " + " | ".join(padded) + " |"
+
+        sep = "[debug] +-" + "-+-".join("-" * width for width in widths) + "-+"
+        print(f"\n[debug] ===== {title} =====")
+        print(sep)
+        print(_row_text(headers))
+        print(sep)
+        for row in rows:
+            print(_row_text(row))
+        print(sep)
+
+    _print_table("per-joint control/obs", control_headers, control_rows)
+    _print_table("per-joint metadata", metadata_headers, metadata_rows)
 
 
 def _poll_stop_token(buf: str) -> tuple[str, bool]:
@@ -143,6 +298,65 @@ def _imu_sanity_check(
         )
 
 
+def _init_imu_with_timeout(
+    *,
+    init_timeout_s: float,
+    i2c_address: int,
+    upside_down: bool,
+    axis_map: list[str] | None,
+    suppress_debug: bool,
+    i2c_frequency_hz: int,
+    init_retries: int,
+    sampling_hz: int,
+) -> BNO085IMU:
+    """Create BNO085IMU with an optional wall-clock timeout.
+
+    Some hardware/I2C failure modes can block inside the IMU constructor.
+    Timeout gives a deterministic failure path instead of a silent hang.
+    """
+    if init_timeout_s <= 0.0:
+        return BNO085IMU(
+            i2c_address=i2c_address,
+            upside_down=upside_down,
+            axis_map=axis_map,
+            suppress_debug=suppress_debug,
+            i2c_frequency_hz=i2c_frequency_hz,
+            init_retries=init_retries,
+            sampling_hz=sampling_hz,
+        )
+
+    result: dict[str, BNO085IMU] = {}
+    err: dict[str, Exception] = {}
+
+    def _worker() -> None:
+        try:
+            result["imu"] = BNO085IMU(
+                i2c_address=i2c_address,
+                upside_down=upside_down,
+                axis_map=axis_map,
+                suppress_debug=suppress_debug,
+                i2c_frequency_hz=i2c_frequency_hz,
+                init_retries=init_retries,
+                sampling_hz=sampling_hz,
+            )
+        except Exception as exc:  # noqa: BLE001
+            err["exc"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(init_timeout_s)
+
+    if thread.is_alive():
+        raise TimeoutError(
+            "IMU initialization timed out. "
+            f"timeout={init_timeout_s:.1f}s. "
+            "Check I2C wiring/address/power, or use --imu-init-timeout-s 0 to disable timeout."
+        )
+    if "exc" in err:
+        raise err["exc"]
+    return result["imu"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run WildRobot ONNX policy on hardware")
     parser.add_argument(
@@ -160,6 +374,12 @@ def main() -> None:
             "If used together with --bundle, the bundle provides policy/model/spec assets and --config "
             "provides servo/IMU/foot-switch settings."
         ),
+    )
+    parser.add_argument(
+        "--log",
+        type=str,
+        default=None,
+        help="Optional text log filename. Mirrors all console output to this file.",
     )
     parser.add_argument("--log-path", type=str, default=None, help="Optional .npz path to save replay logs on exit")
     parser.add_argument(
@@ -197,7 +417,40 @@ def main() -> None:
         default=0.02,
         help="Sleep between IMU samples during sanity check",
     )
+    parser.add_argument(
+        "--imu-init-timeout-s",
+        type=float,
+        default=10.0,
+        help=(
+            "IMU constructor timeout in seconds. "
+            "Set 0 or negative to disable timeout (wait forever)."
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        type=float,
+        default=None,
+        metavar="time-interval-in-second",
+        help=(
+            "Enable periodic per-joint debug prints. "
+            "Value is print interval in seconds (e.g., --debug 1.0). "
+            "First print happens immediately after loop start."
+        ),
+    )
     args = parser.parse_args()
+    if args.debug is not None and float(args.debug) <= 0.0:
+        parser.error("--debug must be > 0 (seconds)")
+
+    console_log_fh = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    if args.log:
+        log_file_path = Path(args.log).expanduser()
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        console_log_fh = log_file_path.open("a", encoding="utf-8", buffering=1)
+        sys.stdout = _TeeStream(original_stdout, console_log_fh)
+        sys.stderr = _TeeStream(original_stderr, console_log_fh)
+        print(f"Console log tee enabled: {log_file_path}")
 
     bundle_dir: Path | None = Path(args.bundle) if args.bundle else None
 
@@ -277,7 +530,9 @@ def main() -> None:
     )
 
     control_dt = 1.0 / cfg.control.hz
-    imu = BNO085IMU(
+    print(f"Initializing IMU (timeout={float(args.imu_init_timeout_s):.1f}s)...")
+    imu = _init_imu_with_timeout(
+        init_timeout_s=float(args.imu_init_timeout_s),
         i2c_address=cfg.bno085.i2c_address,
         upside_down=cfg.bno085.upside_down,
         axis_map=cfg.bno085.axis_map,
@@ -286,6 +541,7 @@ def main() -> None:
         init_retries=cfg.bno085.init_retries,
         sampling_hz=int(cfg.control.hz),
     )
+    print("IMU init OK.")
 
     print(
         "IMU config: "
@@ -352,6 +608,12 @@ def main() -> None:
     print(f"Running control loop at {cfg.control.hz} Hz with {len(joint_names)} actuators")
     print("Type 'q' then Enter to stop (recommended over Ctrl+C for some SSH setups)")
     print("Ctrl+C to stop")
+    if args.debug is not None:
+        print(f"Debug print enabled: interval={float(args.debug):.2f}s")
+
+    # Print the first debug table as soon as the control loop starts, then
+    # continue at the requested interval.
+    next_debug_time = time.monotonic() if args.debug is not None else None
 
     try:
         stop_buf = ""
@@ -373,11 +635,29 @@ def main() -> None:
                     signals=signals,
                     velocity_cmd=np.array([cfg.control.velocity_cmd], dtype=np.float32),
                 )
+                joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
+                    spec=spec,
+                    joint_pos_rad=signals.joint_pos_rad,
+                )
 
                 action_raw = policy.predict(obs)
                 action_post, state = postprocess_action(spec=spec, state=state, action_raw=action_raw)
                 ctrl_targets = NumpyCalibOps.action_to_ctrl(spec=spec, action=action_post)
                 robot_io.write_ctrl(ctrl_targets)
+
+                if next_debug_time is not None:
+                    now_monotonic = time.monotonic()
+                    if now_monotonic >= next_debug_time:
+                        _print_joint_debug(
+                            spec=spec,
+                            cfg=cfg,
+                            actuators=actuators,
+                            action_request=np.asarray(action_raw, dtype=np.float32),
+                            ctrl_targets_rad=np.asarray(ctrl_targets, dtype=np.float32),
+                            joint_pos_rad=np.asarray(signals.joint_pos_rad, dtype=np.float32),
+                            joint_pos_norm=np.asarray(joint_pos_norm, dtype=np.float32),
+                        )
+                        next_debug_time = now_monotonic + float(args.debug)
             except Exception as exc:  # noqa: BLE001
                 print(f"Runtime error in control loop: {exc}")
                 actuators.disable()
@@ -417,6 +697,13 @@ def main() -> None:
             )
             print(f"Saved replay log to {log_path}")
         robot_io.close()
+        if console_log_fh is not None:
+            try:
+                console_log_fh.flush()
+            finally:
+                console_log_fh.close()
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
 
 if __name__ == "__main__":
