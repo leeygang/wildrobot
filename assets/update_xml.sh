@@ -5,10 +5,12 @@
 #   ./assets/update_xml.sh --version v1
 #   ./assets/update_xml.sh --version v2
 #   ./assets/update_xml.sh --version all
+#   ./assets/update_xml.sh --version v2 --export-onshape
 #
 # Notes:
-# - Runs `onshape-to-robot` inside `assets/<version>/` using that folder's config.json.
+# - By default skips Onshape export and reuses existing files in `assets/<version>/`.
 # - Runs `assets/post_process.py` to regenerate `mujoco_robot_config.json` next to the MJCF.
+# - With `--export-onshape`, runs onshape export and refreshes generated assets first.
 
 set -euo pipefail
 
@@ -16,12 +18,6 @@ echo "=============================="
 echo "onshape-to-robot Pipeline"
 echo "Platform: $(uname -s)"
 echo "=============================="
-
-# Check if commands exist
-command -v onshape-to-robot >/dev/null 2>&1 || { 
-    echo "Error: onshape-to-robot not found. Install with: pip install onshape-to-robot"
-    exit 1
-}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -38,12 +34,44 @@ fi
 echo "Using Python: $PYTHON_CMD"
 
 VERSION=""
-if [[ "${1:-}" == "--version" ]]; then
-    VERSION="${2:-}"
-fi
+EXPORT_ONSHAPE=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version)
+            VERSION="${2:-}"
+            shift 2
+            ;;
+        --export-onshape)
+            EXPORT_ONSHAPE=1
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 --version {v1|v2|all} [--export-onshape]"
+            echo ""
+            echo "Options:"
+            echo "  --version      Asset variant to process (v1, v2, all)"
+            echo "  --export-onshape  Run onshape-to-robot and refresh assets before reorder/post_process"
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown option '$1'"
+            echo "Usage: $0 --version {v1|v2|all} [--export-onshape]"
+            exit 1
+            ;;
+    esac
+done
+
 if [[ -z "$VERSION" ]]; then
     echo "Error: missing --version {v1|v2|all}"
     exit 1
+fi
+
+if [[ "$EXPORT_ONSHAPE" -eq 1 ]]; then
+    command -v onshape-to-robot >/dev/null 2>&1 || {
+        echo "Error: onshape-to-robot not found. Install with: pip install onshape-to-robot"
+        exit 1
+    }
 fi
 
 UPDATED_VARIANTS=()
@@ -111,24 +139,34 @@ update_variant() {
 
     pushd "$variant_dir" >/dev/null
 
-    # Clean meshes folder to avoid stale assets after export.
-    # onshape-to-robot will re-create/populate this folder as needed.
-    rm -rf assets
-    mkdir -p assets
+    if [[ "$EXPORT_ONSHAPE" -eq 1 ]]; then
+        # Clean meshes folder to avoid stale assets after export.
+        # onshape-to-robot will re-create/populate this folder as needed.
+        rm -rf assets
+        mkdir -p assets
 
-    # Ensure generated model outputs are refreshed (avoid silently reusing stale files).
-    # Keep existing mujoco_robot_config.json until post_process succeeds to avoid losing
-    # the last valid config if generation fails midway.
-    rm -f wildrobot.xml wildrobot.urdf
+        # Ensure generated model outputs are refreshed (avoid silently reusing stale files).
+        # Keep existing mujoco_robot_config.json until post_process succeeds to avoid losing
+        # the last valid config if generation fails midway.
+        rm -f wildrobot.xml wildrobot.urdf
 
-    # Step 1: Run onshape-to-robot (reads ./config.json)
-    echo ""
-    echo "Running onshape-to-robot in ${variant_dir}..."
-    onshape-to-robot .
+        # Step 1: Run onshape-to-robot (reads ./config.json)
+        echo ""
+        echo "Running onshape-to-robot in ${variant_dir}..."
+        onshape-to-robot .
 
-    if [[ ! -f wildrobot.xml ]]; then
-        echo "Error: onshape-to-robot did not produce wildrobot.xml in ${variant_dir}"
-        exit 1
+        if [[ ! -f wildrobot.xml ]]; then
+            echo "Error: onshape-to-robot did not produce wildrobot.xml in ${variant_dir}"
+            exit 1
+        fi
+    else
+        echo ""
+        echo "Skipping onshape export for ${variant}; reusing existing files in ${variant_dir}."
+        if [[ ! -f wildrobot.xml ]]; then
+            echo "Error: default no-export mode requires existing ${variant_dir}/wildrobot.xml"
+            echo "       Use --export-onshape to regenerate from Onshape."
+            exit 1
+        fi
     fi
 
     # Step 1.5: Enforce canonical actuator order (v2 only)

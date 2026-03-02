@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "d78ddf18c2732df3f80184e5",
+    "elementId": "eed32dd76ad6e0d510784b1c",
+    "fullConfiguration": "default",
+    "id": "Mj9qOE++O56r7KY7o",
+    "isStandardContent": false,
+    "name": "wrist_palm_sevo_conn <1>",
+    "partId": "RYGD",
+    "suppressed": false,
+    "type": "Part"
+}
