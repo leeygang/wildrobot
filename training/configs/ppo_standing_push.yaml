@@ -12,7 +12,7 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.6"
+version: "0.13.7"
 version_name: "Standing robustness (strong pushes, longer run)"
 
 seed: 42
@@ -151,10 +151,14 @@ networks:
 # Task Reward Weights (Environment-side reward only)
 # =============================================================================
 reward_weights:
-  tracking_lin_vel: 1.0
+  # Standing + pushes with stepping allowed:
+  # - Reduce "don't move" incentive when cmd=0 by downweighting vel tracking.
+  # - Encourage upright recovery and planted steps (more slip penalty).
+  # - Keep small clearance reward to allow stepping without fidgeting.
+  tracking_lin_vel: 0.1
   lateral_velocity: -0.5
-  base_height: 3.0
-  orientation: -2.0
+  base_height: 2.0
+  orientation: -3.0
   height_target: 1.0
   height_target_sigma: 0.04
   angular_velocity: -0.1
@@ -164,10 +168,11 @@ reward_weights:
   action_rate: -0.01
   joint_velocity: -0.001
 
-  slip: -0.5
-  clearance: 0.1
-  stance_width_penalty: -0.5
-  stance_width_target: 0.19
+  slip: -1.0
+  clearance: 0.05
+  flight_phase_penalty: -0.1
+  stance_width_penalty: -0.1
+  stance_width_target: 0.23
   stance_width_sigma: 0.05
 
   forward_velocity_scale: 4.0
