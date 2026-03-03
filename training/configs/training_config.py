@@ -59,6 +59,8 @@ from training.configs.training_runtime_config import (
     FrozenInstanceError,
     NetworksConfig,
     PPOConfig,
+    PPOEvalConfig,
+    PPORollbackConfig,
     RewardCompositionConfig,
     RewardWeightsConfig,
     TrainingConfig,
@@ -77,6 +79,8 @@ __all__ = [
     # Sub-configs
     "EnvConfig",
     "PPOConfig",
+    "PPOEvalConfig",
+    "PPORollbackConfig",
     "AMPConfig",
     "NetworksConfig",
     "ActorNetworkConfig",
@@ -151,6 +155,8 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
 def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
     """Parse PPO configuration from YAML dict."""
     ppo = config.get("ppo", {})
+    eval_cfg = ppo.get("eval", {})
+    rollback_cfg = ppo.get("rollback", {})
     return PPOConfig(
         num_envs=ppo.get("num_envs", 1024),
         rollout_steps=ppo.get("rollout_steps", 128),
@@ -165,6 +171,28 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         num_minibatches=ppo.get("num_minibatches", 32),
         max_grad_norm=ppo.get("max_grad_norm", 0.5),
         log_interval=ppo.get("log_interval", 10),
+        target_kl=ppo.get("target_kl", 0.0),
+        kl_early_stop_multiplier=ppo.get("kl_early_stop_multiplier", 1.5),
+        kl_lr_backoff_multiplier=ppo.get("kl_lr_backoff_multiplier", 2.0),
+        kl_lr_backoff_factor=ppo.get("kl_lr_backoff_factor", 0.5),
+        lr_schedule_end_factor=ppo.get("lr_schedule_end_factor", 1.0),
+        entropy_schedule_end_factor=ppo.get("entropy_schedule_end_factor", 1.0),
+        eval=PPOEvalConfig(
+            enabled=eval_cfg.get("enabled", False),
+            interval=eval_cfg.get("interval", 0),
+            num_envs=eval_cfg.get("num_envs", 0),
+            num_steps=eval_cfg.get("num_steps", 0),
+            deterministic=eval_cfg.get("deterministic", True),
+            seed_offset=eval_cfg.get("seed_offset", 10_000),
+        ),
+        rollback=PPORollbackConfig(
+            enabled=rollback_cfg.get("enabled", False),
+            patience=rollback_cfg.get("patience", 2),
+            success_rate_drop_threshold=rollback_cfg.get(
+                "success_rate_drop_threshold", 0.05
+            ),
+            lr_factor=rollback_cfg.get("lr_factor", 0.5),
+        ),
     )
 
 

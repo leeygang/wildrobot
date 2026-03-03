@@ -7,6 +7,38 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.13.6] - 2026-03-03: Standing robustness (strong pushes + PPO stability guardrails)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump training version to v0.13.6.
+- `training/configs/ppo_standing_push.yaml`: enable two-sided height target shaping (`env.height_target_two_sided: true`) to actively reward exploring lower stance near `env.target_height`.
+- `training/configs/ppo_standing_push.yaml`: tighten PPO update aggressiveness for stability under pushes:
+  - `ppo.learning_rate: 3e-4 → 1e-4`, `ppo.epochs: 4 → 2`, `ppo.entropy_coef: 0.01 → 0.005`
+  - `ppo.clip_epsilon: 0.2 → 0.15`
+- `training/configs/ppo_standing_push.yaml`: add P0/P1 stability guardrails (PPO KL + schedules + deterministic eval + rollback):
+  - `ppo.target_kl`, `ppo.kl_*`, `ppo.lr_schedule_end_factor`, `ppo.entropy_schedule_end_factor`
+  - `ppo.eval.*` (periodic deterministic eval)
+  - `ppo.rollback.*` (rollback-on-regression with LR backoff)
+- `training/configs/training_runtime_config.py`: add `PPOEvalConfig` + `PPORollbackConfig` under `PPOConfig`.
+- `training/configs/training_config.py`: parse `ppo.eval` and `ppo.rollback` blocks from YAML.
+
+### Code Updates
+- `training/core/training_loop.py`: stabilize PPO minibatch sampling (one permutation per epoch; contiguous minibatches).
+- `training/core/training_loop.py`: add in-update KL early-stop (halts remaining minibatches within the current PPO update).
+- `training/core/training_loop.py`: add deterministic periodic eval (fixed RNG across eval checkpoints) for monotonic checkpoint comparisons.
+- `training/core/training_loop.py`: add rollback-on-regression using eval metrics + LR backoff scale.
+- `training/core/training_loop.py`: switch to optax LR schedule inside `optax.adam(...)` (instead of gradient pre-scaling); add `ppo/active_updates` + `ppo/epochs_used` metrics for diagnostics and correct LR logging (including resume).
+- `training/train.py`: plumb separate eval reset/step functions (allow different eval batch size).
+- `training/core/experiment_tracking.py`: log `ppo/*` and `eval/*` metrics to W&B/offline logs.
+- `training/tests/test_training_stability_controls.py`: add unit coverage for the stability controls.
+
+### Plan
+1. `uv run python scripts/validate_training_setup.py`
+2. `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --verify`
+3. `uv run python training/train.py --config training/configs/ppo_standing_push.yaml`
+
+---
+
 ## [v0.12.2] - 2026-01-05: Standing robustness (moderate pushes)
 
 ### Config Updates

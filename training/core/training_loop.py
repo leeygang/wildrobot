@@ -40,6 +40,7 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from training.amp.discriminator import (
     AMPDiscriminator,
@@ -56,6 +57,7 @@ from training.configs.training_config import get_robot_config, TrainingConfig
 
 from training.algos.ppo.ppo_core import (
     compute_gae,
+    PPOLossMetrics,
     compute_ppo_loss,
     compute_values,
     create_networks,
@@ -70,8 +72,10 @@ from training.core.rollout import (
 from training.core.metrics_registry import (
     aggregate_metrics,
     METRIC_INDEX,
+    METRICS_VEC_KEY,
     unpack_metrics,
 )
+from training.envs.env_info import WR_INFO_KEY
 
 
 # =============================================================================
@@ -142,6 +146,50 @@ class IterationMetrics(NamedTuple):
     # Contains all metrics from METRIC_SPECS (forward_velocity, height, etc.)
     # Access via: env_metrics["forward_velocity"], env_metrics["tracking/vel_error"], etc.
     env_metrics: Dict[str, jnp.ndarray]
+
+
+def _linear_schedule_factor(progress: float, end_factor: float) -> float:
+    """Linear factor schedule from 1.0 -> end_factor over progress in [0, 1]."""
+    clamped = min(max(progress, 0.0), 1.0)
+    return 1.0 + (float(end_factor) - 1.0) * clamped
+
+
+def _effective_ppo_epochs(
+    base_epochs: int,
+    previous_approx_kl: float,
+    target_kl: float,
+    early_stop_multiplier: float,
+) -> int:
+    """Choose active PPO epochs for this iteration using previous KL signal."""
+    if target_kl <= 0.0:
+        return max(1, int(base_epochs))
+    if previous_approx_kl > float(target_kl) * float(early_stop_multiplier):
+        return 1
+    return max(1, int(base_epochs))
+
+
+def _is_eval_better(
+    success_rate: float,
+    episode_length: float,
+    best_success_rate: float,
+    best_episode_length: float,
+    eps: float = 1e-6,
+) -> bool:
+    """Lexicographic compare: success_rate first, then episode_length."""
+    if success_rate > best_success_rate + eps:
+        return True
+    if abs(success_rate - best_success_rate) <= eps and episode_length > best_episode_length + eps:
+        return True
+    return False
+
+
+def _should_trigger_rollback(
+    current_success_rate: float,
+    best_success_rate: float,
+    threshold: float,
+) -> bool:
+    """Return True when eval success-rate regressed enough to consider rollback."""
+    return current_success_rate < (best_success_rate - threshold)
 
 
 # =============================================================================
@@ -254,94 +302,185 @@ def ppo_update_scan(
     returns: jnp.ndarray,
     rng: jax.Array,
     num_epochs: int,
+    active_epochs: int,
     num_minibatches: int,
     clip_epsilon: float,
     value_loss_coef: float,
     entropy_coef: float,
+    update_scale: float,
+    target_kl: float,
+    kl_early_stop_multiplier: float,
 ) -> Tuple[Any, Any, Any, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """PPO update using jax.lax.scan over epochs and minibatches."""
     batch_size = obs.shape[0]
     minibatch_size = batch_size // num_minibatches
     num_updates = num_epochs * num_minibatches
+    active_epochs = jnp.clip(jnp.asarray(active_epochs, dtype=jnp.int32), 1, num_epochs)
+    update_scale = jnp.asarray(update_scale, dtype=jnp.float32)
+
+    rng, perm_rng = jax.random.split(rng)
+    epoch_rngs = jax.random.split(perm_rng, num_epochs)
+    epoch_perms = jax.vmap(lambda key: jax.random.permutation(key, batch_size))(epoch_rngs)
+    target_kl = jnp.asarray(float(target_kl), dtype=jnp.float32)
+    kl_stop_threshold = target_kl * jnp.asarray(
+        float(kl_early_stop_multiplier), dtype=jnp.float32
+    )
 
     def ppo_step(carry, update_idx):
-        policy_p, value_p, policy_opt, value_opt, rng = carry
-        rng, shuffle_rng, step_rng = jax.random.split(rng, 3)
+        policy_p, value_p, policy_opt, value_opt, rng, stop_updates, active_count = carry
+        rng, step_rng = jax.random.split(rng)
 
         # Compute epoch and minibatch indices
         epoch_idx = update_idx // num_minibatches
         mb_idx = update_idx % num_minibatches
 
-        # Generate permutation for this epoch
-        epoch_rng = jax.random.fold_in(shuffle_rng, epoch_idx)
-        perm = jax.random.permutation(epoch_rng, batch_size)
+        def _active_update(_):
+            perm = epoch_perms[epoch_idx]
 
-        # Get minibatch
-        start_idx = mb_idx * minibatch_size
-        mb_indices = jax.lax.dynamic_slice(perm, (start_idx,), (minibatch_size,))
+            start_idx = mb_idx * minibatch_size
+            mb_indices = jax.lax.dynamic_slice(perm, (start_idx,), (minibatch_size,))
 
-        mb_obs = obs[mb_indices]
-        mb_actions = actions[mb_indices]
-        mb_old_log_probs = old_log_probs[mb_indices]
-        mb_advantages = advantages[mb_indices]
-        mb_returns = returns[mb_indices]
+            mb_obs = obs[mb_indices]
+            mb_actions = actions[mb_indices]
+            mb_old_log_probs = old_log_probs[mb_indices]
+            mb_advantages = advantages[mb_indices]
+            mb_returns = returns[mb_indices]
 
-        # Normalize advantages
-        mb_advantages = (mb_advantages - jnp.mean(mb_advantages)) / (
-            jnp.std(mb_advantages) + 1e-8
-        )
-
-        # Compute loss and gradients
-        def loss_fn(policy_p, value_p):
-            return compute_ppo_loss(
-                processor_params=processor_params,
-                policy_params=policy_p,
-                value_params=value_p,
-                ppo_network=ppo_network,
-                obs=mb_obs,
-                actions=mb_actions,
-                old_log_probs=mb_old_log_probs,
-                advantages=mb_advantages,
-                returns=mb_returns,
-                rng=step_rng,
-                clip_epsilon=clip_epsilon,
-                value_loss_coef=value_loss_coef,
-                entropy_coef=entropy_coef,
+            mb_advantages = (mb_advantages - jnp.mean(mb_advantages)) / (
+                jnp.std(mb_advantages) + 1e-8
             )
 
-        (total_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
-            loss_fn, argnums=(0, 1), has_aux=True
-        )(policy_p, value_p)
+            def loss_fn(policy_p, value_p):
+                return compute_ppo_loss(
+                    processor_params=processor_params,
+                    policy_params=policy_p,
+                    value_params=value_p,
+                    ppo_network=ppo_network,
+                    obs=mb_obs,
+                    actions=mb_actions,
+                    old_log_probs=mb_old_log_probs,
+                    advantages=mb_advantages,
+                    returns=mb_returns,
+                    rng=step_rng,
+                    clip_epsilon=clip_epsilon,
+                    value_loss_coef=value_loss_coef,
+                    entropy_coef=entropy_coef,
+                )
 
-        # Update networks
-        policy_updates, new_policy_opt = policy_optimizer.update(
-            policy_grads, policy_opt
+            (_total_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
+                loss_fn, argnums=(0, 1), has_aux=True
+            )(policy_p, value_p)
+
+            policy_updates, next_policy_opt = policy_optimizer.update(
+                policy_grads, policy_opt
+            )
+            policy_updates = jax.tree_util.tree_map(
+                lambda u: u * update_scale, policy_updates
+            )
+            next_policy_p = optax.apply_updates(policy_p, policy_updates)
+
+            value_updates, next_value_opt = value_optimizer.update(
+                value_grads, value_opt
+            )
+            value_updates = jax.tree_util.tree_map(
+                lambda u: u * update_scale, value_updates
+            )
+            next_value_p = optax.apply_updates(value_p, value_updates)
+
+            return (
+                (
+                    next_policy_p,
+                    next_value_p,
+                    next_policy_opt,
+                    next_value_opt,
+                    rng,
+                    stop_updates,
+                    active_count + jnp.asarray(1, dtype=jnp.int32),
+                ),
+                (metrics, jnp.asarray(1.0, dtype=jnp.float32)),
+            )
+
+        def _inactive_update(_):
+            zero = jnp.array(0.0, dtype=jnp.float32)
+            metrics = PPOLossMetrics(
+                total_loss=zero,
+                policy_loss=zero,
+                value_loss=zero,
+                entropy_loss=zero,
+                clip_fraction=zero,
+                approx_kl=zero,
+            )
+            return (
+                (
+                    policy_p,
+                    value_p,
+                    policy_opt,
+                    value_opt,
+                    rng,
+                    stop_updates,
+                    active_count,
+                ),
+                (metrics, jnp.asarray(0.0, dtype=jnp.float32)),
+            )
+
+        is_active = jnp.logical_and(epoch_idx < active_epochs, jnp.logical_not(stop_updates))
+        (next_carry, (metrics, active_flag)) = jax.lax.cond(
+            is_active, _active_update, _inactive_update, operand=None
         )
-        new_policy_p = optax.apply_updates(policy_p, policy_updates)
-
-        value_updates, new_value_opt = value_optimizer.update(value_grads, value_opt)
-        new_value_p = optax.apply_updates(value_p, value_updates)
-
-        return (new_policy_p, new_value_p, new_policy_opt, new_value_opt, rng), metrics
+        stop_now = jnp.logical_and(
+            target_kl > 0.0,
+            metrics.approx_kl > kl_stop_threshold,
+        )
+        updated_stop = jnp.logical_or(next_carry[5], jnp.logical_and(is_active, stop_now))
+        next_carry = (
+            next_carry[0],
+            next_carry[1],
+            next_carry[2],
+            next_carry[3],
+            next_carry[4],
+            updated_stop,
+            next_carry[6],
+        )
+        return next_carry, (metrics, active_flag)
 
     # Run scan
     update_indices = jnp.arange(num_updates)
-    init_carry = (policy_params, value_params, policy_opt_state, value_opt_state, rng)
-    final_carry, all_metrics = jax.lax.scan(ppo_step, init_carry, update_indices)
+    init_carry = (
+        policy_params,
+        value_params,
+        policy_opt_state,
+        value_opt_state,
+        rng,
+        jnp.asarray(False),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    final_carry, scan_output = jax.lax.scan(ppo_step, init_carry, update_indices)
 
-    new_policy_params, new_value_params, new_policy_opt, new_value_opt, _ = final_carry
+    new_policy_params, new_value_params, new_policy_opt, new_value_opt, _, _, total_active = final_carry
+    all_metrics, active_mask = scan_output
+
+    active_count = jnp.maximum(jnp.sum(active_mask), 1.0)
+    epochs_used = jnp.maximum(
+        jnp.ceil(total_active.astype(jnp.float32) / float(num_minibatches)),
+        1.0,
+    )
+
+    def _active_mean(values):
+        return jnp.sum(values * active_mask) / active_count
 
     return (
         new_policy_params,
         new_value_params,
         new_policy_opt,
         new_value_opt,
-        jnp.mean(all_metrics.policy_loss),
-        jnp.mean(all_metrics.value_loss),
-        jnp.mean(all_metrics.entropy_loss),
-        jnp.mean(all_metrics.total_loss),
-        jnp.mean(all_metrics.clip_fraction),
-        jnp.mean(all_metrics.approx_kl),
+        _active_mean(all_metrics.policy_loss),
+        _active_mean(all_metrics.value_loss),
+        _active_mean(all_metrics.entropy_loss),
+        _active_mean(all_metrics.total_loss),
+        _active_mean(all_metrics.clip_fraction),
+        _active_mean(all_metrics.approx_kl),
+        epochs_used,
+        total_active.astype(jnp.float32),
     )
 
 
@@ -372,6 +511,9 @@ def make_train_iteration_fn(
     def train_iteration(
         state: TrainingState,
         env_state: Any,
+        active_ppo_epochs: int,
+        entropy_coef: float,
+        learning_rate_scale: float,
     ) -> Tuple[TrainingState, Any, IterationMetrics]:
         """Execute one training iteration (fully on GPU)."""
 
@@ -514,6 +656,8 @@ def make_train_iteration_fn(
             total_loss,
             clip_fraction,
             approx_kl,
+            epochs_used,
+            active_updates,
         ) = ppo_update_scan(
             policy_params=state.policy_params,
             value_params=state.value_params,
@@ -530,10 +674,14 @@ def make_train_iteration_fn(
             returns=flat_returns,
             rng=ppo_rng,
             num_epochs=config.ppo.epochs,
+            active_epochs=active_ppo_epochs,
             num_minibatches=config.ppo.num_minibatches,
             clip_epsilon=config.ppo.clip_epsilon,
             value_loss_coef=config.ppo.value_loss_coef,
-            entropy_coef=config.ppo.entropy_coef,
+            entropy_coef=entropy_coef,
+            update_scale=learning_rate_scale,
+            target_kl=config.ppo.target_kl,
+            kl_early_stop_multiplier=config.ppo.kl_early_stop_multiplier,
         )
 
         # ================================================================
@@ -715,6 +863,13 @@ def make_train_iteration_fn(
         agg_metrics["term_pitch_frac"] = term_pitch_frac
         agg_metrics["term_roll_frac"] = term_roll_frac
         agg_metrics["term_truncated_frac"] = term_truncated_frac
+        agg_metrics["ppo/epochs_used"] = epochs_used
+        agg_metrics["ppo/early_stop_epoch"] = jnp.where(
+            epochs_used < float(config.ppo.epochs),
+            epochs_used,
+            0.0,
+        )
+        agg_metrics["ppo/active_updates"] = active_updates
 
         new_state = TrainingState(
             policy_params=new_policy_params,
@@ -924,6 +1079,8 @@ def train(
         Callable[[int, TrainingState, IterationMetrics, float], None]
     ] = None,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
+    eval_env_step_fn: Optional[Callable] = None,
+    eval_env_reset_fn: Optional[Callable] = None,
     *,
     policy_init_action: Optional[jnp.ndarray] = None,
 ) -> TrainingState:
@@ -1010,13 +1167,24 @@ def train(
     )
 
     # Create optimizers
+    total_schedule_updates = max(
+        1,
+        int(config.ppo.iterations)
+        * int(config.ppo.epochs)
+        * int(config.ppo.num_minibatches),
+    )
+    lr_schedule = optax.linear_schedule(
+        init_value=float(config.ppo.learning_rate),
+        end_value=float(config.ppo.learning_rate) * float(config.ppo.lr_schedule_end_factor),
+        transition_steps=total_schedule_updates,
+    )
     policy_optimizer = optax.chain(
         optax.clip_by_global_norm(config.ppo.max_grad_norm),
-        optax.adam(float(config.ppo.learning_rate)),
+        optax.adam(lr_schedule),
     )
     value_optimizer = optax.chain(
         optax.clip_by_global_norm(config.ppo.max_grad_norm),
-        optax.adam(float(config.ppo.learning_rate)),
+        optax.adam(lr_schedule),
     )
     disc_optimizer = optax.adam(float(config.amp.discriminator.learning_rate))
 
@@ -1108,12 +1276,99 @@ def train(
         ref_buffer_data=ref_buffer_data,
     )
 
+    eval_step_fn = eval_env_step_fn or env_step_fn
+    eval_reset_fn = eval_env_reset_fn or env_reset_fn
+    eval_enabled = config.ppo.eval.enabled and config.ppo.eval.interval > 0
+    eval_steps = config.ppo.eval.num_steps or config.ppo.rollout_steps
+    eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
+
+    @jax.jit
+    def run_deterministic_eval(
+        policy_params: Any,
+        processor_params: Any,
+        eval_rng: jax.Array,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        eval_env_state = eval_reset_fn(eval_rng)
+
+        def eval_step(carry, _):
+            env_state, rng = carry
+            rng, action_rng = jax.random.split(rng)
+            obs = env_state.obs
+            action, _, _ = sample_actions(
+                processor_params,
+                policy_params,
+                ppo_network,
+                obs,
+                action_rng,
+                deterministic=config.ppo.eval.deterministic,
+            )
+            next_env_state = eval_step_fn(env_state, action)
+            wr_info = next_env_state.info[WR_INFO_KEY]
+            step_data = {
+                "reward": next_env_state.reward,
+                "done": next_env_state.done,
+                "truncation": wr_info.truncated,
+                "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+            }
+            return (next_env_state, rng), step_data
+
+        (_, _), eval_rollout = jax.lax.scan(
+            eval_step, (eval_env_state, eval_rng), None, length=eval_steps
+        )
+
+        episode_reward = jnp.mean(jnp.sum(eval_rollout["reward"], axis=0))
+        term_idx_pitch = METRIC_INDEX["term/pitch"]
+        term_idx_roll = METRIC_INDEX["term/roll"]
+
+        total_done = jnp.sum(eval_rollout["done"])
+        completed_lengths = (
+            eval_rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
+            * eval_rollout["done"]
+        )
+        episode_length = jnp.where(
+            total_done > 0,
+            jnp.sum(completed_lengths) / total_done,
+            0.0,
+        )
+
+        total_truncated = jnp.sum(eval_rollout["truncation"])
+        success_rate = jnp.where(total_done > 0, total_truncated / total_done, 0.0)
+        term_pitch_frac = jnp.where(
+            total_done > 0,
+            jnp.sum(eval_rollout["metrics_vec"][..., term_idx_pitch]) / total_done,
+            0.0,
+        )
+        term_roll_frac = jnp.where(
+            total_done > 0,
+            jnp.sum(eval_rollout["metrics_vec"][..., term_idx_roll]) / total_done,
+            0.0,
+        )
+        return episode_reward, success_rate, episode_length, term_pitch_frac, term_roll_frac
+
     print("=" * 60)
     print("Pre-compiling JIT functions...")
     compile_start = time.time()
-    _ = train_iteration_fn(state, env_state)
+    _ = train_iteration_fn(
+        state,
+        env_state,
+        config.ppo.epochs,
+        config.ppo.entropy_coef,
+        1.0,
+    )
     jax.block_until_ready(_)
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
+    if eval_enabled:
+        eval_compile_start = time.time()
+        _ = run_deterministic_eval(
+            state.policy_params,
+            state.processor_params,
+            eval_base_rng,
+        )
+        jax.block_until_ready(_)
+        print(
+            "  ✓ run_deterministic_eval compiled "
+            f"({time.time() - eval_compile_start:.1f}s)"
+        )
     print("=" * 60)
 
     # Calculate target iteration (resume adds to checkpoint iteration)
@@ -1138,12 +1393,161 @@ def train(
 
     # Training loop
     start_time = time.time()
+    last_approx_kl = 0.0
+    lr_backoff_scale = 1.0
+    last_eval_metrics: Dict[str, float] = {}
+    rollback_bad_count = 0
+    best_eval = {
+        "success_rate": -1.0,
+        "episode_length": 0.0,
+        "state": None,
+        "iteration": 0,
+    }
+
+    def _extract_opt_count(opt_state: Any) -> int:
+        counts = []
+        for leaf in jax.tree_util.tree_leaves(jax.device_get(opt_state)):
+            if isinstance(leaf, (int, np.integer)):
+                counts.append(int(leaf))
+            elif isinstance(leaf, np.ndarray) and leaf.shape == () and np.issubdtype(
+                leaf.dtype, np.integer
+            ):
+                counts.append(int(leaf.item()))
+        return max(counts) if counts else 0
+
+    cumulative_ppo_updates = _extract_opt_count(state.policy_opt_state)
 
     for iteration in range(start_iteration + 1, target_iteration + 1):
         iter_start = time.time()
 
-        state, env_state, metrics = train_iteration_fn(state, env_state)
+        local_iter = iteration - start_iteration - 1
+        total_local_iters = max(config.ppo.iterations - 1, 1)
+        progress = local_iter / total_local_iters
+        entropy_schedule_factor = _linear_schedule_factor(
+            progress, config.ppo.entropy_schedule_end_factor
+        )
+        learning_rate_scale = lr_backoff_scale
+        entropy_coef = float(config.ppo.entropy_coef) * entropy_schedule_factor
+        active_epochs = _effective_ppo_epochs(
+            base_epochs=config.ppo.epochs,
+            previous_approx_kl=last_approx_kl,
+            target_kl=float(config.ppo.target_kl),
+            early_stop_multiplier=float(config.ppo.kl_early_stop_multiplier),
+        )
+
+        state, env_state, metrics = train_iteration_fn(
+            state,
+            env_state,
+            active_epochs,
+            entropy_coef,
+            learning_rate_scale,
+        )
         jax.block_until_ready(state.total_steps)
+
+        current_approx_kl = float(metrics.approx_kl)
+        kl_backoff_applied = False
+        if (
+            config.ppo.target_kl > 0.0
+            and current_approx_kl
+            > float(config.ppo.target_kl) * float(config.ppo.kl_lr_backoff_multiplier)
+        ):
+            lr_backoff_scale = max(
+                lr_backoff_scale * float(config.ppo.kl_lr_backoff_factor),
+                1e-3,
+            )
+            kl_backoff_applied = True
+        last_approx_kl = current_approx_kl
+
+        env_metrics = metrics.env_metrics
+        active_updates = int(float(env_metrics.get("ppo/active_updates", 0.0)))
+        cumulative_ppo_updates += active_updates
+        base_lr_now = float(lr_schedule(cumulative_ppo_updates))
+        env_metrics["ppo/lr"] = jnp.asarray(
+            base_lr_now * lr_backoff_scale,
+            dtype=jnp.float32,
+        )
+        env_metrics["ppo/target_kl"] = jnp.asarray(config.ppo.target_kl, dtype=jnp.float32)
+        env_metrics["ppo/lr_backoff_scale"] = jnp.asarray(lr_backoff_scale, dtype=jnp.float32)
+        env_metrics["ppo/lr_backoff_applied"] = jnp.asarray(
+            1.0 if kl_backoff_applied else 0.0,
+            dtype=jnp.float32,
+        )
+        env_metrics["ppo/entropy_coef"] = jnp.asarray(entropy_coef, dtype=jnp.float32)
+        env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
+
+        if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
+            eval_reward, eval_success, eval_ep_len, eval_term_pitch, eval_term_roll = (
+                run_deterministic_eval(
+                    state.policy_params,
+                    state.processor_params,
+                    eval_base_rng,
+                )
+            )
+            jax.block_until_ready(eval_success)
+
+            eval_success_f = float(eval_success)
+            eval_ep_len_f = float(eval_ep_len)
+            last_eval_metrics = {
+                "eval/reward": float(eval_reward),
+                "eval/success_rate": eval_success_f,
+                "eval/episode_length": eval_ep_len_f,
+                "eval/term_pitch_frac": float(eval_term_pitch),
+                "eval/term_roll_frac": float(eval_term_roll),
+            }
+            for key, value in last_eval_metrics.items():
+                env_metrics[key] = jnp.asarray(value, dtype=jnp.float32)
+
+            if _is_eval_better(
+                success_rate=eval_success_f,
+                episode_length=eval_ep_len_f,
+                best_success_rate=best_eval["success_rate"],
+                best_episode_length=best_eval["episode_length"],
+            ):
+                best_eval["success_rate"] = eval_success_f
+                best_eval["episode_length"] = eval_ep_len_f
+                best_eval["state"] = jax.device_get(state)
+                best_eval["iteration"] = iteration
+                rollback_bad_count = 0
+            elif config.ppo.rollback.enabled and best_eval["state"] is not None:
+                if _should_trigger_rollback(
+                    current_success_rate=eval_success_f,
+                    best_success_rate=float(best_eval["success_rate"]),
+                    threshold=float(config.ppo.rollback.success_rate_drop_threshold),
+                ):
+                    rollback_bad_count += 1
+                else:
+                    rollback_bad_count = 0
+
+                if rollback_bad_count >= int(config.ppo.rollback.patience):
+                    snap = best_eval["state"]
+                    state = TrainingState(
+                        policy_params=snap.policy_params,
+                        value_params=snap.value_params,
+                        processor_params=snap.processor_params,
+                        policy_opt_state=snap.policy_opt_state,
+                        value_opt_state=snap.value_opt_state,
+                        disc_params=snap.disc_params,
+                        disc_opt_state=snap.disc_opt_state,
+                        feature_mean=snap.feature_mean,
+                        feature_var=snap.feature_var,
+                        iteration=state.iteration,
+                        total_steps=state.total_steps,
+                        rng=state.rng,
+                    )
+                    cumulative_ppo_updates = _extract_opt_count(state.policy_opt_state)
+                    env_state = env_reset_fn(jax.random.fold_in(state.rng, iteration))
+                    lr_backoff_scale = max(
+                        lr_backoff_scale * float(config.ppo.rollback.lr_factor),
+                        1e-4,
+                    )
+                    rollback_bad_count = 0
+                    env_metrics["ppo/rollback_triggered"] = jnp.asarray(
+                        1.0, dtype=jnp.float32
+                    )
+                    print(
+                        f"  ↩ rollback at iter {iteration}: restored params from iter "
+                        f"{best_eval['iteration']}, new_lr_scale={lr_backoff_scale:.4f}"
+                    )
 
         iter_time = time.time() - iter_start
         steps_per_sec = (config.ppo.rollout_steps * config.ppo.num_envs) / iter_time
@@ -1155,6 +1559,9 @@ def train(
 
             # Access env metrics from dict
             env = metrics.env_metrics
+            for key, value in last_eval_metrics.items():
+                if key not in env:
+                    env[key] = jnp.asarray(value, dtype=jnp.float32)
 
             # Main metrics line - v0.10.3: Include velocity command for walking
             main_line = (
@@ -1190,6 +1597,21 @@ def train(
                 f"pitch={float(env['term_pitch_frac']):>4.1%} | "
                 f"roll={float(env['term_roll_frac']):>4.1%}"
             )
+
+            print(
+                f"  └─ ppo: kl={float(metrics.approx_kl):>6.4f} "
+                f"(target={float(env['ppo/target_kl']):>6.4f}) | "
+                f"epochs={int(float(env['ppo/epochs_used'])):>2} | "
+                f"lr={float(env['ppo/lr']):>8.6f}"
+            )
+
+            if "eval/success_rate" in env:
+                print(
+                    f"  └─ eval: success={float(env['eval/success_rate']):>5.1%} | "
+                    f"ep_len={float(env['eval/episode_length']):>5.1f} | "
+                    f"term_pitch={float(env['eval/term_pitch_frac']):>4.1%} | "
+                    f"term_roll={float(env['eval/term_roll_frac']):>4.1%}"
+                )
 
             if amp_enabled:
                 print(

@@ -896,7 +896,12 @@ def build_wandb_metrics(
     # Log selected env debug + termination diagnostics for failure-mode analysis.
     # Keep this lightweight (scalars only).
     for key, value in metrics.env_metrics.items():
-        if key.startswith("debug/") or key.startswith("term_"):
+        if (
+            key.startswith("debug/")
+            or key.startswith("term_")
+            or key.startswith("ppo/")
+            or key.startswith("eval/")
+        ):
             try:
                 wandb_metrics[key] = float(value)
             except (TypeError, ValueError):

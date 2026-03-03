@@ -151,6 +151,39 @@ class PPOConfig(Freezable):
 
     log_interval: int = 10
 
+    target_kl: float = 0.0
+    kl_early_stop_multiplier: float = 1.5
+    kl_lr_backoff_multiplier: float = 2.0
+    kl_lr_backoff_factor: float = 0.5
+
+    lr_schedule_end_factor: float = 1.0
+    entropy_schedule_end_factor: float = 1.0
+
+    eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
+    rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())
+
+
+@dataclass
+class PPOEvalConfig(Freezable):
+    """Deterministic periodic evaluation settings."""
+
+    enabled: bool = False
+    interval: int = 0
+    num_envs: int = 0
+    num_steps: int = 0
+    deterministic: bool = True
+    seed_offset: int = 10_000
+
+
+@dataclass
+class PPORollbackConfig(Freezable):
+    """Rollback-on-regression settings driven by eval metrics."""
+
+    enabled: bool = False
+    patience: int = 2
+    success_rate_drop_threshold: float = 0.05
+    lr_factor: float = 0.5
+
 
 # =============================================================================
 # AMP Discriminator Training Config (NOT architecture)

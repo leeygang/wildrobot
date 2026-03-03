@@ -334,6 +334,17 @@ def start_training(
         rngs = jax.random.split(rng, training_cfg.ppo.num_envs)
         return jax.vmap(env.reset)(rngs)
 
+    eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
+
+    def batched_eval_step_fn(state, action):
+        """Batched eval environment step."""
+        return jax.vmap(lambda s, a: env.step(s, a))(state, action)
+
+    def batched_eval_reset_fn(rng):
+        """Batched eval environment reset."""
+        rngs = jax.random.split(rng, eval_num_envs)
+        return jax.vmap(env.reset)(rngs)
+
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
 
@@ -427,6 +438,8 @@ def start_training(
         ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
         resume_checkpoint=resume_checkpoint,
+        eval_env_step_fn=batched_eval_step_fn,
+        eval_env_reset_fn=batched_eval_reset_fn,
         policy_init_action=JaxCalibOps.ctrl_to_policy_action(
             spec=policy_spec,
             ctrl_rad=jnp.asarray(env._default_joint_qpos, dtype=jnp.float32),
