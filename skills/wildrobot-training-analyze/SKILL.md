@@ -11,6 +11,8 @@ Use this workflow to (1) analyze a training run, (2) choose a deployable checkpo
 
 - Offline run dir: `training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id>/`
 - For checkpoint selection: matching checkpoint dir in `training/checkpoints/*-<run_id>/` (usually exists).
+- Code is in 'training'
+- training Config is in 'training/configs'
 - Wildrobot mujoco xml:  'assets/v2/wildrobot.xml'
 
 ## Quick commands
