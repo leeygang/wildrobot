@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.8"
-version_name: "Standing robustness (collapse prevention + dual eval)"
+version: "0.13.9"
+version_name: "Standing robustness (reduce height-low + pitch terms)"
 
 seed: 42
 
@@ -34,9 +34,9 @@ env:
   # (two-sided shaping instead of the default one-sided "only penalize too low").
   height_target_two_sided: true
   min_height: 0.40
-  collapse_height_buffer: 0.02
+  collapse_height_buffer: 0.03
   collapse_height_sigma: 0.03
-  collapse_vz_gate_band: 0.05
+  collapse_vz_gate_band: 0.07
   max_height: 0.70
   max_pitch: 0.8
   max_roll: 0.8
@@ -50,7 +50,7 @@ env:
   foot_switch_threshold: 2.0
 
   # Action filtering (alpha=0 disables filtering)
-  action_filter_alpha: 0.6
+  action_filter_alpha: 0.5
 
   # Disturbance pushes (strong, single-stage)
   push_enabled: true
@@ -161,11 +161,11 @@ reward_weights:
   tracking_lin_vel: 0.1
   lateral_velocity: -0.5
   base_height: 2.0
-  orientation: -3.0
+  orientation: -4.0
   height_target: 1.0
   height_target_sigma: 0.04
-  collapse_height: -0.3
-  collapse_vz: -0.2
+  collapse_height: -0.5
+  collapse_vz: -0.3
   angular_velocity: -0.1
 
   torque: -0.001

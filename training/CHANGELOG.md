@@ -7,6 +7,29 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.13.9] - 2026-03-04: Standing pushes (reduce height-low + pitch terminations)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump to `version: "0.13.9"`.
+- `training/configs/ppo_standing_push.yaml`: strengthen pre-collapse shaping to reduce `term_height_low_frac`:
+  - `env.collapse_height_buffer: 0.02 -> 0.03`
+  - `env.collapse_vz_gate_band: 0.05 -> 0.07`
+  - `reward_weights.collapse_height: -0.3 -> -0.5`
+  - `reward_weights.collapse_vz: -0.2 -> -0.3`
+- `training/configs/ppo_standing_push.yaml`: improve recovery to reduce pitch-limit failures:
+  - `reward_weights.orientation: -3.0 -> -4.0`
+  - `env.action_filter_alpha: 0.6 -> 0.5` (faster corrections)
+
+### Plan
+1. Validate setup:
+   `uv run python scripts/validate_training_setup.py`
+2. Smoke test:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --verify`
+3. Fine-tune from v0.13.8 best checkpoint:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --resume training/checkpoints/ppo_standing_push_v00138_20260303_195743-6y6ufyw3/checkpoint_80_10485760.pkl`
+
+---
+
 ## [v0.13.8] - 2026-03-04: Standing stability under pushes (collapse prevention + dual eval)
 
 ### Config Updates
@@ -29,6 +52,25 @@ This changelog tracks capability changes, configuration updates, and training re
   - `eval_clean/*` (pushes disabled, clean policy quality signal)
   - rollback/best-checkpoint comparisons are now explicitly driven by `eval_push/success_rate`.
 - Torque saturation metrics remain preferred stress signals (`debug/torque_sat_frac`, `debug/torque_abs_max`); action saturation metrics are retained as legacy diagnostics.
+
+### Results (v0.13.8)
+- Run: `training/wandb/offline-run-20260303_195741-6y6ufyw3`
+- Checkpoints: `training/checkpoints/ppo_standing_push_v00138_20260303_195743-6y6ufyw3`
+- Best checkpoint (eval_push/): `training/checkpoints/ppo_standing_push_v00138_20260303_195743-6y6ufyw3/checkpoint_80_10485760.pkl`
+- Best @ iter 80: eval_push/success_rate=98.44%, eval_push/episode_length=495.3
+- Clean @ iter 80: eval_clean/success_rate=100.00%, eval_clean/episode_length=500.0
+- Train @ iter 80: success=95.24%, ep_len=487.5
+- Final @ iter 200: eval_push/success_rate=98.44%, eval_push/episode_length=494.6
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 4.76% |
+| term_pitch_frac | 0.73% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 59.28% |
+| debug/torque_sat_frac | 0.81% |
+| ppo/approx_kl | 0.0064 |
+| ppo/clip_fraction | 0.1733 |
 
 ---
 

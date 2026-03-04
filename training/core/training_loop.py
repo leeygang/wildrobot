@@ -1329,6 +1329,8 @@ def train(
             )
 
             episode_reward = jnp.mean(jnp.sum(eval_rollout["reward"], axis=0))
+            term_idx_height_low = METRIC_INDEX["term/height_low"]
+            term_idx_height_high = METRIC_INDEX["term/height_high"]
             term_idx_pitch = METRIC_INDEX["term/pitch"]
             term_idx_roll = METRIC_INDEX["term/roll"]
 
@@ -1345,6 +1347,16 @@ def train(
 
             total_truncated = jnp.sum(eval_rollout["truncation"])
             success_rate = jnp.where(total_done > 0, total_truncated / total_done, 0.0)
+            term_height_low_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_height_low]) / total_done,
+                0.0,
+            )
+            term_height_high_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_height_high]) / total_done,
+                0.0,
+            )
             term_pitch_frac = jnp.where(
                 total_done > 0,
                 jnp.sum(eval_rollout["metrics_vec"][..., term_idx_pitch]) / total_done,
@@ -1359,6 +1371,8 @@ def train(
                 episode_reward,
                 success_rate,
                 episode_length,
+                term_height_low_frac,
+                term_height_high_frac,
                 term_pitch_frac,
                 term_roll_frac,
             )
@@ -1509,7 +1523,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_pitch, eval_push_term_roll = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1517,7 +1531,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_pitch, eval_clean_term_roll = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1528,6 +1542,8 @@ def train(
                 eval_clean_reward = eval_push_reward
                 eval_clean_success = eval_push_success
                 eval_clean_ep_len = eval_push_ep_len
+                eval_clean_term_h_low = eval_push_term_h_low
+                eval_clean_term_h_high = eval_push_term_h_high
                 eval_clean_term_pitch = eval_push_term_pitch
                 eval_clean_term_roll = eval_push_term_roll
             jax.block_until_ready(eval_push_success)
@@ -1538,11 +1554,15 @@ def train(
                 "eval_push/reward": float(eval_push_reward),
                 "eval_push/success_rate": eval_push_success_f,
                 "eval_push/episode_length": eval_push_ep_len_f,
+                "eval_push/term_height_low_frac": float(eval_push_term_h_low),
+                "eval_push/term_height_high_frac": float(eval_push_term_h_high),
                 "eval_push/term_pitch_frac": float(eval_push_term_pitch),
                 "eval_push/term_roll_frac": float(eval_push_term_roll),
                 "eval_clean/reward": float(eval_clean_reward),
                 "eval_clean/success_rate": float(eval_clean_success),
                 "eval_clean/episode_length": float(eval_clean_ep_len),
+                "eval_clean/term_height_low_frac": float(eval_clean_term_h_low),
+                "eval_clean/term_height_high_frac": float(eval_clean_term_h_high),
                 "eval_clean/term_pitch_frac": float(eval_clean_term_pitch),
                 "eval_clean/term_roll_frac": float(eval_clean_term_roll),
             }
@@ -1666,6 +1686,8 @@ def train(
                 print(
                     f"  └─ eval_push: success={float(env['eval_push/success_rate']):>5.1%} | "
                     f"ep_len={float(env['eval_push/episode_length']):>5.1f} | "
+                    f"term_h_low={float(env['eval_push/term_height_low_frac']):>4.1%} | "
+                    f"term_h_high={float(env['eval_push/term_height_high_frac']):>4.1%} | "
                     f"term_pitch={float(env['eval_push/term_pitch_frac']):>4.1%} | "
                     f"term_roll={float(env['eval_push/term_roll_frac']):>4.1%}"
                 )
@@ -1673,6 +1695,8 @@ def train(
                 print(
                     f"  └─ eval_clean: success={float(env['eval_clean/success_rate']):>5.1%} | "
                     f"ep_len={float(env['eval_clean/episode_length']):>5.1f} | "
+                    f"term_h_low={float(env['eval_clean/term_height_low_frac']):>4.1%} | "
+                    f"term_h_high={float(env['eval_clean/term_height_high_frac']):>4.1%} | "
                     f"term_pitch={float(env['eval_clean/term_pitch_frac']):>4.1%} | "
                     f"term_roll={float(env['eval_clean/term_roll_frac']):>4.1%}"
                 )
