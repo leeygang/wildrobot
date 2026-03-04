@@ -1,0 +1,7 @@
+display_name: WildRobot Training Analyze
+short_description: Analyze offline WildRobot runs, pick best checkpoint, propose next version changes, update training/CHANGELOG.md.
+default_prompt: >-
+  Analyze the WildRobot offline W&B run under training/wandb/offline-run-*/,
+  summarize stability/success metrics, pick the best deployable checkpoint,
+  propose the next training version changes (config/reward/code), and update
+  training/CHANGELOG.md accordingly.
