@@ -65,6 +65,8 @@ REWARD_TERM_KEYS = [
     "reward/orientation",
     "reward/angvel",
     "reward/height_target",
+    "reward/collapse_height_pen",
+    "reward/collapse_vz_pen",
     "reward/standing",
     "reward/torque",
     "reward/saturation",
@@ -100,6 +102,8 @@ ENV_METRICS_KEYS = {
     "reward/orientation": "Upright orientation reward",
     "reward/angvel": "Angular velocity penalty",
     "reward/height_target": "Height target reward",
+    "reward/collapse_height_pen": "Pre-collapse low-height margin penalty",
+    "reward/collapse_vz_pen": "Pre-collapse downward vertical velocity penalty",
     "reward/torque": "Torque penalty",
     "reward/saturation": "Actuator saturation penalty",
     "reward/action_rate": "Action smoothness penalty",
@@ -125,9 +129,11 @@ ENV_METRICS_KEYS = {
     "debug/right_heel_switch": "Right heel switch state",
     "debug/pitch_rate": "Root pitch rate (heading-local angvel y)",
     "debug/action_abs_max": "Max |action| across actuators (post-filter)",
-    "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter)",
+    "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter, legacy)",
     "debug/raw_action_abs_max": "Max |action| across actuators (pre-filter)",
-    "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter)",
+    "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter, legacy)",
+    "debug/torque_abs_max": "Max |torque| as fraction of limit (0-1, preferred)",
+    "debug/torque_sat_frac": "Fraction of |torque|>0.95 of limit (preferred)",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -202,6 +208,8 @@ def get_initial_env_metrics(
         "reward/orientation": 0.0,
         "reward/angvel": 0.0,
         "reward/height_target": 0.0,
+        "reward/collapse_height_pen": 0.0,
+        "reward/collapse_vz_pen": 0.0,
         "reward/torque": 0.0,
         "reward/saturation": 0.0,
         "reward/action_rate": action_rate,
@@ -230,6 +238,8 @@ def get_initial_env_metrics(
         "debug/action_sat_frac": 0.0,
         "debug/raw_action_abs_max": 0.0,
         "debug/raw_action_sat_frac": 0.0,
+        "debug/torque_abs_max": 0.0,
+        "debug/torque_sat_frac": 0.0,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -293,6 +303,8 @@ def get_initial_env_metrics_jax(
         "reward/orientation": jp.zeros(()),
         "reward/angvel": jp.zeros(()),
         "reward/height_target": jp.zeros(()),
+        "reward/collapse_height_pen": jp.zeros(()),
+        "reward/collapse_vz_pen": jp.zeros(()),
         "reward/torque": jp.zeros(()),
         "reward/saturation": jp.zeros(()),
         "reward/action_rate": _scalar(action_rate),
@@ -321,6 +333,8 @@ def get_initial_env_metrics_jax(
         "debug/action_sat_frac": jp.zeros(()),
         "debug/raw_action_abs_max": jp.zeros(()),
         "debug/raw_action_sat_frac": jp.zeros(()),
+        "debug/torque_abs_max": jp.zeros(()),
+        "debug/torque_sat_frac": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),
@@ -901,6 +915,8 @@ def build_wandb_metrics(
             or key.startswith("term_")
             or key.startswith("ppo/")
             or key.startswith("eval/")
+            or key.startswith("eval_push/")
+            or key.startswith("eval_clean/")
         ):
             try:
                 wandb_metrics[key] = float(value)

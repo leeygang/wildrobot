@@ -7,6 +7,31 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.13.8] - 2026-03-04: Standing stability under pushes (collapse prevention + dual eval)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump to `version: "0.13.8"` and tune standing stability settings.
+- `training/configs/ppo_standing_push.yaml`: add pre-collapse shaping knobs under `env`:
+  - `collapse_height_buffer`, `collapse_height_sigma`, `collapse_vz_gate_band`
+- `training/configs/ppo_standing_push.yaml`: add collapse-prevention reward terms under `reward_weights`:
+  - `collapse_height`, `collapse_vz`
+- `training/configs/ppo_standing_push.yaml`: increase `ppo.kl_lr_backoff_multiplier` (`2.0 -> 3.0`) to avoid immediate KL-triggered LR backoff at iter 1.
+
+### Code Updates
+- `training/envs/wildrobot_env.py`: add two pre-collapse penalties:
+  - `reward/collapse_height_pen`: quadratic penalty when height drops below `(min_height + buffer)`
+  - `reward/collapse_vz_pen`: downward vertical velocity penalty gated near `min_height`
+- `training/configs/training_runtime_config.py` + `training/configs/training_config.py`: add/parse new env knobs and reward weights for collapse shaping.
+- `training/core/metrics_registry.py`: append `reward/collapse_height_pen` and `reward/collapse_vz_pen` (append-only registry).
+- `training/core/experiment_tracking.py`: include new reward terms in schema/init + log filtering for `eval_push/*` and `eval_clean/*`.
+- `training/core/training_loop.py` + `training/train.py`: run and log dual deterministic eval passes:
+  - `eval_push/*` (pushes enabled, baseline robustness signal)
+  - `eval_clean/*` (pushes disabled, clean policy quality signal)
+  - rollback/best-checkpoint comparisons are now explicitly driven by `eval_push/success_rate`.
+- Torque saturation metrics remain preferred stress signals (`debug/torque_sat_frac`, `debug/torque_abs_max`); action saturation metrics are retained as legacy diagnostics.
+
+---
+
 ## [v0.13.6] - 2026-03-03: Standing robustness (strong pushes + PPO stability guardrails)
 
 ### Config Updates

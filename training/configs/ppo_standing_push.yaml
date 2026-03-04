@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.7"
-version_name: "Standing robustness (strong pushes, longer run)"
+version: "0.13.8"
+version_name: "Standing robustness (collapse prevention + dual eval)"
 
 seed: 42
 
@@ -34,6 +34,9 @@ env:
   # (two-sided shaping instead of the default one-sided "only penalize too low").
   height_target_two_sided: true
   min_height: 0.40
+  collapse_height_buffer: 0.02
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.05
   max_height: 0.70
   max_pitch: 0.8
   max_roll: 0.8
@@ -85,7 +88,7 @@ ppo:
   # P0/P1 stability guardrails
   target_kl: 0.02
   kl_early_stop_multiplier: 1.5
-  kl_lr_backoff_multiplier: 2.0
+  kl_lr_backoff_multiplier: 3.0
   kl_lr_backoff_factor: 0.5
   lr_schedule_end_factor: 0.5
   entropy_schedule_end_factor: 0.4
@@ -161,6 +164,8 @@ reward_weights:
   orientation: -3.0
   height_target: 1.0
   height_target_sigma: 0.04
+  collapse_height: -0.3
+  collapse_vz: -0.2
   angular_velocity: -0.1
 
   torque: -0.001

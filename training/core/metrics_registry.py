@@ -352,6 +352,29 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Fraction of actuators with |action|>0.95 (pre-filter)",
     ),
+    MetricSpec(
+        name="debug/torque_abs_max",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Max |torque| as fraction of limit across actuators",
+    ),
+    MetricSpec(
+        name="debug/torque_sat_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Fraction of actuators with |torque|>0.95 of limit",
+    ),
+    # v0.13.8+: Pre-collapse shaping diagnostics (append-only)
+    MetricSpec(
+        name="reward/collapse_height_pen",
+        reducer=Reducer.MEAN,
+        description="Pre-collapse low-height margin penalty",
+    ),
+    MetricSpec(
+        name="reward/collapse_vz_pen",
+        reducer=Reducer.MEAN,
+        description="Pre-collapse downward vertical velocity penalty",
+    ),
 ]
 
 # =============================================================================

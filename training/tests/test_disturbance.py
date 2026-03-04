@@ -67,3 +67,21 @@ def test_apply_push_applies_force(mj_model):
     inactive_data = apply_push(data, schedule, jp.asarray(8))
     inactive_force = inactive_data.xfrc_applied[waist_id][:2]
     assert jp.allclose(inactive_force, 0.0)
+
+
+def test_apply_push_disabled_by_flag(mj_model):
+    mjx_model = mjx.put_model(mj_model)
+    data = mjx.make_data(mjx_model)
+    waist_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "waist")
+    assert waist_id >= 0
+
+    schedule = DisturbanceSchedule(
+        start_step=jp.asarray(0),
+        end_step=jp.asarray(10),
+        force_xy=jp.asarray([2.0, 1.0]),
+        body_id=jp.asarray(waist_id, dtype=jp.int32),
+        rng=jp.zeros((2,)),
+    )
+    disabled_data = apply_push(data, schedule, jp.asarray(3), enabled=False)
+    disabled_force = disabled_data.xfrc_applied[waist_id][:2]
+    assert jp.allclose(disabled_force, 0.0)

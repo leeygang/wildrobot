@@ -88,11 +88,17 @@ def apply_push(
     data,
     schedule: DisturbanceSchedule,
     step_count: jp.ndarray,
+    enabled: jp.ndarray | bool = True,
 ):
     """Apply push force to the specified body for the active window."""
     body_id = schedule.body_id.astype(jp.int32)
     valid_body = body_id >= 0
-    push_active = (step_count >= schedule.start_step) & (step_count < schedule.end_step)
+    push_enabled = jp.asarray(enabled, dtype=jp.bool_)
+    push_active = (
+        (step_count >= schedule.start_step)
+        & (step_count < schedule.end_step)
+        & push_enabled
+    )
     push_force_xy = jp.where(push_active, schedule.force_xy, 0.0)
     xfrc_applied = jp.zeros_like(data.xfrc_applied)
     push_force = jp.array(

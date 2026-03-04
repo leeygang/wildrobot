@@ -573,7 +573,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             push_schedule=schedule,
         )
 
-    def step(self, state: WildRobotEnvState, action: jax.Array) -> WildRobotEnvState:
+    def step(
+        self,
+        state: WildRobotEnvState,
+        action: jax.Array,
+        disable_pushes: bool = False,
+    ) -> WildRobotEnvState:
         """Step environment forward with auto-reset on termination.
 
         Args:
@@ -606,9 +611,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ctrl = JaxCalibOps.action_to_ctrl(spec=self._policy_spec, action=filtered_action)
         data = state.data.replace(ctrl=ctrl)
 
-        # Apply external push disturbance (lateral force on body, if enabled)
-        if self._config.env.push_enabled:
-            data = apply_push(data, wr.push_schedule, step_count)
+        # Apply external push disturbance (JIT-safe boolean gating)
+        push_enabled = jp.logical_and(
+            jp.asarray(self._config.env.push_enabled, dtype=jp.bool_),
+            jp.logical_not(jp.asarray(disable_pushes, dtype=jp.bool_)),
+        )
+        data = apply_push(data, wr.push_schedule, step_count, enabled=push_enabled)
 
         # Physics simulation (multiple substeps)
         def substep_fn(data, _):
@@ -893,7 +901,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # 1. Forward velocity tracking (exp shaping)
-        forward_vel, lateral_vel, _ = root_vel.linear_xyz
+        forward_vel, lateral_vel, v_z = root_vel.linear_xyz
         vel_error = jp.abs(forward_vel - velocity_cmd)
         forward_reward = jp.exp(
             -vel_error * self._config.reward_weights.forward_velocity_scale
@@ -933,8 +941,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         torque_penalty = jp.sum(jp.square(normalized_torques))
 
         # 7. Saturation penalty - penalize actuators near limits
-        saturation = jp.abs(normalized_torques) > 0.95
+        torque_abs = jp.abs(normalized_torques)
+        saturation = torque_abs > 0.95
         saturation_penalty = jp.sum(saturation.astype(jp.float32))
+        torque_sat_frac = jp.mean(saturation.astype(jp.float32))
+        torque_abs_max = jp.max(torque_abs)
 
         # =====================================================================
         # SMOOTHNESS REWARDS (Tier 2)
@@ -1060,7 +1071,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             height_error = jp.maximum(height_target - height, 0.0) / height_sigma
         height_target_reward = jp.exp(-jp.square(height_error))
 
-        # 16. Stance width penalty (discourage wide split stance)
+        # 16. Pre-collapse shaping: height margin and downward velocity near min height
+        collapse_height_sigma = jp.maximum(self._config.env.collapse_height_sigma, 1e-6)
+        collapse_vz_gate_band = jp.maximum(self._config.env.collapse_vz_gate_band, 1e-6)
+        h_margin = height - (
+            self._config.env.min_height + self._config.env.collapse_height_buffer
+        )
+        collapse_height_pen = jp.square(jp.maximum(-h_margin / collapse_height_sigma, 0.0))
+        collapse_gate = jax.nn.sigmoid(
+            (self._config.env.min_height + collapse_vz_gate_band - height)
+            / collapse_vz_gate_band
+        )
+        collapse_vz_pen = collapse_gate * jp.square(jp.maximum(-v_z, 0.0))
+
+        # 17. Stance width penalty (discourage wide split stance)
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -1100,6 +1124,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.base_height * healthy
             + weights.orientation * orientation_penalty
             + weights.angular_velocity * angvel_penalty
+            + weights.collapse_height * collapse_height_pen
+            + weights.collapse_vz * collapse_vz_pen
             # v0.10.4: Smooth standing penalty (negative reward for standing still)
             - standing_penalty_weight * standing_penalty
             # Effort (Tier 1)
@@ -1143,6 +1169,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/angvel": angvel_penalty,
             # v0.10.4: Standing penalty
             "reward/standing": standing_penalty,
+            "reward/collapse_height_pen": collapse_height_pen,
+            "reward/collapse_vz_pen": collapse_vz_pen,
             # Effort
             "reward/torque": torque_penalty,
             "reward/saturation": saturation_penalty,
@@ -1174,6 +1202,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/action_sat_frac": action_sat_frac,
             "debug/raw_action_abs_max": raw_action_abs_max,
             "debug/raw_action_sat_frac": raw_action_sat_frac,
+            "debug/torque_abs_max": torque_abs_max,
+            "debug/torque_sat_frac": torque_sat_frac,
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)

@@ -770,6 +770,8 @@ def make_train_iteration_fn(
             ..., METRIC_INDEX["debug/raw_action_sat_frac"]
         ]
         max_torque_ratio = trajectory.metrics_vec[..., METRIC_INDEX["tracking/max_torque"]]
+        torque_abs_max = trajectory.metrics_vec[..., METRIC_INDEX["debug/torque_abs_max"]]
+        torque_sat_frac = trajectory.metrics_vec[..., METRIC_INDEX["debug/torque_sat_frac"]]
 
         agg_metrics["debug/pitch_term/count"] = pitch_done_count
         agg_metrics["debug/pitch_term/pitch_abs_mean"] = _masked_mean(
@@ -840,6 +842,12 @@ def make_train_iteration_fn(
         )
         agg_metrics["debug/pitch_term/last_raw_action_sat_frac"] = _masked_max(
             raw_action_sat_frac, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_torque_abs_max"] = _masked_max(
+            torque_abs_max, pitch_term_mask
+        )
+        agg_metrics["debug/pitch_term/last_torque_sat_frac"] = _masked_max(
+            torque_sat_frac, pitch_term_mask
         )
         agg_metrics["debug/pitch_term/last_left_toe_switch"] = _masked_max(
             lt, pitch_term_mask
@@ -1080,6 +1088,7 @@ def train(
     ] = None,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
     eval_env_step_fn: Optional[Callable] = None,
+    eval_env_step_fn_no_push: Optional[Callable] = None,
     eval_env_reset_fn: Optional[Callable] = None,
     *,
     policy_init_action: Optional[jnp.ndarray] = None,
@@ -1097,6 +1106,7 @@ def train(
         ref_motion_data: Reference motion features (required if amp_weight>0)
         callback: Optional callback for logging/checkpointing
         resume_checkpoint: Optional checkpoint data to resume from (from load_checkpoint)
+        eval_env_step_fn_no_push: Optional eval step fn with disturbances disabled
 
     Returns:
         Final training state
@@ -1276,74 +1286,90 @@ def train(
         ref_buffer_data=ref_buffer_data,
     )
 
-    eval_step_fn = eval_env_step_fn or env_step_fn
+    eval_step_push_fn = eval_env_step_fn or env_step_fn
+    eval_step_clean_fn = eval_env_step_fn_no_push or eval_step_push_fn
     eval_reset_fn = eval_env_reset_fn or env_reset_fn
     eval_enabled = config.ppo.eval.enabled and config.ppo.eval.interval > 0
     eval_steps = config.ppo.eval.num_steps or config.ppo.rollout_steps
     eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
 
-    @jax.jit
-    def run_deterministic_eval(
-        policy_params: Any,
-        processor_params: Any,
-        eval_rng: jax.Array,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        eval_env_state = eval_reset_fn(eval_rng)
+    def _make_eval_runner(step_fn: Callable):
+        @jax.jit
+        def _runner(
+            policy_params: Any,
+            processor_params: Any,
+            eval_rng: jax.Array,
+        ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            eval_env_state = eval_reset_fn(eval_rng)
 
-        def eval_step(carry, _):
-            env_state, rng = carry
-            rng, action_rng = jax.random.split(rng)
-            obs = env_state.obs
-            action, _, _ = sample_actions(
-                processor_params,
-                policy_params,
-                ppo_network,
-                obs,
-                action_rng,
-                deterministic=config.ppo.eval.deterministic,
+            def eval_step(carry, _):
+                env_state, rng = carry
+                rng, action_rng = jax.random.split(rng)
+                obs = env_state.obs
+                action, _, _ = sample_actions(
+                    processor_params,
+                    policy_params,
+                    ppo_network,
+                    obs,
+                    action_rng,
+                    deterministic=config.ppo.eval.deterministic,
+                )
+                next_env_state = step_fn(env_state, action)
+                wr_info = next_env_state.info[WR_INFO_KEY]
+                step_data = {
+                    "reward": next_env_state.reward,
+                    "done": next_env_state.done,
+                    "truncation": wr_info.truncated,
+                    "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                }
+                return (next_env_state, rng), step_data
+
+            (_, _), eval_rollout = jax.lax.scan(
+                eval_step, (eval_env_state, eval_rng), None, length=eval_steps
             )
-            next_env_state = eval_step_fn(env_state, action)
-            wr_info = next_env_state.info[WR_INFO_KEY]
-            step_data = {
-                "reward": next_env_state.reward,
-                "done": next_env_state.done,
-                "truncation": wr_info.truncated,
-                "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
-            }
-            return (next_env_state, rng), step_data
 
-        (_, _), eval_rollout = jax.lax.scan(
-            eval_step, (eval_env_state, eval_rng), None, length=eval_steps
-        )
+            episode_reward = jnp.mean(jnp.sum(eval_rollout["reward"], axis=0))
+            term_idx_pitch = METRIC_INDEX["term/pitch"]
+            term_idx_roll = METRIC_INDEX["term/roll"]
 
-        episode_reward = jnp.mean(jnp.sum(eval_rollout["reward"], axis=0))
-        term_idx_pitch = METRIC_INDEX["term/pitch"]
-        term_idx_roll = METRIC_INDEX["term/roll"]
+            total_done = jnp.sum(eval_rollout["done"])
+            completed_lengths = (
+                eval_rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
+                * eval_rollout["done"]
+            )
+            episode_length = jnp.where(
+                total_done > 0,
+                jnp.sum(completed_lengths) / total_done,
+                0.0,
+            )
 
-        total_done = jnp.sum(eval_rollout["done"])
-        completed_lengths = (
-            eval_rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
-            * eval_rollout["done"]
-        )
-        episode_length = jnp.where(
-            total_done > 0,
-            jnp.sum(completed_lengths) / total_done,
-            0.0,
-        )
+            total_truncated = jnp.sum(eval_rollout["truncation"])
+            success_rate = jnp.where(total_done > 0, total_truncated / total_done, 0.0)
+            term_pitch_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_pitch]) / total_done,
+                0.0,
+            )
+            term_roll_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_roll]) / total_done,
+                0.0,
+            )
+            return (
+                episode_reward,
+                success_rate,
+                episode_length,
+                term_pitch_frac,
+                term_roll_frac,
+            )
 
-        total_truncated = jnp.sum(eval_rollout["truncation"])
-        success_rate = jnp.where(total_done > 0, total_truncated / total_done, 0.0)
-        term_pitch_frac = jnp.where(
-            total_done > 0,
-            jnp.sum(eval_rollout["metrics_vec"][..., term_idx_pitch]) / total_done,
-            0.0,
-        )
-        term_roll_frac = jnp.where(
-            total_done > 0,
-            jnp.sum(eval_rollout["metrics_vec"][..., term_idx_roll]) / total_done,
-            0.0,
-        )
-        return episode_reward, success_rate, episode_length, term_pitch_frac, term_roll_frac
+        return _runner
+
+    run_eval_push = _make_eval_runner(eval_step_push_fn)
+    eval_has_clean_pass = eval_step_clean_fn is not eval_step_push_fn
+    run_eval_clean = (
+        _make_eval_runner(eval_step_clean_fn) if eval_has_clean_pass else run_eval_push
+    )
 
     print("=" * 60)
     print("Pre-compiling JIT functions...")
@@ -1359,14 +1385,21 @@ def train(
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
     if eval_enabled:
         eval_compile_start = time.time()
-        _ = run_deterministic_eval(
+        _push = run_eval_push(
             state.policy_params,
             state.processor_params,
             eval_base_rng,
         )
-        jax.block_until_ready(_)
+        jax.block_until_ready(_push)
+        if eval_has_clean_pass:
+            _clean = run_eval_clean(
+                state.policy_params,
+                state.processor_params,
+                eval_base_rng,
+            )
+            jax.block_until_ready(_clean)
         print(
-            "  ✓ run_deterministic_eval compiled "
+            "  ✓ run_eval_push/run_eval_clean compiled "
             f"({time.time() - eval_compile_start:.1f}s)"
         )
     print("=" * 60)
@@ -1476,41 +1509,60 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_reward, eval_success, eval_ep_len, eval_term_pitch, eval_term_roll = (
-                run_deterministic_eval(
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_pitch, eval_push_term_roll = (
+                run_eval_push(
                     state.policy_params,
                     state.processor_params,
                     eval_base_rng,
                 )
             )
-            jax.block_until_ready(eval_success)
+            if eval_has_clean_pass:
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_pitch, eval_clean_term_roll = (
+                    run_eval_clean(
+                        state.policy_params,
+                        state.processor_params,
+                        eval_base_rng,
+                    )
+                )
+            else:
+                eval_clean_reward = eval_push_reward
+                eval_clean_success = eval_push_success
+                eval_clean_ep_len = eval_push_ep_len
+                eval_clean_term_pitch = eval_push_term_pitch
+                eval_clean_term_roll = eval_push_term_roll
+            jax.block_until_ready(eval_push_success)
 
-            eval_success_f = float(eval_success)
-            eval_ep_len_f = float(eval_ep_len)
+            eval_push_success_f = float(eval_push_success)
+            eval_push_ep_len_f = float(eval_push_ep_len)
             last_eval_metrics = {
-                "eval/reward": float(eval_reward),
-                "eval/success_rate": eval_success_f,
-                "eval/episode_length": eval_ep_len_f,
-                "eval/term_pitch_frac": float(eval_term_pitch),
-                "eval/term_roll_frac": float(eval_term_roll),
+                "eval_push/reward": float(eval_push_reward),
+                "eval_push/success_rate": eval_push_success_f,
+                "eval_push/episode_length": eval_push_ep_len_f,
+                "eval_push/term_pitch_frac": float(eval_push_term_pitch),
+                "eval_push/term_roll_frac": float(eval_push_term_roll),
+                "eval_clean/reward": float(eval_clean_reward),
+                "eval_clean/success_rate": float(eval_clean_success),
+                "eval_clean/episode_length": float(eval_clean_ep_len),
+                "eval_clean/term_pitch_frac": float(eval_clean_term_pitch),
+                "eval_clean/term_roll_frac": float(eval_clean_term_roll),
             }
             for key, value in last_eval_metrics.items():
                 env_metrics[key] = jnp.asarray(value, dtype=jnp.float32)
 
             if _is_eval_better(
-                success_rate=eval_success_f,
-                episode_length=eval_ep_len_f,
+                success_rate=eval_push_success_f,
+                episode_length=eval_push_ep_len_f,
                 best_success_rate=best_eval["success_rate"],
                 best_episode_length=best_eval["episode_length"],
             ):
-                best_eval["success_rate"] = eval_success_f
-                best_eval["episode_length"] = eval_ep_len_f
+                best_eval["success_rate"] = eval_push_success_f
+                best_eval["episode_length"] = eval_push_ep_len_f
                 best_eval["state"] = jax.device_get(state)
                 best_eval["iteration"] = iteration
                 rollback_bad_count = 0
             elif config.ppo.rollback.enabled and best_eval["state"] is not None:
                 if _should_trigger_rollback(
-                    current_success_rate=eval_success_f,
+                    current_success_rate=eval_push_success_f,
                     best_success_rate=float(best_eval["success_rate"]),
                     threshold=float(config.ppo.rollback.success_rate_drop_threshold),
                 ):
@@ -1597,6 +1649,11 @@ def train(
                 f"pitch={float(env['term_pitch_frac']):>4.1%} | "
                 f"roll={float(env['term_roll_frac']):>4.1%}"
             )
+            print(
+                f"  └─ stress: torque_sat={float(env['debug/torque_sat_frac']):>4.1%} | "
+                f"torque_max={float(env['debug/torque_abs_max']):>4.1%} | "
+                f"action_sat={float(env['debug/action_sat_frac']):>4.1%}"
+            )
 
             print(
                 f"  └─ ppo: kl={float(metrics.approx_kl):>6.4f} "
@@ -1605,12 +1662,19 @@ def train(
                 f"lr={float(env['ppo/lr']):>8.6f}"
             )
 
-            if "eval/success_rate" in env:
+            if "eval_push/success_rate" in env:
                 print(
-                    f"  └─ eval: success={float(env['eval/success_rate']):>5.1%} | "
-                    f"ep_len={float(env['eval/episode_length']):>5.1f} | "
-                    f"term_pitch={float(env['eval/term_pitch_frac']):>4.1%} | "
-                    f"term_roll={float(env['eval/term_roll_frac']):>4.1%}"
+                    f"  └─ eval_push: success={float(env['eval_push/success_rate']):>5.1%} | "
+                    f"ep_len={float(env['eval_push/episode_length']):>5.1f} | "
+                    f"term_pitch={float(env['eval_push/term_pitch_frac']):>4.1%} | "
+                    f"term_roll={float(env['eval_push/term_roll_frac']):>4.1%}"
+                )
+            if "eval_clean/success_rate" in env:
+                print(
+                    f"  └─ eval_clean: success={float(env['eval_clean/success_rate']):>5.1%} | "
+                    f"ep_len={float(env['eval_clean/episode_length']):>5.1f} | "
+                    f"term_pitch={float(env['eval_clean/term_pitch_frac']):>4.1%} | "
+                    f"term_roll={float(env['eval_clean/term_roll_frac']):>4.1%}"
                 )
 
             if amp_enabled:

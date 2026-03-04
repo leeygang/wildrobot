@@ -340,6 +340,10 @@ def start_training(
         """Batched eval environment step."""
         return jax.vmap(lambda s, a: env.step(s, a))(state, action)
 
+    def batched_eval_clean_step_fn(state, action):
+        """Batched eval step with pushes disabled."""
+        return jax.vmap(lambda s, a: env.step(s, a, disable_pushes=True))(state, action)
+
     def batched_eval_reset_fn(rng):
         """Batched eval environment reset."""
         rngs = jax.random.split(rng, eval_num_envs)
@@ -439,6 +443,7 @@ def start_training(
         callback=callback,
         resume_checkpoint=resume_checkpoint,
         eval_env_step_fn=batched_eval_step_fn,
+        eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
         policy_init_action=JaxCalibOps.ctrl_to_policy_action(
             spec=policy_spec,

@@ -93,6 +93,9 @@ class EnvConfig(Freezable):
     target_height: float = 0.45
     height_target_two_sided: bool = False
     min_height: float = 0.20
+    collapse_height_buffer: float = 0.02
+    collapse_height_sigma: float = 0.03
+    collapse_vz_gate_band: float = 0.05
     max_height: float = 0.70
     max_pitch: float = 0.8
     max_roll: float = 0.8
@@ -293,6 +296,8 @@ class RewardWeightsConfig(Freezable):
     angular_velocity: float = -0.05
     height_target: float = 0.0
     height_target_sigma: float = 0.05
+    collapse_height: float = -0.2
+    collapse_vz: float = -0.2
 
     # Effort and safety
     torque: float = -0.001
