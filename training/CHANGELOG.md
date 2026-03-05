@@ -18,7 +18,7 @@ This changelog tracks capability changes, configuration updates, and training re
   - `reward_weights.collapse_vz: -0.2 -> -0.3`
 - `training/configs/ppo_standing_push.yaml`: improve recovery to reduce pitch-limit failures:
   - `reward_weights.orientation: -3.0 -> -4.0`
-  - `env.action_filter_alpha: 0.6 -> 0.5` (faster corrections)
+  - keep `env.action_filter_alpha: 0.6` to allow resuming from v0.13.8 checkpoints (part of `policy_spec_hash`)
 
 ### Plan
 1. Validate setup:

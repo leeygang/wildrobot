@@ -13,7 +13,7 @@
 # =============================================================================
 
 version: "0.13.9"
-version_name: "Standing robustness (reduce height-low + pitch terms)"
+version_name: "Standing robustness (v0.13.9 probe +20 iters, fast eval)"
 
 seed: 42
 
@@ -70,7 +70,7 @@ ppo:
 
   num_envs: 512
   rollout_steps: 256 
-  iterations: 200
+  iterations: 20
 
   # Stabilize PPO updates (reduce late-training regressions)
   learning_rate: 1e-4
@@ -98,8 +98,8 @@ ppo:
   eval:
     enabled: true
     interval: 10
-    num_envs: 128
-    num_steps: 500
+    num_envs: 64
+    num_steps: 200
     deterministic: true
 
   rollback:

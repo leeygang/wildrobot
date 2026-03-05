@@ -1291,6 +1291,7 @@ def train(
     eval_reset_fn = eval_env_reset_fn or env_reset_fn
     eval_enabled = config.ppo.eval.enabled and config.ppo.eval.interval > 0
     eval_steps = config.ppo.eval.num_steps or config.ppo.rollout_steps
+    use_eval_survival_metric = int(eval_steps) < int(config.env.max_episode_steps)
     eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
 
     def _make_eval_runner(step_fn: Callable):
@@ -1299,8 +1300,23 @@ def train(
             policy_params: Any,
             processor_params: Any,
             eval_rng: jax.Array,
-        ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        ) -> Tuple[
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+        ]:
             eval_env_state = eval_reset_fn(eval_rng)
+            reset_h = eval_env_state.metrics["height"]
+            reset_h_mean = jnp.mean(reset_h)
+            reset_h_min = jnp.min(reset_h)
 
             def eval_step(carry, _):
                 env_state, rng = carry
@@ -1335,6 +1351,23 @@ def train(
             term_idx_roll = METRIC_INDEX["term/roll"]
 
             total_done = jnp.sum(eval_rollout["done"])
+            done_by_env = jnp.any(eval_rollout["done"] > 0, axis=0)
+            done_env_frac = jnp.mean(done_by_env.astype(jnp.float32))
+            # "Survival" means: did not end due to failure during this eval horizon.
+            # We treat truncation (max steps) as success, and any other done as failure.
+            trunc_by_env = jnp.any(eval_rollout["truncation"] > 0, axis=0)
+            failure_done_by_env = done_by_env & (~trunc_by_env)
+            survival_rate = 1.0 - jnp.mean(failure_done_by_env.astype(jnp.float32))
+
+            # Survival steps: first done step (1-indexed), or eval_steps if never done.
+            done_mask = eval_rollout["done"] > 0  # (T, N)
+            first_done_idx = jnp.argmax(done_mask.astype(jnp.int32), axis=0)  # 0 if none
+            survived_steps = jnp.where(
+                done_by_env,
+                first_done_idx.astype(jnp.float32) + 1.0,
+                jnp.asarray(float(eval_steps), dtype=jnp.float32),
+            )
+            survival_steps = jnp.mean(survived_steps)
             completed_lengths = (
                 eval_rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
                 * eval_rollout["done"]
@@ -1346,6 +1379,8 @@ def train(
             )
 
             total_truncated = jnp.sum(eval_rollout["truncation"])
+            truncated_by_env = jnp.any(eval_rollout["truncation"] > 0, axis=0)
+            trunc_env_frac = jnp.mean(truncated_by_env.astype(jnp.float32))
             success_rate = jnp.where(total_done > 0, total_truncated / total_done, 0.0)
             term_height_low_frac = jnp.where(
                 total_done > 0,
@@ -1375,6 +1410,12 @@ def train(
                 term_height_high_frac,
                 term_pitch_frac,
                 term_roll_frac,
+                done_env_frac,
+                trunc_env_frac,
+                survival_rate,
+                survival_steps,
+                reset_h_mean,
+                reset_h_min,
             )
 
         return _runner
@@ -1384,6 +1425,14 @@ def train(
     run_eval_clean = (
         _make_eval_runner(eval_step_clean_fn) if eval_has_clean_pass else run_eval_push
     )
+
+    if eval_enabled and use_eval_survival_metric:
+        print(
+            "WARNING: ppo.eval.num_steps < env.max_episode_steps. "
+            "eval_*/success_rate is truncation-based, so it will be ~0 unless episodes end early. "
+            "Use eval_*/survival_rate and eval_*/survival_steps for short-horizon probes. "
+            f"(eval.num_steps={int(config.ppo.eval.num_steps)}, max_episode_steps={int(config.env.max_episode_steps)})"
+        )
 
     print("=" * 60)
     print("Pre-compiling JIT functions...")
@@ -1398,24 +1447,9 @@ def train(
     jax.block_until_ready(_)
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
     if eval_enabled:
-        eval_compile_start = time.time()
-        _push = run_eval_push(
-            state.policy_params,
-            state.processor_params,
-            eval_base_rng,
-        )
-        jax.block_until_ready(_push)
-        if eval_has_clean_pass:
-            _clean = run_eval_clean(
-                state.policy_params,
-                state.processor_params,
-                eval_base_rng,
-            )
-            jax.block_until_ready(_clean)
-        print(
-            "  ✓ run_eval_push/run_eval_clean compiled "
-            f"({time.time() - eval_compile_start:.1f}s)"
-        )
+        # Eval compilation can be very expensive (full rollout scan + metrics), so
+        # compile it lazily on first eval call instead of blocking startup.
+        print("  eval runners will JIT-compile on first eval call")
     print("=" * 60)
 
     # Calculate target iteration (resume adds to checkpoint iteration)
@@ -1523,7 +1557,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1531,7 +1565,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1546,10 +1580,18 @@ def train(
                 eval_clean_term_h_high = eval_push_term_h_high
                 eval_clean_term_pitch = eval_push_term_pitch
                 eval_clean_term_roll = eval_push_term_roll
+                eval_clean_done_env = eval_push_done_env
+                eval_clean_trunc_env = eval_push_trunc_env
+                eval_clean_survival_rate = eval_push_survival_rate
+                eval_clean_survival_steps = eval_push_survival_steps
+                eval_clean_reset_h_mean = eval_push_reset_h_mean
+                eval_clean_reset_h_min = eval_push_reset_h_min
             jax.block_until_ready(eval_push_success)
 
             eval_push_success_f = float(eval_push_success)
             eval_push_ep_len_f = float(eval_push_ep_len)
+            eval_push_survival_rate_f = float(eval_push_survival_rate)
+            eval_push_survival_steps_f = float(eval_push_survival_steps)
             last_eval_metrics = {
                 "eval_push/reward": float(eval_push_reward),
                 "eval_push/success_rate": eval_push_success_f,
@@ -1558,6 +1600,12 @@ def train(
                 "eval_push/term_height_high_frac": float(eval_push_term_h_high),
                 "eval_push/term_pitch_frac": float(eval_push_term_pitch),
                 "eval_push/term_roll_frac": float(eval_push_term_roll),
+                "eval_push/done_env_frac": float(eval_push_done_env),
+                "eval_push/trunc_env_frac": float(eval_push_trunc_env),
+                "eval_push/survival_rate": eval_push_survival_rate_f,
+                "eval_push/survival_steps": eval_push_survival_steps_f,
+                "eval_push/reset_height_mean": float(eval_push_reset_h_mean),
+                "eval_push/reset_height_min": float(eval_push_reset_h_min),
                 "eval_clean/reward": float(eval_clean_reward),
                 "eval_clean/success_rate": float(eval_clean_success),
                 "eval_clean/episode_length": float(eval_clean_ep_len),
@@ -1565,24 +1613,34 @@ def train(
                 "eval_clean/term_height_high_frac": float(eval_clean_term_h_high),
                 "eval_clean/term_pitch_frac": float(eval_clean_term_pitch),
                 "eval_clean/term_roll_frac": float(eval_clean_term_roll),
+                "eval_clean/done_env_frac": float(eval_clean_done_env),
+                "eval_clean/trunc_env_frac": float(eval_clean_trunc_env),
+                "eval_clean/survival_rate": float(eval_clean_survival_rate),
+                "eval_clean/survival_steps": float(eval_clean_survival_steps),
+                "eval_clean/reset_height_mean": float(eval_clean_reset_h_mean),
+                "eval_clean/reset_height_min": float(eval_clean_reset_h_min),
             }
             for key, value in last_eval_metrics.items():
                 env_metrics[key] = jnp.asarray(value, dtype=jnp.float32)
 
+            # Use survival metrics for short-horizon probes (eval_steps < max_episode_steps).
+            gate_success = eval_push_survival_rate_f if use_eval_survival_metric else eval_push_success_f
+            gate_len = eval_push_survival_steps_f if use_eval_survival_metric else eval_push_ep_len_f
+
             if _is_eval_better(
-                success_rate=eval_push_success_f,
-                episode_length=eval_push_ep_len_f,
+                success_rate=gate_success,
+                episode_length=gate_len,
                 best_success_rate=best_eval["success_rate"],
                 best_episode_length=best_eval["episode_length"],
             ):
-                best_eval["success_rate"] = eval_push_success_f
-                best_eval["episode_length"] = eval_push_ep_len_f
+                best_eval["success_rate"] = gate_success
+                best_eval["episode_length"] = gate_len
                 best_eval["state"] = jax.device_get(state)
                 best_eval["iteration"] = iteration
                 rollback_bad_count = 0
             elif config.ppo.rollback.enabled and best_eval["state"] is not None:
                 if _should_trigger_rollback(
-                    current_success_rate=eval_push_success_f,
+                    current_success_rate=gate_success,
                     best_success_rate=float(best_eval["success_rate"]),
                     threshold=float(config.ppo.rollback.success_rate_drop_threshold),
                 ):
@@ -1689,7 +1747,12 @@ def train(
                     f"term_h_low={float(env['eval_push/term_height_low_frac']):>4.1%} | "
                     f"term_h_high={float(env['eval_push/term_height_high_frac']):>4.1%} | "
                     f"term_pitch={float(env['eval_push/term_pitch_frac']):>4.1%} | "
-                    f"term_roll={float(env['eval_push/term_roll_frac']):>4.1%}"
+                    f"term_roll={float(env['eval_push/term_roll_frac']):>4.1%} | "
+                    f"done_env={float(env.get('eval_push/done_env_frac', 0.0)):>4.1%} | "
+                    f"trunc_env={float(env.get('eval_push/trunc_env_frac', 0.0)):>4.1%} | "
+                    f"survive={float(env.get('eval_push/survival_rate', 0.0)):>5.1%} "
+                    f"@{float(env.get('eval_push/survival_steps', 0.0)):>5.1f} | "
+                    f"reset_h={float(env.get('eval_push/reset_height_mean', 0.0)):>4.2f}m"
                 )
             if "eval_clean/success_rate" in env:
                 print(
@@ -1698,7 +1761,12 @@ def train(
                     f"term_h_low={float(env['eval_clean/term_height_low_frac']):>4.1%} | "
                     f"term_h_high={float(env['eval_clean/term_height_high_frac']):>4.1%} | "
                     f"term_pitch={float(env['eval_clean/term_pitch_frac']):>4.1%} | "
-                    f"term_roll={float(env['eval_clean/term_roll_frac']):>4.1%}"
+                    f"term_roll={float(env['eval_clean/term_roll_frac']):>4.1%} | "
+                    f"done_env={float(env.get('eval_clean/done_env_frac', 0.0)):>4.1%} | "
+                    f"trunc_env={float(env.get('eval_clean/trunc_env_frac', 0.0)):>4.1%} | "
+                    f"survive={float(env.get('eval_clean/survival_rate', 0.0)):>5.1%} "
+                    f"@{float(env.get('eval_clean/survival_steps', 0.0)):>5.1f} | "
+                    f"reset_h={float(env.get('eval_clean/reset_height_mean', 0.0)):>4.2f}m"
                 )
 
             if amp_enabled:

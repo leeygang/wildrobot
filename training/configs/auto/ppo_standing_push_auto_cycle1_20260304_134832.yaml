@@ -1,0 +1,137 @@
+version: 0.13.9
+version_name: Standing robustness (reduce height-low + pitch terms) | auto_cycle=1
+  | probe_eval=200
+seed: 42
+env:
+  assets_root: assets/v2
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+  target_height: 0.44
+  height_target_two_sided: true
+  min_height: 0.4
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.7
+  max_pitch: 0.8
+  max_roll: 0.8
+  min_velocity: 0.0
+  max_velocity: 0.0
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+  action_filter_alpha: 0.6
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 3.0
+  push_force_max: 6.0
+  push_bodies:
+  - waist
+  - upperbody
+ppo:
+  num_envs: 512
+  rollout_steps: 256
+  iterations: 30
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+  target_kl: 0.02
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 3.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  entropy_schedule_end_factor: 0.4
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 200
+    deterministic: true
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+  log_interval: 10
+amp:
+  enabled: false
+  dataset_path: null
+  weight: 0.0
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.8
+networks:
+  actor:
+    hidden_sizes:
+    - 256
+    - 256
+    - 128
+    activation: elu
+  critic:
+    hidden_sizes:
+    - 256
+    - 256
+    - 128
+    activation: elu
+  discriminator:
+    hidden_sizes:
+    - 512
+    - 256
+    activation: relu
+reward_weights:
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  base_height: 2.0
+  orientation: -4.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  collapse_height: -0.5
+  collapse_vz: -0.3
+  angular_velocity: -0.1
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -1.0
+  clearance: 0.05
+  flight_phase_penalty: -0.1
+  stance_width_penalty: -0.1
+  stance_width_target: 0.23
+  stance_width_sigma: 0.05
+  forward_velocity_scale: 4.0
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0
+  task_reward_clip: null
+  amp_reward_clip:
+  - 0.0
+  - 1.0
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+quick_verify:
+  ppo:
+    num_envs: 8
