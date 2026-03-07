@@ -115,13 +115,13 @@ def _export_runtime_config(
 ) -> None:
     """Generate a runtime config JSON colocated with the exported bundle.
 
-    Source of truth for hardware settings is `runtime/configs/wr_runtime_config.json`.
+    Source of truth for hardware settings is `runtime/configs/runtime_config_template.json`.
     The generated config patches:
       - `policy_onnx_path` -> `./policy.onnx`
       - `mjcf_path` -> `./wildrobot.xml` (bundle-local snapshot)
     """
     project_root = Path(__file__).parent.parent.parent
-    base_path = project_root / "runtime" / "configs" / "wr_runtime_config.json"
+    base_path = project_root / "runtime" / "configs" / "runtime_config_template.json"
 
     if not base_path.exists():
         raise FileNotFoundError(f"Runtime config base not found: {base_path}")

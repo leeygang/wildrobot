@@ -11,7 +11,7 @@ WildRobot hardware runtime lives under `runtime/wr_runtime/` and assumes:
 Calibration is performed with the interactive script:
 - `runtime/scripts/calibrate.py`
 
-Calibration data is stored in the runtime JSON config (copy the sample `runtime/configs/wr_runtime_config.json` to your robot, typically `~/.wildrobot/config.json`).
+Calibration data is stored in the runtime JSON config (copy the sample `runtime/configs/runtime_config_template.json` (or `runtime/configs/runtime_config_v2.json`) to your robot, typically `~/.wildrobot/config.json`).
 
 This doc describes the servo calibration model and the operator workflow for per-joint:
 1) motor_sign correction
@@ -59,7 +59,7 @@ Per joint, calibration values are:
 
 ## Config Shape
 
-Use `runtime/configs/wr_runtime_config.json` as the canonical “in-repo” calibration target:
+Use `runtime/configs/runtime_config_template.json` as the canonical “in-repo” calibration target:
 - calibration reads joint names (and servo IDs) from this file
 - calibration writes results back to this file (in-place with backups, unless `--output` is provided)
 
@@ -298,7 +298,7 @@ We can add a console entrypoint later if desired.
 ## CLI Sketch
 
 Minimal flags:
-- `--config <path>`: input runtime config (default: `runtime/configs/wr_runtime_config.json`)
+- `--config <path>`: input runtime config (default: `runtime/configs/runtime_config_v2.json`)
 - `--bundle <path>`: optional policy bundle folder (for `policy_spec.json` / `home_ctrl_rad`)
 - `--scene-xml <path>`: optional MuJoCo scene XML (read `"home"` keyframe via MuJoCo)
 - `--keyframes-xml <path>`: optional keyframes XML (read `"home"` keyframe by parsing `qpos`)

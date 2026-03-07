@@ -4,7 +4,7 @@ This runbook describes how to wire and use 4x mechanical foot/contact switches (
 
 WildRobot runtime integration points:
 - GPIO driver: `runtime/wr_runtime/hardware/foot_switches.py`
-- Runtime config field: `foot_switches` (see `runtime/README.md` and `runtime/configs/wr_runtime_config.json`)
+- Runtime config field: `foot_switches` (see `runtime/README.md` and `runtime/configs/runtime_config_template.json`)
 
 ## 1) Electrical behavior (what the runtime expects)
 
@@ -39,7 +39,7 @@ Notes:
 
 The runtime config uses Adafruit Blinka `board` pin names like `"D5"`. On Raspberry Pi, Blinka `D<n>` corresponds to **BCM GPIO `<n>`**.
 
-Default pins from `runtime/configs/wr_runtime_config.json`:
+Default pins from `runtime/configs/runtime_config_template.json`:
 
 | Runtime name | Blinka pin | BCM GPIO | Physical header pin |
 |---|---:|---:|---:|
@@ -112,7 +112,7 @@ Expected:
 Alternative (interactive):
 
 ```bash
-uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-footswitch
+uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-footswitch
 ```
 
 This will:
@@ -130,4 +130,3 @@ When running `wildrobot-run-policy`, foot switches are read every control tick a
 - Reads always `True` (pressed): you likely wired the GPIO to **3.3V** or used `NC` by mistake; use `COM→GND` and `NO→GPIO`.
 - Reads always `False`: wrong pin name in config, broken wire, or the switch never closes; check continuity (COM↔NO closes when pressed).
 - Flickers/chatter when pressed: contact bounce or noise; shorten wiring, add RC filtering, or implement software debouncing upstream of whatever consumes `foot_switches`.
-

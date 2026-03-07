@@ -2521,25 +2521,25 @@ def main() -> None:
     examples = """
 Examples (copy/paste):
   # Dry-run: show planned moves only (no serial required)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --dry-run
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --dry-run
 
   # Move robot to home pose only (no calibration), then wait until you press 'q' to unload
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --go-home --keyframes-xml assets/v2/keyframes.xml
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --go-home --keyframes-xml assets/v2/keyframes.xml
 
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --record-pos
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --record-pos
 
         # Interactive calibration mode (per-joint submenu: p/q/a/m/r/o/s/z/b/x)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
 
   # Test range of motion for joints interactively
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --range
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --range
 
   # Calibrate IMU upside_down (simple inversion check using gravity vector)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-imu
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-imu
 
     # Footswitch calibration/test: select which switch signals to display, then press the switches to verify wiring
-    uv run python runtime/scripts/calibrate.py --config runtime/configs/wr_runtime_config.json --calibrate-footswitch
+    uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-footswitch
 """.strip()
 
     parser = argparse.ArgumentParser(
@@ -2551,7 +2551,7 @@ Examples (copy/paste):
     parser.add_argument("--?", action="help", help="Show help (alias)")
     parser.add_argument(
         "--config",
-        default="runtime/configs/wr_runtime_config.json",
+        default="runtime/configs/runtime_config_v2.json",
         help="Input runtime config path",
     )
     parser.add_argument("--output", help="Optional output path; default is in-place update with backup")

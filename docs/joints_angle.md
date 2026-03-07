@@ -35,7 +35,7 @@ Calibration uses a conceptual “contract-space” unit `u` that is easier to re
 - By definition, the conceptual center is `u = 500`.
 
 ### E. Servo calibration parameters
-These parameters live in `runtime/configs/wr_runtime_config.json` under `servo_controller.servos.<joint>`:
+These parameters live in `runtime/configs/runtime_config_template.json` under `servo_controller.servos.<joint>`:
 - `motor_sign ∈ {+1, -1}` (hardware sign correction):
   - `+1`: increasing `target_rad` increases `u` / `u_elec`
   - `-1`: increasing `target_rad` decreases `u` / `u_elec`
@@ -97,7 +97,7 @@ But `motor_center_mujoco_deg` and `ctrl_center` are different centers, so always
 
 The numbers below are taken from:
 - Joint ranges + `policy_action_sign`: `assets/v2/mujoco_robot_config.json` (unless noted)
-- Servo calibration: `runtime/configs/wr_runtime_config.json` (unless noted)
+- Servo calibration: `runtime/configs/runtime_config_template.json` (unless noted)
 
 Assume the policy outputs the same action for each example:
 - `action = +0.25`

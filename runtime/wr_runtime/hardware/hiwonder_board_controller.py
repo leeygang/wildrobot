@@ -7,7 +7,7 @@ Usage:
     from configs import WrRuntimeConfig
     from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
 
-    config = WrRuntimeConfig.load("runtime/configs/wr_runtime_config.json")
+    config = WrRuntimeConfig.load("runtime/configs/runtime_config_v2.json")
     controller = HiwonderBoardController(config.hiwonder_controller)
 
     # Convert policy actions to servo commands and move

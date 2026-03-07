@@ -370,13 +370,21 @@ def main() -> None:
         help="Bundle directory (contains wildrobot_config.json + policy_spec.json + policy.onnx)",
     )
     parser.add_argument(
-        "--config",
+        "--runtime-config",
         type=str,
         default=None,
         help=(
             "Optional runtime JSON with *hardware calibration* (default: ~/.wildrobot/config.json). "
-            "If used together with --bundle, the bundle provides policy/model/spec assets and --config "
+            "If used together with --bundle, the bundle provides policy/model/spec assets and --runtime-config "
             "provides servo/IMU/foot-switch settings."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=(
+            "Deprecated alias for --runtime-config. Prefer --runtime-config to avoid confusion with training configs."
         ),
     )
     parser.add_argument(
@@ -445,6 +453,9 @@ def main() -> None:
     if args.debug is not None and float(args.debug) <= 0.0:
         parser.error("--debug must be > 0 (seconds)")
 
+    if args.runtime_config is not None and args.config is not None:
+        parser.error("Pass only one of --runtime-config or --config (deprecated).")
+
     console_log_fh = None
     original_stdout = sys.stdout
     original_stderr = sys.stderr
@@ -459,23 +470,26 @@ def main() -> None:
     bundle_dir: Path | None = Path(args.bundle) if args.bundle else None
 
     # Config selection:
-    # - If user provides --config, treat it as the hardware-calibration source of truth.
+    # - If user provides --runtime-config, treat it as the hardware-calibration source of truth.
     # - Else, if --bundle is provided, fall back to bundle-local wildrobot_config.json.
     # - Else, rely on default config search in configs.load_config().
     config_path: str | None
-    if args.config is not None:
+    if args.runtime_config is not None:
+        config_path = args.runtime_config
+    elif args.config is not None:
+        print("Warning: --config is deprecated; use --runtime-config instead.")
         config_path = args.config
     elif bundle_dir is not None:
         cfg_path = bundle_dir / "wildrobot_config.json"
         if not cfg_path.exists():
             raise SystemExit(
                 f"Bundle missing wildrobot_config.json: {cfg_path}. "
-                "Either add it to the bundle or pass --config pointing to your hardware config JSON."
+                "Either add it to the bundle or pass --runtime-config pointing to your hardware config JSON."
             )
         config_path = str(cfg_path)
         print(
             "Using bundle-local wildrobot_config.json for hardware calibration. "
-            "If joints move incorrectly, pass --config ~/.wildrobot/config.json (or your calibrated file)."
+            "If joints move incorrectly, pass --runtime-config ~/.wildrobot/config.json (or your calibrated file)."
         )
     else:
         config_path = None

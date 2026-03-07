@@ -800,7 +800,7 @@ This mirrors the actuator design: servo offsets/directions are applied in the ac
    - Use `runtime/docs/bno08x_rpi_install_and_test.md` to install dependencies and validate basic reads.
 
 2) **Set runtime config basics**
-   - In `runtime/configs/wr_runtime_config.json`, set:
+   - In `runtime/configs/runtime_config_template.json`, set:
      - `bno085.i2c_address`
      - `bno085.upside_down` (initial guess is fine; calibration can update it)
 
@@ -941,7 +941,7 @@ wildrobot/
 │  ├─ README.md
 │  ├─ configs/                             # runtime JSON configs
 │  │  ├─ config.py                         # WrRuntimeConfig + ServoConfig (with rad_to_units)
-│  │  └─ wr_runtime_config.json            # per-robot calibration (servo IDs, offsets, motor_sign)
+│  │  └─ runtime_config_template.json      # calibration template (servo IDs, offsets, motor_sign)
 │  ├─ scripts/
 │  │  └─ calibrate.py                      # interactive servo calibration tool
 │  └─ wr_runtime/                          # ONLY importable runtime package (deploys to robot)
@@ -1083,7 +1083,7 @@ runtime loop already fail-fast disables actuators on exceptions. Treat safety as
 
 - `export_policy_bundle(checkpoint_path, config_path, output_dir, robot_config_path)`
   - Writes: `policy.onnx`, `policy_spec.json`, `mujoco_robot_config.json` snapshot, `checksums.json`, `wildrobot_config.json`
-  - `wildrobot_config.json` is generated from `runtime/configs/wr_runtime_config.json` with `policy_onnx_path=./policy.onnx`
+  - `wildrobot_config.json` is generated from `runtime/configs/runtime_config_template.json` with `policy_onnx_path=./policy.onnx`
   - Ensures: `policy_spec.obs_dim/action_dim` match the exported ONNX and `assets/v2/mujoco_robot_config.json` (or the selected variant config)
 
 ## 7) Policy Bundle Artifact (what gets deployed)
@@ -1095,7 +1095,7 @@ Instead of deploying only `policy.onnx`, deploy a folder (or zip/tar):
 - `policy_spec.json`  ← versioned contract + all semantic knobs used in training
 - `mujoco_robot_config.json` ← snapshot used to train/export (optional but recommended)
 - `checksums.json`    ← sha256 of the above for integrity
-- `wildrobot_config.json` ← runtime JSON seeded from `runtime/configs/wr_runtime_config.json` (hardware settings)
+- `wildrobot_config.json` ← runtime JSON seeded from `runtime/configs/runtime_config_template.json` (hardware settings)
 - `wildrobot.xml` ← MJCF snapshot for actuator order validation
 - `README.md`         ← quick provenance + expected runtime command
 
