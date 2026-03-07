@@ -330,6 +330,14 @@ class RewardWeightsConfig(Freezable):
     velocity_standing_threshold: float = 0.2  # Below this = standing still
     velocity_cmd_min: float = 0.2  # Only apply standing penalty if cmd > this
 
+    # v0.14.x: Posture return shaping (encourage returning to default pose after recovery)
+    # - Computed from mean squared error between current joint_pos_rad and default_joint_qpos.
+    # - Gated by uprightness (|pitch|, |roll|) and healthy.
+    posture: float = 0.0
+    posture_sigma: float = 0.35  # radians; larger = weaker pull to default
+    posture_gate_pitch: float = 0.35  # radians
+    posture_gate_roll: float = 0.35  # radians
+
 
 @dataclass
 class RewardCompositionConfig(Freezable):

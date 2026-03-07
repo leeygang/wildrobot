@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.9"
-version_name: "Standing robustness (reduce height-low + pitch terms)"
+version: "0.13.10"
+version_name: "Standing robustness (step recovery + posture return)"
 
 seed: 42
 
@@ -176,13 +176,19 @@ reward_weights:
   joint_velocity: -0.001
 
   slip: -1.0
-  clearance: 0.05
-  flight_phase_penalty: -0.1
+  clearance: 0.10
+  flight_phase_penalty: 0.0
   stance_width_penalty: -0.1
   stance_width_target: 0.23
   stance_width_sigma: 0.05
 
   forward_velocity_scale: 4.0
+
+  # Encourage returning to default pose once upright after a push.
+  posture: 0.3
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
 
 # =============================================================================
 # Reward Composition (Trainer-side)

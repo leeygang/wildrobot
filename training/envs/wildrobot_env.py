@@ -1093,6 +1093,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         stance_excess = jp.maximum(stance_width - weights.stance_width_target, 0.0)
         stance_width_penalty = jp.square(stance_excess / stance_sigma)
 
+        # 18. Posture return shaping (encourage returning to default joint pose when upright)
+        posture_sigma = jp.maximum(getattr(weights, "posture_sigma", 0.35), 1e-6)
+        joint_pos_rad = self._cal.get_joint_positions(data.qpos, normalize=False)
+        posture_mse = jp.mean(jp.square(joint_pos_rad - self._default_joint_qpos))
+        posture_reward = jp.exp(-posture_mse / (posture_sigma * posture_sigma))
+        posture_gate_pitch = getattr(weights, "posture_gate_pitch", 0.35)
+        posture_gate_roll = getattr(weights, "posture_gate_roll", 0.35)
+        posture_gate = (
+            healthy
+            * (jp.abs(pitch) < posture_gate_pitch).astype(jp.float32)
+            * (jp.abs(roll) < posture_gate_roll).astype(jp.float32)
+        )
+        posture_reward = posture_reward * posture_gate
+
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
@@ -1143,6 +1157,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.flight_phase_penalty * flight_phase
             + weights.height_target * height_target_reward
             + weights.stance_width_penalty * stance_width_penalty
+            + getattr(weights, "posture", 0.0) * posture_reward
         )
 
         # =====================================================================
@@ -1186,6 +1201,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/flight_phase": flight_phase,
             "reward/height_target": height_target_reward,
             "reward/stance_width_penalty": stance_width_penalty,
+            "reward/posture": posture_reward,
+            "debug/posture_mse": posture_mse,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

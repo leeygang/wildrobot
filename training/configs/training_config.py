@@ -293,6 +293,10 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         velocity_standing_penalty=rewards.get("velocity_standing_penalty", 0.0),
         velocity_standing_threshold=rewards.get("velocity_standing_threshold", 0.2),
         velocity_cmd_min=rewards.get("velocity_cmd_min", 0.2),
+        posture=rewards.get("posture", 0.0),
+        posture_sigma=rewards.get("posture_sigma", 0.35),
+        posture_gate_pitch=rewards.get("posture_gate_pitch", 0.35),
+        posture_gate_roll=rewards.get("posture_gate_roll", 0.35),
     )
 
 

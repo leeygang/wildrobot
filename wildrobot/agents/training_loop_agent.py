@@ -9,9 +9,11 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Protocol
 
 import yaml
 
@@ -206,6 +208,34 @@ FORBIDDEN_MUTATIONS = {
     "env.action_filter_alpha",
 }
 
+ALLOWED_MUTATION_PREFIXES = (
+    "env.collapse_",
+    "env.push_",
+    "reward_weights.",
+    "ppo.learning_rate",
+    "ppo.clip_epsilon",
+    "ppo.entropy_coef",
+)
+
+
+def _validate_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for k, v in updates.items():
+        if k in FORBIDDEN_MUTATIONS:
+            raise ValueError(f"Refusing to mutate {k!r}; it breaks resume policy_contract safety.")
+        if not any(k.startswith(p) for p in ALLOWED_MUTATION_PREFIXES):
+            raise ValueError(f"Refusing to mutate {k!r}; not in allowed prefixes {ALLOWED_MUTATION_PREFIXES}.")
+        if isinstance(v, bool):
+            cleaned[k] = v
+        elif isinstance(v, int):
+            cleaned[k] = int(v)
+        elif isinstance(v, float):
+            cleaned[k] = float(v)
+        else:
+            raise ValueError(f"Refusing update {k!r}={v!r}; only bool/int/float allowed.")
+    return cleaned
+
+
 def _format_pct(x: Optional[float]) -> str:
     if x is None:
         return "N/A"
@@ -361,6 +391,14 @@ class TuningKnobs:
     w_collapse_height: float
     w_collapse_vz: float
     w_orientation: float
+    w_clearance: float
+    w_flight_phase_penalty: float
+    w_posture: float
+    posture_sigma: float
+    push_force_max: float
+    push_duration_steps: int
+    w_action_rate: float
+    w_torque: float
 
 
 def _extract_knobs(cfg: Dict[str, Any]) -> TuningKnobs:
@@ -370,6 +408,14 @@ def _extract_knobs(cfg: Dict[str, Any]) -> TuningKnobs:
         w_collapse_height=float(_get_nested(cfg, "reward_weights.collapse_height") or -0.2),
         w_collapse_vz=float(_get_nested(cfg, "reward_weights.collapse_vz") or -0.2),
         w_orientation=float(_get_nested(cfg, "reward_weights.orientation") or -0.5),
+        w_clearance=float(_get_nested(cfg, "reward_weights.clearance") or 0.1),
+        w_flight_phase_penalty=float(_get_nested(cfg, "reward_weights.flight_phase_penalty") or 0.0),
+        w_posture=float(_get_nested(cfg, "reward_weights.posture") or 0.0),
+        posture_sigma=float(_get_nested(cfg, "reward_weights.posture_sigma") or 0.35),
+        push_force_max=float(_get_nested(cfg, "env.push_force_max") or 0.0),
+        push_duration_steps=int(_get_nested(cfg, "env.push_duration_steps") or 10),
+        w_action_rate=float(_get_nested(cfg, "reward_weights.action_rate") or -0.01),
+        w_torque=float(_get_nested(cfg, "reward_weights.torque") or -0.001),
     )
 
 
@@ -379,6 +425,24 @@ def _apply_knobs(cfg: Dict[str, Any], knobs: TuningKnobs) -> None:
     _set_nested(cfg, "reward_weights.collapse_height", float(knobs.w_collapse_height))
     _set_nested(cfg, "reward_weights.collapse_vz", float(knobs.w_collapse_vz))
     _set_nested(cfg, "reward_weights.orientation", float(knobs.w_orientation))
+    _set_nested(cfg, "reward_weights.clearance", float(knobs.w_clearance))
+    _set_nested(cfg, "reward_weights.flight_phase_penalty", float(knobs.w_flight_phase_penalty))
+    _set_nested(cfg, "reward_weights.posture", float(knobs.w_posture))
+    _set_nested(cfg, "reward_weights.posture_sigma", float(knobs.posture_sigma))
+    _set_nested(cfg, "env.push_force_max", float(knobs.push_force_max))
+    _set_nested(cfg, "env.push_duration_steps", int(knobs.push_duration_steps))
+    _set_nested(cfg, "reward_weights.action_rate", float(knobs.w_action_rate))
+    _set_nested(cfg, "reward_weights.torque", float(knobs.w_torque))
+
+
+@dataclass(frozen=True)
+class AdvisorDecision:
+    updates: Dict[str, Any]
+    reason: str
+
+
+class Advisor(Protocol):
+    def suggest(self, *, cfg: Dict[str, Any], metrics: MetricsRow, keys: EvalKeys, probe_is_short: bool) -> AdvisorDecision: ...
 
 
 def _propose_next_knobs(
@@ -419,6 +483,14 @@ def _propose_next_knobs(
             w_collapse_height=max(knobs.w_collapse_height - w_step_h, -1.2),
             w_collapse_vz=max(knobs.w_collapse_vz - w_step_vz, -0.8),
             w_orientation=knobs.w_orientation,
+            w_clearance=knobs.w_clearance,
+            w_flight_phase_penalty=knobs.w_flight_phase_penalty,
+            w_posture=knobs.w_posture,
+            posture_sigma=knobs.posture_sigma,
+            push_force_max=knobs.push_force_max,
+            push_duration_steps=knobs.push_duration_steps,
+            w_action_rate=knobs.w_action_rate,
+            w_torque=knobs.w_torque,
         )
     else:
         reason += f"Targeting pitch term (pitch={term_pitch:.2%}, h_low={term_height_low:.2%})."
@@ -428,8 +500,231 @@ def _propose_next_knobs(
             w_collapse_height=knobs.w_collapse_height,
             w_collapse_vz=knobs.w_collapse_vz,
             w_orientation=max(knobs.w_orientation - w_step_ori, -8.0),
+            w_clearance=knobs.w_clearance,
+            w_flight_phase_penalty=knobs.w_flight_phase_penalty,
+            w_posture=knobs.w_posture,
+            posture_sigma=knobs.posture_sigma,
+            push_force_max=knobs.push_force_max,
+            push_duration_steps=knobs.push_duration_steps,
+            w_action_rate=knobs.w_action_rate,
+            w_torque=knobs.w_torque,
         )
     return next_knobs, reason
+
+
+class HeuristicAdvisor:
+    """Deterministic, resume-safe tuner for standing_push-style runs.
+
+    This stays in config-space only. It does not change policy_contract-sensitive fields.
+    """
+
+    def suggest(self, *, cfg: Dict[str, Any], metrics: MetricsRow, keys: EvalKeys, probe_is_short: bool) -> AdvisorDecision:
+        knobs = _extract_knobs(cfg)
+        term_height_low = float(_get_float(metrics.values, keys.term_height_low) or 0.0)
+        term_pitch = float(_get_float(metrics.values, keys.term_pitch) or 0.0)
+        torque_sat = _get_float(metrics.values, "debug/torque_sat_frac")
+
+        # 1) Fix early termination first (existing collapse/orientation knobs).
+        next_knobs, reason = _propose_next_knobs(
+            knobs,
+            term_height_low=term_height_low,
+            term_pitch=term_pitch,
+            torque_sat_frac=torque_sat,
+        )
+
+        # 2) If we still see height-low failures under pushes, make stepping "cheaper" and more likely.
+        # Use eval term fractions as the trigger (works for both probe+confirm).
+        if term_height_low > 0.005:
+            reason += " Also encouraging stepping recovery (clearance↑, flight_phase_penalty→0, action_rate/torque penalties↓)."
+            next_knobs = TuningKnobs(
+                collapse_height_buffer=next_knobs.collapse_height_buffer,
+                collapse_vz_gate_band=next_knobs.collapse_vz_gate_band,
+                w_collapse_height=next_knobs.w_collapse_height,
+                w_collapse_vz=next_knobs.w_collapse_vz,
+                w_orientation=next_knobs.w_orientation,
+                w_clearance=min(max(next_knobs.w_clearance * 1.25, next_knobs.w_clearance + 0.02), 0.5),
+                w_flight_phase_penalty=min(next_knobs.w_flight_phase_penalty, 0.0),
+                w_posture=next_knobs.w_posture,
+                posture_sigma=next_knobs.posture_sigma,
+                push_force_max=next_knobs.push_force_max,
+                push_duration_steps=next_knobs.push_duration_steps,
+                w_action_rate=min(next_knobs.w_action_rate * 0.75, -0.001),
+                w_torque=min(next_knobs.w_torque * 0.75, -0.0002),
+            )
+
+        # 3) If the policy is stable but tends to stay "crouched/odd", increase posture return shaping.
+        posture_mse = _get_float(metrics.values, "debug/posture_mse")
+        if posture_mse is not None and term_height_low <= 0.002 and term_pitch <= 0.002 and posture_mse > 0.02:
+            reason += " Increasing posture-return shaping (posture↑)."
+            next_knobs = TuningKnobs(
+                collapse_height_buffer=next_knobs.collapse_height_buffer,
+                collapse_vz_gate_band=next_knobs.collapse_vz_gate_band,
+                w_collapse_height=next_knobs.w_collapse_height,
+                w_collapse_vz=next_knobs.w_collapse_vz,
+                w_orientation=next_knobs.w_orientation,
+                w_clearance=next_knobs.w_clearance,
+                w_flight_phase_penalty=next_knobs.w_flight_phase_penalty,
+                w_posture=min(max(next_knobs.w_posture + 0.1, next_knobs.w_posture * 1.2), 2.0),
+                posture_sigma=next_knobs.posture_sigma,
+                push_force_max=next_knobs.push_force_max,
+                push_duration_steps=next_knobs.push_duration_steps,
+                w_action_rate=next_knobs.w_action_rate,
+                w_torque=next_knobs.w_torque,
+            )
+
+        updates: Dict[str, Any] = {
+            "env.collapse_height_buffer": next_knobs.collapse_height_buffer,
+            "env.collapse_vz_gate_band": next_knobs.collapse_vz_gate_band,
+            "reward_weights.collapse_height": next_knobs.w_collapse_height,
+            "reward_weights.collapse_vz": next_knobs.w_collapse_vz,
+            "reward_weights.orientation": next_knobs.w_orientation,
+            "reward_weights.clearance": next_knobs.w_clearance,
+            "reward_weights.flight_phase_penalty": next_knobs.w_flight_phase_penalty,
+            "reward_weights.posture": next_knobs.w_posture,
+            "reward_weights.posture_sigma": next_knobs.posture_sigma,
+            "reward_weights.action_rate": next_knobs.w_action_rate,
+            "reward_weights.torque": next_knobs.w_torque,
+            "env.push_force_max": next_knobs.push_force_max,
+            "env.push_duration_steps": next_knobs.push_duration_steps,
+        }
+        return AdvisorDecision(updates=updates, reason=reason)
+
+
+class OpenAIAdvisor:
+    """LLM-based advisor (optional).
+
+    Only used when explicitly requested via --advisor openai. Requires an API key in the environment.
+    This agent only applies config updates (no code changes) and enforces strict allow/deny lists.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key_env: str,
+        base_url: str,
+        temperature: float,
+        max_tokens: int,
+        dry_run: bool,
+    ) -> None:
+        self.model = model
+        self.api_key_env = api_key_env
+        self.base_url = base_url.rstrip("/")
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+        self.dry_run = bool(dry_run)
+
+    def suggest(self, *, cfg: Dict[str, Any], metrics: MetricsRow, keys: EvalKeys, probe_is_short: bool) -> AdvisorDecision:
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"--advisor openai selected but env var {self.api_key_env!r} is not set."
+            )
+
+        knobs = _extract_knobs(cfg)
+        context = {
+            "probe_is_short": bool(probe_is_short),
+            "forbidden_mutations": sorted(FORBIDDEN_MUTATIONS),
+            "allowed_prefixes": list(ALLOWED_MUTATION_PREFIXES),
+            "current_config_snippet": {
+                "env": {
+                    "push_force_max": knobs.push_force_max,
+                    "push_duration_steps": knobs.push_duration_steps,
+                    "collapse_height_buffer": knobs.collapse_height_buffer,
+                    "collapse_vz_gate_band": knobs.collapse_vz_gate_band,
+                },
+                "reward_weights": {
+                    "collapse_height": knobs.w_collapse_height,
+                    "collapse_vz": knobs.w_collapse_vz,
+                    "orientation": knobs.w_orientation,
+                    "clearance": knobs.w_clearance,
+                    "flight_phase_penalty": knobs.w_flight_phase_penalty,
+                    "posture": knobs.w_posture,
+                    "posture_sigma": knobs.posture_sigma,
+                    "action_rate": knobs.w_action_rate,
+                    "torque": knobs.w_torque,
+                },
+            },
+            "best_metrics_row": {
+                "iteration": metrics.iteration,
+                "step": metrics.step,
+                keys.success: _get_float(metrics.values, keys.success),
+                keys.ep_len: _get_float(metrics.values, keys.ep_len),
+                keys.survival_rate: _get_float(metrics.values, keys.survival_rate),
+                keys.survival_steps: _get_float(metrics.values, keys.survival_steps),
+                keys.term_height_low: _get_float(metrics.values, keys.term_height_low),
+                keys.term_pitch: _get_float(metrics.values, keys.term_pitch),
+                "debug/torque_sat_frac": _get_float(metrics.values, "debug/torque_sat_frac"),
+                "debug/action_sat_frac": _get_float(metrics.values, "debug/action_sat_frac"),
+                "debug/posture_mse": _get_float(metrics.values, "debug/posture_mse"),
+            },
+        }
+
+        system = (
+            "You are a PPO training config tuner for a biped standing_push task. "
+            "Goal: higher eval_push survival/success and return-to-upright posture after disturbances. "
+            "Respond with ONLY valid JSON."
+        )
+        user = (
+            "Suggest the next config updates.\n"
+            "Constraints:\n"
+            f"- Forbidden keys: {sorted(FORBIDDEN_MUTATIONS)}\n"
+            f"- Only keys starting with allowed prefixes: {list(ALLOWED_MUTATION_PREFIXES)}\n"
+            "- Only numeric/bool values.\n"
+            "Output JSON schema:\n"
+            '{\"reason\": \"...\", \"updates\": {\"path.to.key\": 0.123, \"path.to.other\": 5}}\n\n'
+            f"Context:\n{json.dumps(context, indent=2)}"
+        )
+
+        if self.dry_run:
+            return AdvisorDecision(updates={}, reason=f"OpenAI dry-run. Prompt context:\n{user}")
+
+        url = f"{self.base_url}/chat/completions"
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+            raise RuntimeError(f"OpenAI advisor HTTP error: {e.code} {e.reason}\n{body}") from e
+        except Exception as e:
+            raise RuntimeError(f"OpenAI advisor request failed: {e}") from e
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise RuntimeError(f"OpenAI advisor response missing content: keys={list(data.keys())}") from e
+
+        try:
+            out = json.loads(content)
+        except Exception as e:
+            raise RuntimeError(f"OpenAI advisor returned non-JSON content:\n{content}") from e
+
+        if not isinstance(out, dict) or "updates" not in out:
+            raise RuntimeError(f"OpenAI advisor JSON must be an object with 'updates': got {out!r}")
+        updates = out.get("updates") or {}
+        reason = str(out.get("reason") or "openai")
+        if not isinstance(updates, dict):
+            raise RuntimeError(f"OpenAI advisor 'updates' must be an object: got {updates!r}")
+        updates_clean = _validate_updates(updates)
+        return AdvisorDecision(updates=updates_clean, reason=reason)
 
 
 def _write_config(path: Path, cfg: Dict[str, Any]) -> None:
@@ -570,6 +865,29 @@ def _safe_mutate_config(
     return cfg
 
 
+def _apply_updates_inplace(cfg: Dict[str, Any], updates: Dict[str, Any]) -> None:
+    cleaned = _validate_updates(updates)
+    for key, value in cleaned.items():
+        _set_nested(cfg, key, value)
+
+
+def _parse_push_stages(spec: str) -> List[Tuple[float, int]]:
+    """Parse push stages from a string like '9:15,12:15' -> [(9.0, 15), (12.0, 15)]."""
+    spec = spec.strip()
+    if not spec:
+        return []
+    out: List[Tuple[float, int]] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"Invalid --push-stages entry {part!r}; expected 'force:duration'.")
+        force_s, dur_s = [x.strip() for x in part.split(":", 1)]
+        out.append((float(force_s), int(dur_s)))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Automate train/eval/tune/resume loop for WildRobot.")
     ap.add_argument("--base-config", type=Path, required=True)
@@ -586,6 +904,39 @@ def main() -> None:
     ap.add_argument("--target-success", type=float, default=1.0)
     ap.add_argument("--term-eps", type=float, default=0.001)
     ap.add_argument(
+        "--push-stages",
+        type=str,
+        default="",
+        help="Optional push curriculum stages as 'force_max:duration_steps,...' (e.g. '9:15,12:15').",
+    )
+    ap.add_argument(
+        "--advisor",
+        type=str,
+        default="heuristic",
+        choices=["heuristic", "openai"],
+        help="Tuning strategy. 'openai' calls an external LLM and applies validated config updates.",
+    )
+    ap.add_argument("--openai-model", type=str, default="gpt-4.1-mini")
+    ap.add_argument(
+        "--openai-api-key-env",
+        type=str,
+        default="OPENAI_API_KEY",
+        help="Environment variable name containing the OpenAI API key.",
+    )
+    ap.add_argument(
+        "--openai-base-url",
+        type=str,
+        default="https://api.openai.com/v1",
+        help="Base URL for an OpenAI-compatible API.",
+    )
+    ap.add_argument("--openai-temperature", type=float, default=0.2)
+    ap.add_argument("--openai-max-tokens", type=int, default=600)
+    ap.add_argument(
+        "--openai-dry-run",
+        action="store_true",
+        help="Do not call the API; print the prompt context as the tuning reason.",
+    )
+    ap.add_argument(
         "--no-live-metrics",
         dest="live_metrics",
         action="store_false",
@@ -596,6 +947,28 @@ def main() -> None:
     args = ap.parse_args()
 
     base_cfg = _load_yaml(args.base_config)
+    push_stages = _parse_push_stages(str(args.push_stages))
+    push_stage_idx = 0
+    if push_stages:
+        # Start at stage 0 immediately.
+        stage_force, stage_dur = push_stages[0]
+        _set_nested(base_cfg, "env.push_force_max", float(stage_force))
+        _set_nested(base_cfg, "env.push_duration_steps", int(stage_dur))
+        base_cfg["version_name"] = (
+            f"{base_cfg.get('version_name','').strip()} | push_stage=1/{len(push_stages)}"
+            f" force_max={stage_force:g} dur={stage_dur}"
+        ).strip()
+    if args.advisor == "heuristic":
+        advisor: Advisor = HeuristicAdvisor()
+    else:
+        advisor = OpenAIAdvisor(
+            model=str(args.openai_model),
+            api_key_env=str(args.openai_api_key_env),
+            base_url=str(args.openai_base_url),
+            temperature=float(args.openai_temperature),
+            max_tokens=int(args.openai_max_tokens),
+            dry_run=bool(args.openai_dry_run),
+        )
 
     # Environment for subprocess training runs
     run_env = os.environ.copy()
@@ -618,6 +991,10 @@ def main() -> None:
         _set_nested(cycle_cfg, "ppo.iterations", int(args.iters_per_cycle))
         _set_nested(cycle_cfg, "ppo.eval.num_steps", int(args.probe_eval_steps))
         _set_nested(cycle_cfg, "ppo.eval.num_envs", int(args.probe_eval_envs))
+        if push_stages:
+            stage_force, stage_dur = push_stages[push_stage_idx]
+            _set_nested(cycle_cfg, "env.push_force_max", float(stage_force))
+            _set_nested(cycle_cfg, "env.push_duration_steps", int(stage_dur))
         _set_nested(
             cycle_cfg,
             "version_name",
@@ -816,6 +1193,24 @@ def main() -> None:
             print(f"{keys2.success}={s2:.2%}, {keys2.ep_len}={L2:.2f}")
             print(f"{keys2.term_height_low}={h2:.2%}, {keys2.term_pitch}={p2:.2%}")
             if s2 >= args.target_success - 1e-9 and L2 >= args.target_ep_len - 1e-6 and h2 <= args.term_eps and p2 <= args.term_eps:
+                if push_stages and push_stage_idx < len(push_stages) - 1:
+                    # Advance curriculum and keep training from the best confirm checkpoint.
+                    push_stage_idx += 1
+                    next_force, next_dur = push_stages[push_stage_idx]
+                    print(
+                        "\nTARGET MET (confirm eval) for current push stage; advancing curriculum."
+                        f" Next stage {push_stage_idx+1}/{len(push_stages)}: force_max={next_force:g} dur={next_dur}."
+                    )
+                    working_cfg2 = _load_yaml(current_cfg_path)
+                    _set_nested(working_cfg2, "env.push_force_max", float(next_force))
+                    _set_nested(working_cfg2, "env.push_duration_steps", int(next_dur))
+                    working_cfg2["version_name"] = (
+                        f"{working_cfg2.get('version_name','').strip()} | push_stage={push_stage_idx+1}/{len(push_stages)}"
+                        f" force_max={next_force:g} dur={next_dur}"
+                    ).strip()
+                    _write_config(current_cfg_path, working_cfg2)
+                    current_resume = ckpt2 or best_ckpt
+                    continue
                 print("\nTARGET MET (confirm eval): stopping.")
                 if ckpt2 is not None:
                     print(f"Final checkpoint: {ckpt2}")
@@ -826,18 +1221,12 @@ def main() -> None:
 
         # Not good enough: tune and continue from best checkpoint.
         working_cfg = _load_yaml(current_cfg_path)
-        next_knobs, reason = _propose_next_knobs(
-            _extract_knobs(working_cfg),
-            term_height_low=best_h_low,
-            term_pitch=best_pitch,
-            torque_sat_frac=torque_sat,
-        )
-        print(f"\nTuning decision: {reason}")
-        print(f"Old knobs: {_extract_knobs(working_cfg)}")
-        print(f"New knobs: {next_knobs}")
+        decision = advisor.suggest(cfg=working_cfg, metrics=best, keys=keys, probe_is_short=probe_is_short)
+        print(f"\nTuning decision: {decision.reason}")
+        print(f"Updates: {decision.updates}")
 
-        # Apply knob changes to working config (not the original base config).
-        _apply_knobs(working_cfg, next_knobs)
+        # Apply config updates to working config (not the original base config).
+        _apply_updates_inplace(working_cfg, decision.updates)
         _write_config(current_cfg_path, working_cfg)
         current_resume = best_ckpt
 

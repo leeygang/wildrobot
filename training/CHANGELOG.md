@@ -7,6 +7,31 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.13.10] - 2026-03-07: Standing pushes (step recovery + posture return)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump to `version: "0.13.10"`.
+- `training/configs/ppo_standing_push.yaml`: make stepping recovery more accessible under pushes:
+  - `reward_weights.clearance: 0.05 -> 0.10`
+  - `reward_weights.flight_phase_penalty: -0.1 -> 0.0`
+- `training/configs/ppo_standing_push.yaml`: add posture-return shaping (encourage returning to default pose once upright):
+  - `reward_weights.posture: 0.3`
+  - `reward_weights.posture_sigma: 0.40`
+  - `reward_weights.posture_gate_pitch: 0.35`
+  - `reward_weights.posture_gate_roll: 0.35`
+
+### Code Updates
+- `training/envs/wildrobot_env.py`: add `reward/posture` shaping term (gated by uprightness) and log `debug/posture_mse`.
+- `training/configs/training_runtime_config.py` + `training/configs/training_config.py`: add/parse new posture shaping knobs under `reward_weights`.
+
+### Plan
+1. Validate setup:
+   `uv run python scripts/validate_training_setup.py`
+2. Smoke test:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --verify`
+3. Fine-tune from best v0.13.9 checkpoint:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --resume <best_ckpt.pkl>`
+
 ## [v0.13.9] - 2026-03-04: Standing pushes (reduce height-low + pitch terminations)
 
 ### Config Updates
