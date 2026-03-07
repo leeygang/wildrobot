@@ -347,15 +347,37 @@ def _clamp_home_ctrl(
     actuator_names: list[str],
 ) -> list[float]:
     clipped = []
-    clipped_any = False
+    clipped_details: list[tuple[str, float, float, float, float]] = []
     for name, value in zip(actuator_names, home_ctrl):
         joint = joints[name]
-        clamped = min(max(float(value), joint.range_min_rad), joint.range_max_rad)
-        if clamped != float(value):
-            clipped_any = True
+        original = float(value)
+        clamped = min(max(original, joint.range_min_rad), joint.range_max_rad)
+        if not math.isclose(clamped, original, rel_tol=0.0, abs_tol=1e-12):
+            clipped_details.append(
+                (
+                    name,
+                    original,
+                    clamped,
+                    float(joint.range_min_rad),
+                    float(joint.range_max_rad),
+                )
+            )
         clipped.append(clamped)
-    if clipped_any:
+    if clipped_details:
         print("Warning: home_ctrl_rad clamped to joint limits for export bundle")
+        print(
+            f"  clamped_actuators: {len(clipped_details)}/{len(actuator_names)} "
+            "(source: MJCF home keyframe or keyframe[0] fallback)"
+        )
+        for name, original, clamped, range_min, range_max in clipped_details:
+            print(
+                f"  - {name}: {original:.6f} -> {clamped:.6f} rad "
+                f"(limits [{range_min:.6f}, {range_max:.6f}])"
+            )
+        print(
+            "  hint: align MJCF home pose with mujoco_robot_config joint ranges "
+            "to avoid export-time clamping"
+        )
     return clipped
 
 

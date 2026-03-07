@@ -846,10 +846,23 @@ def main():
 
         # Save video
         if args.record and frames:
-            import imageio
-
+            fps = int(1 / ctrl_dt)
             print(f"Saving video to {args.record}...")
-            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
+            try:
+                import mediapy as media
+
+                media.write_video(args.record, frames, fps=fps)
+            except ModuleNotFoundError:
+                try:
+                    import imageio
+
+                    imageio.mimsave(args.record, frames, fps=fps)
+                except ModuleNotFoundError as e:
+                    raise ModuleNotFoundError(
+                        "Video recording requires either `mediapy` (preferred) or `imageio`.\n"
+                        "Try: `uv sync` (mediapy is a repo dependency) or install imageio:\n"
+                        "  `uv add imageio imageio-ffmpeg && uv sync`"
+                    ) from e
             print(f"Done! Saved {len(frames)} frames.")
 
     else:
@@ -964,10 +977,23 @@ def main():
                         renderer.close()
 
                         if step_count == record_steps:
-                            import imageio
-
+                            fps = int(1 / ctrl_dt)
                             print(f"Saving video to {args.record}...")
-                            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
+                            try:
+                                import mediapy as media
+
+                                media.write_video(args.record, frames, fps=fps)
+                            except ModuleNotFoundError:
+                                try:
+                                    import imageio
+
+                                    imageio.mimsave(args.record, frames, fps=fps)
+                                except ModuleNotFoundError as e:
+                                    raise ModuleNotFoundError(
+                                        "Video recording requires either `mediapy` (preferred) or `imageio`.\n"
+                                        "Try: `uv sync` (mediapy is a repo dependency) or install imageio:\n"
+                                        "  `uv add imageio imageio-ffmpeg && uv sync`"
+                                    ) from e
                             print("Done!")
 
                     # Check for episode end (robot fell or max steps)

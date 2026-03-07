@@ -6,7 +6,7 @@ Usage:
     --checkpoint training/checkpoints/ppo_standing/.../checkpoint_580.pkl \
     --config training/configs/ppo_standing.yaml \
     --asset v1 \
-    --bundle-name standing_v0.12.2
+        --bundle-path training/checkpoints/standing_v0.12.2
 """
 
 from __future__ import annotations
@@ -87,22 +87,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to PPO checkpoint (.pkl)")
     parser.add_argument("--config", type=str, required=True, help="Path to training config (.yaml)")
     parser.add_argument(
-        "--output-dir",
+        "--bundle-path",
         type=str,
-        default=None,
-        help="Output bundle directory (overrides --bundle-name/--output-root)",
-    )
-    parser.add_argument(
-        "--bundle-name",
-        type=str,
-        default=None,
-        help="Bundle folder name (e.g., standing_v0.12.1).",
-    )
-    parser.add_argument(
-        "--output-root",
-        type=str,
-        default="training/checkpoints",
-        help="Root directory for bundles when using --bundle-name",
+        required=True,
+        help="Output bundle directory path, including folder name (e.g., training/checkpoints/standing_v0.12.1).",
     )
     parser.add_argument(
         "--asset",
@@ -119,12 +107,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        if not args.bundle_name:
-            raise SystemExit("Provide --output-dir or --bundle-name.")
-        output_dir = Path(args.output_root) / args.bundle_name
+    output_dir = Path(args.bundle_path)
 
     robot_config_path = _resolve_robot_config_path(
         robot_config_arg=args.robot_config,
