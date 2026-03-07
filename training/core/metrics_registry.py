@@ -375,6 +375,46 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Pre-collapse downward vertical velocity penalty",
     ),
+    # v0.13.10+: Posture return shaping diagnostics (append-only)
+    MetricSpec(
+        name="reward/posture",
+        reducer=Reducer.MEAN,
+        description="Posture return reward (gated exp(-mse/sigma^2))",
+    ),
+    MetricSpec(
+        name="debug/posture_mse",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Mean squared error between joint_pos_rad and default pose (gated in reward)",
+    ),
+    MetricSpec(
+        name="reward/step_event",
+        reducer=Reducer.MEAN,
+        description="Step event reward (touchdown * need_step)",
+    ),
+    MetricSpec(
+        name="reward/foot_place",
+        reducer=Reducer.MEAN,
+        description="Foot placement reward at touchdown (Raibert-style, gated by need_step)",
+    ),
+    MetricSpec(
+        name="debug/need_step",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Need-to-step gate (0..1) used for stepping-only rewards",
+    ),
+    MetricSpec(
+        name="debug/touchdown_left",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Left-foot touchdown event flag",
+    ),
+    MetricSpec(
+        name="debug/touchdown_right",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Right-foot touchdown event flag",
+    ),
 ]
 
 # =============================================================================

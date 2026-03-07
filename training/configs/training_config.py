@@ -297,6 +297,17 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         posture_sigma=rewards.get("posture_sigma", 0.35),
         posture_gate_pitch=rewards.get("posture_gate_pitch", 0.35),
         posture_gate_roll=rewards.get("posture_gate_roll", 0.35),
+        step_event=rewards.get("step_event", 0.0),
+        foot_place=rewards.get("foot_place", 0.0),
+        foot_place_sigma=rewards.get("foot_place_sigma", 0.12),
+        foot_place_k_lat_vel=rewards.get("foot_place_k_lat_vel", 0.15),
+        foot_place_k_roll=rewards.get("foot_place_k_roll", 0.10),
+        foot_place_k_pitch=rewards.get("foot_place_k_pitch", 0.05),
+        foot_place_k_fwd_vel=rewards.get("foot_place_k_fwd_vel", 0.05),
+        step_need_pitch=rewards.get("step_need_pitch", 0.35),
+        step_need_roll=rewards.get("step_need_roll", 0.35),
+        step_need_lat_vel=rewards.get("step_need_lat_vel", 0.30),
+        step_need_pitch_rate=rewards.get("step_need_pitch_rate", 1.00),
     )
 
 

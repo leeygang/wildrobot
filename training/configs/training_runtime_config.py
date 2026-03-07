@@ -338,6 +338,21 @@ class RewardWeightsConfig(Freezable):
     posture_gate_pitch: float = 0.35  # radians
     posture_gate_roll: float = 0.35  # radians
 
+    # v0.13.10+: Stepping trait shaping (industry-style: step events + foot placement)
+    step_event: float = 0.0
+    foot_place: float = 0.0
+    foot_place_sigma: float = 0.12  # meters
+    foot_place_k_lat_vel: float = 0.15  # y target correction per (m/s) lateral vel
+    foot_place_k_roll: float = 0.10  # y target correction per rad roll
+    foot_place_k_pitch: float = 0.05  # x target correction per rad pitch
+    foot_place_k_fwd_vel: float = 0.05  # x target correction per (m/s) forward vel
+
+    # Need-to-step gate (0..1) for stepping-only rewards to avoid marching in place
+    step_need_pitch: float = 0.35  # radians
+    step_need_roll: float = 0.35  # radians
+    step_need_lat_vel: float = 0.30  # m/s
+    step_need_pitch_rate: float = 1.00  # rad/s
+
 
 @dataclass
 class RewardCompositionConfig(Freezable):

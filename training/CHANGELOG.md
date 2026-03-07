@@ -7,6 +7,33 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.13.11] - 2026-03-07: Standing pushes (step trait via touchdown + foot placement)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump to `version: "0.13.11"`.
+- `training/configs/ppo_standing_push.yaml`: enable stepping-trait shaping (all gated by `debug/need_step` to avoid marching-in-place):
+  - add `reward_weights.gait_periodicity`, `hip_swing`, `knee_swing`, and `_min` thresholds
+  - add `reward_weights.step_event` (touchdown reward) and `reward_weights.foot_place` (foot placement reward)
+  - add `reward_weights.foot_place_*` coefficients and `reward_weights.step_need_*` gates
+
+### Code Updates
+- `training/envs/env_info.py`: add `prev_left_loaded` / `prev_right_loaded` fields for contact transition (touchdown) detection.
+- `training/envs/wildrobot_env.py`: add step-trait rewards:
+  - `reward/step_event`: touchdown event reward (gated by `need_step`)
+  - `reward/foot_place`: Raibert-style foot placement reward at touchdown (gated by `need_step`)
+  - log `debug/need_step`, `debug/touchdown_left`, `debug/touchdown_right`
+- `training/core/experiment_tracking.py`: include new reward/debug keys in reset metrics dict (JAX scan carry stability).
+- `training/core/metrics_registry.py`: append new metrics (append-only) for W&B logging: `reward/step_event`, `reward/foot_place`, `debug/need_step`, `debug/touchdown_left`, `debug/touchdown_right`.
+- `wildrobot/agents/training_loop_agent.py`: heuristic advisor now tunes stepping weights and can relax `env.min_height` (bounded) when height-low dominates, to allow deep-crouch recovery + stepping.
+
+### Plan
+1. Validate setup:
+   `uv run python scripts/validate_training_setup.py`
+2. Smoke test:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --verify`
+3. Resume stepping curriculum from latest best checkpoint:
+   `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --resume <best_ckpt.pkl>`
+
 ## [v0.13.10] - 2026-03-07: Standing pushes (step recovery + posture return)
 
 ### Config Updates

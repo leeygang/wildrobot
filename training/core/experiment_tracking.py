@@ -222,6 +222,9 @@ def get_initial_env_metrics(
         "reward/flight_phase": 0.0,
         "reward/stance_width_penalty": 0.0,
         "reward/standing": 0.0,
+        "reward/posture": 0.0,
+        "reward/step_event": 0.0,
+        "reward/foot_place": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
         "debug/roll": roll,
@@ -240,6 +243,10 @@ def get_initial_env_metrics(
         "debug/raw_action_sat_frac": 0.0,
         "debug/torque_abs_max": 0.0,
         "debug/torque_sat_frac": 0.0,
+        "debug/posture_mse": 0.0,
+        "debug/need_step": 0.0,
+        "debug/touchdown_left": 0.0,
+        "debug/touchdown_right": 0.0,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -317,6 +324,9 @@ def get_initial_env_metrics_jax(
         "reward/flight_phase": jp.zeros(()),
         "reward/stance_width_penalty": jp.zeros(()),
         "reward/standing": jp.zeros(()),
+        "reward/posture": jp.zeros(()),
+        "reward/step_event": jp.zeros(()),
+        "reward/foot_place": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),
         "debug/roll": _scalar(roll),
@@ -335,6 +345,10 @@ def get_initial_env_metrics_jax(
         "debug/raw_action_sat_frac": jp.zeros(()),
         "debug/torque_abs_max": jp.zeros(()),
         "debug/torque_sat_frac": jp.zeros(()),
+        "debug/posture_mse": jp.zeros(()),
+        "debug/need_step": jp.zeros(()),
+        "debug/touchdown_left": jp.zeros(()),
+        "debug/touchdown_right": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),

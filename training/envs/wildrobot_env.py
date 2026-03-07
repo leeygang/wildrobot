@@ -462,6 +462,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         foot_switches = self._cal.get_foot_switches(
             data, threshold=self._config.env.foot_switch_threshold
         )
+        contact_threshold = self._config.env.contact_threshold_force
+        left_loaded = left_force > contact_threshold
+        right_loaded = right_force > contact_threshold
 
         # Compute total reward with weights (from config)
         weights = self._config.reward_weights
@@ -509,6 +512,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=root_pose.height,  # Actual root height for AMP features
+            prev_left_loaded=left_loaded.astype(jp.float32),
+            prev_right_loaded=right_loaded.astype(jp.float32),
             push_schedule=push_schedule,
         )
 
@@ -648,6 +653,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Get previous foot positions for slip computation from WildRobotInfo
         prev_left_foot_pos = wr.prev_left_foot_pos
         prev_right_foot_pos = wr.prev_right_foot_pos
+        prev_left_loaded = wr.prev_left_loaded
+        prev_right_loaded = wr.prev_right_loaded
 
         # Compute reward
         reward, reward_components = self._get_reward(
@@ -658,6 +665,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd,
             prev_left_foot_pos,
             prev_right_foot_pos,
+            prev_left_loaded,
+            prev_right_loaded,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -693,6 +702,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         curr_left_foot_pos, curr_right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False
         )
+        # Cache contact loads for touchdown/step-event detection in next step.
+        left_force_now, right_force_now = self._cal.get_aggregated_foot_contacts(data)
+        contact_threshold = self._config.env.contact_threshold_force
 
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
@@ -710,6 +722,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
+            prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
+            prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
             push_schedule=wr.push_schedule,
         )
 
@@ -765,6 +779,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
             "debug/posture_mse": metrics.get("debug/posture_mse", jp.zeros(())),
+            "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
+            "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
+            "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
+            "debug/touchdown_left": metrics.get("debug/touchdown_left", jp.zeros(())),
+            "debug/touchdown_right": metrics.get("debug/touchdown_right", jp.zeros(())),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -787,6 +806,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             imu_gyro_hist=reset_wr_info.imu_gyro_hist,
             foot_contacts=reset_wr_info.foot_contacts,
             root_height=reset_wr_info.root_height,
+            prev_left_loaded=reset_wr_info.prev_left_loaded,
+            prev_right_loaded=reset_wr_info.prev_right_loaded,
             push_schedule=reset_wr_info.push_schedule,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
@@ -879,6 +900,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd: jax.Array,
         prev_left_foot_pos: Optional[jax.Array] = None,
         prev_right_foot_pos: Optional[jax.Array] = None,
+        prev_left_loaded: Optional[jax.Array] = None,
+        prev_right_loaded: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -1110,6 +1133,63 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         posture_reward = posture_reward * posture_gate
 
+        # 19. Step event + foot placement shaping (gated by "need to step")
+        # Detect touchdown events from contact transitions (prev_loaded -> loaded).
+        if prev_left_loaded is None or prev_right_loaded is None:
+            prev_left_loaded_b = left_loaded
+            prev_right_loaded_b = right_loaded
+        else:
+            prev_left_loaded_b = prev_left_loaded > 0.5
+            prev_right_loaded_b = prev_right_loaded > 0.5
+
+        touchdown_left = jp.logical_and(jp.logical_not(prev_left_loaded_b), left_loaded)
+        touchdown_right = jp.logical_and(jp.logical_not(prev_right_loaded_b), right_loaded)
+        step_event = jp.where(touchdown_left | touchdown_right, 1.0, 0.0)
+        step_event = jp.asarray(step_event).reshape(())
+
+        # Need-to-step gate: 0..1 based on tilt + lateral motion + pitch rate.
+        g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
+        g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
+        g_lat = jp.maximum(getattr(weights, "step_need_lat_vel", 0.30), 1e-6)
+        g_pr = jp.maximum(getattr(weights, "step_need_pitch_rate", 1.00), 1e-6)
+        need_step = (
+            jp.abs(pitch) / g_pitch
+            + jp.abs(roll) / g_roll
+            + jp.abs(lateral_vel) / g_lat
+            + jp.abs(pitch_rate) / g_pr
+        ) / 4.0
+        need_step = jp.clip(need_step, 0.0, 1.0)
+        need_step = need_step * healthy
+
+        # Foot placement reward at touchdown (Raibert-style heuristic in heading-local frame).
+        base_y = 0.5 * jp.asarray(weights.stance_width_target)
+        y_corr = (
+            jp.asarray(getattr(weights, "foot_place_k_lat_vel", 0.15)) * lateral_vel
+            + jp.asarray(getattr(weights, "foot_place_k_roll", 0.10)) * roll
+        )
+        x_corr = (
+            jp.asarray(getattr(weights, "foot_place_k_fwd_vel", 0.05)) * forward_vel
+            + jp.asarray(getattr(weights, "foot_place_k_pitch", 0.05)) * pitch
+        )
+        sigma_xy = jp.maximum(getattr(weights, "foot_place_sigma", 0.12), 1e-6)
+        inv_sigma2 = 1.0 / (sigma_xy * sigma_xy)
+
+        left_x, left_y = left_foot_pos[0], left_foot_pos[1]
+        right_x, right_y = right_foot_pos[0], right_foot_pos[1]
+        left_y_des = base_y + y_corr
+        right_y_des = -base_y + y_corr
+        x_des = x_corr
+
+        err_left = (left_x - x_des) * (left_x - x_des) + (left_y - left_y_des) * (left_y - left_y_des)
+        err_right = (right_x - x_des) * (right_x - x_des) + (right_y - right_y_des) * (right_y - right_y_des)
+        foot_place_left = jp.exp(-err_left * inv_sigma2)
+        foot_place_right = jp.exp(-err_right * inv_sigma2)
+        foot_place_reward = jp.where(touchdown_left, foot_place_left, 0.0) + jp.where(
+            touchdown_right, foot_place_right, 0.0
+        )
+        foot_place_reward = jp.asarray(foot_place_reward).reshape(())
+        foot_place_reward = foot_place_reward * need_step
+
         # =====================================================================
         # COMBINE REWARDS
         # =====================================================================
@@ -1161,6 +1241,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.height_target * height_target_reward
             + weights.stance_width_penalty * stance_width_penalty
             + getattr(weights, "posture", 0.0) * posture_reward
+            + getattr(weights, "step_event", 0.0) * (step_event * need_step)
+            + getattr(weights, "foot_place", 0.0) * foot_place_reward
         )
 
         # =====================================================================
@@ -1205,7 +1287,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/height_target": height_target_reward,
             "reward/stance_width_penalty": stance_width_penalty,
             "reward/posture": posture_reward,
+            "reward/step_event": step_event * need_step,
+            "reward/foot_place": foot_place_reward,
             "debug/posture_mse": posture_mse,
+            "debug/need_step": need_step,
+            "debug/touchdown_left": touchdown_left.astype(jp.float32),
+            "debug/touchdown_right": touchdown_right.astype(jp.float32),
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

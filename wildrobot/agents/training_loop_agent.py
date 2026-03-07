@@ -223,7 +223,7 @@ def _validate_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in updates.items():
         if k in FORBIDDEN_MUTATIONS:
             raise ValueError(f"Refusing to mutate {k!r}; it breaks resume policy_contract safety.")
-        if not any(k.startswith(p) for p in ALLOWED_MUTATION_PREFIXES):
+        if k != "env.min_height" and not any(k.startswith(p) for p in ALLOWED_MUTATION_PREFIXES):
             raise ValueError(f"Refusing to mutate {k!r}; not in allowed prefixes {ALLOWED_MUTATION_PREFIXES}.")
         if isinstance(v, bool):
             cleaned[k] = v
@@ -399,6 +399,14 @@ class TuningKnobs:
     push_duration_steps: int
     w_action_rate: float
     w_torque: float
+    w_gait_periodicity: float
+    w_hip_swing: float
+    w_knee_swing: float
+    hip_swing_min: float
+    knee_swing_min: float
+    w_step_event: float
+    w_foot_place: float
+    min_height: float
 
 
 def _extract_knobs(cfg: Dict[str, Any]) -> TuningKnobs:
@@ -416,6 +424,14 @@ def _extract_knobs(cfg: Dict[str, Any]) -> TuningKnobs:
         push_duration_steps=int(_get_nested(cfg, "env.push_duration_steps") or 10),
         w_action_rate=float(_get_nested(cfg, "reward_weights.action_rate") or -0.01),
         w_torque=float(_get_nested(cfg, "reward_weights.torque") or -0.001),
+        w_gait_periodicity=float(_get_nested(cfg, "reward_weights.gait_periodicity") or 0.0),
+        w_hip_swing=float(_get_nested(cfg, "reward_weights.hip_swing") or 0.0),
+        w_knee_swing=float(_get_nested(cfg, "reward_weights.knee_swing") or 0.0),
+        hip_swing_min=float(_get_nested(cfg, "reward_weights.hip_swing_min") or 0.0),
+        knee_swing_min=float(_get_nested(cfg, "reward_weights.knee_swing_min") or 0.0),
+        w_step_event=float(_get_nested(cfg, "reward_weights.step_event") or 0.0),
+        w_foot_place=float(_get_nested(cfg, "reward_weights.foot_place") or 0.0),
+        min_height=float(_get_nested(cfg, "env.min_height") or 0.20),
     )
 
 
@@ -433,6 +449,14 @@ def _apply_knobs(cfg: Dict[str, Any], knobs: TuningKnobs) -> None:
     _set_nested(cfg, "env.push_duration_steps", int(knobs.push_duration_steps))
     _set_nested(cfg, "reward_weights.action_rate", float(knobs.w_action_rate))
     _set_nested(cfg, "reward_weights.torque", float(knobs.w_torque))
+    _set_nested(cfg, "reward_weights.gait_periodicity", float(knobs.w_gait_periodicity))
+    _set_nested(cfg, "reward_weights.hip_swing", float(knobs.w_hip_swing))
+    _set_nested(cfg, "reward_weights.knee_swing", float(knobs.w_knee_swing))
+    _set_nested(cfg, "reward_weights.hip_swing_min", float(knobs.hip_swing_min))
+    _set_nested(cfg, "reward_weights.knee_swing_min", float(knobs.knee_swing_min))
+    _set_nested(cfg, "reward_weights.step_event", float(knobs.w_step_event))
+    _set_nested(cfg, "reward_weights.foot_place", float(knobs.w_foot_place))
+    _set_nested(cfg, "env.min_height", float(knobs.min_height))
 
 
 @dataclass(frozen=True)
@@ -491,6 +515,14 @@ def _propose_next_knobs(
             push_duration_steps=knobs.push_duration_steps,
             w_action_rate=knobs.w_action_rate,
             w_torque=knobs.w_torque,
+            w_gait_periodicity=knobs.w_gait_periodicity,
+            w_hip_swing=knobs.w_hip_swing,
+            w_knee_swing=knobs.w_knee_swing,
+            hip_swing_min=knobs.hip_swing_min,
+            knee_swing_min=knobs.knee_swing_min,
+            w_step_event=knobs.w_step_event,
+            w_foot_place=knobs.w_foot_place,
+            min_height=knobs.min_height,
         )
     else:
         reason += f"Targeting pitch term (pitch={term_pitch:.2%}, h_low={term_height_low:.2%})."
@@ -508,6 +540,14 @@ def _propose_next_knobs(
             push_duration_steps=knobs.push_duration_steps,
             w_action_rate=knobs.w_action_rate,
             w_torque=knobs.w_torque,
+            w_gait_periodicity=knobs.w_gait_periodicity,
+            w_hip_swing=knobs.w_hip_swing,
+            w_knee_swing=knobs.w_knee_swing,
+            hip_swing_min=knobs.hip_swing_min,
+            knee_swing_min=knobs.knee_swing_min,
+            w_step_event=knobs.w_step_event,
+            w_foot_place=knobs.w_foot_place,
+            min_height=knobs.min_height,
         )
     return next_knobs, reason
 
@@ -523,6 +563,7 @@ class HeuristicAdvisor:
         term_height_low = float(_get_float(metrics.values, keys.term_height_low) or 0.0)
         term_pitch = float(_get_float(metrics.values, keys.term_pitch) or 0.0)
         torque_sat = _get_float(metrics.values, "debug/torque_sat_frac")
+        survival_rate = _get_float(metrics.values, keys.survival_rate) or _get_float(metrics.values, keys.success) or 0.0
 
         # 1) Fix early termination first (existing collapse/orientation knobs).
         next_knobs, reason = _propose_next_knobs(
@@ -534,8 +575,17 @@ class HeuristicAdvisor:
 
         # 2) If we still see height-low failures under pushes, make stepping "cheaper" and more likely.
         # Use eval term fractions as the trigger (works for both probe+confirm).
-        if term_height_low > 0.005:
-            reason += " Also encouraging stepping recovery (clearance↑, flight_phase_penalty→0, action_rate/torque penalties↓)."
+        if term_height_low > 0.005 or float(survival_rate) < 0.95:
+            reason += " Also encouraging stepping recovery (clearance↑, stepping rewards↑, action_rate/torque penalties↓, and relax min_height if needed)."
+            # If term_height_low dominates, slightly relax termination to allow deeper crouch recovery.
+            # Keep conservative bounds: don't go below 0.36 without manual review.
+            new_min_height = next_knobs.min_height
+            if term_height_low > 0.2 and next_knobs.min_height > 0.36:
+                new_min_height = max(next_knobs.min_height - 0.01, 0.36)
+
+            # Ensure swing thresholds are non-zero so hip/knee swing rewards can activate.
+            hip_min = next_knobs.hip_swing_min if next_knobs.hip_swing_min > 1e-6 else 0.10
+            knee_min = next_knobs.knee_swing_min if next_knobs.knee_swing_min > 1e-6 else 0.10
             next_knobs = TuningKnobs(
                 collapse_height_buffer=next_knobs.collapse_height_buffer,
                 collapse_vz_gate_band=next_knobs.collapse_vz_gate_band,
@@ -550,6 +600,14 @@ class HeuristicAdvisor:
                 push_duration_steps=next_knobs.push_duration_steps,
                 w_action_rate=min(next_knobs.w_action_rate * 0.75, -0.001),
                 w_torque=min(next_knobs.w_torque * 0.75, -0.0002),
+                w_gait_periodicity=min(max(next_knobs.w_gait_periodicity + 0.05, next_knobs.w_gait_periodicity * 1.2), 0.3),
+                w_hip_swing=min(max(next_knobs.w_hip_swing + 0.05, next_knobs.w_hip_swing * 1.2), 0.3),
+                w_knee_swing=min(max(next_knobs.w_knee_swing + 0.05, next_knobs.w_knee_swing * 1.2), 0.3),
+                hip_swing_min=hip_min,
+                knee_swing_min=knee_min,
+                w_step_event=min(max(next_knobs.w_step_event + 0.05, next_knobs.w_step_event * 1.2), 0.6),
+                w_foot_place=min(max(next_knobs.w_foot_place + 0.10, next_knobs.w_foot_place * 1.2), 1.5),
+                min_height=new_min_height,
             )
 
         # 3) If the policy is stable but tends to stay "crouched/odd", increase posture return shaping.
@@ -570,6 +628,14 @@ class HeuristicAdvisor:
                 push_duration_steps=next_knobs.push_duration_steps,
                 w_action_rate=next_knobs.w_action_rate,
                 w_torque=next_knobs.w_torque,
+                w_gait_periodicity=next_knobs.w_gait_periodicity,
+                w_hip_swing=next_knobs.w_hip_swing,
+                w_knee_swing=next_knobs.w_knee_swing,
+                hip_swing_min=next_knobs.hip_swing_min,
+                knee_swing_min=next_knobs.knee_swing_min,
+                w_step_event=next_knobs.w_step_event,
+                w_foot_place=next_knobs.w_foot_place,
+                min_height=next_knobs.min_height,
             )
 
         updates: Dict[str, Any] = {
@@ -584,8 +650,16 @@ class HeuristicAdvisor:
             "reward_weights.posture_sigma": next_knobs.posture_sigma,
             "reward_weights.action_rate": next_knobs.w_action_rate,
             "reward_weights.torque": next_knobs.w_torque,
+            "reward_weights.gait_periodicity": next_knobs.w_gait_periodicity,
+            "reward_weights.hip_swing": next_knobs.w_hip_swing,
+            "reward_weights.knee_swing": next_knobs.w_knee_swing,
+            "reward_weights.hip_swing_min": next_knobs.hip_swing_min,
+            "reward_weights.knee_swing_min": next_knobs.knee_swing_min,
+            "reward_weights.step_event": next_knobs.w_step_event,
+            "reward_weights.foot_place": next_knobs.w_foot_place,
             "env.push_force_max": next_knobs.push_force_max,
             "env.push_duration_steps": next_knobs.push_duration_steps,
+            "env.min_height": next_knobs.min_height,
         }
         return AdvisorDecision(updates=updates, reason=reason)
 

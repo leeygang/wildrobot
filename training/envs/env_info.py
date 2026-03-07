@@ -93,6 +93,9 @@ try:
         # AMP features (post-step values)
         foot_contacts: jnp.ndarray  # shape=(4,)
         root_height: jnp.ndarray  # shape=()
+        # Stepping event detection (post-step values)
+        prev_left_loaded: jnp.ndarray  # shape=()
+        prev_right_loaded: jnp.ndarray  # shape=()
         push_schedule: DisturbanceSchedule
 
 except ImportError:
@@ -113,6 +116,8 @@ except ImportError:
         imu_gyro_hist: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
+        prev_left_loaded: jnp.ndarray
+        prev_right_loaded: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -146,6 +151,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "imu_gyro_hist": (IMU_HIST_LEN, 3),
         "foot_contacts": (4,),
         "root_height": (),
+        "prev_left_loaded": (),
+        "prev_right_loaded": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),
