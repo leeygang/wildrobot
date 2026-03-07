@@ -762,6 +762,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "term/pitch_val": metrics["term/pitch_val"],
             "term/roll_val": metrics["term/roll_val"],
             "term/height_val": metrics["term/height_val"],
+            # Keep dict structure stable when adding new reward/debug keys.
+            "reward/posture": metrics.get("reward/posture", jp.zeros(())),
+            "debug/posture_mse": metrics.get("debug/posture_mse", jp.zeros(())),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
