@@ -415,6 +415,25 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Right-foot touchdown event flag",
     ),
+    # v0.14.x: M3 foot-placement FSM debug metrics (append-only)
+    MetricSpec(
+        name="debug/bc_phase",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 base-controller FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
+    ),
+    MetricSpec(
+        name="debug/bc_swing_foot",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 FSM active swing foot (0=left, 1=right)",
+    ),
+    MetricSpec(
+        name="debug/bc_phase_ticks",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 FSM ticks spent in current phase",
+    ),
 ]
 
 # =============================================================================

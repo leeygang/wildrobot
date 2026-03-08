@@ -98,6 +98,30 @@ try:
         prev_right_loaded: jnp.ndarray  # shape=()
         push_schedule: DisturbanceSchedule
 
+        # -----------------------------------------------------------------------
+        # M3: Step FSM state (foot-placement base controller)
+        # Stored here so the FSM survives across steps in lax.scan rollouts.
+        # All fields initialized to zero (STANCE phase) at reset.
+        # -----------------------------------------------------------------------
+        #: FSM phase: STANCE=0, SWING=1, TOUCHDOWN_RECOVER=2
+        fsm_phase: jnp.ndarray        # shape=(), int32
+        #: 0 = left foot swinging, 1 = right foot swinging
+        fsm_swing_foot: jnp.ndarray   # shape=(), int32
+        #: Number of control ticks spent in current FSM phase
+        fsm_phase_ticks: jnp.ndarray  # shape=(), int32
+        #: Frozen touchdown target x (heading-local, m)
+        fsm_frozen_tx: jnp.ndarray    # shape=()
+        #: Frozen touchdown target y (heading-local, m)
+        fsm_frozen_ty: jnp.ndarray    # shape=()
+        #: X position of swing foot when swing phase began (heading-local, m)
+        fsm_swing_sx: jnp.ndarray     # shape=()
+        #: Y position of swing foot when swing phase began (heading-local, m)
+        fsm_swing_sy: jnp.ndarray     # shape=()
+        #: Consecutive ticks the swing foot has been loaded (touchdown detection)
+        fsm_touch_hold: jnp.ndarray   # shape=(), int32
+        #: Consecutive ticks need_step has exceeded trigger threshold (STANCE)
+        fsm_trigger_hold: jnp.ndarray # shape=(), int32
+
 except ImportError:
     # Fallback to NamedTuple if flax not available
     from typing import NamedTuple
@@ -118,6 +142,16 @@ except ImportError:
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
         prev_right_loaded: jnp.ndarray
+        # M3 FSM state
+        fsm_phase: jnp.ndarray
+        fsm_swing_foot: jnp.ndarray
+        fsm_phase_ticks: jnp.ndarray
+        fsm_frozen_tx: jnp.ndarray
+        fsm_frozen_ty: jnp.ndarray
+        fsm_swing_sx: jnp.ndarray
+        fsm_swing_sy: jnp.ndarray
+        fsm_touch_hold: jnp.ndarray
+        fsm_trigger_hold: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -153,6 +187,16 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "root_height": (),
         "prev_left_loaded": (),
         "prev_right_loaded": (),
+        # M3 FSM state
+        "fsm_phase": (),
+        "fsm_swing_foot": (),
+        "fsm_phase_ticks": (),
+        "fsm_frozen_tx": (),
+        "fsm_frozen_ty": (),
+        "fsm_swing_sx": (),
+        "fsm_swing_sy": (),
+        "fsm_touch_hold": (),
+        "fsm_trigger_hold": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

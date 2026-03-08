@@ -73,12 +73,9 @@ REWARD_TERM_KEYS = [
     "reward/action_rate",
     "reward/joint_vel",
     "reward/slip",
-    "reward/clearance",
-    "reward/gait_periodicity",
-    "reward/hip_swing",
-    "reward/knee_swing",
-    "reward/flight_phase",
-    "reward/stance_width_penalty",
+    "reward/posture",
+    "reward/step_event",
+    "reward/foot_place",
 ]
 
 
@@ -109,13 +106,16 @@ ENV_METRICS_KEYS = {
     "reward/action_rate": "Action smoothness penalty",
     "reward/joint_vel": "Joint velocity penalty",
     "reward/slip": "Foot slip penalty",
-    "reward/clearance": "Foot clearance reward",
-    "reward/gait_periodicity": "Alternating gait reward",
-    "reward/hip_swing": "Hip swing during leg swing",
-    "reward/knee_swing": "Knee swing during leg swing",
-    "reward/flight_phase": "Flight phase penalty",
-    "reward/stance_width_penalty": "Stance width penalty",
+    "reward/clearance": "Foot clearance reward (deprecated for M3 total reward)",
+    "reward/gait_periodicity": "Alternating gait reward (deprecated for M3 total reward)",
+    "reward/hip_swing": "Hip swing during leg swing (deprecated for M3 total reward)",
+    "reward/knee_swing": "Knee swing during leg swing (deprecated for M3 total reward)",
+    "reward/flight_phase": "Flight phase penalty (deprecated for M3 total reward)",
+    "reward/stance_width_penalty": "Stance width penalty (deprecated for M3 total reward)",
     "reward/standing": "Standing still penalty",
+    "reward/posture": "Posture return reward",
+    "reward/step_event": "Touchdown event reward gated by need_step",
+    "reward/foot_place": "Foot placement reward gated by need_step",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
     "debug/roll": "Root roll angle",
@@ -146,6 +146,10 @@ ENV_METRICS_KEYS = {
     # Tracking metrics (v0.10.3+)
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
+    # v0.14.x: M3 base-controller FSM debug metrics
+    "debug/bc_phase": "M3 FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
+    "debug/bc_swing_foot": "M3 FSM active swing foot (0=left, 1=right)",
+    "debug/bc_phase_ticks": "M3 FSM ticks in current phase",
 }
 
 
@@ -247,6 +251,10 @@ def get_initial_env_metrics(
         "debug/need_step": 0.0,
         "debug/touchdown_left": 0.0,
         "debug/touchdown_right": 0.0,
+        # v0.14.x: M3 base-controller FSM debug metrics
+        "debug/bc_phase": 0.0,
+        "debug/bc_swing_foot": 0.0,
+        "debug/bc_phase_ticks": 0.0,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -362,6 +370,10 @@ def get_initial_env_metrics_jax(
         "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
         "tracking/max_torque": jp.zeros(()),  # No torque at reset
         "tracking/avg_torque": jp.zeros(()),  # No torque at reset
+        # v0.14.x: M3 base-controller FSM debug metrics
+        "debug/bc_phase": jp.zeros(()),       # STANCE=0 at reset
+        "debug/bc_swing_foot": jp.zeros(()),  # left(0) at reset
+        "debug/bc_phase_ticks": jp.zeros(()),  # 0 ticks at reset
     }
 
 

@@ -7,6 +7,55 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.2] - 2026-03-07: M3 — foot-placement FSM base controller + waist arm damping
+
+### Summary
+Implements M3 from `training/docs/step_trait_base_controller_design.md`: an explicit 3-phase step state machine (STANCE / SWING / TOUCHDOWN_RECOVER) replaces the M2 joint-heuristic controller. The FSM uses Raibert-style foot placement and a half-sine swing trajectory plus waist arm-momentum compensation. Disabled by default; enable with `env.m3_enabled: true`.
+
+### New Files
+- `training/envs/step_controller.py` (~400 lines): Pure-JAX M3 module.
+  - `compute_need_step()` — gate [0,1] from pitch/roll/lateral-vel/pitch-rate
+  - `select_swing_foot()` — load-based + lateral bias
+  - `compute_step_target()` — Raibert-style target, clamped to step bounds
+  - `compute_swing_trajectory()` — smoothstep XY + half-sine Z arc
+  - `update_fsm()` — fully vectorised FSM transitions (no Python control flow)
+  - `compute_ctrl_base()` — stance uprightness feedback + swing tracking + waist damping
+- `tests/test_step_controller.py` — 26 unit tests, **all passing** (1.82s CPU JAX)
+
+### Code Updates
+- `training/envs/env_info.py`: 9 new FSM state fields in `WildRobotInfo` (`fsm_phase`, `fsm_swing_foot`, `fsm_phase_ticks`, `fsm_frozen_tx/ty`, `fsm_swing_sx/sy`, `fsm_touch_hold`, `fsm_trigger_hold`)
+- `training/configs/training_runtime_config.py`: 25 new `m3_*` fields in `EnvConfig` (`m3_enabled`, trigger/recovery thresholds, hold ticks, nominal step size, Raibert gains, step bounds, swing trajectory params, residual authority per phase, arm gains)
+- `training/envs/wildrobot_env.py`:
+  - `_make_initial_state()`: FSM fields initialised to 0 (STANCE)
+  - `step()`: 3-branch action pipeline (m3 / m2 / passthrough); FSM tuple carried in all branches
+  - `new_wr_info` / `preserved_wr_info`: FSM fields in both `lax.cond` branches (pytree safety)
+  - `WildRobotEnv._m3_compute_ctrl()`: new ~200-line method wiring FSM into step loop
+  - 3 new debug metrics: `debug/bc_phase`, `debug/bc_swing_foot`, `debug/bc_phase_ticks`
+- `training/core/metrics_registry.py`: MetricSpec indices 60-62 for new debug metrics
+- `training/core/experiment_tracking.py`: initial values added to ENV_METRICS_KEYS and both `get_initial_env_metrics()` functions
+
+### Config Updates (`training/configs/ppo_standing_push.yaml` → v0.14.2)
+- `version: "0.14.2"`
+- M3 config block added with `m3_enabled: false` and all 25 parameters at design-doc defaults
+
+### Verified
+```
+26/26 unit tests passing (1.82s CPU JAX)
+Smoke test (reset + 5 steps M3=off, reset + 20 steps M3=on): PASSED
+  M3 disabled: bc_phase=0.000, reward/step_event flowing
+  M3 enabled:  fsm_phase=0 (STANCE), fsm_phase_ticks=20, metrics plumbed correctly
+```
+
+### Activation
+To activate M3 in training:
+```yaml
+env:
+  m3_enabled: true
+  base_ctrl_enabled: false   # M3 replaces M2
+```
+
+---
+
 ## [v0.14.1] - 2026-03-07: Standing pushes (M2: joint-heuristic base + residual gating)
 
 ### Config Updates

@@ -57,6 +57,7 @@ from training.cal.specs import Pose3D
 from training.cal.types import CoordinateFrame
 
 from training.configs.training_config import get_robot_config, TrainingConfig
+from training.envs import step_controller as sc
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
@@ -521,6 +522,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=left_loaded.astype(jp.float32),
             prev_right_loaded=right_loaded.astype(jp.float32),
             push_schedule=push_schedule,
+            # M3 FSM state: initialised to STANCE (all zeros)
+            fsm_phase=jp.zeros((), dtype=jp.int32),
+            fsm_swing_foot=jp.zeros((), dtype=jp.int32),
+            fsm_phase_ticks=jp.zeros((), dtype=jp.int32),
+            fsm_frozen_tx=jp.zeros((), dtype=jp.float32),
+            fsm_frozen_ty=jp.zeros((), dtype=jp.float32),
+            fsm_swing_sx=jp.zeros((), dtype=jp.float32),
+            fsm_swing_sy=jp.zeros((), dtype=jp.float32),
+            fsm_touch_hold=jp.zeros((), dtype=jp.int32),
+            fsm_trigger_hold=jp.zeros((), dtype=jp.int32),
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -608,11 +619,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         policy_action = action
 
-        raw_action = (
-            self._mix_base_and_residual_action(state.data, policy_action)
-            if bool(getattr(self._config.env, "base_ctrl_enabled", False))
-            else policy_action
-        )
+        if bool(getattr(self._config.env, "m3_enabled", False)):
+            raw_action, new_fsm = self._m3_compute_ctrl(state.data, wr, policy_action)
+        elif bool(getattr(self._config.env, "base_ctrl_enabled", False)):
+            raw_action = (
+                self._mix_base_and_residual_action(state.data, policy_action)
+            )
+            # M3 not active: carry FSM state forward unchanged (all zeros at startup)
+            new_fsm = (
+                wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
+                wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
+                wr.fsm_touch_hold, wr.fsm_trigger_hold,
+            )
+        else:
+            raw_action = policy_action
+            new_fsm = (
+                wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
+                wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
+                wr.fsm_touch_hold, wr.fsm_trigger_hold,
+            )
         policy_state = PolicyState(prev_action=prev_action)
         filtered_action, policy_state = postprocess_action(
             spec=self._policy_spec,
@@ -705,6 +730,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             **reward_components,
             # v0.10.2: Termination diagnostics
             **term_info,
+            # v0.14.x: M3 base-controller FSM debug metrics
+            "debug/bc_phase": new_fsm[0].astype(jp.float32),
+            "debug/bc_swing_foot": new_fsm[1].astype(jp.float32),
+            "debug/bc_phase_ticks": new_fsm[2].astype(jp.float32),
         }
         # Add placeholder for metrics_vec (will be rebuilt after cond)
         # This ensures pytree structure matches preserved_metrics
@@ -737,6 +766,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
             prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
             push_schedule=wr.push_schedule,
+            # M3 FSM state (updated by _m3_compute_ctrl or carried from wr)
+            fsm_phase=new_fsm[0],
+            fsm_swing_foot=new_fsm[1],
+            fsm_phase_ticks=new_fsm[2],
+            fsm_frozen_tx=new_fsm[3],
+            fsm_frozen_ty=new_fsm[4],
+            fsm_swing_sx=new_fsm[5],
+            fsm_swing_sy=new_fsm[6],
+            fsm_touch_hold=new_fsm[7],
+            fsm_trigger_hold=new_fsm[8],
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -796,6 +835,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
             "debug/touchdown_left": metrics.get("debug/touchdown_left", jp.zeros(())),
             "debug/touchdown_right": metrics.get("debug/touchdown_right", jp.zeros(())),
+            # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
+            "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
+            "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
+            "debug/bc_phase_ticks": metrics.get("debug/bc_phase_ticks", jp.zeros(())),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -821,6 +864,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=reset_wr_info.prev_left_loaded,
             prev_right_loaded=reset_wr_info.prev_right_loaded,
             push_schedule=reset_wr_info.push_schedule,
+            # M3 FSM: reset to STANCE on new episode
+            fsm_phase=reset_wr_info.fsm_phase,
+            fsm_swing_foot=reset_wr_info.fsm_swing_foot,
+            fsm_phase_ticks=reset_wr_info.fsm_phase_ticks,
+            fsm_frozen_tx=reset_wr_info.fsm_frozen_tx,
+            fsm_frozen_ty=reset_wr_info.fsm_frozen_ty,
+            fsm_swing_sx=reset_wr_info.fsm_swing_sx,
+            fsm_swing_sy=reset_wr_info.fsm_swing_sy,
+            fsm_touch_hold=reset_wr_info.fsm_touch_hold,
+            fsm_trigger_hold=reset_wr_info.fsm_trigger_hold,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace
@@ -877,18 +930,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (height > env_cfg.min_height) & (height < env_cfg.max_height), 1.0, 0.0
         )
 
-        # Need-to-step gate: 0..1 based on tilt + lateral motion + pitch rate.
-        g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
-        g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
-        g_lat = jp.maximum(getattr(weights, "step_need_lat_vel", 0.30), 1e-6)
-        g_pr = jp.maximum(getattr(weights, "step_need_pitch_rate", 1.00), 1e-6)
-        need_step = (
-            jp.abs(pitch) / g_pitch
-            + jp.abs(roll) / g_roll
-            + jp.abs(lateral_vel) / g_lat
-            + jp.abs(pitch_rate) / g_pr
-        ) / 4.0
-        need_step = jp.clip(need_step, 0.0, 1.0) * healthy
+        need_step = self._compute_need_step(
+            pitch=pitch,
+            roll=roll,
+            lateral_vel=lateral_vel,
+            pitch_rate=pitch_rate,
+            healthy=healthy,
+        )
 
         # Base action: default pose (often near 0 in policy-action space)
         base_action = self._default_pose_action
@@ -929,6 +977,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
         mixed = action + residual_scale * policy_action
         return jp.clip(mixed, -1.0, 1.0).astype(jp.float32)
 
+    def _compute_need_step(
+        self,
+        *,
+        pitch: jax.Array,
+        roll: jax.Array,
+        lateral_vel: jax.Array,
+        pitch_rate: jax.Array,
+        healthy: jax.Array,
+    ) -> jax.Array:
+        """Shared 0..1 gate for stepping rewards and residual authority."""
+        weights = self._config.reward_weights
+        g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
+        g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
+        g_lat = jp.maximum(getattr(weights, "step_need_lat_vel", 0.30), 1e-6)
+        g_pr = jp.maximum(getattr(weights, "step_need_pitch_rate", 1.00), 1e-6)
+        need_step = (
+            jp.abs(pitch) / g_pitch
+            + jp.abs(roll) / g_roll
+            + jp.abs(lateral_vel) / g_lat
+            + jp.abs(pitch_rate) / g_pr
+        ) / 4.0
+        return jp.clip(need_step, 0.0, 1.0) * healthy
+
     def _maybe_add_action_delta(
         self, action: jax.Array, actuator_name: str, delta: jax.Array
     ) -> jax.Array:
@@ -936,6 +1007,184 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if idx is None:
             return action
         return action.at[idx].add(delta)
+
+    def _m3_compute_ctrl(
+        self,
+        data: "mjx.Data",
+        wr: "WildRobotInfo",
+        policy_action: jax.Array,
+    ) -> tuple[jax.Array, tuple]:
+        """M3: Foot-placement + arms base controller with gated residual RL.
+
+        Reads FSM state from wr, advances the FSM, computes a stabilising base
+        action, then blends in the policy residual.
+
+        Returns:
+            (mixed_action, new_fsm_tuple) where new_fsm_tuple is a 9-element
+            tuple matching the FSM field order in WildRobotInfo.
+        """
+        env_cfg = self._config.env
+        weights = self._config.reward_weights
+
+        # -- Signals ---------------------------------------------------------
+        root_pose = self._cal.get_root_pose(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        height = root_pose.height
+        root_vel = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        forward_vel, lateral_vel, _ = root_vel.linear_xyz
+        roll_rate, pitch_rate, _ = root_vel.angular_xyz
+
+        healthy = jp.where(
+            (height > env_cfg.min_height) & (height < env_cfg.max_height),
+            1.0, 0.0,
+        )
+
+        need_step = sc.compute_need_step(
+            pitch=pitch,
+            roll=roll,
+            lateral_vel=lateral_vel,
+            pitch_rate=pitch_rate,
+            healthy=healthy,
+            g_pitch=float(getattr(weights, "step_need_pitch", 0.35)),
+            g_roll=float(getattr(weights, "step_need_roll", 0.35)),
+            g_lat=float(getattr(weights, "step_need_lat_vel", 0.30)),
+            g_pr=float(getattr(weights, "step_need_pitch_rate", 1.00)),
+        )
+
+        # -- Foot positions (heading-local) -----------------------------------
+        left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        contact_threshold = env_cfg.contact_threshold_force
+        loaded_left = (left_force > contact_threshold).astype(jp.int32)
+        loaded_right = (right_force > contact_threshold).astype(jp.int32)
+
+        # -- FSM state update ------------------------------------------------
+        new_fsm = sc.update_fsm(
+            phase=wr.fsm_phase,
+            swing_foot=wr.fsm_swing_foot,
+            phase_ticks=wr.fsm_phase_ticks,
+            frozen_tx=wr.fsm_frozen_tx,
+            frozen_ty=wr.fsm_frozen_ty,
+            swing_sx=wr.fsm_swing_sx,
+            swing_sy=wr.fsm_swing_sy,
+            touch_hold=wr.fsm_touch_hold,
+            trigger_hold=wr.fsm_trigger_hold,
+            need_step=need_step,
+            loaded_left=loaded_left,
+            loaded_right=loaded_right,
+            left_foot_x=left_foot_pos[0],
+            left_foot_y=left_foot_pos[1],
+            right_foot_x=right_foot_pos[0],
+            right_foot_y=right_foot_pos[1],
+            lateral_vel=lateral_vel,
+            roll=roll,
+            forward_vel=forward_vel,
+            pitch=pitch,
+            trigger_threshold=float(env_cfg.m3_trigger_threshold),
+            recover_threshold=float(env_cfg.m3_recover_threshold),
+            trigger_hold_ticks=int(env_cfg.m3_trigger_hold_ticks),
+            touch_hold_ticks=int(env_cfg.m3_touch_hold_ticks),
+            swing_timeout_ticks=int(env_cfg.m3_swing_timeout_ticks),
+            y_nominal_m=float(env_cfg.m3_y_nominal_m),
+            k_lat_vel=float(env_cfg.m3_k_lat_vel),
+            k_roll=float(env_cfg.m3_k_roll),
+            k_fwd_vel=float(env_cfg.m3_k_fwd_vel),
+            k_pitch=float(env_cfg.m3_k_pitch),
+            x_nominal_m=float(env_cfg.m3_x_nominal_m),
+            x_step_min_m=float(env_cfg.m3_x_step_min_m),
+            x_step_max_m=float(env_cfg.m3_x_step_max_m),
+            y_step_inner_m=float(env_cfg.m3_y_step_inner_m),
+            y_step_outer_m=float(env_cfg.m3_y_step_outer_m),
+        )
+        new_phase, new_swing_foot = new_fsm[0], new_fsm[1]
+        new_phase_ticks = new_fsm[2]
+
+        # -- Actuator index mapping (looked up at Python trace time) ----------
+        a = self._actuator_name_to_index
+        idx_lhp  = a.get("left_hip_pitch",  -1)
+        idx_rhp  = a.get("right_hip_pitch", -1)
+        idx_lhr  = a.get("left_hip_roll",   -1)
+        idx_rhr  = a.get("right_hip_roll",  -1)
+        idx_lk   = a.get("left_knee",       -1)
+        idx_rk   = a.get("right_knee",      -1)
+        idx_la   = a.get("left_ankle",      -1)
+        idx_ra   = a.get("right_ankle",     -1)
+        idx_w    = a.get("waist",           -1)
+
+        # -- Base action from step controller --------------------------------
+        ctrl_base = sc.compute_ctrl_base(
+            phase=new_phase,
+            swing_foot=new_swing_foot,
+            phase_ticks=new_phase_ticks,
+            frozen_tx=new_fsm[3],
+            frozen_ty=new_fsm[4],
+            swing_sx=new_fsm[5],
+            swing_sy=new_fsm[6],
+            pitch=pitch,
+            roll=roll,
+            pitch_rate=pitch_rate,
+            roll_rate=roll_rate,
+            need_step=need_step,
+            left_foot_x=left_foot_pos[0],
+            left_foot_y=left_foot_pos[1],
+            right_foot_x=right_foot_pos[0],
+            right_foot_y=right_foot_pos[1],
+            default_action=self._default_pose_action,
+            idx_left_hip_pitch=idx_lhp,
+            idx_right_hip_pitch=idx_rhp,
+            idx_left_hip_roll=idx_lhr,
+            idx_right_hip_roll=idx_rhr,
+            idx_left_knee=idx_lk,
+            idx_right_knee=idx_rk,
+            idx_left_ankle=idx_la,
+            idx_right_ankle=idx_ra,
+            idx_waist=idx_w,
+            base_pitch_kp=float(env_cfg.base_ctrl_pitch_kp),
+            base_pitch_kd=float(env_cfg.base_ctrl_pitch_kd),
+            base_roll_kp=float(env_cfg.base_ctrl_roll_kp),
+            base_roll_kd=float(env_cfg.base_ctrl_roll_kd),
+            hip_pitch_gain=float(env_cfg.base_ctrl_hip_pitch_gain),
+            ankle_pitch_gain=float(env_cfg.base_ctrl_ankle_pitch_gain),
+            hip_roll_gain=float(env_cfg.base_ctrl_hip_roll_gain),
+            base_action_clip=float(env_cfg.base_ctrl_action_clip),
+            swing_x_to_hip_pitch=float(env_cfg.m3_swing_x_to_hip_pitch),
+            swing_y_to_hip_roll=float(env_cfg.m3_swing_y_to_hip_roll),
+            swing_z_to_knee=float(env_cfg.m3_swing_z_to_knee),
+            swing_z_to_ankle=float(env_cfg.m3_swing_z_to_ankle),
+            swing_height_m=float(env_cfg.m3_swing_height_m),
+            swing_duration_ticks=int(env_cfg.m3_swing_duration_ticks),
+            swing_height_need_step_mult=float(env_cfg.m3_swing_height_need_step_mult),
+            arm_enabled=bool(env_cfg.m3_arm_enabled),
+            arm_need_step_threshold=float(env_cfg.m3_arm_need_step_threshold),
+            arm_k_roll=float(env_cfg.m3_arm_k_roll),
+            arm_k_roll_rate=float(env_cfg.m3_arm_k_roll_rate),
+            arm_k_pitch_rate=float(env_cfg.m3_arm_k_pitch_rate),
+            arm_max_delta_rad=float(env_cfg.m3_arm_max_delta_rad),
+        )
+
+        # -- Gated residual authority ----------------------------------------
+        # Scale residual authority by FSM phase.
+        resid_swing   = jp.asarray(env_cfg.m3_resid_scale_swing,   jp.float32)
+        resid_stance  = jp.asarray(env_cfg.m3_resid_scale_stance,  jp.float32)
+        resid_recover = jp.asarray(env_cfg.m3_resid_scale_recover, jp.float32)
+
+        in_swing    = (new_phase == sc.SWING).astype(jp.float32)
+        in_recover  = (new_phase == sc.TOUCHDOWN_RECOVER).astype(jp.float32)
+        in_stance   = (1.0 - in_swing - in_recover)
+        resid_scale = (
+            in_stance * resid_stance
+            + in_swing * resid_swing
+            + in_recover * resid_recover
+        )
+
+        mixed = ctrl_base + resid_scale * policy_action
+        mixed = jp.clip(mixed, -1.0, 1.0).astype(jp.float32)
+
+        return mixed, new_fsm
 
     # =========================================================================
     # Observation, Reward, Done
@@ -1124,7 +1373,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             left_slip = jp.zeros(())
             right_slip = jp.zeros(())
 
-        # 11. Swing clearance reward (when foot is unloaded, reward height)
+        # TODO(M3 cleanup): Remove deprecated gait-style reward computations entirely
+        # after the first M3 validation run confirms they are not needed for debugging.
+        # 11. Swing clearance reward (deprecated for M3 total reward; kept for metrics)
         # Reward foot height above ground during swing phase
         min_clearance = 0.02  # 2cm minimum clearance during swing
         left_clearance, right_clearance = self._cal.get_foot_clearances(
@@ -1143,7 +1394,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.where(right_swing, right_clearance, 0.0)
         ) * 10.0  # Scale up small clearance values
 
-        # 12. Gait periodicity (encourage alternating support)
+        # 12. Gait periodicity (deprecated for M3 total reward; kept for metrics)
         left_loaded = left_force > contact_threshold
         right_loaded = right_force > contact_threshold
         gait_periodicity = jp.where(left_loaded ^ right_loaded, 1.0, 0.0)
@@ -1152,7 +1403,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Get weights from frozen config (type-safe access)
         weights = self._config.reward_weights
 
-        # 13. Hip/knee swing (encourage leg articulation during swing)
+        # 13. Hip/knee swing (deprecated for M3 total reward; kept for metrics)
         # Use CAL semantic accessors - joint names defined in robot_config (single source)
         left_hip_pitch, right_hip_pitch = self._cal.get_hip_pitch_positions(
             data.qpos, normalize=True
@@ -1179,7 +1430,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         hip_swing = jp.asarray(hip_swing).reshape(())
         knee_swing = jp.asarray(knee_swing).reshape(())
 
-        # 14. Flight phase penalty (discourage hopping)
+        # 14. Flight phase penalty (deprecated for M3 total reward; kept for metrics)
         flight_phase = jp.where((~left_loaded) & (~right_loaded), 1.0, 0.0)
         flight_phase = jp.asarray(flight_phase).reshape(())
 
@@ -1207,7 +1458,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         collapse_vz_pen = collapse_gate * jp.square(jp.maximum(-v_z, 0.0))
 
-        # 17. Stance width penalty (discourage wide split stance)
+        # 17. Stance width penalty (deprecated for M3 total reward; kept for metrics)
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -1244,19 +1495,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         step_event = jp.where(touchdown_left | touchdown_right, 1.0, 0.0)
         step_event = jp.asarray(step_event).reshape(())
 
-        # Need-to-step gate: 0..1 based on tilt + lateral motion + pitch rate.
-        g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
-        g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
-        g_lat = jp.maximum(getattr(weights, "step_need_lat_vel", 0.30), 1e-6)
-        g_pr = jp.maximum(getattr(weights, "step_need_pitch_rate", 1.00), 1e-6)
-        need_step = (
-            jp.abs(pitch) / g_pitch
-            + jp.abs(roll) / g_roll
-            + jp.abs(lateral_vel) / g_lat
-            + jp.abs(pitch_rate) / g_pr
-        ) / 4.0
-        need_step = jp.clip(need_step, 0.0, 1.0)
-        need_step = need_step * healthy
+        need_step = self._compute_need_step(
+            pitch=pitch,
+            roll=roll,
+            lateral_vel=lateral_vel,
+            pitch_rate=pitch_rate,
+            healthy=healthy,
+        )
 
         # Foot placement reward at touchdown (Raibert-style heuristic in heading-local frame).
         base_y = 0.5 * jp.asarray(weights.stance_width_target)
@@ -1328,15 +1573,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Smoothness (Tier 2)
             + weights.action_rate * action_rate_penalty
             + weights.joint_velocity * joint_vel_penalty
-            # Foot stability (Tier 2)
+            # Foot stability / recovery (M3)
             + weights.slip * slip_penalty
-            + weights.clearance * clearance_reward
-            + weights.gait_periodicity * gait_periodicity
-            + weights.hip_swing * hip_swing
-            + weights.knee_swing * knee_swing
-            + weights.flight_phase_penalty * flight_phase
             + weights.height_target * height_target_reward
-            + weights.stance_width_penalty * stance_width_penalty
             + getattr(weights, "posture", 0.0) * posture_reward
             + getattr(weights, "step_event", 0.0) * (step_event * need_step)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
