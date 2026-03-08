@@ -140,6 +140,21 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         foot_switch_threshold=env.get("foot_switch_threshold", 2.0),
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
+
+        # M2: base controller + residual gating (optional)
+        base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),
+        base_ctrl_pitch_kp=float(env.get("base_ctrl_pitch_kp", 0.25)),
+        base_ctrl_pitch_kd=float(env.get("base_ctrl_pitch_kd", 0.05)),
+        base_ctrl_roll_kp=float(env.get("base_ctrl_roll_kp", 0.25)),
+        base_ctrl_roll_kd=float(env.get("base_ctrl_roll_kd", 0.05)),
+        base_ctrl_hip_pitch_gain=float(env.get("base_ctrl_hip_pitch_gain", 1.0)),
+        base_ctrl_ankle_pitch_gain=float(env.get("base_ctrl_ankle_pitch_gain", 0.7)),
+        base_ctrl_hip_roll_gain=float(env.get("base_ctrl_hip_roll_gain", 1.0)),
+        base_ctrl_action_clip=float(env.get("base_ctrl_action_clip", 0.35)),
+        residual_scale_min=float(env.get("residual_scale_min", 0.30)),
+        residual_scale_max=float(env.get("residual_scale_max", 1.00)),
+        residual_gate_power=float(env.get("residual_gate_power", 1.00)),
+
         push_enabled=env.get("push_enabled", False),
         push_start_step_min=env.get("push_start_step_min", 20),
         push_start_step_max=env.get("push_start_step_max", 200),

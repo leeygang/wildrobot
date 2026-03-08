@@ -32,6 +32,7 @@ logs/
 training_logs/
 **/checkpoints/wildrobot_*/
 **/checkpoints/ppo_*/
+training/configs/auto/
 
 # OS
 .DS_Store

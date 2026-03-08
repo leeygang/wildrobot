@@ -321,6 +321,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             actuated_joint_specs=self._robot_config.actuated_joints,
             action_filter_alpha=float(self._config.env.action_filter_alpha),
         )
+        self._actuator_name_to_index = {
+            name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
+        }
         self._signals_adapter = MjxSignalsAdapter(
             self._mj_model,
             self._robot_config,
@@ -359,6 +362,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Extract joint-only qpos for control default from CAL (single source of truth)
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
+        self._default_pose_action = self._cal.ctrl_to_policy_action(
+            self._default_joint_qpos
+        ).astype(jp.float32)
 
         # Disturbance configuration
         self._push_body_ids = jp.asarray([-1], dtype=jp.int32)
@@ -600,7 +606,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         step_count = wr.step_count
         prev_action = wr.prev_action
 
-        raw_action = action
+        policy_action = action
+
+        raw_action = (
+            self._mix_base_and_residual_action(state.data, policy_action)
+            if bool(getattr(self._config.env, "base_ctrl_enabled", False))
+            else policy_action
+        )
         policy_state = PolicyState(prev_action=prev_action)
         filtered_action, policy_state = postprocess_action(
             spec=self._policy_spec,
@@ -660,7 +672,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward, reward_components = self._get_reward(
             data,
             filtered_action,
-            raw_action,
+            policy_action,
             prev_action,
             velocity_cmd,
             prev_left_foot_pos,
@@ -839,6 +851,91 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pipeline_state=final_data,
             rng=final_rng,
         )
+
+    def _mix_base_and_residual_action(
+        self, data: mjx.Data, policy_action: jax.Array
+    ) -> jax.Array:
+        """M2: Apply a joint-heuristic base action and gate residual authority.
+
+        action_applied = action_base + residual_scale(need_step) * policy_action
+
+        Notes:
+        - This operates in policy-action space so CAL symmetry correction is preserved.
+        - The gating uses the same need_step computation as stepping-trait rewards.
+        """
+        env_cfg = self._config.env
+        weights = self._config.reward_weights
+
+        root_pose = self._cal.get_root_pose(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        height = root_pose.height
+        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        _, lateral_vel, _ = root_vel.linear_xyz
+        roll_rate, pitch_rate, _ = root_vel.angular_xyz
+
+        healthy = jp.where(
+            (height > env_cfg.min_height) & (height < env_cfg.max_height), 1.0, 0.0
+        )
+
+        # Need-to-step gate: 0..1 based on tilt + lateral motion + pitch rate.
+        g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
+        g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
+        g_lat = jp.maximum(getattr(weights, "step_need_lat_vel", 0.30), 1e-6)
+        g_pr = jp.maximum(getattr(weights, "step_need_pitch_rate", 1.00), 1e-6)
+        need_step = (
+            jp.abs(pitch) / g_pitch
+            + jp.abs(roll) / g_roll
+            + jp.abs(lateral_vel) / g_lat
+            + jp.abs(pitch_rate) / g_pr
+        ) / 4.0
+        need_step = jp.clip(need_step, 0.0, 1.0) * healthy
+
+        # Base action: default pose (often near 0 in policy-action space)
+        base_action = self._default_pose_action
+
+        # Conservative uprightness feedback (in policy-action units)
+        clip = jp.maximum(jp.asarray(env_cfg.base_ctrl_action_clip, dtype=jp.float32), 0.0)
+        pitch_delta = -(
+            jp.asarray(env_cfg.base_ctrl_pitch_kp, dtype=jp.float32) * pitch
+            + jp.asarray(env_cfg.base_ctrl_pitch_kd, dtype=jp.float32) * pitch_rate
+        )
+        roll_delta = -(
+            jp.asarray(env_cfg.base_ctrl_roll_kp, dtype=jp.float32) * roll
+            + jp.asarray(env_cfg.base_ctrl_roll_kd, dtype=jp.float32) * roll_rate
+        )
+        pitch_delta = jp.clip(pitch_delta, -clip, clip)
+        roll_delta = jp.clip(roll_delta, -clip, clip)
+
+        hip_pitch_gain = jp.asarray(env_cfg.base_ctrl_hip_pitch_gain, dtype=jp.float32)
+        ankle_pitch_gain = jp.asarray(env_cfg.base_ctrl_ankle_pitch_gain, dtype=jp.float32)
+        hip_roll_gain = jp.asarray(env_cfg.base_ctrl_hip_roll_gain, dtype=jp.float32)
+
+        # Apply feedback to a small set of stabilizing joints (if present).
+        action = base_action
+        action = self._maybe_add_action_delta(action, "left_hip_pitch", hip_pitch_gain * pitch_delta)
+        action = self._maybe_add_action_delta(action, "right_hip_pitch", hip_pitch_gain * pitch_delta)
+        action = self._maybe_add_action_delta(action, "left_ankle_pitch", ankle_pitch_gain * pitch_delta)
+        action = self._maybe_add_action_delta(action, "right_ankle_pitch", ankle_pitch_gain * pitch_delta)
+        action = self._maybe_add_action_delta(action, "left_hip_roll", hip_roll_gain * roll_delta)
+        action = self._maybe_add_action_delta(action, "right_hip_roll", hip_roll_gain * roll_delta)
+
+        # Residual authority increases when need_step is high.
+        residual_min = jp.asarray(env_cfg.residual_scale_min, dtype=jp.float32)
+        residual_max = jp.asarray(env_cfg.residual_scale_max, dtype=jp.float32)
+        gate_power = jp.maximum(jp.asarray(env_cfg.residual_gate_power, dtype=jp.float32), 0.0)
+        t = jp.power(need_step, gate_power)
+        residual_scale = residual_min + t * (residual_max - residual_min)
+
+        mixed = action + residual_scale * policy_action
+        return jp.clip(mixed, -1.0, 1.0).astype(jp.float32)
+
+    def _maybe_add_action_delta(
+        self, action: jax.Array, actuator_name: str, delta: jax.Array
+    ) -> jax.Array:
+        idx = self._actuator_name_to_index.get(actuator_name)
+        if idx is None:
+            return action
+        return action.at[idx].add(delta)
 
     # =========================================================================
     # Observation, Reward, Done

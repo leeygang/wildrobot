@@ -112,6 +112,40 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
 
+    # -------------------------------------------------------------------------
+    # M2: Base controller + residual policy (optional)
+    #
+    # When enabled, the environment applies a simple joint-heuristic "base"
+    # action each step, then mixes in the policy output as a residual:
+    #   action_applied = action_base + residual_scale(need_step) * action_policy
+    #
+    # The residual authority is gated by the same "need_step" signal used by the
+    # stepping-trait rewards (tilt + lateral velocity + pitch rate).
+    # -------------------------------------------------------------------------
+    base_ctrl_enabled: bool = False
+
+    # Base feedback gains (in policy-action units per rad / rad/s).
+    # These are intentionally conservative; they should stabilize uprightness
+    # but not overpower learning.
+    base_ctrl_pitch_kp: float = 0.25
+    base_ctrl_pitch_kd: float = 0.05
+    base_ctrl_roll_kp: float = 0.25
+    base_ctrl_roll_kd: float = 0.05
+
+    # Per-joint contribution multipliers for the base controller feedback.
+    base_ctrl_hip_pitch_gain: float = 1.0
+    base_ctrl_ankle_pitch_gain: float = 0.7
+    base_ctrl_hip_roll_gain: float = 1.0
+
+    # Clamp applied base deltas (policy-action units) for safety.
+    base_ctrl_action_clip: float = 0.35
+
+    # Residual authority gate (0..1) where:
+    #   residual_scale = min + need_step**power * (max - min)
+    residual_scale_min: float = 0.30
+    residual_scale_max: float = 1.00
+    residual_gate_power: float = 1.00
+
     # Disturbance pushes (disabled by default)
     push_enabled: bool = False
     push_start_step_min: int = 20

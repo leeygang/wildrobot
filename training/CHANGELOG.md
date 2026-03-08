@@ -7,6 +7,33 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.1] - 2026-03-07: Standing pushes (M2: joint-heuristic base + residual gating)
+
+### Config Updates
+- `training/configs/ppo_standing_push.yaml`: bump to `version: "0.14.1"` and enable M2 mixing:
+  - `env.base_ctrl_enabled: true`
+  - base feedback gains: `env.base_ctrl_*`
+  - residual gate: `env.residual_scale_{min,max}` + `env.residual_gate_power`
+- `training/configs/ppo_standing_push.yaml`: reduce base/residual authority defaults to lower action clipping (observed high `action_sat` during pushes):
+  - lower `env.base_ctrl_*` gains and `env.base_ctrl_action_clip`
+  - lower `env.residual_scale_max`
+
+### Code Updates
+- `training/configs/training_runtime_config.py`: add `EnvConfig` knobs for M2 base controller + residual gating.
+- `training/configs/training_config.py`: parse new `env.base_ctrl_*` and `env.residual_*` fields from YAML.
+- `training/envs/wildrobot_env.py`: implement M2 action mixing:
+  - `action_applied = action_base(default_pose + conservative pitch/roll feedback) + residual_scale(need_step) * policy_action`
+  - residual gate uses the same `need_step` computation as stepping-trait rewards (tilt + lateral velocity + pitch rate)
+
+### Notes
+- No policy contract changes (action/obs dims unchanged). Existing checkpoints should still resume; the controller is purely an environment-side action transformation controlled by config.
+
+### Results (smoke + hard confirm eval @500)
+- Baseline checkpoint for M3 (handoff): `training/checkpoints/ppo_standing_push_v00141_20260307_182350/checkpoint_210_430080.pkl`
+- Hard confirm eval summary (iter 210, eval horizon 500):
+  - `eval_push`: success=86.2%, ep_len=456.0, term_h_low=13.8% (dominant failure mode)
+  - `eval_clean`: success=99.2%, ep_len=496.7, term_h_low=0.8%
+
 ## [v0.13.11] - 2026-03-07: Standing pushes (step trait via touchdown + foot placement)
 
 ### Config Updates
@@ -26,6 +53,27 @@ This changelog tracks capability changes, configuration updates, and training re
 - `training/core/metrics_registry.py`: append new metrics (append-only) for W&B logging: `reward/step_event`, `reward/foot_place`, `debug/need_step`, `debug/touchdown_left`, `debug/touchdown_right`.
 - `wildrobot/agents/training_loop_agent.py`: heuristic advisor now tunes stepping weights and can relax `env.min_height` (bounded) when height-low dominates, to allow deep-crouch recovery + stepping.
 
+### Milestone M1 implementation summary
+
+This release completes **Milestone M1: Reward-only stepping trait** from `training/docs/step_trait_base_controller_design.md`.
+
+**What's implemented:**
+1. **Touchdown detection** — `prev_left_loaded` / `prev_right_loaded` stored in `WildRobotInfo` each step; contact transitions detected as `(~prev_loaded) & loaded` per foot.
+2. **Need-to-step gate** — `need_step ∈ [0,1]` computed from `|pitch|/g_pitch + |roll|/g_roll + |lat_vel|/g_lat + |pitch_rate|/g_pr) / 4.0`, then multiplied by `healthy`. Prevents marching-in-place.
+3. **Foot placement reward** (Raibert-style) — `exp(-placement_err/sigma²)` at touchdown, gated by `need_step`. Lateral target adjusted by lateral velocity and roll; forward target by forward_vel and pitch.
+4. **Config knobs** — all `step_event`, `foot_place`, `foot_place_sigma/k_*`, `step_need_*`, `gait_periodicity`, `hip_swing/knee_swing*` exposed via `RewardWeightsConfig` and parsed from YAML.
+5. **Metrics** — `reward/step_event`, `reward/foot_place`, `debug/need_step`, `debug/touchdown_left`, `debug/touchdown_right` in registry (indices 55-59) and in initial-metrics dict (zero at reset, correct during step).
+6. **No obs/action/contract changes** — `action_filter_alpha` unchanged; policy contract hash stable.
+
+**Verified (CPU JAX smoke):**
+```
+reward/step_event:   0.1480  (non-zero, gated by need_step)
+reward/foot_place:   0.1469  (non-zero at touchdown)
+debug/need_step:     0.1480  (non-zero when disturbed)
+debug/touchdown_left:  0.0000
+debug/touchdown_right: 1.0000  (right foot touchdown from home keyframe)
+```
+
 ### Plan
 1. Validate setup:
    `uv run python scripts/validate_training_setup.py`
@@ -33,6 +81,12 @@ This changelog tracks capability changes, configuration updates, and training re
    `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --verify`
 3. Resume stepping curriculum from latest best checkpoint:
    `uv run python training/train.py --config training/configs/ppo_standing_push.yaml --resume <best_ckpt.pkl>`
+
+**Acceptance criteria (how to verify during training):**
+- `debug/need_step > 0` during push disturbances.
+- `reward/step_event > 0` and `debug/touchdown_*` become non-zero in pushed runs.
+- `reward/foot_place > 0` (not always zero) at touchdown events.
+- Existing `eval_push/*`, `eval_clean/*`, and survival metrics remain intact.
 
 ## [v0.13.10] - 2026-03-07: Standing pushes (step recovery + posture return)
 

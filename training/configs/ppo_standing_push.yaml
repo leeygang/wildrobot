@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.13.1)
+# WildRobot PPO Standing Config (v0.14.1)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.13.11"
-version_name: "Standing pushes (step trait: touchdown + foot placement, gated)"
+version: "0.14.1"
+version_name: "Standing pushes (M2: joint-heuristic base + residual gating)"
 
 seed: 42
 
@@ -53,6 +53,22 @@ env:
   # NOTE: This is part of the policy_contract hash, so changing it requires a fresh
   # run (or a matching checkpoint trained with the same value).
   action_filter_alpha: 0.6
+
+  # M2: Joint-heuristic base controller + gated residual authority
+  # Applied action: action_base + residual_scale(need_step) * policy_action
+  base_ctrl_enabled: true
+  base_ctrl_pitch_kp: 0.20
+  base_ctrl_pitch_kd: 0.04
+  base_ctrl_roll_kp: 0.20
+  base_ctrl_roll_kd: 0.04
+  base_ctrl_hip_pitch_gain: 1.0
+  base_ctrl_ankle_pitch_gain: 0.7
+  base_ctrl_hip_roll_gain: 1.0
+  # Lower clip/authority to avoid action saturation (keeps recovery bursts, but less clipping).
+  base_ctrl_action_clip: 0.25
+  residual_scale_min: 0.20
+  residual_scale_max: 0.85
+  residual_gate_power: 1.00
 
   # Disturbance pushes (strong, single-stage)
   push_enabled: true

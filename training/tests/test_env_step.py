@@ -53,6 +53,29 @@ def standing_env(robot_config):
     return WildRobotEnv(config=training_cfg)
 
 
+@pytest.fixture(scope="module")
+def standing_env_m2(robot_config):
+    """Standing env with M2 base controller enabled (smoke test)."""
+    from assets.robot_config import load_robot_config
+    from training.configs.training_config import load_training_config
+
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    training_cfg = load_training_config("training/configs/ppo_standing.yaml")
+    training_cfg.env.velocity_cmd_min = 0.0
+    training_cfg.env.velocity_cmd_max = 0.0
+    training_cfg.env.push_enabled = False
+
+    training_cfg.env.base_ctrl_enabled = True
+    training_cfg.env.residual_scale_min = 0.3
+    training_cfg.env.residual_scale_max = 1.0
+
+    training_cfg.freeze()
+
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    return WildRobotEnv(config=training_cfg)
+
+
 # =============================================================================
 # Test 5.1: Reset Contract
 # =============================================================================
@@ -222,6 +245,28 @@ class TestStepContract:
                 "This indicates the default standing pose or physics parameters "
                 "may need adjustment for stability."
             )
+
+    @pytest.mark.sim
+    def test_step_with_zero_action_m2(self, standing_env_m2, rng):
+        """
+        Purpose: Ensure the M2 base-controller action-mix path JITs and stays stable.
+        """
+        state = standing_env_m2.reset(rng)
+        policy_action = jnp.zeros(standing_env_m2.action_size)
+
+        def step_collect(s, _):
+            next_state = standing_env_m2.step(s, policy_action)
+            return next_state, (next_state.obs, next_state.reward, next_state.done)
+
+        scan_fn = jax.jit(lambda s: jax.lax.scan(step_collect, s, None, length=50))
+        _, (obs_seq, reward_seq, done_flags) = scan_fn(state)
+
+        assert jnp.all(jnp.isfinite(obs_seq)), "NaN/Inf detected in obs sequence (M2)"
+        assert jnp.all(jnp.isfinite(reward_seq)), "NaN/Inf detected in reward sequence (M2)"
+
+        if jnp.any(done_flags > 0.5):
+            first_done = int(jnp.argmax(done_flags > 0.5))
+            pytest.fail(f"Robot fell in M2 smoke at step {first_done}.")
 
     @pytest.mark.sim
     def test_step_state_changes(self, env, rng):
