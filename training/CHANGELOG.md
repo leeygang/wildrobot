@@ -7,6 +7,77 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.4] - 2026-03-08: M3 engagement tuning after first hard-push run
+
+### Summary
+Responds to the first real M3 standing-push run, which showed decent posture recovery but almost no meaningful FSM stepping. The next iteration is tuned to make the step state machine engage earlier and to reduce the policy's ability to survive hard pushes by residual-only bracing or waist/arm compensation.
+
+### Results (v0.14.3)
+- Run: `training/wandb/offline-run-20260307_235137-un260w81`
+- Checkpoints: `training/checkpoints/ppo_standing_push_v00143_20260307_235139-un260w81`
+- Best checkpoint (eval_push/): `training/checkpoints/ppo_standing_push_v00143_20260307_235139-un260w81/checkpoint_240_31457280.pkl`
+- Best @ iter 240: `eval_push/success_rate=63.77%`, `eval_push/episode_length=386.1`
+- Train @ iter 240: `success=67.36%`, `ep_len=405.8`
+- FSM verdict: `not meaningfully engaged`
+- FSM touchdown style: `timeout-driven`
+- FSM upright recovery: `good`
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 32.64% |
+| term_pitch_frac | 0.00% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 55.97% |
+| debug/torque_sat_frac | 0.68% |
+| ppo/approx_kl | 0.0038 |
+| ppo/clip_fraction | 0.0912 |
+| debug/bc_phase | 0.049 |
+| debug/bc_phase_ticks | 204.847 |
+| fsm/swing_occupancy | 0.00% |
+| reward/step_event | 0.0071 |
+| reward/foot_place | 0.0046 |
+| debug/need_step | 0.1070 |
+| reward/posture | 0.7575 |
+
+### Diagnosis
+- M3 posture recovery is working better than M3 stepping.
+- The dominant failure remains collapse (`term_height_low_frac`), not pitch/roll loss.
+- The residual policy still appears able to survive too much of the push without committing to useful `SWING` phases.
+- Waist/arm compensation is likely helping mask poor foot placement rather than supporting it.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.4"`
+- tune the FSM to engage earlier under hard pushes:
+  - `env.fsm_trigger_threshold: 0.30` (from `0.45`)
+  - `env.fsm_recover_threshold: 0.15` (from `0.20`)
+  - `env.fsm_trigger_hold_ticks: 1` (from `2`)
+  - `env.fsm_swing_timeout_ticks: 10` (from `12`)
+- reduce residual masking so the step controller must contribute:
+  - `env.fsm_resid_scale_stance: 0.55` (from `0.75`)
+  - `env.fsm_resid_scale_swing: 0.45` (from `0.60`)
+  - `env.fsm_resid_scale_recover: 0.50` (from `0.70`)
+- weaken arm compensation so foot placement, not upper-body damping, carries recovery:
+  - `env.fsm_arm_need_step_threshold: 0.45` (from `0.35`)
+  - `env.fsm_arm_k_roll: 0.06` (from `0.10`)
+  - `env.fsm_arm_k_roll_rate: 0.03` (from `0.05`)
+  - `env.fsm_arm_k_pitch_rate: 0.02` (from `0.03`)
+  - `env.fsm_arm_max_delta_rad: 0.18` (from `0.25`)
+
+### Training Intent
+This release is meant to answer a narrower second M3 question:
+- can the FSM be made to engage reliably under hard pushes?
+- can step events become touchdown-driven instead of timeout-driven?
+- can the robot keep the current posture recovery gains while using the feet more decisively?
+
+### Next-Run Success Signals
+- `debug/bc_phase` shows clear `SWING` occupancy during disturbed episodes
+- `reward/step_event` rises materially above the v0.14.3 baseline
+- `reward/foot_place` rises with step events
+- `debug/bc_phase_ticks` shortens away from timeout-like values
+- `eval_push/success_rate` improves from the v0.14.3 result without a major torque spike
+
+---
+
 ## [v0.14.3] - 2026-03-08: M3 training-ready standing-push baseline
 
 ### Summary

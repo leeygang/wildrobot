@@ -300,6 +300,12 @@ Failure signatures for the first M3 run:
 - The robot steps but fails to regain upright posture afterward.
 - Arms or waist compensation dominate while foot placement remains weak.
 
+If the first hard-push M3 run shows weak FSM engagement but decent posture recovery, the next tuning branch should be:
+- lower the step trigger threshold,
+- reduce trigger hold latency,
+- reduce residual authority in `STANCE` and `TOUCHDOWN_RECOVER`,
+- weaken arm/waist damping before adding new reward terms or more controller complexity.
+
 ### Base controller outputs (API-level)
 
 Add a training/runtime control module conceptually like:
