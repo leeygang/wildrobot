@@ -114,14 +114,10 @@ reward_weights:
   action_rate: -0.005
   joint_velocity: -0.001
 
-  # Encourage stepping.
+  # Encourage planted recovery steps; keep reward outcome-driven.
   slip: -1.0
-  clearance: 0.20
-  flight_phase_penalty: 0.0
-
-  stance_width_penalty: -0.1
+  # Retained as foot-place geometry, not as a standalone stance penalty target.
   stance_width_target: 0.23
-  stance_width_sigma: 0.05
 
   forward_velocity_scale: 4.0
 
@@ -130,6 +126,19 @@ reward_weights:
   posture_sigma: 0.40
   posture_gate_pitch: 0.35
   posture_gate_roll: 0.35
+
+  # M3: event-based stepping trait shaping, gated by "need to step".
+  step_event: 0.20
+  foot_place: 0.50
+  foot_place_sigma: 0.12
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
 
 reward:
   task_weight: 1.0

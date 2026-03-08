@@ -51,6 +51,7 @@ _FSM_KWARGS = dict(
     x_step_max_m=0.12,
     y_step_inner_m=0.08,
     y_step_outer_m=0.20,
+    step_max_delta_m=0.12,
 )
 
 _N_ACT = 9  # minimal actuator count for tests
@@ -196,6 +197,46 @@ class TestComputeStepTarget:
                 else:
                     assert -0.20 - 1e-5 <= float(y) <= -0.08 + 1e-5
 
+    def test_step_max_delta_clamp(self):
+        """step_max_delta_m must clamp target to within delta of current foot pos."""
+        # Place current foot at origin; target would otherwise be at (0, 0.115).
+        # With delta=0.05, y should be clamped to 0.0+0.05=0.05.
+        x, y = sc.compute_step_target(
+            lateral_vel=jp.float32(0.0),
+            roll=jp.float32(0.0),
+            forward_vel=jp.float32(0.0),
+            pitch=jp.float32(0.0),
+            swing_foot=jp.int32(0),
+            y_nominal_m=0.115,
+            k_lat_vel=0.15, k_roll=0.10, k_fwd_vel=0.05, k_pitch=0.05,
+            x_nominal_m=0.0,
+            x_step_min_m=-0.08, x_step_max_m=0.12,
+            y_step_inner_m=0.08, y_step_outer_m=0.20,
+            current_foot_x=jp.float32(0.0),
+            current_foot_y=jp.float32(0.0),
+            step_max_delta_m=0.05,
+        )
+        assert float(y) <= 0.0 + 0.05 + 1e-5, (
+            f"y target {float(y):.4f} exceeds current_foot_y + step_max_delta_m (0.05)"
+        )
+
+    def test_step_max_delta_not_applied_when_None(self):
+        """When current_foot_x/y are None (default), no delta clamp is applied."""
+        # Large nominal y=0.115 is reachable with no current foot supplied
+        x, y = sc.compute_step_target(
+            lateral_vel=jp.float32(0.0),
+            roll=jp.float32(0.0),
+            forward_vel=jp.float32(0.0),
+            pitch=jp.float32(0.0),
+            swing_foot=jp.int32(0),
+            y_nominal_m=0.115,
+            k_lat_vel=0.15, k_roll=0.10, k_fwd_vel=0.05, k_pitch=0.05,
+            x_nominal_m=0.0,
+            x_step_min_m=-0.08, x_step_max_m=0.12,
+            y_step_inner_m=0.08, y_step_outer_m=0.20,
+            # current_foot_x/y not provided → delta clamp inactive
+        )
+        assert float(y) == pytest.approx(0.115, abs=0.01)
 
 # ---------------------------------------------------------------------------
 # compute_swing_trajectory
@@ -338,18 +379,24 @@ class TestFSMTransitions:
         )
 
     def test_touchdown_recover_stays_if_need_step_high(self):
-        """TOUCHDOWN_RECOVER stays if need_step > recover_threshold."""
+        """TOUCHDOWN_RECOVER does not reset to STANCE while need_step > recover_threshold.
+
+        With need_step=0.50 >> recover_threshold=0.20, the FSM must NOT transition
+        back to STANCE in a single tick.  It may re-enter SWING (need_step also
+        exceeds trigger_threshold=0.45 + 2-tick hold), but STANCE is not valid.
+        """
+        # Run only 1 tick so we can observe the immediate RECOVER→* decision
+        # before a possible re-trigger into SWING completes its hold counter.
         state = _run_fsm(
-            5,
+            1,
             phase_in=sc.TOUCHDOWN_RECOVER, swing_foot_in=0, phase_ticks_in=0,
-            need_step=0.50,  # above 0.20 → don't recover yet
+            need_step=0.50,  # above recover_threshold=0.20
             loaded_left=1, loaded_right=1,
         )
-        # May have transitioned to SWING again if need_step is high enough, but
-        # should NOT still be STANCE after just 5 ticks starting from TOUCHDOWN_RECOVER.
-        # At minimum it should not be STANCE (need_step still high).
-        # (It might re-trigger SWING; that's also valid.)
-        assert int(state[0]) != sc.STANCE or True  # relaxed assertion; transitions allowed
+        assert int(state[0]) != sc.STANCE, (
+            f"TOUCHDOWN_RECOVER with need_step=0.50 > recover_threshold=0.20 "
+            f"must not reset to STANCE; got phase={int(state[0])}"
+        )
 
 
 # ---------------------------------------------------------------------------

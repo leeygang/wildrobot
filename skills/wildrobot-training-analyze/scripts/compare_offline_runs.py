@@ -18,6 +18,13 @@ class RunSummary:
     best_ep_len: float
     keyset: str
     best_checkpoint: Optional[Path]
+    fsm_enabled: bool
+    fsm_verdict: str
+    fsm_touchdown_style: str
+    fsm_upright_recovery: str
+    fsm_swing_occupancy: Optional[float]
+    fsm_step_event_mean: Optional[float]
+    fsm_foot_place_mean: Optional[float]
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -51,6 +58,73 @@ def _get_float(row: Dict[str, Any], key: str) -> Optional[float]:
         return float(row[key])
     except Exception:
         return None
+
+
+def _mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _collect_series(rows: List[Dict[str, Any]], key: str, *, min_iter: int = 10) -> List[float]:
+    out: List[float] = []
+    for r in rows:
+        it = _get_iter(r)
+        if it is None or it < min_iter:
+            continue
+        v = _get_float(r, key)
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def _classify_fsm(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[bool, str, str, str, Optional[float], Optional[float], Optional[float]]:
+    env = cfg.get("config", {}).get("env", {})
+    enabled = bool(env.get("fsm_enabled", False)) or any("debug/bc_phase" in r for r in rows)
+    if not enabled:
+        return False, "not_applicable", "not_applicable", "not_applicable", None, None, None
+
+    phase_vals = _collect_series(rows, "debug/bc_phase")
+    phase_ticks_vals = _collect_series(rows, "debug/bc_phase_ticks")
+    step_event_vals = _collect_series(rows, "reward/step_event")
+    foot_place_vals = _collect_series(rows, "reward/foot_place")
+    touchdown_vals = _collect_series(rows, "debug/touchdown_left") + _collect_series(rows, "debug/touchdown_right")
+    posture_vals = _collect_series(rows, "reward/posture")
+
+    swing_occupancy = _mean([1.0 if abs(v - 1.0) < 1e-6 else 0.0 for v in phase_vals]) if phase_vals else None
+    step_event_mean = _mean(step_event_vals)
+    foot_place_mean = _mean(foot_place_vals)
+    touchdown_mean = _mean(touchdown_vals)
+    posture_mean = _mean(posture_vals)
+    phase_ticks_mean = _mean(phase_ticks_vals)
+    timeout_ticks = float(env.get("fsm_swing_timeout_ticks", 12))
+
+    if swing_occupancy is None or swing_occupancy < 0.02:
+        verdict = "not meaningfully engaged"
+    elif step_event_mean is None or step_event_mean < 0.01:
+        verdict = "weakly engaged"
+    else:
+        verdict = "engaged"
+
+    if step_event_mean is None or touchdown_mean is None:
+        touchdown_style = "unknown"
+    elif step_event_mean >= 0.01 and touchdown_mean >= 0.005:
+        touchdown_style = "touchdown-driven"
+    elif phase_ticks_mean is not None and phase_ticks_mean > 0.8 * timeout_ticks:
+        touchdown_style = "timeout-driven"
+    else:
+        touchdown_style = "mixed"
+
+    if posture_mean is None:
+        upright_recovery = "unknown"
+    elif posture_mean >= 0.10:
+        upright_recovery = "good"
+    elif posture_mean >= 0.03:
+        upright_recovery = "partial"
+    else:
+        upright_recovery = "poor"
+
+    return enabled, verdict, touchdown_style, upright_recovery, swing_occupancy, step_event_mean, foot_place_mean
 
 
 def _pick_keys(rows: List[Dict[str, Any]]) -> Tuple[str, str, str]:
@@ -120,6 +194,15 @@ def summarize(run_dir: Path, checkpoints_root: Path) -> RunSummary:
 
     ckpt_dir = _find_ckpt_dir(run_id, checkpoints_root)
     ckpt_file = _find_ckpt_file(ckpt_dir, it, step) if ckpt_dir else None
+    (
+        fsm_enabled,
+        fsm_verdict,
+        fsm_touchdown_style,
+        fsm_upright_recovery,
+        fsm_swing_occupancy,
+        fsm_step_event_mean,
+        fsm_foot_place_mean,
+    ) = _classify_fsm(cfg, rows)
 
     return RunSummary(
         run_dir=run_dir,
@@ -130,6 +213,13 @@ def summarize(run_dir: Path, checkpoints_root: Path) -> RunSummary:
         best_ep_len=L,
         keyset=keyset,
         best_checkpoint=ckpt_file,
+        fsm_enabled=fsm_enabled,
+        fsm_verdict=fsm_verdict,
+        fsm_touchdown_style=fsm_touchdown_style,
+        fsm_upright_recovery=fsm_upright_recovery,
+        fsm_swing_occupancy=fsm_swing_occupancy,
+        fsm_step_event_mean=fsm_step_event_mean,
+        fsm_foot_place_mean=fsm_foot_place_mean,
     )
 
 
@@ -145,11 +235,20 @@ def main() -> None:
 
     def fmt(r: RunSummary) -> str:
         ck = r.best_checkpoint.as_posix() if r.best_checkpoint else "N/A"
-        return (
+        base = (
             f"{r.version} ({r.run_id}) | keyset={r.keyset} | "
             f"best: it={r.best_iter} succ={r.best_success*100:.2f}% len={r.best_ep_len:.1f} | "
             f"ckpt={ck}"
         )
+        if r.fsm_enabled:
+            base += (
+                f" | fsm={r.fsm_verdict}"
+                f" | touchdown={r.fsm_touchdown_style}"
+                f" | upright={r.fsm_upright_recovery}"
+            )
+            if r.fsm_swing_occupancy is not None:
+                base += f" | swing_occ={r.fsm_swing_occupancy*100:.2f}%"
+        return base
 
     print("A:", fmt(a))
     print("B:", fmt(b))
@@ -170,8 +269,15 @@ def main() -> None:
     print("Delta vs other run:")
     print(f"- success: {(winner.best_success - loser.best_success)*100:+.2f}%")
     print(f"- ep_len: {winner.best_ep_len - loser.best_ep_len:+.1f}")
+    if winner.fsm_enabled or loser.fsm_enabled:
+        print(f"- fsm verdict: {winner.fsm_verdict} vs {loser.fsm_verdict}")
+        print(f"- touchdown style: {winner.fsm_touchdown_style} vs {loser.fsm_touchdown_style}")
+        print(f"- upright recovery: {winner.fsm_upright_recovery} vs {loser.fsm_upright_recovery}")
+        if winner.fsm_step_event_mean is not None and loser.fsm_step_event_mean is not None:
+            print(f"- reward/step_event: {winner.fsm_step_event_mean - loser.fsm_step_event_mean:+.4f}")
+        if winner.fsm_foot_place_mean is not None and loser.fsm_foot_place_mean is not None:
+            print(f"- reward/foot_place: {winner.fsm_foot_place_mean - loser.fsm_foot_place_mean:+.4f}")
 
 
 if __name__ == "__main__":
     main()
-

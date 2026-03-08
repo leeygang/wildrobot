@@ -17,6 +17,22 @@ class EvalKeySet:
     ep_len: str
 
 
+@dataclass(frozen=True)
+class FsmSummary:
+    enabled: bool
+    phase_mean: Optional[float]
+    phase_ticks_mean: Optional[float]
+    swing_occupancy: Optional[float]
+    step_event_mean: Optional[float]
+    foot_place_mean: Optional[float]
+    touchdown_mean: Optional[float]
+    need_step_mean: Optional[float]
+    posture_mean: Optional[float]
+    verdict: str
+    touchdown_style: str
+    upright_recovery: str
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -162,6 +178,99 @@ def _format_f(x: Optional[float], nd: int = 3) -> str:
     return f"{x:.{nd}f}"
 
 
+def _is_fsm_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
+    env = cfg.get("config", {}).get("env", {})
+    if bool(env.get("fsm_enabled", False)):
+        return True
+    return any("debug/bc_phase" in r for r in rows)
+
+
+def _classify_fsm(
+    rows: List[Dict[str, Any]],
+    *,
+    min_iter: int,
+    cfg: Dict[str, Any],
+) -> FsmSummary:
+    if not _is_fsm_run(cfg, rows):
+        return FsmSummary(
+            enabled=False,
+            phase_mean=None,
+            phase_ticks_mean=None,
+            swing_occupancy=None,
+            step_event_mean=None,
+            foot_place_mean=None,
+            touchdown_mean=None,
+            need_step_mean=None,
+            posture_mean=None,
+            verdict="not_applicable",
+            touchdown_style="not_applicable",
+            upright_recovery="not_applicable",
+        )
+
+    phase_vals = _collect_series(rows, "debug/bc_phase", min_iter=min_iter)
+    phase_ticks_vals = _collect_series(rows, "debug/bc_phase_ticks", min_iter=min_iter)
+    step_event_vals = _collect_series(rows, "reward/step_event", min_iter=min_iter)
+    foot_place_vals = _collect_series(rows, "reward/foot_place", min_iter=min_iter)
+    touchdown_left = _collect_series(rows, "debug/touchdown_left", min_iter=min_iter)
+    touchdown_right = _collect_series(rows, "debug/touchdown_right", min_iter=min_iter)
+    need_step_vals = _collect_series(rows, "debug/need_step", min_iter=min_iter)
+    posture_vals = _collect_series(rows, "reward/posture", min_iter=min_iter)
+
+    phase_mean = _mean(phase_vals)
+    phase_ticks_mean = _mean(phase_ticks_vals)
+    step_event_mean = _mean(step_event_vals)
+    foot_place_mean = _mean(foot_place_vals)
+    touchdown_mean = _mean((touchdown_left or []) + (touchdown_right or []))
+    need_step_mean = _mean(need_step_vals)
+    posture_mean = _mean(posture_vals)
+    swing_occupancy = (
+        _mean([1.0 if abs(v - 1.0) < 1e-6 else 0.0 for v in phase_vals])
+        if phase_vals
+        else None
+    )
+
+    if swing_occupancy is None or swing_occupancy < 0.02:
+        verdict = "not meaningfully engaged"
+    elif step_event_mean is None or step_event_mean < 0.01:
+        verdict = "weakly engaged"
+    else:
+        verdict = "engaged"
+
+    timeout_ticks = float(cfg.get("config", {}).get("env", {}).get("fsm_swing_timeout_ticks", 12))
+    if step_event_mean is None or touchdown_mean is None:
+        touchdown_style = "unknown"
+    elif step_event_mean >= 0.01 and touchdown_mean >= 0.005:
+        touchdown_style = "touchdown-driven"
+    elif phase_ticks_mean is not None and phase_ticks_mean > 0.8 * timeout_ticks:
+        touchdown_style = "timeout-driven"
+    else:
+        touchdown_style = "mixed"
+
+    if posture_mean is None:
+        upright_recovery = "unknown"
+    elif posture_mean >= 0.10:
+        upright_recovery = "good"
+    elif posture_mean >= 0.03:
+        upright_recovery = "partial"
+    else:
+        upright_recovery = "poor"
+
+    return FsmSummary(
+        enabled=True,
+        phase_mean=phase_mean,
+        phase_ticks_mean=phase_ticks_mean,
+        swing_occupancy=swing_occupancy,
+        step_event_mean=step_event_mean,
+        foot_place_mean=foot_place_mean,
+        touchdown_mean=touchdown_mean,
+        need_step_mean=need_step_mean,
+        posture_mean=posture_mean,
+        verdict=verdict,
+        touchdown_style=touchdown_style,
+        upright_recovery=upright_recovery,
+    )
+
+
 def _changelog_block(
     *,
     version: str,
@@ -171,6 +280,7 @@ def _changelog_block(
     keys: EvalKeySet,
     best_it: int,
     best_row: Dict[str, Any],
+    fsm: FsmSummary,
 ) -> str:
     def g(key: str) -> Optional[float]:
         return _get_float(best_row, key)
@@ -199,6 +309,14 @@ def _changelog_block(
     lines += [
         f"- Best @ iter {best_it}: {keys.success}={_format_pct(eval_s)}, {keys.ep_len}={_format_f(eval_L, 1)}",
         f"- Train @ iter {best_it}: success={_format_pct(train_s)}, ep_len={_format_f(train_L, 1)}",
+    ]
+    if fsm.enabled:
+        lines += [
+            f"- FSM verdict: {fsm.verdict}",
+            f"- FSM touchdown style: {fsm.touchdown_style}",
+            f"- FSM upright recovery: {fsm.upright_recovery}",
+        ]
+    lines += [
         "",
         "| Signal | Value |",
         "|---|---:|",
@@ -210,6 +328,16 @@ def _changelog_block(
         f"| ppo/approx_kl | {_format_f(approx_kl, 4)} |",
         f"| ppo/clip_fraction | {_format_f(clip_frac, 4)} |",
     ]
+    if fsm.enabled:
+        lines += [
+            f"| debug/bc_phase | {_format_f(fsm.phase_mean, 3)} |",
+            f"| debug/bc_phase_ticks | {_format_f(fsm.phase_ticks_mean, 3)} |",
+            f"| fsm/swing_occupancy | {_format_pct(fsm.swing_occupancy)} |",
+            f"| reward/step_event | {_format_f(fsm.step_event_mean, 4)} |",
+            f"| reward/foot_place | {_format_f(fsm.foot_place_mean, 4)} |",
+            f"| debug/need_step | {_format_f(fsm.need_step_mean, 4)} |",
+            f"| reward/posture | {_format_f(fsm.posture_mean, 4)} |",
+        ]
     return "\n".join(lines)
 
 
@@ -251,6 +379,7 @@ def main() -> None:
 
     ckpt_dir = _find_checkpoint_dir(run_id, args.checkpoints_root)
     ckpt_file = _find_checkpoint_file(ckpt_dir, best_it, best_step) if ckpt_dir else None
+    fsm = _classify_fsm(rows, min_iter=args.min_iter, cfg=cfg)
 
     # Aggregate stability stats (post-warmup iters)
     term_low = _mean(_collect_series(rows, "term_height_low_frac", min_iter=args.min_iter))
@@ -277,6 +406,19 @@ def main() -> None:
     print(f"- mean term_roll_frac: {_format_pct(term_roll)}")
     print(f"- mean tracking/max_torque: {_format_pct(max_torque)}")
     print(f"- mean debug/torque_sat_frac: {_format_pct(torque_sat)}")
+    if fsm.enabled:
+        print()
+        print("FSM / M3 summary:")
+        print(f"- verdict: {fsm.verdict}")
+        print(f"- touchdown style: {fsm.touchdown_style}")
+        print(f"- upright recovery: {fsm.upright_recovery}")
+        print(f"- mean debug/bc_phase: {_format_f(fsm.phase_mean, 3)}")
+        print(f"- mean debug/bc_phase_ticks: {_format_f(fsm.phase_ticks_mean, 3)}")
+        print(f"- mean swing occupancy: {_format_pct(fsm.swing_occupancy)}")
+        print(f"- mean reward/step_event: {_format_f(fsm.step_event_mean, 4)}")
+        print(f"- mean reward/foot_place: {_format_f(fsm.foot_place_mean, 4)}")
+        print(f"- mean debug/need_step: {_format_f(fsm.need_step_mean, 4)}")
+        print(f"- mean reward/posture: {_format_f(fsm.posture_mean, 4)}")
     print()
     print("CHANGELOG block (paste into training/CHANGELOG.md):")
     print()
@@ -288,9 +430,9 @@ def main() -> None:
         keys=keys,
         best_it=best_it,
         best_row=best_row,
+        fsm=fsm,
     ))
 
 
 if __name__ == "__main__":
     main()
-

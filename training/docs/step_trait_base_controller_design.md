@@ -1,7 +1,7 @@
 # Step-Trait Base Controller Design (Foot + Arms Placement)
 
 Status: Draft  
-Last updated: 2026-03-07
+Last updated: 2026-03-08
 
 ## Goal
 
@@ -78,27 +78,252 @@ When to use
 At each control tick:
 1) Read signals/state (gravity vector, gyro, joint pos/vel, foot contacts).
 2) Compute a **need-to-step** scalar `need_step ∈ [0, 1]`.
-3) Compute **foot placement targets** (x/y) for the next touchdown.
-4) Compute **arm targets** to counter angular velocity / body tilt.
-5) Convert targets into a baseline joint target `ctrl_base_rad`.
-6) Apply RL residual `ctrl_resid_rad = resid_scale * action`.
-7) Final command: `ctrl = clip(ctrl_base_rad + ctrl_resid_rad, joint_limits)`.
+3) Update the **step state machine** (support leg, swing leg, trigger/commit/touchdown).
+4) If stepping, compute a **frozen touchdown target** for the active swing foot.
+5) Compute a simple **swing trajectory** toward that frozen touchdown target.
+6) Compute **arm targets** as secondary damping for torso angular motion.
+7) Convert targets into a baseline joint target `ctrl_base_rad`.
+8) Apply RL residual `ctrl_resid_rad = resid_scale * action`.
+9) Final command: `ctrl = clip(ctrl_base_rad + ctrl_resid_rad, joint_limits)`.
 
 Key idea:
 - The base controller provides “reasonable” stepping and momentum responses.
-- RL learns *when* and *how much* to deviate, and can take over if it finds better strategies.
+- RL learns *when* and *how much* to deviate, but should not have to rediscover the basic step sequence.
+
+### M3 controller contract
+
+M3 should be implemented as a **hybrid controller**, not a fully continuous target generator.
+
+Required properties:
+- Only **one swing foot** is active at a time in M3.
+- A step target is **committed/frozen** when the controller enters swing; it is not recomputed every tick.
+- Arms are **secondary stabilizers**; they must not carry the recovery by themselves.
+- Residual RL is additive and bounded; it can refine the step, not replace the step state machine.
+
+### M3 controller state machine
+
+The base controller should maintain explicit internal state:
+
+```text
+ControllerMode:
+  STANCE
+  STEP_TRIGGERED
+  SWING
+  TOUCHDOWN_RECOVER
+  REPLAN   # optional safety state; can be deferred if not needed
+```
+
+Per-step internal state:
+
+```text
+support_leg: {left, right, none}
+swing_leg: {left, right, none}
+mode_step_count: int
+step_target_xy: [x, y]          # heading-local touchdown target for active swing foot
+step_start_xy: [x, y]           # heading-local swing-foot position when swing begins
+step_height_m: float
+step_duration_ticks: int
+touchdown_confirmed: bool
+```
+
+State semantics:
+- `STANCE`: both feet considered support candidates; maintain neutral/upright baseline.
+- `STEP_TRIGGERED`: choose swing leg and freeze a touchdown target.
+- `SWING`: track the committed swing-foot trajectory until touchdown or timeout.
+- `TOUCHDOWN_RECOVER`: blend support posture back toward neutral after touchdown.
+- `REPLAN`: optional fallback if swing timeout, target infeasible, or robot state diverges badly.
+
+Transition rules for the first M3 implementation:
+- `STANCE -> STEP_TRIGGERED` when `need_step > step_trigger_threshold` for `N` consecutive control ticks.
+- `STEP_TRIGGERED -> SWING` immediately after choosing `swing_leg`, `support_leg`, and freezing `step_target_xy`.
+- `SWING -> TOUCHDOWN_RECOVER` when the swing foot touchdown is detected and remains loaded for `M` ticks.
+- `SWING -> REPLAN` on swing timeout or if torso tilt grows beyond a safety threshold while the target is still not reached.
+- `TOUCHDOWN_RECOVER -> STANCE` when `need_step < recover_threshold` and torso orientation returns within upright bounds.
+- `REPLAN -> SWING` if a new target is successfully generated; otherwise `REPLAN -> STANCE` as a conservative fallback.
+
+Recommended initial values:
+- `step_trigger_threshold`: 0.45
+- `recover_threshold`: 0.20
+- `trigger_hold_ticks`: 2-3
+- `touchdown_hold_ticks`: 1-2
+- `swing_timeout_ticks`: 8-14 control ticks
+
+### Support-leg and swing-leg selection
+
+M3 should keep this simple and deterministic:
+- Prefer the currently more-loaded foot as `support_leg`.
+- Choose the opposite foot as `swing_leg`.
+- If both feet are similarly loaded, choose the foot that steps **toward** the disturbance direction:
+  - positive roll / positive lateral velocity -> swing left foot
+  - negative roll / negative lateral velocity -> swing right foot
+
+Do not support crossover steps or double-step plans in the first M3 version.
+
+### Foot placement target generation
+
+For M3, target generation should be intentionally conservative:
+- Primary objective: **lateral catch step**.
+- Secondary objective: mild fore-aft correction.
+- Compute target in **heading-local frame**.
+- Freeze the target at `STEP_TRIGGERED`; do not continuously retarget during `SWING`.
+
+Recommended touchdown target:
+
+```text
+y_des = y_nominal(sign by foot side)
+      + k_lat_vel * lateral_vel
+      + k_roll * roll
+
+x_des = x_nominal
+      + k_fwd_vel * forward_vel
+      + k_pitch * pitch
+```
+
+Recommended constraints:
+- Keep `x_nominal` near zero in standing push recovery.
+- Clamp `x_des` and `y_des` to reachable per-foot bounds.
+- Make lateral correction dominant over fore-aft correction in M3.
+- Reuse the same `stance_width_target` concept as the nominal lateral separation.
+
+Recommended first-pass bounds:
+- `x_step_min_m`, `x_step_max_m`
+- `y_step_inner_m`, `y_step_outer_m`
+- `step_max_delta_m` relative to current swing-foot position
+
+### Swing trajectory generation
+
+M3 should not jump directly from touchdown target to joint deltas. It should define a simple swing-foot trajectory first.
+
+Required swing trajectory outputs:
+- `swing_foot_xy(t)`: interpolated horizontal path from `step_start_xy` to `step_target_xy`
+- `swing_foot_z(t)`: fixed-height arc with optional mild scaling by `need_step`
+
+Recommended M3 simplification:
+- Use a fixed-duration swing trajectory.
+- Use a fixed arc height with a small `need_step` multiplier.
+- Use a simple trajectory shape:
+  - XY: linear or smoothstep interpolation
+  - Z: parabola or half-sine
+
+Recommended initial values:
+- `swing_height_m`: 0.03-0.05
+- `swing_duration_ticks`: 10-12
+
+### Target tracking to joints
+
+The design must explicitly separate:
+1) foot target generation
+2) swing trajectory generation
+3) conversion from trajectory to joint targets
+
+For the first M3 version, use the simplest feasible tracker:
+- Keep stance leg near default support posture.
+- Apply lightweight foot-position tracking to the swing leg using:
+  - either a small analytic IK helper if available,
+  - or a hand-tuned joint heuristic that maps foot x/y/z errors into hip/knee/ankle deltas.
+
+The first M3 implementation should favor:
+- predictable tracking,
+- low gain,
+- conservative limits,
+- debuggable sign conventions.
+
+Avoid full-body IK or optimization-based tracking in M3.
+
+### Arm momentum strategy
+
+Arm control should be intentionally weaker and narrower in scope than foot placement.
+
+M3 arm requirements:
+- Arms are **assistive only**.
+- Arms should be gated by `need_step` and/or enabled only in `SWING` and `TOUCHDOWN_RECOVER`.
+- Arm authority must be capped separately from leg/base authority.
+
+Recommended first M3 arm strategy:
+- Prioritize **roll stabilization** first.
+- Optionally add a small pitch-rate damping term after roll behavior is stable.
+- Do not try to learn or hand-design a complex multi-axis arm swing pattern in M3.
+
+Recommended target form:
+
+```text
+arm_delta =
+    k_roll_rate * roll_rate
+  + k_roll * roll
+  + optional small k_pitch_rate * pitch_rate
+```
+
+Recommended limits:
+- `arm_max_delta_rad`
+- `arm_need_step_threshold`
+- `arm_gain_scale` < foot placement authority
+
+### Residual RL interaction
+
+Residual RL should remain additive, bounded, and phase-aware.
+
+Recommended policy:
+- In `STANCE`, allow modest residual authority for posture refinement.
+- In `SWING`, preserve enough residual authority to refine timing/placement, but do not allow it to fully override the committed swing motion.
+- In `TOUCHDOWN_RECOVER`, allow residual authority to help settle back to neutral.
+
+The key M3 rule is:
+- Residual RL can modulate execution quality, not replace the hybrid stepping logic.
+
+### M3 success criteria
+
+The first M3 training run should be judged against explicit mechanism and outcome criteria.
+
+Mechanism criteria:
+- `debug/bc_phase` must show non-trivial occupancy in `SWING` during disturbed episodes.
+- `debug/bc_phase_ticks` should not be dominated by timeout-driven swings.
+- `reward/step_event` must be measurably above zero under hard-push evaluation.
+- `reward/foot_place` must rise with stepping, indicating the touchdown target is not random.
+- `debug/touchdown_left` / `debug/touchdown_right` should occur when `debug/need_step` is elevated, not only during idle motion.
+
+Outcome criteria:
+- Under hard-push eval (`push_force_max=9`, `push_duration_steps=15`), `eval_push/survival_rate` should match or exceed the M2 baseline.
+- `eval_push/episode_length` should trend toward the full 500-step horizon.
+- Dominant terminations should shift away from immediate collapse after disturbance.
+- After the push, the robot should return toward neutral posture:
+  - `reward/posture` should recover after the disturbance window.
+  - roll/pitch termination fractions should remain low.
+- Visual inspection should confirm:
+  - the robot steps instead of only bracing,
+  - the step widens support in the disturbance direction,
+  - the robot does not remain stuck in a crouched or oscillatory recovery pose.
+
+Failure signatures for the first M3 run:
+- `SWING` rarely occurs even under hard pushes.
+- Swing is mostly timeout-driven rather than touchdown-driven.
+- The policy survives by residual-only bracing while the FSM contributes little.
+- The robot steps but fails to regain upright posture afterward.
+- Arms or waist compensation dominate while foot placement remains weak.
 
 ### Base controller outputs (API-level)
 
 Add a training/runtime control module conceptually like:
 
 ```text
-BaseController.compute(signals, internal_state) -> ctrl_base_rad, debug_dict
+BaseController.compute(signals, internal_state) -> ctrl_base_rad, next_state, debug_dict
 ```
 
 This base controller must be implemented in both:
 - Training: `training/envs/wildrobot_env.py` (or imported helper).
 - Runtime: `runtime/wr_runtime/control/` (mirrored logic).
+
+Recommended shared helper boundary:
+
+```text
+compute_need_step(signals, cfg) -> scalar
+update_step_fsm(signals, state, cfg) -> next_state
+compute_step_target(signals, state, cfg) -> target_xy
+compute_swing_traj(signals, state, cfg) -> swing_target
+compute_arm_targets(signals, state, cfg) -> arm_target
+targets_to_ctrl_base(signals, state, targets, cfg) -> ctrl_base_rad
+```
+
+The training env and runtime should both call the same helper logic, with only thin adapter code for simulator/runtime-specific state access.
 
 #### Proposed config/API surface
 
@@ -120,23 +345,45 @@ base_controller:
 
   # Foot placement heuristic
   foot_place:
-    sigma_m: 0.12
+    enabled: true
+    trigger_threshold: 0.45
+    recover_threshold: 0.20
+    trigger_hold_ticks: 2
+    touchdown_hold_ticks: 1
+    swing_timeout_ticks: 12
+
+    x_nominal_m: 0.0
+    y_nominal_m: 0.115
     k_lat_vel: 0.15
     k_roll: 0.10
     k_pitch: 0.05
     k_fwd_vel: 0.05
 
+    x_step_min_m: -0.08
+    x_step_max_m: 0.12
+    y_step_inner_m: 0.08
+    y_step_outer_m: 0.20
+    step_max_delta_m: 0.12
+
+    swing_height_m: 0.04
+    swing_height_need_step_mult: 0.5
+    swing_duration_ticks: 10
+
   # Arm momentum heuristic
   arms:
     enabled: true
-    k_pitch_rate: ...
+    need_step_threshold: 0.35
+    k_roll: ...
     k_roll_rate: ...
+    k_pitch_rate: ...
     max_delta_rad: ...
 ```
 
 Notes:
 - Keep **policy observation/action** the same; only change the internal control composition.
 - The runtime config should be able to disable base control or clamp residual authority.
+- The runtime config should be able to disable arms independently of foot placement.
+- `stance_width_target` remains useful as the nominal support geometry, but should not be used as a separate reward penalty for M3.
 
 ### Reward shaping changes (industry-style stepping incentives)
 
@@ -148,8 +395,8 @@ Use stepping rewards that are:
 Recommended reward components (already implemented in v0.13.11 training code):
 - `reward/step_event`: touchdown event (gated by `need_step`).
 - `reward/foot_place`: exp(-placement error / sigma²) at touchdown (gated by `need_step`).
-- Keep `reward/clearance`, `reward/gait_periodicity`, `reward/hip_swing`, `reward/knee_swing` as auxiliary terms.
 - Keep `reward/slip` strong to avoid shuffling.
+- Keep deprecated gait-style terms only as debug metrics during the first M3 validation run; they should not shape the M3 objective.
 
 Recommended posture return shaping:
 - `reward/posture` (gated by uprightness), so “after recovery” it returns to neutral.
@@ -203,7 +450,7 @@ Minimum hardware checks per milestone:
 - Goal: faster learning + fewer catastrophic terminations.
 
 #### M3: Foot placement + arms base controller
-- Add foot placement targets for touchdown and arm momentum targets.
+- Add explicit step-state logic, frozen touchdown targets, swing trajectory tracking, and secondary arm damping.
 - Ensure runtime parity and stable safety limits.
 - Goal: reliable stepping under hard pushes and consistent return upright.
 
@@ -226,4 +473,3 @@ Minimum hardware checks per milestone:
   - Keep base gains conservative.
   - Let RL residual authority increase with `need_step`.
   - Provide a runtime knob to cap residual/arm motion.
-

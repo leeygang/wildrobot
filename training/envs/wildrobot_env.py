@@ -1099,6 +1099,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             x_step_max_m=float(env_cfg.fsm_x_step_max_m),
             y_step_inner_m=float(env_cfg.fsm_y_step_inner_m),
             y_step_outer_m=float(env_cfg.fsm_y_step_outer_m),
+            step_max_delta_m=float(env_cfg.fsm_step_max_delta_m),
         )
         new_phase, new_swing_foot = new_fsm[0], new_fsm[1]
         new_phase_ticks = new_fsm[2]

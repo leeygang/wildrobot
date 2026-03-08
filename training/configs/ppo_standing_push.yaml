@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.14.1)
+# WildRobot PPO Standing Config (v0.14.3)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.14.2"
-version_name: "Standing pushes (M3: foot-placement FSM base controller)"
+version: "0.14.3"
+version_name: "Standing pushes (M3 training-ready: FSM stepping + upright recovery)"
 
 seed: 42
 
@@ -55,8 +55,8 @@ env:
   action_filter_alpha: 0.6
 
   # M2: Joint-heuristic base controller + gated residual authority
-  # Applied action: action_base + residual_scale(need_step) * policy_action
-  base_ctrl_enabled: true
+  # Kept for rollback/reference, but disabled for the M3 training-ready baseline.
+  base_ctrl_enabled: false
   base_ctrl_pitch_kp: 0.20
   base_ctrl_pitch_kd: 0.04
   base_ctrl_roll_kp: 0.20
@@ -70,9 +70,9 @@ env:
   residual_scale_max: 0.85
   residual_gate_power: 1.00
 
-  # M3: Foot-placement + arms base controller (disabled by default; enable to activate M3)
-  # Set fsm_enabled: true to replace M2 with the full foot-placement FSM.
-  fsm_enabled: false
+  # M3 training-ready baseline: enable the foot-placement FSM and disable M2 above.
+  # This is the default standing-push training path for the first M3 run.
+  fsm_enabled: true
   fsm_trigger_threshold: 0.45
   fsm_recover_threshold: 0.20
   fsm_trigger_hold_ticks: 2
@@ -96,9 +96,10 @@ env:
   fsm_swing_y_to_hip_roll: 0.30
   fsm_swing_z_to_knee: 0.40
   fsm_swing_z_to_ankle: 0.20
-  fsm_resid_scale_swing: 0.70
-  fsm_resid_scale_stance: 0.85
-  fsm_resid_scale_recover: 0.80
+  # Keep residual authority meaningful, but below full override while the FSM proves itself.
+  fsm_resid_scale_swing: 0.60
+  fsm_resid_scale_stance: 0.75
+  fsm_resid_scale_recover: 0.70
   fsm_arm_enabled: true
   fsm_arm_need_step_threshold: 0.35
   fsm_arm_k_roll: 0.10
@@ -106,13 +107,13 @@ env:
   fsm_arm_k_pitch_rate: 0.03
   fsm_arm_max_delta_rad: 0.25
 
-  # Disturbance pushes (strong, single-stage)
+  # Disturbance pushes (first M3 run: hard, but not yet "very hard")
   push_enabled: true
   push_start_step_min: 30
   push_start_step_max: 300
-  push_duration_steps: 10
+  push_duration_steps: 15
   push_force_min: 3.0
-  push_force_max: 6.0
+  push_force_max: 9.0
   push_bodies: [waist, upperbody]
 
 # =============================================================================

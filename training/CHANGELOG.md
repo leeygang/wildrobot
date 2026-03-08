@@ -7,6 +7,43 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.3] - 2026-03-08: M3 training-ready standing-push baseline
+
+### Summary
+Promotes the standing-push baseline from "M3 code present" to "M3 training-ready". The default standing-push config now trains with the foot-placement FSM enabled, M2 disabled, hard pushes restored, and residual authority reduced enough that the FSM must do real recovery work instead of being masked by the policy residual.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.3"`
+- enable M3 by default:
+  - `env.fsm_enabled: true`
+  - `env.base_ctrl_enabled: false`
+- restore hard-push curriculum for the first real M3 run:
+  - `env.push_duration_steps: 15`
+  - `env.push_force_max: 9.0`
+- reduce residual authority so the FSM must contribute meaningful stepping:
+  - `env.fsm_resid_scale_swing: 0.60`
+  - `env.fsm_resid_scale_stance: 0.75`
+  - `env.fsm_resid_scale_recover: 0.70`
+
+### Training Intent
+This release is meant to answer the first M3 question directly:
+- does the robot step under hard pushes?
+- does the step enlarge support meaningfully instead of fidgeting?
+- does the robot return toward upright instead of remaining in a crouched recovery pose?
+
+### First-Run Review Signals
+- `debug/bc_phase` should show real occupancy in `SWING`, not only `STANCE`
+- `reward/step_event` and `reward/foot_place` should rise in disturbed episodes
+- `debug/bc_phase_ticks` should not be dominated by swing timeouts
+- `eval_push/survival_rate` should at least match M2, with clearer stepping behavior
+- `reward/posture` should recover after the disturbance rather than staying near zero
+
+### Notes
+- M2 config fields remain in the file for rollback/comparison, but are disabled in the training-ready default.
+- Deprecated gait-style reward terms remain debug-only for now and should be removed after the first validated M3 run if they are not needed.
+
+---
+
 ## [v0.14.2] - 2026-03-07: M3 — foot-placement FSM base controller + waist arm damping
 
 ### Summary

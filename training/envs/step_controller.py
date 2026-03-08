@@ -140,6 +140,9 @@ def compute_step_target(
     x_step_max_m: float,
     y_step_inner_m: float,
     y_step_outer_m: float,
+    current_foot_x: jp.ndarray | None = None,
+    current_foot_y: jp.ndarray | None = None,
+    step_max_delta_m: float = 99.0,
 ) -> tuple[jp.ndarray, jp.ndarray]:
     """Compute desired touchdown position in heading-local frame.
 
@@ -154,6 +157,12 @@ def compute_step_target(
         x_nominal_m: Nominal fore-aft position (usually 0 for standing).
         x_step_min_m, x_step_max_m: Fore-aft reachable bounds.
         y_step_inner_m, y_step_outer_m: Absolute values of inner/outer y bounds.
+        current_foot_x, current_foot_y: Current swing-foot position in
+            heading-local frame.  When provided together with step_max_delta_m,
+            the target is clamped so that it never moves more than
+            step_max_delta_m in either axis relative to the current foot pose.
+        step_max_delta_m: Per-axis reach limit from the current foot position
+            (metres).  Only used when current_foot_x/y are also supplied.
 
     Returns:
         (x_des, y_des) in heading-local frame.
@@ -185,6 +194,16 @@ def compute_step_target(
                        jp.asarray(y_step_outer_m, dtype=jp.float32),
                        -jp.asarray(y_step_inner_m, dtype=jp.float32))
     y_des = jp.clip(y_des, jp.minimum(y_inner, y_outer), jp.maximum(y_inner, y_outer))
+
+    # Per-step reach clamp: keep target within step_max_delta_m of the current
+    # foot position in each axis (L∞ ball).  Only applied when current position
+    # is provided; the default step_max_delta_m=99.0 is effectively no-op.
+    if current_foot_x is not None and current_foot_y is not None:
+        delta = jp.asarray(step_max_delta_m, dtype=jp.float32)
+        fx = jp.asarray(current_foot_x, dtype=jp.float32)
+        fy = jp.asarray(current_foot_y, dtype=jp.float32)
+        x_des = jp.clip(x_des, fx - delta, fx + delta)
+        y_des = jp.clip(y_des, fy - delta, fy + delta)
 
     return x_des, y_des
 
@@ -273,6 +292,7 @@ def update_fsm(
     x_step_max_m: float,
     y_step_inner_m: float,
     y_step_outer_m: float,
+    step_max_delta_m: float = 99.0,
 ) -> tuple[
     jp.ndarray, jp.ndarray, jp.ndarray,
     jp.ndarray, jp.ndarray, jp.ndarray, jp.ndarray,
@@ -287,6 +307,9 @@ def update_fsm(
         phase, swing_foot, phase_ticks, ...: Current FSM state.
         need_step, loaded_left, loaded_right, ...: Current sensor readings.
         trigger_threshold, ...: Config scalars (traced at JIT time).
+        step_max_delta_m: Maximum per-axis reach from the current swing-foot
+            position (metres).  Forwarded to compute_step_target; default 99.0
+            is effectively no-op for backward compatibility.
 
     Returns:
         Tuple of updated FSM arrays in the same order as inputs:
@@ -298,15 +321,19 @@ def update_fsm(
     # 1. Compute candidate new swing foot and target (used when entering SWING)
     # -----------------------------------------------------------------------
     cand_swing_foot = select_swing_foot(roll, lateral_vel, loaded_left, loaded_right)
+    # Swing start = current position of the chosen swing foot (needed before
+    # compute_step_target so the per-step delta clamp can be applied there).
+    cand_swing_sx = jp.where(cand_swing_foot == 0, left_foot_x, right_foot_x)
+    cand_swing_sy = jp.where(cand_swing_foot == 0, left_foot_y, right_foot_y)
     cand_target_x, cand_target_y = compute_step_target(
         lateral_vel, roll, forward_vel, pitch,
         cand_swing_foot,
         y_nominal_m, k_lat_vel, k_roll, k_fwd_vel, k_pitch,
         x_nominal_m, x_step_min_m, x_step_max_m, y_step_inner_m, y_step_outer_m,
+        current_foot_x=cand_swing_sx,
+        current_foot_y=cand_swing_sy,
+        step_max_delta_m=step_max_delta_m,
     )
-    # Swing start position = current position of the chosen swing foot
-    cand_swing_sx = jp.where(cand_swing_foot == 0, left_foot_x, right_foot_x)
-    cand_swing_sy = jp.where(cand_swing_foot == 0, left_foot_y, right_foot_y)
 
     # -----------------------------------------------------------------------
     # 2. Transition condition: STANCE -> SWING
