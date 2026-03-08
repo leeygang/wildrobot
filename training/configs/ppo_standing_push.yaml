@@ -71,40 +71,40 @@ env:
   residual_gate_power: 1.00
 
   # M3: Foot-placement + arms base controller (disabled by default; enable to activate M3)
-  # Set m3_enabled: true to replace M2 with the full foot-placement FSM.
-  m3_enabled: false
-  m3_trigger_threshold: 0.45
-  m3_recover_threshold: 0.20
-  m3_trigger_hold_ticks: 2
-  m3_touch_hold_ticks: 1
-  m3_swing_timeout_ticks: 12
-  m3_x_nominal_m: 0.0
-  m3_y_nominal_m: 0.115
-  m3_k_lat_vel: 0.15
-  m3_k_roll: 0.10
-  m3_k_pitch: 0.05
-  m3_k_fwd_vel: 0.05
-  m3_x_step_min_m: -0.08
-  m3_x_step_max_m: 0.12
-  m3_y_step_inner_m: 0.08
-  m3_y_step_outer_m: 0.20
-  m3_step_max_delta_m: 0.12
-  m3_swing_height_m: 0.04
-  m3_swing_height_need_step_mult: 0.5
-  m3_swing_duration_ticks: 10
-  m3_swing_x_to_hip_pitch: 0.30
-  m3_swing_y_to_hip_roll: 0.30
-  m3_swing_z_to_knee: 0.40
-  m3_swing_z_to_ankle: 0.20
-  m3_resid_scale_swing: 0.70
-  m3_resid_scale_stance: 0.85
-  m3_resid_scale_recover: 0.80
-  m3_arm_enabled: true
-  m3_arm_need_step_threshold: 0.35
-  m3_arm_k_roll: 0.10
-  m3_arm_k_roll_rate: 0.05
-  m3_arm_k_pitch_rate: 0.03
-  m3_arm_max_delta_rad: 0.25
+  # Set fsm_enabled: true to replace M2 with the full foot-placement FSM.
+  fsm_enabled: false
+  fsm_trigger_threshold: 0.45
+  fsm_recover_threshold: 0.20
+  fsm_trigger_hold_ticks: 2
+  fsm_touch_hold_ticks: 1
+  fsm_swing_timeout_ticks: 12
+  fsm_x_nominal_m: 0.0
+  fsm_y_nominal_m: 0.115
+  fsm_k_lat_vel: 0.15
+  fsm_k_roll: 0.10
+  fsm_k_pitch: 0.05
+  fsm_k_fwd_vel: 0.05
+  fsm_x_step_min_m: -0.08
+  fsm_x_step_max_m: 0.12
+  fsm_y_step_inner_m: 0.08
+  fsm_y_step_outer_m: 0.20
+  fsm_step_max_delta_m: 0.12
+  fsm_swing_height_m: 0.04
+  fsm_swing_height_need_step_mult: 0.5
+  fsm_swing_duration_ticks: 10
+  fsm_swing_x_to_hip_pitch: 0.30
+  fsm_swing_y_to_hip_roll: 0.30
+  fsm_swing_z_to_knee: 0.40
+  fsm_swing_z_to_ankle: 0.20
+  fsm_resid_scale_swing: 0.70
+  fsm_resid_scale_stance: 0.85
+  fsm_resid_scale_recover: 0.80
+  fsm_arm_enabled: true
+  fsm_arm_need_step_threshold: 0.35
+  fsm_arm_k_roll: 0.10
+  fsm_arm_k_roll_rate: 0.05
+  fsm_arm_k_pitch_rate: 0.03
+  fsm_arm_max_delta_rad: 0.25
 
   # Disturbance pushes (strong, single-stage)
   push_enabled: true

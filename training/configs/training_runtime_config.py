@@ -149,61 +149,61 @@ class EnvConfig(Freezable):
     # -------------------------------------------------------------------------
     # M3: Foot-placement + arms base controller + residual RL
     #
-    # When m3_enabled=True, replaces the M2 joint-heuristic action with a
+    # When fsm_enabled=True, replaces the M2 joint-heuristic action with a
     # full step state-machine (STANCE / SWING / TOUCHDOWN_RECOVER) that freezes
     # touchdown targets and tracks simple swing-foot trajectories.
     # Arm (waist) damping is applied as a secondary stabiliser.
     #
     # FSM phases: STANCE=0, SWING=1, TOUCHDOWN_RECOVER=2
     # -------------------------------------------------------------------------
-    m3_enabled: bool = False
+    fsm_enabled: bool = False
 
     # Need-to-step gate widths (shared with M1/M2 rewards when m3 active)
     # (gate signals: same as step_need_* in RewardWeightsConfig)
 
     # FSM thresholds
-    m3_trigger_threshold: float = 0.45       # need_step > this → start trigger hold
-    m3_recover_threshold: float = 0.20       # need_step < this → RECOVER → STANCE
-    m3_trigger_hold_ticks: int = 2           # consecutive ticks to fire SWING
-    m3_touch_hold_ticks: int = 1             # consecutive loaded ticks = touchdown
-    m3_swing_timeout_ticks: int = 12         # max ticks before forced touchdown
+    fsm_trigger_threshold: float = 0.45       # need_step > this → start trigger hold
+    fsm_recover_threshold: float = 0.20       # need_step < this → RECOVER → STANCE
+    fsm_trigger_hold_ticks: int = 2           # consecutive ticks to fire SWING
+    fsm_touch_hold_ticks: int = 1             # consecutive loaded ticks = touchdown
+    fsm_swing_timeout_ticks: int = 12         # max ticks before forced touchdown
 
     # Foot placement target geometry (heading-local, metres)
-    m3_x_nominal_m: float = 0.0
-    m3_y_nominal_m: float = 0.115            # lateral half-width for each foot
-    m3_k_lat_vel: float = 0.15
-    m3_k_roll: float = 0.10
-    m3_k_pitch: float = 0.05
-    m3_k_fwd_vel: float = 0.05
-    m3_x_step_min_m: float = -0.08
-    m3_x_step_max_m: float = 0.12
-    m3_y_step_inner_m: float = 0.08
-    m3_y_step_outer_m: float = 0.20
-    m3_step_max_delta_m: float = 0.12        # max step from current foot position
+    fsm_x_nominal_m: float = 0.0
+    fsm_y_nominal_m: float = 0.115            # lateral half-width for each foot
+    fsm_k_lat_vel: float = 0.15
+    fsm_k_roll: float = 0.10
+    fsm_k_pitch: float = 0.05
+    fsm_k_fwd_vel: float = 0.05
+    fsm_x_step_min_m: float = -0.08
+    fsm_x_step_max_m: float = 0.12
+    fsm_y_step_inner_m: float = 0.08
+    fsm_y_step_outer_m: float = 0.20
+    fsm_step_max_delta_m: float = 0.12        # max step from current foot position
 
     # Swing trajectory
-    m3_swing_height_m: float = 0.04          # peak swing height (m)
-    m3_swing_height_need_step_mult: float = 0.5  # extra height scale with need_step
-    m3_swing_duration_ticks: int = 10        # swing duration in ctrl ticks
+    fsm_swing_height_m: float = 0.04          # peak swing height (m)
+    fsm_swing_height_need_step_mult: float = 0.5  # extra height scale with need_step
+    fsm_swing_duration_ticks: int = 10        # swing duration in ctrl ticks
 
     # Swing-foot tracking gains (policy-action units / metre error)
-    m3_swing_x_to_hip_pitch: float = 0.30   # foot x error → hip pitch delta
-    m3_swing_y_to_hip_roll: float = 0.30    # foot y error → hip roll delta
-    m3_swing_z_to_knee: float = 0.40        # foot z error → knee pitch delta
-    m3_swing_z_to_ankle: float = 0.20       # foot z error → ankle pitch delta
+    fsm_swing_x_to_hip_pitch: float = 0.30   # foot x error → hip pitch delta
+    fsm_swing_y_to_hip_roll: float = 0.30    # foot y error → hip roll delta
+    fsm_swing_z_to_knee: float = 0.40        # foot z error → knee pitch delta
+    fsm_swing_z_to_ankle: float = 0.20       # foot z error → ankle pitch delta
 
     # Residual authority in M3 (replaces M2 residual_scale_min/max for policy action)
-    m3_resid_scale_swing: float = 0.70      # residual authority during SWING
-    m3_resid_scale_stance: float = 0.85     # residual authority during STANCE
-    m3_resid_scale_recover: float = 0.80    # residual authority during TOUCHDOWN_RECOVER
+    fsm_resid_scale_swing: float = 0.70      # residual authority during SWING
+    fsm_resid_scale_stance: float = 0.85     # residual authority during STANCE
+    fsm_resid_scale_recover: float = 0.80    # residual authority during TOUCHDOWN_RECOVER
 
     # Arm / waist strategy
-    m3_arm_enabled: bool = True
-    m3_arm_need_step_threshold: float = 0.35
-    m3_arm_k_roll: float = 0.10
-    m3_arm_k_roll_rate: float = 0.05
-    m3_arm_k_pitch_rate: float = 0.03
-    m3_arm_max_delta_rad: float = 0.25
+    fsm_arm_enabled: bool = True
+    fsm_arm_need_step_threshold: float = 0.35
+    fsm_arm_k_roll: float = 0.10
+    fsm_arm_k_roll_rate: float = 0.05
+    fsm_arm_k_pitch_rate: float = 0.03
+    fsm_arm_max_delta_rad: float = 0.25
 
     # Disturbance pushes (disabled by default)
     push_enabled: bool = False

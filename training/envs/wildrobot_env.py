@@ -619,8 +619,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         policy_action = action
 
-        if bool(getattr(self._config.env, "m3_enabled", False)):
-            raw_action, new_fsm = self._m3_compute_ctrl(state.data, wr, policy_action)
+        if bool(getattr(self._config.env, "fsm_enabled", False)):
+            raw_action, new_fsm = self._fsm_compute_ctrl(state.data, wr, policy_action)
         elif bool(getattr(self._config.env, "base_ctrl_enabled", False)):
             raw_action = (
                 self._mix_base_and_residual_action(state.data, policy_action)
@@ -766,7 +766,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
             prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
             push_schedule=wr.push_schedule,
-            # M3 FSM state (updated by _m3_compute_ctrl or carried from wr)
+            # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
             fsm_phase=new_fsm[0],
             fsm_swing_foot=new_fsm[1],
             fsm_phase_ticks=new_fsm[2],
@@ -1008,7 +1008,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             return action
         return action.at[idx].add(delta)
 
-    def _m3_compute_ctrl(
+    def _fsm_compute_ctrl(
         self,
         data: "mjx.Data",
         wr: "WildRobotInfo",
@@ -1084,21 +1084,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             roll=roll,
             forward_vel=forward_vel,
             pitch=pitch,
-            trigger_threshold=float(env_cfg.m3_trigger_threshold),
-            recover_threshold=float(env_cfg.m3_recover_threshold),
-            trigger_hold_ticks=int(env_cfg.m3_trigger_hold_ticks),
-            touch_hold_ticks=int(env_cfg.m3_touch_hold_ticks),
-            swing_timeout_ticks=int(env_cfg.m3_swing_timeout_ticks),
-            y_nominal_m=float(env_cfg.m3_y_nominal_m),
-            k_lat_vel=float(env_cfg.m3_k_lat_vel),
-            k_roll=float(env_cfg.m3_k_roll),
-            k_fwd_vel=float(env_cfg.m3_k_fwd_vel),
-            k_pitch=float(env_cfg.m3_k_pitch),
-            x_nominal_m=float(env_cfg.m3_x_nominal_m),
-            x_step_min_m=float(env_cfg.m3_x_step_min_m),
-            x_step_max_m=float(env_cfg.m3_x_step_max_m),
-            y_step_inner_m=float(env_cfg.m3_y_step_inner_m),
-            y_step_outer_m=float(env_cfg.m3_y_step_outer_m),
+            trigger_threshold=float(env_cfg.fsm_trigger_threshold),
+            recover_threshold=float(env_cfg.fsm_recover_threshold),
+            trigger_hold_ticks=int(env_cfg.fsm_trigger_hold_ticks),
+            touch_hold_ticks=int(env_cfg.fsm_touch_hold_ticks),
+            swing_timeout_ticks=int(env_cfg.fsm_swing_timeout_ticks),
+            y_nominal_m=float(env_cfg.fsm_y_nominal_m),
+            k_lat_vel=float(env_cfg.fsm_k_lat_vel),
+            k_roll=float(env_cfg.fsm_k_roll),
+            k_fwd_vel=float(env_cfg.fsm_k_fwd_vel),
+            k_pitch=float(env_cfg.fsm_k_pitch),
+            x_nominal_m=float(env_cfg.fsm_x_nominal_m),
+            x_step_min_m=float(env_cfg.fsm_x_step_min_m),
+            x_step_max_m=float(env_cfg.fsm_x_step_max_m),
+            y_step_inner_m=float(env_cfg.fsm_y_step_inner_m),
+            y_step_outer_m=float(env_cfg.fsm_y_step_outer_m),
         )
         new_phase, new_swing_foot = new_fsm[0], new_fsm[1]
         new_phase_ticks = new_fsm[2]
@@ -1151,26 +1151,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ankle_pitch_gain=float(env_cfg.base_ctrl_ankle_pitch_gain),
             hip_roll_gain=float(env_cfg.base_ctrl_hip_roll_gain),
             base_action_clip=float(env_cfg.base_ctrl_action_clip),
-            swing_x_to_hip_pitch=float(env_cfg.m3_swing_x_to_hip_pitch),
-            swing_y_to_hip_roll=float(env_cfg.m3_swing_y_to_hip_roll),
-            swing_z_to_knee=float(env_cfg.m3_swing_z_to_knee),
-            swing_z_to_ankle=float(env_cfg.m3_swing_z_to_ankle),
-            swing_height_m=float(env_cfg.m3_swing_height_m),
-            swing_duration_ticks=int(env_cfg.m3_swing_duration_ticks),
-            swing_height_need_step_mult=float(env_cfg.m3_swing_height_need_step_mult),
-            arm_enabled=bool(env_cfg.m3_arm_enabled),
-            arm_need_step_threshold=float(env_cfg.m3_arm_need_step_threshold),
-            arm_k_roll=float(env_cfg.m3_arm_k_roll),
-            arm_k_roll_rate=float(env_cfg.m3_arm_k_roll_rate),
-            arm_k_pitch_rate=float(env_cfg.m3_arm_k_pitch_rate),
-            arm_max_delta_rad=float(env_cfg.m3_arm_max_delta_rad),
+            swing_x_to_hip_pitch=float(env_cfg.fsm_swing_x_to_hip_pitch),
+            swing_y_to_hip_roll=float(env_cfg.fsm_swing_y_to_hip_roll),
+            swing_z_to_knee=float(env_cfg.fsm_swing_z_to_knee),
+            swing_z_to_ankle=float(env_cfg.fsm_swing_z_to_ankle),
+            swing_height_m=float(env_cfg.fsm_swing_height_m),
+            swing_duration_ticks=int(env_cfg.fsm_swing_duration_ticks),
+            swing_height_need_step_mult=float(env_cfg.fsm_swing_height_need_step_mult),
+            arm_enabled=bool(env_cfg.fsm_arm_enabled),
+            arm_need_step_threshold=float(env_cfg.fsm_arm_need_step_threshold),
+            arm_k_roll=float(env_cfg.fsm_arm_k_roll),
+            arm_k_roll_rate=float(env_cfg.fsm_arm_k_roll_rate),
+            arm_k_pitch_rate=float(env_cfg.fsm_arm_k_pitch_rate),
+            arm_max_delta_rad=float(env_cfg.fsm_arm_max_delta_rad),
         )
 
         # -- Gated residual authority ----------------------------------------
         # Scale residual authority by FSM phase.
-        resid_swing   = jp.asarray(env_cfg.m3_resid_scale_swing,   jp.float32)
-        resid_stance  = jp.asarray(env_cfg.m3_resid_scale_stance,  jp.float32)
-        resid_recover = jp.asarray(env_cfg.m3_resid_scale_recover, jp.float32)
+        resid_swing   = jp.asarray(env_cfg.fsm_resid_scale_swing,   jp.float32)
+        resid_stance  = jp.asarray(env_cfg.fsm_resid_scale_stance,  jp.float32)
+        resid_recover = jp.asarray(env_cfg.fsm_resid_scale_recover, jp.float32)
 
         in_swing    = (new_phase == sc.SWING).astype(jp.float32)
         in_recover  = (new_phase == sc.TOUCHDOWN_RECOVER).astype(jp.float32)
