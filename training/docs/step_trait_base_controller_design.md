@@ -301,11 +301,17 @@ Failure signatures for the first M3 run:
 - The robot steps but fails to regain upright posture afterward.
 - Arms or waist compensation dominate while foot placement remains weak.
 
-If the first hard-push M3 run shows weak FSM engagement but decent posture recovery, the next tuning branch should be:
-- lower the step trigger threshold,
-- reduce trigger hold latency,
-- reduce residual authority in `STANCE` and `TOUCHDOWN_RECOVER`,
-- weaken arm/waist damping before adding new reward terms or more controller complexity.
+**Revised weak-engagement response** (supersedes the original "reduce residual authority" branch):
+
+The original recommendation was to lower trigger thresholds and reduce residual authority to force FSM engagement. Training runs v0.14.3–v0.14.5 showed this approach is counterproductive: cutting residual authority fights the optimizer, degrading the policy's best known strategy (brace/crouch at 98% success) without the FSM being accurate enough to compensate. The result was a monotonic regression from 98% → 86% → 64% → 57% success.
+
+If the first M3 run shows weak FSM engagement but decent posture recovery:
+1. **Establish the bracing ceiling first.** Run the bracing-only baseline (FSM disabled, full residual authority) through a force sweep (9–25N) using `training/eval/force_sweep.py`. Find the force level where success drops below 60%.
+2. **Train at the bracing-failure regime.** Set `push_force_max` to the bracing ceiling + 20%. Keep full residual authority (`resid_scale = 1.0` for all phases). At this force level, bracing alone cannot survive, so the optimizer has a gradient signal toward stepping.
+3. **Try pure PPO first.** If the policy discovers stepping on its own under the harder pushes, FSM complexity is unnecessary.
+4. **Add information, not constraints.** If pure RL does not step, add capture-point error `[x_com - x_cp, y_com - y_cp]` to the actor observation and/or use a privileged critic that sees push force and CoM velocity. This gives the policy *information* about where to step without constraining *how*.
+5. **Re-introduce FSM as a guide, not a controller.** Only if information alone is insufficient, re-enable the FSM with full residual override authority (`resid_scale = 1.0`). The FSM output becomes a mild bias that the RL can fully override when it has a better strategy.
+6. **Do not reduce residual authority** to force FSM engagement. If the FSM is not engaged at full residual authority, the FSM is not helping — fix the FSM or the force regime, not the policy's freedom.
 
 ### Base controller outputs (API-level)
 
@@ -440,6 +446,33 @@ Minimum hardware checks per milestone:
   - does it return to neutral posture?
   - does it avoid prolonged crouch/oscillation?
 
+### Prerequisite: Bracing Ceiling Calibration
+
+Before investing in FSM tuning or stepping reward shaping, the project must establish at what force level the bracing/crouch strategy fundamentally fails. Without this calibration, stepping work may target a force regime where stepping is unnecessary (as happened with M3 at 9N).
+
+**Why this matters:**
+The v0.13.8 checkpoint achieves 98.44% success at `push_force_max=9`, `push_duration_steps=15` with pure PPO (no FSM, no base controller). This means 9N is well within the bracing-recoverable regime. All M3 stepping work at 9N was trying to induce a behavior the optimizer correctly concluded was unnecessary.
+
+**How to calibrate:**
+
+```bash
+uv run python training/eval/force_sweep.py \
+    --checkpoint <bracing_baseline_checkpoint.pkl> \
+    --config training/configs/ppo_standing_push.yaml \
+    --forces 9,12,15,18,22,25 \
+    --num-envs 128 \
+    --num-steps 500 \
+    --output training/eval/bracing_ceiling.json
+```
+
+This sweeps push force from 9N to 25N with FSM disabled and reports `success_rate`, `episode_length`, and termination fractions at each level. The **bracing ceiling** is the force level where `success_rate` drops below 60%.
+
+**Decision tree after calibration:**
+
+1. If bracing ceiling is above 25N: the robot may not need stepping for practical push recovery. Consider whether walking (M4) is a better next investment than push-recovery stepping.
+2. If bracing ceiling is 12–20N: this is the stepping regime. Set `push_force_max` to ceiling + 20% and proceed to M3 at that force level with full residual authority.
+3. If bracing ceiling is below 12N: the bracing policy may be undertrained. Consider further training at the current force level before escalating.
+
 ### Milestones
 
 #### M0: Baseline measurement (current PPO)
@@ -456,8 +489,19 @@ Minimum hardware checks per milestone:
 - Gate residual authority by `need_step`.
 - Goal: faster learning + fewer catastrophic terminations.
 
+#### M2.5: Bracing ceiling calibration (prerequisite for M3)
+- Run the best bracing-only checkpoint through a force sweep (9–25N) using `training/eval/force_sweep.py`.
+- Establish the bracing ceiling: the force where `success_rate` drops below 60%.
+- Define the stepping regime: `push_force_max = ceiling + 20%`.
+- At the stepping regime, train pure PPO with full residual authority to see if RL discovers stepping on its own.
+- If pure RL does not step: add capture-point observations and/or privileged critic, then re-evaluate.
+- Only proceed to M3 after confirming the force regime and that information alone is insufficient.
+
 #### M3: Foot placement + arms base controller
+- Operates at the calibrated stepping-regime force level (from M2.5), not at 9N.
+- FSM acts as a **guide**: residual authority starts at 1.0 for all phases. The policy can fully override the FSM.
 - Add explicit step-state logic, frozen touchdown targets, swing trajectory tracking, and secondary arm damping.
+- If the FSM's open-loop joint tracking (scalar gains) is insufficient, replace with simple analytical leg IK or expose desired foot targets in the policy observation.
 - Ensure runtime parity and stable safety limits.
 - Goal: reliable stepping under hard pushes and consistent return upright.
 
