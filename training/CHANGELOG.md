@@ -7,6 +7,56 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.6] - 2026-03-08: Pure PPO next run at calibrated stepping regime
+
+### Summary
+Replaces the default standing-push baseline with a pure-PPO run at the calibrated stepping regime. The v0.13.9 force sweep showed a bracing ceiling of approximately `9N` for `10` control steps, so the next run should increase disturbance difficulty instead of reducing policy authority. FSM and M2 base control are disabled by default; reward-only stepping terms remain enabled.
+
+### Calibration Result
+- Baseline checkpoint: `runtime/bundles/standing_push_v0.13.9_ckpt310/checkpoint.pkl`
+- Matching training source checkpoint: `training/checkpoints/ppo_standing_push_auto_confirm_20260305_040129_v00139_20260305_040133-j3l4fc1e/checkpoint_310_40632320.pkl`
+- Matching historical config: `training/configs/ppo_standing_push.yaml` @ commit `3a1d1ad`
+- Force-sweep result:
+  - `8N x 10` -> `74.6%`, `ep_len=431.8`
+  - `9N x 10` -> `58.0%`, `ep_len=382.9`
+  - `10N x 10` -> `47.3%`, `ep_len=346.7`
+  - estimated bracing ceiling: `~9N`
+- Dominant failure mode above the ceiling: `term_height_low`
+
+### Diagnosis
+- The calibrated stepping regime begins around `9N x 10`, not at some much higher force range.
+- `9N x 15` remains a useful harder stress test, but it should not be combined with reduced residual authority while the FSM is still inaccurate.
+- The next question is whether pure PPO, given full authority and pushes above the bracing ceiling, will discover stepping on its own.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.6"`
+- disable controller assistance by default:
+  - `env.fsm_enabled: false`
+  - `env.base_ctrl_enabled: false`
+- keep full residual override authority if FSM is later re-enabled:
+  - `env.fsm_resid_scale_stance: 1.00`
+  - `env.fsm_resid_scale_swing: 1.00`
+  - `env.fsm_resid_scale_recover: 1.00`
+- move training pushes to the calibrated stepping regime:
+  - `env.push_duration_steps: 10` (from `15`)
+  - `env.push_force_min: 10.0` (from `3.0`)
+  - `env.push_force_max: 10.0` (from `9.0`)
+
+### Training Intent
+This release is meant to answer the next question directly:
+- does pure PPO discover stepping when bracing alone is no longer reliable?
+- can success recover at `10N x 10` without any FSM or base-controller bias?
+- is `term_height_low` reduced by learned stepping rather than by controller intervention?
+
+### Next-Run Success Signals
+- `eval_push/success_rate` improves materially from the `10N x 10` bracing baseline
+- `reward/step_event` rises above the current reward-only baseline
+- `reward/foot_place` rises with step events instead of staying near zero
+- `term_height_low_frac` falls from the bracing-only ceiling-run behavior
+- torque saturation remains within prior standing-push ranges
+
+---
+
 ## [v0.14.5] - 2026-03-08: M3 committed stepping after phase-aware FSM fixes
 
 ### Summary
