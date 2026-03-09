@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.14.4)
+# WildRobot PPO Standing Config (v0.14.5)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.14.4"
-version_name: "Standing pushes (M3 engage stepping: earlier trigger + lower residual masking)"
+version: "0.14.5"
+version_name: "Standing pushes (M3 committed stepping: phase-aware rewards + wider catch steps)"
 
 seed: 42
 
@@ -79,23 +79,23 @@ env:
   fsm_touch_hold_ticks: 1
   fsm_swing_timeout_ticks: 10
   fsm_x_nominal_m: 0.0
-  fsm_y_nominal_m: 0.115
-  fsm_k_lat_vel: 0.15
-  fsm_k_roll: 0.10
+  fsm_y_nominal_m: 0.125
+  fsm_k_lat_vel: 0.20
+  fsm_k_roll: 0.12
   fsm_k_pitch: 0.05
   fsm_k_fwd_vel: 0.05
   fsm_x_step_min_m: -0.08
   fsm_x_step_max_m: 0.12
   fsm_y_step_inner_m: 0.08
-  fsm_y_step_outer_m: 0.20
-  fsm_step_max_delta_m: 0.12
-  fsm_swing_height_m: 0.04
+  fsm_y_step_outer_m: 0.22
+  fsm_step_max_delta_m: 0.16
+  fsm_swing_height_m: 0.05
   fsm_swing_height_need_step_mult: 0.5
   fsm_swing_duration_ticks: 10
-  fsm_swing_x_to_hip_pitch: 0.30
-  fsm_swing_y_to_hip_roll: 0.30
-  fsm_swing_z_to_knee: 0.40
-  fsm_swing_z_to_ankle: 0.20
+  fsm_swing_x_to_hip_pitch: 0.35
+  fsm_swing_y_to_hip_roll: 0.40
+  fsm_swing_z_to_knee: 0.55
+  fsm_swing_z_to_ankle: 0.25
   # Reduce residual masking so hard-push recovery must express the FSM more clearly.
   fsm_resid_scale_swing: 0.45
   fsm_resid_scale_stance: 0.55
@@ -241,9 +241,9 @@ reward_weights:
   posture_gate_roll: 0.35
 
   # M3: event-based stepping trait shaping, gated by "need to step".
-  step_event: 0.20
-  foot_place: 0.50
-  foot_place_sigma: 0.12
+  step_event: 0.25
+  foot_place: 0.65
+  foot_place_sigma: 0.14
   foot_place_k_lat_vel: 0.15
   foot_place_k_roll: 0.10
   foot_place_k_pitch: 0.05

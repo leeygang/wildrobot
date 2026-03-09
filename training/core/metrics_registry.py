@@ -423,6 +423,18 @@ METRIC_SPECS: List[MetricSpec] = [
         description="M3 base-controller FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
     ),
     MetricSpec(
+        name="debug/bc_in_swing",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 FSM swing occupancy fraction",
+    ),
+    MetricSpec(
+        name="debug/bc_in_recover",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 FSM touchdown-recover occupancy fraction",
+    ),
+    MetricSpec(
         name="debug/bc_swing_foot",
         reducer=Reducer.MEAN,
         log_prefix="debug",

@@ -73,7 +73,9 @@ def compute_need_step(
         pitch, roll: Torso Euler angles (rad).
         lateral_vel: Lateral velocity in heading-local frame (m/s).
         pitch_rate: Pitch angular rate (rad/s).
-        healthy: 1.0 if robot is in a valid height range, else 0.0.
+        healthy: Reserved for compatibility with the env helper. Intentionally
+            not used as a hard gate; the FSM must still be able to trigger a
+            rescue step as the robot approaches a height-collapse failure.
         g_pitch, g_roll, g_lat, g_pr: Gate widths (positive scalars).
 
     Returns:
@@ -89,7 +91,7 @@ def compute_need_step(
         + jp.abs(lateral_vel) / g_lat
         + jp.abs(pitch_rate) / g_pr
     ) / 4.0
-    return jp.clip(raw, 0.0, 1.0) * healthy
+    return jp.clip(raw, 0.0, 1.0)
 
 
 def select_swing_foot(

@@ -85,13 +85,16 @@ def _classify_fsm(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[bool
         return False, "not_applicable", "not_applicable", "not_applicable", None, None, None
 
     phase_vals = _collect_series(rows, "debug/bc_phase")
+    in_swing_vals = _collect_series(rows, "debug/bc_in_swing")
     phase_ticks_vals = _collect_series(rows, "debug/bc_phase_ticks")
     step_event_vals = _collect_series(rows, "reward/step_event")
     foot_place_vals = _collect_series(rows, "reward/foot_place")
     touchdown_vals = _collect_series(rows, "debug/touchdown_left") + _collect_series(rows, "debug/touchdown_right")
     posture_vals = _collect_series(rows, "reward/posture")
 
-    swing_occupancy = _mean([1.0 if abs(v - 1.0) < 1e-6 else 0.0 for v in phase_vals]) if phase_vals else None
+    swing_occupancy = _mean(in_swing_vals) if in_swing_vals else None
+    if swing_occupancy is None and phase_vals:
+        swing_occupancy = _mean([max(0.0, min(1.0, v)) for v in phase_vals])
     step_event_mean = _mean(step_event_vals)
     foot_place_mean = _mean(foot_place_vals)
     touchdown_mean = _mean(touchdown_vals)

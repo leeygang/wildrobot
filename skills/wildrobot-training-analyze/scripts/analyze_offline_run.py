@@ -208,6 +208,7 @@ def _classify_fsm(
         )
 
     phase_vals = _collect_series(rows, "debug/bc_phase", min_iter=min_iter)
+    in_swing_vals = _collect_series(rows, "debug/bc_in_swing", min_iter=min_iter)
     phase_ticks_vals = _collect_series(rows, "debug/bc_phase_ticks", min_iter=min_iter)
     step_event_vals = _collect_series(rows, "reward/step_event", min_iter=min_iter)
     foot_place_vals = _collect_series(rows, "reward/foot_place", min_iter=min_iter)
@@ -223,11 +224,9 @@ def _classify_fsm(
     touchdown_mean = _mean((touchdown_left or []) + (touchdown_right or []))
     need_step_mean = _mean(need_step_vals)
     posture_mean = _mean(posture_vals)
-    swing_occupancy = (
-        _mean([1.0 if abs(v - 1.0) < 1e-6 else 0.0 for v in phase_vals])
-        if phase_vals
-        else None
-    )
+    swing_occupancy = _mean(in_swing_vals) if in_swing_vals else None
+    if swing_occupancy is None and phase_vals:
+        swing_occupancy = _mean([max(0.0, min(1.0, v)) for v in phase_vals])
 
     if swing_occupancy is None or swing_occupancy < 0.02:
         verdict = "not meaningfully engaged"

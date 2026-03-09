@@ -7,6 +7,85 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.5] - 2026-03-08: M3 committed stepping after phase-aware FSM fixes
+
+### Summary
+Promotes the latest controller/debug fixes into the next training baseline. The major change is that M3 stepping signals are now phase-aware and `need_step` no longer shuts off near a height-collapse event. With those fixes in place, the next run should optimize for more useful catch steps: wider lateral placement, stronger swing tracking, and cleaner touchdown-driven step rewards.
+
+### Results (v0.14.4, reinterpreted after analyzer/controller fixes)
+- Run: `training/wandb/offline-run-20260308_095026-0vvxftyt`
+- Checkpoints: `training/checkpoints/ppo_standing_push_v00144_20260308_095028-0vvxftyt`
+- Best checkpoint (eval_push/): `training/checkpoints/ppo_standing_push_v00144_20260308_095028-0vvxftyt/checkpoint_260_34078720.pkl`
+- Best @ iter 260: `eval_push/success_rate=56.64%`, `eval_push/episode_length=363.1`
+- Train @ iter 260: `success=61.10%`, `ep_len=386.5`
+- FSM verdict: `weakly engaged`
+- FSM touchdown style: `timeout-driven`
+- FSM upright recovery: `good`
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 38.90% |
+| term_pitch_frac | 0.00% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 45.67% |
+| debug/torque_sat_frac | 0.18% |
+| ppo/approx_kl | 0.0038 |
+| ppo/clip_fraction | 0.0803 |
+| debug/bc_phase | 0.139 |
+| fsm/swing_occupancy | 13.86% |
+| reward/step_event | 0.0070 |
+| reward/foot_place | 0.0048 |
+| debug/need_step | 0.1223 |
+| reward/posture | 0.7603 |
+
+### Diagnosis
+- The earlier `0%` swing conclusion was partly a metrics bug; M3 is weakly engaging, not completely idle.
+- The main remaining mechanism gap is step quality, not step triggering alone.
+- Posture recovery remains decent, but step events are still mostly timeout-driven and too weak to improve hard-push survival.
+- The next iteration should favor more decisive lateral catch steps and stronger swing tracking, not just lower thresholds.
+
+### Code Updates
+- `need_step` no longer hard-zeros below `min_height`, so the FSM can still attempt a rescue step near collapse.
+- `reward/step_event`, `reward/foot_place`, and touchdown debug signals are now tied to the active swing foot during `SWING`.
+- New debug metrics:
+  - `debug/bc_in_swing`
+  - `debug/bc_in_recover`
+- FSM analyzer scripts now use explicit swing occupancy instead of misreading averaged `debug/bc_phase`.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.5"`
+- make catch steps wider and less constrained:
+  - `env.fsm_y_nominal_m: 0.125` (from `0.115`)
+  - `env.fsm_k_lat_vel: 0.20` (from `0.15`)
+  - `env.fsm_k_roll: 0.12` (from `0.10`)
+  - `env.fsm_y_step_outer_m: 0.22` (from `0.20`)
+  - `env.fsm_step_max_delta_m: 0.16` (from `0.12`)
+- make swing execution more assertive:
+  - `env.fsm_swing_height_m: 0.05` (from `0.04`)
+  - `env.fsm_swing_x_to_hip_pitch: 0.35` (from `0.30`)
+  - `env.fsm_swing_y_to_hip_roll: 0.40` (from `0.30`)
+  - `env.fsm_swing_z_to_knee: 0.55` (from `0.40`)
+  - `env.fsm_swing_z_to_ankle: 0.25` (from `0.20`)
+- strengthen phase-aware stepping rewards moderately:
+  - `reward.step_event: 0.25` (from `0.20`)
+  - `reward.foot_place: 0.65` (from `0.50`)
+  - `reward.foot_place_sigma: 0.14` (from `0.12`)
+
+### Training Intent
+This release is meant to answer the next M3 question directly:
+- can the controller turn weak FSM engagement into useful touchdown-driven catch steps?
+- can wider lateral placement reduce collapse without giving up the current posture recovery gains?
+- can hard-push survival recover while maintaining low torque stress?
+
+### Next-Run Success Signals
+- `debug/bc_in_swing` rises above the v0.14.4 baseline
+- `reward/step_event` and `reward/foot_place` both rise materially
+- `debug/bc_phase_ticks` trends down from timeout-like values
+- `eval_push/success_rate` recovers toward or above the v0.14.3 result
+- `term_height_low_frac` falls without a major increase in torque saturation
+
+---
+
 ## [v0.14.4] - 2026-03-08: M3 engagement tuning after first hard-push run
 
 ### Summary

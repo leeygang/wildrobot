@@ -704,6 +704,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos,
             prev_left_loaded,
             prev_right_loaded,
+            wr.fsm_phase,
+            wr.fsm_swing_foot,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -732,6 +734,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             **term_info,
             # v0.14.x: M3 base-controller FSM debug metrics
             "debug/bc_phase": new_fsm[0].astype(jp.float32),
+            "debug/bc_in_swing": (new_fsm[0] == sc.SWING).astype(jp.float32),
+            "debug/bc_in_recover": (new_fsm[0] == sc.TOUCHDOWN_RECOVER).astype(jp.float32),
             "debug/bc_swing_foot": new_fsm[1].astype(jp.float32),
             "debug/bc_phase_ticks": new_fsm[2].astype(jp.float32),
         }
@@ -986,7 +990,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pitch_rate: jax.Array,
         healthy: jax.Array,
     ) -> jax.Array:
-        """Shared 0..1 gate for stepping rewards and residual authority."""
+        """Shared 0..1 gate for stepping rewards and residual authority.
+
+        Keep this active near collapse. A binary healthy gate suppresses the
+        FSM exactly when a rescue step is most needed.
+        """
         weights = self._config.reward_weights
         g_pitch = jp.maximum(getattr(weights, "step_need_pitch", 0.35), 1e-6)
         g_roll = jp.maximum(getattr(weights, "step_need_roll", 0.35), 1e-6)
@@ -998,7 +1006,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.abs(lateral_vel) / g_lat
             + jp.abs(pitch_rate) / g_pr
         ) / 4.0
-        return jp.clip(need_step, 0.0, 1.0) * healthy
+        return jp.clip(need_step, 0.0, 1.0)
 
     def _maybe_add_action_delta(
         self, action: jax.Array, actuator_name: str, delta: jax.Array
@@ -1249,6 +1257,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_right_foot_pos: Optional[jax.Array] = None,
         prev_left_loaded: Optional[jax.Array] = None,
         prev_right_loaded: Optional[jax.Array] = None,
+        fsm_phase: Optional[jax.Array] = None,
+        fsm_swing_foot: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -1493,6 +1503,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         touchdown_left = jp.logical_and(jp.logical_not(prev_left_loaded_b), left_loaded)
         touchdown_right = jp.logical_and(jp.logical_not(prev_right_loaded_b), right_loaded)
+        if (
+            bool(getattr(self._config.env, "fsm_enabled", False))
+            and fsm_phase is not None
+            and fsm_swing_foot is not None
+        ):
+            in_swing = fsm_phase == sc.SWING
+            touchdown_left = jp.logical_and(touchdown_left, in_swing & (fsm_swing_foot == 0))
+            touchdown_right = jp.logical_and(touchdown_right, in_swing & (fsm_swing_foot == 1))
         step_event = jp.where(touchdown_left | touchdown_right, 1.0, 0.0)
         step_event = jp.asarray(step_event).reshape(())
 

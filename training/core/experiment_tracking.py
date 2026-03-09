@@ -148,6 +148,8 @@ ENV_METRICS_KEYS = {
     "tracking/max_torque": "Max normalized torque (0-1)",
     # v0.14.x: M3 base-controller FSM debug metrics
     "debug/bc_phase": "M3 FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
+    "debug/bc_in_swing": "M3 FSM occupancy in SWING phase",
+    "debug/bc_in_recover": "M3 FSM occupancy in TOUCHDOWN_RECOVER phase",
     "debug/bc_swing_foot": "M3 FSM active swing foot (0=left, 1=right)",
     "debug/bc_phase_ticks": "M3 FSM ticks in current phase",
 }
@@ -253,6 +255,8 @@ def get_initial_env_metrics(
         "debug/touchdown_right": 0.0,
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": 0.0,
+        "debug/bc_in_swing": 0.0,
+        "debug/bc_in_recover": 0.0,
         "debug/bc_swing_foot": 0.0,
         "debug/bc_phase_ticks": 0.0,
         # Termination diagnostics (initialized to zero at reset)
@@ -372,6 +376,8 @@ def get_initial_env_metrics_jax(
         "tracking/avg_torque": jp.zeros(()),  # No torque at reset
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": jp.zeros(()),       # STANCE=0 at reset
+        "debug/bc_in_swing": jp.zeros(()),    # 0 occupancy at reset
+        "debug/bc_in_recover": jp.zeros(()),  # 0 occupancy at reset
         "debug/bc_swing_foot": jp.zeros(()),  # left(0) at reset
         "debug/bc_phase_ticks": jp.zeros(()),  # 0 ticks at reset
     }

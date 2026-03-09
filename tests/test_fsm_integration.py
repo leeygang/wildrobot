@@ -82,10 +82,10 @@ class TestFSMConfigParsing:
         assert cfg_env(fsm_env_from_yaml_only).fsm_y_nominal_m == pytest.approx(0.115)
 
     def test_fsm_trigger_threshold_parsed(self, fsm_env_from_yaml_only):
-        assert cfg_env(fsm_env_from_yaml_only).fsm_trigger_threshold == pytest.approx(0.45)
+        assert cfg_env(fsm_env_from_yaml_only).fsm_trigger_threshold == pytest.approx(0.30)
 
     def test_fsm_recover_threshold_parsed(self, fsm_env_from_yaml_only):
-        assert cfg_env(fsm_env_from_yaml_only).fsm_recover_threshold == pytest.approx(0.20)
+        assert cfg_env(fsm_env_from_yaml_only).fsm_recover_threshold == pytest.approx(0.15)
 
     def test_fsm_step_max_delta_parsed(self, fsm_env_from_yaml_only):
         """fsm_step_max_delta_m must be parsed (was a dead config key)."""
@@ -95,7 +95,7 @@ class TestFSMConfigParsing:
         assert cfg_env(fsm_env_from_yaml_only).fsm_swing_height_m == pytest.approx(0.04)
 
     def test_fsm_resid_scale_swing_parsed(self, fsm_env_from_yaml_only):
-        assert cfg_env(fsm_env_from_yaml_only).fsm_resid_scale_swing == pytest.approx(0.70)
+        assert cfg_env(fsm_env_from_yaml_only).fsm_resid_scale_swing == pytest.approx(0.45)
 
     def test_fsm_arm_enabled_parsed(self, fsm_env_from_yaml_only):
         assert cfg_env(fsm_env_from_yaml_only).fsm_arm_enabled is True
@@ -139,6 +139,8 @@ class TestFSMEnvStep:
         m = unpack_metrics(state.metrics[METRICS_VEC_KEY])
 
         assert "debug/bc_phase" in m, "debug/bc_phase missing from metrics"
+        assert "debug/bc_in_swing" in m
+        assert "debug/bc_in_recover" in m
         assert "debug/bc_swing_foot" in m
         assert "debug/bc_phase_ticks" in m
         assert float(m["debug/bc_phase"]) >= 0.0

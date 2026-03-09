@@ -82,13 +82,13 @@ class TestComputeNeedStep:
         )
         assert float(ns) > 0.4
 
-    def test_unhealthy_zeroes_out(self):
-        """When healthy=0, need_step must be 0 regardless of state."""
+    def test_unhealthy_does_not_disable_rescue_step(self):
+        """When healthy=0, need_step should still reflect disturbance size."""
         ns = sc.compute_need_step(
             pitch=1.0, roll=1.0, lateral_vel=2.0, pitch_rate=3.0, healthy=0.0,
             g_pitch=0.35, g_roll=0.35, g_lat=0.30, g_pr=1.00,
         )
-        assert float(ns) == pytest.approx(0.0, abs=1e-5)
+        assert float(ns) == pytest.approx(1.0, abs=1e-5)
 
     def test_clipped_to_one(self):
         """Very large disturbance → need_step capped at 1.0."""

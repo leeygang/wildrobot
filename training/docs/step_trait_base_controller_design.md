@@ -275,7 +275,8 @@ The key M3 rule is:
 The first M3 training run should be judged against explicit mechanism and outcome criteria.
 
 Mechanism criteria:
-- `debug/bc_phase` must show non-trivial occupancy in `SWING` during disturbed episodes.
+- `debug/bc_in_swing` should be the primary occupancy signal for `SWING` during disturbed episodes.
+- `debug/bc_phase` remains useful as a coarse aggregate phase summary, but should not be used alone to infer swing occupancy.
 - `debug/bc_phase_ticks` should not be dominated by timeout-driven swings.
 - `reward/step_event` must be measurably above zero under hard-push evaluation.
 - `reward/foot_place` must rise with stepping, indicating the touchdown target is not random.
