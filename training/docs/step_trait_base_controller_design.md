@@ -11,8 +11,8 @@ Train and deploy policies that:
 - Scale from standing push-recovery → **walking** without rewriting the whole stack.
 
 Constraints / non-goals (initially):
-- Keep the **policy contract** stable (observations/actions remain usable in runtime).
-- Prefer **resume-safe** training iterations (avoid contract-breaking changes like `env.action_filter_alpha`).
+- Keep the **policy contract** stable (observations/actions remain usable in runtime) within a milestone. Contract-breaking changes (e.g., adding capture-point observations) are acceptable **between milestones** but require a fresh `policy_spec_hash` and a new training run — they are not resume-safe.
+- Prefer **resume-safe** training iterations within a milestone (avoid contract-breaking changes like `env.action_filter_alpha` mid-run).
 - Avoid full-blown MPC; start with a **simple, debuggable** base controller.
 
 ## Approaches
@@ -309,7 +309,7 @@ If the first M3 run shows weak FSM engagement but decent posture recovery:
 1. **Establish the bracing ceiling first.** Run the bracing-only baseline (FSM disabled, full residual authority) through a force sweep (9–25N) using `training/eval/force_sweep.py`. Find the force level where success drops below 60%.
 2. **Train at the bracing-failure regime.** Set `push_force_max` to the bracing ceiling + 20%. Keep full residual authority (`resid_scale = 1.0` for all phases). At this force level, bracing alone cannot survive, so the optimizer has a gradient signal toward stepping.
 3. **Try pure PPO first.** If the policy discovers stepping on its own under the harder pushes, FSM complexity is unnecessary.
-4. **Add information, not constraints.** If pure RL does not step, add capture-point error `[x_com - x_cp, y_com - y_cp]` to the actor observation and/or use a privileged critic that sees push force and CoM velocity. This gives the policy *information* about where to step without constraining *how*.
+4. **Add information, not constraints.** If pure RL does not step, add capture-point error `[x_com - x_cp, y_com - y_cp]` to the actor observation and/or use a privileged critic that sees push force and CoM velocity. This gives the policy *information* about where to step without constraining *how*. **Note:** adding capture-point to the actor observation is a contract-breaking change — it changes `obs_dim` and invalidates the current `policy_spec_hash`. This requires a fresh training run (not resume-safe). If resume-safety is needed, keep capture-point in the critic only (asymmetric actor-critic) and leave the actor observation unchanged.
 5. **Re-introduce FSM as a guide, not a controller.** Only if information alone is insufficient, re-enable the FSM with full residual override authority (`resid_scale = 1.0`). The FSM output becomes a mild bias that the RL can fully override when it has a better strategy.
 6. **Do not reduce residual authority** to force FSM engagement. If the FSM is not engaged at full residual authority, the FSM is not helping — fix the FSM or the force regime, not the policy's freedom.
 

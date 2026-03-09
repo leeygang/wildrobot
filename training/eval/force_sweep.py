@@ -78,8 +78,11 @@ def _run_single_force_level(
     num_steps: int,
     seed: int,
     keep_fsm: bool,
-) -> Dict[str, float]:
-    """Create env at a specific force level, eval, return metrics dict."""
+) -> tuple[Dict[str, float], bool, bool]:
+    """Create env at a specific force level, eval, return metrics dict.
+
+    Returns (metrics, actual_fsm_enabled, actual_base_ctrl_enabled).
+    """
 
     # Fresh config for each level (push force is traced as a JIT constant)
     training_cfg = load_training_config(config_path)
@@ -94,6 +97,10 @@ def _run_single_force_level(
     if not keep_fsm:
         training_cfg.env.fsm_enabled = False
         training_cfg.env.base_ctrl_enabled = False
+
+    # Snapshot actual flags after all overrides (these are what the env sees)
+    actual_fsm = bool(training_cfg.env.fsm_enabled)
+    actual_base_ctrl = bool(training_cfg.env.base_ctrl_enabled)
 
     # Override eval sizing
     training_cfg.ppo.num_envs = int(num_envs)
@@ -145,7 +152,7 @@ def _run_single_force_level(
 
     # Explicit cleanup to free device memory before next level
     del traj, env_state, env, ppo_network
-    return metrics
+    return metrics, actual_fsm, actual_base_ctrl
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +238,7 @@ def main() -> int:
         print(f"{label}: evaluating ...", end="", flush=True)
         t0 = time.time()
 
-        metrics = _run_single_force_level(
+        metrics, actual_fsm, actual_base_ctrl = _run_single_force_level(
             checkpoint_path=checkpoint_path,
             config_path=config_path,
             force_n=force,
@@ -298,8 +305,8 @@ def main() -> int:
             "checkpoint": str(checkpoint_path),
             "config": str(config_path),
             "push_duration_steps": args.push_duration,
-            "fsm_enabled": args.keep_fsm,
-            "base_ctrl_enabled": args.keep_fsm,
+            "fsm_enabled": actual_fsm,
+            "base_ctrl_enabled": actual_base_ctrl,
             "num_envs": args.num_envs,
             "num_steps": args.num_steps,
             "seed": args.seed,
