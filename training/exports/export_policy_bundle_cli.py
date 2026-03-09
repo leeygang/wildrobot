@@ -4,7 +4,7 @@
 Usage:
   uv run python training/exports/export_policy_bundle_cli.py \
     --checkpoint training/checkpoints/ppo_standing/.../checkpoint_580.pkl \
-    --config training/configs/ppo_standing.yaml \
+    --training-config training/configs/ppo_standing.yaml \
     --asset v1 \
         --bundle-path training/checkpoints/standing_v0.12.2
 """
@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 import yaml
@@ -82,10 +83,72 @@ def _resolve_robot_config_path(
     return _resolve_repo_relative(robot_path)
 
 
+def _resolve_training_config_path(
+    *,
+    checkpoint_path: Path,
+    training_config_arg: str | None,
+) -> Path:
+    if training_config_arg:
+        config_path = _resolve_repo_relative(Path(training_config_arg))
+        if not config_path.exists():
+            raise SystemExit(f"--training-config not found: {config_path}")
+        return config_path
+
+    run_dir = checkpoint_path.parent if checkpoint_path.is_file() else checkpoint_path
+    direct_candidates = [
+        run_dir / "training_config.yaml",
+        run_dir / "training_config.yml",
+        run_dir / "config.yaml",
+        run_dir / "config.yml",
+    ]
+    candidates = [p for p in direct_candidates if p.exists()]
+
+    if not candidates:
+        yaml_files = sorted(run_dir.glob("*.yaml")) + sorted(run_dir.glob("*.yml"))
+        if len(yaml_files) == 1:
+            candidates = [yaml_files[0]]
+
+    if not candidates:
+        config_dir = project_root / "training" / "configs"
+        run_name = run_dir.name
+        matches = [
+            p
+            for p in config_dir.glob("*.yaml")
+            if run_name.startswith(p.stem)
+        ]
+        if matches:
+            matches.sort(key=lambda p: len(p.stem), reverse=True)
+            top_len = len(matches[0].stem)
+            top = [m for m in matches if len(m.stem) == top_len]
+            if len(top) == 1:
+                candidates = [top[0]]
+
+    unique_candidates = list(dict.fromkeys(candidates))
+    if len(unique_candidates) == 1:
+        return unique_candidates[0].resolve()
+
+    if len(unique_candidates) > 1:
+        raise SystemExit(
+            "Could not uniquely identify training config from checkpoint context. "
+            f"Candidates: {', '.join(str(p) for p in unique_candidates)}. "
+            "Please pass --training-config."
+        )
+
+    raise SystemExit(
+        "Could not identify training config from checkpoint context. "
+        "Please pass --training-config."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export a WildRobot policy bundle")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to PPO checkpoint (.pkl)")
-    parser.add_argument("--config", type=str, required=True, help="Path to training config (.yaml)")
+    parser.add_argument(
+        "--training-config",
+        type=str,
+        default=None,
+        help="Path to training config (.yaml). Required if auto-detection fails.",
+    )
     parser.add_argument(
         "--bundle-path",
         type=str,
@@ -107,20 +170,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    checkpoint_path = _resolve_repo_relative(Path(args.checkpoint))
+    config_path = _resolve_training_config_path(
+        checkpoint_path=checkpoint_path,
+        training_config_arg=args.training_config,
+    )
     output_dir = Path(args.bundle_path)
 
     robot_config_path = _resolve_robot_config_path(
         robot_config_arg=args.robot_config,
         asset=args.asset,
-        config_path=Path(args.config),
+        config_path=config_path,
     )
 
     export_policy_bundle(
-        checkpoint_path=Path(args.checkpoint),
-        config_path=Path(args.config),
+        checkpoint_path=checkpoint_path,
+        config_path=config_path,
         output_dir=output_dir,
         robot_config_path=robot_config_path,
     )
+    shutil.copy2(config_path, output_dir / "training_config.yaml")
 
     bundle = PolicyBundle.load(output_dir)
     validate_spec(bundle.spec)
