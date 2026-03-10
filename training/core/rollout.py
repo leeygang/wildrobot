@@ -78,6 +78,7 @@ class TrajectoryBatch(NamedTuple):
 
     # Core PPO fields (always populated)
     obs: jnp.ndarray
+    critic_obs: jnp.ndarray
     actions: jnp.ndarray  # Raw actions for log_prob
     log_probs: jnp.ndarray
     values: jnp.ndarray
@@ -110,6 +111,7 @@ def collect_rollout(
     rng: jax.Array,
     num_steps: int,
     collect_amp_features: bool = False,
+    use_privileged_critic: bool = False,
 ) -> Tuple[Any, TrajectoryBatch]:
     """Collect rollout using jax.lax.scan (fully on GPU).
 
@@ -151,7 +153,14 @@ def collect_rollout(
         )
 
         # Get value estimate
-        value = compute_values(processor_params, value_params, ppo_network, obs)
+        critic_obs = jax.lax.cond(
+            jnp.asarray(use_privileged_critic, dtype=jnp.bool_),
+            lambda: env_state.info[WR_INFO_KEY].critic_obs,
+            lambda: obs,
+        )
+        value = compute_values(
+            processor_params, value_params, ppo_network, obs, critic_obs
+        )
 
         # Step environment
         next_env_state = env_step_fn(env_state, action)
@@ -167,6 +176,7 @@ def collect_rollout(
         step_data = {
             # Core PPO fields
             "obs": obs,
+            "critic_obs": critic_obs,
             "action": raw_action,
             "log_prob": log_prob,
             "value": value,
@@ -197,12 +207,21 @@ def collect_rollout(
 
     # Get bootstrap value for final state
     bootstrap_value = compute_values(
-        processor_params, value_params, ppo_network, final_env_state.obs
+        processor_params,
+        value_params,
+        ppo_network,
+        final_env_state.obs,
+        jax.lax.cond(
+            jnp.asarray(use_privileged_critic, dtype=jnp.bool_),
+            lambda: final_env_state.info[WR_INFO_KEY].critic_obs,
+            lambda: final_env_state.obs,
+        ),
     )
 
     # Build TrajectoryBatch
     trajectory = TrajectoryBatch(
         obs=step_data["obs"],
+        critic_obs=step_data["critic_obs"],
         actions=step_data["action"],
         log_probs=step_data["log_prob"],
         values=step_data["value"],

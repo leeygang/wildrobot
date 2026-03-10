@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.14.6)
+# WildRobot PPO Standing Config (v0.14.7)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.14.6"
-version_name: "Standing pushes (pure PPO at calibrated stepping regime)"
+version: "0.14.7"
+version_name: "Standing pushes (information-first privileged critic)"
 
 seed: 42
 
@@ -150,6 +150,11 @@ ppo:
   kl_lr_backoff_factor: 0.5
   lr_schedule_end_factor: 0.5
   entropy_schedule_end_factor: 0.4
+  # Information-first run: keep actor observation contract unchanged, but let
+  # the critic see sim-only disturbance and velocity state for better credit
+  # assignment under hard pushes. This changes the critic architecture, so run
+  # from scratch rather than resuming a v0.14.6 checkpoint.
+  critic_privileged_enabled: true
 
   eval:
     enabled: true

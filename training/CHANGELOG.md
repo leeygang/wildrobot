@@ -7,6 +7,52 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.7] - 2026-03-10: Information-first standing push run with privileged critic
+
+### Summary
+Prepares the next standing-push run as an information-first follow-up to v0.14.6. Pure PPO at `10N x 10` improved over the bracing baseline, but the extended run plateaued around `60.84%` push success and still failed mainly by `term_height_low`. The next experiment keeps FSM off and actor observations unchanged, while giving the critic sim-only disturbance state for better credit assignment.
+
+### Motivation
+- v0.14.6 showed non-zero `reward/step_event` and `reward/foot_place`, so stepping pressure is present.
+- The extension did not convert that extra stepping activity into sustained survival gains.
+- The next missing ingredient is value-function information, not more controller authority.
+
+### Code Updates
+- Add `ppo.critic_privileged_enabled` to the training config/runtime schema.
+- Add a fixed-size privileged critic vector to `WildRobotInfo` and rollout storage.
+- Feed the critic a separate sim-only input while keeping the actor on the existing policy-contract observation.
+- Save `critic_privileged_enabled` in checkpoints and reject incompatible resumes.
+
+### Privileged Critic Features
+The critic now sees a 12-D sim-only vector:
+- heading-local linear velocity `(vx, vy, vz)`
+- heading-local angular velocity `(wx, wy, wz)`
+- root attitude `(roll, pitch)`
+- root height
+- active push force `(fx, fy)`
+- push-active flag
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.7"`
+- keep pure PPO / no controller assistance:
+  - `env.fsm_enabled: false`
+  - `env.base_ctrl_enabled: false`
+- keep the calibrated stepping regime:
+  - `env.push_force_min/max: 10.0`
+  - `env.push_duration_steps: 10`
+- enable information-first critic:
+  - `ppo.critic_privileged_enabled: true`
+
+### Training Intent
+- Test whether better critic information can turn emerging step events into more useful recovery behavior.
+- Keep the actor observation contract unchanged so runtime/export interfaces stay stable.
+- If this run still plateaus, only then consider reintroducing FSM as a guide with full residual override.
+
+### Run Notes
+- Start a fresh run. This is not a resume-safe follow-up to v0.14.6 because the critic network input shape changes.
+
+---
+
 ## [v0.14.6] - 2026-03-08: Pure PPO next run at calibrated stepping regime
 
 ### Summary
@@ -42,18 +88,82 @@ Replaces the default standing-push baseline with a pure-PPO run at the calibrate
   - `env.push_force_min: 10.0` (from `3.0`)
   - `env.push_force_max: 10.0` (from `9.0`)
 
-### Training Intent
-This release is meant to answer the next question directly:
-- does pure PPO discover stepping when bracing alone is no longer reliable?
-- can success recover at `10N x 10` without any FSM or base-controller bias?
-- is `term_height_low` reduced by learned stepping rather than by controller intervention?
+### Results (v0.14.6)
+- Staged run root: `training/checkpoints/staged_v0146/run_20260308_234828`
+- Final W&B segment: `training/wandb/offline-run-20260309_052819-npc17xbk`
+- Final checkpoint dir: `training/checkpoints/staged_v0146/run_20260308_234828/ppo_standing_push_v00146_20260309_052820-npc17xbk`
+- Best checkpoint (eval_push/): `training/checkpoints/staged_v0146/run_20260308_234828/ppo_standing_push_v00146_20260309_052820-npc17xbk/checkpoint_200_26214400.pkl`
+- Best @ iter 200: `eval_push/success_rate=59.59%`, `eval_push/episode_length=379.0`
+- Train @ iter 200: `success=57.27%`, `ep_len=377.1`
+- Clean eval @ iter 200: `eval_clean/success_rate=100.00%`, `eval_clean/episode_length=500.0`
+- Controller status: disabled (`env.fsm_enabled=false`, `env.base_ctrl_enabled=false`)
 
-### Next-Run Success Signals
-- `eval_push/success_rate` improves materially from the `10N x 10` bracing baseline
-- `reward/step_event` rises above the current reward-only baseline
-- `reward/foot_place` rises with step events instead of staying near zero
-- `term_height_low_frac` falls from the bracing-only ceiling-run behavior
-- torque saturation remains within prior standing-push ranges
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 42.73% |
+| term_pitch_frac | 4.45% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 69.99% |
+| debug/torque_sat_frac | 1.70% |
+| ppo/approx_kl | 0.0039 |
+| ppo/clip_fraction | 0.0923 |
+| reward/step_event | 0.0254 |
+| reward/foot_place | 0.0222 |
+| debug/need_step | 0.1252 |
+| reward/posture | 0.9711 |
+
+### Diagnosis
+- Pure PPO improved materially over the calibrated `10N x 10` bracing baseline (`47.3% -> 59.6%`), so the run did create meaningful pressure toward recovery strategies beyond in-place bracing.
+- The dominant failure mode remains `term_height_low`; pitch failures are secondary and roll is negligible.
+- `reward/step_event` and `reward/foot_place` are small but clearly non-zero, which suggests reward-only stepping behavior is emerging rather than the policy relying purely on the old crouch strategy.
+- The best checkpoint is the final checkpoint, and eval_push improved through the last segment (`58.2% -> 59.0% -> 59.3% -> 59.6%` from iters `160 -> 170 -> 190 -> 200`), so the run does not look plateaued yet.
+- Torque stress rose compared with the softer v0.13.x baselines but remains within a manageable range.
+
+### Next Step
+- Do **not** enable FSM yet. The v0.14.6 result does not justify reintroducing controller authority because pure PPO is still improving at the calibrated stepping regime.
+- First extend the same pure-PPO run for another `100-150` iterations from `checkpoint_200_26214400.pkl` and check whether `eval_push/success_rate`, `reward/step_event`, and `reward/foot_place` continue to rise.
+- If that extended pure-PPO run plateaus below a useful level, keep FSM off and add **information first**:
+  - asymmetric actor-critic / privileged critic
+  - capture-point or CoM-velocity information without reducing actor authority
+- Only after a plateaued information-first run should FSM be re-enabled, and when it comes back it should be as a **guide** with full residual override (`resid_scale=1.0`), not as a controller that constrains the policy.
+
+### Extended Results (+150 iter resume)
+- Resume run: `training/wandb/offline-run-20260309_195021-oij0cbcc`
+- Resume checkpoints: `training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc`
+- Best checkpoint (eval_push/): `training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc/checkpoint_250_32768000.pkl`
+- Best @ iter 250: `eval_push/success_rate=60.84%`, `eval_push/episode_length=383.1`
+- Train @ iter 250: `success=56.86%`, `ep_len=368.3`
+- Final @ iter 350: `eval_push/success_rate=54.05%`, `eval_push/episode_length=364.5`
+- Clean eval remained perfect throughout the extension (`eval_clean/success_rate=100%`)
+
+| Signal | Best @250 | Final @350 |
+|---|---:|---:|
+| term_height_low_frac | 39.16% | 45.95% |
+| term_pitch_frac | 10.49% | 7.43% |
+| tracking/max_torque | 68.00% | 66.58% |
+| debug/torque_sat_frac | 1.51% | 1.36% |
+| ppo/approx_kl | 0.0045 | 0.0027 |
+| ppo/clip_fraction | 0.1047 | 0.0485 |
+| reward/step_event | 0.0335 | 0.0369 |
+| reward/foot_place | 0.0286 | 0.0311 |
+| debug/need_step | 0.1523 | 0.1574 |
+| reward/posture | 0.9640 | 0.9614 |
+
+### Updated Diagnosis
+- The extra `150` iterations produced only a small peak gain over the iter-200 checkpoint (`59.59% -> 60.84%` at iter `250`), then regressed for the remainder of the run.
+- `reward/step_event` and `reward/foot_place` continued to rise, but that did **not** translate into sustained push-survival gains. The policy appears to be stepping more often, but not yet stepping well enough to reduce collapse reliably.
+- `term_height_low` remains the dominant failure mode, so the mechanism gap is still recovery quality after disturbance, not merely triggering a foot touchdown.
+- The run looks plateaued/noisy now. The best checkpoint arrived early in the extension and the later checkpoints fell back toward the pre-resume level.
+- A rollback/LR-backoff signal appeared during the late run, which is another sign that simply running longer on the same setup is no longer buying much.
+
+### Updated Next Step
+- Do **not** enable FSM yet. Pure PPO beat the bracing baseline, but this extension does not support turning controller authority back on.
+- The next run should be **information-first, still with FSM off**:
+  - asymmetric actor-critic / privileged critic
+  - add capture-point / CoM-velocity / push-vector information to the critic first
+  - keep the actor contract unchanged if resume-safety is still desired
+- The goal of that run is to see whether better credit assignment can convert the now-nonzero step events into useful foot placement and lower `term_height_low`.
+- Only if the information-first run also plateaus should FSM be enabled, and then only as a **guide** with full residual override (`resid_scale=1.0`) and no residual handicapping.
 
 ---
 

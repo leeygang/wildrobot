@@ -142,6 +142,7 @@ def save_checkpoint_from_cpu(
             "max_grad_norm": config.ppo.max_grad_norm,
             "num_minibatches": config.ppo.num_minibatches,
             "epochs": config.ppo.epochs,
+            "critic_privileged_enabled": config.ppo.critic_privileged_enabled,
             "actor_hidden_sizes": config.networks.actor.hidden_sizes,
             "critic_hidden_sizes": config.networks.critic.hidden_sizes,
             "amp_weight": config.amp.weight,

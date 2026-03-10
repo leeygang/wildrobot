@@ -137,6 +137,7 @@ class TestPPOSmoke:
             value_params=value_params,
             ppo_network=ppo_network,
             obs=batch["obs"],
+            value_obs=None,
             actions=batch["actions"],
             old_log_probs=batch["log_probs"],
             advantages=batch["advantages"],

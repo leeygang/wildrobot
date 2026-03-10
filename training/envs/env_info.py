@@ -34,6 +34,7 @@ import jax.numpy as jnp
 # Fixed maximum latency for IMU history buffers (must match EnvConfig.imu_max_latency_steps)
 IMU_MAX_LATENCY = 4
 IMU_HIST_LEN = IMU_MAX_LATENCY + 1
+PRIVILEGED_OBS_DIM = 12
 
 # Use flax.struct for JAX-compatible dataclass with pytree registration
 # Falls back to NamedTuple if flax not available
@@ -96,6 +97,7 @@ try:
         # Stepping event detection (post-step values)
         prev_left_loaded: jnp.ndarray  # shape=()
         prev_right_loaded: jnp.ndarray  # shape=()
+        critic_obs: jnp.ndarray  # shape=(PRIVILEGED_OBS_DIM,)
         push_schedule: DisturbanceSchedule
 
         # -----------------------------------------------------------------------
@@ -142,6 +144,7 @@ except ImportError:
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
         prev_right_loaded: jnp.ndarray
+        critic_obs: jnp.ndarray
         # M3 FSM state
         fsm_phase: jnp.ndarray
         fsm_swing_foot: jnp.ndarray
@@ -187,6 +190,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "root_height": (),
         "prev_left_loaded": (),
         "prev_right_loaded": (),
+        "critic_obs": (PRIVILEGED_OBS_DIM,),
         # M3 FSM state
         "fsm_phase": (),
         "fsm_swing_foot": (),

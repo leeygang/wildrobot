@@ -33,7 +33,7 @@ training_logs/
 **/checkpoints/wildrobot_*/
 **/checkpoints/ppo_*/
 training/configs/auto/
-
+training/checkpoints/
 # OS
 .DS_Store
 Thumbs.db

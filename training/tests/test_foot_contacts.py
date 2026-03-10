@@ -264,6 +264,7 @@ def test_6_transition_has_foot_contacts():
     shape = (2, 3)
     dummy_traj = TrajectoryBatch(
         obs=jnp.zeros((*shape, 39)),
+        critic_obs=jnp.zeros((*shape, 39)),
         actions=jnp.zeros((*shape, 8)),
         log_probs=jnp.zeros(shape),
         values=jnp.zeros(shape),

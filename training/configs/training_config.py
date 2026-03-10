@@ -230,6 +230,7 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         kl_lr_backoff_factor=ppo.get("kl_lr_backoff_factor", 0.5),
         lr_schedule_end_factor=ppo.get("lr_schedule_end_factor", 1.0),
         entropy_schedule_end_factor=ppo.get("entropy_schedule_end_factor", 1.0),
+        critic_privileged_enabled=bool(ppo.get("critic_privileged_enabled", False)),
         eval=PPOEvalConfig(
             enabled=eval_cfg.get("enabled", False),
             interval=eval_cfg.get("interval", 0),

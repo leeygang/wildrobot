@@ -161,6 +161,7 @@ class TestPPOLossEquivalence:
             value_params=ppo_setup["value_params"],
             ppo_network=ppo_setup["ppo_network"],
             obs=ppo_setup["obs"],
+            value_obs=None,
             actions=ppo_setup["actions"],
             old_log_probs=ppo_setup["old_log_probs"],
             advantages=ppo_setup["advantages"],
@@ -174,6 +175,7 @@ class TestPPOLossEquivalence:
             value_params=ppo_setup["value_params"],
             ppo_network=ppo_setup["ppo_network"],
             obs=ppo_setup["obs"],
+            value_obs=None,
             actions=ppo_setup["actions"],
             old_log_probs=ppo_setup["old_log_probs"],
             advantages=ppo_setup["advantages"],
@@ -198,6 +200,7 @@ class TestRolloutFieldConsistency:
 
         trajectory = TrajectoryBatch(
             obs=jnp.zeros((*shape, obs_dim)),
+            critic_obs=jnp.zeros((*shape, obs_dim)),
             actions=jnp.zeros((*shape, action_dim)),
             log_probs=jnp.zeros(shape),
             values=jnp.zeros(shape),
@@ -230,6 +233,7 @@ class TestRolloutFieldConsistency:
 
         trajectory = TrajectoryBatch(
             obs=jnp.zeros((*shape, obs_dim)),
+            critic_obs=jnp.zeros((*shape, obs_dim)),
             actions=jnp.zeros((*shape, action_dim)),
             log_probs=jnp.zeros(shape),
             values=jnp.zeros(shape),

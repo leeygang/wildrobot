@@ -296,6 +296,7 @@ def ppo_update_scan(
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     obs: jnp.ndarray,
+    critic_obs: Optional[jnp.ndarray],
     actions: jnp.ndarray,
     old_log_probs: jnp.ndarray,
     advantages: jnp.ndarray,
@@ -341,6 +342,7 @@ def ppo_update_scan(
             mb_indices = jax.lax.dynamic_slice(perm, (start_idx,), (minibatch_size,))
 
             mb_obs = obs[mb_indices]
+            mb_critic_obs = None if critic_obs is None else critic_obs[mb_indices]
             mb_actions = actions[mb_indices]
             mb_old_log_probs = old_log_probs[mb_indices]
             mb_advantages = advantages[mb_indices]
@@ -357,6 +359,7 @@ def ppo_update_scan(
                     value_params=value_p,
                     ppo_network=ppo_network,
                     obs=mb_obs,
+                    value_obs=mb_critic_obs,
                     actions=mb_actions,
                     old_log_probs=mb_old_log_probs,
                     advantages=mb_advantages,
@@ -533,6 +536,7 @@ def make_train_iteration_fn(
             rng=rollout_rng,
             num_steps=config.ppo.rollout_steps,
             collect_amp_features=amp_enabled,
+            use_privileged_critic=config.ppo.critic_privileged_enabled,
         )
 
         # ================================================================
@@ -640,6 +644,9 @@ def make_train_iteration_fn(
         batch_size = config.ppo.rollout_steps * config.ppo.num_envs
 
         flat_obs = trajectory.obs.reshape(batch_size, -1)
+        flat_critic_obs = None
+        if config.ppo.critic_privileged_enabled:
+            flat_critic_obs = trajectory.critic_obs.reshape(batch_size, -1)
         flat_actions = trajectory.actions.reshape(batch_size, -1)
         flat_log_probs = trajectory.log_probs.reshape(batch_size)
         flat_advantages = advantages.reshape(batch_size)
@@ -668,6 +675,7 @@ def make_train_iteration_fn(
             policy_optimizer=policy_optimizer,
             value_optimizer=value_optimizer,
             obs=flat_obs,
+            critic_obs=flat_critic_obs,
             actions=flat_actions,
             old_log_probs=flat_log_probs,
             advantages=flat_advantages,
@@ -978,6 +986,11 @@ def _validate_resume_checkpoint(
     )
     _check_mismatch("epochs", ckpt_config.get("epochs"), config.ppo.epochs)
     _check_mismatch(
+        "critic_privileged_enabled",
+        ckpt_config.get("critic_privileged_enabled"),
+        config.ppo.critic_privileged_enabled,
+    )
+    _check_mismatch(
         "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate
     )
     _check_mismatch(
@@ -1124,6 +1137,11 @@ def train(
     )
     obs_dim = spec.model.obs_dim
     action_dim = spec.model.action_dim
+    critic_obs_dim = obs_dim
+    if bool(config.ppo.critic_privileged_enabled):
+        from training.envs.env_info import PRIVILEGED_OBS_DIM
+
+        critic_obs_dim = PRIVILEGED_OBS_DIM
     from policy_contract.spec import policy_spec_hash
 
     current_spec_hash = policy_spec_hash(spec)
@@ -1133,6 +1151,7 @@ def train(
     print("=" * 60)
     print(f"Configuration:")
     print(f"  obs_dim: {obs_dim}")
+    print(f"  critic_obs_dim: {critic_obs_dim}")
     print(f"  action_dim: {action_dim}")
     print(f"  num_envs: {config.ppo.num_envs}")
     print(f"  rollout_steps: {config.ppo.rollout_steps}")
@@ -1157,6 +1176,7 @@ def train(
         action_dim=action_dim,
         policy_hidden_dims=config.networks.actor.hidden_sizes,
         value_hidden_dims=config.networks.critic.hidden_sizes,
+        critic_obs_dim=critic_obs_dim,
     )
 
     # Initialize network parameters

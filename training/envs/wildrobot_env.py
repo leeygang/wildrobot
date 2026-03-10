@@ -61,6 +61,7 @@ from training.envs import step_controller as sc
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
+    PRIVILEGED_OBS_DIM,
     WildRobotInfo,
     WR_INFO_KEY,
 )
@@ -504,6 +505,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False
         )
+        critic_obs = self._get_privileged_critic_obs(
+            data, jp.zeros((), dtype=jp.int32), push_schedule
+        )
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=default_action,
@@ -521,6 +525,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=root_pose.height,  # Actual root height for AMP features
             prev_left_loaded=left_loaded.astype(jp.float32),
             prev_right_loaded=right_loaded.astype(jp.float32),
+            critic_obs=critic_obs,
             push_schedule=push_schedule,
             # M3 FSM state: initialised to STANCE (all zeros)
             fsm_phase=jp.zeros((), dtype=jp.int32),
@@ -750,6 +755,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Cache contact loads for touchdown/step-event detection in next step.
         left_force_now, right_force_now = self._cal.get_aggregated_foot_contacts(data)
         contact_threshold = self._config.env.contact_threshold_force
+        critic_obs = self._get_privileged_critic_obs(
+            data, step_count + 1, wr.push_schedule
+        )
 
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
@@ -769,6 +777,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=curr_root_pose.height,  # Actual root height for AMP features
             prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
             prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
+            critic_obs=critic_obs,
             push_schedule=wr.push_schedule,
             # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
             fsm_phase=new_fsm[0],
@@ -867,6 +876,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=reset_wr_info.root_height,
             prev_left_loaded=reset_wr_info.prev_left_loaded,
             prev_right_loaded=reset_wr_info.prev_right_loaded,
+            critic_obs=reset_wr_info.critic_obs,
             push_schedule=reset_wr_info.push_schedule,
             # M3 FSM: reset to STANCE on new episode
             fsm_phase=reset_wr_info.fsm_phase,
@@ -908,6 +918,43 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pipeline_state=final_data,
             rng=final_rng,
         )
+
+    def _get_privileged_critic_obs(
+        self,
+        data: mjx.Data,
+        step_count: jax.Array,
+        push_schedule: DisturbanceSchedule,
+    ) -> jax.Array:
+        """Build sim-only critic features without changing the actor contract."""
+        root_pose = self._cal.get_root_pose(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        root_vel = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        push_active = (
+            (step_count >= push_schedule.start_step)
+            & (step_count < push_schedule.end_step)
+            & jp.asarray(self._config.env.push_enabled, dtype=jp.bool_)
+        ).astype(jp.float32)
+        push_force_xy = jp.where(push_active > 0.5, push_schedule.force_xy, 0.0)
+        critic_obs = jp.array(
+            [
+                root_vel.linear_xyz[0],
+                root_vel.linear_xyz[1],
+                root_vel.linear_xyz[2],
+                root_vel.angular_xyz[0],
+                root_vel.angular_xyz[1],
+                root_vel.angular_xyz[2],
+                roll,
+                pitch,
+                root_pose.height,
+                push_force_xy[0],
+                push_force_xy[1],
+                push_active,
+            ],
+            dtype=jp.float32,
+        )
+        return jp.reshape(critic_obs, (PRIVILEGED_OBS_DIM,))
 
     def _mix_base_and_residual_action(
         self, data: mjx.Data, policy_action: jax.Array

@@ -88,6 +88,7 @@ def _collect_eval_rollout(
 
     traj = TrajectoryBatch(
         obs=rollout["obs"],
+        critic_obs=rollout["obs"],
         actions=rollout["action"],
         log_probs=rollout["log_prob"],
         values=rollout["value"],

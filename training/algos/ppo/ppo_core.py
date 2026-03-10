@@ -63,6 +63,7 @@ def create_networks(
     action_dim: int,
     policy_hidden_dims: Tuple[int, ...],
     value_hidden_dims: Tuple[int, ...],
+    critic_obs_dim: Optional[int] = None,
     preprocess_observations_fn: Optional[Callable] = None,
 ):
     """Create PPO networks using Brax's factory.
@@ -75,6 +76,7 @@ def create_networks(
         action_dim: Action dimension
         policy_hidden_dims: Hidden layer sizes for policy network
         value_hidden_dims: Hidden layer sizes for value network
+        critic_obs_dim: Optional privileged critic observation dimension.
         preprocess_observations_fn: Optional observation preprocessing.
             If None, uses Brax's identity preprocessor.
 
@@ -83,8 +85,9 @@ def create_networks(
     """
     # Build kwargs - only include preprocess_observations_fn if explicitly provided
     # If None, Brax will use its default identity_observation_preprocessor
+    critic_dim = int(obs_dim if critic_obs_dim is None else critic_obs_dim)
     kwargs = {
-        "observation_size": obs_dim,
+        "observation_size": int(obs_dim),
         "action_size": action_dim,
         "policy_hidden_layer_sizes": policy_hidden_dims,
         "value_hidden_layer_sizes": value_hidden_dims,
@@ -93,7 +96,23 @@ def create_networks(
     if preprocess_observations_fn is not None:
         kwargs["preprocess_observations_fn"] = preprocess_observations_fn
 
-    return ppo_networks.make_ppo_networks(**kwargs)
+    ppo_network = ppo_networks.make_ppo_networks(**kwargs)
+    if critic_dim == int(obs_dim):
+        return ppo_network
+
+    value_kwargs = {
+        "obs_size": critic_dim,
+        "hidden_layer_sizes": value_hidden_dims,
+    }
+    if preprocess_observations_fn is not None:
+        value_kwargs["preprocess_observations_fn"] = preprocess_observations_fn
+
+    privileged_value_network = ppo_networks.networks.make_value_network(**value_kwargs)
+    return ppo_networks.PPONetworks(
+        policy_network=ppo_network.policy_network,
+        value_network=privileged_value_network,
+        parametric_action_distribution=ppo_network.parametric_action_distribution,
+    )
 
 
 def init_network_params(
@@ -346,6 +365,7 @@ def compute_ppo_loss(
     value_params: Any,
     ppo_network,
     obs: jnp.ndarray,
+    value_obs: Any,
     actions: jnp.ndarray,
     old_log_probs: jnp.ndarray,
     advantages: jnp.ndarray,
@@ -372,6 +392,7 @@ def compute_ppo_loss(
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
         obs: Observations (batch_size, obs_dim)
+        value_obs: Critic observations. May differ from obs for asymmetric critic.
         actions: Raw/pre-tanh actions (batch_size, action_dim) - NOT postprocessed
         old_log_probs: Log probs from rollout (batch_size,)
         advantages: GAE advantages (batch_size,)
@@ -399,7 +420,10 @@ def compute_ppo_loss(
 
     # Compute value estimates
     # Brax API: apply(processor_params, network_params, obs) -> values
-    values = ppo_network.value_network.apply(processor_params, value_params, obs)
+    critic_input = obs if value_obs is None else value_obs
+    values = ppo_network.value_network.apply(
+        processor_params, value_params, critic_input
+    )
 
     # Policy loss (clipped surrogate objective)
     ratio = jnp.exp(new_log_probs - old_log_probs)
@@ -526,6 +550,7 @@ def compute_values(
     value_params: Any,
     ppo_network,
     obs: jnp.ndarray,
+    critic_obs: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """Compute value estimates using Brax's network API.
 
@@ -533,13 +558,15 @@ def compute_values(
         processor_params: Observation normalization parameters (empty tuple if not used)
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
-        obs: Observations (batch, obs_dim)
+        obs: Actor observations (batch, obs_dim)
+        critic_obs: Optional privileged critic observations.
 
     Returns:
         values: Value estimates (batch,)
     """
     # Brax API: apply(processor_params, network_params, obs) -> values
-    return ppo_network.value_network.apply(processor_params, value_params, obs)
+    critic_input = obs if critic_obs is None else critic_obs
+    return ppo_network.value_network.apply(processor_params, value_params, critic_input)
 
 
 # ============================================================================

@@ -114,6 +114,29 @@ class TestValueComputation:
 
         assert values.shape == (BATCH_SIZE,)
 
+    def test_compute_values_shape_with_privileged_critic(self):
+        """Test value computation with a separate privileged critic input."""
+        critic_obs_dim = 12
+        network = create_networks(
+            obs_dim=OBS_DIM,
+            action_dim=ACTION_DIM,
+            policy_hidden_dims=POLICY_HIDDEN_DIMS,
+            value_hidden_dims=VALUE_HIDDEN_DIMS,
+            critic_obs_dim=critic_obs_dim,
+        )
+        processor_params, _, value_params = init_network_params(
+            network, OBS_DIM, ACTION_DIM, seed=0
+        )
+        rng = jax.random.PRNGKey(0)
+        obs = jax.random.normal(rng, (BATCH_SIZE, OBS_DIM))
+        critic_obs = jax.random.normal(rng, (BATCH_SIZE, critic_obs_dim))
+
+        values = compute_values(
+            processor_params, value_params, network, obs, critic_obs
+        )
+
+        assert values.shape == (BATCH_SIZE,)
+
 
 class TestGAE:
     """Tests for Generalized Advantage Estimation."""
@@ -165,6 +188,7 @@ class TestPPOLoss:
             value_params,
             ppo_network,
             obs_batch,
+            None,
             action_batch,
             log_prob_batch,
             adv_batch,

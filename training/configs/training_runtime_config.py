@@ -254,6 +254,7 @@ class PPOConfig(Freezable):
 
     lr_schedule_end_factor: float = 1.0
     entropy_schedule_end_factor: float = 1.0
+    critic_privileged_enabled: bool = False
 
     eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
     rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())
