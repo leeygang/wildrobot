@@ -19,22 +19,31 @@ def build_observation_from_components(
     foot_switches: jnp.ndarray,
     prev_action: jnp.ndarray,
     velocity_cmd: jnp.ndarray,
+    capture_point_error: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    if spec.observation.layout_id != "wr_obs_v1":
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
-    obs = jnp.concatenate(
-        [
-            gravity_local.reshape(3),
-            angvel_heading_local.reshape(3),
-            joint_pos_normalized.reshape(-1),
-            joint_vel_normalized.reshape(-1),
-            foot_switches.reshape(4),
-            prev_action.reshape(-1),
-            jnp.atleast_1d(velocity_cmd).reshape(1),
-            jnp.zeros((1,), dtype=jnp.float32),
-        ]
+    cp_error = (
+        jnp.zeros((2,), dtype=jnp.float32)
+        if capture_point_error is None
+        else capture_point_error.reshape(2)
     )
+
+    parts = [
+        gravity_local.reshape(3),
+        angvel_heading_local.reshape(3),
+        joint_pos_normalized.reshape(-1),
+        joint_vel_normalized.reshape(-1),
+        foot_switches.reshape(4),
+        prev_action.reshape(-1),
+        jnp.atleast_1d(velocity_cmd).reshape(1),
+    ]
+    if spec.observation.layout_id == "wr_obs_v2":
+        parts.append(cp_error)
+    parts.append(jnp.zeros((1,), dtype=jnp.float32))
+
+    obs = jnp.concatenate(parts)
     return obs.astype(jnp.float32)
 
 
@@ -44,6 +53,7 @@ def build_observation(
     state: PolicyState,
     signals: Signals,
     velocity_cmd: jnp.ndarray,
+    capture_point_error: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -60,4 +70,5 @@ def build_observation(
         foot_switches=signals.foot_switches,
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
+        capture_point_error=capture_point_error,
     )

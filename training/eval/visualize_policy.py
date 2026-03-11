@@ -89,6 +89,7 @@ def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> P
         robot_name=robot_cfg.robot_name,
         actuated_joint_specs=robot_cfg.actuated_joints,
         action_filter_alpha=float(action_filter_alpha),
+        layout_id=str(training_cfg.env.actor_obs_layout_id),
         provenance={
             "training_config": str(training_cfg.config_path) if hasattr(training_cfg, "config_path") else "<runtime>",
         },

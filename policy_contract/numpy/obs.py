@@ -19,22 +19,31 @@ def build_observation_from_components(
     foot_switches: np.ndarray,
     prev_action: np.ndarray,
     velocity_cmd: np.ndarray,
+    capture_point_error: np.ndarray | None = None,
 ) -> np.ndarray:
-    if spec.observation.layout_id != "wr_obs_v1":
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
-    obs = np.concatenate(
-        [
-            np.asarray(gravity_local, dtype=np.float32).reshape(3),
-            np.asarray(angvel_heading_local, dtype=np.float32).reshape(3),
-            np.asarray(joint_pos_normalized, dtype=np.float32).reshape(-1),
-            np.asarray(joint_vel_normalized, dtype=np.float32).reshape(-1),
-            np.asarray(foot_switches, dtype=np.float32).reshape(4),
-            np.asarray(prev_action, dtype=np.float32).reshape(-1),
-            np.asarray(velocity_cmd, dtype=np.float32).reshape(1),
-            np.zeros((1,), dtype=np.float32),
-        ]
+    cp_error = (
+        np.zeros((2,), dtype=np.float32)
+        if capture_point_error is None
+        else np.asarray(capture_point_error, dtype=np.float32).reshape(2)
     )
+
+    parts = [
+        np.asarray(gravity_local, dtype=np.float32).reshape(3),
+        np.asarray(angvel_heading_local, dtype=np.float32).reshape(3),
+        np.asarray(joint_pos_normalized, dtype=np.float32).reshape(-1),
+        np.asarray(joint_vel_normalized, dtype=np.float32).reshape(-1),
+        np.asarray(foot_switches, dtype=np.float32).reshape(4),
+        np.asarray(prev_action, dtype=np.float32).reshape(-1),
+        np.asarray(velocity_cmd, dtype=np.float32).reshape(1),
+    ]
+    if spec.observation.layout_id == "wr_obs_v2":
+        parts.append(cp_error)
+    parts.append(np.zeros((1,), dtype=np.float32))
+
+    obs = np.concatenate(parts)
     return obs.astype(np.float32)
 
 
@@ -44,6 +53,7 @@ def build_observation(
     state: PolicyState,
     signals: Signals,
     velocity_cmd: np.ndarray,
+    capture_point_error: np.ndarray | None = None,
 ) -> np.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -60,4 +70,5 @@ def build_observation(
         foot_switches=signals.foot_switches,
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
+        capture_point_error=capture_point_error,
     )

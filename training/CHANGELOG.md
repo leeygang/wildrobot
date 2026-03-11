@@ -7,6 +7,52 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.8] - 2026-03-10: Actor-information run with capture-point observation
+
+### Summary
+Prepares the next information-first standing-push run after v0.14.7 failed to beat the plain PPO baseline. The critic-only privileged path increased stepping-related rewards but did not improve survival. The next step moves the information to the actor by extending the policy observation contract with a 2-D heading-local capture-point error.
+
+### Motivation
+- v0.14.7 showed higher `reward/step_event` and `reward/foot_place` than v0.14.6, so the policy is willing to step more.
+- Those extra step events still did not reduce `term_height_low`, which suggests the actor still lacks direct information about where stepping would help.
+- Before reintroducing FSM, test whether explicit actor-side stepping cues are enough.
+
+### Code Updates
+- Add `env.actor_obs_layout_id` to the config/runtime schema.
+- Add a new policy-contract layout `wr_obs_v2`.
+- Extend actor observations with `capture_point_error` (2-D heading-local approximate CoM-minus-capture-point offset).
+- Pass the selected layout through training startup, env creation, visualization, and export policy-spec generation.
+
+### Observation Contract
+- `wr_obs_v1`: existing actor observation layout (resume-safe within prior milestones).
+- `wr_obs_v2`: `wr_obs_v1` plus:
+  - `capture_point_error[0]`
+  - `capture_point_error[1]`
+
+`wr_obs_v2` is a contract-breaking change and requires a fresh run.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.8"`
+- switch actor layout:
+  - `env.actor_obs_layout_id: wr_obs_v2`
+- return critic to symmetric input for isolation:
+  - `ppo.critic_privileged_enabled: false`
+- keep controllers disabled and disturbance regime unchanged:
+  - `env.fsm_enabled: false`
+  - `env.base_ctrl_enabled: false`
+  - `env.push_force_min/max: 10.0`
+  - `env.push_duration_steps: 10`
+
+### Training Intent
+- Test whether actor-side capture-point information improves step quality and recovery quality.
+- Target outcome: beat the v0.14.6 baseline on `eval_push/success_rate` while reducing `term_height_low`.
+- If this still fails to beat v0.14.6, only then consider reintroducing FSM as a guide.
+
+### Run Notes
+- Start a fresh run. Do not resume from v0.14.7 or earlier checkpoints because `wr_obs_v2` changes `policy_spec_hash`.
+
+---
+
 ## [v0.14.7] - 2026-03-10: Information-first standing push run with privileged critic
 
 ### Summary
@@ -50,6 +96,45 @@ The critic now sees a 12-D sim-only vector:
 
 ### Run Notes
 - Start a fresh run. This is not a resume-safe follow-up to v0.14.6 because the critic network input shape changes.
+
+### Results (v0.14.7)
+- Run: `training/wandb/offline-run-20260310_131556-xsg0sih9`
+- Checkpoints: `training/checkpoints/ppo_standing_push_v00147_20260310_131558-xsg0sih9`
+- Best checkpoint (eval_push/): `training/checkpoints/ppo_standing_push_v00147_20260310_131558-xsg0sih9/checkpoint_200_26214400.pkl`
+- Best @ iter 200: `eval_push/success_rate=55.86%`, `eval_push/episode_length=367.6`
+- Train @ iter 200: `success=44.72%`, `ep_len=342.8`
+- Clean eval @ iter 200: `eval_clean/success_rate=100.00%`, `eval_clean/episode_length=500.0`
+- Controller status: disabled (`env.fsm_enabled=false`, `env.base_ctrl_enabled=false`)
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 54.77% |
+| term_pitch_frac | 21.61% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 62.48% |
+| debug/torque_sat_frac | 0.94% |
+| ppo/approx_kl | 0.0037 |
+| ppo/clip_fraction | 0.0865 |
+| reward/step_event | 0.0466 |
+| reward/foot_place | 0.0382 |
+| debug/need_step | 0.1888 |
+| reward/posture | 0.9443 |
+
+### Diagnosis
+- The critic-only information-first run did **not** beat the plain PPO baseline. `eval_push/success_rate` regressed from `59.59%` in v0.14.6 and `60.84%` in the v0.14.6 extension to `55.86%` here.
+- The best checkpoint was the final checkpoint, so v0.14.7 was still improving at the end of 200 iterations, but it was improving toward a worse ceiling than the simpler baseline.
+- `reward/step_event` and `reward/foot_place` both increased relative to v0.14.6, which suggests the privileged critic did help push the policy toward more stepping-like behavior.
+- That extra stepping activity did **not** translate into better survival. `term_height_low` remains dominant and `term_pitch_frac` rose materially, which points to poor step quality / recovery quality rather than an absence of step attempts.
+- Clean standing remained perfect, so the regression is specific to push recovery, not a general loss of balance.
+
+### Updated Next Step
+- Do **not** enable FSM yet. This run does not justify turning controller authority back on.
+- The next step should stay in the information-first branch, but move the information to the **actor**, not only the critic:
+  - add actor-side capture-point or CoM-velocity error features
+  - start a fresh run because this changes the policy observation contract
+  - keep `env.fsm_enabled=false` and `env.base_ctrl_enabled=false`
+- The goal of that next run is to test whether explicit actor-side stepping information can convert the now-higher step-event/foot-place activity into lower `term_height_low` and higher `eval_push/success_rate`.
+- Only if that actor-information run also fails to beat the v0.14.6 baseline should FSM come back, and then only as a guide with full residual override.
 
 ---
 

@@ -104,15 +104,27 @@ def build_policy_spec(
 
 
 def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
-    if layout_id != "wr_obs_v1":
-        raise ValueError(f"Unsupported layout_id: {layout_id!r}")
-    return [
-        ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
-        ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
-        ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
-        ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
-        ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
-        ObsFieldSpec(name="padding", size=1, units="unused"),
-    ]
+    if layout_id == "wr_obs_v1":
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
+    if layout_id == "wr_obs_v2":
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="capture_point_error", size=2, frame="heading_local", units="m"),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
+    raise ValueError(f"Unsupported layout_id: {layout_id!r}")

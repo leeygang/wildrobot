@@ -140,6 +140,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         foot_switch_threshold=env.get("foot_switch_threshold", 2.0),
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
+        actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
 
         # M2: base controller + residual gating (optional)
         base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),

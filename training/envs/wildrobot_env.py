@@ -322,6 +322,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             robot_name=self._robot_config.robot_name,
             actuated_joint_specs=self._robot_config.actuated_joints,
             action_filter_alpha=float(self._config.env.action_filter_alpha),
+            layout_id=str(self._config.env.actor_obs_layout_id),
         )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
@@ -1286,11 +1287,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if signals is None:
             signals = self._signals_adapter.read(data)
         policy_state = PolicyState(prev_action=action)
+        capture_point_error = None
+        if self._policy_spec.observation.layout_id == "wr_obs_v2":
+            capture_point_error = self._get_capture_point_error(data)
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
             velocity_cmd=velocity_cmd,
+            capture_point_error=capture_point_error,
+        )
+
+    def _get_capture_point_error(self, data: mjx.Data) -> jax.Array:
+        """Approximate heading-local capture-point error from CoM height and velocity."""
+        root_pose = self._cal.get_root_pose(data)
+        root_vel = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        vx, vy, _ = root_vel.linear_xyz
+        com_height = jp.maximum(root_pose.height, jp.asarray(1e-3, dtype=jp.float32))
+        omega0 = jp.sqrt(jp.asarray(9.81, dtype=jp.float32) / com_height)
+        return jp.asarray(
+            [
+                -vx / omega0,
+                -vy / omega0,
+            ],
+            dtype=jp.float32,
         )
 
     def _get_reward(

@@ -153,11 +153,10 @@ def collect_rollout(
         )
 
         # Get value estimate
-        critic_obs = jax.lax.cond(
-            jnp.asarray(use_privileged_critic, dtype=jnp.bool_),
-            lambda: env_state.info[WR_INFO_KEY].critic_obs,
-            lambda: obs,
-        )
+        if use_privileged_critic:
+            critic_obs = env_state.info[WR_INFO_KEY].critic_obs
+        else:
+            critic_obs = obs
         value = compute_values(
             processor_params, value_params, ppo_network, obs, critic_obs
         )
@@ -206,16 +205,17 @@ def collect_rollout(
     )
 
     # Get bootstrap value for final state
+    if use_privileged_critic:
+        bootstrap_critic_obs = final_env_state.info[WR_INFO_KEY].critic_obs
+    else:
+        bootstrap_critic_obs = final_env_state.obs
+
     bootstrap_value = compute_values(
         processor_params,
         value_params,
         ppo_network,
         final_env_state.obs,
-        jax.lax.cond(
-            jnp.asarray(use_privileged_critic, dtype=jnp.bool_),
-            lambda: final_env_state.info[WR_INFO_KEY].critic_obs,
-            lambda: final_env_state.obs,
-        ),
+        bootstrap_critic_obs,
     )
 
     # Build TrajectoryBatch
