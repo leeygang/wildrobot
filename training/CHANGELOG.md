@@ -7,6 +7,43 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.14.9] - 2026-03-11: FSM guide on top of actor capture-point observation
+
+### Summary
+Reintroduces the M3 foot-placement FSM after both information-first branches plateaued below the `v0.14.6` pure-PPO baseline. `v0.14.7` tested critic-only privileged information and `v0.14.8` tested actor-side capture-point information; neither beat the best pure-PPO result. The next step is to test whether the existing actor signal plus a guide-only FSM can turn step intent into more effective recovery.
+
+### Config Updates (`training/configs/ppo_standing_push.yaml`)
+- bump to `version: "0.14.9"`
+- keep actor capture-point observation:
+  - `env.actor_obs_layout_id: wr_obs_v2`
+- re-enable FSM:
+  - `env.fsm_enabled: true`
+- keep M2 disabled:
+  - `env.base_ctrl_enabled: false`
+- keep full residual override in every phase:
+  - `env.fsm_resid_scale_stance: 1.00`
+  - `env.fsm_resid_scale_swing: 1.00`
+  - `env.fsm_resid_scale_recover: 1.00`
+- keep the calibrated disturbance regime:
+  - `env.push_force_min/max: 10.0`
+  - `env.push_duration_steps: 10`
+- keep critic symmetric:
+  - `ppo.critic_privileged_enabled: false`
+
+### Resume Point
+- Resume from the best `v0.14.8` checkpoint:
+  - `training/checkpoints/ppo_standing_push_v00148_20260310_203611-l1g2jb6r/checkpoint_200_26214400.pkl`
+- This is resume-safe because `wr_obs_v2` and `action_filter_alpha` are unchanged from `v0.14.8`.
+
+### Training Intent
+- Test whether a guide-only FSM improves `eval_push/success_rate` beyond the `v0.14.6` pure-PPO baseline (`59.59%` at 200 iters, `60.84%` extended).
+- Test whether the FSM reduces the dominant `term_height_low_frac` failure mode rather than merely increasing step-like activity.
+- Preserve the lower pitch-failure and lower torque-stress profile that `v0.14.8` achieved.
+
+### Interpretation Rule
+- If `v0.14.9` beats `v0.14.6`, the guide-FSM branch is justified and can be tuned further.
+- If `v0.14.9` still fails to beat `v0.14.6`, the current FSM implementation is not adding enough value and should not be tightened further without improving execution accuracy first.
+
 ## [v0.14.8] - 2026-03-10: Actor-information run with capture-point observation
 
 ### Summary
@@ -50,6 +87,53 @@ Prepares the next information-first standing-push run after v0.14.7 failed to be
 
 ### Run Notes
 - Start a fresh run. Do not resume from v0.14.7 or earlier checkpoints because `wr_obs_v2` changes `policy_spec_hash`.
+
+### Results (v0.14.8)
+- Run: `training/wandb/offline-run-20260310_203609-l1g2jb6r`
+- Checkpoints: `training/checkpoints/ppo_standing_push_v00148_20260310_203611-l1g2jb6r`
+- Best checkpoint (eval_push/): `training/checkpoints/ppo_standing_push_v00148_20260310_203611-l1g2jb6r/checkpoint_200_26214400.pkl`
+- Best @ iter 200: `eval_push/success_rate=55.41%`, `eval_push/episode_length=366.7`
+- Train @ iter 200: `success=55.52%`, `ep_len=366.6`
+- Clean eval @ iter 200: `eval_clean/success_rate=100.00%`, `eval_clean/episode_length=500.0`
+- Controller status: disabled (`env.fsm_enabled=false`, `env.base_ctrl_enabled=false`)
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 44.48% |
+| term_pitch_frac | 6.40% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 57.50% |
+| debug/torque_sat_frac | 0.71% |
+| ppo/approx_kl | 0.0039 |
+| ppo/clip_fraction | 0.0993 |
+| reward/step_event | 0.0250 |
+| reward/foot_place | 0.0212 |
+| debug/need_step | 0.1286 |
+| reward/posture | 0.9631 |
+
+### Diagnosis
+- Actor-side capture-point information did **not** beat the best plain PPO baseline. `eval_push/success_rate` reached `55.41%`, still below `59.59%` in v0.14.6 and `60.84%` in the later pure-PPO extension.
+- Compared with v0.14.7, `v0.14.8` substantially reduced `term_pitch_frac` and torque stress, which means the new actor signal improved recovery quality and action quality.
+- But those gains did not translate into higher push success. `reward/step_event` and `reward/foot_place` fell back toward the v0.14.6 range, and `term_height_low` remained the dominant failure mode.
+- Clean standing stayed perfect, so the limitation is still specifically push recovery under the calibrated hard-push regime.
+- Taken together with v0.14.7, the information-first branch has now been tested on both sides:
+  - critic-only information (`v0.14.7`)
+  - actor-side capture-point information (`v0.14.8`)
+  Neither beat the simpler v0.14.6 baseline.
+
+### Updated Next Step
+- The next run should move to the **FSM-as-guide** branch.
+- Recommended `v0.14.9` plan:
+  - keep `wr_obs_v2` actor observations
+  - re-enable `env.fsm_enabled: true`
+  - keep `env.base_ctrl_enabled: false`
+  - keep full residual override:
+    - `env.fsm_resid_scale_stance: 1.00`
+    - `env.fsm_resid_scale_swing: 1.00`
+    - `env.fsm_resid_scale_recover: 1.00`
+  - keep the same `10N x 10` push regime
+- Resume from the best v0.14.8 checkpoint if you want the fastest test of whether a guide-FSM can add value on top of the current policy. This is resume-safe as long as `wr_obs_v2` and `action_filter_alpha` stay unchanged.
+- The success criterion for that next run is straightforward: beat the v0.14.6 baseline on `eval_push/success_rate` without giving up the lower pitch-failure and lower torque-stress profile that v0.14.8 achieved.
 
 ---
 

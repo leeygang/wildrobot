@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Standing Config (v0.14.8)
+# WildRobot PPO Standing Config (v0.14.9)
 # =============================================================================
 # Stage 1: Standing robustness with strong push disturbances (No AMP)
 #
@@ -12,8 +12,8 @@
 # Total steps = iterations × num_envs × rollout_steps
 # =============================================================================
 
-version: "0.14.8"
-version_name: "Standing pushes (actor capture-point information)"
+version: "0.14.9"
+version_name: "Standing pushes (FSM guide on top of actor capture-point observation)"
 
 seed: 42
 
@@ -74,10 +74,10 @@ env:
   residual_scale_max: 0.85
   residual_gate_power: 1.00
 
-  # M3 foot-placement FSM: kept for rollback/reference, but disabled for the
-  # next run. The next training step is pure PPO at the calibrated stepping
-  # regime with full policy authority.
-  fsm_enabled: false
+  # M3 foot-placement FSM: re-enabled as a guide only. The FSM may bias foot
+  # placement and swing timing, but residual policy authority stays at 1.0 in
+  # every phase so the actor can fully override it.
+  fsm_enabled: true
   fsm_trigger_threshold: 0.30
   fsm_recover_threshold: 0.15
   fsm_trigger_hold_ticks: 1
@@ -154,8 +154,8 @@ ppo:
   kl_lr_backoff_factor: 0.5
   lr_schedule_end_factor: 0.5
   entropy_schedule_end_factor: 0.4
-  # v0.14.8 isolates actor-side information. Keep the critic symmetric again so
-  # this run answers whether actor capture-point cues help on their own.
+  # v0.14.9 keeps the actor-information path from v0.14.8 and tests whether a
+  # guide-only FSM can improve recovery without constraining the policy.
   critic_privileged_enabled: false
 
   eval:

@@ -5,19 +5,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 CONFIG_PATH="${CONFIG_PATH:-training/configs/ppo_standing_push.yaml}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-training/checkpoints/staged_v0146}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-training/checkpoints/staged_v0149}"
+INITIAL_RESUME="${INITIAL_RESUME:-training/checkpoints/ppo_standing_push_v00148_20260310_203611-l1g2jb6r/checkpoint_200_26214400.pkl}"
 NUM_ENVS="${NUM_ENVS:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-}"
 SEED="${SEED:-}"
 
-# Three-step overnight plan:
-#   stage 1: 80 iterations  -> first go/no-go signal
-#   stage 2: 70 iterations  -> extend to 150 total if promising
-#   stage 3: 50 iterations  -> extend to 200 total if still improving
+# Three-step unattended plan for v0.14.9:
+#   stage 1: 80 iterations  -> first signal
+#   stage 2: 40 iterations  -> extend to 120 total for go/no-go
+#   stage 3: 80 iterations  -> extend to 200 total if still improving
 STAGE_ITERS=(
   "${STAGE1_ITERS:-80}"
-  "${STAGE2_ITERS:-70}"
-  "${STAGE3_ITERS:-50}"
+  "${STAGE2_ITERS:-40}"
+  "${STAGE3_ITERS:-80}"
 )
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
@@ -50,21 +51,30 @@ best_checkpoint_in_dir() {
 print_stage_banner() {
   local stage_idx="$1"
   local iters="$2"
+  local resume_from="$3"
   echo
   echo "============================================================"
   echo "Stage ${stage_idx}: run ${iters} iterations"
   echo "Checkpoint root: ${run_root}"
   echo "Config: ${CONFIG_PATH}"
+  if [[ -n "$resume_from" ]]; then
+    echo "Resume from: ${resume_from}"
+  fi
   echo "============================================================"
 }
 
-resume_ckpt=""
+resume_ckpt="$INITIAL_RESUME"
+
+if [[ -n "$resume_ckpt" && ! -f "$resume_ckpt" ]]; then
+  echo "ERROR: initial resume checkpoint not found: ${resume_ckpt}" >&2
+  exit 1
+fi
 
 for idx in "${!STAGE_ITERS[@]}"; do
   stage_num="$((idx + 1))"
   stage_iters="${STAGE_ITERS[$idx]}"
 
-  print_stage_banner "$stage_num" "$stage_iters"
+  print_stage_banner "$stage_num" "$stage_iters" "$resume_ckpt"
 
   cmd=(
     uv run python training/train.py
