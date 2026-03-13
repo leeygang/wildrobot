@@ -48,6 +48,7 @@ import os
 import pickle
 import sys
 import time
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -251,6 +252,22 @@ def start_training(
     from policy_contract.spec_builder import build_policy_spec
     from policy_contract.calib import JaxCalibOps
 
+    def _to_yamlable(value: Any) -> Any:
+        """Recursively convert config dataclasses into YAML-safe primitives."""
+        if is_dataclass(value):
+            return {
+                f.name: _to_yamlable(getattr(value, f.name))
+                for f in fields(value)
+                if f.name != "_frozen"
+            }
+        if isinstance(value, tuple):
+            return [_to_yamlable(v) for v in value]
+        if isinstance(value, list):
+            return [_to_yamlable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _to_yamlable(v) for k, v in value.items()}
+        return value
+
     # Check JAX backend
     print(f"\n{'=' * 60}")
     print("JAX Configuration")
@@ -292,9 +309,23 @@ def start_training(
         mode_suffix=mode_suffix,
     )
     job_checkpoint_dir = os.path.join(final_checkpoint_dir, job_name)
+    os.makedirs(job_checkpoint_dir, exist_ok=True)
 
     print(f"Training job: {job_name}")
     print(f"Checkpoints will be saved to: {job_checkpoint_dir}")
+
+    # Persist the effective training config next to checkpoints so later tools
+    # (for example bundle export) can auto-detect the exact run configuration.
+    training_config_snapshot_path = os.path.join(job_checkpoint_dir, "training_config.yaml")
+    with open(training_config_snapshot_path, "w", encoding="utf-8") as f:
+        import yaml
+
+        yaml.safe_dump(
+            _to_yamlable(training_cfg),
+            f,
+            sort_keys=False,
+            allow_unicode=False,
+        )
 
     # Load reference motion data only if AMP enabled
     ref_features = None

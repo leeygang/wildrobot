@@ -987,7 +987,7 @@ def _validate_resume_checkpoint(
     _check_mismatch("epochs", ckpt_config.get("epochs"), config.ppo.epochs)
     _check_mismatch(
         "critic_privileged_enabled",
-        ckpt_config.get("critic_privileged_enabled"),
+        ckpt_config.get("critic_privileged_enabled", False),
         config.ppo.critic_privileged_enabled,
     )
     _check_mismatch(

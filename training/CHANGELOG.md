@@ -7,6 +7,53 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.1] - 2026-03-12: Freeze best standing bundle and prepare Stage 1b walking
+
+### Summary
+Freezes the best standing-push pure-PPO policy from `v0.14.6` into a runtime bundle, then switches the default walking config back to the repo's main execution plan: Stage 1b PPO-only walking with no AMP and no stepping controller.
+
+### Frozen Standing Bundle
+- Source checkpoint:
+  - `training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc/checkpoint_250_32768000.pkl`
+- Matching historical config:
+  - `training/configs/ppo_standing_push.yaml` @ commit `d32d11c`
+- Exported runtime bundle:
+  - `runtime/bundles/standing_push_v0.14.6_ckpt250`
+
+### Walking Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.1"`
+- switch back to Stage 1b walking intent:
+  - PPO only
+  - AMP disabled
+  - `env.base_ctrl_enabled: false`
+  - `env.fsm_enabled: false`
+- move walking config to current asset variant:
+  - `env.assets_root: assets/v2`
+- keep warm-start compatibility with the frozen standing checkpoint:
+  - `env.actor_obs_layout_id: wr_obs_v1`
+  - `env.action_filter_alpha: 0.6`
+- use a conservative commanded walking range:
+  - `env.min_velocity: 0.1`
+  - `env.max_velocity: 0.6`
+- add modern PPO eval / rollback settings and keep the standing batch geometry for resume stability:
+  - `ppo.num_envs: 512`
+  - `ppo.rollout_steps: 256`
+  - `ppo.iterations: 400`
+  - `ppo.eval.enabled: true`
+  - `ppo.rollback.enabled: true`
+
+### Training Intent
+- Warm-start walking from the best pure standing-push PPO checkpoint instead of continuing the disproven FSM branch.
+- Learn nominal foot placement and weight transfer through dense walking rewards rather than sparse recovery events.
+- Use this as the Stage 1b baseline before any later robustness or AMP work.
+
+### Run Command
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking.yaml \
+  --resume training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc/checkpoint_250_32768000.pkl
+```
+
 ## [v0.14.9] - 2026-03-11: FSM guide on top of actor capture-point observation
 
 ### Summary
@@ -43,6 +90,49 @@ Reintroduces the M3 foot-placement FSM after both information-first branches pla
 ### Interpretation Rule
 - If `v0.14.9` beats `v0.14.6`, the guide-FSM branch is justified and can be tuned further.
 - If `v0.14.9` still fails to beat `v0.14.6`, the current FSM implementation is not adding enough value and should not be tightened further without improving execution accuracy first.
+
+### Results (v0.14.9)
+- Run: `training/wandb/offline-run-20260311_143401-qcfon7tw`
+- Checkpoints: `training/checkpoints/staged_v0149/run_20260311_095042/ppo_standing_push_v00149_20260311_143403-qcfon7tw`
+- Best checkpoint (eval_push/): `training/checkpoints/staged_v0149/run_20260311_095042/ppo_standing_push_v00149_20260311_143403-qcfon7tw/checkpoint_390_51118080.pkl`
+- Best @ iter 390: `eval_push/success_rate=38.06%`, `eval_push/episode_length=308.1`
+- Train @ iter 390: `success=42.43%`, `ep_len=327.7`
+- Clean eval @ iter 390: `eval_clean/success_rate=100.00%`, `eval_clean/episode_length=500.0`
+- FSM verdict: `weakly engaged`
+- FSM touchdown style: `timeout-driven`
+- FSM upright recovery: `good`
+
+| Signal | Value |
+|---|---:|
+| term_height_low_frac | 57.57% |
+| term_pitch_frac | 0.00% |
+| term_roll_frac | 0.00% |
+| tracking/max_torque | 55.89% |
+| debug/torque_sat_frac | 0.60% |
+| ppo/approx_kl | 0.0034 |
+| ppo/clip_fraction | 0.0727 |
+| debug/bc_phase | 0.258 |
+| debug/bc_phase_ticks | 98.982 |
+| fsm/swing_occupancy | 3.99% |
+| reward/step_event | 0.0012 |
+| reward/foot_place | 0.0007 |
+| debug/need_step | 0.1637 |
+| reward/posture | 0.7528 |
+
+### Diagnosis
+- `v0.14.9` failed decisively. It underperformed not only the best pure-PPO baseline (`v0.14.6`: `59.59%` at 200 iters, `60.84%` extended), but also the actor-information run it resumed from (`v0.14.8`: `55.41%`).
+- The guide-FSM did not convert need-step pressure into meaningful stepping. `debug/need_step` stayed elevated, but swing occupancy was only `3.99%`, and both `reward/step_event` and `reward/foot_place` collapsed toward zero.
+- The controller remained mostly `timeout-driven`, which is the same mechanism failure seen in earlier M3 runs. That strongly suggests the current swing execution / touchdown accuracy is still too weak for the FSM to help, even when PPO retains full override authority.
+- Pitch and roll failures stayed at zero, and torque stress remained reasonable. The regression is specifically failed push recovery through `term_height_low`, not general training instability.
+
+### Next Step
+- Do **not** continue tuning the current FSM branch. This run is strong evidence that the present FSM implementation is not adding useful recovery value.
+- Revert to the best pure-PPO baseline for deployment / continuation:
+  - `training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc/checkpoint_250_32768000.pkl`
+- If standing-push stepping research continues later, only revisit FSM after improving execution accuracy first, for example:
+  - replace joint-heuristic swing tracking with geometrically correct leg IK, or
+  - expose desired foot targets and let PPO learn the leg coordination directly
+- Until then, treat the current FSM as disproven for this task setting rather than something that needs more threshold tuning.
 
 ## [v0.14.8] - 2026-03-10: Actor-information run with capture-point observation
 
