@@ -7,6 +7,43 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.2] - 2026-03-13: Walking breakout from standing local minimum
+
+### Summary
+Tightens the Stage 1b walking config after `v0.15.1` stayed near zero forward velocity while preserving perfect standing success. The root cause was that the warm-started standing policy could still earn good reward by standing still: forward tracking was too soft, the standing penalty was too weak, and the `base_height` term was effectively acting as a flat healthy bonus.
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.2"`
+- keep warm-start compatibility with the standing checkpoint:
+  - `env.actor_obs_layout_id: wr_obs_v1`
+  - `env.action_filter_alpha: 0.6`
+- increase pressure to move:
+  - `reward_weights.tracking_lin_vel: 8.0`
+  - `reward_weights.forward_velocity_scale: 6.0`
+  - `reward_weights.velocity_standing_penalty: 0.5`
+  - `reward_weights.velocity_standing_threshold: 0.15`
+  - `reward_weights.velocity_cmd_min: 0.1`
+- reduce reward for "just stay healthy":
+  - `reward_weights.base_height: 0.1`
+  - `reward_weights.height_target: 0.1`
+- relax posture-only costs that can block gait emergence:
+  - `reward_weights.orientation: -0.5`
+  - `reward_weights.angular_velocity: -0.1`
+  - `reward_weights.slip: -0.2`
+- slightly favor alternating support:
+  - `reward_weights.gait_periodicity: 0.15`
+- make PPO updates more willing to leave the standing basin:
+  - `ppo.learning_rate: 2e-4`
+  - `ppo.entropy_coef: 0.01`
+  - `ppo.iterations: 300`
+- disable rollback for this transition run:
+  - `ppo.rollback.enabled: false`
+
+### Training Intent
+- Break the warm-started standing policy out of the stand-still solution.
+- Accept some temporary drop in standing-style success if it produces actual locomotion.
+- Use the first `80-120` iterations as the main decision window for whether forward motion is emerging.
+
 ## [v0.15.1] - 2026-03-12: Freeze best standing bundle and prepare Stage 1b walking
 
 ### Summary

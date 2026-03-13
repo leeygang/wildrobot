@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.1)
+# WildRobot PPO Walking Config (v0.15.2)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
@@ -18,8 +18,8 @@
 #   standing checkpoint without changing the policy contract.
 # =============================================================================
 
-version: "0.15.1"
-version_name: "Stage 1b walking baseline from standing PPO checkpoint"
+version: "0.15.2"
+version_name: "Stage 1b walking breakout from standing local minimum"
 
 seed: 42
 
@@ -76,14 +76,15 @@ ppo:
   # Match the standing baseline batch geometry for a stable warm start.
   num_envs: 512
   rollout_steps: 256
-  iterations: 400
+  iterations: 300
 
-  learning_rate: 1e-4
+  # Increase update strength vs v0.15.1 so PPO can leave the standing basin.
+  learning_rate: 2e-4
   gamma: 0.99
   gae_lambda: 0.95
 
   clip_epsilon: 0.15
-  entropy_coef: 0.005
+  entropy_coef: 0.01
   value_loss_coef: 0.5
 
   epochs: 2
@@ -106,7 +107,7 @@ ppo:
     deterministic: true
 
   rollback:
-    enabled: true
+    enabled: false
     patience: 2
     success_rate_drop_threshold: 0.05
     lr_factor: 0.5
@@ -162,14 +163,15 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # Make forward motion the primary objective without returning to the old
-  # standing-still local minimum.
-  tracking_lin_vel: 4.0
+  # Break the standing local minimum aggressively enough that the warm-started
+  # standing policy prefers moving over collecting upright-only reward.
+  tracking_lin_vel: 8.0
   lateral_velocity: -0.3
-  base_height: 0.4
-  orientation: -1.0
-  angular_velocity: -0.2
-  height_target: 0.2
+  # Note: this term multiplies `healthy` in env reward, so keep it low here.
+  base_height: 0.1
+  orientation: -0.5
+  angular_velocity: -0.1
+  height_target: 0.1
   height_target_sigma: 0.05
 
   torque: -0.001
@@ -178,9 +180,9 @@ reward_weights:
   action_rate: -0.005
   joint_velocity: -0.0003
 
-  slip: -0.3
+  slip: -0.2
   clearance: 0.2
-  gait_periodicity: 0.1
+  gait_periodicity: 0.15
   hip_swing: 0.1
   knee_swing: 0.15
   hip_swing_min: 0.2
@@ -190,10 +192,10 @@ reward_weights:
   stance_width_target: 0.19
   stance_width_sigma: 0.05
 
-  forward_velocity_scale: 4.0
-  velocity_standing_penalty: 0.1
-  velocity_standing_threshold: 0.1
-  velocity_cmd_min: 0.15
+  forward_velocity_scale: 6.0
+  velocity_standing_penalty: 0.5
+  velocity_standing_threshold: 0.15
+  velocity_cmd_min: 0.1
 
 # =============================================================================
 # Reward Composition
@@ -218,7 +220,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.1]
+  tags: [ppo, stage1, walking, v0.15.2]
 
 video:
   enabled: true
