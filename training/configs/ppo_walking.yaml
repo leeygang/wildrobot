@@ -1,25 +1,19 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.2)
+# WildRobot PPO Walking Config (v0.15.3)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config is prepared as the post-standing next step after freezing
-# the best standing-push pure-PPO checkpoint from v0.14.6.
+# only. This config is a fresh-run walking baseline after the standing-resume
+# transition failed to leave the standing local minimum.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
-#   uv run python training/train.py --config training/configs/ppo_walking.yaml \
-#     --resume training/checkpoints/staged_v0146_resume/ppo_standing_push_v00146_20260309_195023-oij0cbcc/checkpoint_250_32768000.pkl
-#
-# Resume note:
-# - This config keeps `actor_obs_layout_id: wr_obs_v1` and
-#   `action_filter_alpha: 0.6` so it can warm-start safely from the best
-#   standing checkpoint without changing the policy contract.
+# Start this run from scratch. Do not resume from the standing checkpoint.
 # =============================================================================
 
-version: "0.15.2"
-version_name: "Stage 1b walking breakout from standing local minimum"
+version: "0.15.3"
+version_name: "Stage 1b walking fresh start after standing-resume failure"
 
 seed: 42
 
@@ -52,8 +46,8 @@ env:
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
 
-  # Keep the actor contract resume-safe with the v0.14.6 standing baseline.
-  action_filter_alpha: 0.6
+  # Lower action lag for faster pitch correction and easier gait emergence.
+  action_filter_alpha: 0.2
   actor_obs_layout_id: wr_obs_v1
 
   # Controllers off for Stage 1 walking.
@@ -73,13 +67,12 @@ env:
 # PPO Algorithm
 # =============================================================================
 ppo:
-  # Match the standing baseline batch geometry for a stable warm start.
-  num_envs: 512
-  rollout_steps: 256
+  # Standard walking batch geometry; no longer tied to the standing checkpoint.
+  num_envs: 1024
+  rollout_steps: 128
   iterations: 300
 
-  # Increase update strength vs v0.15.1 so PPO can leave the standing basin.
-  learning_rate: 2e-4
+  learning_rate: 3e-4
   gamma: 0.99
   gae_lambda: 0.95
 
@@ -220,7 +213,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.2]
+  tags: [ppo, stage1, walking, v0.15.3]
 
 video:
   enabled: true

@@ -7,6 +7,39 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.3] - 2026-03-13: Fresh-start walking after standing-resume failure
+
+### Summary
+Promotes the walking branch from "resume from standing" to a true fresh-run Stage 1b experiment. `v0.15.2` showed that the standing checkpoint remained too strong a local minimum: forward velocity stayed near zero while pitch failures and torque climbed. That means the standing warm start is blocking gait discovery rather than helping it.
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.3"`
+- start from scratch:
+  - do **not** resume from the standing checkpoint
+- keep controllers off:
+  - `env.base_ctrl_enabled: false`
+  - `env.fsm_enabled: false`
+- keep PPO-only Stage 1b setup:
+  - `amp.enabled: false`
+  - `env.actor_obs_layout_id: wr_obs_v1`
+- reduce action lag for gait emergence:
+  - `env.action_filter_alpha: 0.2`
+- switch back to standard walking batch geometry:
+  - `ppo.num_envs: 1024`
+  - `ppo.rollout_steps: 128`
+- use standard PPO learning rate for fresh training:
+  - `ppo.learning_rate: 3e-4`
+- keep the stronger walking incentive from `v0.15.2`:
+  - high velocity tracking weight
+  - strong standing penalty
+  - low flat healthy bonus
+  - rollback disabled
+
+### Training Intent
+- Learn walking directly instead of trying to deform a standing policy into a gait.
+- Use the first `80-120` iterations as the main decision window for forward-velocity emergence.
+- Continue to `300` iterations only if the policy shows real translational motion rather than posture/torque exploitation.
+
 ## [v0.15.2] - 2026-03-13: Walking breakout from standing local minimum
 
 ### Summary
