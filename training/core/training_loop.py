@@ -977,6 +977,12 @@ def _validate_resume_checkpoint(
         if ckpt_value != current_value:
             hard_mismatch.append((key, ckpt_value, current_value))
 
+    def _warn_if_mismatch(key: str, ckpt_value: Any, current_value: Any) -> None:
+        if ckpt_value != current_value:
+            warn_mismatch.append(
+                f"{key}: ckpt={ckpt_value}, current={current_value}"
+            )
+
     _check_mismatch("num_envs", ckpt_config.get("num_envs"), config.ppo.num_envs)
     _check_mismatch(
         "rollout_steps", ckpt_config.get("rollout_steps"), config.ppo.rollout_steps
@@ -990,7 +996,7 @@ def _validate_resume_checkpoint(
         ckpt_config.get("critic_privileged_enabled", False),
         config.ppo.critic_privileged_enabled,
     )
-    _check_mismatch(
+    _warn_if_mismatch(
         "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate
     )
     _check_mismatch(
@@ -999,7 +1005,7 @@ def _validate_resume_checkpoint(
     _check_mismatch(
         "value_loss_coef", ckpt_config.get("value_loss_coef"), config.ppo.value_loss_coef
     )
-    _check_mismatch(
+    _warn_if_mismatch(
         "entropy_coef", ckpt_config.get("entropy_coef"), config.ppo.entropy_coef
     )
     _check_mismatch(
