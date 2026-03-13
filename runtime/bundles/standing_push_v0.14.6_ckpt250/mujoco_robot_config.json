@@ -1,0 +1,222 @@
+{
+  "robot_name": "WildRobot",
+  "generated_from": "wildrobot.xml",
+  "joint_range_unit": "deg",
+  "root_spec": {
+    "body": "waist",
+    "joint": "waist_freejoint",
+    "qpos_dim": 7,
+    "qvel_dim": 6,
+    "sensors": {
+      "orientation": "chest_imu_quat",
+      "gyro": "chest_imu_gyro",
+      "accel": "chest_imu_accel",
+      "local_linvel": "pelvis_local_linvel"
+    }
+  },
+  "actuated_joint_specs": [
+    {
+      "name": "left_hip_pitch",
+      "range": [
+        -5,
+        85
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_hip_pitch",
+      "range": [
+        -85,
+        5
+      ],
+      "policy_action_sign": -1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_hip_roll",
+      "range": [
+        -90,
+        10
+      ],
+      "policy_action_sign": -1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_hip_roll",
+      "range": [
+        -10,
+        90
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_knee_pitch",
+      "range": [
+        0,
+        80
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_knee_pitch",
+      "range": [
+        0,
+        80
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_ankle_pitch",
+      "range": [
+        -40,
+        45
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_ankle_pitch",
+      "range": [
+        -40,
+        45
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_shoulder_pitch",
+      "range": [
+        -30,
+        180
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_shoulder_pitch",
+      "range": [
+        -180,
+        30
+      ],
+      "policy_action_sign": -1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_shoulder_roll",
+      "range": [
+        -175,
+        25
+      ],
+      "policy_action_sign": -1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_shoulder_roll",
+      "range": [
+        -25,
+        175
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_elbow_pitch",
+      "range": [
+        0,
+        90
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_elbow_pitch",
+      "range": [
+        0,
+        90
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_wrist_yaw",
+      "range": [
+        -90,
+        90
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_wrist_yaw",
+      "range": [
+        -90,
+        90
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "left_wrist_pitch",
+      "range": [
+        0,
+        5
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "right_wrist_pitch",
+      "range": [
+        0,
+        5
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    },
+    {
+      "name": "waist_yaw",
+      "range": [
+        -30,
+        30
+      ],
+      "policy_action_sign": 1.0,
+      "max_velocity": 10.0
+    }
+  ],
+  "foot_specs": {
+    "left": {
+      "body": "left_foot",
+      "toe": "left_toe",
+      "heel": "left_heel"
+    },
+    "right": {
+      "body": "right_foot",
+      "toe": "right_toe",
+      "heel": "right_heel"
+    },
+    "contact_scale": 10.0
+  },
+  "observation_breakdown": {
+    "gravity_vector": 3,
+    "base_angular_velocity": 3,
+    "base_linear_velocity": 3,
+    "joint_positions": 19,
+    "joint_velocities": 19,
+    "foot_switches": 4,
+    "previous_action": 19,
+    "velocity_command": 1,
+    "padding": 1
+  },
+  "amp_feature_breakdown": {
+    "joint_positions": 19,
+    "joint_velocities": 19,
+    "root_linear_velocity": 3,
+    "root_angular_velocity": 3,
+    "root_height": 1,
+    "foot_contacts": 4
+  }
+}
