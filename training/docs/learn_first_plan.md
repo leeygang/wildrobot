@@ -1,6 +1,6 @@
 # Learn First, Retarget Later: Robot-Native Walking Policy
 
-**Version:** v0.15.4
+**Version:** v0.15.6
 **Status:** Active
 **Last Updated:** 2026-03-14
 
@@ -136,6 +136,42 @@ This aligns with common modern legged-locomotion practice from massively paralle
 - If a run reaches roughly `80-120` iterations with `env/forward_velocity < 0.1 m/s` and rising pitch failures, treat it as trapped or exploiting posture rather than "still training".
 - If a run gains some speed but `term_pitch_frac` and eval-clean failures rise sharply, stop and retune; do not continue on the assumption it will stabilize later.
 - Stage 1b should solve nominal translation first. Pushes, terrain variation, and broader speed coverage come only after a stable nominal gait exists.
+
+### Stage 1b Lever Backlog
+
+The current `v0.15.5` evidence suggests the task is still trapped between the stand-still basin and the lean-fall basin. Stage 1b should therefore explore the following levers in order, from smallest structural fix to larger contract changes.
+
+1. **Contact-gated velocity reward** (`v0.15.6`, implemented)
+   - Make most forward reward contingent on stepping evidence instead of unconditional body translation.
+   - Goal: remove the reward path where the policy earns progress by leaning without stepping.
+2. **Explicit pitch-rate penalty** (`v0.15.6`, implemented)
+   - Penalize slow forward-diving behavior directly; the existing `angular_velocity` term only damps yaw.
+3. **Activate existing stepping rewards** (`v0.15.6`, implemented)
+   - Use the already-implemented `step_event` and `foot_place` terms so stepping has a direct positive path.
+4. **Low-speed command curriculum** (`v0.15.6`, implemented)
+   - Keep commands around `0.05-0.20 m/s` until stable translation exists.
+5. **Reward-path diagnostics** (next if `v0.15.6` still stalls)
+   - If the step gate rarely opens, promote a minimal subset of currently logging-only gait terms such as `clearance` and `gait_periodicity` into the total reward.
+6. **Clocked observation layout** (`wr_obs_v3`, deferred)
+   - Add gait phase features only if the structural reward fix still fails. This is likely high-impact, but it is a broader policy-contract change and should not be mixed into the first structural reward test.
+7. **Two-phase curriculum** (deferred)
+   - If nominal translation still does not emerge, explicitly train stepping / weight transfer before walking commands.
+8. **Scale env count / rollout length** (deferred)
+   - Increase to larger batches only after the reward path produces real stepping. More samples should accelerate a good objective, not a bad one.
+
+### Stage 1b Decision Rules After `v0.15.6`
+
+- Use `80` iterations as the hard stop for the incremental `v0.15.6` probe. Historical `v0.15.3` to `v0.15.5` runs all showed their basin clearly by `80`; `120` only made the failure more obvious, not more informative.
+- Treat `40` iterations as the first read:
+  - if `debug/velocity_step_gate` is still near zero and stepping rewards remain flat, the objective is still not opening a stepping path
+  - do not stop yet, because `v0.15.5` had a misleading early transient before settling
+- Treat `60` iterations as the decision-prep checkpoint:
+  - if forward velocity is still near zero and stepping metrics are flat, prepare to stop at `80`
+  - if stepping metrics rise but `term_pitch_frac` also rises sharply, keep going only to `80` to confirm the basin
+- Stop at `80` unless the run shows both stepping engagement and material forward translation without eval-clean collapse.
+- If `debug/velocity_step_gate` stays near zero through `80`, the next step is `wr_obs_v3` clock plus minimal gait terms in total reward.
+- If stepping metrics rise but `term_pitch_frac` still climbs, tighten the pitch-rate / posture branch before widening the command range.
+- Only scale to longer runs or larger batches once the policy shows both stepping engagement and non-trivial forward translation without eval-clean collapse.
 
 ### Version Milestones
 

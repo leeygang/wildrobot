@@ -83,7 +83,9 @@ class TestTrainingConfigSchema:
         required_weights = [
             "tracking_lin_vel",
             "orientation",
+            "pitch_rate",
             "torque",
+            "velocity_step_gate",
         ]
 
         for name in required_weights:

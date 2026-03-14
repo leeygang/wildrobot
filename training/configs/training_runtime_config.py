@@ -389,6 +389,7 @@ class RewardWeightsConfig(Freezable):
     base_height: float = 0.5
     orientation: float = -0.5
     angular_velocity: float = -0.05
+    pitch_rate: float = 0.0
     height_target: float = 0.0
     height_target_sigma: float = 0.05
     collapse_height: float = -0.2
@@ -419,6 +420,7 @@ class RewardWeightsConfig(Freezable):
 
     # Shaping
     forward_velocity_scale: float = 4.0
+    velocity_step_gate: float = 0.0
 
     # v0.10.4: Standing penalty to discourage velocity=0
     velocity_standing_penalty: float = 0.0  # Penalty for standing still

@@ -843,12 +843,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "term/height_val": metrics["term/height_val"],
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
+            "reward/pitch_rate": metrics.get("reward/pitch_rate", jp.zeros(())),
             "debug/posture_mse": metrics.get("debug/posture_mse", jp.zeros(())),
             "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
             "debug/touchdown_left": metrics.get("debug/touchdown_left", jp.zeros(())),
             "debug/touchdown_right": metrics.get("debug/touchdown_right", jp.zeros(())),
+            "debug/velocity_step_gate": metrics.get("debug/velocity_step_gate", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -1381,6 +1383,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Only penalize yaw rate (z-axis rotation), not pitch/roll which are handled by orientation penalty
         angvel_penalty = jp.square(angvel_z)
         pitch_rate = angvel_y
+        pitch_rate_penalty = jp.square(pitch_rate)
 
         # =====================================================================
         # EFFORT REWARDS (Tier 1 - critical for sim2real)
@@ -1570,6 +1573,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded_b = prev_left_loaded > 0.5
             prev_right_loaded_b = prev_right_loaded > 0.5
 
+        liftoff_left = jp.logical_and(prev_left_loaded_b, jp.logical_not(left_loaded))
+        liftoff_right = jp.logical_and(prev_right_loaded_b, jp.logical_not(right_loaded))
         touchdown_left = jp.logical_and(jp.logical_not(prev_left_loaded_b), left_loaded)
         touchdown_right = jp.logical_and(jp.logical_not(prev_right_loaded_b), right_loaded)
         if (
@@ -1578,10 +1583,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             and fsm_swing_foot is not None
         ):
             in_swing = fsm_phase == sc.SWING
+            liftoff_left = jp.logical_and(liftoff_left, in_swing & (fsm_swing_foot == 0))
+            liftoff_right = jp.logical_and(liftoff_right, in_swing & (fsm_swing_foot == 1))
             touchdown_left = jp.logical_and(touchdown_left, in_swing & (fsm_swing_foot == 0))
             touchdown_right = jp.logical_and(touchdown_right, in_swing & (fsm_swing_foot == 1))
         step_event = jp.where(touchdown_left | touchdown_right, 1.0, 0.0)
         step_event = jp.asarray(step_event).reshape(())
+        liftoff_event = jp.where(liftoff_left | liftoff_right, 1.0, 0.0)
+        liftoff_event = jp.asarray(liftoff_event).reshape(())
 
         need_step = self._compute_need_step(
             pitch=pitch,
@@ -1589,6 +1598,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             lateral_vel=lateral_vel,
             pitch_rate=pitch_rate,
             healthy=healthy,
+        )
+        step_reward_gate = jp.maximum(
+            need_step,
+            jp.where(
+                jp.abs(velocity_cmd) > getattr(weights, "velocity_cmd_min", 0.2),
+                1.0,
+                0.0,
+            ),
         )
 
         # Foot placement reward at touchdown (Raibert-style heuristic in heading-local frame).
@@ -1618,7 +1635,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             touchdown_right, foot_place_right, 0.0
         )
         foot_place_reward = jp.asarray(foot_place_reward).reshape(())
-        foot_place_reward = foot_place_reward * need_step
+        foot_place_reward = foot_place_reward * step_reward_gate
+
+        stepping_gate = jp.maximum(gait_periodicity, clearance_reward)
+        stepping_gate = jp.maximum(stepping_gate, step_event)
+        stepping_gate = jp.maximum(stepping_gate, liftoff_event)
+        stepping_gate = jp.clip(stepping_gate, 0.0, 1.0)
+        forward_reward = forward_reward * (
+            (1.0 - getattr(weights, "velocity_step_gate", 0.0))
+            + getattr(weights, "velocity_step_gate", 0.0) * stepping_gate
+        )
 
         # =====================================================================
         # COMBINE REWARDS
@@ -1651,6 +1677,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.base_height * healthy
             + weights.orientation * orientation_penalty
             + weights.angular_velocity * angvel_penalty
+            + getattr(weights, "pitch_rate", 0.0) * pitch_rate_penalty
             + weights.collapse_height * collapse_height_pen
             + weights.collapse_vz * collapse_vz_pen
             # v0.10.4: Smooth standing penalty (negative reward for standing still)
@@ -1665,7 +1692,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.slip * slip_penalty
             + weights.height_target * height_target_reward
             + getattr(weights, "posture", 0.0) * posture_reward
-            + getattr(weights, "step_event", 0.0) * (step_event * need_step)
+            + getattr(weights, "step_event", 0.0) * (step_event * step_reward_gate)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
         )
 
@@ -1691,6 +1718,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/healthy": healthy,
             "reward/orientation": orientation_penalty,
             "reward/angvel": angvel_penalty,
+            "reward/pitch_rate": pitch_rate_penalty,
             # v0.10.4: Standing penalty
             "reward/standing": standing_penalty,
             "reward/collapse_height_pen": collapse_height_pen,
@@ -1711,7 +1739,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/height_target": height_target_reward,
             "reward/stance_width_penalty": stance_width_penalty,
             "reward/posture": posture_reward,
-            "reward/step_event": step_event * need_step,
+            "reward/step_event": step_event * step_reward_gate,
             "reward/foot_place": foot_place_reward,
             "debug/posture_mse": posture_mse,
             "debug/need_step": need_step,
@@ -1729,6 +1757,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/right_toe_switch": foot_switches[2],
             "debug/right_heel_switch": foot_switches[3],
             "debug/pitch_rate": pitch_rate,
+            "debug/velocity_step_gate": stepping_gate,
             "debug/action_abs_max": action_abs_max,
             "debug/action_sat_frac": action_sat_frac,
             "debug/raw_action_abs_max": raw_action_abs_max,

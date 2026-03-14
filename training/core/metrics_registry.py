@@ -329,6 +329,12 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Body pitch rate (heading-local angvel y)",
     ),
     MetricSpec(
+        name="debug/velocity_step_gate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Stepping engagement gate applied to forward reward",
+    ),
+    MetricSpec(
         name="debug/action_abs_max",
         reducer=Reducer.MEAN,
         log_prefix="debug",
@@ -382,6 +388,11 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Posture return reward (gated exp(-mse/sigma^2))",
     ),
     MetricSpec(
+        name="reward/pitch_rate",
+        reducer=Reducer.MEAN,
+        description="Pitch-rate penalty",
+    ),
+    MetricSpec(
         name="debug/posture_mse",
         reducer=Reducer.MEAN,
         log_prefix="debug",
@@ -390,12 +401,12 @@ METRIC_SPECS: List[MetricSpec] = [
     MetricSpec(
         name="reward/step_event",
         reducer=Reducer.MEAN,
-        description="Step event reward (touchdown * need_step)",
+        description="Step event reward (touchdown * step reward gate)",
     ),
     MetricSpec(
         name="reward/foot_place",
         reducer=Reducer.MEAN,
-        description="Foot placement reward at touchdown (Raibert-style, gated by need_step)",
+        description="Foot placement reward at touchdown (Raibert-style, gated by step reward gate)",
     ),
     MetricSpec(
         name="debug/need_step",

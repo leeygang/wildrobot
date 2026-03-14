@@ -7,6 +7,60 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.6] - 2026-03-14: Structural reward fix after `v0.15.5` fell back to standing
+
+### Summary
+Analyzes the `v0.15.5` probe run `training/wandb/offline-run-20260314_083700-h51mp8jx` and treats it as confirmation that config-only retuning is insufficient. By iteration `100`, the policy had largely recovered stable eval-clean survival, but forward velocity remained near zero (`~0.016 m/s`), meaning the run reverted to the stand-still basin instead of discovering a stepping gait. Historical review of `v0.15.3` to `v0.15.5` also showed that the basin is already obvious by around `80` iterations. `v0.15.6` therefore makes the smallest structural change that directly targets the failure mode and shortens the probe: forward reward is now gated by stepping engagement, pitch-rate is penalized explicitly, and the already-implemented stepping rewards are activated.
+
+### Results (v0.15.5)
+- Run: `training/wandb/offline-run-20260314_083700-h51mp8jx`
+- Checkpoints: `training/checkpoints/ppo_walking_v00155_20260314_083702-h51mp8jx`
+- Verdict: stable-standing fallback after a brief early lean/fall transient
+- Early failure phase: around iter `20`, `env/forward_velocity ~ 0.036` with heavy pitch failure
+- Latest inspected point: iter `100`
+- Key metrics at iter `100`:
+  - `env/forward_velocity: ~0.016`
+  - `env/velocity_cmd: ~0.209`
+  - `env/velocity_error: ~0.208`
+  - `eval_clean/success_rate: 1.000`
+
+### Code Updates
+- add explicit `reward_weights.pitch_rate` support and include it in total reward
+- gate the forward tracking reward by stepping evidence:
+  - single-support contact diversity
+  - swing clearance
+  - liftoff/touchdown events
+- add `debug/velocity_step_gate` and `reward/pitch_rate` to env metrics / registry
+- preserve the new metrics through auto-reset
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.6"`
+- keep the short structural probe format:
+  - `ppo.iterations: 80`
+  - `ppo.num_envs: 1024`
+  - `ppo.rollout_steps: 128`
+- lower the command curriculum to a shuffle-discovery band:
+  - `env.min_velocity: 0.12 -> 0.05`
+  - `env.max_velocity: 0.30 -> 0.20`
+- reduce unconditional velocity forcing and make it contingent on stepping:
+  - `reward_weights.tracking_lin_vel: 8.0 -> 6.0`
+  - `reward_weights.forward_velocity_scale: 6.0 -> 5.0`
+  - `reward_weights.velocity_step_gate: 1.0`
+- explicitly penalize pitch-rate drift:
+  - `reward_weights.pitch_rate: -0.25`
+- activate the stepping reward path already present in the env:
+  - `reward_weights.step_event: 0.30`
+  - `reward_weights.foot_place: 0.15`
+- rebalance the low-speed standing penalty for the new command band:
+  - `reward_weights.velocity_standing_penalty: 0.5 -> 0.4`
+  - `reward_weights.velocity_standing_threshold: 0.16 -> 0.10`
+  - `reward_weights.velocity_cmd_min: 0.10 -> 0.05`
+
+### Training Intent
+- Keep the experiment incremental: fix the objective before introducing a clocked observation contract or larger batch geometry.
+- Require real stepping engagement before the policy can earn most of its forward reward.
+- Use `40` / `60` / `80` as the staged readout, with `80` as the hard go / no-go gate for whether Stage 1b now has a viable stepping path.
+
 ## [v0.15.5] - 2026-03-14: Conservative gait-emergence reset after pitch-instability regression
 
 ### Summary

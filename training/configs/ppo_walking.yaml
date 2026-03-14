@@ -1,12 +1,11 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.5)
+# WildRobot PPO Walking Config (v0.15.6)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config resets Stage 1b toward a more aggressive Stage-A gait
-# emergence probe after `v0.15.4` traded a small speed gain for severe
-# pitch-instability regression.
+# only. This config applies a small structural reward fix after `v0.15.5`
+# confirmed that config-only tuning still falls back into the stand-still basin.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
@@ -14,8 +13,8 @@
 # the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.5"
-version_name: "Stage 1b walking aggressive Stage-A gait-emergence probe"
+version: "0.15.6"
+version_name: "Stage 1b walking stepping-gated reward probe"
 
 seed: 42
 
@@ -41,8 +40,8 @@ env:
   max_roll: 0.8
 
   # Walking commands
-  min_velocity: 0.12
-  max_velocity: 0.30
+  min_velocity: 0.05
+  max_velocity: 0.20
 
   # Contacts
   contact_threshold_force: 5.0
@@ -70,10 +69,11 @@ env:
 # PPO Algorithm
 # =============================================================================
 ppo:
-  # Standard walking batch geometry; no longer tied to the standing checkpoint.
+  # Keep the short probe structure until the reward path proves it can discover
+  # stepping instead of oscillating between standing and lean-fall.
   num_envs: 1024
   rollout_steps: 128
-  iterations: 120
+  iterations: 80
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -159,14 +159,15 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # v0.15.5 Stage-A probe: keep velocity tracking primary, lighten effort and
-  # slip costs aggressively, and only moderate posture/pre-collapse penalties.
-  tracking_lin_vel: 8.0
+  # v0.15.6: keep velocity tracking important, but require stepping engagement
+  # for most of the reward path and explicitly penalize pitch-rate drift.
+  tracking_lin_vel: 6.0
   lateral_velocity: -0.3
   # Note: this term multiplies `healthy` in env reward, so keep it low.
   base_height: 0.03
   orientation: -0.4
   angular_velocity: -0.06
+  pitch_rate: -0.25
   height_target: 0.10
   height_target_sigma: 0.05
   collapse_height: -0.25
@@ -190,10 +191,15 @@ reward_weights:
   stance_width_target: 0.19
   stance_width_sigma: 0.05
 
-  forward_velocity_scale: 6.0
-  velocity_standing_penalty: 0.5
-  velocity_standing_threshold: 0.16
-  velocity_cmd_min: 0.10
+  forward_velocity_scale: 5.0
+  velocity_step_gate: 1.0
+  velocity_standing_penalty: 0.4
+  velocity_standing_threshold: 0.10
+  velocity_cmd_min: 0.05
+
+  # Existing stepping traits become active in v0.15.6.
+  step_event: 0.30
+  foot_place: 0.15
 
 # =============================================================================
 # Reward Composition
@@ -218,7 +224,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.5]
+  tags: [ppo, stage1, walking, v0.15.6]
 
 video:
   enabled: true
