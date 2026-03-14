@@ -33,6 +33,21 @@ class FsmSummary:
     upright_recovery: str
 
 
+@dataclass(frozen=True)
+class WalkingSummary:
+    enabled: bool
+    forward_vel_mean: Optional[float]
+    velocity_cmd_mean: Optional[float]
+    velocity_error_mean: Optional[float]
+    gait_periodicity_mean: Optional[float]
+    clearance_mean: Optional[float]
+    hip_swing_mean: Optional[float]
+    knee_swing_mean: Optional[float]
+    verdict: str
+    tracking_status: str
+    stability: str
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -185,6 +200,22 @@ def _is_fsm_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
     return any("debug/bc_phase" in r for r in rows)
 
 
+def _is_walking_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
+    env = cfg.get("config", {}).get("env", {})
+    try:
+        if float(env.get("max_velocity", 0.0)) > 0.0:
+            return True
+    except Exception:
+        pass
+    walking_keys = (
+        "env/forward_velocity",
+        "env/velocity_cmd",
+        "env/velocity_error",
+        "reward/gait_periodicity",
+    )
+    return any(any(k in r for k in walking_keys) for r in rows)
+
+
 def _classify_fsm(
     rows: List[Dict[str, Any]],
     *,
@@ -270,6 +301,85 @@ def _classify_fsm(
     )
 
 
+def _classify_walking(
+    rows: List[Dict[str, Any]],
+    *,
+    min_iter: int,
+    cfg: Dict[str, Any],
+) -> WalkingSummary:
+    if not _is_walking_run(cfg, rows):
+        return WalkingSummary(
+            enabled=False,
+            forward_vel_mean=None,
+            velocity_cmd_mean=None,
+            velocity_error_mean=None,
+            gait_periodicity_mean=None,
+            clearance_mean=None,
+            hip_swing_mean=None,
+            knee_swing_mean=None,
+            verdict="not_applicable",
+            tracking_status="not_applicable",
+            stability="not_applicable",
+        )
+
+    forward_vel_mean = _mean(_collect_series(rows, "env/forward_velocity", min_iter=min_iter))
+    velocity_cmd_mean = _mean(_collect_series(rows, "env/velocity_cmd", min_iter=min_iter))
+    velocity_error_mean = _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter))
+    gait_periodicity_mean = _mean(_collect_series(rows, "reward/gait_periodicity", min_iter=min_iter))
+    clearance_mean = _mean(_collect_series(rows, "reward/clearance", min_iter=min_iter))
+    hip_swing_mean = _mean(_collect_series(rows, "reward/hip_swing", min_iter=min_iter))
+    knee_swing_mean = _mean(_collect_series(rows, "reward/knee_swing", min_iter=min_iter))
+    success_mean = _mean(_collect_series(rows, "env/success_rate", min_iter=min_iter))
+    term_low_mean = _mean(_collect_series(rows, "term_height_low_frac", min_iter=min_iter))
+    term_pitch_mean = _mean(_collect_series(rows, "term_pitch_frac", min_iter=min_iter))
+    torque_sat_mean = _mean(_collect_series(rows, "debug/torque_sat_frac", min_iter=min_iter))
+
+    fwd = forward_vel_mean or 0.0
+    vel_err = velocity_error_mean if velocity_error_mean is not None else float("inf")
+    success = success_mean or 0.0
+    term_pitch = term_pitch_mean or 0.0
+    torque_sat = torque_sat_mean or 0.0
+
+    if fwd < 0.05 and term_pitch >= 0.10:
+        verdict = "posture exploit"
+    elif fwd < 0.05 and success >= 0.80:
+        verdict = "trapped in standing"
+    elif fwd < 0.10 and torque_sat >= 0.03:
+        verdict = "shuffle exploit"
+    elif fwd >= 0.20 and vel_err <= 0.20:
+        verdict = "locomotion emerging"
+    else:
+        verdict = "needs review"
+
+    if fwd >= 0.20 and vel_err <= 0.20:
+        tracking_status = "improving"
+    elif fwd < 0.10 and vel_err >= 0.20:
+        tracking_status = "flat"
+    else:
+        tracking_status = "partial"
+
+    if success >= 0.90 and (term_low_mean or 0.0) < 0.05 and term_pitch < 0.05:
+        stability = "good"
+    elif success >= 0.70:
+        stability = "acceptable"
+    else:
+        stability = "poor"
+
+    return WalkingSummary(
+        enabled=True,
+        forward_vel_mean=forward_vel_mean,
+        velocity_cmd_mean=velocity_cmd_mean,
+        velocity_error_mean=velocity_error_mean,
+        gait_periodicity_mean=gait_periodicity_mean,
+        clearance_mean=clearance_mean,
+        hip_swing_mean=hip_swing_mean,
+        knee_swing_mean=knee_swing_mean,
+        verdict=verdict,
+        tracking_status=tracking_status,
+        stability=stability,
+    )
+
+
 def _changelog_block(
     *,
     version: str,
@@ -280,6 +390,7 @@ def _changelog_block(
     best_it: int,
     best_row: Dict[str, Any],
     fsm: FsmSummary,
+    walking: WalkingSummary,
 ) -> str:
     def g(key: str) -> Optional[float]:
         return _get_float(best_row, key)
@@ -309,6 +420,12 @@ def _changelog_block(
         f"- Best @ iter {best_it}: {keys.success}={_format_pct(eval_s)}, {keys.ep_len}={_format_f(eval_L, 1)}",
         f"- Train @ iter {best_it}: success={_format_pct(train_s)}, ep_len={_format_f(train_L, 1)}",
     ]
+    if walking.enabled:
+        lines += [
+            f"- Walking verdict: {walking.verdict}",
+            f"- Walking tracking: {walking.tracking_status}",
+            f"- Walking stability: {walking.stability}",
+        ]
     if fsm.enabled:
         lines += [
             f"- FSM verdict: {fsm.verdict}",
@@ -327,6 +444,16 @@ def _changelog_block(
         f"| ppo/approx_kl | {_format_f(approx_kl, 4)} |",
         f"| ppo/clip_fraction | {_format_f(clip_frac, 4)} |",
     ]
+    if walking.enabled:
+        lines += [
+            f"| env/forward_velocity | {_format_f(walking.forward_vel_mean, 3)} |",
+            f"| env/velocity_cmd | {_format_f(walking.velocity_cmd_mean, 3)} |",
+            f"| env/velocity_error | {_format_f(walking.velocity_error_mean, 3)} |",
+            f"| reward/gait_periodicity | {_format_f(walking.gait_periodicity_mean, 4)} |",
+            f"| reward/clearance | {_format_f(walking.clearance_mean, 4)} |",
+            f"| reward/hip_swing | {_format_f(walking.hip_swing_mean, 4)} |",
+            f"| reward/knee_swing | {_format_f(walking.knee_swing_mean, 4)} |",
+        ]
     if fsm.enabled:
         lines += [
             f"| debug/bc_phase | {_format_f(fsm.phase_mean, 3)} |",
@@ -379,6 +506,7 @@ def main() -> None:
     ckpt_dir = _find_checkpoint_dir(run_id, args.checkpoints_root)
     ckpt_file = _find_checkpoint_file(ckpt_dir, best_it, best_step) if ckpt_dir else None
     fsm = _classify_fsm(rows, min_iter=args.min_iter, cfg=cfg)
+    walking = _classify_walking(rows, min_iter=args.min_iter, cfg=cfg)
 
     # Aggregate stability stats (post-warmup iters)
     term_low = _mean(_collect_series(rows, "term_height_low_frac", min_iter=args.min_iter))
@@ -405,6 +533,19 @@ def main() -> None:
     print(f"- mean term_roll_frac: {_format_pct(term_roll)}")
     print(f"- mean tracking/max_torque: {_format_pct(max_torque)}")
     print(f"- mean debug/torque_sat_frac: {_format_pct(torque_sat)}")
+    if walking.enabled:
+        print()
+        print("Walking summary:")
+        print(f"- verdict: {walking.verdict}")
+        print(f"- tracking: {walking.tracking_status}")
+        print(f"- stability: {walking.stability}")
+        print(f"- mean env/forward_velocity: {_format_f(walking.forward_vel_mean, 3)}")
+        print(f"- mean env/velocity_cmd: {_format_f(walking.velocity_cmd_mean, 3)}")
+        print(f"- mean env/velocity_error: {_format_f(walking.velocity_error_mean, 3)}")
+        print(f"- mean reward/gait_periodicity: {_format_f(walking.gait_periodicity_mean, 4)}")
+        print(f"- mean reward/clearance: {_format_f(walking.clearance_mean, 4)}")
+        print(f"- mean reward/hip_swing: {_format_f(walking.hip_swing_mean, 4)}")
+        print(f"- mean reward/knee_swing: {_format_f(walking.knee_swing_mean, 4)}")
     if fsm.enabled:
         print()
         print("FSM / M3 summary:")
@@ -430,6 +571,7 @@ def main() -> None:
         best_it=best_it,
         best_row=best_row,
         fsm=fsm,
+        walking=walking,
     ))
 
 

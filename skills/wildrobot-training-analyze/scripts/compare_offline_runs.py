@@ -18,6 +18,10 @@ class RunSummary:
     best_ep_len: float
     keyset: str
     best_checkpoint: Optional[Path]
+    walking_enabled: bool
+    walking_verdict: str
+    forward_velocity_mean: Optional[float]
+    velocity_error_mean: Optional[float]
     fsm_enabled: bool
     fsm_verdict: str
     fsm_touchdown_style: str
@@ -130,6 +134,37 @@ def _classify_fsm(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[bool
     return enabled, verdict, touchdown_style, upright_recovery, swing_occupancy, step_event_mean, foot_place_mean
 
 
+def _is_walking_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
+    env = cfg.get("config", {}).get("env", {})
+    try:
+        if float(env.get("max_velocity", 0.0)) > 0.0:
+            return True
+    except Exception:
+        pass
+    return any(("env/forward_velocity" in r or "env/velocity_error" in r) for r in rows)
+
+
+def _classify_walking(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[bool, str, Optional[float], Optional[float]]:
+    if not _is_walking_run(cfg, rows):
+        return False, "not_applicable", None, None
+    forward_velocity = _mean(_collect_series(rows, "env/forward_velocity"))
+    velocity_error = _mean(_collect_series(rows, "env/velocity_error"))
+    term_pitch = _mean(_collect_series(rows, "term_pitch_frac")) or 0.0
+    success = _mean(_collect_series(rows, "env/success_rate")) or 0.0
+
+    fwd = forward_velocity or 0.0
+    vel_err = velocity_error if velocity_error is not None else float("inf")
+    if fwd < 0.05 and term_pitch >= 0.10:
+        verdict = "posture exploit"
+    elif fwd < 0.05 and success >= 0.80:
+        verdict = "trapped in standing"
+    elif fwd >= 0.20 and vel_err <= 0.20:
+        verdict = "locomotion emerging"
+    else:
+        verdict = "needs review"
+    return True, verdict, forward_velocity, velocity_error
+
+
 def _pick_keys(rows: List[Dict[str, Any]]) -> Tuple[str, str, str]:
     if any("eval_push/success_rate" in r for r in rows):
         return ("eval_push", "eval_push/success_rate", "eval_push/episode_length")
@@ -198,6 +233,12 @@ def summarize(run_dir: Path, checkpoints_root: Path) -> RunSummary:
     ckpt_dir = _find_ckpt_dir(run_id, checkpoints_root)
     ckpt_file = _find_ckpt_file(ckpt_dir, it, step) if ckpt_dir else None
     (
+        walking_enabled,
+        walking_verdict,
+        forward_velocity_mean,
+        velocity_error_mean,
+    ) = _classify_walking(cfg, rows)
+    (
         fsm_enabled,
         fsm_verdict,
         fsm_touchdown_style,
@@ -216,6 +257,10 @@ def summarize(run_dir: Path, checkpoints_root: Path) -> RunSummary:
         best_ep_len=L,
         keyset=keyset,
         best_checkpoint=ckpt_file,
+        walking_enabled=walking_enabled,
+        walking_verdict=walking_verdict,
+        forward_velocity_mean=forward_velocity_mean,
+        velocity_error_mean=velocity_error_mean,
         fsm_enabled=fsm_enabled,
         fsm_verdict=fsm_verdict,
         fsm_touchdown_style=fsm_touchdown_style,
@@ -243,14 +288,24 @@ def main() -> None:
             f"best: it={r.best_iter} succ={r.best_success*100:.2f}% len={r.best_ep_len:.1f} | "
             f"ckpt={ck}"
         )
+        if r.walking_enabled:
+            base += (
+                f" | walking={r.walking_verdict}"
+                f" | fwd_vel={r.forward_velocity_mean:.3f}"
+                if r.forward_velocity_mean is not None
+                else f" | walking={r.walking_verdict}"
+            )
+            if r.velocity_error_mean is not None:
+                base += f" | vel_err={r.velocity_error_mean:.3f}"
         if r.fsm_enabled:
             base += (
                 f" | fsm={r.fsm_verdict}"
                 f" | touchdown={r.fsm_touchdown_style}"
                 f" | upright={r.fsm_upright_recovery}"
+                f" | swing_occ={r.fsm_swing_occupancy*100:.2f}%"
+                if r.fsm_swing_occupancy is not None
+                else f" | fsm={r.fsm_verdict}"
             )
-            if r.fsm_swing_occupancy is not None:
-                base += f" | swing_occ={r.fsm_swing_occupancy*100:.2f}%"
         return base
 
     print("A:", fmt(a))
@@ -272,6 +327,12 @@ def main() -> None:
     print("Delta vs other run:")
     print(f"- success: {(winner.best_success - loser.best_success)*100:+.2f}%")
     print(f"- ep_len: {winner.best_ep_len - loser.best_ep_len:+.1f}")
+    if winner.walking_enabled or loser.walking_enabled:
+        print(f"- walking verdict: {winner.walking_verdict} vs {loser.walking_verdict}")
+        if winner.forward_velocity_mean is not None and loser.forward_velocity_mean is not None:
+            print(f"- env/forward_velocity: {winner.forward_velocity_mean - loser.forward_velocity_mean:+.3f}")
+        if winner.velocity_error_mean is not None and loser.velocity_error_mean is not None:
+            print(f"- env/velocity_error: {winner.velocity_error_mean - loser.velocity_error_mean:+.3f}")
     if winner.fsm_enabled or loser.fsm_enabled:
         print(f"- fsm verdict: {winner.fsm_verdict} vs {loser.fsm_verdict}")
         print(f"- touchdown style: {winner.fsm_touchdown_style} vs {loser.fsm_touchdown_style}")

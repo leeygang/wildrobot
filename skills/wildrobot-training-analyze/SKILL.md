@@ -1,6 +1,6 @@
 ---
 name: wildrobot-training-analyze
-description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/success metrics, pick the best checkpoint for deployment (standing_push prioritizes eval_push success rate then episode length), analyze M3/FSM stepping-controller runs against explicit mechanism/outcome criteria, propose v0.xx+1 config/reward/code changes, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions (e.g. v0.13.6 vs v0.13.7), or plan the next training iteration (v0.xx+1).
+description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/success metrics, pick the best checkpoint for deployment, debug standing-push and walking runs, diagnose reward/pathology issues, propose v0.xx+1 config/reward/PPO changes using established locomotion best practices, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions, debug why a walking run is not moving or is unstable, or plan the next training iteration.
 ---
 
 # WildRobot Training Analyze
@@ -8,6 +8,8 @@ description: Analyze WildRobot training runs from an offline W&B run folder (tra
 Use this workflow to (1) analyze a training run, (2) choose a deployable checkpoint, (3) identify the dominant failure mode, and (4) write the result + next-version plan into `training/CHANGELOG.md`.
 
 For M3/FSM standing-push runs, also determine whether the stepping controller is actually doing useful work, not merely coexisting with a surviving residual policy.
+
+For walking runs, determine whether the policy is actually learning locomotion or exploiting stationary/posture rewards, and recommend reward / PPO / curriculum changes grounded in standard legged-locomotion practice rather than ad hoc trial-and-error.
 
 ## Inputs (what you need)
 
@@ -34,7 +36,9 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scrip
   --run-dir-b training/wandb/offline-run-...-<run_id_b>
 ```
 
-## Checkpoint selection rules (standing_push)
+## Checkpoint selection rules
+
+### standing_push
 
 Prefer eval-based metrics over training-rollout metrics.
 
@@ -46,6 +50,18 @@ Then select the checkpoint file:
 
 - Prefer `training/checkpoints/*-<run_id>/checkpoint_<iter>_<step>.pkl` when it exists.
 - Otherwise pick `checkpoint_<iter>_*.pkl` within the run’s checkpoint dir.
+
+### walking
+
+Prefer eval-based locomotion metrics over training-rollout metrics.
+
+1. If `eval/success_rate` and velocity metrics exist: maximize
+   `(eval/success_rate, -abs(eval/velocity_error), eval/episode_length)`.
+2. Else if `env/success_rate` and velocity metrics exist: maximize
+   `(env/success_rate, -abs(env/velocity_error), env/episode_length)`.
+3. If there is no reliable velocity metric, do **not** select by reward alone; first call out that checkpoint selection is ambiguous.
+
+For walking, a high-reward checkpoint with near-zero forward velocity is usually **not** deployable, even if survival is excellent.
 
 ## What to optimize (standing stability)
 
@@ -62,6 +78,119 @@ Typical high-ROI next changes:
 - If torque saturation is high: increase `reward/saturation` penalty slightly, add curriculum on pushes, or adjust action smoothing.
 - If KL backoff triggers early: use LR warmup or relax backoff trigger (e.g. increase `ppo.kl_lr_backoff_multiplier`).
 - Always: log separate `eval_clean/*` (no pushes) and `eval_push/*` (pushes) when debugging robustness vs base quality.
+
+## Walking analysis extension
+
+Use this section whenever the run's intent is gait learning, for example when config/version/changelog mentions:
+- `ppo_walking`
+- `walking`
+- non-zero velocity commands
+- Stage 1 / PPO-only walking
+
+### What to optimize (walking)
+
+Judge the run on locomotion first, not just reward:
+- **Velocity tracking**: `env/forward_velocity`, `env/velocity_cmd`, `env/velocity_error`
+- **Survival / stability**: `env/episode_length`, `env/success_rate`, `term_height_low_frac`, `term_pitch_frac`, `term_roll_frac`
+- **Actuation stress**: `tracking/max_torque`, `debug/torque_sat_frac`, `debug/action_sat_frac`
+- **Gait structure**: `reward/gait_periodicity`, `reward/clearance`, `reward/hip_swing`, `reward/knee_swing`, `reward/slip`
+- **PPO stability**: `ppo/clip_fraction`, `ppo/approx_kl`, `ppo/lr_backoff_*`, `ppo/epochs_used`
+
+### Walking success criteria
+
+Call a walking run promising only when most of these are true:
+- forward velocity is materially above zero and moving toward the commanded range
+- velocity error is trending down
+- episode length stays high enough that motion is sustainable
+- torque stress is not exploding
+- gait metrics suggest alternating support rather than stationary rocking or hopping
+
+### Walking failure signatures
+
+Call these out explicitly if seen:
+- **standing local minimum**:
+  - `forward_velocity ~= 0`
+  - high survival
+  - high reward driven by posture / healthy terms
+- **posture exploit**:
+  - forward velocity stays near zero
+  - pitch failures and torque rise
+  - reward rises anyway
+- **hopping exploit**:
+  - some speed appears
+  - `flight_phase_penalty` / contact metrics indicate both feet frequently unloaded
+- **shuffle exploit**:
+  - some speed appears
+  - low clearance / swing rewards
+  - high torque / saturation
+- **reward incoherence**:
+  - reward improves while velocity error does not
+  - checkpoint selection by reward conflicts with locomotion quality
+
+### Walking interpretation rules
+
+- If velocity is near zero, do **not** say "still training" by default. First check whether the run is actually trapped in standing.
+- If a standing-resume run stays near zero velocity after roughly `80-120` iterations, strongly consider that the warm start is counterproductive.
+- If reward goes up while velocity error worsens, prioritize diagnosing reward exploitation over tuning PPO.
+- If `eval_push/*` is perfect but pushes are disabled in config, say explicitly that this eval is not informative.
+
+### Walking best-practice interventions
+
+Prefer these interventions before inventing new reward terms:
+
+1. **Task reward must dominate stationary survival**
+   - velocity tracking should create a large reward gap between standing still and matching the command
+   - standing-still penalty must matter when command > 0
+2. **Avoid large flat positive alive bonuses**
+   - especially if they can outweigh failed velocity tracking
+3. **Reduce action lag when gait is sluggish**
+   - lower action filtering if policy is overly damped
+4. **Use command curricula**
+   - start with a conservative forward range like `0.1-0.6 m/s`
+   - only widen once gait exists
+5. **Do not overconstrain early gait emergence**
+   - too much upright / slip / smoothness penalty can trap standing or produce shuffling
+6. **Be careful with standing warm starts**
+   - if they preserve a standing local minimum, switch to fresh-run walking
+7. **Use PPO tuning conservatively**
+   - increase LR / entropy to escape local minima
+   - disable rollback during transition runs if rollback preserves the bad solution
+   - but keep policy-contract and rollout-geometry resume guards hard
+
+### Walking next-step template
+
+When summarizing a walking run, use wording like:
+
+```text
+Walking verdict:
+- locomotion emerging / trapped in standing / posture exploit / hopping exploit / shuffle exploit
+- velocity tracking: improving / flat / regressing
+- stability: good / acceptable / poor
+```
+
+Then recommend one of:
+- continue training unchanged
+- continue training with PPO retuning
+- retune reward weights using standard locomotion priorities
+- restart from scratch (no resume)
+- add curriculum
+
+### Walking design guidance
+
+When asked to design the next walking config, prefer this order:
+1. make the task objective unambiguous
+2. remove or reduce rewards that pay for standing still
+3. check whether warm start is hurting more than helping
+4. only then tune PPO hyperparameters
+
+Do **not** default to inventing new custom reward terms if standard locomotion terms already cover the problem:
+- velocity tracking
+- uprightness / termination limits
+- torque / saturation penalties
+- action smoothness
+- slip
+- clearance
+- gait periodicity
 
 ## M3 / FSM analysis extension
 
@@ -166,6 +295,7 @@ And then state the next action clearly:
    - best eval metrics + final metrics
    - observed failure mode(s) and what to change next
    - for M3/FSM runs: FSM verdict, step-event/foot-place behavior, and whether upright recovery is achieved
+   - for walking runs: locomotion verdict, velocity tracking status, and whether reward appears to be exploited
 3. put the latest version's Changelog on top of the doc.
 
 The scripts print a markdown block intended to paste into `training/CHANGELOG.md`.
