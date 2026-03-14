@@ -1,19 +1,21 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.4)
+# WildRobot PPO Walking Config (v0.15.5)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config tightens the task signal after `v0.15.3` mostly learned
-# survival with weak forward motion and rising pitch failures.
+# only. This config resets Stage 1b toward a more aggressive Stage-A gait
+# emergence probe after `v0.15.4` traded a small speed gain for severe
+# pitch-instability regression.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
-# Start this run from scratch. Do not resume from the standing checkpoint.
+# Start this run from scratch. Do not resume from the standing checkpoint or
+# the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.4"
-version_name: "Stage 1b walking reward rebalance for velocity and pitch stability"
+version: "0.15.5"
+version_name: "Stage 1b walking aggressive Stage-A gait-emergence probe"
 
 seed: 42
 
@@ -39,15 +41,16 @@ env:
   max_roll: 0.8
 
   # Walking commands
-  min_velocity: 0.1
-  max_velocity: 0.45
+  min_velocity: 0.12
+  max_velocity: 0.30
 
   # Contacts
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
 
-  # Lower action lag for faster pitch correction and easier gait emergence.
-  action_filter_alpha: 0.2
+  # Slightly more damping than v0.15.4 to reduce pitchy forward-diving behavior
+  # while still allowing gait emergence.
+  action_filter_alpha: 0.3
   actor_obs_layout_id: wr_obs_v1
 
   # Controllers off for Stage 1 walking.
@@ -70,7 +73,7 @@ ppo:
   # Standard walking batch geometry; no longer tied to the standing checkpoint.
   num_envs: 1024
   rollout_steps: 128
-  iterations: 300
+  iterations: 120
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -156,26 +159,26 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # v0.15.4: pay clearly more for matching commanded forward speed and less
-  # for simply remaining alive while leaning into a posture exploit.
-  tracking_lin_vel: 10.0
+  # v0.15.5 Stage-A probe: keep velocity tracking primary, lighten effort and
+  # slip costs aggressively, and only moderate posture/pre-collapse penalties.
+  tracking_lin_vel: 8.0
   lateral_velocity: -0.3
-  # Note: this term multiplies `healthy` in env reward, so keep it very low.
+  # Note: this term multiplies `healthy` in env reward, so keep it low.
   base_height: 0.03
-  orientation: -0.8
-  angular_velocity: -0.12
-  height_target: 0.2
+  orientation: -0.4
+  angular_velocity: -0.06
+  height_target: 0.10
   height_target_sigma: 0.05
-  collapse_height: -0.4
-  collapse_vz: -0.3
+  collapse_height: -0.25
+  collapse_vz: -0.15
 
-  torque: -0.0012
-  saturation: -0.1
+  torque: -0.0007
+  saturation: -0.05
 
   action_rate: -0.005
   joint_velocity: -0.0003
 
-  slip: -0.15
+  slip: -0.05
   clearance: 0.2
   gait_periodicity: 0.15
   hip_swing: 0.1
@@ -187,10 +190,10 @@ reward_weights:
   stance_width_target: 0.19
   stance_width_sigma: 0.05
 
-  forward_velocity_scale: 8.0
-  velocity_standing_penalty: 0.8
-  velocity_standing_threshold: 0.18
-  velocity_cmd_min: 0.1
+  forward_velocity_scale: 6.0
+  velocity_standing_penalty: 0.5
+  velocity_standing_threshold: 0.16
+  velocity_cmd_min: 0.10
 
 # =============================================================================
 # Reward Composition
@@ -206,7 +209,7 @@ reward:
 # =============================================================================
 checkpoints:
   dir: training/checkpoints
-  interval: 25
+  interval: 20
 
 # =============================================================================
 # Logging
@@ -215,7 +218,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.4]
+  tags: [ppo, stage1, walking, v0.15.5]
 
 video:
   enabled: true

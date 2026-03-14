@@ -7,6 +7,59 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.5] - 2026-03-14: Conservative gait-emergence reset after pitch-instability regression
+
+### Summary
+Analyzes the ongoing `v0.15.4` walking run `training/wandb/offline-run-20260313_212618-c7z4fbv8` and concludes that the policy is still in a non-deployable posture-exploit regime. Relative to `v0.15.3`, `v0.15.4` did increase forward velocity somewhat, but it did so by leaning harder and eventually collapsing eval-clean stability. By iteration `210`, forward velocity rose to about `0.088 m/s` against a commanded `0.273 m/s`, while `term_pitch_frac` rose above `0.81` and `eval_clean/success_rate` fell below `0.09`.
+
+### Results (v0.15.4)
+- Run: `training/wandb/offline-run-20260313_212618-c7z4fbv8`
+- Checkpoints: `training/checkpoints/ppo_walking_v00154_20260313_212621-c7z4fbv8`
+- Verdict: posture exploit with pitch-instability regression, not deployable walking
+- Best stable phase: around iter `100`, but still near-zero usable forward speed
+- Latest logged point: iter `210`
+- Key metrics at iter `210`:
+  - `env/forward_velocity: 0.088`
+  - `env/velocity_cmd: 0.273`
+  - `env/velocity_error: 0.235`
+  - `term_pitch_frac: 0.817`
+  - `env/success_rate: 0.183`
+  - `eval_clean/success_rate: 0.084`
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.5"`
+- reset Stage 1b toward an earlier gait-emergence regime rather than increasing fixed reward pressure again
+- make this a short diagnostic probe instead of a full 300-iteration commitment:
+  - `ppo.iterations: 300 -> 120`
+  - `checkpoints.interval: 25 -> 20`
+- narrow the command curriculum further:
+  - `env.min_velocity: 0.10 -> 0.12`
+  - `env.max_velocity: 0.45 -> 0.30`
+- add a bit more action damping to reduce pitch-diving:
+  - `env.action_filter_alpha: 0.2 -> 0.3`
+- keep velocity tracking primary, but reduce the fixed forcing from `v0.15.4`:
+  - `reward_weights.tracking_lin_vel: 10.0 -> 8.0`
+  - `reward_weights.forward_velocity_scale: 8.0 -> 6.0`
+  - `reward_weights.velocity_standing_penalty: 0.8 -> 0.5`
+  - `reward_weights.velocity_standing_threshold: 0.18 -> 0.16`
+- lighten effort penalties aggressively, but only lighten posture / pre-collapse penalties moderately:
+  - `reward_weights.orientation: -0.8 -> -0.4`
+  - `reward_weights.angular_velocity: -0.12 -> -0.06`
+  - `reward_weights.height_target: 0.2 -> 0.10`
+  - `reward_weights.collapse_height: -0.4 -> -0.25`
+  - `reward_weights.collapse_vz: -0.3 -> -0.15`
+  - `reward_weights.torque: -0.0012 -> -0.0007`
+  - `reward_weights.saturation: -0.1 -> -0.05`
+  - `reward_weights.slip: -0.15 -> -0.05`
+
+### Training Intent
+- Start from scratch rather than resume from a checkpoint that already encodes a posture-exploit basin.
+- Solve conservative nominal forward translation first.
+- Use the first 120 iterations as an explicit go / no-go gate:
+  - continue only if forward velocity rises materially without eval-clean pitch collapse
+  - otherwise retune again rather than training longer into a bad solution
+- Only after stable translation appears should the command range widen and stability / effort penalties tighten again.
+
 ## [v0.15.4] - 2026-03-13: Reward rebalance for walking velocity and pitch stability
 
 ### Summary

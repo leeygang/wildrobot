@@ -1,8 +1,8 @@
 # Learn First, Retarget Later: Robot-Native Walking Policy
 
-**Version:** v0.11.0
-**Status:** Planning
-**Last Updated:** 2024-12-30
+**Version:** v0.15.4
+**Status:** Active
+**Last Updated:** 2026-03-14
 
 ## Overview
 
@@ -81,16 +81,43 @@ Exit: CAL fully integrated and validated
 
 ---
 
-## Stage 1b: Robot-Native Walking Policy (v0.10.x) - CURRENT
+## Stage 1b: Robot-Native Walking Policy (v0.15.x) - CURRENT
 
 **Goal:** Learn a stable, repeatable, controllable gait using task rewards only (no AMP, no reference motion).
+
+### Current Guidance (2026-03-14)
+
+Recent `v0.15.3` and `v0.15.4` walking runs show that simply increasing velocity reward and stability penalties at the same time is not sufficient. The observed failure mode is a **posture exploit**: the robot gains a small amount of forward speed by leaning/pitching harder, while training and eval stability collapse.
+
+The confirmed direction for Stage 1b is therefore:
+- keep flat-terrain PPO-only walking as the primary path
+- keep velocity tracking as the dominant task objective
+- use a **command curriculum** for gait emergence instead of training immediately on the full target walking range
+- use a **reward / penalty curriculum** rather than full-strength stability / effort penalties from iteration 1
+- widen the command range only after a nominal stable gait exists
+- select checkpoints using locomotion quality plus stability, not survival-only eval signals
+
+This aligns with common modern legged-locomotion practice from massively parallel RL systems and curriculum-based locomotion training: command curricula first, then robustness and broader speed coverage.
+
+### References / Rationale
+
+- Rudin et al., *Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning* (CoRL 2022): emphasizes massively parallel RL plus a game-inspired curriculum for locomotion training.
+  - Link: https://proceedings.mlr.press/v164/rudin22a.html
+- Margolis et al., *Rapid Locomotion via Reinforcement Learning* (RSS 2022): identifies adaptive curriculum on velocity commands as a key component of agile locomotion learning.
+  - Link: https://www.roboticsproceedings.org/rss18/p022.html
+- Margolis and Agrawal, *Walk These Ways: Tuning Robot Control for Generalization with Multiplicity of Behavior* (CoRL 2023): argues against repeated ad hoc reward redesign and toward structured behavior spaces / commandable locomotion families.
+  - Link: https://proceedings.mlr.press/v205/margolis23a.html
+- Isaac Lab Documentation, *Curriculum Utilities*: documents reward-weight and environment-parameter curricula as standard tooling for RL training.
+  - Link: https://isaac-sim.github.io/IsaacLab/main/source/how-to/curriculums.html
+- Ciebielski and Khadiv, *Contact-conditioned learning of locomotion policies* (arXiv 2024): shows, for bipeds, that contact-conditioned representations can outperform simple velocity-conditioned policies for robustness and multi-gait learning.
+  - Link: https://arxiv.org/abs/2408.00776
 
 ### Exit Criteria
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
 | Episode length | > 400 steps (8s) | Average over 100 episodes |
-| Forward velocity | 0.5-1.0 m/s | Tracking error < 0.2 m/s |
+| Forward velocity | Stage gate: 0.10-0.35 m/s, final target: 0.5-1.0 m/s | Tracking error < 0.2 m/s |
 | Fall rate | < 5% | Episodes ending in fall |
 | Gait periodicity | Visible alternating steps | Visual inspection |
 | Torque usage | < 80% of limits | Max torque / torque limit |
@@ -101,6 +128,14 @@ Exit: CAL fully integrated and validated
 - Understanding of robot's natural gait dynamics
 - Baseline policy for comparison
 - Foundation for all subsequent stages
+
+### Stage 1b Operating Rules
+
+- **Do not** treat `eval_push/*` as meaningful for walking checkpoint selection when `push_enabled: false`.
+- A checkpoint is not deployable walking if forward velocity remains near zero, even if eval survival is perfect.
+- If a run reaches roughly `80-120` iterations with `env/forward_velocity < 0.1 m/s` and rising pitch failures, treat it as trapped or exploiting posture rather than "still training".
+- If a run gains some speed but `term_pitch_frac` and eval-clean failures rise sharply, stop and retune; do not continue on the assumption it will stabilize later.
+- Stage 1b should solve nominal translation first. Pushes, terrain variation, and broader speed coverage come only after a stable nominal gait exists.
 
 ### Version Milestones
 
@@ -150,8 +185,9 @@ Exit: Standing policy with < 5% fall rate
 **Objective:** Robot walks forward at commanded velocity
 
 Tasks:
-- [ ] Train with velocity command 0.5-1.0 m/s
-- [ ] Tune reward weights for velocity tracking
+- [ ] Start with a conservative command curriculum such as `0.10-0.30` or `0.12-0.35 m/s`
+- [ ] Tune reward weights so velocity tracking dominates standing still
+- [ ] Widen the command range only after stable translation emerges
 - [ ] Add gait symmetry reward (optional)
 
 Exit: Robot walks forward, tracks velocity within 0.2 m/s
@@ -162,8 +198,11 @@ Exit: Robot walks forward, tracks velocity within 0.2 m/s
 Tasks:
 - [ ] Analyze gait pattern (is it shuffling? hopping?)
 - [ ] Add periodic gait reward if needed
-- [ ] Tune action smoothness penalty
-- [ ] Reduce torque usage
+- [ ] Use a reward / penalty curriculum:
+  - start with lighter orientation / angular-velocity / torque / saturation penalties
+  - ramp them up after translation emerges
+- [ ] Tune action smoothing / damping if pitch divergence persists
+- [ ] Reduce torque usage without collapsing forward speed
 
 Exit: Consistent alternating gait, reasonable energy usage
 
@@ -175,6 +214,9 @@ Notes:
   increased orientation/torque/saturation penalties, shortened run to 400 iters.
  - v0.10.6 (current): add swing-gated hip/knee rewards + flight penalty to reduce ankle-dominant gait.
  - v0.10.6 failure gate: after 300 iters, abort if knee range <30% and flight phase >15%.
+ - v0.15.3: fresh-start walking confirmed that standing-resume was counterproductive.
+ - v0.15.4: stronger velocity and stability shaping improved forward speed somewhat, but still produced a posture exploit with rising pitch failures.
+ - Current conclusion: move from fixed full-strength reward forcing to curriculum-based gait emergence.
 
 Tasks:
 - [ ] Add push disturbances during training
