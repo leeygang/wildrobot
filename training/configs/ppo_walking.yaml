@@ -1,19 +1,19 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.3)
+# WildRobot PPO Walking Config (v0.15.4)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config is a fresh-run walking baseline after the standing-resume
-# transition failed to leave the standing local minimum.
+# only. This config tightens the task signal after `v0.15.3` mostly learned
+# survival with weak forward motion and rising pitch failures.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
 # Start this run from scratch. Do not resume from the standing checkpoint.
 # =============================================================================
 
-version: "0.15.3"
-version_name: "Stage 1b walking fresh start after standing-resume failure"
+version: "0.15.4"
+version_name: "Stage 1b walking reward rebalance for velocity and pitch stability"
 
 seed: 42
 
@@ -40,7 +40,7 @@ env:
 
   # Walking commands
   min_velocity: 0.1
-  max_velocity: 0.6
+  max_velocity: 0.45
 
   # Contacts
   contact_threshold_force: 5.0
@@ -156,24 +156,26 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # Break the standing local minimum aggressively enough that the warm-started
-  # standing policy prefers moving over collecting upright-only reward.
-  tracking_lin_vel: 8.0
+  # v0.15.4: pay clearly more for matching commanded forward speed and less
+  # for simply remaining alive while leaning into a posture exploit.
+  tracking_lin_vel: 10.0
   lateral_velocity: -0.3
-  # Note: this term multiplies `healthy` in env reward, so keep it low here.
-  base_height: 0.1
-  orientation: -0.5
-  angular_velocity: -0.1
-  height_target: 0.1
+  # Note: this term multiplies `healthy` in env reward, so keep it very low.
+  base_height: 0.03
+  orientation: -0.8
+  angular_velocity: -0.12
+  height_target: 0.2
   height_target_sigma: 0.05
+  collapse_height: -0.4
+  collapse_vz: -0.3
 
-  torque: -0.001
-  saturation: -0.08
+  torque: -0.0012
+  saturation: -0.1
 
   action_rate: -0.005
   joint_velocity: -0.0003
 
-  slip: -0.2
+  slip: -0.15
   clearance: 0.2
   gait_periodicity: 0.15
   hip_swing: 0.1
@@ -185,9 +187,9 @@ reward_weights:
   stance_width_target: 0.19
   stance_width_sigma: 0.05
 
-  forward_velocity_scale: 6.0
-  velocity_standing_penalty: 0.5
-  velocity_standing_threshold: 0.15
+  forward_velocity_scale: 8.0
+  velocity_standing_penalty: 0.8
+  velocity_standing_threshold: 0.18
   velocity_cmd_min: 0.1
 
 # =============================================================================
@@ -213,7 +215,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.3]
+  tags: [ppo, stage1, walking, v0.15.4]
 
 video:
   enabled: true

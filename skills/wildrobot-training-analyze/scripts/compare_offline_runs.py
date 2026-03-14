@@ -64,6 +64,11 @@ def _get_float(row: Dict[str, Any], key: str) -> Optional[float]:
         return None
 
 
+def _push_enabled(cfg: Dict[str, Any]) -> bool:
+    env = cfg.get("config", {}).get("env", {})
+    return bool(env.get("push_enabled", False))
+
+
 def _mean(values: List[float]) -> Optional[float]:
     if not values:
         return None
@@ -165,7 +170,16 @@ def _classify_walking(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[
     return True, verdict, forward_velocity, velocity_error
 
 
-def _pick_keys(rows: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+def _pick_keys(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+    if _is_walking_run(cfg, rows) and not _push_enabled(cfg):
+        if any("eval_clean/success_rate" in r for r in rows):
+            return ("eval_clean", "eval_clean/success_rate", "eval_clean/episode_length")
+        if any("eval/success_rate" in r for r in rows):
+            return ("eval", "eval/success_rate", "eval/episode_length")
+        if any("env/success_rate" in r for r in rows):
+            return ("env", "env/success_rate", "env/episode_length")
+        return ("train", "success_rate", "episode_length")
+
     if any("eval_push/success_rate" in r for r in rows):
         return ("eval_push", "eval_push/success_rate", "eval_push/episode_length")
     if any("eval/success_rate" in r for r in rows):
@@ -219,7 +233,7 @@ def summarize(run_dir: Path, checkpoints_root: Path) -> RunSummary:
     rows = [r for r in rows if _get_iter(r) is not None]
     rows.sort(key=lambda r: _get_iter(r) or -1)
 
-    keyset, s_k, l_k = _pick_keys(rows)
+    keyset, s_k, l_k = _pick_keys(cfg, rows)
     it, s, L, row = _find_best(rows, s_k, l_k)
     step = None
     for k in ("time/step", "_step"):

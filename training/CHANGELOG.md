@@ -7,6 +7,52 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.4] - 2026-03-13: Reward rebalance for walking velocity and pitch stability
+
+### Summary
+Analyzes the fresh-start walking run `training/wandb/offline-run-20260313_143658-oirn4qg9` and treats it as a non-deployable posture-exploit trajectory rather than a promising gait. By iteration `120`, forward velocity only reached about `0.04 m/s` against a commanded `0.35 m/s`, while pitch terminations rose to about `60%` and eval success collapsed. The fix is to pay substantially more for commanded forward motion, pay less for passive survival, and increase the cost of low-height / pitch-instability drift.
+
+### Results (v0.15.3)
+- Run: `training/wandb/offline-run-20260313_143658-oirn4qg9`
+- Checkpoints: `training/checkpoints/ppo_walking_v00153_20260313_143700-oirn4qg9`
+- Verdict: posture exploit / weak shuffle, not deployable walking
+- Latest logged point: iter `120`
+- Key metrics at iter `120`:
+  - `env/forward_velocity: 0.040`
+  - `env/velocity_cmd: 0.348`
+  - `env/velocity_error: 0.326`
+  - `term_pitch_frac: 0.601`
+  - `env/success_rate: 0.399`
+  - `eval_clean/success_rate: 0.314`
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.4"`
+- narrow the command curriculum slightly so the robot first solves a more stable nominal gait:
+  - `env.max_velocity: 0.6 -> 0.45`
+- reduce flat survival reward:
+  - `reward_weights.base_height: 0.1 -> 0.03`
+- increase direct pressure to match the commanded speed:
+  - `reward_weights.tracking_lin_vel: 8.0 -> 10.0`
+  - `reward_weights.forward_velocity_scale: 6.0 -> 8.0`
+  - `reward_weights.velocity_standing_penalty: 0.5 -> 0.8`
+  - `reward_weights.velocity_standing_threshold: 0.15 -> 0.18`
+- strengthen stability / pre-collapse shaping:
+  - `reward_weights.orientation: -0.5 -> -0.8`
+  - `reward_weights.angular_velocity: -0.1 -> -0.12`
+  - `reward_weights.height_target: 0.1 -> 0.2`
+  - `reward_weights.collapse_height: -0.2 -> -0.4`
+  - `reward_weights.collapse_vz: -0.2 -> -0.3`
+- modestly increase effort penalties to discourage the pitchy high-torque solution:
+  - `reward_weights.torque: -0.001 -> -0.0012`
+  - `reward_weights.saturation: -0.08 -> -0.1`
+- slightly relax slip cost so early stepping is not overconstrained:
+  - `reward_weights.slip: -0.2 -> -0.15`
+
+### Training Intent
+- Force a larger reward gap between standing still and matching the forward command.
+- Preserve Stage 1 PPO-only walking while making pitch stability a hard requirement.
+- Stop using survival-only eval signals as evidence of walking quality; walking checkpoint selection should prioritize velocity/error plus stability.
+
 ## [v0.15.3] - 2026-03-13: Fresh-start walking after standing-resume failure
 
 ### Summary

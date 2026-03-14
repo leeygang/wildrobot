@@ -84,7 +84,26 @@ def _get_float(row: Dict[str, Any], key: str) -> Optional[float]:
     return v
 
 
-def _pick_eval_keys(rows: List[Dict[str, Any]]) -> EvalKeySet:
+def _push_enabled(cfg: Dict[str, Any]) -> bool:
+    env = cfg.get("config", {}).get("env", {})
+    return bool(env.get("push_enabled", False))
+
+
+def _pick_eval_keys(rows: List[Dict[str, Any]], *, cfg: Dict[str, Any]) -> EvalKeySet:
+    # For walking runs without pushes, eval_push is not informative.
+    if _is_walking_run(cfg, rows) and not _push_enabled(cfg):
+        if any("eval_clean/success_rate" in r for r in rows):
+            return EvalKeySet(
+                prefix="eval_clean/",
+                success="eval_clean/success_rate",
+                ep_len="eval_clean/episode_length",
+            )
+        if any("eval/success_rate" in r for r in rows):
+            return EvalKeySet(prefix="eval/", success="eval/success_rate", ep_len="eval/episode_length")
+        if any("env/success_rate" in r for r in rows):
+            return EvalKeySet(prefix="env/", success="env/success_rate", ep_len="env/episode_length")
+        return EvalKeySet(prefix="", success="success_rate", ep_len="episode_length")
+
     # Prefer dual-eval keys if present.
     if any("eval_push/success_rate" in r for r in rows):
         return EvalKeySet(
@@ -492,7 +511,7 @@ def main() -> None:
     rows = [r for r in rows if _get_iter(r) is not None]
     rows.sort(key=lambda r: _get_iter(r) or -1)
 
-    keys = _pick_eval_keys(rows)
+    keys = _pick_eval_keys(rows, cfg=cfg)
     best_it, best_row = _find_best_row(rows, keys)
     best_step = None
     for k in ("time/step", "_step"):

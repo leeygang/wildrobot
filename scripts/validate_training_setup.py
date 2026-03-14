@@ -51,7 +51,7 @@ def main() -> int:
     parser.add_argument(
         "--scene-xml",
         type=Path,
-        default=Path("assets/v1/scene_flat_terrain.xml"),
+        default=Path("assets/v2/scene_flat_terrain.xml"),
         help="Path to MuJoCo scene XML.",
     )
     parser.add_argument(
