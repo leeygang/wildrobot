@@ -457,6 +457,29 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="M3 FSM ticks spent in current phase",
     ),
+    # v0.15.9: propulsion-per-step and cycle diagnostics (append-only)
+    MetricSpec(
+        name="reward/step_length",
+        reducer=Reducer.MEAN,
+        description="Touchdown step-length reward (forward landing relative to body)",
+    ),
+    MetricSpec(
+        name="reward/cycle_progress",
+        reducer=Reducer.MEAN,
+        description="Per-step-cycle net forward displacement reward",
+    ),
+    MetricSpec(
+        name="debug/cycle_complete",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Cycle completion event flag based on clock_stride_period_steps",
+    ),
+    MetricSpec(
+        name="debug/cycle_forward_delta",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Accumulated heading-local forward displacement within current cycle",
+    ),
 ]
 
 # =============================================================================

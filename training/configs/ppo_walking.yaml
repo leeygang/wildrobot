@@ -1,12 +1,13 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.8)
+# WildRobot PPO Walking Config (v0.15.9)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
 # only. This config moves to the larger lever after `v0.15.7` confirmed that
-# reward-only tuning still yields stepping without propulsion: a clocked actor
-# observation (`wr_obs_v3`) plus the existing aggressive propulsion reward mix.
+# reward-only tuning still yielded stepping without propulsion. `v0.15.9`
+# keeps `wr_obs_v3` but switches to per-step propulsion rewards:
+# touchdown step length + cycle displacement + phase-gated clearance.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
@@ -14,8 +15,8 @@
 # the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.8"
-version_name: "Stage 1b walking clocked propulsion probe"
+version: "0.15.9"
+version_name: "Stage 1b per-step propulsion probe"
 
 seed: 42
 
@@ -53,6 +54,7 @@ env:
   action_filter_alpha: 0.3
   actor_obs_layout_id: wr_obs_v3
   clock_stride_period_steps: 36
+  clock_phase_gate_width: 0.22
 
   # Controllers off for Stage 1 walking.
   base_ctrl_enabled: false
@@ -161,9 +163,8 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # v0.15.8: keep the aggressive propulsion mix from `v0.15.7`, but now give
-  # the actor an explicit gait clock so it does not have to discover timing
-  # from scratch while also solving propulsion.
+  # v0.15.9: keep wr_obs_v3, but force propulsion to come from per-step and
+  # per-cycle forward progress rather than generic step activity.
   tracking_lin_vel: 8.0
   lateral_velocity: -0.3
   # Note: this term multiplies `healthy` in env reward, so keep it low.
@@ -183,8 +184,8 @@ reward_weights:
   joint_velocity: -0.0003
 
   slip: -0.05
-  clearance: 0.2
-  gait_periodicity: 0.15
+  clearance: 0.35
+  gait_periodicity: 0.08
   hip_swing: 0.1
   knee_swing: 0.15
   hip_swing_min: 0.2
@@ -202,8 +203,15 @@ reward_weights:
 
   # Aggressive propulsion rebalance: pay less for arbitrary stepping and much
   # more for command-aligned forward placement.
-  step_event: 0.05
-  foot_place: 0.35
+  step_event: 0.005
+  foot_place: 0.08
+  step_length: 1.0
+  step_length_target_base: 0.035
+  step_length_target_scale: 0.30
+  step_length_sigma: 0.03
+  cycle_progress: 1.2
+  cycle_progress_target_scale: 1.0
+  cycle_progress_sigma: 0.06
   foot_place_k_cmd_vel: 0.30
   foot_place_k_fwd_vel: 0.08
 
@@ -230,7 +238,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.8]
+  tags: [ppo, stage1, walking, v0.15.9]
 
 video:
   enabled: true

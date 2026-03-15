@@ -181,8 +181,20 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
 - Read it at `20`, `40`, and `60`:
   - by `20`, forward velocity should move off the floor more clearly than `v0.15.7`
   - by `40`, there should be a visible separation from the reward-only stepping-in-place basin
-  - by `60`, stop unless forward velocity is materially improving and velocity error is dropping
+- by `60`, stop unless forward velocity is materially improving and velocity error is dropping
 - If `v0.15.8` still cannot turn stepping into propulsion by `60`, stop doing local reward tuning and move to a more explicit curriculum / architecture change.
+
+### `v0.15.9` Explicit Per-Step Propulsion Branch
+
+- `v0.15.9` keeps `wr_obs_v3` and stays a fresh-run branch (not resume-safe), but changes reward structure to make propulsion explicit per step cycle.
+- Branch changes:
+  - touchdown step-length reward scaled by `velocity_cmd`
+  - per-cycle forward displacement reward using `clock_stride_period_steps`
+  - phase-gated clearance reward (left clearance only in left swing window, right only in right swing window)
+- Read it at `20`, `40`, and `60`:
+  - by `20`, forward velocity should rise off the floor more clearly than `v0.15.8`
+  - by `40`, there should be visible separation from stepping-in-place
+  - by `60`, if forward velocity remains near zero, treat this branch as failed and move to a larger curriculum/architecture lever
 
 ### Version Milestones
 

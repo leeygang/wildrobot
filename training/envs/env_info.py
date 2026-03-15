@@ -97,6 +97,7 @@ try:
         # Stepping event detection (post-step values)
         prev_left_loaded: jnp.ndarray  # shape=()
         prev_right_loaded: jnp.ndarray  # shape=()
+        cycle_start_forward_x: jnp.ndarray  # shape=(), accumulated heading-local cycle progress
         critic_obs: jnp.ndarray  # shape=(PRIVILEGED_OBS_DIM,)
         push_schedule: DisturbanceSchedule
 
@@ -144,6 +145,7 @@ except ImportError:
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
         prev_right_loaded: jnp.ndarray
+        cycle_start_forward_x: jnp.ndarray
         critic_obs: jnp.ndarray
         # M3 FSM state
         fsm_phase: jnp.ndarray
@@ -190,6 +192,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "root_height": (),
         "prev_left_loaded": (),
         "prev_right_loaded": (),
+        "cycle_start_forward_x": (),
         "critic_obs": (PRIVILEGED_OBS_DIM,),
         # M3 FSM state
         "fsm_phase": (),

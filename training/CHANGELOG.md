@@ -7,6 +7,53 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.9] - 2026-03-15: Per-step propulsion rewards after `v0.15.8` still stepped in place
+
+### Summary
+Analyzes the failed `v0.15.8` run `training/wandb/offline-run-20260314_230225-jgkxxp2w`. Even with `wr_obs_v3` clocked observations, the policy still converged to a stepping-in-place basin: stepping activity was present, but commanded forward translation remained near the floor. `v0.15.9` therefore shifts reward structure from generic stepping to explicit propulsion contracts: touchdown forward step length, per-cycle net forward displacement, and clock-phase-gated clearance.
+
+### Why `v0.15.8` failed
+- Clock features improved timing cues but did not change what was being paid for most strongly.
+- Existing touchdown/foot-placement terms still allowed high reward from low-propulsion stepping patterns.
+- Result: stable stepping without material cycle-to-cycle forward displacement.
+
+### Code Updates
+- `training/envs/wildrobot_env.py`
+  - add touchdown `step_length` reward tied to `velocity_cmd`
+  - add `cycle_progress` reward at clock-cycle completion using net forward displacement
+  - phase-gate clearance with `clock_phase_gate_width` so left/right clearance only pays in expected swing windows
+  - add metrics and auto-reset preservation for new reward/debug terms
+- `training/envs/env_info.py`
+  - add `cycle_start_forward_x` to persistent env info state for cycle displacement tracking
+- `training/core/metrics_registry.py`
+  - register `reward/step_length`, `reward/cycle_progress`, `debug/cycle_complete`, `debug/cycle_forward_delta`
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.9"`
+- keep fresh-run clocked actor contract:
+  - `env.actor_obs_layout_id: wr_obs_v3`
+  - `ppo.iterations: 60`
+- add phase gate parameter:
+  - `env.clock_phase_gate_width: 0.22`
+- reduce undirected stepping reward:
+  - `reward_weights.step_event: 0.005`
+- make propulsion dominate:
+  - `reward_weights.step_length: 1.0`
+  - `reward_weights.step_length_target_base: 0.035`
+  - `reward_weights.step_length_target_scale: 0.30`
+  - `reward_weights.step_length_sigma: 0.03`
+  - `reward_weights.cycle_progress: 1.2`
+  - `reward_weights.cycle_progress_target_scale: 1.0`
+  - `reward_weights.cycle_progress_sigma: 0.06`
+- keep stability terms broadly aligned with `v0.15.6+` and only modestly retune gait auxiliaries.
+
+### Training Intent
+- Keep `wr_obs_v3`, but pay primarily for propulsion per touchdown and per cycle.
+- Expected staged readout:
+  - iter `20`: forward velocity should move off floor more clearly than `v0.15.8`
+  - iter `40`: should visibly break stepping-in-place basin
+  - iter `60`: if still near-zero forward velocity, stop and treat branch as failed
+
 ## [v0.15.8] - 2026-03-14: Clocked observation after `v0.15.7` exhausted reward-only tuning
 
 ### Summary

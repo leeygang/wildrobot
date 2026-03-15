@@ -153,6 +153,95 @@ def _apply_imu_noise_and_delay(signals, rng: jax.Array, cfg, prev_hist_quat, pre
     return signals_override, prev_q_hist, prev_g_hist, rng_out
 
 
+def compute_phase_gated_clearance_reward(
+    left_clearance: jax.Array,
+    right_clearance: jax.Array,
+    left_force: jax.Array,
+    right_force: jax.Array,
+    contact_threshold: jax.Array,
+    phase: jax.Array,
+    phase_gate_width: jax.Array,
+) -> jax.Array:
+    """Compute clock phase-gated clearance reward used by v0.15.9."""
+    phase_gate_width = jp.clip(jp.asarray(phase_gate_width, dtype=jp.float32), 1e-3, 0.5)
+    phase_half_width = jp.pi * phase_gate_width
+
+    def _phase_gate(theta: jax.Array, center: float) -> jax.Array:
+        delta = jp.arctan2(jp.sin(theta - center), jp.cos(theta - center))
+        return (jp.abs(delta) <= phase_half_width).astype(jp.float32)
+
+    left_swing_phase = _phase_gate(phase, 0.5 * jp.pi)
+    right_swing_phase = _phase_gate(phase, 1.5 * jp.pi)
+    left_unloaded = (left_force < contact_threshold).astype(jp.float32)
+    right_unloaded = (right_force < contact_threshold).astype(jp.float32)
+    return (
+        left_clearance * left_swing_phase * left_unloaded
+        + right_clearance * right_swing_phase * right_unloaded
+    ) * 10.0
+
+
+def compute_step_length_touchdown_reward(
+    left_x: jax.Array,
+    right_x: jax.Array,
+    touchdown_left: jax.Array,
+    touchdown_right: jax.Array,
+    velocity_cmd: jax.Array,
+    step_reward_gate: jax.Array,
+    target_base: jax.Array,
+    target_scale: jax.Array,
+    sigma: jax.Array,
+) -> jax.Array:
+    """Compute touchdown step-length reward used by v0.15.9."""
+    step_length_target = (
+        jp.asarray(target_base, dtype=jp.float32)
+        + jp.asarray(target_scale, dtype=jp.float32) * jp.maximum(velocity_cmd, 0.0)
+    )
+    step_length_sigma = jp.maximum(jp.asarray(sigma, dtype=jp.float32), 1e-6)
+    step_len_left = jp.maximum(left_x, 0.0)
+    step_len_right = jp.maximum(right_x, 0.0)
+    step_len_left_reward = jp.exp(
+        -jp.square((step_len_left - step_length_target) / step_length_sigma)
+    )
+    step_len_right_reward = jp.exp(
+        -jp.square((step_len_right - step_length_target) / step_length_sigma)
+    )
+    reward = jp.where(touchdown_left, step_len_left_reward, 0.0) + jp.where(
+        touchdown_right, step_len_right_reward, 0.0
+    )
+    return jp.asarray(reward).reshape(()) * step_reward_gate
+
+
+def compute_cycle_progress_terms(
+    cycle_progress_accum: jax.Array,
+    forward_vel: jax.Array,
+    dt: float,
+    current_step_count: jax.Array,
+    stride_steps: jax.Array,
+    velocity_cmd: jax.Array,
+    target_scale: jax.Array,
+    sigma: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute cycle-progress reward and updated accumulator."""
+    stride_steps_i = jp.maximum(jp.asarray(stride_steps, dtype=jp.int32), jp.asarray(1, dtype=jp.int32))
+    curr_step_i = jp.asarray(current_step_count, dtype=jp.int32)
+    cycle_complete = jp.equal(jp.mod(curr_step_i, stride_steps_i), 0)
+    cycle_forward_delta = cycle_progress_accum + forward_vel * dt
+
+    cycle_target = (
+        jp.maximum(velocity_cmd, 0.0)
+        * dt
+        * jp.asarray(stride_steps_i, dtype=jp.float32)
+        * jp.asarray(target_scale, dtype=jp.float32)
+    )
+    cycle_sigma = jp.maximum(jp.asarray(sigma, dtype=jp.float32), 1e-6)
+    cycle_progress_reward_raw = jp.exp(
+        -jp.square((cycle_forward_delta - cycle_target) / cycle_sigma)
+    )
+    cycle_progress_reward = jp.where(cycle_complete, cycle_progress_reward_raw, 0.0)
+    next_cycle_progress_accum = jp.where(cycle_complete, jp.zeros(()), cycle_forward_delta)
+    return cycle_progress_reward, cycle_forward_delta, cycle_complete, next_cycle_progress_accum
+
+
 # =============================================================================
 # Asset Loading
 # =============================================================================
@@ -532,6 +621,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=root_pose.height,  # Actual root height for AMP features
             prev_left_loaded=left_loaded.astype(jp.float32),
             prev_right_loaded=right_loaded.astype(jp.float32),
+            cycle_start_forward_x=jp.zeros(()),
             critic_obs=critic_obs,
             push_schedule=push_schedule,
             # M3 FSM state: initialised to STANCE (all zeros)
@@ -719,6 +809,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_loaded,
             wr.fsm_phase,
             wr.fsm_swing_foot,
+            current_step_count=step_count + 1,
+            cycle_start_forward_x=wr.cycle_start_forward_x,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -731,6 +823,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         forward_vel, _, _ = self._cal.get_root_velocity(
             data, frame=CoordinateFrame.HEADING_LOCAL
         ).linear_xyz
+        _, _, _, cycle_start_forward_x = compute_cycle_progress_terms(
+            cycle_progress_accum=wr.cycle_start_forward_x,
+            forward_vel=forward_vel,
+            dt=self.dt,
+            current_step_count=step_count + 1,
+            stride_steps=jp.asarray(self._config.env.clock_stride_period_steps, dtype=jp.int32),
+            velocity_cmd=velocity_cmd,
+            target_scale=jp.asarray(1.0, dtype=jp.float32),
+            sigma=jp.asarray(1.0, dtype=jp.float32),
+        )
 
         # v0.10.4: Store step count in metrics for episode length calculation
         # This gets preserved through auto-reset, unlike wr_info.step_count which resets
@@ -785,6 +887,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=curr_root_pose.height,  # Actual root height for AMP features
             prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
             prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
+            cycle_start_forward_x=cycle_start_forward_x,
             critic_obs=critic_obs,
             push_schedule=wr.push_schedule,
             # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
@@ -854,10 +957,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/posture_mse": metrics.get("debug/posture_mse", jp.zeros(())),
             "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
+            "reward/step_length": metrics.get("reward/step_length", jp.zeros(())),
+            "reward/cycle_progress": metrics.get("reward/cycle_progress", jp.zeros(())),
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
             "debug/touchdown_left": metrics.get("debug/touchdown_left", jp.zeros(())),
             "debug/touchdown_right": metrics.get("debug/touchdown_right", jp.zeros(())),
             "debug/velocity_step_gate": metrics.get("debug/velocity_step_gate", jp.zeros(())),
+            "debug/cycle_complete": metrics.get("debug/cycle_complete", jp.zeros(())),
+            "debug/cycle_forward_delta": metrics.get("debug/cycle_forward_delta", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -886,6 +993,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=reset_wr_info.root_height,
             prev_left_loaded=reset_wr_info.prev_left_loaded,
             prev_right_loaded=reset_wr_info.prev_right_loaded,
+            cycle_start_forward_x=reset_wr_info.cycle_start_forward_x,
             critic_obs=reset_wr_info.critic_obs,
             push_schedule=reset_wr_info.push_schedule,
             # M3 FSM: reset to STANCE on new episode
@@ -1363,6 +1471,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_right_loaded: Optional[jax.Array] = None,
         fsm_phase: Optional[jax.Array] = None,
         fsm_swing_foot: Optional[jax.Array] = None,
+        current_step_count: Optional[jax.Array] = None,
+        cycle_start_forward_x: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -1491,7 +1601,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # TODO(M3 cleanup): Remove deprecated gait-style reward computations entirely
         # after the first M3 validation run confirms they are not needed for debugging.
-        # 11. Swing clearance reward (deprecated for M3 total reward; kept for metrics)
+        # 11. Swing clearance reward (phase-gated by clock; active in total reward)
         # Reward foot height above ground during swing phase
         min_clearance = 0.02  # 2cm minimum clearance during swing
         left_clearance, right_clearance = self._cal.get_foot_clearances(
@@ -1502,13 +1612,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )  # cap at 5cm
         right_clearance = jp.clip(right_clearance - min_clearance, 0.0, 0.05)
 
-        # Gate by NOT loaded (only reward clearance during swing)
+        # Gate by clock phase and unloaded status so clearance only pays during
+        # the expected swing window for each foot.
+        if current_step_count is None:
+            step_f = jp.zeros((), dtype=jp.float32)
+        else:
+            step_f = jp.asarray(current_step_count, dtype=jp.float32)
+        stride_steps_f = jp.maximum(
+            jp.asarray(self._config.env.clock_stride_period_steps, dtype=jp.float32),
+            1.0,
+        )
+        phase = 2.0 * jp.pi * (step_f / stride_steps_f)
+
+        phase_gate_width = jp.asarray(
+            getattr(self._config.env, "clock_phase_gate_width", 0.20), dtype=jp.float32
+        )
+        clearance_reward = compute_phase_gated_clearance_reward(
+            left_clearance=left_clearance,
+            right_clearance=right_clearance,
+            left_force=left_force,
+            right_force=right_force,
+            contact_threshold=contact_threshold,
+            phase=phase,
+            phase_gate_width=phase_gate_width,
+        )
         left_swing = left_force < contact_threshold
         right_swing = right_force < contact_threshold
-        clearance_reward = (
-            jp.where(left_swing, left_clearance, 0.0)
-            + jp.where(right_swing, right_clearance, 0.0)
-        ) * 10.0  # Scale up small clearance values
 
         # 12. Gait periodicity (deprecated for M3 total reward; kept for metrics)
         left_loaded = left_force > contact_threshold
@@ -1671,6 +1800,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
         foot_place_reward = jp.asarray(foot_place_reward).reshape(())
         foot_place_reward = foot_place_reward * step_reward_gate
 
+        step_length_reward = compute_step_length_touchdown_reward(
+            left_x=left_x,
+            right_x=right_x,
+            touchdown_left=touchdown_left,
+            touchdown_right=touchdown_right,
+            velocity_cmd=velocity_cmd,
+            step_reward_gate=step_reward_gate,
+            target_base=jp.asarray(getattr(weights, "step_length_target_base", 0.03), dtype=jp.float32),
+            target_scale=jp.asarray(getattr(weights, "step_length_target_scale", 0.25), dtype=jp.float32),
+            sigma=jp.asarray(getattr(weights, "step_length_sigma", 0.04), dtype=jp.float32),
+        )
+
+        # Per-step-cycle progress reward: pay net forward displacement per clock cycle.
+        if current_step_count is None:
+            curr_step_i = jp.zeros((), dtype=jp.int32)
+        else:
+            curr_step_i = jp.asarray(current_step_count, dtype=jp.int32)
+        if cycle_start_forward_x is None:
+            cycle_start_forward_x = jp.zeros(())
+        cycle_progress_reward, cycle_forward_delta, cycle_complete, _ = compute_cycle_progress_terms(
+            cycle_progress_accum=cycle_start_forward_x,
+            forward_vel=forward_vel,
+            dt=self.dt,
+            current_step_count=curr_step_i,
+            stride_steps=jp.asarray(self._config.env.clock_stride_period_steps, dtype=jp.int32),
+            velocity_cmd=velocity_cmd,
+            target_scale=jp.asarray(getattr(weights, "cycle_progress_target_scale", 1.0), dtype=jp.float32),
+            sigma=jp.asarray(getattr(weights, "cycle_progress_sigma", 0.08), dtype=jp.float32),
+        )
+
         stepping_gate = jp.maximum(gait_periodicity, clearance_reward)
         stepping_gate = jp.maximum(stepping_gate, step_event)
         stepping_gate = jp.maximum(stepping_gate, liftoff_event)
@@ -1724,10 +1883,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.joint_velocity * joint_vel_penalty
             # Foot stability / recovery (M3)
             + weights.slip * slip_penalty
+            + weights.clearance * clearance_reward
             + weights.height_target * height_target_reward
             + getattr(weights, "posture", 0.0) * posture_reward
             + getattr(weights, "step_event", 0.0) * (step_event * step_reward_gate)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
+            + getattr(weights, "step_length", 0.0) * step_length_reward
+            + getattr(weights, "cycle_progress", 0.0) * cycle_progress_reward
         )
 
         # =====================================================================
@@ -1775,10 +1937,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/posture": posture_reward,
             "reward/step_event": step_event * step_reward_gate,
             "reward/foot_place": foot_place_reward,
+            "reward/step_length": step_length_reward,
+            "reward/cycle_progress": cycle_progress_reward,
             "debug/posture_mse": posture_mse,
             "debug/need_step": need_step,
             "debug/touchdown_left": touchdown_left.astype(jp.float32),
             "debug/touchdown_right": touchdown_right.astype(jp.float32),
+            "debug/cycle_complete": cycle_complete.astype(jp.float32),
+            "debug/cycle_forward_delta": cycle_forward_delta,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

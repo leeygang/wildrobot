@@ -142,6 +142,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
+        clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),
 
         # M2: base controller + residual gating (optional)
         base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),
@@ -360,6 +361,13 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         foot_place_k_cmd_vel=rewards.get("foot_place_k_cmd_vel", 0.0),
         foot_place_k_pitch=rewards.get("foot_place_k_pitch", 0.05),
         foot_place_k_fwd_vel=rewards.get("foot_place_k_fwd_vel", 0.05),
+        step_length=rewards.get("step_length", 0.0),
+        step_length_target_base=rewards.get("step_length_target_base", 0.03),
+        step_length_target_scale=rewards.get("step_length_target_scale", 0.25),
+        step_length_sigma=rewards.get("step_length_sigma", 0.04),
+        cycle_progress=rewards.get("cycle_progress", 0.0),
+        cycle_progress_target_scale=rewards.get("cycle_progress_target_scale", 1.0),
+        cycle_progress_sigma=rewards.get("cycle_progress_sigma", 0.08),
         step_need_pitch=rewards.get("step_need_pitch", 0.35),
         step_need_roll=rewards.get("step_need_roll", 0.35),
         step_need_lat_vel=rewards.get("step_need_lat_vel", 0.30),

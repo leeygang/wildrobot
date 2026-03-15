@@ -12,6 +12,13 @@ Markers: @pytest.mark.sim
 import mujoco
 import numpy as np
 import pytest
+import jax.numpy as jp
+
+from training.envs.wildrobot_env import (
+    compute_cycle_progress_terms,
+    compute_phase_gated_clearance_reward,
+    compute_step_length_touchdown_reward,
+)
 
 
 # =============================================================================
@@ -454,20 +461,146 @@ class TestFootClearanceReward:
         - Swing leg (unloaded) should get clearance reward based on height
         """
         CONTACT_THRESHOLD = 50.0  # N
+        WIDTH = 0.22
 
-        def compute_gated_clearance_reward(foot_height, contact_force,
-                                           target_height=0.05, threshold=50.0):
-            """Clearance reward gated by contact."""
-            is_swing = contact_force < threshold
-            if is_swing:
-                return min(1.0, foot_height / target_height)
-            else:
-                return 0.0  # No clearance reward for stance leg
+        # Left swing phase center (pi/2): unloaded left foot should get reward.
+        r_left_phase = compute_phase_gated_clearance_reward(
+            left_clearance=jp.asarray(0.03),
+            right_clearance=jp.asarray(0.00),
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(CONTACT_THRESHOLD),
+            phase=jp.asarray(0.5 * np.pi),
+            phase_gate_width=jp.asarray(WIDTH),
+        )
+        assert float(r_left_phase) > 0.0, f"Expected left-swing clearance reward > 0: {r_left_phase}"
 
-        # Swing leg with height → reward
-        r_swing = compute_gated_clearance_reward(0.05, 0.0)
-        assert r_swing > 0, f"Swing leg should get clearance reward: {r_swing}"
+        # Wrong phase (right swing center): same foot should not be rewarded.
+        r_wrong_phase = compute_phase_gated_clearance_reward(
+            left_clearance=jp.asarray(0.03),
+            right_clearance=jp.asarray(0.00),
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(CONTACT_THRESHOLD),
+            phase=jp.asarray(1.5 * np.pi),
+            phase_gate_width=jp.asarray(WIDTH),
+        )
+        assert np.isclose(float(r_wrong_phase), 0.0), (
+            f"Expected zero reward in wrong swing window: {r_wrong_phase}"
+        )
 
-        # Stance leg with height → no reward
-        r_stance = compute_gated_clearance_reward(0.05, 100.0)
-        assert r_stance == 0, f"Stance leg should not get clearance reward: {r_stance}"
+        # Loaded foot should get no reward even in correct phase.
+        r_loaded = compute_phase_gated_clearance_reward(
+            left_clearance=jp.asarray(0.03),
+            right_clearance=jp.asarray(0.00),
+            left_force=jp.asarray(100.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(CONTACT_THRESHOLD),
+            phase=jp.asarray(0.5 * np.pi),
+            phase_gate_width=jp.asarray(WIDTH),
+        )
+        assert np.isclose(float(r_loaded), 0.0), f"Loaded foot should not get clearance reward: {r_loaded}"
+
+
+# =============================================================================
+# Test 4.8: v0.15.9 Propulsion Rewards
+# =============================================================================
+
+
+class TestPropulsionRewardsV0159:
+    """Focused tests for v0.15.9 step-length and cycle-progress semantics."""
+
+    @pytest.mark.sim
+    def test_step_length_reward_scales_with_cmd_and_clamps_negative_step(self):
+        """Touchdown step-length target should scale with command and clamp negative landings."""
+
+        # Perfect touchdown at target should be near-max.
+        cmd = 0.2
+        target = 0.035 + 0.30 * cmd
+        r_match = compute_step_length_touchdown_reward(
+            left_x=jp.asarray(target),
+            right_x=jp.asarray(-1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(cmd),
+            step_reward_gate=jp.asarray(1.0),
+            target_base=jp.asarray(0.035),
+            target_scale=jp.asarray(0.30),
+            sigma=jp.asarray(0.03),
+        )
+        assert np.isclose(r_match, 1.0), f"Expected near-1 reward at target, got {r_match}"
+
+        # Backward touchdown should be clamped to 0 and strongly penalized for moving command.
+        r_backward = compute_step_length_touchdown_reward(
+            left_x=jp.asarray(-0.05),
+            right_x=jp.asarray(-1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(cmd),
+            step_reward_gate=jp.asarray(1.0),
+            target_base=jp.asarray(0.035),
+            target_scale=jp.asarray(0.30),
+            sigma=jp.asarray(0.03),
+        )
+        r_forward = r_match
+        assert r_backward < r_forward, (
+            f"Backward touchdown should score lower than target landing: {r_backward} < {r_forward}"
+        )
+
+        # Negative command should not reduce target below base (max(cmd, 0) behavior).
+        r_neg_cmd = compute_step_length_touchdown_reward(
+            left_x=jp.asarray(0.035),
+            right_x=jp.asarray(-1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(-0.2),
+            step_reward_gate=jp.asarray(1.0),
+            target_base=jp.asarray(0.035),
+            target_scale=jp.asarray(0.30),
+            sigma=jp.asarray(0.03),
+        )
+        r_zero_cmd = compute_step_length_touchdown_reward(
+            left_x=jp.asarray(0.035),
+            right_x=jp.asarray(-1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(0.0),
+            step_reward_gate=jp.asarray(1.0),
+            target_base=jp.asarray(0.035),
+            target_scale=jp.asarray(0.30),
+            sigma=jp.asarray(0.03),
+        )
+        assert np.isclose(r_neg_cmd, r_zero_cmd), (
+            f"Negative cmd should clamp to base target: {r_neg_cmd} vs {r_zero_cmd}"
+        )
+
+    @pytest.mark.sim
+    def test_cycle_progress_reward_only_on_cycle_complete(self):
+        """Cycle progress should integrate heading-local vx*dt and pay only on cycle boundary."""
+
+        dt = 0.02
+        stride_steps = 4
+        velocity_cmd = 0.2
+        forward_vel = 0.2
+
+        progress = 0.0
+        rewards = []
+        for step in [1, 2, 3, 4]:
+            reward, cycle_delta, complete, progress = compute_cycle_progress_terms(
+                cycle_progress_accum=jp.asarray(progress),
+                forward_vel=jp.asarray(forward_vel),
+                dt=dt,
+                current_step_count=jp.asarray(step),
+                stride_steps=jp.asarray(stride_steps),
+                velocity_cmd=jp.asarray(velocity_cmd),
+                target_scale=jp.asarray(1.0),
+                sigma=jp.asarray(0.06),
+            )
+            rewards.append(float(reward))
+
+        # No reward before boundary, then reward at completion.
+        assert rewards[0] == 0.0 and rewards[1] == 0.0 and rewards[2] == 0.0, (
+            f"Cycle reward must be zero before completion: {rewards}"
+        )
+        assert rewards[3] > 0.9, f"Cycle-complete reward should be high at target progress: {rewards[3]}"
+        assert np.isclose(progress, 0.0), f"Cycle accumulator should reset on completion, got {progress}"

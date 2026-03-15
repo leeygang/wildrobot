@@ -113,6 +113,7 @@ class EnvConfig(Freezable):
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
     clock_stride_period_steps: int = 36
+    clock_phase_gate_width: float = 0.20
 
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)
@@ -445,6 +446,14 @@ class RewardWeightsConfig(Freezable):
     foot_place_k_cmd_vel: float = 0.0  # x target correction per (m/s) commanded forward vel
     foot_place_k_pitch: float = 0.05  # x target correction per rad pitch
     foot_place_k_fwd_vel: float = 0.05  # x target correction per (m/s) forward vel
+    # v0.15.9: propulsion-per-step shaping
+    step_length: float = 0.0
+    step_length_target_base: float = 0.03  # metres
+    step_length_target_scale: float = 0.25  # metres per (m/s) velocity_cmd
+    step_length_sigma: float = 0.04  # metres
+    cycle_progress: float = 0.0
+    cycle_progress_target_scale: float = 1.0
+    cycle_progress_sigma: float = 0.08  # metres
 
     # Need-to-step gate (0..1) for stepping-only rewards to avoid marching in place
     step_need_pitch: float = 0.35  # radians
