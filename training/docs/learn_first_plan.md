@@ -150,13 +150,15 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
    - Use the already-implemented `step_event` and `foot_place` terms so stepping has a direct positive path.
 4. **Low-speed command curriculum** (`v0.15.6`, implemented)
    - Keep commands around `0.05-0.20 m/s` until stable translation exists.
-5. **Reward-path diagnostics** (next if `v0.15.6` still stalls)
+5. **Command-conditioned propulsion bias** (`v0.15.7`, implemented)
+   - If the policy learns to step without moving, reduce undirected touchdown reward and tie forward foot placement to `velocity_cmd`, not just current `forward_vel`.
+6. **Reward-path diagnostics** (next if `v0.15.7` still stalls)
    - If the step gate rarely opens, promote a minimal subset of currently logging-only gait terms such as `clearance` and `gait_periodicity` into the total reward.
-6. **Clocked observation layout** (`wr_obs_v3`, deferred)
+7. **Clocked observation layout** (`wr_obs_v3`, deferred)
    - Add gait phase features only if the structural reward fix still fails. This is likely high-impact, but it is a broader policy-contract change and should not be mixed into the first structural reward test.
-7. **Two-phase curriculum** (deferred)
+8. **Two-phase curriculum** (deferred)
    - If nominal translation still does not emerge, explicitly train stepping / weight transfer before walking commands.
-8. **Scale env count / rollout length** (deferred)
+9. **Scale env count / rollout length** (deferred)
    - Increase to larger batches only after the reward path produces real stepping. More samples should accelerate a good objective, not a bad one.
 
 ### Stage 1b Decision Rules After `v0.15.6`
@@ -172,6 +174,15 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
 - If `debug/velocity_step_gate` stays near zero through `80`, the next step is `wr_obs_v3` clock plus minimal gait terms in total reward.
 - If stepping metrics rise but `term_pitch_frac` still climbs, tighten the pitch-rate / posture branch before widening the command range.
 - Only scale to longer runs or larger batches once the policy shows both stepping engagement and non-trivial forward translation without eval-clean collapse.
+
+### `v0.15.7` Fast-Read Rule
+
+- `v0.15.7` is a propulsion-focused probe, so the minimal useful window is `60` iterations, not `80`.
+- Read it at `20`, `40`, and `60`:
+  - by `20`, forward velocity should at least move off the floor if the propulsion rebalance is helping
+  - by `40`, there should be a clear separation from the `v0.15.6` stepping-in-place basin
+  - by `60`, stop unless forward velocity is materially improving and step rewards are translating into lower velocity error
+- If `v0.15.7` is still near-zero forward velocity at `60` despite high `step_event` / `foot_place`, move directly to a clocked observation change.
 
 ### Version Milestones
 

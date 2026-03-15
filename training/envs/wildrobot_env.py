@@ -1615,7 +1615,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.asarray(getattr(weights, "foot_place_k_roll", 0.10)) * roll
         )
         x_corr = (
-            jp.asarray(getattr(weights, "foot_place_k_fwd_vel", 0.05)) * forward_vel
+            jp.asarray(getattr(weights, "foot_place_k_cmd_vel", 0.0)) * velocity_cmd
+            + jp.asarray(getattr(weights, "foot_place_k_fwd_vel", 0.05)) * forward_vel
             + jp.asarray(getattr(weights, "foot_place_k_pitch", 0.05)) * pitch
         )
         sigma_xy = jp.maximum(getattr(weights, "foot_place_sigma", 0.12), 1e-6)

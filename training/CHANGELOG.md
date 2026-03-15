@@ -7,6 +7,55 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.7] - 2026-03-14: Aggressive propulsion rebalance after `v0.15.6` learned to step in place
+
+### Summary
+Analyzes the completed `v0.15.6` run `training/wandb/offline-run-20260314_143238-eten6grc` and concludes that the structural stepping fix worked, but it converged to a new local minimum: stable stepping without useful forward propulsion. By iteration `80`, the run maintained excellent survival and low pitch failure while `debug/velocity_step_gate` stayed near `0.96` and stepping rewards stayed high, yet `env/forward_velocity` remained only about `0.003-0.006 m/s` against a commanded `0.124 m/s`. `v0.15.7` therefore becomes an aggressive propulsion probe: pay far less for arbitrary touchdown, pay much more for command-aligned forward foot placement, and increase raw forward-tracking pressure now that the policy can step without collapsing.
+
+### Results (v0.15.6)
+- Run: `training/wandb/offline-run-20260314_143238-eten6grc`
+- Checkpoints: `training/checkpoints/ppo_walking_v00156_20260314_143239-eten6grc`
+- Verdict: trapped in standing / stepping-in-place
+- Best checkpoint: `checkpoint_80_10485760.pkl`
+- Key metrics at iter `80`:
+  - `env/forward_velocity: 0.003`
+  - `env/velocity_cmd: 0.124`
+  - `env/velocity_error: 0.130`
+  - `env/success_rate: 0.985`
+  - `eval_clean/success_rate: 1.000`
+  - `term_pitch_frac: 0.015`
+  - `reward/step_event: 0.341`
+  - `reward/foot_place: 0.298`
+  - `debug/velocity_step_gate: 0.964`
+
+### Code Updates
+- add `reward_weights.foot_place_k_cmd_vel`
+- make foot-placement forward target depend on `velocity_cmd` as well as current `forward_vel`
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.7"`
+- keep the short hard-stop probe:
+  - `ppo.iterations: 60`
+- increase exploration / propulsion pressure:
+  - `ppo.entropy_coef: 0.01 -> 0.02`
+  - `env.min_velocity: 0.05 -> 0.08`
+  - `env.max_velocity: 0.20 -> 0.25`
+  - `reward_weights.tracking_lin_vel: 6.0 -> 8.0`
+  - `reward_weights.forward_velocity_scale: 5.0 -> 6.0`
+  - `reward_weights.velocity_standing_penalty: 0.4 -> 0.5`
+  - `reward_weights.velocity_standing_threshold: 0.10 -> 0.12`
+  - `reward_weights.velocity_cmd_min: 0.05 -> 0.08`
+- aggressively rebalance stepping rewards toward propulsion:
+  - `reward_weights.step_event: 0.30 -> 0.05`
+  - `reward_weights.foot_place: 0.15 -> 0.35`
+  - `reward_weights.foot_place_k_cmd_vel: 0.30`
+  - `reward_weights.foot_place_k_fwd_vel: 0.05 -> 0.08`
+
+### Training Intent
+- Bias the policy away from stepping-in-place and toward net forward placement per step.
+- Keep the run short; by `60` iterations it should be obvious whether the new objective converts stepping into propulsion.
+- If this still fails, the next step should be a more invasive observation / curriculum change rather than another small reward retune.
+
 ## [v0.15.6] - 2026-03-14: Structural reward fix after `v0.15.5` fell back to standing
 
 ### Summary
@@ -60,6 +109,18 @@ Analyzes the `v0.15.5` probe run `training/wandb/offline-run-20260314_083700-h51
 - Keep the experiment incremental: fix the objective before introducing a clocked observation contract or larger batch geometry.
 - Require real stepping engagement before the policy can earn most of its forward reward.
 - Use `40` / `60` / `80` as the staged readout, with `80` as the hard go / no-go gate for whether Stage 1b now has a viable stepping path.
+
+### Why Not Clock Yet
+- The next lever after `v0.15.5` could have been a clocked observation layout, but that was intentionally deferred in `v0.15.6`.
+- At that point the main unresolved question was still whether the reward objective itself could make the policy step, because prior runs were trapped between standing and lean-fall.
+- A clock change would have been broader and harder to attribute:
+  - new observation contract
+  - env observation changes
+  - policy / export / eval compatibility changes
+- `v0.15.6` was therefore used as the smallest structural test first:
+  - if stepping did not emerge, the next step would be clock
+  - if stepping did emerge, the next bottleneck could be isolated more cleanly
+- Result: `v0.15.6` did induce stable stepping, so the decision to delay clock was justified for diagnosis. The remaining failure after `v0.15.6` is no longer "no timing cue," but "stepping without propulsion."
 
 ## [v0.15.5] - 2026-03-14: Conservative gait-emergence reset after pitch-instability regression
 
