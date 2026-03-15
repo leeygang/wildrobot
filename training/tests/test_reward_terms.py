@@ -15,9 +15,12 @@ import pytest
 import jax.numpy as jp
 
 from training.envs.wildrobot_env import (
+    compute_dense_progress_reward,
     compute_cycle_progress_terms,
     compute_phase_gated_clearance_reward,
+    compute_propulsion_quality_gate,
     compute_step_length_touchdown_reward,
+    compute_zero_baseline_forward_reward,
 )
 
 
@@ -604,3 +607,113 @@ class TestPropulsionRewardsV0159:
         )
         assert rewards[3] > 0.9, f"Cycle-complete reward should be high at target progress: {rewards[3]}"
         assert np.isclose(progress, 0.0), f"Cycle accumulator should reset on completion, got {progress}"
+
+
+class TestRewardEconomicsV01510:
+    """Focused tests for v0.15.10 reward-economics helpers."""
+
+    @pytest.mark.sim
+    def test_zero_baseline_forward_reward_for_commanded_walking(self):
+        """Standing should be near-zero reward for commanded walking after baseline subtraction."""
+        scale = jp.asarray(6.0)
+        cmd_min = jp.asarray(0.08)
+        velocity_cmd = jp.asarray(0.16)
+
+        r_stand = compute_zero_baseline_forward_reward(
+            forward_vel=jp.asarray(0.0),
+            velocity_cmd=velocity_cmd,
+            scale=scale,
+            velocity_cmd_min=cmd_min,
+        )
+        r_move = compute_zero_baseline_forward_reward(
+            forward_vel=jp.asarray(0.16),
+            velocity_cmd=velocity_cmd,
+            scale=scale,
+            velocity_cmd_min=cmd_min,
+        )
+        assert np.isclose(float(r_stand), 0.0, atol=1e-6), f"Standing baseline should be ~0: {r_stand}"
+        assert float(r_move) > 0.5, f"Matched command should keep strong reward: {r_move}"
+        r_backward = compute_zero_baseline_forward_reward(
+            forward_vel=jp.asarray(-0.16),
+            velocity_cmd=velocity_cmd,
+            scale=scale,
+            velocity_cmd_min=cmd_min,
+        )
+        assert float(r_backward) < 0.0, f"Backward tracking should be negative vs standing baseline: {r_backward}"
+
+    @pytest.mark.sim
+    def test_dense_progress_reward_heading_local_semantics(self):
+        """Dense progress should be command-gated and increase with positive heading-local velocity."""
+        cmd_min = jp.asarray(0.08)
+        velocity_cmd = jp.asarray(0.16)
+
+        r_zero = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.0),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+        )
+        r_half = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.08),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+        )
+        r_match = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.16),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+        )
+        r_small_cmd = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.10),
+            velocity_cmd=jp.asarray(0.02),
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+        )
+        r_no_support = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.16),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(100.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+        )
+        assert np.isclose(float(r_zero), 0.0), f"No forward speed should give zero dense progress: {r_zero}"
+        assert float(r_zero) < float(r_half) < float(r_match), (
+            f"Dense reward should rise with forward speed: {r_zero}, {r_half}, {r_match}"
+        )
+        assert np.isclose(float(r_small_cmd), 0.0), f"Below cmd gate should disable dense progress: {r_small_cmd}"
+        assert np.isclose(float(r_no_support), 0.0), (
+            f"Dense progress should not open without single-support stepping evidence: {r_no_support}"
+        )
+
+    @pytest.mark.sim
+    def test_propulsion_quality_gate_depends_on_propulsion_signals(self):
+        """Propulsion gate should follow propulsion quality max(step_length, dense_progress, cycle_progress)."""
+        gate_low = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.0),
+            dense_progress_reward=jp.asarray(0.0),
+            cycle_progress_reward=jp.asarray(0.0),
+        )
+        gate_dense = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.0),
+            dense_progress_reward=jp.asarray(0.6),
+            cycle_progress_reward=jp.asarray(0.1),
+        )
+        gate_step = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.7),
+            dense_progress_reward=jp.asarray(0.2),
+            cycle_progress_reward=jp.asarray(0.1),
+        )
+        assert np.isclose(float(gate_low), 0.0), f"No propulsion signals should keep gate closed: {gate_low}"
+        assert np.isclose(float(gate_dense), 0.6), f"Gate should follow dense progress max: {gate_dense}"
+        assert np.isclose(float(gate_step), 0.7), f"Gate should follow step-length max: {gate_step}"

@@ -332,7 +332,7 @@ METRIC_SPECS: List[MetricSpec] = [
         name="debug/velocity_step_gate",
         reducer=Reducer.MEAN,
         log_prefix="debug",
-        description="Stepping engagement gate applied to forward reward",
+        description="Forward reward gate value (v0.15.10 propulsion-quality gate)",
     ),
     MetricSpec(
         name="debug/action_abs_max",
@@ -479,6 +479,17 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="debug",
         description="Accumulated heading-local forward displacement within current cycle",
+    ),
+    MetricSpec(
+        name="reward/dense_progress",
+        reducer=Reducer.MEAN,
+        description="Dense heading-local forward progress shaping reward",
+    ),
+    MetricSpec(
+        name="debug/propulsion_gate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Propulsion-quality gate applied to forward reward",
     ),
 ]
 

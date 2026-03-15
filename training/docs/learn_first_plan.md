@@ -196,6 +196,30 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
   - by `40`, there should be visible separation from stepping-in-place
   - by `60`, if forward velocity remains near zero, treat this branch as failed and move to a larger curriculum/architecture lever
 
+### `v0.15.10` Reward-Economics Fix Branch
+
+- `v0.15.9` showed that the main blocker is now reward economics, not missing stepping machinery.
+- Root-cause conclusions from `v0.15.9`:
+  - dense forward tracking still pays too much even when forward velocity is near zero
+  - generic stepping is sufficient to open the forward reward gate
+  - `step_length` and `cycle_progress` are directionally right but too sparse and too strict to dominate early learning
+- Implemented `v0.15.10` structure (fresh-run, `wr_obs_v3`):
+  - forward reward uses a zero-baseline commanded-walking form so standing / near-standing is near-zero reward
+  - forward reward gate is propulsion-quality based (`step_length`, dense progress, cycle progress), not generic stepping
+  - dense heading-local per-step forward-progress shaping is active (cycle-complete bonus retained)
+  - Stage-A propulsion targets are relaxed for early-learning gradient
+  - legacy touchdown shaping is minimized (`foot_place` near/off, `step_event` negligible)
+- Concrete tuning direction:
+  - lower `step_length_target_scale` from `0.30` toward `0.12-0.18`
+  - widen `step_length_sigma` from `0.03` toward `0.05-0.07`
+  - lower `cycle_progress_target_scale` from `1.0` toward `0.5-0.7`
+  - widen `cycle_progress_sigma` from `0.06` toward `0.10-0.14`
+- Probe policy:
+  - fresh run, not resume
+  - `ppo.iterations: 60`
+  - read at `20`, `40`, and `60`
+  - by `60`, if `env/forward_velocity <= 0.02`, treat the branch as failed
+
 ### Version Milestones
 
 #### v0.10.0 - PPO Infrastructure Setup ✅

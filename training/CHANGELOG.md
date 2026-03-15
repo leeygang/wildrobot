@@ -7,6 +7,78 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.10] - 2026-03-15: Reward-economics fix after `v0.15.9` low-propulsion basin
+
+### Summary
+`v0.15.9` confirmed that the branch is no longer blocked by missing stepping, missing clock input, or missing propulsion-specific reward terms. It is blocked by reward economics. The dense forward-tracking term still pays a large positive reward even when the robot barely moves, while the new propulsion terms (`step_length`, `cycle_progress`) are too sparse and too small in realized value to compete. PPO therefore converges to safe low-propulsion stepping because that solution is already strongly rewarded.
+
+### Results (v0.15.9)
+- Run: `training/wandb/offline-run-20260315_093127-25uho0zk`
+- Checkpoints: `training/checkpoints/ppo_walking_v00159_20260315_093129-25uho0zk`
+- Verdict: no-go; another safe stepping / near-standing basin
+- Best checkpoint by current analyzer: iter `50`
+- Key metrics near the end of the probe:
+  - `env/forward_velocity: 0.003-0.009`
+  - `env/velocity_cmd: 0.164`
+  - `env/velocity_error: 0.170-0.174`
+  - `env/success_rate: ~0.89`
+  - `eval_clean/success_rate: 1.000`
+  - `term_pitch_frac: ~0.11`
+  - `reward/step_event: ~0.354`
+  - `reward/foot_place: ~0.229`
+  - `reward/step_length: ~0.003`
+  - `reward/cycle_progress: ~0.004`
+  - `debug/velocity_step_gate: ~0.936`
+
+### Root Cause
+- Dense forward reward is still too generous at low velocity:
+  - `reward/forward = exp(-|forward_vel - velocity_cmd| * forward_velocity_scale)`
+  - at `velocity_cmd ~= 0.164` and `forward_vel ~= 0`, raw forward reward is still about `0.37`
+  - with `tracking_lin_vel: 8.0`, that is about `+3.0` reward before other shaping
+- The standing penalty is far too small to offset that basin:
+  - `velocity_standing_penalty: 0.5`
+- The step gate still opens on generic stepping signals rather than propulsion-quality signals:
+  - clearance / periodicity / touchdown are enough to unlock the dense forward reward
+- The new propulsion terms are numerically too weak in practice:
+  - `step_length` and `cycle_progress` are correct directionally, but their realized values stay around `0.001-0.005`
+  - `cycle_progress` is also sparse because it only pays on cycle completion
+- Net result:
+  - safe stepping with little translation is already highly rewarded
+  - real propulsion is too sparse and too hard to discover early
+
+### Code Updates
+- `training/envs/wildrobot_env.py`
+  - add `compute_zero_baseline_forward_reward()` and apply it to forward tracking so commanded near-standing no longer gets large positive reward
+  - add `compute_dense_progress_reward()` for dense heading-local propulsion credit each step
+  - add `compute_propulsion_quality_gate()` and gate forward reward on propulsion-quality (`step_length`, dense progress, cycle progress), replacing generic stepping gate economics
+  - keep cycle progress heading-local and cycle-complete, but pair it with dense per-step progress shaping
+- `training/configs/training_runtime_config.py`, `training/configs/training_config.py`
+  - add and parse `reward_weights.dense_progress`
+- `training/tests/test_reward_terms.py`
+  - add helper-linked tests for zero-baseline forward reward, propulsion-quality gate, and dense progress semantics
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.10"`
+- keep fresh-run, `wr_obs_v3`, and short probe (`ppo.iterations: 60`)
+- relax Stage-A propulsion targets:
+  - `step_length_target_scale: 0.30 -> 0.15`
+  - `step_length_sigma: 0.03 -> 0.06`
+  - `cycle_progress_target_scale: 1.0 -> 0.6`
+  - `cycle_progress_sigma: 0.06 -> 0.12`
+- densify propulsion shaping:
+  - `dense_progress: 0.8`
+- reduce legacy stepping reward path:
+  - `step_event: 0.001`
+  - `foot_place: 0.0`
+
+### Training Intent
+- Break the reward basin first, not the controller architecture.
+- The next probe should answer whether propulsion becomes economically preferable once bad tracking no longer pays well.
+- Readout:
+  - iter `20`: forward velocity should clearly exceed the `v0.15.9` floor
+  - iter `40`: should separate from safe stepping / near-standing
+  - iter `60`: if `env/forward_velocity <= 0.02`, treat the branch as failed
+
 ## [v0.15.9] - 2026-03-15: Per-step propulsion rewards after `v0.15.8` still stepped in place
 
 ### Summary

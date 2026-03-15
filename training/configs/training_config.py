@@ -365,6 +365,7 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         step_length_target_base=rewards.get("step_length_target_base", 0.03),
         step_length_target_scale=rewards.get("step_length_target_scale", 0.25),
         step_length_sigma=rewards.get("step_length_sigma", 0.04),
+        dense_progress=rewards.get("dense_progress", 0.0),
         cycle_progress=rewards.get("cycle_progress", 0.0),
         cycle_progress_target_scale=rewards.get("cycle_progress_target_scale", 1.0),
         cycle_progress_sigma=rewards.get("cycle_progress_sigma", 0.08),

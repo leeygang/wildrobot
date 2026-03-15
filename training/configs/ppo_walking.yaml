@@ -1,13 +1,13 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.9)
+# WildRobot PPO Walking Config (v0.15.10)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
 # only. This config moves to the larger lever after `v0.15.7` confirmed that
-# reward-only tuning still yielded stepping without propulsion. `v0.15.9`
-# keeps `wr_obs_v3` but switches to per-step propulsion rewards:
-# touchdown step length + cycle displacement + phase-gated clearance.
+# `v0.15.10` keeps `wr_obs_v3` but fixes reward economics:
+# zero-baseline forward reward, propulsion-quality gating, and denser
+# forward-progress shaping so propulsion dominates safe stepping.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
@@ -15,8 +15,8 @@
 # the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.9"
-version_name: "Stage 1b per-step propulsion probe"
+version: "0.15.10"
+version_name: "Stage 1b reward-economics propulsion probe"
 
 seed: 42
 
@@ -163,8 +163,7 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # v0.15.9: keep wr_obs_v3, but force propulsion to come from per-step and
-  # per-cycle forward progress rather than generic step activity.
+  # v0.15.10: keep wr_obs_v3, but shift economics so near-standing does not pay.
   tracking_lin_vel: 8.0
   lateral_velocity: -0.3
   # Note: this term multiplies `healthy` in env reward, so keep it low.
@@ -201,17 +200,18 @@ reward_weights:
   velocity_standing_threshold: 0.12
   velocity_cmd_min: 0.08
 
-  # Aggressive propulsion rebalance: pay less for arbitrary stepping and much
-  # more for command-aligned forward placement.
-  step_event: 0.005
-  foot_place: 0.08
+  # Stage-A propulsion probe: legacy stepping rewards are negligible; propulsion
+  # terms should drive the optimization path.
+  step_event: 0.001
+  foot_place: 0.0
   step_length: 1.0
   step_length_target_base: 0.035
-  step_length_target_scale: 0.30
-  step_length_sigma: 0.03
-  cycle_progress: 1.2
-  cycle_progress_target_scale: 1.0
-  cycle_progress_sigma: 0.06
+  step_length_target_scale: 0.15
+  step_length_sigma: 0.06
+  dense_progress: 0.8
+  cycle_progress: 1.0
+  cycle_progress_target_scale: 0.6
+  cycle_progress_sigma: 0.12
   foot_place_k_cmd_vel: 0.30
   foot_place_k_fwd_vel: 0.08
 
@@ -238,7 +238,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.9]
+  tags: [ppo, stage1, walking, v0.15.10]
 
 video:
   enabled: true

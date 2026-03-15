@@ -451,6 +451,7 @@ class RewardWeightsConfig(Freezable):
     step_length_target_base: float = 0.03  # metres
     step_length_target_scale: float = 0.25  # metres per (m/s) velocity_cmd
     step_length_sigma: float = 0.04  # metres
+    dense_progress: float = 0.0
     cycle_progress: float = 0.0
     cycle_progress_target_scale: float = 1.0
     cycle_progress_sigma: float = 0.08  # metres

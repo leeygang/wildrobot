@@ -78,6 +78,7 @@ REWARD_TERM_KEYS = [
     "reward/step_event",
     "reward/foot_place",
     "reward/step_length",
+    "reward/dense_progress",
     "reward/cycle_progress",
 ]
 
@@ -121,6 +122,7 @@ ENV_METRICS_KEYS = {
     "reward/step_event": "Touchdown event reward gated by step need or walking command",
     "reward/foot_place": "Foot placement reward gated by step need or walking command",
     "reward/step_length": "Touchdown step-length reward tied to commanded speed",
+    "reward/dense_progress": "Dense heading-local forward progress shaping reward",
     "reward/cycle_progress": "Per-clock-cycle forward displacement reward",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
@@ -134,7 +136,8 @@ ENV_METRICS_KEYS = {
     "debug/right_toe_switch": "Right toe switch state",
     "debug/right_heel_switch": "Right heel switch state",
     "debug/pitch_rate": "Root pitch rate (heading-local angvel y)",
-    "debug/velocity_step_gate": "Stepping engagement gate applied to forward reward",
+    "debug/velocity_step_gate": "Forward reward gate value (v0.15.10 propulsion-quality gate)",
+    "debug/propulsion_gate": "Propulsion-quality gate applied to forward reward",
     "debug/cycle_complete": "Clock cycle completion event",
     "debug/cycle_forward_delta": "Cycle forward displacement used for cycle progress reward",
     "debug/action_abs_max": "Max |action| across actuators (post-filter)",
@@ -242,6 +245,7 @@ def get_initial_env_metrics(
         "reward/step_event": 0.0,
         "reward/foot_place": 0.0,
         "reward/step_length": 0.0,
+        "reward/dense_progress": 0.0,
         "reward/cycle_progress": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
@@ -266,6 +270,7 @@ def get_initial_env_metrics(
         "debug/need_step": 0.0,
         "debug/touchdown_left": 0.0,
         "debug/touchdown_right": 0.0,
+        "debug/propulsion_gate": 0.0,
         "debug/cycle_complete": 0.0,
         "debug/cycle_forward_delta": 0.0,
         # v0.14.x: M3 base-controller FSM debug metrics
@@ -356,6 +361,7 @@ def get_initial_env_metrics_jax(
         "reward/step_event": jp.zeros(()),
         "reward/foot_place": jp.zeros(()),
         "reward/step_length": jp.zeros(()),
+        "reward/dense_progress": jp.zeros(()),
         "reward/cycle_progress": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),
@@ -380,6 +386,7 @@ def get_initial_env_metrics_jax(
         "debug/need_step": jp.zeros(()),
         "debug/touchdown_left": jp.zeros(()),
         "debug/touchdown_right": jp.zeros(()),
+        "debug/propulsion_gate": jp.zeros(()),
         "debug/cycle_complete": jp.zeros(()),
         "debug/cycle_forward_delta": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)

@@ -242,6 +242,57 @@ def compute_cycle_progress_terms(
     return cycle_progress_reward, cycle_forward_delta, cycle_complete, next_cycle_progress_accum
 
 
+def compute_zero_baseline_forward_reward(
+    forward_vel: jax.Array,
+    velocity_cmd: jax.Array,
+    scale: jax.Array,
+    velocity_cmd_min: jax.Array,
+) -> jax.Array:
+    """Compute forward tracking reward with standing baseline removed for walking commands."""
+    scale = jp.asarray(scale, dtype=jp.float32)
+    velocity_cmd_min = jp.asarray(velocity_cmd_min, dtype=jp.float32)
+    vel_error = jp.abs(forward_vel - velocity_cmd)
+    raw_reward = jp.exp(-vel_error * scale)
+    standing_baseline = jp.exp(-jp.abs(velocity_cmd) * scale)
+    cmd_gate = (jp.abs(velocity_cmd) > velocity_cmd_min).astype(jp.float32)
+    reward_zero_baseline = raw_reward - standing_baseline
+    return (1.0 - cmd_gate) * raw_reward + cmd_gate * reward_zero_baseline
+
+
+def compute_dense_progress_reward(
+    forward_vel: jax.Array,
+    velocity_cmd: jax.Array,
+    velocity_cmd_min: jax.Array,
+    left_force: jax.Array,
+    right_force: jax.Array,
+    contact_threshold: jax.Array,
+) -> jax.Array:
+    """Dense heading-local propulsion shaping gated by single-support contact evidence."""
+    velocity_cmd_min = jp.maximum(jp.asarray(velocity_cmd_min, dtype=jp.float32), 1e-3)
+    cmd_abs = jp.abs(velocity_cmd)
+    forward_pos = jp.maximum(forward_vel, 0.0)
+    norm_den = jp.maximum(cmd_abs, velocity_cmd_min)
+    ratio = jp.clip(forward_pos / norm_den, 0.0, 1.0)
+    cmd_gate = (cmd_abs > velocity_cmd_min).astype(jp.float32)
+    left_loaded = left_force > contact_threshold
+    right_loaded = right_force > contact_threshold
+    support_gate = (left_loaded ^ right_loaded).astype(jp.float32)
+    return ratio * cmd_gate * support_gate
+
+
+def compute_propulsion_quality_gate(
+    step_length_reward: jax.Array,
+    dense_progress_reward: jax.Array,
+    cycle_progress_reward: jax.Array,
+) -> jax.Array:
+    """Gate forward reward using propulsion-quality signals instead of generic stepping."""
+    return jp.clip(
+        jp.maximum(step_length_reward, jp.maximum(dense_progress_reward, cycle_progress_reward)),
+        0.0,
+        1.0,
+    )
+
+
 # =============================================================================
 # Asset Loading
 # =============================================================================
@@ -542,10 +593,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_pose = self._cal.get_root_pose(data)
         height = root_pose.height
 
-        # v0.10.1: Simplified initial reward (robot at rest, no slip/clearance yet)
-        # Forward reward: robot is stationary (vel=0), so miss target by velocity_cmd
-        forward_reward = jp.exp(
-            -velocity_cmd * self._config.reward_weights.forward_velocity_scale
+        # v0.15.10: Keep reset forward reward semantics aligned with step reward.
+        forward_reward = compute_zero_baseline_forward_reward(
+            forward_vel=jp.zeros(()),
+            velocity_cmd=velocity_cmd,
+            scale=self._config.reward_weights.forward_velocity_scale,
+            velocity_cmd_min=self._config.reward_weights.velocity_cmd_min,
         )
 
         # Healthy reward: robot is upright at reset
@@ -958,11 +1011,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
             "reward/step_length": metrics.get("reward/step_length", jp.zeros(())),
+            "reward/dense_progress": metrics.get("reward/dense_progress", jp.zeros(())),
             "reward/cycle_progress": metrics.get("reward/cycle_progress", jp.zeros(())),
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
             "debug/touchdown_left": metrics.get("debug/touchdown_left", jp.zeros(())),
             "debug/touchdown_right": metrics.get("debug/touchdown_right", jp.zeros(())),
             "debug/velocity_step_gate": metrics.get("debug/velocity_step_gate", jp.zeros(())),
+            "debug/propulsion_gate": metrics.get("debug/propulsion_gate", jp.zeros(())),
             "debug/cycle_complete": metrics.get("debug/cycle_complete", jp.zeros(())),
             "debug/cycle_forward_delta": metrics.get("debug/cycle_forward_delta", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
@@ -1500,8 +1555,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 1. Forward velocity tracking (exp shaping)
         forward_vel, lateral_vel, v_z = root_vel.linear_xyz
         vel_error = jp.abs(forward_vel - velocity_cmd)
-        forward_reward = jp.exp(
-            -vel_error * self._config.reward_weights.forward_velocity_scale
+        forward_reward = compute_zero_baseline_forward_reward(
+            forward_vel=forward_vel,
+            velocity_cmd=velocity_cmd,
+            scale=self._config.reward_weights.forward_velocity_scale,
+            velocity_cmd_min=self._config.reward_weights.velocity_cmd_min,
         )
 
         # 2. Lateral velocity penalty (penalize sideways drift)
@@ -1829,14 +1887,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
             target_scale=jp.asarray(getattr(weights, "cycle_progress_target_scale", 1.0), dtype=jp.float32),
             sigma=jp.asarray(getattr(weights, "cycle_progress_sigma", 0.08), dtype=jp.float32),
         )
-
-        stepping_gate = jp.maximum(gait_periodicity, clearance_reward)
-        stepping_gate = jp.maximum(stepping_gate, step_event)
-        stepping_gate = jp.maximum(stepping_gate, liftoff_event)
-        stepping_gate = jp.clip(stepping_gate, 0.0, 1.0)
+        dense_progress_reward = compute_dense_progress_reward(
+            forward_vel=forward_vel,
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=jp.asarray(getattr(weights, "velocity_cmd_min", 0.2), dtype=jp.float32),
+            left_force=left_force,
+            right_force=right_force,
+            contact_threshold=contact_threshold,
+        )
+        propulsion_gate = compute_propulsion_quality_gate(
+            step_length_reward=step_length_reward,
+            dense_progress_reward=dense_progress_reward,
+            cycle_progress_reward=cycle_progress_reward,
+        )
         forward_reward = forward_reward * (
             (1.0 - getattr(weights, "velocity_step_gate", 0.0))
-            + getattr(weights, "velocity_step_gate", 0.0) * stepping_gate
+            + getattr(weights, "velocity_step_gate", 0.0) * propulsion_gate
         )
 
         # =====================================================================
@@ -1852,7 +1918,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd_min = weights.velocity_cmd_min
 
         # Smooth penalty: how far below threshold (0 if at/above threshold)
-        velocity_deficit = jp.maximum(standing_threshold - jp.abs(forward_vel), 0.0)
+        cmd_sign = jp.where(velocity_cmd >= 0.0, 1.0, -1.0)
+        signed_forward_vel = cmd_sign * forward_vel
+        velocity_deficit = jp.maximum(standing_threshold - signed_forward_vel, 0.0)
         standing_penalty_raw = velocity_deficit / (standing_threshold + 1e-6)
 
         # Gate by command magnitude: only penalize if asked to move (supports future backward cmds)
@@ -1889,6 +1957,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + getattr(weights, "step_event", 0.0) * (step_event * step_reward_gate)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
             + getattr(weights, "step_length", 0.0) * step_length_reward
+            + getattr(weights, "dense_progress", 0.0) * dense_progress_reward
             + getattr(weights, "cycle_progress", 0.0) * cycle_progress_reward
         )
 
@@ -1938,6 +2007,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_event": step_event * step_reward_gate,
             "reward/foot_place": foot_place_reward,
             "reward/step_length": step_length_reward,
+            "reward/dense_progress": dense_progress_reward,
             "reward/cycle_progress": cycle_progress_reward,
             "debug/posture_mse": posture_mse,
             "debug/need_step": need_step,
@@ -1957,7 +2027,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/right_toe_switch": foot_switches[2],
             "debug/right_heel_switch": foot_switches[3],
             "debug/pitch_rate": pitch_rate,
-            "debug/velocity_step_gate": stepping_gate,
+            "debug/velocity_step_gate": propulsion_gate,
+            "debug/propulsion_gate": propulsion_gate,
             "debug/action_abs_max": action_abs_max,
             "debug/action_sat_frac": action_sat_frac,
             "debug/raw_action_abs_max": raw_action_abs_max,
