@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 
-SUPPORTED_LAYOUT_IDS = {"wr_obs_v1", "wr_obs_v2"}
+SUPPORTED_LAYOUT_IDS = {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}
 SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
@@ -333,6 +333,25 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
         if got != expected:
             raise ValueError(
                 "observation.layout mismatch for layout_id='wr_obs_v2':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v3":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("gait_clock", 4),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v3':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )

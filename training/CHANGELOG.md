@@ -7,6 +7,49 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.8] - 2026-03-14: Clocked observation after `v0.15.7` exhausted reward-only tuning
+
+### Summary
+Analyzes the completed `v0.15.7` run `training/wandb/offline-run-20260314_193228-0y0j38w2` and concludes that reward-only tuning is no longer the main bottleneck. The policy again stayed upright, opened the stepping gate, and produced strong step rewards, yet still failed to generate useful forward motion. By iteration `60`, `debug/velocity_step_gate` remained near `0.96`, `reward/step_event` remained high, and `eval_clean/success_rate` returned to `1.0`, while `env/forward_velocity` was still only about `0.008 m/s` against `env/velocity_cmd ≈ 0.164`. That means the next justified lever is no longer another local reward retune, but an observation change: `wr_obs_v3` adds an explicit gait clock so the actor can coordinate periodic stepping and propulsion more directly.
+
+### Results (v0.15.7)
+- Run: `training/wandb/offline-run-20260314_193228-0y0j38w2`
+- Checkpoints: `training/checkpoints/ppo_walking_v00157_20260314_193230-0y0j38w2`
+- Verdict: reward-only tuning exhausted; still stepping without propulsion
+- Best checkpoint: `checkpoint_60_7864320.pkl`
+- Key metrics at iter `60`:
+  - `env/forward_velocity: 0.008`
+  - `env/velocity_cmd: 0.164`
+  - `env/velocity_error: 0.166`
+  - `env/success_rate: 0.951`
+  - `eval_clean/success_rate: 1.000`
+  - `term_pitch_frac: 0.049`
+  - `reward/step_event: 0.353`
+  - `reward/foot_place: 0.205`
+  - `debug/velocity_step_gate: 0.961`
+
+### Code Updates
+- add policy-contract layout `wr_obs_v3`
+- add 4-D gait clock features (`sin/cos` for left and right phase) to JAX and NumPy observation builders
+- add `env.clock_stride_period_steps`
+- wire clock features through the training env and policy visualization path
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.8"`
+- switch actor observation layout:
+  - `env.actor_obs_layout_id: wr_obs_v1 -> wr_obs_v3`
+  - `env.clock_stride_period_steps: 36`
+- keep the aggressive propulsion objective from `v0.15.7`
+- increase exploration slightly for the fresh contract change:
+  - `ppo.entropy_coef: 0.02 -> 0.03`
+- keep the short hard-stop probe:
+  - `ppo.iterations: 60`
+
+### Training Intent
+- This is a fresh run, not a resume-safe continuation. `wr_obs_v3` changes the policy contract.
+- Give the actor an explicit periodic cue now that the reward path can already induce stable stepping.
+- Use the same `20` / `40` / `60` readout, but expect a clearer answer faster than the reward-only branches.
+
 ## [v0.15.7] - 2026-03-14: Aggressive propulsion rebalance after `v0.15.6` learned to step in place
 
 ### Summary

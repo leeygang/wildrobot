@@ -20,14 +20,20 @@ def build_observation_from_components(
     prev_action: jnp.ndarray,
     velocity_cmd: jnp.ndarray,
     capture_point_error: jnp.ndarray | None = None,
+    gait_clock: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2"}:
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
     cp_error = (
         jnp.zeros((2,), dtype=jnp.float32)
         if capture_point_error is None
         else capture_point_error.reshape(2)
+    )
+    clock = (
+        jnp.zeros((4,), dtype=jnp.float32)
+        if gait_clock is None
+        else gait_clock.reshape(4)
     )
 
     parts = [
@@ -41,6 +47,8 @@ def build_observation_from_components(
     ]
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
+    if spec.observation.layout_id == "wr_obs_v3":
+        parts.append(clock)
     parts.append(jnp.zeros((1,), dtype=jnp.float32))
 
     obs = jnp.concatenate(parts)
@@ -54,6 +62,7 @@ def build_observation(
     signals: Signals,
     velocity_cmd: jnp.ndarray,
     capture_point_error: jnp.ndarray | None = None,
+    gait_clock: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -71,4 +80,5 @@ def build_observation(
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
         capture_point_error=capture_point_error,
+        gait_clock=gait_clock,
     )

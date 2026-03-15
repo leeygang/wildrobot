@@ -154,8 +154,8 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
    - If the policy learns to step without moving, reduce undirected touchdown reward and tie forward foot placement to `velocity_cmd`, not just current `forward_vel`.
 6. **Reward-path diagnostics** (next if `v0.15.7` still stalls)
    - If the step gate rarely opens, promote a minimal subset of currently logging-only gait terms such as `clearance` and `gait_periodicity` into the total reward.
-7. **Clocked observation layout** (`wr_obs_v3`, deferred)
-   - Add gait phase features only if the structural reward fix still fails. This is likely high-impact, but it is a broader policy-contract change and should not be mixed into the first structural reward test.
+7. **Clocked observation layout** (`wr_obs_v3`, implemented in `v0.15.8`)
+   - After `v0.15.7`, reward-only tuning had clearly run out: the policy could step and stay upright but still could not produce propulsion. `wr_obs_v3` adds an explicit gait clock so the actor does not need to infer periodic timing from scratch.
 8. **Two-phase curriculum** (deferred)
    - If nominal translation still does not emerge, explicitly train stepping / weight transfer before walking commands.
 9. **Scale env count / rollout length** (deferred)
@@ -175,14 +175,14 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
 - If stepping metrics rise but `term_pitch_frac` still climbs, tighten the pitch-rate / posture branch before widening the command range.
 - Only scale to longer runs or larger batches once the policy shows both stepping engagement and non-trivial forward translation without eval-clean collapse.
 
-### `v0.15.7` Fast-Read Rule
+### `v0.15.8` Fast-Read Rule
 
-- `v0.15.7` is a propulsion-focused probe, so the minimal useful window is `60` iterations, not `80`.
+- `v0.15.8` is the first clocked walking probe, so keep the same `60`-iteration fast-read window.
 - Read it at `20`, `40`, and `60`:
-  - by `20`, forward velocity should at least move off the floor if the propulsion rebalance is helping
-  - by `40`, there should be a clear separation from the `v0.15.6` stepping-in-place basin
-  - by `60`, stop unless forward velocity is materially improving and step rewards are translating into lower velocity error
-- If `v0.15.7` is still near-zero forward velocity at `60` despite high `step_event` / `foot_place`, move directly to a clocked observation change.
+  - by `20`, forward velocity should move off the floor more clearly than `v0.15.7`
+  - by `40`, there should be a visible separation from the reward-only stepping-in-place basin
+  - by `60`, stop unless forward velocity is materially improving and velocity error is dropping
+- If `v0.15.8` still cannot turn stepping into propulsion by `60`, stop doing local reward tuning and move to a more explicit curriculum / architecture change.
 
 ### Version Milestones
 

@@ -112,6 +112,7 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
+    clock_stride_period_steps: int = 36
 
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)

@@ -20,14 +20,20 @@ def build_observation_from_components(
     prev_action: np.ndarray,
     velocity_cmd: np.ndarray,
     capture_point_error: np.ndarray | None = None,
+    gait_clock: np.ndarray | None = None,
 ) -> np.ndarray:
-    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2"}:
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
     cp_error = (
         np.zeros((2,), dtype=np.float32)
         if capture_point_error is None
         else np.asarray(capture_point_error, dtype=np.float32).reshape(2)
+    )
+    clock = (
+        np.zeros((4,), dtype=np.float32)
+        if gait_clock is None
+        else np.asarray(gait_clock, dtype=np.float32).reshape(4)
     )
 
     parts = [
@@ -41,6 +47,8 @@ def build_observation_from_components(
     ]
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
+    if spec.observation.layout_id == "wr_obs_v3":
+        parts.append(clock)
     parts.append(np.zeros((1,), dtype=np.float32))
 
     obs = np.concatenate(parts)
@@ -54,6 +62,7 @@ def build_observation(
     signals: Signals,
     velocity_cmd: np.ndarray,
     capture_point_error: np.ndarray | None = None,
+    gait_clock: np.ndarray | None = None,
 ) -> np.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -71,4 +80,5 @@ def build_observation(
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
         capture_point_error=capture_point_error,
+        gait_clock=gait_clock,
     )

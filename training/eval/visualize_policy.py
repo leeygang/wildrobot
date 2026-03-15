@@ -448,15 +448,34 @@ def main():
     )
     prev_action = default_policy_action.copy()
 
-    def get_observation(mj_data, velocity_cmd, prev_action_in):
+    clock_stride_period_steps = int(env_cfg.get("clock_stride_period_steps", 36))
+
+    def get_gait_clock(step_count: int) -> np.ndarray:
+        phase = 2.0 * np.pi * (float(step_count) / max(clock_stride_period_steps, 1))
+        phase_right = phase + np.pi
+        return np.asarray(
+            [
+                np.sin(phase),
+                np.cos(phase),
+                np.sin(phase_right),
+                np.cos(phase_right),
+            ],
+            dtype=np.float32,
+        )
+
+    def get_observation(mj_data, velocity_cmd, prev_action_in, step_count):
         """Compute observation via policy_contract (hardware-aligned)."""
         signals = signals_adapter.read(mj_data)
+        gait_clock = None
+        if policy_spec.observation.layout_id == "wr_obs_v3":
+            gait_clock = get_gait_clock(step_count)
 
         obs = build_observation(
             spec=policy_spec,
             state=PolicyState(prev_action=np.asarray(prev_action_in, dtype=np.float32)),
             signals=signals,
             velocity_cmd=np.array(velocity_cmd, dtype=np.float32),
+            gait_clock=gait_clock,
         )
 
         return obs
@@ -741,7 +760,7 @@ def main():
         )  # Limit steps if not recording
         while step_count < max_steps:
             # Get observation from native MuJoCo state
-            obs = get_observation(mj_data, velocity_cmd, prev_action)
+            obs = get_observation(mj_data, velocity_cmd, prev_action, step_count)
             obs_jax = jnp.asarray(obs)
 
             # Get action from policy
@@ -887,7 +906,7 @@ def main():
                     step_start = time.time()
 
                     # Get observation from native MuJoCo state
-                    obs = get_observation(mj_data, velocity_cmd, prev_action)
+                    obs = get_observation(mj_data, velocity_cmd, prev_action, step_count)
                     obs_jax = jnp.asarray(obs)
 
                     # Get action from policy

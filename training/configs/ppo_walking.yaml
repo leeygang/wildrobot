@@ -1,12 +1,12 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.7)
+# WildRobot PPO Walking Config (v0.15.8)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config aggressively converts the `v0.15.6` stepping-in-place basin
-# into a propulsion-seeking objective by reducing undirected touchdown reward and
-# biasing foot placement toward the commanded forward speed.
+# only. This config moves to the larger lever after `v0.15.7` confirmed that
+# reward-only tuning still yields stepping without propulsion: a clocked actor
+# observation (`wr_obs_v3`) plus the existing aggressive propulsion reward mix.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
@@ -14,8 +14,8 @@
 # the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.7"
-version_name: "Stage 1b walking aggressive propulsion probe"
+version: "0.15.8"
+version_name: "Stage 1b walking clocked propulsion probe"
 
 seed: 42
 
@@ -51,7 +51,8 @@ env:
   # Slightly more damping than v0.15.4 to reduce pitchy forward-diving behavior
   # while still allowing gait emergence.
   action_filter_alpha: 0.3
-  actor_obs_layout_id: wr_obs_v1
+  actor_obs_layout_id: wr_obs_v3
+  clock_stride_period_steps: 36
 
   # Controllers off for Stage 1 walking.
   base_ctrl_enabled: false
@@ -81,7 +82,7 @@ ppo:
   gae_lambda: 0.95
 
   clip_epsilon: 0.15
-  entropy_coef: 0.02
+  entropy_coef: 0.03
   value_loss_coef: 0.5
 
   epochs: 2
@@ -160,8 +161,9 @@ networks:
 # Task Reward Weights
 # =============================================================================
 reward_weights:
-  # v0.15.7: after `v0.15.6` discovered stable stepping without propulsion,
-  # aggressively rebalance toward commanded forward translation.
+  # v0.15.8: keep the aggressive propulsion mix from `v0.15.7`, but now give
+  # the actor an explicit gait clock so it does not have to discover timing
+  # from scratch while also solving propulsion.
   tracking_lin_vel: 8.0
   lateral_velocity: -0.3
   # Note: this term multiplies `healthy` in env reward, so keep it low.
@@ -228,7 +230,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.7]
+  tags: [ppo, stage1, walking, v0.15.8]
 
 video:
   enabled: true

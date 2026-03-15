@@ -437,7 +437,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             raw_signals, push_schedule.rng, self._config, None, None
         )
 
-        obs = self._get_obs(data, default_action, velocity_cmd, signals=signals_override)
+        obs = self._get_obs(
+            data,
+            default_action,
+            velocity_cmd,
+            step_count=jp.zeros((), dtype=jp.int32),
+            signals=signals_override,
+        )
 
         # Initial reward and done
         reward = jp.zeros(())
@@ -688,8 +694,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data,
             filtered_action,
             velocity_cmd,
-            prev_root_pos,
-            prev_root_quat,
+            step_count=step_count + 1,
+            prev_root_pos=prev_root_pos,
+            prev_root_quat=prev_root_quat,
             signals=signals_override,
         )
 
@@ -1254,6 +1261,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data: mjx.Data,
         action: jax.Array,
         velocity_cmd: jax.Array,
+        step_count: Optional[jax.Array] = None,
         prev_root_pos: Optional[jax.Array] = None,
         prev_root_quat: Optional[jax.Array] = None,
         signals=None,
@@ -1290,14 +1298,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             signals = self._signals_adapter.read(data)
         policy_state = PolicyState(prev_action=action)
         capture_point_error = None
+        gait_clock = None
         if self._policy_spec.observation.layout_id == "wr_obs_v2":
             capture_point_error = self._get_capture_point_error(data)
+        elif self._policy_spec.observation.layout_id == "wr_obs_v3":
+            gait_clock = self._get_gait_clock(step_count)
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
             velocity_cmd=velocity_cmd,
             capture_point_error=capture_point_error,
+            gait_clock=gait_clock,
         )
 
     def _get_capture_point_error(self, data: mjx.Data) -> jax.Array:
@@ -1313,6 +1325,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [
                 -vx / omega0,
                 -vy / omega0,
+            ],
+            dtype=jp.float32,
+        )
+
+    def _get_gait_clock(self, step_count: Optional[jax.Array]) -> jax.Array:
+        """Return left/right sinusoidal gait clock features for `wr_obs_v3`."""
+        if step_count is None:
+            step_count = jp.zeros((), dtype=jp.float32)
+        step = jp.asarray(step_count, dtype=jp.float32)
+        stride_steps = jp.maximum(
+            jp.asarray(self._config.env.clock_stride_period_steps, dtype=jp.float32),
+            1.0,
+        )
+        phase = 2.0 * jp.pi * (step / stride_steps)
+        phase_right = phase + jp.pi
+        return jp.asarray(
+            [
+                jp.sin(phase),
+                jp.cos(phase),
+                jp.sin(phase_right),
+                jp.cos(phase_right),
             ],
             dtype=jp.float32,
         )
