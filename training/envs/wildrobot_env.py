@@ -211,6 +211,71 @@ def compute_step_length_touchdown_reward(
     return jp.asarray(reward).reshape(()) * step_reward_gate
 
 
+def compute_step_progress_touchdown_reward(
+    current_root_pos: jax.Array,
+    last_touchdown_root_pos: jax.Array,
+    last_touchdown_foot: jax.Array,
+    heading_sin: jax.Array,
+    heading_cos: jax.Array,
+    touchdown_left: jax.Array,
+    touchdown_right: jax.Array,
+    velocity_cmd: jax.Array,
+    velocity_cmd_min: jax.Array,
+    step_reward_gate: jax.Array,
+    dt: float,
+    stride_steps: jax.Array,
+    target_scale: jax.Array,
+    sigma: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute touchdown-to-touchdown structured step progress reward."""
+    last_touchdown_foot_i = jp.asarray(last_touchdown_foot, dtype=jp.int32)
+    touchdown_any = jp.logical_or(touchdown_left, touchdown_right)
+    touchdown_foot = jp.where(
+        touchdown_left,
+        jp.asarray(0, dtype=jp.int32),
+        jp.where(touchdown_right, jp.asarray(1, dtype=jp.int32), last_touchdown_foot_i),
+    )
+    has_prev_touchdown = last_touchdown_foot_i >= 0
+    alternating_touchdown = touchdown_any & has_prev_touchdown & (touchdown_foot != last_touchdown_foot_i)
+
+    delta_world = current_root_pos - last_touchdown_root_pos
+    progress_delta = heading_cos * delta_world[0] + heading_sin * delta_world[1]
+    step_target = (
+        jp.maximum(velocity_cmd, 0.0)
+        * dt
+        * jp.maximum(jp.asarray(stride_steps, dtype=jp.float32), 1.0)
+        * 0.5
+        * jp.asarray(target_scale, dtype=jp.float32)
+    )
+    sigma = jp.maximum(jp.asarray(sigma, dtype=jp.float32), 1e-6)
+    reward_raw = jp.exp(-jp.square((progress_delta - step_target) / sigma))
+    zero_progress_baseline = jp.exp(-jp.square(step_target / sigma))
+    cmd_gate = compute_command_active_gate(velocity_cmd, velocity_cmd_min)
+    reward_centered = (1.0 - cmd_gate) * reward_raw + cmd_gate * (reward_raw - zero_progress_baseline)
+    reward = jp.where(alternating_touchdown, reward_centered, 0.0) * step_reward_gate
+
+    next_last_touchdown_root_pos = jp.where(
+        touchdown_any,
+        jp.asarray(current_root_pos, dtype=jp.float32),
+        jp.asarray(last_touchdown_root_pos, dtype=jp.float32),
+    )
+    next_last_touchdown_foot = jp.where(touchdown_any, touchdown_foot, last_touchdown_foot_i)
+
+    return (
+        jp.asarray(reward).reshape(()),
+        jp.asarray(progress_delta).reshape(()),
+        alternating_touchdown.astype(jp.float32).reshape(()),
+        next_last_touchdown_root_pos.reshape((3,)),
+        next_last_touchdown_foot.reshape(()),
+    )
+
+
+def compute_command_active_gate(velocity_cmd: jax.Array, velocity_cmd_min: jax.Array) -> jax.Array:
+    """Return 1 when command magnitude reaches the active-walking threshold."""
+    velocity_cmd_min = jp.maximum(jp.asarray(velocity_cmd_min, dtype=jp.float32), 0.0)
+    return (jp.abs(velocity_cmd) >= velocity_cmd_min).astype(jp.float32)
+
+
 def compute_cycle_progress_terms(
     cycle_progress_accum: jax.Array,
     forward_vel: jax.Array,
@@ -254,7 +319,7 @@ def compute_zero_baseline_forward_reward(
     vel_error = jp.abs(forward_vel - velocity_cmd)
     raw_reward = jp.exp(-vel_error * scale)
     standing_baseline = jp.exp(-jp.abs(velocity_cmd) * scale)
-    cmd_gate = (jp.abs(velocity_cmd) > velocity_cmd_min).astype(jp.float32)
+    cmd_gate = compute_command_active_gate(velocity_cmd, velocity_cmd_min)
     reward_zero_baseline = raw_reward - standing_baseline
     return (1.0 - cmd_gate) * raw_reward + cmd_gate * reward_zero_baseline
 
@@ -278,7 +343,7 @@ def compute_dense_progress_reward(
     forward_pos = jp.maximum(forward_vel, 0.0)
     norm_den = jp.maximum(cmd_abs, velocity_cmd_min)
     ratio = jp.clip(forward_pos / norm_den, 0.0, 1.0)
-    cmd_gate = (cmd_abs > velocity_cmd_min).astype(jp.float32)
+    cmd_gate = compute_command_active_gate(velocity_cmd, velocity_cmd_min)
     left_loaded = left_force > contact_threshold
     right_loaded = right_force > contact_threshold
     support_gate = (left_loaded ^ right_loaded).astype(jp.float32)
@@ -312,19 +377,18 @@ def compute_smooth_upright_gate(
 
 def compute_propulsion_quality_gate(
     step_length_reward: jax.Array,
-    dense_progress_reward: jax.Array,
-    cycle_progress_reward: jax.Array,
-    dense_support_weight: jax.Array,
-    structured_weight: jax.Array,
-    dense_cap: jax.Array,
+    step_progress_reward: jax.Array,
+    step_length_weight: jax.Array,
+    step_progress_weight: jax.Array,
 ) -> jax.Array:
-    """Gate forward reward using propulsion-quality signals instead of generic stepping."""
-    dense_support_weight = jp.asarray(dense_support_weight, dtype=jp.float32)
-    structured_weight = jp.asarray(structured_weight, dtype=jp.float32)
-    dense_cap = jp.maximum(jp.asarray(dense_cap, dtype=jp.float32), 0.0)
-    structured_signal = jp.maximum(step_length_reward, cycle_progress_reward)
-    dense_support = jp.minimum(jp.maximum(dense_progress_reward, 0.0), dense_cap)
-    gate_raw = structured_weight * structured_signal + dense_support_weight * dense_support
+    """Gate forward reward using structured contact-driven step evidence."""
+    step_length_weight = jp.maximum(jp.asarray(step_length_weight, dtype=jp.float32), 0.0)
+    step_progress_weight = jp.maximum(jp.asarray(step_progress_weight, dtype=jp.float32), 0.0)
+    weight_sum = jp.maximum(step_length_weight + step_progress_weight, 1e-6)
+    gate_raw = (
+        step_length_weight * jp.clip(step_length_reward, 0.0, 1.0)
+        + step_progress_weight * jp.clip(step_progress_reward, 0.0, 1.0)
+    ) / weight_sum
     return jp.clip(gate_raw, 0.0, 1.0)
 
 
@@ -652,9 +716,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 dtype=jp.float32,
             ),
         )
-        cmd_gate_fwd = (
-            jp.abs(velocity_cmd) > getattr(self._config.reward_weights, "velocity_cmd_min", 0.2)
-        ).astype(jp.float32)
+        cmd_gate_fwd = compute_command_active_gate(
+            velocity_cmd, getattr(self._config.reward_weights, "velocity_cmd_min", 0.2)
+        )
         forward_gate_strength = jp.asarray(
             getattr(self._config.reward_weights, "forward_upright_gate_strength", 1.0),
             dtype=jp.float32,
@@ -739,6 +803,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=left_loaded.astype(jp.float32),
             prev_right_loaded=right_loaded.astype(jp.float32),
             cycle_start_forward_x=jp.zeros(()),
+            last_touchdown_root_pos=root_pose.position,
+            last_touchdown_foot=jp.asarray(-1, dtype=jp.int32),
             critic_obs=critic_obs,
             push_schedule=push_schedule,
             # M3 FSM state: initialised to STANCE (all zeros)
@@ -928,6 +994,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             wr.fsm_swing_foot,
             current_step_count=step_count + 1,
             cycle_start_forward_x=wr.cycle_start_forward_x,
+            last_touchdown_root_pos=wr.last_touchdown_root_pos,
+            last_touchdown_foot=wr.last_touchdown_foot,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -950,7 +1018,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             target_scale=jp.asarray(1.0, dtype=jp.float32),
             sigma=jp.asarray(1.0, dtype=jp.float32),
         )
-
         # v0.10.4: Store step count in metrics for episode length calculation
         # This gets preserved through auto-reset, unlike wr_info.step_count which resets
         episode_step_count = step_count + 1
@@ -982,6 +1049,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Cache contact loads for touchdown/step-event detection in next step.
         left_force_now, right_force_now = self._cal.get_aggregated_foot_contacts(data)
         contact_threshold = self._config.env.contact_threshold_force
+        left_loaded_now = left_force_now > contact_threshold
+        right_loaded_now = right_force_now > contact_threshold
+        prev_left_loaded_b = wr.prev_left_loaded > 0.5
+        prev_right_loaded_b = wr.prev_right_loaded > 0.5
+        touchdown_left_now = jp.logical_and(jp.logical_not(prev_left_loaded_b), left_loaded_now)
+        touchdown_right_now = jp.logical_and(jp.logical_not(prev_right_loaded_b), right_loaded_now)
+        if bool(getattr(self._config.env, "fsm_enabled", False)):
+            in_swing = wr.fsm_phase == sc.SWING
+            touchdown_left_now = jp.logical_and(
+                touchdown_left_now, in_swing & (wr.fsm_swing_foot == 0)
+            )
+            touchdown_right_now = jp.logical_and(
+                touchdown_right_now, in_swing & (wr.fsm_swing_foot == 1)
+            )
+        touchdown_any_now = jp.logical_or(touchdown_left_now, touchdown_right_now)
+        touchdown_foot_now = jp.where(
+            touchdown_left_now,
+            jp.asarray(0, dtype=jp.int32),
+            jp.where(
+                touchdown_right_now,
+                jp.asarray(1, dtype=jp.int32),
+                wr.last_touchdown_foot,
+            ),
+        )
+        next_last_touchdown_root_pos = jp.where(
+            touchdown_any_now, curr_root_pose.position, wr.last_touchdown_root_pos
+        )
+        next_last_touchdown_foot = jp.where(
+            touchdown_any_now, touchdown_foot_now, wr.last_touchdown_foot
+        )
         critic_obs = self._get_privileged_critic_obs(
             data, step_count + 1, wr.push_schedule
         )
@@ -1002,9 +1099,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 data, normalize=True
             ),  # For AMP
             root_height=curr_root_pose.height,  # Actual root height for AMP features
-            prev_left_loaded=(left_force_now > contact_threshold).astype(jp.float32),
-            prev_right_loaded=(right_force_now > contact_threshold).astype(jp.float32),
+            prev_left_loaded=left_loaded_now.astype(jp.float32),
+            prev_right_loaded=right_loaded_now.astype(jp.float32),
             cycle_start_forward_x=cycle_start_forward_x,
+            last_touchdown_root_pos=next_last_touchdown_root_pos,
+            last_touchdown_foot=next_last_touchdown_foot,
             critic_obs=critic_obs,
             push_schedule=wr.push_schedule,
             # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
@@ -1075,6 +1174,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
             "reward/step_length": metrics.get("reward/step_length", jp.zeros(())),
+            "reward/step_progress": metrics.get("reward/step_progress", jp.zeros(())),
             "reward/dense_progress": metrics.get("reward/dense_progress", jp.zeros(())),
             "reward/cycle_progress": metrics.get("reward/cycle_progress", jp.zeros(())),
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
@@ -1084,6 +1184,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/propulsion_gate": metrics.get("debug/propulsion_gate", jp.zeros(())),
             "debug/cycle_complete": metrics.get("debug/cycle_complete", jp.zeros(())),
             "debug/cycle_forward_delta": metrics.get("debug/cycle_forward_delta", jp.zeros(())),
+            "debug/step_progress_delta": metrics.get("debug/step_progress_delta", jp.zeros(())),
+            "debug/step_progress_event": metrics.get("debug/step_progress_event", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -1113,6 +1215,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_left_loaded=reset_wr_info.prev_left_loaded,
             prev_right_loaded=reset_wr_info.prev_right_loaded,
             cycle_start_forward_x=reset_wr_info.cycle_start_forward_x,
+            last_touchdown_root_pos=reset_wr_info.last_touchdown_root_pos,
+            last_touchdown_foot=reset_wr_info.last_touchdown_foot,
             critic_obs=reset_wr_info.critic_obs,
             push_schedule=reset_wr_info.push_schedule,
             # M3 FSM: reset to STANCE on new episode
@@ -1592,6 +1696,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         fsm_swing_foot: Optional[jax.Array] = None,
         current_step_count: Optional[jax.Array] = None,
         cycle_start_forward_x: Optional[jax.Array] = None,
+        last_touchdown_root_pos: Optional[jax.Array] = None,
+        last_touchdown_foot: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -1885,11 +1991,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         step_reward_gate = jp.maximum(
             need_step,
-            jp.where(
-                jp.abs(velocity_cmd) > getattr(weights, "velocity_cmd_min", 0.2),
-                1.0,
-                0.0,
-            ),
+            compute_command_active_gate(velocity_cmd, getattr(weights, "velocity_cmd_min", 0.2)),
         )
 
         # Foot placement reward at touchdown (Raibert-style heuristic in heading-local frame).
@@ -1934,7 +2036,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
             sigma=jp.asarray(getattr(weights, "step_length_sigma", 0.04), dtype=jp.float32),
         )
 
-        # Per-step-cycle progress reward: pay net forward displacement per clock cycle.
+        # Structured touchdown-to-touchdown progress reward (contact-driven).
+        if last_touchdown_root_pos is None:
+            last_touchdown_root_pos = root_pose.position
+        if last_touchdown_foot is None:
+            last_touchdown_foot = jp.asarray(-1, dtype=jp.int32)
+        heading_sin, heading_cos = root_pose.heading_sincos
+        (
+            step_progress_reward,
+            step_progress_delta,
+            step_progress_event,
+            _,
+            _,
+        ) = compute_step_progress_touchdown_reward(
+            current_root_pos=root_pose.position,
+            last_touchdown_root_pos=last_touchdown_root_pos,
+            last_touchdown_foot=last_touchdown_foot,
+            heading_sin=heading_sin,
+            heading_cos=heading_cos,
+            touchdown_left=touchdown_left,
+            touchdown_right=touchdown_right,
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=jp.asarray(getattr(weights, "velocity_cmd_min", 0.08), dtype=jp.float32),
+            step_reward_gate=step_reward_gate,
+            dt=self.dt,
+            stride_steps=jp.asarray(self._config.env.clock_stride_period_steps, dtype=jp.int32),
+            target_scale=jp.asarray(getattr(weights, "step_progress_target_scale", 1.0), dtype=jp.float32),
+            sigma=jp.asarray(getattr(weights, "step_progress_sigma", 0.05), dtype=jp.float32),
+        )
+
+        # Per-step-cycle progress reward (retained as optional auxiliary).
         if current_step_count is None:
             curr_step_i = jp.zeros((), dtype=jp.int32)
         else:
@@ -1986,8 +2117,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         forward_upright_gate_strength = jp.asarray(
             getattr(weights, "forward_upright_gate_strength", 1.0), dtype=jp.float32
         )
-        cmd_gate_fwd = (jp.abs(velocity_cmd) > getattr(weights, "velocity_cmd_min", 0.2)).astype(
-            jp.float32
+        cmd_gate_fwd = compute_command_active_gate(
+            velocity_cmd, getattr(weights, "velocity_cmd_min", 0.2)
         )
         forward_reward = forward_reward * (
             (1.0 - cmd_gate_fwd)
@@ -1999,15 +2130,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         propulsion_gate = compute_propulsion_quality_gate(
             step_length_reward=step_length_reward,
-            dense_progress_reward=dense_progress_reward,
-            cycle_progress_reward=cycle_progress_reward,
-            dense_support_weight=jp.asarray(
-                getattr(weights, "propulsion_gate_dense_weight", 0.25), dtype=jp.float32
+            step_progress_reward=step_progress_reward,
+            step_length_weight=jp.asarray(
+                getattr(weights, "propulsion_gate_step_length_weight", 0.5), dtype=jp.float32
             ),
-            structured_weight=jp.asarray(
-                getattr(weights, "propulsion_gate_structured_weight", 0.75), dtype=jp.float32
+            step_progress_weight=jp.asarray(
+                getattr(weights, "propulsion_gate_step_progress_weight", 0.5), dtype=jp.float32
             ),
-            dense_cap=jp.asarray(getattr(weights, "propulsion_gate_dense_cap", 0.35), dtype=jp.float32),
         )
         forward_reward = forward_reward * (
             (1.0 - getattr(weights, "velocity_step_gate", 0.0))
@@ -2019,7 +2148,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =====================================================================
 
         # v0.10.4: Smooth, command-gated standing penalty
-        # Only apply when |velocity_cmd| > velocity_cmd_min (don't penalize if asked to stop)
+        # Only apply when |velocity_cmd| >= velocity_cmd_min (don't penalize if asked to stop)
         # Only apply when healthy (prevents noise during falling/recovery)
         # Penalty is smooth: relu(threshold - |vel|) / threshold, ranges from 0 to 1
         standing_threshold = weights.velocity_standing_threshold
@@ -2033,7 +2162,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         standing_penalty_raw = velocity_deficit / (standing_threshold + 1e-6)
 
         # Gate by command magnitude: only penalize if asked to move (supports future backward cmds)
-        cmd_gate = jp.where(jp.abs(velocity_cmd) > velocity_cmd_min, 1.0, 0.0)
+        cmd_gate = compute_command_active_gate(velocity_cmd, velocity_cmd_min)
 
         # Gate by healthy: don't penalize during falling/recovery (prevents twitch behaviors)
         healthy_gate = healthy
@@ -2066,6 +2195,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + getattr(weights, "step_event", 0.0) * (step_event * step_reward_gate)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
             + getattr(weights, "step_length", 0.0) * step_length_reward
+            + getattr(weights, "step_progress", 0.0) * step_progress_reward
             + getattr(weights, "dense_progress", 0.0) * dense_progress_reward
             + getattr(weights, "cycle_progress", 0.0) * cycle_progress_reward
         )
@@ -2116,6 +2246,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_event": step_event * step_reward_gate,
             "reward/foot_place": foot_place_reward,
             "reward/step_length": step_length_reward,
+            "reward/step_progress": step_progress_reward,
             "reward/dense_progress": dense_progress_reward,
             "reward/cycle_progress": cycle_progress_reward,
             "debug/posture_mse": posture_mse,
@@ -2124,6 +2255,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/touchdown_right": touchdown_right.astype(jp.float32),
             "debug/cycle_complete": cycle_complete.astype(jp.float32),
             "debug/cycle_forward_delta": cycle_forward_delta,
+            "debug/step_progress_delta": step_progress_delta,
+            "debug/step_progress_event": step_progress_event,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

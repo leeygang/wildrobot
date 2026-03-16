@@ -15,12 +15,14 @@ import pytest
 import jax.numpy as jp
 
 from training.envs.wildrobot_env import (
+    compute_command_active_gate,
     compute_dense_progress_reward,
     compute_cycle_progress_terms,
     compute_phase_gated_clearance_reward,
     compute_propulsion_quality_gate,
     compute_smooth_upright_gate,
     compute_step_length_touchdown_reward,
+    compute_step_progress_touchdown_reward,
     compute_zero_baseline_forward_reward,
 )
 
@@ -643,6 +645,31 @@ class TestRewardEconomicsV01510:
         assert float(r_backward) < 0.0, f"Backward tracking should be negative vs standing baseline: {r_backward}"
 
     @pytest.mark.sim
+    def test_command_active_gate_includes_min_velocity_boundary(self):
+        """Command gate should activate at velocity_cmd == velocity_cmd_min (>= semantics)."""
+        gate_at_boundary = compute_command_active_gate(
+            velocity_cmd=jp.asarray(0.05),
+            velocity_cmd_min=jp.asarray(0.05),
+        )
+        gate_below = compute_command_active_gate(
+            velocity_cmd=jp.asarray(0.049),
+            velocity_cmd_min=jp.asarray(0.05),
+        )
+        gate_negative_boundary = compute_command_active_gate(
+            velocity_cmd=jp.asarray(-0.05),
+            velocity_cmd_min=jp.asarray(0.05),
+        )
+        assert np.isclose(float(gate_at_boundary), 1.0), (
+            f"Boundary command should be active (>=), got {gate_at_boundary}"
+        )
+        assert np.isclose(float(gate_below), 0.0), (
+            f"Below-boundary command should stay inactive, got {gate_below}"
+        )
+        assert np.isclose(float(gate_negative_boundary), 1.0), (
+            f"Boundary magnitude should activate for negative commands too, got {gate_negative_boundary}"
+        )
+
+    @pytest.mark.sim
     def test_dense_progress_reward_heading_local_semantics(self):
         """Dense progress should be command/support/upright gated and rise with heading-local speed."""
         cmd_min = jp.asarray(0.08)
@@ -788,40 +815,224 @@ class TestRewardEconomicsV01510:
 
     @pytest.mark.sim
     def test_propulsion_quality_gate_depends_on_propulsion_signals(self):
-        """Propulsion gate should prioritize structured signals over dense-progress support."""
+        """Propulsion gate should depend on structured step_length/step_progress signals."""
         gate_low = compute_propulsion_quality_gate(
             step_length_reward=jp.asarray(0.0),
-            dense_progress_reward=jp.asarray(0.0),
-            cycle_progress_reward=jp.asarray(0.0),
-            dense_support_weight=jp.asarray(0.25),
-            structured_weight=jp.asarray(0.75),
-            dense_cap=jp.asarray(0.35),
-        )
-        gate_dense = compute_propulsion_quality_gate(
-            step_length_reward=jp.asarray(0.0),
-            dense_progress_reward=jp.asarray(1.0),
-            cycle_progress_reward=jp.asarray(0.1),
-            dense_support_weight=jp.asarray(0.25),
-            structured_weight=jp.asarray(0.75),
-            dense_cap=jp.asarray(0.35),
+            step_progress_reward=jp.asarray(0.0),
+            step_length_weight=jp.asarray(0.5),
+            step_progress_weight=jp.asarray(0.5),
         )
         gate_step = compute_propulsion_quality_gate(
             step_length_reward=jp.asarray(0.7),
-            dense_progress_reward=jp.asarray(1.0),
-            cycle_progress_reward=jp.asarray(0.1),
-            dense_support_weight=jp.asarray(0.25),
-            structured_weight=jp.asarray(0.75),
-            dense_cap=jp.asarray(0.35),
+            step_progress_reward=jp.asarray(0.0),
+            step_length_weight=jp.asarray(0.5),
+            step_progress_weight=jp.asarray(0.5),
         )
-        gate_cycle = compute_propulsion_quality_gate(
-            step_length_reward=jp.asarray(0.1),
-            dense_progress_reward=jp.asarray(1.0),
-            cycle_progress_reward=jp.asarray(0.8),
-            dense_support_weight=jp.asarray(0.25),
-            structured_weight=jp.asarray(0.75),
-            dense_cap=jp.asarray(0.35),
+        gate_progress = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.0),
+            step_progress_reward=jp.asarray(0.8),
+            step_length_weight=jp.asarray(0.5),
+            step_progress_weight=jp.asarray(0.5),
+        )
+        gate_both = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.7),
+            step_progress_reward=jp.asarray(0.8),
+            step_length_weight=jp.asarray(0.5),
+            step_progress_weight=jp.asarray(0.5),
         )
         assert np.isclose(float(gate_low), 0.0), f"No propulsion signals should keep gate closed: {gate_low}"
-        assert float(gate_dense) < 0.2, f"Dense-only signal should not dominate gate: {gate_dense}"
-        assert float(gate_step) > 0.5, f"Strong step-length should open gate: {gate_step}"
-        assert float(gate_cycle) > 0.5, f"Strong cycle progress should open gate: {gate_cycle}"
+        assert float(gate_step) > 0.3, f"Strong step-length should open gate: {gate_step}"
+        assert float(gate_progress) > 0.35, f"Strong step-progress should open gate: {gate_progress}"
+        assert float(gate_both) > float(gate_step), f"Combined structured signals should open more: {gate_both}"
+
+    @pytest.mark.sim
+    def test_step_progress_reward_requires_alternating_touchdowns(self):
+        """step_progress should pay on alternating touchdown events, not first/same-foot touchdown."""
+        reward_first, delta_first, evt_first, next_prog, next_foot = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_root_pos=jp.asarray([0.00, 0.00, 0.0]),
+            last_touchdown_foot=jp.asarray(-1, dtype=jp.int32),
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert np.isclose(float(reward_first), 0.0), f"First touchdown should only initialize state: {reward_first}"
+        assert np.isclose(float(evt_first), 0.0), f"First touchdown should not count as alternating: {evt_first}"
+        assert np.allclose(np.asarray(next_prog), np.array([0.10, 0.0, 0.0])), (
+            f"Touchdown should update stored touchdown root position: {next_prog}"
+        )
+        assert int(next_foot) == 0, f"Touchdown foot should store left=0: {next_foot}"
+
+        reward_same, _, evt_same, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.16, 0.00, 0.0]),
+            last_touchdown_root_pos=next_prog,
+            last_touchdown_foot=next_foot,
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(True),
+            touchdown_right=jp.asarray(False),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert np.isclose(float(reward_same), 0.0), f"Same-foot touchdown should not pay structured progress: {reward_same}"
+        assert np.isclose(float(evt_same), 0.0), f"Same-foot touchdown should not trigger alternating event: {evt_same}"
+
+        reward_alt, delta_alt, evt_alt, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.15, 0.00, 0.0]),
+            last_touchdown_root_pos=next_prog,
+            last_touchdown_foot=next_foot,
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert float(evt_alt) > 0.5, f"Alternating touchdown should trigger event: {evt_alt}"
+        assert float(delta_alt) > 0.0, f"Alternating touchdown should measure positive forward delta: {delta_alt}"
+        assert float(reward_alt) > 0.0, f"Alternating touchdown with progress should pay reward: {reward_alt}"
+
+        reward_zero_delta, _, evt_zero_delta, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=next_prog,
+            last_touchdown_root_pos=next_prog,
+            last_touchdown_foot=next_foot,
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert float(evt_zero_delta) > 0.5, "Alternating touchdown event should still trigger at zero delta"
+        assert np.isclose(float(reward_zero_delta), 0.0, atol=1e-5), (
+            f"Zero step displacement should baseline to ~0 reward under walking command: {reward_zero_delta}"
+        )
+
+    @pytest.mark.sim
+    def test_step_progress_reward_respects_step_gate(self):
+        """step_progress reward should be suppressed when step_reward_gate is zero."""
+        reward_open, _, _, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.15, 0.00, 0.0]),
+            last_touchdown_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_foot=jp.asarray(0, dtype=jp.int32),
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        reward_closed, _, _, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.15, 0.00, 0.0]),
+            last_touchdown_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_foot=jp.asarray(0, dtype=jp.int32),
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.12),
+            velocity_cmd_min=jp.asarray(0.08),
+            step_reward_gate=jp.asarray(0.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert float(reward_open) > 0.0, f"Open gate should allow structured progress reward: {reward_open}"
+        assert np.isclose(float(reward_closed), 0.0), (
+            f"Closed step gate should suppress structured progress reward: {reward_closed}"
+        )
+
+    @pytest.mark.sim
+    def test_step_progress_zero_progress_baselines_at_min_command_boundary(self):
+        """At velocity_cmd_min boundary, zero-progress alternating touchdown should baseline to ~0."""
+        reward_boundary, _, evt_boundary, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_foot=jp.asarray(0, dtype=jp.int32),
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.05),
+            velocity_cmd_min=jp.asarray(0.05),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        reward_below, _, evt_below, _, _ = compute_step_progress_touchdown_reward(
+            current_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_root_pos=jp.asarray([0.10, 0.00, 0.0]),
+            last_touchdown_foot=jp.asarray(0, dtype=jp.int32),
+            heading_sin=jp.asarray(0.0),
+            heading_cos=jp.asarray(1.0),
+            touchdown_left=jp.asarray(False),
+            touchdown_right=jp.asarray(True),
+            velocity_cmd=jp.asarray(0.04),
+            velocity_cmd_min=jp.asarray(0.05),
+            step_reward_gate=jp.asarray(1.0),
+            dt=0.02,
+            stride_steps=jp.asarray(36),
+            target_scale=jp.asarray(1.0),
+            sigma=jp.asarray(0.05),
+        )
+        assert float(evt_boundary) > 0.5, "Boundary command should still be an alternating touchdown event"
+        assert np.isclose(float(reward_boundary), 0.0, atol=1e-5), (
+            f"Boundary command must use zero-progress baseline subtraction: {reward_boundary}"
+        )
+        assert float(evt_below) > 0.5, "Below-boundary command should still be an alternating touchdown event"
+        assert float(reward_below) > 0.0, (
+            f"Below command threshold should retain raw shaping behavior: {reward_below}"
+        )
+
+    @pytest.mark.sim
+    def test_zero_baseline_forward_reward_applies_at_min_command_boundary(self):
+        """Forward zero-baseline economics should activate at velocity_cmd == velocity_cmd_min."""
+        reward_boundary = compute_zero_baseline_forward_reward(
+            forward_vel=jp.asarray(0.0),
+            velocity_cmd=jp.asarray(0.05),
+            scale=jp.asarray(6.0),
+            velocity_cmd_min=jp.asarray(0.05),
+        )
+        reward_below = compute_zero_baseline_forward_reward(
+            forward_vel=jp.asarray(0.0),
+            velocity_cmd=jp.asarray(0.04),
+            scale=jp.asarray(6.0),
+            velocity_cmd_min=jp.asarray(0.05),
+        )
+        assert np.isclose(float(reward_boundary), 0.0, atol=1e-6), (
+            f"Boundary command should baseline standing reward to ~0: {reward_boundary}"
+        )
+        assert float(reward_below) > 0.0, (
+            f"Below threshold should keep raw standing reward behavior: {reward_below}"
+        )

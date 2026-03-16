@@ -98,6 +98,8 @@ try:
         prev_left_loaded: jnp.ndarray  # shape=()
         prev_right_loaded: jnp.ndarray  # shape=()
         cycle_start_forward_x: jnp.ndarray  # shape=(), accumulated heading-local cycle progress
+        last_touchdown_root_pos: jnp.ndarray  # shape=(3,), world root position at last touchdown
+        last_touchdown_foot: jnp.ndarray  # shape=(), -1 none, 0 left, 1 right
         critic_obs: jnp.ndarray  # shape=(PRIVILEGED_OBS_DIM,)
         push_schedule: DisturbanceSchedule
 
@@ -146,6 +148,8 @@ except ImportError:
         prev_left_loaded: jnp.ndarray
         prev_right_loaded: jnp.ndarray
         cycle_start_forward_x: jnp.ndarray
+        last_touchdown_root_pos: jnp.ndarray
+        last_touchdown_foot: jnp.ndarray
         critic_obs: jnp.ndarray
         # M3 FSM state
         fsm_phase: jnp.ndarray
@@ -193,6 +197,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_left_loaded": (),
         "prev_right_loaded": (),
         "cycle_start_forward_x": (),
+        "last_touchdown_root_pos": (3,),
+        "last_touchdown_foot": (),
         "critic_obs": (PRIVILEGED_OBS_DIM,),
         # M3 FSM state
         "fsm_phase": (),

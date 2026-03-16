@@ -78,6 +78,7 @@ REWARD_TERM_KEYS = [
     "reward/step_event",
     "reward/foot_place",
     "reward/step_length",
+    "reward/step_progress",
     "reward/dense_progress",
     "reward/cycle_progress",
 ]
@@ -122,6 +123,7 @@ ENV_METRICS_KEYS = {
     "reward/step_event": "Touchdown event reward gated by step need or walking command",
     "reward/foot_place": "Foot placement reward gated by step need or walking command",
     "reward/step_length": "Touchdown step-length reward tied to commanded speed",
+    "reward/step_progress": "Touchdown-to-touchdown structured forward progress reward",
     "reward/dense_progress": "Dense heading-local forward progress shaping reward",
     "reward/cycle_progress": "Per-clock-cycle forward displacement reward",
     # Debug metrics
@@ -140,6 +142,8 @@ ENV_METRICS_KEYS = {
     "debug/propulsion_gate": "Propulsion-quality gate applied to forward reward",
     "debug/cycle_complete": "Clock cycle completion event",
     "debug/cycle_forward_delta": "Cycle forward displacement used for cycle progress reward",
+    "debug/step_progress_delta": "Forward progress delta between alternating touchdowns",
+    "debug/step_progress_event": "Alternating touchdown event used by step_progress reward",
     "debug/action_abs_max": "Max |action| across actuators (post-filter)",
     "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter, legacy)",
     "debug/raw_action_abs_max": "Max |action| across actuators (pre-filter)",
@@ -245,6 +249,7 @@ def get_initial_env_metrics(
         "reward/step_event": 0.0,
         "reward/foot_place": 0.0,
         "reward/step_length": 0.0,
+        "reward/step_progress": 0.0,
         "reward/dense_progress": 0.0,
         "reward/cycle_progress": 0.0,
         # Debug metrics
@@ -273,6 +278,8 @@ def get_initial_env_metrics(
         "debug/propulsion_gate": 0.0,
         "debug/cycle_complete": 0.0,
         "debug/cycle_forward_delta": 0.0,
+        "debug/step_progress_delta": 0.0,
+        "debug/step_progress_event": 0.0,
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": 0.0,
         "debug/bc_in_swing": 0.0,
@@ -361,6 +368,7 @@ def get_initial_env_metrics_jax(
         "reward/step_event": jp.zeros(()),
         "reward/foot_place": jp.zeros(()),
         "reward/step_length": jp.zeros(()),
+        "reward/step_progress": jp.zeros(()),
         "reward/dense_progress": jp.zeros(()),
         "reward/cycle_progress": jp.zeros(()),
         # Debug metrics
@@ -389,6 +397,8 @@ def get_initial_env_metrics_jax(
         "debug/propulsion_gate": jp.zeros(()),
         "debug/cycle_complete": jp.zeros(()),
         "debug/cycle_forward_delta": jp.zeros(()),
+        "debug/step_progress_delta": jp.zeros(()),
+        "debug/step_progress_event": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),

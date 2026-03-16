@@ -464,6 +464,11 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Touchdown step-length reward (forward landing relative to body)",
     ),
     MetricSpec(
+        name="reward/step_progress",
+        reducer=Reducer.MEAN,
+        description="Touchdown-to-touchdown structured forward progress reward",
+    ),
+    MetricSpec(
         name="reward/cycle_progress",
         reducer=Reducer.MEAN,
         description="Per-step-cycle net forward displacement reward",
@@ -479,6 +484,18 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="debug",
         description="Accumulated heading-local forward displacement within current cycle",
+    ),
+    MetricSpec(
+        name="debug/step_progress_delta",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Forward progress delta between alternating touchdowns",
+    ),
+    MetricSpec(
+        name="debug/step_progress_event",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Alternating touchdown event indicator for step_progress reward",
     ),
     MetricSpec(
         name="reward/dense_progress",

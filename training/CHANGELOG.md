@@ -7,6 +7,113 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.12] - 2026-03-16: Contact-driven step-to-step propulsion after `v0.15.11` still converged to pitch-collapse speed
+
+### Summary
+`v0.15.11` improved the shape of the run but did not change the terminal basin. It delayed the old `v0.15.10` pitch exploit, but by the end of the `40`-iteration probe it still converged to the same outcome: strong forward speed with `term_pitch_frac = 1.0`, zero train success, and near-dead `eval_clean`. The root cause is now clearer: dense velocity-shaped reward is still the easiest way to earn speed, while `step_length` remains mostly flat and `cycle_progress` stays too weak and too time-based to dominate credit assignment. `v0.15.12` should therefore pivot from velocity-led reward credit to contact-driven step-to-step propulsion.
+
+### Results (v0.15.11)
+- Run: `training/wandb/offline-run-20260315_171309-wxzaehsm`
+- Checkpoints: `training/checkpoints/ppo_walking_v01511_20260315_171311-wxzaehsm`
+- Verdict: delayed collapse, but same final pitch-driven speed basin
+- Trajectory:
+  - early `20`-iter checkpoint:
+    - `env/forward_velocity: 0.037`
+    - `env/velocity_cmd: 0.164`
+    - `env/velocity_error: 0.153`
+    - `env/success_rate: 0.895`
+    - `eval_clean/success_rate: 0.489`
+    - `term_pitch_frac: 0.105`
+  - final `40`-iter checkpoint:
+    - `env/forward_velocity: 0.221`
+    - `env/velocity_cmd: 0.164`
+    - `env/velocity_error: 0.149`
+    - `env/success_rate: 0.000`
+    - `eval_clean/success_rate: 0.050`
+    - `term_pitch_frac: 1.000`
+    - `reward/dense_progress: 0.166`
+    - `reward/step_length: 0.138`
+    - `reward/cycle_progress: 0.017`
+    - `debug/propulsion_gate: 0.145`
+
+### Root Cause
+- `v0.15.11` proved that posture-gating alone is not enough:
+  - it slowed the exploit and improved early stability
+  - but it did not change which reward path ultimately dominates
+- The structured gait terms still are not the main explanation for speed:
+  - `step_length` stays nearly flat as the run accelerates
+  - `cycle_progress` remains tiny and sparse
+  - the final speed increase still comes mainly from dense forward-progress reward
+- The current cycle reward is also poorly aligned to actual gait events:
+  - clock-cycle completion is weaker than contact-driven touchdown-to-touchdown progress for this failure mode
+- Net conclusion:
+  - the next branch must stop paying primarily for instantaneous forward motion
+  - and instead pay for forward displacement caused by successful steps
+
+### Code Updates
+- `training/envs/wildrobot_env.py`
+  - add `compute_step_progress_touchdown_reward()` for structured touchdown-to-touchdown forward displacement credit in heading-local frame
+  - track touchdown state in env info (`last_touchdown_root_pos`, `last_touchdown_foot`) so reward is tied to real contact transitions
+  - gate `forward_reward` with `compute_propulsion_quality_gate(step_length, step_progress)` and remove dense velocity / cycle terms from the gate path
+  - keep `dense_progress` and `cycle_progress` available only as auxiliary reward channels (not gate openers)
+  - make the commanded forward reward unlock only from structured propulsion evidence:
+    - `step_length`
+    - `step_progress`
+  - keep `wr_obs_v3` clock and phase-gated clearance, but demote pure clock-cycle reward as the main propulsion signal
+- `training/configs/training_runtime_config.py`, `training/configs/training_config.py`
+  - add/parse structured propulsion config fields:
+    - `reward_weights.step_progress`
+    - `reward_weights.step_progress_target_scale`
+    - `reward_weights.step_progress_sigma`
+    - `reward_weights.propulsion_gate_step_length_weight`
+    - `reward_weights.propulsion_gate_step_progress_weight`
+- `training/tests/test_reward_terms.py`
+  - add helper-linked tests for:
+    - touchdown-to-touchdown forward progress reward semantics
+    - propulsion gate depending on structured step evidence instead of dense velocity alone
+    - reset / alternating-touchdown behavior for the new `step_progress` term
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.12"`
+- keep:
+  - `env.actor_obs_layout_id: wr_obs_v3`
+  - fresh-run semantics
+  - short probe format (`ppo.iterations: 40`)
+- change the reward mix toward structured contact-driven propulsion:
+  - `dense_progress: 0.0` or tiny support only
+  - `step_length`: increase into the primary Stage-A structured term
+  - add `step_progress` as a strong reward
+  - demote or remove `cycle_progress` as the main propulsion driver
+  - keep `foot_place: 0.0` and `step_event` negligible
+- narrow command range again for the structured branch:
+  - bias toward `0.05-0.15 m/s`
+- keep stronger pitch stability shaping from `v0.15.11`
+
+### `v0.15.12` Plan (Completed)
+- Keep:
+  - zero-baseline forward reward
+  - `wr_obs_v3`
+  - phase-gated clearance
+  - stronger pitch / posture penalties
+- Remove dense velocity as the main learning path:
+  - take `dense_progress` out of the propulsion gate
+  - reduce its weight to near-zero or zero
+- Shift to contact-driven step-to-step propulsion:
+  - reward touchdown-time `step_length`
+  - reward new touchdown-to-touchdown `step_progress`
+  - gate commanded forward reward on structured step evidence, not raw speed
+- Keep the probe short and decisive:
+  - fresh run
+  - `ppo.iterations: 40`
+
+### Training Intent
+- Convert the branch from velocity-led learning to contact-driven locomotion learning.
+- Make the policy earn forward reward because steps move the body forward, not because the body is already moving forward.
+- Readout:
+  - iter `20`: `env/forward_velocity > 0.03` with `term_pitch_frac` still well below `v0.15.10/11` collapse levels
+  - iter `40`: `env/forward_velocity > 0.06` with meaningful `eval_clean` survival and structured reward terms (`step_length`, `step_progress`) clearly active
+  - if speed rises again while structured step rewards stay flat, stop and treat the branch as failed
+
 ## [v0.15.11] - 2026-03-16: Stability-constrained propulsion after `v0.15.10` broke the low-speed basin by pitching out
 
 ### Summary

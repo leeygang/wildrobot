@@ -247,6 +247,40 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
   - by `40`, expect `env/forward_velocity > 0.05` while `eval_clean/success_rate` remains meaningfully alive
   - if speed rises only together with pitch collapse again, stop immediately
 
+### `v0.15.12` Contact-Driven Step-to-Step Propulsion Branch
+
+- `v0.15.11` improved the early trajectory but did not change the final basin:
+  - speed still rises into the commanded range and beyond
+  - `term_pitch_frac` still ends at `1.0`
+  - `eval_clean` still collapses
+  - `step_length` stays mostly flat while `dense_progress` remains the easiest path to speed
+- So `v0.15.12` should stop making dense forward velocity the main source of reward credit and instead make contact-driven step outcomes the main source of reward credit.
+- Implemented branch direction:
+  - keep zero-baseline forward reward
+  - keep `wr_obs_v3`
+  - keep phase-gated clearance and stronger pitch stability shaping
+  - remove `dense_progress` from the main propulsion-gate path
+  - add a new structured `step_progress` reward based on touchdown-to-touchdown forward displacement
+  - make the forward-reward gate depend on structured signals:
+    - `step_length`
+    - `step_progress`
+  - demote or remove `cycle_progress` as the primary propulsion driver if it remains too sparse / clock-bound
+  - runtime choices in `v0.15.12`:
+    - command range narrowed to `0.05-0.15 m/s`
+    - `dense_progress: 0.0` (not a main optimization path)
+    - `step_length` and `step_progress` are the primary structured propulsion terms
+    - `cycle_progress` retained only as low auxiliary shaping
+- Probe policy:
+  - fresh run, not resume
+  - `ppo.iterations: 40`
+  - narrow command range back toward `0.05-0.15 m/s`
+  - treat this as a bigger structural branch, not a local weight retune
+- Success criteria:
+  - by `20`, `env/forward_velocity > 0.03` without rapid pitch divergence
+  - by `40`, `env/forward_velocity > 0.06` with meaningful `eval_clean` survival
+  - `step_length` and `step_progress` should rise together
+  - if speed rises again while structured step rewards stay flat, stop and escalate to a new training paradigm
+
 ### Version Milestones
 
 #### v0.10.0 - PPO Infrastructure Setup ✅
