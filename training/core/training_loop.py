@@ -1092,6 +1092,37 @@ def _validate_resume_checkpoint(
         print(f"  ⚠️  Resume config warning: {', '.join(warn_mismatch)}")
 
 
+def _apply_pretrained_checkpoint(
+    pretrained_checkpoint: Dict[str, Any],
+    *,
+    current_policy_spec_hash: str,
+    processor_params: Any,
+    policy_params: Any,
+    value_params: Any,
+) -> tuple[Any, Any, Any]:
+    """Apply student warm-start parameters from a pretraining checkpoint."""
+    checkpoint_hash = pretrained_checkpoint.get("policy_spec_hash")
+    if checkpoint_hash is None:
+        checkpoint_hash = pretrained_checkpoint.get("config", {}).get("policy_spec_hash")
+    if not checkpoint_hash:
+        raise ValueError(
+            "Pretrained checkpoint missing policy_spec_hash; cannot verify observation/action contract."
+        )
+    if checkpoint_hash != current_policy_spec_hash:
+        raise ValueError(
+            "Pretrained checkpoint policy_contract mismatch:\n"
+            f"  - ckpt={checkpoint_hash}\n"
+            f"  - current={current_policy_spec_hash}"
+        )
+    if "policy_params" not in pretrained_checkpoint:
+        raise ValueError("Pretrained checkpoint missing required key: policy_params")
+
+    loaded_processor = pretrained_checkpoint.get("processor_params", processor_params)
+    loaded_policy = pretrained_checkpoint["policy_params"]
+    loaded_value = pretrained_checkpoint.get("value_params", value_params)
+    return loaded_processor, loaded_policy, loaded_value
+
+
 # =============================================================================
 # Main Training Function
 # =============================================================================
@@ -1106,6 +1137,7 @@ def train(
         Callable[[int, TrainingState, IterationMetrics, float], None]
     ] = None,
     resume_checkpoint: Optional[Dict[str, Any]] = None,
+    pretrained_checkpoint: Optional[Dict[str, Any]] = None,
     eval_env_step_fn: Optional[Callable] = None,
     eval_env_step_fn_no_push: Optional[Callable] = None,
     eval_env_reset_fn: Optional[Callable] = None,
@@ -1125,6 +1157,7 @@ def train(
         ref_motion_data: Reference motion features (required if amp_weight>0)
         callback: Optional callback for logging/checkpointing
         resume_checkpoint: Optional checkpoint data to resume from (from load_checkpoint)
+        pretrained_checkpoint: Optional student warm-start checkpoint (policy/value params)
         eval_env_step_fn_no_push: Optional eval step fn with disturbances disabled
 
     Returns:
@@ -1202,6 +1235,21 @@ def train(
         hidden_dims=config.networks.discriminator.hidden_sizes,
         seed=int(disc_rng[0]),
     )
+
+    if resume_checkpoint is not None and pretrained_checkpoint is not None:
+        raise ValueError(
+            "Cannot provide both resume_checkpoint and pretrained_checkpoint."
+        )
+
+    if pretrained_checkpoint is not None:
+        processor_params, policy_params, value_params = _apply_pretrained_checkpoint(
+            pretrained_checkpoint,
+            current_policy_spec_hash=current_spec_hash,
+            processor_params=processor_params,
+            policy_params=policy_params,
+            value_params=value_params,
+        )
+        print("✓ Applied pretrained student parameters for PPO warm start")
 
     # Create optimizers
     total_schedule_updates = max(

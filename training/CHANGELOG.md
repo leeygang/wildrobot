@@ -7,7 +7,49 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.16.1] - 2026-03-16: Teacher-to-student handoff bootstrap
+
+### Summary
+`v0.16.1` adds the minimum viable student handoff path on top of `v0.16.0`: teacher rollout sharding, a stable dataset contract, behavior-cloning warm start, and PPO warm-start plumbing for the command-conditioned student branch.
+
+### Code Updates
+- Teacher rollout dataset/export:
+  - `training/imitation/dataset.py`
+  - `training/imitation/collect_teacher_rollouts.py`
+  - contract: sharded `.npz` + `metadata.json`
+  - required shard arrays:
+    - `obs`, `actions`, `phase`, `velocity_cmd`, `forward_velocity`, `done`, `left_foot_contact`, `right_foot_contact`
+  - recommended shard arrays supported:
+    - `teacher_action_mean`, `teacher_action_std`, `teacher_value`, `root_pitch`, `root_pitch_rate`
+- Student pretraining:
+  - `training/imitation/pretrain_student.py`
+  - behavior-cloning warm start on teacher action targets (`obs -> actions`)
+  - exports `student_pretrain_v0.16.1` checkpoint with policy/value/processor params + `policy_spec_hash`
+- Student PPO config:
+  - `training/configs/ppo_walking_student.yaml`
+  - flat terrain, no pushes, narrow command range (`0.05-0.15 m/s`)
+- PPO handoff hooks:
+  - `training/core/training_loop.py`
+    - add pretrained warm-start checkpoint application path (policy-spec hash guarded)
+  - `training/train.py`
+    - add `--pretrained-student` and config-driven warm-start checkpoint loading
+  - `training/configs/training_runtime_config.py`, `training/configs/training_config.py`
+    - add PPO fields:
+      - `pretrained_checkpoint_path`
+      - `teacher_regularization_checkpoint`
+      - `teacher_regularization_weight`
+      - `teacher_regularization_decay`
+    - teacher-regularization fields are intentionally placeholder-level in this branch
+- Tests:
+  - `training/tests/test_teacher_rollout_export.py`
+  - `training/tests/test_student_imitation_pipeline.py`
+
+### What Remains After `v0.16.1`
+- integrate active teacher-regularization loss during PPO fine-tuning (currently config/plumbing placeholder)
+- run longer student PPO probes and widen commands only after narrow-regime stability is confirmed
+
 ## [v0.16.0] - 2026-03-16: Transition from exhausted PPO-only walking to MuJoCo motion-tracking teacher bootstrap
+
 
 ### Summary
 `v0.15.x` PPO-only walking is now considered exhausted as the main branch. The reward-only and structure-only branches succeeded at producing forward speed, but all successful speed branches converged to the same terminal failure mode: pitch-driven locomotion exploits instead of a stable gait basin. `v0.16.0` therefore formalizes a stage transition rather than another reward retune: bootstrap a robot-native gait in MuJoCo with a retargeted reference motion and a phase-conditioned motion-tracking teacher, then transfer that behavior into a command-conditioned locomotion student.

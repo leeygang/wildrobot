@@ -237,6 +237,10 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         lr_schedule_end_factor=ppo.get("lr_schedule_end_factor", 1.0),
         entropy_schedule_end_factor=ppo.get("entropy_schedule_end_factor", 1.0),
         critic_privileged_enabled=bool(ppo.get("critic_privileged_enabled", False)),
+        pretrained_checkpoint_path=ppo.get("pretrained_checkpoint_path"),
+        teacher_regularization_checkpoint=ppo.get("teacher_regularization_checkpoint"),
+        teacher_regularization_weight=float(ppo.get("teacher_regularization_weight", 0.0)),
+        teacher_regularization_decay=float(ppo.get("teacher_regularization_decay", 1.0)),
         eval=PPOEvalConfig(
             enabled=eval_cfg.get("enabled", False),
             interval=eval_cfg.get("interval", 0),

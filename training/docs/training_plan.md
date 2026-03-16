@@ -1,6 +1,6 @@
 # Training Plan: Learn First, Retarget Later
 
-**Version:** v0.16.0
+**Version:** v0.16.1
 **Status:** Active
 **Last Updated:** 2026-03-16
 
@@ -707,6 +707,24 @@ Target additions:
 - `training/imitation/pretrain_student.py`
 - `training/tests/test_teacher_rollout_export.py`
 - `training/tests/test_student_imitation_pipeline.py`
+
+#### `v0.16.1` Implemented Scope Notes
+
+- Implemented teacher rollout sharding and metadata contract:
+  - `training/imitation/dataset.py`
+  - `training/imitation/collect_teacher_rollouts.py`
+- Implemented BC warm-start pipeline:
+  - `training/imitation/pretrain_student.py`
+  - checkpoint output includes policy/value/processor params and policy-contract hash
+- Implemented student PPO warm-start plumbing:
+  - `training/train.py` supports `--pretrained-student`
+  - `training/core/training_loop.py` applies pretrained checkpoint params before PPO optimization
+  - `training/configs/ppo_walking_student.yaml` defines the narrow student branch
+- Implemented placeholder teacher-regularization config path in PPO config for early fine-tuning staging:
+  - `teacher_regularization_checkpoint`
+  - `teacher_regularization_weight`
+  - `teacher_regularization_decay`
+- Active teacher-regularization loss shaping during PPO fine-tuning is deferred to the next iteration.
 
 #### `v0.16.1` Training Rules
 

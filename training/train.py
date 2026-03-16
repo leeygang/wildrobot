@@ -34,7 +34,7 @@ Architecture:
        AMP discriminator for natural motion learning from reference data.
 
 See also:
-    - training/docs/learn_first_plan.md: Roadmap for the "Learn First, Retarget Later" approach
+    - training/docs/training_plan.md: Roadmap for the "Learn First, Retarget Later" approach
     - training/configs/ppo_walking.yaml: Stage 1 config
     - training/configs/ppo_amass_training.yaml: AMP+PPO config
 """
@@ -208,6 +208,15 @@ def parse_args():
         default=None,
         help="Path to checkpoint to resume training from (e.g., checkpoints/best_checkpoint.pkl)",
     )
+    parser.add_argument(
+        "--pretrained-student",
+        type=str,
+        default=None,
+        help=(
+            "Path to student pretraining checkpoint for PPO warm start. "
+            "Ignored when --resume is provided."
+        ),
+    )
 
     # Checkpoint settings
     parser.add_argument(
@@ -226,6 +235,7 @@ def start_training(
     checkpoint_dir: Optional[str] = None,
     amp_data_path: Optional[str] = None,
     resume_checkpoint_path: Optional[str] = None,
+    pretrained_checkpoint_path: Optional[str] = None,
     config_name: Optional[str] = None,
 ):
     """Unified training using training_loop.py for both PPO-only and AMP+PPO.
@@ -457,9 +467,20 @@ def start_training(
 
     # Load checkpoint for resuming if provided
     resume_checkpoint = None
+    pretrained_checkpoint = None
+    selected_pretrained_path = (
+        pretrained_checkpoint_path or training_cfg.ppo.pretrained_checkpoint_path
+    )
+    if resume_checkpoint_path is not None and selected_pretrained_path:
+        raise ValueError(
+            "Cannot use both resume checkpoint and pretrained student checkpoint at once."
+        )
     if resume_checkpoint_path is not None:
         print(f"\nLoading checkpoint for resume: {resume_checkpoint_path}")
         resume_checkpoint = load_checkpoint(resume_checkpoint_path)
+    elif selected_pretrained_path:
+        print(f"\nLoading pretrained student checkpoint: {selected_pretrained_path}")
+        pretrained_checkpoint = load_checkpoint(selected_pretrained_path)
 
     # Train using unified trainer
     mode_str = "AMP+PPO" if training_cfg.amp.enabled else "PPO-only (Stage 1)"
@@ -474,6 +495,7 @@ def start_training(
         ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
         resume_checkpoint=resume_checkpoint,
+        pretrained_checkpoint=pretrained_checkpoint,
         eval_env_step_fn=batched_eval_step_fn,
         eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
@@ -545,6 +567,8 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
         training_cfg.checkpoints.dir = args.checkpoint_dir
     if args.checkpoint_interval is not None:
         training_cfg.checkpoints.interval = args.checkpoint_interval
+    if args.pretrained_student is not None:
+        training_cfg.ppo.pretrained_checkpoint_path = args.pretrained_student
 
     # Validate AMP configuration (if enabled)
     if training_cfg.amp.enabled and training_cfg.amp.weight <= 0:
@@ -616,6 +640,21 @@ def main():
         print(f"  AMP weight: {training_cfg.amp.weight}")
         print(f"  AMP data: {training_cfg.amp.dataset_path}")
     print(f"  Checkpoint dir: {training_cfg.checkpoints.dir}")
+    if training_cfg.ppo.pretrained_checkpoint_path:
+        print(
+            "  Pretrained student checkpoint: "
+            f"{training_cfg.ppo.pretrained_checkpoint_path}"
+        )
+    if training_cfg.ppo.teacher_regularization_checkpoint:
+        print(
+            "  Teacher regularization checkpoint: "
+            f"{training_cfg.ppo.teacher_regularization_checkpoint}"
+        )
+        print(
+            "  Teacher regularization weight/decay: "
+            f"{training_cfg.ppo.teacher_regularization_weight}/"
+            f"{training_cfg.ppo.teacher_regularization_decay}"
+        )
     print(f"{'=' * 60}\n")
 
     start_time = time.time()
@@ -644,6 +683,7 @@ def main():
             checkpoint_dir=args.checkpoint_dir,
             amp_data_path=args.amp_data,
             resume_checkpoint_path=args.resume,
+            pretrained_checkpoint_path=args.pretrained_student,
             config_name=config_name,
         )
 

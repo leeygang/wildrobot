@@ -261,6 +261,10 @@ class PPOConfig(Freezable):
     lr_schedule_end_factor: float = 1.0
     entropy_schedule_end_factor: float = 1.0
     critic_privileged_enabled: bool = False
+    pretrained_checkpoint_path: Optional[str] = None
+    teacher_regularization_checkpoint: Optional[str] = None
+    teacher_regularization_weight: float = 0.0
+    teacher_regularization_decay: float = 1.0
 
     eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
     rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())
