@@ -266,6 +266,11 @@ def compute_dense_progress_reward(
     left_force: jax.Array,
     right_force: jax.Array,
     contact_threshold: jax.Array,
+    pitch: jax.Array,
+    pitch_rate: jax.Array,
+    upright_pitch_limit: jax.Array,
+    upright_pitch_rate_limit: jax.Array,
+    upright_gate_sharpness: jax.Array,
 ) -> jax.Array:
     """Dense heading-local propulsion shaping gated by single-support contact evidence."""
     velocity_cmd_min = jp.maximum(jp.asarray(velocity_cmd_min, dtype=jp.float32), 1e-3)
@@ -277,20 +282,50 @@ def compute_dense_progress_reward(
     left_loaded = left_force > contact_threshold
     right_loaded = right_force > contact_threshold
     support_gate = (left_loaded ^ right_loaded).astype(jp.float32)
-    return ratio * cmd_gate * support_gate
+    upright_gate = compute_smooth_upright_gate(
+        pitch=pitch,
+        pitch_rate=pitch_rate,
+        upright_pitch_limit=upright_pitch_limit,
+        upright_pitch_rate_limit=upright_pitch_rate_limit,
+        upright_gate_sharpness=upright_gate_sharpness,
+    )
+    return ratio * cmd_gate * support_gate * upright_gate
+
+
+def compute_smooth_upright_gate(
+    pitch: jax.Array,
+    pitch_rate: jax.Array,
+    upright_pitch_limit: jax.Array,
+    upright_pitch_rate_limit: jax.Array,
+    upright_gate_sharpness: jax.Array,
+) -> jax.Array:
+    """Smooth uprightness gate using pitch and pitch-rate margins."""
+    upright_pitch_limit = jp.maximum(jp.asarray(upright_pitch_limit, dtype=jp.float32), 1e-3)
+    upright_pitch_rate_limit = jp.maximum(jp.asarray(upright_pitch_rate_limit, dtype=jp.float32), 1e-3)
+    upright_gate_sharpness = jp.maximum(jp.asarray(upright_gate_sharpness, dtype=jp.float32), 1e-3)
+    pitch_gate = jax.nn.sigmoid((upright_pitch_limit - jp.abs(pitch)) * upright_gate_sharpness)
+    pitch_rate_gate = jax.nn.sigmoid(
+        (upright_pitch_rate_limit - jp.abs(pitch_rate)) * upright_gate_sharpness
+    )
+    return pitch_gate * pitch_rate_gate
 
 
 def compute_propulsion_quality_gate(
     step_length_reward: jax.Array,
     dense_progress_reward: jax.Array,
     cycle_progress_reward: jax.Array,
+    dense_support_weight: jax.Array,
+    structured_weight: jax.Array,
+    dense_cap: jax.Array,
 ) -> jax.Array:
     """Gate forward reward using propulsion-quality signals instead of generic stepping."""
-    return jp.clip(
-        jp.maximum(step_length_reward, jp.maximum(dense_progress_reward, cycle_progress_reward)),
-        0.0,
-        1.0,
-    )
+    dense_support_weight = jp.asarray(dense_support_weight, dtype=jp.float32)
+    structured_weight = jp.asarray(structured_weight, dtype=jp.float32)
+    dense_cap = jp.maximum(jp.asarray(dense_cap, dtype=jp.float32), 0.0)
+    structured_signal = jp.maximum(step_length_reward, cycle_progress_reward)
+    dense_support = jp.minimum(jp.maximum(dense_progress_reward, 0.0), dense_cap)
+    gate_raw = structured_weight * structured_signal + dense_support_weight * dense_support
+    return jp.clip(gate_raw, 0.0, 1.0)
 
 
 # =============================================================================
@@ -599,6 +634,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd=velocity_cmd,
             scale=self._config.reward_weights.forward_velocity_scale,
             velocity_cmd_min=self._config.reward_weights.velocity_cmd_min,
+        )
+        _, pitch, _ = root_pose.euler_angles()
+        forward_upright_gate = compute_smooth_upright_gate(
+            pitch=pitch,
+            pitch_rate=jp.zeros(()),
+            upright_pitch_limit=jp.asarray(
+                getattr(self._config.reward_weights, "dense_progress_upright_pitch", 0.25),
+                dtype=jp.float32,
+            ),
+            upright_pitch_rate_limit=jp.asarray(
+                getattr(self._config.reward_weights, "dense_progress_upright_pitch_rate", 0.9),
+                dtype=jp.float32,
+            ),
+            upright_gate_sharpness=jp.asarray(
+                getattr(self._config.reward_weights, "dense_progress_upright_sharpness", 10.0),
+                dtype=jp.float32,
+            ),
+        )
+        cmd_gate_fwd = (
+            jp.abs(velocity_cmd) > getattr(self._config.reward_weights, "velocity_cmd_min", 0.2)
+        ).astype(jp.float32)
+        forward_gate_strength = jp.asarray(
+            getattr(self._config.reward_weights, "forward_upright_gate_strength", 1.0),
+            dtype=jp.float32,
+        )
+        forward_reward = forward_reward * (
+            (1.0 - cmd_gate_fwd)
+            + cmd_gate_fwd
+            * ((1.0 - forward_gate_strength) + forward_gate_strength * forward_upright_gate)
         )
 
         # Healthy reward: robot is upright at reset
@@ -1894,11 +1958,56 @@ class WildRobotEnv(mjx_env.MjxEnv):
             left_force=left_force,
             right_force=right_force,
             contact_threshold=contact_threshold,
+            pitch=pitch,
+            pitch_rate=pitch_rate,
+            upright_pitch_limit=jp.asarray(
+                getattr(weights, "dense_progress_upright_pitch", 0.25), dtype=jp.float32
+            ),
+            upright_pitch_rate_limit=jp.asarray(
+                getattr(weights, "dense_progress_upright_pitch_rate", 0.9), dtype=jp.float32
+            ),
+            upright_gate_sharpness=jp.asarray(
+                getattr(weights, "dense_progress_upright_sharpness", 10.0), dtype=jp.float32
+            ),
+        )
+        forward_upright_gate = compute_smooth_upright_gate(
+            pitch=pitch,
+            pitch_rate=pitch_rate,
+            upright_pitch_limit=jp.asarray(
+                getattr(weights, "dense_progress_upright_pitch", 0.25), dtype=jp.float32
+            ),
+            upright_pitch_rate_limit=jp.asarray(
+                getattr(weights, "dense_progress_upright_pitch_rate", 0.9), dtype=jp.float32
+            ),
+            upright_gate_sharpness=jp.asarray(
+                getattr(weights, "dense_progress_upright_sharpness", 10.0), dtype=jp.float32
+            ),
+        )
+        forward_upright_gate_strength = jp.asarray(
+            getattr(weights, "forward_upright_gate_strength", 1.0), dtype=jp.float32
+        )
+        cmd_gate_fwd = (jp.abs(velocity_cmd) > getattr(weights, "velocity_cmd_min", 0.2)).astype(
+            jp.float32
+        )
+        forward_reward = forward_reward * (
+            (1.0 - cmd_gate_fwd)
+            + cmd_gate_fwd
+            * (
+                (1.0 - forward_upright_gate_strength)
+                + forward_upright_gate_strength * forward_upright_gate
+            )
         )
         propulsion_gate = compute_propulsion_quality_gate(
             step_length_reward=step_length_reward,
             dense_progress_reward=dense_progress_reward,
             cycle_progress_reward=cycle_progress_reward,
+            dense_support_weight=jp.asarray(
+                getattr(weights, "propulsion_gate_dense_weight", 0.25), dtype=jp.float32
+            ),
+            structured_weight=jp.asarray(
+                getattr(weights, "propulsion_gate_structured_weight", 0.75), dtype=jp.float32
+            ),
+            dense_cap=jp.asarray(getattr(weights, "propulsion_gate_dense_cap", 0.35), dtype=jp.float32),
         )
         forward_reward = forward_reward * (
             (1.0 - getattr(weights, "velocity_step_gate", 0.0))

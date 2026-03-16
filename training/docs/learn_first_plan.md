@@ -220,6 +220,33 @@ The current `v0.15.5` evidence suggests the task is still trapped between the st
   - read at `20`, `40`, and `60`
   - by `60`, if `env/forward_velocity <= 0.02`, treat the branch as failed
 
+### `v0.15.11` Stability-Constrained Propulsion Branch
+
+- `v0.15.10` confirmed a major milestone: the low-propulsion basin is now broken.
+- But it also showed the next failure mode clearly:
+  - speed rises past command
+  - `dense_progress` and `propulsion_gate` keep rising
+  - `step_length` plateaus
+  - `term_pitch_frac` goes to `1.0`
+  - `eval_clean` collapses
+- So `v0.15.11` should preserve the `v0.15.10` reward-economics foundation while constraining propulsion by posture quality.
+- Implemented branch changes:
+  - keep zero-baseline forward reward
+  - keep propulsion-quality gating
+  - keep relaxed Stage-A step targets
+  - make `dense_progress` posture-aware with smooth pitch / pitch-rate gating
+  - upright-gate the commanded forward reward with configurable strength
+  - bias propulsion gate toward `step_length` / `cycle_progress` and cap dense-only influence
+  - reduce `dense_progress` weight so it cannot dominate by pure leaning
+  - increase `orientation` / `pitch_rate` penalties and modestly strengthen pre-collapse shaping
+- Probe policy:
+  - fresh run, not resume
+  - `ppo.iterations: 40`
+  - read at `20` and `40`
+  - by `20`, expect `env/forward_velocity > 0.03` with `term_pitch_frac < 0.25`
+  - by `40`, expect `env/forward_velocity > 0.05` while `eval_clean/success_rate` remains meaningfully alive
+  - if speed rises only together with pitch collapse again, stop immediately
+
 ### Version Milestones
 
 #### v0.10.0 - PPO Infrastructure Setup ✅

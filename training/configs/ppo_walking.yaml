@@ -1,13 +1,12 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.10)
+# WildRobot PPO Walking Config (v0.15.11)
 # =============================================================================
 # Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
 #
 # Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
 # only. This config moves to the larger lever after `v0.15.7` confirmed that
-# `v0.15.10` keeps `wr_obs_v3` but fixes reward economics:
-# zero-baseline forward reward, propulsion-quality gating, and denser
-# forward-progress shaping so propulsion dominates safe stepping.
+# `v0.15.11` keeps the v0.15.10 propulsion breakthrough, but constrains it with
+# posture-aware economics so forward reward does not pay via pitch collapse.
 #
 # Usage:
 #   uv run python training/train.py --config training/configs/ppo_walking.yaml
@@ -15,8 +14,8 @@
 # the v0.15.4 walking checkpoints; both were trapped in bad basins.
 # =============================================================================
 
-version: "0.15.10"
-version_name: "Stage 1b reward-economics propulsion probe"
+version: "0.15.11"
+version_name: "Stage 1b stability-constrained propulsion probe"
 
 seed: 42
 
@@ -77,7 +76,7 @@ ppo:
   # `v0.15.6` proved the policy can step without falling.
   num_envs: 1024
   rollout_steps: 128
-  iterations: 60
+  iterations: 40
 
   learning_rate: 3e-4
   gamma: 0.99
@@ -168,13 +167,13 @@ reward_weights:
   lateral_velocity: -0.3
   # Note: this term multiplies `healthy` in env reward, so keep it low.
   base_height: 0.03
-  orientation: -0.4
+  orientation: -0.7
   angular_velocity: -0.06
-  pitch_rate: -0.25
+  pitch_rate: -0.4
   height_target: 0.10
   height_target_sigma: 0.05
-  collapse_height: -0.25
-  collapse_vz: -0.15
+  collapse_height: -0.3
+  collapse_vz: -0.2
 
   torque: -0.0007
   saturation: -0.05
@@ -208,10 +207,17 @@ reward_weights:
   step_length_target_base: 0.035
   step_length_target_scale: 0.15
   step_length_sigma: 0.06
-  dense_progress: 0.8
-  cycle_progress: 1.0
+  dense_progress: 0.35
+  dense_progress_upright_pitch: 0.22
+  dense_progress_upright_pitch_rate: 0.75
+  dense_progress_upright_sharpness: 10.0
+  forward_upright_gate_strength: 0.85
+  cycle_progress: 1.2
   cycle_progress_target_scale: 0.6
   cycle_progress_sigma: 0.12
+  propulsion_gate_dense_weight: 0.25
+  propulsion_gate_structured_weight: 0.75
+  propulsion_gate_dense_cap: 0.35
   foot_place_k_cmd_vel: 0.30
   foot_place_k_fwd_vel: 0.08
 
@@ -238,7 +244,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.10]
+  tags: [ppo, stage1, walking, v0.15.11]
 
 video:
   enabled: true

@@ -19,6 +19,7 @@ from training.envs.wildrobot_env import (
     compute_cycle_progress_terms,
     compute_phase_gated_clearance_reward,
     compute_propulsion_quality_gate,
+    compute_smooth_upright_gate,
     compute_step_length_touchdown_reward,
     compute_zero_baseline_forward_reward,
 )
@@ -643,7 +644,7 @@ class TestRewardEconomicsV01510:
 
     @pytest.mark.sim
     def test_dense_progress_reward_heading_local_semantics(self):
-        """Dense progress should be command-gated and increase with positive heading-local velocity."""
+        """Dense progress should be command/support/upright gated and rise with heading-local speed."""
         cmd_min = jp.asarray(0.08)
         velocity_cmd = jp.asarray(0.16)
 
@@ -654,6 +655,11 @@ class TestRewardEconomicsV01510:
             left_force=jp.asarray(0.0),
             right_force=jp.asarray(100.0),
             contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
         )
         r_half = compute_dense_progress_reward(
             forward_vel=jp.asarray(0.08),
@@ -662,6 +668,11 @@ class TestRewardEconomicsV01510:
             left_force=jp.asarray(0.0),
             right_force=jp.asarray(100.0),
             contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
         )
         r_match = compute_dense_progress_reward(
             forward_vel=jp.asarray(0.16),
@@ -670,6 +681,11 @@ class TestRewardEconomicsV01510:
             left_force=jp.asarray(0.0),
             right_force=jp.asarray(100.0),
             contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
         )
         r_small_cmd = compute_dense_progress_reward(
             forward_vel=jp.asarray(0.10),
@@ -678,6 +694,11 @@ class TestRewardEconomicsV01510:
             left_force=jp.asarray(0.0),
             right_force=jp.asarray(100.0),
             contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
         )
         r_no_support = compute_dense_progress_reward(
             forward_vel=jp.asarray(0.16),
@@ -686,6 +707,37 @@ class TestRewardEconomicsV01510:
             left_force=jp.asarray(100.0),
             right_force=jp.asarray(100.0),
             contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
+        )
+        r_bad_pitch = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.16),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.50),
+            pitch_rate=jp.asarray(0.10),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
+        )
+        r_bad_pitch_rate = compute_dense_progress_reward(
+            forward_vel=jp.asarray(0.16),
+            velocity_cmd=velocity_cmd,
+            velocity_cmd_min=cmd_min,
+            left_force=jp.asarray(0.0),
+            right_force=jp.asarray(100.0),
+            contact_threshold=jp.asarray(50.0),
+            pitch=jp.asarray(0.05),
+            pitch_rate=jp.asarray(1.40),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
         )
         assert np.isclose(float(r_zero), 0.0), f"No forward speed should give zero dense progress: {r_zero}"
         assert float(r_zero) < float(r_half) < float(r_match), (
@@ -695,25 +747,81 @@ class TestRewardEconomicsV01510:
         assert np.isclose(float(r_no_support), 0.0), (
             f"Dense progress should not open without single-support stepping evidence: {r_no_support}"
         )
+        assert float(r_bad_pitch) < 0.15 * float(r_match), (
+            f"Excessive pitch should strongly suppress dense progress: {r_bad_pitch} vs {r_match}"
+        )
+        assert float(r_bad_pitch_rate) < 0.15 * float(r_match), (
+            f"Excessive pitch-rate should strongly suppress dense progress: {r_bad_pitch_rate} vs {r_match}"
+        )
+
+    @pytest.mark.sim
+    def test_smooth_upright_gate_is_monotonic(self):
+        """Upright gate should be high near upright and drop smoothly with pitch/pitch-rate."""
+        gate_upright = compute_smooth_upright_gate(
+            pitch=jp.asarray(0.03),
+            pitch_rate=jp.asarray(0.08),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
+        )
+        gate_bad_pitch = compute_smooth_upright_gate(
+            pitch=jp.asarray(0.45),
+            pitch_rate=jp.asarray(0.08),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
+        )
+        gate_bad_rate = compute_smooth_upright_gate(
+            pitch=jp.asarray(0.03),
+            pitch_rate=jp.asarray(1.20),
+            upright_pitch_limit=jp.asarray(0.22),
+            upright_pitch_rate_limit=jp.asarray(0.75),
+            upright_gate_sharpness=jp.asarray(10.0),
+        )
+        assert float(gate_upright) > 0.6, f"Near-upright gate should remain high: {gate_upright}"
+        assert float(gate_bad_pitch) < float(gate_upright), (
+            f"Higher pitch should reduce gate: {gate_bad_pitch} vs {gate_upright}"
+        )
+        assert float(gate_bad_rate) < float(gate_upright), (
+            f"Higher pitch-rate should reduce gate: {gate_bad_rate} vs {gate_upright}"
+        )
 
     @pytest.mark.sim
     def test_propulsion_quality_gate_depends_on_propulsion_signals(self):
-        """Propulsion gate should follow propulsion quality max(step_length, dense_progress, cycle_progress)."""
+        """Propulsion gate should prioritize structured signals over dense-progress support."""
         gate_low = compute_propulsion_quality_gate(
             step_length_reward=jp.asarray(0.0),
             dense_progress_reward=jp.asarray(0.0),
             cycle_progress_reward=jp.asarray(0.0),
+            dense_support_weight=jp.asarray(0.25),
+            structured_weight=jp.asarray(0.75),
+            dense_cap=jp.asarray(0.35),
         )
         gate_dense = compute_propulsion_quality_gate(
             step_length_reward=jp.asarray(0.0),
-            dense_progress_reward=jp.asarray(0.6),
+            dense_progress_reward=jp.asarray(1.0),
             cycle_progress_reward=jp.asarray(0.1),
+            dense_support_weight=jp.asarray(0.25),
+            structured_weight=jp.asarray(0.75),
+            dense_cap=jp.asarray(0.35),
         )
         gate_step = compute_propulsion_quality_gate(
             step_length_reward=jp.asarray(0.7),
-            dense_progress_reward=jp.asarray(0.2),
+            dense_progress_reward=jp.asarray(1.0),
             cycle_progress_reward=jp.asarray(0.1),
+            dense_support_weight=jp.asarray(0.25),
+            structured_weight=jp.asarray(0.75),
+            dense_cap=jp.asarray(0.35),
+        )
+        gate_cycle = compute_propulsion_quality_gate(
+            step_length_reward=jp.asarray(0.1),
+            dense_progress_reward=jp.asarray(1.0),
+            cycle_progress_reward=jp.asarray(0.8),
+            dense_support_weight=jp.asarray(0.25),
+            structured_weight=jp.asarray(0.75),
+            dense_cap=jp.asarray(0.35),
         )
         assert np.isclose(float(gate_low), 0.0), f"No propulsion signals should keep gate closed: {gate_low}"
-        assert np.isclose(float(gate_dense), 0.6), f"Gate should follow dense progress max: {gate_dense}"
-        assert np.isclose(float(gate_step), 0.7), f"Gate should follow step-length max: {gate_step}"
+        assert float(gate_dense) < 0.2, f"Dense-only signal should not dominate gate: {gate_dense}"
+        assert float(gate_step) > 0.5, f"Strong step-length should open gate: {gate_step}"
+        assert float(gate_cycle) > 0.5, f"Strong cycle progress should open gate: {gate_cycle}"

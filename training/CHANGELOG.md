@@ -7,6 +7,108 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.15.11] - 2026-03-16: Stability-constrained propulsion after `v0.15.10` broke the low-speed basin by pitching out
+
+### Summary
+`v0.15.10` is the first walking branch that truly broke the low-propulsion / stepping-in-place basin. The run reached and exceeded commanded forward velocity, proving that the reward-economics fix worked. But the branch immediately converted that propulsion into a pitch-driven collapse basin: forward speed kept rising while `term_pitch_frac` went to `1.0` and `eval_clean` collapsed. `v0.15.11` should therefore keep the `v0.15.10` reward-economics foundation, but make propulsion pay only when posture remains sufficiently upright.
+
+### Results (v0.15.10)
+- Run: `training/wandb/offline-run-20260315_135306-ta8q1b8v`
+- Checkpoints: `training/checkpoints/ppo_walking_v01510_20260315_135308-ta8q1b8v`
+- Verdict: propulsion unlocked, stability lost
+- Basin reached by iter `40-50`:
+  - `env/forward_velocity: 0.175 -> 0.215`
+  - `env/velocity_cmd: 0.164`
+  - `env/velocity_error: 0.154 -> 0.148`
+  - `env/success_rate: 0.010 -> 0.000`
+  - `eval_clean/success_rate: 0.021 -> 0.042`
+  - `term_pitch_frac: 0.990 -> 1.000`
+  - `reward/dense_progress: 0.389 -> 0.456`
+  - `reward/step_length: ~0.135` (plateaued)
+  - `reward/cycle_progress: ~0.017` (still weak)
+  - `debug/propulsion_gate: 0.467 -> 0.525`
+
+### Root Cause
+- `v0.15.10` fixed the old reward basin:
+  - forward reward no longer overpaid near-standing
+  - propulsion gating and dense progress shaping finally created a real path to translation
+- But the new dense propulsion path is not posture-constrained enough:
+  - `dense_progress` keeps rising as the policy leans harder
+  - `step_length` plateaus instead of improving further
+  - `cycle_progress` remains too small to be the dominant structured gait signal
+- Net result:
+  - the policy discovered a fast way to earn propulsion-related reward
+  - that fast way is a pitch-driven locomotion exploit, not stable walking
+
+### Code Updates
+- `training/envs/wildrobot_env.py`
+  - add `compute_smooth_upright_gate()` and use it to posture-gate `dense_progress` with smooth pitch/pitch-rate margins
+  - posture-gate commanded forward reward (zero-baseline path) with configurable strength so forward tracking pays far less during pitch collapse
+  - tighten propulsion gate economics via weighted structured-vs-dense composition:
+    - structured signal: `max(step_length, cycle_progress)`
+    - dense support: capped contribution with configurable weight/cap
+- `training/configs/training_runtime_config.py`, `training/configs/training_config.py`
+  - add/parse new reward fields:
+    - `dense_progress_upright_pitch`
+    - `dense_progress_upright_pitch_rate`
+    - `dense_progress_upright_sharpness`
+    - `forward_upright_gate_strength`
+    - `propulsion_gate_dense_weight`
+    - `propulsion_gate_structured_weight`
+    - `propulsion_gate_dense_cap`
+- `training/tests/test_reward_terms.py`
+  - extend helper-linked tests for:
+    - posture-gated dense progress under excessive pitch/pitch-rate
+    - monotonic smooth upright gate behavior
+    - propulsion gate no longer dominated by dense-progress-only signal
+
+### Config Updates (`training/configs/ppo_walking.yaml`)
+- bump to `version: "0.15.11"` and shorten probe to `ppo.iterations: 40`
+- keep `wr_obs_v3` and the `v0.15.10` reward-economics base (zero-baseline + propulsion gating)
+- retune for stability-constrained propulsion:
+  - lower `dense_progress` weight (`0.8 -> 0.35`)
+  - slightly raise structured cycle term (`cycle_progress: 1.0 -> 1.2`)
+  - strengthen stability shaping:
+    - `orientation: -0.4 -> -0.7`
+    - `pitch_rate: -0.25 -> -0.4`
+    - `collapse_height: -0.25 -> -0.3`
+    - `collapse_vz: -0.15 -> -0.2`
+  - add upright/propgate controls:
+    - `dense_progress_upright_pitch: 0.22`
+    - `dense_progress_upright_pitch_rate: 0.75`
+    - `dense_progress_upright_sharpness: 10.0`
+    - `forward_upright_gate_strength: 0.85`
+    - `propulsion_gate_dense_weight: 0.25`
+    - `propulsion_gate_structured_weight: 0.75`
+    - `propulsion_gate_dense_cap: 0.35`
+
+### `v0.15.11` Plan (Completed)
+- Keep the `v0.15.10` foundation:
+  - zero-baseline forward reward
+  - propulsion-quality gate
+  - relaxed Stage-A step targets
+  - `wr_obs_v3`
+- Add stability-constrained propulsion:
+  - make `dense_progress` posture-aware using smooth pitch / pitch-rate gates
+  - optionally make the forward reward itself upright-gated for commanded walking
+  - reduce `dense_progress` weight so it cannot dominate by pure leaning
+  - increase `orientation` and `pitch_rate` penalties
+  - strengthen pre-collapse / anti-pitch shaping if needed
+- Tighten what opens the propulsion gate:
+  - let `step_length` and `cycle_progress` matter more relative to dense progress
+  - dense progress should support propulsion learning, not fully define it
+- Keep the probe short:
+  - fresh run
+  - `ppo.iterations: 40`
+
+### Training Intent
+- Preserve the propulsion breakthrough from `v0.15.10`.
+- Prevent the new reward path from paying mostly for pitch-driven forward collapse.
+- Readout:
+  - iter `20`: `env/forward_velocity > 0.03` while `term_pitch_frac < 0.25`
+  - iter `40`: `env/forward_velocity > 0.05` and `eval_clean/success_rate` remains meaningfully alive
+  - if speed rises only together with pitch collapse again, stop immediately
+
 ## [v0.15.10] - 2026-03-15: Reward-economics fix after `v0.15.9` low-propulsion basin
 
 ### Summary

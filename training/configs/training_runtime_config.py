@@ -452,9 +452,16 @@ class RewardWeightsConfig(Freezable):
     step_length_target_scale: float = 0.25  # metres per (m/s) velocity_cmd
     step_length_sigma: float = 0.04  # metres
     dense_progress: float = 0.0
+    dense_progress_upright_pitch: float = 0.25  # radians (50% gate around this pitch)
+    dense_progress_upright_pitch_rate: float = 0.90  # rad/s (50% gate around this pitch rate)
+    dense_progress_upright_sharpness: float = 10.0  # sigmoid sharpness for upright gate
+    forward_upright_gate_strength: float = 1.0  # 0=off, 1=full upright gate on forward reward
     cycle_progress: float = 0.0
     cycle_progress_target_scale: float = 1.0
     cycle_progress_sigma: float = 0.08  # metres
+    propulsion_gate_dense_weight: float = 0.25
+    propulsion_gate_structured_weight: float = 0.75
+    propulsion_gate_dense_cap: float = 0.35
 
     # Need-to-step gate (0..1) for stepping-only rewards to avoid marching in place
     step_need_pitch: float = 0.35  # radians
