@@ -21,8 +21,12 @@ def build_observation_from_components(
     velocity_cmd: jnp.ndarray,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
+    teacher_phase: jnp.ndarray | None = None,
+    teacher_joint_pos_target: jnp.ndarray | None = None,
+    teacher_root_lin_vel_target: jnp.ndarray | None = None,
+    teacher_root_height_target: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}:
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_teacher"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
     cp_error = (
@@ -34,6 +38,27 @@ def build_observation_from_components(
         jnp.zeros((4,), dtype=jnp.float32)
         if gait_clock is None
         else gait_clock.reshape(4)
+    )
+    teacher_phase_feat = (
+        jnp.zeros((2,), dtype=jnp.float32)
+        if teacher_phase is None
+        else teacher_phase.reshape(2)
+    )
+    action_dim = spec.model.action_dim
+    teacher_joint_target = (
+        jnp.zeros((action_dim,), dtype=jnp.float32)
+        if teacher_joint_pos_target is None
+        else teacher_joint_pos_target.reshape(action_dim)
+    )
+    teacher_root_vel_target = (
+        jnp.zeros((2,), dtype=jnp.float32)
+        if teacher_root_lin_vel_target is None
+        else teacher_root_lin_vel_target.reshape(2)
+    )
+    teacher_root_h_target = (
+        jnp.zeros((1,), dtype=jnp.float32)
+        if teacher_root_height_target is None
+        else teacher_root_height_target.reshape(1)
     )
 
     parts = [
@@ -49,6 +74,15 @@ def build_observation_from_components(
         parts.append(cp_error)
     if spec.observation.layout_id == "wr_obs_v3":
         parts.append(clock)
+    if spec.observation.layout_id == "wr_obs_teacher":
+        parts.extend(
+            [
+                teacher_phase_feat,
+                teacher_joint_target,
+                teacher_root_vel_target,
+                teacher_root_h_target,
+            ]
+        )
     parts.append(jnp.zeros((1,), dtype=jnp.float32))
 
     obs = jnp.concatenate(parts)
@@ -63,6 +97,10 @@ def build_observation(
     velocity_cmd: jnp.ndarray,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
+    teacher_phase: jnp.ndarray | None = None,
+    teacher_joint_pos_target: jnp.ndarray | None = None,
+    teacher_root_lin_vel_target: jnp.ndarray | None = None,
+    teacher_root_height_target: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -81,4 +119,8 @@ def build_observation(
         velocity_cmd=velocity_cmd,
         capture_point_error=capture_point_error,
         gait_clock=gait_clock,
+        teacher_phase=teacher_phase,
+        teacher_joint_pos_target=teacher_joint_pos_target,
+        teacher_root_lin_vel_target=teacher_root_lin_vel_target,
+        teacher_root_height_target=teacher_root_height_target,
     )

@@ -114,6 +114,9 @@ class EnvConfig(Freezable):
     actor_obs_layout_id: str = "wr_obs_v1"
     clock_stride_period_steps: int = 36
     clock_phase_gate_width: float = 0.20
+    teacher_enabled: bool = False
+    reference_motion_npz_path: Optional[str] = None
+    reference_motion_metadata_path: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)
@@ -464,6 +467,22 @@ class RewardWeightsConfig(Freezable):
     cycle_progress_sigma: float = 0.08  # metres
     propulsion_gate_step_length_weight: float = 0.5
     propulsion_gate_step_progress_weight: float = 0.5
+    # v0.16.0: motion-tracking teacher rewards
+    teacher_root_pose: float = 0.0
+    teacher_root_velocity: float = 0.0
+    teacher_joint_pose: float = 0.0
+    teacher_foot_position: float = 0.0
+    teacher_contact_timing: float = 0.0
+    teacher_phase_consistency: float = 0.0
+    teacher_upright: float = 0.0
+    teacher_root_pos_sigma: float = 0.08
+    teacher_root_quat_sigma: float = 0.15
+    teacher_root_lin_vel_sigma: float = 0.25
+    teacher_root_ang_vel_sigma: float = 0.30
+    teacher_joint_sigma: float = 0.20
+    teacher_foot_sigma: float = 0.06
+    teacher_phase_sigma: float = 0.10
+    teacher_upright_sigma: float = 0.25
 
     # Need-to-step gate (0..1) for stepping-only rewards to avoid marching in place
     step_need_pitch: float = 0.35  # radians

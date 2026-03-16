@@ -81,6 +81,13 @@ REWARD_TERM_KEYS = [
     "reward/step_progress",
     "reward/dense_progress",
     "reward/cycle_progress",
+    "reward/teacher_root_pose",
+    "reward/teacher_root_velocity",
+    "reward/teacher_joint_pose",
+    "reward/teacher_foot_position",
+    "reward/teacher_contact_timing",
+    "reward/teacher_phase_consistency",
+    "reward/teacher_upright",
 ]
 
 
@@ -126,6 +133,13 @@ ENV_METRICS_KEYS = {
     "reward/step_progress": "Touchdown-to-touchdown structured forward progress reward",
     "reward/dense_progress": "Dense heading-local forward progress shaping reward",
     "reward/cycle_progress": "Per-clock-cycle forward displacement reward",
+    "reward/teacher_root_pose": "Teacher root pose tracking reward",
+    "reward/teacher_root_velocity": "Teacher root velocity tracking reward",
+    "reward/teacher_joint_pose": "Teacher joint pose tracking reward",
+    "reward/teacher_foot_position": "Teacher foot position tracking reward",
+    "reward/teacher_contact_timing": "Teacher foot contact timing agreement reward",
+    "reward/teacher_phase_consistency": "Teacher phase consistency reward",
+    "reward/teacher_upright": "Teacher upright stability reward",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
     "debug/roll": "Root roll angle",
@@ -144,6 +158,8 @@ ENV_METRICS_KEYS = {
     "debug/cycle_forward_delta": "Cycle forward displacement used for cycle progress reward",
     "debug/step_progress_delta": "Forward progress delta between alternating touchdowns",
     "debug/step_progress_event": "Alternating touchdown event used by step_progress reward",
+    "debug/teacher_phase": "Reference phase used by teacher tracking",
+    "debug/teacher_phase_error": "Wrapped phase error for teacher phase consistency",
     "debug/action_abs_max": "Max |action| across actuators (post-filter)",
     "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter, legacy)",
     "debug/raw_action_abs_max": "Max |action| across actuators (pre-filter)",
@@ -162,6 +178,10 @@ ENV_METRICS_KEYS = {
     # Tracking metrics (v0.10.3+)
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
+    "tracking/root_tracking_error": "Root position tracking error to teacher reference (m)",
+    "tracking/joint_tracking_error": "Joint pose tracking RMSE to teacher reference (rad)",
+    "tracking/contact_timing_agreement": "Teacher contact timing agreement [0, 1]",
+    "tracking/phase_consistency": "Teacher phase consistency [0, 1]",
     # v0.14.x: M3 base-controller FSM debug metrics
     "debug/bc_phase": "M3 FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
     "debug/bc_in_swing": "M3 FSM occupancy in SWING phase",
@@ -252,6 +272,13 @@ def get_initial_env_metrics(
         "reward/step_progress": 0.0,
         "reward/dense_progress": 0.0,
         "reward/cycle_progress": 0.0,
+        "reward/teacher_root_pose": 0.0,
+        "reward/teacher_root_velocity": 0.0,
+        "reward/teacher_joint_pose": 0.0,
+        "reward/teacher_foot_position": 0.0,
+        "reward/teacher_contact_timing": 0.0,
+        "reward/teacher_phase_consistency": 0.0,
+        "reward/teacher_upright": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
         "debug/roll": roll,
@@ -280,6 +307,8 @@ def get_initial_env_metrics(
         "debug/cycle_forward_delta": 0.0,
         "debug/step_progress_delta": 0.0,
         "debug/step_progress_event": 0.0,
+        "debug/teacher_phase": 0.0,
+        "debug/teacher_phase_error": 0.0,
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": 0.0,
         "debug/bc_in_swing": 0.0,
@@ -299,6 +328,10 @@ def get_initial_env_metrics(
         "tracking/vel_error": 0.0,  # Starts at zero (stationary)
         "tracking/max_torque": 0.0,  # No torque at reset
         "tracking/avg_torque": 0.0,  # No torque at reset
+        "tracking/root_tracking_error": 0.0,
+        "tracking/joint_tracking_error": 0.0,
+        "tracking/contact_timing_agreement": 0.0,
+        "tracking/phase_consistency": 0.0,
     }
 
 
@@ -371,6 +404,13 @@ def get_initial_env_metrics_jax(
         "reward/step_progress": jp.zeros(()),
         "reward/dense_progress": jp.zeros(()),
         "reward/cycle_progress": jp.zeros(()),
+        "reward/teacher_root_pose": jp.zeros(()),
+        "reward/teacher_root_velocity": jp.zeros(()),
+        "reward/teacher_joint_pose": jp.zeros(()),
+        "reward/teacher_foot_position": jp.zeros(()),
+        "reward/teacher_contact_timing": jp.zeros(()),
+        "reward/teacher_phase_consistency": jp.zeros(()),
+        "reward/teacher_upright": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),
         "debug/roll": _scalar(roll),
@@ -399,6 +439,8 @@ def get_initial_env_metrics_jax(
         "debug/cycle_forward_delta": jp.zeros(()),
         "debug/step_progress_delta": jp.zeros(()),
         "debug/step_progress_event": jp.zeros(()),
+        "debug/teacher_phase": jp.zeros(()),
+        "debug/teacher_phase_error": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),
@@ -412,6 +454,10 @@ def get_initial_env_metrics_jax(
         "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
         "tracking/max_torque": jp.zeros(()),  # No torque at reset
         "tracking/avg_torque": jp.zeros(()),  # No torque at reset
+        "tracking/root_tracking_error": jp.zeros(()),
+        "tracking/joint_tracking_error": jp.zeros(()),
+        "tracking/contact_timing_agreement": jp.zeros(()),
+        "tracking/phase_consistency": jp.zeros(()),
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": jp.zeros(()),       # STANCE=0 at reset
         "debug/bc_in_swing": jp.zeros(()),    # 0 occupancy at reset

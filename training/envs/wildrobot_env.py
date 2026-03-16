@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Union
 import jax
 import jax.numpy as jp
 import mujoco
+import numpy as np
 from flax import struct
 from ml_collections import config_dict
 from mujoco import mjx
@@ -70,6 +71,14 @@ from training.envs.disturbance import (
     apply_push,
     sample_push_schedule,
 )
+from training.envs.teacher_rewards import (
+    foot_position_contact_reward,
+    joint_pose_tracking_reward,
+    phase_consistency_reward,
+    root_pose_tracking_reward,
+    root_velocity_tracking_reward,
+    upright_reward,
+)
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import (
     build_metrics_vec,
@@ -78,6 +87,7 @@ from training.core.metrics_registry import (
     NUM_METRICS,
 )
 from policy_contract.spec_builder import build_policy_spec
+from training.reference_motion.loader import load_reference_motion
 
 
 # =============================================================================
@@ -514,11 +524,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Load model and setup robot infrastructure
         self._load_model()
+        self._teacher_enabled = bool(getattr(self._config.env, "teacher_enabled", False))
+        self._ref_clip_name = ""
+        self._ref_dt = 0.02
+        self._ref_frame_count = 1
+        self._ref_phase = jp.zeros((1,), dtype=jp.float32)
+        self._ref_root_pos = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_root_quat = jp.tile(jp.asarray([1.0, 0.0, 0.0, 0.0], dtype=jp.float32), (1, 1))
+        self._ref_root_lin_vel = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_root_ang_vel = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_joint_pos = jp.zeros((1, self._mj_model.nu), dtype=jp.float32)
+        self._ref_joint_vel = jp.zeros((1, self._mj_model.nu), dtype=jp.float32)
+        self._ref_left_foot_pos = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_right_foot_pos = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_left_contact = jp.zeros((1,), dtype=jp.float32)
+        self._ref_right_contact = jp.zeros((1,), dtype=jp.float32)
+        if self._teacher_enabled:
+            self._load_teacher_reference()
 
         print(f"WildRobotEnv initialized:")
         print(f"  Actuators: {self._mj_model.nu}")
         print(f"  Floating base: {self._robot_config.floating_base_body}")
         print(f"  Control dt: {self.dt}s, Sim dt: {self.sim_dt}s")
+        if self._teacher_enabled:
+            print(
+                f"  Teacher reference: {self._ref_clip_name} "
+                f"(frames={self._ref_frame_count}, dt={self._ref_dt:.4f}s)"
+            )
 
     # =========================================================================
     # Model Loading
@@ -624,6 +656,54 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     raise ValueError(f"Push body '{body_name}' not found in model.")
                 push_body_ids.append(int(body_id))
             self._push_body_ids = jp.asarray(push_body_ids, dtype=jp.int32)
+
+    def _load_teacher_reference(self) -> None:
+        """Load teacher reference clip for phase-conditioned tracking mode."""
+        npz_path = getattr(self._config.env, "reference_motion_npz_path", None)
+        meta_path = getattr(self._config.env, "reference_motion_metadata_path", None)
+        if not npz_path or not meta_path:
+            raise ValueError(
+                "Teacher mode requires env.reference_motion_npz_path and "
+                "env.reference_motion_metadata_path."
+            )
+        project_root = Path(__file__).parent.parent.parent
+        clip = load_reference_motion(
+            project_root / str(npz_path),
+            project_root / str(meta_path),
+            actuator_names=self._policy_spec.robot.actuator_names,
+        )
+        self._ref_clip_name = clip.name
+        self._ref_dt = float(clip.dt)
+        self._ref_frame_count = int(clip.frame_count)
+        self._ref_phase = jp.asarray(clip.phase, dtype=jp.float32)
+        self._ref_root_pos = jp.asarray(clip.root_pos, dtype=jp.float32)
+        self._ref_root_quat = jp.asarray(clip.root_quat, dtype=jp.float32)
+        self._ref_root_lin_vel = jp.asarray(clip.root_lin_vel, dtype=jp.float32)
+        self._ref_root_ang_vel = jp.asarray(clip.root_ang_vel, dtype=jp.float32)
+        self._ref_joint_pos = jp.asarray(clip.joint_pos, dtype=jp.float32)
+        self._ref_joint_vel = jp.asarray(clip.joint_vel, dtype=jp.float32)
+        self._ref_left_foot_pos = jp.asarray(clip.left_foot_pos, dtype=jp.float32)
+        self._ref_right_foot_pos = jp.asarray(clip.right_foot_pos, dtype=jp.float32)
+        self._ref_left_contact = jp.asarray(clip.left_foot_contact, dtype=jp.float32)
+        self._ref_right_contact = jp.asarray(clip.right_foot_contact, dtype=jp.float32)
+
+    def _get_teacher_reference_frame(self, step_count: jax.Array) -> Dict[str, jax.Array]:
+        """Sample teacher reference arrays at current step index (wrapped)."""
+        idx = jp.mod(jp.asarray(step_count, dtype=jp.int32), jp.asarray(self._ref_frame_count, dtype=jp.int32))
+        return {
+            "index": idx,
+            "phase": self._ref_phase[idx],
+            "root_pos": self._ref_root_pos[idx],
+            "root_quat": self._ref_root_quat[idx],
+            "root_lin_vel": self._ref_root_lin_vel[idx],
+            "root_ang_vel": self._ref_root_ang_vel[idx],
+            "joint_pos": self._ref_joint_pos[idx],
+            "joint_vel": self._ref_joint_vel[idx],
+            "left_foot_pos": self._ref_left_foot_pos[idx],
+            "right_foot_pos": self._ref_right_foot_pos[idx],
+            "left_contact": self._ref_left_contact[idx],
+            "right_contact": self._ref_right_contact[idx],
+        }
 
     # =========================================================================
     # MjxEnv Interface
@@ -1186,6 +1266,31 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/cycle_forward_delta": metrics.get("debug/cycle_forward_delta", jp.zeros(())),
             "debug/step_progress_delta": metrics.get("debug/step_progress_delta", jp.zeros(())),
             "debug/step_progress_event": metrics.get("debug/step_progress_event", jp.zeros(())),
+            "reward/teacher_root_pose": metrics.get("reward/teacher_root_pose", jp.zeros(())),
+            "reward/teacher_root_velocity": metrics.get(
+                "reward/teacher_root_velocity", jp.zeros(())
+            ),
+            "reward/teacher_joint_pose": metrics.get("reward/teacher_joint_pose", jp.zeros(())),
+            "reward/teacher_foot_position": metrics.get(
+                "reward/teacher_foot_position", jp.zeros(())
+            ),
+            "reward/teacher_contact_timing": metrics.get(
+                "reward/teacher_contact_timing", jp.zeros(())
+            ),
+            "reward/teacher_phase_consistency": metrics.get(
+                "reward/teacher_phase_consistency", jp.zeros(())
+            ),
+            "reward/teacher_upright": metrics.get("reward/teacher_upright", jp.zeros(())),
+            "tracking/root_tracking_error": metrics.get("tracking/root_tracking_error", jp.zeros(())),
+            "tracking/joint_tracking_error": metrics.get(
+                "tracking/joint_tracking_error", jp.zeros(())
+            ),
+            "tracking/contact_timing_agreement": metrics.get(
+                "tracking/contact_timing_agreement", jp.zeros(())
+            ),
+            "tracking/phase_consistency": metrics.get("tracking/phase_consistency", jp.zeros(())),
+            "debug/teacher_phase": metrics.get("debug/teacher_phase", jp.zeros(())),
+            "debug/teacher_phase_error": metrics.get("debug/teacher_phase_error", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -1630,10 +1735,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         policy_state = PolicyState(prev_action=action)
         capture_point_error = None
         gait_clock = None
+        teacher_phase = None
+        teacher_joint_target = None
+        teacher_root_vel_target = None
+        teacher_root_height_target = None
         if self._policy_spec.observation.layout_id == "wr_obs_v2":
             capture_point_error = self._get_capture_point_error(data)
         elif self._policy_spec.observation.layout_id == "wr_obs_v3":
             gait_clock = self._get_gait_clock(step_count)
+        elif self._policy_spec.observation.layout_id == "wr_obs_teacher":
+            if step_count is None:
+                step_count = jp.zeros((), dtype=jp.int32)
+            ref = self._get_teacher_reference_frame(step_count)
+            phase_theta = 2.0 * jp.pi * ref["phase"]
+            teacher_phase = jp.asarray([jp.sin(phase_theta), jp.cos(phase_theta)], dtype=jp.float32)
+            teacher_joint_target = JaxCalibOps.normalize_joint_pos(
+                spec=self._policy_spec,
+                joint_pos_rad=ref["joint_pos"],
+            )
+            teacher_root_vel_target = jp.asarray(ref["root_lin_vel"][:2], dtype=jp.float32)
+            teacher_root_height_target = jp.asarray([ref["root_pos"][2]], dtype=jp.float32)
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
@@ -1641,6 +1762,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd=velocity_cmd,
             capture_point_error=capture_point_error,
             gait_clock=gait_clock,
+            teacher_phase=teacher_phase,
+            teacher_joint_pos_target=teacher_joint_target,
+            teacher_root_lin_vel_target=teacher_root_vel_target,
+            teacher_root_height_target=teacher_root_height_target,
         )
 
     def _get_capture_point_error(self, data: mjx.Data) -> jax.Array:
@@ -1708,6 +1833,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             (total_reward, reward_components_dict)
         """
+        if self._teacher_enabled:
+            return self._get_teacher_reward(
+                data=data,
+                action=action,
+                prev_action=prev_action,
+                velocity_cmd=velocity_cmd,
+                current_step_count=current_step_count,
+            )
 
         # =====================================================================
         # PRIMARY REWARDS (Tier 1)
@@ -2249,6 +2382,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_progress": step_progress_reward,
             "reward/dense_progress": dense_progress_reward,
             "reward/cycle_progress": cycle_progress_reward,
+            "reward/teacher_root_pose": jp.zeros(()),
+            "reward/teacher_root_velocity": jp.zeros(()),
+            "reward/teacher_joint_pose": jp.zeros(()),
+            "reward/teacher_foot_position": jp.zeros(()),
+            "reward/teacher_contact_timing": jp.zeros(()),
+            "reward/teacher_phase_consistency": jp.zeros(()),
+            "reward/teacher_upright": jp.zeros(()),
             "debug/posture_mse": posture_mse,
             "debug/need_step": need_step,
             "debug/touchdown_left": touchdown_left.astype(jp.float32),
@@ -2257,6 +2397,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/cycle_forward_delta": cycle_forward_delta,
             "debug/step_progress_delta": step_progress_delta,
             "debug/step_progress_event": step_progress_event,
+            "debug/teacher_phase": jp.zeros(()),
+            "debug/teacher_phase_error": jp.zeros(()),
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,
@@ -2281,8 +2423,215 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)
             "tracking/avg_torque": avg_torque,  # mean(|torque|) in Nm
+            "tracking/root_tracking_error": jp.zeros(()),
+            "tracking/joint_tracking_error": jp.zeros(()),
+            "tracking/contact_timing_agreement": jp.zeros(()),
+            "tracking/phase_consistency": jp.zeros(()),
         }
 
+        return total, components
+
+    def _get_teacher_reward(
+        self,
+        data: mjx.Data,
+        action: jax.Array,
+        prev_action: jax.Array,
+        velocity_cmd: jax.Array,
+        current_step_count: Optional[jax.Array] = None,
+    ) -> tuple[jax.Array, Dict[str, jax.Array]]:
+        """Compute teacher motion-tracking reward components."""
+        weights = self._config.reward_weights
+        root_pose = self._cal.get_root_pose(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        forward_vel, lateral_vel, _ = root_vel.linear_xyz
+        pitch_rate = root_vel.angular_xyz[1]
+        angvel_penalty = jp.sum(jp.square(root_vel.angular_xyz))
+        orientation_penalty = jp.square(pitch) + jp.square(roll)
+        healthy = jp.where(
+            (root_pose.height > self._config.env.min_height)
+            & (root_pose.height < self._config.env.max_height),
+            1.0,
+            0.0,
+        )
+
+        step_i = (
+            jp.zeros((), dtype=jp.int32)
+            if current_step_count is None
+            else jp.asarray(current_step_count, dtype=jp.int32)
+        )
+        ref = self._get_teacher_reference_frame(step_i)
+        root_pose_reward, root_pos_err, _ = root_pose_tracking_reward(
+            root_pos=root_pose.position,
+            root_quat_wxyz=root_pose.orientation,
+            ref_root_pos=ref["root_pos"],
+            ref_root_quat_wxyz=ref["root_quat"],
+            pos_sigma=jp.asarray(getattr(weights, "teacher_root_pos_sigma", 0.08), dtype=jp.float32),
+            quat_sigma=jp.asarray(getattr(weights, "teacher_root_quat_sigma", 0.15), dtype=jp.float32),
+        )
+        root_vel_reward, _, _ = root_velocity_tracking_reward(
+            root_lin_vel=root_vel.linear_xyz,
+            root_ang_vel=root_vel.angular_xyz,
+            ref_root_lin_vel=ref["root_lin_vel"],
+            ref_root_ang_vel=ref["root_ang_vel"],
+            lin_sigma=jp.asarray(
+                getattr(weights, "teacher_root_lin_vel_sigma", 0.25), dtype=jp.float32
+            ),
+            ang_sigma=jp.asarray(
+                getattr(weights, "teacher_root_ang_vel_sigma", 0.30), dtype=jp.float32
+            ),
+        )
+        joint_pos = self._cal.get_joint_positions(data.qpos, normalize=False)
+        joint_reward, joint_err = joint_pose_tracking_reward(
+            joint_pos=joint_pos,
+            ref_joint_pos=ref["joint_pos"],
+            sigma=jp.asarray(getattr(weights, "teacher_joint_sigma", 0.20), dtype=jp.float32),
+        )
+        left_foot_pos, right_foot_pos = self._cal.get_foot_positions(data, normalize=False)
+        left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        contact_threshold = jp.asarray(self._config.env.contact_threshold_force, dtype=jp.float32)
+        left_contact = (left_force > contact_threshold).astype(jp.float32)
+        right_contact = (right_force > contact_threshold).astype(jp.float32)
+        foot_reward, _, contact_timing_reward, contact_agreement = foot_position_contact_reward(
+            left_foot_pos=left_foot_pos,
+            right_foot_pos=right_foot_pos,
+            ref_left_foot_pos=ref["left_foot_pos"],
+            ref_right_foot_pos=ref["right_foot_pos"],
+            left_contact=left_contact,
+            right_contact=right_contact,
+            ref_left_contact=ref["left_contact"],
+            ref_right_contact=ref["right_contact"],
+            pos_sigma=jp.asarray(getattr(weights, "teacher_foot_sigma", 0.06), dtype=jp.float32),
+        )
+        current_phase = jp.mod(
+            jp.asarray(step_i, dtype=jp.float32)
+            / jp.maximum(jp.asarray(self._ref_frame_count, dtype=jp.float32), 1.0),
+            1.0,
+        )
+        phase_reward, phase_error = phase_consistency_reward(
+            current_phase=current_phase,
+            reference_phase=ref["phase"],
+            sigma=jp.asarray(getattr(weights, "teacher_phase_sigma", 0.10), dtype=jp.float32),
+        )
+        upright_track_reward, _ = upright_reward(
+            pitch=pitch,
+            roll=roll,
+            sigma=jp.asarray(getattr(weights, "teacher_upright_sigma", 0.25), dtype=jp.float32),
+        )
+
+        normalized_torques = self._cal.get_actuator_torques(data.qfrc_actuator, normalize=True)
+        torque_penalty = jp.sum(jp.square(normalized_torques))
+        torque_abs_max = jp.max(jp.abs(normalized_torques))
+        torque_sat_frac = jp.mean((jp.abs(normalized_torques) > 0.95).astype(jp.float32))
+
+        action_abs_max = jp.max(jp.abs(action))
+        action_sat_frac = jp.mean((jp.abs(action) > 0.95).astype(jp.float32))
+        action_rate_penalty = jp.sum(jp.square(action - prev_action))
+        joint_vel = self._cal.get_joint_velocities(data.qvel, normalize=False)
+        joint_vel_penalty = jp.sum(jp.square(joint_vel))
+        saturation_penalty = jp.mean(jp.square(jp.maximum(jp.abs(action) - 0.95, 0.0)))
+
+        total = (
+            getattr(weights, "teacher_root_pose", 0.0) * root_pose_reward
+            + getattr(weights, "teacher_root_velocity", 0.0) * root_vel_reward
+            + getattr(weights, "teacher_joint_pose", 0.0) * joint_reward
+            + getattr(weights, "teacher_foot_position", 0.0) * foot_reward
+            + getattr(weights, "teacher_contact_timing", 0.0) * contact_timing_reward
+            + getattr(weights, "teacher_phase_consistency", 0.0) * phase_reward
+            + getattr(weights, "teacher_upright", 0.0) * upright_track_reward
+            + weights.base_height * healthy
+            + weights.lateral_velocity * jp.square(lateral_vel)
+            + weights.orientation * orientation_penalty
+            + weights.angular_velocity * angvel_penalty
+            + getattr(weights, "pitch_rate", 0.0) * jp.square(pitch_rate)
+            + weights.torque * torque_penalty
+            + weights.saturation * saturation_penalty
+            + weights.action_rate * action_rate_penalty
+            + weights.joint_velocity * joint_vel_penalty
+        )
+
+        max_torque_ratio = jp.max(jp.abs(normalized_torques))
+        avg_torque = jp.mean(
+            jp.abs(self._cal.get_actuator_torques(data.qfrc_actuator, normalize=False))
+        )
+        vel_error = jp.abs(forward_vel - velocity_cmd)
+        foot_switches = self._cal.get_foot_switches(
+            data, threshold=self._config.env.foot_switch_threshold
+        )
+
+        components = {
+            "reward/forward": root_vel_reward,
+            "reward/lateral": jp.square(lateral_vel),
+            "reward/healthy": healthy,
+            "reward/orientation": orientation_penalty,
+            "reward/angvel": angvel_penalty,
+            "reward/pitch_rate": jp.square(pitch_rate),
+            "reward/standing": jp.zeros(()),
+            "reward/collapse_height_pen": jp.zeros(()),
+            "reward/collapse_vz_pen": jp.zeros(()),
+            "reward/torque": torque_penalty,
+            "reward/saturation": saturation_penalty,
+            "reward/action_rate": action_rate_penalty,
+            "reward/joint_vel": joint_vel_penalty,
+            "reward/slip": jp.zeros(()),
+            "reward/clearance": jp.zeros(()),
+            "reward/gait_periodicity": jp.zeros(()),
+            "reward/hip_swing": jp.zeros(()),
+            "reward/knee_swing": jp.zeros(()),
+            "reward/flight_phase": jp.zeros(()),
+            "reward/height_target": jp.zeros(()),
+            "reward/stance_width_penalty": jp.zeros(()),
+            "reward/posture": jp.zeros(()),
+            "reward/step_event": jp.zeros(()),
+            "reward/foot_place": jp.zeros(()),
+            "reward/step_length": jp.zeros(()),
+            "reward/step_progress": jp.zeros(()),
+            "reward/dense_progress": jp.zeros(()),
+            "reward/cycle_progress": jp.zeros(()),
+            "reward/teacher_root_pose": root_pose_reward,
+            "reward/teacher_root_velocity": root_vel_reward,
+            "reward/teacher_joint_pose": joint_reward,
+            "reward/teacher_foot_position": foot_reward,
+            "reward/teacher_contact_timing": contact_timing_reward,
+            "reward/teacher_phase_consistency": phase_reward,
+            "reward/teacher_upright": upright_track_reward,
+            "debug/posture_mse": jp.zeros(()),
+            "debug/need_step": jp.zeros(()),
+            "debug/touchdown_left": jp.zeros(()),
+            "debug/touchdown_right": jp.zeros(()),
+            "debug/cycle_complete": jp.zeros(()),
+            "debug/cycle_forward_delta": jp.zeros(()),
+            "debug/step_progress_delta": jp.zeros(()),
+            "debug/step_progress_event": jp.zeros(()),
+            "debug/pitch": pitch,
+            "debug/roll": roll,
+            "debug/forward_vel": forward_vel,
+            "debug/lateral_vel": lateral_vel,
+            "debug/left_force": left_force,
+            "debug/right_force": right_force,
+            "debug/left_toe_switch": foot_switches[0],
+            "debug/left_heel_switch": foot_switches[1],
+            "debug/right_toe_switch": foot_switches[2],
+            "debug/right_heel_switch": foot_switches[3],
+            "debug/pitch_rate": pitch_rate,
+            "debug/velocity_step_gate": jp.ones(()),
+            "debug/propulsion_gate": jp.ones(()),
+            "debug/action_abs_max": action_abs_max,
+            "debug/action_sat_frac": action_sat_frac,
+            "debug/raw_action_abs_max": action_abs_max,
+            "debug/raw_action_sat_frac": action_sat_frac,
+            "debug/torque_abs_max": torque_abs_max,
+            "debug/torque_sat_frac": torque_sat_frac,
+            "debug/teacher_phase": ref["phase"],
+            "debug/teacher_phase_error": phase_error,
+            "tracking/vel_error": vel_error,
+            "tracking/max_torque": max_torque_ratio,
+            "tracking/avg_torque": avg_torque,
+            "tracking/root_tracking_error": root_pos_err,
+            "tracking/joint_tracking_error": joint_err,
+            "tracking/contact_timing_agreement": contact_agreement,
+            "tracking/phase_consistency": 1.0 - phase_error * 2.0,
+        }
         return total, components
 
     def _get_termination(

@@ -1,0 +1,161 @@
+version: "0.16.0"
+version_name: "Teacher Bootstrap"
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+  mjcf_path: assets/v2/wildrobot.xml
+  model_path: assets/v2/scene_flat_terrain.xml
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.20
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  min_velocity: 0.05
+  max_velocity: 0.15
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.3
+  actor_obs_layout_id: wr_obs_teacher
+  teacher_enabled: true
+  reference_motion_npz_path: training/reference_motion/wildrobot_walk_forward_v001.npz
+  reference_motion_metadata_path: training/reference_motion/wildrobot_walk_forward_v001.json
+
+  base_ctrl_enabled: false
+  fsm_enabled: false
+  push_enabled: false
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 20
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.15
+  entropy_coef: 0.02
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+  target_kl: 0.02
+  log_interval: 10
+  critic_privileged_enabled: false
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 128
+    num_steps: 500
+    deterministic: true
+
+amp:
+  enabled: false
+  dataset_path: null
+  weight: 0.0
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.80
+
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+  discriminator:
+    hidden_sizes: [512, 256]
+    activation: relu
+
+reward_weights:
+  tracking_lin_vel: 1.0
+  lateral_velocity: -0.2
+  base_height: 0.05
+  orientation: -0.4
+  angular_velocity: -0.05
+  pitch_rate: -0.2
+  collapse_height: -0.2
+  collapse_vz: -0.1
+  torque: -0.0005
+  saturation: -0.03
+  action_rate: -0.003
+  joint_velocity: -0.0003
+  slip: -0.02
+  clearance: 0.0
+  gait_periodicity: 0.0
+  forward_velocity_scale: 4.0
+  velocity_step_gate: 0.0
+  velocity_standing_penalty: 0.0
+  velocity_standing_threshold: 0.12
+  velocity_cmd_min: 0.05
+
+  teacher_root_pose: 3.0
+  teacher_root_velocity: 2.5
+  teacher_joint_pose: 3.0
+  teacher_foot_position: 2.0
+  teacher_contact_timing: 1.2
+  teacher_phase_consistency: 0.8
+  teacher_upright: 1.0
+  teacher_root_pos_sigma: 0.10
+  teacher_root_quat_sigma: 0.20
+  teacher_root_lin_vel_sigma: 0.25
+  teacher_root_ang_vel_sigma: 0.30
+  teacher_joint_sigma: 0.20
+  teacher_foot_sigma: 0.06
+  teacher_phase_sigma: 0.12
+  teacher_upright_sigma: 0.25
+
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0
+  task_reward_clip: null
+  amp_reward_clip: [0.0, 1.0]
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot
+  mode: offline
+  tags: ["teacher", "v0.16.0"]
+  log_frequency: 1
+  log_dir: training/wandb
+
+video:
+  enabled: false
+  num_videos: 1
+  episode_length: 500
+  render_every: 2
+  width: 640
+  height: 480
+  fps: 25
+  upload_to_wandb: false
+  output_subdir: videos
+

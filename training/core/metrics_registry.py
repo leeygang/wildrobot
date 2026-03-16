@@ -508,6 +508,73 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Propulsion-quality gate applied to forward reward",
     ),
+    MetricSpec(
+        name="reward/teacher_root_pose",
+        reducer=Reducer.MEAN,
+        description="Teacher root pose tracking reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_root_velocity",
+        reducer=Reducer.MEAN,
+        description="Teacher root velocity tracking reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_joint_pose",
+        reducer=Reducer.MEAN,
+        description="Teacher joint pose tracking reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_foot_position",
+        reducer=Reducer.MEAN,
+        description="Teacher foot position tracking reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_contact_timing",
+        reducer=Reducer.MEAN,
+        description="Teacher contact timing agreement reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_phase_consistency",
+        reducer=Reducer.MEAN,
+        description="Teacher phase consistency reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_upright",
+        reducer=Reducer.MEAN,
+        description="Teacher upright stability reward",
+    ),
+    MetricSpec(
+        name="tracking/root_tracking_error",
+        reducer=Reducer.MEAN,
+        description="Teacher root position tracking error (m)",
+    ),
+    MetricSpec(
+        name="tracking/joint_tracking_error",
+        reducer=Reducer.MEAN,
+        description="Teacher joint tracking RMSE (rad)",
+    ),
+    MetricSpec(
+        name="tracking/contact_timing_agreement",
+        reducer=Reducer.MEAN,
+        description="Teacher contact timing agreement [0, 1]",
+    ),
+    MetricSpec(
+        name="tracking/phase_consistency",
+        reducer=Reducer.MEAN,
+        description="Teacher phase consistency [0, 1]",
+    ),
+    MetricSpec(
+        name="debug/teacher_phase",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Teacher reference phase at current step",
+    ),
+    MetricSpec(
+        name="debug/teacher_phase_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Wrapped phase error between env cycle and teacher reference",
+    ),
 ]
 
 # =============================================================================

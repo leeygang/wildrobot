@@ -7,6 +7,128 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.16.0] - 2026-03-16: Transition from exhausted PPO-only walking to MuJoCo motion-tracking teacher bootstrap
+
+### Summary
+`v0.15.x` PPO-only walking is now considered exhausted as the main branch. The reward-only and structure-only branches succeeded at producing forward speed, but all successful speed branches converged to the same terminal failure mode: pitch-driven locomotion exploits instead of a stable gait basin. `v0.16.0` therefore formalizes a stage transition rather than another reward retune: bootstrap a robot-native gait in MuJoCo with a retargeted reference motion and a phase-conditioned motion-tracking teacher, then transfer that behavior into a command-conditioned locomotion student.
+
+### Results That Triggered The Transition
+- `v0.15.10` broke the original low-speed / stepping-in-place basin, but reached commanded speed by collapsing into pitch failure.
+- `v0.15.11` improved early stability, but ended in the same final pitch-collapse basin.
+- `v0.15.12` improved early structured behavior further, but still ended in the same terminal basin.
+
+### Results (v0.15.12)
+- Run: `training/wandb/offline-run-20260315_210623-l94cm2gs`
+- Checkpoints: `training/checkpoints/ppo_walking_v01512_20260315_210625-l94cm2gs`
+- Verdict: better early structured branch entry, same final pitch-collapse basin
+- Early/mid checkpoint:
+  - `env/forward_velocity: 0.034`
+  - `env/velocity_cmd: 0.100`
+  - `env/velocity_error: 0.100`
+  - `env/success_rate: 0.991`
+  - `eval_clean/success_rate: 0.789`
+  - `term_pitch_frac: 0.009`
+  - `reward/step_length: 0.184`
+  - `reward/step_progress: 0.006`
+- Final checkpoint:
+  - `env/forward_velocity: 0.211`
+  - `env/velocity_cmd: 0.100`
+  - `env/velocity_error: 0.152`
+  - `env/success_rate: 0.002`
+  - `eval_clean/success_rate: 0.055`
+  - `term_pitch_frac: 0.998`
+  - `reward/step_length: 0.185`
+  - `reward/step_progress: 0.024`
+  - `reward/dense_progress: 0.192`
+  - `debug/propulsion_gate: 0.105`
+
+### Root Cause
+- Stage `v0.15.x` established that WildRobot can produce forward speed in simulation.
+- Stage `v0.15.x` did **not** establish a stable gait basin that PPO-from-scratch can reliably discover with local reward shaping.
+- Even when structured touchdown rewards are active:
+  - structured step terms improve
+  - but they still do not dominate the terminal behavior strongly enough
+  - forward speed ultimately rises together with pitch collapse
+- Conclusion:
+  - the missing ingredient is now gait structure / teacher signal, not another local reward coefficient change
+
+### Stage Decision
+- Stop `v0.15.x` reward-only walking as the main branch.
+- Do not spend more time on local reward tuning as the primary approach.
+- Start `v0.16.0` as a MuJoCo teacher-bootstrap stage.
+
+### `v0.16.0` Plan
+- Keep WildRobot and MuJoCo as the primary stack.
+- Do **not** attempt direct H1 or Isaac Lab policy transfer.
+- Follow the external best-practice pattern conceptually instead:
+  - retarget a minimal nominal forward-walk reference to WildRobot
+  - train a phase-conditioned motion-tracking teacher in MuJoCo
+  - initialize or distill a locomotion student from that teacher
+  - only then return to command-conditioned task locomotion and later robustness
+
+### Concrete `v0.16.0` Deliverables
+- `training/reference_motion/`
+  - loader and phase utilities for a nominal walk clip
+  - explicit first-pass clip contract:
+    - `.npz` arrays for `phase`, `root_*`, `joint_*`, foot positions, and foot contacts
+    - companion `.json` metadata with actuator names, loop mode, and nominal gait metadata
+- retargeting utility
+  - produce WildRobot-feasible reference motion from a source walk clip
+- teacher config
+  - add `training/configs/ppo_walking_teacher.yaml`
+- teacher reward / observation path
+  - phase-conditioned observations
+  - root pose / velocity tracking
+  - joint tracking
+  - foot placement / contact timing tracking
+- teacher metrics / tests
+  - tracking error
+  - contact timing agreement
+  - phase consistency
+  - deterministic tests for reference motion loading and teacher reward terms
+
+### `v0.16.0` Implementation (Teacher Bootstrap)
+- Reference-motion module added:
+  - `training/reference_motion/loader.py`
+  - `training/reference_motion/phase.py`
+  - `training/reference_motion/retarget.py`
+- Bootstrap reference clip pipeline added:
+  - script: `scripts/export_teacher_reference_clip.py`
+  - generated local bootstrap placeholder clip (no external mocap download):
+    - `training/reference_motion/wildrobot_walk_forward_v001.npz`
+    - `training/reference_motion/wildrobot_walk_forward_v001.json`
+- Teacher config added:
+  - `training/configs/ppo_walking_teacher.yaml`
+  - flat terrain only, no pushes, short proof-of-life probe
+- Teacher environment path added:
+  - teacher mode toggle and reference clip loading
+  - `wr_obs_teacher` observation layout with phase and reference targets
+  - teacher reward helpers for root pose/velocity, joint pose, foot/contact timing, phase consistency, upright tracking, and effort/smoothness penalties
+- Teacher metrics schema added:
+  - tracking errors, contact timing agreement, phase consistency, teacher phase diagnostics
+- Focused tests added:
+  - `training/tests/test_reference_motion.py`
+  - `training/tests/test_teacher_reward_terms.py`
+
+### Training Intent
+- Replace PPO-from-scratch gait discovery with reference-guided gait bootstrap.
+- Prove stable nominal teacher walking before building a locomotion student.
+- Use Stage `v0.16.0` to answer one question only:
+  - can WildRobot track a single retargeted forward-walk reference stably in MuJoCo?
+
+### Planned Follow-Up: `v0.16.1`
+- If `v0.16.0` succeeds, do not jump straight to wide-range task RL.
+- First build a teacher-to-student handoff:
+  - export teacher rollouts
+  - use a sharded `.npz` dataset contract with `obs`, `actions`, phase, command, forward velocity, done flags, and foot contacts
+  - warm-start a command-conditioned locomotion student with behavior cloning / distillation
+  - fine-tune the student with PPO locomotion rewards plus a decaying teacher regularization term
+- Keep `v0.16.1` narrow:
+  - flat terrain only
+  - command range close to the teacher nominal gait
+  - no pushes, no rough terrain
+- `v0.16.1` is successful if the student preserves the teacher gait basin while learning narrow command-conditioned locomotion without immediately regressing to the old pitch-collapse solution.
+
 ## [v0.15.12] - 2026-03-16: Contact-driven step-to-step propulsion after `v0.15.11` still converged to pitch-collapse speed
 
 ### Summary
