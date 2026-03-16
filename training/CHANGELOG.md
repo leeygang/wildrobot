@@ -16,6 +16,7 @@ This changelog tracks capability changes, configuration updates, and training re
 - Teacher rollout dataset/export:
   - `training/imitation/dataset.py`
   - `training/imitation/collect_teacher_rollouts.py`
+  - supports direct collection from teacher checkpoint + config by running the teacher policy in env and exporting student-layout observations
   - contract: sharded `.npz` + `metadata.json`
   - required shard arrays:
     - `obs`, `actions`, `phase`, `velocity_cmd`, `forward_velocity`, `done`, `left_foot_contact`, `right_foot_contact`
@@ -144,6 +145,8 @@ This changelog tracks capability changes, configuration updates, and training re
   - flat terrain only, no pushes, short proof-of-life probe
 - Teacher environment path added:
   - teacher mode toggle and reference clip loading
+  - loop-aware unwrapped reference root/foot positions across wrapped cycles for forward locomotion tracking
+  - contact-template phase estimate for phase-consistency tracking (not step-index-constant)
   - `wr_obs_teacher` observation layout with phase and reference targets
   - teacher reward helpers for root pose/velocity, joint pose, foot/contact timing, phase consistency, upright tracking, and effort/smoothness penalties
 - Teacher metrics schema added:

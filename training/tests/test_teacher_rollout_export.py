@@ -4,11 +4,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NamedTuple
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from training.imitation.collect_teacher_rollouts import shard_teacher_rollouts
+from training.imitation.collect_teacher_rollouts import (
+    collect_teacher_rollouts_from_checkpoint,
+    shard_teacher_rollouts,
+)
 from training.imitation.dataset import (
     REQUIRED_SHARD_KEYS,
     list_shards,
@@ -68,3 +74,146 @@ def test_rollout_shard_export_and_metadata(tmp_path: Path):
     assert loaded_meta.observation_layout == "wr_obs_v3"
     assert loaded_meta.num_shards == 3
 
+
+@pytest.mark.unit
+def test_teacher_checkpoint_rollout_collection_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import training.imitation.collect_teacher_rollouts as mod
+
+    action_dim = 2
+    teacher_obs_dim = 25  # wr_obs_teacher with action_dim=2
+
+    class FakeWrInfo(NamedTuple):
+        velocity_cmd: jnp.ndarray
+
+    class FakeState(NamedTuple):
+        obs: jnp.ndarray
+        done: jnp.ndarray
+        metrics: dict
+        info: dict
+
+    class FakeEnv:
+        def __init__(self, config):
+            self._config = config
+
+        def reset(self, rng):
+            obs = jnp.zeros((teacher_obs_dim,), dtype=jnp.float32)
+            # teacher_phase slice at [17:19] => [sin, cos] = [0, 1]
+            obs = obs.at[18].set(1.0)
+            return FakeState(
+                obs=obs,
+                done=jnp.asarray(0.0, dtype=jnp.float32),
+                metrics={
+                    "debug/left_force": jnp.asarray(6.0, dtype=jnp.float32),
+                    "debug/right_force": jnp.asarray(1.0, dtype=jnp.float32),
+                    "debug/forward_vel": jnp.asarray(0.08, dtype=jnp.float32),
+                    "debug/pitch": jnp.asarray(0.01, dtype=jnp.float32),
+                    "debug/pitch_rate": jnp.asarray(0.02, dtype=jnp.float32),
+                },
+                info={"wr": FakeWrInfo(velocity_cmd=jnp.asarray(0.1, dtype=jnp.float32))},
+            )
+
+        def step(self, state, action):
+            return state
+
+    def _fake_build_policy_spec(*, layout_id: str, **kwargs):
+        if layout_id == "wr_obs_teacher":
+            layout = [
+                SimpleNamespace(name="gravity_local", size=3),
+                SimpleNamespace(name="angvel_heading_local", size=3),
+                SimpleNamespace(name="joint_pos_normalized", size=action_dim),
+                SimpleNamespace(name="joint_vel_normalized", size=action_dim),
+                SimpleNamespace(name="foot_switches", size=4),
+                SimpleNamespace(name="prev_action", size=action_dim),
+                SimpleNamespace(name="velocity_cmd", size=1),
+                SimpleNamespace(name="teacher_phase", size=2),
+                SimpleNamespace(name="teacher_joint_pos_target", size=action_dim),
+                SimpleNamespace(name="teacher_root_lin_vel_target", size=2),
+                SimpleNamespace(name="teacher_root_height_target", size=1),
+                SimpleNamespace(name="padding", size=1),
+            ]
+            obs_dim = teacher_obs_dim
+        elif layout_id == "wr_obs_v3":
+            layout = [
+                SimpleNamespace(name="gravity_local", size=3),
+                SimpleNamespace(name="angvel_heading_local", size=3),
+                SimpleNamespace(name="joint_pos_normalized", size=action_dim),
+                SimpleNamespace(name="joint_vel_normalized", size=action_dim),
+                SimpleNamespace(name="foot_switches", size=4),
+                SimpleNamespace(name="prev_action", size=action_dim),
+                SimpleNamespace(name="velocity_cmd", size=1),
+                SimpleNamespace(name="gait_clock", size=4),
+                SimpleNamespace(name="padding", size=1),
+            ]
+            obs_dim = 22
+        else:
+            raise ValueError(layout_id)
+        return SimpleNamespace(
+            model=SimpleNamespace(obs_dim=obs_dim, action_dim=action_dim),
+            observation=SimpleNamespace(layout=layout),
+        )
+
+    fake_cfg = SimpleNamespace(
+        env=SimpleNamespace(
+            teacher_enabled=True,
+            actor_obs_layout_id="wr_obs_teacher",
+            action_filter_alpha=0.3,
+            robot_config_path="assets/v2/mujoco_robot_config.json",
+            contact_threshold_force=5.0,
+        ),
+        networks=SimpleNamespace(
+            actor=SimpleNamespace(hidden_sizes=(8, 8)),
+            critic=SimpleNamespace(hidden_sizes=(8, 8)),
+        ),
+        freeze=lambda: None,
+    )
+
+    monkeypatch.setattr(mod, "load_training_config", lambda _: fake_cfg)
+    monkeypatch.setattr(mod, "load_robot_config", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "get_robot_config",
+        lambda: SimpleNamespace(robot_name="wildrobot", actuated_joints=[]),
+    )
+    monkeypatch.setattr(mod, "build_policy_spec", _fake_build_policy_spec)
+    monkeypatch.setattr(mod, "policy_spec_hash", lambda _spec: "hash")
+    monkeypatch.setattr(
+        mod,
+        "load_checkpoint",
+        lambda _path: {"policy_params": {"p": 1}, "processor_params": (), "config": {"policy_spec_hash": "hash"}},
+    )
+    monkeypatch.setattr(mod, "WildRobotEnv", FakeEnv)
+    monkeypatch.setattr(mod, "create_networks", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        mod,
+        "sample_actions",
+        lambda **kwargs: (
+            jnp.zeros((kwargs["obs"].shape[0], action_dim), dtype=jnp.float32),
+            jnp.zeros((kwargs["obs"].shape[0], action_dim), dtype=jnp.float32),
+            jnp.zeros((kwargs["obs"].shape[0],), dtype=jnp.float32),
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "compute_values",
+        lambda **kwargs: jnp.zeros((kwargs["obs"].shape[0],), dtype=jnp.float32),
+    )
+
+    out_dir = tmp_path / "teacher_rollouts"
+    metadata = collect_teacher_rollouts_from_checkpoint(
+        teacher_checkpoint_path=tmp_path / "teacher.pkl",
+        teacher_config_path=tmp_path / "teacher.yaml",
+        output_dir=out_dir,
+        shard_size=8,
+        observation_layout="wr_obs_v3",
+        num_envs=2,
+        num_steps=4,
+        seed=42,
+        deterministic=True,
+    )
+    assert metadata.num_samples == 8
+    assert metadata.observation_layout == "wr_obs_v3"
+    shards = list_shards(out_dir)
+    assert len(shards) == 1
+    shard = load_rollout_shard(shards[0])
+    assert shard["obs"].shape == (8, 22)
+    assert shard["actions"].shape == (8, action_dim)

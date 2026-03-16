@@ -15,6 +15,10 @@ from training.envs.teacher_rewards import (
     root_velocity_tracking_reward,
     upright_reward,
 )
+from training.envs.wildrobot_env import (
+    compute_unwrapped_loop_position,
+    estimate_phase_from_contact_template,
+)
 
 
 @pytest.mark.sim
@@ -137,3 +141,35 @@ def test_phase_consistency_and_upright_reward():
     assert float(r_upright) > float(r_tilted)
     assert np.isfinite(float(r_upright))
 
+
+@pytest.mark.sim
+def test_unwrapped_reference_position_advances_across_cycles():
+    ref = jp.asarray([0.01, 0.0, 0.45], dtype=jp.float32)
+    cycle_delta = jp.asarray([0.144, 0.0, 0.0], dtype=jp.float32)
+    p0 = compute_unwrapped_loop_position(ref, jp.asarray(0, dtype=jp.int32), cycle_delta)
+    p3 = compute_unwrapped_loop_position(ref, jp.asarray(3, dtype=jp.int32), cycle_delta)
+    assert float(p3[0]) > float(p0[0]) + 0.40
+    assert np.isclose(float(p3[2]), float(p0[2]), atol=1e-6)
+
+
+@pytest.mark.sim
+def test_phase_estimate_uses_contact_template_not_step_index():
+    ref_phase = jp.asarray([0.0, 0.25, 0.5, 0.75], dtype=jp.float32)
+    ref_left = jp.asarray([1.0, 1.0, 0.0, 0.0], dtype=jp.float32)
+    ref_right = jp.asarray([0.0, 0.0, 1.0, 1.0], dtype=jp.float32)
+    phase_l, idx_l = estimate_phase_from_contact_template(
+        ref_phase=ref_phase,
+        ref_left_contact=ref_left,
+        ref_right_contact=ref_right,
+        left_contact=jp.asarray(1.0),
+        right_contact=jp.asarray(0.0),
+    )
+    phase_r, idx_r = estimate_phase_from_contact_template(
+        ref_phase=ref_phase,
+        ref_left_contact=ref_left,
+        ref_right_contact=ref_right,
+        left_contact=jp.asarray(0.0),
+        right_contact=jp.asarray(1.0),
+    )
+    assert int(idx_l) != int(idx_r)
+    assert not np.isclose(float(phase_l), float(phase_r), atol=1e-6)

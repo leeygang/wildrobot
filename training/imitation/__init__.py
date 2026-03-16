@@ -1,6 +1,9 @@
 """Teacher rollout export and student imitation utilities."""
 
-from .collect_teacher_rollouts import shard_teacher_rollouts
+from .collect_teacher_rollouts import (
+    collect_teacher_rollouts_from_checkpoint,
+    shard_teacher_rollouts,
+)
 from .dataset import (
     REQUIRED_METADATA_KEYS,
     REQUIRED_SHARD_KEYS,
@@ -26,7 +29,7 @@ __all__ = [
     "write_metadata",
     "load_metadata",
     "list_shards",
+    "collect_teacher_rollouts_from_checkpoint",
     "shard_teacher_rollouts",
     "pretrain_student_behavior_cloning",
 ]
-

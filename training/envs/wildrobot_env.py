@@ -402,6 +402,36 @@ def compute_propulsion_quality_gate(
     return jp.clip(gate_raw, 0.0, 1.0)
 
 
+def compute_unwrapped_loop_position(
+    reference_position: jax.Array,
+    cycle_index: jax.Array,
+    cycle_delta: jax.Array,
+) -> jax.Array:
+    """Unwrap a wrapped locomotion reference position across repeated cycles."""
+    cycle_index_f = jp.asarray(cycle_index, dtype=jp.float32)
+    return jp.asarray(reference_position, dtype=jp.float32) + cycle_index_f * jp.asarray(
+        cycle_delta, dtype=jp.float32
+    )
+
+
+def estimate_phase_from_contact_template(
+    ref_phase: jax.Array,
+    ref_left_contact: jax.Array,
+    ref_right_contact: jax.Array,
+    left_contact: jax.Array,
+    right_contact: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Estimate current phase by matching observed contacts to reference contact template."""
+    left_contact = jp.asarray(left_contact, dtype=jp.float32)
+    right_contact = jp.asarray(right_contact, dtype=jp.float32)
+    contact_error = jp.abs(jp.asarray(ref_left_contact, dtype=jp.float32) - left_contact) + jp.abs(
+        jp.asarray(ref_right_contact, dtype=jp.float32) - right_contact
+    )
+    phase_idx = jp.argmin(contact_error)
+    phase_value = jp.asarray(ref_phase, dtype=jp.float32)[phase_idx]
+    return phase_value, phase_idx
+
+
 # =============================================================================
 # Asset Loading
 # =============================================================================
@@ -533,6 +563,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._ref_root_quat = jp.tile(jp.asarray([1.0, 0.0, 0.0, 0.0], dtype=jp.float32), (1, 1))
         self._ref_root_lin_vel = jp.zeros((1, 3), dtype=jp.float32)
         self._ref_root_ang_vel = jp.zeros((1, 3), dtype=jp.float32)
+        self._ref_cycle_delta = jp.zeros((3,), dtype=jp.float32)
         self._ref_joint_pos = jp.zeros((1, self._mj_model.nu), dtype=jp.float32)
         self._ref_joint_vel = jp.zeros((1, self._mj_model.nu), dtype=jp.float32)
         self._ref_left_foot_pos = jp.zeros((1, 3), dtype=jp.float32)
@@ -680,6 +711,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._ref_root_quat = jp.asarray(clip.root_quat, dtype=jp.float32)
         self._ref_root_lin_vel = jp.asarray(clip.root_lin_vel, dtype=jp.float32)
         self._ref_root_ang_vel = jp.asarray(clip.root_ang_vel, dtype=jp.float32)
+        cycle_delta = (clip.root_pos[-1] + clip.root_lin_vel[-1] * float(clip.dt)) - clip.root_pos[0]
+        self._ref_cycle_delta = jp.asarray(cycle_delta, dtype=jp.float32)
         self._ref_joint_pos = jp.asarray(clip.joint_pos, dtype=jp.float32)
         self._ref_joint_vel = jp.asarray(clip.joint_vel, dtype=jp.float32)
         self._ref_left_foot_pos = jp.asarray(clip.left_foot_pos, dtype=jp.float32)
@@ -689,18 +722,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def _get_teacher_reference_frame(self, step_count: jax.Array) -> Dict[str, jax.Array]:
         """Sample teacher reference arrays at current step index (wrapped)."""
-        idx = jp.mod(jp.asarray(step_count, dtype=jp.int32), jp.asarray(self._ref_frame_count, dtype=jp.int32))
+        step_i = jp.asarray(step_count, dtype=jp.int32)
+        frame_count_i = jp.asarray(self._ref_frame_count, dtype=jp.int32)
+        idx = jp.mod(step_i, frame_count_i)
+        cycle_index = step_i // frame_count_i
+        cycle_offset = jp.asarray(cycle_index, dtype=jp.float32) * self._ref_cycle_delta
         return {
             "index": idx,
+            "cycle_index": cycle_index,
             "phase": self._ref_phase[idx],
-            "root_pos": self._ref_root_pos[idx],
+            "root_pos": compute_unwrapped_loop_position(
+                self._ref_root_pos[idx], cycle_index, self._ref_cycle_delta
+            ),
             "root_quat": self._ref_root_quat[idx],
             "root_lin_vel": self._ref_root_lin_vel[idx],
             "root_ang_vel": self._ref_root_ang_vel[idx],
             "joint_pos": self._ref_joint_pos[idx],
             "joint_vel": self._ref_joint_vel[idx],
-            "left_foot_pos": self._ref_left_foot_pos[idx],
-            "right_foot_pos": self._ref_right_foot_pos[idx],
+            "left_foot_pos": self._ref_left_foot_pos[idx] + cycle_offset,
+            "right_foot_pos": self._ref_right_foot_pos[idx] + cycle_offset,
             "left_contact": self._ref_left_contact[idx],
             "right_contact": self._ref_right_contact[idx],
         }
@@ -2444,9 +2484,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_pose = self._cal.get_root_pose(data)
         roll, pitch, _ = root_pose.euler_angles()
         root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
-        forward_vel, lateral_vel, _ = root_vel.linear_xyz
-        pitch_rate = root_vel.angular_xyz[1]
-        angvel_penalty = jp.sum(jp.square(root_vel.angular_xyz))
+        root_lin_vel = jp.asarray(root_vel.linear_xyz, dtype=jp.float32)
+        root_ang_vel = jp.asarray(root_vel.angular_xyz, dtype=jp.float32)
+        forward_vel, lateral_vel, _ = root_lin_vel
+        pitch_rate = root_ang_vel[1]
+        angvel_penalty = jp.sum(jp.square(root_ang_vel))
         orientation_penalty = jp.square(pitch) + jp.square(roll)
         healthy = jp.where(
             (root_pose.height > self._config.env.min_height)
@@ -2470,8 +2512,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             quat_sigma=jp.asarray(getattr(weights, "teacher_root_quat_sigma", 0.15), dtype=jp.float32),
         )
         root_vel_reward, _, _ = root_velocity_tracking_reward(
-            root_lin_vel=root_vel.linear_xyz,
-            root_ang_vel=root_vel.angular_xyz,
+            root_lin_vel=root_lin_vel,
+            root_ang_vel=root_ang_vel,
             ref_root_lin_vel=ref["root_lin_vel"],
             ref_root_ang_vel=ref["root_ang_vel"],
             lin_sigma=jp.asarray(
@@ -2503,10 +2545,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_right_contact=ref["right_contact"],
             pos_sigma=jp.asarray(getattr(weights, "teacher_foot_sigma", 0.06), dtype=jp.float32),
         )
-        current_phase = jp.mod(
-            jp.asarray(step_i, dtype=jp.float32)
-            / jp.maximum(jp.asarray(self._ref_frame_count, dtype=jp.float32), 1.0),
-            1.0,
+        current_phase, _ = estimate_phase_from_contact_template(
+            ref_phase=self._ref_phase,
+            ref_left_contact=self._ref_left_contact,
+            ref_right_contact=self._ref_right_contact,
+            left_contact=left_contact,
+            right_contact=right_contact,
         )
         phase_reward, phase_error = phase_consistency_reward(
             current_phase=current_phase,
