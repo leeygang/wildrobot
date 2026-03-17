@@ -60,7 +60,7 @@ wildrobot/
 │   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
 │   ├── docs/                           # Training documentation
-│   │   ├── learn_first_plan.md         # Training guide
+│   │   ├── training_plan.md            # Training guide
 │   │   ├── TRAINING_SYSTEM_DESIGN.md   # System architecture
 │   │
 │   ├── envs/                           # Environment implementation

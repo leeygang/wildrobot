@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current Execution Plan
 
-**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `training/docs/learn_first_plan.md`. This is the active execution plan for training a walking policy.
+**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `training/docs/training_plan.md`. This is the active execution plan for training a walking policy.
 
-### Current Stage: v0.10.x - Robot-Native Walking Policy
+### Current Stage: v0.16.x - MuJoCo Motion-Tracking Teacher Bootstrap
 
 We are implementing Stage 1: Learn stable walking using PPO task rewards only (no AMP, no reference motion).
 
@@ -28,7 +28,7 @@ uv run python training/train.py --config training/configs/ppo_walking.yaml  --ve
 - Fall rate < 5%
 - Visible alternating gait
 
-See `training/docs/learn_first_plan.md` for full roadmap including Stage 2 (data collection), Stage 3 (self-imitation AMP), and Stage 4 (human style blending).
+See `training/docs/training_plan.md` for full roadmap including the `v0.16.x` teacher-bootstrap transition and later stages.
 
 ## Project Overview
 
@@ -49,7 +49,7 @@ The project implements the development roadmap outlined in `mujoco_playground_pl
 - **training/checkpoints/**: Training checkpoints 
 - **training/configs/**: training configs
 - **training/CHANGELOG.md**: the changelog for training, log training changes, results, reverse chronical order!
-- **training/docs/learn_first_plan.md**: high level training roadmap and milestone
+- **training/docs/training_plan.md**: high level training roadmap and milestone
 - **training/cal/cal.md**: high level control abstraction layer design
 - **training/tests/test_plan.md**: test plan doc
 

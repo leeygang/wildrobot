@@ -2483,12 +2483,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         weights = self._config.reward_weights
         root_pose = self._cal.get_root_pose(data)
         roll, pitch, _ = root_pose.euler_angles()
-        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
-        root_lin_vel = jp.asarray(root_vel.linear_xyz, dtype=jp.float32)
-        root_ang_vel = jp.asarray(root_vel.angular_xyz, dtype=jp.float32)
-        forward_vel, lateral_vel, _ = root_lin_vel
-        pitch_rate = root_ang_vel[1]
-        angvel_penalty = jp.sum(jp.square(root_ang_vel))
+        root_vel_heading = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        root_vel_world = self._cal.get_root_velocity(data, frame=CoordinateFrame.WORLD)
+        root_lin_vel_heading = jp.asarray(root_vel_heading.linear_xyz, dtype=jp.float32)
+        root_lin_vel_world = jp.asarray(root_vel_world.linear_xyz, dtype=jp.float32)
+        root_ang_vel_world = jp.asarray(root_vel_world.angular_xyz, dtype=jp.float32)
+        forward_vel, lateral_vel, _ = root_lin_vel_heading
+        pitch_rate = root_ang_vel_world[1]
+        angvel_penalty = jp.sum(jp.square(root_ang_vel_world))
         orientation_penalty = jp.square(pitch) + jp.square(roll)
         healthy = jp.where(
             (root_pose.height > self._config.env.min_height)
@@ -2512,8 +2516,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             quat_sigma=jp.asarray(getattr(weights, "teacher_root_quat_sigma", 0.15), dtype=jp.float32),
         )
         root_vel_reward, _, _ = root_velocity_tracking_reward(
-            root_lin_vel=root_lin_vel,
-            root_ang_vel=root_ang_vel,
+            root_lin_vel=root_lin_vel_world,
+            root_ang_vel=root_ang_vel_world,
             ref_root_lin_vel=ref["root_lin_vel"],
             ref_root_ang_vel=ref["root_ang_vel"],
             lin_sigma=jp.asarray(

@@ -217,3 +217,6 @@ def test_teacher_checkpoint_rollout_collection_smoke(tmp_path: Path, monkeypatch
     shard = load_rollout_shard(shards[0])
     assert shard["obs"].shape == (8, 22)
     assert shard["actions"].shape == (8, action_dim)
+    # wr_obs_v3 gait_clock must be [sin(phase), cos(phase), sin(phase+pi), cos(phase+pi)].
+    gait_clock = shard["obs"][0, 17:21]
+    assert np.allclose(gait_clock, np.asarray([0.0, 1.0, 0.0, -1.0], dtype=np.float32), atol=1e-6)

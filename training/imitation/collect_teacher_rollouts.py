@@ -162,13 +162,12 @@ def _build_student_obs_projector(
             obs_teacher = jnp.asarray(obs_teacher, dtype=jnp.float32)
             base = obs_teacher[..., :base_dim]
             teacher_phase = obs_teacher[..., phase_slice]
-            phase_theta = jnp.arctan2(teacher_phase[..., 0], teacher_phase[..., 1])
             gait_clock = jnp.stack(
                 [
                     teacher_phase[..., 0],
                     teacher_phase[..., 1],
-                    jnp.sin(2.0 * phase_theta),
-                    jnp.cos(2.0 * phase_theta),
+                    -teacher_phase[..., 0],
+                    -teacher_phase[..., 1],
                 ],
                 axis=-1,
             )
