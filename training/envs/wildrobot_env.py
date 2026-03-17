@@ -732,9 +732,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def _get_teacher_reset_state(
         self,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        """Build deterministic teacher reset state from the clip start frame."""
-        ref = self._get_teacher_reference_frame(jp.zeros((), dtype=jp.int32))
+        rng: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Sample a teacher reset state from the reference clip phase."""
+        frame_idx = jax.random.randint(
+            rng,
+            shape=(),
+            minval=0,
+            maxval=max(self._ref_frame_count, 1),
+            dtype=jp.int32,
+        )
+        ref = self._get_teacher_reference_frame(frame_idx)
         qpos = self._init_qpos.copy()
         qpos = qpos.at[0:3].set(ref["root_pos"])
         qpos = qpos.at[3:7].set(ref["root_quat"])
@@ -747,7 +755,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         ctrl = jp.asarray(ref["joint_pos"], dtype=jp.float32)
         velocity_cmd = jp.asarray(self._ref_nominal_velocity, dtype=jp.float32)
-        return qpos, qvel, ctrl, velocity_cmd
+        return qpos, qvel, ctrl, velocity_cmd, frame_idx
 
     def _get_teacher_reference_frame(self, step_count: jax.Array) -> Dict[str, jax.Array]:
         """Sample teacher reference arrays at current step index (wrapped)."""
@@ -1020,7 +1028,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         rng, key1, key2, key3 = jax.random.split(rng, 4)
 
         if self._teacher_enabled:
-            qpos, qvel, ctrl, velocity_cmd = self._get_teacher_reset_state()
+            qpos, qvel, ctrl, velocity_cmd, step_count = self._get_teacher_reset_state(key1)
         else:
             # Sample velocity command
             velocity_cmd = jax.random.uniform(
@@ -1042,6 +1050,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
             qvel = None
             ctrl = None
+            step_count = None
 
         schedule = sample_push_schedule(key3, self._config.env, self._push_body_ids)
 
@@ -1050,6 +1059,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd,
             qvel=qvel,
             ctrl_override=ctrl,
+            step_count=step_count,
             push_schedule=schedule,
         )
 
@@ -1193,7 +1203,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         # v0.10.4: Store step count in metrics for episode length calculation
         # This gets preserved through auto-reset, unlike wr_info.step_count which resets
-        episode_step_count = step_count + 1
+        episode_step_count = jp.asarray(step_count + 1, dtype=jp.float32)
 
         metrics = {
             "velocity_command": velocity_cmd,
@@ -1310,12 +1320,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             push_rng, self._config.env, self._push_body_ids
         )
         if self._teacher_enabled:
-            reset_qpos, reset_qvel, reset_ctrl, reset_velocity_cmd = self._get_teacher_reset_state()
+            reset_qpos, reset_qvel, reset_ctrl, reset_velocity_cmd, reset_step_count = (
+                self._get_teacher_reset_state(push_rng)
+            )
             reset_state = self._make_initial_state(
                 reset_qpos,
                 reset_velocity_cmd,
                 qvel=reset_qvel,
                 ctrl_override=reset_ctrl,
+                step_count=reset_step_count,
                 base_info=state.info,
                 push_schedule=reset_schedule,
             )

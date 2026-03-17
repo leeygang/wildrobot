@@ -11,7 +11,7 @@ env:
 
   sim_dt: 0.002
   ctrl_dt: 0.02
-  max_episode_steps: 500
+  max_episode_steps: 216
 
   target_height: 0.45
   min_height: 0.20
@@ -43,7 +43,7 @@ ppo:
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.15
-  entropy_coef: 0.02
+  entropy_coef: 0.03
   value_loss_coef: 0.5
   epochs: 2
   num_minibatches: 32
@@ -95,7 +95,7 @@ networks:
 reward_weights:
   tracking_lin_vel: 1.0
   lateral_velocity: -0.2
-  base_height: 0.05
+  base_height: 0.0
   orientation: -0.4
   angular_velocity: -0.05
   pitch_rate: -0.2
@@ -114,21 +114,21 @@ reward_weights:
   velocity_standing_threshold: 0.12
   velocity_cmd_min: 0.05
 
-  teacher_root_pose: 3.0
-  teacher_root_velocity: 2.5
-  teacher_joint_pose: 3.0
-  teacher_foot_position: 2.0
-  teacher_contact_timing: 1.2
-  teacher_phase_consistency: 0.8
-  teacher_upright: 1.0
-  teacher_root_pos_sigma: 0.10
+  teacher_root_pose: 6.0
+  teacher_root_velocity: 1.5
+  teacher_joint_pose: 1.5
+  teacher_foot_position: 8.0
+  teacher_contact_timing: 3.0
+  teacher_phase_consistency: 2.0
+  teacher_upright: 0.2
+  teacher_root_pos_sigma: 0.08
   teacher_root_quat_sigma: 0.20
   teacher_root_lin_vel_sigma: 0.25
   teacher_root_ang_vel_sigma: 0.30
   teacher_joint_sigma: 0.20
-  teacher_foot_sigma: 0.06
-  teacher_phase_sigma: 0.12
-  teacher_upright_sigma: 0.25
+  teacher_foot_sigma: 0.10
+  teacher_phase_sigma: 0.08
+  teacher_upright_sigma: 0.20
 
 reward:
   task_weight: 1.0
