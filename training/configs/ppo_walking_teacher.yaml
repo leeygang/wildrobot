@@ -19,8 +19,8 @@ env:
   max_pitch: 0.8
   max_roll: 0.8
 
-  min_velocity: 0.05
-  max_velocity: 0.15
+  min_velocity: 0.10
+  max_velocity: 0.10
 
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
@@ -158,4 +158,3 @@ video:
   fps: 25
   upload_to_wandb: false
   output_subdir: videos
-

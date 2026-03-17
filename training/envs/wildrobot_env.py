@@ -570,6 +570,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._ref_right_foot_pos = jp.zeros((1, 3), dtype=jp.float32)
         self._ref_left_contact = jp.zeros((1,), dtype=jp.float32)
         self._ref_right_contact = jp.zeros((1,), dtype=jp.float32)
+        self._ref_nominal_velocity = jp.asarray(
+            float(self._config.env.min_velocity), dtype=jp.float32
+        )
         if self._teacher_enabled:
             self._load_teacher_reference()
 
@@ -719,6 +722,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._ref_right_foot_pos = jp.asarray(clip.right_foot_pos, dtype=jp.float32)
         self._ref_left_contact = jp.asarray(clip.left_foot_contact, dtype=jp.float32)
         self._ref_right_contact = jp.asarray(clip.right_foot_contact, dtype=jp.float32)
+        nominal_velocity = float(
+            clip.metadata.get(
+                "nominal_forward_velocity_mps",
+                getattr(self._config.env, "min_velocity", 0.0),
+            )
+        )
+        self._ref_nominal_velocity = jp.asarray(nominal_velocity, dtype=jp.float32)
+
+    def _get_teacher_reset_state(
+        self,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Build deterministic teacher reset state from the clip start frame."""
+        ref = self._get_teacher_reference_frame(jp.zeros((), dtype=jp.int32))
+        qpos = self._init_qpos.copy()
+        qpos = qpos.at[0:3].set(ref["root_pos"])
+        qpos = qpos.at[3:7].set(ref["root_quat"])
+        qpos = qpos.at[7 : 7 + self._mj_model.nu].set(ref["joint_pos"])
+
+        qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
+        qvel = qvel.at[0:3].set(ref["root_lin_vel"])
+        qvel = qvel.at[3:6].set(ref["root_ang_vel"])
+        qvel = qvel.at[6 : 6 + self._mj_model.nu].set(ref["joint_vel"])
+
+        ctrl = jp.asarray(ref["joint_pos"], dtype=jp.float32)
+        velocity_cmd = jp.asarray(self._ref_nominal_velocity, dtype=jp.float32)
+        return qpos, qvel, ctrl, velocity_cmd
 
     def _get_teacher_reference_frame(self, step_count: jax.Array) -> Dict[str, jax.Array]:
         """Sample teacher reference arrays at current step index (wrapped)."""
@@ -753,6 +782,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         qpos: jax.Array,
         velocity_cmd: jax.Array,
+        qvel: jax.Array | None = None,
+        ctrl_override: jax.Array | None = None,
+        step_count: jax.Array | None = None,
         base_info: dict | None = None,
         push_schedule: DisturbanceSchedule | None = None,
     ) -> WildRobotEnvState:
@@ -768,11 +800,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Initial WildRobotEnvState
         """
-        qvel = jp.zeros(self._mj_model.nv)
+        qvel = (
+            jp.asarray(qvel, dtype=jp.float32)
+            if qvel is not None
+            else jp.zeros(self._mj_model.nv, dtype=jp.float32)
+        )
+        ctrl = (
+            jp.asarray(ctrl_override, dtype=jp.float32)
+            if ctrl_override is not None
+            else self._default_joint_qpos
+        )
+        step_count = (
+            jp.asarray(step_count, dtype=jp.int32)
+            if step_count is not None
+            else jp.zeros((), dtype=jp.int32)
+        )
 
         # Create MJX data and run forward kinematics
         data = mjx.make_data(self._mjx_model)
-        data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
+        data = data.replace(qpos=qpos, qvel=qvel, ctrl=ctrl)
         data = mjx.forward(self._mjx_model, data)
 
         if push_schedule is None:
@@ -787,7 +833,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Build observation using default pose action (matches ctrl at reset)
         default_action = JaxCalibOps.ctrl_to_policy_action(
             spec=self._policy_spec,
-            ctrl_rad=self._default_joint_qpos,
+            ctrl_rad=ctrl,
         )
 
         # Read raw sensors and initialize IMU history using push_schedule.rng
@@ -800,7 +846,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data,
             default_action,
             velocity_cmd,
-            step_count=jp.zeros((), dtype=jp.int32),
+            step_count=step_count,
             signals=signals_override,
         )
 
@@ -903,10 +949,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data, normalize=False
         )
         critic_obs = self._get_privileged_critic_obs(
-            data, jp.zeros((), dtype=jp.int32), push_schedule
+            data, step_count, push_schedule
         )
         wr_info = WildRobotInfo(
-            step_count=jp.zeros(()),
+            step_count=step_count,
             prev_action=default_action,
             truncated=jp.zeros(()),  # No truncation at reset
             velocity_cmd=velocity_cmd,  # Target velocity for this episode
@@ -973,30 +1019,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         rng, key1, key2, key3 = jax.random.split(rng, 4)
 
-        # Sample velocity command
-        velocity_cmd = jax.random.uniform(
-            key1,
-            shape=(),
-            minval=self._config.env.min_velocity,
-            maxval=self._config.env.max_velocity,
-        )
+        if self._teacher_enabled:
+            qpos, qvel, ctrl, velocity_cmd = self._get_teacher_reset_state()
+        else:
+            # Sample velocity command
+            velocity_cmd = jax.random.uniform(
+                key1,
+                shape=(),
+                minval=self._config.env.min_velocity,
+                maxval=self._config.env.max_velocity,
+            )
 
-        # Use initial qpos from model (keyframe or qpos0)
-        qpos = self._init_qpos.copy()
+            # Use initial qpos from model (keyframe or qpos0)
+            qpos = self._init_qpos.copy()
 
-        # Add small random noise to joint positions (not floating base)
-        joint_noise = jax.random.uniform(
-            key2, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
-        )
-        qpos = qpos.at[7 : 7 + len(self._default_joint_qpos)].set(
-            self._default_joint_qpos + joint_noise
-        )
+            # Add small random noise to joint positions (not floating base)
+            joint_noise = jax.random.uniform(
+                key2, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
+            )
+            qpos = qpos.at[7 : 7 + len(self._default_joint_qpos)].set(
+                self._default_joint_qpos + joint_noise
+            )
+            qvel = None
+            ctrl = None
 
         schedule = sample_push_schedule(key3, self._config.env, self._push_body_ids)
 
         return self._make_initial_state(
             qpos,
             velocity_cmd,
+            qvel=qvel,
+            ctrl_override=ctrl,
             push_schedule=schedule,
         )
 
@@ -1252,15 +1305,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         # Use updated RNG after consuming IMU noise
+        _, push_rng = jax.random.split(rng_after)
         reset_schedule = sample_push_schedule(
-            rng_after, self._config.env, self._push_body_ids
+            push_rng, self._config.env, self._push_body_ids
         )
-        reset_state = self._make_initial_state(
-            self._init_qpos,
-            velocity_cmd,
-            base_info=state.info,
-            push_schedule=reset_schedule,
-        )
+        if self._teacher_enabled:
+            reset_qpos, reset_qvel, reset_ctrl, reset_velocity_cmd = self._get_teacher_reset_state()
+            reset_state = self._make_initial_state(
+                reset_qpos,
+                reset_velocity_cmd,
+                qvel=reset_qvel,
+                ctrl_override=reset_ctrl,
+                base_info=state.info,
+                push_schedule=reset_schedule,
+            )
+        else:
+            reset_state = self._make_initial_state(
+                self._init_qpos,
+                velocity_cmd,
+                base_info=state.info,
+                push_schedule=reset_schedule,
+            )
 
         # v0.10.2: Preserve termination diagnostics in metrics even after reset
         # The reset_state.metrics has all zeros for term/*, but we want to keep

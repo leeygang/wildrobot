@@ -1030,6 +1030,7 @@ def build_wandb_metrics(
             key.startswith("debug/")
             or key.startswith("term_")
             or key.startswith("ppo/")
+            or key.startswith("tracking/")
             or key.startswith("eval/")
             or key.startswith("eval_push/")
             or key.startswith("eval_clean/")
