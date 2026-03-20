@@ -1,5 +1,5 @@
 # training/tests/test_reference_motion.py
-"""Reference-motion format and retargeting contract tests for v0.16.0."""
+"""Reference-motion format and retargeting contract tests for v0.16.x."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from training.reference_motion.loader import (
     ReferenceMotionClip,
@@ -136,3 +137,60 @@ def test_retarget_and_bootstrap_clip_sanity(robot_config):
     assert np.all(stance <= 0.26 + 1e-6)
     assert np.mean(retargeted.root_pos[:, 2]) > 0.38
 
+
+@pytest.mark.unit
+def test_real_retarget_v002_contract_and_sanity(robot_config, project_root: Path):
+    actuator_names = list(robot_config.actuator_names)
+    npz_path = project_root / "training" / "reference_motion" / "wildrobot_walk_forward_v002.npz"
+    meta_path = project_root / "training" / "reference_motion" / "wildrobot_walk_forward_v002.json"
+    assert npz_path.exists(), f"Missing retargeted clip: {npz_path}"
+    assert meta_path.exists(), f"Missing retargeted metadata: {meta_path}"
+
+    clip = load_reference_motion(npz_path, meta_path, actuator_names=actuator_names)
+    metadata = clip.metadata
+    for key in (
+        "name",
+        "source_name",
+        "source_format",
+        "frame_count",
+        "dt",
+        "actuator_names",
+        "loop_mode",
+        "phase_mode",
+        "retarget_version",
+        "nominal_forward_velocity_mps",
+        "notes",
+    ):
+        assert key in metadata, f"Missing metadata field: {key}"
+
+    lower = np.asarray([joint["range"][0] for joint in robot_config.actuated_joints], dtype=np.float32)
+    upper = np.asarray([joint["range"][1] for joint in robot_config.actuated_joints], dtype=np.float32)
+    assert np.all(clip.joint_pos >= lower - 1e-6)
+    assert np.all(clip.joint_pos <= upper + 1e-6)
+    assert np.isfinite(clip.joint_vel).all()
+    assert np.isfinite(clip.root_lin_vel).all()
+    assert np.isfinite(clip.root_ang_vel).all()
+
+    # Velocity smoothness sanity: large spikes would destabilize teacher tracking.
+    assert float(np.percentile(np.abs(clip.joint_vel), 99)) < 8.0
+    assert float(np.percentile(np.abs(np.diff(clip.joint_vel, axis=0)), 99)) < 8.0
+    assert float(np.mean(clip.root_lin_vel[:, 0])) > 0.05
+    quat_norm = np.linalg.norm(clip.root_quat, axis=1)
+    assert np.allclose(quat_norm, 1.0, atol=1e-3)
+
+    # Guard against quaternion-convention regressions from source motion ingestion.
+    root_quat_xyzw = np.stack(
+        [clip.root_quat[:, 1], clip.root_quat[:, 2], clip.root_quat[:, 3], clip.root_quat[:, 0]],
+        axis=-1,
+    )
+    root_euler = Rotation.from_quat(root_quat_xyzw).as_euler("xyz", degrees=False)
+    assert float(np.mean(np.abs(root_euler[:, 0]))) < 1.5
+
+    left_contact = clip.left_foot_contact > 0.5
+    right_contact = clip.right_foot_contact > 0.5
+    left_transitions = int(np.sum(np.abs(np.diff(left_contact.astype(np.int32))) > 0))
+    right_transitions = int(np.sum(np.abs(np.diff(right_contact.astype(np.int32))) > 0))
+    alternating_rate = float(np.mean(np.logical_xor(left_contact, right_contact)))
+    assert left_transitions >= 2
+    assert right_transitions >= 2
+    assert alternating_rate > 0.2

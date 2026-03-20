@@ -8,6 +8,7 @@ from .loader import (
 from .phase import phase_distance, phase_to_index, phase_to_sin_cos, wrap_phase
 from .retarget import (
     generate_bootstrap_nominal_walk_clip,
+    generate_real_retarget_nominal_walk_clip,
     retarget_wildrobot_clip,
 )
 
@@ -21,5 +22,5 @@ __all__ = [
     "phase_to_sin_cos",
     "retarget_wildrobot_clip",
     "generate_bootstrap_nominal_walk_clip",
+    "generate_real_retarget_nominal_walk_clip",
 ]
-

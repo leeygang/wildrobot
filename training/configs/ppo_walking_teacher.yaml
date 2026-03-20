@@ -1,5 +1,5 @@
-version: "0.16.0"
-version_name: "Teacher Bootstrap"
+version: "0.16.2"
+version_name: "Teacher Real Retarget v1"
 seed: 42
 
 env:
@@ -28,8 +28,8 @@ env:
   action_filter_alpha: 0.3
   actor_obs_layout_id: wr_obs_teacher
   teacher_enabled: true
-  reference_motion_npz_path: training/reference_motion/wildrobot_walk_forward_v001.npz
-  reference_motion_metadata_path: training/reference_motion/wildrobot_walk_forward_v001.json
+  reference_motion_npz_path: training/reference_motion/wildrobot_walk_forward_v002.npz
+  reference_motion_metadata_path: training/reference_motion/wildrobot_walk_forward_v002.json
 
   base_ctrl_enabled: false
   fsm_enabled: false
@@ -144,7 +144,7 @@ wandb:
   enabled: true
   project: wildrobot
   mode: offline
-  tags: ["teacher", "v0.16.0"]
+  tags: ["teacher", "v0.16.2", "real-retarget-v1"]
   log_frequency: 1
   log_dir: training/wandb
 

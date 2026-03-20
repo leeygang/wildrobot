@@ -1,8 +1,8 @@
 # Training Plan
 
-**Version:** v0.16.1
+**Version:** v0.16.2
 **Status:** Active
-**Last Updated:** 2026-03-16
+**Last Updated:** 2026-03-17
 
 ## Overview
 
@@ -21,16 +21,31 @@ The key shift is methodological:
 
 **Current active branch:** Stage `1c` (`v0.16.x`)
 
-**Current objective:** get a stable nominal forward-walk teacher in MuJoCo, then hand it off to a narrow command-conditioned student.
+**Current objective:** run the next teacher proof-of-life on the new `real retarget v1` clip and only then unblock student transfer.
 
-**Current blockers from PR review:**
-- `v0.16.0` teacher clip/reward path still has a looping forward-reference issue:
-  - wrapped clip phase currently implies wrapped absolute root position unless fixed in code
-  - teacher root tracking must be cycle-relative or displacement-aware
-- `v0.16.0` teacher phase-consistency signal is not yet trustworthy if it is derived from step index equality with the reference clip rather than state/contact-derived phase
-- `v0.16.1` rollout export is not complete until it can actually run a teacher checkpoint in-env and emit the student dataset, not just shard prebuilt arrays
+**Current status:**
+- The Stage `1c` pipeline is now structurally sound enough to keep:
+  - reference clip loading works
+  - loop-unwrapped teacher tracking works
+  - contact-template phase estimation works
+  - teacher rollout export for `v0.16.1` is real
+- The current blocker is no longer teacher plumbing.
+- The procedural placeholder clip has been replaced by `wildrobot_walk_forward_v002`.
+- The current blocker is now teacher learning outcome on the new clip (must show positive forward tracking before unblocking `v0.16.1`).
 
-So Stage `1c` is the right direction, but the two overnight PRs are not yet ready to merge without fixes.
+**Evidence:**
+- [`offline-run-20260316_202553-04hb74z3`](/home/leeygang/projects/wildrobot/training/wandb/offline-run-20260316_202553-04hb74z3):
+  - stable, but converged to standing
+  - `tracking/root_tracking_error ≈ 0.52`
+  - `reward/teacher_foot_position ≈ 0.002`
+  - `env/forward_velocity ≈ -0.002`
+- [`offline-run-20260316_214827-dxmrxuc2`](/home/leeygang/projects/wildrobot/training/wandb/offline-run-20260316_214827-dxmrxuc2):
+  - materially better tracking
+  - `tracking/root_tracking_error ≈ 0.20`
+  - `reward/teacher_foot_position ≈ 0.019`
+  - still `env/forward_velocity ≈ -0.004`
+
+So the teacher has moved from “stand anywhere” to “quasi-static reference matching,” but it is still not walking. That makes `real retarget v1` the next main milestone, and it blocks `v0.16.1`.
 
 ---
 
@@ -314,14 +329,145 @@ Teacher reward should include:
 
 ### `v0.16.0` Current Status
 
-Implemented in local PR form, but **not review-complete**.
+Teacher pipeline fixes are in place and two proof-of-life runs have already answered the next question.
 
-Open review findings that must be fixed before merge:
-1. looping forward-reference bug:
-   - wrapped phase cannot imply wrapped absolute root `x`
-   - teacher root/foot tracking must support forward progression across cycles
-2. phase-consistency signal must not collapse to a trivial step-index equality
-3. teacher proof-of-life should use metrics that actually reflect tracking quality, not just reference indexing
+Current conclusion:
+- `v0.16.0` teacher infrastructure is viable enough to continue using
+- the bootstrap procedural clip is not a good enough locomotion target
+- the next `v0.16.0` task is no longer reward surgery or teacher-plumbing fixes
+- the next `v0.16.0` task is `real retarget v1`
+
+### `v0.16.0` Immediate Next Milestone: `real retarget v1`
+
+#### Objective
+
+Replace the placeholder procedural clip with the first real WildRobot-feasible retargeted nominal walk clip.
+
+The target does not need final production quality.
+It needs to be:
+- clearly walking forward
+- kinematically feasible for WildRobot
+- smooth enough that teacher PPO can track it
+- informative enough that standing still is no longer a good local optimum
+
+#### Source Motion Assumption
+
+Use one simple nominal forward-walk source clip only.
+
+Acceptable sources:
+- a local AMASS / GMR / project motion clip if already available
+- a local robot-native source animation
+- a manually authored fallback only if no suitable local source exists
+
+Do not block on a motion library or multi-clip system.
+One good nominal walk is enough for `real retarget v1`.
+
+#### Retargeting Priorities
+
+Retarget task-space gait structure first.
+
+Primary targets:
+- root/pelvis forward progression
+- pelvis height
+- torso orientation
+- left/right foot world positions
+- stance width
+- forward step length
+- contact timing
+- knee bend direction and minimum flexion
+
+Secondary targets:
+- exact upper-body style
+- perfect joint-angle imitation of the source
+
+#### Minimal Solver Shape
+
+Implement a lightweight offline retargeting pass in `training/reference_motion/retarget.py`:
+- per-frame optimization or IK solve
+- first acceptable implementation:
+  - SciPy `least_squares`
+  - WildRobot-specific mapping, not a giant framework
+
+Optimization priorities:
+- match foot positions
+- keep pelvis/root feasible
+- enforce joint limits
+- preserve smoothness frame-to-frame
+- keep stance width and knee configuration valid
+
+#### Output Contract
+
+Keep the existing reference motion file format.
+Export a new clip version, for example:
+- `training/reference_motion/wildrobot_walk_forward_v002.npz`
+- `training/reference_motion/wildrobot_walk_forward_v002.json`
+
+Required `.npz` arrays remain:
+- `dt`
+- `phase`
+- `root_pos`
+- `root_quat`
+- `root_lin_vel`
+- `root_ang_vel`
+- `joint_pos`
+- `joint_vel`
+- `left_foot_pos`
+- `right_foot_pos`
+- `left_foot_contact`
+- `right_foot_contact`
+
+Metadata should keep the current fields and update:
+- `source_name`
+- `source_format`
+- `retarget_version`
+- `nominal_forward_velocity_mps`
+- `notes`
+
+#### `real retarget v1` (Implemented)
+
+Source clip used:
+- `training/data/gmr/walking_slow01.pkl`
+
+Implemented assumptions:
+- source is a local 8-DOF lower-body GMR clip (`left/right hip pitch/roll, knee, ankle`) with floating-base root motion
+- source `root_rot` is consumed as `xyzw` and converted to `wxyz` for MuJoCo/reference export consistency
+- retarget path is WildRobot-specific and intentionally minimal
+- one nominal gait cycle is selected from the source, aligned to world +x progression, then solved frame-by-frame
+- per-frame solve uses SciPy `least_squares` with:
+  - foot world-position tracking
+  - joint-limit bounds
+  - minimum knee flexion regularization
+  - frame-to-frame smoothness regularization
+
+Exported clip:
+- `training/reference_motion/wildrobot_walk_forward_v002.npz`
+- `training/reference_motion/wildrobot_walk_forward_v002.json`
+
+Known limitations in `real retarget v1`:
+- only one source clip and one nominal gait cycle are used (no multi-clip coverage yet)
+- because the source clip is already WildRobot-retargeted, the v1 solver is mostly a feasibility/adaptation pass (not a full de novo retarget reconstruction)
+- upper body is mostly neutral (style fidelity is not a target in this step)
+- stance width is conservative and near the lower feasible bound
+- this is a kinematic nominal clip; dynamic realism quality is still gated by teacher PPO results
+
+#### Validation Before Training
+
+Before rerunning teacher training, verify:
+- joint positions stay inside limits
+- joint velocities are finite and not excessively spiky
+- pelvis height stays in nominal range
+- foot trajectories show alternating swing/stance
+- contact labels match foot height/phase well enough
+- nominal forward velocity is positive and nontrivial
+
+#### What Success Looks Like
+
+`real retarget v1` is good enough if the next teacher run shows:
+- positive `env/forward_velocity`
+- active `reward/teacher_foot_position`
+- improving `tracking/root_tracking_error`
+- stable or improving `tracking/contact_timing_agreement`
+- no immediate return to standing or pitch-collapse
 
 ### `v0.16.0` Exit Criteria
 
@@ -340,6 +486,9 @@ This stage does **not** require:
 ### `v0.16.0` Decision Rule
 
 - If the teacher cannot stabilize even one nominal walk clip, fix the clip or tracking reward before building a student.
+- That question is now answered more precisely:
+  - teacher mechanics are adequate
+  - clip quality is the next bottleneck
 - Do not go back to PPO-only walking unless `1c` fails for a clear infrastructure reason.
 
 ---
@@ -398,16 +547,11 @@ Minimum first path:
 
 ### `v0.16.1` Current Status
 
-Implemented in local PR form, but **not review-complete**.
+Implemented and review-fixed, but intentionally blocked.
 
-Open review finding that must be fixed before merge:
-- the current rollout tool only shards prebuilt arrays
-- it must actually:
-  - load a teacher checkpoint
-  - run the teacher in the env
-  - build student-layout observations
-  - record teacher actions and required metadata
-  - emit the dataset contract directly
+Current block:
+- `v0.16.1` should not be run until the teacher is actually walking
+- the current teacher still exports a quasi-static basin, not a locomotion basin
 
 ### Student Training Rules
 
@@ -589,12 +733,12 @@ Stage 4 is successful if:
 
 Work in this order.
 
-1. Fix the `v0.16.0` teacher PR review findings.
-2. Fix the `v0.16.1` real rollout-collection gap.
-3. Merge `v0.16.0` only after the teacher branch is structurally sound.
-4. Merge `v0.16.1` only after it can export real teacher data and warm-start a student.
-5. Run a short `v0.16.0` teacher proof-of-life.
-6. If the teacher is stable, run the `v0.16.1` student bootstrap.
+1. Implement `real retarget v1`.
+2. Export a new retargeted nominal walk clip.
+3. Repoint `v0.16.0` teacher training to the new clip.
+4. Run a short `v0.16.0` teacher proof-of-life on the real clip.
+5. Only if the teacher shows positive forward tracking, unblock `v0.16.1`.
+6. Run teacher rollout export, BC warm start, and narrow student PPO.
 7. Promote to Stage 2 only after the student preserves the gait basin under narrow commands.
 
 ## Success Definition For The Program

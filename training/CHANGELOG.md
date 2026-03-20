@@ -7,6 +7,115 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.16.2] - 2026-03-17: `real retarget v1` becomes the Stage `1c` unblock step
+
+### Summary
+Two `v0.16.0` teacher proof-of-life runs clarified the next move.
+
+The teacher pipeline is now structurally viable:
+- reference clip loading works
+- loop-unwrapped teacher tracking works
+- contact-template phase estimation works
+- teacher rollout export for `v0.16.1` is real
+
+But the current procedural bootstrap clip is not good enough to induce locomotion.
+
+Results:
+- [`offline-run-20260316_202553-04hb74z3`](/home/leeygang/projects/wildrobot/training/wandb/offline-run-20260316_202553-04hb74z3)
+  - stable, but effectively standing
+  - `tracking/root_tracking_error ≈ 0.52`
+  - `reward/teacher_foot_position ≈ 0.002`
+  - `env/forward_velocity ≈ -0.002`
+- [`offline-run-20260316_214827-dxmrxuc2`](/home/leeygang/projects/wildrobot/training/wandb/offline-run-20260316_214827-dxmrxuc2)
+  - materially better tracking
+  - `tracking/root_tracking_error ≈ 0.20`
+  - `reward/teacher_foot_position ≈ 0.019`
+  - still `env/forward_velocity ≈ -0.004`
+
+Interpretation:
+- the branch has moved from `safe standing` to `quasi-static reference matching`
+- that is progress
+- but it is still not a usable walking teacher
+
+### Stage Decision
+- Do **not** run `v0.16.1` yet.
+- `v0.16.1` is blocked, not abandoned.
+- The next main step is `real retarget v1`:
+  - replace the procedural placeholder clip
+  - keep the current teacher infrastructure
+  - rerun `v0.16.0` on a real retargeted nominal walk
+
+### `real retarget v1` Plan
+- Use one simple source forward-walk clip only.
+- Retarget task-space gait structure first:
+  - pelvis/root progression
+  - pelvis height
+  - torso orientation
+  - left/right foot positions
+  - stance width
+  - forward step length
+  - contact timing
+  - knee bend direction
+- Implement a lightweight WildRobot-specific offline retargeting pass in `training/reference_motion/retarget.py`
+- Export a new reference clip version:
+  - e.g. `wildrobot_walk_forward_v002.{npz,json}`
+- Keep the existing clip contract and metadata schema
+- Validate:
+  - joint-limit compliance
+  - finite/smooth joint velocities
+  - alternating swing/stance
+  - reasonable contact labels
+  - positive nominal forward velocity
+
+### Code Updates (`real retarget v1` implemented)
+- Retarget implementation:
+  - `training/reference_motion/retarget.py`
+    - add WildRobot-specific real-retarget pipeline using local GMR source data
+    - add nominal-cycle extraction, heading/progression alignment, and offline per-frame SciPy `least_squares` solve
+    - enforce leg joint bounds, minimum knee flexion, and frame-to-frame smoothness
+    - preserve existing `.npz` + `.json` reference contract
+- Export script:
+  - `scripts/export_teacher_reference_clip.py`
+    - add `--mode real-retarget-v1` and source/model arguments
+- New reference clip:
+  - `training/reference_motion/wildrobot_walk_forward_v002.npz`
+  - `training/reference_motion/wildrobot_walk_forward_v002.json`
+- Teacher config repointed:
+  - `training/configs/ppo_walking_teacher.yaml`
+    - reference paths now point to `v002`
+    - config version/tag updated for `v0.16.2`
+- Tests extended:
+  - `training/tests/test_reference_motion.py`
+    - add focused `v002` contract + kinematic sanity checks
+
+### Source Clip and Retarget Assumptions
+- Source clip used: `training/data/gmr/walking_slow01.pkl`
+- Source format: local GMR `.pkl` with root pose + 8-DOF lower-body joint trajectories
+- Quaternion convention: source `root_rot` is `xyzw`, converted to `wxyz` in retarget export path
+- Mapping assumption:
+  - source DOF order is leg-only (`LHP, LHR, LKP, LAP, RHP, RHR, RKP, RAP`)
+  - mapped into WildRobot 19-actuator order with non-leg joints kept neutral/limited
+- Retarget priorities follow Stage `1c` gate:
+  - root progression + pelvis feasibility
+  - torso/root orientation continuity
+  - foot world positions and contact timing structure
+  - feasible knee bend direction/minimum flexion
+
+### Remaining Limitations in `real retarget v1`
+- Single-clip coverage only (no style/pace diversity yet)
+- v1 is primarily a feasibility/adaptation pass on an already WildRobot-retargeted source clip, not a full de novo retarget reconstruction
+- Upper-body style remains minimal/neutral
+- Stance width remains conservative in this first pass
+- Clip quality is now sufficient to rerun teacher; final acceptance still depends on teacher forward-tracking results
+
+### Unblock Condition For `v0.16.1`
+Only move to student transfer after the retargeted-teacher run shows:
+- positive `env/forward_velocity`
+- active foot tracking reward
+- improving root tracking error
+- stable or improving contact timing agreement
+- no immediate reversion to standing or pitch-collapse
+
 ## [v0.16.1] - 2026-03-16: Teacher-to-student handoff bootstrap
 
 ### Summary
