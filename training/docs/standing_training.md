@@ -8,7 +8,7 @@
 
 ## Purpose
 
-This document defines a standing-first side branch for WildRobot.
+This document defines the return to the original standing-first training goal for WildRobot.
 
 Goal:
 - stand stably under external pushes
@@ -104,6 +104,31 @@ The standing history already gives a clear base to build from.
 - `v0.14.8` actor-side capture-point observation improved quality but did not beat the pure PPO baseline.
 - `v0.14.9` guide-only FSM underperformed decisively and remained weakly engaged / timeout-driven.
 
+### Quantitative Boundary Data
+
+The standing curriculum should be anchored to the force sweep already established in the changelog:
+
+| Push Regime | Success Rate | Episode Length | Interpretation |
+|---|---:|---:|---|
+| `8N x 10` | `74.6%` | `431.8` | mostly bracing-manageable |
+| `9N x 10` | `58.0%` | `382.9` | boundary / transition regime |
+| `10N x 10` | `47.3%` | `346.7` | hard-push regime |
+
+This is the empirical basis for the v0.17 curriculum:
+- `8N x 10` is below the stepping boundary
+- `9N x 10` is where stepping should begin to matter
+- `10N x 10` is the first hard-push target
+
+Capture-point geometry points in the same direction.
+
+Back-of-the-envelope standing estimate for WildRobot:
+- nominal CoM height `z ≈ 0.30 m`
+- `omega_0 = sqrt(g / z) ≈ 5.7 rad/s`
+- a `9N` push for `0.2s` on a `~1.2kg` body gives `delta_v ≈ 1.5 m/s`
+- capture-point offset is then about `delta_v / omega_0 ≈ 0.26 m`
+
+That offset is larger than the nominal support-width scale the current standing branch works around, so stepping at `9N+` is not just empirically observed. It is geometrically expected.
+
 ### Standing Branch Conclusion
 
 The unresolved problem is:
@@ -128,8 +153,11 @@ v0.17 uses a single mainline strategy:
 2. Train with a push curriculum centered on the known bracing boundary.
 3. Keep the reward simple and stability-focused.
 4. Keep the actor observation contact-aware.
-5. Add Li-style history only if hard-push recovery plateaus.
-6. Delay any controller prior or motion-prior path until the RL baseline clearly fails.
+5. Keep mild need-gated stepping auxiliaries as bootstrap signals, not as the main objective.
+6. Escalate by failure signature:
+   - Li-style history for step timing / event sensitivity problems
+   - guide-only M3-lite for touchdown geometry / foot-placement quality problems
+7. Delay any motion-prior path until the RL baseline and the two bounded escalations clearly fail.
 
 This avoids the two old failure modes:
 - turning standing into a walking problem
@@ -165,8 +193,6 @@ Required actor observations:
 - joint velocities
 - previous action
 - left / right foot contact or load signals
-
-Optional actor addition in `v0.17.0`:
 - `capture_point_error`
 
 Guideline:
@@ -177,6 +203,20 @@ Guideline:
 Reason:
 - `legged_gym` rewards and curricula assume the policy can see enough proprioceptive state to manage contacts
 - Li et al. specifically motivate richer temporal context for contact-sensitive biped behaviors
+
+### Health And Termination Defaults
+
+Unless hard evidence says otherwise, v0.17 inherits the proven standing thresholds:
+- `target_height: 0.44`
+- `min_height: 0.40`
+- `max_pitch: 0.8`
+- `max_roll: 0.8`
+- `collapse_height_buffer: 0.03`
+- `collapse_vz_gate_band: 0.07`
+
+Rule:
+- do **not** relax the fall thresholds into a deep-collapse regime
+- the branch should preserve the current standing definition of "still alive"
 
 ### Reward Design
 
@@ -199,6 +239,7 @@ Keep:
 - `collapse_height`
 - `collapse_vz`
 - posture return
+- need-gated stepping auxiliaries at low weight
 
 Remove from the mainline:
 - all walking reward terms
@@ -208,8 +249,17 @@ Remove from the mainline:
 - gait clock dependent rewards
 
 Default v0.17 position on stepping rewards:
-- `step_event` and `foot_place` are **off by default** in the mainline
-- if the policy never initiates useful steps at the hard-push boundary, they may return later as tiny auxiliaries, not as major reward channels
+- keep `step_event` and `foot_place` **on at low weight** in the mainline
+- keep them strictly gated by the existing `need_step` logic from the standing branch
+- treat them as bootstrap and diagnostic signals, not primary task terms
+
+Recommended starting weights:
+- `step_event: 0.10-0.15`
+- `foot_place: 0.25-0.35`
+
+Rule:
+- if they produce fidgeting or gratuitous stepping, zero them quickly
+- if they stay well-behaved, keep them because the standing history suggests they are a safe bootstrap signal here
 
 This matches the external recipes better than inventing a new reward family.
 
@@ -220,7 +270,7 @@ Do not redesign PPO on day one.
 Start from the current stable standing geometry, then scale only after the new branch is behaving sensibly.
 
 Initial default:
-- keep the current rollout geometry close to [ppo_standing_push.yaml](/home/leeygang/projects/wildrobot/training/configs/ppo_standing_push.yaml)
+- keep the current rollout geometry close to `training/configs/ppo_standing_push.yaml`
 - keep conservative PPO trust-region settings
 - keep deterministic evals and rollback
 
@@ -256,7 +306,7 @@ Use directly:
 Concrete WildRobot translation:
 - keep standing as a first-class branch
 - use push training to make recovery emerge
-- if hard-push stepping is low-quality, add history before inventing new rewards
+- if hard-push stepping is low-quality, add history or a guide path based on the failure signature before inventing new rewards
 
 ---
 
@@ -355,7 +405,8 @@ Changes:
 - remove walking-specific reward terms
 - keep collapse-prevention and posture-return terms
 - keep contact-aware actor observations
-- optionally add `capture_point_error`
+- keep `capture_point_error` in the actor observation from day one
+- keep low-weight need-gated `step_event` / `foot_place`
 - keep current PPO geometry and eval/rollback guardrails
 
 Deliverables:
@@ -378,7 +429,7 @@ Training setup:
 - curriculum through easy and medium pushes
 - hard evals present from the start
 - no controller guide
-- no step rewards
+- low-weight need-gated step auxiliaries remain on
 
 Main question:
 - can the cleaned standing recipe beat the old `v0.14.6` line at `10N x 10`
@@ -389,26 +440,65 @@ Exit criteria:
 - `eval_hard > 60%`
 - `term_height_low_frac` below the old hard-push baseline
 
-### v0.17.2: Li-Style History Upgrade
+### v0.17.2: Bounded Escalation Fork
 
 Objective:
-- improve step timing and touchdown quality if the baseline plateaus
+- improve hard-push recovery if the baseline plateaus near the old standing ceiling
 
-Trigger:
-- use this stage only if `eval_hard` stays near the old ceiling and the robot shows delayed or poor recovery steps
+This stage is a controlled fork, not a single hard-sequenced escalation.
+
+#### Track A: Li-Style History
+
+Use this track if:
+- stepping rarely happens at all, or
+- first-step timing is delayed, or
+- contact event handling looks noisy / inconsistent
 
 Changes:
-- add short recent observation history to the actor and critic, or an explicitly history-aware observation path
-- keep the reward stack mostly unchanged
-- keep the same curriculum and eval ladder
+- stack the most recent `4` control ticks of the contact-sensitive channels:
+  - projected gravity
+  - base angular velocity
+  - joint positions
+  - joint velocities
+  - left / right foot contact or load
+  - `capture_point_error`
+- this adds roughly `28 x 4 = 112` history features on top of the instantaneous observation
+- keep the reward stack and curriculum unchanged
 
 Reason:
-- this follows Li et al. more closely and is a more principled escalation than inventing new step rewards
+- this is the simplest Li-style temporal upgrade that preserves the current PPO stack
 
-Exit criteria:
+Expected outcome:
+- lower first-step latency
+- cleaner event timing
+- better recovery initiation
+
+#### Track B: M3-Lite Guide Path
+
+Use this track if:
+- stepping is present, but touchdown quality is poor, or
+- the robot changes support but still collapses through `term_height_low`, or
+- left / right step geometry is visibly wrong or asymmetric
+
+Changes:
+- reintroduce only a guide-only foot-placement prior
+- keep full residual authority
+- do **not** reduce policy authority by phase
+- do **not** use arm logic, since WildRobot has no arms
+- keep the touchdown target conservative and standing-specific
+
+Reason:
+- this addresses foot geometry directly without returning to the old constrained FSM branch
+
+Expected outcome:
+- better touchdown placement
+- lower post-touchdown collapse
+- improved hard-push survival without rewriting the training recipe
+
+Exit criteria for either winning track:
 - `eval_hard` improves materially over `v0.17.1`
-- first-step latency decreases
-- post-touchdown collapse decreases
+- `term_height_low_frac` falls
+- either first-step latency improves, or post-touchdown collapse improves, depending on the chosen track
 
 ### v0.17.3: Hard-Push Reliability
 
@@ -472,9 +562,17 @@ These rules are part of the plan and should be followed strictly.
 
 ### If Hard-Push Success Plateaus Near The Old Baseline
 
-- do not jump to a new FSM run
 - do not start a new motion-prior branch
-- first apply the Li-style history upgrade
+- diagnose the failure mode first
+- choose the bounded escalation track that matches it:
+  - history for timing / event sensitivity
+  - M3-lite for touchdown geometry / placement quality
+
+### If Step Count Stays Near Zero At The Boundary
+
+- keep the reward stack stable
+- do not start a new motion-prior branch
+- first apply the Li-style history track
 
 ### If Step Count Rises But `term_height_low` Does Not Fall
 
@@ -485,13 +583,13 @@ Interpretation:
 Action:
 - keep the reward stack stable
 - inspect first-step latency, touchdown timing, and post-push residual velocity
-- use the history upgrade before adding reward complexity
+- try the M3-lite guide path before adding reward complexity
 
-### If History Still Fails
+### If Both Bounded Escalations Fail
 
 Only then consider a second-line branch:
-- tiny need-gated `step_event` / `foot_place` auxiliaries, or
-- a guide-only foot-placement controller branch
+- increase the low-weight step auxiliaries modestly, or
+- start a separate motion-prior / recovery-teacher investigation
 
 These are fallback branches, not the mainline plan.
 
@@ -523,11 +621,13 @@ The branch should look like a disciplined execution of two recipes:
 
 ## Relationship To The Main Training Plan
 
-This document defines a deliberate side branch.
+This document defines the return to the original standing push-recovery goal.
 
-The repo-wide active plan in [training_plan.md](/home/leeygang/projects/wildrobot/training/docs/training_plan.md) still treats walking teacher bootstrap as the mainline locomotion strategy.
+`training/docs/learn_first_plan.md` remains the walking-first roadmap described in `CLAUDE.md`.
 
-v0.17 is narrower:
+For the standing objective, v0.17 should be treated as the primary plan.
+
+v0.17 is narrower than the walking roadmap:
 - it tests whether WildRobot can solve the original standing push-recovery goal cleanly
 - it does so using a small, recipe-driven branch rather than a broad research program
 
@@ -535,4 +635,3 @@ If v0.17 succeeds, it gives the project:
 - a deployable standing-recovery policy
 - a stronger basis for later walking handoff
 - a clearer answer about whether WildRobot needs a motion prior for recovery at all
-
