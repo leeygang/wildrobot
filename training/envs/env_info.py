@@ -127,6 +127,25 @@ try:
         #: Consecutive ticks need_step has exceeded trigger threshold (STANCE)
         fsm_trigger_hold: jnp.ndarray # shape=(), int32
 
+        # -----------------------------------------------------------------------
+        # v0.17.1+: Recovery metrics state tracking
+        # Enables proper episode-level recovery metric computation.
+        # -----------------------------------------------------------------------
+        #: Whether recovery window is currently active
+        recovery_active: jnp.ndarray  # shape=(), bool
+        #: Steps elapsed since push end within the active recovery window
+        recovery_age: jnp.ndarray  # shape=(), int32
+        #: Support foot at previous step (-1=none, 0=left, 1=right)
+        recovery_last_support_foot: jnp.ndarray  # shape=(), int32
+        #: Whether first touchdown after push_end has been recorded
+        recovery_first_touchdown_recorded: jnp.ndarray  # shape=(), bool
+        #: Latched latency from push_end to first touchdown
+        recovery_first_step_latency: jnp.ndarray  # shape=(), int32
+        #: Accumulated touchdown count during recovery period
+        recovery_touchdown_count: jnp.ndarray  # shape=(), int32
+        #: Accumulated support-foot changes during recovery period
+        recovery_support_foot_changes: jnp.ndarray  # shape=(), int32
+
 except ImportError:
     # Fallback to NamedTuple if flax not available
     from typing import NamedTuple
@@ -161,6 +180,14 @@ except ImportError:
         fsm_swing_sy: jnp.ndarray
         fsm_touch_hold: jnp.ndarray
         fsm_trigger_hold: jnp.ndarray
+        # v0.17.1+: Recovery metrics state
+        recovery_active: jnp.ndarray
+        recovery_age: jnp.ndarray
+        recovery_last_support_foot: jnp.ndarray
+        recovery_first_touchdown_recorded: jnp.ndarray
+        recovery_first_step_latency: jnp.ndarray
+        recovery_touchdown_count: jnp.ndarray
+        recovery_support_foot_changes: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -210,6 +237,14 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "fsm_swing_sy": (),
         "fsm_touch_hold": (),
         "fsm_trigger_hold": (),
+        # v0.17.1+: Recovery metrics state
+        "recovery_active": (),
+        "recovery_age": (),
+        "recovery_last_support_foot": (),
+        "recovery_first_touchdown_recorded": (),
+        "recovery_first_step_latency": (),
+        "recovery_touchdown_count": (),
+        "recovery_support_foot_changes": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

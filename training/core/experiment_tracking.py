@@ -418,6 +418,12 @@ def get_initial_env_metrics_jax(
         "debug/bc_in_recover": jp.zeros(()),  # 0 occupancy at reset
         "debug/bc_swing_foot": jp.zeros(()),  # left(0) at reset
         "debug/bc_phase_ticks": jp.zeros(()),  # 0 ticks at reset
+        # v0.17.1: Recovery metrics for standing-reset branch
+        "recovery/first_step_latency": jp.zeros(()),    # Time from push end to first step
+        "recovery/touchdown_count": jp.zeros(()),       # Number of touchdowns after push
+        "recovery/support_foot_changes": jp.zeros(()),  # Support foot transitions
+        "recovery/post_push_velocity": jp.zeros(()),    # Residual velocity after recovery
+        "recovery/completed": jp.zeros(()),             # Number of finalized recovery summaries
     }
 
 

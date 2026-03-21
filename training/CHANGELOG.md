@@ -7,6 +7,180 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.2] - 2026-03-21: Finalized Recovery Summary Metrics 🔧
+
+### Summary
+Reworked standing recovery diagnostics into finalized recovery-summary metrics instead of per-step proxy signals. Recovery bookkeeping now lives in env state, summary metrics are emitted once when a recovery window completes (or the episode terminates mid-window), and rollout aggregation normalizes those summaries by `recovery/completed`. This makes `recovery/first_step_latency`, `recovery/touchdown_count`, `recovery/support_foot_changes`, and `recovery/post_push_velocity` interpretable during training and eval.
+
+### Problems Fixed
+1. **first_step_latency**: No longer emitted as a single-step spike and then lost in rollout aggregation.
+2. **touchdown_count**: No longer logged as a running per-step accumulator averaged across the rollout.
+3. **support_foot_changes**: No longer duplicated touchdown density; now counts actual support-foot alternations inside the recovery window.
+4. **post_push_velocity**: Now records the residual horizontal speed at recovery finalization instead of averaging across all recovery steps.
+5. **Auto-reset preservation**: Finalized recovery summaries now survive the terminating step and remain visible to the trainer.
+
+### Changes
+- **training/envs/env_info.py**
+  - Added persistent recovery state: `recovery_active`, `recovery_age`, `recovery_first_step_latency`, `recovery_touchdown_count`, `recovery_support_foot_changes`, `recovery_last_support_foot`
+- **training/envs/wildrobot_env.py**
+  - Moved recovery bookkeeping out of `_get_reward()` and into `step()`
+  - Added finalized summary emission with a fixed 50-step recovery window
+  - Added `recovery/completed`
+  - Preserved finalized recovery metrics through auto-reset
+- **training/core/metrics_registry.py**
+  - Switched recovery metrics to summary-event `SUM` reducers
+  - Added normalization by `recovery/completed`
+- **training/core/experiment_tracking.py**
+  - Added zero initialization for `recovery/completed`
+- **CHANGELOG.md**
+  - Clarified that the fixed eval ladder remains external to the training loop
+
+### Testing
+- `tests/test_recovery_metrics_aggregation.py` now validates finalized summary semantics directly:
+  - no-touchdown recovery
+  - single-touchdown latency
+  - alternating vs repeated support foot touchdowns
+  - early termination during active recovery
+  - rollout normalization by `recovery/completed`
+- `tests/test_v0171_boundary_push_eval.py` continues to validate config wiring and env-level metric presence
+
+---
+
+## [v0.17.1] - 2026-03-21: Recipe Baseline at the Boundary ✅ [BUG FIXES APPLIED]
+
+### Summary
+`v0.17.1` implements the recipe baseline milestone at the push boundary as defined in `training/docs/standing_training.md`. This milestone focuses on answering one key question: **Can the cleaned standing recipe beat the old v0.14.6 pure-PPO hard-push baseline at 10N x 10?** The implementation provides a boundary-focused training curriculum, periodic `eval_push/*` and `eval_clean/*` checks, and initial recovery-metric plumbing.
+
+**CRITICAL BUG FIXES APPLIED**: Fixed reward sign regression, schema mismatches, recovery metrics crashes, and test validation gaps identified in post-implementation review.
+
+### Key Goals
+- **Primary Target**: Beat v0.14.6 baseline (60.84% success at 10N x 10)
+- **Exit Criteria**: `eval_easy > 95%`, `eval_medium > 75%`, `eval_hard > 60%`, `term_height_low_frac` reduction
+- **Boundary Focus**: Curriculum centered on empirical bracing boundary (5N-10N regime)  
+- **Recipe-Driven**: Execute legged_gym/Rudin + Li et al. 2024 Cassie recipes cleanly
+
+### Code Changes
+- **New config**: `training/configs/ppo_standing_v0171.yaml`
+  - Boundary-focused push curriculum: 3.0N to 10.0N (covers easy->boundary->hard regime)
+  - Extended iterations: 300 (up from 200) for curriculum progression
+  - FSM/base controller disabled for pure PPO approach
+  - Eval frequency: 25 iterations (eval_push/* and eval_clean/* tests only)
+- **Recovery metrics computation**: Enhanced `training/envs/wildrobot_env.py`
+  - Added `push_schedule` parameter to `_get_reward()` function
+  - Implemented recovery metrics computation logic during push recovery periods
+  - Tracks first-step latency, touchdown count, support foot changes, post-push velocity
+- **Initial metrics update**: Modified `training/core/experiment_tracking.py`
+  - Added recovery metrics initialization to `get_initial_env_metrics_jax()`
+  - Ensures recovery metrics are present at environment reset
+- **Test infrastructure**: Created `tests/test_v0171_boundary_push_eval.py`
+  - Validates boundary push curriculum configuration
+  - Tests recovery metrics computation and logging  
+  - Verifies eval ladder integration and conservative reward stack
+
+### Config Changes
+- **Curriculum Design**: Boundary-focused push forces span the known bracing boundary
+  - Easy regime: 3-7N (ankle/hip strategy quality)
+  - Boundary regime: 7-10N (first reliable recovery steps at capturability boundary)
+  - Hard regime: 10N fixed (target to exceed old baseline)
+  - Duration: 10 steps (0.2s) matching proven regime
+- **Conservative Reward Stack**: No walking reward creep
+  - Walking baggage explicitly zeroed: `step_length: 0.0`, `step_progress: 0.0`, etc.
+  - Mild stepping auxiliaries at reduced weights: `step_event: 0.12`, `foot_place: 0.30`
+  - Core standing terms preserved: base_height, orientation, collapse prevention
+- **Priority Metrics**: Push evals prioritized over reward metrics
+  - Primary: `eval_hard/success_rate` (beat v0.14.6 baseline)
+  - Boundary performance: `eval_medium/success_rate`, `eval_easy/success_rate`
+  - Failure mode tracking: `term_height_low_frac`
+  - Recovery diagnostics: `recovery/first_step_latency`, etc.
+
+### Recovery Metrics Implementation
+- **First-step latency**: Time from push end to first touchdown event  
+- **Touchdown count**: Number of touchdown events during recovery period
+- **Support foot changes**: Support foot transitions (simplified as touchdown count)
+- **Post-push velocity**: Residual horizontal body velocity after recovery
+- **Implementation**: Computed during 50-step window after push ends
+- **Status**: Registry + computation logic complete, ready for training validation
+
+### Evaluation Ladder Design
+- **eval_clean**: No pushes (quiet standing baseline)
+- **eval_easy**: 5N x 10 (easy regime, target >95%)
+- **eval_medium**: 8N x 10 (boundary regime, target >75%)
+- **eval_hard**: 10N x 10 (hard regime, target >60% to beat v0.14.6)
+- **eval_hard_long**: 9N x 15 (long impulse stress test)
+- **Note**: Training loop currently runs eval_push/* and eval_clean/* only; eval_ladder/* test not wired yet
+
+### What Was Preserved from v0.17.0
+- **Standing-only design**: Zero velocity commands, reactive stepping only when needed
+- **Observation layout**: `wr_obs_v2` with contact-aware signals and `capture_point_error`
+- **Health defaults**: Proven standing thresholds (target_height: 0.44, min_height: 0.40, etc.)
+- **Pure PPO approach**: No FSM, no base controller, no motion priors
+
+### What Remains for v0.17.2
+If v0.17.1 plateaus near the old baseline, apply bounded escalation per standing_training.md:
+- **Track A**: Li-style history for timing/event sensitivity issues
+- **Track B**: M3-lite guide path for touchdown geometry/placement quality issues
+- **Decision Rule**: Diagnose failure mode first, choose appropriate escalation track
+
+### Target Performance Validation
+- **Baseline to beat**: v0.14.6 achieved 59.59% at 200 iters, 60.84% extended at 10N x 10
+- **Success metrics**: 
+  - `eval_easy/success_rate > 95%` (5N x 10)
+  - `eval_medium/success_rate > 75%` (8N x 10)  
+  - `eval_hard/success_rate > 60%` (10N x 10) - **primary target**
+  - Reduced `term_height_low_frac` (dominant failure mode)
+- **Training validation**: Ready for full training run to establish baseline
+
+### Critical Bug Fixes Applied
+**Post-implementation review identified several blocking issues that have been fixed:**
+
+1. **Reward Sign Regression (HIGH PRIORITY)** ✅ **FIXED**
+   - **Issue**: Core stability penalties accidentally flipped to rewards (`orientation: 2.0`, `collapse_height: 1.0`, `collapse_vz: 0.5`)
+   - **Impact**: Would have made larger pitch/roll error and collapse states increase reward instead of penalizing them
+   - **Fix**: Corrected to proper penalty signs (`orientation: -2.0`, `collapse_height: -1.0`, `collapse_vz: -0.5`)
+
+2. **Config Schema Mismatch (HIGH PRIORITY)** ✅ **FIXED**
+   - **Issue**: Custom networks, observation, and eval blocks not wired to actual TrainingConfig schema
+   - **Impact**: Claimed boundary-eval integration was not actually configured at runtime
+   - **Fix**: Restructured to use proper nested `ppo.eval` configuration (enabled: true, interval: 25, num_envs: 64, num_steps: 500)
+
+3. **Recovery Metrics Implementation (HIGH PRIORITY)** ✅ **CRASH FIXED**, ❌ **SEMANTICS LIMITED**
+   - **Crash fix**: Fixed `root_velocity.linear[:2]` indexing issue that would cause training crashes ✅
+   - **Semantic limitation**: Metrics still don't measure exactly what their names claim ❌
+   - **Current state**: 
+     - `recovery/touchdown_count`: Measures touchdown event density (not actual episode counts)
+     - `recovery/first_step_latency`: Averages early touchdown latencies (not first-only) 
+     - `recovery/support_foot_changes`: Duplicates touchdown density (not actual transitions)
+     - `recovery/post_push_velocity`: Measures correctly ✅
+   - **Impact**: Provides useful diagnostic signals for training, but names are misleading
+   - **Proper fix**: Would require episode-level state tracking (significant architecture change)
+
+4. **Test Validation Gaps (MEDIUM PRIORITY)** ✅ **FIXED**
+   - **Issue**: Tests didn't properly exercise recovery metrics path or validate claimed behavior
+   - **Impact**: Critical bugs above went undetected by test suite  
+   - **Fix**: Extended test runtime to cover push recovery periods and added semantic validation (checks latency ≤ 5 steps, counts are binary)
+
+### Additional Remaining Issues (Acknowledged Limitations)
+
+5. **Recovery Metrics Semantics (MEDIUM PRIORITY)** ❌ **KNOWN LIMITATION**
+   - **Issue**: Metrics don't measure what their names claim due to per-step computation + MEAN aggregation
+   - **Status**: Acknowledged limitation documented in code - would require significant architecture changes to fix properly
+   - **Impact**: Names are misleading but metrics provide useful training diagnostics
+   - **Decision**: Accept limitation for v0.17.1 - focus on training validation rather than perfect metrics
+6. **Eval Ladder Integration (MEDIUM PRIORITY)** ❌ **INCOMPLETE**
+   - **Issue**: Fixed ladder suites (eval_clean, eval_easy, eval_medium, eval_hard, eval_hard_long) exist in external script but are not integrated into training-time evaluation
+   - **Current state**: Training loop only runs generic `eval_push/*` and `eval_clean/*` 
+   - **Impact**: Boundary-focused evaluation must be run manually via external script
+   - **Decision**: Accept manual evaluation workflow for v0.17.1
+
+### Training Readiness Status  
+- **Blocking crashes**: ✅ All fixed (reward signs, schema, Velocity3D indexing)
+- **Config verification**: ✅ Loads correctly, training initializes successfully  
+- **Recovery diagnostics**: ⚠️ Provide useful signals despite semantic limitations
+- **Eval integration**: ⚠️ Manual execution required via external script
+- **Ready for training**: ✅ Can answer core milestone question despite limitations
+
+---
+
 ## [v0.17.0] - 2026-03-21: Standing Reset - Reactive Push Recovery
 
 ### Summary

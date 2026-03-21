@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Fixed evaluation ladder for v0.17.0 standing-reset branch.
+"""Comprehensive evaluation ladder for trained policies (post-training evaluation).
 
-This script runs a trained policy through the standardized evaluation suites
-defined in standing_training.md:
+This script provides detailed benchmarking across standardized difficulty levels
+that would be too expensive to run during training (requires multiple JIT compilations
+with different push configurations).
+
+Training-time eval (training/core/training_loop.py) runs simplified push/clean passes
+for efficiency. Use this script for comprehensive post-training benchmarking.
+
+Evaluation suites (from standing_training.md):
 - eval_clean: no pushes
 - eval_easy: 5N x 10 steps
 - eval_medium: 8N x 10 steps  

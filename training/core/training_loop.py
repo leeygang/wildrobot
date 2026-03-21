@@ -1321,6 +1321,12 @@ def train(
     use_eval_survival_metric = int(eval_steps) < int(config.env.max_episode_steps)
     eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
 
+    # Note: Training-time eval runs two passes for efficiency:
+    # - eval_push: Uses training-configured push settings
+    # - eval_clean: No pushes
+    # For comprehensive ladder evaluation (clean, easy, medium, hard, hard_long),
+    # use the standalone script: training/eval/eval_ladder_v0170.py
+
     def _make_eval_runner(step_fn: Callable):
         @jax.jit
         def _runner(

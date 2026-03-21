@@ -84,6 +84,160 @@ from policy_contract.spec_builder import build_policy_spec
 # Helper utilities
 # =============================================================================
 
+RECOVERY_WINDOW_STEPS = 50
+
+
+def _update_recovery_tracking(
+    *,
+    track_recovery: jax.Array,
+    push_schedule: DisturbanceSchedule,
+    current_step: jax.Array,
+    episode_done: jax.Array,
+    touchdown_left: jax.Array,
+    touchdown_right: jax.Array,
+    horizontal_speed: jax.Array,
+    recovery_active: jax.Array,
+    recovery_age: jax.Array,
+    recovery_last_support_foot: jax.Array,
+    recovery_first_touchdown_recorded: jax.Array,
+    recovery_first_step_latency: jax.Array,
+    recovery_touchdown_count: jax.Array,
+    recovery_support_foot_changes: jax.Array,
+) -> tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
+    """Update recovery state and emit finalized summary metrics once per recovery."""
+    del recovery_active, recovery_age
+    current_step = jp.asarray(current_step, dtype=jp.int32)
+
+    recovery_start = track_recovery & (current_step == push_schedule.end_step)
+    in_recovery = (
+        track_recovery
+        & (current_step >= push_schedule.end_step)
+        & (current_step < push_schedule.end_step + RECOVERY_WINDOW_STEPS)
+    )
+    age = jp.where(
+        in_recovery,
+        current_step - push_schedule.end_step,
+        jp.zeros((), dtype=jp.int32),
+    )
+    age = age.astype(jp.int32)
+
+    last_support_foot = jp.where(
+        recovery_start,
+        jp.asarray(-1, dtype=jp.int32),
+        recovery_last_support_foot,
+    )
+    first_touchdown_recorded = jp.where(
+        recovery_start,
+        jp.asarray(False, dtype=jp.bool_),
+        recovery_first_touchdown_recorded,
+    )
+    first_step_latency = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.int32),
+        recovery_first_step_latency,
+    )
+    touchdown_count = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.int32),
+        recovery_touchdown_count,
+    )
+    support_foot_changes = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.int32),
+        recovery_support_foot_changes,
+    )
+
+    any_touchdown = touchdown_left | touchdown_right
+    current_support_foot = jp.where(
+        touchdown_left & ~touchdown_right,
+        jp.asarray(0, dtype=jp.int32),
+        jp.where(
+            touchdown_right & ~touchdown_left,
+            jp.asarray(1, dtype=jp.int32),
+            jp.asarray(-1, dtype=jp.int32),
+        ),
+    )
+
+    first_touchdown_now = in_recovery & any_touchdown & ~first_touchdown_recorded
+    first_step_latency = jp.where(
+        first_touchdown_now,
+        age,
+        first_step_latency,
+    )
+    first_step_latency = first_step_latency.astype(jp.int32)
+    first_touchdown_recorded = first_touchdown_recorded | first_touchdown_now
+
+    touchdown_count = jp.where(
+        in_recovery & any_touchdown,
+        touchdown_count + jp.asarray(1, dtype=jp.int32),
+        touchdown_count,
+    )
+    touchdown_count = touchdown_count.astype(jp.int32)
+
+    support_changed = (
+        in_recovery
+        & (last_support_foot >= 0)
+        & (current_support_foot >= 0)
+        & (last_support_foot != current_support_foot)
+    )
+    support_foot_changes = jp.where(
+        support_changed,
+        support_foot_changes + jp.asarray(1, dtype=jp.int32),
+        support_foot_changes,
+    )
+    support_foot_changes = support_foot_changes.astype(jp.int32)
+    last_support_foot = jp.where(
+        in_recovery & (current_support_foot >= 0),
+        current_support_foot,
+        last_support_foot,
+    )
+
+    finalize_recovery = in_recovery & (
+        (age == (RECOVERY_WINDOW_STEPS - 1)) | episode_done
+    )
+    summary_metrics = {
+        "recovery/first_step_latency": jp.where(
+            finalize_recovery,
+            first_step_latency.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/touchdown_count": jp.where(
+            finalize_recovery,
+            touchdown_count.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/support_foot_changes": jp.where(
+            finalize_recovery,
+            support_foot_changes.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/post_push_velocity": jp.where(
+            finalize_recovery,
+            horizontal_speed.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/completed": jp.where(
+            finalize_recovery,
+            jp.asarray(1.0, dtype=jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+    }
+
+    next_state = {
+        "recovery_active": in_recovery & ~finalize_recovery,
+        "recovery_age": jp.where(
+            in_recovery & ~finalize_recovery,
+            age,
+            jp.zeros((), dtype=jp.int32),
+        ).astype(jp.int32),
+        "recovery_last_support_foot": last_support_foot.astype(jp.int32),
+        "recovery_first_touchdown_recorded": first_touchdown_recorded,
+        "recovery_first_step_latency": first_step_latency.astype(jp.int32),
+        "recovery_touchdown_count": touchdown_count.astype(jp.int32),
+        "recovery_support_foot_changes": support_foot_changes.astype(jp.int32),
+    }
+    return next_state, summary_metrics
+
 
 def _apply_imu_noise_and_delay(signals, rng: jax.Array, cfg, prev_hist_quat, prev_hist_gyro):
     """
@@ -817,6 +971,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             fsm_swing_sy=jp.zeros((), dtype=jp.float32),
             fsm_touch_hold=jp.zeros((), dtype=jp.int32),
             fsm_trigger_hold=jp.zeros((), dtype=jp.int32),
+            # v0.17.1+: Recovery metrics state
+            recovery_active=jp.asarray(False, dtype=jp.bool_),
+            recovery_age=jp.zeros((), dtype=jp.int32),
+            recovery_last_support_foot=jp.asarray(-1, dtype=jp.int32),
+            recovery_first_touchdown_recorded=jp.asarray(False, dtype=jp.bool_),
+            recovery_first_step_latency=jp.zeros((), dtype=jp.int32),
+            recovery_touchdown_count=jp.zeros((), dtype=jp.int32),
+            recovery_support_foot_changes=jp.zeros((), dtype=jp.int32),
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -1082,6 +1244,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
         critic_obs = self._get_privileged_critic_obs(
             data, step_count + 1, wr.push_schedule
         )
+        root_velocity_world = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.WORLD
+        )
+        post_push_horizontal_speed = jp.linalg.norm(root_velocity_world.linear[:2])
+        recovery_state_updates, recovery_metrics = _update_recovery_tracking(
+            track_recovery=jp.logical_and(
+                jp.asarray(self._config.env.push_enabled, dtype=jp.bool_),
+                jp.logical_not(jp.asarray(disable_pushes, dtype=jp.bool_)),
+            ),
+            push_schedule=wr.push_schedule,
+            current_step=step_count + 1,
+            episode_done=done > 0.5,
+            touchdown_left=touchdown_left_now,
+            touchdown_right=touchdown_right_now,
+            horizontal_speed=post_push_horizontal_speed,
+            recovery_active=wr.recovery_active,
+            recovery_age=wr.recovery_age,
+            recovery_last_support_foot=wr.recovery_last_support_foot,
+            recovery_first_touchdown_recorded=wr.recovery_first_touchdown_recorded,
+            recovery_first_step_latency=wr.recovery_first_step_latency,
+            recovery_touchdown_count=wr.recovery_touchdown_count,
+            recovery_support_foot_changes=wr.recovery_support_foot_changes,
+        )
+        metrics.update(recovery_metrics)
 
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
@@ -1116,6 +1302,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             fsm_swing_sy=new_fsm[6],
             fsm_touch_hold=new_fsm[7],
             fsm_trigger_hold=new_fsm[8],
+            # v0.17.1+: Recovery metrics state
+            recovery_active=recovery_state_updates["recovery_active"],
+            recovery_age=recovery_state_updates["recovery_age"],
+            recovery_last_support_foot=recovery_state_updates["recovery_last_support_foot"],
+            recovery_first_touchdown_recorded=recovery_state_updates["recovery_first_touchdown_recorded"],
+            recovery_first_step_latency=recovery_state_updates["recovery_first_step_latency"],
+            recovery_touchdown_count=recovery_state_updates["recovery_touchdown_count"],
+            recovery_support_foot_changes=recovery_state_updates["recovery_support_foot_changes"],
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -1190,6 +1384,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
             "debug/bc_phase_ticks": metrics.get("debug/bc_phase_ticks", jp.zeros(())),
+            # v0.17.2: Finalized recovery summaries must survive auto-reset.
+            "recovery/first_step_latency": metrics.get("recovery/first_step_latency", jp.zeros(())),
+            "recovery/touchdown_count": metrics.get("recovery/touchdown_count", jp.zeros(())),
+            "recovery/support_foot_changes": metrics.get("recovery/support_foot_changes", jp.zeros(())),
+            "recovery/post_push_velocity": metrics.get("recovery/post_push_velocity", jp.zeros(())),
+            "recovery/completed": metrics.get("recovery/completed", jp.zeros(())),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -1229,6 +1429,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             fsm_swing_sy=reset_wr_info.fsm_swing_sy,
             fsm_touch_hold=reset_wr_info.fsm_touch_hold,
             fsm_trigger_hold=reset_wr_info.fsm_trigger_hold,
+            # v0.17.1+: Recovery metrics state (reset to initial values)
+            recovery_active=reset_wr_info.recovery_active,
+            recovery_age=reset_wr_info.recovery_age,
+            recovery_last_support_foot=reset_wr_info.recovery_last_support_foot,
+            recovery_first_touchdown_recorded=reset_wr_info.recovery_first_touchdown_recorded,
+            recovery_first_step_latency=reset_wr_info.recovery_first_step_latency,
+            recovery_touchdown_count=reset_wr_info.recovery_touchdown_count,
+            recovery_support_foot_changes=reset_wr_info.recovery_support_foot_changes,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace

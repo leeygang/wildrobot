@@ -509,29 +509,36 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Propulsion-quality gate applied to forward reward",
     ),
     # v0.17.0+: Recovery metrics for standing-reset branch (append-only)
+    # v0.17.1: Corrected semantics with episode-level state tracking
     MetricSpec(
         name="recovery/first_step_latency",
-        reducer=Reducer.MEAN,
+        reducer=Reducer.SUM,
         log_prefix="recovery",
-        description="Time steps from push end to first step (touchdown event)",
+        description="Summed first-step latencies from finalized recovery summaries; normalized by recovery/completed",
     ),
     MetricSpec(
         name="recovery/touchdown_count",
-        reducer=Reducer.MEAN,
-        log_prefix="recovery", 
-        description="Number of touchdown events after push onset",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Summed touchdown counts from finalized recovery summaries; normalized by recovery/completed",
     ),
     MetricSpec(
         name="recovery/support_foot_changes",
-        reducer=Reducer.MEAN,
+        reducer=Reducer.SUM,
         log_prefix="recovery",
-        description="Number of support foot transitions during recovery",
+        description="Summed support-foot changes from finalized recovery summaries; normalized by recovery/completed",
     ),
     MetricSpec(
         name="recovery/post_push_velocity",
-        reducer=Reducer.MEAN,
+        reducer=Reducer.SUM,
         log_prefix="recovery",
-        description="Residual body velocity magnitude after push recovery",
+        description="Summed final horizontal velocities from finalized recovery summaries; normalized by recovery/completed",
+    ),
+    MetricSpec(
+        name="recovery/completed",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Number of finalized recovery summaries in the rollout",
     ),
 ]
 
@@ -620,6 +627,20 @@ def aggregate_metrics(
             result[spec.name] = values[-1].mean()  # Last timestep, mean over envs
         else:
             result[spec.name] = jnp.mean(values)
+
+    completed = result.get("recovery/completed")
+    if completed is not None:
+        completed_safe = jnp.maximum(completed, 1.0)
+        has_completed = completed > 0.0
+        for name in (
+            "recovery/first_step_latency",
+            "recovery/touchdown_count",
+            "recovery/support_foot_changes",
+            "recovery/post_push_velocity",
+        ):
+            if name in result:
+                normalized = result[name] / completed_safe
+                result[name] = jnp.where(has_completed, normalized, 0.0)
 
     return result
 
