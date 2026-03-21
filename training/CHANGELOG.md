@@ -7,6 +7,64 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.16.3] - 2026-03-20: Add an explicit GMR retarget verification gate before teacher training
+
+### Summary
+Stage `1c` is still blocked, but the blocker is now precise:
+- not PPO
+- not teacher plumbing
+- not student handoff
+- the upstream GMR/WildRobot retarget itself
+
+The immediate issue found in March 20 verification:
+- `training/data/gmr/walking_slow01.pkl` looks plausible as a motion file
+- but fails a MuJoCo verification gate before export/training
+
+Result:
+- [`walking_slow01_gmr_report.json`](/home/leeygang/projects/wildrobot/training/reference_motion/verification/walking_slow01_gmr_report.json)
+  - `verdict: fail`
+  - failed checks:
+    - `kinematic_grounding`
+    - `full_contact_support`
+    - `capped_dynamic_tracking`
+  - median lowest support-foot height in kinematic replay: about `+1.4 cm`
+  - full replay load support: about `67% mg`
+  - capped replay failed at frame `82/305`
+
+Interpretation:
+- the current GMR retarget floats above the floor too much
+- even before teacher export, it is not a physically trustworthy WildRobot walk target
+- therefore `real retarget v1` should not be treated as accepted yet
+
+### Code Updates
+- Added reusable verification helpers:
+  - [`training/reference_motion/verify.py`](/home/leeygang/projects/wildrobot/training/reference_motion/verify.py)
+    - expand 8-DOF lower-body GMR motion into full WildRobot actuator layout
+    - compute MuJoCo-side kinematic grounding/posture metrics
+- Added an explicit GMR retarget gate:
+  - [`verify_gmr_retarget.py`](/home/leeygang/projects/wildrobot/scripts/verify_gmr_retarget.py)
+    - runs:
+      - kinematic grounding checks
+      - full replay support checks
+      - capped replay dynamic plausibility checks
+    - writes structured JSON reports
+- Improved existing replay tooling:
+  - [`debug_gmr_physics.py`](/home/leeygang/projects/wildrobot/training/data/debug_gmr_physics.py)
+    - now supports 8-DOF lower-body GMR motions on the 19-actuator WildRobot model
+    - can return structured summary metrics for verification scripts
+- Added a regression test:
+  - [`test_reference_motion.py`](/home/leeygang/projects/wildrobot/training/tests/test_reference_motion.py)
+    - verifies the 8-DOF GMR lower-body mapping into full WildRobot actuator layout
+
+### Stage Decision
+- Do **not** run more `v0.16.0` teacher training on `walking_slow01.pkl` / `v002`.
+- Do **not** run `v0.16.1`.
+- The next step is:
+  1. fix or regenerate the GMR retarget so it passes the new gate
+  2. export a corrected reference clip
+  3. rerun `v0.16.0`
+  4. only then unblock `v0.16.1`
+
 ## [v0.16.2] - 2026-03-17: `real retarget v1` becomes the Stage `1c` unblock step
 
 ### Summary

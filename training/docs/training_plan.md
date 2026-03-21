@@ -1,8 +1,8 @@
 # Training Plan
 
-**Version:** v0.16.2
+**Version:** v0.16.3
 **Status:** Active
-**Last Updated:** 2026-03-17
+**Last Updated:** 2026-03-20
 
 ## Overview
 
@@ -21,17 +21,18 @@ The key shift is methodological:
 
 **Current active branch:** Stage `1c` (`v0.16.x`)
 
-**Current objective:** run the next teacher proof-of-life on the new `real retarget v1` clip and only then unblock student transfer.
+**Current objective:** verify the upstream GMR retarget itself before any more teacher training, then either fix/regenerate the source motion or export a corrected teacher clip.
 
 **Current status:**
-- The Stage `1c` pipeline is now structurally sound enough to keep:
+- The Stage `1c` pipeline is still structurally sound enough to keep:
   - reference clip loading works
   - loop-unwrapped teacher tracking works
   - contact-template phase estimation works
   - teacher rollout export for `v0.16.1` is real
-- The current blocker is no longer teacher plumbing.
-- The procedural placeholder clip has been replaced by `wildrobot_walk_forward_v002`.
-- The current blocker is now teacher learning outcome on the new clip (must show positive forward tracking before unblocking `v0.16.1`).
+- But the current blocker has moved upstream again:
+  - the `real retarget v1` source motion is not verified as a physically valid WildRobot walk
+  - downstream teacher results cannot be trusted until the source retarget passes a MuJoCo verification gate
+- `v0.16.1` remains blocked.
 
 **Evidence:**
 - [`offline-run-20260316_202553-04hb74z3`](/home/leeygang/projects/wildrobot/training/wandb/offline-run-20260316_202553-04hb74z3):
@@ -45,7 +46,20 @@ The key shift is methodological:
   - `reward/teacher_foot_position ≈ 0.019`
   - still `env/forward_velocity ≈ -0.004`
 
-So the teacher has moved from “stand anywhere” to “quasi-static reference matching,” but it is still not walking. That makes `real retarget v1` the next main milestone, and it blocks `v0.16.1`.
+So the teacher moved from “stand anywhere” to “quasi-static reference matching,” but not to walking.
+
+Additional retarget verification on March 20, 2026 showed the deeper issue:
+- [`walking_slow01_gmr_report.json`](/home/leeygang/projects/wildrobot/training/reference_motion/verification/walking_slow01_gmr_report.json)
+  - `verdict: fail`
+  - failed checks:
+    - `kinematic_grounding`
+    - `full_contact_support`
+    - `capped_dynamic_tracking`
+  - support foot median height in kinematic replay was still about `+1.4 cm`
+  - full replay load support was only about `67% mg`
+  - capped replay failed by frame `82/305`
+
+That means the current source retarget itself is not yet a valid walking target.
 
 ---
 
@@ -181,6 +195,21 @@ This is closer to:
 - ASAP
 
 than continuing local reward surgery.
+
+### Current Gate Before More Teacher Training
+
+Before exporting or training on any new teacher clip:
+
+1. Verify the upstream GMR/WildRobot motion in MuJoCo.
+2. Reject any motion that floats, penetrates badly, or cannot sustain support in kinematic replay.
+3. Only then convert/export it into the teacher reference-motion contract.
+
+The new verification tools are:
+- [`verify_gmr_retarget.py`](/home/leeygang/projects/wildrobot/scripts/verify_gmr_retarget.py)
+- [`verify_reference_retarget.py`](/home/leeygang/projects/wildrobot/scripts/verify_reference_retarget.py)
+- [`debug_gmr_physics.py`](/home/leeygang/projects/wildrobot/training/data/debug_gmr_physics.py)
+
+This gate now precedes the next `v0.16.0` teacher run.
 
 ### External Patterns To Follow
 

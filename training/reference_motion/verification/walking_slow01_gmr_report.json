@@ -1,0 +1,139 @@
+{
+  "motion": "training/data/gmr/walking_slow01.pkl",
+  "metadata": {
+    "source_file": "/Users/ygli/projects/amass/smplx/KIT/3/walking_slow01_stageii.npz",
+    "robot": "wildrobot",
+    "fps": 33.224222585924714,
+    "num_frames": 203,
+    "duration_sec": 6.11
+  },
+  "kinematic": {
+    "frame_count": 203,
+    "lowest_support_z_m": {
+      "min": -0.002183806151151657,
+      "mean": 0.014321595430374146,
+      "median": 0.013935416005551815,
+      "p95": 0.025311915203928947,
+      "max": 0.029368840157985687
+    },
+    "left_toe_z_m": {
+      "min": 0.02016347274184227,
+      "mean": 0.03824453055858612,
+      "median": 0.03306529298424721,
+      "p95": 0.07118099182844162,
+      "max": 0.07570771872997284
+    },
+    "left_heel_z_m": {
+      "min": -0.002183806151151657,
+      "mean": 0.021723177284002304,
+      "median": 0.013935416005551815,
+      "p95": 0.07778047770261765,
+      "max": 0.08952982723712921
+    },
+    "right_toe_z_m": {
+      "min": 0.02038269117474556,
+      "mean": 0.045241642743349075,
+      "median": 0.039729464799165726,
+      "p95": 0.09412825852632523,
+      "max": 0.10613728314638138
+    },
+    "right_heel_z_m": {
+      "min": 0.0141298184171319,
+      "mean": 0.03284171596169472,
+      "median": 0.02763725072145462,
+      "p95": 0.06679219007492065,
+      "max": 0.08169308304786682
+    },
+    "stance_width_m": {
+      "min": -0.1175658255815506,
+      "mean": -0.0907699391245842,
+      "median": -0.09234879165887833,
+      "p95": -0.06443458050489426,
+      "max": -0.06001532822847366
+    },
+    "left_minus_right_foot_x_m": {
+      "min": -0.1971747726202011,
+      "mean": 0.04096236824989319,
+      "median": 0.03312493860721588,
+      "p95": 0.24991530179977417,
+      "max": 0.25801223516464233
+    },
+    "mean_abs_pitch_deg": 4.548744325348164,
+    "max_abs_pitch_deg": 15.121065024387208,
+    "mean_abs_roll_deg": 2.0667840391117713,
+    "max_abs_roll_deg": 4.946815876460312,
+    "left_knee_deg": {
+      "min": 0.0,
+      "mean": 9.894878387451172,
+      "median": 2.4320309162139893,
+      "p95": 40.49323654174805,
+      "max": 42.667022705078125
+    },
+    "right_knee_deg": {
+      "min": 0.539958655834198,
+      "mean": 17.50023078918457,
+      "median": 15.680561065673828,
+      "p95": 38.57611083984375,
+      "max": 43.33073043823242
+    }
+  },
+  "physics_full": {
+    "frames_run": 305,
+    "num_frames": 305,
+    "frame_completion_rate": 1.0,
+    "joint_tracking_mean_rad": 0.01414972880508076,
+    "joint_tracking_max_rad": 0.20333265591897406,
+    "load_support_mean_ratio": 0.6737491051157851,
+    "load_support_min_ratio": 0.0,
+    "harness_mean_ratio": 0.0,
+    "harness_max_ratio": 0.0,
+    "harness_p95_ratio": 0.0,
+    "mean_pitch_deg": 4.550261840469777,
+    "max_pitch_deg": 15.051105085666915,
+    "mean_roll_deg": 2.0606759265417853,
+    "max_roll_deg": 4.943342040208074,
+    "mean_height_m": 0.4790277804507584,
+    "min_height_m": 0.4623768925666809,
+    "max_height_m": 0.4885396957397461,
+    "tier0plus_pass": false
+  },
+  "physics_capped": {
+    "frames_run": 83,
+    "num_frames": 305,
+    "frame_completion_rate": 0.2721311475409836,
+    "joint_tracking_mean_rad": 0.021972111490422476,
+    "joint_tracking_max_rad": 0.2764878142324668,
+    "load_support_mean_ratio": 1.097515120935437,
+    "load_support_min_ratio": 0.0,
+    "harness_mean_ratio": 0.06087890852549744,
+    "harness_max_ratio": 0.15680389544911089,
+    "harness_p95_ratio": 0.14916782799119274,
+    "mean_pitch_deg": 18.457270960550236,
+    "max_pitch_deg": 34.72059451657798,
+    "mean_roll_deg": 14.721569539304902,
+    "max_roll_deg": 57.784138452254744,
+    "mean_height_m": 0.4384791053356703,
+    "min_height_m": 0.2700060203626747,
+    "max_height_m": 0.4754650959099889,
+    "tier0plus_pass": false
+  },
+  "checks": {
+    "kinematic_grounding": false,
+    "kinematic_posture": true,
+    "kinematic_knees": true,
+    "full_contact_support": false,
+    "capped_dynamic_tracking": false
+  },
+  "failed_checks": [
+    "kinematic_grounding",
+    "full_contact_support",
+    "capped_dynamic_tracking"
+  ],
+  "verdict": "fail",
+  "notes": [
+    "Source motion is already a WildRobot GMR output; this gate validates whether that retarget is physically usable in MuJoCo.",
+    "Kinematic replay does not keep the support foot close enough to the floor. Fix foot-ground alignment before teacher export.",
+    "Full kinematic replay does not generate enough ground reaction support; the motion likely floats or under-contacts the floor.",
+    "Physics-assisted replay is not stable enough; even if the pose is plausible, the motion is not dynamically trackable yet."
+  ]
+}

@@ -21,6 +21,7 @@ from training.reference_motion.retarget import (
     generate_bootstrap_nominal_walk_clip,
     retarget_wildrobot_clip,
 )
+from training.reference_motion.verify import expand_gmr_dof_to_actuator_layout
 
 
 def _make_dummy_clip(actuator_names: list[str], frame_count: int = 8) -> ReferenceMotionClip:
@@ -194,3 +195,36 @@ def test_real_retarget_v002_contract_and_sanity(robot_config, project_root: Path
     assert left_transitions >= 2
     assert right_transitions >= 2
     assert alternating_rate > 0.2
+
+
+@pytest.mark.unit
+def test_expand_gmr_dof_to_actuator_layout_maps_8dof_lower_body(robot_config):
+    actuator_names = list(robot_config.actuator_names)
+    gmr_dof = np.asarray(
+        [
+            [0.1, 0.2, 0.3, 0.4, -0.1, -0.2, 0.5, 0.6],
+            [0.7, 0.8, 0.9, 1.0, -0.7, -0.8, 1.1, 1.2],
+        ],
+        dtype=np.float32,
+    )
+    expanded = expand_gmr_dof_to_actuator_layout(gmr_dof, actuator_names=actuator_names)
+    assert expanded.shape == (2, len(actuator_names))
+
+    idx = {name: i for i, name in enumerate(actuator_names)}
+    assert np.allclose(expanded[:, idx["left_hip_pitch"]], gmr_dof[:, 0])
+    assert np.allclose(expanded[:, idx["left_hip_roll"]], gmr_dof[:, 1])
+    assert np.allclose(expanded[:, idx["left_knee_pitch"]], gmr_dof[:, 2])
+    assert np.allclose(expanded[:, idx["left_ankle_pitch"]], gmr_dof[:, 3])
+    assert np.allclose(expanded[:, idx["right_hip_pitch"]], gmr_dof[:, 4])
+    assert np.allclose(expanded[:, idx["right_hip_roll"]], gmr_dof[:, 5])
+    assert np.allclose(expanded[:, idx["right_knee_pitch"]], gmr_dof[:, 6])
+    assert np.allclose(expanded[:, idx["right_ankle_pitch"]], gmr_dof[:, 7])
+    untouched = [
+        "left_shoulder_pitch",
+        "right_shoulder_pitch",
+        "left_elbow_pitch",
+        "right_elbow_pitch",
+        "waist_yaw",
+    ]
+    for name in untouched:
+        assert np.allclose(expanded[:, idx[name]], 0.0)

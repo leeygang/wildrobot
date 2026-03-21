@@ -25,16 +25,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from training.envs.wildrobot_env import get_assets
+from training.reference_motion.verify import (
+    load_mujoco_model_with_assets,
+    map_motion_to_robot_layout,
+)
 
 
 def load_mujoco_model(model_path: str) -> mujoco.MjModel:
     """Load MuJoCo model with assets."""
-    model_path = Path(model_path)
-    mj_model = mujoco.MjModel.from_xml_string(
-        model_path.read_text(), assets=get_assets(model_path.parent)
-    )
-    return mj_model
+    return load_mujoco_model_with_assets(model_path)
 
 
 def resample_motion(motion_data, target_fps: float):
@@ -78,6 +77,7 @@ def run_physics_test(
     harness_cap: float = 0.15,  # fraction of mg
     loop: bool = False,  # loop continuously
     z_offset: float = 0.0,  # Z offset to apply to root position (negative = lower)
+    return_summary: bool = False,
 ):
     """Run physics test on GMR motion.
 
@@ -115,18 +115,42 @@ def run_physics_test(
     mj_model = load_mujoco_model(model_path)
     mj_data = mujoco.MjData(mj_model)
 
+    dof_pos, actuator_names, _, _ = map_motion_to_robot_layout(motion, model_path=model_path)
+    actuator_dim = len(actuator_names)
+    actuator_ctrl_idx = np.asarray(
+        [
+            mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            for name in actuator_names
+        ],
+        dtype=np.int32,
+    )
+    joint_qpos_idx = np.asarray(
+        [
+            int(
+                mj_model.jnt_qposadr[
+                    mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                ]
+            )
+            for name in actuator_names
+        ],
+        dtype=np.int32,
+    )
+
+    raw_dof_pos = np.asarray(motion["dof_pos"], dtype=np.float32)
+    if raw_dof_pos.shape[1] != actuator_dim:
+        print("  Mapping lower-body GMR motion into full WildRobot actuator layout...")
+    motion["dof_pos"] = dof_pos
+
     # Get joint limits and clamp GMR motion to respect them
-    n_actuators = mj_model.nu
     joint_limits = []
-    for i in range(n_actuators):
-        jnt_id = mj_model.actuator_trnid[i, 0]
+    for name in actuator_names:
+        jnt_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
         joint_limits.append(mj_model.jnt_range[jnt_id].copy())
     joint_limits = np.array(joint_limits)
 
     # Check and clamp joint values
-    dof_pos = motion["dof_pos"]
     violations = 0
-    for j in range(n_actuators):
+    for j in range(actuator_dim):
         lo, hi = joint_limits[j]
         below = dof_pos[:, j] < lo
         above = dof_pos[:, j] > hi
@@ -185,7 +209,7 @@ def run_physics_test(
     ref_xy_start = ref_root_pos[0, :2].copy()
     sim_xy_start = mj_data.qpos[0:2].copy()
 
-    n_joints = 8
+    n_joints = actuator_dim
     num_frames = motion["num_frames"]
 
     # For grounded mode: compute Z offset to place feet on ground
@@ -193,7 +217,7 @@ def run_physics_test(
     if harness_mode == "grounded" and z_offset == 0.0:
         mj_data.qpos[0:3] = ref_root_pos[0]
         mj_data.qpos[3:7] = ref_root_rot[0]
-        mj_data.qpos[7:7+n_joints] = ref_dof_pos[0]
+        mj_data.qpos[joint_qpos_idx] = ref_dof_pos[0]
         mujoco.mj_forward(mj_model, mj_data)
 
         # Find minimum foot Z
@@ -254,7 +278,7 @@ def run_physics_test(
                 mj_data.qpos[0:2] = ref_root_pos[0, :2]
                 mj_data.qpos[2] = ref_root_pos[0, 2] + z_offset
                 mj_data.qpos[3:7] = ref_root_rot[0]
-                mj_data.qpos[7:7+n_joints] = ref_dof_pos[0]
+                mj_data.qpos[joint_qpos_idx] = ref_dof_pos[0]
                 mj_data.qvel[:] = 0
                 mujoco.mj_forward(mj_model, mj_data)
                 sim_xy_start = mj_data.qpos[0:2].copy()
@@ -262,7 +286,7 @@ def run_physics_test(
             fell = False
             for i in range(num_frames):
                 # Set control targets (joint positions from GMR motion)
-                mj_data.ctrl[:n_joints] = ref_dof_pos[i]
+                mj_data.ctrl[actuator_ctrl_idx] = ref_dof_pos[i]
 
                 # Harness modes:
                 # - "none": Pure physics, no external support
@@ -357,7 +381,7 @@ def run_physics_test(
                     mujoco.mj_step(mj_model, mj_data)
 
                 # Measure tracking error
-                actual_joints = mj_data.qpos[7:7+n_joints]
+                actual_joints = mj_data.qpos[joint_qpos_idx]
                 target_joints = ref_dof_pos[i]
                 error = np.abs(actual_joints - target_joints)
                 tracking_errors.append(error)
@@ -456,10 +480,35 @@ def run_physics_test(
     print(f"  p95 harness <= 10%:     {'✓' if meets_harness else '✗'} ({100*np.percentile(harness_ratio, 95):.0f}%)")
     print(f"  Orientation <= 20°:     {'✓' if meets_orientation else '✗'} (pitch={np.max(pitches):.0f}°, roll={np.max(rolls):.0f}°)")
 
-    if meets_load and meets_harness and meets_orientation:
+    passed = bool(meets_load and meets_harness and meets_orientation)
+    if passed:
         print(f"\n  [bold green]✓ PASSES Tier 0+ gates[/bold green]")
     else:
         print(f"\n  ✗ FAILS Tier 0+ gates")
+
+    summary = {
+        "frames_run": int(frames_run),
+        "num_frames": int(num_frames),
+        "frame_completion_rate": float(frames_run / max(num_frames, 1)),
+        "joint_tracking_mean_rad": float(tracking_errors.mean()),
+        "joint_tracking_max_rad": float(tracking_errors.max()),
+        "load_support_mean_ratio": float(load_ratio.mean()),
+        "load_support_min_ratio": float(load_ratio.min()),
+        "harness_mean_ratio": float(harness_ratio.mean()),
+        "harness_max_ratio": float(harness_ratio.max()),
+        "harness_p95_ratio": float(np.percentile(harness_ratio, 95)),
+        "mean_pitch_deg": float(np.mean(pitches)),
+        "max_pitch_deg": float(np.max(pitches)),
+        "mean_roll_deg": float(np.mean(rolls)),
+        "max_roll_deg": float(np.max(rolls)),
+        "mean_height_m": float(np.mean(heights)),
+        "min_height_m": float(np.min(heights)),
+        "max_height_m": float(np.max(heights)),
+        "tier0plus_pass": passed,
+    }
+    if return_summary:
+        return summary
+    return None
 
 
 def main():
