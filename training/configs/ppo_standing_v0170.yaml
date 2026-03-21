@@ -1,0 +1,269 @@
+# =============================================================================
+# WildRobot PPO Standing Config (v0.17.0)
+# =============================================================================
+# Stage: Standing robustness with reactive push recovery
+#
+# Goal: Robot maintains balance under pushes using reactive stepping when needed.
+# This is a standing-only branch, not a walking branch.
+#
+# Recipe A: legged_gym / Rudin for RL implementation
+# Recipe B: Li et al. 2024 Cassie for biped behavior/escalation
+#
+# Usage:
+#   uv run python training/train.py --config training/configs/ppo_standing_v0170.yaml
+#
+# Total steps = iterations × num_envs × rollout_steps
+# =============================================================================
+
+version: "0.17.0"
+version_name: "Standing Reset - reactive push recovery"
+
+seed: 42
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination - keep proven standing defaults
+  target_height: 0.44
+  # Encourage exploring a lower stance by rewarding height near target_height
+  height_target_two_sided: true
+  min_height: 0.40
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  # Commands - standing only (zero velocity command)
+  min_velocity: 0.0
+  max_velocity: 0.0
+
+  # Contacts
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Action filtering
+  action_filter_alpha: 0.6
+  
+  # Actor observation layout - ensure contact-aware signals included
+  actor_obs_layout_id: wr_obs_v2
+
+  # M2: Base controller DISABLED for pure PPO standing approach
+  base_ctrl_enabled: false
+
+  # M3: FSM DISABLED for pure PPO standing approach  
+  fsm_enabled: false
+
+  # Disturbance pushes: calibrated to the bracing boundary
+  # 9N+ is where stepping should begin to matter per standing_training.md
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 9.0
+  push_force_max: 10.0
+  push_bodies: [waist, upperbody]
+
+# =============================================================================
+# PPO Algorithm (task learning)
+# =============================================================================
+ppo:
+
+  num_envs: 512
+  rollout_steps: 256 
+  iterations: 200
+
+  # Stabilized PPO updates
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  # Conservative PPO trust region for stability
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  # Stability guardrails
+  target_kl: 0.02
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 3.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  entropy_schedule_end_factor: 0.4
+  
+  # No privileged critic for pure PPO approach
+  critic_privileged_enabled: false
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 128
+    num_steps: 500
+    deterministic: true
+
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# AMP (disabled for standing-reset branch)
+# =============================================================================
+amp:
+  enabled: false
+
+  dataset_path: null
+  weight: 0.0
+
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.80
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  discriminator:
+    hidden_sizes: [512, 256]
+    activation: relu
+
+# =============================================================================
+# Task Reward Weights - Standing-focused, walking baggage removed
+# =============================================================================
+reward_weights:
+  # STANDING-FOCUSED TERMS - kept from proven standing config
+  
+  # Core standing stability
+  base_height: 2.0
+  orientation: -4.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  collapse_height: -0.5
+  collapse_vz: -0.3
+  angular_velocity: -0.1
+
+  # Zero horizontal velocity for standing
+  tracking_lin_vel: 0.1  # Keep small for zero-velocity standing
+  lateral_velocity: -0.5
+
+  # Quality terms
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -1.0
+
+  # Posture return after disturbance
+  posture: 0.3
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
+
+  # MILD NEED-GATED STEPPING AUXILIARIES - kept as bootstrap signals
+  # Reduced weights per standing_training.md requirements
+  step_event: 0.12        # Reduced from 0.25 to 0.10-0.15 range
+  foot_place: 0.30        # Reduced from 0.65 to 0.25-0.35 range
+  foot_place_sigma: 0.14
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
+
+  # WALKING BAGGAGE EXPLICITLY ZEROED - for config self-containment
+  # These terms are walking-specific and disabled for standing-reset branch
+  step_length: 0.0                        # Structured step length rewards
+  step_progress: 0.0                      # Touchdown-to-touchdown forward displacement
+  dense_progress: 0.0                     # Dense forward progress shaping
+  cycle_progress: 0.0                     # Gait-clock-dependent cycle completion
+  velocity_step_gate: 0.0                 # Forward reward gating based on stepping quality
+  
+  # Related walking parameters (explicitly set for clarity)
+  step_length_target_base: 0.03
+  step_length_target_scale: 0.25
+  step_length_sigma: 0.04
+  step_progress_target_scale: 1.0
+  step_progress_sigma: 0.05
+  dense_progress_upright_pitch: 0.25
+  dense_progress_upright_pitch_rate: 0.90
+  dense_progress_upright_sharpness: 10.0
+  forward_upright_gate_strength: 1.0
+  cycle_progress_target_scale: 1.0
+  cycle_progress_sigma: 0.08
+  propulsion_gate_step_length_weight: 0.5
+  propulsion_gate_step_progress_weight: 0.5
+
+  # Stance geometry (kept for foot placement quality, not walking)
+  stance_width_target: 0.23
+  forward_velocity_scale: 4.0
+
+# =============================================================================
+# Reward Composition (Trainer-side)
+# =============================================================================
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0
+  task_reward_clip: null
+  amp_reward_clip: [0.0, 1.0]
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+# =============================================================================
+# Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  ppo:
+    num_envs: 8

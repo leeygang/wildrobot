@@ -508,6 +508,31 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Propulsion-quality gate applied to forward reward",
     ),
+    # v0.17.0+: Recovery metrics for standing-reset branch (append-only)
+    MetricSpec(
+        name="recovery/first_step_latency",
+        reducer=Reducer.MEAN,
+        log_prefix="recovery",
+        description="Time steps from push end to first step (touchdown event)",
+    ),
+    MetricSpec(
+        name="recovery/touchdown_count",
+        reducer=Reducer.MEAN,
+        log_prefix="recovery", 
+        description="Number of touchdown events after push onset",
+    ),
+    MetricSpec(
+        name="recovery/support_foot_changes",
+        reducer=Reducer.MEAN,
+        log_prefix="recovery",
+        description="Number of support foot transitions during recovery",
+    ),
+    MetricSpec(
+        name="recovery/post_push_velocity",
+        reducer=Reducer.MEAN,
+        log_prefix="recovery",
+        description="Residual body velocity magnitude after push recovery",
+    ),
 ]
 
 # =============================================================================

@@ -7,6 +7,95 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.0] - 2026-03-21: Standing Reset - Reactive Push Recovery
+
+### Summary
+`v0.17.0` implements the standing-reset branch for reactive push recovery as defined in `training/docs/standing_training.md`. This is a clean, standing-only branch that follows two public recipes: `legged_gym` / Rudin for RL implementation and Li et al. 2024 Cassie for biped behavior/escalation. The branch focuses on standing robustness under external pushes with reactive stepping only when bracing is no longer sufficient.
+
+### Key Design Principles
+- **Standing-only**: Not a walking branch - command is always zero velocity
+- **Recipe-driven**: Follows established practices rather than ad hoc exploration
+- **Conservative**: Builds on proven standing machinery from v0.14.x baseline
+- **Reactive stepping**: Steps only when needed, returns to neutral posture after recovery
+
+### Code Changes
+- **New config**: `training/configs/ppo_standing_v0170.yaml`
+  - Forked from `ppo_standing_push.yaml` (v0.14.9)
+  - `fsm_enabled: false`, `base_ctrl_enabled: false` for pure PPO approach
+  - Push forces calibrated to bracing boundary: 9-10N where stepping should begin
+- **Observation path**: Uses `wr_obs_v2` layout with contact-aware signals
+  - Includes `capture_point_error` which encodes heading-local base linear velocity information
+  - Provides projected gravity, base angular velocity, joint states, foot contacts
+  - NOTE: Explicit base linear velocity is privileged-only, not in actor observation per current design
+- **Evaluation infrastructure**: `training/eval/eval_ladder_v0170.py`
+  - Fixed eval suites: `eval_clean`, `eval_easy` (5N), `eval_medium` (8N), `eval_hard` (10N), `eval_hard_long` (9N x 15)
+  - Standardized evaluation ladder per standing_training.md requirements
+- **Recovery metrics**: Added registry entries in `training/core/metrics_registry.py`
+  - Registry infrastructure for future implementation
+  - `recovery/first_step_latency`: Time from push end to first step
+  - `recovery/touchdown_count`: Number of touchdown events after push
+  - `recovery/support_foot_changes`: Support foot transition count
+  - `recovery/post_push_velocity`: Residual body velocity after recovery
+
+### Config Changes
+- **Health defaults**: Kept proven standing thresholds
+  - `target_height: 0.44`, `min_height: 0.40`
+  - `max_pitch: 0.8`, `max_roll: 0.8`
+  - `collapse_height_buffer: 0.03`, `collapse_vz_gate_band: 0.07`
+- **Reward weights**: Standing-focused, walking baggage explicitly zeroed
+  - **Explicitly disabled**: All walking-specific reward terms set to 0.0 for config self-containment
+    - `step_length: 0.0`: Structured step length rewards
+    - `step_progress: 0.0`: Touchdown-to-touchdown forward displacement  
+    - `dense_progress: 0.0`: Dense forward progress shaping
+    - `cycle_progress: 0.0`: Gait-clock-dependent cycle completion
+    - `velocity_step_gate: 0.0`: Forward reward gating based on stepping quality
+  - **Kept**: Core stability (base_height, orientation, collapse prevention)
+  - **Kept**: Quality terms (slip, action_rate, torque, saturation, posture return)
+  - **Kept**: Mild stepping auxiliaries at reduced weights
+    - `step_event: 0.12` (reduced from 0.25)
+    - `foot_place: 0.30` (reduced from 0.65)
+- **Push curriculum**: Centered on empirical bracing boundary
+  - 9-10N forces where stepping geometrically expected per capture-point analysis
+  - Duration: 10 steps (0.2s) matching proven push regime
+
+### What Was Intentionally Removed
+- **Walking-specific reward baggage**:
+  - `dense_progress`: Dense forward progress rewards
+  - `step_progress`: Structured touchdown-to-touchdown forward displacement
+  - `step_length`: Structured step length rewards for propulsion
+  - `cycle_progress`: Gait-clock-dependent cycle completion
+  - `propulsion_gate`: Forward reward gating based on stepping quality
+- **Controllers**: FSM and base controller disabled for pure PPO approach
+- **Velocity tracking**: No non-zero velocity commands (standing-only)
+
+### Exit Criteria (v0.17.0)
+- [x] Code imports and runs
+- [x] New config is clearly standing-only
+- [x] Actor observation includes contact-aware signals and `capture_point_error`
+- [x] Walking-specific reward baggage removed
+- [x] Mild need-gated stepping auxiliaries remain at reduced weights
+- [x] Fixed evaluation ladder implemented
+- [x] Recovery metrics registry infrastructure added
+- [ ] Training validation and smoke tests
+
+### What Remains for v0.17.1
+- **Training validation**: Run actual training and verify behavior
+- **Recovery metrics computation**: Implement actual computation logic in environment (currently registry-only)
+- **Observation enhancement**: Consider adding explicit base linear velocity if capture_point_error encoding proves insufficient
+- **Baseline establishment**: Reproduce and exceed old v0.14.6 hard-push baseline
+- **Target performance**: 
+  - `eval_clean > 95%`
+  - `eval_medium > 75%`
+  - `eval_hard > 60%`
+  - Low `term_height_low_frac`
+
+### Next Steps
+If v0.17.0 training succeeds, v0.17.1 should establish the recipe baseline at the bracing boundary. If hard-push recovery plateaus, apply bounded escalation:
+- **Track A**: Li-style history for timing/event sensitivity
+- **Track B**: M3-lite guide path for touchdown geometry quality
+
+---
+
 ## [v0.15.12] - 2026-03-16: Contact-driven step-to-step propulsion after `v0.15.11` still converged to pitch-collapse speed
 
 ### Summary
