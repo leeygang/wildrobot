@@ -75,17 +75,17 @@ def build_compatibility_report(
     notes: list[str] = []
 
     if not status.has_mjcf:
-        missing.append("assets/v2/wildrobot.xml")
+        missing.append(str(root / "wildrobot.xml"))
     if not status.has_robot_config:
-        missing.append("assets/v2/mujoco_robot_config.json")
+        missing.append(str(root / "mujoco_robot_config.json"))
     if not status.has_urdf:
-        missing.append("URDF control model export (e.g., assets/v2/wildrobot.urdf)")
+        missing.append(f"URDF control model export (e.g., {root / 'wildrobot.urdf'})")
         notes.append("URDF export is required for most OCS2/humanoid-MPC pipelines.")
     if not status.has_frame_convention_note:
-        missing.append("assets/v2/FRAME_CONVENTIONS.md")
+        missing.append(str(root / "FRAME_CONVENTIONS.md"))
         notes.append("Frame/sign conventions must be explicitly documented for controller integration.")
     if not status.has_contact_geometry_note:
-        missing.append("assets/v2/CONTACT_GEOMETRY.md")
+        missing.append(str(root / "CONTACT_GEOMETRY.md"))
         notes.append("Controller-facing foot support/contact geometry note is missing.")
 
     return WildRobotModelCompatibilityReport(
@@ -95,4 +95,3 @@ def build_compatibility_report(
         missing_artifacts=tuple(missing),
         notes=tuple(notes),
     )
-

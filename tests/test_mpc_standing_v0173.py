@@ -25,6 +25,27 @@ def test_v0173_config_loads():
     assert cfg.env.mpc_residual_scale > 0.0
 
 
+def test_invalid_controller_stack_fails_fast():
+    cfg = load_training_config("training/configs/mpc_standing_v0173.yaml")
+    cfg.env.controller_stack = "mpc_standng"
+    cfg_path = Path("training/configs/__tmp_invalid_controller_stack.yaml")
+    try:
+        cfg_path.write_text(
+            Path("training/configs/mpc_standing_v0173.yaml")
+            .read_text()
+            .replace("controller_stack: mpc_standing", "controller_stack: mpc_standng"),
+            encoding="utf-8",
+        )
+        try:
+            load_training_config(str(cfg_path))
+            assert False, "Expected ValueError for invalid controller_stack"
+        except ValueError as exc:
+            assert "controller_stack" in str(exc)
+    finally:
+        if cfg_path.exists():
+            cfg_path.unlink()
+
+
 def test_v0173_env_init_and_step():
     cfg = load_training_config("training/configs/mpc_standing_v0173.yaml")
     load_robot_config(Path(cfg.env.assets_root) / "mujoco_robot_config.json")
@@ -43,6 +64,5 @@ def test_v0173_env_init_and_step():
     assert "debug/mpc_planner_active" in metrics
     assert "debug/mpc_controller_active" in metrics
     assert "debug/mpc_step_requested" in metrics
-    assert float(metrics["debug/mpc_planner_active"]) >= 0.0
-    assert float(metrics["debug/mpc_controller_active"]) >= 0.0
-
+    assert float(metrics["debug/mpc_planner_active"]) == 1.0
+    assert float(metrics["debug/mpc_controller_active"]) == 1.0

@@ -650,6 +650,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Store frozen runtime config directly - no extraction needed!
         # All values accessed via self._config.env.*, self._config.ppo.*, etc.
         self._config = config
+        self._controller_stack = str(getattr(self._config.env, "controller_stack", "ppo"))
+        if self._controller_stack not in ("ppo", "mpc_standing"):
+            raise ValueError(
+                f"Unsupported controller_stack '{self._controller_stack}'. "
+                "Expected one of: ['ppo', 'mpc_standing']"
+            )
 
         # Ensure IMU history buffer length matches compile-time constant in env_info
         if int(self._config.env.imu_max_latency_steps) != int(IMU_MAX_LATENCY):
@@ -1075,7 +1081,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         policy_action = action
 
-        controller_stack = str(getattr(self._config.env, "controller_stack", "ppo"))
+        controller_stack = self._controller_stack
         mpc_debug = None
 
         if controller_stack == "mpc_standing":

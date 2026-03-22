@@ -114,6 +114,13 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
     resolved = resolve_env_asset_paths(env)
+    controller_stack = str(env.get("controller_stack", "ppo"))
+    allowed_controller_stacks = {"ppo", "mpc_standing"}
+    if controller_stack not in allowed_controller_stacks:
+        raise ValueError(
+            f"Invalid env.controller_stack='{controller_stack}'. "
+            f"Allowed values: {sorted(allowed_controller_stacks)}"
+        )
 
     return EnvConfig(
         assets_root=resolved.assets_root,
@@ -143,7 +150,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),
-        controller_stack=str(env.get("controller_stack", "ppo")),
+        controller_stack=controller_stack,
         mpc_residual_scale=float(env.get("mpc_residual_scale", 0.25)),
         mpc_pitch_kp=float(env.get("mpc_pitch_kp", 0.30)),
         mpc_pitch_kd=float(env.get("mpc_pitch_kd", 0.06)),
