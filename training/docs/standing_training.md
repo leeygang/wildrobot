@@ -37,6 +37,10 @@ Current standing result:
   - concrete humanoid reference: 1X `wb-humanoid-mpc`
   - OpenLoong remains a secondary MuJoCo implementation reference
 
+Architecture documents for this pivot:
+- repo-level overview: [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- WildRobot adoption plan: [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
+
 ---
 
 ## External References
@@ -531,6 +535,9 @@ Primary references:
 - OpenLoong only as a secondary MuJoCo integration reference
 
 Deliverables:
+- architecture documents:
+  - [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+  - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
 - WildRobot adoption plan for OCS2 / humanoid MPC stack
 - robot-model gap analysis:
   - URDF/MJCF and inertial data requirements
