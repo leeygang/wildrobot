@@ -13,9 +13,9 @@ This changelog tracks capability changes, configuration updates, and training re
 Landed concrete repository scaffolding for the OCS2 / humanoid-MPC pivot without pretending a complete controller exists. This milestone establishes controller-path selection, model-compatibility interfaces, and compatibility-note placeholders so `v0.17.3+` can proceed without reopening architecture decisions.
 
 ### What Landed
-- Added `training/control/` package with explicit pivot scaffolding:
-  - `training/control/interfaces.py` (planner/execution debug interface contracts)
-  - `training/control/robot_model_adapter.py` (model artifact compatibility checks/report)
+- Added top-level `control/` package scaffolding aligned with repo architecture:
+  - `control/interfaces.py` (planner/execution debug interface contracts)
+  - `control/robot_model/adapter.py` (model artifact compatibility checks/report)
 - Added WildRobot compatibility notes:
   - `assets/v2/FRAME_CONVENTIONS.md`
   - `assets/v2/CONTACT_GEOMETRY.md`
@@ -43,9 +43,9 @@ This is **not** a full MPC implementation and does **not** claim hard-push recov
   - Added `env.controller_stack` config selection (`ppo` default, `mpc_standing` bring-up path).
   - Kept legacy paths (`ppo`, `base_ctrl_enabled`, `fsm_enabled`) unchanged.
 - **Minimal control scaffolding**
-  - Added `training/control/` package with explicit interfaces and a conservative standing controller stub:
-    - `training/control/interfaces.py`
-    - `training/control/mpc_standing.py`
+  - Added top-level `control/` modules and a conservative standing controller stub:
+    - `control/interfaces.py`
+    - `control/mpc/standing.py`
   - The stub computes upright stabilization action deltas in policy-action space and emits planner/controller debug signals.
 - **Environment integration**
   - `training/envs/wildrobot_env.py` now routes to `mpc_standing` when selected.

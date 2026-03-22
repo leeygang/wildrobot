@@ -58,7 +58,7 @@ from training.cal.types import CoordinateFrame
 
 from training.configs.training_config import get_robot_config, TrainingConfig
 from training.envs import step_controller as sc
-from training.control.mpc_standing import compute_mpc_standing_action
+from control.mpc.standing import compute_mpc_standing_action
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,

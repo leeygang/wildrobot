@@ -13,7 +13,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jp
 
-from training.control.interfaces import ControllerDebugSignals
+from control.interfaces import ControllerDebugSignals
 
 
 def compute_mpc_standing_action(
@@ -102,4 +102,3 @@ def compute_mpc_standing_action(
         step_requested=step_requested.astype(jp.float32),
     )
     return mixed, debug
-
