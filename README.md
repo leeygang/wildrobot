@@ -1,13 +1,15 @@
 # WildRobot
 
-A humanoid robot locomotion project centered on MuJoCo/JAX training, with a
-hardware-fit hybrid planner + RL controller path now under active development.
+A humanoid robot locomotion project centered on MuJoCo/JAX training, with an
+industry-style RL deployment path as the current mainline for WildRobot.
 
 Current repo reality:
 - `training/` still contains the active PPO/AMP baseline stack and evaluation
   infrastructure
-- the current `v0.17` mainline is a **simple footstep planner + RL tracking**
-  path on top of the existing MJCF / MuJoCo stack
+- the current `v0.17` mainline keeps the deployed controller as a **direct RL
+  policy** on top of the existing MJCF / MuJoCo stack
+- step-target or planner logic, if used, is treated as **training-time
+  teacher/scaffold support**, not as a required runtime controller
 - OCS2 / `wb_humanoid_mpc` and URDF migration remain long-term reference
   directions, not the active implementation target for current hardware
 - future controller and planner code should live under top-level `control/`,
@@ -87,7 +89,7 @@ wildrobot/
 │   ├── docs/                           # Training documentation
 │   │   ├── learn_first_plan.md         # Legacy walking-first PPO plan
 │   │   ├── standing_training.md        # Standing push-recovery roadmap
-│   │   ├── footstep_planner_rl_adoption.md # Active hybrid planner + RL plan
+│   │   ├── footstep_planner_rl_adoption.md # Active RL-first + optional teacher plan
 │   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
 │   │   └── TRAINING_SYSTEM_DESIGN.md   # Legacy training-stack design
 │   │
@@ -202,11 +204,11 @@ wildrobot/
 
 Use this rule of thumb:
 
-- `control/` owns controller logic
+- `control/` owns non-PPO support logic
   - robot model interfaces
-  - reduced-order dynamics
-  - simple planner logic first
-  - execution / tracking layer
+  - reduced-order helper logic
+  - optional planner / teacher utilities
+  - execution / tracking helpers
   - adapters for sim/runtime
   - reserved room for future advanced planning experiments
 
@@ -266,8 +268,8 @@ uv run pytest training/tests --cov=training --cov-report=html
 
 The commands below are for the existing PPO/AMP baseline stack in `training/`.
 They remain valid for baseline comparison, regression, and for the current
-hybrid planner + RL work, which still reuses the same MuJoCo/JAX training
-infrastructure.
+RL-first standing work, which still reuses the same MuJoCo/JAX training
+infrastructure and deployment path.
 
 ### Walking Task (PPO + AMP)
 

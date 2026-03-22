@@ -1,9 +1,9 @@
 # Control Stack
 
-This directory is the non-PPO controller and planner path for WildRobot.
+This directory is the non-PPO support path for WildRobot.
 
 Ownership:
-- `control/` owns controller logic
+- `control/` owns non-PPO helper logic
 - `training/` owns experiments, PPO baselines, evals, and training integration
 
 Planned subdirectories:
@@ -15,7 +15,7 @@ Planned subdirectories:
 
 This directory is intentionally minimal at the architecture-doc stage.
 
-Current mainline implementation starts from the hybrid planner + RL plan in:
+Current mainline implementation starts from the RL-first plan in:
 - `docs/system_architecture.md`
 - `training/docs/footstep_planner_rl_adoption.md`
 
