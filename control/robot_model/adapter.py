@@ -1,8 +1,9 @@
-"""WildRobot robot-model adapter scaffold for OCS2-style adoption.
+"""WildRobot robot-model adapter scaffold for planner/controller integration.
 
 This module provides a minimal compatibility contract between current WildRobot
 assets (`assets/v2/*.xml`, `mujoco_robot_config.json`) and future control-stack
-model requirements (URDF/control model + frame/contact conventions).
+model requirements such as frame/contact conventions and optional controller
+model artifacts.
 
 It intentionally does not implement full model conversion.
 """
@@ -43,7 +44,7 @@ def evaluate_model_artifacts(
     assets_root: Path,
     robot_cfg: RobotConfig,
 ) -> ModelArtifactStatus:
-    """Evaluate presence of model artifacts needed for OCS2-style adoption."""
+    """Evaluate presence of model artifacts useful for controller integration."""
     urdf_candidates: Iterable[Path] = (
         assets_root / "wildrobot.urdf",
         assets_root / "wildrobot_control.urdf",
@@ -80,7 +81,7 @@ def build_compatibility_report(
         missing.append(str(root / "mujoco_robot_config.json"))
     if not status.has_urdf:
         missing.append(f"URDF control model export (e.g., {root / 'wildrobot.urdf'})")
-        notes.append("URDF export is required for most OCS2/humanoid-MPC pipelines.")
+        notes.append("URDF export is only needed if a future controller stack requires it.")
     if not status.has_frame_convention_note:
         missing.append(str(root / "FRAME_CONVENTIONS.md"))
         notes.append("Frame/sign conventions must be explicitly documented for controller integration.")

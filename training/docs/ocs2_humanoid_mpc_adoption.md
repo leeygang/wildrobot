@@ -1,367 +1,166 @@
-# WildRobot OCS2 / Humanoid MPC Adoption Plan
+# WildRobot OCS2 / Humanoid MPC Adoption Notes
 
-**Status:** Planned at `v0.17.2`  
+**Status:** Deferred reference, not the active mainline for `v0.17.3+`  
 **Last updated:** 2026-03-22
 
 ---
 
 ## Purpose
 
-This document defines the WildRobot-specific adoption plan for the new mainline control architecture:
-- OCS2 as the optimal-control foundation
-- 1X `wb-humanoid-mpc` as the primary humanoid implementation reference
-- OpenLoong as a secondary MuJoCo implementation reference
+This document records why OCS2 / `wb_humanoid_mpc` was investigated, why it is
+not the current mainline for WildRobot, and what parts of that architecture
+remain useful as long-term reference material.
 
-This is the concrete follow-up to the `v0.17.1` standing baseline failure and should be read together with:
-- [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
+Active mainline doc:
+- [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
+
+Repo-level context:
 - [system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
 
 ---
 
-## Why `v0.17.1` Was Insufficient
+## Why It Was Investigated
 
-`v0.17.1` was the correct PPO baseline to run, but it was not sufficient as the mainline solution.
+After `v0.17.1` failed the true hard-push gate, the first interpretation was:
+- pure PPO is not discovering good enough step geometry
+- a more explicit model-based locomotion stack might solve both standing
+  recovery and walking under one architecture
 
-What it proved:
-- quiet standing can be kept stable
-- PPO optimization was not the dominant blocker
-- the cleaned standing recipe can survive nontrivial pushes
+OCS2 / `wb_humanoid_mpc` was attractive because it offered:
+- planner / execution separation
+- switched-contact reasoning
+- a standing-to-walking architectural path
+- a more explicit handling of step placement than PPO-only training
 
-What it failed to prove:
-- reliable hard-push recovery at the true fixed gate
-- a credible path from standing recovery to walking on the same stack
-
-Observed result:
-- internal `eval_push/*` looked strong
-- fixed ladder still failed the true hard-push gate
-- dominant failure remained `term_height_low`
-
-Interpretation:
-- the remaining problem is not “make PPO more stable”
-- the remaining problem is “use a control architecture that handles stepping, contact switching, and recovery geometry more directly”
+That made it a reasonable architectural candidate to evaluate.
 
 ---
 
-## Why OCS2 / 1X Is The Chosen Mainline
+## Why It Is Not The Current Mainline
 
-### OCS2
+The hardware-fit review changed the decision.
 
-OCS2 is the chosen control foundation because it provides a more established structure for:
-- switched-system optimal control
-- contact-phase reasoning
-- model/cost/constraint decomposition
-- receding-horizon control
+Current WildRobot constraints:
+- position-controlled hobby servos
+- no torque-control interface
+- `50 Hz` runtime loop
+- one IMU and binary foot switches
+- no ankle roll
+- thin dynamic torque margin
 
-This is a better fit for WildRobot’s current standing+walking goal than continuing direct-action PPO as the only mainline.
+Those constraints conflict with what the reference stacks are best at:
+- torque or force-oriented execution
+- higher-bandwidth control loops
+- richer contact-state estimation
+- stronger lateral stabilization hardware
 
-### 1X `wb-humanoid-mpc`
+Main blockers for direct adoption:
 
-1X `wb-humanoid-mpc` is the chosen humanoid implementation reference because it is closer to the actual target stack:
-- humanoid-specific MPC organization
-- whole-body execution assumptions
-- one stack for both standing-like balance and locomotion
+1. **Actuation mismatch**
+   - Whole-body MPC / WBC stacks assume much more direct control authority than
+     current hobby servos provide.
 
-This is more directly aligned with WildRobot’s medium-term objective than a standing-only PPO branch.
+2. **Bandwidth mismatch**
+   - WildRobot runtime is much slower than the controller loops typically
+     assumed by these stacks.
 
-### Why Not OpenLoong As The Main Reference
+3. **Lateral stabilization limits**
+   - missing ankle roll materially reduces the classical balance toolbox.
 
-OpenLoong remains useful, but as a secondary reference only.
+4. **Infrastructure cost**
+   - URDF / Pinocchio / OCS2 plumbing is substantial work before controller
+     validation can even begin.
 
-Reason:
-- it is more tightly coupled to its own robot and controller conventions
-- it is more useful as a MuJoCo implementation reference than as the architectural source of truth
-
----
-
-## WildRobot-Specific Model And Integration Gaps
-
-WildRobot already has a lot of usable robot data, but not in the exact form this stack will want.
-
-### What exists today
-
-Current active robot/model assets:
-- `assets/v2/wildrobot.xml`
-- `assets/v2/mujoco_robot_config.json`
-- `assets/v2/scene.xml`
-- `assets/v2/scene_flat_terrain.xml`
-- `runtime/configs/runtime_config_v2.json`
-
-These provide:
-- MJCF geometry and inertials
-- current actuator ordering
-- runtime calibration/config path
-- current foot/contact instrumentation path
-
-### Main gaps to close
-
-1. **Canonical model path for the new controller stack**
-   - WildRobot currently has a checked-in MJCF path in `assets/v2/`
-   - It does **not** yet have a clearly maintained URDF/control-model path for the new architecture
-
-2. **Frame and convention audit**
-   - base frame
-   - heading-local frame
-   - foot frames
-   - contact frame conventions
-   - sign conventions for roll/pitch/yaw, foot lateral offsets, and joint directions
-
-3. **Contact geometry audit**
-   - exact support polygon definition
-   - toe/heel geometry mapping
-   - contact points used by the controller vs by MuJoCo
-
-4. **Actuation mapping audit**
-   - joint names and order
-   - limits
-   - nominal joint posture
-   - runtime actuator constraints vs simulation actuator assumptions
-
-5. **Execution-layer choice**
-   - determine whether the first WildRobot implementation should use:
-     - whole-body control, or
-     - a narrower joint-space tracking layer
-
-6. **State-estimation interface definition**
-   - what the controller reads from simulation first
-   - what the runtime equivalent would be later
+So for current hardware, the OCS2 path is architecturally interesting but not
+the best near-term implementation target.
 
 ---
 
-## Required Model Artifacts
+## What We Still Want To Borrow
 
-These artifacts are required before the adopted stack can be implemented cleanly.
+Even though the full adoption is deferred, several ideas remain useful:
 
-### Required source artifacts
+1. **Planner / execution separation**
+   - step geometry should be explicit
+   - joint-space execution should be a separate concern
 
-1. **Canonical robot description for control**
-   - preferred: URDF or equivalent model path suitable for the target control stack
-   - must stay synchronized with `assets/v2/wildrobot.xml`
+2. **Standing and walking on one stack**
+   - avoid building an unrelated walking controller later
 
-2. **Inertial data**
-   - link masses
-   - COM locations
-   - inertias
-   - validated against the active MJCF
+3. **Model-based first where it helps**
+   - planner logic should encode obvious locomotion structure
+   - RL should not be forced to invent all of that from scratch
 
-3. **Joint metadata**
-   - names
-   - order
-   - limits
-   - neutral standing pose
-   - actuator mapping
+4. **Clear interfaces**
+   - robot model
+   - reduced-order planner
+   - execution layer
+   - simulation/runtime adapters
 
-4. **Contact geometry**
-   - left/right foot support geometry
-   - toe/heel contact points
-   - controller-facing support polygon definition
-
-5. **Frame conventions**
-   - base frame
-   - pelvis/root frame
-   - world frame
-   - heading-local frame
-   - left/right foot frames
-
-6. **Simulation/controller adapter spec**
-   - what kinematic and dynamic quantities the new controller path expects
-   - where they come from in MuJoCo
-   - how they will map later to runtime signals
-
-### Immediate WildRobot action items
-
-1. Define whether `assets/v2/wildrobot.xml` remains the single source of truth for inertials.
-2. Add or generate the control-model artifact expected by the adopted stack.
-3. Create a written frame-convention map for WildRobot.
-4. Document the support geometry used for standing and stepping.
+These ideas still shape the `control/` folder and the active hybrid plan.
 
 ---
 
-## Proposed Controller Decomposition
+## Repository Role Now
 
-The WildRobot controller stack should be decomposed explicitly.
+This document is now a reference note, not an implementation plan.
 
-### 1. Reduced-order model layer
+Use it for:
+- long-term architecture thinking
+- future hardware-upgrade planning
+- naming the abstractions that should remain clean in `control/`
 
-Responsibilities:
-- represent locomotion-relevant simplified dynamics
-- support balance and step planning
-- expose quantities like support state, CoM evolution, and contact phase
+Do not use it to drive:
+- `v0.17.3`
+- `v0.17.4`
+- `v0.17.5`
 
-Candidate forms:
-- LIP/capture-point style for first reasoning
-- ALIP or centroidal approximation if required by the chosen implementation path
-
-WildRobot requirement:
-- this layer must be simple enough to validate first in simulation
-- but strong enough to support both standing recovery and walking planning
-
-### 2. MPC footstep / CoM planner
-
-Responsibilities:
-- plan or refine CoM motion
-- plan support switching
-- generate footstep targets
-- stabilize standing under pushes
-- serve as the main locomotion-planning mechanism for walking later
-
-Standing-first expectation:
-- quiet standing
-- moderate push rejection
-- recovery-step planning under hard pushes
-
-Walking expectation later:
-- nominal forward walking
-- preserved standing recovery behavior
-
-### 3. Whole-body or joint-space execution layer
-
-Responsibilities:
-- realize planner outputs on the full WildRobot model
-- respect joint limits and contact constraints
-- maintain stable posture while tracking the planner
-
-Decision needed:
-- start with a narrower joint-space execution layer if that materially lowers adoption risk
-- only adopt full WBC immediately if the chosen reference stack makes that the smaller-risk path
-
-Default recommendation:
-- choose the smallest execution layer that preserves the planner/controller contract cleanly
-- do not prematurely implement a custom full-body controller if a simpler execution layer is enough for the first standing bring-up
+Those milestones are owned by the active hybrid plan in
+[footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md).
 
 ---
 
-## What Will Be Reused From The Current Repo
+## When To Revisit This Path
 
-These parts should be reused directly or treated as regression infrastructure.
+Revisit direct OCS2 / humanoid MPC adoption only if at least one of these is
+true:
 
-### Reuse directly
+1. WildRobot hardware is upgraded materially:
+   - higher-bandwidth actuators
+   - torque or impedance control
+   - richer contact sensing
 
-- `assets/v2/wildrobot.xml`
-- `assets/v2/mujoco_robot_config.json`
-- current scene files in `assets/v2/`
-- `runtime/configs/runtime_config_v2.json`
-- MuJoCo simulation path
-- evaluation ladder and standing regression targets
-- run logging and experiment comparison workflow
+2. The project chooses a more capable robot class:
+   - one where whole-body MPC / WBC is actually a good fit
 
-### Reuse as validation infrastructure
+3. The current hybrid planner + RL branch clearly saturates:
+   - planner geometry is still insufficient
+   - RL tracking is no longer the main bottleneck
 
-- `training/docs/standing_training.md`
-- `v0.14.6` as hard-push historical baseline
-- `v0.17.1` as the final PPO standing baseline
-- current fixed ladder concepts:
-  - `eval_clean`
-  - `eval_easy`
-  - `eval_medium`
-  - `eval_hard`
-  - `eval_hard_long`
+4. A simulation-only advanced controller branch becomes worthwhile as a
+   separate research effort.
 
 ---
 
-## What Will Not Be Reused As Mainline
+## What To Preserve From This Investigation
 
-These stay in the repo but stop being the mainline control answer.
+Keep these decisions:
+- `control/` stays top-level
+- controller logic stays separate from PPO-specific code
+- reduced-order planning remains a valid abstraction
+- standing-first validation still comes before walking
 
-- PPO-only escalation after `v0.17.1`
-- M3-lite as the primary architecture
-- Li-style history as the primary architecture
-- large reward-family growth as the main way to solve stepping
-
----
-
-## Proposed Repository Impact
-
-The architecture pivot should be visible in the repo layout.
-
-Recommended new areas:
-
-```text
-docs/
-  system_architecture.md
-
-training/docs/
-  ocs2_humanoid_mpc_adoption.md
-
-training/control/ or control/
-  robot_model/
-  reduced_model/
-  mpc/
-  execution/
-  adapters/
-```
-
-Principle:
-- controller code should not live inside PPO-specific files
-- planner/execution layers should be separable from the training loop
-- the current PPO path should remain intact for comparison
+Keep these expectations realistic:
+- full humanoid MPC is not a free upgrade for hobby hardware
+- URDF migration is only worth it if the controller stack can actually exploit
+  it
 
 ---
 
-## Implementation Plan
+## Bottom Line
 
-### `v0.17.2` - Adoption, Gap Analysis, And Scaffolding
-
-Deliver:
-- architecture docs
-- WildRobot gap analysis
-- repo scaffolding direction
-- first implementation scope
-
-Status:
-- completed as planning/scaffolding stage
-
-### `v0.17.3` - Controller Integration Groundwork
-
-Deliver:
-- controller initialization path on the new stack
-- MuJoCo/controller adapter wiring
-- inspectable planner/execution signals
-- minimum execution path for simulation
-
-### `v0.17.4` - Quiet Standing
-
-Deliver:
-- quiet standing on the new stack
-- stable neutral posture hold
-- repeatable idle behavior in simulation
-
-### `v0.17.5` - Standing Push Recovery
-
-Deliver:
-- moderate push recovery first
-- fixed-ladder evaluation on the new stack
-- comparison against `v0.17.1` and `v0.14.6`
-
-### `v0.17.6` - Walking Bring-Up
-
-Deliver:
-- same architecture supports nominal walking
-- standing recovery remains a regression requirement
-
-### `v0.17.7` - Optional RL Augmentation
-
-Deliver:
-- RL only if it clearly improves the established model-based stack
-
----
-
-## Top WildRobot Integration Risks
-
-1. **Model-path mismatch**
-   - MJCF exists, but the new stack may require a different canonical model path and stricter frame conventions.
-
-2. **Execution-layer overreach**
-   - trying to implement too much WBC/custom control at once could recreate the same “repo-specific controller invention” problem we are trying to avoid.
-
-3. **Simulation/controller convention drift**
-   - if support geometry, contact frames, or joint directions are inconsistent between model, planner, and execution layer, standing and stepping behavior will fail for reasons that are hard to diagnose.
-
----
-
-## Immediate Next Actions
-
-1. Confirm the control-model source of truth for WildRobot.
-2. Define the frame and contact-geometry conventions in writing.
-3. Decide the minimum execution layer for the first controller integration milestone.
-4. Create the implementation scaffolding for the new controller path.
-5. Keep the fixed standing ladder as the first acceptance test after quiet standing is stable.
+For current WildRobot hardware:
+- OCS2 / `wb_humanoid_mpc` is **not** the active mainline
+- it remains a **long-term reference**
+- the active path is **simple footstep planner + RL tracking**

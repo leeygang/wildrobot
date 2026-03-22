@@ -20,11 +20,12 @@ It is **not** the new mainline system architecture for WildRobot.
 
 Starting at `v0.17.2`, repo-level architecture is defined in:
 - [system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
 - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
 
 Boundary:
 - `training/` owns experiments, baselines, training loops, evals, and logging
-- the future controller stack should live under top-level `control/`
+- the future controller and planner stack should live under top-level `control/`
 - `training/` may integrate with `control/`, but should not own the new controller design
 
 ---

@@ -120,7 +120,7 @@ class EnvConfig(Freezable):
     # - "mpc_standing": v0.17.3 standing bring-up stub path
     controller_stack: str = "ppo"
 
-    # v0.17.3 standing bring-up (OCS2-style scaffold): conservative placeholder gains.
+    # v0.17.3 standing bring-up scaffold: conservative placeholder gains.
     # These parameters intentionally expose inspectable planner/controller signals
     # without claiming a full MPC implementation.
     mpc_residual_scale: float = 0.25

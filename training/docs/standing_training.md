@@ -1,174 +1,157 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` scoped, `v0.17.3` next  
+**Status:** `v0.17.1` evaluated, `v0.17.2` scaffolding complete, `v0.17.3` next  
 **Created:** 2026-03-20  
+**Last updated:** 2026-03-22
 
 ---
 
 ## Purpose
 
-This document defines the return to the original standing-first training goal for WildRobot.
+This document defines the standing-first roadmap for WildRobot.
 
-Goal:
-- stand stably under external pushes
-- take corrective steps only when bracing is no longer enough
-- return to an upright neutral posture after recovery
+Standing success means:
+- stand quietly under zero command
+- survive pushes
+- step only when bracing is no longer enough
+- return to upright neutral standing after recovery
 
-Validation remains standing-first, but starting with `v0.17.2` the target architecture must support both:
-- standing push recovery
-- nominal walking
+Walking is still part of the broader goal, but for `v0.17` it comes only after
+standing recovery is credible.
 
-The early `v0.17.0` / `v0.17.1` branch was intentionally **not** a walking branch.
+The key project-level decision after `v0.17.1` is:
+- keep the current MJCF / MuJoCo / RL stack
+- add explicit step geometry through a lightweight planner
+- do **not** make full OCS2 / humanoid MPC adoption the current mainline on
+  this hardware
 
-It did not try to:
-- learn nominal walking
-- use a gait clock
-- use velocity tracking rewards
-- use a motion-prior or teacher pipeline as the first step
+Active architecture docs:
+- repo-level architecture:
+  [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- active hybrid plan:
+  [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
 
-The plan is designed to follow a small number of public recipes closely, so the branch is driven by established practice rather than ad hoc exploration.
+Deferred reference docs:
+- [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
+- [URDF_migration_plan.md](/home/leeygang/projects/wildrobot/docs/URDF_migration_plan.md)
 
-Current standing result:
-- `v0.17.1` completed as the recipe baseline run
-- fixed ladder evaluation did **not** beat the old `v0.14.6` hard-push baseline
-- `v0.17.2` is therefore the architecture-pivot stage:
-  - primary reference stack: OCS2 / humanoid MPC family
-  - concrete humanoid reference: 1X `wb-humanoid-mpc`
-  - OpenLoong remains a secondary MuJoCo implementation reference
+---
 
-Architecture documents for this pivot:
-- repo-level overview: [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
-- WildRobot adoption plan: [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
+## Current Standing Result
+
+`v0.17.1` is now the final PPO standing baseline for this branch.
+
+Best checked fixed-ladder result:
+- `eval_medium = 71.6%`
+- `eval_hard = 39.2%`
+- `eval_hard/term_height_low_frac = 60.8%`
+
+Verdict:
+- `v0.17.1` failed the true gate
+- it did **not** beat the old `v0.14.6` hard-push baseline of `60.84%`
+- internal `eval_push/*` overstated true hard-push performance
+
+Diagnosis:
+- quiet standing and PPO stability were not the problem
+- dominant failure remained `term_height_low`
+- the gap is still step quality and post-touchdown arrest
+
+This result invalidated two different ideas:
+- continuing PPO-only escalation as the mainline
+- jumping straight to full humanoid MPC on current hobby hardware
+
+The active answer is now the middle path:
+- **simple planner for step geometry**
+- **RL for execution through the existing position-servo stack**
 
 ---
 
 ## External References
 
-v0.17 now has two phases with different primary references.
+v0.17 now uses two categories of references:
+- historical references for the completed PPO baseline
+- active references for the hybrid planner + RL branch
 
-### Phase 1 References: `v0.17.0` - `v0.17.1`
-
-These were the references used for the PPO standing baseline.
+### Historical Baseline References: `v0.17.0` - `v0.17.1`
 
 #### Recipe A: `legged_gym` / Rudin et al. 2022
 
 - Paper: https://proceedings.mlr.press/v164/rudin22a.html
 - Code: https://github.com/leggedrobotics/legged_gym
 
-This is the **implementation recipe** for v0.17.
-
-We follow it for:
-- PPO setup and rollout structure
-- curriculum as the main training lever
-- compact reward design centered on stability and control quality
-- structured evals at fixed difficulty levels
-- later domain randomization and robustness passes
-
-What we do **not** copy literally:
-- quadruped-specific terms
-- walking-specific command tracking objectives
-- terrain curriculum
-
-WildRobot mapping:
-- terrain curriculum -> push curriculum
-- velocity tracking -> zero-velocity standing target
-- gait rewards -> none in the first branch
+Used for:
+- PPO structure
+- curriculum-first training
+- compact reward design
+- fixed eval discipline
 
 #### Recipe B: Li et al. 2024 Cassie
 
 - Project: https://xbpeng.github.io/projects/Cassie_Locomotion/index.html
 
-This is the **biped behavior recipe** for v0.17.
+Used for:
+- treating standing recovery as a first-class skill
+- disturbance exposure
+- history as a later escalation if needed
 
-We follow it for:
-- treating standing and push recovery as first-class skills
-- using task randomization and disturbance exposure to build robustness
-- using observation history when contact timing and disturbance response matter
-- keeping the recovery policy general instead of scripting one exact recovery
+### Active Mainline References: `v0.17.3+`
 
-What we take from it most directly:
-- standing is a valid locomotion skill, not just a pretraining artifact
-- push recovery should emerge from training under disturbances
-- short-term and long-term history are legitimate upgrades if contact handling stalls
+#### Practical control pattern: simple footstep planner + learned tracking
 
-### Phase 2 References: `v0.17.2+` Architecture Pivot
+What we take from this pattern:
+- planner provides when/where to step
+- RL handles execution on messy real actuators
 
-These are the main references for the post-`v0.17.1` stack change.
+This is the active architecture choice for current WildRobot hardware.
 
-#### Recipe C: OCS2 / MPC Stack
+#### Servo-humanoid implementation style: OP3-like planner + kinematic execution
 
-- Code: https://github.com/leggedrobotics/ocs2
-- Examples: https://leggedrobotics.github.io/ocs2/robotic_examples.html
+Relevant because:
+- it is much closer to current WildRobot hardware than torque-control humanoid
+  MPC stacks
+- it matches the reality of position-servo execution and simpler sensing
 
-This is the new **control architecture foundation**.
+#### Secondary simulation-side references
 
-We follow it for:
-- optimal-control problem structure
-- switched contact planning structure
-- model, cost, and constraint decomposition
-- receding-horizon control as the main stabilizing mechanism
+Useful as reference only:
+- OpenLoong for MuJoCo humanoid module structure
+- MuJoCo MPC as a possible simulation teacher later
 
-#### Recipe D: 1X `wb-humanoid-mpc`
+#### Long-term architecture references
 
-- Code: https://github.com/1x-technologies/wb-humanoid-mpc
+Useful, but not the current mainline:
+- OCS2
+- `wb_humanoid_mpc`
 
-This is the new **humanoid implementation reference**.
-
-We follow it for:
-- humanoid-specific MPC structure
-- whole-body execution layer expectations
-- standing and walking under one control architecture
-- practical robot-model integration patterns
-
-#### Secondary Reference: OpenLoong Dyn-Control
-
-- Code: https://github.com/loongOpen/OpenLoong-Dyn-Control
-
-OpenLoong is a secondary implementation reference for:
-- MuJoCo integration patterns
-- practical humanoid module boundaries
-- working MPC/WBC-style control in simulation
-
-It is **not** the primary adoption target because it is more tightly coupled to its own robot and controller conventions.
-
-### What Is Not A Primary Recipe
-
-The following are not mainline references for the post-`v0.17.1` plan:
-- DeepMimic
-- ASAP
-- the existing M3/FSM document as the main architecture
-- PPO-only standing escalation as the mainline
-
-Reason:
-- they either require validated reference motions,
-- or add a larger control-design burden than needed for the initial baseline,
-- or were already tested in weaker form and underperformed the true hard-push baseline,
-- or do not provide the broader standing+walking architecture now required.
+They remain valuable as long-term architecture inspiration, not as the active
+implementation contract for `v0.17.3+`.
 
 ---
 
 ## Repo Starting Point
 
-The standing history already gives a clear base to build from.
+The standing history still gives a clear baseline.
 
 ### What Worked
 
-- `v0.13.8` established strong standing robustness at moderate pushes with collapse-prevention shaping and dual evals.
-- `v0.13.10` added explicit posture return after disturbance.
-- `v0.14.6` pure PPO at the calibrated hard-push regime reached the best hard-push standing checkpoint:
-  - `eval_push/success_rate = 60.84%` at `10N x 10` after resume
-  - dominant failure remained `term_height_low`
+- `v0.13.8` established strong moderate-push standing robustness
+- `v0.13.10` added explicit posture return
+- `v0.14.6` pure PPO at the calibrated hard-push regime reached the best
+  historical hard-push checkpoint:
+  - `eval_push/success_rate = 60.84%` at `10N x 10`
+  - dominant failure still `term_height_low`
 
 ### What Did Not Work
 
-- `v0.14.7` privileged critic did not beat the pure PPO baseline.
-- `v0.14.8` actor-side capture-point observation improved quality but did not beat the pure PPO baseline.
-- `v0.14.9` guide-only FSM underperformed decisively and remained weakly engaged / timeout-driven.
+- `v0.14.7` privileged critic did not beat pure PPO
+- `v0.14.8` actor-side capture-point observation did not beat pure PPO
+- `v0.14.9` guide-only FSM underperformed and remained weakly engaged
+- `v0.17.1` cleaned PPO baseline still failed the true hard gate
 
 ### Quantitative Boundary Data
 
-The standing curriculum should be anchored to the force sweep already established in the changelog:
+Existing force sweep:
 
 | Push Regime | Success Rate | Episode Length | Interpretation |
 |---|---:|---:|---|
@@ -176,52 +159,53 @@ The standing curriculum should be anchored to the force sweep already establishe
 | `9N x 10` | `58.0%` | `382.9` | boundary / transition regime |
 | `10N x 10` | `47.3%` | `346.7` | hard-push regime |
 
-This is the empirical basis for the v0.17 curriculum:
-- `8N x 10` is below the stepping boundary
-- `9N x 10` is where stepping should begin to matter
-- `10N x 10` is the first hard-push target
+Planning implication:
+- `8N x 10` is often recoverable by bracing
+- `9N x 10` is where stepping should start to matter
+- `10N x 10` is the real hard-push target
 
-Capture-point geometry points in the same direction.
+---
 
-Back-of-the-envelope standing estimate for WildRobot:
-- nominal CoM height `z ≈ 0.30 m`
-- `omega_0 = sqrt(g / z) ≈ 5.7 rad/s`
-- a `9N` push for `0.2s` on a `~1.2kg` body gives `delta_v ≈ 1.5 m/s`
-- capture-point offset is then about `delta_v / omega_0 ≈ 0.26 m`
+## Hardware Reality
 
-That offset is larger than the nominal support-width scale the current standing branch works around, so stepping at `9N+` is not just empirically observed. It is geometrically expected.
+Current hardware matters to the architecture choice.
 
-### Standing Branch Conclusion
+Current constraints:
+- position-controlled hobby servos
+- `50 Hz` runtime
+- one IMU
+- four binary foot switches
+- no ankle roll
 
-The unresolved problem is:
-- not disturbance detection
-- not basic posture recovery
-- not whether stepping pressure exists
+Implications:
+- full whole-body MPC / WBC is not a good near-term fit
+- URDF / Pinocchio / OCS2 plumbing is too much cost for the immediate branch
+- pure PPO still needs help with explicit step geometry
 
-It is:
-- step quality
-- touchdown quality
-- post-touchdown arrest of collapse
+So the active plan is deliberately narrower:
+- planner gives conservative recovery-step intent
+- RL tracks that intent through the existing actuation stack
 
-That means `v0.17.0` / `v0.17.1` were the correct PPO baseline reset, but `v0.17.2+` should pivot away from PPO-only escalation and toward a more established model-based humanoid stack.
+Aggressive whole-body dynamic recovery is **not** the immediate target on this
+hardware.
 
 ---
 
 ## Strategy
 
-v0.17 now uses a two-stage strategy:
+v0.17 now uses this sequence:
 
-1. Establish a standing-only PPO baseline aligned to `legged_gym`.
-2. Use that baseline to determine whether pure PPO is enough for the true hard gate.
-3. Because `v0.17.1` failed the true hard gate, pivot to an OCS2 / humanoid MPC stack for `v0.17.2+`.
-4. Keep standing push recovery as the first validation task on the new stack.
-5. Extend the same stack to nominal walking after standing recovery is credible.
-6. Keep RL augmentation as a later option, not the new foundation.
+1. Use `v0.17.1` as the final PPO baseline result.
+2. Keep MJCF / MuJoCo and the current RL infrastructure.
+3. Add a lightweight reduced-order planner for step geometry.
+4. Validate quiet standing first.
+5. Validate standing push recovery next.
+6. Extend the same stack to slow / conservative walking.
 
-This avoids the two old failure modes:
-- turning standing into a walking problem
-- turning the training loop into an open-ended reward-design experiment
-- continuing PPO-only escalation after the fixed ladder already rejected it
+This avoids three failure modes:
+- endless PPO-only reward patching
+- architecture pivots the hardware cannot exploit
+- splitting standing and walking into unrelated controller stacks
 
 ---
 
@@ -230,505 +214,248 @@ This avoids the two old failure modes:
 ### Task Definition
 
 Task:
-- command is always zero velocity
+- command starts at zero velocity
 - robot starts from neutral standing
-- random pushes occur during the episode
-- success means surviving the push and returning to upright quiet standing
+- pushes arrive during the episode
+- success means surviving the push and returning to upright standing
 
-There is no reward for:
-- forward motion
-- periodic stepping
-- gait style
-- making steps for their own sake
+Later walking extension:
+- add conservative forward / turn / stop commands on the same stack
 
 ### Observation Design
 
-The first observation layout should stay close to the current standing stack and add only the information justified by the two recipes.
+Keep the actor close to the current standing stack and add only planner signals
+that are genuinely useful.
 
-Required actor observations:
+Required observations:
 - projected gravity
 - base angular velocity
 - heading-local base linear velocity
 - joint positions
 - joint velocities
 - previous action
-- left / right foot contact or load signals
-- `capture_point_error`
+- foot contact signals
+- planner state / mode
+- step target or local touchdown target when active
 
-Guideline:
-- do **not** remove contact information from the actor
-- do **not** add a gait clock
-- do **not** include velocity commands, because the command is always zero
+Guidelines:
+- do not remove contact information from the actor
+- do not add a gait clock as the first fix
+- do not explode the observation space with speculative planner internals
 
-Reason:
-- `legged_gym` rewards and curricula assume the policy can see enough proprioceptive state to manage contacts
-- Li et al. specifically motivate richer temporal context for contact-sensitive biped behaviors
+### Planner Design
 
-### Health And Termination Defaults
+First planner should be small and inspectable.
 
-Unless hard evidence says otherwise, v0.17 inherits the proven standing thresholds:
-- `target_height: 0.44`
-- `min_height: 0.40`
-- `max_pitch: 0.8`
-- `max_roll: 0.8`
-- `collapse_height_buffer: 0.03`
-- `collapse_vz_gate_band: 0.07`
+Required abilities:
+- detect when the no-step basin is exceeded
+- pick the swing foot
+- compute a conservative landing target
+- expose planner activation and step intent clearly
 
-Rule:
-- do **not** relax the fall thresholds into a deep-collapse regime
-- the branch should preserve the current standing definition of "still alive"
+First model family:
+- capture-point / LIP
+
+Allowed escalation only if required:
+- ALIP-lite
+
+Not the first branch:
+- full OCS2
+- full humanoid MPC
+- full WBC
+
+### Policy / Execution Design
+
+The RL side remains the execution engine.
+
+Responsibilities:
+- turn planner intent into servo-friendly joint behavior
+- stabilize the body around the planned step
+- absorb model mismatch and actuation quirks
+
+This is still an RL branch, but not an RL-from-scratch stepping-geometry branch.
 
 ### Reward Design
 
-Use a small standing-focused reward stack.
+Keep reward changes bounded.
 
-Primary terms:
-- upright orientation
-- target height
-- zero horizontal velocity
-- posture return toward neutral
-- pre-collapse shaping near the height threshold
+Allow:
+- planner alignment terms
+- execution-quality terms
+- recovery success terms already consistent with the standing task
 
-Quality terms:
-- angular velocity penalty
-- slip penalty
-- action-rate penalty
-- torque / saturation penalty
+Avoid:
+- large new reward families for every phase of stepping
+- turning the branch into another open-ended reward-design project
 
-Keep:
-- `collapse_height`
-- `collapse_vz`
-- posture return
-- need-gated stepping auxiliaries at low weight
+### Evaluation
 
-Remove from the mainline:
-- all walking reward terms
-- gait periodicity
-- dense progress
-- step-progress propulsion terms
-- gait clock dependent rewards
-
-Default v0.17 position on stepping rewards:
-- keep `step_event` and `foot_place` **on at low weight** in the mainline
-- keep them strictly gated by the existing `need_step` logic from the standing branch
-- treat them as bootstrap and diagnostic signals, not primary task terms
-
-Recommended starting weights:
-- `step_event: 0.10-0.15`
-- `foot_place: 0.25-0.35`
-
-Rule:
-- if they produce fidgeting or gratuitous stepping, zero them quickly
-- if they stay well-behaved, keep them because the standing history suggests they are a safe bootstrap signal here
-
-This matches the external recipes better than inventing a new reward family.
-
-### PPO and Training Geometry
-
-Do not redesign PPO on day one.
-
-Start from the current stable standing geometry, then scale only after the new branch is behaving sensibly.
-
-Initial default:
-- keep the current rollout geometry close to `training/configs/ppo_standing_push.yaml`
-- keep conservative PPO trust-region settings
-- keep deterministic evals and rollback
-
-Scaling rule:
-- only move toward larger `num_envs` after the baseline branch is stable and the metrics are trustworthy
-
-This is more defensible than assuming a `4096`-env jump up front.
-
----
-
-## What We Follow From Each Recipe
-
-### From `legged_gym`
-
-Use directly:
-- curriculum is the main lever
-- reward stack stays small and generic
-- fixed eval ladders at known difficulty
-- later domain randomization is a robustness stage, not a day-one feature
-
-Concrete WildRobot translation:
-- curriculum variable is push force / duration, not terrain
-- objective is standing robustness, not velocity tracking
-- checkpoint selection is driven by push evals, not reward
-
-### From Li et al. 2024
-
-Use directly:
-- standing and recovery are legitimate target skills
-- disturbance exposure is part of the task, not an afterthought
-- history is a principled escalation path when contact-sensitive behavior stalls
-
-Concrete WildRobot translation:
-- keep standing as a first-class branch
-- use push training to make recovery emerge
-- if hard-push stepping is low-quality, add history or a guide path based on the failure signature before inventing new rewards
-
----
-
-## Push Curriculum
-
-The curriculum should stay centered around the known WildRobot bracing boundary.
-
-Known boundary from the standing history:
-- `8N x 10` is mostly bracing-manageable
-- `9N x 10` is the transition regime
-- `10N x 10` is the hard-push regime
-- `9N x 15` is a strong long-impulse stress test
-
-v0.17 curriculum stages:
-
-1. Quiet standing
-   - no pushes
-   - verify posture baseline and logging
-
-2. Easy pushes
-   - roughly `3N` to `7N`
-   - goal: ankle / hip strategy quality
-
-3. Boundary pushes
-   - roughly `7N` to `10N`
-   - goal: first reliable recovery steps at the capturability boundary
-
-4. Hard pushes
-   - fixed and randomized pushes centered on `10N x 10`
-   - include `9N x 15`
-   - goal: improve hard-push success beyond the old pure-PPO ceiling
-
-5. Robustness pushes
-   - add direction diversity, duration diversity, and later multi-push episodes
-   - only after hard-push single-recovery behavior is stable
-
-Rule:
-- do not jump immediately to `14N+` or multi-push training
-- first solve the boundary regime where stepping should begin
-
----
-
-## Evaluation Ladder
-
-Every checkpoint should run a fixed eval ladder.
-
-Required eval suites:
+Keep the same standing ladder as the first gate:
 - `eval_clean`
-  - no pushes
 - `eval_easy`
-  - `5N x 10`
 - `eval_medium`
-  - `8N x 10`
 - `eval_hard`
-  - `10N x 10`
 - `eval_hard_long`
-  - `9N x 15`
 
-Optional later eval:
-- `eval_extreme`
-  - `14N x 12`
-
-Primary metrics:
-- `success_rate`
-- `episode_length`
+Primary decision metrics:
+- `eval_medium`
+- `eval_hard`
 - `term_height_low_frac`
-- `term_pitch_frac`
-- `term_roll_frac`
-- `tracking/max_torque`
-- `debug/torque_sat_frac`
-
-Required new recovery metrics:
-- time from push end to upright recovery
-- post-push residual body velocity
-- number of touchdown events after each push
-- first-step latency after push onset
-- support-foot change count
-
-Decision rule:
-- checkpoint selection is driven by fixed evals, especially `eval_hard` and `eval_hard_long`
-- do not use aggregate reward as the main selection signal
 
 ---
 
-## Concrete Roadmap
+## Milestones
 
-### v0.17.0: Standing Reset
-
-Objective:
-- create a clean standing config aligned to the two recipes
-
-Changes:
-- fork from the standing branch, not the walking branch
-- disable `fsm_enabled`
-- disable `base_ctrl_enabled`
-- remove walking-specific reward terms
-- keep collapse-prevention and posture-return terms
-- keep contact-aware actor observations
-- keep `capture_point_error` in the actor observation from day one
-- keep low-weight need-gated `step_event` / `foot_place`
-- keep current PPO geometry and eval/rollback guardrails
-
-Deliverables:
-- new standing config
-- new or updated standing observation layout
-- fixed eval ladder
-- recovery metrics plumbing
-
-Exit criteria:
-- `eval_clean/success_rate = 100%`
-- quiet-standing posture is stable for full episodes
-- all eval and recovery metrics log correctly
-
-### v0.17.1: Recipe Baseline at The Boundary
+### `v0.17.2`: Planning / Scaffolding
 
 Objective:
-- reproduce and exceed the old hard-push pure-PPO baseline using the cleaned standing recipe
-
-Training setup:
-- curriculum through easy and medium pushes
-- hard evals present from the start
-- no controller guide
-- low-weight need-gated step auxiliaries remain on
-
-Main question:
-- can the cleaned standing recipe beat the old `v0.14.6` line at `10N x 10`
-
-Result:
-- training run `run-20260321_123307-0flajxzh` completed with stable PPO and perfect `eval_clean`
-- internal `eval_push` rose to `84.4%`, but this did **not** transfer to the fixed ladder
-- best checked fixed-ladder checkpoint was `checkpoint_160_20971520.pkl`
-- fixed ladder result:
-  - `eval_medium = 71.6%`
-  - `eval_hard = 39.2%`
-  - `eval_hard/term_height_low_frac = 60.8%`
-
-Verdict:
-- `v0.17.1` failed the true gate
-- it did **not** beat the old `v0.14.6` hard-push baseline of `60.84%` at `10N x 10`
-- the internal `eval_push/*` probe overstated true hard-push performance
-
-Diagnosis:
-- clean standing and PPO stability were not the problem
-- the dominant failure remained `term_height_low`
-- stepping pressure existed, but hard-push recovery quality was still insufficient
-- this points to touchdown geometry / post-touchdown arrest, not to a basic disturbance-detection failure
-
-Decision:
-- do **not** extend `v0.17.1`
-- use it as the baseline result for the branch
-- use it as the justification for the `v0.17.2` architecture pivot to OCS2 / humanoid MPC
-
-### v0.17.2: Architecture Pivot To OCS2 / Humanoid MPC
-
-Objective:
-- replace PPO-only escalation with a higher-confidence model-based control stack that can cover both standing push recovery and walking
-
-Reason:
-- `v0.17.1` failed the true hard-push gate
-- the next priority is not more PPO reward/controller patching
-- the next priority is adopting a more established humanoid control architecture with broader standing+walking coverage
-
-Primary references:
-- OCS2 for the optimal-control foundation
-- 1X `wb-humanoid-mpc` for the humanoid control-stack structure
-- OpenLoong only as a secondary MuJoCo integration reference
-
-Deliverables:
-- architecture documents:
-  - [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
-  - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
-- WildRobot adoption plan for OCS2 / humanoid MPC stack
-- robot-model gap analysis:
-  - URDF/MJCF and inertial data requirements
-  - contact model and foot geometry mapping
-  - state-estimation / kinematics / frame conventions
-- controller decomposition for WildRobot:
-  - reduced-order model
-  - MPC footstep / CoM planner
-  - whole-body or joint-space execution layer
-- minimal simulation bring-up plan for standing
-
-Exit criteria:
-- the target architecture is defined clearly enough that implementation does not depend on ad hoc controller invention
-- WildRobot-specific integration risks are listed explicitly
-- first implementation milestone is scoped
+- architecture review, folder split, and doc/scaffolding work
 
 Status:
-- this stage is complete at the planning/scaffolding level
+- complete
 
-### v0.17.3: Controller Integration Groundwork
+Important note:
+- the earlier OCS2-mainline framing from this stage is now superseded by the
+  hardware-fit review
+
+### `v0.17.3`: Planner / Policy Integration Groundwork
 
 Objective:
-- make the new model-based stack executable in simulation without yet claiming stable standing
+- integrate the reduced-order planner into the existing stack without claiming
+  stable standing yet
 
 Changes:
-- integrate the robot model into the chosen control stack
-- implement the minimum controller state path
-- implement the MuJoCo/controller adapter boundary
-- implement the minimum servo-friendly execution path
-- add controller debug signals and inspectable planner/execution outputs
+- planner state extraction
+- planner outputs in metrics / debug signals
+- mode manager skeleton
+- actor observation plumbing for planner targets
+- keep execution servo-friendly
 
 Exit criteria:
-- the controller path initializes and steps in simulation
-- controller outputs are inspectable and physically coherent
-- the repo is ready for a dedicated quiet-standing milestone
+- planner path initializes cleanly
+- planner outputs are inspectable
+- RL path can consume planner outputs without crashing
 
-### v0.17.4: Quiet Standing On The New Stack
+### `v0.17.4`: Quiet Standing
 
 Objective:
-- achieve repeatable quiet standing on the new controller stack
+- quiet standing on the hybrid planner + RL stack
 
 Changes:
-- implement the minimal stabilizing standing controller
 - validate stable neutral posture hold
-- keep validation in simulation first
-- use only tiny disturbances for smoke validation if needed
+- keep planner mostly inactive during nominal standing
+- verify no regression in clean-standing behavior
 
 Exit criteria:
-- quiet standing is stable for full episodes
-- controller signals remain coherent under idle operation
-- standing is repeatable enough to justify moving to push recovery
+- quiet standing is repeatable
+- planner does not destabilize idle standing
 
-### v0.17.5: Standing Push Recovery
+### `v0.17.5`: Standing Push Recovery
 
 Objective:
-- solve standing push recovery with step trait on the new stack
+- solve standing push recovery with a real step trait on the hybrid stack
 
 Changes:
-- add moderate push recovery first
-- activate step planning / step switching under the model-based controller
-- then evaluate against the same fixed ladder used for `v0.17.1`
-- compare directly against both `v0.17.1` and `v0.14.6`
+- planner-triggered stepping under moderate pushes
+- extend to hard-push boundary
+- compare against both `v0.17.1` and `v0.14.6`
 
 Exit criteria:
 - `eval_medium > 75%`
 - `eval_hard > 60%`
-- `term_height_low_frac` improves materially over `v0.17.1`
+- `term_height_low_frac` materially better than `v0.17.1`
 
-### v0.17.6: Walking Bring-Up On The Same Stack
-
-Objective:
-- extend the same architecture from standing recovery to nominal walking
-
-Changes:
-- add walking references / velocity control within the model-based stack
-- preserve standing recovery as a regression suite
-- do not split into a separate unrelated walking architecture
-
-Exit criteria:
-- nominal walking exists without breaking standing recovery
-- the same stack supports both behaviors
-
-### v0.17.7: Optional RL Augmentation
+### `v0.17.6`: Walking On The Same Stack
 
 Objective:
-- add learning only after the model-based standing+walking stack is already credible
+- extend the same stack to slow / conservative walking
 
 Changes:
-- consider RL augmentation of footstep planning or tracking
-- evaluate whether a `2407.17683`-style hybrid stack adds value on top of the adopted control foundation
+- forward walking
+- stop / hold
+- gentle turn
+- keep standing push recovery as a regression suite
 
 Exit criteria:
-- RL improves the adopted architecture rather than replacing it
-- standing and walking both remain intact
+- one stack supports both standing recovery and slow commanded walking
 
-### Deferred Side Branch: M3-Lite / Li-Style PPO Escalations
+### `v0.17.7`: Optional Teacher / Privileged Extensions
 
-These are no longer the mainline plan.
+Objective:
+- add complexity only if the simpler hybrid stack works but saturates
 
-They remain optional only if:
-- the OCS2 / humanoid MPC adoption stalls for practical reasons, or
-- a quick side experiment is needed while the new architecture is being integrated
+Possible directions:
+- privileged teacher-student training
+- MJPC-generated references in simulation
+- more structured planner-state supervision
+
+Not a license to abandon the active branch early.
 
 ---
 
 ## Decision Rules
 
-These rules are part of the plan and should be followed strictly.
-
 ### If Quiet Standing Breaks
 
-- do not add new reward terms
-- return to the `legged_gym`-style baseline stack
-- check observation normalization, action filtering, and PPO stability first
+- do not add a large new reward family first
+- check planner gating, observation plumbing, and sign conventions first
+- restore clean-standing stability before continuing
 
-### If Hard-Push Success Plateaus Near The Old Baseline
-
-- do not continue PPO-only escalation as the mainline
-- use the result as the justification to pivot to the model-based stack
-
-Applied result:
-- this happened in `v0.17.1`
-- the chosen next branch is the OCS2 / humanoid MPC architecture pivot
-
-### If Step Count Stays Near Zero At The Boundary
-
-- in the PPO baseline stage, keep the reward stack stable
-- do not start a new motion-prior branch inside the same baseline
-- if the architecture pivot has already been chosen, do not spend the mainline effort here
-
-### If Step Count Rises But `term_height_low` Does Not Fall
+### If Planner Activity Stays Near Zero At The Boundary
 
 Interpretation:
-- the robot is attempting steps
-- the problem is step quality, not step intent
+- the planner threshold or state abstraction is wrong
 
 Action:
-- treat it as evidence that direct-action PPO is not closing the hard-recovery geometry gap
-- do not keep adding local PPO/controller complexity as the mainline answer
-- pivot to the model-based architecture
+- debug planner state and triggering first
+- do not jump straight to bigger controllers or broader rewards
 
-Applied result:
-- this is the closest match to the `v0.17.1` failure signature
+### If Planner Activity Rises But `term_height_low` Does Not Fall
 
-### If Both Bounded Escalations Fail
+Interpretation:
+- step intent exists
+- execution quality is still insufficient
 
-Only then consider them as side branches:
-- M3-lite
-- Li-style history
-- motion-prior / recovery-teacher investigation
+Action:
+- improve planner target quality or RL tracking
+- do not conclude that the active architecture is wrong after one occurrence
+- only escalate after repeated evidence across the fixed ladder
 
-These are no longer the mainline plan.
+### If The Hybrid Branch Still Fails The Hard Gate
 
-### If Robustness Work Breaks Nominal Recovery
+Only then consider bigger escalations:
+- privileged teacher-student path
+- MJPC teacher in simulation
+- revisit stronger model-based stacks after a hardware change
 
-- reduce randomization strength
-- reduce disturbance diversity
-- restore the hard-push single-recovery basin first
+### If Walking Breaks Standing Recovery
 
-This follows the current repo-wide rule that robustness must not mask a broken nominal skill.
+- walking is subordinate to standing recovery in this roadmap
+- reduce walking ambition before weakening the standing recovery stack
 
 ---
 
 ## What We Are Explicitly Avoiding
 
-To keep confidence high, v0.17 will not continue with:
-- a walking objective
-- endless PPO reward / controller patching after the hard gate already failed
-- a large custom reward family for stepping
-- a broad literature-driven exploration branch
-
-The branch should now look like a disciplined architecture pivot:
-- OCS2 for the control foundation
-- 1X `wb-humanoid-mpc` for humanoid stack structure
-- OpenLoong only as a secondary MuJoCo implementation reference
+For the active branch, do not make these the mainline:
+- full OCS2 / humanoid MPC adoption on current hardware
+- URDF-first migration as a prerequisite
+- endless PPO-only reward/controller patching
+- full custom WBC stack
+- walking-first redesign before standing recovery improves
 
 ---
 
 ## Relationship To The Main Training Plan
 
-This document defines the return to the original standing push-recovery goal.
+This document defines the standing-first roadmap.
 
-`training/docs/learn_first_plan.md` remains the walking-first roadmap described in `CLAUDE.md`.
-
-For the standing objective, v0.17 should be treated as the primary plan.
-
-v0.17 is narrower than the walking roadmap:
-- it tests whether WildRobot can solve the original standing push-recovery goal cleanly
-- it does so using a small, recipe-driven branch rather than a broad research program
+It remains narrower than the broader walking-first plans elsewhere in the repo:
+- standing push recovery is the first acceptance task
+- walking is added only after the standing stack is credible
 
 If v0.17 succeeds, it gives the project:
-- a deployable standing-recovery policy
-- a stronger basis for later walking handoff
-- a clearer answer about whether WildRobot needs a motion prior for recovery at all
+- a deployable standing-recovery strategy for current hardware
+- a realistic path to slow commanded walking
+- a clearer basis for deciding whether stronger teachers or bigger controllers
+  are actually needed

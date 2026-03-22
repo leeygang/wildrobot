@@ -1,15 +1,22 @@
 # WildRobot
 
-A humanoid robot locomotion project in transition from a PPO-first training stack to a model-based humanoid control architecture.
+A humanoid robot locomotion project centered on MuJoCo/JAX training, with a
+hardware-fit hybrid planner + RL controller path now under active development.
 
 Current repo reality:
-- `training/` still contains the active PPO/AMP baseline stack and evaluation infrastructure
-- the new mainline architecture direction is OCS2 / humanoid MPC
-- the future controller stack should live under top-level `control/`, not inside `training/`
+- `training/` still contains the active PPO/AMP baseline stack and evaluation
+  infrastructure
+- the current `v0.17` mainline is a **simple footstep planner + RL tracking**
+  path on top of the existing MJCF / MuJoCo stack
+- OCS2 / `wb_humanoid_mpc` and URDF migration remain long-term reference
+  directions, not the active implementation target for current hardware
+- future controller and planner code should live under top-level `control/`,
+  not inside `training/`
 
 Architecture references:
 - [docs/system_architecture.md](docs/system_architecture.md)
 - [training/docs/standing_training.md](training/docs/standing_training.md)
+- [training/docs/footstep_planner_rl_adoption.md](training/docs/footstep_planner_rl_adoption.md)
 - [training/docs/ocs2_humanoid_mpc_adoption.md](training/docs/ocs2_humanoid_mpc_adoption.md)
 
 ## Project Structure
@@ -22,6 +29,7 @@ wildrobot/
 ├── pyproject.toml                      # Python package configuration (uv)
 ├── docs/                               # Repo-level architecture and process docs
 │   ├── system_architecture.md          # Mainline system architecture
+│   ├── URDF_migration_plan.md          # Deferred URDF migration notes
 │   ├── e2e_training_to_sim2real.md     # Sim2real flow notes
 │   └── sim2real_policy_contract.md     # Policy contract docs
 │
@@ -36,11 +44,11 @@ wildrobot/
 │   ├── update_xml.sh                   # Regenerate XML/config from Onshape
 │   └── robot_config.py                 # Robot config helpers
 │
-├── control/                            # Future mainline controller stack (target architecture)
+├── control/                            # Planner / controller path outside PPO-specific training code
 │   ├── robot_model/                    # Robot-model interfaces and conventions
 │   ├── reduced_model/                  # Reduced-order locomotion model
-│   ├── mpc/                            # MPC planner/problem definition
-│   ├── execution/                      # Whole-body or joint-space execution layer
+│   ├── mpc/                            # Reserved for future advanced planner work
+│   ├── execution/                      # Servo-friendly execution / tracking layer
 │   └── adapters/                       # Simulation/runtime controller adapters
 │
 ├── training/                          # Main training codebase
@@ -79,7 +87,8 @@ wildrobot/
 │   ├── docs/                           # Training documentation
 │   │   ├── learn_first_plan.md         # Legacy walking-first PPO plan
 │   │   ├── standing_training.md        # Standing push-recovery roadmap
-│   │   ├── ocs2_humanoid_mpc_adoption.md # WildRobot adoption plan for the new stack
+│   │   ├── footstep_planner_rl_adoption.md # Active hybrid planner + RL plan
+│   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
 │   │   └── TRAINING_SYSTEM_DESIGN.md   # Legacy training-stack design
 │   │
 │   ├── envs/                           # Environment implementation
@@ -196,9 +205,10 @@ Use this rule of thumb:
 - `control/` owns controller logic
   - robot model interfaces
   - reduced-order dynamics
-  - MPC planning
+  - simple planner logic first
   - execution / tracking layer
   - adapters for sim/runtime
+  - reserved room for future advanced planning experiments
 
 - `training/` owns experiments
   - PPO baselines
@@ -255,7 +265,9 @@ uv run pytest training/tests --cov=training --cov-report=html
 ## Training
 
 The commands below are for the existing PPO/AMP baseline stack in `training/`.
-They remain valid for baseline comparison and regression work even though the repo-wide mainline architecture is pivoting toward `control/`.
+They remain valid for baseline comparison, regression, and for the current
+hybrid planner + RL work, which still reuses the same MuJoCo/JAX training
+infrastructure.
 
 ### Walking Task (PPO + AMP)
 
