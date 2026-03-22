@@ -88,6 +88,15 @@ def _set_jax_platform(platform: str) -> None:
         "Jax plugin configuration error: Exception when calling jax_plugins.xla_cuda13.initialize()"
         This is expected and safe - JAX is discovering that CUDA is unavailable and falling back to CPU.
     """
+    # Clear any stale backend overrides first. A bad inherited value like
+    # JAX_PLATFORMS=rocm can poison the eval subprocess even when the CLI asks
+    # for GPU or auto.
+    for key in ("JAX_PLATFORMS", "JAX_PLATFORM_NAME"):
+        os.environ.pop(key, None)
+    # Undo CPU isolation if a previous invocation left it in the environment.
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+
     if platform == "cpu":
         # Force CPU and hide GPUs completely
         os.environ["JAX_PLATFORMS"] = "cpu"
@@ -101,10 +110,12 @@ def _set_jax_platform(platform: str) -> None:
         print("    JAX platform forced to CPU (GPU discovery disabled)")
         print("    Note: JAX plugin errors during initialization are expected and harmless")
     elif platform == "gpu":
-        os.environ["JAX_PLATFORMS"] = "gpu"
-        os.environ["JAX_PLATFORM_NAME"] = "gpu"  
-        print("JAX platform forced to GPU (recommended for fast evaluation)")
-    # 'auto' does nothing - let JAX decide
+        # This JAX build exposes the GPU backend as 'cuda', not 'gpu'.
+        os.environ["JAX_PLATFORMS"] = "cuda"
+        os.environ["JAX_PLATFORM_NAME"] = "cuda"
+        print("JAX platform forced to CUDA GPU (recommended for fast evaluation)")
+    else:
+        print("JAX platform auto-detect enabled")
 
 
 def _run_eval_suite(

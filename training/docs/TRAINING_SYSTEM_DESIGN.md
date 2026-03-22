@@ -1,8 +1,31 @@
 # WildRobot Training System Design
 
 **Version:** 0.6.0
-**Last Updated:** 2024-12-23
-**Status:** Production Ready
+**Last Updated:** 2026-03-22
+**Status:** Legacy PPO/AMP training-stack design; still relevant for the baseline path, not the full repo architecture
+
+---
+
+## Scope Note
+
+This document describes the existing `training/`-owned PPO/AMP training stack.
+
+It is still useful for:
+- PPO baseline experiments
+- legacy training infrastructure
+- reward/curriculum/eval plumbing
+- comparison against older locomotion branches
+
+It is **not** the new mainline system architecture for WildRobot.
+
+Starting at `v0.17.2`, repo-level architecture is defined in:
+- [system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
+
+Boundary:
+- `training/` owns experiments, baselines, training loops, evals, and logging
+- the future controller stack should live under top-level `control/`
+- `training/` may integrate with `control/`, but should not own the new controller design
 
 ---
 

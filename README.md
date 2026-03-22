@@ -1,6 +1,16 @@
 # WildRobot
 
-A humanoid robot locomotion project using MuJoCo/MJX with JAX-based PPO and Adversarial Motion Priors (AMP) training.
+A humanoid robot locomotion project in transition from a PPO-first training stack to a model-based humanoid control architecture.
+
+Current repo reality:
+- `training/` still contains the active PPO/AMP baseline stack and evaluation infrastructure
+- the new mainline architecture direction is OCS2 / humanoid MPC
+- the future controller stack should live under top-level `control/`, not inside `training/`
+
+Architecture references:
+- [docs/system_architecture.md](docs/system_architecture.md)
+- [training/docs/standing_training.md](training/docs/standing_training.md)
+- [training/docs/ocs2_humanoid_mpc_adoption.md](training/docs/ocs2_humanoid_mpc_adoption.md)
 
 ## Project Structure
 
@@ -10,21 +20,28 @@ wildrobot/
 ├── AGENTS.md                           # Agent guidelines
 ├── CLAUDE.md                           # Claude AI guidelines
 ├── pyproject.toml                      # Python package configuration (uv)
+├── docs/                               # Repo-level architecture and process docs
+│   ├── system_architecture.md          # Mainline system architecture
+│   ├── e2e_training_to_sim2real.md     # Sim2real flow notes
+│   └── sim2real_policy_contract.md     # Policy contract docs
+│
 ├── assets/                             # Robot model files
-│   ├── wildrobot.xml                   # Main MuJoCo robot model
-│   ├── wildrobot.urdf                  # URDF version
-│   ├── scene_flat_terrain.xml          # Flat terrain scene
-│   ├── scene_rough_terrain.xml         # Rough terrain scene
-│   ├── joints_properties.xml           # Joint configuration
-│   ├── sensors.xml                     # Sensor definitions
-│   ├── mujoco_robot_config.json               # Robot parameters
-│   ├── v1/config.json                  # Onshape configuration (v1)
-│   ├── v2/config.json                  # Onshape configuration (v2)
-│   ├── post_process.py                 # post-process during model generation
-│   ├── update_xml.sh                   # generate and update the wildrobot.xml/urdf from Onshape
-│   └── assets/                         # Generated Mesh files (STL)
-│       ├── *.stl                       # Robot part meshes
-│       └── *.part                      # Part definitions
+│   ├── v2/                             # Active WildRobot asset variant
+│   │   ├── wildrobot.xml               # Main MuJoCo robot model
+│   │   ├── mujoco_robot_config.json    # Generated robot metadata
+│   │   ├── scene_flat_terrain.xml      # Training scene
+│   │   ├── sensors.xml                 # Sensor definitions
+│   │   └── assets/                     # Generated Mesh files (STL)
+│   ├── post_process.py                 # Post-process during model generation
+│   ├── update_xml.sh                   # Regenerate XML/config from Onshape
+│   └── robot_config.py                 # Robot config helpers
+│
+├── control/                            # Future mainline controller stack (target architecture)
+│   ├── robot_model/                    # Robot-model interfaces and conventions
+│   ├── reduced_model/                  # Reduced-order locomotion model
+│   ├── mpc/                            # MPC planner/problem definition
+│   ├── execution/                      # Whole-body or joint-space execution layer
+│   └── adapters/                       # Simulation/runtime controller adapters
 │
 ├── training/                          # Main training codebase
 │   ├── train.py                        # Training entry point
@@ -60,8 +77,10 @@ wildrobot/
 │   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
 │   ├── docs/                           # Training documentation
-│   │   ├── learn_first_plan.md         # Training guide
-│   │   ├── TRAINING_SYSTEM_DESIGN.md   # System architecture
+│   │   ├── learn_first_plan.md         # Legacy walking-first PPO plan
+│   │   ├── standing_training.md        # Standing push-recovery roadmap
+│   │   ├── ocs2_humanoid_mpc_adoption.md # WildRobot adoption plan for the new stack
+│   │   └── TRAINING_SYSTEM_DESIGN.md   # Legacy training-stack design
 │   │
 │   ├── envs/                           # Environment implementation
 │   │   ├── wildrobot_env.py            # Main JAX environment
@@ -170,6 +189,28 @@ wildrobot/
     └── scp_from_remote.sh              # Download from remote server
 ```
 
+## Architecture Split
+
+Use this rule of thumb:
+
+- `control/` owns controller logic
+  - robot model interfaces
+  - reduced-order dynamics
+  - MPC planning
+  - execution / tracking layer
+  - adapters for sim/runtime
+
+- `training/` owns experiments
+  - PPO baselines
+  - training loops
+  - eval ladders
+  - reward/curriculum work
+  - logging and checkpointing
+  - wrappers that call into `control/`
+
+`training/` may depend on `control/`.  
+`control/` should not depend on PPO-specific training code.
+
 ## Getting Started
 
 ### Prerequisites
@@ -212,6 +253,9 @@ uv run pytest training/tests --cov=training --cov-report=html
 ```
 
 ## Training
+
+The commands below are for the existing PPO/AMP baseline stack in `training/`.
+They remain valid for baseline comparison and regression work even though the repo-wide mainline architecture is pivoting toward `control/`.
 
 ### Walking Task (PPO + AMP)
 

@@ -1,7 +1,7 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` planned  
+**Status:** `v0.17.1` evaluated, `v0.17.2` scoped, `v0.17.3` next  
 **Created:** 2026-03-20  
 
 ---
@@ -554,30 +554,51 @@ Exit criteria:
 - WildRobot-specific integration risks are listed explicitly
 - first implementation milestone is scoped
 
-### v0.17.3: Standing Recovery Bring-Up On The New Stack
+Status:
+- this stage is complete at the planning/scaffolding level
+
+### v0.17.3: Controller Integration Groundwork
 
 Objective:
-- get the new model-based stack to hold quiet standing and survive moderate pushes
+- make the new model-based stack executable in simulation without yet claiming stable standing
 
 Changes:
 - integrate the robot model into the chosen control stack
-- implement the minimal stabilizing controller path needed for quiet standing
-- add moderate push tests before hard-push stepping
-- keep validation in simulation first
+- implement the minimum controller state path
+- implement the MuJoCo/controller adapter boundary
+- implement the minimum servo-friendly execution path
+- add controller debug signals and inspectable planner/execution outputs
 
 Exit criteria:
-- quiet standing is stable
-- moderate push survival is credible
-- controller signals are inspectable and physically coherent
+- the controller path initializes and steps in simulation
+- controller outputs are inspectable and physically coherent
+- the repo is ready for a dedicated quiet-standing milestone
 
-### v0.17.4: Hard-Push Standing Recovery
+### v0.17.4: Quiet Standing On The New Stack
 
 Objective:
-- solve the original standing push-recovery task on the new stack
+- achieve repeatable quiet standing on the new controller stack
 
 Changes:
+- implement the minimal stabilizing standing controller
+- validate stable neutral posture hold
+- keep validation in simulation first
+- use only tiny disturbances for smoke validation if needed
+
+Exit criteria:
+- quiet standing is stable for full episodes
+- controller signals remain coherent under idle operation
+- standing is repeatable enough to justify moving to push recovery
+
+### v0.17.5: Standing Push Recovery
+
+Objective:
+- solve standing push recovery with step trait on the new stack
+
+Changes:
+- add moderate push recovery first
 - activate step planning / step switching under the model-based controller
-- evaluate against the same fixed ladder used for `v0.17.1`
+- then evaluate against the same fixed ladder used for `v0.17.1`
 - compare directly against both `v0.17.1` and `v0.14.6`
 
 Exit criteria:
@@ -585,7 +606,7 @@ Exit criteria:
 - `eval_hard > 60%`
 - `term_height_low_frac` improves materially over `v0.17.1`
 
-### v0.17.5: Walking Bring-Up On The Same Stack
+### v0.17.6: Walking Bring-Up On The Same Stack
 
 Objective:
 - extend the same architecture from standing recovery to nominal walking
@@ -599,7 +620,7 @@ Exit criteria:
 - nominal walking exists without breaking standing recovery
 - the same stack supports both behaviors
 
-### v0.17.6: Optional RL Augmentation
+### v0.17.7: Optional RL Augmentation
 
 Objective:
 - add learning only after the model-based standing+walking stack is already credible

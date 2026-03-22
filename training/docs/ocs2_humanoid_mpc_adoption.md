@@ -299,7 +299,7 @@ Principle:
 
 ## Implementation Plan
 
-### `v0.17.2` - Adoption And Gap Analysis
+### `v0.17.2` - Adoption, Gap Analysis, And Scaffolding
 
 Deliver:
 - architecture docs
@@ -307,26 +307,38 @@ Deliver:
 - repo scaffolding direction
 - first implementation scope
 
-### `v0.17.3` - Standing Bring-Up
+Status:
+- completed as planning/scaffolding stage
+
+### `v0.17.3` - Controller Integration Groundwork
+
+Deliver:
+- controller initialization path on the new stack
+- MuJoCo/controller adapter wiring
+- inspectable planner/execution signals
+- minimum execution path for simulation
+
+### `v0.17.4` - Quiet Standing
 
 Deliver:
 - quiet standing on the new stack
-- inspectable controller signals
-- moderate-push readiness
+- stable neutral posture hold
+- repeatable idle behavior in simulation
 
-### `v0.17.4` - Hard-Push Standing Recovery
+### `v0.17.5` - Standing Push Recovery
 
 Deliver:
+- moderate push recovery first
 - fixed-ladder evaluation on the new stack
 - comparison against `v0.17.1` and `v0.14.6`
 
-### `v0.17.5` - Walking Bring-Up
+### `v0.17.6` - Walking Bring-Up
 
 Deliver:
 - same architecture supports nominal walking
 - standing recovery remains a regression requirement
 
-### `v0.17.6` - Optional RL Augmentation
+### `v0.17.7` - Optional RL Augmentation
 
 Deliver:
 - RL only if it clearly improves the established model-based stack
@@ -350,6 +362,6 @@ Deliver:
 
 1. Confirm the control-model source of truth for WildRobot.
 2. Define the frame and contact-geometry conventions in writing.
-3. Decide the minimum execution layer for the first standing bring-up.
+3. Decide the minimum execution layer for the first controller integration milestone.
 4. Create the implementation scaffolding for the new controller path.
-5. Keep the fixed standing ladder as the first acceptance test for the new stack.
+5. Keep the fixed standing ladder as the first acceptance test after quiet standing is stable.

@@ -242,6 +242,44 @@ They become:
 
 ---
 
+## Folder Ownership
+
+The new architecture should live in **top-level `control/`**, not `training/control/`.
+
+Reason:
+- the new stack is no longer just a training detail
+- it is the future main controller architecture for:
+  - standing validation in simulation
+  - walking
+  - later runtime deployment
+  - optional RL augmentation
+
+Ownership rule:
+- `control/` owns controller logic
+- `training/` owns experiments, baselines, evals, and training integration
+
+Practical boundary:
+- `training/` may depend on `control/`
+- `control/` should not depend on PPO-specific training code
+
+What belongs in `control/`:
+- robot model interfaces
+- frame and contact conventions
+- reduced-order locomotion model
+- MPC problem setup
+- execution / tracking layer
+- simulation/runtime adapters for the new controller stack
+
+What stays in `training/`:
+- PPO baseline stack
+- reward/curriculum experiments
+- standing and walking training configs
+- fixed eval ladder and regression logic
+- W&B / logging / checkpointing infrastructure
+- wrappers that call into `control/`
+
+---
+
 ## Expected Repo Shape After The Pivot
 
 This is the intended organization direction, not a claim that it already exists.
@@ -254,7 +292,8 @@ training/docs/
   standing_training.md
   ocs2_humanoid_mpc_adoption.md
 
-control/ or training/control/
+control/
+  README.md
   robot_model/
   reduced_model/
   mpc/
@@ -275,17 +314,23 @@ Suggested boundary:
 - architecture adoption plan
 - WildRobot gap analysis
 - controller decomposition
+- controller/model scaffolding
 
 ### `v0.17.3`
-- quiet standing / moderate-push bring-up on the new stack
+- controller integration groundwork on the new stack
+- controller path executes in simulation
+- model, adapter, and execution interfaces are inspectable
 
 ### `v0.17.4`
-- hard-push standing recovery on the new stack
+- quiet standing on the new stack
 
 ### `v0.17.5`
-- walking bring-up on the same stack
+- standing push recovery with step trait on the new stack
 
 ### `v0.17.6`
+- walking bring-up on the same stack
+
+### `v0.17.7`
 - optional RL augmentation only if the model-based stack is already credible
 
 ---

@@ -53,31 +53,49 @@ class TestPlatformSelection:
         """Test that GPU platform sets required environment variables."""
         original_platforms = os.environ.get("JAX_PLATFORMS")
         original_platform_name = os.environ.get("JAX_PLATFORM_NAME")
+        original_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
         
         try:
             _set_jax_platform("gpu")
-            assert os.environ.get("JAX_PLATFORMS") == "gpu"
-            assert os.environ.get("JAX_PLATFORM_NAME") == "gpu"
+            assert os.environ.get("JAX_PLATFORMS") == "cuda"
+            assert os.environ.get("JAX_PLATFORM_NAME") == "cuda"
+            assert os.environ.get("CUDA_VISIBLE_DEVICES") != ""
         finally:
             for key, original in [
                 ("JAX_PLATFORMS", original_platforms),
                 ("JAX_PLATFORM_NAME", original_platform_name),
+                ("CUDA_VISIBLE_DEVICES", original_cuda),
             ]:
                 if original is None:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = original
     
-    def test_auto_platform_does_not_set_env_vars(self):
-        """Test that auto platform doesn't modify environment."""
+    def test_auto_platform_clears_stale_backend_env_vars(self):
+        """Test that auto platform removes stale explicit backend overrides."""
         original_platforms = os.environ.get("JAX_PLATFORMS")
         original_platform_name = os.environ.get("JAX_PLATFORM_NAME")
-        
+        original_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
+
+        os.environ["JAX_PLATFORMS"] = "rocm"
+        os.environ["JAX_PLATFORM_NAME"] = "rocm"
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
         _set_jax_platform("auto")
         
-        # Should not change
-        assert os.environ.get("JAX_PLATFORMS") == original_platforms
-        assert os.environ.get("JAX_PLATFORM_NAME") == original_platform_name
+        assert "JAX_PLATFORMS" not in os.environ
+        assert "JAX_PLATFORM_NAME" not in os.environ
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+        for key, original in [
+            ("JAX_PLATFORMS", original_platforms),
+            ("JAX_PLATFORM_NAME", original_platform_name),
+            ("CUDA_VISIBLE_DEVICES", original_cuda),
+        ]:
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
 
 
 class TestEvalLadderStructure:
