@@ -58,6 +58,7 @@ from training.cal.types import CoordinateFrame
 
 from training.configs.training_config import get_robot_config, TrainingConfig
 from training.envs import step_controller as sc
+from training.control.mpc_standing import compute_mpc_standing_action
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
@@ -979,6 +980,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_latency=jp.zeros((), dtype=jp.int32),
             recovery_touchdown_count=jp.zeros((), dtype=jp.int32),
             recovery_support_foot_changes=jp.zeros((), dtype=jp.int32),
+            mpc_planner_active=jp.zeros((), dtype=jp.float32),
+            mpc_controller_active=jp.zeros((), dtype=jp.float32),
+            mpc_target_com_x=jp.zeros((), dtype=jp.float32),
+            mpc_target_com_y=jp.zeros((), dtype=jp.float32),
+            mpc_target_step_x=jp.zeros((), dtype=jp.float32),
+            mpc_target_step_y=jp.zeros((), dtype=jp.float32),
+            mpc_support_state=jp.zeros((), dtype=jp.float32),
+            mpc_step_requested=jp.zeros((), dtype=jp.float32),
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -1066,7 +1075,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         policy_action = action
 
-        if bool(getattr(self._config.env, "fsm_enabled", False)):
+        controller_stack = str(getattr(self._config.env, "controller_stack", "ppo"))
+        mpc_debug = None
+
+        if controller_stack == "mpc_standing":
+            raw_action, mpc_debug = self._mpc_standing_compute_ctrl(state.data, policy_action)
+            new_fsm = (
+                wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
+                wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
+                wr.fsm_touch_hold, wr.fsm_trigger_hold,
+            )
+        elif bool(getattr(self._config.env, "fsm_enabled", False)):
             raw_action, new_fsm = self._fsm_compute_ctrl(state.data, wr, policy_action)
         elif bool(getattr(self._config.env, "base_ctrl_enabled", False)):
             raw_action = (
@@ -1199,7 +1218,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/bc_in_recover": (new_fsm[0] == sc.TOUCHDOWN_RECOVER).astype(jp.float32),
             "debug/bc_swing_foot": new_fsm[1].astype(jp.float32),
             "debug/bc_phase_ticks": new_fsm[2].astype(jp.float32),
+            "debug/mpc_planner_active": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_controller_active": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_target_com_x": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_target_com_y": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_target_step_x": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_target_step_y": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_support_state": jp.zeros((), dtype=jp.float32),
+            "debug/mpc_step_requested": jp.zeros((), dtype=jp.float32),
         }
+        if mpc_debug is not None:
+            metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
+            metrics["debug/mpc_controller_active"] = mpc_debug.controller_active
+            metrics["debug/mpc_target_com_x"] = mpc_debug.target_com_x
+            metrics["debug/mpc_target_com_y"] = mpc_debug.target_com_y
+            metrics["debug/mpc_target_step_x"] = mpc_debug.target_step_x
+            metrics["debug/mpc_target_step_y"] = mpc_debug.target_step_y
+            metrics["debug/mpc_support_state"] = mpc_debug.support_state
+            metrics["debug/mpc_step_requested"] = mpc_debug.step_requested
         # Add placeholder for metrics_vec (will be rebuilt after cond)
         # This ensures pytree structure matches preserved_metrics
         metrics[METRICS_VEC_KEY] = build_metrics_vec(metrics)
@@ -1310,6 +1346,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_latency=recovery_state_updates["recovery_first_step_latency"],
             recovery_touchdown_count=recovery_state_updates["recovery_touchdown_count"],
             recovery_support_foot_changes=recovery_state_updates["recovery_support_foot_changes"],
+            mpc_planner_active=metrics["debug/mpc_planner_active"],
+            mpc_controller_active=metrics["debug/mpc_controller_active"],
+            mpc_target_com_x=metrics["debug/mpc_target_com_x"],
+            mpc_target_com_y=metrics["debug/mpc_target_com_y"],
+            mpc_target_step_x=metrics["debug/mpc_target_step_x"],
+            mpc_target_step_y=metrics["debug/mpc_target_step_y"],
+            mpc_support_state=metrics["debug/mpc_support_state"],
+            mpc_step_requested=metrics["debug/mpc_step_requested"],
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -1384,12 +1428,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
             "debug/bc_phase_ticks": metrics.get("debug/bc_phase_ticks", jp.zeros(())),
+            "debug/bc_in_swing": metrics.get("debug/bc_in_swing", jp.zeros(())),
+            "debug/bc_in_recover": metrics.get("debug/bc_in_recover", jp.zeros(())),
             # v0.17.2: Finalized recovery summaries must survive auto-reset.
             "recovery/first_step_latency": metrics.get("recovery/first_step_latency", jp.zeros(())),
             "recovery/touchdown_count": metrics.get("recovery/touchdown_count", jp.zeros(())),
             "recovery/support_foot_changes": metrics.get("recovery/support_foot_changes", jp.zeros(())),
             "recovery/post_push_velocity": metrics.get("recovery/post_push_velocity", jp.zeros(())),
             "recovery/completed": metrics.get("recovery/completed", jp.zeros(())),
+            # v0.17.3: preserve architecture-pivot controller debug metrics
+            "debug/mpc_planner_active": metrics.get("debug/mpc_planner_active", jp.zeros(())),
+            "debug/mpc_controller_active": metrics.get("debug/mpc_controller_active", jp.zeros(())),
+            "debug/mpc_target_com_x": metrics.get("debug/mpc_target_com_x", jp.zeros(())),
+            "debug/mpc_target_com_y": metrics.get("debug/mpc_target_com_y", jp.zeros(())),
+            "debug/mpc_target_step_x": metrics.get("debug/mpc_target_step_x", jp.zeros(())),
+            "debug/mpc_target_step_y": metrics.get("debug/mpc_target_step_y", jp.zeros(())),
+            "debug/mpc_support_state": metrics.get("debug/mpc_support_state", jp.zeros(())),
+            "debug/mpc_step_requested": metrics.get("debug/mpc_step_requested", jp.zeros(())),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -1437,6 +1492,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_latency=reset_wr_info.recovery_first_step_latency,
             recovery_touchdown_count=reset_wr_info.recovery_touchdown_count,
             recovery_support_foot_changes=reset_wr_info.recovery_support_foot_changes,
+            mpc_planner_active=reset_wr_info.mpc_planner_active,
+            mpc_controller_active=reset_wr_info.mpc_controller_active,
+            mpc_target_com_x=reset_wr_info.mpc_target_com_x,
+            mpc_target_com_y=reset_wr_info.mpc_target_com_y,
+            mpc_target_step_x=reset_wr_info.mpc_target_step_x,
+            mpc_target_step_y=reset_wr_info.mpc_target_step_y,
+            mpc_support_state=reset_wr_info.mpc_support_state,
+            mpc_step_requested=reset_wr_info.mpc_step_requested,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace
@@ -1603,6 +1666,65 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.abs(pitch_rate) / g_pr
         ) / 4.0
         return jp.clip(need_step, 0.0, 1.0)
+
+    def _mpc_standing_compute_ctrl(
+        self,
+        data: "mjx.Data",
+        policy_action: jax.Array,
+    ):
+        """v0.17.3 standing bring-up controller path.
+
+        This is a conservative scaffold for architecture pivot validation:
+        - initializes/runs in JAX env loop
+        - emits inspectable planner/controller debug signals
+        - does not claim full MPC/contact-phase optimization
+        """
+        env_cfg = self._config.env
+
+        root_pose = self._cal.get_root_pose(data)
+        roll, pitch, _ = root_pose.euler_angles()
+        root_vel = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        forward_vel, lateral_vel, _ = root_vel.linear_xyz
+        roll_rate, pitch_rate, _ = root_vel.angular_xyz
+        height_error = jp.asarray(env_cfg.target_height, dtype=jp.float32) - root_pose.height
+
+        a = self._actuator_name_to_index
+        idx_lhp = a.get("left_hip_pitch", -1)
+        idx_rhp = a.get("right_hip_pitch", -1)
+        idx_lhr = a.get("left_hip_roll", -1)
+        idx_rhr = a.get("right_hip_roll", -1)
+        idx_lank = a.get("left_ankle_pitch", a.get("left_ankle", -1))
+        idx_rank = a.get("right_ankle_pitch", a.get("right_ankle", -1))
+
+        raw_action, debug = compute_mpc_standing_action(
+            pitch=pitch,
+            roll=roll,
+            pitch_rate=pitch_rate,
+            roll_rate=roll_rate,
+            height_error=height_error,
+            forward_vel=forward_vel,
+            lateral_vel=lateral_vel,
+            default_action=self._default_pose_action,
+            policy_action=policy_action,
+            hip_pitch_gain=jp.asarray(env_cfg.base_ctrl_hip_pitch_gain, dtype=jp.float32),
+            ankle_pitch_gain=jp.asarray(env_cfg.base_ctrl_ankle_pitch_gain, dtype=jp.float32),
+            hip_roll_gain=jp.asarray(env_cfg.base_ctrl_hip_roll_gain, dtype=jp.float32),
+            idx_left_hip_pitch=idx_lhp,
+            idx_right_hip_pitch=idx_rhp,
+            idx_left_ankle_pitch=idx_lank,
+            idx_right_ankle_pitch=idx_rank,
+            idx_left_hip_roll=idx_lhr,
+            idx_right_hip_roll=idx_rhr,
+            pitch_kp=float(env_cfg.mpc_pitch_kp),
+            pitch_kd=float(env_cfg.mpc_pitch_kd),
+            roll_kp=float(env_cfg.mpc_roll_kp),
+            roll_kd=float(env_cfg.mpc_roll_kd),
+            height_kp=float(env_cfg.mpc_height_kp),
+            residual_scale=float(env_cfg.mpc_residual_scale),
+            action_clip=float(env_cfg.mpc_action_clip),
+            step_trigger_threshold=float(env_cfg.mpc_step_trigger_threshold),
+        )
+        return raw_action, debug
 
     def _maybe_add_action_delta(
         self, action: jax.Array, actuator_name: str, delta: jax.Array

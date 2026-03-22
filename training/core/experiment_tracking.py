@@ -424,6 +424,15 @@ def get_initial_env_metrics_jax(
         "recovery/support_foot_changes": jp.zeros(()),  # Support foot transitions
         "recovery/post_push_velocity": jp.zeros(()),    # Residual velocity after recovery
         "recovery/completed": jp.zeros(()),             # Number of finalized recovery summaries
+        # v0.17.3: architecture-pivot standing controller debug metrics
+        "debug/mpc_planner_active": jp.zeros(()),
+        "debug/mpc_controller_active": jp.zeros(()),
+        "debug/mpc_target_com_x": jp.zeros(()),
+        "debug/mpc_target_com_y": jp.zeros(()),
+        "debug/mpc_target_step_x": jp.zeros(()),
+        "debug/mpc_target_step_y": jp.zeros(()),
+        "debug/mpc_support_state": jp.zeros(()),
+        "debug/mpc_step_requested": jp.zeros(()),
     }
 
 

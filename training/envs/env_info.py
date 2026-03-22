@@ -146,6 +146,16 @@ try:
         #: Accumulated support-foot changes during recovery period
         recovery_support_foot_changes: jnp.ndarray  # shape=(), int32
 
+        # v0.17.3: architecture-pivot controller debug state (scalar latches)
+        mpc_planner_active: jnp.ndarray  # shape=()
+        mpc_controller_active: jnp.ndarray  # shape=()
+        mpc_target_com_x: jnp.ndarray  # shape=()
+        mpc_target_com_y: jnp.ndarray  # shape=()
+        mpc_target_step_x: jnp.ndarray  # shape=()
+        mpc_target_step_y: jnp.ndarray  # shape=()
+        mpc_support_state: jnp.ndarray  # shape=()
+        mpc_step_requested: jnp.ndarray  # shape=()
+
 except ImportError:
     # Fallback to NamedTuple if flax not available
     from typing import NamedTuple
@@ -188,6 +198,14 @@ except ImportError:
         recovery_first_step_latency: jnp.ndarray
         recovery_touchdown_count: jnp.ndarray
         recovery_support_foot_changes: jnp.ndarray
+        mpc_planner_active: jnp.ndarray
+        mpc_controller_active: jnp.ndarray
+        mpc_target_com_x: jnp.ndarray
+        mpc_target_com_y: jnp.ndarray
+        mpc_target_step_x: jnp.ndarray
+        mpc_target_step_y: jnp.ndarray
+        mpc_support_state: jnp.ndarray
+        mpc_step_requested: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -245,6 +263,14 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "recovery_first_step_latency": (),
         "recovery_touchdown_count": (),
         "recovery_support_foot_changes": (),
+        "mpc_planner_active": (),
+        "mpc_controller_active": (),
+        "mpc_target_com_x": (),
+        "mpc_target_com_y": (),
+        "mpc_target_step_x": (),
+        "mpc_target_step_y": (),
+        "mpc_support_state": (),
+        "mpc_step_requested": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

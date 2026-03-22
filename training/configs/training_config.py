@@ -143,6 +143,15 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),
+        controller_stack=str(env.get("controller_stack", "ppo")),
+        mpc_residual_scale=float(env.get("mpc_residual_scale", 0.25)),
+        mpc_pitch_kp=float(env.get("mpc_pitch_kp", 0.30)),
+        mpc_pitch_kd=float(env.get("mpc_pitch_kd", 0.06)),
+        mpc_roll_kp=float(env.get("mpc_roll_kp", 0.30)),
+        mpc_roll_kd=float(env.get("mpc_roll_kd", 0.06)),
+        mpc_height_kp=float(env.get("mpc_height_kp", 0.15)),
+        mpc_action_clip=float(env.get("mpc_action_clip", 0.35)),
+        mpc_step_trigger_threshold=float(env.get("mpc_step_trigger_threshold", 0.45)),
 
         # M2: base controller + residual gating (optional)
         base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),

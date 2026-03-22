@@ -115,6 +115,23 @@ class EnvConfig(Freezable):
     clock_stride_period_steps: int = 36
     clock_phase_gate_width: float = 0.20
 
+    # Controller stack selection:
+    # - "ppo": existing policy-only / residual-controller path (default)
+    # - "mpc_standing": v0.17.3 standing bring-up stub path
+    controller_stack: str = "ppo"
+
+    # v0.17.3 standing bring-up (OCS2-style scaffold): conservative placeholder gains.
+    # These parameters intentionally expose inspectable planner/controller signals
+    # without claiming a full MPC implementation.
+    mpc_residual_scale: float = 0.25
+    mpc_pitch_kp: float = 0.30
+    mpc_pitch_kd: float = 0.06
+    mpc_roll_kp: float = 0.30
+    mpc_roll_kd: float = 0.06
+    mpc_height_kp: float = 0.15
+    mpc_action_clip: float = 0.35
+    mpc_step_trigger_threshold: float = 0.45
+
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)
     #

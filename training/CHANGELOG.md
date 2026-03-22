@@ -7,6 +7,66 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.2] - 2026-03-22: Architecture-Pivot Groundwork (Scaffolding) 🧱
+
+### Summary
+Landed concrete repository scaffolding for the OCS2 / humanoid-MPC pivot without pretending a complete controller exists. This milestone establishes controller-path selection, model-compatibility interfaces, and compatibility-note placeholders so `v0.17.3+` can proceed without reopening architecture decisions.
+
+### What Landed
+- Added `training/control/` package with explicit pivot scaffolding:
+  - `training/control/interfaces.py` (planner/execution debug interface contracts)
+  - `training/control/robot_model_adapter.py` (model artifact compatibility checks/report)
+- Added WildRobot compatibility notes:
+  - `assets/v2/FRAME_CONVENTIONS.md`
+  - `assets/v2/CONTACT_GEOMETRY.md`
+- Added config/runtime selection hook:
+  - `env.controller_stack` (`ppo` default, `mpc_standing` for bring-up path)
+  - v0.17.3 bring-up controller parameters wired through config parsing.
+
+### Deliberately Deferred
+- No full OCS2 optimizer integration.
+- No URDF exporter implementation.
+- No whole-body controller implementation.
+- No standing performance claims from this milestone alone.
+
+---
+
+## [v0.17.3] - 2026-03-22: Architecture-Pivot Standing Bring-Up (Scaffold) 🚧
+
+### Summary
+Implemented the first truthful standing bring-up slice on top of the OCS2/humanoid-MPC pivot groundwork. This change adds a selectable `mpc_standing` controller path that initializes and runs in the existing MuJoCo/JAX environment, emits inspectable controller/planner debug signals, and preserves the existing PPO/eval infrastructure.
+
+This is **not** a full MPC implementation and does **not** claim hard-push recovery or walking.
+
+### What Landed
+- **Controller-path plumbing**
+  - Added `env.controller_stack` config selection (`ppo` default, `mpc_standing` bring-up path).
+  - Kept legacy paths (`ppo`, `base_ctrl_enabled`, `fsm_enabled`) unchanged.
+- **Minimal control scaffolding**
+  - Added `training/control/` package with explicit interfaces and a conservative standing controller stub:
+    - `training/control/interfaces.py`
+    - `training/control/mpc_standing.py`
+  - The stub computes upright stabilization action deltas in policy-action space and emits planner/controller debug signals.
+- **Environment integration**
+  - `training/envs/wildrobot_env.py` now routes to `mpc_standing` when selected.
+  - Added debug metrics emission for planner active/controller active/targets/support/step request.
+  - Extended `WildRobotInfo` state and auto-reset metric preservation for the new debug signals.
+- **Config and smoke coverage**
+  - Added `training/configs/mpc_standing_v0173.yaml`.
+  - Added `tests/test_mpc_standing_v0173.py` covering config load + reset/step + debug metrics presence.
+
+### Deliberately Deferred
+- No switched-contact optimization loop.
+- No true CoM/footstep horizon optimizer.
+- No whole-body controller.
+- No hard-push success claims.
+- No walking behavior claims.
+
+### Why This Scope
+The goal for `v0.17.3` is honest bring-up: controller initialization + inspectability + compatibility with existing training/eval flow. This keeps implementation narrow, testable, and ready for the next milestone (moderate-push hardening, then fixed-ladder validation).
+
+---
+
 ## [v0.17.4] - 2026-03-22: Pivot To OCS2 / Humanoid MPC Architecture 🔄
 
 ### Summary

@@ -540,6 +540,57 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="recovery",
         description="Number of finalized recovery summaries in the rollout",
     ),
+    # =========================================================================
+    # v0.17.3: Architecture-pivot controller debug metrics
+    # =========================================================================
+    MetricSpec(
+        name="debug/mpc_planner_active",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="MPC standing planner active flag (bring-up scaffold)",
+    ),
+    MetricSpec(
+        name="debug/mpc_controller_active",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="MPC standing controller active flag (bring-up scaffold)",
+    ),
+    MetricSpec(
+        name="debug/mpc_target_com_x",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner target CoM x (debug only)",
+    ),
+    MetricSpec(
+        name="debug/mpc_target_com_y",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner target CoM y (debug only)",
+    ),
+    MetricSpec(
+        name="debug/mpc_target_step_x",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner target step x (debug only)",
+    ),
+    MetricSpec(
+        name="debug/mpc_target_step_y",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner target step y (debug only)",
+    ),
+    MetricSpec(
+        name="debug/mpc_support_state",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner support state indicator",
+    ),
+    MetricSpec(
+        name="debug/mpc_step_requested",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Planner step-request indicator",
+    ),
 ]
 
 # =============================================================================
