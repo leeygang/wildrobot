@@ -7,6 +7,48 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.4] - 2026-03-22: Pivot To OCS2 / Humanoid MPC Architecture 🔄
+
+### Summary
+After reviewing the completed `v0.17.1` standing baseline and the confidence requirements for a shared standing+walking solution, the `v0.17` mainline pivots away from PPO-only escalation and toward an OCS2 / humanoid MPC architecture. The new main references are:
+- OCS2 as the optimal-control foundation
+- 1X `wb-humanoid-mpc` as the concrete humanoid implementation reference
+- OpenLoong only as a secondary MuJoCo implementation reference
+
+This pivot changes the mainline plan from "improve pure-PPO standing recovery with bounded local controller patches" to "adopt a more established model-based humanoid control stack and validate standing push recovery first."
+
+### Why The Mainline Changed
+- `v0.17.1` failed the true hard-push gate:
+  - `eval_medium = 71.6%`
+  - `eval_hard = 39.2%`
+  - dominant failure remained `term_height_low`
+- The remaining gap is no longer best understood as a reward-tuning or PPO-stability issue
+- The project now wants one architecture for both:
+  - standing push recovery
+  - nominal walking
+- A model-based humanoid MPC stack is a higher-confidence direction for that goal than continued PPO-only escalation
+
+### Mainline Decision
+- **New mainline**: OCS2 / humanoid MPC adoption path
+- **Primary concrete reference**: 1X `wb-humanoid-mpc`
+- **Secondary simulation reference**: OpenLoong Dyn-Control
+- **Standing-first validation remains**
+- **Walking remains a required follow-on objective on the same stack**
+
+### What This Means For Existing v0.17 Branches
+- `v0.17.1` remains the final PPO standing baseline
+- `v0.17.3` M3-lite remains a side branch / local experiment, not the mainline direction
+- Li-style history and motion-prior investigations are also demoted to side branches unless the architecture pivot stalls
+
+### Next Focus
+1. Define the WildRobot adoption plan for OCS2 / humanoid MPC
+2. Complete robot-model and control-stack gap analysis
+3. Bring up quiet standing on the new stack
+4. Re-run standing push recovery against the same fixed ladder
+5. Extend the same stack to walking
+
+---
+
 ## [v0.17.2] - 2026-03-21: Finalized Recovery Summary Metrics 🔧
 
 ### Summary
@@ -52,6 +94,29 @@ Reworked standing recovery diagnostics into finalized recovery-summary metrics i
 `v0.17.1` implements the recipe baseline milestone at the push boundary as defined in `training/docs/standing_training.md`. This milestone focuses on answering one key question: **Can the cleaned standing recipe beat the old v0.14.6 pure-PPO hard-push baseline at 10N x 10?** The implementation provides a boundary-focused training curriculum, periodic `eval_push/*` and `eval_clean/*` checks, and initial recovery-metric plumbing.
 
 **CRITICAL BUG FIXES APPLIED**: Fixed reward sign regression, schema mismatches, recovery metrics crashes, and test validation gaps identified in post-implementation review.
+
+### Final Training Result
+- Training run: `training/wandb/run-20260321_123307-0flajxzh`
+- Internal probe result: `eval_push/success_rate` rose to `84.4%` with stable PPO and `eval_clean = 100%`
+- Best checked fixed-ladder checkpoint: `checkpoint_160_20971520.pkl`
+- Fixed ladder result on the branch gate:
+  - `eval_medium = 71.6%`
+  - `eval_hard = 39.2%`
+  - `eval_hard/term_height_low_frac = 60.8%`
+
+### Verdict
+`v0.17.1` did **not** beat the real hard-push baseline.
+
+Interpretation:
+- it did not beat the old `v0.14.6` result of `60.84%` at `10N x 10`
+- the in-training `eval_push/*` probe overstated the true fixed-ladder hard-push performance
+- the dominant failure remained collapse through `term_height_low`
+- clean standing and PPO stability were not the bottleneck
+
+Decision:
+- stop extending `v0.17.1`
+- treat it as the clean recipe baseline result
+- the immediate M3-lite follow-up was later superseded as the mainline by the `v0.17.4` OCS2 / humanoid MPC architecture pivot
 
 ### Key Goals
 - **Primary Target**: Beat v0.14.6 baseline (60.84% success at 10N x 10)
@@ -116,10 +181,10 @@ Reworked standing recovery diagnostics into finalized recovery-summary metrics i
 - **Pure PPO approach**: No FSM, no base controller, no motion priors
 
 ### What Remains for v0.17.2
-If v0.17.1 plateaus near the old baseline, apply bounded escalation per standing_training.md:
-- **Track A**: Li-style history for timing/event sensitivity issues
-- **Track B**: M3-lite guide path for touchdown geometry/placement quality issues
-- **Decision Rule**: Diagnose failure mode first, choose appropriate escalation track
+This roadmap decision was later superseded by the `v0.17.4` architecture pivot:
+- **Current mainline**: OCS2 / humanoid MPC adoption path
+- **Demoted side branch**: M3-lite guide-only foot-placement path
+- **Reason**: the project now prioritizes a shared standing+walking architecture with higher external confidence
 
 ### Target Performance Validation
 - **Baseline to beat**: v0.14.6 achieved 59.59% at 200 iters, 60.84% extended at 10N x 10
@@ -128,7 +193,7 @@ If v0.17.1 plateaus near the old baseline, apply bounded escalation per standing
   - `eval_medium/success_rate > 75%` (8N x 10)  
   - `eval_hard/success_rate > 60%` (10N x 10) - **primary target**
   - Reduced `term_height_low_frac` (dominant failure mode)
-- **Training validation**: Ready for full training run to establish baseline
+- **Actual result**: missed `eval_medium` and `eval_hard`; branch proceeds to bounded escalation
 
 ### Critical Bug Fixes Applied
 **Post-implementation review identified several blocking issues that have been fixed:**
