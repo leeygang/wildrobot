@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current Execution Plan
 
-**IMPORTANT**: The current development focus is the "Learn First, Retarget Later" approach outlined in `training/docs/learn_first_plan.md`. This is the active execution plan for training a walking policy.
+**IMPORTANT**: The current development focus is the standing-first `v0.17`
+branch outlined in `training/docs/standing_training.md`. This is the canonical
+active execution plan for training.
 
-### Current Stage: v0.10.x - Robot-Native Walking Policy
+### Current Stage: v0.17.x - Standing Push Recovery First
 
-We are implementing Stage 1: Learn stable walking using PPO task rewards only (no AMP, no reference motion).
+We are implementing the active RL-first standing branch: fix the recipe on the
+pure-RL stack, validate hard-push standing recovery, then extend the same
+deployed policy stack to conservative walking later if the standing gate clears.
 
 **Key Commands for Current Stage:**
 ```bash
@@ -22,13 +26,13 @@ uv run python training/train.py --config training/configs/ppo_walking.yaml
 uv run python training/train.py --config training/configs/ppo_walking.yaml  --verify
 ```
 
-**Exit Criteria for Stage 1:**
-- Episode length > 400 steps (8s)
-- Forward velocity 0.5-1.0 m/s with tracking error < 0.2 m/s
-- Fall rate < 5%
-- Visible alternating gait
+**Current Exit Criteria:**
+- `eval_medium > 75%`
+- `eval_hard > 60%`
+- `term_height_low_frac` materially below `v0.17.1`
 
-See `training/docs/learn_first_plan.md` for full roadmap including Stage 2 (data collection), Stage 3 (self-imitation AMP), and Stage 4 (human style blending).
+See `training/docs/standing_training.md` for the active roadmap. The older
+walking-first plan is archived at `training/docs/archive/learn_first_plan.md`.
 
 ## Project Overview
 
@@ -49,7 +53,8 @@ The project implements the development roadmap outlined in `mujoco_playground_pl
 - **training/checkpoints/**: Training checkpoints 
 - **training/configs/**: training configs
 - **training/CHANGELOG.md**: the changelog for training, log training changes, results, reverse chronical order!
-- **training/docs/learn_first_plan.md**: high level training roadmap and milestone
+- **training/docs/standing_training.md**: canonical active training roadmap
+- **training/docs/archive/learn_first_plan.md**: archived walking-first roadmap
 - **training/cal/cal.md**: high level control abstraction layer design
 - **training/tests/test_plan.md**: test plan doc
 

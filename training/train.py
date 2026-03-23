@@ -34,7 +34,8 @@ Architecture:
        AMP discriminator for natural motion learning from reference data.
 
 See also:
-    - training/docs/learn_first_plan.md: Roadmap for the "Learn First, Retarget Later" approach
+    - training/docs/standing_training.md: Canonical active training roadmap
+    - training/docs/archive/learn_first_plan.md: Archived walking-first roadmap
     - training/configs/ppo_walking.yaml: Stage 1 config
     - training/configs/ppo_amass_training.yaml: AMP+PPO config
 """

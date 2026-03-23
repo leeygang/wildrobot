@@ -17,7 +17,7 @@ Current repo reality:
 
 Architecture references:
 - [docs/system_architecture.md](docs/system_architecture.md)
-- [training/docs/standing_training.md](training/docs/standing_training.md)
+- [training/docs/standing_training.md](training/docs/standing_training.md) - canonical active training plan
 - [training/docs/footstep_planner_rl_adoption.md](training/docs/footstep_planner_rl_adoption.md)
 - [training/docs/ocs2_humanoid_mpc_adoption.md](training/docs/ocs2_humanoid_mpc_adoption.md)
 
@@ -87,10 +87,11 @@ wildrobot/
 │   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
 │   ├── docs/                           # Training documentation
-│   │   ├── learn_first_plan.md         # Legacy walking-first PPO plan
-│   │   ├── standing_training.md        # Standing push-recovery roadmap
+│   │   ├── standing_training.md        # Canonical active training plan
 │   │   ├── footstep_planner_rl_adoption.md # Active RL-first + optional teacher plan
 │   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
+│   │   ├── archive/                    # Archived / superseded training docs
+│   │   │   └── learn_first_plan.md     # Historical walking-first roadmap
 │   │   └── TRAINING_SYSTEM_DESIGN.md   # Legacy training-stack design
 │   │
 │   ├── envs/                           # Environment implementation

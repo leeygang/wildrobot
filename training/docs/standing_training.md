@@ -11,6 +11,11 @@
 
 This document defines the standing-first roadmap for WildRobot.
 
+This is the **canonical training plan** for the active branch. Older
+walking-first roadmap material is archived under
+`training/docs/archive/learn_first_plan.md` and should be treated as historical
+context, not the current execution plan.
+
 Standing success means:
 - stand quietly under zero command
 - survive pushes
@@ -26,12 +31,15 @@ The key project-level decision after `v0.17.1` is:
   - simulator-native RL
   - direct policy deployment
   - transfer hardening through training, not controller replacement
+- fix the proven RL recipe gaps from the closest hardware-adjacent baselines
+  before adding teacher logic
 - use step-target or capture-point logic only as bounded training-time
   assistance when needed
 
 Active architecture docs:
 - [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
 - [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
+- [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
 
 Deferred reference docs:
 - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
@@ -64,8 +72,9 @@ That means the next step is not:
 
 The active answer is:
 - **keep the deployed controller as a policy**
-- **improve the RL recipe**
-- **add bounded teacher/scaffold signals only if needed**
+- **fix the RL recipe first**
+- **add bounded teacher/scaffold signals only if the recipe-fixed rerun still
+  needs them**
 
 ---
 
@@ -206,14 +215,21 @@ v0.17 now uses this sequence:
 
 1. Use `v0.17.1` as the final PPO standing baseline result.
 2. Keep MJCF / MuJoCo and the current RL infrastructure.
-3. Align the branch to the practical RL deployment recipe used in modern
-   projects.
-4. Add bounded teacher or scaffold signals only if the geometry gap remains.
-5. Validate standing push recovery first.
-6. Extend the same deployed policy stack to conservative walking later.
+3. Fix the proven recipe gaps from the closest small-servo RL baselines:
+   - residual action around a standing default pose
+   - recovery-friendly termination
+   - dominant alive / survival reward
+   - domain randomization
+   - action / IMU delay and sensor noise
+4. Re-evaluate the hard-push gate on the recipe-fixed pure-RL branch.
+5. Add bounded teacher or scaffold signals only if the geometry gap remains
+   after that rerun.
+6. Validate standing push recovery first.
+7. Extend the same deployed policy stack to conservative walking later.
 
-This avoids three failure modes:
+This avoids four failure modes:
 - endless PPO-only reward patching without recipe discipline
+- premature teacher / hierarchy work before the execution layer is fixed
 - a controller pivot the hardware cannot use well
 - splitting standing and walking into unrelated deployment stacks
 
@@ -283,11 +299,15 @@ Responsibilities:
 ### Training Recipe Design
 
 The mainline should emphasize:
+- residual actions around a standing default pose
+- recovery-friendly termination
+- dominant survival reward
 - curriculum
 - domain randomization
 - actuator/noise/delay hardening
 - fixed eval ladder
-- optional privileged/teacher channels only when justified
+- optional privileged/teacher channels only after the recipe-fixed rerun if
+  justified
 
 ### Evaluation
 
@@ -315,29 +335,35 @@ Objective:
 Status:
 - complete
 
-### `v0.17.3`: RL Recipe Alignment Groundwork
+### `v0.17.3`: Recipe-Fixed Pure RL
 
 Objective:
-- align the active branch with the industry-style RL recipe
+- align the active branch with the closest proven RL recipe on similar hardware
 
 Changes:
+- switch standing action representation to residual targets around a default
+  standing pose
+- relax recovery-related termination so near-fall states remain trainable
+- raise the alive / survival reward so survival dominates the reward landscape
+- enable domain randomization on the standing branch
+- enable action delay, IMU delay, and sensor noise
 - make the runtime policy contract explicit
 - separate runtime actor inputs from any privileged training inputs
-- review or add the needed hooks for:
-  - latency / delay modeling
-  - sensor-noise modeling
-  - domain randomization
-  - export/runtime parity
+- preserve export/runtime parity
+- rerun the fixed ladder on the pure-RL branch before any teacher escalation
 
 Exit criteria:
-- the active recipe is explicit
+- the key recipe gaps are addressed on the pure-RL branch
 - deployment remains policy-only
-- the branch is ready for bounded teacher/scaffold work
+- the hard-push gate has been rerun without teacher logic
+- the branch is ready for a teacher decision only if the pure-RL rerun still
+  misses the gate
 
-### `v0.17.4`: Step-Target Teacher / Scaffold Integration
+### `v0.17.4`: Conditional Step-Target Teacher / Scaffold Integration
 
 Objective:
-- add bounded geometry assistance without changing the deployed-controller type
+- add bounded geometry assistance only if the recipe-fixed pure-RL branch still
+  misses the hard gate
 
 Changes:
 - optional capture-point or similar step-target heuristic
@@ -347,6 +373,8 @@ Changes:
 Exit criteria:
 - teacher signals are bounded and inspectable
 - the policy can train with or without them
+- the teacher branch is compared directly against the recipe-fixed pure-RL
+  baseline
 
 ### `v0.17.5`: Standing Push Recovery
 
@@ -395,10 +423,15 @@ Possible directions:
 - do not jump to bigger teacher logic first
 - restore runtime-compatible standing behavior first
 
-### If Hard-Push Recovery Still Fails Without Teacher Logic
+### If Recipe-Fixed Pure RL Meets The Hard Gate
 
-- add bounded step-target teacher signals before considering a new controller
-  architecture
+- do not add teacher logic just because it was planned
+- keep the simpler policy-only path as the mainline
+
+### If Recipe-Fixed Pure RL Still Fails The Hard Gate
+
+- add bounded step-target teacher signals before considering runtime hierarchy
+  or a new controller architecture
 
 ### If Teacher Logic Helps In Training But Creates Runtime Dependency
 
@@ -420,17 +453,18 @@ For the active branch, do not make these the mainline:
 - full OCS2 / humanoid MPC adoption on current hardware
 - URDF-first migration as a prerequisite
 - planner-dependent runtime controller execution
+- runtime hierarchy before the recipe-fixed pure-RL branch is evaluated
 - open-ended reward-family growth without recipe discipline
 
 ---
 
-## Relationship To The Main Training Plan
+## Canonical Plan Status
 
-This document defines the standing-first roadmap.
-
-It remains narrower than the broader walking-first plans elsewhere in the repo:
+This document is the active source of truth for training planning on the current
+branch:
 - standing push recovery is the first acceptance task
 - walking is added only after the standing stack is credible
+- archived walking-first plans are historical references only
 
 If v0.17 succeeds, it gives the project:
 - a deployable standing-recovery policy for current hardware

@@ -22,7 +22,7 @@
 # Total steps = iterations × num_envs × rollout_steps
 # Example: 500 × 1024 × 128 = 65M steps
 #
-# See: docs/learn_first_plan.md for roadmap
+# See: training/docs/standing_training.md for the canonical active roadmap
 # =============================================================================
 version: "0.11.4"
 version_name: "PPO Walking Conservative + Push Config (v0.11.4)"

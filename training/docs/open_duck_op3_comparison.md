@@ -5,6 +5,11 @@
 against two proven pipelines on similar hardware: Open Duck Mini (Open Duck
 Playground) and ROBOTIS OP3 (mujoco_playground / DeepMind).
 
+This comparison changes the sequencing of the active branch:
+- fix the recipe on the pure-RL standing stack first
+- re-run the hard-push gate
+- add teacher or hierarchy layers only if the recipe-fixed rerun still fails
+
 ---
 
 ## Hardware Context
@@ -264,24 +269,45 @@ Minimum set (matching Open Duck):
 
 ---
 
-## What About the Footstep Planner (v0.17.3)?
+## Architecture Implication
+
+This comparison supports the following controller decision order:
+
+1. `recipe-fixed pure RL`
+2. `teacher-in-training + single deployed policy`
+3. `high-level step target + low-level RL`
+4. `high-level RL + low-level model-based control`
+5. `planner / MPC-first`
+
+What this document supports most strongly is option 1.
+
+It does not rule out options 2-4, but it does say they should not come before
+the recipe-fixed pure-RL rerun. Otherwise the project risks solving the wrong
+problem.
+
+---
+
+## What About Teacher / Hierarchy / Planner Work?
 
 Open Duck Mini achieves walking and push recovery on similar hardware with pure
 RL using the recipe above. No footstep planner, no capture point, no LIP model.
 
-The key was not adding a planner but fixing the training recipe fundamentals:
+The key was not adding a planner or hierarchy first, but fixing the training
+recipe fundamentals:
 residual actions, relaxed termination, alive bonus, domain randomization.
 
-The planner approach in v0.17.3 is architecturally reasonable, but the 5 gaps
-above would block it too — a planner providing step targets will not help if the
-RL execution layer cannot learn recovery because of the action representation
-and termination constraints.
+Teacher or hierarchy work is still architecturally reasonable, but the 5 gaps
+above would block those paths too. A higher layer providing step targets or
+intent will not help if the execution policy cannot learn recovery because of
+the action representation and termination constraints.
 
 Suggested sequence:
 1. Fix the 5 recipe gaps on the current pure-RL standing stack
 2. Re-evaluate against the hard-push gate (eval_hard > 60%)
-3. If the gap closes, the planner may not be needed for current goals
-4. If the gap remains, add the planner on top of the fixed recipe
+3. If the gap closes, do not add teacher or hierarchy logic just because it was
+   planned
+4. If the gap remains, add the smallest bounded teacher layer on top of the
+   fixed recipe before considering larger runtime re-architecture
 
 ---
 

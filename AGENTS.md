@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Active Plan (AI Quickstart)
-- Follow the execution plan in `training/docs/learn_first_plan.md`; current focus is Stage 1 (PPO-only walking with task rewards, no AMP). Align experiments and changes with the stated stage gates and metrics.
+- Follow the execution plan in `training/docs/standing_training.md`; this is the canonical active training plan for the current branch. Align experiments and changes with its stage gates, metrics, and decision rules.
 - Use the commands in `CLAUDE.md` as the canonical entry points (validation, PPO training, visualization). Keep new scripts/configs consistent with that flow.
 
 ## Project Structure & Module Organization

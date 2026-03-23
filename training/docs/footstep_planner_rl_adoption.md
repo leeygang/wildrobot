@@ -1,6 +1,7 @@
-# WildRobot Step-Target Teacher + RL Plan
+# WildRobot Step-Target Teacher + RL Escalation Plan
 
-**Status:** Active mainline plan for `v0.17.3+`  
+**Status:** Conditional escalation plan for `v0.17.4+` after the `v0.17.3`
+recipe-fixed RL rerun  
 **Last updated:** 2026-03-22
 
 ---
@@ -14,8 +15,10 @@ The key decision is:
 - keep the existing MJCF / MuJoCo / JAX RL stack as the mainline
 - keep the deployed artifact as a direct policy, not a planner-dependent
   controller
+- run the closest proven pure-RL recipe first on the standing task
 - use step-target or capture-point heuristics only as optional training-time
-  teachers, labels, or reward scaffolds
+  teachers, labels, or reward scaffolds if the recipe-fixed rerun still misses
+  the hard gate
 
 This is the closest fit to the current industry recipe for practical humanoid
 locomotion on position-controlled hardware:
@@ -27,6 +30,7 @@ locomotion on position-controlled hardware:
 Read together with:
 - [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
 - [system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
+- [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
 
 Deferred reference docs:
 - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
@@ -40,8 +44,10 @@ For current hardware, the mainline should look like:
 - MJCF / MuJoCo or equivalent simulator-native model
 - RL policy as the deployed runtime controller
 - domain randomization / latency / noise modeling for transfer
+- a recipe-fixed pure-RL branch before any teacher escalation
 - optional privileged training channels
-- optional teacher or imitation signals when task geometry is hard to discover
+- optional teacher or imitation signals only when task geometry remains hard to
+  discover after the pure-RL rerun
 
 Reference tiers for this plan:
 
@@ -75,6 +81,7 @@ This is the practical hardware reference for:
 - hobby-servo deployment reality
 - similar runtime constraints
 - policy export and runtime simplicity
+- the first recipe to copy before adding a teacher layer
 
 Useful secondary references:
 - OP3-style servo-humanoid walking stacks
@@ -97,14 +104,18 @@ Not the active mainline:
 
 What that means:
 - the deployed control style is not obviously wrong
-- the missing piece is likely training structure, step geometry supervision, or
-  stronger sim2real-style hardening
+- the first missing piece is likely training structure and stronger
+  sim2real-style hardening
+- if a geometry gap remains after the recipe-fixed rerun, then bounded
+  step-target supervision becomes the next escalation
 - the next step should still look like the recipe used by practical RL humanoid
   projects, not a controller-stack pivot the hardware cannot exploit
 
 So the active answer is:
 - **RL-first mainline**
-- **planner or capture-point logic only as optional training-time assistance**
+- **recipe-fixed pure RL first**
+- **planner or capture-point logic only as optional training-time assistance
+  after that rerun**
 
 ---
 
@@ -135,6 +146,9 @@ This is why the active branch remains:
 ## Target Architecture
 
 The active architecture is training-first and policy-first.
+
+The teacher / scaffold path is gated behind a recipe-fixed pure-RL rerun. It is
+not the first branch.
 
 ```text
 MJCF / MuJoCo simulation
@@ -186,7 +200,8 @@ Use:
 
 ## What The Step-Target Teacher May Provide
 
-If used, the teacher should stay small and explicit.
+If `v0.17.3` recipe-fixed pure RL still misses the hard gate, the teacher
+should stay small and explicit.
 
 Minimum outputs:
 - `need_step`
@@ -226,23 +241,30 @@ This is the key rule:
 
 To align with the industry recipe, the active branch should emphasize:
 
-1. **Runtime-available actor observations**
+1. **Recipe-fixed pure RL baseline first**
+   - residual action around a standing default pose
+   - recovery-friendly termination
+   - dominant alive / survival reward
+   - domain randomization
+   - action / IMU delay and sensor noise
+
+2. **Runtime-available actor observations**
    - actor input must stay compatible with deployment
 
-2. **Privileged training channels only when justified**
+3. **Privileged training channels only when justified**
    - teacher features, if used, should be clearly separated from runtime policy
      inputs
 
-3. **Domain randomization and transfer hardening**
+4. **Domain randomization and transfer hardening**
    - actuator variation
    - latency / delay
    - sensor noise
    - contact variation
 
-4. **Sim2sim and deployment discipline**
+5. **Sim2sim and deployment discipline**
    - keep checkpoint evaluation and export compatible with the existing runtime
 
-5. **Bounded teacher logic**
+6. **Bounded teacher logic**
    - step-target heuristics should stay small, inspectable, and removable
 
 ---
@@ -271,26 +293,29 @@ Do not delete:
 
 ## Implementation Plan
 
-### `v0.17.3` - RL Recipe Alignment Groundwork
+### `v0.17.3` - Recipe-Fixed Pure RL
 
 Deliver:
 - document and enforce the active RL-first recipe
+- switch standing actions to residual targets around a standing default pose
+- relax termination so near-fall recovery states remain trainable
+- raise alive / survival reward so survival dominates the reward landscape
+- enable domain randomization
+- enable action delay, IMU delay, and sensor noise
 - separate runtime actor inputs from any privileged teacher inputs
-- audit or add the needed training hooks for:
-  - domain randomization
-  - latency / delay modeling
-  - sensor-noise modeling
-  - sim2sim / export compatibility
+- preserve sim2sim / export compatibility
 - no deployed-controller change yet
 
 Exit criteria:
-- active training recipe is explicit
+- active training recipe is explicit and implemented on the standing branch
 - deployment contract stays policy-only
-- repo is ready for bounded step-target teacher experiments
+- the hard-push gate has been rerun without teacher logic
+- teacher escalation is justified only if the pure-RL rerun still misses the
+  gate
 
-### `v0.17.4` - Step-Target Teacher / Scaffold Integration
+### `v0.17.4` - Conditional Step-Target Teacher / Scaffold Integration
 
-Deliver:
+Deliver only if `v0.17.3` still misses the hard-push gate:
 - optional capture-point or similar step-target heuristic
 - privileged labels or auxiliary targets for the policy
 - metrics and debug signals for teacher engagement
@@ -299,6 +324,7 @@ Deliver:
 Exit criteria:
 - teacher signals are inspectable and bounded
 - policy can train with or without the teacher path
+- teacher branch is compared directly against the recipe-fixed pure-RL baseline
 
 ### `v0.17.5` - Standing Push Recovery
 
@@ -360,10 +386,11 @@ Recovery diagnostics:
 ## Immediate Next Actions
 
 1. Make the RL-first deployment contract explicit in configs and docs.
-2. Separate runtime actor observations from any privileged teacher path.
-3. Add the minimum hooks for latency/noise/domain-randomization review.
-4. Define the optional step-target teacher interface.
-5. Keep the standing fixed ladder as the first hard acceptance test.
+2. Implement the recipe fixes on the current standing stack.
+3. Separate runtime actor observations from any privileged teacher path.
+4. Re-run the standing fixed ladder on the pure-RL branch.
+5. Define the optional step-target teacher interface only if the rerun still
+   misses the gate.
 
 ---
 
@@ -371,6 +398,7 @@ Recovery diagnostics:
 
 Do not make these the mainline right now:
 - runtime planner-dependent controller execution
+- runtime hierarchy before the recipe-fixed pure-RL branch is evaluated
 - full OCS2 adoption
 - URDF-first migration
 - full humanoid MPC / WBC

@@ -19,6 +19,7 @@ The repo keeps two paths:
 The active mainline for current WildRobot hardware is now:
 - **MJCF / MuJoCo remains the main simulation path**
 - **the deployed controller remains a direct RL policy**
+- **recipe-fixed pure RL is tested before enabling teacher/scaffold logic**
 - **planner or capture-point logic, if used, is training-time teacher/scaffold
   only**
 - **standing push recovery is validated first**
@@ -33,6 +34,7 @@ This is the closest match to the practical industry recipe for this robot class:
 Active planning docs:
 - [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
 - [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
+- [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
 
 Reference tiers for the active branch:
 
@@ -95,8 +97,9 @@ Two follow-up ideas were examined and rejected as the mainline:
 
 That leaves the more practical conclusion:
 - keep the industry-standard RL deployment recipe
-- improve training structure
-- add step-geometry hints only as bounded teachers or privileged scaffolds
+- first match the closest proven small-servo RL recipe
+- add step-geometry hints only as bounded teachers or privileged scaffolds after
+  the recipe-fixed pure-RL rerun if still needed
 
 ---
 
@@ -172,6 +175,8 @@ The artifact being evaluated and deployed stays the policy.
 
 2. **Teacher second, not planner-first**
    - Step geometry can be injected as labels, targets, or privileged signals.
+   - First run the recipe-fixed pure-RL branch before escalating to teacher
+     logic.
    - It should not become a required runtime dependency unless later evidence
      justifies that jump.
 
@@ -292,12 +297,13 @@ the RL stack, not to replace it with a heavyweight controller.
 - documentation
 
 ### `v0.17.3`
-- RL recipe alignment groundwork
+- recipe-fixed pure RL
 - explicit runtime-vs-privileged input boundary
-- prepare optional teacher/scaffold hooks
+- optional teacher/scaffold hooks remain gated
 
 ### `v0.17.4`
-- bounded step-target teacher / scaffold integration
+- conditional bounded step-target teacher / scaffold integration if the
+  recipe-fixed rerun still misses the gate
 
 ### `v0.17.5`
 - standing push recovery on the RL mainline
@@ -315,6 +321,7 @@ the RL stack, not to replace it with a heavyweight controller.
 Mainline decision as of `2026-03-22`:
 - **Use an industry-style RL recipe as the active path**
 - **Keep the deployed artifact as a policy**
+- **Run recipe-fixed pure RL before escalating to teacher hierarchy**
 - **Use step-target logic only as optional training-time assistance**
 - **Keep MJCF / MuJoCo as the mainline sim and eval stack**
 - **Keep OCS2 / `wb_humanoid_mpc` as long-term references only**

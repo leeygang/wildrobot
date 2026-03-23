@@ -1,8 +1,13 @@
 # Learn First, Retarget Later: Robot-Native Walking Policy
 
 **Version:** v0.15.6
-**Status:** Active
+**Status:** Archived / superseded by `training/docs/standing_training.md` for the
+active training plan
 **Last Updated:** 2026-03-14
+
+> Archive note: this document is preserved as historical context for the older
+> walking-first roadmap (`v0.10` - `v0.15`). The canonical active training plan
+> is now `training/docs/standing_training.md`.
 
 ## Overview
 
