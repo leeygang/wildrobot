@@ -400,21 +400,41 @@ The call chain is:
 - `wildrobot_env.py:829` → `JaxCalibOps.ctrl_to_policy_action(spec=..., ...)`
 - Both dispatch to `policy_contract/jax/calib.py` which reads
   centers/spans from `spec.robot.joints`
+- The spec is built by `build_policy_spec()` which currently hardcodes
+  `mapping_id="pos_target_rad_v1"` — this must accept the new mapping_id.
+
+The home position should use the actual `home_ctrl_rad` from the policy spec
+(already supported by `spec_builder.py:22`), not assume zero. For the current
+asset they are equivalent (~0 rad from keyframe), but using the spec value
+keeps export/runtime parity exact.
 
 The change must go through `policy_contract`, with CAL kept in sync.
 
-Files:
-- `policy_contract/jax/calib.py` — change `_get_joint_params()` to compute
-  home-centered spans: `center = home` (0), `span = max(abs(range_min), abs(range_max))`.
-  Add `clip(ctrl, range_min, range_max)` to `action_to_ctrl()`. Update
-  `ctrl_to_policy_action()` inverse.
-- `policy_contract/numpy/calib.py` — mirror the same change for runtime
+Files — policy_contract layer:
+- `policy_contract/spec.py` — add `"pos_target_home_v1"` to
+  `SUPPORTED_MAPPING_IDS`
+- `policy_contract/spec_builder.py` — accept `mapping_id` parameter, pass it
+  through to `ActionSpec`; also pass `home_ctrl_rad` from keyframe
+- `policy_contract/jax/calib.py` — add `pos_target_home_v1` branch in
+  `action_to_ctrl()` / `ctrl_to_policy_action()`: center on `home_ctrl_rad`,
+  per-joint span, clip to range. Keep `pos_target_rad_v1` for backward compat.
+- `policy_contract/numpy/calib.py` — mirror for runtime
 - `policy_contract/jax/obs.py` — update `normalize_joint_pos` to use the same
   home-centered span so obs=0 means "at home"
 - `policy_contract/numpy/obs.py` — mirror for runtime
-- `policy_contract/spec.py` — add `"pos_target_home_v1"` to
-  `SUPPORTED_MAPPING_IDS`; dispatch in calib based on `spec.action.mapping_id`
-- `policy_contract/spec_builder.py` — accept `mapping_id` parameter
+
+Files — `build_policy_spec()` callsites (must pass `mapping_id`):
+- `training/envs/wildrobot_env.py:721` — env init
+- `training/train.py:352` — checkpoint fingerprint
+- `training/core/training_loop.py:1139` — training loop spec
+- `training/eval/visualize_policy.py:87` — visualization
+- `training/exports/export_policy_bundle.py:290` — ONNX export
+
+All five callsites must read `mapping_id` from the training config and pass
+it to `build_policy_spec()`. If any callsite uses a different mapping_id,
+checkpoint fingerprinting will detect the drift.
+
+Files — sync and docs:
 - `training/cal/cal.py` — keep in sync (same span formula in
   `_precompute_arrays()`)
 - `training/configs/training_config.py` — wire `mapping_id` from YAML
@@ -528,16 +548,21 @@ New file: `training/envs/domain_randomize.py`
 - Follow Open Duck pattern: modify `mjx_model` fields in-place (vmapped)
 - Gated by config flag `domain_randomization_enabled: bool`
 
-Implementation note: the current training loop vmaps `env.reset`/`env.step`
-over state, not over model. Domain randomization must either:
-- (a) randomize parameters that live in `mjx.Data` (e.g., qpos0 offsets), or
-- (b) store randomized model parameters in env state and apply them at
-  reset/step time, or
-- (c) batch-vmap over both model and state (requires threading changes)
+Implementation: store randomized parameters in env state (per-env scalars),
+apply them at reset/step time. This follows the Open Duck Playground pattern
+and works with the existing vmap-over-state architecture (no model threading
+changes needed). Specifically:
+- At `env.reset()`, sample randomized scalars (friction scale, mass scales,
+  kp scale, frictionloss scale) and store them in `WildRobotEnvState`
+- At `env.step()`, apply the stored scales to the relevant `mjx.Data` fields
+  before `mjx.step()`
+- `qpos0` offsets are applied at reset by adding noise to `self._init_qpos`
 
-Option (a) is the smallest first step. Option (b) follows the Open Duck
-pattern. Option (c) is the most general but the largest change. The
-implementation should start with (a)/(b) and only escalate to (c) if needed.
+Files:
+- `training/envs/domain_randomize.py` — **New file**: sampling functions
+- `training/envs/env_info.py` — add randomization state fields to
+  `WildRobotEnvState`
+- `training/envs/wildrobot_env.py` — call randomization at reset/step
 
 **Change 5: Action and IMU delay + sensor noise**
 
@@ -575,27 +600,32 @@ v0.17.3a (must modify):
 
 | File | Change |
 |---|---|
-| `policy_contract/jax/calib.py` | Home-centered `_get_joint_params()`, add clip in `action_to_ctrl()` |
+| `policy_contract/spec.py` | Add `pos_target_home_v1` to `SUPPORTED_MAPPING_IDS` |
+| `policy_contract/spec_builder.py` | Accept `mapping_id` param, pass to `ActionSpec` |
+| `policy_contract/jax/calib.py` | Add `pos_target_home_v1` branch: home center, per-joint span, clip |
 | `policy_contract/numpy/calib.py` | Mirror for runtime |
 | `policy_contract/jax/obs.py` | Home-centered joint position normalization |
 | `policy_contract/numpy/obs.py` | Mirror for runtime |
-| `policy_contract/spec.py` | Add `pos_target_home_v1` to supported mappings |
-| `policy_contract/spec_builder.py` | Accept `mapping_id` param |
+| `training/envs/wildrobot_env.py` | Pass `mapping_id` to `build_policy_spec()` + alive reward + relaxed termination |
+| `training/train.py` | Pass `mapping_id` to `build_policy_spec()` |
+| `training/core/training_loop.py` | Pass `mapping_id` to `build_policy_spec()` |
+| `training/eval/visualize_policy.py` | Pass `mapping_id` to `build_policy_spec()` |
+| `training/exports/export_policy_bundle.py` | Pass `mapping_id` to `build_policy_spec()` |
 | `training/cal/cal.py` | Keep in sync with policy_contract span formula |
-| `training/envs/wildrobot_env.py` | Alive reward, relaxed termination |
 | `training/configs/training_runtime_config.py` | New config fields |
 | `training/configs/training_config.py` | Wire `mapping_id` + new fields from YAML |
 | `training/configs/ppo_standing_v0173a.yaml` | **New config** |
 | `docs/joints_angle.md` | Update section 2 action↔ctrl equations |
 
-v0.17.3b (after v0.17.3a validates):
+v0.17.3b (after v0.17.3a gate passes):
 
 | File | Change |
 |---|---|
-| `training/envs/domain_randomize.py` | **New file** — physics randomization |
-| `training/envs/wildrobot_env.py` | Domain rand call, action delay buffer |
-| `training/configs/training_runtime_config.py` | Domain rand + delay config |
-| `training/configs/ppo_standing_v0173b.yaml` | **New config** |
+| `training/envs/domain_randomize.py` | **New file** — sampling functions for physics randomization |
+| `training/envs/env_info.py` | Add randomization state fields to `WildRobotEnvState` |
+| `training/envs/wildrobot_env.py` | Domain rand at reset/step, 1-step action delay |
+| `training/configs/training_runtime_config.py` | Domain rand + delay + noise config fields |
+| `training/configs/ppo_standing_v0173b.yaml` | **New standalone config** (no inheritance) |
 
 Exit criteria:
 - the key recipe gaps are addressed on the pure-RL branch

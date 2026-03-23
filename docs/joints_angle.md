@@ -52,17 +52,18 @@ Each joint gets a per-joint span that maximizes action resolution while
 preserving full range access.
 
 Per-joint constants:
-- `home = 0` (same for all joints, from keyframe)
+- `home` = actual home position from `spec.robot.home_ctrl_rad` (loaded from
+  MJCF keyframe). For the current asset, all joints are ~0 rad.
 - `span = max(abs(range_min_rad - home), abs(range_max_rad - home))`
-- Since home ≈ 0: `span = max(abs(range_min_rad), abs(range_max_rad))`
+- For the current asset where home ≈ 0: `span ≈ max(abs(range_min_rad), abs(range_max_rad))`
 
 Forward (policy → MuJoCo):
 - `action_clipped = clip(action, -1, 1)`
 - `corrected = action_clipped * policy_action_sign`
-- `target_rad = clip(corrected * span, range_min_rad, range_max_rad)`
+- `target_rad = clip(home + corrected * span, range_min_rad, range_max_rad)`
 
 Inverse (MuJoCo → policy):
-- `corrected = target_rad / span`
+- `corrected = (target_rad - home) / span`
 - `action = clip(corrected * policy_action_sign, -1, 1)`
 
 Properties:
@@ -258,8 +259,8 @@ Policy NN (tanh)
 action ∈ [-1, +1]
     │
     │  corrected = action * policy_action_sign
-    │  span = max(abs(range_min), abs(range_max))   [per joint]
-    │  target_rad = clip(corrected * span, range_min, range_max)
+    │  span = max(abs(range_min - home), abs(range_max - home))   [per joint]
+    │  target_rad = clip(home + corrected * span, range_min, range_max)
     │
     ▼
 target_rad (MuJoCo joint angle, radians)
