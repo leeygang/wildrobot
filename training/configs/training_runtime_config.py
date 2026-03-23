@@ -99,6 +99,10 @@ class EnvConfig(Freezable):
     max_height: float = 0.70
     max_pitch: float = 0.8
     max_roll: float = 0.8
+    # Relaxed termination: only terminate on height, not orientation.
+    # When true, max_pitch/max_roll are ignored for termination (but still
+    # available for reward penalties).
+    use_relaxed_termination: bool = False
 
     # Commands
     min_velocity: float = 0.0
@@ -112,6 +116,9 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
+    # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
+    # "pos_target_home_v1" (home-centered, per-joint span)
+    action_mapping_id: str = "pos_target_rad_v1"
     clock_stride_period_steps: int = 36
     clock_phase_gate_width: float = 0.20
 
@@ -240,6 +247,16 @@ class EnvConfig(Freezable):
     imu_quat_noise_deg: float = 0.0  # Small rotation noise in degrees (std)
     imu_latency_steps: int = 0  # Number of steps delay to apply to IMU readings
     imu_max_latency_steps: int = 4  # Fixed-size history buffer (max latency)
+
+    # v0.17.3b: Domain randomization (disabled by default)
+    domain_randomization_enabled: bool = False
+    domain_rand_friction_range: List[float] = field(default_factory=lambda: [0.5, 1.0])
+    domain_rand_mass_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
+    domain_rand_kp_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
+    domain_rand_frictionloss_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
+    domain_rand_joint_offset_rad: float = 0.03  # U(-val, val) added to qpos0
+    # v0.17.3b: Action delay (disabled by default, 0 = no delay)
+    action_delay_steps: int = 0  # 1 = apply prev_action instead of current
 
 
 # =============================================================================
@@ -403,6 +420,7 @@ class RewardWeightsConfig(Freezable):
     """Task reward weights (environment-side)."""
 
     # Primary objectives
+    alive: float = 0.0  # v0.17.3a: constant per-step survival reward
     tracking_lin_vel: float = 2.0
     lateral_velocity: float = -0.5
     base_height: float = 0.5

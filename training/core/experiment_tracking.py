@@ -343,6 +343,7 @@ def get_initial_env_metrics_jax(
         "episode_step_count": jp.zeros(()),  # Starts at 0 for new episode
         # Reward components
         "reward/total": _scalar(total_reward),
+        "reward/alive": jp.ones(()),  # v0.17.3a: constant survival reward
         "reward/forward": _scalar(forward_reward),
         "reward/lateral": jp.zeros(()),
         "reward/healthy": _scalar(healthy_reward),

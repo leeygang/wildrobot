@@ -292,6 +292,7 @@ def _build_policy_spec(
         actuated_joint_specs=actuated_joint_specs,
         action_filter_alpha=action_filter_alpha,
         layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         home_ctrl_rad=home_ctrl_rad,
         provenance={
             "created_at": datetime.now(timezone.utc).isoformat(),

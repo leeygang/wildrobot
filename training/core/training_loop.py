@@ -1141,6 +1141,7 @@ def train(
         actuated_joint_specs=robot_config.actuated_joints,
         action_filter_alpha=float(config.env.action_filter_alpha),
         layout_id=str(config.env.actor_obs_layout_id),
+        mapping_id=str(config.env.action_mapping_id),
     )
     obs_dim = spec.model.obs_dim
     action_dim = spec.model.action_dim

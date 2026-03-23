@@ -25,6 +25,7 @@ def build_policy_spec(
     contract_version: str = "1.0.0",
     spec_version: int = 2,
     layout_id: str = "wr_obs_v1",
+    mapping_id: str = "pos_target_rad_v1",
     model_input_name: str = "observation",
     model_output_name: str = "action",
 ) -> PolicySpec:
@@ -95,7 +96,7 @@ def build_policy_spec(
             bounds={"min": -1.0, "max": 1.0},
             postprocess_id=postprocess_id,
             postprocess_params=postprocess_params,
-            mapping_id="pos_target_rad_v1",
+            mapping_id=mapping_id,
         ),
         provenance=provenance,
     )

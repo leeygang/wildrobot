@@ -718,15 +718,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Get robot config (loaded by train.py at startup)
         self._robot_config = get_robot_config()
-        self._policy_spec = build_policy_spec(
-            robot_name=self._robot_config.robot_name,
-            actuated_joint_specs=self._robot_config.actuated_joints,
-            action_filter_alpha=float(self._config.env.action_filter_alpha),
-            layout_id=str(self._config.env.actor_obs_layout_id),
-        )
-        self._actuator_name_to_index = {
-            name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
-        }
         self._signals_adapter = MjxSignalsAdapter(
             self._mj_model,
             self._robot_config,
@@ -765,8 +756,31 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Extract joint-only qpos for control default from CAL (single source of truth)
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
-        self._default_pose_action = self._cal.ctrl_to_policy_action(
-            self._default_joint_qpos
+
+        # Build policy spec after CAL so we can use home_ctrl_rad from keyframe.
+        # Clamp to joint ranges to handle keyframe settling noise (e.g., -1e-5
+        # on a joint with range [0, 1.4]).
+        home_ctrl_list = []
+        for i, entry in enumerate(self._robot_config.actuated_joints):
+            val = float(self._default_joint_qpos[i])
+            rng = entry.get("range", [-3.14, 3.14])
+            val = max(rng[0], min(rng[1], val))
+            home_ctrl_list.append(val)
+        self._policy_spec = build_policy_spec(
+            robot_name=self._robot_config.robot_name,
+            actuated_joint_specs=self._robot_config.actuated_joints,
+            action_filter_alpha=float(self._config.env.action_filter_alpha),
+            layout_id=str(self._config.env.actor_obs_layout_id),
+            mapping_id=str(self._config.env.action_mapping_id),
+            home_ctrl_rad=home_ctrl_list,
+        )
+        self._actuator_name_to_index = {
+            name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
+        }
+
+        self._default_pose_action = JaxCalibOps.ctrl_to_policy_action(
+            spec=self._policy_spec,
+            ctrl_rad=self._default_joint_qpos,
         ).astype(jp.float32)
 
         # Disturbance configuration
@@ -2505,9 +2519,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         standing_penalty = standing_penalty_raw * cmd_gate * healthy_gate
 
+        # v0.17.3a: alive bonus — constant 1.0 every step, dominant survival signal
+        alive_reward = jp.ones(())
+
         total = (
             # Primary (Tier 1)
-            weights.tracking_lin_vel * forward_reward
+            getattr(weights, "alive", 0.0) * alive_reward
+            + weights.tracking_lin_vel * forward_reward
             + weights.lateral_velocity * lateral_penalty
             + weights.base_height * healthy
             + weights.orientation * orientation_penalty
@@ -2553,6 +2571,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         components = {
             # Primary
+            "reward/alive": alive_reward,
             "reward/forward": forward_reward,
             "reward/lateral": lateral_penalty,
             "reward/healthy": healthy,
@@ -2651,7 +2670,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         orientation_fail = pitch_fail | roll_fail
 
         # Combined failure termination
-        terminated = height_fail | orientation_fail
+        # v0.17.3a: relaxed termination — only terminate on height, not orientation
+        if self._config.env.use_relaxed_termination:
+            terminated = height_fail
+        else:
+            terminated = height_fail | orientation_fail
 
         # Episode length truncation (success - reached max steps without failing)
         truncated = (step_count >= self._config.env.max_episode_steps) & ~terminated

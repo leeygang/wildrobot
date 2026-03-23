@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 
 SUPPORTED_LAYOUT_IDS = {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}
-SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1"}
+SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1", "pos_target_home_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
 # Joint range validation:

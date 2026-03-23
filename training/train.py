@@ -354,6 +354,7 @@ def start_training(
         actuated_joint_specs=robot_cfg.actuated_joints,
         action_filter_alpha=float(training_cfg.env.action_filter_alpha),
         layout_id=str(training_cfg.env.actor_obs_layout_id),
+        mapping_id=str(training_cfg.env.action_mapping_id),
     )
     policy_spec_dict = policy_spec.to_json_dict()
 

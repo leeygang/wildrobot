@@ -140,6 +140,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         max_height=env.get("max_height", 0.70),
         max_pitch=env.get("max_pitch", 0.8),
         max_roll=env.get("max_roll", 0.8),
+        use_relaxed_termination=bool(env.get("use_relaxed_termination", False)),
         min_velocity=env.get("min_velocity", 0.0),
         max_velocity=env.get("max_velocity", 1.0),
         contact_threshold_force=env.get("contact_threshold_force", 5.0),
@@ -148,6 +149,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),
         controller_stack=controller_stack,
@@ -221,6 +223,14 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         imu_quat_noise_deg=env.get("imu_quat_noise_deg", 0.0),
         imu_latency_steps=env.get("imu_latency_steps", 0),
         imu_max_latency_steps=env.get("imu_max_latency_steps", 4),
+        # v0.17.3b: domain randomization (disabled by default)
+        domain_randomization_enabled=bool(env.get("domain_randomization_enabled", False)),
+        domain_rand_friction_range=env.get("domain_rand_friction_range", [0.5, 1.0]),
+        domain_rand_mass_scale_range=env.get("domain_rand_mass_scale_range", [0.9, 1.1]),
+        domain_rand_kp_scale_range=env.get("domain_rand_kp_scale_range", [0.9, 1.1]),
+        domain_rand_frictionloss_scale_range=env.get("domain_rand_frictionloss_scale_range", [0.9, 1.1]),
+        domain_rand_joint_offset_rad=float(env.get("domain_rand_joint_offset_rad", 0.03)),
+        action_delay_steps=int(env.get("action_delay_steps", 0)),
     )
 
 

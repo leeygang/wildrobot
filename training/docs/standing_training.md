@@ -362,7 +362,7 @@ Three tightly-coupled changes applied together.
 **Change 1: Home-centered action mapping**
 
 Current: `ctrl = action * policy_action_sign * per_joint_span + per_joint_center`
-New: `ctrl = clip(action * policy_action_sign * per_joint_span, range_min, range_max)`
+New: `ctrl = clip(home + action * policy_action_sign * per_joint_span, range_min, range_max)`
 
 Where:
 - `per_joint_span = max(abs(range_min - home), abs(range_max - home))`
@@ -548,12 +548,12 @@ New file: `training/envs/domain_randomize.py`
 - Follow Open Duck pattern: modify `mjx_model` fields in-place (vmapped)
 - Gated by config flag `domain_randomization_enabled: bool`
 
-Implementation: store randomized parameters in env state (per-env scalars),
+Implementation: store randomized parameters in env info (per-env scalars),
 apply them at reset/step time. This follows the Open Duck Playground pattern
 and works with the existing vmap-over-state architecture (no model threading
 changes needed). Specifically:
 - At `env.reset()`, sample randomized scalars (friction scale, mass scales,
-  kp scale, frictionloss scale) and store them in `WildRobotEnvState`
+  kp scale, frictionloss scale) and store them in `WildRobotInfo`
 - At `env.step()`, apply the stored scales to the relevant `mjx.Data` fields
   before `mjx.step()`
 - `qpos0` offsets are applied at reset by adding noise to `self._init_qpos`
@@ -561,7 +561,7 @@ changes needed). Specifically:
 Files:
 - `training/envs/domain_randomize.py` — **New file**: sampling functions
 - `training/envs/env_info.py` — add randomization state fields to
-  `WildRobotEnvState`
+  `WildRobotInfo`
 - `training/envs/wildrobot_env.py` — call randomization at reset/step
 
 **Change 5: Action and IMU delay + sensor noise**
@@ -622,7 +622,7 @@ v0.17.3b (after v0.17.3a gate passes):
 | File | Change |
 |---|---|
 | `training/envs/domain_randomize.py` | **New file** — sampling functions for physics randomization |
-| `training/envs/env_info.py` | Add randomization state fields to `WildRobotEnvState` |
+| `training/envs/env_info.py` | Add randomization state fields to `WildRobotInfo` |
 | `training/envs/wildrobot_env.py` | Domain rand at reset/step, 1-step action delay |
 | `training/configs/training_runtime_config.py` | Domain rand + delay + noise config fields |
 | `training/configs/ppo_standing_v0173b.yaml` | **New standalone config** (no inheritance) |
