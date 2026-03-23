@@ -1,7 +1,7 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` scaffolding complete, `v0.17.3` next  
+**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` in progress
 **Created:** 2026-03-20  
 **Last updated:** 2026-03-22
 
@@ -339,18 +339,185 @@ Status:
 
 Objective:
 - align the active branch with the closest proven RL recipe on similar hardware
+- fix 5 recipe gaps identified in `open_duck_op3_comparison.md` that explain why
+  pure PPO cannot learn push recovery on this hardware
+- the planner+RL hybrid path (original v0.17.3 plan) is **postponed** — the
+  recipe gaps would block that approach too
 
-Changes:
-- switch standing action representation to residual targets around a default
-  standing pose
-- relax recovery-related termination so near-fall states remain trainable
-- raise the alive / survival reward so survival dominates the reward landscape
-- enable domain randomization on the standing branch
-- enable action delay, IMU delay, and sensor noise
-- make the runtime policy contract explicit
-- separate runtime actor inputs from any privileged training inputs
-- preserve export/runtime parity
-- rerun the fixed ladder on the pure-RL branch before any teacher escalation
+Sequence:
+```
+v0.17.3a: Core recipe fix (residual actions + relaxed termination + alive bonus)
+v0.17.3b: Robustness (domain randomization + delay/noise)
+v0.17.4:  Decision gate — eval_hard > 60%?
+```
+
+#### `v0.17.3a`: Core Recipe Fix
+
+Three tightly-coupled changes applied together.
+
+**Change 1: Home-centered action mapping**
+
+Current: `ctrl = action * span + center` (center = mid-range of joint limits)
+New: `ctrl = clip(action * policy_action_sign * servo_span, range_min, range_max)`
+
+Where `servo_span = deg2rad(120) = 2.094 rad` (the physical servo travel
+limit, same for all joints).
+
+Why:
+- Home keyframe is ~0 rad for all joints (confirmed from
+  `assets/v2/keyframes.xml`). So removing `ctrl_center` is equivalent to
+  centering on home.
+- The current mapping puts action=0 at mid-range, which is a crouched/bent pose
+  for most joints. The policy must learn a non-zero constant just to stand.
+- With the new mapping, action=0 = home = standing pose.
+- `servo_span = 2.094 rad` is the universal maximum because the servo travel is
+  [-120°, +120°]. Using one constant for all joints simplifies the code and
+  preserves full joint range (the per-joint `clip` enforces actual limits).
+- The runtime `target_rad → servo units` path is completely unchanged — it uses
+  its own `motor_center_mujoco_deg` and `motor_sign`, independent of
+  `ctrl_center`.
+
+Implementation:
+- Remove `ctrl_center` from the action→ctrl mapping (or set it to 0).
+- Replace per-joint `ctrl_span` with the universal constant `2.094 rad`.
+- Keep `clip(target_rad, range_min, range_max)` per joint.
+- Keep `policy_action_sign` unchanged.
+- Update `ctrl_to_policy_action` (inverse) to match.
+- Joint position observation normalization: use the same span so obs=0 means
+  "at home."
+
+Files:
+- `training/cal/cal.py` — change `_precompute_arrays()`: set `_ctrl_centers` to
+  0, set `_ctrl_spans` to 2.094; add clip to `policy_action_to_ctrl()`
+- `training/cal/specs.py` — no change needed (range properties still used for
+  clip bounds)
+- `docs/joints_angle.md` — update section 2 equations
+- Runtime path (`runtime/wr_runtime/hardware/actuators.py`) — no change needed
+
+**Change 2: Relaxed termination**
+
+Current: height < 0.40m OR pitch/roll > 0.8 rad
+New: height < 0.15m (near-ground only, no orientation termination)
+
+Rationale: the agent must experience and recover from large tilts during
+training. Terminating at 0.8 rad pitch prevents learning recovery from pushes
+that cause significant lean.
+
+Files:
+- `training/envs/wildrobot_env.py` (`_get_termination`) — add
+  `use_relaxed_termination` flag; when enabled, only terminate on
+  `height < min_height` (0.15m)
+- `training/configs/training_runtime_config.py` — add config field
+
+**Change 3: Large alive bonus**
+
+Current: `base_height` weight = 1.0–2.0 (binary healthy)
+New: dedicated `alive` reward term with weight = 15.0
+
+Rationale: the dominant signal should be "stay alive as long as possible."
+Standing quality, orientation, posture, etc. are secondary shaping terms. This
+follows the Open Duck / standard RL recipe pattern.
+
+Files:
+- `training/envs/wildrobot_env.py` (`_get_reward`) — add `alive` term:
+  constant 1.0 every step
+- Config: `alive: 15.0`, reduce `base_height` to 0.5, `orientation` to -1.0,
+  zero out `collapse_height` and `collapse_vz` (pre-collapse shapers at 0.40m
+  are no longer useful with termination at 0.15m)
+
+**Config: `ppo_standing_v0173a.yaml`**
+
+Key settings:
+```yaml
+version: "0.17.3a"
+version_name: "Recipe Fix - Residual Actions + Relaxed Term + Alive Bonus"
+
+env:
+  use_home_centered_action: true  # action=0 → home pose, span = 120 deg
+  use_relaxed_termination: true
+  min_height: 0.15             # only terminate near ground
+  action_filter_alpha: 0.3     # reduce from 0.6 — residual actions bounded
+
+reward_weights:
+  alive: 15.0                  # dominant survival signal
+  base_height: 0.5             # reduced (alive handles survival)
+  orientation: -1.0            # less punishing (relaxed term allows recovery)
+  height_target: 0.5
+  collapse_height: 0.0         # removed (termination at 0.15m)
+  collapse_vz: 0.0             # removed
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -0.5
+  posture: 0.5                 # pulls robot back to standing after recovery
+  posture_sigma: 0.40
+  step_event: 0.12
+  foot_place: 0.30
+```
+
+**Verification:**
+```bash
+# Smoke test — verify config loads and env initializes
+uv run python training/train.py \
+  --config training/configs/ppo_standing_v0173a.yaml --verify
+
+# Training run
+uv run python training/train.py \
+  --config training/configs/ppo_standing_v0173a.yaml
+```
+
+Expected: within 100 iterations the policy should learn quiet standing (since
+action=0 is already standing). Push recovery should start emerging as training
+progresses.
+
+#### `v0.17.3b`: Robustness (after v0.17.3a validates)
+
+**Change 4: Domain randomization**
+
+New file: `training/envs/domain_randomize.py`
+- `randomize_physics(mjx_model, rng) -> mjx_model`
+- Randomize per episode at reset:
+  - Floor friction: U(0.5, 1.0)
+  - Link masses: nominal × U(0.9, 1.1) per body
+  - Actuator Kp (gainprm + biasprm): nominal × U(0.9, 1.1)
+  - Joint frictionloss: nominal × U(0.9, 1.1)
+  - Joint zero offsets (qpos0): +U(-0.03, 0.03) rad
+- Follow Open Duck pattern: modify `mjx_model` fields in-place (vmapped)
+- Gated by config flag `domain_randomization_enabled: bool`
+
+**Change 5: Action and IMU delay + sensor noise**
+
+- Action delay ring buffer: store last N actions, sample delay d ~ U[0, max),
+  apply `action_history[d]` instead of current action
+- IMU noise: `imu_gyro_noise_std: 0.05`, `imu_quat_noise_deg: 1.0`,
+  `imu_latency_steps: 2`
+- Joint position noise: per-joint Gaussian before normalization
+
+Config: `ppo_standing_v0173b.yaml` — inherits v0.17.3a, enables domain rand +
+delay + noise.
+
+#### Files Summary
+
+v0.17.3a (must modify):
+
+| File | Change |
+|---|---|
+| `training/cal/cal.py` | Home-centered action: `_ctrl_centers`→0, `_ctrl_spans`→2.094, add clip |
+| `training/envs/wildrobot_env.py` | Alive reward, relaxed termination |
+| `training/configs/training_runtime_config.py` | New config fields |
+| `training/configs/training_config.py` | Wire new fields from YAML |
+| `training/configs/ppo_standing_v0173a.yaml` | **New config** |
+| `docs/joints_angle.md` | Update section 2 action↔ctrl equations |
+
+v0.17.3b (after v0.17.3a validates):
+
+| File | Change |
+|---|---|
+| `training/envs/domain_randomize.py` | **New file** — physics randomization |
+| `training/envs/wildrobot_env.py` | Domain rand call, action delay buffer |
+| `training/configs/training_runtime_config.py` | Domain rand + delay config |
+| `training/configs/ppo_standing_v0173b.yaml` | **New config** |
 
 Exit criteria:
 - the key recipe gaps are addressed on the pure-RL branch

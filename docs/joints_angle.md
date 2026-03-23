@@ -12,15 +12,15 @@ It is an abstraction of the mapping described in `runtime/docs/servo_calibration
 
 ### A. MuJoCo joint coordinate (`target_rad`)
 - `target_rad` is the **MuJoCo hinge joint coordinate** in **radians**.
-- Positive direction follows MuJoCo’s convention: **right-hand rule around the joint axis** defined in the MJCF.
-- In `assets/v2/wildrobot.xml`, these hinge joints are typically `axis="0 0 1"`, i.e. rotation around the joint’s **local +Z axis**.
+- Positive direction follows MuJoCo's convention: **right-hand rule around the joint axis** defined in the MJCF.
+- In `assets/v2/wildrobot.xml`, these hinge joints are typically `axis="0 0 1"`, i.e. rotation around the joint's **local +Z axis**.
 - This is the quantity that:
-  - the policy contract calls “position target in radians”
+  - the policy contract calls "position target in radians"
   - the runtime actuator layer takes as input (and converts to hardware units)
 
 ### B. Policy action coordinate (`action ∈ [-1, 1]`)
 - The policy outputs `action` in `[-1, 1]` per joint (in actuator order).
-- `policy_action_sign ∈ {+1, -1}` is a **model/policy convention** (from `assets/v2/mujoco_robot_config.json`) used to flip actions so that “same action on symmetric joints” can mean “symmetric motion”.
+- `policy_action_sign ∈ {+1, -1}` is a **model/policy convention** (from `assets/v2/mujoco_robot_config.json`) used to flip actions so that "same action on symmetric joints" can mean "symmetric motion".
 - `policy_action_sign` is applied **only** in the mapping between `action` and `target_rad` (it is *not* a servo calibration parameter).
 
 ### C. Servo electrical units (`u_elec ∈ [0, 1000]`)
@@ -28,7 +28,7 @@ It is an abstraction of the mapping described in `runtime/docs/servo_calibration
 - Runtime ultimately sends **electrical** units to hardware.
 
 ### D. Servo conceptual (offset-corrected) units (`u ∈ [max(0, -offset_unit), 1000-offset_unit]`)
-Calibration uses a conceptual “contract-space” unit `u` that is easier to reason about:
+Calibration uses a conceptual "contract-space" unit `u` that is easier to reason about:
 - `offset_unit ∈ ℤ` (per-joint) shifts between electrical and conceptual units:
   - `u = u_elec - offset_unit`
   - `u_elec = u + offset_unit`
@@ -45,7 +45,44 @@ These parameters live in `runtime/configs/runtime_config_template.json` under `s
 
 ## 2) Conversion: policy action ↔ MuJoCo target radians
 
-WildRobot uses a “range-center + half-span” mapping (policy contract id `pos_target_rad_v1`).
+### Current mapping (v0.17.3+): home-centered with universal servo span
+
+The home keyframe (`assets/v2/keyframes.xml`) places all joints at ~0 rad.
+The servo physical travel is [-120°, +120°] (240° total), giving a universal
+half-span of `servo_span = deg2rad(120) = 2.094 rad`.
+
+Constants:
+- `servo_span = 2.094` (same for all joints, derived from servo hardware)
+
+Forward (policy → MuJoCo):
+- `action_clipped = clip(action, -1, 1)`
+- `corrected = action_clipped * policy_action_sign`
+- `target_rad = clip(corrected * servo_span, range_min_rad, range_max_rad)`
+
+Inverse (MuJoCo → policy):
+- `corrected = target_rad / servo_span`
+- `action = clip(corrected * policy_action_sign, -1, 1)`
+
+Properties:
+- `action = 0` → `target_rad = 0` → home (standing) pose for all joints.
+- `action = ±1` → `target_rad = ±2.094 rad (±120°)`, then clamped to per-joint
+  limits. The full joint range is always reachable because no joint range
+  exceeds ±120°.
+- For joints whose range is much smaller than [-120°, +120°] (e.g.,
+  `left_hip_pitch` range [-5°, +85°]), the policy action saturates (clips)
+  well before ±1. The policy learns to stay within the useful region.
+
+Why this mapping:
+- The old mapping (`ctrl_center + ctrl_span`) placed action=0 at the midpoint
+  of each joint's range, which was a crouched/bent pose — not standing.
+- Centering on home=0 means the policy starts from a natural standing pose
+  and learns corrections from there.
+- A single universal span (the servo limit) avoids per-joint span computation
+  and ensures full range access.
+
+### Legacy mapping (pre-v0.17.3): range-center + half-span
+
+Used in v0.17.2 and earlier. Documented here for reference.
 
 Given a joint range in radians `[range_min_rad, range_max_rad]`:
 - `ctrl_center = (range_min_rad + range_max_rad) / 2`
@@ -60,9 +97,15 @@ Inverse (MuJoCo → policy):
 - `corrected = (target_rad - ctrl_center) / (ctrl_span + 1e-6)`
 - `action = clip(corrected * policy_action_sign, -1, 1)`
 
-Important nuance:
-- `ctrl_center` / `ctrl_span` come from the **joint’s modeled range** (from `assets/v2/mujoco_robot_config.json` and exported into the policy spec).
-- `motor_center_mujoco_deg` is a **separate** center used only for the **rad ↔ servo** mapping.
+Problem: `ctrl_center` ≠ home pose for most joints. Action=0 produced a
+crouched pose, forcing the policy to learn a non-zero output just to stand.
+
+### Important note on layer boundaries
+
+- `servo_span` and `policy_action_sign` are used **only** in the action↔target_rad mapping.
+- `motor_center_mujoco_deg` and `motor_sign` are used **only** in the target_rad↔servo mapping.
+- These are independent layers. Changing the action mapping does not affect
+  the runtime servo conversion.
 
 ## 3) Conversion: MuJoCo target radians ↔ servo units
 
@@ -82,16 +125,20 @@ Conceptual units (optional, for debugging math):
 - `u = u_elec - offset_unit`
 - So `u = 500 + motor_sign * (target_rad - center_rad) * units_per_rad`
 
+This layer is unchanged by the v0.17.3 action mapping update.
+
 ## 4) How the signs compose (common source of confusion)
 
-There are two independent “sign flips”, applied at different layers:
+There are two independent "sign flips", applied at different layers:
 - `policy_action_sign`: flips **action → target_rad** (model/policy convention)
 - `motor_sign`: flips **target_rad → servo units** (hardware installation/calibration)
 
-If you want to know whether “+action increases electrical units” for a joint, look at:
+If you want to know whether "+action increases electrical units" for a joint, look at:
 - `effective_unit_direction ≈ policy_action_sign * motor_sign`
 
-But `motor_center_mujoco_deg` and `ctrl_center` are different centers, so always reason in terms of the full equations when debugging absolute targets.
+Since the action mapping no longer uses `ctrl_center`, and the servo mapping
+uses a separate `motor_center_mujoco_deg`, the two layers are fully
+independent. Reason about each layer separately.
 
 ## 5) Concrete numerical examples (forward + inverse)
 
@@ -110,27 +157,20 @@ Config:
 - Joint range (deg): `[-175, +5]` and `policy_action_sign = +1` (custom example)
 - Servo calibration: `motor_center_mujoco_deg = -85`, `motor_sign = -1`, `offset_unit = 0` (custom example)
 
-Interpretation (physical framing, if you use it this way):
-- With `range_max = +5°`, MuJoCo `0°` sits `5°` away from that “midline/inward limit” toward the left.
-
 Step 1 (action → target):
-- `ctrl_center = (-175 + 5)/2 = -85°`
-- `ctrl_span   = (5 - (-175))/2 = 90°`
+- `servo_span = 120°`
 - `corrected = +0.25 * (+1) = +0.25`
-- `target = -85° + 0.25 * 90° = -62.5°` (`target_rad ≈ -1.0908`)
+- `target = clip(0.25 * 120°, -175°, +5°) = 30°` (`target_rad ≈ 0.5236`)
 
 Step 2 (target → units):
 - `center = -85°`
-- `u_elec ≈ 500 + 0 + (-1) * (-62.5° - (-85°)) * (1000/240°)`
-- `u_elec ≈ 406.25` → command `406`
-
-Sanity check:
-- When `target == -85°`, `u_elec == 500 + offset_unit == 500`.
+- `u_elec ≈ 500 + 0 + (-1) * (30° - (-85°)) * (1000/240°)`
+- `u_elec ≈ 500 - 479.17 ≈ 20.83` → command `21`
 
 Step 3 (units → action):
-- `target ≈ -85° + (-1) * ((406 - 500 - 0) * (240° / 1000)) = -62.44°`
-- `corrected ≈ (target - ctrl_center) / ctrl_span = (-62.44° - (-85°)) / 90° ≈ 0.2507`
-- `action ≈ corrected * policy_action_sign = 0.2507 * (+1) ≈ 0.2507`
+- `target ≈ -85° + (-1) * ((21 - 500 - 0) * (240° / 1000)) = -85° + 114.96° = 29.96°`
+- `corrected ≈ 29.96° / 120° ≈ 0.2497`
+- `action ≈ 0.2497 * (+1) ≈ 0.2497`
 
 ### Example B — `left_shoulder_pitch`
 Config:
@@ -138,20 +178,18 @@ Config:
 - Servo calibration: `motor_center_mujoco_deg = +90`, `motor_sign = -1`, `offset_unit = +14`
 
 Step 1 (action → target):
-- `ctrl_center = (-30 + 180)/2 = 75°`
-- `ctrl_span   = (180 - (-30))/2 = 105°`
 - `corrected = +0.25`
-- `target = 75° + 0.25 * 105° = 101.25°` (`target_rad ≈ 1.7671`)
+- `target = clip(0.25 * 120°, -30°, +180°) = 30°` (`target_rad ≈ 0.5236`)
 
 Step 2 (target → units):
 - `center = 90°`
-- `u_elec ≈ 500 + 14 + (-1) * (101.25° - 90°) * (1000/240°)`
-- `u_elec ≈ 467.13` → command `467`
+- `u_elec ≈ 500 + 14 + (-1) * (30° - 90°) * (1000/240°)`
+- `u_elec ≈ 514 + 250 = 764` → command `764`
 
 Step 3 (units → action):
-- `target ≈ 90° + (-1) * ((467 - 500 - 14) * (240° / 1000)) = 101.28°`
-- `corrected ≈ (101.28° - 75°) / 105° ≈ 0.2503`
-- `action ≈ 0.2503 * (+1) ≈ 0.2503`
+- `target ≈ 90° + (-1) * ((764 - 500 - 14) * (240° / 1000)) = 90° - 60° = 30°`
+- `corrected ≈ 30° / 120° ≈ 0.25`
+- `action ≈ 0.25 * (+1) ≈ 0.25`
 
 ### Example C — `left_elbow_pitch`
 Config:
@@ -159,32 +197,29 @@ Config:
 - Servo calibration: `motor_center_mujoco_deg = 0`, `motor_sign = -1`, `offset_unit = +4`
 
 Step 1 (action → target):
-- `ctrl_center = 45°`
-- `ctrl_span   = 45°`
-- `target = 45° + 0.25 * 45° = 56.25°` (`target_rad ≈ 0.9817`)
+- `target = clip(0.25 * 120°, 0°, +90°) = 30°` (`target_rad ≈ 0.5236`)
 
 Step 2 (target → units):
-- `u_elec ≈ 500 + 4 + (-1) * (56.25° - 0°) * (1000/240°)`
-- `u_elec ≈ 269.63` → command `270`
+- `u_elec ≈ 500 + 4 + (-1) * (30° - 0°) * (1000/240°)`
+- `u_elec ≈ 504 - 125 = 379` → command `379`
 
 Step 3 (units → action):
-- `target ≈ 0° + (-1) * ((270 - 500 - 4) * (240° / 1000)) = 56.16°`
-- `corrected ≈ (56.16° - 45°) / 45° ≈ 0.2480`
-- `action ≈ 0.2480 * (+1) ≈ 0.2480`
+- `target ≈ 0° + (-1) * ((379 - 500 - 4) * (240° / 1000)) = 30°`
+- `corrected ≈ 30° / 120° ≈ 0.25`
+- `action ≈ 0.25 * (+1) ≈ 0.25`
 
 ## 6) APIs for doing these conversions
 
-### A. Policy action ↔ MuJoCo radians (contract-level)
-- `policy_contract/numpy/calib.py`
-  - `action_to_joint_target_rad(spec=..., action=...) -> joint_target_rad`
-  - `joint_target_rad_to_action(spec=..., joint_target_rad=...) -> action`
-- `policy_contract/jax/calib.py` provides the same mapping for JAX arrays.
+### A. Policy action ↔ MuJoCo radians (training CAL layer)
+- `training/cal/cal.py`
+  - `policy_action_to_ctrl(action) -> target_rad` — applies `policy_action_sign`, scales by `servo_span`, clips to joint range
+  - `ctrl_to_policy_action(ctrl) -> action` — inverse
 
-Notes:
-- These functions use per-joint `range_min_rad`, `range_max_rad`, and `policy_action_sign` from the `PolicySpec`.
-- They implement the equations in section 2.
+### B. Policy action ↔ MuJoCo radians (runtime / inference)
+- `runtime/configs/config.py` (`ServoControllerConfig.policy_action_to_servo_cmd`)
+  - End-to-end: policy action list → `(servo_id, pos)` commands
 
-### B. MuJoCo radians ↔ servo units (runtime actuator-level)
+### C. MuJoCo radians ↔ servo units (runtime actuator-level)
 Vectorized (the runtime hardware path):
 - `runtime/wr_runtime/hardware/actuators.py`
   - `joint_target_rad_to_servo_pos_elec_units(targets_rad, offsets_unit, motor_signs, centers_rad, servo_model) -> units`
@@ -195,5 +230,25 @@ Scalar/per-joint (handy for calibration tooling and debugging):
   - `joint_target_rad_to_elect_unit(target_rad) -> int`
   - `servo_elect_units_to_joint_target_rad(units) -> float`
 
-End-to-end helper (policy action list → `(servo_id, pos)` commands):
-- `runtime/configs/config.py` (`ServoControllerConfig.policy_action_to_servo_cmd`)
+## 7) E2E flow summary
+
+```
+Policy NN (tanh)
+    │
+    ▼
+action ∈ [-1, +1]
+    │
+    │  corrected = action * policy_action_sign
+    │  target_rad = clip(corrected * 2.094, range_min, range_max)
+    │
+    ▼
+target_rad (MuJoCo joint angle, radians)
+    │
+    │  u_elec = clamp(500 + offset + motor_sign * (target_rad - center_rad) * 238.732)
+    │
+    ▼
+u_elec ∈ [0, 1000] (servo command)
+```
+
+Two conversions. Two independent sign parameters. No shared center constants
+between the layers.
