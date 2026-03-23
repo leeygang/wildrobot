@@ -215,8 +215,15 @@ copy_run() {
     if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$WANDB_REMOTE' ]" 2>/dev/null; then
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
         echo ""
-        echo -e "${CYAN}Available W&B runs:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
+        # Try fuzzy match — maybe a typo (missing/extra chars)
+        local FUZZY=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | grep '$RUN_NAME\|${RUN_NAME%?}' | head -5")
+        if [ -n "$FUZZY" ]; then
+            echo -e "${CYAN}Did you mean:${NC}"
+            echo "$FUZZY"
+        else
+            echo -e "${CYAN}Recent W&B runs:${NC}"
+            ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
+        fi
         return 1
     fi
 
