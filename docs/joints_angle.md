@@ -45,40 +45,50 @@ These parameters live in `runtime/configs/runtime_config_template.json` under `s
 
 ## 2) Conversion: policy action ↔ MuJoCo target radians
 
-### Current mapping (v0.17.3+): home-centered with universal servo span
+### Current mapping (v0.17.3+): home-centered with per-joint span
 
 The home keyframe (`assets/v2/keyframes.xml`) places all joints at ~0 rad.
-The servo physical travel is [-120°, +120°] (240° total), giving a universal
-half-span of `servo_span = deg2rad(120) = 2.094 rad`.
+Each joint gets a per-joint span that maximizes action resolution while
+preserving full range access.
 
-Constants:
-- `servo_span = 2.094` (same for all joints, derived from servo hardware)
+Per-joint constants:
+- `home = 0` (same for all joints, from keyframe)
+- `span = max(abs(range_min_rad - home), abs(range_max_rad - home))`
+- Since home ≈ 0: `span = max(abs(range_min_rad), abs(range_max_rad))`
 
 Forward (policy → MuJoCo):
 - `action_clipped = clip(action, -1, 1)`
 - `corrected = action_clipped * policy_action_sign`
-- `target_rad = clip(corrected * servo_span, range_min_rad, range_max_rad)`
+- `target_rad = clip(corrected * span, range_min_rad, range_max_rad)`
 
 Inverse (MuJoCo → policy):
-- `corrected = target_rad / servo_span`
+- `corrected = target_rad / span`
 - `action = clip(corrected * policy_action_sign, -1, 1)`
 
 Properties:
 - `action = 0` → `target_rad = 0` → home (standing) pose for all joints.
-- `action = ±1` → `target_rad = ±2.094 rad (±120°)`, then clamped to per-joint
-  limits. The full joint range is always reachable because no joint range
-  exceeds ±120°.
-- For joints whose range is much smaller than [-120°, +120°] (e.g.,
-  `left_hip_pitch` range [-5°, +85°]), the policy action saturates (clips)
-  well before ±1. The policy learns to stay within the useful region.
+- `action = +1` or `-1` → reaches the further joint limit exactly. The short
+  side of asymmetric joints clips, but the dead zone is minimal because the
+  span is fitted to each joint.
+- Per-joint spans preserve action resolution. A universal span (e.g., 120°)
+  would waste most of the [-1, +1] range on small joints like knee [0°, 80°].
+
+Per-joint span examples:
+
+| Joint | range (rad) | span | action for max | action for min |
+|---|---|---|---|---|
+| left_hip_pitch | [-0.087, 1.484] | 1.484 | +1.0 | -0.059 (clips) |
+| left_knee_pitch | [0.0, 1.396] | 1.396 | +1.0 | 0.0 (at limit) |
+| left_ankle_pitch | [-0.698, 0.785] | 0.785 | +1.0 | -0.889 |
+| waist_yaw | [-0.524, 0.524] | 0.524 | +1.0 | -1.0 (symmetric) |
 
 Why this mapping:
 - The old mapping (`ctrl_center + ctrl_span`) placed action=0 at the midpoint
   of each joint's range, which was a crouched/bent pose — not standing.
 - Centering on home=0 means the policy starts from a natural standing pose
   and learns corrections from there.
-- A single universal span (the servo limit) avoids per-joint span computation
-  and ensures full range access.
+- Per-joint spans ensure the policy uses most of its [-1, +1] output range
+  for reachable joint positions, avoiding large dead zones.
 
 ### Legacy mapping (pre-v0.17.3): range-center + half-span
 
@@ -156,57 +166,66 @@ Inverse examples start from the integer `u_elec` (what hardware reads back), so 
 Config:
 - Joint range (deg): `[-175, +5]` and `policy_action_sign = +1` (custom example)
 - Servo calibration: `motor_center_mujoco_deg = -85`, `motor_sign = -1`, `offset_unit = 0` (custom example)
+- Per-joint span: `max(175, 5) = 175°`
 
 Step 1 (action → target):
-- `servo_span = 120°`
 - `corrected = +0.25 * (+1) = +0.25`
-- `target = clip(0.25 * 120°, -175°, +5°) = 30°` (`target_rad ≈ 0.5236`)
+- `target = clip(0.25 * 175°, -175°, +5°) = clip(43.75°, -175°, +5°) = 5°`
+  (clips to range_max)
+- (`target_rad ≈ 0.0873`)
 
 Step 2 (target → units):
 - `center = -85°`
-- `u_elec ≈ 500 + 0 + (-1) * (30° - (-85°)) * (1000/240°)`
-- `u_elec ≈ 500 - 479.17 ≈ 20.83` → command `21`
+- `u_elec ≈ 500 + 0 + (-1) * (5° - (-85°)) * (1000/240°)`
+- `u_elec ≈ 500 - 375 = 125` → command `125`
 
 Step 3 (units → action):
-- `target ≈ -85° + (-1) * ((21 - 500 - 0) * (240° / 1000)) = -85° + 114.96° = 29.96°`
-- `corrected ≈ 29.96° / 120° ≈ 0.2497`
-- `action ≈ 0.2497 * (+1) ≈ 0.2497`
+- `target ≈ -85° + (-1) * ((125 - 500 - 0) * (240° / 1000)) = -85° + 90° = 5°`
+- `corrected ≈ 5° / 175° ≈ 0.0286`
+- `action ≈ 0.0286 * (+1) ≈ 0.0286`
+
+Note: the round-trip recovers the clamped target (5°), not the original
+action (0.25). This is expected — action=0.25 was beyond this joint's
+positive range. The inverse correctly maps back to the action that would
+produce 5°.
 
 ### Example B — `left_shoulder_pitch`
 Config:
 - Joint range (deg): `[-30, +180]` and `policy_action_sign = +1`
 - Servo calibration: `motor_center_mujoco_deg = +90`, `motor_sign = -1`, `offset_unit = +14`
+- Per-joint span: `max(30, 180) = 180°`
 
 Step 1 (action → target):
 - `corrected = +0.25`
-- `target = clip(0.25 * 120°, -30°, +180°) = 30°` (`target_rad ≈ 0.5236`)
+- `target = clip(0.25 * 180°, -30°, +180°) = 45°` (`target_rad ≈ 0.7854`)
 
 Step 2 (target → units):
 - `center = 90°`
-- `u_elec ≈ 500 + 14 + (-1) * (30° - 90°) * (1000/240°)`
-- `u_elec ≈ 514 + 250 = 764` → command `764`
+- `u_elec ≈ 500 + 14 + (-1) * (45° - 90°) * (1000/240°)`
+- `u_elec ≈ 514 + 187.5 ≈ 701.5` → command `702`
 
 Step 3 (units → action):
-- `target ≈ 90° + (-1) * ((764 - 500 - 14) * (240° / 1000)) = 90° - 60° = 30°`
-- `corrected ≈ 30° / 120° ≈ 0.25`
-- `action ≈ 0.25 * (+1) ≈ 0.25`
+- `target ≈ 90° + (-1) * ((702 - 500 - 14) * (240° / 1000)) = 90° - 45.12° = 44.88°`
+- `corrected ≈ 44.88° / 180° ≈ 0.2493`
+- `action ≈ 0.2493 * (+1) ≈ 0.2493`
 
 ### Example C — `left_elbow_pitch`
 Config:
 - Joint range (deg): `[0, +90]` and `policy_action_sign = +1`
 - Servo calibration: `motor_center_mujoco_deg = 0`, `motor_sign = -1`, `offset_unit = +4`
+- Per-joint span: `max(0, 90) = 90°`
 
 Step 1 (action → target):
-- `target = clip(0.25 * 120°, 0°, +90°) = 30°` (`target_rad ≈ 0.5236`)
+- `target = clip(0.25 * 90°, 0°, +90°) = 22.5°` (`target_rad ≈ 0.3927`)
 
 Step 2 (target → units):
-- `u_elec ≈ 500 + 4 + (-1) * (30° - 0°) * (1000/240°)`
-- `u_elec ≈ 504 - 125 = 379` → command `379`
+- `u_elec ≈ 500 + 4 + (-1) * (22.5° - 0°) * (1000/240°)`
+- `u_elec ≈ 504 - 93.75 ≈ 410.25` → command `410`
 
 Step 3 (units → action):
-- `target ≈ 0° + (-1) * ((379 - 500 - 4) * (240° / 1000)) = 30°`
-- `corrected ≈ 30° / 120° ≈ 0.25`
-- `action ≈ 0.25 * (+1) ≈ 0.25`
+- `target ≈ 0° + (-1) * ((410 - 500 - 4) * (240° / 1000)) = 22.56°`
+- `corrected ≈ 22.56° / 90° ≈ 0.2507`
+- `action ≈ 0.2507 * (+1) ≈ 0.2507`
 
 ## 6) APIs for doing these conversions
 
@@ -239,7 +258,8 @@ Policy NN (tanh)
 action ∈ [-1, +1]
     │
     │  corrected = action * policy_action_sign
-    │  target_rad = clip(corrected * 2.094, range_min, range_max)
+    │  span = max(abs(range_min), abs(range_max))   [per joint]
+    │  target_rad = clip(corrected * span, range_min, range_max)
     │
     ▼
 target_rad (MuJoCo joint angle, radians)
@@ -251,4 +271,5 @@ u_elec ∈ [0, 1000] (servo command)
 ```
 
 Two conversions. Two independent sign parameters. No shared center constants
-between the layers.
+between the layers. Per-joint spans maximize action resolution while
+preserving full joint range access.

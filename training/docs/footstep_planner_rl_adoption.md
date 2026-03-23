@@ -242,8 +242,8 @@ This is the key rule:
 To align with the industry recipe, the active branch should emphasize:
 
 1. **Recipe-fixed pure RL baseline first**
-   - home-centered action mapping (action=0 = standing home pose, universal
-     servo span = 120°, per-joint clip to joint limits)
+   - home-centered action mapping (action=0 = standing home pose, per-joint
+     span = `max(abs(range_min), abs(range_max))`, clip to joint limits)
    - recovery-friendly termination
    - dominant alive / survival reward
    - domain randomization
@@ -298,8 +298,8 @@ Do not delete:
 
 Deliver:
 - document and enforce the active RL-first recipe
-- home-centered action mapping (action=0 = home, servo span = 120°, per-joint
-  clip)
+- home-centered action mapping (action=0 = home, per-joint span, clip to joint
+  limits)
 - relax termination so near-fall recovery states remain trainable
 - raise alive / survival reward so survival dominates the reward landscape
 - enable domain randomization

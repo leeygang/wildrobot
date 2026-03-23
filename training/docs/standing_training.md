@@ -346,9 +346,13 @@ Objective:
 
 Sequence:
 ```
-v0.17.3a: Core recipe fix (residual actions + relaxed termination + alive bonus)
+v0.17.3a: Core recipe fix (home-centered action + relaxed termination + alive bonus)
+  gate: eval_clean > 95%, action=0 stands, export parity
 v0.17.3b: Robustness (domain randomization + delay/noise)
+  gate: eval_clean > 90% under randomization
 v0.17.4:  Decision gate — eval_hard > 60%?
+  yes → v0.17.5 (push recovery on pure RL)
+  no  → v0.17.4t (conditional step-target teacher)
 ```
 
 #### `v0.17.3a`: Core Recipe Fix
@@ -357,40 +361,63 @@ Three tightly-coupled changes applied together.
 
 **Change 1: Home-centered action mapping**
 
-Current: `ctrl = action * span + center` (center = mid-range of joint limits)
-New: `ctrl = clip(action * policy_action_sign * servo_span, range_min, range_max)`
+Current: `ctrl = action * policy_action_sign * per_joint_span + per_joint_center`
+New: `ctrl = clip(action * policy_action_sign * per_joint_span, range_min, range_max)`
 
-Where `servo_span = deg2rad(120) = 2.094 rad` (the physical servo travel
-limit, same for all joints).
+Where:
+- `per_joint_span = max(abs(range_min - home), abs(range_max - home))`
+- `home ≈ 0 rad` for all joints (confirmed from `assets/v2/keyframes.xml`)
+- So effectively: `per_joint_span = max(abs(range_min), abs(range_max))`
 
 Why:
-- Home keyframe is ~0 rad for all joints (confirmed from
-  `assets/v2/keyframes.xml`). So removing `ctrl_center` is equivalent to
-  centering on home.
-- The current mapping puts action=0 at mid-range, which is a crouched/bent pose
-  for most joints. The policy must learn a non-zero constant just to stand.
+- The current mapping puts action=0 at the midpoint of each joint range, which
+  is a crouched/bent pose for most joints. The policy must learn a non-zero
+  constant just to stand.
 - With the new mapping, action=0 = home = standing pose.
-- `servo_span = 2.094 rad` is the universal maximum because the servo travel is
-  [-120°, +120°]. Using one constant for all joints simplifies the code and
-  preserves full joint range (the per-joint `clip` enforces actual limits).
+- Per-joint spans preserve action resolution. A universal span (e.g., 120°)
+  would waste most of the [-1, +1] range on joints like knee [0°, 80°] where
+  83% of actions would clip. Per-joint spans ensure action=±1 reaches the
+  further limit, with only the short side clipping (minimally).
 - The runtime `target_rad → servo units` path is completely unchanged — it uses
-  its own `motor_center_mujoco_deg` and `motor_sign`, independent of
-  `ctrl_center`.
+  its own `motor_center_mujoco_deg` and `motor_sign`, independent of the
+  action mapping.
 
-Implementation:
-- Remove `ctrl_center` from the action→ctrl mapping (or set it to 0).
-- Replace per-joint `ctrl_span` with the universal constant `2.094 rad`.
-- Keep `clip(target_rad, range_min, range_max)` per joint.
-- Keep `policy_action_sign` unchanged.
-- Update `ctrl_to_policy_action` (inverse) to match.
-- Joint position observation normalization: use the same span so obs=0 means
-  "at home."
+Per-joint span examples (home = 0 for all):
+
+| Joint | range (rad) | per_joint_span | action=+1 | action=-1 |
+|---|---|---|---|---|
+| left_hip_pitch | [-0.087, 1.484] | 1.484 | 1.484 ✓ | -1.484 → clip -0.087 |
+| left_knee_pitch | [0.0, 1.396] | 1.396 | 1.396 ✓ | -1.396 → clip 0.0 |
+| left_ankle_pitch | [-0.698, 0.785] | 0.785 | 0.785 ✓ | -0.785 → clip -0.698 |
+| waist_yaw | [-0.524, 0.524] | 0.524 | 0.524 ✓ | -0.524 ✓ |
+| left_shoulder_pitch | [-0.524, 3.142] | 3.142 | 3.142 ✓ | -3.142 → clip -0.524 |
+
+Implementation surface — the actual action→ctrl path:
+
+The training/eval/export path uses `policy_contract`, NOT `training/cal/cal.py`.
+The call chain is:
+- `wildrobot_env.py:1125` → `JaxCalibOps.action_to_ctrl(spec=self._policy_spec, ...)`
+- `wildrobot_env.py:829` → `JaxCalibOps.ctrl_to_policy_action(spec=..., ...)`
+- Both dispatch to `policy_contract/jax/calib.py` which reads
+  centers/spans from `spec.robot.joints`
+
+The change must go through `policy_contract`, with CAL kept in sync.
 
 Files:
-- `training/cal/cal.py` — change `_precompute_arrays()`: set `_ctrl_centers` to
-  0, set `_ctrl_spans` to 2.094; add clip to `policy_action_to_ctrl()`
-- `training/cal/specs.py` — no change needed (range properties still used for
-  clip bounds)
+- `policy_contract/jax/calib.py` — change `_get_joint_params()` to compute
+  home-centered spans: `center = home` (0), `span = max(abs(range_min), abs(range_max))`.
+  Add `clip(ctrl, range_min, range_max)` to `action_to_ctrl()`. Update
+  `ctrl_to_policy_action()` inverse.
+- `policy_contract/numpy/calib.py` — mirror the same change for runtime
+- `policy_contract/jax/obs.py` — update `normalize_joint_pos` to use the same
+  home-centered span so obs=0 means "at home"
+- `policy_contract/numpy/obs.py` — mirror for runtime
+- `policy_contract/spec.py` — add `"pos_target_home_v1"` to
+  `SUPPORTED_MAPPING_IDS`; dispatch in calib based on `spec.action.mapping_id`
+- `policy_contract/spec_builder.py` — accept `mapping_id` parameter
+- `training/cal/cal.py` — keep in sync (same span formula in
+  `_precompute_arrays()`)
+- `training/configs/training_config.py` — wire `mapping_id` from YAML
 - `docs/joints_angle.md` — update section 2 equations
 - Runtime path (`runtime/wr_runtime/hardware/actuators.py`) — no change needed
 
@@ -433,7 +460,7 @@ version: "0.17.3a"
 version_name: "Recipe Fix - Residual Actions + Relaxed Term + Alive Bonus"
 
 env:
-  use_home_centered_action: true  # action=0 → home pose, span = 120 deg
+  action_mapping_id: pos_target_home_v1  # action=0 → home, per-joint span
   use_relaxed_termination: true
   min_height: 0.15             # only terminate near ground
   action_filter_alpha: 0.3     # reduce from 0.6 — residual actions bounded
@@ -471,7 +498,22 @@ Expected: within 100 iterations the policy should learn quiet standing (since
 action=0 is already standing). Push recovery should start emerging as training
 progresses.
 
-#### `v0.17.3b`: Robustness (after v0.17.3a validates)
+#### `v0.17.3a` exit gate
+
+v0.17.3a passes if:
+- `eval_clean/success_rate > 95%` (quiet standing not broken)
+- `eval_hard/success_rate` is measured and logged (no minimum required —
+  this is the baseline for comparison)
+- Action=0 produces stable standing in visualization (no drift, no crouch)
+- Policy export + runtime parity check passes
+
+v0.17.3a fails if:
+- Quiet standing regresses below 90%
+- Training diverges within 100 iterations
+
+Only proceed to v0.17.3b after v0.17.3a passes.
+
+#### `v0.17.3b`: Robustness (after v0.17.3a gate passes)
 
 **Change 4: Domain randomization**
 
@@ -486,16 +528,46 @@ New file: `training/envs/domain_randomize.py`
 - Follow Open Duck pattern: modify `mjx_model` fields in-place (vmapped)
 - Gated by config flag `domain_randomization_enabled: bool`
 
+Implementation note: the current training loop vmaps `env.reset`/`env.step`
+over state, not over model. Domain randomization must either:
+- (a) randomize parameters that live in `mjx.Data` (e.g., qpos0 offsets), or
+- (b) store randomized model parameters in env state and apply them at
+  reset/step time, or
+- (c) batch-vmap over both model and state (requires threading changes)
+
+Option (a) is the smallest first step. Option (b) follows the Open Duck
+pattern. Option (c) is the most general but the largest change. The
+implementation should start with (a)/(b) and only escalate to (c) if needed.
+
 **Change 5: Action and IMU delay + sensor noise**
 
-- Action delay ring buffer: store last N actions, sample delay d ~ U[0, max),
-  apply `action_history[d]` instead of current action
+Implementation note: the current env state stores only a single `prev_action`
+(`env_info.py:76`), not an action history ring buffer. Action delay requires
+either:
+- expanding env state to store an action history array of length N, or
+- using a simpler 1-step fixed delay (apply `prev_action` instead of current
+  action) as the first version
+
+Start with 1-step fixed delay, escalate to ring buffer only if needed.
+
 - IMU noise: `imu_gyro_noise_std: 0.05`, `imu_quat_noise_deg: 1.0`,
-  `imu_latency_steps: 2`
+  `imu_latency_steps: 1` (1-step fixed delay first)
 - Joint position noise: per-joint Gaussian before normalization
 
-Config: `ppo_standing_v0173b.yaml` — inherits v0.17.3a, enables domain rand +
-delay + noise.
+Config: `ppo_standing_v0173b.yaml` — standalone config (the config loader uses
+plain `yaml.safe_load` with no inheritance/merge mechanism, so this config must
+be self-contained, not "inheriting" from v0.17.3a).
+
+#### `v0.17.3b` exit gate
+
+v0.17.3b passes if:
+- `eval_clean/success_rate > 90%` (standing survives randomization)
+- `eval_hard/success_rate` measured and compared against v0.17.3a baseline
+- Domain randomization is confirmed active (logged randomized parameter stats)
+
+v0.17.3b fails if:
+- Quiet standing drops below 80% under randomization
+- Training diverges
 
 #### Files Summary
 
@@ -503,10 +575,16 @@ v0.17.3a (must modify):
 
 | File | Change |
 |---|---|
-| `training/cal/cal.py` | Home-centered action: `_ctrl_centers`→0, `_ctrl_spans`→2.094, add clip |
+| `policy_contract/jax/calib.py` | Home-centered `_get_joint_params()`, add clip in `action_to_ctrl()` |
+| `policy_contract/numpy/calib.py` | Mirror for runtime |
+| `policy_contract/jax/obs.py` | Home-centered joint position normalization |
+| `policy_contract/numpy/obs.py` | Mirror for runtime |
+| `policy_contract/spec.py` | Add `pos_target_home_v1` to supported mappings |
+| `policy_contract/spec_builder.py` | Accept `mapping_id` param |
+| `training/cal/cal.py` | Keep in sync with policy_contract span formula |
 | `training/envs/wildrobot_env.py` | Alive reward, relaxed termination |
 | `training/configs/training_runtime_config.py` | New config fields |
-| `training/configs/training_config.py` | Wire new fields from YAML |
+| `training/configs/training_config.py` | Wire `mapping_id` + new fields from YAML |
 | `training/configs/ppo_standing_v0173a.yaml` | **New config** |
 | `docs/joints_angle.md` | Update section 2 action↔ctrl equations |
 
@@ -526,11 +604,21 @@ Exit criteria:
 - the branch is ready for a teacher decision only if the pure-RL rerun still
   misses the gate
 
-### `v0.17.4`: Conditional Step-Target Teacher / Scaffold Integration
+### `v0.17.4`: Decision Gate + Conditional Teacher
+
+This milestone has two outcomes depending on `eval_hard` after v0.17.3.
+
+**If `eval_hard > 60%`**: pure RL succeeded. Skip teacher work, proceed
+directly to `v0.17.5` (push recovery hardening on pure RL).
+
+**If `eval_hard <= 60%`**: pure RL still misses the gate. Proceed to
+`v0.17.4t` (teacher integration).
+
+#### `v0.17.4t`: Conditional Step-Target Teacher (only if gate missed)
 
 Objective:
-- add bounded geometry assistance only if the recipe-fixed pure-RL branch still
-  misses the hard gate
+- add bounded geometry assistance because the recipe-fixed pure-RL branch
+  still misses the hard gate
 
 Changes:
 - optional capture-point or similar step-target heuristic
