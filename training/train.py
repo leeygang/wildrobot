@@ -95,6 +95,7 @@ from training.core.experiment_tracking import (
     save_and_upload_video,
     WandbTracker,
 )
+from training.policy_spec_utils import build_policy_spec_from_training_config
 
 
 def parse_args():
@@ -250,7 +251,6 @@ def start_training(
     import numpy as np
 
     from training.configs.training_config import get_robot_config
-    from policy_contract.spec_builder import build_policy_spec
     from policy_contract.calib import JaxCalibOps
 
     def _to_yamlable(value: Any) -> Any:
@@ -349,12 +349,9 @@ def start_training(
 
     # Policy contract fingerprint (stored in checkpoints to prevent silent resume drift).
     robot_cfg = get_robot_config()
-    policy_spec = build_policy_spec(
-        robot_name=robot_cfg.robot_name,
-        actuated_joint_specs=robot_cfg.actuated_joints,
-        action_filter_alpha=float(training_cfg.env.action_filter_alpha),
-        layout_id=str(training_cfg.env.actor_obs_layout_id),
-        mapping_id=str(training_cfg.env.action_mapping_id),
+    policy_spec = build_policy_spec_from_training_config(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
     )
     policy_spec_dict = policy_spec.to_json_dict()
 

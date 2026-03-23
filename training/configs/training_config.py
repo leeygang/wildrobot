@@ -524,6 +524,7 @@ def load_training_config(config_path: str | Path) -> TrainingConfig:
         config = yaml.safe_load(f)
 
     _training_config = load_training_config_from_dict(config)
+    _training_config.config_path = str(Path(config_path))
     return _training_config
 
 

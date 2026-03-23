@@ -50,22 +50,14 @@ from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.state import PolicyState
-from policy_contract.spec import (
-    ActionSpec,
-    JointSpec,
-    ModelSpec,
-    ObservationSpec,
-    ObsFieldSpec,
-    PolicySpec,
-    RobotSpec,
-)
-from policy_contract.spec_builder import build_policy_spec as build_policy_spec_contract
+from policy_contract.spec import PolicySpec
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.specs import CoordinateFrame, Pose3D
 from training.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
+from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 
@@ -85,14 +77,16 @@ class PushSchedule:
 
 
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
-    return build_policy_spec_contract(
-        robot_name=robot_cfg.robot_name,
-        actuated_joint_specs=robot_cfg.actuated_joints,
+    return build_policy_spec_from_training_config(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
         action_filter_alpha=float(action_filter_alpha),
-        layout_id=str(training_cfg.env.actor_obs_layout_id),
-        mapping_id=str(getattr(training_cfg.env, "action_mapping_id", "pos_target_rad_v1")),
         provenance={
-            "training_config": str(training_cfg.config_path) if hasattr(training_cfg, "config_path") else "<runtime>",
+            "training_config": (
+                str(training_cfg.config_path)
+                if hasattr(training_cfg, "config_path")
+                else "<runtime>"
+            ),
         },
     )
 

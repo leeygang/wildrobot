@@ -76,6 +76,7 @@ from training.core.metrics_registry import (
     unpack_metrics,
 )
 from training.envs.env_info import WR_INFO_KEY
+from training.policy_spec_utils import build_policy_spec_from_training_config
 
 
 # =============================================================================
@@ -1133,15 +1134,10 @@ def train(
     amp_enabled = config.amp.enabled
     mode_str = "AMP+PPO" if amp_enabled else "PPO-only"
 
-    from policy_contract.spec_builder import build_policy_spec
-
     robot_config = get_robot_config()
-    spec = build_policy_spec(
-        robot_name=robot_config.robot_name,
-        actuated_joint_specs=robot_config.actuated_joints,
-        action_filter_alpha=float(config.env.action_filter_alpha),
-        layout_id=str(config.env.actor_obs_layout_id),
-        mapping_id=str(config.env.action_mapping_id),
+    spec = build_policy_spec_from_training_config(
+        training_cfg=config,
+        robot_cfg=robot_config,
     )
     obs_dim = spec.model.obs_dim
     action_dim = spec.model.action_dim

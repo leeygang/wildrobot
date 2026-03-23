@@ -71,6 +71,10 @@ from training.envs.disturbance import (
     apply_push,
     sample_push_schedule,
 )
+from training.envs.domain_randomize import (
+    nominal_domain_rand_params,
+    sample_domain_rand_params,
+)
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import (
     build_metrics_vec,
@@ -79,6 +83,7 @@ from training.core.metrics_registry import (
     NUM_METRICS,
 )
 from policy_contract.spec_builder import build_policy_spec
+from training.policy_spec_utils import clamp_home_ctrl, get_home_ctrl_from_mj_model
 
 
 # =============================================================================
@@ -664,6 +669,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"must equal IMU_MAX_LATENCY ({IMU_MAX_LATENCY}) compiled into env_info.py. "
                 "Adjust your config or the code to use a different fixed max latency."
             )
+        if int(getattr(self._config.env, "action_delay_steps", 0)) not in (0, 1):
+            raise ValueError(
+                "Only action_delay_steps in {0, 1} is currently supported."
+            )
+        self._action_delay_enabled = int(getattr(self._config.env, "action_delay_steps", 0)) == 1
 
         # Model path (required - must be in config)
         if not config.env.scene_xml_path:
@@ -757,15 +767,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Extract joint-only qpos for control default from CAL (single source of truth)
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
-        # Build policy spec after CAL so we can use home_ctrl_rad from keyframe.
-        # Clamp to joint ranges to handle keyframe settling noise (e.g., -1e-5
-        # on a joint with range [0, 1.4]).
-        home_ctrl_list = []
-        for i, entry in enumerate(self._robot_config.actuated_joints):
-            val = float(self._default_joint_qpos[i])
-            rng = entry.get("range", [-3.14, 3.14])
-            val = max(rng[0], min(rng[1], val))
-            home_ctrl_list.append(val)
+        # Build policy spec after CAL so the action contract uses the exact
+        # MJCF home pose everywhere: training, env, eval, and export.
+        home_ctrl_list = clamp_home_ctrl(
+            home_ctrl=get_home_ctrl_from_mj_model(
+                mj_model=self._mj_model,
+                actuator_names=[str(item["name"]) for item in self._robot_config.actuated_joints],
+            ),
+            actuated_joint_specs=self._robot_config.actuated_joints,
+            actuator_names=[str(item["name"]) for item in self._robot_config.actuated_joints],
+        )
         self._policy_spec = build_policy_spec(
             robot_name=self._robot_config.robot_name,
             actuated_joint_specs=self._robot_config.actuated_joints,
@@ -782,6 +793,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
             spec=self._policy_spec,
             ctrl_rad=self._default_joint_qpos,
         ).astype(jp.float32)
+        self._joint_range_mins = jp.asarray(
+            [float(item["range"][0]) for item in self._robot_config.actuated_joints],
+            dtype=jp.float32,
+        )
+        self._joint_range_maxs = jp.asarray(
+            [float(item["range"][1]) for item in self._robot_config.actuated_joints],
+            dtype=jp.float32,
+        )
+        actuator_qpos_addrs = []
+        actuator_dof_addrs = []
+        for name in self._policy_spec.robot.actuator_names:
+            act_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            joint_id = int(self._mj_model.actuator_trnid[act_id][0])
+            actuator_qpos_addrs.append(int(self._mj_model.jnt_qposadr[joint_id]))
+            actuator_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
+        self._actuator_qpos_addrs = jp.asarray(actuator_qpos_addrs, dtype=jp.int32)
+        self._actuator_dof_addrs = jp.asarray(actuator_dof_addrs, dtype=jp.int32)
+        self._base_geom_friction = self._mjx_model.geom_friction
+        self._base_body_mass = self._mjx_model.body_mass
+        self._base_actuator_gainprm = self._mjx_model.actuator_gainprm
+        self._base_actuator_biasprm = self._mjx_model.actuator_biasprm
+        self._base_dof_frictionloss = self._mjx_model.dof_frictionloss
 
         # Disturbance configuration
         self._push_body_ids = jp.asarray([-1], dtype=jp.int32)
@@ -804,12 +837,65 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # MjxEnv Interface
     # =========================================================================
 
+    def _sample_domain_rand_params(self, rng: jax.Array) -> dict[str, jax.Array]:
+        if not bool(getattr(self._config.env, "domain_randomization_enabled", False)):
+            return nominal_domain_rand_params(
+                num_bodies=self._mj_model.nbody,
+                num_actuators=self.action_size,
+            )
+        return sample_domain_rand_params(
+            rng,
+            num_bodies=self._mj_model.nbody,
+            num_actuators=self.action_size,
+            friction_range=tuple(self._config.env.domain_rand_friction_range),
+            mass_scale_range=tuple(self._config.env.domain_rand_mass_scale_range),
+            kp_scale_range=tuple(self._config.env.domain_rand_kp_scale_range),
+            frictionloss_scale_range=tuple(
+                self._config.env.domain_rand_frictionloss_scale_range
+            ),
+            joint_offset_rad=float(self._config.env.domain_rand_joint_offset_rad),
+        )
+
+    def _get_randomized_mjx_model(self, wr: WildRobotInfo | dict[str, jax.Array]) -> mjx.Model:
+        if not bool(getattr(self._config.env, "domain_randomization_enabled", False)):
+            return self._mjx_model
+        if isinstance(wr, dict):
+            friction_scale = wr["friction_scale"]
+            mass_scales = wr["mass_scales"]
+            kp_scales = wr["kp_scales"]
+            frictionloss_scales = wr["frictionloss_scales"]
+        else:
+            friction_scale = wr.domain_rand_friction_scale
+            mass_scales = wr.domain_rand_mass_scales
+            kp_scales = wr.domain_rand_kp_scales
+            frictionloss_scales = wr.domain_rand_frictionloss_scales
+
+        geom_friction = self._base_geom_friction * friction_scale
+        body_mass = self._base_body_mass * mass_scales
+        actuator_gainprm = self._base_actuator_gainprm.at[:, 0].set(
+            self._base_actuator_gainprm[:, 0] * kp_scales
+        )
+        actuator_biasprm = self._base_actuator_biasprm.at[:, 1].set(
+            self._base_actuator_biasprm[:, 1] * kp_scales
+        )
+        dof_frictionloss = self._base_dof_frictionloss.at[self._actuator_dof_addrs].set(
+            self._base_dof_frictionloss[self._actuator_dof_addrs] * frictionloss_scales
+        )
+        return self._mjx_model.replace(
+            geom_friction=geom_friction,
+            body_mass=body_mass,
+            actuator_gainprm=actuator_gainprm,
+            actuator_biasprm=actuator_biasprm,
+            dof_frictionloss=dof_frictionloss,
+        )
+
     def _make_initial_state(
         self,
         qpos: jax.Array,
         velocity_cmd: jax.Array,
         base_info: dict | None = None,
         push_schedule: DisturbanceSchedule | None = None,
+        domain_rand_params: dict[str, jax.Array] | None = None,
     ) -> WildRobotEnvState:
         """Create initial environment state from qpos (shared by reset and auto-reset).
 
@@ -824,11 +910,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             Initial WildRobotEnvState
         """
         qvel = jp.zeros(self._mj_model.nv)
+        if domain_rand_params is None:
+            domain_rand_params = nominal_domain_rand_params(
+                num_bodies=self._mj_model.nbody,
+                num_actuators=self.action_size,
+            )
+        randomized_model = self._get_randomized_mjx_model(domain_rand_params)
 
         # Create MJX data and run forward kinematics
-        data = mjx.make_data(self._mjx_model)
+        data = mjx.make_data(randomized_model)
         data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
-        data = mjx.forward(self._mjx_model, data)
+        data = mjx.forward(randomized_model, data)
 
         if push_schedule is None:
             push_schedule = DisturbanceSchedule(
@@ -963,6 +1055,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=default_action,
+            pending_action=default_action,
             truncated=jp.zeros(()),  # No truncation at reset
             velocity_cmd=velocity_cmd,  # Target velocity for this episode
             prev_root_pos=root_pose.position,  # (3,)
@@ -1008,6 +1101,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             mpc_target_step_y=jp.zeros((), dtype=jp.float32),
             mpc_support_state=jp.zeros((), dtype=jp.float32),
             mpc_step_requested=jp.zeros((), dtype=jp.float32),
+            domain_rand_friction_scale=domain_rand_params["friction_scale"],
+            domain_rand_mass_scales=domain_rand_params["mass_scales"],
+            domain_rand_kp_scales=domain_rand_params["kp_scales"],
+            domain_rand_frictionloss_scales=domain_rand_params["frictionloss_scales"],
+            domain_rand_joint_offsets=domain_rand_params["joint_offsets"],
         )
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
@@ -1042,7 +1140,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Initial WildRobotEnvState.
         """
-        rng, key1, key2, key3 = jax.random.split(rng, 4)
+        rng, key1, key2, key3, key4 = jax.random.split(rng, 5)
 
         # Sample velocity command
         velocity_cmd = jax.random.uniform(
@@ -1052,6 +1150,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             maxval=self._config.env.max_velocity,
         )
 
+        domain_rand_params = self._sample_domain_rand_params(key4)
+
         # Use initial qpos from model (keyframe or qpos0)
         qpos = self._init_qpos.copy()
 
@@ -1059,9 +1159,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_noise = jax.random.uniform(
             key2, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
         )
-        qpos = qpos.at[7 : 7 + len(self._default_joint_qpos)].set(
-            self._default_joint_qpos + joint_noise
+        joint_qpos = (
+            self._default_joint_qpos
+            + joint_noise
+            + domain_rand_params["joint_offsets"]
         )
+        joint_qpos = jp.clip(joint_qpos, self._joint_range_mins, self._joint_range_maxs)
+        qpos = qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
         schedule = sample_push_schedule(key3, self._config.env, self._push_body_ids)
 
@@ -1069,6 +1173,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             qpos,
             velocity_cmd,
             push_schedule=schedule,
+            domain_rand_params=domain_rand_params,
         )
 
     def step(
@@ -1092,6 +1197,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd = wr.velocity_cmd
         step_count = wr.step_count
         prev_action = wr.prev_action
+        pending_action = wr.pending_action
 
         policy_action = action
 
@@ -1124,19 +1230,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
                 wr.fsm_touch_hold, wr.fsm_trigger_hold,
             )
-        policy_state = PolicyState(prev_action=prev_action)
+        policy_state = PolicyState(prev_action=pending_action)
         filtered_action, policy_state = postprocess_action(
             spec=self._policy_spec,
             state=policy_state,
             action_raw=raw_action,
         )
+        applied_action = pending_action if self._action_delay_enabled else filtered_action
 
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
         # =====================================================================
         # CAL applies symmetry correction (policy_action_sign) for left/right joints
         # This ensures same action values produce symmetric motion on both sides
-        ctrl = JaxCalibOps.action_to_ctrl(spec=self._policy_spec, action=filtered_action)
+        ctrl = JaxCalibOps.action_to_ctrl(spec=self._policy_spec, action=applied_action)
         data = state.data.replace(ctrl=ctrl)
 
         # Apply external push disturbance (JIT-safe boolean gating)
@@ -1147,8 +1254,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         data = apply_push(data, wr.push_schedule, step_count, enabled=push_enabled)
 
         # Physics simulation (multiple substeps)
+        randomized_model = self._get_randomized_mjx_model(wr)
+
         def substep_fn(data, _):
-            return mjx.step(self._mjx_model, data), None
+            return mjx.step(randomized_model, data), None
 
         n_substeps = int(self.dt / self.sim_dt)
         data, _ = jax.lax.scan(substep_fn, data, None, length=n_substeps)
@@ -1166,7 +1275,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Build observation using possibly delayed/noisy IMU signals
         obs = self._get_obs(
             data,
-            filtered_action,
+            applied_action,
             velocity_cmd,
             step_count=step_count + 1,
             prev_root_pos=prev_root_pos,
@@ -1183,7 +1292,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Compute reward
         reward, reward_components = self._get_reward(
             data,
-            filtered_action,
+            applied_action,
             policy_action,
             prev_action,
             velocity_cmd,
@@ -1328,7 +1437,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
             step_count=step_count + 1,
-            prev_action=policy_state.prev_action,
+            prev_action=applied_action,
+            pending_action=policy_state.prev_action,
             truncated=truncated,  # 1.0 if reached max steps (success), 0.0 otherwise
             velocity_cmd=velocity_cmd,  # Preserved through episode
             prev_root_pos=curr_root_pose.position,
@@ -1374,6 +1484,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             mpc_target_step_y=metrics["debug/mpc_target_step_y"],
             mpc_support_state=metrics["debug/mpc_support_state"],
             mpc_step_requested=metrics["debug/mpc_step_requested"],
+            domain_rand_friction_scale=wr.domain_rand_friction_scale,
+            domain_rand_mass_scales=wr.domain_rand_mass_scales,
+            domain_rand_kp_scales=wr.domain_rand_kp_scales,
+            domain_rand_frictionloss_scales=wr.domain_rand_frictionloss_scales,
+            domain_rand_joint_offsets=wr.domain_rand_joint_offsets,
         )
 
         # Preserve wrapper fields, update wr namespace
@@ -1390,14 +1505,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         # Use updated RNG after consuming IMU noise
+        rng_after, reset_push_rng, reset_domain_rng = jax.random.split(rng_after, 3)
         reset_schedule = sample_push_schedule(
-            rng_after, self._config.env, self._push_body_ids
+            reset_push_rng, self._config.env, self._push_body_ids
+        )
+        reset_domain_rand_params = self._sample_domain_rand_params(reset_domain_rng)
+        reset_qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(
+            jp.clip(
+                self._default_joint_qpos + reset_domain_rand_params["joint_offsets"],
+                self._joint_range_mins,
+                self._joint_range_maxs,
+            )
         )
         reset_state = self._make_initial_state(
-            self._init_qpos,
+            reset_qpos,
             velocity_cmd,
             base_info=state.info,
             push_schedule=reset_schedule,
+            domain_rand_params=reset_domain_rand_params,
         )
 
         # v0.10.2: Preserve termination diagnostics in metrics even after reset

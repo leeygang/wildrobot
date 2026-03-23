@@ -74,7 +74,8 @@ try:
         """
         # Core bookkeeping
         step_count: jnp.ndarray  # shape=()
-        prev_action: jnp.ndarray  # shape=(action_size,)
+        prev_action: jnp.ndarray  # shape=(action_size,), action applied this step
+        pending_action: jnp.ndarray  # shape=(action_size,), next filtered action
         truncated: jnp.ndarray  # shape=(), sticky through auto-reset
         velocity_cmd: jnp.ndarray  # shape=(), target velocity for episode
 
@@ -156,6 +157,13 @@ try:
         mpc_support_state: jnp.ndarray  # shape=()
         mpc_step_requested: jnp.ndarray  # shape=()
 
+        # v0.17.3b: episode-constant domain randomization state
+        domain_rand_friction_scale: jnp.ndarray  # shape=()
+        domain_rand_mass_scales: jnp.ndarray  # shape=(num_bodies,)
+        domain_rand_kp_scales: jnp.ndarray  # shape=(action_size,)
+        domain_rand_frictionloss_scales: jnp.ndarray  # shape=(action_size,)
+        domain_rand_joint_offsets: jnp.ndarray  # shape=(action_size,)
+
 except ImportError:
     # Fallback to NamedTuple if flax not available
     from typing import NamedTuple
@@ -164,6 +172,7 @@ except ImportError:
         """Strict schema for WildRobot algorithm-critical info fields."""
         step_count: jnp.ndarray
         prev_action: jnp.ndarray
+        pending_action: jnp.ndarray
         truncated: jnp.ndarray
         velocity_cmd: jnp.ndarray
         prev_root_pos: jnp.ndarray
@@ -206,6 +215,11 @@ except ImportError:
         mpc_target_step_y: jnp.ndarray
         mpc_support_state: jnp.ndarray
         mpc_step_requested: jnp.ndarray
+        domain_rand_friction_scale: jnp.ndarray
+        domain_rand_mass_scales: jnp.ndarray
+        domain_rand_kp_scales: jnp.ndarray
+        domain_rand_frictionloss_scales: jnp.ndarray
+        domain_rand_joint_offsets: jnp.ndarray
         push_schedule: DisturbanceSchedule
 
 
@@ -229,6 +243,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
     return {
         "step_count": (),
         "prev_action": (action_size,),
+        "pending_action": (action_size,),
         "truncated": (),
         "velocity_cmd": (),
         "prev_root_pos": (3,),
@@ -271,6 +286,11 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "mpc_target_step_y": (),
         "mpc_support_state": (),
         "mpc_step_requested": (),
+        "domain_rand_friction_scale": (),
+        "domain_rand_mass_scales": None,
+        "domain_rand_kp_scales": (action_size,),
+        "domain_rand_frictionloss_scales": (action_size,),
+        "domain_rand_joint_offsets": (action_size,),
         "push_schedule": {
             "start_step": (),
             "end_step": (),
@@ -341,7 +361,7 @@ def validate_wildrobot_info(
                         f"shape {sub_shape}, got {sub_value.shape}"
                     )
         else:
-            if value.shape != expected_shape:
+            if expected_shape is not None and value.shape != expected_shape:
                 errors.append(
                     f"[{context}] Field '{field_name}': expected shape {expected_shape}, "
                     f"got {value.shape}"

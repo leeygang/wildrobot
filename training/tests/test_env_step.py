@@ -76,6 +76,26 @@ def standing_env_m2(robot_config):
     return WildRobotEnv(config=training_cfg)
 
 
+@pytest.fixture(scope="module")
+def standing_env_delay(robot_config):
+    """Standing env with 1-step action delay enabled."""
+    from assets.robot_config import load_robot_config
+    from training.configs.training_config import load_training_config
+
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    training_cfg = load_training_config("training/configs/ppo_standing.yaml")
+    training_cfg.env.velocity_cmd_min = 0.0
+    training_cfg.env.velocity_cmd_max = 0.0
+    training_cfg.env.push_enabled = False
+    training_cfg.env.action_filter_alpha = 0.0
+    training_cfg.env.action_delay_steps = 1
+    training_cfg.freeze()
+
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    return WildRobotEnv(config=training_cfg)
+
+
 # =============================================================================
 # Test 5.1: Reset Contract
 # =============================================================================
@@ -157,8 +177,8 @@ class TestResetContract:
         - prev_action corresponds to data.ctrl at reset
         - observation action slice matches prev_action
         """
+        from policy_contract.layout import get_slices
         from training.envs.env_info import WR_INFO_KEY
-        from training.envs.wildrobot_env import ObsLayout
 
         state = env.reset(rng)
         wr_info = state.info[WR_INFO_KEY]
@@ -168,7 +188,7 @@ class TestResetContract:
             wr_info.prev_action, expected_action, atol=1e-6
         ), "prev_action does not match ctrl-derived action at reset"
 
-        action_slice = ObsLayout.get_slices()["action"]
+        action_slice = get_slices(env._policy_spec.observation)["prev_action"]
         obs_action = state.obs[action_slice]
         assert jnp.allclose(
             obs_action, wr_info.prev_action, atol=1e-6
@@ -502,7 +522,7 @@ class TestObservationConsistency:
         Assertions:
         - After step, observation contains the filtered action that was applied
         """
-        from training.envs.wildrobot_env import ObsLayout
+        from policy_contract.layout import get_slices
 
         state = env.reset(rng)
 
@@ -513,8 +533,34 @@ class TestObservationConsistency:
         # The observation should contain the filtered action
         alpha = env._config.env.action_filter_alpha
         expected_action = (1.0 - alpha) * action
-        action_slice = ObsLayout.get_slices()["action"]
+        action_slice = get_slices(env._policy_spec.observation)["prev_action"]
         obs_prev_action = new_state.obs[action_slice]
         assert jnp.allclose(
             obs_prev_action, expected_action, atol=1e-6
         ), f"prev_action slice mismatch: got {obs_prev_action}, expected {expected_action}"
+
+    @pytest.mark.sim
+    def test_action_delay_uses_pending_action(self, standing_env_delay, rng):
+        """Verify 1-step action delay applies the queued action, not the current one."""
+        from policy_contract.layout import get_slices
+        from training.envs.env_info import WR_INFO_KEY
+
+        state = standing_env_delay.reset(rng)
+        wr0 = state.info[WR_INFO_KEY]
+        action = jnp.array([0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8], dtype=jnp.float32)
+
+        state1 = standing_env_delay.step(state, action)
+        wr1 = state1.info[WR_INFO_KEY]
+        action_slice = get_slices(standing_env_delay._policy_spec.observation)["prev_action"]
+
+        assert jnp.allclose(wr1.prev_action, wr0.pending_action, atol=1e-6)
+        assert jnp.allclose(wr1.pending_action, action, atol=1e-6)
+        assert jnp.allclose(state1.obs[action_slice], wr1.prev_action, atol=1e-6)
+
+        zero_action = jnp.zeros_like(action)
+        state2 = standing_env_delay.step(state1, zero_action)
+        wr2 = state2.info[WR_INFO_KEY]
+
+        assert jnp.allclose(wr2.prev_action, action, atol=1e-6)
+        assert jnp.allclose(wr2.pending_action, zero_action, atol=1e-6)
+        assert jnp.allclose(state2.obs[action_slice], wr2.prev_action, atol=1e-6)
