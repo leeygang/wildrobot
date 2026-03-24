@@ -146,6 +146,32 @@ try:
         recovery_touchdown_count: jnp.ndarray  # shape=(), int32
         #: Accumulated support-foot changes during recovery period
         recovery_support_foot_changes: jnp.ndarray  # shape=(), int32
+        #: Whether first liftoff after push_end has been recorded
+        recovery_first_liftoff_recorded: jnp.ndarray  # shape=(), bool
+        #: Latched latency from push_end to first liftoff
+        recovery_first_liftoff_latency: jnp.ndarray  # shape=(), int32
+        #: Age at first touchdown (used for +10 tick diagnostics)
+        recovery_first_touchdown_age: jnp.ndarray  # shape=(), int32
+        #: Pitch rate sampled at push end
+        recovery_pitch_rate_at_push_end: jnp.ndarray  # shape=()
+        #: Pitch rate sampled at first touchdown
+        recovery_pitch_rate_at_touchdown: jnp.ndarray  # shape=()
+        #: Pitch rate sampled 10 ticks after first touchdown
+        recovery_pitch_rate_after_10t: jnp.ndarray  # shape=()
+        #: Capture-point error norm sampled at push end
+        recovery_capture_error_at_push_end: jnp.ndarray  # shape=()
+        #: Capture-point error norm sampled at first touchdown
+        recovery_capture_error_at_touchdown: jnp.ndarray  # shape=()
+        #: Capture-point error norm sampled 10 ticks after first touchdown
+        recovery_capture_error_after_10t: jnp.ndarray  # shape=()
+        #: First touchdown foot x in heading-local frame
+        recovery_first_step_dx: jnp.ndarray  # shape=()
+        #: First touchdown foot y in heading-local frame
+        recovery_first_step_dy: jnp.ndarray  # shape=()
+        #: First touchdown x-target error
+        recovery_first_step_target_err_x: jnp.ndarray  # shape=()
+        #: First touchdown y-target error
+        recovery_first_step_target_err_y: jnp.ndarray  # shape=()
 
         # v0.17.3: architecture-pivot controller debug state (scalar latches)
         mpc_planner_active: jnp.ndarray  # shape=()
@@ -207,6 +233,19 @@ except ImportError:
         recovery_first_step_latency: jnp.ndarray
         recovery_touchdown_count: jnp.ndarray
         recovery_support_foot_changes: jnp.ndarray
+        recovery_first_liftoff_recorded: jnp.ndarray
+        recovery_first_liftoff_latency: jnp.ndarray
+        recovery_first_touchdown_age: jnp.ndarray
+        recovery_pitch_rate_at_push_end: jnp.ndarray
+        recovery_pitch_rate_at_touchdown: jnp.ndarray
+        recovery_pitch_rate_after_10t: jnp.ndarray
+        recovery_capture_error_at_push_end: jnp.ndarray
+        recovery_capture_error_at_touchdown: jnp.ndarray
+        recovery_capture_error_after_10t: jnp.ndarray
+        recovery_first_step_dx: jnp.ndarray
+        recovery_first_step_dy: jnp.ndarray
+        recovery_first_step_target_err_x: jnp.ndarray
+        recovery_first_step_target_err_y: jnp.ndarray
         mpc_planner_active: jnp.ndarray
         mpc_controller_active: jnp.ndarray
         mpc_target_com_x: jnp.ndarray
@@ -278,6 +317,19 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "recovery_first_step_latency": (),
         "recovery_touchdown_count": (),
         "recovery_support_foot_changes": (),
+        "recovery_first_liftoff_recorded": (),
+        "recovery_first_liftoff_latency": (),
+        "recovery_first_touchdown_age": (),
+        "recovery_pitch_rate_at_push_end": (),
+        "recovery_pitch_rate_at_touchdown": (),
+        "recovery_pitch_rate_after_10t": (),
+        "recovery_capture_error_at_push_end": (),
+        "recovery_capture_error_at_touchdown": (),
+        "recovery_capture_error_after_10t": (),
+        "recovery_first_step_dx": (),
+        "recovery_first_step_dy": (),
+        "recovery_first_step_target_err_x": (),
+        "recovery_first_step_target_err_y": (),
         "mpc_planner_active": (),
         "mpc_controller_active": (),
         "mpc_target_com_x": (),

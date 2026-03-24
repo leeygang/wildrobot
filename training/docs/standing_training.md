@@ -1,9 +1,9 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` in progress
+**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.3a-pitchfix` next
 **Created:** 2026-03-20  
-**Last updated:** 2026-03-22
+**Last updated:** 2026-03-23
 
 ---
 
@@ -347,12 +347,19 @@ Objective:
 Sequence:
 ```
 v0.17.3a: Core recipe fix (home-centered action + relaxed termination + alive bonus)
-  gate: eval_clean > 95%, action=0 stands, export parity
-v0.17.3b: Robustness (domain randomization + delay/noise)
-  gate: eval_clean > 90% under randomization
-v0.17.4:  Decision gate — eval_hard > 60%?
-  yes → v0.17.5 (push recovery on pure RL)
-  no  → v0.17.4t (conditional step-target teacher)
+  result: eval_medium = 83.1%, eval_hard = 51.4% on best checked checkpoint
+v0.17.3a-metrics: Recovery-window diagnostics patch
+  gate: recovery metrics visible and interpretable in training/eval
+v0.17.3a-pitchfix: Cheap sim-side pitch-arrest probe
+  gate: eval_hard > 60%?
+    yes → v0.17.5
+    no  → v0.17.3a-arrest
+v0.17.3a-arrest: Recovery-gated step-quality rewards
+  gate: eval_hard > 60%?
+    yes → v0.17.5
+    no  → v0.17.4t
+v0.17.3b: Sim2real hardening (domain randomization + delay/noise)
+  only after the sim hard-push gate is already passed
 ```
 
 #### `v0.17.3a`: Core Recipe Fix
@@ -531,9 +538,141 @@ v0.17.3a fails if:
 - Quiet standing regresses below 90%
 - Training diverges within 100 iterations
 
-Only proceed to v0.17.3b after v0.17.3a passes.
+After `v0.17.3a`, proceed to `v0.17.3a-metrics` and then the sim-side
+follow-ups (`v0.17.3a-pitchfix`, `v0.17.3a-arrest`). `v0.17.3b` remains a
+later sim2real-hardening branch only after the simulation hard-push gate is
+already passed.
 
-#### `v0.17.3b`: Robustness (after v0.17.3a gate passes)
+#### `v0.17.3a` result
+
+Completed run:
+- run: `training/wandb/run-20260323_011338-0gmualhi`
+- best checked checkpoint:
+  `training/checkpoints/ppo_standing_v0173a_v0173a_20260323_011340-0gmualhi/checkpoint_210_27525120.pkl`
+
+Best checked fixed-ladder result:
+- `eval_medium = 83.1%`
+- `eval_hard = 51.4%`
+- `eval_hard/term_height_low_frac = 48.6%`
+
+Interpretation:
+- `v0.17.3a` is a real pure-RL improvement over `v0.17.1`
+- quiet standing is solved
+- the remaining gap is still simulation competence, not transfer
+- `v0.17.3b` is therefore **not** the next branch for improving fixed-ladder
+  sim performance
+
+#### `v0.17.3a-metrics`: Recovery-Window Diagnostics Patch
+
+Objective:
+- make the next standing run diagnosable at the step-quality level
+- distinguish:
+  - no step happened
+  - a step happened but failed
+  - a step happened and actually reduced the fall
+
+Why this comes before the next long run:
+- current `v0.17.3a` metrics show touchdown activity, but the recovery summary
+  metrics were not usable in the completed run
+- the next branch should not be evaluated only from global `term_pitch_frac`
+
+Required metrics:
+- `recovery/no_touchdown_frac`
+- `recovery/touchdown_then_fail_frac`
+- `recovery/first_liftoff_latency`
+- `recovery/first_touchdown_latency`
+- `recovery/first_step_dx`
+- `recovery/first_step_dy`
+- `recovery/first_step_target_err_x`
+- `recovery/first_step_target_err_y`
+- `recovery/pitch_rate_at_push_end`
+- `recovery/pitch_rate_at_touchdown`
+- `recovery/pitch_rate_reduction_10t`
+- `recovery/capture_error_at_push_end`
+- `recovery/capture_error_at_touchdown`
+- `recovery/capture_error_reduction_10t`
+- `recovery/touchdown_to_term_steps`
+- `eval_clean/unnecessary_step_rate`
+
+Exit criteria:
+- recovery summaries appear in training and eval logs
+- step failures can be separated into:
+  - no-touchdown failures
+  - touchdown-but-still-failed cases
+- unnecessary stepping in quiet standing is measurable
+
+#### `v0.17.3a-pitchfix`: Cheap Sim-Side Pitch-Arrest Probe
+
+Objective:
+- try one cheap pure-RL sim-side fix before changing the step reward structure
+  or adding teacher support
+
+Status:
+- config landed:
+  `training/configs/ppo_standing_v0173a_pitchfix.yaml`
+
+Changes relative to `v0.17.3a`:
+- keep:
+  - home-centered action mapping
+  - relaxed termination
+  - alive bonus
+  - `min_height = 0.15`
+- add only mild shaping:
+  - `pitch_rate: -0.2`
+  - `collapse_height: -0.05`
+  - `collapse_vz: -0.1`
+
+Decision rule:
+- if fixed-ladder `eval_hard > 60%`, stop here and keep the simpler RL branch
+- if it still misses, proceed to `v0.17.3a-arrest`
+
+#### `v0.17.3a-arrest`: Recovery-Gated Step-Quality Rewards
+
+Objective:
+- improve the quality of catch steps without creating a generic stepping habit
+
+Diagnosis this branch targets:
+- the agent is already producing touchdown events
+- the missing trait is not "move a foot at all"
+- the missing trait is "take a recovery step that actually arrests pitch and
+  regains capturability"
+
+Principles:
+- step rewards should be active only when recovery is actually needed
+- do not reward generic rocking or quiet-stance touch adjustments
+- do not add an explicit unnecessary-step penalty at first; measure it first
+
+Reward changes:
+- gate step-quality rewards by `push_active || recovery_active` rather than
+  broad rollout-wide stepping pressure
+- keep `step_event` only as a weak auxiliary term
+- strengthen outcome-linked step quality:
+  - turn on `step_progress`
+  - optionally turn on `step_length` if the geometry metrics show steps are too
+    short
+- add post-touchdown arrest rewards:
+  - reduction in `|pitch_rate|` after touchdown
+  - reduction in capture-point error after touchdown
+  - short-horizon survival after the first recovery touchdown
+
+Metrics required before or during this branch:
+- the `v0.17.3a-metrics` recovery-window diagnostics above
+
+Exit criteria:
+- `eval_hard > 60%`, or
+- the run shows that step timing/geometry improves but still plateaus below the
+  gate, which justifies teacher support
+
+#### `v0.17.3b`: Sim2real Hardening (deferred until sim gate passes)
+
+Objective:
+- harden a standing policy that already works in simulation for real hardware
+  transfer
+
+Important:
+- `v0.17.3b` is **not** expected to fix a fixed-ladder sim miss
+- domain randomization, delay, and sensor noise are transfer-hardening tools,
+  not the next explanation for why `eval_hard` is still below 60% in sim
 
 **Change 4: Domain randomization**
 
@@ -617,7 +756,7 @@ v0.17.3a (must modify):
 | `training/configs/ppo_standing_v0173a.yaml` | **New config** |
 | `docs/joints_angle.md` | Update section 2 action↔ctrl equations |
 
-v0.17.3b (after v0.17.3a gate passes):
+v0.17.3b (after the sim hard-push gate passes):
 
 | File | Change |
 |---|---|
@@ -630,19 +769,16 @@ v0.17.3b (after v0.17.3a gate passes):
 Exit criteria:
 - the key recipe gaps are addressed on the pure-RL branch
 - deployment remains policy-only
-- the hard-push gate has been rerun without teacher logic
-- the branch is ready for a teacher decision only if the pure-RL rerun still
-  misses the gate
+- sim competence is judged before transfer hardening work
 
-### `v0.17.4`: Decision Gate + Conditional Teacher
+### `v0.17.4`: Conditional Teacher
 
-This milestone has two outcomes depending on `eval_hard` after v0.17.3.
+This milestone is entered only if:
+- `v0.17.3a-pitchfix` still misses the hard gate, and
+- `v0.17.3a-arrest` still misses or clearly plateaus below the hard gate
 
-**If `eval_hard > 60%`**: pure RL succeeded. Skip teacher work, proceed
-directly to `v0.17.5` (push recovery hardening on pure RL).
-
-**If `eval_hard <= 60%`**: pure RL still misses the gate. Proceed to
-`v0.17.4t` (teacher integration).
+At that point, the remaining gap is treated as a bounded step-geometry /
+recovery-quality gap, not a reason to change the deployed architecture.
 
 #### `v0.17.4t`: Conditional Step-Target Teacher (only if gate missed)
 
@@ -651,15 +787,26 @@ Objective:
   still misses the hard gate
 
 Changes:
-- optional capture-point or similar step-target heuristic
-- teacher labels or auxiliary targets
-- metrics and debug signals for teacher engagement
+- generate compact training-time teacher targets during `push_active ||
+  recovery_active` windows only:
+  - `step_required`
+  - `swing_foot`
+  - `target_step_x`
+  - `target_step_y`
+- first teacher form:
+  - use teacher targets for reward shaping / supervision only
+  - keep them out of actor observations
+  - keep the deployed artifact as the same single policy
+- possible teacher source:
+  - capture-point or similar heuristic target generator
+- add metrics and debug signals for teacher engagement and agreement
 
 Exit criteria:
 - teacher signals are bounded and inspectable
 - the policy can train with or without them
 - the teacher branch is compared directly against the recipe-fixed pure-RL
   baseline
+- the deployed policy does not require runtime teacher inputs
 
 ### `v0.17.5`: Standing Push Recovery
 

@@ -421,10 +421,26 @@ def get_initial_env_metrics_jax(
         "debug/bc_phase_ticks": jp.zeros(()),  # 0 ticks at reset
         # v0.17.1: Recovery metrics for standing-reset branch
         "recovery/first_step_latency": jp.zeros(()),    # Time from push end to first step
+        "recovery/first_liftoff_latency": jp.zeros(()),  # Time from push end to first liftoff
+        "recovery/first_touchdown_latency": jp.zeros(()),  # Time from push end to first touchdown
         "recovery/touchdown_count": jp.zeros(()),       # Number of touchdowns after push
         "recovery/support_foot_changes": jp.zeros(()),  # Support foot transitions
         "recovery/post_push_velocity": jp.zeros(()),    # Residual velocity after recovery
         "recovery/completed": jp.zeros(()),             # Number of finalized recovery summaries
+        "recovery/no_touchdown_frac": jp.zeros(()),  # Finalized no-touchdown indicator
+        "recovery/touchdown_then_fail_frac": jp.zeros(()),  # Finalized touchdown-then-fail indicator
+        "recovery/first_step_dx": jp.zeros(()),  # First touchdown x in heading-local frame
+        "recovery/first_step_dy": jp.zeros(()),  # First touchdown y in heading-local frame
+        "recovery/first_step_target_err_x": jp.zeros(()),  # First touchdown x target error
+        "recovery/first_step_target_err_y": jp.zeros(()),  # First touchdown y target error
+        "recovery/pitch_rate_at_push_end": jp.zeros(()),
+        "recovery/pitch_rate_at_touchdown": jp.zeros(()),
+        "recovery/pitch_rate_reduction_10t": jp.zeros(()),
+        "recovery/capture_error_at_push_end": jp.zeros(()),
+        "recovery/capture_error_at_touchdown": jp.zeros(()),
+        "recovery/capture_error_reduction_10t": jp.zeros(()),
+        "recovery/touchdown_to_term_steps": jp.zeros(()),
+        "unnecessary_step_rate": jp.zeros(()),
         # v0.17.3: architecture-pivot standing controller debug metrics
         "debug/mpc_planner_active": jp.zeros(()),
         "debug/mpc_controller_active": jp.zeros(()),
@@ -999,6 +1015,7 @@ def build_wandb_metrics(
         if (
             key.startswith("debug/")
             or key.startswith("term_")
+            or key.startswith("recovery/")
             or key.startswith("ppo/")
             or key.startswith("eval/")
             or key.startswith("eval_push/")

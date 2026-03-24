@@ -28,10 +28,23 @@ def _initial_recovery_state() -> dict[str, jnp.ndarray]:
         "recovery_active": jnp.asarray(False, dtype=jnp.bool_),
         "recovery_age": jnp.asarray(0, dtype=jnp.int32),
         "recovery_last_support_foot": jnp.asarray(-1, dtype=jnp.int32),
+        "recovery_first_liftoff_recorded": jnp.asarray(False, dtype=jnp.bool_),
+        "recovery_first_liftoff_latency": jnp.asarray(0, dtype=jnp.int32),
         "recovery_first_touchdown_recorded": jnp.asarray(False, dtype=jnp.bool_),
         "recovery_first_step_latency": jnp.asarray(0, dtype=jnp.int32),
+        "recovery_first_touchdown_age": jnp.asarray(-1, dtype=jnp.int32),
         "recovery_touchdown_count": jnp.asarray(0, dtype=jnp.int32),
         "recovery_support_foot_changes": jnp.asarray(0, dtype=jnp.int32),
+        "recovery_pitch_rate_at_push_end": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_pitch_rate_at_touchdown": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_pitch_rate_after_10t": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_capture_error_at_push_end": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_capture_error_at_touchdown": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_capture_error_after_10t": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_first_step_dx": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_first_step_dy": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_first_step_target_err_x": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_first_step_target_err_y": jnp.asarray(0.0, dtype=jnp.float32),
     }
 
 
@@ -41,8 +54,17 @@ def _step_recovery(
     step: int,
     touchdown_left: bool = False,
     touchdown_right: bool = False,
+    liftoff_left: bool = False,
+    liftoff_right: bool = False,
     done: bool = False,
+    failed: bool = False,
     speed: float = 0.0,
+    pitch_rate: float = 0.0,
+    capture_error_norm: float = 0.0,
+    first_step_dx: float = 0.0,
+    first_step_dy: float = 0.0,
+    first_step_target_err_x: float = 0.0,
+    first_step_target_err_y: float = 0.0,
     track: bool = True,
 ) -> tuple[dict[str, jnp.ndarray], dict[str, jnp.ndarray]]:
     return _update_recovery_tracking(
@@ -50,26 +72,54 @@ def _step_recovery(
         push_schedule=_schedule(),
         current_step=jnp.asarray(step, dtype=jnp.int32),
         episode_done=jnp.asarray(done, dtype=jnp.bool_),
+        episode_failed=jnp.asarray(failed, dtype=jnp.bool_),
+        liftoff_left=jnp.asarray(liftoff_left, dtype=jnp.bool_),
+        liftoff_right=jnp.asarray(liftoff_right, dtype=jnp.bool_),
         touchdown_left=jnp.asarray(touchdown_left, dtype=jnp.bool_),
         touchdown_right=jnp.asarray(touchdown_right, dtype=jnp.bool_),
         horizontal_speed=jnp.asarray(speed, dtype=jnp.float32),
+        pitch_rate=jnp.asarray(pitch_rate, dtype=jnp.float32),
+        capture_error_norm=jnp.asarray(capture_error_norm, dtype=jnp.float32),
+        first_touchdown_dx=jnp.asarray(first_step_dx, dtype=jnp.float32),
+        first_touchdown_dy=jnp.asarray(first_step_dy, dtype=jnp.float32),
+        first_touchdown_target_err_x=jnp.asarray(first_step_target_err_x, dtype=jnp.float32),
+        first_touchdown_target_err_y=jnp.asarray(first_step_target_err_y, dtype=jnp.float32),
         recovery_active=state["recovery_active"],
         recovery_age=state["recovery_age"],
         recovery_last_support_foot=state["recovery_last_support_foot"],
+        recovery_first_liftoff_recorded=state["recovery_first_liftoff_recorded"],
+        recovery_first_liftoff_latency=state["recovery_first_liftoff_latency"],
         recovery_first_touchdown_recorded=state["recovery_first_touchdown_recorded"],
         recovery_first_step_latency=state["recovery_first_step_latency"],
+        recovery_first_touchdown_age=state["recovery_first_touchdown_age"],
         recovery_touchdown_count=state["recovery_touchdown_count"],
         recovery_support_foot_changes=state["recovery_support_foot_changes"],
+        recovery_pitch_rate_at_push_end=state["recovery_pitch_rate_at_push_end"],
+        recovery_pitch_rate_at_touchdown=state["recovery_pitch_rate_at_touchdown"],
+        recovery_pitch_rate_after_10t=state["recovery_pitch_rate_after_10t"],
+        recovery_capture_error_at_push_end=state["recovery_capture_error_at_push_end"],
+        recovery_capture_error_at_touchdown=state["recovery_capture_error_at_touchdown"],
+        recovery_capture_error_after_10t=state["recovery_capture_error_after_10t"],
+        recovery_first_step_dx=state["recovery_first_step_dx"],
+        recovery_first_step_dy=state["recovery_first_step_dy"],
+        recovery_first_step_target_err_x=state["recovery_first_step_target_err_x"],
+        recovery_first_step_target_err_y=state["recovery_first_step_target_err_y"],
     )
 
 
 def test_recovery_metric_reducers_use_finalized_summary_contract():
     expected = {
         "recovery/first_step_latency": Reducer.SUM,
+        "recovery/first_liftoff_latency": Reducer.SUM,
+        "recovery/first_touchdown_latency": Reducer.SUM,
         "recovery/touchdown_count": Reducer.SUM,
         "recovery/support_foot_changes": Reducer.SUM,
         "recovery/post_push_velocity": Reducer.SUM,
         "recovery/completed": Reducer.SUM,
+        "recovery/no_touchdown_frac": Reducer.SUM,
+        "recovery/touchdown_then_fail_frac": Reducer.SUM,
+        "recovery/touchdown_to_term_steps": Reducer.SUM,
+        "unnecessary_step_rate": Reducer.MEAN,
     }
     for spec in METRIC_SPECS:
         reducer = expected.get(spec.name)
@@ -86,6 +136,8 @@ def test_no_touchdown_recovery_finalizes_zero_summary():
     assert metrics is not None
     assert float(metrics["recovery/completed"]) == 1.0
     assert float(metrics["recovery/first_step_latency"]) == 0.0
+    assert float(metrics["recovery/no_touchdown_frac"]) == 1.0
+    assert float(metrics["recovery/touchdown_then_fail_frac"]) == 0.0
     assert float(metrics["recovery/touchdown_count"]) == 0.0
     assert float(metrics["recovery/support_foot_changes"]) == 0.0
     assert float(metrics["recovery/post_push_velocity"]) == pytest.approx(0.25)
@@ -96,13 +148,36 @@ def test_single_touchdown_records_first_latency_once():
     metrics = None
     for step in range(60, 60 + RECOVERY_WINDOW_STEPS):
         touchdown_left = step == 64
-        state, metrics = _step_recovery(state, step=step, touchdown_left=touchdown_left)
+        state, metrics = _step_recovery(
+            state,
+            step=step,
+            liftoff_left=(step == 62),
+            touchdown_left=touchdown_left,
+            pitch_rate=1.2 if step == 60 else (1.0 if step == 64 else 0.4 if step == 74 else 0.0),
+            capture_error_norm=0.8 if step == 60 else (0.6 if step == 64 else 0.2 if step == 74 else 0.0),
+            first_step_dx=0.11 if step == 64 else 0.0,
+            first_step_dy=0.05 if step == 64 else 0.0,
+            first_step_target_err_x=0.02 if step == 64 else 0.0,
+            first_step_target_err_y=-0.01 if step == 64 else 0.0,
+        )
 
     assert metrics is not None
     assert float(metrics["recovery/completed"]) == 1.0
     assert float(metrics["recovery/first_step_latency"]) == 4.0
+    assert float(metrics["recovery/first_liftoff_latency"]) == 2.0
+    assert float(metrics["recovery/first_touchdown_latency"]) == 4.0
     assert float(metrics["recovery/touchdown_count"]) == 1.0
     assert float(metrics["recovery/support_foot_changes"]) == 0.0
+    assert float(metrics["recovery/first_step_dx"]) == pytest.approx(0.11)
+    assert float(metrics["recovery/first_step_dy"]) == pytest.approx(0.05)
+    assert float(metrics["recovery/first_step_target_err_x"]) == pytest.approx(0.02)
+    assert float(metrics["recovery/first_step_target_err_y"]) == pytest.approx(-0.01)
+    assert float(metrics["recovery/pitch_rate_at_push_end"]) == pytest.approx(1.2)
+    assert float(metrics["recovery/pitch_rate_at_touchdown"]) == pytest.approx(1.0)
+    assert float(metrics["recovery/pitch_rate_reduction_10t"]) == pytest.approx(0.6)
+    assert float(metrics["recovery/capture_error_at_push_end"]) == pytest.approx(0.8)
+    assert float(metrics["recovery/capture_error_at_touchdown"]) == pytest.approx(0.6)
+    assert float(metrics["recovery/capture_error_reduction_10t"]) == pytest.approx(0.4)
 
 
 def test_support_changes_count_only_true_alternations():
@@ -139,6 +214,7 @@ def test_early_termination_finalizes_partial_recovery():
             touchdown_left=(step == 62),
             touchdown_right=(step == 65),
             done=(step == 66),
+            failed=(step == 66),
             speed=0.4,
         )
 
@@ -148,6 +224,8 @@ def test_early_termination_finalizes_partial_recovery():
     assert float(metrics["recovery/touchdown_count"]) == 2.0
     assert float(metrics["recovery/support_foot_changes"]) == 1.0
     assert float(metrics["recovery/post_push_velocity"]) == pytest.approx(0.4)
+    assert float(metrics["recovery/touchdown_then_fail_frac"]) == 1.0
+    assert float(metrics["recovery/touchdown_to_term_steps"]) == pytest.approx(4.0)
 
 
 def test_aggregate_metrics_normalizes_by_completed_recoveries():
@@ -160,12 +238,20 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
         metrics_vec = metrics_vec.at[t, n, idx].set(value)
 
     set_metric("recovery/first_step_latency", 0, 0, 4.0)
+    set_metric("recovery/first_liftoff_latency", 0, 0, 2.0)
+    set_metric("recovery/no_touchdown_frac", 0, 0, 0.0)
+    set_metric("recovery/touchdown_then_fail_frac", 0, 0, 1.0)
+    set_metric("recovery/touchdown_to_term_steps", 0, 0, 7.0)
     set_metric("recovery/touchdown_count", 0, 0, 2.0)
     set_metric("recovery/support_foot_changes", 0, 0, 1.0)
     set_metric("recovery/post_push_velocity", 0, 0, 0.3)
     set_metric("recovery/completed", 0, 0, 1.0)
 
     set_metric("recovery/first_step_latency", 2, 1, 6.0)
+    set_metric("recovery/first_liftoff_latency", 2, 1, 1.0)
+    set_metric("recovery/no_touchdown_frac", 2, 1, 1.0)
+    set_metric("recovery/touchdown_then_fail_frac", 2, 1, 0.0)
+    set_metric("recovery/touchdown_to_term_steps", 2, 1, 0.0)
     set_metric("recovery/touchdown_count", 2, 1, 4.0)
     set_metric("recovery/support_foot_changes", 2, 1, 3.0)
     set_metric("recovery/post_push_velocity", 2, 1, 0.5)
@@ -175,6 +261,10 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
 
     assert float(aggregated["recovery/completed"]) == 2.0
     assert float(aggregated["recovery/first_step_latency"]) == 5.0
+    assert float(aggregated["recovery/first_liftoff_latency"]) == 1.5
+    assert float(aggregated["recovery/no_touchdown_frac"]) == 0.5
+    assert float(aggregated["recovery/touchdown_then_fail_frac"]) == 0.5
+    assert float(aggregated["recovery/touchdown_to_term_steps"]) == 3.5
     assert float(aggregated["recovery/touchdown_count"]) == 3.0
     assert float(aggregated["recovery/support_foot_changes"]) == 2.0
     assert float(aggregated["recovery/post_push_velocity"]) == pytest.approx(0.4)

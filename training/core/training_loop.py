@@ -1342,6 +1342,21 @@ def train(
             jnp.ndarray,
             jnp.ndarray,
             jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
         ]:
             eval_env_state = eval_reset_fn(eval_rng)
             reset_h = eval_env_state.metrics["height"]
@@ -1379,6 +1394,16 @@ def train(
             term_idx_height_high = METRIC_INDEX["term/height_high"]
             term_idx_pitch = METRIC_INDEX["term/pitch"]
             term_idx_roll = METRIC_INDEX["term/roll"]
+            unnecessary_step_idx = METRIC_INDEX["unnecessary_step_rate"]
+            recovery_completed_idx = METRIC_INDEX["recovery/completed"]
+            recovery_no_touchdown_idx = METRIC_INDEX["recovery/no_touchdown_frac"]
+            recovery_touchdown_then_fail_idx = METRIC_INDEX["recovery/touchdown_then_fail_frac"]
+            recovery_touchdown_count_idx = METRIC_INDEX["recovery/touchdown_count"]
+            recovery_first_liftoff_idx = METRIC_INDEX["recovery/first_liftoff_latency"]
+            recovery_first_touchdown_idx = METRIC_INDEX["recovery/first_touchdown_latency"]
+            recovery_pitch_reduction_idx = METRIC_INDEX["recovery/pitch_rate_reduction_10t"]
+            recovery_capture_reduction_idx = METRIC_INDEX["recovery/capture_error_reduction_10t"]
+            recovery_touchdown_to_term_idx = METRIC_INDEX["recovery/touchdown_to_term_steps"]
 
             total_done = jnp.sum(eval_rollout["done"])
             done_by_env = jnp.any(eval_rollout["done"] > 0, axis=0)
@@ -1432,6 +1457,62 @@ def train(
                 jnp.sum(eval_rollout["metrics_vec"][..., term_idx_roll]) / total_done,
                 0.0,
             )
+            unnecessary_step_rate = jnp.mean(
+                eval_rollout["metrics_vec"][..., unnecessary_step_idx]
+            )
+            recovery_completed = jnp.sum(
+                eval_rollout["metrics_vec"][..., recovery_completed_idx]
+            )
+            recovery_completed_safe = jnp.maximum(recovery_completed, 1.0)
+            recovery_has_completed = recovery_completed > 0.0
+            recovery_no_touchdown_frac = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_no_touchdown_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_touchdown_then_fail_frac = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_touchdown_then_fail_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_touchdown_count = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_touchdown_count_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_first_liftoff_latency = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_first_liftoff_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_first_touchdown_latency = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_first_touchdown_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_pitch_rate_reduction_10t = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_pitch_reduction_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_capture_error_reduction_10t = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_capture_reduction_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_touchdown_to_term_steps = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_touchdown_to_term_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
             return (
                 episode_reward,
                 success_rate,
@@ -1446,6 +1527,16 @@ def train(
                 survival_steps,
                 reset_h_mean,
                 reset_h_min,
+                unnecessary_step_rate,
+                recovery_completed,
+                recovery_no_touchdown_frac,
+                recovery_touchdown_then_fail_frac,
+                recovery_touchdown_count,
+                recovery_first_liftoff_latency,
+                recovery_first_touchdown_latency,
+                recovery_pitch_rate_reduction_10t,
+                recovery_capture_error_reduction_10t,
+                recovery_touchdown_to_term_steps,
             )
 
         return _runner
@@ -1587,7 +1678,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1595,7 +1686,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1616,6 +1707,28 @@ def train(
                 eval_clean_survival_steps = eval_push_survival_steps
                 eval_clean_reset_h_mean = eval_push_reset_h_mean
                 eval_clean_reset_h_min = eval_push_reset_h_min
+                eval_clean_unnecessary_step_rate = eval_push_unnecessary_step_rate
+                eval_clean_recovery_completed = eval_push_recovery_completed
+                eval_clean_recovery_no_touchdown_frac = eval_push_recovery_no_touchdown_frac
+                eval_clean_recovery_touchdown_then_fail_frac = (
+                    eval_push_recovery_touchdown_then_fail_frac
+                )
+                eval_clean_recovery_touchdown_count = eval_push_recovery_touchdown_count
+                eval_clean_recovery_first_liftoff_latency = (
+                    eval_push_recovery_first_liftoff_latency
+                )
+                eval_clean_recovery_first_touchdown_latency = (
+                    eval_push_recovery_first_touchdown_latency
+                )
+                eval_clean_recovery_pitch_rate_reduction_10t = (
+                    eval_push_recovery_pitch_rate_reduction_10t
+                )
+                eval_clean_recovery_capture_error_reduction_10t = (
+                    eval_push_recovery_capture_error_reduction_10t
+                )
+                eval_clean_recovery_touchdown_to_term_steps = (
+                    eval_push_recovery_touchdown_to_term_steps
+                )
             jax.block_until_ready(eval_push_success)
 
             eval_push_success_f = float(eval_push_success)
@@ -1636,6 +1749,30 @@ def train(
                 "eval_push/survival_steps": eval_push_survival_steps_f,
                 "eval_push/reset_height_mean": float(eval_push_reset_h_mean),
                 "eval_push/reset_height_min": float(eval_push_reset_h_min),
+                "eval_push/unnecessary_step_rate": float(eval_push_unnecessary_step_rate),
+                "eval_push/recovery_completed": float(eval_push_recovery_completed),
+                "eval_push/recovery_no_touchdown_frac": float(
+                    eval_push_recovery_no_touchdown_frac
+                ),
+                "eval_push/recovery_touchdown_then_fail_frac": float(
+                    eval_push_recovery_touchdown_then_fail_frac
+                ),
+                "eval_push/recovery_touchdown_count": float(eval_push_recovery_touchdown_count),
+                "eval_push/recovery_first_liftoff_latency": float(
+                    eval_push_recovery_first_liftoff_latency
+                ),
+                "eval_push/recovery_first_touchdown_latency": float(
+                    eval_push_recovery_first_touchdown_latency
+                ),
+                "eval_push/recovery_pitch_rate_reduction_10t": float(
+                    eval_push_recovery_pitch_rate_reduction_10t
+                ),
+                "eval_push/recovery_capture_error_reduction_10t": float(
+                    eval_push_recovery_capture_error_reduction_10t
+                ),
+                "eval_push/recovery_touchdown_to_term_steps": float(
+                    eval_push_recovery_touchdown_to_term_steps
+                ),
                 "eval_clean/reward": float(eval_clean_reward),
                 "eval_clean/success_rate": float(eval_clean_success),
                 "eval_clean/episode_length": float(eval_clean_ep_len),
@@ -1649,6 +1786,32 @@ def train(
                 "eval_clean/survival_steps": float(eval_clean_survival_steps),
                 "eval_clean/reset_height_mean": float(eval_clean_reset_h_mean),
                 "eval_clean/reset_height_min": float(eval_clean_reset_h_min),
+                "eval_clean/unnecessary_step_rate": float(eval_clean_unnecessary_step_rate),
+                "eval_clean/recovery_completed": float(eval_clean_recovery_completed),
+                "eval_clean/recovery_no_touchdown_frac": float(
+                    eval_clean_recovery_no_touchdown_frac
+                ),
+                "eval_clean/recovery_touchdown_then_fail_frac": float(
+                    eval_clean_recovery_touchdown_then_fail_frac
+                ),
+                "eval_clean/recovery_touchdown_count": float(
+                    eval_clean_recovery_touchdown_count
+                ),
+                "eval_clean/recovery_first_liftoff_latency": float(
+                    eval_clean_recovery_first_liftoff_latency
+                ),
+                "eval_clean/recovery_first_touchdown_latency": float(
+                    eval_clean_recovery_first_touchdown_latency
+                ),
+                "eval_clean/recovery_pitch_rate_reduction_10t": float(
+                    eval_clean_recovery_pitch_rate_reduction_10t
+                ),
+                "eval_clean/recovery_capture_error_reduction_10t": float(
+                    eval_clean_recovery_capture_error_reduction_10t
+                ),
+                "eval_clean/recovery_touchdown_to_term_steps": float(
+                    eval_clean_recovery_touchdown_to_term_steps
+                ),
             }
             for key, value in last_eval_metrics.items():
                 env_metrics[key] = jnp.asarray(value, dtype=jnp.float32)

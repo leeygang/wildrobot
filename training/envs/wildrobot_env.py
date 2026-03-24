@@ -99,16 +99,38 @@ def _update_recovery_tracking(
     push_schedule: DisturbanceSchedule,
     current_step: jax.Array,
     episode_done: jax.Array,
+    episode_failed: jax.Array,
+    liftoff_left: jax.Array,
+    liftoff_right: jax.Array,
     touchdown_left: jax.Array,
     touchdown_right: jax.Array,
     horizontal_speed: jax.Array,
+    pitch_rate: jax.Array,
+    capture_error_norm: jax.Array,
+    first_touchdown_dx: jax.Array,
+    first_touchdown_dy: jax.Array,
+    first_touchdown_target_err_x: jax.Array,
+    first_touchdown_target_err_y: jax.Array,
     recovery_active: jax.Array,
     recovery_age: jax.Array,
     recovery_last_support_foot: jax.Array,
+    recovery_first_liftoff_recorded: jax.Array,
+    recovery_first_liftoff_latency: jax.Array,
     recovery_first_touchdown_recorded: jax.Array,
     recovery_first_step_latency: jax.Array,
+    recovery_first_touchdown_age: jax.Array,
     recovery_touchdown_count: jax.Array,
     recovery_support_foot_changes: jax.Array,
+    recovery_pitch_rate_at_push_end: jax.Array,
+    recovery_pitch_rate_at_touchdown: jax.Array,
+    recovery_pitch_rate_after_10t: jax.Array,
+    recovery_capture_error_at_push_end: jax.Array,
+    recovery_capture_error_at_touchdown: jax.Array,
+    recovery_capture_error_after_10t: jax.Array,
+    recovery_first_step_dx: jax.Array,
+    recovery_first_step_dy: jax.Array,
+    recovery_first_step_target_err_x: jax.Array,
+    recovery_first_step_target_err_y: jax.Array,
 ) -> tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
     """Update recovery state and emit finalized summary metrics once per recovery."""
     del recovery_active, recovery_age
@@ -152,7 +174,73 @@ def _update_recovery_tracking(
         jp.zeros((), dtype=jp.int32),
         recovery_support_foot_changes,
     )
+    first_liftoff_recorded = jp.where(
+        recovery_start,
+        jp.asarray(False, dtype=jp.bool_),
+        recovery_first_liftoff_recorded,
+    )
+    first_liftoff_latency = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.int32),
+        recovery_first_liftoff_latency,
+    )
+    first_touchdown_age = jp.where(
+        recovery_start,
+        jp.asarray(-1, dtype=jp.int32),
+        recovery_first_touchdown_age,
+    )
+    pitch_rate_at_push_end = jp.where(
+        recovery_start,
+        jp.asarray(pitch_rate, dtype=jp.float32),
+        recovery_pitch_rate_at_push_end,
+    )
+    pitch_rate_at_touchdown = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_pitch_rate_at_touchdown,
+    )
+    pitch_rate_after_10t = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_pitch_rate_after_10t,
+    )
+    capture_error_at_push_end = jp.where(
+        recovery_start,
+        jp.asarray(capture_error_norm, dtype=jp.float32),
+        recovery_capture_error_at_push_end,
+    )
+    capture_error_at_touchdown = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_capture_error_at_touchdown,
+    )
+    capture_error_after_10t = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_capture_error_after_10t,
+    )
+    first_step_dx = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_first_step_dx,
+    )
+    first_step_dy = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_first_step_dy,
+    )
+    first_step_target_err_x = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_first_step_target_err_x,
+    )
+    first_step_target_err_y = jp.where(
+        recovery_start,
+        jp.zeros((), dtype=jp.float32),
+        recovery_first_step_target_err_y,
+    )
 
+    any_liftoff = liftoff_left | liftoff_right
     any_touchdown = touchdown_left | touchdown_right
     current_support_foot = jp.where(
         touchdown_left & ~touchdown_right,
@@ -165,6 +253,11 @@ def _update_recovery_tracking(
     )
 
     first_touchdown_now = in_recovery & any_touchdown & ~first_touchdown_recorded
+    first_liftoff_now = in_recovery & any_liftoff & ~first_liftoff_recorded
+    first_liftoff_latency = jp.where(first_liftoff_now, age, first_liftoff_latency).astype(
+        jp.int32
+    )
+    first_liftoff_recorded = first_liftoff_recorded | first_liftoff_now
     first_step_latency = jp.where(
         first_touchdown_now,
         age,
@@ -172,6 +265,56 @@ def _update_recovery_tracking(
     )
     first_step_latency = first_step_latency.astype(jp.int32)
     first_touchdown_recorded = first_touchdown_recorded | first_touchdown_now
+    first_touchdown_age = jp.where(first_touchdown_now, age, first_touchdown_age).astype(
+        jp.int32
+    )
+    pitch_rate_at_touchdown = jp.where(
+        first_touchdown_now, pitch_rate.astype(jp.float32), pitch_rate_at_touchdown
+    )
+    pitch_rate_after_10t = jp.where(
+        first_touchdown_now, pitch_rate.astype(jp.float32), pitch_rate_after_10t
+    )
+    capture_error_at_touchdown = jp.where(
+        first_touchdown_now,
+        capture_error_norm.astype(jp.float32),
+        capture_error_at_touchdown,
+    )
+    capture_error_after_10t = jp.where(
+        first_touchdown_now,
+        capture_error_norm.astype(jp.float32),
+        capture_error_after_10t,
+    )
+    first_step_dx = jp.where(
+        first_touchdown_now, first_touchdown_dx.astype(jp.float32), first_step_dx
+    )
+    first_step_dy = jp.where(
+        first_touchdown_now, first_touchdown_dy.astype(jp.float32), first_step_dy
+    )
+    first_step_target_err_x = jp.where(
+        first_touchdown_now,
+        first_touchdown_target_err_x.astype(jp.float32),
+        first_step_target_err_x,
+    )
+    first_step_target_err_y = jp.where(
+        first_touchdown_now,
+        first_touchdown_target_err_y.astype(jp.float32),
+        first_step_target_err_y,
+    )
+
+    reached_10t_after_touchdown = (
+        in_recovery
+        & first_touchdown_recorded
+        & (first_touchdown_age >= 0)
+        & (age == (first_touchdown_age + jp.asarray(10, dtype=jp.int32)))
+    )
+    pitch_rate_after_10t = jp.where(
+        reached_10t_after_touchdown, pitch_rate.astype(jp.float32), pitch_rate_after_10t
+    )
+    capture_error_after_10t = jp.where(
+        reached_10t_after_touchdown,
+        capture_error_norm.astype(jp.float32),
+        capture_error_after_10t,
+    )
 
     touchdown_count = jp.where(
         in_recovery & any_touchdown,
@@ -201,8 +344,35 @@ def _update_recovery_tracking(
     finalize_recovery = in_recovery & (
         (age == (RECOVERY_WINDOW_STEPS - 1)) | episode_done
     )
+    no_touchdown = touchdown_count == 0
+    touchdown_then_fail = (touchdown_count > 0) & episode_failed
+    touchdown_to_term_steps = jp.where(
+        episode_failed & first_touchdown_recorded & (first_touchdown_age >= 0),
+        jp.maximum(age - first_touchdown_age, 0).astype(jp.float32),
+        jp.zeros((), dtype=jp.float32),
+    )
+    pitch_rate_reduction_10t = jp.where(
+        first_touchdown_recorded,
+        jp.abs(pitch_rate_at_touchdown) - jp.abs(pitch_rate_after_10t),
+        jp.zeros((), dtype=jp.float32),
+    )
+    capture_error_reduction_10t = jp.where(
+        first_touchdown_recorded,
+        capture_error_at_touchdown - capture_error_after_10t,
+        jp.zeros((), dtype=jp.float32),
+    )
     summary_metrics = {
         "recovery/first_step_latency": jp.where(
+            finalize_recovery,
+            first_step_latency.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_liftoff_latency": jp.where(
+            finalize_recovery,
+            first_liftoff_latency.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_touchdown_latency": jp.where(
             finalize_recovery,
             first_step_latency.astype(jp.float32),
             jp.zeros((), dtype=jp.float32),
@@ -227,6 +397,71 @@ def _update_recovery_tracking(
             jp.asarray(1.0, dtype=jp.float32),
             jp.zeros((), dtype=jp.float32),
         ),
+        "recovery/no_touchdown_frac": jp.where(
+            finalize_recovery,
+            no_touchdown.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/touchdown_then_fail_frac": jp.where(
+            finalize_recovery,
+            touchdown_then_fail.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_step_dx": jp.where(
+            finalize_recovery,
+            first_step_dx.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_step_dy": jp.where(
+            finalize_recovery,
+            first_step_dy.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_step_target_err_x": jp.where(
+            finalize_recovery,
+            first_step_target_err_x.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/first_step_target_err_y": jp.where(
+            finalize_recovery,
+            first_step_target_err_y.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/pitch_rate_at_push_end": jp.where(
+            finalize_recovery,
+            pitch_rate_at_push_end.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/pitch_rate_at_touchdown": jp.where(
+            finalize_recovery,
+            pitch_rate_at_touchdown.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/pitch_rate_reduction_10t": jp.where(
+            finalize_recovery,
+            pitch_rate_reduction_10t.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/capture_error_at_push_end": jp.where(
+            finalize_recovery,
+            capture_error_at_push_end.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/capture_error_at_touchdown": jp.where(
+            finalize_recovery,
+            capture_error_at_touchdown.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/capture_error_reduction_10t": jp.where(
+            finalize_recovery,
+            capture_error_reduction_10t.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/touchdown_to_term_steps": jp.where(
+            finalize_recovery,
+            touchdown_to_term_steps.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
     }
 
     next_state = {
@@ -237,10 +472,23 @@ def _update_recovery_tracking(
             jp.zeros((), dtype=jp.int32),
         ).astype(jp.int32),
         "recovery_last_support_foot": last_support_foot.astype(jp.int32),
+        "recovery_first_liftoff_recorded": first_liftoff_recorded,
+        "recovery_first_liftoff_latency": first_liftoff_latency.astype(jp.int32),
         "recovery_first_touchdown_recorded": first_touchdown_recorded,
         "recovery_first_step_latency": first_step_latency.astype(jp.int32),
+        "recovery_first_touchdown_age": first_touchdown_age.astype(jp.int32),
         "recovery_touchdown_count": touchdown_count.astype(jp.int32),
         "recovery_support_foot_changes": support_foot_changes.astype(jp.int32),
+        "recovery_pitch_rate_at_push_end": pitch_rate_at_push_end.astype(jp.float32),
+        "recovery_pitch_rate_at_touchdown": pitch_rate_at_touchdown.astype(jp.float32),
+        "recovery_pitch_rate_after_10t": pitch_rate_after_10t.astype(jp.float32),
+        "recovery_capture_error_at_push_end": capture_error_at_push_end.astype(jp.float32),
+        "recovery_capture_error_at_touchdown": capture_error_at_touchdown.astype(jp.float32),
+        "recovery_capture_error_after_10t": capture_error_after_10t.astype(jp.float32),
+        "recovery_first_step_dx": first_step_dx.astype(jp.float32),
+        "recovery_first_step_dy": first_step_dy.astype(jp.float32),
+        "recovery_first_step_target_err_x": first_step_target_err_x.astype(jp.float32),
+        "recovery_first_step_target_err_y": first_step_target_err_y.astype(jp.float32),
     }
     return next_state, summary_metrics
 
@@ -1089,10 +1337,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_active=jp.asarray(False, dtype=jp.bool_),
             recovery_age=jp.zeros((), dtype=jp.int32),
             recovery_last_support_foot=jp.asarray(-1, dtype=jp.int32),
+            recovery_first_liftoff_recorded=jp.asarray(False, dtype=jp.bool_),
+            recovery_first_liftoff_latency=jp.zeros((), dtype=jp.int32),
             recovery_first_touchdown_recorded=jp.asarray(False, dtype=jp.bool_),
             recovery_first_step_latency=jp.zeros((), dtype=jp.int32),
+            recovery_first_touchdown_age=jp.asarray(-1, dtype=jp.int32),
             recovery_touchdown_count=jp.zeros((), dtype=jp.int32),
             recovery_support_foot_changes=jp.zeros((), dtype=jp.int32),
+            recovery_pitch_rate_at_push_end=jp.zeros((), dtype=jp.float32),
+            recovery_pitch_rate_at_touchdown=jp.zeros((), dtype=jp.float32),
+            recovery_pitch_rate_after_10t=jp.zeros((), dtype=jp.float32),
+            recovery_capture_error_at_push_end=jp.zeros((), dtype=jp.float32),
+            recovery_capture_error_at_touchdown=jp.zeros((), dtype=jp.float32),
+            recovery_capture_error_after_10t=jp.zeros((), dtype=jp.float32),
+            recovery_first_step_dx=jp.zeros((), dtype=jp.float32),
+            recovery_first_step_dy=jp.zeros((), dtype=jp.float32),
+            recovery_first_step_target_err_x=jp.zeros((), dtype=jp.float32),
+            recovery_first_step_target_err_y=jp.zeros((), dtype=jp.float32),
             mpc_planner_active=jp.zeros((), dtype=jp.float32),
             mpc_controller_active=jp.zeros((), dtype=jp.float32),
             mpc_target_com_x=jp.zeros((), dtype=jp.float32),
@@ -1380,6 +1641,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         right_loaded_now = right_force_now > contact_threshold
         prev_left_loaded_b = wr.prev_left_loaded > 0.5
         prev_right_loaded_b = wr.prev_right_loaded > 0.5
+        liftoff_left_now = jp.logical_and(prev_left_loaded_b, jp.logical_not(left_loaded_now))
+        liftoff_right_now = jp.logical_and(prev_right_loaded_b, jp.logical_not(right_loaded_now))
         touchdown_left_now = jp.logical_and(jp.logical_not(prev_left_loaded_b), left_loaded_now)
         touchdown_right_now = jp.logical_and(jp.logical_not(prev_right_loaded_b), right_loaded_now)
         if bool(getattr(self._config.env, "fsm_enabled", False)):
@@ -1413,6 +1676,42 @@ class WildRobotEnv(mjx_env.MjxEnv):
             data, frame=CoordinateFrame.WORLD
         )
         post_push_horizontal_speed = jp.linalg.norm(root_velocity_world.linear[:2])
+        root_vel_heading_local = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        pitch_rate_now = root_vel_heading_local.angular_xyz[1]
+        capture_error_xy = self._get_capture_point_error(data)
+        capture_error_norm = jp.linalg.norm(capture_error_xy)
+        root_pose_now = self._cal.get_root_pose(data)
+        left_foot_h, right_foot_h = self._cal.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        first_touchdown_dx = jp.where(
+            touchdown_left_now, left_foot_h[0], jp.where(touchdown_right_now, right_foot_h[0], 0.0)
+        )
+        first_touchdown_dy = jp.where(
+            touchdown_left_now, left_foot_h[1], jp.where(touchdown_right_now, right_foot_h[1], 0.0)
+        )
+        root_vel_for_target = root_vel_heading_local.linear_xyz
+        fwd_vel_now, lat_vel_now, _ = root_vel_for_target
+        roll_now, pitch_now, _ = root_pose_now.euler_angles()
+        weights = self._config.reward_weights
+        base_y = 0.5 * jp.asarray(weights.stance_width_target)
+        y_corr = (
+            jp.asarray(getattr(weights, "foot_place_k_lat_vel", 0.15)) * lat_vel_now
+            + jp.asarray(getattr(weights, "foot_place_k_roll", 0.10)) * roll_now
+        )
+        x_corr = (
+            jp.asarray(getattr(weights, "foot_place_k_cmd_vel", 0.0)) * velocity_cmd
+            + jp.asarray(getattr(weights, "foot_place_k_fwd_vel", 0.05)) * fwd_vel_now
+            + jp.asarray(getattr(weights, "foot_place_k_pitch", 0.05)) * pitch_now
+        )
+        target_x = x_corr
+        target_y = jp.where(
+            touchdown_left_now, base_y + y_corr, jp.where(touchdown_right_now, -base_y + y_corr, 0.0)
+        )
+        first_touchdown_target_err_x = first_touchdown_dx - target_x
+        first_touchdown_target_err_y = first_touchdown_dy - target_y
         recovery_state_updates, recovery_metrics = _update_recovery_tracking(
             track_recovery=jp.logical_and(
                 jp.asarray(self._config.env.push_enabled, dtype=jp.bool_),
@@ -1421,18 +1720,54 @@ class WildRobotEnv(mjx_env.MjxEnv):
             push_schedule=wr.push_schedule,
             current_step=step_count + 1,
             episode_done=done > 0.5,
+            episode_failed=(done > 0.5) & (truncated < 0.5),
+            liftoff_left=liftoff_left_now,
+            liftoff_right=liftoff_right_now,
             touchdown_left=touchdown_left_now,
             touchdown_right=touchdown_right_now,
             horizontal_speed=post_push_horizontal_speed,
+            pitch_rate=pitch_rate_now,
+            capture_error_norm=capture_error_norm,
+            first_touchdown_dx=first_touchdown_dx,
+            first_touchdown_dy=first_touchdown_dy,
+            first_touchdown_target_err_x=first_touchdown_target_err_x,
+            first_touchdown_target_err_y=first_touchdown_target_err_y,
             recovery_active=wr.recovery_active,
             recovery_age=wr.recovery_age,
             recovery_last_support_foot=wr.recovery_last_support_foot,
+            recovery_first_liftoff_recorded=wr.recovery_first_liftoff_recorded,
+            recovery_first_liftoff_latency=wr.recovery_first_liftoff_latency,
             recovery_first_touchdown_recorded=wr.recovery_first_touchdown_recorded,
             recovery_first_step_latency=wr.recovery_first_step_latency,
+            recovery_first_touchdown_age=wr.recovery_first_touchdown_age,
             recovery_touchdown_count=wr.recovery_touchdown_count,
             recovery_support_foot_changes=wr.recovery_support_foot_changes,
+            recovery_pitch_rate_at_push_end=wr.recovery_pitch_rate_at_push_end,
+            recovery_pitch_rate_at_touchdown=wr.recovery_pitch_rate_at_touchdown,
+            recovery_pitch_rate_after_10t=wr.recovery_pitch_rate_after_10t,
+            recovery_capture_error_at_push_end=wr.recovery_capture_error_at_push_end,
+            recovery_capture_error_at_touchdown=wr.recovery_capture_error_at_touchdown,
+            recovery_capture_error_after_10t=wr.recovery_capture_error_after_10t,
+            recovery_first_step_dx=wr.recovery_first_step_dx,
+            recovery_first_step_dy=wr.recovery_first_step_dy,
+            recovery_first_step_target_err_x=wr.recovery_first_step_target_err_x,
+            recovery_first_step_target_err_y=wr.recovery_first_step_target_err_y,
         )
         metrics.update(recovery_metrics)
+        push_active_now = (
+            (step_count + 1 >= wr.push_schedule.start_step)
+            & (step_count + 1 < wr.push_schedule.end_step)
+            & jp.asarray(self._config.env.push_enabled, dtype=jp.bool_)
+            & jp.logical_not(jp.asarray(disable_pushes, dtype=jp.bool_))
+        )
+        unnecessary_need_step_threshold = jp.asarray(0.2, dtype=jp.float32)
+        unnecessary_touchdown = (
+            touchdown_any_now
+            & (~push_active_now)
+            & (~wr.recovery_active)
+            & (metrics.get("debug/need_step", jp.zeros(())) < unnecessary_need_step_threshold)
+        )
+        metrics["unnecessary_step_rate"] = unnecessary_touchdown.astype(jp.float32)
 
         # Create new WildRobotInfo with updated values
         new_wr_info = WildRobotInfo(
@@ -1472,10 +1807,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_active=recovery_state_updates["recovery_active"],
             recovery_age=recovery_state_updates["recovery_age"],
             recovery_last_support_foot=recovery_state_updates["recovery_last_support_foot"],
+            recovery_first_liftoff_recorded=recovery_state_updates["recovery_first_liftoff_recorded"],
+            recovery_first_liftoff_latency=recovery_state_updates["recovery_first_liftoff_latency"],
             recovery_first_touchdown_recorded=recovery_state_updates["recovery_first_touchdown_recorded"],
             recovery_first_step_latency=recovery_state_updates["recovery_first_step_latency"],
+            recovery_first_touchdown_age=recovery_state_updates["recovery_first_touchdown_age"],
             recovery_touchdown_count=recovery_state_updates["recovery_touchdown_count"],
             recovery_support_foot_changes=recovery_state_updates["recovery_support_foot_changes"],
+            recovery_pitch_rate_at_push_end=recovery_state_updates["recovery_pitch_rate_at_push_end"],
+            recovery_pitch_rate_at_touchdown=recovery_state_updates["recovery_pitch_rate_at_touchdown"],
+            recovery_pitch_rate_after_10t=recovery_state_updates["recovery_pitch_rate_after_10t"],
+            recovery_capture_error_at_push_end=recovery_state_updates["recovery_capture_error_at_push_end"],
+            recovery_capture_error_at_touchdown=recovery_state_updates["recovery_capture_error_at_touchdown"],
+            recovery_capture_error_after_10t=recovery_state_updates["recovery_capture_error_after_10t"],
+            recovery_first_step_dx=recovery_state_updates["recovery_first_step_dx"],
+            recovery_first_step_dy=recovery_state_updates["recovery_first_step_dy"],
+            recovery_first_step_target_err_x=recovery_state_updates["recovery_first_step_target_err_x"],
+            recovery_first_step_target_err_y=recovery_state_updates["recovery_first_step_target_err_y"],
             mpc_planner_active=metrics["debug/mpc_planner_active"],
             mpc_controller_active=metrics["debug/mpc_controller_active"],
             mpc_target_com_x=metrics["debug/mpc_target_com_x"],
@@ -1577,10 +1925,46 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/bc_in_recover": metrics.get("debug/bc_in_recover", jp.zeros(())),
             # v0.17.2: Finalized recovery summaries must survive auto-reset.
             "recovery/first_step_latency": metrics.get("recovery/first_step_latency", jp.zeros(())),
+            "recovery/first_liftoff_latency": metrics.get("recovery/first_liftoff_latency", jp.zeros(())),
+            "recovery/first_touchdown_latency": metrics.get("recovery/first_touchdown_latency", jp.zeros(())),
             "recovery/touchdown_count": metrics.get("recovery/touchdown_count", jp.zeros(())),
             "recovery/support_foot_changes": metrics.get("recovery/support_foot_changes", jp.zeros(())),
             "recovery/post_push_velocity": metrics.get("recovery/post_push_velocity", jp.zeros(())),
             "recovery/completed": metrics.get("recovery/completed", jp.zeros(())),
+            "recovery/no_touchdown_frac": metrics.get("recovery/no_touchdown_frac", jp.zeros(())),
+            "recovery/touchdown_then_fail_frac": metrics.get(
+                "recovery/touchdown_then_fail_frac", jp.zeros(())
+            ),
+            "recovery/first_step_dx": metrics.get("recovery/first_step_dx", jp.zeros(())),
+            "recovery/first_step_dy": metrics.get("recovery/first_step_dy", jp.zeros(())),
+            "recovery/first_step_target_err_x": metrics.get(
+                "recovery/first_step_target_err_x", jp.zeros(())
+            ),
+            "recovery/first_step_target_err_y": metrics.get(
+                "recovery/first_step_target_err_y", jp.zeros(())
+            ),
+            "recovery/pitch_rate_at_push_end": metrics.get(
+                "recovery/pitch_rate_at_push_end", jp.zeros(())
+            ),
+            "recovery/pitch_rate_at_touchdown": metrics.get(
+                "recovery/pitch_rate_at_touchdown", jp.zeros(())
+            ),
+            "recovery/pitch_rate_reduction_10t": metrics.get(
+                "recovery/pitch_rate_reduction_10t", jp.zeros(())
+            ),
+            "recovery/capture_error_at_push_end": metrics.get(
+                "recovery/capture_error_at_push_end", jp.zeros(())
+            ),
+            "recovery/capture_error_at_touchdown": metrics.get(
+                "recovery/capture_error_at_touchdown", jp.zeros(())
+            ),
+            "recovery/capture_error_reduction_10t": metrics.get(
+                "recovery/capture_error_reduction_10t", jp.zeros(())
+            ),
+            "recovery/touchdown_to_term_steps": metrics.get(
+                "recovery/touchdown_to_term_steps", jp.zeros(())
+            ),
+            "unnecessary_step_rate": metrics.get("unnecessary_step_rate", jp.zeros(())),
             # v0.17.3: preserve architecture-pivot controller debug metrics
             "debug/mpc_planner_active": metrics.get("debug/mpc_planner_active", jp.zeros(())),
             "debug/mpc_controller_active": metrics.get("debug/mpc_controller_active", jp.zeros(())),
@@ -1634,10 +2018,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_active=reset_wr_info.recovery_active,
             recovery_age=reset_wr_info.recovery_age,
             recovery_last_support_foot=reset_wr_info.recovery_last_support_foot,
+            recovery_first_liftoff_recorded=reset_wr_info.recovery_first_liftoff_recorded,
+            recovery_first_liftoff_latency=reset_wr_info.recovery_first_liftoff_latency,
             recovery_first_touchdown_recorded=reset_wr_info.recovery_first_touchdown_recorded,
             recovery_first_step_latency=reset_wr_info.recovery_first_step_latency,
+            recovery_first_touchdown_age=reset_wr_info.recovery_first_touchdown_age,
             recovery_touchdown_count=reset_wr_info.recovery_touchdown_count,
             recovery_support_foot_changes=reset_wr_info.recovery_support_foot_changes,
+            recovery_pitch_rate_at_push_end=reset_wr_info.recovery_pitch_rate_at_push_end,
+            recovery_pitch_rate_at_touchdown=reset_wr_info.recovery_pitch_rate_at_touchdown,
+            recovery_pitch_rate_after_10t=reset_wr_info.recovery_pitch_rate_after_10t,
+            recovery_capture_error_at_push_end=reset_wr_info.recovery_capture_error_at_push_end,
+            recovery_capture_error_at_touchdown=reset_wr_info.recovery_capture_error_at_touchdown,
+            recovery_capture_error_after_10t=reset_wr_info.recovery_capture_error_after_10t,
+            recovery_first_step_dx=reset_wr_info.recovery_first_step_dx,
+            recovery_first_step_dy=reset_wr_info.recovery_first_step_dy,
+            recovery_first_step_target_err_x=reset_wr_info.recovery_first_step_target_err_x,
+            recovery_first_step_target_err_y=reset_wr_info.recovery_first_step_target_err_y,
             mpc_planner_active=reset_wr_info.mpc_planner_active,
             mpc_controller_active=reset_wr_info.mpc_controller_active,
             mpc_target_com_x=reset_wr_info.mpc_target_com_x,
@@ -2767,6 +3164,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)
             "tracking/avg_torque": avg_torque,  # mean(|torque|) in Nm
+            "unnecessary_step_rate": jp.zeros(()),  # Overwritten in step() using touchdown context
         }
 
         return total, components
