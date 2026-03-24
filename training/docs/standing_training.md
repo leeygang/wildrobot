@@ -655,6 +655,9 @@ Reward changes:
   - reduction in capture-point error after touchdown
   - short-horizon survival after the first recovery touchdown
 
+Config:
+- `training/configs/ppo_standing_v0173a_arrest.yaml`
+
 Metrics required before or during this branch:
 - the `v0.17.3a-metrics` recovery-window diagnostics above
 

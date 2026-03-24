@@ -489,6 +489,11 @@ class RewardWeightsConfig(Freezable):
     step_progress: float = 0.0
     step_progress_target_scale: float = 1.0
     step_progress_sigma: float = 0.05  # metres
+    arrest_pitch_rate: float = 0.0
+    arrest_capture_error: float = 0.0
+    post_touchdown_survival: float = 0.0
+    arrest_pitch_rate_scale: float = 3.0  # rad/s improvement for unit reward
+    arrest_capture_error_scale: float = 0.15  # m improvement for unit reward
     dense_progress: float = 0.0
     dense_progress_upright_pitch: float = 0.25  # radians (50% gate around this pitch)
     dense_progress_upright_pitch_rate: float = 0.90  # rad/s (50% gate around this pitch rate)

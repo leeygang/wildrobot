@@ -1550,6 +1550,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_left_loaded = wr.prev_left_loaded
         prev_right_loaded = wr.prev_right_loaded
 
+        current_push_active = (
+            (step_count >= wr.push_schedule.start_step)
+            & (step_count < wr.push_schedule.end_step)
+            & push_enabled
+        )
+
         # Compute reward
         reward, reward_components = self._get_reward(
             data,
@@ -1567,6 +1573,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cycle_start_forward_x=wr.cycle_start_forward_x,
             last_touchdown_root_pos=wr.last_touchdown_root_pos,
             last_touchdown_foot=wr.last_touchdown_foot,
+            push_active=current_push_active,
+            recovery_active=wr.recovery_active,
+            recovery_first_touchdown_recorded=wr.recovery_first_touchdown_recorded,
+            recovery_pitch_rate_at_touchdown=wr.recovery_pitch_rate_at_touchdown,
+            recovery_capture_error_at_touchdown=wr.recovery_capture_error_at_touchdown,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -1901,6 +1912,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
             "reward/pitch_rate": metrics.get("reward/pitch_rate", jp.zeros(())),
+            "reward/arrest_pitch_rate": metrics.get("reward/arrest_pitch_rate", jp.zeros(())),
+            "reward/arrest_capture_error": metrics.get(
+                "reward/arrest_capture_error", jp.zeros(())
+            ),
+            "reward/post_touchdown_survival": metrics.get(
+                "reward/post_touchdown_survival", jp.zeros(())
+            ),
             "debug/posture_mse": metrics.get("debug/posture_mse", jp.zeros(())),
             "reward/step_event": metrics.get("reward/step_event", jp.zeros(())),
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
@@ -1917,6 +1935,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/cycle_forward_delta": metrics.get("debug/cycle_forward_delta", jp.zeros(())),
             "debug/step_progress_delta": metrics.get("debug/step_progress_delta", jp.zeros(())),
             "debug/step_progress_event": metrics.get("debug/step_progress_event", jp.zeros(())),
+            "debug/recovery_step_gate": metrics.get("debug/recovery_step_gate", jp.zeros(())),
+            "debug/post_touchdown_arrest_gate": metrics.get(
+                "debug/post_touchdown_arrest_gate", jp.zeros(())
+            ),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -2576,6 +2598,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         cycle_start_forward_x: Optional[jax.Array] = None,
         last_touchdown_root_pos: Optional[jax.Array] = None,
         last_touchdown_foot: Optional[jax.Array] = None,
+        push_active: Optional[jax.Array] = None,
+        recovery_active: Optional[jax.Array] = None,
+        recovery_first_touchdown_recorded: Optional[jax.Array] = None,
+        recovery_pitch_rate_at_touchdown: Optional[jax.Array] = None,
+        recovery_capture_error_at_touchdown: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -2867,10 +2894,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pitch_rate=pitch_rate,
             healthy=healthy,
         )
-        step_reward_gate = jp.maximum(
-            need_step,
-            compute_command_active_gate(velocity_cmd, getattr(weights, "velocity_cmd_min", 0.2)),
+        command_step_gate = compute_command_active_gate(
+            velocity_cmd, getattr(weights, "velocity_cmd_min", 0.2)
         )
+        recovery_step_gate = jp.maximum(
+            jp.asarray(push_active if push_active is not None else 0.0, dtype=jp.float32),
+            jp.asarray(recovery_active if recovery_active is not None else 0.0, dtype=jp.float32),
+        )
+        step_reward_gate = jp.maximum(recovery_step_gate, command_step_gate)
 
         # Foot placement reward at touchdown (Raibert-style heuristic in heading-local frame).
         base_y = 0.5 * jp.asarray(weights.stance_width_target)
@@ -2942,6 +2973,49 @@ class WildRobotEnv(mjx_env.MjxEnv):
             target_scale=jp.asarray(getattr(weights, "step_progress_target_scale", 1.0), dtype=jp.float32),
             sigma=jp.asarray(getattr(weights, "step_progress_sigma", 0.05), dtype=jp.float32),
         )
+        capture_error_norm = jp.linalg.norm(self._get_capture_point_error(data))
+        post_touchdown_arrest_gate = (
+            jp.asarray(recovery_active if recovery_active is not None else 0.0, dtype=jp.float32)
+            * jp.asarray(
+                recovery_first_touchdown_recorded
+                if recovery_first_touchdown_recorded is not None
+                else 0.0,
+                dtype=jp.float32,
+            )
+        )
+        touchdown_pitch_rate_abs = jp.abs(
+            jp.asarray(
+                recovery_pitch_rate_at_touchdown
+                if recovery_pitch_rate_at_touchdown is not None
+                else 0.0,
+                dtype=jp.float32,
+            )
+        )
+        touchdown_capture_error = jp.asarray(
+            recovery_capture_error_at_touchdown
+            if recovery_capture_error_at_touchdown is not None
+            else 0.0,
+            dtype=jp.float32,
+        )
+        arrest_pitch_rate_scale = jp.maximum(
+            jp.asarray(getattr(weights, "arrest_pitch_rate_scale", 3.0), dtype=jp.float32),
+            1e-6,
+        )
+        arrest_capture_error_scale = jp.maximum(
+            jp.asarray(getattr(weights, "arrest_capture_error_scale", 0.15), dtype=jp.float32),
+            1e-6,
+        )
+        arrest_pitch_rate_reward = post_touchdown_arrest_gate * jp.clip(
+            (touchdown_pitch_rate_abs - jp.abs(pitch_rate)) / arrest_pitch_rate_scale,
+            0.0,
+            1.0,
+        )
+        arrest_capture_error_reward = post_touchdown_arrest_gate * jp.clip(
+            (touchdown_capture_error - capture_error_norm) / arrest_capture_error_scale,
+            0.0,
+            1.0,
+        )
+        post_touchdown_survival_reward = post_touchdown_arrest_gate
 
         # Per-step-cycle progress reward (retained as optional auxiliary).
         if current_step_count is None:
@@ -3078,6 +3152,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
             + getattr(weights, "step_length", 0.0) * step_length_reward
             + getattr(weights, "step_progress", 0.0) * step_progress_reward
+            + getattr(weights, "arrest_pitch_rate", 0.0) * arrest_pitch_rate_reward
+            + getattr(weights, "arrest_capture_error", 0.0) * arrest_capture_error_reward
+            + getattr(weights, "post_touchdown_survival", 0.0)
+            * post_touchdown_survival_reward
             + getattr(weights, "dense_progress", 0.0) * dense_progress_reward
             + getattr(weights, "cycle_progress", 0.0) * cycle_progress_reward
         )
@@ -3130,6 +3208,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/foot_place": foot_place_reward,
             "reward/step_length": step_length_reward,
             "reward/step_progress": step_progress_reward,
+            "reward/arrest_pitch_rate": arrest_pitch_rate_reward,
+            "reward/arrest_capture_error": arrest_capture_error_reward,
+            "reward/post_touchdown_survival": post_touchdown_survival_reward,
             "reward/dense_progress": dense_progress_reward,
             "reward/cycle_progress": cycle_progress_reward,
             "debug/posture_mse": posture_mse,
@@ -3140,6 +3221,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/cycle_forward_delta": cycle_forward_delta,
             "debug/step_progress_delta": step_progress_delta,
             "debug/step_progress_event": step_progress_event,
+            "debug/recovery_step_gate": recovery_step_gate,
+            "debug/post_touchdown_arrest_gate": post_touchdown_arrest_gate,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,

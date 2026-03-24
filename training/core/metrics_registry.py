@@ -687,6 +687,33 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Planner step-request indicator",
     ),
+    MetricSpec(
+        name="reward/arrest_pitch_rate",
+        reducer=Reducer.MEAN,
+        description="Post-touchdown pitch-rate arrest reward during recovery",
+    ),
+    MetricSpec(
+        name="reward/arrest_capture_error",
+        reducer=Reducer.MEAN,
+        description="Post-touchdown capture-error arrest reward during recovery",
+    ),
+    MetricSpec(
+        name="reward/post_touchdown_survival",
+        reducer=Reducer.MEAN,
+        description="Per-step survival reward after first recovery touchdown",
+    ),
+    MetricSpec(
+        name="debug/recovery_step_gate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Gate enabling recovery-window step rewards",
+    ),
+    MetricSpec(
+        name="debug/post_touchdown_arrest_gate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Gate enabling post-touchdown arrest rewards",
+    ),
 ]
 
 # =============================================================================
