@@ -1602,6 +1602,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         preserved_wr_info = WildRobotInfo(
             step_count=reset_wr_info.step_count,  # Reset to 0 for new episode (NOT new_wr_info.step_count!)
             prev_action=reset_wr_info.prev_action,
+            pending_action=reset_wr_info.pending_action,
             truncated=new_wr_info.truncated,  # Preserve original truncated flag for success rate
             velocity_cmd=reset_wr_info.velocity_cmd,  # New velocity for new episode
             prev_root_pos=reset_wr_info.prev_root_pos,
@@ -1645,6 +1646,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             mpc_target_step_y=reset_wr_info.mpc_target_step_y,
             mpc_support_state=reset_wr_info.mpc_support_state,
             mpc_step_requested=reset_wr_info.mpc_step_requested,
+            domain_rand_friction_scale=reset_wr_info.domain_rand_friction_scale,
+            domain_rand_mass_scales=reset_wr_info.domain_rand_mass_scales,
+            domain_rand_kp_scales=reset_wr_info.domain_rand_kp_scales,
+            domain_rand_frictionloss_scales=reset_wr_info.domain_rand_frictionloss_scales,
+            domain_rand_joint_offsets=reset_wr_info.domain_rand_joint_offsets,
         )
         preserved_info = dict(reset_state.info)  # Copy wrapper fields
         preserved_info[WR_INFO_KEY] = preserved_wr_info  # Update wr namespace

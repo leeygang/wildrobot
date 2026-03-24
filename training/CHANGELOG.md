@@ -7,6 +7,110 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.3a-pitchfix] - 2026-03-23: Cheap Sim-Side Pitch-Arrest Probe 🧪
+
+### Summary
+Added a minimal follow-up config on top of the best `v0.17.3a` policy recipe before escalating to teacher support. This probe does **not** change the policy contract, observation layout, action mapping, or termination boundary. It only adds small reward-shaping terms intended to reduce unrecoverable pitch momentum after hard pushes in simulation.
+
+### Why This Exists
+`v0.17.3a` materially improved the standing policy and beat `v0.17.1` on the fixed ladder, but it still missed the hard gate:
+- best checked checkpoint: `checkpoint_210_27525120.pkl`
+- `eval_medium = 83.1%`
+- `eval_hard = 51.4%`
+
+The remaining gap is still a **simulation competence** gap. `v0.17.3b` remains sim2real hardening and is therefore not the next explanation for the fixed-ladder miss. Before adding teacher support, this branch tries one cheap pure-RL intervention aimed at pitch arrest.
+
+### What Changed
+- Added new config: `training/configs/ppo_standing_v0173a_pitchfix.yaml`
+- Preserved all successful `v0.17.3a` recipe changes:
+  - `action_mapping_id: pos_target_home_v1`
+  - `use_relaxed_termination: true`
+  - `alive: 15.0`
+  - `min_height: 0.15`
+  - no domain randomization
+  - no action delay
+  - no teacher / runtime hierarchy
+- Added mild sim-side shaping terms:
+  - `pitch_rate: -0.2`
+  - `collapse_height: -0.05`
+  - `collapse_vz: -0.1`
+- Added a `quick_verify` block so `--verify` runs as a real smoke test.
+
+### Training Plan
+- Start from the last good `v0.17.3a` checkpoint:
+  - `training/checkpoints/ppo_standing_v0173a_v0173a_20260323_011340-0gmualhi/checkpoint_210_27525120.pkl`
+- Use resume training as a **screening** run because the policy contract is unchanged.
+- If this run materially improves `eval_hard`, rerun from scratch to confirm the gain is not checkpoint luck.
+- If it does not move the fixed-ladder result enough, proceed to bounded teacher support in `v0.17.4t`.
+
+### Status
+- Config landed
+- Config load verified
+- Training result: pending
+
+---
+
+## [v0.17.3a] - 2026-03-23: Recipe-Fixed Pure RL Result ✅
+
+### Summary
+`v0.17.3a` is the completed pure-RL recipe-fix standing run. This branch tested the closest Open Duck / OP3-inspired standing recipe adjustments before any teacher or runtime hierarchy:
+- home-centered residual action mapping
+- relaxed termination
+- dominant alive bonus
+
+The result is a clear improvement over `v0.17.1`, but it still misses the true hard-push gate on the external fixed ladder.
+
+### Training Run
+- Run: `training/wandb/run-20260323_011338-0gmualhi`
+- Config: `training/configs/ppo_standing_v0173a.yaml`
+- Best deploy/eval candidate:
+  - `training/checkpoints/ppo_standing_v0173a_v0173a_20260323_011340-0gmualhi/checkpoint_210_27525120.pkl`
+
+### Internal Training / Eval Result
+- `eval_clean/success_rate = 100%`
+- best `eval_push/success_rate = 92.2%` (around iter `200`, nearest saved checkpoint iter `210`)
+- final `eval_push/success_rate = 89.2%`
+- final `env/success_rate = 82.0%`
+- episode length improved substantially versus `v0.17.1`
+
+### Fixed Ladder Result
+Measured on `checkpoint_210_27525120.pkl` using the external standing ladder:
+- `eval_medium = 83.1%`
+- `eval_hard = 51.4%`
+- `eval_hard/term_height_low_frac = 48.6%`
+
+For comparison, `v0.17.1` fixed-ladder result was:
+- `eval_medium = 71.6%`
+- `eval_hard = 39.2%`
+- `eval_hard/term_height_low_frac = 60.8%`
+
+### Verdict
+`v0.17.3a` is a **real pure-RL improvement**, but it does **not** clear the standing hard gate.
+
+Interpretation:
+- quiet standing is solved (`eval_clean = 100%`)
+- the RL recipe changes substantially improved push recovery in simulation
+- the dominant collapse mode shifted away from the old `term_height_low` dominance
+- the remaining gap is still a **simulation competence** gap, not a transfer gap
+
+Decision:
+- freeze `v0.17.3a` as the current best pure-RL standing baseline
+- do **not** treat `v0.17.3b` as the fix for this sim miss; `v0.17.3b` remains sim2real hardening
+- try one cheap sim-side reward follow-up (`v0.17.3a-pitchfix`) before escalating to teacher support
+
+### Why The Best Checkpoint Is Iter 210
+- raw internal push eval peaked before the final iteration
+- later checkpoints showed worse push success and higher torque stress
+- iter `210` is the nearest saved checkpoint to the best internal eval point
+
+### Main Lessons
+- recipe alignment mattered; pure PPO was not exhausted in `v0.17.1`
+- internal `eval_push/*` is directionally useful but still overstates true fixed-ladder performance
+- remaining failures appear more pitch-related than the older straight-collapse pattern
+- the next decision should continue to be made off the fixed ladder, not only internal probe metrics
+
+---
+
 ## [v0.17.2] - 2026-03-22: Architecture-Pivot Groundwork (Scaffolding) 🧱
 
 ### Summary

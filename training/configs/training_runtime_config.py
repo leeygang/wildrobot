@@ -525,7 +525,7 @@ class CheckpointConfig(Freezable):
     """Checkpoint configuration."""
 
     dir: str = "training/checkpoints"
-    interval: int = 50
+    interval: int = 10
 
 
 # =============================================================================
