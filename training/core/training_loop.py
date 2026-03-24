@@ -1723,85 +1723,65 @@ def train(
                 if key not in env:
                     env[key] = jnp.asarray(value, dtype=jnp.float32)
 
-            # Main metrics line - v0.10.3: Include velocity command for walking
+            # Main metrics line
             main_line = (
                 f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
-                f"vel={float(env['forward_velocity']):>5.2f}m/s (cmd={float(env['velocity_command']):>4.2f}) | "
+                f"success={float(metrics.success_rate):>4.1%} | "
                 f"steps/s={steps_per_sec:>8.0f}"
             )
 
-            # Print the main metrics line in yellow to make it stand out in logs
             YELLOW = "\x1b[33m"
             RESET = "\x1b[0m"
             try:
                 print(f"{YELLOW}{main_line}{RESET}")
             except Exception:
-                # Fallback to normal print if terminal doesn't support ANSI sequences
                 print(main_line)
 
-            # Second line: episode metrics + v0.10.3 tracking metrics
+            # Episode details
             print(
                 f"  └─ ep_len={float(metrics.episode_length):>5.0f} | "
                 f"height={float(env['height']):>4.2f}m | "
-                f"success={float(metrics.success_rate):>4.1%} | "
-                f"vel_err={float(env['tracking/vel_error']):>5.3f} | "
-                f"torque={float(env['tracking/max_torque']):>4.1%}"
+                f"vel={float(env['forward_velocity']):>5.2f} (cmd={float(env['velocity_command']):>4.2f}) | "
+                f"vel_err={float(env['tracking/vel_error']):>5.3f}"
             )
 
-            # v0.10.2: Third line - termination diagnostics (what's causing failures?)
-            # Always show termination breakdown for debugging
+            # Torque + termination on one line
             print(
-                f"  └─ term: h_low={float(env['term_height_low_frac']):>4.1%} | "
-                f"h_high={float(env['term_height_high_frac']):>4.1%} | "
-                f"pitch={float(env['term_pitch_frac']):>4.1%} | "
+                f"  └─ torque: max={float(env['tracking/max_torque']):>4.1%} sat={float(env['debug/torque_sat_frac']):>4.1%} | "
+                f"term: h_low={float(env['term_height_low_frac']):>4.1%} "
+                f"pitch={float(env['term_pitch_frac']):>4.1%} "
                 f"roll={float(env['term_roll_frac']):>4.1%}"
             )
-            print(
-                f"  └─ stress: torque_sat={float(env['debug/torque_sat_frac']):>4.1%} | "
-                f"torque_max={float(env['debug/torque_abs_max']):>4.1%} | "
-                f"action_sat={float(env['debug/action_sat_frac']):>4.1%}"
-            )
 
-            print(
-                f"  └─ ppo: kl={float(metrics.approx_kl):>6.4f} "
-                f"(target={float(env['ppo/target_kl']):>6.4f}) | "
-                f"epochs={int(float(env['ppo/epochs_used'])):>2} | "
-                f"lr={float(env['ppo/lr']):>8.6f}"
-            )
+            # PPO internals — only on anomaly (early stop or rollback)
+            ppo_early_stop = int(float(env.get('ppo/early_stop_epoch', 0)))
+            ppo_rollback = int(float(env.get('ppo/rollback_triggered', 0)))
+            if ppo_early_stop > 0 or ppo_rollback > 0:
+                print(
+                    f"  └─ ppo: kl={float(metrics.approx_kl):>6.4f} "
+                    f"(target={float(env['ppo/target_kl']):>6.4f}) | "
+                    f"epochs={int(float(env['ppo/epochs_used'])):>2} | "
+                    f"lr={float(env['ppo/lr']):>8.6f}"
+                    f"{' | EARLY_STOP' if ppo_early_stop > 0 else ''}"
+                    f"{' | ROLLBACK' if ppo_rollback > 0 else ''}"
+                )
 
+            # Eval lines — compact: success + dominant failure terms only
             if "eval_push/success_rate" in env:
                 print(
                     f"  └─ eval_push: success={float(env['eval_push/success_rate']):>5.1%} | "
-                    f"ep_len={float(env['eval_push/episode_length']):>5.1f} | "
-                    f"term_h_low={float(env['eval_push/term_height_low_frac']):>4.1%} | "
-                    f"term_h_high={float(env['eval_push/term_height_high_frac']):>4.1%} | "
-                    f"term_pitch={float(env['eval_push/term_pitch_frac']):>4.1%} | "
-                    f"term_roll={float(env['eval_push/term_roll_frac']):>4.1%} | "
-                    f"done_env={float(env.get('eval_push/done_env_frac', 0.0)):>4.1%} | "
-                    f"trunc_env={float(env.get('eval_push/trunc_env_frac', 0.0)):>4.1%} | "
-                    f"survive={float(env.get('eval_push/survival_rate', 0.0)):>5.1%} "
-                    f"@{float(env.get('eval_push/survival_steps', 0.0)):>5.1f} | "
-                    f"reset_h={float(env.get('eval_push/reset_height_mean', 0.0)):>4.2f}m"
+                    f"h_low={float(env['eval_push/term_height_low_frac']):>4.1%} "
+                    f"pitch={float(env['eval_push/term_pitch_frac']):>4.1%}"
                 )
             if "eval_clean/success_rate" in env:
                 print(
-                    f"  └─ eval_clean: success={float(env['eval_clean/success_rate']):>5.1%} | "
-                    f"ep_len={float(env['eval_clean/episode_length']):>5.1f} | "
-                    f"term_h_low={float(env['eval_clean/term_height_low_frac']):>4.1%} | "
-                    f"term_h_high={float(env['eval_clean/term_height_high_frac']):>4.1%} | "
-                    f"term_pitch={float(env['eval_clean/term_pitch_frac']):>4.1%} | "
-                    f"term_roll={float(env['eval_clean/term_roll_frac']):>4.1%} | "
-                    f"done_env={float(env.get('eval_clean/done_env_frac', 0.0)):>4.1%} | "
-                    f"trunc_env={float(env.get('eval_clean/trunc_env_frac', 0.0)):>4.1%} | "
-                    f"survive={float(env.get('eval_clean/survival_rate', 0.0)):>5.1%} "
-                    f"@{float(env.get('eval_clean/survival_steps', 0.0)):>5.1f} | "
-                    f"reset_h={float(env.get('eval_clean/reset_height_mean', 0.0)):>4.2f}m"
+                    f"  └─ eval_clean: success={float(env['eval_clean/success_rate']):>5.1%}"
                 )
 
             if amp_enabled:
                 print(
-                    f" | amp={float(metrics.amp_reward_mean):>6.4f} | "
+                    f"  └─ amp={float(metrics.amp_reward_mean):>6.4f} | "
                     f"disc_acc={float(metrics.disc_accuracy):>5.2f}"
                 )
 
