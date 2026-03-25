@@ -7,6 +7,74 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.3a-arrest] - 2026-03-24: Recovery-Gated Arrest Rewards Result ⚠️
+
+### Summary
+`v0.17.3a-arrest` completed the last planned reward-only standing branch before teacher support. This branch kept the `v0.17.3a` standing recipe and mild `pitchfix` shaping, then added:
+- recovery-window gating for step rewards
+- explicit post-touchdown arrest rewards
+- short-horizon post-touchdown survival reward
+
+The mechanism worked, but the outcome did not break through the hard-push gate.
+
+### Training Run
+- Run: `training/wandb/run-20260323_234412-ke6ts9kz`
+- Config: `training/configs/ppo_standing_v0173a_arrest.yaml`
+- Checkpoints: `training/checkpoints/ppo_standing_v0173a_arrest_v0173a-arrest_20260323_234415-ke6ts9kz`
+
+### Best Internal Push-Eval Checkpoint
+The clean-standing eval saturates at `100%`, so the standing objective should be selected by `eval_push/*`, not `eval_clean/*`.
+
+Best push-eval checkpoint:
+- `training/checkpoints/ppo_standing_v0173a_arrest_v0173a-arrest_20260323_234415-ke6ts9kz/checkpoint_300_39321600.pkl`
+
+Metrics at iter `300`:
+- `eval_push/success_rate = 93.75%`
+- `eval_push/episode_length = 478.7`
+- `eval_push/term_height_low_frac = 6.25%`
+- `eval_push/term_pitch_frac = 46.9%`
+- `env/success_rate = 87.6%`
+- `debug/torque_sat_frac = 5.5%`
+
+### Fixed Ladder Result
+Measured on `checkpoint_300_39321600.pkl` using the external standing ladder:
+- `eval_medium = 83.1%`
+- `eval_hard = 52.2%`
+- `eval_hard/term_height_low_frac = 47.8%`
+
+Comparison:
+- `v0.17.3a`: `eval_medium = 83.1%`, `eval_hard = 51.4%`
+- `v0.17.3a-pitchfix`: `eval_medium = 85.4%`, `eval_hard = 51.8%`
+- `v0.17.3a-arrest`: `eval_medium = 83.1%`, `eval_hard = 52.2%`
+
+### What Worked
+- Arrest rewards were active and stable:
+  - `reward/arrest_pitch_rate` non-zero
+  - `reward/arrest_capture_error` non-zero
+  - `reward/post_touchdown_survival ≈ 0.10`
+- Recovery gating was genuinely engaged:
+  - `debug/recovery_step_gate ≈ 0.13`
+  - `debug/post_touchdown_arrest_gate ≈ 0.10`
+- `recovery/no_touchdown_frac` was effectively zero at the best point, which means the policy is usually stepping when disturbed.
+
+### Verdict
+`v0.17.3a-arrest` confirms that the remaining gap is **not** “the robot never steps.” The policy steps, and the arrest shaping is active, but the step quality still does not improve enough to clear the hard gate.
+
+Decision:
+- stop reward-only tuning for this standing branch
+- keep `v0.17.3b` deferred; this is still a sim-competence miss, not a transfer miss
+- proceed to bounded teacher support in `v0.17.4t`
+
+### Main Lesson
+The repo now has evidence for all three pure-RL standing branches:
+- `v0.17.3a` improved the baseline materially
+- `v0.17.3a-pitchfix` slightly improved hard-push results
+- `v0.17.3a-arrest` activated the intended recovery mechanism but still plateaued below the gate
+
+The next justified lever is **bounded step-target teacher support**, not more local reward shaping.
+
+---
+
 ## [v0.17.3a-pitchfix] - 2026-03-23: Cheap Sim-Side Pitch-Arrest Probe 🧪
 
 ### Summary
@@ -46,7 +114,16 @@ The remaining gap is still a **simulation competence** gap. `v0.17.3b` remains s
 ### Status
 - Config landed
 - Config load verified
-- Training result: pending
+- Training complete
+- Best checked checkpoint:
+  - `training/checkpoints/ppo_standing_v0173a_pitchfix_v0173a-pitchfix_20260323_175304-8v4o0hfn/checkpoint_280_36700160.pkl`
+- Fixed ladder:
+  - `eval_medium = 85.4%`
+  - `eval_hard = 51.8%`
+- Verdict:
+  - small improvement over `v0.17.3a`
+  - not enough to clear the hard gate
+  - justified one last reward-only branch (`v0.17.3a-arrest`) before teacher support
 
 ---
 

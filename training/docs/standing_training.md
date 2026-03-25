@@ -40,6 +40,7 @@ Active architecture docs:
 - [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
 - [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
 - [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
+- [teacher_training_design.md](/home/leeygang/projects/wildrobot/training/docs/teacher_training_design.md)
 
 Deferred reference docs:
 - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
@@ -666,6 +667,19 @@ Exit criteria:
 - the run shows that step timing/geometry improves but still plateaus below the
   gate, which justifies teacher support
 
+Completed result:
+- best internal `eval_push` matched `v0.17.3a-pitchfix` but did not beat it
+- fixed ladder on `checkpoint_300_39321600.pkl`:
+  - `eval_medium = 83.1%`
+  - `eval_hard = 52.2%`
+- interpretation:
+  - the policy is stepping
+  - arrest rewards are active
+  - the remaining gap is still recovery-step quality, not step initiation
+- decision:
+  - do not spend another branch on local reward tuning here
+  - proceed to `v0.17.4t`
+
 #### `v0.17.3b`: Sim2real Hardening (deferred until sim gate passes)
 
 Objective:
@@ -803,6 +817,32 @@ Changes:
 - possible teacher source:
   - capture-point or similar heuristic target generator
 - add metrics and debug signals for teacher engagement and agreement
+
+Implementation plan:
+- new config: `training/configs/ppo_standing_v0174t.yaml`
+- new teacher target generator module:
+  - `training/envs/teacher_step_target.py`
+- env integration:
+  - `training/envs/wildrobot_env.py`
+  - compute teacher targets only during disturbed windows
+  - keep teacher targets out of actor observations
+- runtime config plumbing:
+  - `training/configs/training_runtime_config.py`
+  - `training/configs/training_config.py`
+- first teacher weights should stay small and bounded:
+  - `teacher_step_required`
+  - `teacher_target_step_xy`
+  - optional `teacher_swing_foot`
+- logging/debug:
+  - teacher target values
+  - teacher-active gate
+  - policy/teacher agreement metrics at touchdown
+
+First success criteria for `v0.17.4t`:
+- `eval_hard > 60%`, or a clear improvement over `52.2%`
+- `eval_clean` remains saturated
+- teacher metrics confirm that support is used mainly in disturbed windows
+- deployed policy remains single-policy with no runtime teacher dependency
 
 Exit criteria:
 - teacher signals are bounded and inspectable
