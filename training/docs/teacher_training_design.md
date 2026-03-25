@@ -112,6 +112,16 @@ Likely teacher source:
 - capture-point-style recovery heuristic
 - plus simple foot-selection and reachable-step clipping rules
 
+Initial reachable-step bounds for the first teacher should be explicit and
+conservative:
+- `target_step_x in [-0.10, 0.10] m`
+- left `target_step_y in [0.02, 0.06] m`
+- right `target_step_y in [-0.06, -0.02] m`
+
+These are not final hardware limits. They are the first bounded training-time
+teacher region and should be validated in `T0` against observed touchdown
+geometry and asset reach.
+
 Later escalation, only if needed:
 - stronger privileged teacher-student path
 - model-based or MJPC teacher in simulation
@@ -194,10 +204,24 @@ The first teacher branch should add small, bounded terms:
   reward when touchdown foot matches teacher foot choice
 
 Design rules:
-- keep weights small compared with survival and posture terms
 - gate them to disturbed windows only
 - compute them on first recovery step / touchdown, not all touch events
 - keep clipping and bounds explicit
+- use soft agreement, not hard tracking
+
+Weight guidance for the first branch:
+- `teacher_target_step_xy` should be large enough to matter because it fires
+  rarely; start around posture-scale, not tiny auxiliary scale
+- first recommended range:
+  - `teacher_target_step_xy: 0.3 - 0.6`
+  - `teacher_step_required: 0.1 - 0.2`
+  - `teacher_swing_foot: 0.05 - 0.1`
+
+Rationale:
+- the teacher reward is gated to first recovery touchdown only
+- it should be strong enough to shape rare hard-push events
+- it should still remain below the dominant survival objective over the full
+  episode
 
 Initial priority:
 1. `teacher_target_step_xy`
@@ -206,6 +230,23 @@ Initial priority:
 
 Reason:
 - the current evidence says step quality matters more than step occurrence
+
+Recommended first reward form for `teacher_target_step_xy`:
+
+\[
+r_{xy} = \exp(-\|p_{td} - p_{teacher}\|^2 / \sigma^2)
+\]
+
+where:
+- `p_td` is the first recovery touchdown position in heading-local `x/y`
+- `p_teacher` is the teacher target
+- `sigma` should start in the `0.05 - 0.08 m` range
+
+This keeps the teacher soft:
+- near the target gives a useful gradient
+- moderate disagreement still receives partial credit
+- if the teacher target is wrong by a large margin, the reward fades instead of
+  strongly punishing the policy for choosing a different touchdown
 
 ---
 
@@ -220,6 +261,10 @@ Protections:
 - teacher weights stay small and bounded
 - quiet-standing metrics remain a hard regression gate
 - fixed-ladder outcome decides success, not teacher agreement alone
+
+Teacher disagreement should not be treated as a hard error condition.
+The branch should prefer soft touchdown-agreement rewards over penalties that
+force strict teacher tracking.
 
 If teacher is noisy or wrong:
 - `eval_clean/unnecessary_step_rate` will rise
@@ -285,10 +330,19 @@ Exit criteria:
 - `eval_clean/unnecessary_step_rate` does not regress
 - teacher debug plots are visually sane in sampled rollouts
 - teacher-active fraction in clean standing is near zero
+- teacher target distribution is documented:
+  - mean / std / min / max for `target_step_x`
+  - mean / std / min / max for `target_step_y`
+- reachable-target fraction is high enough for the first branch:
+  - target inside configured teacher step bounds for at least `80%` of active
+    teacher samples
+- teacher does not fire frequently in mild-push cases that are still clearly
+  brace-recoverable
 
 Failure criteria:
 - teacher triggers broadly in quiet standing
 - teacher targets are unstable / discontinuous enough to be unusable
+- teacher frequently requests unreachable or obviously implausible targets
 
 ### Milestone T1: Teacher XY Guidance
 
@@ -372,6 +426,21 @@ If T3 fails:
 
 This keeps the branch debuggable and avoids bundling too many new levers into
 the first run.
+
+Resume strategy:
+- start the first screened teacher run by resuming from the best
+  `v0.17.3a` checkpoint:
+  - `training/checkpoints/ppo_standing_v0173a_v0173a_20260323_011340-0gmualhi/checkpoint_210_27525120.pkl`
+- do **not** resume from `v0.17.3a-arrest` for the first teacher test
+
+Reason:
+- `v0.17.3a` is the cleanest recipe-fixed baseline
+- `pitchfix` and `arrest` were useful diagnostics, but they did not break the
+  plateau
+- teacher effect should be measured against the cleanest strong baseline first
+
+If the resumed teacher screening run succeeds:
+- rerun the same branch from scratch for confirmation
 
 ---
 
