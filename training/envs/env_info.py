@@ -173,6 +173,15 @@ try:
         #: First touchdown y-target error
         recovery_first_step_target_err_y: jnp.ndarray  # shape=()
 
+        # v0.17.4t: teacher step-target diagnostics (training-time only)
+        teacher_active: jnp.ndarray  # shape=()
+        teacher_step_required_soft: jnp.ndarray  # shape=()
+        teacher_step_required_hard: jnp.ndarray  # shape=()
+        teacher_swing_foot: jnp.ndarray  # shape=(), -1 none, 0 left, 1 right
+        teacher_target_step_x: jnp.ndarray  # shape=()
+        teacher_target_step_y: jnp.ndarray  # shape=()
+        teacher_target_reachable: jnp.ndarray  # shape=()
+
         # v0.17.3: architecture-pivot controller debug state (scalar latches)
         mpc_planner_active: jnp.ndarray  # shape=()
         mpc_controller_active: jnp.ndarray  # shape=()
@@ -246,6 +255,13 @@ except ImportError:
         recovery_first_step_dy: jnp.ndarray
         recovery_first_step_target_err_x: jnp.ndarray
         recovery_first_step_target_err_y: jnp.ndarray
+        teacher_active: jnp.ndarray
+        teacher_step_required_soft: jnp.ndarray
+        teacher_step_required_hard: jnp.ndarray
+        teacher_swing_foot: jnp.ndarray
+        teacher_target_step_x: jnp.ndarray
+        teacher_target_step_y: jnp.ndarray
+        teacher_target_reachable: jnp.ndarray
         mpc_planner_active: jnp.ndarray
         mpc_controller_active: jnp.ndarray
         mpc_target_com_x: jnp.ndarray
@@ -330,6 +346,13 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "recovery_first_step_dy": (),
         "recovery_first_step_target_err_x": (),
         "recovery_first_step_target_err_y": (),
+        "teacher_active": (),
+        "teacher_step_required_soft": (),
+        "teacher_step_required_hard": (),
+        "teacher_swing_foot": (),
+        "teacher_target_step_x": (),
+        "teacher_target_step_y": (),
+        "teacher_target_reachable": (),
         "mpc_planner_active": (),
         "mpc_controller_active": (),
         "mpc_target_com_x": (),

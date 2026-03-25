@@ -268,3 +268,52 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     assert float(aggregated["recovery/touchdown_count"]) == 3.0
     assert float(aggregated["recovery/support_foot_changes"]) == 2.0
     assert float(aggregated["recovery/post_push_velocity"]) == pytest.approx(0.4)
+
+
+def test_teacher_aggregation_normalizes_by_active_count_and_clean_count():
+    num_metrics = len(METRIC_SPECS)
+    metrics_vec = jnp.zeros((4, 1, num_metrics), dtype=jnp.float32)
+
+    def set_metric(name: str, t: int, value: float) -> None:
+        idx = METRIC_INDEX[name]
+        nonlocal metrics_vec
+        metrics_vec = metrics_vec.at[t, 0, idx].set(value)
+
+    # Active on t=0,1 only.
+    set_metric("teacher/active_frac", 0, 1.0)
+    set_metric("teacher/active_frac", 1, 1.0)
+    set_metric("teacher/active_count", 0, 1.0)
+    set_metric("teacher/active_count", 1, 1.0)
+    set_metric("teacher/step_required_mean", 0, 0.5)
+    set_metric("teacher/step_required_mean", 1, 1.0)
+    set_metric("teacher/target_step_x_mean", 0, 0.02)
+    set_metric("teacher/target_step_x_mean", 1, 0.06)
+    set_metric("teacher/target_step_x_sq_mean", 0, 0.02 * 0.02)
+    set_metric("teacher/target_step_x_sq_mean", 1, 0.06 * 0.06)
+    set_metric("teacher/reachable_frac", 0, 1.0)
+    set_metric("teacher/reachable_frac", 1, 0.0)
+
+    # Clean on t=2,3 only.
+    set_metric("teacher/clean_step_count", 2, 1.0)
+    set_metric("teacher/clean_step_count", 3, 1.0)
+    set_metric("teacher/raw_step_required_during_clean_mean", 2, 0.3)
+    set_metric("teacher/raw_step_required_during_clean_mean", 3, 0.5)
+    set_metric("teacher/teacher_active_during_clean_frac", 2, 0.0)
+    set_metric("teacher/teacher_active_during_clean_frac", 3, 0.0)
+    # Push on t=0,1 only; teacher active both times.
+    set_metric("teacher/push_step_count", 0, 1.0)
+    set_metric("teacher/push_step_count", 1, 1.0)
+    set_metric("teacher/teacher_active_during_push_frac", 0, 1.0)
+    set_metric("teacher/teacher_active_during_push_frac", 1, 1.0)
+
+    aggregated = aggregate_metrics(metrics_vec)
+
+    assert float(aggregated["teacher/active_frac"]) == pytest.approx(0.5)
+    assert float(aggregated["teacher/active_count"]) == pytest.approx(2.0)
+    assert float(aggregated["teacher/step_required_mean"]) == pytest.approx(0.75)
+    assert float(aggregated["teacher/target_step_x_mean"]) == pytest.approx(0.04)
+    assert float(aggregated["teacher/reachable_frac"]) == pytest.approx(0.5)
+    assert float(aggregated["teacher/target_step_x_std"]) == pytest.approx(0.02)
+    assert float(aggregated["teacher/raw_step_required_during_clean_mean"]) == pytest.approx(0.4)
+    assert float(aggregated["teacher/teacher_active_during_clean_frac"]) == pytest.approx(0.0)
+    assert float(aggregated["teacher/teacher_active_during_push_frac"]) == pytest.approx(1.0)

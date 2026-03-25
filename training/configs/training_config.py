@@ -115,7 +115,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     env = config.get("env", {})
     resolved = resolve_env_asset_paths(env)
     controller_stack = str(env.get("controller_stack", "ppo"))
-    allowed_controller_stacks = {"ppo", "mpc_standing"}
+    allowed_controller_stacks = {"ppo", "mpc_standing", "ppo_teacher_standing"}
     if controller_stack not in allowed_controller_stacks:
         raise ValueError(
             f"Invalid env.controller_stack='{controller_stack}'. "
@@ -161,6 +161,14 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         mpc_height_kp=float(env.get("mpc_height_kp", 0.15)),
         mpc_action_clip=float(env.get("mpc_action_clip", 0.35)),
         mpc_step_trigger_threshold=float(env.get("mpc_step_trigger_threshold", 0.45)),
+        teacher_enabled=bool(env.get("teacher_enabled", False)),
+        teacher_hard_threshold=float(env.get("teacher_hard_threshold", 0.60)),
+        teacher_target_x_min=float(env.get("teacher_target_x_min", -0.10)),
+        teacher_target_x_max=float(env.get("teacher_target_x_max", 0.10)),
+        teacher_target_y_left_min=float(env.get("teacher_target_y_left_min", 0.02)),
+        teacher_target_y_left_max=float(env.get("teacher_target_y_left_max", 0.06)),
+        teacher_target_y_right_min=float(env.get("teacher_target_y_right_min", -0.06)),
+        teacher_target_y_right_max=float(env.get("teacher_target_y_right_max", -0.02)),
 
         # M2: base controller + residual gating (optional)
         base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),
@@ -413,6 +421,10 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         step_need_roll=rewards.get("step_need_roll", 0.35),
         step_need_lat_vel=rewards.get("step_need_lat_vel", 0.30),
         step_need_pitch_rate=rewards.get("step_need_pitch_rate", 1.00),
+        teacher_target_step_xy=rewards.get("teacher_target_step_xy", 0.45),
+        teacher_target_step_xy_sigma=rewards.get("teacher_target_step_xy_sigma", 0.06),
+        teacher_step_required=rewards.get("teacher_step_required", 0.0),
+        teacher_swing_foot=rewards.get("teacher_swing_foot", 0.0),
     )
 
 

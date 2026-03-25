@@ -79,6 +79,7 @@ REWARD_TERM_KEYS = [
     "reward/foot_place",
     "reward/step_length",
     "reward/step_progress",
+    "reward/teacher_target_step_xy",
     "reward/arrest_pitch_rate",
     "reward/arrest_capture_error",
     "reward/post_touchdown_survival",
@@ -127,6 +128,7 @@ ENV_METRICS_KEYS = {
     "reward/foot_place": "Foot placement reward gated by recovery window or walking command",
     "reward/step_length": "Touchdown step-length reward tied to commanded speed",
     "reward/step_progress": "Touchdown-to-touchdown structured forward progress reward",
+    "reward/teacher_target_step_xy": "Teacher target agreement reward on first recovery touchdown",
     "reward/arrest_pitch_rate": "Post-touchdown reduction in |pitch_rate| during recovery",
     "reward/arrest_capture_error": "Post-touchdown reduction in capture error during recovery",
     "reward/post_touchdown_survival": "Per-step survival reward after first recovery touchdown",
@@ -176,6 +178,27 @@ ENV_METRICS_KEYS = {
     "debug/bc_in_recover": "M3 FSM occupancy in TOUCHDOWN_RECOVER phase",
     "debug/bc_swing_foot": "M3 FSM active swing foot (0=left, 1=right)",
     "debug/bc_phase_ticks": "M3 FSM ticks in current phase",
+    # v0.17.4t: teacher diagnostics
+    "teacher/active_frac": "Fraction of steps where teacher is active",
+    "teacher/active_count": "Count of steps where teacher is active",
+    "teacher/step_required_mean": "Teacher soft step-required signal mean",
+    "teacher/step_required_hard_frac": "Teacher hard step-required fraction",
+    "teacher/target_step_x_mean": "Teacher target step x mean",
+    "teacher/target_step_y_mean": "Teacher target step y mean",
+    "teacher/target_step_x_std": "Teacher target step x std",
+    "teacher/target_step_y_std": "Teacher target step y std",
+    "teacher/swing_left_frac": "Teacher swing-left fraction when active",
+    "teacher/target_xy_error": "Touchdown XY error to teacher target",
+    "teacher/teacher_active_during_clean_frac": "Teacher activity in clean windows",
+    "teacher/raw_step_required_during_clean_mean": "Raw (pre-disturbance-gated) teacher demand during clean windows",
+    "teacher/clean_step_count": "Count of clean-window samples",
+    "teacher/push_step_count": "Count of push-window samples",
+    "teacher/teacher_active_during_push_frac": "Teacher activity in push windows",
+    "teacher/reachable_frac": "Teacher target reachable fraction",
+    "teacher/target_step_x_min": "Teacher target step x min",
+    "teacher/target_step_x_max": "Teacher target step x max",
+    "teacher/target_step_y_min": "Teacher target step y min",
+    "teacher/target_step_y_max": "Teacher target step y max",
 }
 
 
@@ -258,6 +281,7 @@ def get_initial_env_metrics(
         "reward/foot_place": 0.0,
         "reward/step_length": 0.0,
         "reward/step_progress": 0.0,
+        "reward/teacher_target_step_xy": 0.0,
         "reward/arrest_pitch_rate": 0.0,
         "reward/arrest_capture_error": 0.0,
         "reward/post_touchdown_survival": 0.0,
@@ -383,6 +407,7 @@ def get_initial_env_metrics_jax(
         "reward/foot_place": jp.zeros(()),
         "reward/step_length": jp.zeros(()),
         "reward/step_progress": jp.zeros(()),
+        "reward/teacher_target_step_xy": jp.zeros(()),
         "reward/arrest_pitch_rate": jp.zeros(()),
         "reward/arrest_capture_error": jp.zeros(()),
         "reward/post_touchdown_survival": jp.zeros(()),
@@ -459,6 +484,30 @@ def get_initial_env_metrics_jax(
         "recovery/capture_error_reduction_10t": jp.zeros(()),
         "recovery/touchdown_to_term_steps": jp.zeros(()),
         "unnecessary_step_rate": jp.zeros(()),
+        "teacher/active_frac": jp.zeros(()),
+        "teacher/active_count": jp.zeros(()),
+        "teacher/step_required_mean": jp.zeros(()),
+        "teacher/step_required_hard_frac": jp.zeros(()),
+        "teacher/target_step_x_mean": jp.zeros(()),
+        "teacher/target_step_y_mean": jp.zeros(()),
+        "teacher/swing_left_frac": jp.zeros(()),
+        "teacher/target_xy_error": jp.zeros(()),
+        "teacher/target_xy_error_events": jp.zeros(()),
+        "teacher/teacher_active_during_clean_frac": jp.zeros(()),
+        "teacher/raw_step_required_during_clean_mean": jp.zeros(()),
+        "teacher/clean_step_count": jp.zeros(()),
+        "teacher/push_step_count": jp.zeros(()),
+        "teacher/teacher_active_during_push_frac": jp.zeros(()),
+        "teacher/reachable_frac": jp.zeros(()),
+        "teacher/target_step_x_min": jp.asarray(jp.inf, dtype=jp.float32),
+        "teacher/target_step_x_max": jp.asarray(-jp.inf, dtype=jp.float32),
+        "teacher/target_step_y_min": jp.asarray(jp.inf, dtype=jp.float32),
+        "teacher/target_step_y_max": jp.asarray(-jp.inf, dtype=jp.float32),
+        "teacher/target_step_x_sq_mean": jp.zeros(()),
+        "teacher/target_step_y_sq_mean": jp.zeros(()),
+        "teacher/swing_foot": jp.asarray(-1.0, dtype=jp.float32),
+        "teacher/target_step_x_std": jp.zeros(()),
+        "teacher/target_step_y_std": jp.zeros(()),
         # v0.17.3: architecture-pivot standing controller debug metrics
         "debug/mpc_planner_active": jp.zeros(()),
         "debug/mpc_controller_active": jp.zeros(()),
@@ -1034,6 +1083,7 @@ def build_wandb_metrics(
             key.startswith("debug/")
             or key.startswith("term_")
             or key.startswith("recovery/")
+            or key.startswith("teacher/")
             or key.startswith("ppo/")
             or key.startswith("eval/")
             or key.startswith("eval_push/")

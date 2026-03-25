@@ -75,6 +75,10 @@ from training.envs.domain_randomize import (
     nominal_domain_rand_params,
     sample_domain_rand_params,
 )
+from training.envs.teacher_step_target import (
+    compute_teacher_step_target,
+    compute_teacher_target_step_xy_reward,
+)
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import (
     build_metrics_vec,
@@ -904,10 +908,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # All values accessed via self._config.env.*, self._config.ppo.*, etc.
         self._config = config
         self._controller_stack = str(getattr(self._config.env, "controller_stack", "ppo"))
-        if self._controller_stack not in ("ppo", "mpc_standing"):
+        if self._controller_stack not in ("ppo", "ppo_teacher_standing", "mpc_standing"):
             raise ValueError(
                 f"Unsupported controller_stack '{self._controller_stack}'. "
-                "Expected one of: ['ppo', 'mpc_standing']"
+                "Expected one of: ['ppo', 'ppo_teacher_standing', 'mpc_standing']"
             )
 
         # Ensure IMU history buffer length matches compile-time constant in env_info
@@ -1354,6 +1358,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=jp.zeros((), dtype=jp.float32),
             recovery_first_step_target_err_x=jp.zeros((), dtype=jp.float32),
             recovery_first_step_target_err_y=jp.zeros((), dtype=jp.float32),
+            teacher_active=jp.zeros((), dtype=jp.float32),
+            teacher_step_required_soft=jp.zeros((), dtype=jp.float32),
+            teacher_step_required_hard=jp.zeros((), dtype=jp.float32),
+            teacher_swing_foot=jp.asarray(-1, dtype=jp.int32),
+            teacher_target_step_x=jp.zeros((), dtype=jp.float32),
+            teacher_target_step_y=jp.zeros((), dtype=jp.float32),
+            teacher_target_reachable=jp.zeros((), dtype=jp.float32),
             mpc_planner_active=jp.zeros((), dtype=jp.float32),
             mpc_controller_active=jp.zeros((), dtype=jp.float32),
             mpc_target_com_x=jp.zeros((), dtype=jp.float32),
@@ -1467,6 +1478,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         if controller_stack == "mpc_standing":
             raw_action, mpc_debug = self._mpc_standing_compute_ctrl(state.data, policy_action)
+            new_fsm = (
+                wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
+                wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
+                wr.fsm_touch_hold, wr.fsm_trigger_hold,
+            )
+        elif controller_stack == "ppo_teacher_standing":
+            raw_action = policy_action
             new_fsm = (
                 wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
                 wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
@@ -1771,6 +1789,152 @@ class WildRobotEnv(mjx_env.MjxEnv):
             & jp.asarray(self._config.env.push_enabled, dtype=jp.bool_)
             & jp.logical_not(jp.asarray(disable_pushes, dtype=jp.bool_))
         )
+        teacher_enabled_now = bool(getattr(self._config.env, "teacher_enabled", False)) or (
+            controller_stack == "ppo_teacher_standing"
+        )
+        teacher = compute_teacher_step_target(
+            teacher_enabled=teacher_enabled_now,
+            push_active=push_active_now,
+            recovery_active=wr.recovery_active,
+            need_step=metrics.get("debug/need_step", jp.zeros(())),
+            pitch=pitch_now,
+            roll=roll_now,
+            pitch_rate=pitch_rate_now,
+            forward_vel=fwd_vel_now,
+            lateral_vel=lat_vel_now,
+            capture_error_xy=capture_error_xy,
+            hard_threshold=float(getattr(self._config.env, "teacher_hard_threshold", 0.60)),
+            x_min=float(getattr(self._config.env, "teacher_target_x_min", -0.10)),
+            x_max=float(getattr(self._config.env, "teacher_target_x_max", 0.10)),
+            left_y_min=float(getattr(self._config.env, "teacher_target_y_left_min", 0.02)),
+            left_y_max=float(getattr(self._config.env, "teacher_target_y_left_max", 0.06)),
+            right_y_min=float(getattr(self._config.env, "teacher_target_y_right_min", -0.06)),
+            right_y_max=float(getattr(self._config.env, "teacher_target_y_right_max", -0.02)),
+        )
+        teacher_xy_reward, teacher_xy_error = compute_teacher_target_step_xy_reward(
+            touchdown_x=first_touchdown_dx,
+            touchdown_y=first_touchdown_dy,
+            target_x=teacher.target_step_x,
+            target_y=teacher.target_step_y,
+            teacher_active=teacher.teacher_active,
+            first_recovery_touchdown=(
+                wr.recovery_active & (~wr.recovery_first_touchdown_recorded) & touchdown_any_now
+            ).astype(jp.float32),
+            sigma=float(getattr(self._config.reward_weights, "teacher_target_step_xy_sigma", 0.06)),
+        )
+        teacher_xy_event = (
+            teacher.teacher_active
+            * (wr.recovery_active & (~wr.recovery_first_touchdown_recorded) & touchdown_any_now).astype(
+                jp.float32
+            )
+        )
+        reward += (
+            jp.asarray(getattr(self._config.reward_weights, "teacher_target_step_xy", 0.0), dtype=jp.float32)
+            * teacher_xy_reward
+        )
+        metrics["reward/total"] = reward
+        reward_components["reward/total"] = reward
+        reward_components["reward/teacher_target_step_xy"] = teacher_xy_reward
+        reward_components["teacher/target_xy_error"] = teacher_xy_error * teacher_xy_event
+        reward_components["teacher/target_xy_error_events"] = teacher_xy_event
+        metrics["reward/teacher_target_step_xy"] = teacher_xy_reward
+        metrics["teacher/active_frac"] = teacher.teacher_active
+        metrics["teacher/active_count"] = teacher.active_count
+        metrics["teacher/step_required_mean"] = teacher.step_required_soft * teacher.teacher_active
+        metrics["teacher/step_required_hard_frac"] = teacher.step_required_hard * teacher.teacher_active
+        metrics["teacher/target_step_x_mean"] = teacher.target_step_x * teacher.teacher_active
+        metrics["teacher/target_step_y_mean"] = teacher.target_step_y * teacher.teacher_active
+        metrics["teacher/swing_left_frac"] = (
+            (teacher.swing_foot == jp.asarray(0, dtype=jp.int32)).astype(jp.float32)
+            * teacher.teacher_active
+        )
+        metrics["teacher/target_xy_error"] = teacher_xy_error * teacher_xy_event
+        metrics["teacher/target_xy_error_events"] = teacher_xy_event
+        clean_now = (~jp.logical_or(push_active_now, wr.recovery_active)).astype(jp.float32)
+        metrics["teacher/raw_step_required_during_clean_mean"] = (
+            teacher.raw_step_required_soft * clean_now
+        )
+        metrics["teacher/teacher_active_during_clean_frac"] = teacher.teacher_active * clean_now
+        metrics["teacher/clean_step_count"] = clean_now
+        push_now = push_active_now.astype(jp.float32)
+        metrics["teacher/push_step_count"] = push_now
+        metrics["teacher/teacher_active_during_push_frac"] = teacher.teacher_active * push_now
+        metrics["teacher/reachable_frac"] = teacher.target_reachable * teacher.teacher_active
+        metrics["teacher/target_step_x_min"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_x, jp.asarray(jp.inf, dtype=jp.float32)
+        )
+        metrics["teacher/target_step_x_max"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_x, jp.asarray(-jp.inf, dtype=jp.float32)
+        )
+        metrics["teacher/target_step_y_min"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_y, jp.asarray(jp.inf, dtype=jp.float32)
+        )
+        metrics["teacher/target_step_y_max"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_y, jp.asarray(-jp.inf, dtype=jp.float32)
+        )
+        metrics["teacher/target_step_x_sq_mean"] = (
+            teacher.target_step_x * teacher.target_step_x * teacher.teacher_active
+        )
+        metrics["teacher/target_step_y_sq_mean"] = (
+            teacher.target_step_y * teacher.target_step_y * teacher.teacher_active
+        )
+        metrics["teacher/swing_foot"] = teacher.swing_foot.astype(jp.float32)
+        metrics["teacher/target_xy_error_events"] = teacher_xy_event
+        metrics["teacher/target_step_x_std"] = jp.zeros(())
+        metrics["teacher/target_step_y_std"] = jp.zeros(())
+        reward_components["teacher/active_frac"] = teacher.teacher_active
+        reward_components["teacher/active_count"] = teacher.active_count
+        reward_components["teacher/step_required_mean"] = (
+            teacher.step_required_soft * teacher.teacher_active
+        )
+        reward_components["teacher/step_required_hard_frac"] = (
+            teacher.step_required_hard * teacher.teacher_active
+        )
+        reward_components["teacher/target_step_x_mean"] = (
+            teacher.target_step_x * teacher.teacher_active
+        )
+        reward_components["teacher/target_step_y_mean"] = (
+            teacher.target_step_y * teacher.teacher_active
+        )
+        reward_components["teacher/swing_left_frac"] = (
+            (teacher.swing_foot == jp.asarray(0, dtype=jp.int32)).astype(jp.float32)
+            * teacher.teacher_active
+        )
+        reward_components["teacher/raw_step_required_during_clean_mean"] = (
+            teacher.raw_step_required_soft * clean_now
+        )
+        reward_components["teacher/teacher_active_during_clean_frac"] = (
+            teacher.teacher_active * clean_now
+        )
+        reward_components["teacher/clean_step_count"] = clean_now
+        reward_components["teacher/push_step_count"] = push_now
+        reward_components["teacher/teacher_active_during_push_frac"] = (
+            teacher.teacher_active * push_now
+        )
+        reward_components["teacher/reachable_frac"] = (
+            teacher.target_reachable * teacher.teacher_active
+        )
+        reward_components["teacher/target_step_x_min"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_x, jp.asarray(jp.inf, dtype=jp.float32)
+        )
+        reward_components["teacher/target_step_x_max"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_x, jp.asarray(-jp.inf, dtype=jp.float32)
+        )
+        reward_components["teacher/target_step_y_min"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_y, jp.asarray(jp.inf, dtype=jp.float32)
+        )
+        reward_components["teacher/target_step_y_max"] = jp.where(
+            teacher.teacher_active > 0.5, teacher.target_step_y, jp.asarray(-jp.inf, dtype=jp.float32)
+        )
+        reward_components["teacher/target_step_x_sq_mean"] = (
+            teacher.target_step_x * teacher.target_step_x * teacher.teacher_active
+        )
+        reward_components["teacher/target_step_y_sq_mean"] = (
+            teacher.target_step_y * teacher.target_step_y * teacher.teacher_active
+        )
+        reward_components["teacher/swing_foot"] = teacher.swing_foot.astype(jp.float32)
+        reward_components["teacher/target_step_x_std"] = jp.zeros(())
+        reward_components["teacher/target_step_y_std"] = jp.zeros(())
         unnecessary_need_step_threshold = jp.asarray(0.2, dtype=jp.float32)
         unnecessary_touchdown = (
             touchdown_any_now
@@ -1835,6 +1999,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=recovery_state_updates["recovery_first_step_dy"],
             recovery_first_step_target_err_x=recovery_state_updates["recovery_first_step_target_err_x"],
             recovery_first_step_target_err_y=recovery_state_updates["recovery_first_step_target_err_y"],
+            teacher_active=metrics.get("teacher/active_frac", jp.zeros(())),
+            teacher_step_required_soft=metrics.get("teacher/step_required_mean", jp.zeros(())),
+            teacher_step_required_hard=metrics.get(
+                "teacher/step_required_hard_frac", jp.zeros(())
+            ),
+            teacher_swing_foot=metrics.get(
+                "teacher/swing_foot", jp.asarray(-1, dtype=jp.float32)
+            ).astype(jp.int32),
+            teacher_target_step_x=metrics.get("teacher/target_step_x_mean", jp.zeros(())),
+            teacher_target_step_y=metrics.get("teacher/target_step_y_mean", jp.zeros(())),
+            teacher_target_reachable=metrics.get("teacher/reachable_frac", jp.zeros(())),
             mpc_planner_active=metrics["debug/mpc_planner_active"],
             mpc_controller_active=metrics["debug/mpc_controller_active"],
             mpc_target_com_x=metrics["debug/mpc_target_com_x"],
@@ -1912,6 +2087,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
             "reward/pitch_rate": metrics.get("reward/pitch_rate", jp.zeros(())),
+            "reward/teacher_target_step_xy": metrics.get(
+                "reward/teacher_target_step_xy", jp.zeros(())
+            ),
             "reward/arrest_pitch_rate": metrics.get("reward/arrest_pitch_rate", jp.zeros(())),
             "reward/arrest_capture_error": metrics.get(
                 "reward/arrest_capture_error", jp.zeros(())
@@ -1924,6 +2102,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/foot_place": metrics.get("reward/foot_place", jp.zeros(())),
             "reward/step_length": metrics.get("reward/step_length", jp.zeros(())),
             "reward/step_progress": metrics.get("reward/step_progress", jp.zeros(())),
+            "reward/teacher_target_step_xy": metrics.get(
+                "reward/teacher_target_step_xy", jp.zeros(())
+            ),
             "reward/dense_progress": metrics.get("reward/dense_progress", jp.zeros(())),
             "reward/cycle_progress": metrics.get("reward/cycle_progress", jp.zeros(())),
             "debug/need_step": metrics.get("debug/need_step", jp.zeros(())),
@@ -1987,6 +2168,46 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 "recovery/touchdown_to_term_steps", jp.zeros(())
             ),
             "unnecessary_step_rate": metrics.get("unnecessary_step_rate", jp.zeros(())),
+            "teacher/active_frac": metrics.get("teacher/active_frac", jp.zeros(())),
+            "teacher/active_count": metrics.get("teacher/active_count", jp.zeros(())),
+            "teacher/step_required_mean": metrics.get("teacher/step_required_mean", jp.zeros(())),
+            "teacher/step_required_hard_frac": metrics.get(
+                "teacher/step_required_hard_frac", jp.zeros(())
+            ),
+            "teacher/target_step_x_mean": metrics.get("teacher/target_step_x_mean", jp.zeros(())),
+            "teacher/target_step_y_mean": metrics.get("teacher/target_step_y_mean", jp.zeros(())),
+            "teacher/swing_left_frac": metrics.get("teacher/swing_left_frac", jp.zeros(())),
+            "teacher/target_xy_error": metrics.get("teacher/target_xy_error", jp.zeros(())),
+            "teacher/teacher_active_during_clean_frac": metrics.get(
+                "teacher/teacher_active_during_clean_frac", jp.zeros(())
+            ),
+            "teacher/raw_step_required_during_clean_mean": metrics.get(
+                "teacher/raw_step_required_during_clean_mean", jp.zeros(())
+            ),
+            "teacher/clean_step_count": metrics.get("teacher/clean_step_count", jp.zeros(())),
+            "teacher/push_step_count": metrics.get("teacher/push_step_count", jp.zeros(())),
+            "teacher/teacher_active_during_push_frac": metrics.get(
+                "teacher/teacher_active_during_push_frac", jp.zeros(())
+            ),
+            "teacher/reachable_frac": metrics.get("teacher/reachable_frac", jp.zeros(())),
+            "teacher/target_step_x_min": metrics.get("teacher/target_step_x_min", jp.zeros(())),
+            "teacher/target_step_x_max": metrics.get("teacher/target_step_x_max", jp.zeros(())),
+            "teacher/target_step_y_min": metrics.get("teacher/target_step_y_min", jp.zeros(())),
+            "teacher/target_step_y_max": metrics.get("teacher/target_step_y_max", jp.zeros(())),
+            "teacher/target_step_x_sq_mean": metrics.get(
+                "teacher/target_step_x_sq_mean", jp.zeros(())
+            ),
+            "teacher/target_step_y_sq_mean": metrics.get(
+                "teacher/target_step_y_sq_mean", jp.zeros(())
+            ),
+            "teacher/swing_foot": metrics.get(
+                "teacher/swing_foot", jp.asarray(-1, dtype=jp.int32)
+            ).astype(jp.float32),
+            "teacher/target_xy_error_events": metrics.get(
+                "teacher/target_xy_error_events", jp.zeros(())
+            ),
+            "teacher/target_step_x_std": metrics.get("teacher/target_step_x_std", jp.zeros(())),
+            "teacher/target_step_y_std": metrics.get("teacher/target_step_y_std", jp.zeros(())),
             # v0.17.3: preserve architecture-pivot controller debug metrics
             "debug/mpc_planner_active": metrics.get("debug/mpc_planner_active", jp.zeros(())),
             "debug/mpc_controller_active": metrics.get("debug/mpc_controller_active", jp.zeros(())),
@@ -2057,6 +2278,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=reset_wr_info.recovery_first_step_dy,
             recovery_first_step_target_err_x=reset_wr_info.recovery_first_step_target_err_x,
             recovery_first_step_target_err_y=reset_wr_info.recovery_first_step_target_err_y,
+            teacher_active=reset_wr_info.teacher_active,
+            teacher_step_required_soft=reset_wr_info.teacher_step_required_soft,
+            teacher_step_required_hard=reset_wr_info.teacher_step_required_hard,
+            teacher_swing_foot=reset_wr_info.teacher_swing_foot,
+            teacher_target_step_x=reset_wr_info.teacher_target_step_x,
+            teacher_target_step_y=reset_wr_info.teacher_target_step_y,
+            teacher_target_reachable=reset_wr_info.teacher_target_reachable,
             mpc_planner_active=reset_wr_info.mpc_planner_active,
             mpc_controller_active=reset_wr_info.mpc_controller_active,
             mpc_target_com_x=reset_wr_info.mpc_target_com_x,
@@ -3208,6 +3436,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/foot_place": foot_place_reward,
             "reward/step_length": step_length_reward,
             "reward/step_progress": step_progress_reward,
+            "reward/teacher_target_step_xy": jp.zeros(()),
             "reward/arrest_pitch_rate": arrest_pitch_rate_reward,
             "reward/arrest_capture_error": arrest_capture_error_reward,
             "reward/post_touchdown_survival": post_touchdown_survival_reward,
@@ -3243,6 +3472,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/raw_action_sat_frac": raw_action_sat_frac,
             "debug/torque_abs_max": torque_abs_max,
             "debug/torque_sat_frac": torque_sat_frac,
+            "teacher/active_frac": jp.zeros(()),
+            "teacher/active_count": jp.zeros(()),
+            "teacher/step_required_mean": jp.zeros(()),
+            "teacher/step_required_hard_frac": jp.zeros(()),
+            "teacher/target_step_x_mean": jp.zeros(()),
+            "teacher/target_step_y_mean": jp.zeros(()),
+            "teacher/swing_left_frac": jp.zeros(()),
+            "teacher/target_xy_error": jp.zeros(()),
+            "teacher/target_xy_error_events": jp.zeros(()),
+            "teacher/teacher_active_during_clean_frac": jp.zeros(()),
+            "teacher/raw_step_required_during_clean_mean": jp.zeros(()),
+            "teacher/clean_step_count": jp.zeros(()),
+            "teacher/push_step_count": jp.zeros(()),
+            "teacher/teacher_active_during_push_frac": jp.zeros(()),
+            "teacher/reachable_frac": jp.zeros(()),
+            "teacher/target_step_x_min": jp.asarray(jp.inf, dtype=jp.float32),
+            "teacher/target_step_x_max": jp.asarray(-jp.inf, dtype=jp.float32),
+            "teacher/target_step_y_min": jp.asarray(jp.inf, dtype=jp.float32),
+            "teacher/target_step_y_max": jp.asarray(-jp.inf, dtype=jp.float32),
+            "teacher/target_step_x_sq_mean": jp.zeros(()),
+            "teacher/target_step_y_sq_mean": jp.zeros(()),
+            "teacher/swing_foot": jp.asarray(-1.0, dtype=jp.float32),
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)

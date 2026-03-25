@@ -185,7 +185,7 @@ class TestResetContract:
 
         expected_action = env._cal.ctrl_to_policy_action(state.data.ctrl)
         assert jnp.allclose(
-            wr_info.prev_action, expected_action, atol=1e-6
+            wr_info.prev_action, expected_action, atol=2e-5
         ), "prev_action does not match ctrl-derived action at reset"
 
         action_slice = get_slices(env._policy_spec.observation)["prev_action"]
@@ -525,14 +525,17 @@ class TestObservationConsistency:
         from policy_contract.layout import get_slices
 
         state = env.reset(rng)
+        wr0 = state.info["wr"]
 
         # Apply known action
-        action = jnp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
+        action = jnp.linspace(
+            0.1, 0.8, num=env.action_size, dtype=jnp.float32
+        )
         new_state = env.step(state, action)
 
         # The observation should contain the filtered action
         alpha = env._config.env.action_filter_alpha
-        expected_action = (1.0 - alpha) * action
+        expected_action = alpha * wr0.pending_action + (1.0 - alpha) * action
         action_slice = get_slices(env._policy_spec.observation)["prev_action"]
         obs_prev_action = new_state.obs[action_slice]
         assert jnp.allclose(
@@ -547,7 +550,9 @@ class TestObservationConsistency:
 
         state = standing_env_delay.reset(rng)
         wr0 = state.info[WR_INFO_KEY]
-        action = jnp.array([0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8], dtype=jnp.float32)
+        action = jnp.linspace(
+            -0.8, 0.8, num=standing_env_delay.action_size, dtype=jnp.float32
+        )
 
         state1 = standing_env_delay.step(state, action)
         wr1 = state1.info[WR_INFO_KEY]

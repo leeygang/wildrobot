@@ -41,6 +41,7 @@ class Reducer(Enum):
     """Aggregation method for metrics across rollout."""
     MEAN = "mean"           # Standard mean over (T, N)
     MAX = "max"             # Max over (T, N) - for peak values
+    MIN = "min"             # Min over (T, N) - for lower bounds
     SUM = "sum"             # Sum over (T, N) - for counts
     LAST = "last"           # Last value only - for episode-end metrics
 
@@ -469,6 +470,11 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Touchdown-to-touchdown structured forward progress reward",
     ),
     MetricSpec(
+        name="reward/teacher_target_step_xy",
+        reducer=Reducer.MEAN,
+        description="Teacher XY target agreement reward at first recovery touchdown",
+    ),
+    MetricSpec(
         name="reward/cycle_progress",
         reducer=Reducer.MEAN,
         description="Per-step-cycle net forward displacement reward",
@@ -703,6 +709,150 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Per-step survival reward after first recovery touchdown",
     ),
     MetricSpec(
+        name="teacher/active_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="teacher",
+        description="Fraction of steps where teacher is active",
+    ),
+    MetricSpec(
+        name="teacher/active_count",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of active teacher samples used to normalize teacher means",
+    ),
+    MetricSpec(
+        name="teacher/step_required_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed teacher soft step-required signal; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/step_required_hard_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed hard step-required indicator; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/target_step_x_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed teacher target x; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/target_step_y_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed teacher target y; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/swing_left_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed swing-left indicator; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/target_xy_error",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed touchdown-vs-teacher XY error; normalized by teacher/target_xy_error_events",
+    ),
+    MetricSpec(
+        name="teacher/target_xy_error_events",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of teacher XY touchdown events for error normalization",
+    ),
+    MetricSpec(
+        name="teacher/teacher_active_during_clean_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Teacher-active count during clean (no push/recovery) steps; normalized by teacher/clean_step_count",
+    ),
+    MetricSpec(
+        name="teacher/raw_step_required_during_clean_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Raw (pre-disturbance-gating) teacher step-required sum during clean steps; normalized by teacher/clean_step_count",
+    ),
+    MetricSpec(
+        name="teacher/clean_step_count",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of clean (no push/recovery) samples for clean-window normalization",
+    ),
+    MetricSpec(
+        name="teacher/push_step_count",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of push-active samples for push-window normalization",
+    ),
+    MetricSpec(
+        name="teacher/teacher_active_during_push_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Teacher-active count during push-active steps; normalized by teacher/push_step_count",
+    ),
+    MetricSpec(
+        name="teacher/reachable_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed reachable-target indicator; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/target_step_x_min",
+        reducer=Reducer.MIN,
+        log_prefix="teacher",
+        description="Minimum teacher target x over active samples",
+    ),
+    MetricSpec(
+        name="teacher/target_step_x_max",
+        reducer=Reducer.MAX,
+        log_prefix="teacher",
+        description="Maximum teacher target x over active samples",
+    ),
+    MetricSpec(
+        name="teacher/target_step_y_min",
+        reducer=Reducer.MIN,
+        log_prefix="teacher",
+        description="Minimum teacher target y over active samples",
+    ),
+    MetricSpec(
+        name="teacher/target_step_y_max",
+        reducer=Reducer.MAX,
+        log_prefix="teacher",
+        description="Maximum teacher target y over active samples",
+    ),
+    MetricSpec(
+        name="teacher/target_step_x_sq_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed target x squared; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/target_step_y_sq_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed target y squared; normalized by teacher/active_count",
+    ),
+    MetricSpec(
+        name="teacher/swing_foot",
+        reducer=Reducer.LAST,
+        log_prefix="teacher",
+        description="Latest teacher swing-foot suggestion (-1 none, 0 left, 1 right)",
+    ),
+    MetricSpec(
+        name="teacher/target_step_x_std",
+        reducer=Reducer.LAST,
+        log_prefix="teacher",
+        description="Std dev of teacher target step x over active samples",
+    ),
+    MetricSpec(
+        name="teacher/target_step_y_std",
+        reducer=Reducer.LAST,
+        log_prefix="teacher",
+        description="Std dev of teacher target step y over active samples",
+    ),
+    MetricSpec(
         name="debug/recovery_step_gate",
         reducer=Reducer.MEAN,
         log_prefix="debug",
@@ -795,6 +945,8 @@ def aggregate_metrics(
             result[spec.name] = jnp.mean(values)
         elif spec.reducer == Reducer.MAX:
             result[spec.name] = jnp.max(values)
+        elif spec.reducer == Reducer.MIN:
+            result[spec.name] = jnp.min(values)
         elif spec.reducer == Reducer.SUM:
             result[spec.name] = jnp.sum(values)
         elif spec.reducer == Reducer.LAST:
@@ -830,6 +982,82 @@ def aggregate_metrics(
             if name in result:
                 normalized = result[name] / completed_safe
                 result[name] = jnp.where(has_completed, normalized, 0.0)
+
+    teacher_active = result.get("teacher/active_count")
+    if teacher_active is not None:
+        teacher_active_safe = jnp.maximum(teacher_active, 1e-6)
+        for name in (
+            "teacher/step_required_mean",
+            "teacher/step_required_hard_frac",
+            "teacher/target_step_x_mean",
+            "teacher/target_step_y_mean",
+            "teacher/swing_left_frac",
+            "teacher/reachable_frac",
+            "teacher/target_step_x_sq_mean",
+            "teacher/target_step_y_sq_mean",
+        ):
+            if name in result:
+                result[name] = result[name] / teacher_active_safe
+
+        clean_count = result.get("teacher/clean_step_count")
+        if clean_count is not None:
+            clean_count_safe = jnp.maximum(clean_count, 1e-6)
+            if "teacher/teacher_active_during_clean_frac" in result:
+                result["teacher/teacher_active_during_clean_frac"] = (
+                    result["teacher/teacher_active_during_clean_frac"] / clean_count_safe
+                )
+            if "teacher/raw_step_required_during_clean_mean" in result:
+                result["teacher/raw_step_required_during_clean_mean"] = (
+                    result["teacher/raw_step_required_during_clean_mean"] / clean_count_safe
+                )
+        push_count = result.get("teacher/push_step_count")
+        if push_count is not None and "teacher/teacher_active_during_push_frac" in result:
+            push_count_safe = jnp.maximum(push_count, 1e-6)
+            result["teacher/teacher_active_during_push_frac"] = (
+                result["teacher/teacher_active_during_push_frac"] / push_count_safe
+            )
+
+        if "teacher/target_step_x_min" in result:
+            result["teacher/target_step_x_min"] = jnp.where(
+                teacher_active > 0.0, result["teacher/target_step_x_min"], 0.0
+            )
+        if "teacher/target_step_x_max" in result:
+            result["teacher/target_step_x_max"] = jnp.where(
+                teacher_active > 0.0, result["teacher/target_step_x_max"], 0.0
+            )
+        if "teacher/target_step_y_min" in result:
+            result["teacher/target_step_y_min"] = jnp.where(
+                teacher_active > 0.0, result["teacher/target_step_y_min"], 0.0
+            )
+        if "teacher/target_step_y_max" in result:
+            result["teacher/target_step_y_max"] = jnp.where(
+                teacher_active > 0.0, result["teacher/target_step_y_max"], 0.0
+            )
+
+        if "teacher/target_xy_error" in result:
+            err_events = jnp.maximum(result.get("teacher/target_xy_error_events", 0.0), 1e-6)
+            result["teacher/target_xy_error"] = result["teacher/target_xy_error"] / err_events
+
+        if (
+            "teacher/target_step_x_sq_mean" in result
+            and "teacher/target_step_x_mean" in result
+        ):
+            x_var = jnp.maximum(
+                result["teacher/target_step_x_sq_mean"]
+                - result["teacher/target_step_x_mean"] * result["teacher/target_step_x_mean"],
+                0.0,
+            )
+            result["teacher/target_step_x_std"] = jnp.sqrt(x_var)
+        if (
+            "teacher/target_step_y_sq_mean" in result
+            and "teacher/target_step_y_mean" in result
+        ):
+            y_var = jnp.maximum(
+                result["teacher/target_step_y_sq_mean"]
+                - result["teacher/target_step_y_mean"] * result["teacher/target_step_y_mean"],
+                0.0,
+            )
+            result["teacher/target_step_y_std"] = jnp.sqrt(y_var)
 
     return result
 

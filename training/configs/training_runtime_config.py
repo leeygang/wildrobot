@@ -139,6 +139,16 @@ class EnvConfig(Freezable):
     mpc_action_clip: float = 0.35
     mpc_step_trigger_threshold: float = 0.45
 
+    # v0.17.4t: training-time teacher step targets (T0/T1)
+    teacher_enabled: bool = False
+    teacher_hard_threshold: float = 0.60
+    teacher_target_x_min: float = -0.10
+    teacher_target_x_max: float = 0.10
+    teacher_target_y_left_min: float = 0.02
+    teacher_target_y_left_max: float = 0.06
+    teacher_target_y_right_min: float = -0.06
+    teacher_target_y_right_max: float = -0.02
+
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)
     #
@@ -510,6 +520,12 @@ class RewardWeightsConfig(Freezable):
     step_need_roll: float = 0.35  # radians
     step_need_lat_vel: float = 0.30  # m/s
     step_need_pitch_rate: float = 1.00  # rad/s
+
+    # v0.17.4t: teacher-assisted standing rewards (training-time only)
+    teacher_target_step_xy: float = 0.45
+    teacher_target_step_xy_sigma: float = 0.06
+    teacher_step_required: float = 0.0
+    teacher_swing_foot: float = 0.0
 
 
 @dataclass
