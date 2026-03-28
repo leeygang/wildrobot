@@ -1,9 +1,9 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.3a-pitchfix` next
+**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.4t` complete
 **Created:** 2026-03-20  
-**Last updated:** 2026-03-23
+**Last updated:** 2026-03-26
 
 ---
 
@@ -851,6 +851,31 @@ Exit criteria:
   baseline
 - the deployed policy does not require runtime teacher inputs
 
+Completed result:
+- run: `training/wandb/run-20260324_225425-zn8r3l5g`
+- best standing checkpoint:
+  - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+- best internal push eval at iter `330`:
+  - `eval_push/success_rate = 93.75%`
+  - `eval_push/episode_length = 478.9`
+  - `eval_push/term_height_low_frac = 6.25%`
+- fixed ladder on the best checkpoint:
+  - `eval_medium = 93.8%`
+  - `eval_hard = 70.6%`
+  - `eval_hard/term_height_low_frac = 29.4%`
+
+Interpretation:
+- `v0.17.4t` cleared the real standing hard gate
+- the teacher remained bounded to disturbed windows
+- runtime stayed a single-policy deployment path
+- stronger teacher logic is not the next step
+
+Decision:
+- freeze iter `330` as the winning standing checkpoint
+- stop the teacher branch here
+- hand off next to `v0.17.3b` transfer hardening / deployment robustness
+- keep `v0.17.7` as optional future complexity only if new evidence appears
+
 ### `v0.17.5`: Standing Push Recovery
 
 Objective:
@@ -864,6 +889,11 @@ Exit criteria:
 - `eval_medium > 75%`
 - `eval_hard > 60%`
 - `term_height_low_frac` materially below `v0.17.1`
+
+Current status:
+- satisfied by `v0.17.4t`
+- standing sim competence gate is solved
+- next work is transfer hardening, not more standing-sim teacher complexity
 
 ### `v0.17.6`: Walking On The Same Policy Stack
 
@@ -902,6 +932,11 @@ Possible directions:
 
 - do not add teacher logic just because it was planned
 - keep the simpler policy-only path as the mainline
+
+Applied result:
+- `v0.17.4t` cleared the gate with bounded teacher support
+- do not escalate to stronger teacher forms by default
+- return to the mainline sequence: transfer hardening, then walking
 
 ### If Recipe-Fixed Pure RL Still Fails The Hard Gate
 

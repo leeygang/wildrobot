@@ -1,8 +1,31 @@
 # v0.17.4t Teacher Training Design
 
-**Status:** Active design for the next standing branch after `v0.17.3a-arrest`  
+**Status:** Completed design record for the standing branch that cleared the hard gate  
 **Applies to:** Standing push recovery on the current MuJoCo / JAX / single-policy stack  
-**Last updated:** 2026-03-24
+**Last updated:** 2026-03-26
+
+---
+
+## Outcome Note
+
+`v0.17.4t` has now completed successfully.
+
+Winning checkpoint:
+- `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+
+Fixed ladder:
+- `eval_medium = 93.8%`
+- `eval_hard = 70.6%`
+- `eval_hard/term_height_low_frac = 29.4%`
+
+This means:
+- the first bounded teacher branch was sufficient
+- stronger teacher complexity is not the next mainline task
+- the next repo step should return to `v0.17.3b` transfer hardening and then
+  walking extension on the same policy stack
+
+The rest of this document remains useful as the design record for what
+`v0.17.4t` was meant to do and how it was bounded.
 
 ---
 

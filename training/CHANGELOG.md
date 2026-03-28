@@ -7,6 +7,86 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.17.4t] - 2026-03-26: Bounded Step-Target Teacher Result ✅
+
+### Summary
+`v0.17.4t` is the first completed bounded teacher-assisted standing branch.
+This branch kept the deployed artifact as the same single policy and added:
+- disturbed-window-only teacher activation
+- heuristic step-target generation
+- first-touchdown `teacher_target_step_xy` reward shaping
+- teacher diagnostics for reachability, activation, and agreement
+
+The internal `eval_push` curve plateaued and regressed late, but the best
+checkpoint still cleared the real fixed-ladder hard gate. This branch therefore
+succeeded, and stronger teacher complexity is not the next move.
+
+### Training Run
+- Run: `training/wandb/run-20260324_225425-zn8r3l5g`
+- Config: `training/configs/ppo_standing_v0174t.yaml`
+- Checkpoints: `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g`
+
+### Best Checkpoint Selection
+The clean-standing eval saturates at `100%`, so the standing objective should
+still be selected by `eval_push/*`, not `eval_clean/*`.
+
+Best push-eval checkpoint:
+- `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+
+Metrics at iter `330`:
+- `eval_push/success_rate = 93.75%`
+- `eval_push/episode_length = 478.9`
+- `eval_push/term_height_low_frac = 6.25%`
+- `eval_push/term_pitch_frac = 50.0%`
+- `env/success_rate = 83.1%`
+- `debug/torque_sat_frac = 6.5%`
+
+Late-run note:
+- the clean-saturated final checkpoint at iter `510` is **not** the best
+  standing checkpoint
+- internal push performance regressed after the iter `330` peak
+
+### Fixed Ladder Result
+Measured on `checkpoint_330_43253760.pkl` using the external standing ladder:
+- `eval_medium = 93.8%`
+- `eval_hard = 70.6%`
+- `eval_hard/term_height_low_frac = 29.4%`
+
+Comparison:
+- `v0.17.3a`: `eval_medium = 83.1%`, `eval_hard = 51.4%`
+- `v0.17.3a-pitchfix`: `eval_medium = 85.4%`, `eval_hard = 51.8%`
+- `v0.17.3a-arrest`: `eval_medium = 83.1%`, `eval_hard = 52.2%`
+- `v0.17.4t`: `eval_medium = 93.8%`, `eval_hard = 70.6%`
+
+### What Worked
+- Teacher stayed bounded to disturbed windows:
+  - `teacher/active_frac ≈ 0.12`
+  - `teacher/teacher_active_during_push_frac ≈ 1.0`
+  - `teacher/teacher_active_during_clean_frac = 0.0`
+- Teacher targets were mostly reachable:
+  - `teacher/reachable_frac ≈ 0.92`
+- Clean standing remained intact:
+  - `eval_clean/success_rate = 100%`
+- The branch materially improved the true hard-push gate:
+  - `eval_hard` improved from the `52.2%` pure-RL plateau to `70.6%`
+
+### Verdict
+`v0.17.4t` clears the standing hard gate.
+
+Decision:
+- freeze `checkpoint_330_43253760.pkl` as the winning standing-recovery checkpoint
+- stop teacher escalation for now
+- move next to `v0.17.3b` sim2real hardening and deployment transfer work
+- then continue to the walking-on-the-same-policy-stack path
+
+### Main Lesson
+The repo now has a complete answer for the standing branch:
+- reward-only pure-RL tuning plateaued below the hard gate
+- bounded step-target teacher support broke through that plateau
+- the deployed controller can stay a single policy
+
+---
+
 ## [v0.17.3a-arrest] - 2026-03-24: Recovery-Gated Arrest Rewards Result ⚠️
 
 ### Summary
