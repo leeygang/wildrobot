@@ -33,6 +33,7 @@ def _initial_recovery_state() -> dict[str, jnp.ndarray]:
         "recovery_first_touchdown_recorded": jnp.asarray(False, dtype=jnp.bool_),
         "recovery_first_step_latency": jnp.asarray(0, dtype=jnp.int32),
         "recovery_first_touchdown_age": jnp.asarray(-1, dtype=jnp.int32),
+        "recovery_visible_step_recorded": jnp.asarray(False, dtype=jnp.bool_),
         "recovery_touchdown_count": jnp.asarray(0, dtype=jnp.int32),
         "recovery_support_foot_changes": jnp.asarray(0, dtype=jnp.int32),
         "recovery_pitch_rate_at_push_end": jnp.asarray(0.0, dtype=jnp.float32),
@@ -92,6 +93,7 @@ def _step_recovery(
         recovery_first_touchdown_recorded=state["recovery_first_touchdown_recorded"],
         recovery_first_step_latency=state["recovery_first_step_latency"],
         recovery_first_touchdown_age=state["recovery_first_touchdown_age"],
+        recovery_visible_step_recorded=state["recovery_visible_step_recorded"],
         recovery_touchdown_count=state["recovery_touchdown_count"],
         recovery_support_foot_changes=state["recovery_support_foot_changes"],
         recovery_pitch_rate_at_push_end=state["recovery_pitch_rate_at_push_end"],
@@ -119,6 +121,9 @@ def test_recovery_metric_reducers_use_finalized_summary_contract():
         "recovery/no_touchdown_frac": Reducer.SUM,
         "recovery/touchdown_then_fail_frac": Reducer.SUM,
         "recovery/touchdown_to_term_steps": Reducer.SUM,
+        "recovery/visible_step_rate": Reducer.SUM,
+        "visible_step_rate_hard": Reducer.SUM,
+        "teacher/step_required_event_rate": Reducer.SUM,
         "unnecessary_step_rate": Reducer.MEAN,
     }
     for spec in METRIC_SPECS:
@@ -139,6 +144,7 @@ def test_no_touchdown_recovery_finalizes_zero_summary():
     assert float(metrics["recovery/no_touchdown_frac"]) == 1.0
     assert float(metrics["recovery/touchdown_then_fail_frac"]) == 0.0
     assert float(metrics["recovery/touchdown_count"]) == 0.0
+    assert float(metrics["recovery/visible_step_rate"]) == 0.0
     assert float(metrics["recovery/support_foot_changes"]) == 0.0
     assert float(metrics["recovery/post_push_velocity"]) == pytest.approx(0.25)
 
@@ -167,6 +173,7 @@ def test_single_touchdown_records_first_latency_once():
     assert float(metrics["recovery/first_liftoff_latency"]) == 2.0
     assert float(metrics["recovery/first_touchdown_latency"]) == 4.0
     assert float(metrics["recovery/touchdown_count"]) == 1.0
+    assert float(metrics["recovery/visible_step_rate"]) == 1.0
     assert float(metrics["recovery/support_foot_changes"]) == 0.0
     assert float(metrics["recovery/first_step_dx"]) == pytest.approx(0.11)
     assert float(metrics["recovery/first_step_dy"]) == pytest.approx(0.05)
@@ -178,6 +185,22 @@ def test_single_touchdown_records_first_latency_once():
     assert float(metrics["recovery/capture_error_at_push_end"]) == pytest.approx(0.8)
     assert float(metrics["recovery/capture_error_at_touchdown"]) == pytest.approx(0.6)
     assert float(metrics["recovery/capture_error_reduction_10t"]) == pytest.approx(0.4)
+
+
+def test_visible_step_requires_prior_liftoff_not_same_tick_chatter():
+    state = _initial_recovery_state()
+    metrics = None
+    for step in range(60, 60 + RECOVERY_WINDOW_STEPS):
+        state, metrics = _step_recovery(
+            state,
+            step=step,
+            liftoff_left=(step == 64),
+            touchdown_left=(step == 64),
+        )
+
+    assert metrics is not None
+    assert float(metrics["recovery/completed"]) == 1.0
+    assert float(metrics["recovery/visible_step_rate"]) == 0.0
 
 
 def test_support_changes_count_only_true_alternations():
@@ -200,6 +223,7 @@ def test_support_changes_count_only_true_alternations():
 
     assert metrics is not None
     assert float(metrics["recovery/touchdown_count"]) == 4.0
+    assert float(metrics["recovery/visible_step_rate"]) == 0.0
     assert float(metrics["recovery/support_foot_changes"]) == 2.0
     assert float(metrics["recovery/first_step_latency"]) == 3.0
 
@@ -226,6 +250,7 @@ def test_early_termination_finalizes_partial_recovery():
     assert float(metrics["recovery/post_push_velocity"]) == pytest.approx(0.4)
     assert float(metrics["recovery/touchdown_then_fail_frac"]) == 1.0
     assert float(metrics["recovery/touchdown_to_term_steps"]) == pytest.approx(4.0)
+    assert float(metrics["recovery/visible_step_rate"]) == 0.0
 
 
 def test_aggregate_metrics_normalizes_by_completed_recoveries():
@@ -242,6 +267,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     set_metric("recovery/no_touchdown_frac", 0, 0, 0.0)
     set_metric("recovery/touchdown_then_fail_frac", 0, 0, 1.0)
     set_metric("recovery/touchdown_to_term_steps", 0, 0, 7.0)
+    set_metric("recovery/visible_step_rate", 0, 0, 1.0)
+    set_metric("visible_step_rate_hard", 0, 0, 1.0)
+    set_metric("teacher/step_required_event_rate", 0, 0, 1.0)
     set_metric("recovery/touchdown_count", 0, 0, 2.0)
     set_metric("recovery/support_foot_changes", 0, 0, 1.0)
     set_metric("recovery/post_push_velocity", 0, 0, 0.3)
@@ -252,6 +280,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     set_metric("recovery/no_touchdown_frac", 2, 1, 1.0)
     set_metric("recovery/touchdown_then_fail_frac", 2, 1, 0.0)
     set_metric("recovery/touchdown_to_term_steps", 2, 1, 0.0)
+    set_metric("recovery/visible_step_rate", 2, 1, 0.0)
+    set_metric("visible_step_rate_hard", 2, 1, 0.0)
+    set_metric("teacher/step_required_event_rate", 2, 1, 0.0)
     set_metric("recovery/touchdown_count", 2, 1, 4.0)
     set_metric("recovery/support_foot_changes", 2, 1, 3.0)
     set_metric("recovery/post_push_velocity", 2, 1, 0.5)
@@ -265,6 +296,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     assert float(aggregated["recovery/no_touchdown_frac"]) == 0.5
     assert float(aggregated["recovery/touchdown_then_fail_frac"]) == 0.5
     assert float(aggregated["recovery/touchdown_to_term_steps"]) == 3.5
+    assert float(aggregated["recovery/visible_step_rate"]) == 0.5
+    assert float(aggregated["visible_step_rate_hard"]) == 0.5
+    assert float(aggregated["teacher/step_required_event_rate"]) == 0.5
     assert float(aggregated["recovery/touchdown_count"]) == 3.0
     assert float(aggregated["recovery/support_foot_changes"]) == 2.0
     assert float(aggregated["recovery/post_push_velocity"]) == pytest.approx(0.4)

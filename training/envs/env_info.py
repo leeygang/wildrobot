@@ -152,6 +152,8 @@ try:
         recovery_first_liftoff_latency: jnp.ndarray  # shape=(), int32
         #: Age at first touchdown (used for +10 tick diagnostics)
         recovery_first_touchdown_age: jnp.ndarray  # shape=(), int32
+        #: Whether a visible recovery step (liftoff then touchdown) was recorded
+        recovery_visible_step_recorded: jnp.ndarray  # shape=(), bool
         #: Pitch rate sampled at push end
         recovery_pitch_rate_at_push_end: jnp.ndarray  # shape=()
         #: Pitch rate sampled at first touchdown
@@ -245,6 +247,7 @@ except ImportError:
         recovery_first_liftoff_recorded: jnp.ndarray
         recovery_first_liftoff_latency: jnp.ndarray
         recovery_first_touchdown_age: jnp.ndarray
+        recovery_visible_step_recorded: jnp.ndarray
         recovery_pitch_rate_at_push_end: jnp.ndarray
         recovery_pitch_rate_at_touchdown: jnp.ndarray
         recovery_pitch_rate_after_10t: jnp.ndarray
@@ -336,6 +339,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "recovery_first_liftoff_recorded": (),
         "recovery_first_liftoff_latency": (),
         "recovery_first_touchdown_age": (),
+        "recovery_visible_step_recorded": (),
         "recovery_pitch_rate_at_push_end": (),
         "recovery_pitch_rate_at_touchdown": (),
         "recovery_pitch_rate_after_10t": (),

@@ -78,6 +78,8 @@ from training.envs.domain_randomize import (
 from training.envs.teacher_step_target import (
     compute_teacher_step_target,
     compute_teacher_target_step_xy_reward,
+    compute_teacher_step_required_reward,
+    compute_teacher_swing_foot_reward,
 )
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import (
@@ -123,6 +125,7 @@ def _update_recovery_tracking(
     recovery_first_touchdown_recorded: jax.Array,
     recovery_first_step_latency: jax.Array,
     recovery_first_touchdown_age: jax.Array,
+    recovery_visible_step_recorded: jax.Array,
     recovery_touchdown_count: jax.Array,
     recovery_support_foot_changes: jax.Array,
     recovery_pitch_rate_at_push_end: jax.Array,
@@ -193,6 +196,11 @@ def _update_recovery_tracking(
         jp.asarray(-1, dtype=jp.int32),
         recovery_first_touchdown_age,
     )
+    visible_step_recorded = jp.where(
+        recovery_start,
+        jp.asarray(False, dtype=jp.bool_),
+        recovery_visible_step_recorded,
+    )
     pitch_rate_at_push_end = jp.where(
         recovery_start,
         jp.asarray(pitch_rate, dtype=jp.float32),
@@ -261,6 +269,7 @@ def _update_recovery_tracking(
     first_liftoff_latency = jp.where(first_liftoff_now, age, first_liftoff_latency).astype(
         jp.int32
     )
+    liftoff_recorded_before_step = first_liftoff_recorded
     first_liftoff_recorded = first_liftoff_recorded | first_liftoff_now
     first_step_latency = jp.where(
         first_touchdown_now,
@@ -269,6 +278,9 @@ def _update_recovery_tracking(
     )
     first_step_latency = first_step_latency.astype(jp.int32)
     first_touchdown_recorded = first_touchdown_recorded | first_touchdown_now
+    # Require touchdown after a previously recorded liftoff to avoid same-tick chatter.
+    visible_step_now = in_recovery & liftoff_recorded_before_step & first_touchdown_now
+    visible_step_recorded = visible_step_recorded | visible_step_now
     first_touchdown_age = jp.where(first_touchdown_now, age, first_touchdown_age).astype(
         jp.int32
     )
@@ -466,6 +478,11 @@ def _update_recovery_tracking(
             touchdown_to_term_steps.astype(jp.float32),
             jp.zeros((), dtype=jp.float32),
         ),
+        "recovery/visible_step_rate": jp.where(
+            finalize_recovery,
+            visible_step_recorded.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
     }
 
     next_state = {
@@ -481,6 +498,7 @@ def _update_recovery_tracking(
         "recovery_first_touchdown_recorded": first_touchdown_recorded,
         "recovery_first_step_latency": first_step_latency.astype(jp.int32),
         "recovery_first_touchdown_age": first_touchdown_age.astype(jp.int32),
+        "recovery_visible_step_recorded": visible_step_recorded,
         "recovery_touchdown_count": touchdown_count.astype(jp.int32),
         "recovery_support_foot_changes": support_foot_changes.astype(jp.int32),
         "recovery_pitch_rate_at_push_end": pitch_rate_at_push_end.astype(jp.float32),
@@ -1346,6 +1364,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_touchdown_recorded=jp.asarray(False, dtype=jp.bool_),
             recovery_first_step_latency=jp.zeros((), dtype=jp.int32),
             recovery_first_touchdown_age=jp.asarray(-1, dtype=jp.int32),
+            recovery_visible_step_recorded=jp.asarray(False, dtype=jp.bool_),
             recovery_touchdown_count=jp.zeros((), dtype=jp.int32),
             recovery_support_foot_changes=jp.zeros((), dtype=jp.int32),
             recovery_pitch_rate_at_push_end=jp.zeros((), dtype=jp.float32),
@@ -1769,6 +1788,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_touchdown_recorded=wr.recovery_first_touchdown_recorded,
             recovery_first_step_latency=wr.recovery_first_step_latency,
             recovery_first_touchdown_age=wr.recovery_first_touchdown_age,
+            recovery_visible_step_recorded=wr.recovery_visible_step_recorded,
             recovery_touchdown_count=wr.recovery_touchdown_count,
             recovery_support_foot_changes=wr.recovery_support_foot_changes,
             recovery_pitch_rate_at_push_end=wr.recovery_pitch_rate_at_push_end,
@@ -1822,6 +1842,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ).astype(jp.float32),
             sigma=float(getattr(self._config.reward_weights, "teacher_target_step_xy_sigma", 0.06)),
         )
+        first_recovery_liftoff_event = (
+            wr.recovery_active & (~wr.recovery_first_liftoff_recorded) & (liftoff_left_now | liftoff_right_now)
+        ).astype(jp.float32)
+        first_recovery_touchdown_event = (
+            wr.recovery_active & (~wr.recovery_first_touchdown_recorded) & touchdown_any_now
+        ).astype(jp.float32)
+        teacher_step_required_reward, teacher_step_required_event = compute_teacher_step_required_reward(
+            teacher_active=teacher.teacher_active,
+            step_required_soft=teacher.step_required_soft,
+            first_recovery_liftoff=first_recovery_liftoff_event,
+        )
+        teacher_swing_reward, _teacher_swing_event = compute_teacher_swing_foot_reward(
+            touchdown_foot=touchdown_foot_now,
+            teacher_swing_foot=teacher.swing_foot,
+            teacher_active=teacher.teacher_active,
+            teacher_step_required_hard=teacher.step_required_hard,
+            first_recovery_touchdown=first_recovery_touchdown_event,
+        )
         teacher_xy_event = (
             teacher.teacher_active
             * (wr.recovery_active & (~wr.recovery_first_touchdown_recorded) & touchdown_any_now).astype(
@@ -1832,12 +1870,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.asarray(getattr(self._config.reward_weights, "teacher_target_step_xy", 0.0), dtype=jp.float32)
             * teacher_xy_reward
         )
+        reward += (
+            jp.asarray(getattr(self._config.reward_weights, "teacher_step_required", 0.0), dtype=jp.float32)
+            * teacher_step_required_reward
+        )
+        reward += (
+            jp.asarray(getattr(self._config.reward_weights, "teacher_swing_foot", 0.0), dtype=jp.float32)
+            * teacher_swing_reward
+        )
         metrics["reward/total"] = reward
         reward_components["reward/total"] = reward
         reward_components["reward/teacher_target_step_xy"] = teacher_xy_reward
+        reward_components["reward/teacher_step_required"] = teacher_step_required_reward
+        reward_components["reward/teacher_swing_foot"] = teacher_swing_reward
         reward_components["teacher/target_xy_error"] = teacher_xy_error * teacher_xy_event
         reward_components["teacher/target_xy_error_events"] = teacher_xy_event
+        reward_components["teacher/step_required_event_rate"] = teacher_step_required_event
+        reward_components["teacher/swing_foot_match_frac"] = teacher_swing_reward
+        reward_components["teacher/swing_foot_match_events"] = _teacher_swing_event
+        reward_components["recovery/visible_step_rate"] = recovery_metrics.get(
+            "recovery/visible_step_rate", jp.zeros(())
+        )
+        reward_components["visible_step_rate_hard"] = recovery_metrics.get(
+            "recovery/visible_step_rate", jp.zeros(())
+        )
         metrics["reward/teacher_target_step_xy"] = teacher_xy_reward
+        metrics["reward/teacher_step_required"] = teacher_step_required_reward
+        metrics["reward/teacher_swing_foot"] = teacher_swing_reward
         metrics["teacher/active_frac"] = teacher.teacher_active
         metrics["teacher/active_count"] = teacher.active_count
         metrics["teacher/step_required_mean"] = teacher.step_required_soft * teacher.teacher_active
@@ -1880,6 +1939,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         metrics["teacher/swing_foot"] = teacher.swing_foot.astype(jp.float32)
         metrics["teacher/target_xy_error_events"] = teacher_xy_event
+        metrics["teacher/step_required_event_rate"] = teacher_step_required_event
+        metrics["teacher/swing_foot_match_frac"] = teacher_swing_reward
+        metrics["teacher/swing_foot_match_events"] = _teacher_swing_event
+        metrics["recovery/visible_step_rate"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
+        metrics["visible_step_rate_hard"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
         metrics["teacher/target_step_x_std"] = jp.zeros(())
         metrics["teacher/target_step_y_std"] = jp.zeros(())
         reward_components["teacher/active_frac"] = teacher.teacher_active
@@ -1933,6 +1997,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             teacher.target_step_y * teacher.target_step_y * teacher.teacher_active
         )
         reward_components["teacher/swing_foot"] = teacher.swing_foot.astype(jp.float32)
+        reward_components["teacher/swing_foot_match_events"] = _teacher_swing_event
         reward_components["teacher/target_step_x_std"] = jp.zeros(())
         reward_components["teacher/target_step_y_std"] = jp.zeros(())
         unnecessary_need_step_threshold = jp.asarray(0.2, dtype=jp.float32)
@@ -1987,6 +2052,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_touchdown_recorded=recovery_state_updates["recovery_first_touchdown_recorded"],
             recovery_first_step_latency=recovery_state_updates["recovery_first_step_latency"],
             recovery_first_touchdown_age=recovery_state_updates["recovery_first_touchdown_age"],
+            recovery_visible_step_recorded=recovery_state_updates["recovery_visible_step_recorded"],
             recovery_touchdown_count=recovery_state_updates["recovery_touchdown_count"],
             recovery_support_foot_changes=recovery_state_updates["recovery_support_foot_changes"],
             recovery_pitch_rate_at_push_end=recovery_state_updates["recovery_pitch_rate_at_push_end"],
@@ -2090,6 +2156,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/teacher_target_step_xy": metrics.get(
                 "reward/teacher_target_step_xy", jp.zeros(())
             ),
+            "reward/teacher_step_required": metrics.get("reward/teacher_step_required", jp.zeros(())),
+            "reward/teacher_swing_foot": metrics.get("reward/teacher_swing_foot", jp.zeros(())),
             "reward/arrest_pitch_rate": metrics.get("reward/arrest_pitch_rate", jp.zeros(())),
             "reward/arrest_capture_error": metrics.get(
                 "reward/arrest_capture_error", jp.zeros(())
@@ -2167,6 +2235,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "recovery/touchdown_to_term_steps": metrics.get(
                 "recovery/touchdown_to_term_steps", jp.zeros(())
             ),
+            "recovery/visible_step_rate": metrics.get("recovery/visible_step_rate", jp.zeros(())),
+            "visible_step_rate_hard": metrics.get("visible_step_rate_hard", jp.zeros(())),
             "unnecessary_step_rate": metrics.get("unnecessary_step_rate", jp.zeros(())),
             "teacher/active_frac": metrics.get("teacher/active_frac", jp.zeros(())),
             "teacher/active_count": metrics.get("teacher/active_count", jp.zeros(())),
@@ -2208,6 +2278,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "teacher/target_step_x_std": metrics.get("teacher/target_step_x_std", jp.zeros(())),
             "teacher/target_step_y_std": metrics.get("teacher/target_step_y_std", jp.zeros(())),
+            "teacher/step_required_event_rate": metrics.get(
+                "teacher/step_required_event_rate", jp.zeros(())
+            ),
+            "teacher/swing_foot_match_frac": metrics.get("teacher/swing_foot_match_frac", jp.zeros(())),
+            "teacher/swing_foot_match_events": metrics.get(
+                "teacher/swing_foot_match_events", jp.zeros(())
+            ),
+            "visible_step_rate_hard": metrics.get("visible_step_rate_hard", jp.zeros(())),
             # v0.17.3: preserve architecture-pivot controller debug metrics
             "debug/mpc_planner_active": metrics.get("debug/mpc_planner_active", jp.zeros(())),
             "debug/mpc_controller_active": metrics.get("debug/mpc_controller_active", jp.zeros(())),
@@ -2266,6 +2344,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_touchdown_recorded=reset_wr_info.recovery_first_touchdown_recorded,
             recovery_first_step_latency=reset_wr_info.recovery_first_step_latency,
             recovery_first_touchdown_age=reset_wr_info.recovery_first_touchdown_age,
+            recovery_visible_step_recorded=reset_wr_info.recovery_visible_step_recorded,
             recovery_touchdown_count=reset_wr_info.recovery_touchdown_count,
             recovery_support_foot_changes=reset_wr_info.recovery_support_foot_changes,
             recovery_pitch_rate_at_push_end=reset_wr_info.recovery_pitch_rate_at_push_end,
@@ -3437,6 +3516,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/step_length": step_length_reward,
             "reward/step_progress": step_progress_reward,
             "reward/teacher_target_step_xy": jp.zeros(()),
+            "reward/teacher_step_required": jp.zeros(()),
+            "reward/teacher_swing_foot": jp.zeros(()),
             "reward/arrest_pitch_rate": arrest_pitch_rate_reward,
             "reward/arrest_capture_error": arrest_capture_error_reward,
             "reward/post_touchdown_survival": post_touchdown_survival_reward,
@@ -3494,6 +3575,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "teacher/target_step_x_sq_mean": jp.zeros(()),
             "teacher/target_step_y_sq_mean": jp.zeros(()),
             "teacher/swing_foot": jp.asarray(-1.0, dtype=jp.float32),
+            "teacher/step_required_event_rate": jp.zeros(()),
+            "teacher/swing_foot_match_frac": jp.zeros(()),
+            "teacher/swing_foot_match_events": jp.zeros(()),
+            "recovery/visible_step_rate": jp.zeros(()),
+            "visible_step_rate_hard": jp.zeros(()),
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|
             "tracking/max_torque": max_torque_ratio,  # max(|torque|/limit)

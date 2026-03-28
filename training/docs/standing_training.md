@@ -1,7 +1,7 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.4t` complete
+**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.4t` complete, `v0.17.4t-step` next
 **Created:** 2026-03-20  
 **Last updated:** 2026-03-26
 
@@ -868,32 +868,54 @@ Interpretation:
 - `v0.17.4t` cleared the real standing hard gate
 - the teacher remained bounded to disturbed windows
 - runtime stayed a single-policy deployment path
-- stronger teacher logic is not the next step
+- but viewer inspection suggests the policy still does not show a strong
+  conditional recovery-step trait under hard pushes
+- if visible stepping when bracing fails is a requirement, the branch is
+  outcome-successful but mechanism-incomplete
 
 Decision:
 - freeze iter `330` as the winning standing checkpoint
-- stop the teacher branch here
-- hand off next to `v0.17.3b` transfer hardening / deployment robustness
-- keep `v0.17.7` as optional future complexity only if new evidence appears
+- keep `v0.17.4t` as the current best standing baseline
+- start a follow-on branch focused on conditional step initiation:
+  `v0.17.4t-step`
+- delay `v0.17.3b` transfer hardening until the policy shows the desired
+  step-to-rebalance trait under hard pushes
+- keep stronger teacher forms optional unless `v0.17.4t-step` also plateaus
 
 ### `v0.17.5`: Standing Push Recovery
 
 Objective:
-- solve standing push recovery on the RL mainline
+- solve standing push recovery on the RL mainline with the intended mechanism:
+  brace when bracing is enough, step when bracing no longer works
 
 Changes:
-- train and evaluate the hard-push branch using the industry-style recipe
-- compare directly against both `v0.17.1` and `v0.14.6`
+- keep the `v0.17.4t` fixed-ladder gain
+- add explicit conditional step-initiation support on top of
+  `teacher_target_step_xy`
+- likely turn on:
+  - `teacher_step_required`
+  - `teacher_swing_foot`
+- add explicit step-trait diagnostics:
+  - `visible_step_rate_hard`
+  - `first_liftoff_latency`
+  - `first_touchdown_latency`
+  - `no_touchdown_frac`
+  - `touchdown_then_fail_frac`
+  - `eval_clean/unnecessary_step_rate`
 
 Exit criteria:
 - `eval_medium > 75%`
 - `eval_hard > 60%`
 - `term_height_low_frac` materially below `v0.17.1`
+- hard pushes usually trigger a real recovery step when bracing alone is
+  insufficient
+- quiet standing does not develop a stepping habit
 
 Current status:
-- satisfied by `v0.17.4t`
-- standing sim competence gate is solved
-- next work is transfer hardening, not more standing-sim teacher complexity
+- fixed-ladder competence gate is already satisfied by `v0.17.4t`
+- mechanism requirement remains open because the current branch does not yet
+  clearly show conditional visible stepping under hard pushes
+- next work is `v0.17.4t-step`, not `v0.17.3b`
 
 ### `v0.17.6`: Walking On The Same Policy Stack
 
@@ -935,8 +957,9 @@ Possible directions:
 
 Applied result:
 - `v0.17.4t` cleared the gate with bounded teacher support
-- do not escalate to stronger teacher forms by default
-- return to the mainline sequence: transfer hardening, then walking
+- however, if the required recovery mechanism is still missing, continue the
+  standing branch until the policy demonstrates the intended trait
+- do not jump to transfer hardening just because the benchmark gate is solved
 
 ### If Recipe-Fixed Pure RL Still Fails The Hard Gate
 

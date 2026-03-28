@@ -443,7 +443,7 @@ def main():
     )
     prev_action = default_policy_action.copy()
 
-    clock_stride_period_steps = int(env_cfg.get("clock_stride_period_steps", 36))
+    clock_stride_period_steps = int(training_cfg.env.clock_stride_period_steps)
 
     def get_gait_clock(step_count: int) -> np.ndarray:
         phase = 2.0 * np.pi * (float(step_count) / max(clock_stride_period_steps, 1))

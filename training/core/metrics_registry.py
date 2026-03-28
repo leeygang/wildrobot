@@ -475,6 +475,16 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Teacher XY target agreement reward at first recovery touchdown",
     ),
     MetricSpec(
+        name="reward/teacher_step_required",
+        reducer=Reducer.MEAN,
+        description="Teacher step-required reward on first recovery step-init events",
+    ),
+    MetricSpec(
+        name="reward/teacher_swing_foot",
+        reducer=Reducer.MEAN,
+        description="Teacher swing-foot agreement reward on first recovery touchdown",
+    ),
+    MetricSpec(
         name="reward/cycle_progress",
         reducer=Reducer.MEAN,
         description="Per-step-cycle net forward displacement reward",
@@ -635,6 +645,12 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.SUM,
         log_prefix="recovery",
         description="Summed steps from first touchdown to failure termination; normalized by recovery/completed",
+    ),
+    MetricSpec(
+        name="recovery/visible_step_rate",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Summed visible-step indicators (first liftoff followed by first touchdown); normalized by recovery/completed",
     ),
     MetricSpec(
         name="unnecessary_step_rate",
@@ -853,6 +869,30 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Std dev of teacher target step y over active samples",
     ),
     MetricSpec(
+        name="teacher/step_required_event_rate",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed teacher step-required event gates; normalized by recovery/completed",
+    ),
+    MetricSpec(
+        name="teacher/swing_foot_match_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed teacher swing-foot match indicators; normalized by teacher/swing_foot_match_events",
+    ),
+    MetricSpec(
+        name="teacher/swing_foot_match_events",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of first-touchdown events used for teacher/swing_foot_match_frac normalization",
+    ),
+    MetricSpec(
+        name="visible_step_rate_hard",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Hard-push visible-step proxy; normalized by recovery/completed",
+    ),
+    MetricSpec(
         name="debug/recovery_step_gate",
         reducer=Reducer.MEAN,
         log_prefix="debug",
@@ -978,6 +1018,9 @@ def aggregate_metrics(
             "recovery/capture_error_at_touchdown",
             "recovery/capture_error_reduction_10t",
             "recovery/touchdown_to_term_steps",
+            "recovery/visible_step_rate",
+            "teacher/step_required_event_rate",
+            "visible_step_rate_hard",
         ):
             if name in result:
                 normalized = result[name] / completed_safe
@@ -1037,6 +1080,11 @@ def aggregate_metrics(
         if "teacher/target_xy_error" in result:
             err_events = jnp.maximum(result.get("teacher/target_xy_error_events", 0.0), 1e-6)
             result["teacher/target_xy_error"] = result["teacher/target_xy_error"] / err_events
+        if "teacher/swing_foot_match_frac" in result:
+            swing_events = jnp.maximum(result.get("teacher/swing_foot_match_events", 0.0), 1e-6)
+            result["teacher/swing_foot_match_frac"] = (
+                result["teacher/swing_foot_match_frac"] / swing_events
+            )
 
         if (
             "teacher/target_step_x_sq_mean" in result

@@ -1,14 +1,14 @@
 # v0.17.4t Teacher Training Design
 
-**Status:** Completed design record for the standing branch that cleared the hard gate  
+**Status:** Active design record for the follow-on teacher branch after `v0.17.4t` cleared the hard gate  
 **Applies to:** Standing push recovery on the current MuJoCo / JAX / single-policy stack  
-**Last updated:** 2026-03-26
+**Last updated:** 2026-03-28
 
 ---
 
 ## Outcome Note
 
-`v0.17.4t` has now completed successfully.
+`v0.17.4t` has now completed successfully on the fixed ladder.
 
 Winning checkpoint:
 - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
@@ -19,13 +19,17 @@ Fixed ladder:
 - `eval_hard/term_height_low_frac = 29.4%`
 
 This means:
-- the first bounded teacher branch was sufficient
-- stronger teacher complexity is not the next mainline task
-- the next repo step should return to `v0.17.3b` transfer hardening and then
-  walking extension on the same policy stack
+- the first bounded teacher branch was sufficient to clear the benchmark gate
+- but visual inspection suggests the policy still does not show a strong
+  conditional recovery step under hard pushes
+- if visible stepping when bracing fails is a requirement, the teacher design
+  remains active and should continue with `v0.17.4t-step`
+- `v0.17.3b` transfer hardening should stay after the visible-step mechanism is
+  in place
 
 The rest of this document remains useful as the design record for what
-`v0.17.4t` was meant to do and how it was bounded.
+`v0.17.4t` did, and for the next bounded teacher branch that should add
+explicit step initiation.
 
 ---
 
@@ -63,6 +67,9 @@ Success means:
 - improve fixed-ladder `eval_hard` beyond the `52.2%` plateau
 - target `eval_hard > 60%`
 - preserve `eval_clean = 100%`
+- under hard pushes, the robot visibly initiates a recovery step when bracing
+  alone is not enough
+- quiet standing keeps unnecessary stepping low
 - keep deployment as one policy with no runtime teacher dependency
 
 ---
@@ -77,7 +84,8 @@ Success means:
 - a sim2real hardening branch
 
 `v0.17.3b` remains the transfer-hardening milestone and should stay after the
-sim competence gate is solved.
+sim competence gate is solved and the desired step-to-rebalance mechanism is in
+place.
 
 ---
 
@@ -402,11 +410,15 @@ Scope:
 - keep both weaker than `teacher_target_step_xy`
 
 Reason:
-- use only if T1 is directionally right but still insufficient
+- use when T1 improves the benchmark but still does not create a clear
+  conditional step-initiation trait
 
 Exit criteria:
-- fixed-ladder `eval_hard > 60%`, or
-- clear improvement trajectory with no clean-standing regression
+- fixed-ladder `eval_hard > 60%`
+- hard-push rollouts show a real recovery step in the cases where bracing alone
+  is insufficient
+- `no_touchdown_frac` falls and `touchdown_then_fail_frac` trends down
+- no clean-standing regression or unnecessary stepping habit
 
 Failure criteria:
 - no material improvement beyond T1
@@ -427,6 +439,8 @@ Scope:
 Exit criteria:
 - best checkpoint beats the `52.2%` plateau convincingly
 - target milestone is `eval_hard > 60%`
+- the learned behavior includes conditional recovery stepping, not only better
+  bracing or subtle touchdown adjustments
 - deployed policy still requires no teacher inputs
 - branch is ready to hand off to later `v0.17.3b` sim2real hardening
 
@@ -443,9 +457,11 @@ If T3 fails:
 2. `v0.17.4t-xy`
    add touchdown target reward
 3. `v0.17.4t-step`
-   add step-required reward
+   add `teacher_step_required` and make conditional step initiation the active
+   focus
 4. `v0.17.4t-foot`
-   add swing-foot reward only if still needed
+   add `teacher_swing_foot` only if step-required plus XY still does not create
+   the desired recovery-step trait
 
 This keeps the branch debuggable and avoids bundling too many new levers into
 the first run.

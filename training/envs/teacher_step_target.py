@@ -144,3 +144,37 @@ def compute_teacher_target_step_xy_reward(
         * jp.asarray(first_recovery_touchdown, dtype=jp.float32)
     )
     return gate * reward, err_norm
+
+
+def compute_teacher_step_required_reward(
+    *,
+    teacher_active: jax.Array,
+    step_required_soft: jax.Array,
+    first_recovery_liftoff: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Reward first recovery liftoff only when teacher says stepping is needed."""
+    event = jp.asarray(first_recovery_liftoff, dtype=jp.float32)
+    gate = jp.asarray(teacher_active, dtype=jp.float32) * event
+    demand = jp.clip(jp.asarray(step_required_soft, dtype=jp.float32), 0.0, 1.0)
+    return gate * demand, gate
+
+
+def compute_teacher_swing_foot_reward(
+    *,
+    touchdown_foot: jax.Array,
+    teacher_swing_foot: jax.Array,
+    teacher_active: jax.Array,
+    teacher_step_required_hard: jax.Array,
+    first_recovery_touchdown: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Reward touchdown-foot agreement with teacher's suggested swing foot."""
+    gate = (
+        jp.asarray(first_recovery_touchdown, dtype=jp.float32)
+        * jp.asarray(teacher_active, dtype=jp.float32)
+        * jp.asarray(teacher_step_required_hard, dtype=jp.float32)
+    )
+    match = (
+        jp.asarray(touchdown_foot, dtype=jp.int32)
+        == jp.asarray(teacher_swing_foot, dtype=jp.int32)
+    ).astype(jp.float32)
+    return gate * match, gate
