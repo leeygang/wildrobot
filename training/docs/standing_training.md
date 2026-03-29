@@ -1,9 +1,9 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.1` evaluated, `v0.17.2` complete, `v0.17.3a` complete, `v0.17.4t` complete, `v0.17.4t-step` next
+**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-step` complete (mechanism incomplete), `v0.17.4t-crouch` next → then `v0.18` model-based if needed
 **Created:** 2026-03-20  
-**Last updated:** 2026-03-26
+**Last updated:** 2026-03-29
 
 ---
 
@@ -960,172 +960,316 @@ Data support for the current hypothesis:
   - the current search problem is no longer just "should I step?" but "how do I
     coordinate trunk, knees, and step timing when bracing is insufficient?"
 
-Options under external review:
+Decision after external review:
 
-1. Option A: Keep step teacher, add recovery-gated reward relaxation only
-   Branch sketch:
-   - keep `teacher_target_step_xy`
-   - keep `teacher_step_required`
-   - keep `teacher_swing_foot`
-   - during `push_active || recovery_active`:
-     - down-weight or gate `height_target`
-     - down-weight or gate `posture`
-     - reduce `orientation`
-     - add a low-height floor / collapse guard
-     - add horizontal CoM-velocity damping
-   Rationale:
-   - smallest delta from current `v0.17.4t-step`
-   - current data already shows some step trait (`visible_step_rate_hard = 0.537`
-     at iter `430`)
-   - if the main issue is that the reward still punishes crouch/trunk use during
-     recovery, this branch may be enough
-   Main risk:
-   - reward gating alone may still leave too large a coordination search space
-     for trunk + knees + stepping
+The RL-only teacher path has been explored across six training iterations
+(`v0.17.3a` → `pitchfix` → `arrest` → `v0.17.4t` → `v0.17.4t-step`). The
+fixed-ladder gate was cleared at `v0.17.4t` (70.6%), but the robot still falls
+with a stiff straight body — it does not show coordinated whole-body recovery
+(knee flexion + stepping + trunk motion).
 
-2. Option B: Keep or weaken step teacher, add compact whole-body recovery targets
-   Preferred proposal for the next branch.
-   Branch sketch:
-   - keep the step teacher as a compact recovery intent scaffold, but do not let
-     it dominate
-   - add recovery-window guidance for one or two task-space quantities instead of
-     per-joint supervision, for example:
-     - target recovery height band
-     - minimum knee-flex / crouch indicator
-     - horizontal CoM-velocity reduction target
-   - still keep all of this bounded to `push_active || recovery_active`
-   Rationale:
-   - current `v0.17.4t-step` suggests that step intent is no longer the only
-     bottleneck
-   - pure reward gating may be too weak because the policy must discover a
-     coordinated many-joint response in a broad search space
-   - compact task-space guidance reduces that search space without creating a
-     runtime teacher dependency or prescribing every joint
-   Main risk:
-   - adds another layer of shaping / supervision and must stay compact enough to
-     avoid becoming a new brittle controller
+The core problem:
+- The 19-joint coordination required for whole-body recovery is a large search
+  space for end-to-end RL
+- Every run so far penalized `height_target` and `posture` during recovery,
+  actively preventing the crouch response the robot needs
+- Even with teacher step targets, the RL policy discovered bracing/survival
+  strategies rather than coordinated recovery motions
 
-3. Option C: Reduce or remove step teacher, shift to a broader recovery-mode teacher
-   Branch sketch:
-   - weaken or remove the current step-focused teacher
-   - replace it with a broader recovery-mode scaffold such as:
-     - brace
-     - step
-     - crouch-step
-   - possibly move toward a stronger privileged or model-based teacher if needed
-   Rationale:
-   - if the current step teacher is biasing the policy toward step-only
-     responses, it may be constraining exploration of whole-body recovery
-   - this is the cleanest option if external review concludes that the current
-     step-teacher framing is too narrow
-   Main risk:
-   - largest design delta
-   - least mature / highest integration risk for the current branch
+Plan:
+1. One fast validation run to test whether reward relaxation alone is
+   sufficient (cheapest possible test)
+2. If it is not, pivot to a position-level model-based control stack that
+   eliminates the coordination search space by construction
 
-Proposal:
-- default next branch for review and implementation:
-  `v0.17.4t-step-crouch` using Option B
-- concrete proposal:
-  - start from the best `v0.17.4t-step` checkpoint, not from scratch
-  - keep the current step teacher but reduce its role to compact recovery intent
-  - add recovery-gated whole-body permission:
-    - relax `height_target`
-    - relax `posture`
-    - reduce `orientation`
-    - keep a recovery floor / collapse guard
-  - add one compact whole-body target:
-    - preferred first target is horizontal CoM-velocity reduction
-    - optional second target is a bounded recovery height band or knee-flex
-      indicator
-  - keep quiet standing unchanged outside disturbed windows
-- why this is the default proposal:
-  - it addresses the current observed failure mode ("falls tall and straight")
-  - it keeps the deployed architecture unchanged
-  - it uses the existing teacher only as a bounded scaffold
-  - it reduces search-space difficulty more than reward gating alone, without
-    jumping to a full privileged/model-based teacher
-
-### `v0.17.6`: Walking On The Same Policy Stack
+#### `v0.17.4t-crouch`: Fast Reward Relaxation Validation
 
 Objective:
-- extend the same deployed stack to slow / conservative walking
+- test whether removing reward barriers is sufficient for whole-body recovery,
+  before committing to a new control architecture
+
+This is a single-run validation experiment, not an iterative tuning branch.
+
+Changes relative to `v0.17.4t`:
+- keep all existing teacher rewards
+- during `push_active || recovery_active`:
+  - `height_target`: 0.0 (was 0.5 — stop penalizing crouch)
+  - `posture`: 0.0 (was 0.5 — stop penalizing knee flexion)
+  - `orientation`: -0.3 (was -1.0 — allow trunk motion)
+- add during recovery only:
+  - `height_floor`: -2.0 below 0.20m (prevent full collapse)
+  - `com_velocity_damping`: 1.0 (reward reducing horizontal CoM velocity)
+- keep quiet-standing rewards unchanged outside disturbed windows
+
+Resume from:
+- `v0.17.4t` best checkpoint (`checkpoint_330_43253760.pkl`)
+
+Gate:
+- visual inspection: does the robot crouch and step under hard pushes?
+  - **yes** → the reward was the bottleneck. Continue with RL path, proceed to
+    `v0.17.3b` sim2real hardening
+  - **no** → the 19-joint search space is too hard for end-to-end RL. Proceed
+    to `v0.18` model-based control stack
+
+Expected outcome:
+- low confidence this will produce visible whole-body recovery
+- high confidence this will answer whether reward gating is sufficient
+- one run, ~10 hours, decisive
+
+### `v0.18`: Position-Level Model-Based Control
+
+Objective:
+- replace end-to-end RL joint control with a position-level model-based stack
+  that solves whole-body coordination by construction
+
+This is a **new branch**, not a continuation of the RL teacher path. The
+standing-first validation sequence is preserved.
+
+Why a new branch:
+- six iterations of RL reward and teacher tuning produced survival but not
+  coordinated recovery
+- the remaining gap is a 19-joint coordination problem that RL has not solved
+- IK-based control eliminates this search space: commanding "lower CoM to
+  0.30m" produces automatic knee flexion, no learning required
+- the same stack extends naturally to walking (different gait targets, same
+  planner + IK)
+
+#### Architecture
+
+```text
+Layer 1: Task-space planner (10-50 Hz)
+  inputs:  CoM state, foot positions, contact state, push detection
+  outputs: target CoM position, target foot placement, recovery mode flag
+  method:  capture-point / ALIP on LIP model
+
+Layer 2: Whole-body IK (50 Hz)
+  inputs:  task-space targets from Layer 1
+  outputs: 19 joint position targets
+  method:  Jacobian-based IK using MuJoCo kinematics (mj_jac, mj_comPos)
+  constraints: joint limits, kinematic reachability
+
+Layer 3: Servo interface (50 Hz)
+  inputs:  joint position targets from Layer 2
+  outputs: position commands to servos (or MuJoCo ctrl)
+  method:  direct pass-through (servos have internal PD)
+```
+
+Key design points:
+- **Position-level, not torque-level** — outputs joint angle targets, which is
+  what the HTD-45H servos accept. No WBC, no inverse dynamics.
+- **MuJoCo-native kinematics** — uses `mj_jac` for Jacobian, `mj_comPos` for
+  CoM. No URDF, no Pinocchio, no OCS2.
+- **50 Hz is sufficient** — IK and capture-point computation are microseconds
+  of matrix math. This is not a high-bandwidth torque control loop.
+- **Same MJCF model** — `assets/v2/wildrobot.xml` remains the single source of
+  truth. The IK reads joint limits and kinematic chain from the same model.
+
+#### Why the original OCS2 rejection does not apply
+
+The `v0.17.2` architecture review rejected model-based control for three
+reasons. All three are addressed by the position-level approach:
+
+| Original rejection reason | Position-level response |
+|---|---|
+| "Position servos can't do torque-based WBC" | This stack outputs position targets, not torques. IK computes joint angles; the servo PD handles force generation. |
+| "No accurate dynamics model for real-time control" | IK needs kinematics, not dynamics. MuJoCo's kinematic model is exact. For the planner, a simple LIP model is sufficient. |
+| "50 Hz is too slow for MPC inner loop" | IK + capture-point is microseconds of computation. 50 Hz is more than enough for position-level planning on a 4.1 kg robot. |
+
+The earlier rejection was about OCS2/Pinocchio/URDF/torque-level WBC — a heavy
+stack that does not match this hardware. The proposed stack is much lighter:
+just MuJoCo kinematics + simple planner + position output.
+
+#### How whole-body recovery works in this stack
+
+The coordination problem disappears:
+- **Planner says "lower CoM to 0.30m during recovery"** → IK computes knee
+  angles that achieve this height → knees flex automatically
+- **Planner says "step left foot to [0.08, 0.04]"** → IK computes the swing
+  leg joint angles → step happens with correct geometry
+- **Trunk counter-rotation** → falls out of the IK solution when the CoM
+  target and foot targets require it
+- No search space, no reward shaping, no teacher
+
+For quiet standing:
+- Planner sets target CoM at standing height (0.44m), feet at current position
+- IK produces home-like joint angles
+- No push → no recovery mode → robot stands still
+
+#### Implementation plan
+
+Phase 1: IK validation in simulation
+- implement Jacobian-based IK for the leg chains using MuJoCo's `mj_jac`
+- validate that IK can track a commanded CoM height + foot position on the
+  static model (no physics step)
+- validate joint limits and singularity handling
+- deliverable: a standalone script that poses the robot at commanded task-space
+  targets
+
+Phase 2: Standing controller
+- implement capture-point computation from CoM state
+- implement standing balance: hold CoM over support polygon, adjust ankle/hip
+  targets
+- implement recovery mode: when capture point exits support polygon, lower CoM
+  target + plan recovery step
+- integrate with MuJoCo simulation loop
+- deliverable: quiet standing and push recovery in simulation
+
+Phase 3: Fixed-ladder validation
+- run the same standing push ladder used for RL evaluation
+- compare directly against `v0.17.4t` (70.6% eval_hard)
+- visual inspection: does the robot show coordinated crouch + step?
+
+Phase 4: Walking extension
+- add gait timing (alternating support phases)
+- use the same planner with periodic foot placement targets
+- keep standing recovery as a regression gate
+
+Phase 5: Sim2real
+- calibrate IK against real robot kinematics
+- deploy planner + IK on Raspberry Pi (no ML inference needed)
+- hardware validation
+
+#### Files
+
+New code (under `control/`):
+- `control/ik/jacobian_ik.py` — Jacobian-based IK using MuJoCo
+- `control/planner/capture_point.py` — capture-point computation
+- `control/planner/standing_planner.py` — standing balance + recovery planner
+- `control/standing_controller.py` — top-level standing controller
+- `control/sim_adapter.py` — adapter to run the controller in MuJoCo sim loop
+
+Validation:
+- `scripts/validate_ik.py` — standalone IK validation
+- `scripts/validate_standing_controller.py` — standing + push test
+
+Reused from RL branch:
+- `assets/v2/wildrobot.xml` — same MJCF model
+- `training/eval/eval_ladder_v0170.py` — same fixed-ladder evaluation
+- `runtime/` — same servo interface for deployment
+
+#### Exit criteria
+
+Phase 2 gate (standing controller):
+- quiet standing is stable (no drift, no oscillation)
+- push recovery shows visible knee flexion + stepping
+- the controller survives the fixed-ladder eval_medium pushes
+
+Phase 3 gate (fixed-ladder):
+- `eval_medium > 75%`
+- `eval_hard > 60%`
+- visual inspection confirms whole-body recovery (crouch + step)
+
+Phase 4 gate (walking):
+- slow forward walking (0.05-0.15 m/s)
+- stop and hold
+- standing recovery regression passes
+
+#### Relationship to the RL branch
+
+The RL branch (`v0.17.x`) remains in the repo as:
+- baseline comparison for the model-based stack
+- fallback if the model-based stack fails on unexpected scenarios
+- potential future hybrid: RL policy on top of the model-based lower stack for
+  adaptive behavior
+
+The `v0.17.4t` checkpoint (`eval_hard = 70.6%`) is the RL-path standing
+baseline. The model-based stack should match or exceed this on the same ladder
+before it replaces the RL path as the mainline.
+
+#### Risk
+
+- **IK feasibility**: the robot may have kinematic singularities or limited
+  workspace that prevent the IK from tracking task-space targets. Phase 1
+  validates this before any planner work.
+- **Planner model mismatch**: the LIP/capture-point model may not match the
+  robot's actual dynamics well (thick legs, 4.1 kg). Phase 2 validates this
+  in simulation.
+- **Sim2real gap**: the IK solution in simulation may not transfer to hardware
+  if the kinematic model has calibration errors. Phase 5 addresses this.
+- **Walking complexity**: gait timing and contact scheduling are non-trivial
+  even with IK. Phase 4 may require iteration.
+
+### `v0.19`: Walking On The Same Control Stack
+
+Objective:
+- extend the standing controller to slow / conservative walking
+- same planner + IK architecture, different gait targets
 
 Changes:
-- forward walking
-- stop / hold
-- gentle turn
+- add gait timing (periodic left/right support switching)
+- add forward velocity command → footstep placement targets
+- stop / hold command
+- gentle turn command
 - keep standing push recovery as a regression suite
 
 Exit criteria:
-- one policy stack supports both standing recovery and conservative walking
+- one control stack supports both standing recovery and conservative walking
+- the robot walks at 0.05-0.15 m/s on flat ground
+- standing push recovery regression passes after walking training
 
-### `v0.17.7`: Optional Stronger Teachers
+### Optional Future: Hybrid RL + Model-Based
 
-Objective:
-- add complexity only if the simpler branch clearly saturates
-
-Possible directions:
-- privileged teacher-student path
-- imitation / motion-reference assistance
-- MJPC-generated teacher data in simulation
+If the model-based stack handles standing and walking but struggles with
+robustness or adaptive behavior:
+- use the model-based stack as the lower layer (IK + planner)
+- add an RL policy on top that outputs task-space corrections
+- the RL policy searches in 5-6 dimensional task space instead of 19-joint
+  space — exponentially easier
+- this is the Singh architecture (model-based geometry + RL execution) with
+  the model-based layer providing the coordination that end-to-end RL could
+  not discover
 
 ---
 
 ## Decision Rules
 
-### If Quiet Standing Breaks
+### After `v0.17.4t-crouch`
 
-- do not jump to bigger teacher logic first
-- restore runtime-compatible standing behavior first
+- if the robot shows coordinated crouch + step under hard pushes:
+  - stay on the RL path
+  - proceed to `v0.17.3b` sim2real hardening, then walking
+- if the robot still falls stiff despite reward relaxation:
+  - the 19-joint coordination problem is confirmed as too hard for end-to-end
+    RL on this hardware
+  - proceed to `v0.18` model-based control stack
 
-### If Recipe-Fixed Pure RL Meets The Hard Gate
+### On the `v0.18` model-based path
 
-- do not add teacher logic just because it was planned
-- keep the simpler policy-only path as the mainline
+- the deployed artifact changes from an RL policy to an IK + planner stack
+- this is a deliberate architecture change, not a failure of the RL approach —
+  the RL branch established the benchmark gate and proved what reward/teacher
+  tuning can and cannot achieve
+- the RL branch remains as a baseline and potential future hybrid layer
 
-Applied result:
-- `v0.17.4t` cleared the gate with bounded teacher support
-- however, if the required recovery mechanism is still missing, continue the
-  standing branch until the policy demonstrates the intended trait
-- do not jump to transfer hardening just because the benchmark gate is solved
+### Standing-first validation still applies
 
-### If Recipe-Fixed Pure RL Still Fails The Hard Gate
+- regardless of the control approach (RL or model-based), standing push
+  recovery is validated first on the fixed ladder
+- walking extends the same stack afterward
+- the same eval ladder, same push definitions, and same success metrics apply
 
-- add bounded step-target teacher signals before considering runtime hierarchy
-  or a new controller architecture
+### What we learned from the RL branch
 
-### If Teacher Logic Helps In Training But Creates Runtime Dependency
+Applied results from `v0.17.3a` through `v0.17.4t-step`:
+- recipe-fixed pure RL plateaued at `eval_hard ≈ 52%`
+- bounded step-target teacher broke through to `eval_hard = 70.6%`
+- the teacher improved survival rate but did not produce visible whole-body
+  recovery
+- the remaining gap is coordination (crouch + step + trunk), not reward
+  tuning or step intent
 
-- treat that as a design failure
-- the active branch must keep the deployed artifact as a policy
+### What is no longer being avoided
 
-### If Step Initiation Improves But The Robot Still Falls Tall And Straight
+The original `v0.17.2` architecture decision avoided model-based control
+because it assumed OCS2/Pinocchio/URDF/torque-level WBC. The `v0.18` proposal
+is different:
+- position-level output (not torque)
+- MuJoCo-native kinematics (not Pinocchio/URDF)
+- simple planner (capture-point, not full MPC)
+- 50 Hz position commands (matches servo interface)
 
-- do not immediately escalate to a planner or stronger teacher stack
-- first test a bounded whole-body recovery extension:
-  - conditional knee flexion
-  - modest CoM lowering
-  - still coupled to step initiation
-- keep the behavior recovery-gated and verify that quiet standing remains
-  upright and clean
-
-### If The RL Mainline Still Fails After Bounded Teacher Support
-
-Only then consider bigger escalations:
-- stronger privileged teacher-student paths
-- MJPC teacher in simulation
-- revisit heavier controller stacks after a hardware change
-
----
-
-## What We Are Explicitly Avoiding
-
-For the active branch, do not make these the mainline:
-- full OCS2 / humanoid MPC adoption on current hardware
-- URDF-first migration as a prerequisite
-- planner-dependent runtime controller execution
-- runtime hierarchy before the recipe-fixed pure-RL branch is evaluated
-- open-ended reward-family growth without recipe discipline
+This is a lightweight model-based stack, not the heavyweight OCS2 adoption
+that was correctly deferred.
 
 ---
 
