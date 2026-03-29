@@ -983,8 +983,10 @@ The core problem:
 Plan:
 1. One fast validation run to test whether reward relaxation alone is
    sufficient (cheapest possible test)
-2. If it is not, pivot to a position-level model-based control stack that
-   eliminates the coordination search space by construction
+2. If it is not, try one compact whole-body teacher branch inside RL before a
+   full architecture pivot
+3. If that still fails, pivot to a position-level model-based control stack
+   that reduces the coordination search space substantially
 
 #### `v0.17.4t-crouch`: Fast Reward Relaxation Validation
 
@@ -1026,16 +1028,67 @@ Decision after gate:
   the reward was the bottleneck. Continue with RL path, proceed to `v0.17.3b`
   sim2real hardening.
 - **if `eval_hard >= 65%` but no visible coordinated recovery**:
-  the RL path can survive pushes through subtle mechanisms but cannot discover
-  whole-body coordination. Proceed to `v0.18` model-based control stack.
+  the RL path can survive pushes through subtle mechanisms but reward
+  relaxation alone did not create coordinated whole-body recovery. Proceed to
+  one compact whole-body teacher branch inside RL before a model-based pivot.
 - **if `eval_hard < 65%`**:
   the reward relaxation actively hurt survival. Restore v0.17.4t as the best
-  RL checkpoint and proceed to `v0.18`.
+  RL checkpoint and proceed to one compact whole-body teacher branch inside RL
+  before `v0.18`.
 
 Expected outcome:
 - low confidence this will produce visible whole-body recovery
 - high confidence this will answer whether reward gating is sufficient
 - one run, ~10 hours
+
+#### `v0.17.4t-crouch-teacher`: Compact Whole-Body Teacher Inside RL
+
+Objective:
+- add one compact whole-body recovery scaffold inside RL if reward relaxation
+  alone is still too weak, while keeping the deployed artifact as one policy
+
+This is the last planned RL-side mechanism experiment before a model-based
+pivot.
+
+Why this branch exists:
+- reward gating alone may still leave too large a search space for coordinated
+  trunk + knee + step behavior
+- a compact task-space teacher can reduce that search space without prescribing
+  every joint and without creating a runtime teacher dependency
+
+Scope:
+- keep the current step teacher as a bounded recovery-intent scaffold
+  (`teacher_step_required`, `teacher_swing_foot`, `teacher_target_step_xy`)
+- add one or two compact whole-body recovery targets during
+  `push_active || recovery_active`, for example:
+  - horizontal CoM-velocity reduction target
+  - bounded recovery height band
+  - bounded knee-flex / crouch indicator
+- do **not** add per-joint supervision
+- keep quiet standing unchanged outside disturbed windows
+
+Rationale:
+- current `v0.17.4t-step` data suggests step intent is no longer the only
+  bottleneck
+- current `v0.17.4t-crouch` hypothesis tests whether simple permission is
+  enough
+- if not, the next smallest step is compact task-space guidance, not a full new
+  controller stack
+
+Exit criteria:
+- fixed ladder remains competitive with `v0.17.4t` (`eval_hard >= 65%` for a
+  screening bar, target `>= 70%`)
+- visible crouch + step behavior appears under hard pushes
+- `eval_clean/unnecessary_step_rate <= 0.10`
+- recovery metrics improve:
+  - `visible_step_rate`
+  - `no_touchdown_frac`
+  - `touchdown_then_fail_frac`
+  - `pitch_rate_reduction_10t`
+
+If this branch also fails:
+- the RL path has exhausted the planned bounded whole-body guidance options
+- proceed to `v0.18`
 
 ### `v0.18`: Position-Level Model-Based Control
 
@@ -1044,8 +1097,10 @@ Objective:
   that reduces the whole-body coordination problem from RL exploration to
   structured task-space IK design
 
-This is a **new branch**, not a continuation of the RL teacher path. The
-standing-first validation sequence is preserved.
+This is a **new branch**, not a continuation of the RL teacher path. It is the
+fallback after the bounded RL whole-body guidance options (`v0.17.4t-crouch`
+and `v0.17.4t-crouch-teacher`) are exhausted. The standing-first validation
+sequence is preserved.
 
 Why a new branch:
 - six iterations of RL reward and teacher tuning produced survival but not
@@ -1289,8 +1344,16 @@ robustness or adaptive behavior:
   - stay on the RL path
   - proceed to `v0.17.3b` sim2real hardening, then walking
 - if the robot still falls stiff despite reward relaxation:
-  - the 19-joint coordination problem is confirmed as too hard for end-to-end
-    RL on this hardware
+  - reward gating alone was insufficient
+  - proceed first to `v0.17.4t-crouch-teacher`
+
+### After `v0.17.4t-crouch-teacher`
+
+- if compact whole-body teacher guidance produces coordinated crouch + step:
+  - stay on the RL path
+  - proceed to `v0.17.3b` sim2real hardening, then walking
+- if it still fails to produce the required mechanism:
+  - the bounded RL whole-body guidance path has been exhausted on this hardware
   - proceed to `v0.18` model-based control stack
 
 ### On the `v0.18` model-based path
