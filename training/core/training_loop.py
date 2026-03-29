@@ -1406,7 +1406,9 @@ def train(
             recovery_capture_reduction_idx = METRIC_INDEX["recovery/capture_error_reduction_10t"]
             recovery_touchdown_to_term_idx = METRIC_INDEX["recovery/touchdown_to_term_steps"]
             recovery_visible_step_idx = METRIC_INDEX["recovery/visible_step_rate"]
+            visible_step_rate_hard_idx = METRIC_INDEX["visible_step_rate_hard"]
             recovery_min_height_idx = METRIC_INDEX["recovery/min_height"]
+            recovery_max_knee_flex_idx = METRIC_INDEX["recovery/max_knee_flex"]
             recovery_first_step_dist_abs_idx = METRIC_INDEX["recovery/first_step_dist_abs"]
 
             total_done = jnp.sum(eval_rollout["done"])
@@ -1517,15 +1519,27 @@ def train(
                 / recovery_completed_safe,
                 0.0,
             )
-            visible_step_rate_hard = jnp.where(
+            recovery_visible_step_rate = jnp.where(
                 recovery_has_completed,
                 jnp.sum(eval_rollout["metrics_vec"][..., recovery_visible_step_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            visible_step_rate_hard = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., visible_step_rate_hard_idx])
                 / recovery_completed_safe,
                 0.0,
             )
             recovery_min_height = jnp.where(
                 recovery_has_completed,
                 jnp.sum(eval_rollout["metrics_vec"][..., recovery_min_height_idx])
+                / recovery_completed_safe,
+                0.0,
+            )
+            recovery_max_knee_flex = jnp.where(
+                recovery_has_completed,
+                jnp.sum(eval_rollout["metrics_vec"][..., recovery_max_knee_flex_idx])
                 / recovery_completed_safe,
                 0.0,
             )
@@ -1559,8 +1573,10 @@ def train(
                 recovery_pitch_rate_reduction_10t,
                 recovery_capture_error_reduction_10t,
                 recovery_touchdown_to_term_steps,
+                recovery_visible_step_rate,
                 visible_step_rate_hard,
                 recovery_min_height,
+                recovery_max_knee_flex,
                 recovery_first_step_dist_abs,
             )
 
@@ -1703,7 +1719,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_first_step_dist_abs = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1711,7 +1727,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_first_step_dist_abs = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1754,8 +1770,10 @@ def train(
                 eval_clean_recovery_touchdown_to_term_steps = (
                     eval_push_recovery_touchdown_to_term_steps
                 )
+                eval_clean_recovery_visible_step_rate = eval_push_recovery_visible_step_rate
                 eval_clean_visible_step_rate_hard = eval_push_visible_step_rate_hard
                 eval_clean_recovery_min_height = eval_push_recovery_min_height
+                eval_clean_recovery_max_knee_flex = eval_push_recovery_max_knee_flex
                 eval_clean_recovery_first_step_dist_abs = eval_push_recovery_first_step_dist_abs
             jax.block_until_ready(eval_push_success)
 
@@ -1801,9 +1819,12 @@ def train(
                 "eval_push/recovery_touchdown_to_term_steps": float(
                     eval_push_recovery_touchdown_to_term_steps
                 ),
+                "eval_push/recovery_visible_step_rate": float(
+                    eval_push_recovery_visible_step_rate
+                ),
                 "eval_push/visible_step_rate_hard": float(eval_push_visible_step_rate_hard),
-                "eval_push/recovery_visible_step_rate": float(eval_push_visible_step_rate_hard),
                 "eval_push/recovery_min_height": float(eval_push_recovery_min_height),
+                "eval_push/recovery_max_knee_flex": float(eval_push_recovery_max_knee_flex),
                 "eval_push/recovery_first_step_dist_abs": float(
                     eval_push_recovery_first_step_dist_abs
                 ),
@@ -1846,9 +1867,12 @@ def train(
                 "eval_clean/recovery_touchdown_to_term_steps": float(
                     eval_clean_recovery_touchdown_to_term_steps
                 ),
+                "eval_clean/recovery_visible_step_rate": float(
+                    eval_clean_recovery_visible_step_rate
+                ),
                 "eval_clean/visible_step_rate_hard": float(eval_clean_visible_step_rate_hard),
-                "eval_clean/recovery_visible_step_rate": float(eval_clean_visible_step_rate_hard),
                 "eval_clean/recovery_min_height": float(eval_clean_recovery_min_height),
+                "eval_clean/recovery_max_knee_flex": float(eval_clean_recovery_max_knee_flex),
                 "eval_clean/recovery_first_step_dist_abs": float(
                     eval_clean_recovery_first_step_dist_abs
                 ),

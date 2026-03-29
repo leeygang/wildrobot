@@ -26,11 +26,14 @@ def decide_branch(
     *,
     metrics: Dict[str, float],
     visible_step_threshold: float,
+    clean_unnecessary_step_max: float,
 ) -> str:
     eval_hard = _get(metrics, "eval_push/success_rate")
     has_mechanism = _has_visible_crouch_step(metrics, visible_step_threshold)
+    clean_step_rate = _get(metrics, "eval_clean/unnecessary_step_rate")
+    clean_gate_ok = clean_step_rate <= clean_unnecessary_step_max
 
-    if eval_hard >= 0.70 and has_mechanism:
+    if eval_hard >= 0.70 and has_mechanism and clean_gate_ok:
         return "stay_rl"
     if eval_hard >= 0.65:
         return "go_crouch_teacher"
@@ -53,6 +56,12 @@ def main() -> int:
         default=0.10,
         help="Minimum eval_push/recovery_visible_step_rate considered visible crouch+step.",
     )
+    parser.add_argument(
+        "--clean-unnecessary-step-max",
+        type=float,
+        default=0.10,
+        help="Maximum allowed eval_clean/unnecessary_step_rate for stay_rl.",
+    )
     args = parser.parse_args()
 
     if not args.metrics.exists():
@@ -62,6 +71,7 @@ def main() -> int:
     decision = decide_branch(
         metrics=metrics,
         visible_step_threshold=float(args.visible_step_threshold),
+        clean_unnecessary_step_max=float(args.clean_unnecessary_step_max),
     )
 
     summary = {
@@ -70,6 +80,10 @@ def main() -> int:
         "eval_clean/unnecessary_step_rate": _get(
             metrics, "eval_clean/unnecessary_step_rate"
         ),
+        "eval_clean/unnecessary_step_gate_ok": _get(
+            metrics, "eval_clean/unnecessary_step_rate"
+        )
+        <= float(args.clean_unnecessary_step_max),
         "recovery/visible_step_rate": _get(
             metrics, "eval_push/recovery_visible_step_rate"
         ),
@@ -83,6 +97,7 @@ def main() -> int:
             metrics, "eval_push/recovery_pitch_rate_reduction_10t"
         ),
         "recovery/min_height": _get(metrics, "eval_push/recovery_min_height"),
+        "recovery/max_knee_flex": _get(metrics, "eval_push/recovery_max_knee_flex"),
         "recovery/first_step_dist_abs": _get(
             metrics, "eval_push/recovery_first_step_dist_abs"
         ),
