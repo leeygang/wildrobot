@@ -1,14 +1,14 @@
-# v0.17.4t Teacher Training Design
+# v0.17 Whole-Body Recovery Design
 
-**Status:** Active design record for the follow-on teacher branch after `v0.17.4t` cleared the hard gate  
+**Status:** Active implementation design for post-`v0.17.4t` standing branches  
 **Applies to:** Standing push recovery on the current MuJoCo / JAX / single-policy stack  
-**Last updated:** 2026-03-28
+**Last updated:** 2026-03-29
 
 ---
 
 ## Outcome Note
 
-`v0.17.4t` has now completed successfully on the fixed ladder.
+`v0.17.4t` completed successfully on the fixed ladder.
 
 Winning checkpoint:
 - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
@@ -22,294 +22,137 @@ This means:
 - the first bounded teacher branch was sufficient to clear the benchmark gate
 - but visual inspection suggests the policy still does not show a strong
   conditional recovery step under hard pushes
-- if visible stepping when bracing fails is a requirement, the teacher design
-  remains active and should continue with `v0.17.4t-step`
-- `v0.17.3b` transfer hardening should stay after the visible-step mechanism is
-  in place
+- `v0.17.4t-step` should still be ladder-validated before it is used as
+  evidence for larger architecture decisions
+- if visible stepping and whole-body recovery when bracing fails are product
+  requirements, the design remains active for the next sequence:
+  `v0.17.4t-crouch` -> `v0.17.4t-crouch-teacher` -> `v0.18` if needed
 
 The rest of this document remains useful as the design record for what
-`v0.17.4t` did, and for the next bounded teacher branch that should add
-explicit step initiation.
+`v0.17.4t` and `v0.17.4t-step` established, and as the detailed implementation
+plan for the next standing branches.
 
 ---
 
 ## Purpose
 
-This document defines the design for `v0.17.4t`, the first bounded
-teacher-assisted standing branch.
+This document defines the implementation-level plan for the follow-on standing
+branches after `v0.17.4t` cleared the hard gate but did not yet show the full
+desired mechanism.
 
-The branch exists because the pure-RL standing sequence improved materially but
-plateaued below the hard-push gate:
-- `v0.17.3a`: `eval_hard = 51.4%`
-- `v0.17.3a-pitchfix`: `eval_hard = 51.8%`
-- `v0.17.3a-arrest`: `eval_hard = 52.2%`
+This doc is the detailed companion to
+[standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md),
+which stays the canonical high-level plan. Use this document when the work
+requires concrete implementation scope, milestones, file ownership, and
+decision gates.
 
-Interpretation:
-- the policy already steps under disturbance
-- reward-only tuning is no longer producing meaningful gains
-- the remaining gap looks like recovery-step geometry / step-quality, not
-  “never steps at all”
+Active sequence covered here:
+1. `v0.17.4t-crouch`
+2. `v0.17.4t-crouch-teacher`
+3. `v0.18` position-level model-based control, only if the bounded RL path is
+   exhausted
 
-The goal of `v0.17.4t` is to improve hard-push recovery **without** changing
-the deployed architecture.
+Historical context:
+- `v0.17.3a`: fixed-ladder `eval_hard = 51.4%`
+- `v0.17.3a-pitchfix`: `51.8%`
+- `v0.17.3a-arrest`: `52.2%`
+- `v0.17.4t`: `70.6%`
+- `v0.17.4t-step`: mechanism branch; best internal point currently needs the
+  same fixed-ladder validation before it is used for architecture decisions
 
 ---
 
 ## Goal
 
-Teach the policy to make a better first recovery step under hard pushes:
+Teach or engineer the robot to use the intended recovery mechanism under hard
+push:
+- brace when bracing is enough
 - step when bracing is no longer enough
-- choose a plausible swing foot
-- place the foot in a more useful recovery location
+- if needed, use modest knee flexion / CoM lowering / trunk motion during the
+  recovery window
 - keep quiet standing unchanged
 
 Success means:
-- improve fixed-ladder `eval_hard` beyond the `52.2%` plateau
-- target `eval_hard > 60%`
+- preserve or exceed the current standing benchmark (`v0.17.4t` at
+  `eval_hard = 70.6%`)
 - preserve `eval_clean = 100%`
 - under hard pushes, the robot visibly initiates a recovery step when bracing
   alone is not enough
+- if large pushes exceed upright brace capacity, the robot is allowed to use a
+  bounded whole-body recovery response instead of falling tall and straight
 - quiet standing keeps unnecessary stepping low
-- keep deployment as one policy with no runtime teacher dependency
+- keep deployment as one policy for the `v0.17.x` RL branches, with no runtime
+  teacher dependency
 
 ---
 
 ## Non-Goals
 
-`v0.17.4t` is **not**:
+The `v0.17.x` follow-on branches are **not**:
 - a runtime planner
 - a second deployed controller
 - a high-level policy plus low-level policy architecture
 - a requirement to add teacher targets to actor observations
-- a sim2real hardening branch
+- a sim2real hardening branch (`v0.17.3b` remains later)
 
-`v0.17.3b` remains the transfer-hardening milestone and should stay after the
-sim competence gate is solved and the desired step-to-rebalance mechanism is in
-place.
-
----
-
-## Core Strategy
-
-Use a small training-time teacher that is active only during disturbed windows:
-- `push_active || recovery_active`
-
-The teacher does not output joint actions. It outputs compact recovery-step
-targets:
-- `step_required`
-- `swing_foot`
-- `target_step_x`
-- `target_step_y`
-
-The RL policy still produces all motor actions. The teacher only supplies an
-extra learning signal that says:
-- when a step is likely necessary
-- which leg should make the first rescue step
-- where that first rescue step should roughly land
-
-This improves credit assignment. Instead of learning only from delayed outcomes
-like `term_height_low` or `term_pitch`, the policy receives a more immediate
-signal about what a useful recovery step looks like.
+`v0.18` is explicitly a new branch and a different controller architecture.
+That branch is allowed to change the deployed artifact if the bounded RL path
+fails to deliver the mechanism.
 
 ---
 
-## Why Teacher Is Justified Now
+## Active Design Principles
 
-The current evidence is:
-- `v0.17.3a-arrest` made post-touchdown arrest rewards active
-- `recovery/no_touchdown_frac` is near zero at the best point
-- fixed-ladder improvement from reward-only tuning is marginal
+1. Disturbed-window-only changes
+- all recovery-specific permissions or teacher guidance remain bounded to
+  `push_active || recovery_active`
+- quiet standing should keep the normal standing priors
 
-So the unresolved question is no longer “should the robot step at all?”
-It is:
-- “is the first rescue step timed and placed well enough to arrest the fall?”
+2. Compact task-space guidance, not per-joint supervision
+- if RL needs extra structure, guide a small number of recovery-relevant
+  quantities:
+  - step required
+  - swing foot
+  - touchdown target
+  - recovery height band
+  - horizontal CoM-velocity reduction
+- do not add teacher targets for every joint angle
 
-That is exactly the kind of gap a bounded teacher can address.
+3. Runtime contract stability for `v0.17.x`
+- actor observations remain unchanged
+- exported policy remains a single policy with no runtime teacher dependency
 
----
+4. Quantitative gate before architecture pivot
+- no architecture change should be triggered by viewer impressions alone
+- use fixed-ladder comparison plus behavior metrics plus visual inspection
 
-## Teacher Type
-
-The first teacher should be a **heuristic step-target teacher**, not a learned
-teacher and not a runtime planner.
-
-Why heuristic first:
-- cheapest to implement
-- easiest to inspect and debug
-- uses state signals the env already computes
-- low risk of creating runtime dependency
-
-Likely teacher source:
-- capture-point-style recovery heuristic
-- plus simple foot-selection and reachable-step clipping rules
-
-Initial reachable-step bounds for the first teacher should be explicit and
-conservative:
-- `target_step_x in [-0.10, 0.10] m`
-- left `target_step_y in [0.02, 0.06] m`
-- right `target_step_y in [-0.06, -0.02] m`
-
-These are not final hardware limits. They are the first bounded training-time
-teacher region and should be validated in `T0` against observed touchdown
-geometry and asset reach.
-
-Later escalation, only if needed:
-- stronger privileged teacher-student path
-- model-based or MJPC teacher in simulation
+5. Diagnosability over complexity
+- each branch should answer one concrete question:
+  - did removing reward barriers unlock whole-body recovery?
+  - if not, does compact whole-body teacher guidance unlock it?
+  - if not, is a controller-stack change justified?
 
 ---
 
-## How The Teacher Works
-
-During `push_active || recovery_active`, the teacher inspects the current fall
-state:
-- body tilt
-- body angular velocity
-- heading-local base velocity
-- capture-point-style error
-- current foot positions / contact state
-
-Then it produces four targets:
-
-### 1. `step_required`
-
-Meaning:
-- should the policy treat the current state as requiring a rescue step?
-
-Teacher intent:
-- low during quiet standing
-- high only when bracing is likely no longer enough
-
-### 2. `swing_foot`
-
-Meaning:
-- which foot should likely make the first rescue step?
-
-Teacher intent:
-- choose a plausible foot based on lateral fall direction, current stance
-  geometry, and contact / loading context
-
-### 3. `target_step_x`
-
-Meaning:
-- approximate forward/back landing target in heading-local coordinates
-
-### 4. `target_step_y`
-
-Meaning:
-- approximate lateral landing target in heading-local coordinates
-
-The teacher is not required to be perfect. It only needs to provide a bounded,
-useful prior that is better than delayed failure-only learning.
+## Current Evidence
 
 ---
 
-## Training Mechanism
-
-The first `v0.17.4t` version should use the teacher for **reward shaping /
-training supervision only**.
-
-Do:
-- compute teacher targets in the env during disturbed windows
-- add small reward terms that encourage agreement with those targets
-- log teacher activity and policy/teacher agreement
-
-Do not:
-- feed teacher targets into actor observations
-- make the exported policy depend on teacher inputs
-- replace PPO with a separate imitation pipeline
-
-The training loop remains PPO on the same standing task.
-
----
-
-## First Reward Design
-
-The first teacher branch should add small, bounded terms:
-- `teacher_step_required`
-  reward when a first recovery touchdown occurs in states where teacher
-  confidence says a step is needed
-- `teacher_target_step_xy`
-  reward when first touchdown lands near the teacher target
-- optional `teacher_swing_foot`
-  reward when touchdown foot matches teacher foot choice
-
-Design rules:
-- gate them to disturbed windows only
-- compute them on first recovery step / touchdown, not all touch events
-- keep clipping and bounds explicit
-- use soft agreement, not hard tracking
-
-Weight guidance for the first branch:
-- `teacher_target_step_xy` should be large enough to matter because it fires
-  rarely; start around posture-scale, not tiny auxiliary scale
-- first recommended range:
-  - `teacher_target_step_xy: 0.3 - 0.6`
-  - `teacher_step_required: 0.1 - 0.2`
-  - `teacher_swing_foot: 0.05 - 0.1`
-
-Rationale:
-- the teacher reward is gated to first recovery touchdown only
-- it should be strong enough to shape rare hard-push events
-- it should still remain below the dominant survival objective over the full
-  episode
-
-Initial priority:
-1. `teacher_target_step_xy`
-2. `teacher_step_required`
-3. optional `teacher_swing_foot`
-
-Reason:
-- the current evidence says step quality matters more than step occurrence
-
-Recommended first reward form for `teacher_target_step_xy`:
-
-\[
-r_{xy} = \exp(-\|p_{td} - p_{teacher}\|^2 / \sigma^2)
-\]
-
-where:
-- `p_td` is the first recovery touchdown position in heading-local `x/y`
-- `p_teacher` is the teacher target
-- `sigma` should start in the `0.05 - 0.08 m` range
-
-This keeps the teacher soft:
-- near the target gives a useful gradient
-- moderate disagreement still receives partial credit
-- if the teacher target is wrong by a large margin, the reward fades instead of
-  strongly punishing the policy for choosing a different touchdown
-
----
-
-## Safety / Failure Containment
-
-The teacher can be imperfect. `v0.17.4t` should be designed so that imperfect
-teacher thresholds do not corrupt the final controller.
-
-Protections:
-- teacher only affects training
-- teacher is active only in disturbed windows
-- teacher weights stay small and bounded
-- quiet-standing metrics remain a hard regression gate
-- fixed-ladder outcome decides success, not teacher agreement alone
-
-Teacher disagreement should not be treated as a hard error condition.
-The branch should prefer soft touchdown-agreement rewards over penalties that
-force strict teacher tracking.
-
-If teacher is noisy or wrong:
-- `eval_clean/unnecessary_step_rate` will rise
-- `touchdown_then_fail_frac` will not improve
-- fixed-ladder `eval_hard` will not improve
-
-That is how the branch should be judged.
+`v0.17.4t` result:
+- fixed ladder:
+  - `eval_medium = 93.8%`
+  - `eval_hard = 70.6%`
+  - `eval_hard/term_height_low_frac = 29.4%`
+- outcome gate is solved
+- but visual inspection suggests large-push failures still look too tall and
+  stiff
 
 ---
 
 ## Metrics
 
-`v0.17.4t` should use the existing recovery metrics and add teacher-specific
-ones.
+The follow-on branches should use the existing recovery metrics and add any
+extra branch-specific metrics needed to answer the current question.
 
 Existing recovery metrics that matter:
 - `recovery/no_touchdown_frac`
@@ -318,6 +161,9 @@ Existing recovery metrics that matter:
 - `recovery/pitch_rate_reduction_10t`
 - `recovery/capture_error_reduction_10t`
 - `eval_clean/unnecessary_step_rate`
+- `recovery/visible_step_rate`
+- `recovery/first_step_dx`
+- `recovery/first_step_dy`
 
 Teacher-specific metrics to add:
 - `teacher/active_frac`
@@ -331,191 +177,376 @@ Teacher-specific metrics to add:
 - `teacher/teacher_active_during_clean_frac`
 - `teacher/teacher_active_during_push_frac`
 
+Additional metrics for whole-body recovery branches:
+- `recovery/min_height`
+  minimum robot height during disturbed recovery window
+- `recovery/max_knee_flex`
+  max recovery knee flexion magnitude, averaged over the recovery window
+- `recovery/first_step_dist_abs`
+  mean absolute first-step distance:
+  `sqrt(dx^2 + dy^2)` averaged without sign cancellation
+- `recovery/trunk_pitch_excursion`
+  absolute trunk/waist contribution during recovery if instrumented
+
 Interpretation:
-- teacher should be mostly inactive in clean standing
-- teacher should engage mostly in disturbed windows
-- touchdown agreement should improve before fixed-ladder survival improves
+- `visible_step_rate` rising alone is not enough
+- the desired progression is:
+  - more clear recovery steps when needed
+  - lower `no_touchdown_frac`
+  - lower `touchdown_then_fail_frac`
+  - better `pitch_rate_reduction_10t`
+  - modest recovery height lowering or knee flexion only during disturbed
+    windows
+- `eval_clean/unnecessary_step_rate` remains a hard regression gate
 
 ---
 
-## Execution Roadmap
+## Active Execution Roadmap
 
-### Milestone T0: Teacher Dry-Run
-
-Objective:
-- implement the teacher target generator and logging without changing the
-  standing reward yet
-
-Scope:
-- add `training/envs/teacher_step_target.py`
-- compute teacher outputs in `wildrobot_env.py`
-- log teacher signals and agreement metrics
-- no actor observation changes
-- no runtime export changes
-
-Entry criteria:
-- `v0.17.3a-arrest` complete and accepted as the reward-only plateau
-
-Exit criteria:
-- teacher targets are emitted only in disturbed windows
-- `eval_clean/unnecessary_step_rate` does not regress
-- teacher debug plots are visually sane in sampled rollouts
-- teacher-active fraction in clean standing is near zero
-- teacher target distribution is documented:
-  - mean / std / min / max for `target_step_x`
-  - mean / std / min / max for `target_step_y`
-- reachable-target fraction is high enough for the first branch:
-  - target inside configured teacher step bounds for at least `80%` of active
-    teacher samples
-- teacher does not fire frequently in mild-push cases that are still clearly
-  brace-recoverable
-
-Failure criteria:
-- teacher triggers broadly in quiet standing
-- teacher targets are unstable / discontinuous enough to be unusable
-- teacher frequently requests unreachable or obviously implausible targets
-
-### Milestone T1: Teacher XY Guidance
+### Branch A: `v0.17.4t-crouch`
 
 Objective:
-- add first-teacher reward shaping using touchdown proximity to teacher target
+- test whether removing reward barriers is sufficient for visible whole-body
+  recovery, while building on the current best step-initiation mechanism
 
-Scope:
-- add `teacher_target_step_xy` reward
-- gate to first recovery touchdown only
-- keep weight small and bounded
+Branch principle:
+- keep the current `v0.17.4t-step` teacher signals
+- change only disturbed-window reward logic
+- do not add new observation dimensions or runtime dependencies
 
-Exit criteria:
-- internal recovery metrics improve:
-  - lower `touchdown_then_fail_frac`
-  - better `pitch_rate_reduction_10t`
-  - better `capture_error_reduction_10t`
-- fixed-ladder `eval_hard` shows a clear upward move over `52.2%`
-- `eval_clean` remains saturated
+Resume point:
+- current best `v0.17.4t-step` checkpoint:
+  `training/checkpoints/ppo_standing_v0174t_step_v0174t-step_20260328_155031-vtrx3sxe/checkpoint_440_57671680.pkl`
+  or the current best validated checkpoint from that branch if the ladder
+  result changes the winner
 
-Failure criteria:
-- no meaningful hard-ladder improvement
-- clear overstepping in clean standing
-- teacher target agreement improves but survival does not
+Concrete implementation scope:
+- new config:
+  - `training/configs/ppo_standing_v0174t_crouch.yaml`
+- reward/config plumbing:
+  - `training/configs/training_runtime_config.py`
+  - `training/configs/training_config.py`
+- env reward gating and metrics:
+  - `training/envs/wildrobot_env.py`
+  - `training/envs/env_info.py`
+  - `training/core/metrics_registry.py`
+  - `training/core/experiment_tracking.py`
+  - `training/core/training_loop.py`
 
-### Milestone T2: Teacher Step-Required / Foot Choice
+Concrete changes:
+- during `push_active || recovery_active`:
+  - gate `height_target` to `0.0`
+  - gate `posture` to `0.0`
+  - reduce `orientation` from `-1.0` to `-0.3`
+  - add `height_floor` penalty below `0.20 m`
+  - add `com_velocity_damping` on horizontal CoM speed
+- outside disturbed windows:
+  - keep existing `v0.17.4t-step` standing rewards unchanged
+
+Milestones:
+
+#### A0: Reward Plumbing
+Deliver:
+- config loads cleanly
+- disturbed-window gating is implemented and covered by deterministic tests
+- new metrics exist:
+  - `recovery/min_height`
+  - `recovery/first_step_dist_abs`
+  - `recovery/max_knee_flex` if feasible from current joint naming
+
+Exit:
+- tests pass
+- actor observation contract unchanged
+- no runtime/export contract drift
+
+#### A1: Screening Run
+Deliver:
+- one resumed screening run from the best `v0.17.4t-step` checkpoint
+- stop at the best internal checkpoint, not necessarily the final iteration
+
+Quantitative gate:
+- run fixed ladder on the best checkpoint
+- compare against `v0.17.4t` (`eval_hard = 70.6%`)
+- must not regress below `65%`
+- `eval_clean/unnecessary_step_rate <= 0.10`
+- inspect:
+  - `recovery/visible_step_rate`
+  - `recovery/no_touchdown_frac`
+  - `recovery/touchdown_then_fail_frac`
+  - `recovery/pitch_rate_reduction_10t`
+  - `recovery/min_height`
+  - `recovery/first_step_dist_abs`
+
+#### A2: Decision
+If:
+- `eval_hard >= 70%`
+- visible crouch + step appears
+- clean standing remains clean
+
+Then:
+- stay on the RL path and hand off to `v0.17.3b`
+
+If:
+- `eval_hard >= 65%` but crouch/whole-body response is still absent or weak
+
+Then:
+- proceed to Branch B: `v0.17.4t-crouch-teacher`
+
+If:
+- `eval_hard < 65%`
+
+Then:
+- restore `v0.17.4t` as the best RL baseline
+- proceed to Branch B anyway, because reward gating alone was insufficient
+
+### Branch B: `v0.17.4t-crouch-teacher`
 
 Objective:
-- add small supervision for whether a step is needed and optionally which foot
-  should swing
+- add one compact whole-body recovery scaffold inside RL before changing the
+  deployed controller architecture
 
-Scope:
-- add `teacher_step_required`
-- optionally add `teacher_swing_foot`
-- keep both weaker than `teacher_target_step_xy`
+Branch principle:
+- keep step teacher for compact recovery intent:
+  - `teacher_step_required`
+  - `teacher_swing_foot`
+  - `teacher_target_step_xy`
+- add one or two compact whole-body targets during disturbed windows
+- do not add per-joint supervision
 
-Reason:
-- use when T1 improves the benchmark but still does not create a clear
-  conditional step-initiation trait
+Default compact targets:
+1. `teacher_recovery_height`
+   - bounded recovery height target or target band during disturbed windows
+2. `teacher_com_velocity_reduction`
+   - teacher-assisted pressure toward lower horizontal CoM velocity during
+     recovery
 
-Exit criteria:
-- fixed-ladder `eval_hard > 60%`
-- hard-push rollouts show a real recovery step in the cases where bracing alone
-  is insufficient
-- `no_touchdown_frac` falls and `touchdown_then_fail_frac` trends down
-- no clean-standing regression or unnecessary stepping habit
+Optional only if still needed:
+3. `teacher_knee_flex_min`
+   - bounded knee-flex indicator or target band
 
-Failure criteria:
-- no material improvement beyond T1
-- rising `eval_clean/unnecessary_step_rate`
-- teacher starts acting like a global stepping prior rather than a recovery aid
+Concrete implementation scope:
+- new config:
+  - `training/configs/ppo_standing_v0174t_crouch_teacher.yaml`
+- teacher extension:
+  - extend `training/envs/teacher_step_target.py` or add
+    `training/envs/teacher_whole_body_target.py`
+- env/reward plumbing:
+  - `training/envs/wildrobot_env.py`
+  - `training/envs/env_info.py`
+  - `training/core/metrics_registry.py`
+  - `training/core/experiment_tracking.py`
+  - `training/core/training_loop.py`
 
-### Milestone T3: Confirm And Freeze
+Concrete changes:
+- retain current step teacher, but keep it bounded
+- add teacher reward/supervision terms only during `push_active || recovery_active`
+- first preferred whole-body teacher is task-space, not joint-space:
+  - recovery height target / band
+  - CoM-velocity reduction target
+- keep quiet standing unchanged outside disturbed windows
+
+Milestones:
+
+#### B0: Teacher Target Dry-Run
+Deliver:
+- teacher signals logged with no reward changes first
+- document distribution / reachability / gating:
+  - height target distribution
+  - teacher active in disturbed windows only
+  - clean-window leakage near zero
+
+Exit:
+- targets are bounded and interpretable
+- actor contract unchanged
+
+#### B1: First Whole-Body Teacher Reward
+Deliver:
+- turn on one compact whole-body teacher term only
+- recommended first term:
+  - `teacher_recovery_height`
+- keep step teacher active but do not increase its weights
+
+Exit:
+- internal metrics improve without clean-standing regression
+- visible crouch + step appears more clearly than Branch A
+
+#### B2: Optional Second Teacher Term
+Deliver:
+- only if B1 is still too weak, add:
+  - `teacher_com_velocity_reduction`
+  or
+  - `teacher_knee_flex_min`
+- add one term at a time
+
+Exit:
+- fixed ladder is competitive (`eval_hard >= 65%` screening bar, target `>= 70%`)
+- visible crouch + step appears
+- `eval_clean/unnecessary_step_rate <= 0.10`
+
+#### B3: RL Path Final Decision
+If:
+- fixed ladder stays competitive and the mechanism is present
+
+Then:
+- bounded RL whole-body guidance succeeded
+- proceed to `v0.17.3b`
+
+If:
+- compact whole-body teacher guidance still fails to produce the mechanism
+
+Then:
+- the bounded RL whole-body guidance path is exhausted
+- proceed to Branch C: `v0.18`
+
+### Branch C: `v0.18` Position-Level Model-Based Control
 
 Objective:
-- confirm the teacher branch is a real win and does not create runtime
-  dependency
+- replace end-to-end RL joint control with a position-level model-based stack
+  that reduces the whole-body coordination problem from RL exploration to
+  structured task-space IK design
 
-Scope:
-- rerun from scratch if a resumed screening run succeeded
-- compare directly against `v0.17.3a`, `pitchfix`, and `arrest`
-- verify runtime/export contract is unchanged
+This is the fallback after Branch A and Branch B fail to deliver the desired
+mechanism.
 
-Exit criteria:
-- best checkpoint beats the `52.2%` plateau convincingly
-- target milestone is `eval_hard > 60%`
-- the learned behavior includes conditional recovery stepping, not only better
-  bracing or subtle touchdown adjustments
-- deployed policy still requires no teacher inputs
-- branch is ready to hand off to later `v0.17.3b` sim2real hardening
+Concrete implementation scope:
+- new code under `control/`:
+  - `control/ik/jacobian_ik.py`
+  - `control/planner/capture_point.py`
+  - `control/planner/standing_planner.py`
+  - `control/standing_controller.py`
+  - `control/sim_adapter.py`
+- validation scripts:
+  - `scripts/validate_ik.py`
+  - `scripts/validate_standing_controller.py`
 
-If T3 fails:
-- stop adding local heuristic complexity
-- escalate to stronger teacher forms only if justified by the data
+Milestones:
+
+#### C0: Kinematics And IK Validation
+Deliver:
+- Jacobian-based IK on the MuJoCo model
+- static validation of CoM height tracking + foot placement
+- joint-limit and singularity handling
+
+Exit:
+- commanded CoM lowering produces bounded knee flexion on the static model
+- swing-foot targets remain reachable within configured bounds
+
+#### C1: Standing Controller In Simulation
+Deliver:
+- standing controller with:
+  - quiet standing
+  - recovery mode trigger
+  - CoM lowering target
+  - step target
+- contact-consistent task prioritization
+
+Exit:
+- quiet standing stable in sim
+- visible crouch + step under scripted pushes
+- survives `eval_medium` pushes
+
+#### C2: Fixed-Ladder Validation
+Deliver:
+- same ladder used by RL branches
+- direct comparison against `v0.17.4t`
+
+Exit:
+- `eval_medium > 75%`
+- `eval_hard > 60%`
+- visual inspection confirms coordinated whole-body recovery
+
+#### C3: Walking Extension
+Deliver:
+- same planner + IK stack extended to slow walking
+- standing recovery remains a regression gate
+
+Exit:
+- slow forward walking
+- stop / hold
+- standing regression passes
+
+#### C4: Sim2Real
+Deliver:
+- hardware-calibrated kinematics
+- planner + IK deployed to the robot
+
+Exit:
+- standing recovery works on hardware with acceptable drift from sim
+- same runtime stack remains viable for walking
+
+### Historical Completed Teacher Milestones
+
+The original `v0.17.4t` teacher milestones are complete historical context:
+- dry-run teacher instrumentation
+- touchdown XY teacher
+- step-required teacher
+- swing-foot teacher
+
+They established the current RL baseline and are not the active implementation
+focus of this document anymore.
 
 ---
 
 ## Suggested Experiment Order
 
-1. `v0.17.4t-dryrun`
-   teacher targets + metrics only
-2. `v0.17.4t-xy`
-   add touchdown target reward
-3. `v0.17.4t-step`
-   add `teacher_step_required` and make conditional step initiation the active
-   focus
-4. `v0.17.4t-foot`
-   add `teacher_swing_foot` only if step-required plus XY still does not create
-   the desired recovery-step trait
-
-This keeps the branch debuggable and avoids bundling too many new levers into
-the first run.
-
-Resume strategy:
-- start the first screened teacher run by resuming from the best
-  `v0.17.3a` checkpoint:
-  - `training/checkpoints/ppo_standing_v0173a_v0173a_20260323_011340-0gmualhi/checkpoint_210_27525120.pkl`
-- do **not** resume from `v0.17.3a-arrest` for the first teacher test
-
-Reason:
-- `v0.17.3a` is the cleanest recipe-fixed baseline
-- `pitchfix` and `arrest` were useful diagnostics, but they did not break the
-  plateau
-- teacher effect should be measured against the cleanest strong baseline first
-
-If the resumed teacher screening run succeeds:
-- rerun the same branch from scratch for confirmation
+1. fixed-ladder validate `v0.17.4t-step` best checkpoint
+2. `v0.17.4t-crouch`
+3. `v0.17.4t-crouch-teacher`
+4. `v0.18` only if the bounded RL whole-body guidance path still fails
 
 ---
 
 ## File-Level Plan
 
 Primary files:
-- `training/configs/ppo_standing_v0174t.yaml`
+- `training/configs/ppo_standing_v0174t_crouch.yaml`
+- `training/configs/ppo_standing_v0174t_crouch_teacher.yaml`
 - `training/envs/teacher_step_target.py`
+- optional:
+  - `training/envs/teacher_whole_body_target.py`
 - `training/envs/wildrobot_env.py`
+- `training/envs/env_info.py`
 - `training/configs/training_runtime_config.py`
 - `training/configs/training_config.py`
 - `training/core/metrics_registry.py`
 - `training/core/experiment_tracking.py`
+- `training/core/training_loop.py`
+- `control/ik/jacobian_ik.py`
+- `control/planner/capture_point.py`
+- `control/planner/standing_planner.py`
+- `control/standing_controller.py`
 
 Tests / validation:
-- add deterministic tests for teacher target generation
-- add env-step coverage for teacher gating
-- verify export/runtime contract remains unchanged
+- add deterministic tests for:
+  - recovery-gated reward masking
+  - whole-body teacher target generation if used
+  - new recovery metrics
+  - env-step / auto-reset persistence
+- verify export/runtime contract remains unchanged for all `v0.17.x` branches
+- add standalone validation scripts for `v0.18` IK and standing controller
 
 ---
 
 ## Decision Rules
 
-Proceed with `v0.17.4t` if:
-- reward-only tuning is clearly plateaued
-- teacher remains bounded to disturbed windows
-- clean standing stays intact
+Proceed to Branch A if:
+- `v0.17.4t-step` fixed-ladder result is available
+- the mechanism requirement is still open after viewer + metrics review
 
-Stop the branch and reconsider if:
-- teacher causes overstepping in clean standing
-- teacher metrics look active everywhere
-- fixed-ladder performance does not move despite good teacher agreement
+Proceed from Branch A to Branch B if:
+- reward gating alone did not create the mechanism
+- but the RL path remains benchmark-competitive enough to justify one last
+  bounded whole-body guidance branch
 
-Escalate beyond heuristic teacher only if:
-- `v0.17.4t` is cleanly implemented and measured
-- the branch still fails to break the plateau
+Proceed from Branch B to Branch C if:
+- compact whole-body teacher guidance also fails to produce the mechanism
+- or the RL path becomes clearly less competitive than the validated
+  `v0.17.4t` baseline
+
+Escalate to `v0.18` only after:
+- Branch A gate is closed
+- Branch B gate is closed
+- the evidence says the bounded RL whole-body guidance path is exhausted
 
 ---
 
