@@ -934,6 +934,117 @@ Current status:
 - before implementation, get external review on whether this matches standard
   humanoid push-recovery practice
 
+Data support for the current hypothesis:
+- `v0.17.4t` already cleared the fixed ladder with:
+  - `eval_medium = 93.8%`
+  - `eval_hard = 70.6%`
+  - `eval_hard/term_height_low_frac = 29.4%`
+- however, visual evaluation still suggests many large-push failures happen with
+  a relatively tall straight body rather than a clear whole-body recovery
+- ongoing `v0.17.4t-step` evidence (run `20260328_155028-vtrx3sxe`) shows that
+  step-initiation guidance is changing the mechanism, but not yet giving a
+  decisive outcome win:
+  - current best internal point is iter `430`
+  - `eval_push/success_rate = 93.75%` (same plateau as best `v0.17.4t`)
+  - `eval_push/visible_step_rate_hard = 0.537`
+  - `eval_push/recovery_no_touchdown_frac = 0.104`
+  - `eval_push/recovery_touchdown_then_fail_frac = 0.060`
+  - `eval_clean/unnecessary_step_rate = 0.027` at the best point
+  - later in the same run, `eval_clean/unnecessary_step_rate` degrades badly
+    (`0.50+` by iter `530`), indicating over-stepping if the branch is trained
+    too long unchanged
+- interpretation:
+  - step teaching is producing some visible-step behavior
+  - but the robot may still lack a robust whole-body recovery mode under large
+    pushes
+  - the current search problem is no longer just "should I step?" but "how do I
+    coordinate trunk, knees, and step timing when bracing is insufficient?"
+
+Options under external review:
+
+1. Option A: Keep step teacher, add recovery-gated reward relaxation only
+   Branch sketch:
+   - keep `teacher_target_step_xy`
+   - keep `teacher_step_required`
+   - keep `teacher_swing_foot`
+   - during `push_active || recovery_active`:
+     - down-weight or gate `height_target`
+     - down-weight or gate `posture`
+     - reduce `orientation`
+     - add a low-height floor / collapse guard
+     - add horizontal CoM-velocity damping
+   Rationale:
+   - smallest delta from current `v0.17.4t-step`
+   - current data already shows some step trait (`visible_step_rate_hard = 0.537`
+     at iter `430`)
+   - if the main issue is that the reward still punishes crouch/trunk use during
+     recovery, this branch may be enough
+   Main risk:
+   - reward gating alone may still leave too large a coordination search space
+     for trunk + knees + stepping
+
+2. Option B: Keep or weaken step teacher, add compact whole-body recovery targets
+   Preferred proposal for the next branch.
+   Branch sketch:
+   - keep the step teacher as a compact recovery intent scaffold, but do not let
+     it dominate
+   - add recovery-window guidance for one or two task-space quantities instead of
+     per-joint supervision, for example:
+     - target recovery height band
+     - minimum knee-flex / crouch indicator
+     - horizontal CoM-velocity reduction target
+   - still keep all of this bounded to `push_active || recovery_active`
+   Rationale:
+   - current `v0.17.4t-step` suggests that step intent is no longer the only
+     bottleneck
+   - pure reward gating may be too weak because the policy must discover a
+     coordinated many-joint response in a broad search space
+   - compact task-space guidance reduces that search space without creating a
+     runtime teacher dependency or prescribing every joint
+   Main risk:
+   - adds another layer of shaping / supervision and must stay compact enough to
+     avoid becoming a new brittle controller
+
+3. Option C: Reduce or remove step teacher, shift to a broader recovery-mode teacher
+   Branch sketch:
+   - weaken or remove the current step-focused teacher
+   - replace it with a broader recovery-mode scaffold such as:
+     - brace
+     - step
+     - crouch-step
+   - possibly move toward a stronger privileged or model-based teacher if needed
+   Rationale:
+   - if the current step teacher is biasing the policy toward step-only
+     responses, it may be constraining exploration of whole-body recovery
+   - this is the cleanest option if external review concludes that the current
+     step-teacher framing is too narrow
+   Main risk:
+   - largest design delta
+   - least mature / highest integration risk for the current branch
+
+Proposal:
+- default next branch for review and implementation:
+  `v0.17.4t-step-crouch` using Option B
+- concrete proposal:
+  - start from the best `v0.17.4t-step` checkpoint, not from scratch
+  - keep the current step teacher but reduce its role to compact recovery intent
+  - add recovery-gated whole-body permission:
+    - relax `height_target`
+    - relax `posture`
+    - reduce `orientation`
+    - keep a recovery floor / collapse guard
+  - add one compact whole-body target:
+    - preferred first target is horizontal CoM-velocity reduction
+    - optional second target is a bounded recovery height band or knee-flex
+      indicator
+  - keep quiet standing unchanged outside disturbed windows
+- why this is the default proposal:
+  - it addresses the current observed failure mode ("falls tall and straight")
+  - it keeps the deployed architecture unchanged
+  - it uses the existing teacher only as a bounded scaffold
+  - it reduces search-space difficulty more than reward gating alone, without
+    jumping to a full privileged/model-based teacher
+
 ### `v0.17.6`: Walking On The Same Policy Stack
 
 Objective:
