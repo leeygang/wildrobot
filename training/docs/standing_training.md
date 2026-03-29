@@ -895,6 +895,11 @@ Changes:
 - likely turn on:
   - `teacher_step_required`
   - `teacher_swing_foot`
+- if step-initiation alone still plateaus, test a whole-body recovery variant:
+  - conditional knee flexion / recovery crouch
+  - modest center-of-mass lowering during disturbed windows
+  - keep this bounded to `push_active || recovery_active`
+  - do not turn it into a global lower standing posture
 - add explicit step-trait diagnostics:
   - `visible_step_rate_hard`
   - `first_liftoff_latency`
@@ -909,6 +914,9 @@ Exit criteria:
 - `term_height_low_frac` materially below `v0.17.1`
 - hard pushes usually trigger a real recovery step when bracing alone is
   insufficient
+- if hard pushes are too large for an upright brace-only response, the policy
+  should be allowed to use whole-body recovery:
+  modest knee bend / CoM lowering plus a recovery step
 - quiet standing does not develop a stepping habit
 
 Current status:
@@ -916,6 +924,15 @@ Current status:
 - mechanism requirement remains open because the current branch does not yet
   clearly show conditional visible stepping under hard pushes
 - next work is `v0.17.4t-step`, not `v0.17.3b`
+- current hypothesis under review:
+  `v0.17.4t-step` may need a follow-on whole-body recovery branch
+  (`v0.17.4t-step-crouch`) if the robot still falls with a tall straight body
+  under large pushes
+- expected behavior for that branch:
+  brace for small disturbances, but under larger pushes use a bounded recovery
+  crouch together with the capture step
+- before implementation, get external review on whether this matches standard
+  humanoid push-recovery practice
 
 ### `v0.17.6`: Walking On The Same Policy Stack
 
@@ -970,6 +987,16 @@ Applied result:
 
 - treat that as a design failure
 - the active branch must keep the deployed artifact as a policy
+
+### If Step Initiation Improves But The Robot Still Falls Tall And Straight
+
+- do not immediately escalate to a planner or stronger teacher stack
+- first test a bounded whole-body recovery extension:
+  - conditional knee flexion
+  - modest CoM lowering
+  - still coupled to step initiation
+- keep the behavior recovery-gated and verify that quiet standing remains
+  upright and clean
 
 ### If The RL Mainline Still Fails After Bounded Teacher Support
 
