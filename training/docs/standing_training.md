@@ -1,7 +1,7 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-step` complete (mechanism incomplete), `v0.17.4t-crouch` next → then `v0.18` model-based if needed
+**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-step` pending ladder validation, `v0.17.4t-crouch` next → then `v0.18` model-based if needed
 **Created:** 2026-03-20  
 **Last updated:** 2026-03-29
 
@@ -941,10 +941,8 @@ Data support for the current hypothesis:
   - `eval_hard/term_height_low_frac = 29.4%`
 - however, visual evaluation still suggests many large-push failures happen with
   a relatively tall straight body rather than a clear whole-body recovery
-- ongoing `v0.17.4t-step` evidence (run `20260328_155028-vtrx3sxe`) shows that
-  step-initiation guidance is changing the mechanism, but not yet giving a
-  decisive outcome win:
-  - current best internal point is iter `430`
+- `v0.17.4t-step` evidence (run `20260328_155028-vtrx3sxe`):
+  - best internal eval_push point is iter `440`
   - `eval_push/success_rate = 93.75%` (same plateau as best `v0.17.4t`)
   - `eval_push/visible_step_rate_hard = 0.537`
   - `eval_push/recovery_no_touchdown_frac = 0.104`
@@ -953,7 +951,13 @@ Data support for the current hypothesis:
   - later in the same run, `eval_clean/unnecessary_step_rate` degrades badly
     (`0.50+` by iter `530`), indicating over-stepping if the branch is trained
     too long unchanged
-- interpretation:
+- **required before drawing conclusions from `v0.17.4t-step`**:
+  - freeze the best checkpoint (iter `440`)
+  - run fixed-ladder evaluation (same methodology as all prior branches)
+  - record `eval_medium`, `eval_hard`, `eval_hard/term_height_low_frac`
+  - compare directly against `v0.17.4t` ladder result
+  - only then use the result as evidence for architecture decisions
+- interpretation (pending ladder validation):
   - step teaching is producing some visible-step behavior
   - but the robot may still lack a robust whole-body recovery mode under large
     pushes
@@ -1002,25 +1006,43 @@ Changes relative to `v0.17.4t`:
 - keep quiet-standing rewards unchanged outside disturbed windows
 
 Resume from:
-- `v0.17.4t` best checkpoint (`checkpoint_330_43253760.pkl`)
+- `v0.17.4t-step` best checkpoint (iter 440) — this checkpoint has the
+  strongest step-initiation trait. The crouch test builds on the step mechanism
+  rather than discarding it.
+- If the intent is to ablate crouch permission without the step teacher,
+  that would be a separate experiment resuming from `v0.17.4t`.
 
-Gate:
-- visual inspection: does the robot crouch and step under hard pushes?
-  - **yes** → the reward was the bottleneck. Continue with RL path, proceed to
-    `v0.17.3b` sim2real hardening
-  - **no** → the 19-joint search space is too hard for end-to-end RL. Proceed
-    to `v0.18` model-based control stack
+Gate (all required before drawing conclusions):
+- run fixed-ladder evaluation on the best checkpoint
+- compare `eval_hard` against `v0.17.4t` (70.6%) — must not regress below 65%
+- check `eval_clean/unnecessary_step_rate` — must not exceed 0.10
+- check `recovery/visible_step_rate` — should increase over `v0.17.4t-step`
+- check `recovery/no_touchdown_frac` and `recovery/touchdown_then_fail_frac`
+- check `recovery/pitch_rate_reduction_10t` — is momentum arrest improving?
+- visual inspection of hard-push rollouts in the MuJoCo viewer
+
+Decision after gate:
+- **if `eval_hard >= 70%` AND visual crouch+step under hard pushes**:
+  the reward was the bottleneck. Continue with RL path, proceed to `v0.17.3b`
+  sim2real hardening.
+- **if `eval_hard >= 65%` but no visible coordinated recovery**:
+  the RL path can survive pushes through subtle mechanisms but cannot discover
+  whole-body coordination. Proceed to `v0.18` model-based control stack.
+- **if `eval_hard < 65%`**:
+  the reward relaxation actively hurt survival. Restore v0.17.4t as the best
+  RL checkpoint and proceed to `v0.18`.
 
 Expected outcome:
 - low confidence this will produce visible whole-body recovery
 - high confidence this will answer whether reward gating is sufficient
-- one run, ~10 hours, decisive
+- one run, ~10 hours
 
 ### `v0.18`: Position-Level Model-Based Control
 
 Objective:
 - replace end-to-end RL joint control with a position-level model-based stack
-  that solves whole-body coordination by construction
+  that reduces the whole-body coordination problem from RL exploration to
+  structured task-space IK design
 
 This is a **new branch**, not a continuation of the RL teacher path. The
 standing-first validation sequence is preserved.
@@ -1029,10 +1051,10 @@ Why a new branch:
 - six iterations of RL reward and teacher tuning produced survival but not
   coordinated recovery
 - the remaining gap is a 19-joint coordination problem that RL has not solved
-- IK-based control eliminates this search space: commanding "lower CoM to
-  0.30m" produces automatic knee flexion, no learning required
-- the same stack extends naturally to walking (different gait targets, same
-  planner + IK)
+- IK-based control reduces this search space substantially: the coordination
+  problem moves from RL exploration in 19-joint space to structured task-space
+  IK design, which is a more predictable engineering problem
+- the same stack extends to walking (different gait targets, same planner + IK)
 
 #### Architecture
 
@@ -1081,14 +1103,25 @@ just MuJoCo kinematics + simple planner + position output.
 
 #### How whole-body recovery works in this stack
 
-The coordination problem disappears:
-- **Planner says "lower CoM to 0.30m during recovery"** → IK computes knee
-  angles that achieve this height → knees flex automatically
-- **Planner says "step left foot to [0.08, 0.04]"** → IK computes the swing
-  leg joint angles → step happens with correct geometry
-- **Trunk counter-rotation** → falls out of the IK solution when the CoM
-  target and foot targets require it
-- No search space, no reward shaping, no teacher
+How IK reduces the coordination problem:
+- **CoM height target → knee flexion**: planner commands "lower CoM to 0.30m
+  during recovery" → IK computes knee angles to achieve this → knees flex as
+  a direct consequence of the task-space target. This is the highest-confidence
+  part of the approach.
+- **Foot placement target → swing leg coordination**: planner commands step
+  target → IK computes swing leg joint angles. This is standard leg IK.
+- **Trunk counter-rotation**: this does NOT fall out of basic IK automatically.
+  The waist joint is not in the leg chains, so it requires an explicit
+  objective — either an angular momentum regulation task, a CoM horizontal
+  positioning task that involves the trunk, or a nullspace objective. This must
+  be designed, not assumed.
+- **Contact consistency**: while one foot swings, the stance foot must stay
+  planted and the CoM must remain over the support polygon. This requires a
+  prioritized IK formulation (stance constraint > CoM target > swing target).
+
+The search space is substantially reduced compared to end-to-end RL, but
+the IK formulation itself requires careful engineering — particularly for
+trunk motion and task priority management.
 
 For quiet standing:
 - Planner sets target CoM at standing height (0.44m), feet at current position
@@ -1176,18 +1209,45 @@ The `v0.17.4t` checkpoint (`eval_hard = 70.6%`) is the RL-path standing
 baseline. The model-based stack should match or exceed this on the same ladder
 before it replaces the RL path as the mainline.
 
-#### Risk
+#### Confidence assessment
 
-- **IK feasibility**: the robot may have kinematic singularities or limited
-  workspace that prevent the IK from tracking task-space targets. Phase 1
-  validates this before any planner work.
-- **Planner model mismatch**: the LIP/capture-point model may not match the
-  robot's actual dynamics well (thick legs, 4.1 kg). Phase 2 validates this
-  in simulation.
+The model-based stack is **medium confidence** overall. It is a more
+structured approach to the coordination problem than end-to-end RL, but it is
+not a guaranteed solution.
+
+High confidence:
+- CoM height target → knee flexion via Jacobian IK. This is standard
+  kinematics and will work if the robot has sufficient workspace.
+- Foot placement → swing leg IK. Analytical IK for 4-DOF legs is solved.
+- 50 Hz position-level control is feasible for this computation.
+
+Medium confidence:
+- Trunk counter-rotation requires explicit IK design (angular momentum task
+  or CoM horizontal positioning through the trunk). It will not emerge
+  automatically from basic leg IK.
+- Contact-consistent IK (stance foot stays planted, CoM stays over support)
+  requires correct task prioritization. Getting this wrong produces unstable
+  or infeasible solutions.
+- The capture-point planner uses a simplified LIP model that may not match
+  the actual robot dynamics well.
+
+Open risks:
+- **IK feasibility**: kinematic singularities or limited workspace may
+  prevent the IK from tracking task-space targets. Phase 1 validates this.
+- **Dynamic feasibility**: IK computes kinematically correct poses, but the
+  4.41 Nm servos may not track them fast enough during recovery. This is the
+  same torque budget constraint that limited the RL approach.
+- **Planner model mismatch**: LIP/capture-point assumes point mass at constant
+  height, which is a poor fit for a 4.1 kg robot with thick legs at
+  variable height. Phase 2 validates this in simulation.
 - **Sim2real gap**: the IK solution in simulation may not transfer to hardware
-  if the kinematic model has calibration errors. Phase 5 addresses this.
+  if kinematic calibration is off. Phase 5 addresses this.
 - **Walking complexity**: gait timing and contact scheduling are non-trivial
   even with IK. Phase 4 may require iteration.
+
+The main advantage over the RL path is not that the model-based stack is
+guaranteed to work, but that failures are diagnosable and fixable through
+engineering rather than opaque training dynamics.
 
 ### `v0.19`: Walking On The Same Control Stack
 
