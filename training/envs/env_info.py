@@ -174,6 +174,10 @@ try:
         recovery_first_step_target_err_x: jnp.ndarray  # shape=()
         #: First touchdown y-target error
         recovery_first_step_target_err_y: jnp.ndarray  # shape=()
+        #: Minimum root height observed within the active recovery window
+        recovery_min_height: jnp.ndarray  # shape=()
+        #: Maximum knee flexion magnitude observed within the active recovery window
+        recovery_max_knee_flex: jnp.ndarray  # shape=()
 
         # v0.17.4t: teacher step-target diagnostics (training-time only)
         teacher_active: jnp.ndarray  # shape=()
@@ -258,6 +262,8 @@ except ImportError:
         recovery_first_step_dy: jnp.ndarray
         recovery_first_step_target_err_x: jnp.ndarray
         recovery_first_step_target_err_y: jnp.ndarray
+        recovery_min_height: jnp.ndarray
+        recovery_max_knee_flex: jnp.ndarray
         teacher_active: jnp.ndarray
         teacher_step_required_soft: jnp.ndarray
         teacher_step_required_hard: jnp.ndarray
@@ -350,6 +356,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "recovery_first_step_dy": (),
         "recovery_first_step_target_err_x": (),
         "recovery_first_step_target_err_y": (),
+        "recovery_min_height": (),
+        "recovery_max_knee_flex": (),
         "teacher_active": (),
         "teacher_step_required_soft": (),
         "teacher_step_required_hard": (),

@@ -10,7 +10,13 @@ from training.core.metrics_registry import (
     aggregate_metrics,
 )
 from training.envs.disturbance import DisturbanceSchedule
-from training.envs.wildrobot_env import RECOVERY_WINDOW_STEPS, _update_recovery_tracking
+from training.envs.wildrobot_env import (
+    RECOVERY_WINDOW_STEPS,
+    _update_recovery_tracking,
+    compute_com_velocity_damping_reward,
+    compute_disturbed_window_reward_weights,
+    compute_height_floor_penalty,
+)
 
 
 def _schedule(start: int = 50, end: int = 60) -> DisturbanceSchedule:
@@ -46,6 +52,8 @@ def _initial_recovery_state() -> dict[str, jnp.ndarray]:
         "recovery_first_step_dy": jnp.asarray(0.0, dtype=jnp.float32),
         "recovery_first_step_target_err_x": jnp.asarray(0.0, dtype=jnp.float32),
         "recovery_first_step_target_err_y": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_min_height": jnp.asarray(0.0, dtype=jnp.float32),
+        "recovery_max_knee_flex": jnp.asarray(0.0, dtype=jnp.float32),
     }
 
 
@@ -66,6 +74,8 @@ def _step_recovery(
     first_step_dy: float = 0.0,
     first_step_target_err_x: float = 0.0,
     first_step_target_err_y: float = 0.0,
+    current_height: float = 0.0,
+    current_knee_flex: float = 0.0,
     track: bool = True,
 ) -> tuple[dict[str, jnp.ndarray], dict[str, jnp.ndarray]]:
     return _update_recovery_tracking(
@@ -85,6 +95,8 @@ def _step_recovery(
         first_touchdown_dy=jnp.asarray(first_step_dy, dtype=jnp.float32),
         first_touchdown_target_err_x=jnp.asarray(first_step_target_err_x, dtype=jnp.float32),
         first_touchdown_target_err_y=jnp.asarray(first_step_target_err_y, dtype=jnp.float32),
+        current_height=jnp.asarray(current_height, dtype=jnp.float32),
+        current_knee_flex=jnp.asarray(current_knee_flex, dtype=jnp.float32),
         recovery_active=state["recovery_active"],
         recovery_age=state["recovery_age"],
         recovery_last_support_foot=state["recovery_last_support_foot"],
@@ -106,6 +118,8 @@ def _step_recovery(
         recovery_first_step_dy=state["recovery_first_step_dy"],
         recovery_first_step_target_err_x=state["recovery_first_step_target_err_x"],
         recovery_first_step_target_err_y=state["recovery_first_step_target_err_y"],
+        recovery_min_height=state["recovery_min_height"],
+        recovery_max_knee_flex=state["recovery_max_knee_flex"],
     )
 
 
@@ -122,6 +136,9 @@ def test_recovery_metric_reducers_use_finalized_summary_contract():
         "recovery/touchdown_then_fail_frac": Reducer.SUM,
         "recovery/touchdown_to_term_steps": Reducer.SUM,
         "recovery/visible_step_rate": Reducer.SUM,
+        "recovery/min_height": Reducer.SUM,
+        "recovery/max_knee_flex": Reducer.SUM,
+        "recovery/first_step_dist_abs": Reducer.SUM,
         "visible_step_rate_hard": Reducer.SUM,
         "teacher/step_required_event_rate": Reducer.SUM,
         "unnecessary_step_rate": Reducer.MEAN,
@@ -136,7 +153,13 @@ def test_no_touchdown_recovery_finalizes_zero_summary():
     state = _initial_recovery_state()
     metrics = None
     for step in range(60, 60 + RECOVERY_WINDOW_STEPS):
-        state, metrics = _step_recovery(state, step=step, speed=0.25)
+        state, metrics = _step_recovery(
+            state,
+            step=step,
+            speed=0.25,
+            current_height=0.235 - 0.001 * (step - 60),
+            current_knee_flex=0.15 + 0.005 * (step - 60),
+        )
 
     assert metrics is not None
     assert float(metrics["recovery/completed"]) == 1.0
@@ -147,6 +170,9 @@ def test_no_touchdown_recovery_finalizes_zero_summary():
     assert float(metrics["recovery/visible_step_rate"]) == 0.0
     assert float(metrics["recovery/support_foot_changes"]) == 0.0
     assert float(metrics["recovery/post_push_velocity"]) == pytest.approx(0.25)
+    assert float(metrics["recovery/min_height"]) == pytest.approx(0.186)
+    assert float(metrics["recovery/max_knee_flex"]) == pytest.approx(0.395)
+    assert float(metrics["recovery/first_step_dist_abs"]) == 0.0
 
 
 def test_single_touchdown_records_first_latency_once():
@@ -165,6 +191,8 @@ def test_single_touchdown_records_first_latency_once():
             first_step_dy=0.05 if step == 64 else 0.0,
             first_step_target_err_x=0.02 if step == 64 else 0.0,
             first_step_target_err_y=-0.01 if step == 64 else 0.0,
+            current_height=0.24 if step == 60 else 0.205 if step == 68 else 0.22,
+            current_knee_flex=0.25 if step == 60 else 0.47 if step == 66 else 0.31,
         )
 
     assert metrics is not None
@@ -185,6 +213,9 @@ def test_single_touchdown_records_first_latency_once():
     assert float(metrics["recovery/capture_error_at_push_end"]) == pytest.approx(0.8)
     assert float(metrics["recovery/capture_error_at_touchdown"]) == pytest.approx(0.6)
     assert float(metrics["recovery/capture_error_reduction_10t"]) == pytest.approx(0.4)
+    assert float(metrics["recovery/min_height"]) == pytest.approx(0.205)
+    assert float(metrics["recovery/max_knee_flex"]) == pytest.approx(0.47)
+    assert float(metrics["recovery/first_step_dist_abs"]) == pytest.approx((0.11**2 + 0.05**2) ** 0.5)
 
 
 def test_visible_step_requires_prior_liftoff_not_same_tick_chatter():
@@ -268,6 +299,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     set_metric("recovery/touchdown_then_fail_frac", 0, 0, 1.0)
     set_metric("recovery/touchdown_to_term_steps", 0, 0, 7.0)
     set_metric("recovery/visible_step_rate", 0, 0, 1.0)
+    set_metric("recovery/min_height", 0, 0, 0.19)
+    set_metric("recovery/max_knee_flex", 0, 0, 0.42)
+    set_metric("recovery/first_step_dist_abs", 0, 0, 0.12)
     set_metric("visible_step_rate_hard", 0, 0, 1.0)
     set_metric("teacher/step_required_event_rate", 0, 0, 1.0)
     set_metric("recovery/touchdown_count", 0, 0, 2.0)
@@ -281,6 +315,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     set_metric("recovery/touchdown_then_fail_frac", 2, 1, 0.0)
     set_metric("recovery/touchdown_to_term_steps", 2, 1, 0.0)
     set_metric("recovery/visible_step_rate", 2, 1, 0.0)
+    set_metric("recovery/min_height", 2, 1, 0.21)
+    set_metric("recovery/max_knee_flex", 2, 1, 0.36)
+    set_metric("recovery/first_step_dist_abs", 2, 1, 0.08)
     set_metric("visible_step_rate_hard", 2, 1, 0.0)
     set_metric("teacher/step_required_event_rate", 2, 1, 0.0)
     set_metric("recovery/touchdown_count", 2, 1, 4.0)
@@ -297,6 +334,9 @@ def test_aggregate_metrics_normalizes_by_completed_recoveries():
     assert float(aggregated["recovery/touchdown_then_fail_frac"]) == 0.5
     assert float(aggregated["recovery/touchdown_to_term_steps"]) == 3.5
     assert float(aggregated["recovery/visible_step_rate"]) == 0.5
+    assert float(aggregated["recovery/min_height"]) == pytest.approx(0.2)
+    assert float(aggregated["recovery/max_knee_flex"]) == pytest.approx(0.39)
+    assert float(aggregated["recovery/first_step_dist_abs"]) == pytest.approx(0.1)
     assert float(aggregated["visible_step_rate_hard"]) == 0.5
     assert float(aggregated["teacher/step_required_event_rate"]) == 0.5
     assert float(aggregated["recovery/touchdown_count"]) == 3.0
@@ -351,3 +391,61 @@ def test_teacher_aggregation_normalizes_by_active_count_and_clean_count():
     assert float(aggregated["teacher/raw_step_required_during_clean_mean"]) == pytest.approx(0.4)
     assert float(aggregated["teacher/teacher_active_during_clean_frac"]) == pytest.approx(0.0)
     assert float(aggregated["teacher/teacher_active_during_push_frac"]) == pytest.approx(1.0)
+
+
+def test_disturbed_window_reward_weights_switch_only_in_disturbed_window():
+    gate, orient_w, height_w, posture_w = compute_disturbed_window_reward_weights(
+        base_orientation_weight=jnp.asarray(-1.0, dtype=jnp.float32),
+        base_height_target_weight=jnp.asarray(1.5, dtype=jnp.float32),
+        base_posture_weight=jnp.asarray(0.3, dtype=jnp.float32),
+        push_active=jnp.asarray(0.0, dtype=jnp.float32),
+        recovery_active=jnp.asarray(0.0, dtype=jnp.float32),
+        disturbed_orientation_weight=jnp.asarray(-0.3, dtype=jnp.float32),
+        disturbed_height_target_scale=jnp.asarray(0.0, dtype=jnp.float32),
+        disturbed_posture_scale=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert float(gate) == 0.0
+    assert float(orient_w) == pytest.approx(-1.0)
+    assert float(height_w) == pytest.approx(1.5)
+    assert float(posture_w) == pytest.approx(0.3)
+
+    gate, orient_w, height_w, posture_w = compute_disturbed_window_reward_weights(
+        base_orientation_weight=jnp.asarray(-1.0, dtype=jnp.float32),
+        base_height_target_weight=jnp.asarray(1.5, dtype=jnp.float32),
+        base_posture_weight=jnp.asarray(0.3, dtype=jnp.float32),
+        push_active=jnp.asarray(1.0, dtype=jnp.float32),
+        recovery_active=jnp.asarray(0.0, dtype=jnp.float32),
+        disturbed_orientation_weight=jnp.asarray(-0.3, dtype=jnp.float32),
+        disturbed_height_target_scale=jnp.asarray(0.0, dtype=jnp.float32),
+        disturbed_posture_scale=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert float(gate) == 1.0
+    assert float(orient_w) == pytest.approx(-0.3)
+    assert float(height_w) == pytest.approx(0.0)
+    assert float(posture_w) == pytest.approx(0.0)
+
+
+def test_disturbed_height_floor_and_com_damping_terms():
+    height_floor = compute_height_floor_penalty(
+        height=jnp.asarray(0.18, dtype=jnp.float32),
+        threshold=jnp.asarray(0.20, dtype=jnp.float32),
+        sigma=jnp.asarray(0.02, dtype=jnp.float32),
+    )
+    assert float(height_floor) == pytest.approx(1.0)
+
+    height_floor_zero = compute_height_floor_penalty(
+        height=jnp.asarray(0.22, dtype=jnp.float32),
+        threshold=jnp.asarray(0.20, dtype=jnp.float32),
+        sigma=jnp.asarray(0.02, dtype=jnp.float32),
+    )
+    assert float(height_floor_zero) == pytest.approx(0.0)
+
+    damping_small = compute_com_velocity_damping_reward(
+        horizontal_speed=jnp.asarray(0.10, dtype=jnp.float32),
+        scale=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    damping_large = compute_com_velocity_damping_reward(
+        horizontal_speed=jnp.asarray(0.30, dtype=jnp.float32),
+        scale=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert float(damping_small) > float(damping_large)

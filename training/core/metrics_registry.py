@@ -149,6 +149,11 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Height target reward",
     ),
     MetricSpec(
+        name="reward/height_floor",
+        reducer=Reducer.MEAN,
+        description="Disturbed-window height-floor penalty",
+    ),
+    MetricSpec(
         name="reward/torque",
         reducer=Reducer.MEAN,
         description="Torque penalty",
@@ -387,6 +392,11 @@ METRIC_SPECS: List[MetricSpec] = [
         name="reward/posture",
         reducer=Reducer.MEAN,
         description="Posture return reward (gated exp(-mse/sigma^2))",
+    ),
+    MetricSpec(
+        name="reward/com_velocity_damping",
+        reducer=Reducer.MEAN,
+        description="Disturbed-window horizontal CoM speed damping reward",
     ),
     MetricSpec(
         name="reward/pitch_rate",
@@ -904,6 +914,48 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Gate enabling post-touchdown arrest rewards",
     ),
+    MetricSpec(
+        name="debug/disturbed_reward_gate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Gate enabling disturbed-window reward relaxation",
+    ),
+    MetricSpec(
+        name="debug/effective_orientation_weight",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Effective orientation weight after disturbed-window gating",
+    ),
+    MetricSpec(
+        name="debug/effective_height_target_weight",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Effective height-target weight after disturbed-window gating",
+    ),
+    MetricSpec(
+        name="debug/effective_posture_weight",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Effective posture weight after disturbed-window gating",
+    ),
+    MetricSpec(
+        name="recovery/min_height",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Summed minimum root heights over finalized recoveries; normalized by recovery/completed",
+    ),
+    MetricSpec(
+        name="recovery/max_knee_flex",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Summed maximum knee flexion magnitudes over finalized recoveries; normalized by recovery/completed",
+    ),
+    MetricSpec(
+        name="recovery/first_step_dist_abs",
+        reducer=Reducer.SUM,
+        log_prefix="recovery",
+        description="Summed absolute first-step distances over finalized recoveries; normalized by recovery/completed",
+    ),
 ]
 
 # =============================================================================
@@ -1019,6 +1071,9 @@ def aggregate_metrics(
             "recovery/capture_error_reduction_10t",
             "recovery/touchdown_to_term_steps",
             "recovery/visible_step_rate",
+            "recovery/min_height",
+            "recovery/max_knee_flex",
+            "recovery/first_step_dist_abs",
             "teacher/step_required_event_rate",
             "visible_step_rate_hard",
         ):

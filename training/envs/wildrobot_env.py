@@ -117,6 +117,8 @@ def _update_recovery_tracking(
     first_touchdown_dy: jax.Array,
     first_touchdown_target_err_x: jax.Array,
     first_touchdown_target_err_y: jax.Array,
+    current_height: jax.Array,
+    current_knee_flex: jax.Array,
     recovery_active: jax.Array,
     recovery_age: jax.Array,
     recovery_last_support_foot: jax.Array,
@@ -138,6 +140,8 @@ def _update_recovery_tracking(
     recovery_first_step_dy: jax.Array,
     recovery_first_step_target_err_x: jax.Array,
     recovery_first_step_target_err_y: jax.Array,
+    recovery_min_height: jax.Array,
+    recovery_max_knee_flex: jax.Array,
 ) -> tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
     """Update recovery state and emit finalized summary metrics once per recovery."""
     del recovery_active, recovery_age
@@ -251,6 +255,16 @@ def _update_recovery_tracking(
         jp.zeros((), dtype=jp.float32),
         recovery_first_step_target_err_y,
     )
+    min_height = jp.where(
+        recovery_start,
+        jp.asarray(current_height, dtype=jp.float32),
+        recovery_min_height,
+    )
+    max_knee_flex = jp.where(
+        recovery_start,
+        jp.asarray(current_knee_flex, dtype=jp.float32),
+        recovery_max_knee_flex,
+    )
 
     any_liftoff = liftoff_left | liftoff_right
     any_touchdown = touchdown_left | touchdown_right
@@ -331,6 +345,16 @@ def _update_recovery_tracking(
         capture_error_norm.astype(jp.float32),
         capture_error_after_10t,
     )
+    min_height = jp.where(
+        in_recovery,
+        jp.minimum(min_height, jp.asarray(current_height, dtype=jp.float32)),
+        min_height,
+    )
+    max_knee_flex = jp.where(
+        in_recovery,
+        jp.maximum(max_knee_flex, jp.asarray(current_knee_flex, dtype=jp.float32)),
+        max_knee_flex,
+    )
 
     touchdown_count = jp.where(
         in_recovery & any_touchdown,
@@ -376,6 +400,10 @@ def _update_recovery_tracking(
         first_touchdown_recorded,
         capture_error_at_touchdown - capture_error_after_10t,
         jp.zeros((), dtype=jp.float32),
+    )
+    first_step_dist_abs = jp.sqrt(
+        jp.square(first_step_dx.astype(jp.float32))
+        + jp.square(first_step_dy.astype(jp.float32))
     )
     summary_metrics = {
         "recovery/first_step_latency": jp.where(
@@ -443,6 +471,11 @@ def _update_recovery_tracking(
             first_step_target_err_y.astype(jp.float32),
             jp.zeros((), dtype=jp.float32),
         ),
+        "recovery/first_step_dist_abs": jp.where(
+            finalize_recovery,
+            first_step_dist_abs.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
         "recovery/pitch_rate_at_push_end": jp.where(
             finalize_recovery,
             pitch_rate_at_push_end.astype(jp.float32),
@@ -483,6 +516,16 @@ def _update_recovery_tracking(
             visible_step_recorded.astype(jp.float32),
             jp.zeros((), dtype=jp.float32),
         ),
+        "recovery/min_height": jp.where(
+            finalize_recovery,
+            min_height.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
+        "recovery/max_knee_flex": jp.where(
+            finalize_recovery,
+            max_knee_flex.astype(jp.float32),
+            jp.zeros((), dtype=jp.float32),
+        ),
     }
 
     next_state = {
@@ -511,6 +554,8 @@ def _update_recovery_tracking(
         "recovery_first_step_dy": first_step_dy.astype(jp.float32),
         "recovery_first_step_target_err_x": first_step_target_err_x.astype(jp.float32),
         "recovery_first_step_target_err_y": first_step_target_err_y.astype(jp.float32),
+        "recovery_min_height": min_height.astype(jp.float32),
+        "recovery_max_knee_flex": max_knee_flex.astype(jp.float32),
     }
     return next_state, summary_metrics
 
@@ -706,6 +751,42 @@ def compute_command_active_gate(velocity_cmd: jax.Array, velocity_cmd_min: jax.A
     return (jp.abs(velocity_cmd) >= velocity_cmd_min).astype(jp.float32)
 
 
+def compute_disturbed_window_reward_weights(
+    *,
+    base_orientation_weight: jax.Array,
+    base_height_target_weight: jax.Array,
+    base_posture_weight: jax.Array,
+    push_active: Optional[jax.Array],
+    recovery_active: Optional[jax.Array],
+    disturbed_orientation_weight: jax.Array,
+    disturbed_height_target_scale: jax.Array,
+    disturbed_posture_scale: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute effective standing reward weights under disturbed-window gating."""
+    disturbed_gate = jp.maximum(
+        jp.asarray(push_active if push_active is not None else 0.0, dtype=jp.float32),
+        jp.asarray(recovery_active if recovery_active is not None else 0.0, dtype=jp.float32),
+    )
+    effective_orientation_weight = (
+        (1.0 - disturbed_gate) * jp.asarray(base_orientation_weight, dtype=jp.float32)
+        + disturbed_gate * jp.asarray(disturbed_orientation_weight, dtype=jp.float32)
+    )
+    effective_height_target_weight = jp.asarray(base_height_target_weight, dtype=jp.float32) * (
+        (1.0 - disturbed_gate)
+        + disturbed_gate * jp.asarray(disturbed_height_target_scale, dtype=jp.float32)
+    )
+    effective_posture_weight = jp.asarray(base_posture_weight, dtype=jp.float32) * (
+        (1.0 - disturbed_gate)
+        + disturbed_gate * jp.asarray(disturbed_posture_scale, dtype=jp.float32)
+    )
+    return (
+        disturbed_gate,
+        effective_orientation_weight,
+        effective_height_target_weight,
+        effective_posture_weight,
+    )
+
+
 def compute_cycle_progress_terms(
     cycle_progress_accum: jax.Array,
     forward_vel: jax.Array,
@@ -752,6 +833,28 @@ def compute_zero_baseline_forward_reward(
     cmd_gate = compute_command_active_gate(velocity_cmd, velocity_cmd_min)
     reward_zero_baseline = raw_reward - standing_baseline
     return (1.0 - cmd_gate) * raw_reward + cmd_gate * reward_zero_baseline
+
+
+def compute_height_floor_penalty(
+    *,
+    height: jax.Array,
+    threshold: jax.Array,
+    sigma: jax.Array,
+) -> jax.Array:
+    """Quadratic penalty when height drops below threshold."""
+    sigma_safe = jp.maximum(jp.asarray(sigma, dtype=jp.float32), 1e-6)
+    normalized_gap = jp.maximum(jp.asarray(threshold, dtype=jp.float32) - height, 0.0) / sigma_safe
+    return jp.square(normalized_gap)
+
+
+def compute_com_velocity_damping_reward(
+    *,
+    horizontal_speed: jax.Array,
+    scale: jax.Array,
+) -> jax.Array:
+    """Reward low horizontal CoM speed during disturbed recovery windows."""
+    scale_safe = jp.maximum(jp.asarray(scale, dtype=jp.float32), 1e-6)
+    return jp.exp(-jp.square(horizontal_speed / scale_safe))
 
 
 def compute_dense_progress_reward(
@@ -1377,6 +1480,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=jp.zeros((), dtype=jp.float32),
             recovery_first_step_target_err_x=jp.zeros((), dtype=jp.float32),
             recovery_first_step_target_err_y=jp.zeros((), dtype=jp.float32),
+            recovery_min_height=jp.zeros((), dtype=jp.float32),
+            recovery_max_knee_flex=jp.zeros((), dtype=jp.float32),
             teacher_active=jp.zeros((), dtype=jp.float32),
             teacher_step_required_soft=jp.zeros((), dtype=jp.float32),
             teacher_step_required_hard=jp.zeros((), dtype=jp.float32),
@@ -1760,6 +1865,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         first_touchdown_target_err_x = first_touchdown_dx - target_x
         first_touchdown_target_err_y = first_touchdown_dy - target_y
+        left_knee_pitch_now, right_knee_pitch_now = self._cal.get_knee_pitch_positions(
+            data.qpos, normalize=False
+        )
+        recovery_knee_flex_now = jp.maximum(
+            jp.abs(left_knee_pitch_now), jp.abs(right_knee_pitch_now)
+        )
         recovery_state_updates, recovery_metrics = _update_recovery_tracking(
             track_recovery=jp.logical_and(
                 jp.asarray(self._config.env.push_enabled, dtype=jp.bool_),
@@ -1780,6 +1891,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             first_touchdown_dy=first_touchdown_dy,
             first_touchdown_target_err_x=first_touchdown_target_err_x,
             first_touchdown_target_err_y=first_touchdown_target_err_y,
+            current_height=root_pose_now.height,
+            current_knee_flex=recovery_knee_flex_now,
             recovery_active=wr.recovery_active,
             recovery_age=wr.recovery_age,
             recovery_last_support_foot=wr.recovery_last_support_foot,
@@ -1801,6 +1914,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=wr.recovery_first_step_dy,
             recovery_first_step_target_err_x=wr.recovery_first_step_target_err_x,
             recovery_first_step_target_err_y=wr.recovery_first_step_target_err_y,
+            recovery_min_height=wr.recovery_min_height,
+            recovery_max_knee_flex=wr.recovery_max_knee_flex,
         )
         metrics.update(recovery_metrics)
         push_active_now = (
@@ -1944,6 +2059,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["teacher/swing_foot_match_events"] = _teacher_swing_event
         metrics["recovery/visible_step_rate"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
         metrics["visible_step_rate_hard"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
+        metrics["recovery/min_height"] = recovery_metrics.get("recovery/min_height", jp.zeros(()))
+        metrics["recovery/max_knee_flex"] = recovery_metrics.get("recovery/max_knee_flex", jp.zeros(()))
+        metrics["recovery/first_step_dist_abs"] = recovery_metrics.get(
+            "recovery/first_step_dist_abs", jp.zeros(())
+        )
         metrics["teacher/target_step_x_std"] = jp.zeros(())
         metrics["teacher/target_step_y_std"] = jp.zeros(())
         reward_components["teacher/active_frac"] = teacher.teacher_active
@@ -2000,6 +2120,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward_components["teacher/swing_foot_match_events"] = _teacher_swing_event
         reward_components["teacher/target_step_x_std"] = jp.zeros(())
         reward_components["teacher/target_step_y_std"] = jp.zeros(())
+        reward_components["recovery/min_height"] = recovery_metrics.get(
+            "recovery/min_height", jp.zeros(())
+        )
+        reward_components["recovery/max_knee_flex"] = recovery_metrics.get(
+            "recovery/max_knee_flex", jp.zeros(())
+        )
+        reward_components["recovery/first_step_dist_abs"] = recovery_metrics.get(
+            "recovery/first_step_dist_abs", jp.zeros(())
+        )
         unnecessary_need_step_threshold = jp.asarray(0.2, dtype=jp.float32)
         unnecessary_touchdown = (
             touchdown_any_now
@@ -2065,6 +2194,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=recovery_state_updates["recovery_first_step_dy"],
             recovery_first_step_target_err_x=recovery_state_updates["recovery_first_step_target_err_x"],
             recovery_first_step_target_err_y=recovery_state_updates["recovery_first_step_target_err_y"],
+            recovery_min_height=recovery_state_updates["recovery_min_height"],
+            recovery_max_knee_flex=recovery_state_updates["recovery_max_knee_flex"],
             teacher_active=metrics.get("teacher/active_frac", jp.zeros(())),
             teacher_step_required_soft=metrics.get("teacher/step_required_mean", jp.zeros(())),
             teacher_step_required_hard=metrics.get(
@@ -2153,6 +2284,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
             "reward/pitch_rate": metrics.get("reward/pitch_rate", jp.zeros(())),
+            "reward/height_floor": metrics.get("reward/height_floor", jp.zeros(())),
+            "reward/com_velocity_damping": metrics.get("reward/com_velocity_damping", jp.zeros(())),
             "reward/teacher_target_step_xy": metrics.get(
                 "reward/teacher_target_step_xy", jp.zeros(())
             ),
@@ -2188,6 +2321,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/post_touchdown_arrest_gate": metrics.get(
                 "debug/post_touchdown_arrest_gate", jp.zeros(())
             ),
+            "debug/disturbed_reward_gate": metrics.get("debug/disturbed_reward_gate", jp.zeros(())),
+            "debug/effective_orientation_weight": metrics.get(
+                "debug/effective_orientation_weight", jp.zeros(())
+            ),
+            "debug/effective_height_target_weight": metrics.get(
+                "debug/effective_height_target_weight", jp.zeros(())
+            ),
+            "debug/effective_posture_weight": metrics.get(
+                "debug/effective_posture_weight", jp.zeros(())
+            ),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -2214,6 +2357,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "recovery/first_step_target_err_y": metrics.get(
                 "recovery/first_step_target_err_y", jp.zeros(())
             ),
+            "recovery/first_step_dist_abs": metrics.get("recovery/first_step_dist_abs", jp.zeros(())),
             "recovery/pitch_rate_at_push_end": metrics.get(
                 "recovery/pitch_rate_at_push_end", jp.zeros(())
             ),
@@ -2236,6 +2380,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 "recovery/touchdown_to_term_steps", jp.zeros(())
             ),
             "recovery/visible_step_rate": metrics.get("recovery/visible_step_rate", jp.zeros(())),
+            "recovery/min_height": metrics.get("recovery/min_height", jp.zeros(())),
+            "recovery/max_knee_flex": metrics.get("recovery/max_knee_flex", jp.zeros(())),
             "visible_step_rate_hard": metrics.get("visible_step_rate_hard", jp.zeros(())),
             "unnecessary_step_rate": metrics.get("unnecessary_step_rate", jp.zeros(())),
             "teacher/active_frac": metrics.get("teacher/active_frac", jp.zeros(())),
@@ -2357,6 +2503,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_step_dy=reset_wr_info.recovery_first_step_dy,
             recovery_first_step_target_err_x=reset_wr_info.recovery_first_step_target_err_x,
             recovery_first_step_target_err_y=reset_wr_info.recovery_first_step_target_err_y,
+            recovery_min_height=reset_wr_info.recovery_min_height,
+            recovery_max_knee_flex=reset_wr_info.recovery_max_knee_flex,
             teacher_active=reset_wr_info.teacher_active,
             teacher_step_required_soft=reset_wr_info.teacher_step_required_soft,
             teacher_step_required_hard=reset_wr_info.teacher_step_required_hard,
@@ -2959,6 +3107,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 4. Orientation penalty (pitch² + roll²)
         roll, pitch, _ = root_pose.euler_angles()
         orientation_penalty = jp.square(pitch) + jp.square(roll)
+        com_horizontal_speed = jp.sqrt(jp.square(forward_vel) + jp.square(lateral_vel))
 
         # 5. Angular velocity penalty (reduce body rotation)
         # Note: Using cached root_vel (LOCAL frame) - reuse from above
@@ -3165,6 +3314,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * (jp.abs(roll) < posture_gate_roll).astype(jp.float32)
         )
         posture_reward = posture_reward * posture_gate
+
+        (
+            disturbed_gate,
+            effective_orientation_weight,
+            effective_height_target_weight,
+            effective_posture_weight,
+        ) = compute_disturbed_window_reward_weights(
+            base_orientation_weight=weights.orientation,
+            base_height_target_weight=weights.height_target,
+            base_posture_weight=getattr(weights, "posture", 0.0),
+            push_active=push_active,
+            recovery_active=recovery_active,
+            disturbed_orientation_weight=getattr(
+                weights, "disturbed_orientation", weights.orientation
+            ),
+            disturbed_height_target_scale=getattr(weights, "disturbed_height_target_scale", 1.0),
+            disturbed_posture_scale=getattr(weights, "disturbed_posture_scale", 1.0),
+        )
+        height_floor_penalty = disturbed_gate * compute_height_floor_penalty(
+            height=height,
+            threshold=jp.asarray(
+                getattr(weights, "height_floor_threshold", 0.20), dtype=jp.float32
+            ),
+            sigma=jp.asarray(getattr(weights, "height_floor_sigma", 0.03), dtype=jp.float32),
+        )
+        com_velocity_damping_reward = disturbed_gate * compute_com_velocity_damping_reward(
+            horizontal_speed=com_horizontal_speed,
+            scale=jp.asarray(
+                getattr(weights, "com_velocity_damping_scale", 1.0), dtype=jp.float32
+            ),
+        )
 
         # 19. Step event + foot placement shaping (gated by "need to step")
         # Detect touchdown events from contact transitions (prev_loaded -> loaded).
@@ -3437,7 +3617,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + weights.tracking_lin_vel * forward_reward
             + weights.lateral_velocity * lateral_penalty
             + weights.base_height * healthy
-            + weights.orientation * orientation_penalty
+            + effective_orientation_weight * orientation_penalty
             + weights.angular_velocity * angvel_penalty
             + getattr(weights, "pitch_rate", 0.0) * pitch_rate_penalty
             + weights.collapse_height * collapse_height_pen
@@ -3453,8 +3633,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Foot stability / recovery (M3)
             + weights.slip * slip_penalty
             + weights.clearance * clearance_reward
-            + weights.height_target * height_target_reward
-            + getattr(weights, "posture", 0.0) * posture_reward
+            + effective_height_target_weight * height_target_reward
+            + effective_posture_weight * posture_reward
+            + getattr(weights, "height_floor", 0.0) * height_floor_penalty
+            + getattr(weights, "com_velocity_damping", 0.0) * com_velocity_damping_reward
             + getattr(weights, "step_event", 0.0) * (step_event * step_reward_gate)
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
             + getattr(weights, "step_length", 0.0) * step_length_reward
@@ -3491,10 +3673,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/orientation": orientation_penalty,
             "reward/angvel": angvel_penalty,
             "reward/pitch_rate": pitch_rate_penalty,
+            "reward/com_velocity_damping": com_velocity_damping_reward,
             # v0.10.4: Standing penalty
             "reward/standing": standing_penalty,
             "reward/collapse_height_pen": collapse_height_pen,
             "reward/collapse_vz_pen": collapse_vz_pen,
+            "reward/height_floor": height_floor_penalty,
             # Effort
             "reward/torque": torque_penalty,
             "reward/saturation": saturation_penalty,
@@ -3533,6 +3717,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/step_progress_event": step_progress_event,
             "debug/recovery_step_gate": recovery_step_gate,
             "debug/post_touchdown_arrest_gate": post_touchdown_arrest_gate,
+            "debug/disturbed_reward_gate": disturbed_gate,
+            "debug/effective_orientation_weight": effective_orientation_weight,
+            "debug/effective_height_target_weight": effective_height_target_weight,
+            "debug/effective_posture_weight": effective_posture_weight,
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,
@@ -3579,6 +3767,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "teacher/swing_foot_match_frac": jp.zeros(()),
             "teacher/swing_foot_match_events": jp.zeros(()),
             "recovery/visible_step_rate": jp.zeros(()),
+            "recovery/min_height": jp.zeros(()),
+            "recovery/max_knee_flex": jp.zeros(()),
+            "recovery/first_step_dist_abs": jp.zeros(()),
             "visible_step_rate_hard": jp.zeros(()),
             # v0.10.3: Tracking metrics for walking exit criteria
             "tracking/vel_error": vel_error,  # |forward_vel - velocity_cmd|

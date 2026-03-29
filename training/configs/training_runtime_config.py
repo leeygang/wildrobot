@@ -439,6 +439,16 @@ class RewardWeightsConfig(Freezable):
     pitch_rate: float = 0.0
     height_target: float = 0.0
     height_target_sigma: float = 0.05
+    # Disturbed-window gating for standing recovery branches.
+    # Defaults preserve historical behavior unless explicitly overridden in YAML.
+    disturbed_height_target_scale: float = 1.0
+    disturbed_posture_scale: float = 1.0
+    disturbed_orientation: float = -0.5
+    height_floor: float = 0.0
+    height_floor_threshold: float = 0.20
+    height_floor_sigma: float = 0.03
+    com_velocity_damping: float = 0.0
+    com_velocity_damping_scale: float = 1.0
     collapse_height: float = -0.2
     collapse_vz: float = -0.2
 
