@@ -148,6 +148,12 @@ class EnvConfig(Freezable):
     teacher_target_y_left_max: float = 0.06
     teacher_target_y_right_min: float = -0.06
     teacher_target_y_right_max: float = -0.02
+    whole_body_teacher_enabled: bool = False
+    whole_body_teacher_height_target_min: float = 0.39
+    whole_body_teacher_height_target_max: float = 0.42
+    whole_body_teacher_height_hard_gate: bool = True
+    whole_body_teacher_com_vel_target: float = 0.12
+    whole_body_teacher_com_vel_active_speed_min: float = 0.10
 
     # -------------------------------------------------------------------------
     # M2: Base controller + residual policy (optional)
@@ -536,6 +542,13 @@ class RewardWeightsConfig(Freezable):
     teacher_target_step_xy_sigma: float = 0.06
     teacher_step_required: float = 0.0
     teacher_swing_foot: float = 0.0
+    teacher_recovery_height: float = 0.0
+    teacher_recovery_height_sigma: float = 0.03
+    teacher_com_velocity_reduction: float = 0.0
+    teacher_com_velocity_reduction_sigma: float = 0.08
+    teacher_knee_flex_min: float = 0.0
+    teacher_knee_flex_target: float = 0.30
+    teacher_knee_flex_sigma: float = 0.10
 
 
 @dataclass

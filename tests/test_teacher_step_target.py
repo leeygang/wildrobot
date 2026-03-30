@@ -18,7 +18,13 @@ from training.envs.teacher_step_target import (
     compute_teacher_step_target,
     compute_teacher_target_step_xy_reward,
 )
+from training.envs.teacher_whole_body_target import (
+    compute_teacher_whole_body_target,
+    compute_teacher_recovery_height_reward,
+)
 from training.envs.wildrobot_env import WildRobotEnv
+from training.policy_spec_utils import build_policy_spec_from_training_config
+from policy_contract.spec import policy_spec_hash
 
 
 def test_teacher_target_clipping_and_reachability() -> None:
@@ -243,10 +249,105 @@ def test_v0174t_step_observation_contract_and_clean_gating() -> None:
     for key in (
         "reward/teacher_step_required",
         "reward/teacher_swing_foot",
+        "reward/teacher_recovery_height",
+        "reward/teacher_com_velocity_reduction",
         "teacher/step_required_event_rate",
         "teacher/swing_foot_match_events",
+        "teacher/whole_body_active_frac",
+        "teacher/whole_body_active_during_clean_frac",
+        "teacher/whole_body_active_during_push_frac",
+        "teacher/recovery_height_target_mean",
+        "teacher/recovery_height_error",
+        "teacher/recovery_height_in_band_frac",
+        "teacher/com_velocity_target_mean",
+        "teacher/com_velocity_error",
+        "teacher/com_velocity_target_hit_frac",
         "recovery/visible_step_rate",
         "visible_step_rate_hard",
     ):
         assert key in metrics
         assert jnp.isfinite(jnp.asarray(metrics[key]))
+
+
+def test_whole_body_teacher_disturbed_hard_gate_activation() -> None:
+    out = compute_teacher_whole_body_target(
+        whole_body_teacher_enabled=True,
+        push_active=jnp.asarray(True),
+        recovery_active=jnp.asarray(False),
+        step_required_hard=jnp.asarray(1.0, dtype=jnp.float32),
+        height=jnp.asarray(0.40, dtype=jnp.float32),
+        horizontal_speed=jnp.asarray(0.22, dtype=jnp.float32),
+        height_target_min=0.39,
+        height_target_max=0.42,
+        height_hard_gate=True,
+        com_vel_target=0.12,
+    )
+    assert float(out.whole_body_active) == 1.0
+    assert float(out.whole_body_active_count) == 1.0
+    assert 0.39 <= float(out.recovery_height_target) <= 0.42
+    assert float(out.recovery_height_error) == pytest.approx(0.0)
+    assert float(out.recovery_height_in_band) == 1.0
+
+
+def test_whole_body_teacher_clean_window_leakage_zero() -> None:
+    out = compute_teacher_whole_body_target(
+        whole_body_teacher_enabled=True,
+        push_active=jnp.asarray(False),
+        recovery_active=jnp.asarray(False),
+        step_required_hard=jnp.asarray(1.0, dtype=jnp.float32),
+        height=jnp.asarray(0.35, dtype=jnp.float32),
+        horizontal_speed=jnp.asarray(0.35, dtype=jnp.float32),
+        height_target_min=0.39,
+        height_target_max=0.42,
+        height_hard_gate=True,
+        com_vel_target=0.12,
+    )
+    assert float(out.whole_body_active) == 0.0
+    assert float(out.whole_body_active_count) == 0.0
+    assert float(out.recovery_height_target) == 0.0
+    assert float(out.recovery_height_error) == 0.0
+    assert float(out.com_velocity_error) == 0.0
+
+
+def test_whole_body_teacher_hard_gate_blocks_when_step_not_required() -> None:
+    out = compute_teacher_whole_body_target(
+        whole_body_teacher_enabled=True,
+        push_active=jnp.asarray(True),
+        recovery_active=jnp.asarray(False),
+        step_required_hard=jnp.asarray(0.0, dtype=jnp.float32),
+        height=jnp.asarray(0.36, dtype=jnp.float32),
+        horizontal_speed=jnp.asarray(0.28, dtype=jnp.float32),
+        height_target_min=0.39,
+        height_target_max=0.42,
+        height_hard_gate=True,
+        com_vel_target=0.12,
+    )
+    assert float(out.whole_body_active) == 0.0
+    assert float(out.recovery_height_error) == 0.0
+    reward = compute_teacher_recovery_height_reward(
+        height_error=out.recovery_height_error,
+        teacher_active=out.whole_body_active,
+        sigma=0.03,
+    )
+    assert float(reward) == 0.0
+
+
+def test_crouch_teacher_policy_contract_hash_unchanged_vs_crouch() -> None:
+    cfg_a = load_training_config("training/configs/ppo_standing_v0174t_crouch.yaml")
+    cfg_b = load_training_config("training/configs/ppo_standing_v0174t_crouch_teacher.yaml")
+    cfg_a.freeze()
+    cfg_b.freeze()
+    robot_cfg = load_robot_config(Path(cfg_a.env.assets_root) / "mujoco_robot_config.json")
+    spec_a = build_policy_spec_from_training_config(training_cfg=cfg_a, robot_cfg=robot_cfg)
+    spec_b = build_policy_spec_from_training_config(training_cfg=cfg_b, robot_cfg=robot_cfg)
+    assert policy_spec_hash(spec_a) == policy_spec_hash(spec_b)
+
+
+def test_crouch_teacher_config_parses_whole_body_keys() -> None:
+    cfg = load_training_config("training/configs/ppo_standing_v0174t_crouch_teacher.yaml")
+    assert cfg.env.whole_body_teacher_enabled is True
+    assert float(cfg.env.whole_body_teacher_height_target_min) == pytest.approx(0.39)
+    assert float(cfg.env.whole_body_teacher_height_target_max) == pytest.approx(0.42)
+    assert cfg.env.whole_body_teacher_height_hard_gate is True
+    assert float(cfg.reward_weights.teacher_recovery_height) > 0.0
+    assert float(cfg.reward_weights.teacher_com_velocity_reduction) == pytest.approx(0.0)

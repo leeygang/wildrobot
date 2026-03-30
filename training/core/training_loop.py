@@ -1358,6 +1358,16 @@ def train(
             jnp.ndarray,
             jnp.ndarray,
             jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
         ]:
             eval_env_state = eval_reset_fn(eval_rng)
             reset_h = eval_env_state.metrics["height"]
@@ -1410,6 +1420,34 @@ def train(
             recovery_min_height_idx = METRIC_INDEX["recovery/min_height"]
             recovery_max_knee_flex_idx = METRIC_INDEX["recovery/max_knee_flex"]
             recovery_first_step_dist_abs_idx = METRIC_INDEX["recovery/first_step_dist_abs"]
+            teacher_clean_step_count_idx = METRIC_INDEX["teacher/clean_step_count"]
+            teacher_push_step_count_idx = METRIC_INDEX["teacher/push_step_count"]
+            teacher_whole_body_active_frac_idx = METRIC_INDEX["teacher/whole_body_active_frac"]
+            teacher_whole_body_active_count_idx = METRIC_INDEX["teacher/whole_body_active_count"]
+            teacher_whole_body_active_during_clean_frac_idx = METRIC_INDEX[
+                "teacher/whole_body_active_during_clean_frac"
+            ]
+            teacher_whole_body_active_during_push_frac_idx = METRIC_INDEX[
+                "teacher/whole_body_active_during_push_frac"
+            ]
+            teacher_recovery_height_target_mean_idx = METRIC_INDEX[
+                "teacher/recovery_height_target_mean"
+            ]
+            teacher_recovery_height_error_idx = METRIC_INDEX["teacher/recovery_height_error"]
+            teacher_recovery_height_in_band_frac_idx = METRIC_INDEX[
+                "teacher/recovery_height_in_band_frac"
+            ]
+            teacher_com_velocity_target_mean_idx = METRIC_INDEX[
+                "teacher/com_velocity_target_mean"
+            ]
+            teacher_com_velocity_error_idx = METRIC_INDEX["teacher/com_velocity_error"]
+            teacher_com_velocity_target_hit_frac_idx = METRIC_INDEX[
+                "teacher/com_velocity_target_hit_frac"
+            ]
+            reward_teacher_recovery_height_idx = METRIC_INDEX["reward/teacher_recovery_height"]
+            reward_teacher_com_velocity_reduction_idx = METRIC_INDEX[
+                "reward/teacher_com_velocity_reduction"
+            ]
 
             total_done = jnp.sum(eval_rollout["done"])
             done_by_env = jnp.any(eval_rollout["done"] > 0, axis=0)
@@ -1549,6 +1587,93 @@ def train(
                 / recovery_completed_safe,
                 0.0,
             )
+            teacher_clean_step_count = jnp.sum(
+                eval_rollout["metrics_vec"][..., teacher_clean_step_count_idx]
+            )
+            teacher_push_step_count = jnp.sum(
+                eval_rollout["metrics_vec"][..., teacher_push_step_count_idx]
+            )
+            teacher_whole_body_active_count = jnp.sum(
+                eval_rollout["metrics_vec"][..., teacher_whole_body_active_count_idx]
+            )
+            teacher_clean_step_count_safe = jnp.maximum(teacher_clean_step_count, 1.0)
+            teacher_push_step_count_safe = jnp.maximum(teacher_push_step_count, 1.0)
+            teacher_whole_body_active_count_safe = jnp.maximum(
+                teacher_whole_body_active_count, 1.0
+            )
+            teacher_whole_body_active_frac = jnp.mean(
+                eval_rollout["metrics_vec"][..., teacher_whole_body_active_frac_idx]
+            )
+            teacher_whole_body_active_during_clean_frac = jnp.where(
+                teacher_clean_step_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][
+                        ..., teacher_whole_body_active_during_clean_frac_idx
+                    ]
+                )
+                / teacher_clean_step_count_safe,
+                0.0,
+            )
+            teacher_whole_body_active_during_push_frac = jnp.where(
+                teacher_push_step_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][
+                        ..., teacher_whole_body_active_during_push_frac_idx
+                    ]
+                )
+                / teacher_push_step_count_safe,
+                0.0,
+            )
+            teacher_recovery_height_target_mean = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][..., teacher_recovery_height_target_mean_idx]
+                )
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            teacher_recovery_height_error = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(eval_rollout["metrics_vec"][..., teacher_recovery_height_error_idx])
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            teacher_recovery_height_in_band_frac = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][..., teacher_recovery_height_in_band_frac_idx]
+                )
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            teacher_com_velocity_target_mean = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][..., teacher_com_velocity_target_mean_idx]
+                )
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            teacher_com_velocity_error = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(eval_rollout["metrics_vec"][..., teacher_com_velocity_error_idx])
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            teacher_com_velocity_target_hit_frac = jnp.where(
+                teacher_whole_body_active_count > 0.0,
+                jnp.sum(
+                    eval_rollout["metrics_vec"][..., teacher_com_velocity_target_hit_frac_idx]
+                )
+                / teacher_whole_body_active_count_safe,
+                0.0,
+            )
+            reward_teacher_recovery_height = jnp.mean(
+                eval_rollout["metrics_vec"][..., reward_teacher_recovery_height_idx]
+            )
+            reward_teacher_com_velocity_reduction = jnp.mean(
+                eval_rollout["metrics_vec"][..., reward_teacher_com_velocity_reduction_idx]
+            )
             return (
                 episode_reward,
                 success_rate,
@@ -1578,6 +1703,17 @@ def train(
                 recovery_min_height,
                 recovery_max_knee_flex,
                 recovery_first_step_dist_abs,
+                teacher_whole_body_active_frac,
+                teacher_whole_body_active_during_clean_frac,
+                teacher_whole_body_active_during_push_frac,
+                teacher_recovery_height_target_mean,
+                teacher_recovery_height_error,
+                teacher_recovery_height_in_band_frac,
+                teacher_com_velocity_target_mean,
+                teacher_com_velocity_error,
+                teacher_com_velocity_target_hit_frac,
+                reward_teacher_recovery_height,
+                reward_teacher_com_velocity_reduction,
             )
 
         return _runner
@@ -1719,7 +1855,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1727,7 +1863,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs, eval_clean_teacher_whole_body_active_frac, eval_clean_teacher_whole_body_active_during_clean_frac, eval_clean_teacher_whole_body_active_during_push_frac, eval_clean_teacher_recovery_height_target_mean, eval_clean_teacher_recovery_height_error, eval_clean_teacher_recovery_height_in_band_frac, eval_clean_teacher_com_velocity_target_mean, eval_clean_teacher_com_velocity_error, eval_clean_teacher_com_velocity_target_hit_frac, eval_clean_reward_teacher_recovery_height, eval_clean_reward_teacher_com_velocity_reduction = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1775,6 +1911,31 @@ def train(
                 eval_clean_recovery_min_height = eval_push_recovery_min_height
                 eval_clean_recovery_max_knee_flex = eval_push_recovery_max_knee_flex
                 eval_clean_recovery_first_step_dist_abs = eval_push_recovery_first_step_dist_abs
+                eval_clean_teacher_whole_body_active_frac = eval_push_teacher_whole_body_active_frac
+                eval_clean_teacher_whole_body_active_during_clean_frac = (
+                    eval_push_teacher_whole_body_active_during_clean_frac
+                )
+                eval_clean_teacher_whole_body_active_during_push_frac = (
+                    eval_push_teacher_whole_body_active_during_push_frac
+                )
+                eval_clean_teacher_recovery_height_target_mean = (
+                    eval_push_teacher_recovery_height_target_mean
+                )
+                eval_clean_teacher_recovery_height_error = eval_push_teacher_recovery_height_error
+                eval_clean_teacher_recovery_height_in_band_frac = (
+                    eval_push_teacher_recovery_height_in_band_frac
+                )
+                eval_clean_teacher_com_velocity_target_mean = (
+                    eval_push_teacher_com_velocity_target_mean
+                )
+                eval_clean_teacher_com_velocity_error = eval_push_teacher_com_velocity_error
+                eval_clean_teacher_com_velocity_target_hit_frac = (
+                    eval_push_teacher_com_velocity_target_hit_frac
+                )
+                eval_clean_reward_teacher_recovery_height = eval_push_reward_teacher_recovery_height
+                eval_clean_reward_teacher_com_velocity_reduction = (
+                    eval_push_reward_teacher_com_velocity_reduction
+                )
             jax.block_until_ready(eval_push_success)
 
             eval_push_success_f = float(eval_push_success)
@@ -1828,6 +1989,39 @@ def train(
                 "eval_push/recovery_first_step_dist_abs": float(
                     eval_push_recovery_first_step_dist_abs
                 ),
+                "eval_push/teacher_whole_body_active_frac": float(
+                    eval_push_teacher_whole_body_active_frac
+                ),
+                "eval_push/teacher_whole_body_active_during_clean_frac": float(
+                    eval_push_teacher_whole_body_active_during_clean_frac
+                ),
+                "eval_push/teacher_whole_body_active_during_push_frac": float(
+                    eval_push_teacher_whole_body_active_during_push_frac
+                ),
+                "eval_push/teacher_recovery_height_target_mean": float(
+                    eval_push_teacher_recovery_height_target_mean
+                ),
+                "eval_push/teacher_recovery_height_error": float(
+                    eval_push_teacher_recovery_height_error
+                ),
+                "eval_push/teacher_recovery_height_in_band_frac": float(
+                    eval_push_teacher_recovery_height_in_band_frac
+                ),
+                "eval_push/teacher_com_velocity_target_mean": float(
+                    eval_push_teacher_com_velocity_target_mean
+                ),
+                "eval_push/teacher_com_velocity_error": float(
+                    eval_push_teacher_com_velocity_error
+                ),
+                "eval_push/teacher_com_velocity_target_hit_frac": float(
+                    eval_push_teacher_com_velocity_target_hit_frac
+                ),
+                "eval_push/reward_teacher_recovery_height": float(
+                    eval_push_reward_teacher_recovery_height
+                ),
+                "eval_push/reward_teacher_com_velocity_reduction": float(
+                    eval_push_reward_teacher_com_velocity_reduction
+                ),
                 "eval_clean/reward": float(eval_clean_reward),
                 "eval_clean/success_rate": float(eval_clean_success),
                 "eval_clean/episode_length": float(eval_clean_ep_len),
@@ -1875,6 +2069,39 @@ def train(
                 "eval_clean/recovery_max_knee_flex": float(eval_clean_recovery_max_knee_flex),
                 "eval_clean/recovery_first_step_dist_abs": float(
                     eval_clean_recovery_first_step_dist_abs
+                ),
+                "eval_clean/teacher_whole_body_active_frac": float(
+                    eval_clean_teacher_whole_body_active_frac
+                ),
+                "eval_clean/teacher_whole_body_active_during_clean_frac": float(
+                    eval_clean_teacher_whole_body_active_during_clean_frac
+                ),
+                "eval_clean/teacher_whole_body_active_during_push_frac": float(
+                    eval_clean_teacher_whole_body_active_during_push_frac
+                ),
+                "eval_clean/teacher_recovery_height_target_mean": float(
+                    eval_clean_teacher_recovery_height_target_mean
+                ),
+                "eval_clean/teacher_recovery_height_error": float(
+                    eval_clean_teacher_recovery_height_error
+                ),
+                "eval_clean/teacher_recovery_height_in_band_frac": float(
+                    eval_clean_teacher_recovery_height_in_band_frac
+                ),
+                "eval_clean/teacher_com_velocity_target_mean": float(
+                    eval_clean_teacher_com_velocity_target_mean
+                ),
+                "eval_clean/teacher_com_velocity_error": float(
+                    eval_clean_teacher_com_velocity_error
+                ),
+                "eval_clean/teacher_com_velocity_target_hit_frac": float(
+                    eval_clean_teacher_com_velocity_target_hit_frac
+                ),
+                "eval_clean/reward_teacher_recovery_height": float(
+                    eval_clean_reward_teacher_recovery_height
+                ),
+                "eval_clean/reward_teacher_com_velocity_reduction": float(
+                    eval_clean_reward_teacher_com_velocity_reduction
                 ),
             }
             for key, value in last_eval_metrics.items():

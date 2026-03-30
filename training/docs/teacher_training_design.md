@@ -1,6 +1,6 @@
 # v0.17 Whole-Body Recovery Design
 
-**Status:** Active implementation design for post-`v0.17.4t` standing branches  
+**Status:** Active implementation design for post-`v0.17.4t-crouch` standing branches  
 **Applies to:** Standing push recovery on the current MuJoCo / JAX / single-policy stack  
 **Last updated:** 2026-03-29
 
@@ -18,19 +18,47 @@ Fixed ladder:
 - `eval_hard = 70.6%`
 - `eval_hard/term_height_low_frac = 29.4%`
 
+Comparison across key branches:
+
+| Branch | eval_medium | eval_hard | eval_hard h_low |
+| --- | ---: | ---: | ---: |
+| `v0.17.1` | 71.6% | 39.2% | 60.8% |
+| `v0.17.3a` | 83.1% | 51.4% | 48.6% |
+| `v0.17.3a-pitchfix` | — | ~51.8% | — |
+| `v0.17.4t` | 93.8% | 70.6% | 29.4% |
+| `v0.17.4t-step` | 83.1% | 52.2% | 47.8% |
+| `v0.17.4t-crouch` | 83.3% | 54.2% | 45.8% |
+
 This means:
 - the first bounded teacher branch was sufficient to clear the benchmark gate
 - but visual inspection suggests the policy still does not show a strong
   conditional recovery step under hard pushes
-- `v0.17.4t-step` should still be ladder-validated before it is used as
-  evidence for larger architecture decisions
-- if visible stepping and whole-body recovery when bracing fails are product
-  requirements, the design remains active for the next sequence:
-  `v0.17.4t-crouch` -> `v0.17.4t-crouch-teacher` -> `v0.18` if needed
+- `v0.17.4t-step` now has critical-suite ladder validation:
+  - `eval_medium = 83.1%`
+  - `eval_hard = 52.2%`
+  - `eval_hard_long = 27.6%`
+  - `eval_hard/term_height_low_frac = 47.8%`
+  - `eval_easy` was skipped in that pass, so the script's printed `0.0%`
+    target line should not be treated as an actual measured result
+- the step-initiation mechanism branch did not beat the validated `v0.17.4t`
+  baseline on fixed-ladder robustness
+- Branch A (`v0.17.4t-crouch`) has now been run and closed:
+  - fixed ladder:
+    - `eval_clean = 100.0%`
+    - `eval_easy = 100.0%`
+    - `eval_medium = 83.3%`
+    - `eval_hard = 54.2%`
+    - `eval_hard_long = 32.1%`
+  - it failed the `>= 65%` screening bar
+  - it was worse than the validated `v0.17.4t` baseline
+  - it also failed to improve on the `v0.17.4t-step` branch for the intended
+    mechanism evidence
+- the active next sequence is now:
+  `v0.17.4t-crouch-teacher` -> `v0.18` if needed
 
 The rest of this document remains useful as the design record for what
-`v0.17.4t` and `v0.17.4t-step` established, and as the detailed implementation
-plan for the next standing branches.
+`v0.17.4t`, `v0.17.4t-step`, and `v0.17.4t-crouch` established, and as the
+detailed implementation plan for the next standing branches.
 
 ---
 
@@ -47,9 +75,8 @@ requires concrete implementation scope, milestones, file ownership, and
 decision gates.
 
 Active sequence covered here:
-1. `v0.17.4t-crouch`
-2. `v0.17.4t-crouch-teacher`
-3. `v0.18` position-level model-based control, only if the bounded RL path is
+1. `v0.17.4t-crouch-teacher`
+2. `v0.18` position-level model-based control, only if the bounded RL path is
    exhausted
 
 Historical context:
@@ -57,8 +84,14 @@ Historical context:
 - `v0.17.3a-pitchfix`: `51.8%`
 - `v0.17.3a-arrest`: `52.2%`
 - `v0.17.4t`: `70.6%`
-- `v0.17.4t-step`: mechanism branch; best internal point currently needs the
-  same fixed-ladder validation before it is used for architecture decisions
+  - best checkpoint:
+    - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+- `v0.17.4t-step`: `52.2%` (`eval_medium = 83.1%`, `eval_hard_long = 27.6%`)
+  - best checkpoint:
+    - `training/checkpoints/ppo_standing_v0174t_step_v0174t-step_20260328_155031-vtrx3sxe/checkpoint_440_57671680.pkl`
+- `v0.17.4t-crouch`: `54.2%` (`eval_hard_long = 32.1%`)
+- `v0.17.4t-step` confirmed that internal visible-step evidence was not enough
+  to outperform `v0.17.4t` on the fixed ladder
 
 ---
 
@@ -299,6 +332,26 @@ Then:
 - restore `v0.17.4t` as the best RL baseline
 - proceed to Branch B anyway, because reward gating alone was insufficient
 
+Observed result:
+- screening run:
+  - `run-20260329_134942-k4xaef65`
+- best checkpoint:
+  - `training/checkpoints/ppo_standing_v0174t_crouch_v0174t-crouch_20260329_134944-k4xaef65/checkpoint_550_72089600.pkl`
+- fixed ladder:
+  - `eval_clean = 100.0%`
+  - `eval_easy = 100.0%`
+  - `eval_medium = 83.3%`
+  - `eval_hard = 54.2%`
+  - `eval_hard_long = 32.1%`
+- mechanism readout:
+  - no convincing crouch-specific lowering
+  - no convincing knee-flex increase
+  - no clear improvement over `v0.17.4t-step` on useful step-trait evidence
+- verdict:
+  - this branch landed in the `< 65%` case
+  - Branch A is closed
+  - Branch B is now the active implementation path
+
 ### Branch B: `v0.17.4t-crouch-teacher`
 
 Objective:
@@ -345,6 +398,154 @@ Concrete changes:
   - CoM-velocity reduction target
 - keep quiet standing unchanged outside disturbed windows
 
+Recommended Branch B implementation plan:
+- resume from the best `v0.17.4t-crouch` checkpoint, not from `v0.17.4t-step`
+- keep the disturbed-window reward gating from Branch A unchanged:
+  - `height_target` relaxed in disturbed windows
+  - `posture` relaxed in disturbed windows
+  - `orientation` reduced in disturbed windows
+  - `height_floor` and `com_velocity_damping` remain active
+- add compact teacher targets on top of that existing disturbed-window reward
+  scaffold rather than replacing it
+- preserve actor observation / policy contract:
+  - no new actor observation dimensions
+  - no runtime teacher dependency at inference
+
+Preferred initial target definitions:
+1. `teacher_recovery_height`
+   - purpose:
+     - explicitly ask for modest body lowering during disturbed windows, since
+       Branch A showed that permission alone does not create the behavior
+   - gating:
+     - active only when `push_active || recovery_active`
+     - additionally gate on current step teacher demand:
+       `teacher.step_required_hard > 0.5`
+   - form:
+     - bounded target band, not a hard point target
+     - recommended initial band:
+       - `target_min = 0.39 m`
+       - `target_max = 0.42 m`
+     - reward should be high inside the band and decay smoothly outside it
+   - interpretation:
+     - low enough to create visible knee flexion / body lowering
+     - high enough to avoid teaching collapse or deep squat behavior
+
+2. `teacher_com_velocity_reduction`
+   - purpose:
+     - explicitly ask for horizontal arrest after the disturbance, since
+       Branch A preserved stepping but did not improve arrest quality
+   - gating:
+     - active only when `push_active || recovery_active`
+     - preferred additional gate:
+       - only after push onset or only when horizontal speed exceeds a small
+         threshold, to avoid paying reward for already-static states
+   - form:
+     - scalar target on heading-local horizontal speed
+     - recommended initial target:
+       - encourage `horizontal_speed <= 0.10-0.15 m/s`
+     - reward should be smooth and saturating, not binary
+   - interpretation:
+     - this is whole-body guidance for arrest, not footstep micromanagement
+
+3. `teacher_knee_flex_min` (deferred; optional only)
+   - only add if recovery-height guidance is too indirect
+   - treat as a bounded indicator:
+     - reward modest knee flexion in disturbed windows
+     - do not reward unbounded crouching
+   - this should remain a fallback behind recovery height and CoM-velocity
+     targets
+
+Suggested config additions:
+- env:
+  - `whole_body_teacher_enabled: true`
+  - `whole_body_teacher_height_target_min: 0.39`
+  - `whole_body_teacher_height_target_max: 0.42`
+  - `whole_body_teacher_height_hard_gate: true`
+  - `whole_body_teacher_com_vel_target: 0.12`
+  - `whole_body_teacher_com_vel_active_speed_min: 0.10`
+- reward_weights:
+  - `teacher_recovery_height`
+  - `teacher_recovery_height_sigma`
+  - `teacher_com_velocity_reduction`
+  - `teacher_com_velocity_reduction_sigma`
+  - optional only:
+    - `teacher_knee_flex_min`
+    - `teacher_knee_flex_target`
+    - `teacher_knee_flex_sigma`
+
+Preferred code shape:
+- keep `training/envs/teacher_step_target.py` responsible for step-intent
+  signals only
+- add a separate `training/envs/teacher_whole_body_target.py` for Branch B
+  whole-body targets
+- wire the whole-body teacher into `training/envs/wildrobot_env.py` beside the
+  existing step teacher, not inside the policy or rollout code
+- extend config/runtime parsing in:
+  - `training/configs/training_runtime_config.py`
+  - `training/configs/training_config.py`
+- extend logging / reduction in:
+  - `training/core/metrics_registry.py`
+  - `training/core/experiment_tracking.py`
+  - `training/core/training_loop.py`
+
+Required metrics for Branch B:
+- teacher activation / leakage:
+  - `teacher/whole_body_active_frac`
+  - `teacher/whole_body_active_during_clean_frac`
+  - `teacher/whole_body_active_during_push_frac`
+- recovery height teacher:
+  - `teacher/recovery_height_target_mean`
+  - `teacher/recovery_height_error`
+  - `teacher/recovery_height_in_band_frac`
+- CoM-velocity teacher:
+  - `teacher/com_velocity_target_mean`
+  - `teacher/com_velocity_error`
+  - `teacher/com_velocity_target_hit_frac`
+- reward terms:
+  - `reward/teacher_recovery_height`
+  - `reward/teacher_com_velocity_reduction`
+  - optional only:
+    - `reward/teacher_knee_flex_min`
+- preserve existing Branch A recovery diagnostics:
+  - `recovery/min_height`
+  - `recovery/max_knee_flex`
+  - `recovery/first_step_dist_abs`
+  - `recovery/visible_step_rate`
+  - `recovery/no_touchdown_frac`
+  - `recovery/touchdown_then_fail_frac`
+  - `recovery/pitch_rate_reduction_10t`
+
+Tests required for implementation:
+- deterministic unit tests for whole-body teacher target generation:
+  - disturbed-window gating only
+  - hard-gated activation through `teacher.step_required_hard`
+  - clean-window leakage stays zero
+- env aggregation tests for new teacher metrics and reward terms
+- env-step persistence / auto-reset coverage for new info fields
+- config parse tests for new env and reward keys
+- verification that actor observation shape and policy contract hash remain
+  unchanged
+
+Recommended milestone-to-code mapping:
+- B0:
+  - add config/runtime plumbing
+  - add `teacher_whole_body_target.py`
+  - surface metrics only, with reward weights set to zero by default
+  - run one dry-run verify / short smoke to confirm bounded signals
+- B1:
+  - turn on `teacher_recovery_height` only
+  - keep `teacher_com_velocity_reduction = 0.0`
+  - use this as the first actual Branch B screening run
+- B2:
+  - only if B1 still produces strong step-without-crouch behavior, add
+    `teacher_com_velocity_reduction`
+  - do not add `teacher_knee_flex_min` unless both task-space teachers are too
+    weak
+- B3:
+  - fixed-ladder evaluation + viewer review
+  - decide whether Branch B closes the whole-body mechanism gap or whether the
+    RL path is exhausted
+
 Milestones:
 
 #### B0: Teacher Target Dry-Run
@@ -354,10 +555,19 @@ Deliver:
   - height target distribution
   - teacher active in disturbed windows only
   - clean-window leakage near zero
+- concrete implementation:
+  - add `training/envs/teacher_whole_body_target.py`
+  - add whole-body teacher config keys with zeroed reward weights by default
+  - surface the new `teacher/*` metrics and `reward/teacher_*` placeholders
+  - keep total reward numerically unchanged in this milestone
 
 Exit:
 - targets are bounded and interpretable
 - actor contract unchanged
+- verify:
+  - `teacher/whole_body_active_during_clean_frac ~= 0`
+  - recovery-height targets stay in `[0.39, 0.42]`
+  - no new reward term changes training behavior when weights are zero
 
 #### B1: First Whole-Body Teacher Reward
 Deliver:
@@ -365,10 +575,21 @@ Deliver:
 - recommended first term:
   - `teacher_recovery_height`
 - keep step teacher active but do not increase its weights
+- initial config intent:
+  - resume from best `v0.17.4t-crouch` checkpoint
+  - keep Branch A disturbed-window reward gating unchanged
+  - set `teacher_recovery_height > 0`
+  - keep `teacher_com_velocity_reduction = 0`
+  - keep `teacher_knee_flex_min = 0`
 
 Exit:
 - internal metrics improve without clean-standing regression
 - visible crouch + step appears more clearly than Branch A
+- quantitative screening expectations:
+  - `eval_clean/unnecessary_step_rate <= 0.10`
+  - `recovery/min_height` decreases modestly relative to Branch A
+  - `recovery/max_knee_flex` increases modestly relative to Branch A
+  - `recovery/visible_step_rate` stays at least competitive with Branch A
 
 #### B2: Optional Second Teacher Term
 Deliver:
@@ -382,6 +603,10 @@ Exit:
 - fixed ladder is competitive (`eval_hard >= 65%` screening bar, target `>= 70%`)
 - visible crouch + step appears
 - `eval_clean/unnecessary_step_rate <= 0.10`
+- expected signature versus B1:
+  - `recovery/pitch_rate_reduction_10t` improves toward positive values
+  - `recovery/no_touchdown_frac` and `recovery/touchdown_then_fail_frac` do not
+    regress materially
 
 #### B3: RL Path Final Decision
 If:

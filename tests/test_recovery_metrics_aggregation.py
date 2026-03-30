@@ -393,6 +393,52 @@ def test_teacher_aggregation_normalizes_by_active_count_and_clean_count():
     assert float(aggregated["teacher/teacher_active_during_push_frac"]) == pytest.approx(1.0)
 
 
+def test_whole_body_teacher_aggregation_normalizes_expected_fields():
+    num_metrics = len(METRIC_SPECS)
+    metrics_vec = jnp.zeros((4, 1, num_metrics), dtype=jnp.float32)
+
+    def set_metric(name: str, t: int, value: float) -> None:
+        idx = METRIC_INDEX[name]
+        nonlocal metrics_vec
+        metrics_vec = metrics_vec.at[t, 0, idx].set(value)
+
+    set_metric("teacher/whole_body_active_frac", 0, 1.0)
+    set_metric("teacher/whole_body_active_frac", 1, 1.0)
+    set_metric("teacher/whole_body_active_count", 0, 1.0)
+    set_metric("teacher/whole_body_active_count", 1, 1.0)
+    set_metric("teacher/recovery_height_target_mean", 0, 0.40)
+    set_metric("teacher/recovery_height_target_mean", 1, 0.41)
+    set_metric("teacher/recovery_height_error", 0, 0.01)
+    set_metric("teacher/recovery_height_error", 1, 0.03)
+    set_metric("teacher/recovery_height_in_band_frac", 0, 1.0)
+    set_metric("teacher/recovery_height_in_band_frac", 1, 0.0)
+    set_metric("teacher/com_velocity_target_mean", 0, 0.12)
+    set_metric("teacher/com_velocity_target_mean", 1, 0.12)
+    set_metric("teacher/com_velocity_error", 0, 0.08)
+    set_metric("teacher/com_velocity_error", 1, 0.02)
+    set_metric("teacher/com_velocity_target_hit_frac", 0, 0.0)
+    set_metric("teacher/com_velocity_target_hit_frac", 1, 1.0)
+    set_metric("teacher/clean_step_count", 2, 1.0)
+    set_metric("teacher/clean_step_count", 3, 1.0)
+    set_metric("teacher/push_step_count", 0, 1.0)
+    set_metric("teacher/push_step_count", 1, 1.0)
+    set_metric("teacher/whole_body_active_during_clean_frac", 2, 0.0)
+    set_metric("teacher/whole_body_active_during_clean_frac", 3, 0.0)
+    set_metric("teacher/whole_body_active_during_push_frac", 0, 1.0)
+    set_metric("teacher/whole_body_active_during_push_frac", 1, 1.0)
+
+    aggregated = aggregate_metrics(metrics_vec)
+    assert float(aggregated["teacher/whole_body_active_frac"]) == pytest.approx(0.5)
+    assert float(aggregated["teacher/recovery_height_target_mean"]) == pytest.approx(0.405)
+    assert float(aggregated["teacher/recovery_height_error"]) == pytest.approx(0.02)
+    assert float(aggregated["teacher/recovery_height_in_band_frac"]) == pytest.approx(0.5)
+    assert float(aggregated["teacher/com_velocity_target_mean"]) == pytest.approx(0.12)
+    assert float(aggregated["teacher/com_velocity_error"]) == pytest.approx(0.05)
+    assert float(aggregated["teacher/com_velocity_target_hit_frac"]) == pytest.approx(0.5)
+    assert float(aggregated["teacher/whole_body_active_during_clean_frac"]) == pytest.approx(0.0)
+    assert float(aggregated["teacher/whole_body_active_during_push_frac"]) == pytest.approx(1.0)
+
+
 def test_disturbed_window_reward_weights_switch_only_in_disturbed_window():
     gate, orient_w, height_w, posture_w = compute_disturbed_window_reward_weights(
         base_orientation_weight=jnp.asarray(-1.0, dtype=jnp.float32),

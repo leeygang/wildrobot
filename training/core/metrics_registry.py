@@ -956,6 +956,76 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="recovery",
         description="Summed absolute first-step distances over finalized recoveries; normalized by recovery/completed",
     ),
+    MetricSpec(
+        name="reward/teacher_recovery_height",
+        reducer=Reducer.MEAN,
+        description="Whole-body teacher recovery-height reward",
+    ),
+    MetricSpec(
+        name="reward/teacher_com_velocity_reduction",
+        reducer=Reducer.MEAN,
+        description="Whole-body teacher CoM-velocity reduction reward",
+    ),
+    MetricSpec(
+        name="teacher/whole_body_active_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="teacher",
+        description="Fraction of steps where whole-body teacher is active",
+    ),
+    MetricSpec(
+        name="teacher/whole_body_active_count",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Count of active whole-body teacher samples for normalization",
+    ),
+    MetricSpec(
+        name="teacher/whole_body_active_during_clean_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Whole-body teacher active count during clean steps; normalized by teacher/clean_step_count",
+    ),
+    MetricSpec(
+        name="teacher/whole_body_active_during_push_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Whole-body teacher active count during push-active steps; normalized by teacher/push_step_count",
+    ),
+    MetricSpec(
+        name="teacher/recovery_height_target_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed whole-body recovery-height targets; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="teacher/recovery_height_error",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed whole-body recovery-height errors; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="teacher/recovery_height_in_band_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed in-band indicators for recovery-height target; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="teacher/com_velocity_target_mean",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed whole-body CoM-velocity targets; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="teacher/com_velocity_error",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed whole-body CoM-velocity errors; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="teacher/com_velocity_target_hit_frac",
+        reducer=Reducer.SUM,
+        log_prefix="teacher",
+        description="Summed CoM-velocity target-hit indicators; normalized by teacher/whole_body_active_count",
+    ),
 ]
 
 # =============================================================================
@@ -1114,6 +1184,15 @@ def aggregate_metrics(
             result["teacher/teacher_active_during_push_frac"] = (
                 result["teacher/teacher_active_during_push_frac"] / push_count_safe
             )
+            if "teacher/whole_body_active_during_push_frac" in result:
+                result["teacher/whole_body_active_during_push_frac"] = (
+                    result["teacher/whole_body_active_during_push_frac"] / push_count_safe
+                )
+        if clean_count is not None and "teacher/whole_body_active_during_clean_frac" in result:
+            clean_count_safe = jnp.maximum(clean_count, 1e-6)
+            result["teacher/whole_body_active_during_clean_frac"] = (
+                result["teacher/whole_body_active_during_clean_frac"] / clean_count_safe
+            )
 
         if "teacher/target_step_x_min" in result:
             result["teacher/target_step_x_min"] = jnp.where(
@@ -1161,6 +1240,20 @@ def aggregate_metrics(
                 0.0,
             )
             result["teacher/target_step_y_std"] = jnp.sqrt(y_var)
+
+    whole_body_active = result.get("teacher/whole_body_active_count")
+    if whole_body_active is not None:
+        whole_body_active_safe = jnp.maximum(whole_body_active, 1e-6)
+        for name in (
+            "teacher/recovery_height_target_mean",
+            "teacher/recovery_height_error",
+            "teacher/recovery_height_in_band_frac",
+            "teacher/com_velocity_target_mean",
+            "teacher/com_velocity_error",
+            "teacher/com_velocity_target_hit_frac",
+        ):
+            if name in result:
+                result[name] = result[name] / whole_body_active_safe
 
     return result
 

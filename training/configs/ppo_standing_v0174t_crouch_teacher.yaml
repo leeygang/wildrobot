@@ -1,0 +1,171 @@
+version: "0.17.4t-crouch-teacher"
+version_name: "Teacher Step Target + Disturbed Crouch + Whole-Body Height Teacher"
+
+# Resume target (best v0.17.4t-crouch checkpoint):
+# training/checkpoints/ppo_standing_v0174t_crouch_v0174t-crouch_20260329_134944-k4xaef65/checkpoint_550_72089600.pkl
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  action_mapping_id: pos_target_home_v1
+  use_relaxed_termination: true
+  target_height: 0.44
+  min_height: 0.15
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+  action_filter_alpha: 0.3
+  actor_obs_layout_id: wr_obs_v2
+
+  controller_stack: ppo_teacher_standing
+  teacher_enabled: true
+  teacher_hard_threshold: 0.60
+  teacher_target_x_min: -0.10
+  teacher_target_x_max: 0.10
+  teacher_target_y_left_min: 0.02
+  teacher_target_y_left_max: 0.06
+  teacher_target_y_right_min: -0.06
+  teacher_target_y_right_max: -0.02
+
+  whole_body_teacher_enabled: true
+  whole_body_teacher_height_target_min: 0.39
+  whole_body_teacher_height_target_max: 0.42
+  whole_body_teacher_height_hard_gate: true
+  whole_body_teacher_com_vel_target: 0.12
+  whole_body_teacher_com_vel_active_speed_min: 0.10
+
+  base_ctrl_enabled: false
+  fsm_enabled: false
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 3.0
+  push_force_max: 10.0
+  push_bodies: [waist, upperbody]
+  domain_randomization_enabled: false
+  action_delay_steps: 0
+
+ppo:
+  num_envs: 512
+  rollout_steps: 256
+  iterations: 300
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+  target_kl: 0.02
+  log_interval: 10
+  eval:
+    enabled: true
+    interval: 25
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+
+amp:
+  enabled: false
+
+reward_weights:
+  alive: 15.0
+  base_height: 0.5
+  orientation: -1.0
+  disturbed_orientation: -0.3
+  angular_velocity: -0.1
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  height_target: 0.5
+  disturbed_height_target_scale: 0.0
+  height_target_sigma: 0.05
+  collapse_height: 0.0
+  collapse_vz: 0.0
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -0.5
+  posture: 0.5
+  disturbed_posture_scale: 0.0
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
+  height_floor: -2.0
+  height_floor_threshold: 0.20
+  height_floor_sigma: 0.03
+  com_velocity_damping: 1.0
+  com_velocity_damping_scale: 1.0
+  step_event: 0.12
+  foot_place: 0.30
+  foot_place_sigma: 0.14
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
+  step_length: 0.0
+  step_progress: 0.0
+  dense_progress: 0.0
+  cycle_progress: 0.0
+  velocity_step_gate: 0.0
+  step_length_target_base: 0.03
+  step_length_target_scale: 0.25
+  step_length_sigma: 0.04
+  step_progress_target_scale: 1.0
+  step_progress_sigma: 0.05
+  dense_progress_upright_pitch: 0.25
+  dense_progress_upright_pitch_rate: 0.90
+  dense_progress_upright_sharpness: 10.0
+  forward_upright_gate_strength: 1.0
+  cycle_progress_target_scale: 1.0
+  cycle_progress_sigma: 0.08
+  propulsion_gate_step_length_weight: 0.5
+  propulsion_gate_step_progress_weight: 0.5
+  stance_width_target: 0.23
+  forward_velocity_scale: 4.0
+
+  teacher_target_step_xy: 0.45
+  teacher_target_step_xy_sigma: 0.06
+  teacher_step_required: 0.16
+  teacher_swing_foot: 0.06
+  teacher_recovery_height: 0.12
+  teacher_recovery_height_sigma: 0.03
+  teacher_com_velocity_reduction: 0.0
+  teacher_com_velocity_reduction_sigma: 0.08
+  teacher_knee_flex_min: 0.0
+  teacher_knee_flex_target: 0.30
+  teacher_knee_flex_sigma: 0.10
+
+quick_verify:
+  ppo:
+    num_envs: 8
+    rollout_steps: 64
+    iterations: 1
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 8
+      num_steps: 64
+      deterministic: true

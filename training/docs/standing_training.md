@@ -1,7 +1,7 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-step` pending ladder validation, `v0.17.4t-crouch` next → then `v0.18` model-based if needed
+**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-crouch` complete (gate failed), `v0.17.4t-crouch-teacher` next → then `v0.18` model-based if needed
 **Created:** 2026-03-20  
 **Last updated:** 2026-03-29
 
@@ -936,6 +936,8 @@ Current status:
 
 Data support for the current hypothesis:
 - `v0.17.4t` already cleared the fixed ladder with:
+  - best checkpoint:
+    - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
   - `eval_medium = 93.8%`
   - `eval_hard = 70.6%`
   - `eval_hard/term_height_low_frac = 29.4%`
@@ -951,18 +953,44 @@ Data support for the current hypothesis:
   - later in the same run, `eval_clean/unnecessary_step_rate` degrades badly
     (`0.50+` by iter `530`), indicating over-stepping if the branch is trained
     too long unchanged
-- **required before drawing conclusions from `v0.17.4t-step`**:
-  - freeze the best checkpoint (iter `440`)
-  - run fixed-ladder evaluation (same methodology as all prior branches)
-  - record `eval_medium`, `eval_hard`, `eval_hard/term_height_low_frac`
-  - compare directly against `v0.17.4t` ladder result
-  - only then use the result as evidence for architecture decisions
-- interpretation (pending ladder validation):
-  - step teaching is producing some visible-step behavior
-  - but the robot may still lack a robust whole-body recovery mode under large
-    pushes
+- fixed ladder on the best checkpoint (critical suites run):
+  - checkpoint:
+    - `training/checkpoints/ppo_standing_v0174t_step_v0174t-step_20260328_155031-vtrx3sxe/checkpoint_440_57671680.pkl`
+  - `eval_medium = 83.1%`
+  - `eval_hard = 52.2%`
+  - `eval_hard_long = 27.6%`
+  - `eval_hard/term_height_low_frac = 47.8%`
+  - `eval_easy` was not run in this pass; the script's printed `0.0%` target
+    line is not a measured branch result
+- interpretation:
+  - step teaching did produce some visible-step behavior internally
+  - but that mechanism did not translate into a stronger fixed-ladder branch
+  - `v0.17.4t-step` regressed materially from `v0.17.4t` on hard pushes
+  - the branch landed back near the earlier `v0.17.3a` regime on fixed-ladder
+    robustness
   - the current search problem is no longer just "should I step?" but "how do I
     coordinate trunk, knees, and step timing when bracing is insufficient?"
+
+Comparison across key branches:
+
+| Branch | eval_medium | eval_hard | eval_hard h_low |
+| --- | ---: | ---: | ---: |
+| `v0.17.1` | 71.6% | 39.2% | 60.8% |
+| `v0.17.3a` | 83.1% | 51.4% | 48.6% |
+| `v0.17.3a-pitchfix` | — | ~51.8% | — |
+| `v0.17.4t` | 93.8% | 70.6% | 29.4% |
+| `v0.17.4t-step` | 83.1% | 52.2% | 47.8% |
+| `v0.17.4t-crouch` | 83.3% | 54.2% | 45.8% |
+
+Reference benchmark:
+- current best validated RL checkpoint remains:
+  - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+- practical interpretation:
+  - `v0.17.4t-step` is now fixed-ladder checked on the critical suites, and it
+    is worse than `v0.17.4t`
+  - `v0.17.4t-crouch` is not only worse than `v0.17.4t`
+  - it falls back into the same general hard-push regime as the earlier
+    `v0.17.3a` family rather than extending the `v0.17.4t` improvement
 
 Decision after external review:
 
@@ -1040,6 +1068,32 @@ Expected outcome:
 - low confidence this will produce visible whole-body recovery
 - high confidence this will answer whether reward gating is sufficient
 - one run, ~10 hours
+
+Observed result:
+- screening run: `run-20260329_134942-k4xaef65`
+- best checkpoint:
+  - `training/checkpoints/ppo_standing_v0174t_crouch_v0174t-crouch_20260329_134944-k4xaef65/checkpoint_550_72089600.pkl`
+- comparison reference:
+  - best validated `v0.17.4t` checkpoint remains:
+    - `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+- fixed ladder:
+  - `eval_clean = 100.0%`
+  - `eval_easy = 100.0%`
+  - `eval_medium = 83.3%`
+  - `eval_hard = 54.2%`
+  - `eval_hard_long = 32.1%`
+- interpretation:
+  - this branch failed the fixed-ladder screen (`eval_hard < 65%`)
+  - it is materially worse than the validated `v0.17.4t` baseline (`70.6%`)
+  - it also failed to beat the `v0.17.4t-step` mechanism branch on the intended
+    whole-body evidence:
+    - no convincing crouch-specific lowering
+    - no convincing knee-flex increase
+    - no clear increase in useful step trait
+- conclusion:
+  - reward relaxation alone was not sufficient
+  - Branch A is closed
+  - proceed to `v0.17.4t-crouch-teacher`
 
 #### `v0.17.4t-crouch-teacher`: Compact Whole-Body Teacher Inside RL
 
@@ -1346,6 +1400,11 @@ robustness or adaptive behavior:
 - if the robot still falls stiff despite reward relaxation:
   - reward gating alone was insufficient
   - proceed first to `v0.17.4t-crouch-teacher`
+- actual result:
+  - fixed ladder regressed to `eval_hard = 54.2%`
+  - branch did not show the desired whole-body mechanism
+  - this branch is therefore closed and `v0.17.4t-crouch-teacher` is the active
+    next step
 
 ### After `v0.17.4t-crouch-teacher`
 

@@ -169,6 +169,22 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         teacher_target_y_left_max=float(env.get("teacher_target_y_left_max", 0.06)),
         teacher_target_y_right_min=float(env.get("teacher_target_y_right_min", -0.06)),
         teacher_target_y_right_max=float(env.get("teacher_target_y_right_max", -0.02)),
+        whole_body_teacher_enabled=bool(env.get("whole_body_teacher_enabled", False)),
+        whole_body_teacher_height_target_min=float(
+            env.get("whole_body_teacher_height_target_min", 0.39)
+        ),
+        whole_body_teacher_height_target_max=float(
+            env.get("whole_body_teacher_height_target_max", 0.42)
+        ),
+        whole_body_teacher_height_hard_gate=bool(
+            env.get("whole_body_teacher_height_hard_gate", True)
+        ),
+        whole_body_teacher_com_vel_target=float(
+            env.get("whole_body_teacher_com_vel_target", 0.12)
+        ),
+        whole_body_teacher_com_vel_active_speed_min=float(
+            env.get("whole_body_teacher_com_vel_active_speed_min", 0.10)
+        ),
 
         # M2: base controller + residual gating (optional)
         base_ctrl_enabled=bool(env.get("base_ctrl_enabled", False)),
@@ -433,6 +449,15 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         teacher_target_step_xy_sigma=rewards.get("teacher_target_step_xy_sigma", 0.06),
         teacher_step_required=rewards.get("teacher_step_required", 0.0),
         teacher_swing_foot=rewards.get("teacher_swing_foot", 0.0),
+        teacher_recovery_height=rewards.get("teacher_recovery_height", 0.0),
+        teacher_recovery_height_sigma=rewards.get("teacher_recovery_height_sigma", 0.03),
+        teacher_com_velocity_reduction=rewards.get("teacher_com_velocity_reduction", 0.0),
+        teacher_com_velocity_reduction_sigma=rewards.get(
+            "teacher_com_velocity_reduction_sigma", 0.08
+        ),
+        teacher_knee_flex_min=rewards.get("teacher_knee_flex_min", 0.0),
+        teacher_knee_flex_target=rewards.get("teacher_knee_flex_target", 0.30),
+        teacher_knee_flex_sigma=rewards.get("teacher_knee_flex_sigma", 0.10),
     )
 
 

@@ -81,6 +81,11 @@ from training.envs.teacher_step_target import (
     compute_teacher_step_required_reward,
     compute_teacher_swing_foot_reward,
 )
+from training.envs.teacher_whole_body_target import (
+    compute_teacher_whole_body_target,
+    compute_teacher_recovery_height_reward,
+    compute_teacher_com_velocity_reduction_reward,
+)
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import (
     build_metrics_vec,
@@ -1975,6 +1980,52 @@ class WildRobotEnv(mjx_env.MjxEnv):
             teacher_step_required_hard=teacher.step_required_hard,
             first_recovery_touchdown=first_recovery_touchdown_event,
         )
+        whole_body_teacher = compute_teacher_whole_body_target(
+            whole_body_teacher_enabled=bool(
+                getattr(self._config.env, "whole_body_teacher_enabled", False)
+            ),
+            push_active=push_active_now,
+            recovery_active=wr.recovery_active,
+            step_required_hard=teacher.step_required_hard,
+            height=root_pose_now.height,
+            horizontal_speed=post_push_horizontal_speed,
+            height_target_min=float(
+                getattr(self._config.env, "whole_body_teacher_height_target_min", 0.39)
+            ),
+            height_target_max=float(
+                getattr(self._config.env, "whole_body_teacher_height_target_max", 0.42)
+            ),
+            height_hard_gate=bool(
+                getattr(self._config.env, "whole_body_teacher_height_hard_gate", True)
+            ),
+            com_vel_target=float(
+                getattr(self._config.env, "whole_body_teacher_com_vel_target", 0.12)
+            ),
+        )
+        teacher_recovery_height_reward = compute_teacher_recovery_height_reward(
+            height_error=whole_body_teacher.recovery_height_error,
+            teacher_active=whole_body_teacher.whole_body_active,
+            sigma=float(
+                getattr(self._config.reward_weights, "teacher_recovery_height_sigma", 0.03)
+            ),
+        )
+        teacher_com_velocity_reduction_reward = compute_teacher_com_velocity_reduction_reward(
+            com_velocity_error=whole_body_teacher.com_velocity_error,
+            horizontal_speed=post_push_horizontal_speed,
+            teacher_active=whole_body_teacher.whole_body_active,
+            active_speed_min=float(
+                getattr(
+                    self._config.env, "whole_body_teacher_com_vel_active_speed_min", 0.10
+                )
+            ),
+            sigma=float(
+                getattr(
+                    self._config.reward_weights,
+                    "teacher_com_velocity_reduction_sigma",
+                    0.08,
+                )
+            ),
+        )
         teacher_xy_event = (
             teacher.teacher_active
             * (wr.recovery_active & (~wr.recovery_first_touchdown_recorded) & touchdown_any_now).astype(
@@ -1993,11 +2044,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.asarray(getattr(self._config.reward_weights, "teacher_swing_foot", 0.0), dtype=jp.float32)
             * teacher_swing_reward
         )
+        reward += (
+            jp.asarray(
+                getattr(self._config.reward_weights, "teacher_recovery_height", 0.0),
+                dtype=jp.float32,
+            )
+            * teacher_recovery_height_reward
+        )
+        reward += (
+            jp.asarray(
+                getattr(self._config.reward_weights, "teacher_com_velocity_reduction", 0.0),
+                dtype=jp.float32,
+            )
+            * teacher_com_velocity_reduction_reward
+        )
         metrics["reward/total"] = reward
         reward_components["reward/total"] = reward
         reward_components["reward/teacher_target_step_xy"] = teacher_xy_reward
         reward_components["reward/teacher_step_required"] = teacher_step_required_reward
         reward_components["reward/teacher_swing_foot"] = teacher_swing_reward
+        reward_components["reward/teacher_recovery_height"] = teacher_recovery_height_reward
+        reward_components["reward/teacher_com_velocity_reduction"] = (
+            teacher_com_velocity_reduction_reward
+        )
         reward_components["teacher/target_xy_error"] = teacher_xy_error * teacher_xy_event
         reward_components["teacher/target_xy_error_events"] = teacher_xy_event
         reward_components["teacher/step_required_event_rate"] = teacher_step_required_event
@@ -2012,6 +2081,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["reward/teacher_target_step_xy"] = teacher_xy_reward
         metrics["reward/teacher_step_required"] = teacher_step_required_reward
         metrics["reward/teacher_swing_foot"] = teacher_swing_reward
+        metrics["reward/teacher_recovery_height"] = teacher_recovery_height_reward
+        metrics["reward/teacher_com_velocity_reduction"] = (
+            teacher_com_velocity_reduction_reward
+        )
         metrics["teacher/active_frac"] = teacher.teacher_active
         metrics["teacher/active_count"] = teacher.active_count
         metrics["teacher/step_required_mean"] = teacher.step_required_soft * teacher.teacher_active
@@ -2057,6 +2130,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["teacher/step_required_event_rate"] = teacher_step_required_event
         metrics["teacher/swing_foot_match_frac"] = teacher_swing_reward
         metrics["teacher/swing_foot_match_events"] = _teacher_swing_event
+        metrics["teacher/whole_body_active_frac"] = whole_body_teacher.whole_body_active
+        metrics["teacher/whole_body_active_count"] = whole_body_teacher.whole_body_active_count
+        metrics["teacher/recovery_height_target_mean"] = whole_body_teacher.recovery_height_target
+        metrics["teacher/recovery_height_error"] = whole_body_teacher.recovery_height_error
+        metrics["teacher/recovery_height_in_band_frac"] = whole_body_teacher.recovery_height_in_band
+        metrics["teacher/com_velocity_target_mean"] = whole_body_teacher.com_velocity_target
+        metrics["teacher/com_velocity_error"] = whole_body_teacher.com_velocity_error
+        metrics["teacher/com_velocity_target_hit_frac"] = whole_body_teacher.com_velocity_target_hit
         metrics["recovery/visible_step_rate"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
         metrics["visible_step_rate_hard"] = recovery_metrics.get("recovery/visible_step_rate", jp.zeros(()))
         metrics["recovery/min_height"] = recovery_metrics.get("recovery/min_height", jp.zeros(()))
@@ -2120,6 +2201,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward_components["teacher/swing_foot_match_events"] = _teacher_swing_event
         reward_components["teacher/target_step_x_std"] = jp.zeros(())
         reward_components["teacher/target_step_y_std"] = jp.zeros(())
+        reward_components["teacher/whole_body_active_frac"] = whole_body_teacher.whole_body_active
+        reward_components["teacher/whole_body_active_count"] = whole_body_teacher.whole_body_active_count
+        reward_components["teacher/recovery_height_target_mean"] = (
+            whole_body_teacher.recovery_height_target
+        )
+        reward_components["teacher/recovery_height_error"] = whole_body_teacher.recovery_height_error
+        reward_components["teacher/recovery_height_in_band_frac"] = (
+            whole_body_teacher.recovery_height_in_band
+        )
+        reward_components["teacher/com_velocity_target_mean"] = whole_body_teacher.com_velocity_target
+        reward_components["teacher/com_velocity_error"] = whole_body_teacher.com_velocity_error
+        reward_components["teacher/com_velocity_target_hit_frac"] = (
+            whole_body_teacher.com_velocity_target_hit
+        )
+        metrics["teacher/whole_body_active_during_clean_frac"] = (
+            whole_body_teacher.whole_body_active * clean_now
+        )
+        metrics["teacher/whole_body_active_during_push_frac"] = (
+            whole_body_teacher.whole_body_active * push_now
+        )
+        reward_components["teacher/whole_body_active_during_clean_frac"] = (
+            whole_body_teacher.whole_body_active * clean_now
+        )
+        reward_components["teacher/whole_body_active_during_push_frac"] = (
+            whole_body_teacher.whole_body_active * push_now
+        )
         reward_components["recovery/min_height"] = recovery_metrics.get(
             "recovery/min_height", jp.zeros(())
         )
@@ -2291,6 +2398,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "reward/teacher_step_required": metrics.get("reward/teacher_step_required", jp.zeros(())),
             "reward/teacher_swing_foot": metrics.get("reward/teacher_swing_foot", jp.zeros(())),
+            "reward/teacher_recovery_height": metrics.get(
+                "reward/teacher_recovery_height", jp.zeros(())
+            ),
+            "reward/teacher_com_velocity_reduction": metrics.get(
+                "reward/teacher_com_velocity_reduction", jp.zeros(())
+            ),
             "reward/arrest_pitch_rate": metrics.get("reward/arrest_pitch_rate", jp.zeros(())),
             "reward/arrest_capture_error": metrics.get(
                 "reward/arrest_capture_error", jp.zeros(())
@@ -2430,6 +2543,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "teacher/swing_foot_match_frac": metrics.get("teacher/swing_foot_match_frac", jp.zeros(())),
             "teacher/swing_foot_match_events": metrics.get(
                 "teacher/swing_foot_match_events", jp.zeros(())
+            ),
+            "teacher/whole_body_active_frac": metrics.get(
+                "teacher/whole_body_active_frac", jp.zeros(())
+            ),
+            "teacher/whole_body_active_count": metrics.get(
+                "teacher/whole_body_active_count", jp.zeros(())
+            ),
+            "teacher/whole_body_active_during_clean_frac": metrics.get(
+                "teacher/whole_body_active_during_clean_frac", jp.zeros(())
+            ),
+            "teacher/whole_body_active_during_push_frac": metrics.get(
+                "teacher/whole_body_active_during_push_frac", jp.zeros(())
+            ),
+            "teacher/recovery_height_target_mean": metrics.get(
+                "teacher/recovery_height_target_mean", jp.zeros(())
+            ),
+            "teacher/recovery_height_error": metrics.get(
+                "teacher/recovery_height_error", jp.zeros(())
+            ),
+            "teacher/recovery_height_in_band_frac": metrics.get(
+                "teacher/recovery_height_in_band_frac", jp.zeros(())
+            ),
+            "teacher/com_velocity_target_mean": metrics.get(
+                "teacher/com_velocity_target_mean", jp.zeros(())
+            ),
+            "teacher/com_velocity_error": metrics.get(
+                "teacher/com_velocity_error", jp.zeros(())
+            ),
+            "teacher/com_velocity_target_hit_frac": metrics.get(
+                "teacher/com_velocity_target_hit_frac", jp.zeros(())
             ),
             "visible_step_rate_hard": metrics.get("visible_step_rate_hard", jp.zeros(())),
             # v0.17.3: preserve architecture-pivot controller debug metrics
@@ -3702,6 +3845,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/teacher_target_step_xy": jp.zeros(()),
             "reward/teacher_step_required": jp.zeros(()),
             "reward/teacher_swing_foot": jp.zeros(()),
+            "reward/teacher_recovery_height": jp.zeros(()),
+            "reward/teacher_com_velocity_reduction": jp.zeros(()),
             "reward/arrest_pitch_rate": arrest_pitch_rate_reward,
             "reward/arrest_capture_error": arrest_capture_error_reward,
             "reward/post_touchdown_survival": post_touchdown_survival_reward,
@@ -3766,6 +3911,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "teacher/step_required_event_rate": jp.zeros(()),
             "teacher/swing_foot_match_frac": jp.zeros(()),
             "teacher/swing_foot_match_events": jp.zeros(()),
+            "teacher/whole_body_active_frac": jp.zeros(()),
+            "teacher/whole_body_active_count": jp.zeros(()),
+            "teacher/whole_body_active_during_clean_frac": jp.zeros(()),
+            "teacher/whole_body_active_during_push_frac": jp.zeros(()),
+            "teacher/recovery_height_target_mean": jp.zeros(()),
+            "teacher/recovery_height_error": jp.zeros(()),
+            "teacher/recovery_height_in_band_frac": jp.zeros(()),
+            "teacher/com_velocity_target_mean": jp.zeros(()),
+            "teacher/com_velocity_error": jp.zeros(()),
+            "teacher/com_velocity_target_hit_frac": jp.zeros(()),
             "recovery/visible_step_rate": jp.zeros(()),
             "recovery/min_height": jp.zeros(()),
             "recovery/max_knee_flex": jp.zeros(()),
