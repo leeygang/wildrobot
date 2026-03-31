@@ -1,8 +1,8 @@
 # v0.17 Whole-Body Recovery Design
 
-**Status:** Active implementation design for post-`v0.17.4t-crouch` standing branches  
+**Status:** Active implementation design for post-`v0.17.4t-crouch-teacher` B1 standing branches  
 **Applies to:** Standing push recovery on the current MuJoCo / JAX / single-policy stack  
-**Last updated:** 2026-03-29
+**Last updated:** 2026-03-30
 
 ---
 
@@ -28,6 +28,7 @@ Comparison across key branches:
 | `v0.17.4t` | 93.8% | 70.6% | 29.4% |
 | `v0.17.4t-step` | 83.1% | 52.2% | 47.8% |
 | `v0.17.4t-crouch` | 83.3% | 54.2% | 45.8% |
+| `v0.17.4t-crouch-teacher` | 84.4% | 55.1% | 44.9% |
 
 This means:
 - the first bounded teacher branch was sufficient to clear the benchmark gate
@@ -53,12 +54,24 @@ This means:
   - it was worse than the validated `v0.17.4t` baseline
   - it also failed to improve on the `v0.17.4t-step` branch for the intended
     mechanism evidence
+- Branch B B1 (`v0.17.4t-crouch-teacher`) has now been run:
+  - fixed ladder:
+    - `eval_clean = 100.0%`
+    - `eval_easy = 100.0%`
+    - `eval_medium = 84.4%`
+    - `eval_hard = 55.1%`
+    - `eval_hard_long = 31.3%`
+  - it improved slightly over `v0.17.4t-step` and `v0.17.4t-crouch`
+  - but it still failed the `>= 65%` screening bar
+  - training-time diagnostics still did not show a convincing whole-body
+    crouch-mediated recovery mechanism
 - the active next sequence is now:
-  `v0.17.4t-crouch-teacher` -> `v0.18` if needed
+  optional `v0.17.4t-crouch-teacher` B2 -> `v0.18` if needed
 
 The rest of this document remains useful as the design record for what
-`v0.17.4t`, `v0.17.4t-step`, and `v0.17.4t-crouch` established, and as the
-detailed implementation plan for the next standing branches.
+`v0.17.4t`, `v0.17.4t-step`, `v0.17.4t-crouch`, and `v0.17.4t-crouch-teacher`
+B1 established, and as the detailed implementation plan for the next standing
+branches.
 
 ---
 
@@ -75,7 +88,7 @@ requires concrete implementation scope, milestones, file ownership, and
 decision gates.
 
 Active sequence covered here:
-1. `v0.17.4t-crouch-teacher`
+1. optional `v0.17.4t-crouch-teacher` B2
 2. `v0.18` position-level model-based control, only if the bounded RL path is
    exhausted
 
@@ -90,6 +103,9 @@ Historical context:
   - best checkpoint:
     - `training/checkpoints/ppo_standing_v0174t_step_v0174t-step_20260328_155031-vtrx3sxe/checkpoint_440_57671680.pkl`
 - `v0.17.4t-crouch`: `54.2%` (`eval_hard_long = 32.1%`)
+- `v0.17.4t-crouch-teacher` B1: `55.1%` (`eval_medium = 84.4%`, `eval_hard_long = 31.3%`)
+  - best checkpoint:
+    - `training/checkpoints/ppo_standing_v0174t_crouch_teacher_v0174t-crouch-teacher_20260329_203032-rocg9xk1/checkpoint_600_78643200.pkl`
 - `v0.17.4t-step` confirmed that internal visible-step evidence was not enough
   to outperform `v0.17.4t` on the fixed ladder
 
@@ -590,6 +606,28 @@ Exit:
   - `recovery/min_height` decreases modestly relative to Branch A
   - `recovery/max_knee_flex` increases modestly relative to Branch A
   - `recovery/visible_step_rate` stays at least competitive with Branch A
+
+Observed result:
+- screening run:
+  - `run-20260329_203029-rocg9xk1`
+- best checkpoint:
+  - `training/checkpoints/ppo_standing_v0174t_crouch_teacher_v0174t-crouch-teacher_20260329_203032-rocg9xk1/checkpoint_600_78643200.pkl`
+- fixed ladder:
+  - `eval_clean = 100.0%`
+  - `eval_easy = 100.0%`
+  - `eval_medium = 84.4%`
+  - `eval_hard = 55.1%`
+  - `eval_hard_long = 31.3%`
+- training-time mechanism readout:
+  - clean standing stayed clean at the best checkpoint
+  - the height teacher stayed tightly gated with no clean leakage
+  - but recovery-height in-band fraction remained low and the observed lowering
+    / knee-flex metrics stayed weak
+- verdict:
+  - B1 did not clear the `>= 65%` screening bar
+  - B1 recovered slightly over Branch A but did not close the whole-body
+    mechanism gap
+  - if the bounded RL path is continued, proceed only to B2
 
 #### B2: Optional Second Teacher Term
 Deliver:

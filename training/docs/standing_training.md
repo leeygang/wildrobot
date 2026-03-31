@@ -1,9 +1,9 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-crouch` complete (gate failed), `v0.17.4t-crouch-teacher` next → then `v0.18` model-based if needed
+**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-crouch` complete (gate failed), `v0.17.4t-crouch-teacher` B1 complete (gate failed), optional final B2 RL follow-up → then `v0.18` model-based if needed
 **Created:** 2026-03-20  
-**Last updated:** 2026-03-29
+**Last updated:** 2026-03-30
 
 ---
 
@@ -696,20 +696,30 @@ Important:
 New file: `training/envs/domain_randomize.py`
 - `randomize_physics(mjx_model, rng) -> mjx_model`
 - Randomize per episode at reset:
-  - Floor friction: U(0.5, 1.0)
+  - Floor friction: U(0.4, 1.0)
   - Link masses: nominal × U(0.9, 1.1) per body
-  - Actuator Kp (gainprm + biasprm): nominal × U(0.9, 1.1)
-  - Joint frictionloss: nominal × U(0.9, 1.1)
+  - Actuator Kp/Kd (gainprm + biasprm): nominal × U(0.9, 1.1)
+  - Joint frictionloss: nominal × U(0.8, 1.2)
+  - Joint armature: nominal × U(0.8, 1.2)
+  - Servo torque / speed limits: nominal × U(0.9, 1.1)
+  - Servo backlash deadband: U(0.02, 0.10) rad
   - Joint zero offsets (qpos0): +U(-0.03, 0.03) rad
 - Follow Open Duck pattern: modify `mjx_model` fields in-place (vmapped)
 - Gated by config flag `domain_randomization_enabled: bool`
+
+ToddlerBot-informed note:
+- the highest-value additions for hobby-servo realism are backlash,
+  torque/speed-limit randomization, and armature/frictionloss variation
+- these are transfer-hardening levers, not a substitute for fixing the sim-side
+  recovery mechanism first
 
 Implementation: store randomized parameters in env info (per-env scalars),
 apply them at reset/step time. This follows the Open Duck Playground pattern
 and works with the existing vmap-over-state architecture (no model threading
 changes needed). Specifically:
 - At `env.reset()`, sample randomized scalars (friction scale, mass scales,
-  kp scale, frictionloss scale) and store them in `WildRobotInfo`
+  kp/kd scale, frictionloss scale, armature scale, torque-limit scale,
+  backlash deadband) and store them in `WildRobotInfo`
 - At `env.step()`, apply the stored scales to the relevant `mjx.Data` fields
   before `mjx.step()`
 - `qpos0` offsets are applied at reset by adding noise to `self._init_qpos`
@@ -731,9 +741,15 @@ either:
 
 Start with 1-step fixed delay, escalate to ring buffer only if needed.
 
-- IMU noise: `imu_gyro_noise_std: 0.05`, `imu_quat_noise_deg: 1.0`,
+- IMU noise B1: `imu_gyro_noise_std: 0.05`, `imu_quat_noise_deg: 1.0`,
   `imu_latency_steps: 1` (1-step fixed delay first)
+- IMU noise B2 if transfer gap remains: low-frequency bias-walk / AR(1)-style
+  gyro + orientation noise with per-episode amplitude variation
 - Joint position noise: per-joint Gaussian before normalization
+- Observation history: keep the first version simple, but add an optional short
+  observation / action history window after the 1-step delay path is working;
+  ToddlerBot suggests that temporal context is often more valuable than a more
+  complex one-off reward change during transfer hardening
 
 Config: `ppo_standing_v0173b.yaml` — standalone config (the config loader uses
 plain `yaml.safe_load` with no inheritance/merge mechanism, so this config must
@@ -745,6 +761,8 @@ v0.17.3b passes if:
 - `eval_clean/success_rate > 90%` (standing survives randomization)
 - `eval_hard/success_rate` measured and compared against v0.17.3a baseline
 - Domain randomization is confirmed active (logged randomized parameter stats)
+- a scripted sim2real-style comparison can be run on quiet-standing logs:
+  commanded action vs measured joint position / velocity / torque and IMU
 
 v0.17.3b fails if:
 - Quiet standing drops below 80% under randomization
@@ -782,6 +800,7 @@ v0.17.3b (after the sim hard-push gate passes):
 | `training/envs/wildrobot_env.py` | Domain rand at reset/step, 1-step action delay |
 | `training/configs/training_runtime_config.py` | Domain rand + delay + noise config fields |
 | `training/configs/ppo_standing_v0173b.yaml` | **New standalone config** (no inheritance) |
+| `scripts/eval_sim2real_gap.py` | **New file** — compare action / joint / IMU traces between sim and real logs |
 
 Exit criteria:
 - the key recipe gaps are addressed on the pure-RL branch
@@ -981,6 +1000,7 @@ Comparison across key branches:
 | `v0.17.4t` | 93.8% | 70.6% | 29.4% |
 | `v0.17.4t-step` | 83.1% | 52.2% | 47.8% |
 | `v0.17.4t-crouch` | 83.3% | 54.2% | 45.8% |
+| `v0.17.4t-crouch-teacher` | 84.4% | 55.1% | 44.9% |
 
 Reference benchmark:
 - current best validated RL checkpoint remains:
@@ -989,16 +1009,20 @@ Reference benchmark:
   - `v0.17.4t-step` is now fixed-ladder checked on the critical suites, and it
     is worse than `v0.17.4t`
   - `v0.17.4t-crouch` is not only worse than `v0.17.4t`
+  - `v0.17.4t-crouch-teacher` B1 recovered slightly over `v0.17.4t-step` and
+    `v0.17.4t-crouch`, but it still failed the hard gate and remained far below
+    `v0.17.4t`
   - it falls back into the same general hard-push regime as the earlier
     `v0.17.3a` family rather than extending the `v0.17.4t` improvement
 
 Decision after external review:
 
-The RL-only teacher path has been explored across six training iterations
-(`v0.17.3a` → `pitchfix` → `arrest` → `v0.17.4t` → `v0.17.4t-step`). The
-fixed-ladder gate was cleared at `v0.17.4t` (70.6%), but the robot still falls
-with a stiff straight body — it does not show coordinated whole-body recovery
-(knee flexion + stepping + trunk motion).
+The RL-only teacher path has now been explored through the full `v0.17`
+standing sequence (`v0.17.3a` → `pitchfix` → `arrest` → `v0.17.4t` →
+`v0.17.4t-step` → `v0.17.4t-crouch` → `v0.17.4t-crouch-teacher` B1). The
+fixed-ladder gate was cleared only at `v0.17.4t` (70.6%), but the robot still
+falls with a stiff straight body — it does not show coordinated whole-body
+recovery (knee flexion + stepping + trunk motion).
 
 The core problem:
 - The 19-joint coordination required for whole-body recovery is a large search
@@ -1144,6 +1168,61 @@ If this branch also fails:
 - the RL path has exhausted the planned bounded whole-body guidance options
 - proceed to `v0.18`
 
+Observed result (B1):
+- screening run: `run-20260329_203029-rocg9xk1`
+- best checkpoint:
+  - `training/checkpoints/ppo_standing_v0174t_crouch_teacher_v0174t-crouch-teacher_20260329_203032-rocg9xk1/checkpoint_600_78643200.pkl`
+- fixed ladder:
+  - `eval_clean = 100.0%`
+  - `eval_easy = 100.0%`
+  - `eval_medium = 84.4%`
+  - `eval_hard = 55.1%`
+  - `eval_hard_long = 31.3%`
+- interpretation:
+  - this branch improved slightly over `v0.17.4t-step` (`52.2%`) and
+    `v0.17.4t-crouch` (`54.2%`) on `eval_hard`
+  - but it still failed the fixed-ladder screening bar (`eval_hard < 65%`)
+  - training-time diagnostics suggested the whole-body teacher stayed too weak
+    to create a convincing crouch-mediated recovery mechanism
+- conclusion:
+  - Branch B B1 is not a validated replacement for `v0.17.4t`
+  - if the RL path is continued at all, only one bounded follow-up remains:
+    add the second whole-body teacher term (`teacher_com_velocity_reduction`)
+  - otherwise proceed to `v0.18`
+
+#### External review update: ToddlerBot lessons
+
+External review of ToddlerBot does **not** change the standing-branch verdict.
+It strengthens it.
+
+What the review supports:
+- ToddlerBot succeeds with a more structured stack around learning:
+  calibrated digital twin, actuator / joint SysID, explicit sim2real gap
+  evaluation, observation history + delay modeling, and reference / planner
+  scaffolding
+- this supports moving `v0.18` forward as the main new branch once the bounded
+  RL whole-body guidance options are exhausted
+- it also upgrades `v0.17.3b`: transfer hardening should include backlash,
+  armature, torque-limit randomization, and stronger IMU / delay realism
+
+What the review does **not** support:
+- do **not** copy a full ZMP walking reference stack directly into the current
+  standing recovery branch
+- do **not** assume that a scripted joint-space
+  `crouch -> step -> stand` trajectory is the right next RL input
+- do **not** treat lower `gamma` or longer training alone as the missing
+  mechanism
+
+Takeaway for WildRobot:
+- for the current standing problem, the highest-confidence structured input is
+  still compact task-space recovery guidance
+  (`teacher_step_required`, `teacher_swing_foot`, `teacher_target_step_xy`,
+  `teacher_com_velocity_reduction`)
+- for the next architecture, the ToddlerBot lesson is to add structure at the
+  right layer, not to keep stretching end-to-end PPO
+- for later walking work, a simple capture-point / ZMP-style nominal step
+  generator remains a plausible extension on top of `v0.18`
+
 ### `v0.18`: Position-Level Model-Based Control
 
 Objective:
@@ -1194,6 +1273,12 @@ Key design points:
   of matrix math. This is not a high-bandwidth torque control loop.
 - **Same MJCF model** — `assets/v2/wildrobot.xml` remains the single source of
   truth. The IK reads joint limits and kinematic chain from the same model.
+- **ToddlerBot-informed transfer discipline** — keep a calibrated digital twin,
+  explicit actuator realism, and a scripted sim-vs-real evaluation loop as part
+  of this branch from the start rather than bolting them on at the end.
+- **State feedback, not scripted pose phases** — recovery targets should be
+  generated from current CoM / contact state. Do not hard-code a fixed
+  `crouch -> step -> stand` sequence as the primary standing controller logic.
 
 #### Why the original OCS2 rejection does not apply
 
@@ -1239,6 +1324,12 @@ For quiet standing:
 
 #### Implementation plan
 
+Phase 0: Servo / sim realism calibration
+- characterize `HTD-45H` actuation with simple scripted tests
+- fit or bound backlash, torque / speed limits, armature, and delay
+- add a reusable sim2real evaluation script for action / joint / IMU traces
+- deliverable: calibrated ranges that feed both `v0.17.3b` and `v0.18`
+
 Phase 1: IK validation in simulation
 - implement Jacobian-based IK for the leg chains using MuJoCo's `mj_jac`
 - validate that IK can track a commanded CoM height + foot position on the
@@ -1263,11 +1354,15 @@ Phase 3: Fixed-ladder validation
 
 Phase 4: Walking extension
 - add gait timing (alternating support phases)
-- use the same planner with periodic foot placement targets
+- use the same planner with periodic foot placement targets; if needed, add a
+  simple nominal gait / step reference generator rather than asking RL to
+  invent walking from scratch
 - keep standing recovery as a regression gate
 
 Phase 5: Sim2real
 - calibrate IK against real robot kinematics
+- run the explicit sim2real evaluation suite on joint / IMU traces before and
+  after hardware standing tests
 - deploy planner + IK on Raspberry Pi (no ML inference needed)
 - hardware validation
 
@@ -1281,8 +1376,11 @@ New code (under `control/`):
 - `control/sim_adapter.py` — adapter to run the controller in MuJoCo sim loop
 
 Validation:
+- `scripts/characterize_servo_response.py` — scripted actuator tests for delay,
+  backlash, and speed / torque bounds
 - `scripts/validate_ik.py` — standalone IK validation
 - `scripts/validate_standing_controller.py` — standing + push test
+- `scripts/eval_sim2real_gap.py` — compare action / joint / IMU traces
 
 Reused from RL branch:
 - `assets/v2/wildrobot.xml` — same MJCF model
@@ -1412,8 +1510,12 @@ robustness or adaptive behavior:
   - stay on the RL path
   - proceed to `v0.17.3b` sim2real hardening, then walking
 - if it still fails to produce the required mechanism:
-  - the bounded RL whole-body guidance path has been exhausted on this hardware
-  - proceed to `v0.18` model-based control stack
+  - B1 actual result:
+    - fixed ladder reached `eval_hard = 55.1%`
+    - this is slightly better than `v0.17.4t-step` and `v0.17.4t-crouch`, but
+      still below the `65%` screening bar
+  - if the RL path is continued, only the bounded B2 follow-up remains
+  - otherwise proceed to `v0.18` model-based control stack
 
 ### On the `v0.18` model-based path
 
