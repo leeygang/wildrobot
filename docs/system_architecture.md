@@ -324,10 +324,21 @@ control/
   robot_model/
   reduced_model/
   references/
+    locomotion_contract.py
   kinematics/
+    interfaces.py
   mpc/                              # reserved for future advanced planner work
   execution/
   adapters/
+    locomotion_action_adapter.py
+
+runtime/wr_runtime/
+  logging/
+    locomotion_log_schema.py
+
+tools/
+  sysid/
+  sim2real_eval/
 ```
 
 In the active branch, `control/` exists to support training and deployment of

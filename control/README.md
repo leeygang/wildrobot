@@ -9,6 +9,8 @@ Ownership:
 Planned subdirectories:
 - `robot_model/`
 - `reduced_model/`
+- `references/`
+- `kinematics/`
 - `mpc/` (reserved for advanced planning work if needed later)
 - `execution/`
 - `adapters/`

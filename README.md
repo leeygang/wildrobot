@@ -4,24 +4,29 @@ A humanoid robot locomotion project centered on MuJoCo/JAX training, with an
 industry-style RL deployment path as the current mainline for WildRobot.
 
 Current repo reality:
-- `training/` still contains the active PPO/AMP baseline stack and evaluation
-  infrastructure
-- the current `v0.17` mainline keeps the deployed controller as a **direct RL
-  policy** on top of the existing MJCF / MuJoCo stack
-- step-target or planner logic, if used, is treated as **training-time
-  teacher/scaffold support**, not as a required runtime controller
+- the repo is pivoting from standing-first PPO exploration toward a
+  locomotion-first `v0.19.x` platform
+- the deployed runtime artifact remains a **learned policy**
+- reduced-order references and IK are moving into top-level `control/` as
+  nominal-motion and training-support infrastructure
+- `training/` remains the home for RL, eval, export, and locomotion curricula
+- `runtime/` remains the hardware-facing layer and will absorb locomotion
+  policy running plus shared logging
+- `tools/` becomes the explicit home for SysID, replay, and sim2real analysis
 - OCS2 / `wb_humanoid_mpc` and URDF migration remain long-term reference
   directions, not the active implementation target for current hardware
-- future controller and planner code should live under top-level `control/`,
-  not inside `training/`
 
 Architecture references:
 - [docs/system_architecture.md](docs/system_architecture.md)
-- [training/docs/standing_training.md](training/docs/standing_training.md) - canonical active training plan
+- [training/docs/walking_training.md](training/docs/walking_training.md) - active locomotion roadmap
+- [training/docs/ToddlerBot_direction.md](training/docs/ToddlerBot_direction.md) - ToddlerBot-style pivot rationale
+- [training/docs/standing_training.md](training/docs/standing_training.md) - standing branch history and regression gates
 - [training/docs/footstep_planner_rl_adoption.md](training/docs/footstep_planner_rl_adoption.md)
 - [training/docs/ocs2_humanoid_mpc_adoption.md](training/docs/ocs2_humanoid_mpc_adoption.md)
 
 ## Project Structure
+
+Mainline platform split after the locomotion pivot:
 
 ```
 wildrobot/
@@ -35,7 +40,7 @@ wildrobot/
 │   ├── e2e_training_to_sim2real.md     # Sim2real flow notes
 │   └── sim2real_policy_contract.md     # Policy contract docs
 │
-├── assets/                             # Robot model files
+├── assets/                             # Digital twin and robot model files
 │   ├── v2/                             # Active WildRobot asset variant
 │   │   ├── wildrobot.xml               # Main MuJoCo robot model
 │   │   ├── mujoco_robot_config.json    # Generated robot metadata
@@ -46,14 +51,17 @@ wildrobot/
 │   ├── update_xml.sh                   # Regenerate XML/config from Onshape
 │   └── robot_config.py                 # Robot config helpers
 │
-├── control/                            # Planner / controller path outside PPO-specific training code
+├── control/                            # Reduced-order references, IK, adapters, reusable non-PPO helpers
+│   ├── interfaces.py                   # Shared controller / reference-side interfaces
 │   ├── robot_model/                    # Robot-model interfaces and conventions
-│   ├── reduced_model/                  # Reduced-order locomotion model
-│   ├── mpc/                            # Reserved for future advanced planner work
+│   ├── reduced_model/                  # LIPM / DCM / ALIP-style helpers
+│   ├── references/                     # Walking reference generators (Milestone 2+)
+│   ├── kinematics/                     # Leg IK and nominal-motion utilities (Milestone 2+)
+│   ├── adapters/                       # Reference -> joint-target adapters
 │   ├── execution/                      # Servo-friendly execution / tracking layer
-│   └── adapters/                       # Simulation/runtime controller adapters
+│   └── mpc/                            # Reserved for future advanced planner work
 │
-├── training/                          # Main training codebase
+├── training/                           # RL, eval, export, locomotion curricula
 │   ├── train.py                        # Training entry point
 │   ├── CHANGELOG.md                    # Training version history
 │   │
@@ -87,8 +95,10 @@ wildrobot/
 │   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
 │   ├── docs/                           # Training documentation
-│   │   ├── standing_training.md        # Canonical active training plan
-│   │   ├── footstep_planner_rl_adoption.md # Active RL-first + optional teacher plan
+│   │   ├── walking_training.md         # Active locomotion roadmap
+│   │   ├── ToddlerBot_direction.md     # ToddlerBot-style pivot note
+│   │   ├── standing_training.md        # Standing branch history / regression gates
+│   │   ├── footstep_planner_rl_adoption.md # RL-first + optional teacher plan
 │   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
 │   │   ├── archive/                    # Archived / superseded training docs
 │   │   │   └── learn_first_plan.md     # Historical walking-first roadmap
@@ -106,6 +116,7 @@ wildrobot/
 │   │
 │   ├── eval/                           # Evaluation tools
 │   │   ├── eval_policy.py              # Headless evaluation
+│   │   ├── eval_ladder_v0170.py        # Standing fixed ladder
 │   │   └── visualize_policy.py         # MuJoCo viewer playback
 │   │
 │   ├── scripts/                        # Analysis scripts
@@ -178,11 +189,16 @@ wildrobot/
 │   ├── jax/                            # JAX backend (training)
 │   └── numpy/                          # NumPy backend (runtime + tooling)
 │
-├── runtime/                            # Hardware runtime (Raspberry Pi / Ubuntu)
+├── runtime/                            # Hardware runtime and shared execution logs
 │   ├── README.md                       # Runtime install + run instructions
 │   ├── configs/                        # Runtime JSON config templates (hardware calibration source of truth)
 │   ├── scripts/                        # Calibration tools (IMU/servo/footswitch)
-│   └── wr_runtime/                     # Importable runtime package + CLIs (wildrobot-run-policy, etc.)
+│   └── wr_runtime/                     # Importable runtime package + CLIs
+│       └── locomotion/                 # Planned locomotion runner / command / log schema layer
+│
+├── tools/                              # Sim2real and platform tooling (Milestone 0+)
+│   ├── sysid/                          # Actuator characterization and fitting tools
+│   └── sim2real_eval/                  # Replay, comparison, and regression plotting tools
 │
 ├── mujoco-brax/                        # Legacy mujoco brax training version.(reference only not used)
 │   ├── README.md
@@ -205,21 +221,37 @@ wildrobot/
 
 Use this rule of thumb:
 
-- `control/` owns non-PPO support logic
-  - robot model interfaces
-  - reduced-order helper logic
-  - optional planner / teacher utilities
-  - execution / tracking helpers
-  - adapters for sim/runtime
-  - reserved room for future advanced planning experiments
+- `assets/` owns the digital twin
+  - MJCF / scene files
+  - generated robot metadata
+  - sensor and asset definitions
 
-- `training/` owns experiments
-  - PPO baselines
+- `control/` owns locomotion priors and reusable nominal-motion logic
+  - reduced-order models
+  - reference generation
+  - IK and adapters
+  - execution / tracking helpers
+  - optional future planning experiments
+
+- `training/` owns RL and evaluation
+  - locomotion and standing experiments
   - training loops
-  - eval ladders
-  - reward/curriculum work
+  - fixed eval ladders
+  - reward / curriculum work
   - logging and checkpointing
+  - exportable learned policies
   - wrappers that call into `control/`
+
+- `runtime/` owns hardware execution
+  - runtime configs
+  - policy runners
+  - hardware-facing calibration scripts
+  - shared runtime log schema
+
+- `tools/` owns sim2real engineering support
+  - SysID capture / fitting
+  - replay and trace comparison
+  - calibration and regression utilities
 
 `training/` may depend on `control/`.  
 `control/` should not depend on PPO-specific training code.

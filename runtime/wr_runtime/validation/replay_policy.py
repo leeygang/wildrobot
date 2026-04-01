@@ -18,14 +18,35 @@ from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
-from policy_contract.spec import PolicyBundle, validate_spec
+from policy_contract.spec import PolicyBundle, PolicySpec, validate_spec
 
 from wr_runtime.inference.onnx_policy import OnnxPolicy
+from wr_runtime.logging import required_replay_log_fields
 
 
 def _load_npz(path: Path) -> dict[str, np.ndarray]:
     data = np.load(path)
     return {k: data[k] for k in data.files}
+
+
+def _build_policy_command_vector(
+    *,
+    spec: PolicySpec,
+    forward_speed: np.ndarray,
+    yaw_rate: np.ndarray,
+) -> np.ndarray:
+    command_size = 0
+    for field in spec.observation.layout:
+        if field.name == "velocity_cmd":
+            command_size = int(field.size)
+            break
+    if command_size <= 0:
+        raise ValueError("Policy observation layout must include velocity_cmd")
+    if command_size == 1:
+        return forward_speed.reshape(1)
+    if command_size == 2:
+        return np.asarray([float(forward_speed), float(yaw_rate)], dtype=np.float32)
+    raise ValueError(f"Unsupported velocity_cmd observation size: {command_size}")
 
 
 def replay_policy(
@@ -42,6 +63,9 @@ def replay_policy(
     policy = OnnxPolicy(str(bundle.model_path), input_name=spec.model.input_name, output_name=spec.model.output_name)
 
     data = _load_npz(input_npz)
+    missing = [k for k in required_replay_log_fields() if k not in data]
+    if missing:
+        raise ValueError(f"Missing required replay-log fields: {missing}")
     quat_xyzw = np.asarray(data["quat_xyzw"], dtype=np.float32)
     gyro_rad_s = np.asarray(data["gyro_rad_s"], dtype=np.float32)
     joint_pos_rad = np.asarray(data["joint_pos_rad"], dtype=np.float32)
@@ -63,19 +87,25 @@ def replay_policy(
     if foot_switches.ndim != 2 or foot_switches.shape[1] != 4:
         raise ValueError(f"Expected foot_switches shape (T,4), got {foot_switches.shape}")
 
-    velocity_cmd = data.get("velocity_cmd")
-    if velocity_cmd is None:
-        velocity_cmd = np.zeros((quat_xyzw.shape[0], 1), dtype=np.float32)
-    else:
-        velocity_cmd = np.asarray(velocity_cmd, dtype=np.float32)
-        if velocity_cmd.ndim == 0:
-            velocity_cmd = np.full((quat_xyzw.shape[0], 1), float(velocity_cmd), dtype=np.float32)
-        elif velocity_cmd.ndim == 1:
-            velocity_cmd = velocity_cmd.reshape(-1, 1)
-        if velocity_cmd.shape[0] != quat_xyzw.shape[0]:
-            raise ValueError(
-                f"velocity_cmd length {velocity_cmd.shape[0]} != T={quat_xyzw.shape[0]}"
-            )
+    velocity_cmd = np.asarray(data["velocity_cmd"], dtype=np.float32)
+    if velocity_cmd.ndim == 0:
+        velocity_cmd = np.full((quat_xyzw.shape[0], 1), float(velocity_cmd), dtype=np.float32)
+    elif velocity_cmd.ndim == 1:
+        velocity_cmd = velocity_cmd.reshape(-1, 1)
+    if velocity_cmd.shape[0] != quat_xyzw.shape[0]:
+        raise ValueError(
+            f"velocity_cmd length {velocity_cmd.shape[0]} != T={quat_xyzw.shape[0]}"
+        )
+
+    yaw_rate_cmd = np.asarray(data["yaw_rate_cmd"], dtype=np.float32)
+    if yaw_rate_cmd.ndim == 0:
+        yaw_rate_cmd = np.full((quat_xyzw.shape[0], 1), float(yaw_rate_cmd), dtype=np.float32)
+    elif yaw_rate_cmd.ndim == 1:
+        yaw_rate_cmd = yaw_rate_cmd.reshape(-1, 1)
+    if yaw_rate_cmd.shape[0] != quat_xyzw.shape[0]:
+        raise ValueError(
+            f"yaw_rate_cmd length {yaw_rate_cmd.shape[0]} != T={quat_xyzw.shape[0]}"
+        )
 
     T = quat_xyzw.shape[0] if limit is None else min(limit, quat_xyzw.shape[0])
     obs_out = np.zeros((T, spec.model.obs_dim), dtype=np.float32)
@@ -94,11 +124,16 @@ def replay_policy(
             foot_switches=foot_switches[t],
         )
 
+        velocity_cmd_vec = _build_policy_command_vector(
+            spec=spec,
+            forward_speed=velocity_cmd[t],
+            yaw_rate=yaw_rate_cmd[t],
+        )
         obs = build_observation(
             spec=spec,
             state=state,
             signals=signals,
-            velocity_cmd=velocity_cmd[t],
+            velocity_cmd=velocity_cmd_vec,
         )
 
         action_raw = policy.predict(obs)

@@ -45,6 +45,7 @@ Minimal example:
   "control_hz": 50,
   "action_scale_rad": 0.35,
   "velocity_cmd": 0.0,
+  "yaw_rate_cmd": 0.0,
 
   "servo_controller": {
     "type": "hiwonder",

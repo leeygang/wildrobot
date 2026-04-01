@@ -263,6 +263,8 @@ Expected additions:
 - `control/reduced_model/dcm.py`
 - `control/kinematics/leg_ik.py`
 - `control/adapters/reference_to_joint_targets.py`
+- `control/references/locomotion_contract.py` (Milestone 0 schema)
+- `control/kinematics/interfaces.py` (Milestone 0 interface)
 
 ### `training/`
 
@@ -280,6 +282,9 @@ Expected additions:
 - `tools/sysid/`
 - `tools/sim2real_eval/`
 - replay and plotting scripts for sim-vs-real comparison
+- Milestone 0 placeholders:
+  - `tools/sysid/run_capture_stub.py`
+  - `tools/sim2real_eval/replay_compare_stub.py`
 
 ### `runtime/`
 
@@ -287,6 +292,7 @@ Expected additions:
 
 - locomotion policy runner with history and delay support
 - unified log schema for sim and real execution
+- `runtime/wr_runtime/logging/locomotion_log_schema.py` (Milestone 0 schema)
 
 ---
 

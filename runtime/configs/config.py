@@ -61,12 +61,14 @@ class ControlConfig:
     Attributes:
         hz: Control loop frequency in Hz (default: 50)
         action_scale_rad: Scale factor for policy actions in radians (default: 0.35)
-        velocity_cmd: Initial velocity command for the policy (default: 0.0)
+        velocity_cmd: Initial forward-speed command for the policy in m/s (default: 0.0)
+        yaw_rate_cmd: Initial yaw-rate command for the policy in rad/s (default: 0.0)
     """
 
     hz: float = 50.0
     action_scale_rad: float = 0.35
     velocity_cmd: float = 0.0
+    yaw_rate_cmd: float = 0.0
 
     @property
     def dt(self) -> float:
@@ -640,6 +642,7 @@ class WrRuntimeConfig:
             hz=float(data.get("control_hz", 50.0)),
             action_scale_rad=float(data.get("action_scale_rad", 0.35)),
             velocity_cmd=float(data.get("velocity_cmd", 0.0)),
+            yaw_rate_cmd=float(data.get("yaw_rate_cmd", 0.0)),
         )
 
     @staticmethod
@@ -829,6 +832,7 @@ class WrRuntimeConfig:
             "control_hz": self.control.hz,
             "action_scale_rad": self.control.action_scale_rad,
             "velocity_cmd": self.control.velocity_cmd,
+            "yaw_rate_cmd": self.control.yaw_rate_cmd,
             "servo_controller": {
                 "type": self.servo_controller.type,
                 "port": self.servo_controller.port,
