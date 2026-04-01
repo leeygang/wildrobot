@@ -1,20 +1,20 @@
 # v0.17: Standing Stabilization with Reactive Stepping
 
 **Version:** v0.17.0  
-**Status:** `v0.17.4t` complete (gate cleared), `v0.17.4t-crouch` complete (gate failed), `v0.17.4t-crouch-teacher` B1 complete (gate failed), optional final B2 RL follow-up → then `v0.18` model-based if needed
+**Status:** Frozen. Final selected standing checkpoint is `v0.17.4t` iter `330`. Later `step`, `crouch`, and `crouch-teacher` branches are retained as historical negative results, not active work.
 **Created:** 2026-03-20  
-**Last updated:** 2026-03-30
+**Last updated:** 2026-03-31
 
 ---
 
 ## Purpose
 
-This document defines the standing-first roadmap for WildRobot.
+This document records the completed standing-first roadmap for WildRobot.
 
-This is the **canonical training plan** for the active branch. Older
-walking-first roadmap material is archived under
-`training/docs/archive/learn_first_plan.md` and should be treated as historical
-context, not the current execution plan.
+This document is now **frozen**. The active roadmap has moved to
+[walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md).
+Older walking-first roadmap material remains archived under
+`training/docs/archive/learn_first_plan.md`.
 
 Standing success means:
 - stand quietly under zero command
@@ -22,19 +22,15 @@ Standing success means:
 - step only when bracing is no longer enough
 - return to upright neutral standing after recovery
 
-Walking is still part of the broader goal, but for `v0.17` it comes only after
-standing recovery is credible.
+Walking remains part of the broader goal, but this document no longer defines
+the active execution plan for that work.
 
-The key project-level decision after `v0.17.1` is:
-- keep the current MJCF / MuJoCo / RL stack as the mainline
-- follow the practical industry recipe for deployment:
-  - simulator-native RL
-  - direct policy deployment
-  - transfer hardening through training, not controller replacement
-- fix the proven RL recipe gaps from the closest hardware-adjacent baselines
-  before adding teacher logic
-- use step-target or capture-point logic only as bounded training-time
-  assistance when needed
+The final project-level standing decision is:
+- keep `v0.17.4t` as the selected standing baseline
+- freeze further standing-only training on the current branch
+- use the validated standing checkpoint as the quiet-stance and recovery
+  baseline for the locomotion pivot
+- move active development to the ToddlerBot-style locomotion roadmap
 
 Active architecture docs:
 - [docs/system_architecture.md](/home/leeygang/projects/wildrobot/docs/system_architecture.md)
@@ -48,34 +44,54 @@ Deferred reference docs:
 
 ---
 
-## Current Standing Result
+## Final Standing Result
 
-`v0.17.1` is now the final PPO standing baseline for this branch.
+The final selected standing checkpoint for WildRobot is:
+
+- run:
+  `training/wandb/run-20260324_225425-zn8r3l5g`
+- checkpoint:
+  `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
 
 Best checked fixed-ladder result:
-- `eval_medium = 71.6%`
-- `eval_hard = 39.2%`
-- `eval_hard/term_height_low_frac = 60.8%`
+- `eval_medium = 93.8%`
+- `eval_hard = 70.6%`
+- `eval_hard/term_height_low_frac = 29.4%`
+
+Best internal push eval at the selected checkpoint:
+- `eval_push/success_rate = 93.75%`
+- `eval_push/episode_length = 478.9`
+- `eval_push/term_height_low_frac = 6.25%`
 
 Verdict:
-- `v0.17.1` failed the true gate
-- it did **not** beat the old `v0.14.6` hard-push baseline of `60.84%`
-- internal `eval_push/*` overstated true hard-push performance
+- `v0.17.4t` cleared the real standing hard gate
+- it is the best validated standing branch in the full `v0.17` sequence
+- later RL follow-ons did not beat it on the fixed ladder
+- this is the checkpoint to keep for standing baseline, viewer demos, and
+  future standing regression tests
 
 Diagnosis:
-- quiet standing and PPO stability were not the problem
-- dominant failure remained `term_height_low`
-- the gap is still step quality and post-touchdown arrest
+- quiet standing and fixed-ladder standing recovery are solved well enough to
+  freeze the branch
+- the remaining locomotion problem is no longer "pick a better standing
+  checkpoint"
+- the remaining work is locomotion architecture, nominal motion generation, and
+  sim2real transfer for walking
 
-That means the next step is not:
-- endless PPO-only patching, or
-- a full controller-stack pivot the hardware cannot exploit
+Freeze decision:
+- keep `v0.17.4t` iter `330` as the final standing checkpoint
+- do not resume `v0.17.4t-step`, `v0.17.4t-crouch`, or
+  `v0.17.4t-crouch-teacher`
+- keep those later runs only as evidence about what did not improve the branch
+- move active work to the walking roadmap beginning at `v0.19.0`
 
-The active answer is:
-- **keep the deployed controller as a policy**
-- **fix the RL recipe first**
-- **add bounded teacher/scaffold signals only if the recipe-fixed rerun still
-  needs them**
+Standing regression references:
+- selected checkpoint:
+  `training/checkpoints/ppo_standing_v0174t_v0174t_20260324_225428-zn8r3l5g/checkpoint_330_43253760.pkl`
+- previous PPO baseline:
+  `v0.17.1`
+- historical hard-push PPO comparison:
+  `v0.14.6`
 
 ---
 
@@ -212,7 +228,7 @@ hardware.
 
 ## Strategy
 
-v0.17 now uses this sequence:
+The completed `v0.17` branch used this sequence:
 
 1. Use `v0.17.1` as the final PPO standing baseline result.
 2. Keep MJCF / MuJoCo and the current RL infrastructure.
@@ -226,13 +242,17 @@ v0.17 now uses this sequence:
 5. Add bounded teacher or scaffold signals only if the geometry gap remains
    after that rerun.
 6. Validate standing push recovery first.
-7. Extend the same deployed policy stack to conservative walking later.
+7. Freeze the standing winner and move to locomotion work.
 
 This avoids four failure modes:
 - endless PPO-only reward patching without recipe discipline
 - premature teacher / hierarchy work before the execution layer is fixed
 - a controller pivot the hardware cannot use well
 - splitting standing and walking into unrelated deployment stacks
+
+Current branch decision:
+- standing work is frozen at `v0.17.4t`
+- the active roadmap is now [walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md)
 
 ---
 

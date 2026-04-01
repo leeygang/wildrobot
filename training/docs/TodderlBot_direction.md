@@ -256,6 +256,216 @@ If the goal is specifically to match ToddlerBot-like locomotion capability, then
 the project should also plan a hardware revision. The most important candidate
 change is ankle roll.
 
+## Concrete Milestones
+
+The pivot needs one clear rule up front:
+
+- the deployed runtime artifact is a learned policy
+- reduced-order planning, capture-point logic, and IK are support tools for
+  reference generation, teacher signals, safety checks, and debugging
+
+The first realistic product goal on current WildRobot v2 hardware is:
+
+- zero-shot or near-zero-touch sim-to-real forward walking
+- reliable stop and quiet standing
+- in-place yaw turning
+- moderate push recovery during standing and slow walking
+
+### Milestone 0: Platform Pivot
+
+Software stack:
+
+- freeze the standing-only branch as a completed exploration path
+- define a locomotion-first repo structure around `runtime`, `assets`,
+  `references`, `training`, `policies`, and `tools`
+- add a standard log format shared by sim and real runs
+- define one canonical observation and action schema for locomotion
+
+Training approach:
+
+- stop treating free PPO standing recovery as the main path
+- define the new training direction as reference-guided RL
+- define the first command space as forward speed and yaw rate, not full
+  omnidirectional motion
+
+Sim2real:
+
+- add a replayable standing test script
+- add a reproducible calibration checklist for joints, IMU, and foot switches
+- add one baseline real-vs-sim log capture for standing and squat motions
+
+Exit gate:
+
+- one documented train/eval/deploy flow exists for locomotion work
+- one shared log schema is used in both simulation and hardware
+
+### Milestone 1: Digital Twin and Actuator Realism
+
+Software stack:
+
+- add `HTD-45H` actuator parameter files for delay, backlash, frictionloss,
+  armature, and torque/speed limits
+- add `tools/sysid/` for chirp, step, and hold-response characterization
+- add `tools/sim2real_eval/` for plotting real-vs-sim joint and IMU traces
+
+Training approach:
+
+- no walking training yet beyond smoke tests
+- validate that the simulator reacts plausibly to the measured actuator model
+- optionally train a very small standing policy with history as a realism check
+
+Sim2real:
+
+- measure joint step response on representative joints
+- fit a first usable servo model
+- model IMU bias/noise and foot-switch latency or dropout
+
+Exit gate:
+
+- sim-vs-real traces for scripted motions are close enough to support policy
+  transfer work
+- actuator and sensor realism parameters are under version control
+
+### Milestone 2: Reference Generator v1
+
+Software stack:
+
+- implement `walking_ref_v1` as a reduced-order task-space reference generator
+- use `LIPM/DCM/capture-point` for step timing and foot placement
+- generate swing-foot trajectory, pelvis height target, and pelvis roll/pitch
+  target
+- add simple IK that converts the task-space reference into nominal joint
+  targets
+
+Training approach:
+
+- train a residual policy around IK-generated nominal targets
+- start with forward walking only
+- include gait phase, next foothold, and pelvis targets in observation
+- keep the first reference narrow and morphology-aware rather than copying a
+  human or ToddlerBot gait directly
+
+Sim2real:
+
+- verify the reference generator produces kinematically feasible motions in sim
+- replay the nominal reference slowly on hardware with safety constraints
+- confirm joint limits, foot clearance, and touchdown geometry are sane
+
+Exit gate:
+
+- the reference generator alone produces stable nominal walking in simulation or
+  at least a coherent stepping sequence
+- the reference is safe enough to use as a prior for RL
+
+### Milestone 3: Walking Policy v1
+
+Software stack:
+
+- add a locomotion env that consumes command velocity and the reference state
+- add runtime support for history stacking and one-step action delay
+- add policy export and replay tools for offline inspection
+
+Training approach:
+
+- train reference-guided PPO for forward walking and stop
+- reward command tracking, pelvis tracking, foothold tracking, low slip, and
+  survival
+- keep joint-space imitation light; prioritize task-space tracking
+- use residual actions around the nominal reference instead of unrestricted
+  joint targets
+
+Sim2real:
+
+- add domain randomization v1 for friction, damping, mass, Kp/Kd, backlash,
+  armature, torque limits, and IMU noise
+- test short hardware rollouts with tether or guarded safety setup
+- compare the policy's action statistics in sim and real
+
+Exit gate:
+
+- stable forward walking in simulation over a meaningful command range
+- first hardware rollouts show recognizable stepping and controlled stopping
+
+### Milestone 4: Transfer Hardening
+
+Software stack:
+
+- add automatic regression plots for sim-vs-real mismatch
+- add richer observation history and delay randomization
+- add failure-case tagging for slip, pitch fall, lateral fall, and missed
+  touchdown
+
+Training approach:
+
+- broaden the command curriculum
+- train on richer domain randomization and contact variation
+- add start/stop transitions and in-place yaw
+- tune the reference and residual balance rather than adding many ad hoc reward
+  terms
+
+Sim2real:
+
+- iterate between real logs and simulator calibration
+- require repeatable hardware evaluation across multiple floors or friction
+  conditions
+- quantify zero-shot success rate for walk, stop, and turn
+
+Exit gate:
+
+- zero-shot or near-zero-touch sim-to-real forward walking is reliable
+- stop and turn behaviors are repeatable on hardware
+
+### Milestone 5: Recovery and Robustness
+
+Software stack:
+
+- extend the reference generator to support disturbance-aware step adjustment
+- optionally move from plain `LIPM/DCM` to an `ALIP`-inspired reference if
+  angular-momentum effects matter strongly
+- add runtime safety monitors and fall logging
+
+Training approach:
+
+- add moderate push recovery during standing and slow walking
+- keep the same policy-centered runtime artifact
+- treat planner logic as a better prior, not as a controller replacement
+
+Sim2real:
+
+- benchmark moderate push recovery
+- benchmark recovery from command changes and stop transitions
+- track failure modes by class rather than only aggregate success rate
+
+Exit gate:
+
+- WildRobot v2 can walk, stop, turn, and recover from moderate disturbances on
+  current hardware
+
+### Milestone 6: Platformization
+
+Software stack:
+
+- add reusable policy packaging and deployment tools
+- add dataset recording and replay for future imitation or keyframe workflows
+- add one command entry point for train, eval, replay, and deploy
+
+Training approach:
+
+- keep RL as the main locomotion training path
+- make room for future data-driven skills on top of the same platform
+- separate locomotion priors from robot IO and evaluation tooling
+
+Sim2real:
+
+- make calibration, evaluation, and deployment reproducible enough for repeated
+  hardware iterations
+- keep one standard benchmark suite for every new policy
+
+Exit gate:
+
+- WildRobot operates as a small robot-learning platform rather than a single
+  experiment branch
+
 ## Proposed Next Steps
 
 1. Decide whether the goal is:

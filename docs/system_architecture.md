@@ -1,68 +1,86 @@
 # WildRobot System Architecture
 
-**Status:** Active mainline updated at `v0.17.3`  
-**Last updated:** 2026-03-22
+**Status:** ToddlerBot-style locomotion pivot active for `v0.19.x`  
+**Last updated:** 2026-03-31
 
 ---
 
 ## Purpose
 
-This document captures the repo-level architecture decision after the `v0.17.1`
-standing result and the later hardware-fit review.
+This document captures the repo-level architecture decision after the
+standing-only exploration and the later ToddlerBot / LeRobot comparison.
 
-The repo keeps two paths:
-- the existing PPO/AMP stack in `training/` as baseline, runtime, and eval
-  infrastructure
-- a new set of non-PPO helpers under `control/` for bounded teacher/planner
-  utilities when needed
+The project is pivoting from a standing-first PPO branch toward a
+locomotion-first robot-learning platform on current WildRobot v2 hardware.
+
+The repo keeps three layers:
+- `runtime/` and `assets/` own the hardware interface and digital twin
+- `training/` owns RL, eval, export, and locomotion curricula
+- top-level `control/` owns reduced-order models, references, IK, and reusable
+  non-PPO helpers
 
 The active mainline for current WildRobot hardware is now:
 - **MJCF / MuJoCo remains the main simulation path**
-- **the deployed controller remains a direct RL policy**
-- **recipe-fixed pure RL is tested before enabling teacher/scaffold logic**
-- **planner or capture-point logic, if used, is training-time teacher/scaffold
-  only**
-- **standing push recovery is validated first**
-- **walking is added later on the same deployed policy stack**
+- **the deployed controller remains a learned policy**
+- **reference-guided RL becomes the active locomotion recipe**
+- **reduced-order reference + IK provide nominal motion, not the final
+  controller**
+- **sim2real becomes an explicit calibration + SysID + evaluation loop**
+- **walking becomes the primary product goal on current hardware**
+- **standing remains a regression gate, not the top-level destination**
 
 This is the closest match to the practical industry recipe for this robot class:
 - simulator-native RL
 - policy deployment to hardware
-- domain-randomized transfer hardening
-- optional teacher or privileged training signals
+- structured locomotion priors
+- actuator realism and transfer hardening
+- explicit sim2real tooling
 
 Active planning docs:
+- [walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md)
+- [TodderlBot_direction.md](/home/leeygang/projects/wildrobot/training/docs/TodderlBot_direction.md)
 - [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
 - [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
 - [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
 
 Reference tiers for the active branch:
 
-1. **Direct RL recipe references**
+1. **Primary architecture and training reference**
+   - ToddlerBot:
+     - <https://toddlerbot.github.io/>
+     - <https://arxiv.org/abs/2502.00893>
+   This defines the mainline recipe shape:
+   - digital twin quality
+   - actuator realism and SysID
+   - structured locomotion prior
+   - learned runtime policy
+
+2. **Reduced-order locomotion reference**
+   - LIPM / DCM / capture-point
+   - ALIP-inspired task-space learning:
+     - <https://arxiv.org/abs/2309.15442>
+   These define the reference-generator shape:
+   - task-space step targets
+   - reduced-order balance logic
+   - nominal motion prior for RL
+
+3. **Direct RL stack references**
    - MuJoCo Playground:
      - <https://github.com/google-deepmind/mujoco_playground>
    - Unitree RL Lab:
      - <https://github.com/unitreerobotics/unitree_rl_lab>
-   These define the mainline recipe shape:
+   These define the training and deployment recipe:
    - simulator-native RL
    - direct policy deployment
    - transfer hardening through training
 
-2. **Teacher / scaffold reference**
-   - ModelBasedFootstepPlanning-IROS2024:
-     - <https://github.com/hojae-io/ModelBasedFootstepPlanning-IROS2024>
-   This is the closest open-source reference for:
-   - model-based footstep targets
-   - model-free RL execution
-   - teacher-like geometry assistance without making the deployed artifact a
-     full planner stack
-
-3. **Closest hardware-class implementation reference**
-   - adjacent Open Duck Mini project / runtime
-   This is the grounding reference for:
-   - hobby-servo deployment reality
-   - similar runtime constraints
-   - what the deployed policy path can plausibly support on small hardware
+4. **Infrastructure reference**
+   - LeRobot:
+     - <https://github.com/huggingface/lerobot>
+   This is the reference for:
+   - dataset and replay tooling
+   - robot interface cleanup
+   - reusable train/eval/deploy workflows
 
 Deferred reference docs:
 - [ocs2_humanoid_mpc_adoption.md](/home/leeygang/projects/wildrobot/training/docs/ocs2_humanoid_mpc_adoption.md)
@@ -72,64 +90,95 @@ Deferred reference docs:
 
 ## Why The Architecture Changed
 
-`v0.17.1` answered the PPO baseline question:
-- quiet standing was stable
-- PPO optimization itself was not the blocker
-- internal push probes looked strong
-- the fixed ladder still failed the true hard-push gate
+The standing exploration established useful baseline facts:
+- quiet standing is learnable on current hardware
+- PPO itself is not the main blocker
+- the hard part is coordinated locomotion and whole-body recovery
 
-The remaining gap was:
-- hard-push step quality
-- touchdown geometry
-- post-touchdown arrest of collapse
+The remaining gap is no longer "can RL stabilize standing?" The remaining gap
+is:
+- reliable step timing
+- task-space foot placement
+- trunk and pelvis coordination
+- repeatable sim2real transfer for locomotion
 
-Two follow-up ideas were examined and rejected as the mainline:
+Three directions were compared:
 
-1. **Keep escalating PPO without changing the recipe**
-   - low confidence after the fixed ladder already rejected the branch
+1. **Keep escalating free PPO**
+   - low confidence after the standing branch already exposed the mechanism gap
 
 2. **Jump to full OCS2 / humanoid MPC**
-   - poor fit for current hardware:
+   - still a poor fit for current hardware:
      - position-controlled hobby servos
      - `50 Hz` runtime
      - thin sensing stack
      - no ankle roll
 
-That leaves the more practical conclusion:
-- keep the industry-standard RL deployment recipe
-- first match the closest proven small-servo RL recipe
-- add step-geometry hints only as bounded teachers or privileged scaffolds after
-  the recipe-fixed pure-RL rerun if still needed
+3. **Follow a ToddlerBot-style structured-learning route**
+   - highest confidence on current hardware
+   - keeps a learned runtime policy
+   - adds a stronger locomotion prior and better sim2real discipline
+
+That leads to the current conclusion:
+- keep the learned-policy deployment recipe
+- add reduced-order reference generation and IK as nominal-motion tools
+- train a residual policy around that nominal motion
+- make sim2real an explicit engineering loop rather than a later patch
 
 ---
 
 ## Current Mainline Architecture
 
-The active mainline is RL-first.
+The active mainline is reference-guided RL.
 
 ```text
 MJCF / MuJoCo simulation
     ->
-RL training stack
+Calibration and SysID
     ->
-Optional teacher / scaffold path
-  (need_step labels, capture-point targets, privileged signals)
+Reduced-order walking reference
+  (LIPM / DCM / capture-point first, ALIP later if needed)
     ->
-Direct policy
+IK nominal motion generator
+    ->
+Residual RL policy
     ->
 Joint position targets
     ->
 Current runtime / hardware path
 ```
 
-### Layer 1: Simulation and robot model
+### Layer 1: Simulation and digital twin
 
 Responsibilities:
 - keep `assets/v2/wildrobot.xml` as the main simulation model
 - preserve MuJoCo contact tuning and actuator semantics
 - provide the state path used by training, eval, and runtime parity checks
+- absorb actuator, sensor, and latency realism from SysID work
 
-### Layer 2: RL training stack
+### Layer 2: Calibration and SysID
+
+Responsibilities:
+- identify actuator delay, backlash, frictionloss, armature, and torque limits
+- calibrate sensor noise and bias
+- provide versioned realism parameters for the digital twin
+
+### Layer 3: Reduced-order reference generation
+
+Responsibilities:
+- generate task-space locomotion references from command velocity and robot state
+- provide gait phase, foothold targets, pelvis targets, and swing-foot targets
+- begin with `LIPM / DCM / capture-point`
+- later allow `ALIP` if angular-momentum effects matter enough to justify it
+
+### Layer 4: IK nominal motion generation
+
+Responsibilities:
+- map task-space reference targets into nominal joint targets
+- keep the nominal motion morphology-aware for WildRobot v2
+- provide a clear baseline motion for policy residual learning
+
+### Layer 5: RL training stack
 
 Responsibilities:
 - policy optimization
@@ -137,59 +186,49 @@ Responsibilities:
 - curriculum
 - fixed evaluation
 - exportable runtime-compatible policy contract
+- residual correction around the nominal reference path
 
-This remains the main deployed-control path.
+The deployed artifact remains the policy.
 
-### Layer 3: Optional teacher / scaffold path
-
-Responsibilities:
-- provide bounded training-time assistance when task geometry is hard to learn
-  from scratch
-
-Allowed forms:
-- `need_step` labels
-- target step placement
-- capture-margin signal
-- privileged training inputs
-- auxiliary reward targets
-
-Disallowed role:
-- becoming a required runtime controller dependency
-
-### Layer 4: Evaluation and deployment
+### Layer 6: Evaluation and deployment
 
 Responsibilities:
-- fixed ladder comparison against `v0.14.6` and `v0.17.1`
+- fixed locomotion and standing regression ladders
 - sim2sim checks
+- sim2real replay and mismatch analysis
 - policy export and runtime deployment
 
-The artifact being evaluated and deployed stays the policy.
+The artifact being evaluated and deployed stays the policy. Reference and IK
+layers are part of the locomotion stack, but they are not treated as a separate
+standalone controller product.
 
 ---
 
 ## Architecture Principles
 
-1. **RL-first deployed controller**
-   - The runtime artifact should remain a direct policy that matches the current
+1. **Learned policy remains the deployed controller**
+   - The runtime artifact remains a learned policy that matches the current
      hardware path.
 
-2. **Teacher second, not planner-first**
-   - Step geometry can be injected as labels, targets, or privileged signals.
-   - First run the recipe-fixed pure-RL branch before escalating to teacher
-     logic.
-   - It should not become a required runtime dependency unless later evidence
-     justifies that jump.
+2. **Reference-guided RL replaces reward-first discovery**
+   - Reduced-order references and IK narrow the search space.
+   - The policy learns robustness and adaptation around a nominal motion.
 
-3. **Keep MJCF / MuJoCo as the mainline sim path**
+3. **IK is a nominal-motion tool, not the final controller**
+   - IK provides the base posture and step realization.
+   - The deployed control contract still centers on the learned policy.
+
+4. **Keep MJCF / MuJoCo as the mainline sim path**
    - Do not force URDF or a new simulator into the active branch.
 
-4. **Follow the existing industry recipe**
+5. **Follow the existing industry recipe**
    - simulator-native RL
    - policy deployment
    - domain randomization / latency / noise hardening
-   - optional teacher or imitation support
+   - structured locomotion prior
+   - explicit sim2real tooling
 
-5. **Keep heavyweight model-based stacks as long-term references**
+6. **Keep heavyweight model-based stacks as long-term references**
    - OCS2, `wb_humanoid_mpc`, OpenLoong, and MJPC remain reference material.
    - They are not the immediate implementation contract for current hardware.
 
@@ -225,8 +264,9 @@ These remain references, not mainline dependencies:
 These paths stay documented, but they are not the active implementation plan:
 - full OCS2 / humanoid MPC adoption on current hardware
 - URDF-first migration as the mainline path
-- planner-dependent runtime controller execution
-- PPO-only escalation without recipe changes
+- standing-first PPO as the top-level product path
+- unrestricted joint-space gait discovery from rewards alone
+- mocap-first retargeting as the initial locomotion route
 - open-ended reward-family growth as the main solution
 
 ---
@@ -248,6 +288,8 @@ Practical boundary:
 What belongs in `control/`:
 - robot model interfaces
 - reduced-order helper logic
+- locomotion references
+- IK / kinematics helpers
 - optional teacher or target generators
 - adapters and reusable non-PPO support code
 - reserved room for future advanced planner experiments
@@ -271,6 +313,8 @@ docs/
   URDF_migration_plan.md            # deferred / conditional
 
 training/docs/
+  walking_training.md
+  TodderlBot_direction.md
   standing_training.md
   footstep_planner_rl_adoption.md
   ocs2_humanoid_mpc_adoption.md     # deferred / reference only
@@ -279,49 +323,65 @@ control/
   README.md
   robot_model/
   reduced_model/
+  references/
+  kinematics/
   mpc/                              # reserved for future advanced planner work
   execution/
   adapters/
 ```
 
 In the active branch, `control/` exists to support training and deployment of
-the RL stack, not to replace it with a heavyweight controller.
+the locomotion policy stack, not to replace it with a heavyweight controller.
 
 ---
 
 ## Milestone Mapping
 
-### `v0.17.2`
-- architecture review
-- folder split and scaffolding
-- documentation
+### `v0.19.0`
+- architecture pivot
+- locomotion-first roadmap
+- shared observation / action contract
 
-### `v0.17.3`
-- recipe-fixed pure RL
-- explicit runtime-vs-privileged input boundary
-- optional teacher/scaffold hooks remain gated
+### `v0.19.1`
+- actuator SysID
+- digital twin realism
+- sim2real replay tooling
 
-### `v0.17.4`
-- conditional bounded step-target teacher / scaffold integration if the
-  recipe-fixed rerun still misses the gate
+### `v0.19.2`
+- `walking_ref_v1`
+- `LIPM / DCM / capture-point` reference
+- IK nominal motion path
 
-### `v0.17.5`
-- standing push recovery on the RL mainline
+### `v0.19.3`
+- reference-guided walking PPO
+- forward walk and stop
+- residual policy export
 
-### `v0.17.6`
-- walking on the same deployed policy stack
+### `v0.19.4`
+- transfer hardening
+- history and delay
+- domain randomization expansion
 
-### `v0.17.7`
-- optional stronger teachers only if the simpler branch saturates
+### `v0.19.5`
+- in-place yaw
+- broader command range
+- repeatable zero-shot or near-zero-touch transfer
+
+### `v0.19.6`
+- disturbance-aware stepping
+- moderate push recovery during standing and slow walking
+- optional `ALIP` upgrade if the simpler reference saturates
 
 ---
 
 ## Decision Record
 
-Mainline decision as of `2026-03-22`:
-- **Use an industry-style RL recipe as the active path**
-- **Keep the deployed artifact as a policy**
-- **Run recipe-fixed pure RL before escalating to teacher hierarchy**
-- **Use step-target logic only as optional training-time assistance**
+Mainline decision as of `2026-03-31`:
+- **Use a ToddlerBot-style locomotion platform direction on current v2
+  hardware**
+- **Keep the deployed artifact as a learned policy**
+- **Use reduced-order references + IK to provide nominal locomotion**
+- **Train residual reference-guided RL rather than free gait discovery**
 - **Keep MJCF / MuJoCo as the mainline sim and eval stack**
+- **Make SysID and sim2real evaluation part of the mainline architecture**
 - **Keep OCS2 / `wb_humanoid_mpc` as long-term references only**
