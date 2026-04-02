@@ -365,6 +365,8 @@ Exit gate:
 
 - the reference generator produces coherent stepping in simulation
 - the nominal motion is safe enough to serve as a policy prior
+- initial smoke command:
+  - `uv run python tools/reference_smoke/run_reference_smoke.py --robot-config assets/v2/mujoco_robot_config.json --steps 300 --dt-s 0.02 --forward-speed-mps 0.12`
 
 ### `v0.19.3` Walking Policy v1
 

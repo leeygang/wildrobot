@@ -7,6 +7,13 @@ from .locomotion_contract import (
     LocomotionActionContract,
     validate_locomotion_contract,
 )
+from .walking_ref_v1 import (
+    WalkingRefV1Config,
+    WalkingRefV1Input,
+    WalkingRefV1State,
+    WalkingReferenceOutput,
+    step_reference,
+)
 
 __all__ = [
     "LocomotionCommand",
@@ -14,4 +21,9 @@ __all__ = [
     "LocomotionObservationContract",
     "LocomotionActionContract",
     "validate_locomotion_contract",
+    "WalkingRefV1Config",
+    "WalkingRefV1Input",
+    "WalkingRefV1State",
+    "WalkingReferenceOutput",
+    "step_reference",
 ]

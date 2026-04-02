@@ -8,7 +8,14 @@ Milestone 0 scope is intentionally schema-only:
 - observation contract container (IMU orientation + angular velocity, plus command + reference)
 - residual action contract around nominal targets
 
-Non-goals in this milestone:
-- no walking reference generator implementation
-- no LIPM/DCM logic
-- no IK logic
+Milestone `v0.19.2` now adds:
+
+- `walking_ref_v1.py`: forward-only bounded stepping reference
+- reduced-order step-placement shaping using LIPM/DCM helpers
+- outputs compatible with `LocomotionReferenceState`
+
+Still intentionally deferred to `v0.19.3+`:
+
+- policy integration in env/runtime loops
+- yaw reference support
+- ALIP upgrade
