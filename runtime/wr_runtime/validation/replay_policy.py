@@ -19,6 +19,7 @@ from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, PolicySpec, validate_spec
+from wr_runtime.control.loc_ref_runtime import RuntimeLocRefBuilder
 
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.logging import required_replay_log_fields
@@ -106,6 +107,100 @@ def replay_policy(
         raise ValueError(
             f"yaw_rate_cmd length {yaw_rate_cmd.shape[0]} != T={quat_xyzw.shape[0]}"
         )
+    dt_s = np.asarray(data["dt_s"], dtype=np.float32) if "dt_s" in data else None
+    if dt_s is not None and dt_s.shape[0] != quat_xyzw.shape[0]:
+        raise ValueError(f"dt_s length {dt_s.shape[0]} != T={quat_xyzw.shape[0]}")
+
+    loc_ref_phase_sin_cos = (
+        np.asarray(data["loc_ref_phase_sin_cos"], dtype=np.float32)
+        if "loc_ref_phase_sin_cos" in data
+        else None
+    )
+    loc_ref_stance_foot = (
+        np.asarray(data["loc_ref_stance_foot"], dtype=np.float32)
+        if "loc_ref_stance_foot" in data
+        else None
+    )
+    loc_ref_next_foothold = (
+        np.asarray(data["loc_ref_next_foothold"], dtype=np.float32)
+        if "loc_ref_next_foothold" in data
+        else None
+    )
+    loc_ref_swing_pos = (
+        np.asarray(data["loc_ref_swing_pos"], dtype=np.float32)
+        if "loc_ref_swing_pos" in data
+        else None
+    )
+    loc_ref_swing_vel = (
+        np.asarray(data["loc_ref_swing_vel"], dtype=np.float32)
+        if "loc_ref_swing_vel" in data
+        else None
+    )
+    loc_ref_pelvis_targets = (
+        np.asarray(data["loc_ref_pelvis_targets"], dtype=np.float32)
+        if "loc_ref_pelvis_targets" in data
+        else None
+    )
+    loc_ref_history = (
+        np.asarray(data["loc_ref_history"], dtype=np.float32)
+        if "loc_ref_history" in data
+        else None
+    )
+
+    has_logged_loc_ref = all(
+        arr is not None
+        for arr in (
+            loc_ref_phase_sin_cos,
+            loc_ref_stance_foot,
+            loc_ref_next_foothold,
+            loc_ref_swing_pos,
+            loc_ref_swing_vel,
+            loc_ref_pelvis_targets,
+            loc_ref_history,
+        )
+    )
+
+    if has_logged_loc_ref:
+        assert loc_ref_phase_sin_cos is not None
+        assert loc_ref_stance_foot is not None
+        assert loc_ref_next_foothold is not None
+        assert loc_ref_swing_pos is not None
+        assert loc_ref_swing_vel is not None
+        assert loc_ref_pelvis_targets is not None
+        assert loc_ref_history is not None
+        if loc_ref_phase_sin_cos.shape != (quat_xyzw.shape[0], 2):
+            raise ValueError(
+                f"Expected loc_ref_phase_sin_cos shape (T,2), got {loc_ref_phase_sin_cos.shape}"
+            )
+        if loc_ref_stance_foot.shape != (quat_xyzw.shape[0], 1):
+            raise ValueError(
+                f"Expected loc_ref_stance_foot shape (T,1), got {loc_ref_stance_foot.shape}"
+            )
+        if loc_ref_next_foothold.shape != (quat_xyzw.shape[0], 2):
+            raise ValueError(
+                f"Expected loc_ref_next_foothold shape (T,2), got {loc_ref_next_foothold.shape}"
+            )
+        if loc_ref_swing_pos.shape != (quat_xyzw.shape[0], 3):
+            raise ValueError(
+                f"Expected loc_ref_swing_pos shape (T,3), got {loc_ref_swing_pos.shape}"
+            )
+        if loc_ref_swing_vel.shape != (quat_xyzw.shape[0], 3):
+            raise ValueError(
+                f"Expected loc_ref_swing_vel shape (T,3), got {loc_ref_swing_vel.shape}"
+            )
+        if loc_ref_pelvis_targets.shape != (quat_xyzw.shape[0], 3):
+            raise ValueError(
+                f"Expected loc_ref_pelvis_targets shape (T,3), got {loc_ref_pelvis_targets.shape}"
+            )
+        if loc_ref_history.shape != (quat_xyzw.shape[0], 4):
+            raise ValueError(
+                f"Expected loc_ref_history shape (T,4), got {loc_ref_history.shape}"
+            )
+    else:
+        loc_ref_builder = RuntimeLocRefBuilder(
+            default_dt_s=0.02,
+            actuator_names=tuple(spec.robot.actuator_names),
+        )
 
     T = quat_xyzw.shape[0] if limit is None else min(limit, quat_xyzw.shape[0])
     obs_out = np.zeros((T, spec.model.obs_dim), dtype=np.float32)
@@ -129,11 +224,47 @@ def replay_policy(
             forward_speed=velocity_cmd[t],
             yaw_rate=yaw_rate_cmd[t],
         )
+        if has_logged_loc_ref:
+            assert loc_ref_phase_sin_cos is not None
+            assert loc_ref_stance_foot is not None
+            assert loc_ref_next_foothold is not None
+            assert loc_ref_swing_pos is not None
+            assert loc_ref_swing_vel is not None
+            assert loc_ref_pelvis_targets is not None
+            assert loc_ref_history is not None
+            loc_ref_phase = loc_ref_phase_sin_cos[t]
+            loc_ref_stance = loc_ref_stance_foot[t]
+            loc_ref_foothold = loc_ref_next_foothold[t]
+            loc_ref_spos = loc_ref_swing_pos[t]
+            loc_ref_svel = loc_ref_swing_vel[t]
+            loc_ref_pelvis = loc_ref_pelvis_targets[t]
+            loc_ref_hist = loc_ref_history[t]
+        else:
+            loc_ref = loc_ref_builder.step(
+                forward_speed_mps=float(velocity_cmd[t][0]),
+                dt_s=float(dt_s[t]) if dt_s is not None else None,
+                joint_pos_rad=joint_pos_rad[t],
+                joint_vel_rad_s=joint_vel_rad_s[t],
+            )
+            loc_ref_phase = loc_ref.phase_sin_cos
+            loc_ref_stance = loc_ref.stance_foot
+            loc_ref_foothold = loc_ref.next_foothold
+            loc_ref_spos = loc_ref.swing_pos
+            loc_ref_svel = loc_ref.swing_vel
+            loc_ref_pelvis = loc_ref.pelvis_targets
+            loc_ref_hist = loc_ref.history
         obs = build_observation(
             spec=spec,
             state=state,
             signals=signals,
             velocity_cmd=velocity_cmd_vec,
+            loc_ref_phase_sin_cos=loc_ref_phase,
+            loc_ref_stance_foot=loc_ref_stance,
+            loc_ref_next_foothold=loc_ref_foothold,
+            loc_ref_swing_pos=loc_ref_spos,
+            loc_ref_swing_vel=loc_ref_svel,
+            loc_ref_pelvis_targets=loc_ref_pelvis,
+            loc_ref_history=loc_ref_hist,
         )
 
         action_raw = policy.predict(obs)

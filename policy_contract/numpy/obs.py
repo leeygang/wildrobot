@@ -21,8 +21,15 @@ def build_observation_from_components(
     velocity_cmd: np.ndarray,
     capture_point_error: np.ndarray | None = None,
     gait_clock: np.ndarray | None = None,
+    loc_ref_phase_sin_cos: np.ndarray | None = None,
+    loc_ref_stance_foot: np.ndarray | None = None,
+    loc_ref_next_foothold: np.ndarray | None = None,
+    loc_ref_swing_pos: np.ndarray | None = None,
+    loc_ref_swing_vel: np.ndarray | None = None,
+    loc_ref_pelvis_targets: np.ndarray | None = None,
+    loc_ref_history: np.ndarray | None = None,
 ) -> np.ndarray:
-    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3"}:
+    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4"}:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
     cp_error = (
@@ -34,6 +41,41 @@ def build_observation_from_components(
         np.zeros((4,), dtype=np.float32)
         if gait_clock is None
         else np.asarray(gait_clock, dtype=np.float32).reshape(4)
+    )
+    phase = (
+        np.zeros((2,), dtype=np.float32)
+        if loc_ref_phase_sin_cos is None
+        else np.asarray(loc_ref_phase_sin_cos, dtype=np.float32).reshape(2)
+    )
+    stance = (
+        np.zeros((1,), dtype=np.float32)
+        if loc_ref_stance_foot is None
+        else np.asarray(loc_ref_stance_foot, dtype=np.float32).reshape(1)
+    )
+    foothold = (
+        np.zeros((2,), dtype=np.float32)
+        if loc_ref_next_foothold is None
+        else np.asarray(loc_ref_next_foothold, dtype=np.float32).reshape(2)
+    )
+    swing_pos = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_swing_pos is None
+        else np.asarray(loc_ref_swing_pos, dtype=np.float32).reshape(3)
+    )
+    swing_vel = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_swing_vel is None
+        else np.asarray(loc_ref_swing_vel, dtype=np.float32).reshape(3)
+    )
+    pelvis = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_pelvis_targets is None
+        else np.asarray(loc_ref_pelvis_targets, dtype=np.float32).reshape(3)
+    )
+    history = (
+        np.zeros((4,), dtype=np.float32)
+        if loc_ref_history is None
+        else np.asarray(loc_ref_history, dtype=np.float32).reshape(4)
     )
 
     parts = [
@@ -49,6 +91,8 @@ def build_observation_from_components(
         parts.append(cp_error)
     if spec.observation.layout_id == "wr_obs_v3":
         parts.append(clock)
+    if spec.observation.layout_id == "wr_obs_v4":
+        parts.extend([phase, stance, foothold, swing_pos, swing_vel, pelvis, history])
     parts.append(np.zeros((1,), dtype=np.float32))
 
     obs = np.concatenate(parts)
@@ -63,6 +107,13 @@ def build_observation(
     velocity_cmd: np.ndarray,
     capture_point_error: np.ndarray | None = None,
     gait_clock: np.ndarray | None = None,
+    loc_ref_phase_sin_cos: np.ndarray | None = None,
+    loc_ref_stance_foot: np.ndarray | None = None,
+    loc_ref_next_foothold: np.ndarray | None = None,
+    loc_ref_swing_pos: np.ndarray | None = None,
+    loc_ref_swing_vel: np.ndarray | None = None,
+    loc_ref_pelvis_targets: np.ndarray | None = None,
+    loc_ref_history: np.ndarray | None = None,
 ) -> np.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -81,4 +132,11 @@ def build_observation(
         velocity_cmd=velocity_cmd,
         capture_point_error=capture_point_error,
         gait_clock=gait_clock,
+        loc_ref_phase_sin_cos=loc_ref_phase_sin_cos,
+        loc_ref_stance_foot=loc_ref_stance_foot,
+        loc_ref_next_foothold=loc_ref_next_foothold,
+        loc_ref_swing_pos=loc_ref_swing_pos,
+        loc_ref_swing_vel=loc_ref_swing_vel,
+        loc_ref_pelvis_targets=loc_ref_pelvis_targets,
+        loc_ref_history=loc_ref_history,
     )

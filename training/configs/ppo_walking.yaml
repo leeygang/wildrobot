@@ -1,37 +1,25 @@
 # =============================================================================
-# WildRobot PPO Walking Config (v0.15.12)
+# WildRobot PPO Walking Config (v0.19.3)
 # =============================================================================
-# Stage 1b: Robot-Native Walking Policy (No AMP, no reference motion)
-#
-# Goal: Learn a stable, repeatable, controllable gait using PPO task rewards
-# only. This config moves to the larger lever after `v0.15.7` confirmed that
-# `v0.15.12` keeps the reward-economics foundation, but pivots the propulsion
-# path to contact-driven step outcomes instead of dense velocity credit.
-#
-# Usage:
-#   uv run python training/train.py --config training/configs/ppo_walking.yaml
-# Start this run from scratch. Do not resume from the standing checkpoint or
-# the v0.15.4 walking checkpoints; both were trapped in bad basins.
+# Milestone 3: Walking Policy v1
+# - reference-guided PPO (wr_obs_v4)
+# - forward walk + stop only
+# - residual action around nominal q_ref
 # =============================================================================
 
-version: "0.15.12"
-version_name: "Stage 1b contact-driven step-propulsion probe"
+version: "0.19.3"
+version_name: "M3 walking policy v1 reference-guided PPO"
 
 seed: 42
 
-# =============================================================================
-# Environment
-# =============================================================================
 env:
   assets_root: assets/v2
   realism_profile_path: assets/v2/realism_profile_v0.19.1.json
 
   sim_dt: 0.002
   ctrl_dt: 0.02
-
   max_episode_steps: 500
 
-  # Health / termination
   target_height: 0.45
   min_height: 0.20
   collapse_height_buffer: 0.02
@@ -41,40 +29,27 @@ env:
   max_pitch: 0.8
   max_roll: 0.8
 
-  # Walking commands
-  min_velocity: 0.05
-  max_velocity: 0.15
+  # Forward + stop only (no backward/yaw commands in M3)
+  min_velocity: 0.0
+  max_velocity: 0.20
 
-  # Contacts
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
 
-  # Slightly more damping than v0.15.4 to reduce pitchy forward-diving behavior
-  # while still allowing gait emergence.
   action_filter_alpha: 0.3
-  actor_obs_layout_id: wr_obs_v3
-  clock_stride_period_steps: 36
-  clock_phase_gate_width: 0.22
+  actor_obs_layout_id: wr_obs_v4
+  action_mapping_id: pos_target_home_v1
+  loc_ref_enabled: true
+  loc_ref_residual_scale: 0.18
 
-  # Controllers off for Stage 1 walking.
+  clock_stride_period_steps: 36
+  clock_phase_gate_width: 0.20
+
   base_ctrl_enabled: false
   fsm_enabled: false
-
-  # Disturbance pushes remain off until the robot has a usable nominal gait.
   push_enabled: false
-  push_start_step_min: 40
-  push_start_step_max: 250
-  push_duration_steps: 6
-  push_force_min: 1.0
-  push_force_max: 3.0
-  push_body: waist
 
-# =============================================================================
-# PPO Algorithm
-# =============================================================================
 ppo:
-  # Keep the short probe structure, but push much harder on propulsion now that
-  # `v0.15.6` proved the policy can step without falling.
   num_envs: 1024
   rollout_steps: 128
   iterations: 40
@@ -82,15 +57,12 @@ ppo:
   learning_rate: 3e-4
   gamma: 0.99
   gae_lambda: 0.95
-
   clip_epsilon: 0.15
   entropy_coef: 0.03
   value_loss_coef: 0.5
-
   epochs: 2
   num_minibatches: 32
   max_grad_norm: 0.5
-
   target_kl: 0.02
   kl_early_stop_multiplier: 1.5
   kl_lr_backoff_multiplier: 3.0
@@ -98,6 +70,7 @@ ppo:
   lr_schedule_end_factor: 0.5
   entropy_schedule_end_factor: 0.4
   critic_privileged_enabled: false
+  log_interval: 10
 
   eval:
     enabled: true
@@ -112,37 +85,11 @@ ppo:
     success_rate_drop_threshold: 0.05
     lr_factor: 0.5
 
-  log_interval: 10
-
-# =============================================================================
-# AMP (disabled for Stage 1)
-# =============================================================================
 amp:
   enabled: false
-
   dataset_path: null
   weight: 0.0
 
-  discriminator:
-    learning_rate: 8e-5
-    batch_size: 256
-    updates_per_ppo_update: 2
-    r1_gamma: 10.0
-    input_noise_std: 0.03
-
-  feature_config:
-    use_finite_diff_vel: true
-    use_estimated_contacts: true
-    mask_waist: false
-    enable_mirror_augmentation: false
-
-  targets:
-    disc_acc_min: 0.55
-    disc_acc_max: 0.80
-
-# =============================================================================
-# Networks
-# =============================================================================
 networks:
   actor:
     hidden_sizes: [256, 256, 128]
@@ -150,104 +97,80 @@ networks:
     log_std_init: -1.0
     min_log_std: -5.0
     max_log_std: 2.0
-
   critic:
     hidden_sizes: [256, 256, 128]
     activation: elu
-
   discriminator:
     hidden_sizes: [512, 256]
     activation: relu
 
-# =============================================================================
-# Task Reward Weights
-# =============================================================================
 reward_weights:
-  # v0.15.12: structured step-to-step propulsion branch with wr_obs_v3.
-  tracking_lin_vel: 8.0
-  lateral_velocity: -0.3
-  # Note: this term multiplies `healthy` in env reward, so keep it low.
-  base_height: 0.03
-  orientation: -0.7
-  angular_velocity: -0.06
-  pitch_rate: -0.4
+  alive: 0.8
+  tracking_lin_vel: 6.5
+  lateral_velocity: -0.25
+  base_height: 0.05
+  orientation: -0.6
+  angular_velocity: -0.05
+  pitch_rate: -0.2
   height_target: 0.10
   height_target_sigma: 0.05
   collapse_height: -0.3
   collapse_vz: -0.2
-
   torque: -0.0007
   saturation: -0.05
-
   action_rate: -0.005
   joint_velocity: -0.0003
-
   slip: -0.05
-  clearance: 0.35
-  gait_periodicity: 0.08
-  hip_swing: 0.1
-  knee_swing: 0.15
-  hip_swing_min: 0.2
-  knee_swing_min: 0.2
-  flight_phase_penalty: -0.02
-  stance_width_penalty: -0.1
-  stance_width_target: 0.19
-  stance_width_sigma: 0.05
-
+  clearance: 0.20
   forward_velocity_scale: 6.0
-  velocity_step_gate: 1.0
-  velocity_standing_penalty: 0.5
-  velocity_standing_threshold: 0.12
+  velocity_step_gate: 0.0
+  velocity_standing_penalty: 0.3
+  velocity_standing_threshold: 0.10
   velocity_cmd_min: 0.05
 
-  # Stage-A propulsion probe: legacy stepping rewards are negligible; propulsion
-  # terms should drive the optimization path.
-  step_event: 0.0005
-  foot_place: 0.0
-  step_length: 1.2
-  step_length_target_base: 0.035
-  step_length_target_scale: 0.15
-  step_length_sigma: 0.06
-  step_progress: 1.4
-  step_progress_target_scale: 1.0
-  step_progress_sigma: 0.05
-  dense_progress: 0.0
-  dense_progress_upright_pitch: 0.22
-  dense_progress_upright_pitch_rate: 0.75
-  dense_progress_upright_sharpness: 10.0
-  forward_upright_gate_strength: 0.85
-  cycle_progress: 0.1
-  cycle_progress_target_scale: 0.6
-  cycle_progress_sigma: 0.12
-  propulsion_gate_step_length_weight: 0.5
-  propulsion_gate_step_progress_weight: 0.5
-  foot_place_k_cmd_vel: 0.30
-  foot_place_k_fwd_vel: 0.08
+  # M3 conservative task-space family
+  m3_pelvis_orientation_tracking: 0.35
+  m3_pelvis_height_tracking: 0.25
+  m3_swing_foot_tracking: 0.25
+  m3_foothold_consistency: 0.25
+  m3_residual_magnitude: -0.02
+  m3_excessive_impact: -0.01
+  m3_pelvis_orientation_sigma: 0.20
+  m3_pelvis_height_sigma: 0.04
+  m3_swing_pos_sigma: 0.08
+  m3_swing_vel_sigma: 0.80
+  m3_foothold_sigma: 0.10
+  m3_impact_force_threshold: 40.0
+  m3_impact_force_sigma: 20.0
 
-# =============================================================================
-# Reward Composition
-# =============================================================================
+  # Keep standing-regression metrics visible, minimize older walking clutter.
+  step_event: 0.0
+  foot_place: 0.0
+  step_length: 0.0
+  step_progress: 0.0
+  dense_progress: 0.0
+  cycle_progress: 0.0
+  posture: 0.0
+  com_velocity_damping: 0.0
+  arrest_pitch_rate: 0.0
+  arrest_capture_error: 0.0
+  post_touchdown_survival: 0.0
+
 reward:
   task_weight: 1.0
   amp_weight: 0.0
   task_reward_clip: null
   amp_reward_clip: [0.0, 1.0]
 
-# =============================================================================
-# Checkpoints
-# =============================================================================
 checkpoints:
   dir: training/checkpoints
   interval: 10
 
-# =============================================================================
-# Logging
-# =============================================================================
 wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, stage1, walking, v0.15.12]
+  tags: [ppo, walking, v0.19.3, wr_obs_v4, residual_q_ref]
 
 video:
   enabled: true
@@ -256,9 +179,6 @@ video:
   height: 480
   fps: 25
 
-# =============================================================================
-# Quick Verify
-# =============================================================================
 quick_verify:
   enabled: false
   ppo:

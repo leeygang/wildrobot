@@ -40,6 +40,7 @@ from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicyBundle, validate_spec
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
+from wr_runtime.control.loc_ref_runtime import RuntimeLocRefBuilder
 
 from configs import load_config
 from wr_runtime.hardware.actuators import (
@@ -65,6 +66,21 @@ _DEBUG_JOINT_GROUPS: list[tuple[str, list[str]]] = [
     ("ankle_pitch", ["left_ankle_pitch", "right_ankle_pitch"]),
     ("wrist_pitch", ["left_wrist_pitch", "right_wrist_pitch"]),
 ]
+
+
+def _build_policy_command_vector(*, spec, forward_speed: float, yaw_rate: float) -> np.ndarray:
+    command_size = 0
+    for field in spec.observation.layout:
+        if field.name == "velocity_cmd":
+            command_size = int(field.size)
+            break
+    if command_size <= 0:
+        raise ValueError("Policy observation layout must include velocity_cmd")
+    if command_size == 1:
+        return np.asarray([forward_speed], dtype=np.float32)
+    if command_size == 2:
+        return np.asarray([forward_speed, yaw_rate], dtype=np.float32)
+    raise ValueError(f"Unsupported velocity_cmd observation size: {command_size}")
 
 
 def _print_joint_debug(
@@ -619,6 +635,10 @@ def main() -> None:
 
     state = PolicyState.init(spec)
     last_time = time.time()
+    loc_ref_builder = RuntimeLocRefBuilder(
+        default_dt_s=control_dt,
+        actuator_names=tuple(spec.robot.actuator_names),
+    )
 
     log_path = Path(args.log_path).expanduser() if args.log_path else None
     log_steps = int(args.log_steps) if args.log_steps is not None else None
@@ -630,6 +650,13 @@ def main() -> None:
     log_foot: list[np.ndarray] = []
     log_vel_cmd: list[np.ndarray] = []
     log_yaw_rate_cmd: list[np.ndarray] = []
+    log_loc_ref_phase_sin_cos: list[np.ndarray] = []
+    log_loc_ref_stance_foot: list[np.ndarray] = []
+    log_loc_ref_next_foothold: list[np.ndarray] = []
+    log_loc_ref_swing_pos: list[np.ndarray] = []
+    log_loc_ref_swing_vel: list[np.ndarray] = []
+    log_loc_ref_pelvis_targets: list[np.ndarray] = []
+    log_loc_ref_history: list[np.ndarray] = []
     log_timestamp_s: list[np.ndarray] = []
     log_dt_s: list[np.ndarray] = []
 
@@ -656,12 +683,30 @@ def main() -> None:
 
             try:
                 signals = robot_io.read()
+                loc_ref = loc_ref_builder.step(
+                    forward_speed_mps=float(cfg.control.velocity_cmd),
+                    dt_s=float(dt),
+                    joint_pos_rad=np.asarray(signals.joint_pos_rad, dtype=np.float32),
+                    joint_vel_rad_s=np.asarray(signals.joint_vel_rad_s, dtype=np.float32),
+                )
+                velocity_cmd_vec = _build_policy_command_vector(
+                    spec=spec,
+                    forward_speed=float(cfg.control.velocity_cmd),
+                    yaw_rate=float(cfg.control.yaw_rate_cmd),
+                )
 
                 obs = build_observation(
                     spec=spec,
                     state=state,
                     signals=signals,
-                    velocity_cmd=np.array([cfg.control.velocity_cmd], dtype=np.float32),
+                    velocity_cmd=velocity_cmd_vec,
+                    loc_ref_phase_sin_cos=loc_ref.phase_sin_cos,
+                    loc_ref_stance_foot=loc_ref.stance_foot,
+                    loc_ref_next_foothold=loc_ref.next_foothold,
+                    loc_ref_swing_pos=loc_ref.swing_pos,
+                    loc_ref_swing_vel=loc_ref.swing_vel,
+                    loc_ref_pelvis_targets=loc_ref.pelvis_targets,
+                    loc_ref_history=loc_ref.history,
                 )
                 joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
                     spec=spec,
@@ -700,6 +745,13 @@ def main() -> None:
                 log_foot.append(np.asarray(signals.foot_switches, dtype=np.float32))
                 log_vel_cmd.append(np.asarray([cfg.control.velocity_cmd], dtype=np.float32))
                 log_yaw_rate_cmd.append(np.asarray([cfg.control.yaw_rate_cmd], dtype=np.float32))
+                log_loc_ref_phase_sin_cos.append(np.asarray(loc_ref.phase_sin_cos, dtype=np.float32))
+                log_loc_ref_stance_foot.append(np.asarray(loc_ref.stance_foot, dtype=np.float32))
+                log_loc_ref_next_foothold.append(np.asarray(loc_ref.next_foothold, dtype=np.float32))
+                log_loc_ref_swing_pos.append(np.asarray(loc_ref.swing_pos, dtype=np.float32))
+                log_loc_ref_swing_vel.append(np.asarray(loc_ref.swing_vel, dtype=np.float32))
+                log_loc_ref_pelvis_targets.append(np.asarray(loc_ref.pelvis_targets, dtype=np.float32))
+                log_loc_ref_history.append(np.asarray(loc_ref.history, dtype=np.float32))
                 log_timestamp_s.append(np.asarray([signals.timestamp_s], dtype=np.float64))
                 log_dt_s.append(np.asarray([dt], dtype=np.float64))
                 if log_steps is not None and len(log_quat) >= log_steps:
@@ -723,6 +775,13 @@ def main() -> None:
                 foot_switches=np.stack(log_foot, axis=0),
                 velocity_cmd=np.stack(log_vel_cmd, axis=0),
                 yaw_rate_cmd=np.stack(log_yaw_rate_cmd, axis=0),
+                loc_ref_phase_sin_cos=np.stack(log_loc_ref_phase_sin_cos, axis=0),
+                loc_ref_stance_foot=np.stack(log_loc_ref_stance_foot, axis=0),
+                loc_ref_next_foothold=np.stack(log_loc_ref_next_foothold, axis=0),
+                loc_ref_swing_pos=np.stack(log_loc_ref_swing_pos, axis=0),
+                loc_ref_swing_vel=np.stack(log_loc_ref_swing_vel, axis=0),
+                loc_ref_pelvis_targets=np.stack(log_loc_ref_pelvis_targets, axis=0),
+                loc_ref_history=np.stack(log_loc_ref_history, axis=0),
                 timestamp_s=np.concatenate(log_timestamp_s, axis=0),
                 dt_s=np.concatenate(log_dt_s, axis=0),
             )

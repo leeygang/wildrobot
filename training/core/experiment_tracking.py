@@ -81,6 +81,12 @@ REWARD_TERM_KEYS = [
     "reward/foot_place",
     "reward/step_length",
     "reward/step_progress",
+    "reward/m3_pelvis_orientation_tracking",
+    "reward/m3_pelvis_height_tracking",
+    "reward/m3_swing_foot_tracking",
+    "reward/m3_foothold_consistency",
+    "reward/m3_residual_magnitude",
+    "reward/m3_excessive_impact",
     "reward/teacher_target_step_xy",
     "reward/teacher_step_required",
     "reward/teacher_swing_foot",
@@ -136,6 +142,12 @@ ENV_METRICS_KEYS = {
     "reward/foot_place": "Foot placement reward gated by recovery window or walking command",
     "reward/step_length": "Touchdown step-length reward tied to commanded speed",
     "reward/step_progress": "Touchdown-to-touchdown structured forward progress reward",
+    "reward/m3_pelvis_orientation_tracking": "Pelvis roll/pitch tracking reward to locomotion reference",
+    "reward/m3_pelvis_height_tracking": "Pelvis height tracking reward to locomotion reference",
+    "reward/m3_swing_foot_tracking": "Swing foot position/velocity tracking reward to locomotion reference",
+    "reward/m3_foothold_consistency": "Touchdown-to-reference foothold consistency reward",
+    "reward/m3_residual_magnitude": "Residual joint-delta magnitude penalty",
+    "reward/m3_excessive_impact": "Penalty for excessive touchdown/contact impact force",
     "reward/teacher_target_step_xy": "Teacher target agreement reward on first recovery touchdown",
     "reward/teacher_step_required": "Teacher step-required reward on first recovery step-init event",
     "reward/teacher_swing_foot": "Teacher swing-foot agreement reward on first recovery touchdown",
@@ -184,6 +196,14 @@ ENV_METRICS_KEYS = {
     # Tracking metrics (v0.10.3+)
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
+    "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
+    "tracking/loc_ref_phase_progress": "Locomotion reference stance switch counter",
+    "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
+    "tracking/nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude",
+    "tracking/residual_q_abs_mean": "Mean absolute residual delta_q magnitude",
+    "tracking/residual_q_abs_max": "Max absolute residual delta_q magnitude",
+    "tracking/loc_ref_left_reachable": "Left-leg IK target reachable flag",
+    "tracking/loc_ref_right_reachable": "Right-leg IK target reachable flag",
     # v0.14.x: M3 base-controller FSM debug metrics
     "debug/bc_phase": "M3 FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
     "debug/bc_in_swing": "M3 FSM occupancy in SWING phase",
@@ -313,6 +333,12 @@ def get_initial_env_metrics(
         "reward/foot_place": 0.0,
         "reward/step_length": 0.0,
         "reward/step_progress": 0.0,
+        "reward/m3_pelvis_orientation_tracking": 0.0,
+        "reward/m3_pelvis_height_tracking": 0.0,
+        "reward/m3_swing_foot_tracking": 0.0,
+        "reward/m3_foothold_consistency": 0.0,
+        "reward/m3_residual_magnitude": 0.0,
+        "reward/m3_excessive_impact": 0.0,
         "reward/teacher_target_step_xy": 0.0,
         "reward/teacher_step_required": 0.0,
         "reward/teacher_swing_foot": 0.0,
@@ -376,6 +402,14 @@ def get_initial_env_metrics(
         "tracking/vel_error": 0.0,  # Starts at zero (stationary)
         "tracking/max_torque": 0.0,  # No torque at reset
         "tracking/avg_torque": 0.0,  # No torque at reset
+        "tracking/cmd_vs_achieved_forward": 0.0,
+        "tracking/loc_ref_phase_progress": 0.0,
+        "tracking/loc_ref_stance_foot": 0.0,
+        "tracking/nominal_q_abs_mean": 0.0,
+        "tracking/residual_q_abs_mean": 0.0,
+        "tracking/residual_q_abs_max": 0.0,
+        "tracking/loc_ref_left_reachable": 0.0,
+        "tracking/loc_ref_right_reachable": 0.0,
     }
 
 
@@ -449,6 +483,12 @@ def get_initial_env_metrics_jax(
         "reward/foot_place": jp.zeros(()),
         "reward/step_length": jp.zeros(()),
         "reward/step_progress": jp.zeros(()),
+        "reward/m3_pelvis_orientation_tracking": jp.zeros(()),
+        "reward/m3_pelvis_height_tracking": jp.zeros(()),
+        "reward/m3_swing_foot_tracking": jp.zeros(()),
+        "reward/m3_foothold_consistency": jp.zeros(()),
+        "reward/m3_residual_magnitude": jp.zeros(()),
+        "reward/m3_excessive_impact": jp.zeros(()),
         "reward/teacher_target_step_xy": jp.zeros(()),
         "reward/teacher_step_required": jp.zeros(()),
         "reward/teacher_swing_foot": jp.zeros(()),
@@ -506,6 +546,14 @@ def get_initial_env_metrics_jax(
         "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
         "tracking/max_torque": jp.zeros(()),  # No torque at reset
         "tracking/avg_torque": jp.zeros(()),  # No torque at reset
+        "tracking/cmd_vs_achieved_forward": jp.zeros(()),
+        "tracking/loc_ref_phase_progress": jp.zeros(()),
+        "tracking/loc_ref_stance_foot": jp.zeros(()),
+        "tracking/nominal_q_abs_mean": jp.zeros(()),
+        "tracking/residual_q_abs_mean": jp.zeros(()),
+        "tracking/residual_q_abs_max": jp.zeros(()),
+        "tracking/loc_ref_left_reachable": jp.zeros(()),
+        "tracking/loc_ref_right_reachable": jp.zeros(()),
         # v0.14.x: M3 base-controller FSM debug metrics
         "debug/bc_phase": jp.zeros(()),       # STANCE=0 at reset
         "debug/bc_in_swing": jp.zeros(()),    # 0 occupancy at reset

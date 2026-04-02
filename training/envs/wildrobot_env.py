@@ -59,12 +59,18 @@ from training.cal.types import CoordinateFrame
 from training.configs.training_config import get_robot_config, TrainingConfig
 from training.envs import step_controller as sc
 from control.mpc.standing import compute_mpc_standing_action
+from control.kinematics.leg_ik import LegIkConfig, solve_leg_sagittal_ik_jax
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
     PRIVILEGED_OBS_DIM,
     WildRobotInfo,
     WR_INFO_KEY,
+)
+from control.references.walking_ref_v1 import (
+    WalkingRefV1Config,
+    LEFT_STANCE as REF_LEFT_STANCE,
+    RIGHT_STANCE as REF_RIGHT_STANCE,
 )
 from training.envs.disturbance import (
     DisturbanceSchedule,
@@ -102,6 +108,105 @@ from training.policy_spec_utils import clamp_home_ctrl, get_home_ctrl_from_mj_mo
 # =============================================================================
 
 RECOVERY_WINDOW_STEPS = 50
+STANCE_REF_HISTORY_LEN = 2
+
+
+def _clip_scalar(x: jax.Array, lo: float, hi: float) -> jax.Array:
+    return jp.clip(jp.asarray(x, dtype=jp.float32), jp.asarray(lo, dtype=jp.float32), jp.asarray(hi, dtype=jp.float32))
+
+
+def _step_walking_reference_jax(
+    *,
+    phase_time_s: jax.Array,
+    stance_foot_id: jax.Array,
+    stance_switch_count: jax.Array,
+    forward_speed_mps: jax.Array,
+    com_position_stance_frame: jax.Array,
+    com_velocity_stance_frame: jax.Array,
+    dt_s: float,
+    cfg: WalkingRefV1Config,
+) -> tuple[dict[str, jax.Array], jax.Array, jax.Array, jax.Array]:
+    dt = jp.asarray(dt_s, dtype=jp.float32)
+    step_time = jp.asarray(cfg.step_time_s, dtype=jp.float32)
+    phase_time = jp.asarray(phase_time_s, dtype=jp.float32) + dt
+    stance = jp.asarray(stance_foot_id, dtype=jp.int32)
+    switches = jp.asarray(stance_switch_count, dtype=jp.int32)
+    switched = phase_time >= step_time
+    phase_time = jp.where(switched, phase_time - step_time, phase_time)
+    stance = jp.where(switched, 1 - stance, stance)
+    switches = jp.where(switched, switches + 1, switches)
+    phase = jp.clip(phase_time / jp.maximum(step_time, 1e-6), 0.0, 1.0)
+
+    speed = _clip_scalar(forward_speed_mps, 0.0, cfg.max_forward_speed_mps)
+    omega = jp.sqrt(jp.asarray(9.81, dtype=jp.float32) / jp.asarray(cfg.nominal_com_height_m, dtype=jp.float32))
+    cp_x = com_position_stance_frame[0] + com_velocity_stance_frame[0] / jp.maximum(omega, 1e-6)
+    b = jp.exp(-omega * step_time)
+    nominal_step = _clip_scalar(
+        speed * step_time,
+        cfg.min_step_length_m,
+        cfg.max_step_length_m,
+    )
+    x_foot = (nominal_step - b * cp_x) / jp.maximum(1.0 - b, 1e-6)
+    x_foot = _clip_scalar(x_foot, cfg.min_step_length_m, cfg.max_step_length_m)
+    y_sign = jp.where(stance == REF_LEFT_STANCE, -1.0, 1.0)
+    y_foot = _clip_scalar(
+        y_sign * jp.asarray(cfg.nominal_lateral_foot_offset_m, dtype=jp.float32),
+        -cfg.max_lateral_step_m,
+        cfg.max_lateral_step_m,
+    )
+    z_swing = jp.asarray(cfg.swing_height_m, dtype=jp.float32) * jp.sin(jp.pi * phase)
+    swing_pos = jp.asarray([x_foot * phase, y_foot * phase, z_swing], dtype=jp.float32)
+    swing_vel = jp.asarray(
+        [
+            x_foot / jp.maximum(step_time, 1e-6),
+            y_foot / jp.maximum(step_time, 1e-6),
+            (jp.asarray(cfg.swing_height_m, dtype=jp.float32) * jp.pi / jp.maximum(step_time, 1e-6)) * jp.cos(jp.pi * phase),
+        ],
+        dtype=jp.float32,
+    )
+    pelvis_roll = jp.where(
+        stance == REF_LEFT_STANCE,
+        -jp.asarray(cfg.pelvis_roll_bias_rad, dtype=jp.float32),
+        jp.asarray(cfg.pelvis_roll_bias_rad, dtype=jp.float32),
+    )
+    pelvis_pitch = _clip_scalar(
+        jp.asarray(cfg.pelvis_pitch_gain, dtype=jp.float32) * speed,
+        -cfg.max_pelvis_pitch_rad,
+        cfg.max_pelvis_pitch_rad,
+    )
+    ref = {
+        "gait_phase_sin": jp.sin(2.0 * jp.pi * phase).astype(jp.float32),
+        "gait_phase_cos": jp.cos(2.0 * jp.pi * phase).astype(jp.float32),
+        "stance_foot_id": stance.astype(jp.int32),
+        "next_foothold": jp.asarray([x_foot, y_foot], dtype=jp.float32),
+        "swing_pos": swing_pos,
+        "swing_vel": swing_vel,
+        "pelvis_height": jp.asarray(cfg.nominal_com_height_m, dtype=jp.float32),
+        "pelvis_roll": pelvis_roll.astype(jp.float32),
+        "pelvis_pitch": pelvis_pitch.astype(jp.float32),
+    }
+    return ref, phase_time.astype(jp.float32), stance.astype(jp.int32), switches.astype(jp.int32)
+
+
+def _update_loc_ref_history(prev_hist: jax.Array, phase_sin: jax.Array, phase_cos: jax.Array) -> jax.Array:
+    prev = jp.asarray(prev_hist, dtype=jp.float32).reshape(4)
+    return jp.asarray([prev[2], prev[3], phase_sin, phase_cos], dtype=jp.float32)
+
+
+def _swing_state_in_stance_frame(
+    *,
+    left_foot_pos_h: jax.Array,
+    right_foot_pos_h: jax.Array,
+    left_foot_vel_h: jax.Array,
+    right_foot_vel_h: jax.Array,
+    stance_foot_id: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == REF_LEFT_STANCE
+    stance_pos = jp.where(stance_is_left, left_foot_pos_h, right_foot_pos_h)
+    swing_pos_h = jp.where(stance_is_left, right_foot_pos_h, left_foot_pos_h)
+    stance_vel = jp.where(stance_is_left, left_foot_vel_h, right_foot_vel_h)
+    swing_vel_h = jp.where(stance_is_left, right_foot_vel_h, left_foot_vel_h)
+    return swing_pos_h - stance_pos, swing_vel_h - stance_vel
 
 
 def _update_recovery_tracking(
@@ -1163,9 +1268,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
             mapping_id=str(self._config.env.action_mapping_id),
             home_ctrl_rad=home_ctrl_list,
         )
+        self._loc_ref_enabled = bool(getattr(self._config.env, "loc_ref_enabled", False)) or (
+            self._policy_spec.observation.layout_id == "wr_obs_v4"
+        )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
         }
+        self._walking_ref_cfg = WalkingRefV1Config()
+        self._leg_ik_cfg = LegIkConfig()
+        self._residual_q_scale = jp.asarray(
+            getattr(self._config.env, "loc_ref_residual_scale", 0.18), dtype=jp.float32
+        )
+        self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
+        self._idx_right_hip_pitch = self._actuator_name_to_index.get("right_hip_pitch", -1)
+        self._idx_left_hip_roll = self._actuator_name_to_index.get("left_hip_roll", -1)
+        self._idx_right_hip_roll = self._actuator_name_to_index.get("right_hip_roll", -1)
+        self._idx_left_knee_pitch = self._actuator_name_to_index.get("left_knee_pitch", -1)
+        self._idx_right_knee_pitch = self._actuator_name_to_index.get("right_knee_pitch", -1)
+        self._idx_left_ankle_pitch = self._actuator_name_to_index.get("left_ankle_pitch", -1)
+        self._idx_right_ankle_pitch = self._actuator_name_to_index.get("right_ankle_pitch", -1)
+        self._idx_left_shoulder_pitch = self._actuator_name_to_index.get(
+            "left_shoulder_pitch", -1
+        )
+        self._idx_right_shoulder_pitch = self._actuator_name_to_index.get(
+            "right_shoulder_pitch", -1
+        )
+        self._idx_waist_yaw = self._actuator_name_to_index.get("waist_yaw", -1)
 
         self._default_pose_action = JaxCalibOps.ctrl_to_policy_action(
             spec=self._policy_spec,
@@ -1179,6 +1307,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [float(item["range"][1]) for item in self._robot_config.actuated_joints],
             dtype=jp.float32,
         )
+        self._joint_half_spans = 0.5 * (self._joint_range_maxs - self._joint_range_mins)
         actuator_qpos_addrs = []
         actuator_dof_addrs = []
         for name in self._policy_spec.robot.actuator_names:
@@ -1321,11 +1450,64 @@ class WildRobotEnv(mjx_env.MjxEnv):
             raw_signals, push_schedule.rng, self._config, None, None
         )
 
+        root_pose = self._cal.get_root_pose(data)
+        root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        ref_state, ref_phase_time, ref_stance_foot, ref_switch_count = _step_walking_reference_jax(
+            phase_time_s=jp.zeros((), dtype=jp.float32),
+            stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
+            stance_switch_count=jp.zeros((), dtype=jp.int32),
+            forward_speed_mps=velocity_cmd,
+            com_position_stance_frame=jp.asarray(
+                [root_pose.position[0], root_pose.position[1]], dtype=jp.float32
+            ),
+            com_velocity_stance_frame=jp.asarray(
+                [root_vel_h.linear_xyz[0], root_vel_h.linear_xyz[1]], dtype=jp.float32
+            ),
+            dt_s=self.dt,
+            cfg=self._walking_ref_cfg,
+        )
+        loc_ref_phase_sin = ref_state["gait_phase_sin"]
+        loc_ref_phase_cos = ref_state["gait_phase_cos"]
+        loc_ref_next_foothold = ref_state["next_foothold"]
+        loc_ref_swing_pos = ref_state["swing_pos"]
+        loc_ref_swing_vel = ref_state["swing_vel"]
+        loc_ref_pelvis_height = ref_state["pelvis_height"]
+        loc_ref_pelvis_roll = ref_state["pelvis_roll"]
+        loc_ref_pelvis_pitch = ref_state["pelvis_pitch"]
+        loc_ref_history = _update_loc_ref_history(
+            jp.zeros((STANCE_REF_HISTORY_LEN * 2,), dtype=jp.float32),
+            loc_ref_phase_sin,
+            loc_ref_phase_cos,
+        )
+        nominal_q_ref, left_ref_reachable, right_ref_reachable = (
+            self._compute_nominal_q_ref_from_loc_ref(
+                stance_foot_id=ref_stance_foot,
+                swing_pos=loc_ref_swing_pos,
+                pelvis_height=loc_ref_pelvis_height,
+                pelvis_roll=loc_ref_pelvis_roll,
+                pelvis_pitch=loc_ref_pelvis_pitch,
+            )
+        )
+
         obs = self._get_obs(
             data,
             default_action,
             velocity_cmd,
             step_count=jp.zeros((), dtype=jp.int32),
+            loc_ref_phase_sin_cos=jp.asarray(
+                [loc_ref_phase_sin, loc_ref_phase_cos], dtype=jp.float32
+            ),
+            loc_ref_stance_foot=jp.asarray(
+                [ref_stance_foot.astype(jp.float32)], dtype=jp.float32
+            ),
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_pelvis_targets=jp.asarray(
+                [loc_ref_pelvis_height, loc_ref_pelvis_roll, loc_ref_pelvis_pitch],
+                dtype=jp.float32,
+            ),
+            loc_ref_history=loc_ref_history,
             signals=signals_override,
         )
 
@@ -1334,7 +1516,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         done = jp.zeros(())
 
         # Cache root pose (used for height, pitch/roll, position, orientation)
-        root_pose = self._cal.get_root_pose(data)
         height = root_pose.height
 
         # v0.15.10: Keep reset forward reward semantics aligned with step reward.
@@ -1452,6 +1633,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_touchdown_root_pos=root_pose.position,
             last_touchdown_foot=jp.asarray(-1, dtype=jp.int32),
             critic_obs=critic_obs,
+            loc_ref_phase_time=ref_phase_time,
+            loc_ref_stance_foot=ref_stance_foot.astype(jp.int32),
+            loc_ref_switch_count=ref_switch_count.astype(jp.int32),
+            loc_ref_gait_phase_sin=loc_ref_phase_sin,
+            loc_ref_gait_phase_cos=loc_ref_phase_cos,
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_pelvis_height=loc_ref_pelvis_height,
+            loc_ref_pelvis_roll=loc_ref_pelvis_roll,
+            loc_ref_pelvis_pitch=loc_ref_pelvis_pitch,
+            loc_ref_history=loc_ref_history,
+            nominal_q_ref=nominal_q_ref,
             push_schedule=push_schedule,
             # M3 FSM state: initialised to STANCE (all zeros)
             fsm_phase=jp.zeros((), dtype=jp.int32),
@@ -1508,6 +1702,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_frictionloss_scales=domain_rand_params["frictionloss_scales"],
             domain_rand_joint_offsets=domain_rand_params["joint_offsets"],
         )
+        metrics["tracking/loc_ref_left_reachable"] = left_ref_reachable
+        metrics["tracking/loc_ref_right_reachable"] = right_ref_reachable
+        metrics["debug/m3_pelvis_orientation_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/m3_pelvis_height_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/m3_swing_pos_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/m3_swing_vel_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/m3_foothold_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/m3_impact_force"] = jp.zeros((), dtype=jp.float32)
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
         if base_info is not None:
@@ -1601,6 +1803,45 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pending_action = wr.pending_action
 
         policy_action = action
+        root_pose_pre = self._cal.get_root_pose(state.data)
+        root_vel_pre_h = self._cal.get_root_velocity(
+            state.data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        ref_state, ref_phase_time, ref_stance_foot, ref_switch_count = _step_walking_reference_jax(
+            phase_time_s=wr.loc_ref_phase_time,
+            stance_foot_id=wr.loc_ref_stance_foot,
+            stance_switch_count=wr.loc_ref_switch_count,
+            forward_speed_mps=velocity_cmd,
+            com_position_stance_frame=jp.asarray(
+                [root_pose_pre.position[0], root_pose_pre.position[1]], dtype=jp.float32
+            ),
+            com_velocity_stance_frame=jp.asarray(
+                [root_vel_pre_h.linear_xyz[0], root_vel_pre_h.linear_xyz[1]], dtype=jp.float32
+            ),
+            dt_s=self.dt,
+            cfg=self._walking_ref_cfg,
+        )
+        loc_ref_phase_sin = ref_state["gait_phase_sin"]
+        loc_ref_phase_cos = ref_state["gait_phase_cos"]
+        loc_ref_next_foothold = ref_state["next_foothold"]
+        loc_ref_swing_pos = ref_state["swing_pos"]
+        loc_ref_swing_vel = ref_state["swing_vel"]
+        loc_ref_pelvis_height = ref_state["pelvis_height"]
+        loc_ref_pelvis_roll = ref_state["pelvis_roll"]
+        loc_ref_pelvis_pitch = ref_state["pelvis_pitch"]
+        loc_ref_history = _update_loc_ref_history(
+            wr.loc_ref_history, loc_ref_phase_sin, loc_ref_phase_cos
+        )
+        nominal_q_ref, left_ref_reachable, right_ref_reachable = (
+            self._compute_nominal_q_ref_from_loc_ref(
+                stance_foot_id=ref_stance_foot,
+                swing_pos=loc_ref_swing_pos,
+                pelvis_height=loc_ref_pelvis_height,
+                pelvis_roll=loc_ref_pelvis_roll,
+                pelvis_pitch=loc_ref_pelvis_pitch,
+            )
+        )
+        residual_delta_q = jp.zeros((self.action_size,), dtype=jp.float32)
 
         controller_stack = self._controller_stack
         mpc_debug = None
@@ -1632,7 +1873,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 wr.fsm_touch_hold, wr.fsm_trigger_hold,
             )
         else:
-            raw_action = policy_action
+            if self._loc_ref_enabled:
+                raw_action, residual_delta_q = self._compose_loc_ref_residual_action(
+                    policy_action=policy_action,
+                    nominal_q_ref=nominal_q_ref,
+                )
+            else:
+                raw_action = policy_action
             new_fsm = (
                 wr.fsm_phase, wr.fsm_swing_foot, wr.fsm_phase_ticks,
                 wr.fsm_frozen_tx, wr.fsm_frozen_ty, wr.fsm_swing_sx, wr.fsm_swing_sy,
@@ -1688,6 +1935,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             step_count=step_count + 1,
             prev_root_pos=prev_root_pos,
             prev_root_quat=prev_root_quat,
+            loc_ref_phase_sin_cos=jp.asarray(
+                [loc_ref_phase_sin, loc_ref_phase_cos], dtype=jp.float32
+            ),
+            loc_ref_stance_foot=jp.asarray(
+                [ref_stance_foot.astype(jp.float32)], dtype=jp.float32
+            ),
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_pelvis_targets=jp.asarray(
+                [loc_ref_pelvis_height, loc_ref_pelvis_roll, loc_ref_pelvis_pitch],
+                dtype=jp.float32,
+            ),
+            loc_ref_history=loc_ref_history,
             signals=signals_override,
         )
 
@@ -1725,6 +1986,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             recovery_first_touchdown_recorded=wr.recovery_first_touchdown_recorded,
             recovery_pitch_rate_at_touchdown=wr.recovery_pitch_rate_at_touchdown,
             recovery_capture_error_at_touchdown=wr.recovery_capture_error_at_touchdown,
+            nominal_q_ref=nominal_q_ref,
+            residual_delta_q=residual_delta_q,
+            loc_ref_pelvis_height=loc_ref_pelvis_height,
+            loc_ref_pelvis_roll=loc_ref_pelvis_roll,
+            loc_ref_pelvis_pitch=loc_ref_pelvis_pitch,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_stance_foot=ref_stance_foot,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -1774,6 +2044,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/mpc_target_step_y": jp.zeros((), dtype=jp.float32),
             "debug/mpc_support_state": jp.zeros((), dtype=jp.float32),
             "debug/mpc_step_requested": jp.zeros((), dtype=jp.float32),
+            "tracking/cmd_vs_achieved_forward": jp.abs(forward_vel - velocity_cmd),
+            "tracking/loc_ref_phase_progress": jp.asarray(
+                ref_switch_count, dtype=jp.float32
+            ),
+            "tracking/loc_ref_stance_foot": ref_stance_foot.astype(jp.float32),
+            "tracking/nominal_q_abs_mean": jp.mean(jp.abs(nominal_q_ref)),
+            "tracking/residual_q_abs_mean": jp.mean(jp.abs(residual_delta_q)),
+            "tracking/residual_q_abs_max": jp.max(jp.abs(residual_delta_q)),
+            "tracking/loc_ref_left_reachable": left_ref_reachable,
+            "tracking/loc_ref_right_reachable": right_ref_reachable,
         }
         if mpc_debug is not None:
             metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
@@ -2268,6 +2548,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_touchdown_root_pos=next_last_touchdown_root_pos,
             last_touchdown_foot=next_last_touchdown_foot,
             critic_obs=critic_obs,
+            loc_ref_phase_time=ref_phase_time,
+            loc_ref_stance_foot=ref_stance_foot.astype(jp.int32),
+            loc_ref_switch_count=ref_switch_count.astype(jp.int32),
+            loc_ref_gait_phase_sin=loc_ref_phase_sin,
+            loc_ref_gait_phase_cos=loc_ref_phase_cos,
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_pelvis_height=loc_ref_pelvis_height,
+            loc_ref_pelvis_roll=loc_ref_pelvis_roll,
+            loc_ref_pelvis_pitch=loc_ref_pelvis_pitch,
+            loc_ref_history=loc_ref_history,
+            nominal_q_ref=nominal_q_ref,
             push_schedule=wr.push_schedule,
             # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
             fsm_phase=new_fsm[0],
@@ -2584,6 +2877,48 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/mpc_target_step_y": metrics.get("debug/mpc_target_step_y", jp.zeros(())),
             "debug/mpc_support_state": metrics.get("debug/mpc_support_state", jp.zeros(())),
             "debug/mpc_step_requested": metrics.get("debug/mpc_step_requested", jp.zeros(())),
+            "tracking/cmd_vs_achieved_forward": metrics.get(
+                "tracking/cmd_vs_achieved_forward", jp.zeros(())
+            ),
+            "tracking/loc_ref_phase_progress": metrics.get(
+                "tracking/loc_ref_phase_progress", jp.zeros(())
+            ),
+            "tracking/loc_ref_stance_foot": metrics.get(
+                "tracking/loc_ref_stance_foot", jp.zeros(())
+            ),
+            "tracking/nominal_q_abs_mean": metrics.get(
+                "tracking/nominal_q_abs_mean", jp.zeros(())
+            ),
+            "tracking/residual_q_abs_mean": metrics.get(
+                "tracking/residual_q_abs_mean", jp.zeros(())
+            ),
+            "tracking/residual_q_abs_max": metrics.get(
+                "tracking/residual_q_abs_max", jp.zeros(())
+            ),
+            "tracking/loc_ref_left_reachable": metrics.get(
+                "tracking/loc_ref_left_reachable", jp.zeros(())
+            ),
+            "tracking/loc_ref_right_reachable": metrics.get(
+                "tracking/loc_ref_right_reachable", jp.zeros(())
+            ),
+            "debug/m3_pelvis_orientation_error": metrics.get(
+                "debug/m3_pelvis_orientation_error", jp.zeros(())
+            ),
+            "debug/m3_pelvis_height_error": metrics.get(
+                "debug/m3_pelvis_height_error", jp.zeros(())
+            ),
+            "debug/m3_swing_pos_error": metrics.get(
+                "debug/m3_swing_pos_error", jp.zeros(())
+            ),
+            "debug/m3_swing_vel_error": metrics.get(
+                "debug/m3_swing_vel_error", jp.zeros(())
+            ),
+            "debug/m3_foothold_error": metrics.get(
+                "debug/m3_foothold_error", jp.zeros(())
+            ),
+            "debug/m3_impact_force": metrics.get(
+                "debug/m3_impact_force", jp.zeros(())
+            ),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -2613,6 +2948,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_touchdown_root_pos=reset_wr_info.last_touchdown_root_pos,
             last_touchdown_foot=reset_wr_info.last_touchdown_foot,
             critic_obs=reset_wr_info.critic_obs,
+            loc_ref_phase_time=reset_wr_info.loc_ref_phase_time,
+            loc_ref_stance_foot=reset_wr_info.loc_ref_stance_foot,
+            loc_ref_switch_count=reset_wr_info.loc_ref_switch_count,
+            loc_ref_gait_phase_sin=reset_wr_info.loc_ref_gait_phase_sin,
+            loc_ref_gait_phase_cos=reset_wr_info.loc_ref_gait_phase_cos,
+            loc_ref_next_foothold=reset_wr_info.loc_ref_next_foothold,
+            loc_ref_swing_pos=reset_wr_info.loc_ref_swing_pos,
+            loc_ref_swing_vel=reset_wr_info.loc_ref_swing_vel,
+            loc_ref_pelvis_height=reset_wr_info.loc_ref_pelvis_height,
+            loc_ref_pelvis_roll=reset_wr_info.loc_ref_pelvis_roll,
+            loc_ref_pelvis_pitch=reset_wr_info.loc_ref_pelvis_pitch,
+            loc_ref_history=reset_wr_info.loc_ref_history,
+            nominal_q_ref=reset_wr_info.nominal_q_ref,
             push_schedule=reset_wr_info.push_schedule,
             # M3 FSM: reset to STANCE on new episode
             fsm_phase=reset_wr_info.fsm_phase,
@@ -2735,6 +3083,93 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dtype=jp.float32,
         )
         return jp.reshape(critic_obs, (PRIVILEGED_OBS_DIM,))
+
+    def _compute_nominal_q_ref_from_loc_ref(
+        self,
+        *,
+        stance_foot_id: jax.Array,
+        swing_pos: jax.Array,
+        pelvis_height: jax.Array,
+        pelvis_roll: jax.Array,
+        pelvis_pitch: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Compute nominal joint-space target from locomotion reference fields."""
+        stance_margin = jp.asarray(0.015, dtype=jp.float32)
+        nominal_stance_z = -jp.maximum(
+            jp.asarray(0.0, dtype=jp.float32),
+            jp.asarray(pelvis_height, dtype=jp.float32) - stance_margin,
+        )
+        swing_x = jp.asarray(swing_pos[0], dtype=jp.float32)
+        swing_z = jp.asarray(swing_pos[2], dtype=jp.float32)
+        swing_target_z = nominal_stance_z + swing_z
+
+        stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
+            REF_LEFT_STANCE, dtype=jp.int32
+        )
+        left_target_x = jp.where(stance_is_left, 0.0, swing_x)
+        left_target_z = jp.where(stance_is_left, nominal_stance_z, swing_target_z)
+        right_target_x = jp.where(stance_is_left, swing_x, 0.0)
+        right_target_z = jp.where(stance_is_left, swing_target_z, nominal_stance_z)
+
+        left_hip, left_knee, left_ankle, left_reachable = solve_leg_sagittal_ik_jax(
+            target_x_m=left_target_x, target_z_m=left_target_z, config=self._leg_ik_cfg
+        )
+        right_hip, right_knee, right_ankle, right_reachable = solve_leg_sagittal_ik_jax(
+            target_x_m=right_target_x, target_z_m=right_target_z, config=self._leg_ik_cfg
+        )
+
+        q_ref = jp.asarray(self._default_joint_qpos, dtype=jp.float32)
+        if self._idx_left_hip_pitch >= 0:
+            q_ref = q_ref.at[self._idx_left_hip_pitch].set(-left_hip)
+        if self._idx_left_knee_pitch >= 0:
+            q_ref = q_ref.at[self._idx_left_knee_pitch].set(left_knee)
+        if self._idx_left_ankle_pitch >= 0:
+            q_ref = q_ref.at[self._idx_left_ankle_pitch].set(left_ankle)
+        if self._idx_right_hip_pitch >= 0:
+            q_ref = q_ref.at[self._idx_right_hip_pitch].set(right_hip)
+        if self._idx_right_knee_pitch >= 0:
+            q_ref = q_ref.at[self._idx_right_knee_pitch].set(right_knee)
+        if self._idx_right_ankle_pitch >= 0:
+            q_ref = q_ref.at[self._idx_right_ankle_pitch].set(right_ankle)
+
+        roll = jp.asarray(pelvis_roll, dtype=jp.float32)
+        pitch = jp.asarray(pelvis_pitch, dtype=jp.float32)
+        if self._idx_left_hip_roll >= 0:
+            q_ref = q_ref.at[self._idx_left_hip_roll].set(-roll)
+        if self._idx_right_hip_roll >= 0:
+            q_ref = q_ref.at[self._idx_right_hip_roll].set(roll)
+        if self._idx_waist_yaw >= 0:
+            q_ref = q_ref.at[self._idx_waist_yaw].set(jp.asarray(0.0, dtype=jp.float32))
+        if self._idx_left_shoulder_pitch >= 0:
+            q_ref = q_ref.at[self._idx_left_shoulder_pitch].set(-0.15 * pitch)
+        if self._idx_right_shoulder_pitch >= 0:
+            q_ref = q_ref.at[self._idx_right_shoulder_pitch].set(-0.15 * pitch)
+
+        q_ref = jp.clip(q_ref, self._joint_range_mins, self._joint_range_maxs).astype(jp.float32)
+        return q_ref, left_reachable.astype(jp.float32), right_reachable.astype(jp.float32)
+
+    def _compose_loc_ref_residual_action(
+        self,
+        *,
+        policy_action: jax.Array,
+        nominal_q_ref: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Compose policy residual around nominal q_ref and map back to action space."""
+        residual_delta_q = (
+            jp.clip(jp.asarray(policy_action, dtype=jp.float32), -1.0, 1.0)
+            * self._residual_q_scale
+            * self._joint_half_spans
+        )
+        target_q = jp.clip(
+            jp.asarray(nominal_q_ref, dtype=jp.float32) + residual_delta_q,
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        )
+        raw_action = JaxCalibOps.ctrl_to_policy_action(
+            spec=self._policy_spec,
+            ctrl_rad=target_q,
+        ).astype(jp.float32)
+        return raw_action, residual_delta_q
 
     def _mix_base_and_residual_action(
         self, data: mjx.Data, policy_action: jax.Array
@@ -3093,6 +3528,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         step_count: Optional[jax.Array] = None,
         prev_root_pos: Optional[jax.Array] = None,
         prev_root_quat: Optional[jax.Array] = None,
+        loc_ref_phase_sin_cos: Optional[jax.Array] = None,
+        loc_ref_stance_foot: Optional[jax.Array] = None,
+        loc_ref_next_foothold: Optional[jax.Array] = None,
+        loc_ref_swing_pos: Optional[jax.Array] = None,
+        loc_ref_swing_vel: Optional[jax.Array] = None,
+        loc_ref_pelvis_targets: Optional[jax.Array] = None,
+        loc_ref_history: Optional[jax.Array] = None,
         signals=None,
     ) -> jax.Array:
         """Build observation vector.
@@ -3139,6 +3581,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd=velocity_cmd,
             capture_point_error=capture_point_error,
             gait_clock=gait_clock,
+            loc_ref_phase_sin_cos=loc_ref_phase_sin_cos,
+            loc_ref_stance_foot=loc_ref_stance_foot,
+            loc_ref_next_foothold=loc_ref_next_foothold,
+            loc_ref_swing_pos=loc_ref_swing_pos,
+            loc_ref_swing_vel=loc_ref_swing_vel,
+            loc_ref_pelvis_targets=loc_ref_pelvis_targets,
+            loc_ref_history=loc_ref_history,
         )
 
     def _get_capture_point_error(self, data: mjx.Data) -> jax.Array:
@@ -3201,6 +3650,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         recovery_first_touchdown_recorded: Optional[jax.Array] = None,
         recovery_pitch_rate_at_touchdown: Optional[jax.Array] = None,
         recovery_capture_error_at_touchdown: Optional[jax.Array] = None,
+        nominal_q_ref: Optional[jax.Array] = None,
+        residual_delta_q: Optional[jax.Array] = None,
+        loc_ref_pelvis_height: Optional[jax.Array] = None,
+        loc_ref_pelvis_roll: Optional[jax.Array] = None,
+        loc_ref_pelvis_pitch: Optional[jax.Array] = None,
+        loc_ref_swing_pos: Optional[jax.Array] = None,
+        loc_ref_swing_vel: Optional[jax.Array] = None,
+        loc_ref_next_foothold: Optional[jax.Array] = None,
+        loc_ref_stance_foot: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -3315,6 +3773,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 prev_right_foot_pos,
                 self.dt,
                 normalize=False,
+                frame=CoordinateFrame.HEADING_LOCAL,
             )
             # Tangential (xy) velocity magnitude
             left_slip = jp.sqrt(jp.square(left_vel[0]) + jp.square(left_vel[1]))
@@ -3330,15 +3789,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             slip_penalty = jp.zeros(())
             left_slip = jp.zeros(())
             right_slip = jp.zeros(())
+            left_vel = jp.zeros((3,), dtype=jp.float32)
+            right_vel = jp.zeros((3,), dtype=jp.float32)
 
         # TODO(M3 cleanup): Remove deprecated gait-style reward computations entirely
         # after the first M3 validation run confirms they are not needed for debugging.
         # 11. Swing clearance reward (phase-gated by clock; active in total reward)
         # Reward foot height above ground during swing phase
         min_clearance = 0.02  # 2cm minimum clearance during swing
-        left_clearance, right_clearance = self._cal.get_foot_clearances(
+        left_clearance_raw, right_clearance_raw = self._cal.get_foot_clearances(
             data, normalize=False
         )
+        left_clearance = left_clearance_raw
+        right_clearance = right_clearance_raw
         left_clearance = jp.clip(
             left_clearance - min_clearance, 0.0, 0.05
         )  # cap at 5cm
@@ -3563,6 +4026,110 @@ class WildRobotEnv(mjx_env.MjxEnv):
         foot_place_reward = jp.asarray(foot_place_reward).reshape(())
         foot_place_reward = foot_place_reward * step_reward_gate
 
+        # v0.19.3: reference-guided task-space rewards (forward + stop only).
+        if loc_ref_pelvis_height is None:
+            loc_ref_pelvis_height = jp.asarray(height, dtype=jp.float32)
+        if loc_ref_pelvis_roll is None:
+            loc_ref_pelvis_roll = jp.asarray(0.0, dtype=jp.float32)
+        if loc_ref_pelvis_pitch is None:
+            loc_ref_pelvis_pitch = jp.asarray(0.0, dtype=jp.float32)
+        if loc_ref_swing_pos is None:
+            loc_ref_swing_pos = jp.zeros((3,), dtype=jp.float32)
+        if loc_ref_swing_vel is None:
+            loc_ref_swing_vel = jp.zeros((3,), dtype=jp.float32)
+        if loc_ref_next_foothold is None:
+            loc_ref_next_foothold = jp.zeros((2,), dtype=jp.float32)
+        if loc_ref_stance_foot is None:
+            loc_ref_stance_foot = jp.asarray(0, dtype=jp.int32)
+        if residual_delta_q is None:
+            residual_delta_q = jp.zeros((self.action_size,), dtype=jp.float32)
+        if nominal_q_ref is None:
+            nominal_q_ref = self._default_joint_qpos
+
+        pelvis_roll_err = roll - jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
+        pelvis_pitch_err = pitch - jp.asarray(loc_ref_pelvis_pitch, dtype=jp.float32)
+        pelvis_orientation_err = jp.sqrt(
+            jp.square(pelvis_roll_err) + jp.square(pelvis_pitch_err)
+        )
+        pelvis_orientation_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_pelvis_orientation_sigma", 0.20), dtype=jp.float32),
+            1e-6,
+        )
+        m3_pelvis_orientation_reward = jp.exp(
+            -jp.square(pelvis_orientation_err / pelvis_orientation_sigma)
+        )
+
+        pelvis_height_err = height - jp.asarray(loc_ref_pelvis_height, dtype=jp.float32)
+        pelvis_height_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_pelvis_height_sigma", 0.04), dtype=jp.float32),
+            1e-6,
+        )
+        m3_pelvis_height_reward = jp.exp(-jp.square(pelvis_height_err / pelvis_height_sigma))
+
+        swing_pos_actual, swing_vel_actual = _swing_state_in_stance_frame(
+            left_foot_pos_h=left_foot_pos,
+            right_foot_pos_h=right_foot_pos,
+            left_foot_vel_h=left_vel,
+            right_foot_vel_h=right_vel,
+            stance_foot_id=loc_ref_stance_foot,
+        )
+        swing_pos_err = jp.linalg.norm(
+            swing_pos_actual - jp.asarray(loc_ref_swing_pos, dtype=jp.float32)
+        )
+        swing_vel_err = jp.linalg.norm(
+            swing_vel_actual - jp.asarray(loc_ref_swing_vel, dtype=jp.float32)
+        )
+        swing_pos_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_swing_pos_sigma", 0.08), dtype=jp.float32),
+            1e-6,
+        )
+        swing_vel_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_swing_vel_sigma", 0.80), dtype=jp.float32),
+            1e-6,
+        )
+        m3_swing_tracking_reward = jp.exp(-jp.square(swing_pos_err / swing_pos_sigma)) * jp.exp(
+            -jp.square(swing_vel_err / swing_vel_sigma)
+        )
+
+        touchdown_any = touchdown_left | touchdown_right
+        touchdown_pos = jp.where(
+            touchdown_left,
+            left_foot_pos[:2],
+            jp.where(touchdown_right, right_foot_pos[:2], jp.zeros((2,), dtype=jp.float32)),
+        )
+        stance_xy = jp.where(
+            jp.asarray(loc_ref_stance_foot, dtype=jp.int32) == REF_LEFT_STANCE,
+            left_foot_pos[:2],
+            right_foot_pos[:2],
+        )
+        touchdown_pos_stance_frame = touchdown_pos - stance_xy
+        foothold_err = jp.linalg.norm(
+            touchdown_pos_stance_frame - jp.asarray(loc_ref_next_foothold, dtype=jp.float32)
+        )
+        foothold_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_foothold_sigma", 0.10), dtype=jp.float32),
+            1e-6,
+        )
+        m3_foothold_consistency_reward = jp.where(
+            touchdown_any,
+            jp.exp(-jp.square(foothold_err / foothold_sigma)),
+            jp.zeros((), dtype=jp.float32),
+        )
+
+        m3_residual_mag_penalty = jp.mean(jp.square(jp.asarray(residual_delta_q, dtype=jp.float32)))
+
+        impact_force = jp.maximum(left_force, right_force)
+        impact_threshold = jp.asarray(
+            getattr(weights, "m3_impact_force_threshold", 40.0), dtype=jp.float32
+        )
+        impact_sigma = jp.maximum(
+            jp.asarray(getattr(weights, "m3_impact_force_sigma", 20.0), dtype=jp.float32),
+            1e-6,
+        )
+        m3_excessive_impact_penalty = jp.square(
+            jp.maximum(impact_force - impact_threshold, 0.0) / impact_sigma
+        )
+
         step_length_reward = compute_step_length_touchdown_reward(
             left_x=left_x,
             right_x=right_x,
@@ -3784,10 +4351,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + getattr(weights, "foot_place", 0.0) * foot_place_reward
             + getattr(weights, "step_length", 0.0) * step_length_reward
             + getattr(weights, "step_progress", 0.0) * step_progress_reward
+            + getattr(weights, "m3_pelvis_orientation_tracking", 0.0)
+            * m3_pelvis_orientation_reward
+            + getattr(weights, "m3_pelvis_height_tracking", 0.0)
+            * m3_pelvis_height_reward
+            + getattr(weights, "m3_swing_foot_tracking", 0.0)
+            * m3_swing_tracking_reward
+            + getattr(weights, "m3_foothold_consistency", 0.0)
+            * m3_foothold_consistency_reward
+            + getattr(weights, "m3_residual_magnitude", 0.0)
+            * m3_residual_mag_penalty
             + getattr(weights, "arrest_pitch_rate", 0.0) * arrest_pitch_rate_reward
             + getattr(weights, "arrest_capture_error", 0.0) * arrest_capture_error_reward
             + getattr(weights, "post_touchdown_survival", 0.0)
             * post_touchdown_survival_reward
+            + getattr(weights, "m3_excessive_impact", 0.0)
+            * m3_excessive_impact_penalty
             + getattr(weights, "dense_progress", 0.0) * dense_progress_reward
             + getattr(weights, "cycle_progress", 0.0) * cycle_progress_reward
         )
@@ -3842,6 +4421,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/foot_place": foot_place_reward,
             "reward/step_length": step_length_reward,
             "reward/step_progress": step_progress_reward,
+            "reward/m3_pelvis_orientation_tracking": m3_pelvis_orientation_reward,
+            "reward/m3_pelvis_height_tracking": m3_pelvis_height_reward,
+            "reward/m3_swing_foot_tracking": m3_swing_tracking_reward,
+            "reward/m3_foothold_consistency": m3_foothold_consistency_reward,
+            "reward/m3_residual_magnitude": m3_residual_mag_penalty,
+            "reward/m3_excessive_impact": m3_excessive_impact_penalty,
             "reward/teacher_target_step_xy": jp.zeros(()),
             "reward/teacher_step_required": jp.zeros(()),
             "reward/teacher_swing_foot": jp.zeros(()),
@@ -3856,6 +4441,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/need_step": need_step,
             "debug/touchdown_left": touchdown_left.astype(jp.float32),
             "debug/touchdown_right": touchdown_right.astype(jp.float32),
+            "debug/m3_pelvis_orientation_error": pelvis_orientation_err,
+            "debug/m3_pelvis_height_error": jp.abs(pelvis_height_err),
+            "debug/m3_swing_pos_error": swing_pos_err,
+            "debug/m3_swing_vel_error": swing_vel_err,
+            "debug/m3_foothold_error": foothold_err,
+            "debug/m3_impact_force": impact_force,
             "debug/cycle_complete": cycle_complete.astype(jp.float32),
             "debug/cycle_forward_delta": cycle_forward_delta,
             "debug/step_progress_delta": step_progress_delta,

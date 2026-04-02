@@ -480,6 +480,76 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Touchdown-to-touchdown structured forward progress reward",
     ),
     MetricSpec(
+        name="reward/m3_pelvis_orientation_tracking",
+        reducer=Reducer.MEAN,
+        description="Pelvis orientation tracking reward to locomotion reference",
+    ),
+    MetricSpec(
+        name="reward/m3_pelvis_height_tracking",
+        reducer=Reducer.MEAN,
+        description="Pelvis height tracking reward to locomotion reference",
+    ),
+    MetricSpec(
+        name="reward/m3_swing_foot_tracking",
+        reducer=Reducer.MEAN,
+        description="Swing-foot tracking reward to locomotion reference",
+    ),
+    MetricSpec(
+        name="reward/m3_foothold_consistency",
+        reducer=Reducer.MEAN,
+        description="Touchdown consistency reward vs desired foothold",
+    ),
+    MetricSpec(
+        name="reward/m3_residual_magnitude",
+        reducer=Reducer.MEAN,
+        description="Residual action magnitude penalty in joint space",
+    ),
+    MetricSpec(
+        name="reward/m3_excessive_impact",
+        reducer=Reducer.MEAN,
+        description="Excessive contact impact penalty",
+    ),
+    MetricSpec(
+        name="tracking/cmd_vs_achieved_forward",
+        reducer=Reducer.MEAN,
+        description="Absolute commanded-vs-achieved forward speed error",
+    ),
+    MetricSpec(
+        name="tracking/loc_ref_phase_progress",
+        reducer=Reducer.MEAN,
+        description="Locomotion reference phase/stance switch progression",
+    ),
+    MetricSpec(
+        name="tracking/loc_ref_stance_foot",
+        reducer=Reducer.MEAN,
+        description="Locomotion reference stance foot id (0/1)",
+    ),
+    MetricSpec(
+        name="tracking/nominal_q_abs_mean",
+        reducer=Reducer.MEAN,
+        description="Mean absolute nominal q_ref magnitude",
+    ),
+    MetricSpec(
+        name="tracking/residual_q_abs_mean",
+        reducer=Reducer.MEAN,
+        description="Mean absolute residual delta_q magnitude",
+    ),
+    MetricSpec(
+        name="tracking/residual_q_abs_max",
+        reducer=Reducer.MEAN,
+        description="Max absolute residual delta_q magnitude",
+    ),
+    MetricSpec(
+        name="tracking/loc_ref_left_reachable",
+        reducer=Reducer.MEAN,
+        description="Left nominal IK target reachable fraction",
+    ),
+    MetricSpec(
+        name="tracking/loc_ref_right_reachable",
+        reducer=Reducer.MEAN,
+        description="Right nominal IK target reachable fraction",
+    ),
+    MetricSpec(
         name="reward/teacher_target_step_xy",
         reducer=Reducer.MEAN,
         description="Teacher XY target agreement reward at first recovery touchdown",

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import acos, atan2, cos, pi, sin, sqrt
 
+import jax.numpy as jnp
+
 
 @dataclass(frozen=True)
 class LegIkConfig:
@@ -92,3 +94,46 @@ def forward_leg_sagittal(
     shank_x = l2 * sin(hip_pitch_rad + knee_pitch_rad)
     shank_z = -l2 * cos(hip_pitch_rad + knee_pitch_rad)
     return float(thigh_x + shank_x), float(thigh_z + shank_z)
+
+
+def solve_leg_sagittal_ik_jax(
+    *,
+    target_x_m: jnp.ndarray,
+    target_z_m: jnp.ndarray,
+    config: LegIkConfig,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """JAX-friendly sagittal IK used by training env rollout code.
+
+    Returns:
+        (hip_pitch_rad, knee_pitch_rad, ankle_pitch_rad, reachable_float)
+    """
+    l1 = jnp.asarray(config.upper_leg_length_m, dtype=jnp.float32)
+    l2 = jnp.asarray(config.lower_leg_length_m, dtype=jnp.float32)
+    eps = jnp.asarray(1e-6, dtype=jnp.float32)
+    tx = jnp.asarray(target_x_m, dtype=jnp.float32)
+    tz = jnp.asarray(target_z_m, dtype=jnp.float32)
+    r = jnp.sqrt(tx * tx + tz * tz + eps)
+    r_min = jnp.asarray(abs(config.upper_leg_length_m - config.lower_leg_length_m) + config.min_reach_margin_m, dtype=jnp.float32)
+    r_max = jnp.asarray((config.upper_leg_length_m + config.lower_leg_length_m) - config.min_reach_margin_m, dtype=jnp.float32)
+    reachable = ((r >= r_min) & (r <= r_max)).astype(jnp.float32)
+    r_clipped = jnp.clip(r, r_min, r_max)
+    scale = r_clipped / jnp.maximum(r, eps)
+    tx = tx * scale
+    tz = tz * scale
+    rr = jnp.sqrt(tx * tx + tz * tz + eps)
+
+    cos_knee = jnp.clip((l1 * l1 + l2 * l2 - rr * rr) / (2.0 * l1 * l2 + eps), -1.0, 1.0)
+    knee_internal = jnp.arccos(cos_knee)
+    knee_pitch = jnp.maximum(0.0, jnp.asarray(pi, dtype=jnp.float32) - knee_internal)
+
+    cos_hip_aux = jnp.clip((l1 * l1 + rr * rr - l2 * l2) / (2.0 * l1 * rr + eps), -1.0, 1.0)
+    hip_aux = jnp.arccos(cos_hip_aux)
+    hip_line = jnp.arctan2(tx, -tz)
+    hip_pitch = hip_line - hip_aux
+    ankle_pitch = -(hip_pitch + knee_pitch)
+    return (
+        hip_pitch.astype(jnp.float32),
+        knee_pitch.astype(jnp.float32),
+        ankle_pitch.astype(jnp.float32),
+        reachable.astype(jnp.float32),
+    )

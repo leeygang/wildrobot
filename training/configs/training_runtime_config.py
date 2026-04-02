@@ -117,6 +117,11 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
+    # v0.19.3: reference-guided locomotion (M2 nominal + PPO residual)
+    loc_ref_enabled: bool = False
+    # Residual joint delta scale (fraction of per-joint half-range).
+    # Effective delta_q = residual_action * loc_ref_residual_scale * half_span.
+    loc_ref_residual_scale: float = 0.18
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"
@@ -521,6 +526,20 @@ class RewardWeightsConfig(Freezable):
     post_touchdown_survival: float = 0.0
     arrest_pitch_rate_scale: float = 3.0  # rad/s improvement for unit reward
     arrest_capture_error_scale: float = 0.15  # m improvement for unit reward
+    # v0.19.3: conservative reference-guided walking reward family (M3)
+    m3_pelvis_orientation_tracking: float = 0.0
+    m3_pelvis_height_tracking: float = 0.0
+    m3_swing_foot_tracking: float = 0.0
+    m3_foothold_consistency: float = 0.0
+    m3_residual_magnitude: float = 0.0
+    m3_excessive_impact: float = 0.0
+    m3_pelvis_orientation_sigma: float = 0.20
+    m3_pelvis_height_sigma: float = 0.04
+    m3_swing_pos_sigma: float = 0.08
+    m3_swing_vel_sigma: float = 0.80
+    m3_foothold_sigma: float = 0.10
+    m3_impact_force_threshold: float = 40.0
+    m3_impact_force_sigma: float = 20.0
     dense_progress: float = 0.0
     dense_progress_upright_pitch: float = 0.25  # radians (50% gate around this pitch)
     dense_progress_upright_pitch_rate: float = 0.90  # rad/s (50% gate around this pitch rate)

@@ -140,4 +140,22 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
             ObsFieldSpec(name="gait_clock", size=4, units="sin_cos_phase"),
             ObsFieldSpec(name="padding", size=1, units="unused"),
         ]
+    if layout_id == "wr_obs_v4":
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="loc_ref_phase_sin_cos", size=2, units="sin_cos_phase"),
+            ObsFieldSpec(name="loc_ref_stance_foot", size=1, units="foot_id_float"),
+            ObsFieldSpec(name="loc_ref_next_foothold", size=2, units="m_stance_frame"),
+            ObsFieldSpec(name="loc_ref_swing_pos", size=3, units="m_stance_frame"),
+            ObsFieldSpec(name="loc_ref_swing_vel", size=3, units="mps_stance_frame"),
+            ObsFieldSpec(name="loc_ref_pelvis_targets", size=3, units="m_rad_rad"),
+            ObsFieldSpec(name="loc_ref_history", size=4, units="recent_phase_sin_cos"),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
     raise ValueError(f"Unsupported layout_id: {layout_id!r}")

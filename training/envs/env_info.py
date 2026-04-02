@@ -102,6 +102,20 @@ try:
         last_touchdown_root_pos: jnp.ndarray  # shape=(3,), world root position at last touchdown
         last_touchdown_foot: jnp.ndarray  # shape=(), -1 none, 0 left, 1 right
         critic_obs: jnp.ndarray  # shape=(PRIVILEGED_OBS_DIM,)
+        # v0.19.3: Locomotion reference state + nominal IK joint target
+        loc_ref_phase_time: jnp.ndarray  # shape=()
+        loc_ref_stance_foot: jnp.ndarray  # shape=(), int32 (0 left, 1 right)
+        loc_ref_switch_count: jnp.ndarray  # shape=(), int32
+        loc_ref_gait_phase_sin: jnp.ndarray  # shape=()
+        loc_ref_gait_phase_cos: jnp.ndarray  # shape=()
+        loc_ref_next_foothold: jnp.ndarray  # shape=(2,)
+        loc_ref_swing_pos: jnp.ndarray  # shape=(3,)
+        loc_ref_swing_vel: jnp.ndarray  # shape=(3,)
+        loc_ref_pelvis_height: jnp.ndarray  # shape=()
+        loc_ref_pelvis_roll: jnp.ndarray  # shape=()
+        loc_ref_pelvis_pitch: jnp.ndarray  # shape=()
+        loc_ref_history: jnp.ndarray  # shape=(4,)
+        nominal_q_ref: jnp.ndarray  # shape=(action_size,)
         push_schedule: DisturbanceSchedule
 
         # -----------------------------------------------------------------------
@@ -230,6 +244,19 @@ except ImportError:
         last_touchdown_root_pos: jnp.ndarray
         last_touchdown_foot: jnp.ndarray
         critic_obs: jnp.ndarray
+        loc_ref_phase_time: jnp.ndarray
+        loc_ref_stance_foot: jnp.ndarray
+        loc_ref_switch_count: jnp.ndarray
+        loc_ref_gait_phase_sin: jnp.ndarray
+        loc_ref_gait_phase_cos: jnp.ndarray
+        loc_ref_next_foothold: jnp.ndarray
+        loc_ref_swing_pos: jnp.ndarray
+        loc_ref_swing_vel: jnp.ndarray
+        loc_ref_pelvis_height: jnp.ndarray
+        loc_ref_pelvis_roll: jnp.ndarray
+        loc_ref_pelvis_pitch: jnp.ndarray
+        loc_ref_history: jnp.ndarray
+        nominal_q_ref: jnp.ndarray
         # M3 FSM state
         fsm_phase: jnp.ndarray
         fsm_swing_foot: jnp.ndarray
@@ -324,6 +351,19 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "last_touchdown_root_pos": (3,),
         "last_touchdown_foot": (),
         "critic_obs": (PRIVILEGED_OBS_DIM,),
+        "loc_ref_phase_time": (),
+        "loc_ref_stance_foot": (),
+        "loc_ref_switch_count": (),
+        "loc_ref_gait_phase_sin": (),
+        "loc_ref_gait_phase_cos": (),
+        "loc_ref_next_foothold": (2,),
+        "loc_ref_swing_pos": (3,),
+        "loc_ref_swing_vel": (3,),
+        "loc_ref_pelvis_height": (),
+        "loc_ref_pelvis_roll": (),
+        "loc_ref_pelvis_pitch": (),
+        "loc_ref_history": (4,),
+        "nominal_q_ref": (action_size,),
         # M3 FSM state
         "fsm_phase": (),
         "fsm_swing_foot": (),
