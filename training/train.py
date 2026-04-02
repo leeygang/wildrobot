@@ -72,6 +72,7 @@ from training.configs.training_config import (
     TrainingConfig,
     WandbConfig,
 )
+from training.configs.realism import load_training_realism_profile
 
 # Import checkpoint management
 from training.core.checkpoint import (
@@ -295,6 +296,12 @@ def start_training(
     print(
         f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
     )
+    realism_profile = load_training_realism_profile(training_cfg)
+    if realism_profile is not None:
+        print(
+            "✓ Realism profile loaded "
+            f"({realism_profile.profile_name}, schema={realism_profile.schema_version})"
+        )
 
     # Determine checkpoint directory
     final_checkpoint_dir = checkpoint_dir or training_cfg.checkpoints.dir

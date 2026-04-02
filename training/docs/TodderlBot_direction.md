@@ -307,6 +307,9 @@ Software stack:
   armature, and torque/speed limits
 - add `tools/sysid/` for chirp, step, and hold-response characterization
 - add `tools/sim2real_eval/` for plotting real-vs-sim joint and IMU traces
+- initial CLI entrypoints:
+  - `tools/sysid/run_capture.py`
+  - `tools/sim2real_eval/replay_compare.py`
 
 Training approach:
 

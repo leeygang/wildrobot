@@ -66,9 +66,14 @@ uv run wildrobot-run-policy --bundle ../training/checkpoints/<bundle_name> --log
 uv run wildrobot-inspect-log --input runtime/logs/<run>.npz
 ```
 
-Milestone 0 scaffold tools:
+Milestone 1 (`v0.19.1`) digital-twin and SysID tools:
 
 ```bash
-uv run python tools/sysid/run_capture_stub.py --output-dir runtime/logs/sysid
-uv run python tools/sim2real_eval/replay_compare_stub.py --sim-log <sim.npz> --real-log <real.npz>
+uv run python tools/sysid/run_capture.py --mode step --joint-name left_knee_pitch --output-dir runtime/logs/sysid
+uv run python tools/sysid/run_capture.py --mode chirp --joint-name left_knee_pitch --output-dir runtime/logs/sysid
+uv run python tools/sim2real_eval/replay_compare.py --sim-log <sim.npz> --real-log <real.npz> --output-dir runtime/logs/comparisons
 ```
+
+Realism profiles are versioned in `assets/v2/realism_profile_v0.19.1.json` and selected via runtime/training config `realism_profile_path`.
+
+`tools/sysid/run_capture.py` defaults to hardware capture; use `--capture-source synthetic` only for offline development/testing.

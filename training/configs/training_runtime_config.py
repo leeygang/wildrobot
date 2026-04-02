@@ -81,6 +81,7 @@ class EnvConfig(Freezable):
     robot_config_path: str = "assets/v2/mujoco_robot_config.json"
     mjcf_path: str = "assets/v2/wildrobot.xml"
     model_path: str = "assets/v2/scene_flat_terrain.xml"
+    realism_profile_path: Optional[str] = None
 
     # Timing
     sim_dt: float = 0.002

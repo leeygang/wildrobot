@@ -53,6 +53,7 @@ from wr_runtime.hardware.robot_io import HardwareRobotIO
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 from wr_runtime.validation.startup_validator import validate_runtime_interface
+from wr_runtime.validation.realism_profile import load_runtime_realism_profile
 _DEBUG_JOINT_GROUPS: list[tuple[str, list[str]]] = [
     ("shoulder_pitch", ["left_shoulder_pitch", "right_shoulder_pitch"]),
     ("shoulder_roll", ["left_shoulder_roll", "right_shoulder_roll"]),
@@ -500,6 +501,14 @@ def main() -> None:
     print(f"Resolved bundle: {resolved_bundle_path}")
 
     cfg = load_config(config_path)
+    realism_profile = load_runtime_realism_profile(cfg)
+    if realism_profile is not None:
+        print(
+            "Loaded realism profile: "
+            f"name={realism_profile.profile_name} "
+            f"schema={realism_profile.schema_version} "
+            f"actuators={len(realism_profile.actuators)}"
+        )
 
     # Bundle selection:
     # - If --bundle is provided, always load policy assets from it.

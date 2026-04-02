@@ -1,6 +1,7 @@
 {
   "mjcf_path": "../assets/v2/wildrobot.xml",
   "policy_onnx_path": "../policies/wildrobot_policy.onnx",
+  "realism_profile_path": "../assets/v2/realism_profile_v0.19.1.json",
   "control_hz": 50,
   "action_scale_rad": 0.35,
   "velocity_cmd": 0.0,

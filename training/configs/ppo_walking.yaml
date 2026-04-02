@@ -24,6 +24,7 @@ seed: 42
 # =============================================================================
 env:
   assets_root: assets/v2
+  realism_profile_path: assets/v2/realism_profile_v0.19.1.json
 
   sim_dt: 0.002
   ctrl_dt: 0.02

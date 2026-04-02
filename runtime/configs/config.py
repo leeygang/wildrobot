@@ -484,6 +484,7 @@ class WrRuntimeConfig:
     servo_controller: ServoControllerConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
+    realism_profile_path: Optional[str] = None
 
     # Store config directory for resolving relative paths
     _config_dir: Path = field(default=Path("."), repr=False, compare=False)
@@ -632,6 +633,11 @@ class WrRuntimeConfig:
             servo_controller=servo_controller,
             bno085=bno085,
             foot_switches=foot_switches,
+            realism_profile_path=(
+                str(data["realism_profile_path"])
+                if "realism_profile_path" in data and data["realism_profile_path"] is not None
+                else None
+            ),
             _config_dir=config_dir,
         )
 
@@ -853,6 +859,11 @@ class WrRuntimeConfig:
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
+            **(
+                {"realism_profile_path": self.realism_profile_path}
+                if self.realism_profile_path is not None
+                else {}
+            ),
         }
         return out
 

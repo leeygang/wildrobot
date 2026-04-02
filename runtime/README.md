@@ -41,6 +41,7 @@ Minimal example:
 {
   "mjcf_path": "../assets/v2/wildrobot.xml",
   "policy_onnx_path": "../policies/wildrobot_policy/policy.onnx",
+  "realism_profile_path": "../assets/v2/realism_profile_v0.19.1.json",
 
   "control_hz": 50,
   "action_scale_rad": 0.35,
@@ -86,6 +87,7 @@ Notes:
 - `servo_controller.servos.<joint>.motor_sign` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.motor_center_mujoco_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
+- `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.
 
 ## Run
 

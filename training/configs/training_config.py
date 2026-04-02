@@ -128,6 +128,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         robot_config_path=resolved.robot_config_path,
         mjcf_path=resolved.mjcf_path,
         model_path=resolved.model_path,
+        realism_profile_path=env.get("realism_profile_path"),
         sim_dt=env.get("sim_dt", 0.002),
         ctrl_dt=env.get("ctrl_dt", 0.02),
         max_episode_steps=env.get("max_episode_steps", 500),

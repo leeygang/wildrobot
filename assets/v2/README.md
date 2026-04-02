@@ -25,6 +25,15 @@ uv run python ../post_process.py wildrobot.xml
 
 This writes `assets/v2/mujoco_robot_config.json` next to the MJCF and (if available) runs a basic validation.
 
+## Digital-twin realism profiles (`v0.19.1`)
+
+Versioned realism parameters for actuator and sensor modeling live here:
+
+- `realism_profile_v0.19.1.json`: typed baseline profile with actuator delay/backlash/frictionloss/armature/effective output limits and sensor noise/latency/dropout parameters
+- `realism_profiles.json`: profile registry and default selector
+
+These files are intentionally JSON and diff-friendly so SysID updates can be reviewed in git.
+
 ## Actuator order (ABI)
 
 The actuator order in `wildrobot.xml` must be deterministic for policy/action index stability.

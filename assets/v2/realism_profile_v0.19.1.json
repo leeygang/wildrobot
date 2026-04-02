@@ -1,0 +1,223 @@
+{
+  "schema_version": "v0.19.1",
+  "profile_name": "wildrobot_v2_baseline_sysid_m1",
+  "asset_version": "v2",
+  "sample_rate_hz": 50.0,
+  "actuators": [
+    {
+      "joint_name": "left_hip_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.015,
+      "frictionloss": 0.08,
+      "armature": 0.003,
+      "effective_max_velocity_rad_s": 5.5,
+      "effective_max_torque_scale": 0.82
+    },
+    {
+      "joint_name": "left_hip_roll",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.07,
+      "armature": 0.003,
+      "effective_max_velocity_rad_s": 5.2,
+      "effective_max_torque_scale": 0.8
+    },
+    {
+      "joint_name": "left_knee_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.016,
+      "frictionloss": 0.09,
+      "armature": 0.0035,
+      "effective_max_velocity_rad_s": 5.0,
+      "effective_max_torque_scale": 0.85
+    },
+    {
+      "joint_name": "left_ankle_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.018,
+      "frictionloss": 0.1,
+      "armature": 0.004,
+      "effective_max_velocity_rad_s": 4.8,
+      "effective_max_torque_scale": 0.78
+    },
+    {
+      "joint_name": "right_hip_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.015,
+      "frictionloss": 0.08,
+      "armature": 0.003,
+      "effective_max_velocity_rad_s": 5.5,
+      "effective_max_torque_scale": 0.82
+    },
+    {
+      "joint_name": "right_hip_roll",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.07,
+      "armature": 0.003,
+      "effective_max_velocity_rad_s": 5.2,
+      "effective_max_torque_scale": 0.8
+    },
+    {
+      "joint_name": "right_knee_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.016,
+      "frictionloss": 0.09,
+      "armature": 0.0035,
+      "effective_max_velocity_rad_s": 5.0,
+      "effective_max_torque_scale": 0.85
+    },
+    {
+      "joint_name": "right_ankle_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.018,
+      "frictionloss": 0.1,
+      "armature": 0.004,
+      "effective_max_velocity_rad_s": 4.8,
+      "effective_max_torque_scale": 0.78
+    },
+    {
+      "joint_name": "waist_yaw",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.01,
+      "frictionloss": 0.06,
+      "armature": 0.002,
+      "effective_max_velocity_rad_s": 6.0,
+      "effective_max_torque_scale": 0.74
+    },
+    {
+      "joint_name": "left_shoulder_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.06,
+      "armature": 0.0025,
+      "effective_max_velocity_rad_s": 6.2,
+      "effective_max_torque_scale": 0.72
+    },
+    {
+      "joint_name": "left_shoulder_roll",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.06,
+      "armature": 0.0025,
+      "effective_max_velocity_rad_s": 6.2,
+      "effective_max_torque_scale": 0.72
+    },
+    {
+      "joint_name": "left_elbow_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.011,
+      "frictionloss": 0.05,
+      "armature": 0.002,
+      "effective_max_velocity_rad_s": 6.5,
+      "effective_max_torque_scale": 0.7
+    },
+    {
+      "joint_name": "left_wrist_yaw",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.01,
+      "frictionloss": 0.05,
+      "armature": 0.0015,
+      "effective_max_velocity_rad_s": 6.8,
+      "effective_max_torque_scale": 0.65
+    },
+    {
+      "joint_name": "left_wrist_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.01,
+      "frictionloss": 0.05,
+      "armature": 0.0015,
+      "effective_max_velocity_rad_s": 6.8,
+      "effective_max_torque_scale": 0.65
+    },
+    {
+      "joint_name": "right_shoulder_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.06,
+      "armature": 0.0025,
+      "effective_max_velocity_rad_s": 6.2,
+      "effective_max_torque_scale": 0.72
+    },
+    {
+      "joint_name": "right_shoulder_roll",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.012,
+      "frictionloss": 0.06,
+      "armature": 0.0025,
+      "effective_max_velocity_rad_s": 6.2,
+      "effective_max_torque_scale": 0.72
+    },
+    {
+      "joint_name": "right_elbow_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.011,
+      "frictionloss": 0.05,
+      "armature": 0.002,
+      "effective_max_velocity_rad_s": 6.5,
+      "effective_max_torque_scale": 0.7
+    },
+    {
+      "joint_name": "right_wrist_yaw",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.01,
+      "frictionloss": 0.05,
+      "armature": 0.0015,
+      "effective_max_velocity_rad_s": 6.8,
+      "effective_max_torque_scale": 0.65
+    },
+    {
+      "joint_name": "right_wrist_pitch",
+      "control_delay_s": 0.02,
+      "control_delay_steps": 1,
+      "backlash_rad": 0.01,
+      "frictionloss": 0.05,
+      "armature": 0.0015,
+      "effective_max_velocity_rad_s": 6.8,
+      "effective_max_torque_scale": 0.65
+    }
+  ],
+  "sensor_model": {
+    "imu_gyro_noise_std": 0.015,
+    "imu_gyro_bias_walk_std": 0.002,
+    "imu_orientation_noise_std": 0.004,
+    "foot_switch_latency_s": 0.02,
+    "foot_switch_latency_steps": 1,
+    "foot_switch_dropout_prob": 0.01
+  },
+  "metadata": {
+    "description": "Milestone v0.19.1 baseline realism profile for digital twin and SysID tooling",
+    "source": "initial representative values; intended to be updated from measured captures",
+    "units": {
+      "control_delay_s": "seconds",
+      "backlash_rad": "radians",
+      "frictionloss": "MuJoCo actuator frictionloss",
+      "armature": "MuJoCo actuator armature",
+      "effective_max_velocity_rad_s": "radians_per_second",
+      "effective_max_torque_scale": "unitless_scale",
+      "imu_gyro_noise_std": "radians_per_second",
+      "imu_gyro_bias_walk_std": "radians_per_second_per_sqrt_s",
+      "imu_orientation_noise_std": "radians",
+      "foot_switch_latency_s": "seconds",
+      "foot_switch_dropout_prob": "probability"
+    }
+  }
+}

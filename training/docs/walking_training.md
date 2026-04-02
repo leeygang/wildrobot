@@ -282,9 +282,9 @@ Expected additions:
 - `tools/sysid/`
 - `tools/sim2real_eval/`
 - replay and plotting scripts for sim-vs-real comparison
-- Milestone 0 placeholders:
-  - `tools/sysid/run_capture_stub.py`
-  - `tools/sim2real_eval/replay_compare_stub.py`
+- Milestone 1 usable CLIs:
+  - `tools/sysid/run_capture.py`
+  - `tools/sim2real_eval/replay_compare.py`
 
 ### `runtime/`
 
