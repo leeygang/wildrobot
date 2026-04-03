@@ -152,6 +152,27 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         loc_ref_enabled=bool(env.get("loc_ref_enabled", False)),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
+        loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
+        loc_ref_nominal_com_height_m=float(env.get("loc_ref_nominal_com_height_m", 0.40)),
+        loc_ref_nominal_lateral_foot_offset_m=float(
+            env.get("loc_ref_nominal_lateral_foot_offset_m", 0.09)
+        ),
+        loc_ref_min_step_length_m=float(env.get("loc_ref_min_step_length_m", 0.02)),
+        loc_ref_max_step_length_m=float(env.get("loc_ref_max_step_length_m", 0.14)),
+        loc_ref_max_lateral_step_m=float(env.get("loc_ref_max_lateral_step_m", 0.14)),
+        loc_ref_swing_height_m=float(env.get("loc_ref_swing_height_m", 0.04)),
+        loc_ref_pelvis_roll_bias_rad=float(env.get("loc_ref_pelvis_roll_bias_rad", 0.03)),
+        loc_ref_pelvis_pitch_gain=float(env.get("loc_ref_pelvis_pitch_gain", 0.08)),
+        loc_ref_max_pelvis_pitch_rad=float(env.get("loc_ref_max_pelvis_pitch_rad", 0.08)),
+        loc_ref_dcm_placement_gain=float(env.get("loc_ref_dcm_placement_gain", 1.0)),
+        loc_ref_swing_target_blend=float(env.get("loc_ref_swing_target_blend", 0.65)),
+        loc_ref_stance_height_blend=float(env.get("loc_ref_stance_height_blend", 0.25)),
+        loc_ref_stance_extension_margin_m=float(
+            env.get("loc_ref_stance_extension_margin_m", 0.015)
+        ),
+        loc_ref_max_swing_x_delta_m=float(env.get("loc_ref_max_swing_x_delta_m", 0.04)),
+        loc_ref_max_swing_z_delta_m=float(env.get("loc_ref_max_swing_z_delta_m", 0.03)),
+        loc_ref_swing_y_to_hip_roll=float(env.get("loc_ref_swing_y_to_hip_roll", 0.30)),
         action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),

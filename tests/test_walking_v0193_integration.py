@@ -66,6 +66,21 @@ def test_step_emits_m3_metrics_and_preserves_standing_regression() -> None:
     assert "reward/m3_pelvis_orientation_tracking" in metrics
     assert "tracking/cmd_vs_achieved_forward" in metrics
     assert "tracking/residual_q_abs_mean" in metrics
+    assert "tracking/loc_ref_left_reachable" in metrics
+    assert "tracking/loc_ref_right_reachable" in metrics
+    assert "tracking/loc_ref_phase_progress" in metrics
+    assert "debug/m3_swing_pos_error" in metrics
+    assert "debug/m3_swing_vel_error" in metrics
+    assert "debug/m3_foothold_error" in metrics
     assert "term/height_low" in metrics
     assert jp.isfinite(metrics["reward/m3_pelvis_orientation_tracking"])
     assert jp.isfinite(metrics["tracking/residual_q_abs_mean"])
+    assert metrics["tracking/loc_ref_phase_progress"] >= 0.0
+    assert metrics["tracking/loc_ref_phase_progress"] <= 1.0
+
+
+def test_v0193a_config_parses_nominal_path_knobs() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    assert cfg.env.loc_ref_step_time_s > 0.0
+    assert cfg.env.loc_ref_max_step_length_m >= cfg.env.loc_ref_min_step_length_m
+    assert 0.0 <= cfg.env.loc_ref_dcm_placement_gain <= 1.0

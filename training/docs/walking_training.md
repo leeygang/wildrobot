@@ -1,7 +1,7 @@
 # WildRobot Walking Training Plan
 
 **Status:** Active locomotion plan for `v0.19.x`  
-**Last updated:** 2026-03-31
+**Last updated:** 2026-04-02
 
 ---
 
@@ -298,6 +298,30 @@ Expected additions:
 
 ## Milestones
 
+### Current status
+
+- `v0.19.0` complete: locomotion-first contract, schema, and runtime/logging
+  split are in place.
+- `v0.19.1` complete: digital-twin realism profile, SysID capture, and
+  sim-vs-real comparison tooling are implemented.
+- `v0.19.2` complete: `walking_ref_v1`, bounded sagittal IK, and nominal
+  reference smoke tests are implemented.
+- `v0.19.3` implemented but first screening run failed:
+  - run: `training/wandb/offline-run-20260402_082711-xn1wgkap`
+  - failure mode: forward-dive / skate exploit
+  - `eval_clean/success_rate = 0%`
+  - `term_pitch_frac = 100%`
+  - episode length collapsed to about `40` steps
+  - achieved forward speed overshot command by about `2x`
+  - `m3_swing_foot_tracking` and `m3_foothold_consistency` stayed nearly
+    inactive
+- Active next branch: `v0.19.3a`
+  - bounded config-only recovery pass
+  - lower residual authority around `q_ref`
+  - stronger stance-frame reference tracking
+  - stronger slip / impact penalties
+  - remove generic clearance reward from the next screening run
+
 ### `v0.19.0` Platform Pivot
 
 Software stack:
@@ -391,6 +415,46 @@ Exit gate:
 
 - stable forward walking in simulation
 - first hardware rollouts show repeatable stepping and controlled stopping
+
+Result:
+
+- implemented end-to-end, but the first screening run did not clear the gate
+- the initial config overpaid uncontrolled forward motion relative to nominal
+  reference tracking
+- no checkpoint from the first `v0.19.3` run should be treated as a promotion
+  candidate
+
+### `v0.19.3a` Walking Policy v1 Recovery Pass
+
+Software stack:
+
+- keep the `v0.19.3` code path unchanged
+- apply a bounded config-only recovery pass in
+  `training/configs/ppo_walking_v0193a.yaml`
+
+Training approach:
+
+- reduce `loc_ref_residual_scale` so PPO cannot overpower nominal motion as
+  easily
+- reduce maximum commanded forward speed for the first recovery screen
+- increase `m3_swing_foot_tracking` and `m3_foothold_consistency` so the policy
+  is paid for following the reference instead of free-running forward
+- strengthen slip, impact, and residual-magnitude penalties
+- set generic `clearance` reward to zero for this recovery run
+
+Sim2real:
+
+- no hardware walking promotion from `v0.19.3`
+- regain stable simulation behavior first, then re-open guarded hardware tests
+
+Exit gate:
+
+- `term_pitch_frac` drops materially below the failed `v0.19.3` regime
+- clean eval episode length rises well above `40` steps
+- achieved forward speed tracks command instead of overshooting it
+- `m3_swing_foot_tracking` and `m3_foothold_consistency` become meaningfully
+  active
+- slip falls sharply relative to the failed `v0.19.3` run
 
 ### `v0.19.4` Transfer Hardening
 

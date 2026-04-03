@@ -31,6 +31,7 @@ class WalkingRefV1Config:
     pelvis_pitch_gain: float = 0.08
     max_pelvis_pitch_rad: float = 0.08
     max_forward_speed_mps: float = 0.35
+    dcm_placement_gain: float = 1.0
 
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
@@ -45,6 +46,8 @@ class WalkingRefV1Config:
             raise ValueError("max_lateral_step_m must be > 0")
         if self.max_forward_speed_mps <= 0.0:
             raise ValueError("max_forward_speed_mps must be > 0")
+        if self.dcm_placement_gain < 0.0 or self.dcm_placement_gain > 1.0:
+            raise ValueError("dcm_placement_gain must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -129,11 +132,12 @@ def step_reference(
         config.max_step_length_m,
     )
     dcm_cfg = DcmStepConfig(step_time_s=config.step_time_s, omega=omega)
-    x_foot = compute_next_foothold_1d(
+    x_foot_dcm = compute_next_foothold_1d(
         dcm_now=cp[0],
         dcm_target_next=nominal_step,
         config=dcm_cfg,
     )
+    x_foot = (1.0 - config.dcm_placement_gain) * nominal_step + config.dcm_placement_gain * x_foot_dcm
     x_foot = _clip(x_foot, config.min_step_length_m, config.max_step_length_m)
 
     nominal_lateral = config.nominal_lateral_foot_offset_m

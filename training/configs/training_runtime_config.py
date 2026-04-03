@@ -122,6 +122,27 @@ class EnvConfig(Freezable):
     # Residual joint delta scale (fraction of per-joint half-range).
     # Effective delta_q = residual_action * loc_ref_residual_scale * half_span.
     loc_ref_residual_scale: float = 0.18
+    # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
+    loc_ref_step_time_s: float = 0.36
+    loc_ref_nominal_com_height_m: float = 0.40
+    loc_ref_nominal_lateral_foot_offset_m: float = 0.09
+    loc_ref_min_step_length_m: float = 0.02
+    loc_ref_max_step_length_m: float = 0.14
+    loc_ref_max_lateral_step_m: float = 0.14
+    loc_ref_swing_height_m: float = 0.04
+    loc_ref_pelvis_roll_bias_rad: float = 0.03
+    loc_ref_pelvis_pitch_gain: float = 0.08
+    loc_ref_max_pelvis_pitch_rad: float = 0.08
+    # Blend between nominal speed-based foothold and DCM foothold.
+    # 0.0 = pure nominal step length, 1.0 = pure DCM foothold.
+    loc_ref_dcm_placement_gain: float = 1.0
+    # Conservative nominal-path shaping for M3 reference execution.
+    loc_ref_swing_target_blend: float = 0.65
+    loc_ref_stance_height_blend: float = 0.25
+    loc_ref_stance_extension_margin_m: float = 0.015
+    loc_ref_max_swing_x_delta_m: float = 0.04
+    loc_ref_max_swing_z_delta_m: float = 0.03
+    loc_ref_swing_y_to_hip_roll: float = 0.30
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

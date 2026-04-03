@@ -197,7 +197,7 @@ ENV_METRICS_KEYS = {
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
     "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
-    "tracking/loc_ref_phase_progress": "Locomotion reference stance switch counter",
+    "tracking/loc_ref_phase_progress": "Locomotion reference intra-step phase progress in [0, 1]",
     "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
     "tracking/nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude",
     "tracking/residual_q_abs_mean": "Mean absolute residual delta_q magnitude",
@@ -633,6 +633,13 @@ def get_initial_env_metrics_jax(
         "debug/mpc_target_step_y": jp.zeros(()),
         "debug/mpc_support_state": jp.zeros(()),
         "debug/mpc_step_requested": jp.zeros(()),
+        # v0.19.3+: M3 locomotion-reference debug diagnostics
+        "debug/m3_swing_pos_error": jp.zeros(()),
+        "debug/m3_swing_vel_error": jp.zeros(()),
+        "debug/m3_foothold_error": jp.zeros(()),
+        "debug/m3_pelvis_orientation_error": jp.zeros(()),
+        "debug/m3_pelvis_height_error": jp.zeros(()),
+        "debug/m3_impact_force": jp.zeros(()),
     }
 
 
@@ -1197,6 +1204,7 @@ def build_wandb_metrics(
     for key, value in metrics.env_metrics.items():
         if (
             key.startswith("debug/")
+            or key.startswith("tracking/")
             or key.startswith("term_")
             or key.startswith("recovery/")
             or key.startswith("teacher/")

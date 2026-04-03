@@ -51,3 +51,32 @@ def test_swing_trajectory_clearance_and_velocity_present() -> None:
     ref = out.reference
     assert ref.desired_swing_foot_position[2] >= 0.0
     assert abs(ref.desired_swing_foot_velocity[0]) > 0.0
+
+
+def test_dcm_placement_gain_blends_nominal_and_dcm_step() -> None:
+    base_kwargs = dict(
+        step_time_s=0.36,
+        min_step_length_m=0.01,
+        max_step_length_m=0.14,
+    )
+    state = WalkingRefV1State()
+    inputs = WalkingRefV1Input(
+        forward_speed_mps=0.12,
+        com_position_stance_frame=(0.20, 0.0),
+        com_velocity_stance_frame=(0.20, 0.0),
+    )
+    out_nominal = step_reference(
+        config=WalkingRefV1Config(**base_kwargs, dcm_placement_gain=0.0),
+        state=state,
+        inputs=inputs,
+        dt_s=0.02,
+    )
+    out_dcm = step_reference(
+        config=WalkingRefV1Config(**base_kwargs, dcm_placement_gain=1.0),
+        state=state,
+        inputs=inputs,
+        dt_s=0.02,
+    )
+    x_nominal = out_nominal.reference.desired_next_foothold_stance_frame[0]
+    x_dcm = out_dcm.reference.desired_next_foothold_stance_frame[0]
+    assert x_nominal != x_dcm

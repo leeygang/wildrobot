@@ -1192,13 +1192,17 @@ def train(
         policy_init_action=policy_init_action,
     )
 
-    # Create discriminator (always created, may be unused)
+    # Create discriminator only when AMP is enabled.
     amp_feature_dim = get_feature_config().feature_dim
-    disc_model, disc_params = create_discriminator(
-        obs_dim=amp_feature_dim,
-        hidden_dims=config.networks.discriminator.hidden_sizes,
-        seed=int(disc_rng[0]),
-    )
+    if amp_enabled:
+        disc_model, disc_params = create_discriminator(
+            obs_dim=amp_feature_dim,
+            hidden_dims=config.networks.discriminator.hidden_sizes,
+            seed=int(disc_rng[0]),
+        )
+    else:
+        disc_model = None
+        disc_params = {}
 
     # Create optimizers
     total_schedule_updates = max(
@@ -1220,12 +1224,16 @@ def train(
         optax.clip_by_global_norm(config.ppo.max_grad_norm),
         optax.adam(lr_schedule),
     )
-    disc_optimizer = optax.adam(float(config.amp.discriminator.learning_rate))
+    disc_optimizer = (
+        optax.adam(float(config.amp.discriminator.learning_rate))
+        if amp_enabled
+        else None
+    )
 
     # Initialize optimizer states
     policy_opt_state = policy_optimizer.init(policy_params)
     value_opt_state = value_optimizer.init(value_params)
-    disc_opt_state = disc_optimizer.init(disc_params)
+    disc_opt_state = disc_optimizer.init(disc_params) if amp_enabled else ()
 
     # Feature normalization stats
     if amp_enabled:

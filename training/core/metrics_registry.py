@@ -517,7 +517,7 @@ METRIC_SPECS: List[MetricSpec] = [
     MetricSpec(
         name="tracking/loc_ref_phase_progress",
         reducer=Reducer.MEAN,
-        description="Locomotion reference phase/stance switch progression",
+        description="Locomotion reference intra-step phase progress in [0, 1]",
     ),
     MetricSpec(
         name="tracking/loc_ref_stance_foot",
@@ -1095,6 +1095,42 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.SUM,
         log_prefix="teacher",
         description="Summed CoM-velocity target-hit indicators; normalized by teacher/whole_body_active_count",
+    ),
+    MetricSpec(
+        name="debug/m3_swing_pos_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 swing-foot position error in stance-foot frame",
+    ),
+    MetricSpec(
+        name="debug/m3_swing_vel_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 swing-foot velocity error in stance-foot frame",
+    ),
+    MetricSpec(
+        name="debug/m3_foothold_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 touchdown foothold error in stance-foot frame",
+    ),
+    MetricSpec(
+        name="debug/m3_pelvis_orientation_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 pelvis orientation error magnitude",
+    ),
+    MetricSpec(
+        name="debug/m3_pelvis_height_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 pelvis height absolute error",
+    ),
+    MetricSpec(
+        name="debug/m3_impact_force",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="M3 maximum contact impact force",
     ),
 ]
 
