@@ -143,6 +143,13 @@ class EnvConfig(Freezable):
     loc_ref_max_swing_x_delta_m: float = 0.04
     loc_ref_max_swing_z_delta_m: float = 0.03
     loc_ref_swing_y_to_hip_roll: float = 0.30
+    # Overspeed-aware nominal reference shaping (v0.19.3d).
+    loc_ref_overspeed_deadband: float = 0.05
+    loc_ref_overspeed_brake_gain: float = 1.5
+    loc_ref_overspeed_phase_slowdown_gain: float = 2.5
+    loc_ref_overspeed_phase_min_scale: float = 0.2
+    loc_ref_pitch_brake_start_rad: float = 0.12
+    loc_ref_pitch_brake_gain: float = 1.0
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

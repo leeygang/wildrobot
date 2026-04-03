@@ -184,6 +184,12 @@ ENV_METRICS_KEYS = {
     "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter, legacy)",
     "debug/torque_abs_max": "Max |torque| as fraction of limit (0-1, preferred)",
     "debug/torque_sat_frac": "Fraction of |torque|>0.95 of limit (preferred)",
+    "debug/loc_ref_speed_scale": "Loc-ref speed scale after overspeed/pitch braking",
+    "debug/loc_ref_phase_scale": "Loc-ref phase-time scale after overspeed/pitch braking",
+    "debug/loc_ref_overspeed": "Loc-ref overspeed signal max(fwd-cmd-deadband, 0)",
+    "debug/loc_ref_nominal_vs_applied_q_l1": "Mean |applied_target_q - nominal_q_ref| per step",
+    "debug/loc_ref_applied_q_abs_mean": "Mean absolute applied target-q magnitude",
+    "debug/loc_ref_nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude (debug copy)",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -640,6 +646,12 @@ def get_initial_env_metrics_jax(
         "debug/m3_pelvis_orientation_error": jp.zeros(()),
         "debug/m3_pelvis_height_error": jp.zeros(()),
         "debug/m3_impact_force": jp.zeros(()),
+        "debug/loc_ref_speed_scale": jp.zeros(()),
+        "debug/loc_ref_phase_scale": jp.zeros(()),
+        "debug/loc_ref_overspeed": jp.zeros(()),
+        "debug/loc_ref_nominal_vs_applied_q_l1": jp.zeros(()),
+        "debug/loc_ref_applied_q_abs_mean": jp.zeros(()),
+        "debug/loc_ref_nominal_q_abs_mean": jp.zeros(()),
     }
 
 

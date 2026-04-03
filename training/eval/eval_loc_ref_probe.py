@@ -103,6 +103,24 @@ def run_nominal_probe(
         "tracking_loc_ref_stance_foot_last": float(
             metrics_vec[done_idx, 0, METRIC_INDEX["tracking/loc_ref_stance_foot"]]
         ),
+        "debug_loc_ref_speed_scale_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_speed_scale"]])
+        ),
+        "debug_loc_ref_phase_scale_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_phase_scale"]])
+        ),
+        "debug_loc_ref_overspeed_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_overspeed"]])
+        ),
+        "debug_loc_ref_nominal_vs_applied_q_l1_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_nominal_vs_applied_q_l1"]])
+        ),
+        "debug_loc_ref_applied_q_abs_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_applied_q_abs_mean"]])
+        ),
+        "debug_loc_ref_nominal_q_abs_mean_debug": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_nominal_q_abs_mean"]])
+        ),
         "debug_m3_swing_pos_error": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/m3_swing_pos_error"]])
         ),

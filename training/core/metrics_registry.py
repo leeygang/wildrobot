@@ -1132,6 +1132,42 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="M3 maximum contact impact force",
     ),
+    MetricSpec(
+        name="debug/loc_ref_speed_scale",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Loc-ref speed scale after overspeed/pitch braking",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_phase_scale",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Loc-ref phase-time scale after overspeed/pitch braking",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_overspeed",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Loc-ref overspeed signal max(fwd-cmd-deadband, 0)",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_nominal_vs_applied_q_l1",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Mean |applied_target_q - nominal_q_ref| per step",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_applied_q_abs_mean",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Mean absolute applied target-q magnitude",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_nominal_q_abs_mean",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Mean absolute nominal q_ref magnitude (debug copy)",
+    ),
 ]
 
 # =============================================================================

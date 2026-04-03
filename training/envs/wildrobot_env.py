@@ -126,8 +126,12 @@ def _step_walking_reference_jax(
     dt_s: float,
     cfg: WalkingRefV1Config,
     dcm_placement_gain: float = 1.0,
+    phase_scale: jax.Array = jp.asarray(1.0, dtype=jp.float32),
+    speed_scale: jax.Array = jp.asarray(1.0, dtype=jp.float32),
 ) -> tuple[dict[str, jax.Array], jax.Array, jax.Array, jax.Array]:
-    dt = jp.asarray(dt_s, dtype=jp.float32)
+    dt = jp.asarray(dt_s, dtype=jp.float32) * jp.clip(
+        jp.asarray(phase_scale, dtype=jp.float32), 0.05, 1.0
+    )
     step_time = jp.asarray(cfg.step_time_s, dtype=jp.float32)
     phase_time = jp.asarray(phase_time_s, dtype=jp.float32) + dt
     stance = jp.asarray(stance_foot_id, dtype=jp.int32)
@@ -138,9 +142,16 @@ def _step_walking_reference_jax(
     switches = jp.where(switched, switches + 1, switches)
     phase = jp.clip(phase_time / jp.maximum(step_time, 1e-6), 0.0, 1.0)
 
-    speed = _clip_scalar(forward_speed_mps, 0.0, cfg.max_forward_speed_mps)
+    speed = _clip_scalar(
+        forward_speed_mps * jp.clip(jp.asarray(speed_scale, dtype=jp.float32), 0.0, 1.0),
+        0.0,
+        cfg.max_forward_speed_mps,
+    )
     omega = jp.sqrt(jp.asarray(9.81, dtype=jp.float32) / jp.asarray(cfg.nominal_com_height_m, dtype=jp.float32))
-    cp_x = com_position_stance_frame[0] + com_velocity_stance_frame[0] / jp.maximum(omega, 1e-6)
+    dcm_vel_scale = jp.clip(jp.asarray(speed_scale, dtype=jp.float32), 0.0, 1.0)
+    cp_x = com_position_stance_frame[0] + (
+        com_velocity_stance_frame[0] * dcm_vel_scale
+    ) / jp.maximum(omega, 1e-6)
     b = jp.exp(-omega * step_time)
     nominal_step = _clip_scalar(
         speed * step_time,
@@ -195,6 +206,40 @@ def _step_walking_reference_jax(
 def _update_loc_ref_history(prev_hist: jax.Array, phase_sin: jax.Array, phase_cos: jax.Array) -> jax.Array:
     prev = jp.asarray(prev_hist, dtype=jp.float32).reshape(4)
     return jp.asarray([prev[2], prev[3], phase_sin, phase_cos], dtype=jp.float32)
+
+
+def _loc_ref_brake_scales(
+    *,
+    velocity_cmd: jax.Array,
+    forward_vel_h: jax.Array,
+    pitch_rad: jax.Array,
+    overspeed_deadband: jax.Array,
+    overspeed_brake_gain: jax.Array,
+    overspeed_phase_slowdown_gain: jax.Array,
+    overspeed_phase_min_scale: jax.Array,
+    pitch_brake_start_rad: jax.Array,
+    pitch_brake_gain: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    cmd = jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
+    fwd = jp.asarray(forward_vel_h, dtype=jp.float32)
+    pitch = jp.asarray(pitch_rad, dtype=jp.float32)
+    overspeed = jp.maximum(fwd - cmd - jp.asarray(overspeed_deadband, dtype=jp.float32), 0.0)
+    pitch_excess = jp.maximum(jp.abs(pitch) - jp.asarray(pitch_brake_start_rad, dtype=jp.float32), 0.0)
+
+    speed_scale = 1.0 / (
+        1.0
+        + jp.asarray(overspeed_brake_gain, dtype=jp.float32) * overspeed
+        + jp.asarray(pitch_brake_gain, dtype=jp.float32) * pitch_excess
+    )
+    phase_scale = 1.0 / (
+        1.0
+        + jp.asarray(overspeed_phase_slowdown_gain, dtype=jp.float32) * overspeed
+        + 0.5 * jp.asarray(pitch_brake_gain, dtype=jp.float32) * pitch_excess
+    )
+    phase_scale = jp.maximum(
+        jp.asarray(overspeed_phase_min_scale, dtype=jp.float32), phase_scale
+    )
+    return speed_scale.astype(jp.float32), phase_scale.astype(jp.float32), overspeed.astype(jp.float32)
 
 
 def _swing_state_in_stance_frame(
@@ -1332,6 +1377,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._loc_ref_swing_y_to_hip_roll = jp.asarray(
             getattr(self._config.env, "loc_ref_swing_y_to_hip_roll", 0.30), dtype=jp.float32
         )
+        self._loc_ref_overspeed_deadband = jp.asarray(
+            getattr(self._config.env, "loc_ref_overspeed_deadband", 0.05), dtype=jp.float32
+        )
+        self._loc_ref_overspeed_brake_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_overspeed_brake_gain", 1.5), dtype=jp.float32
+        )
+        self._loc_ref_overspeed_phase_slowdown_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_overspeed_phase_slowdown_gain", 2.5),
+            dtype=jp.float32,
+        )
+        self._loc_ref_overspeed_phase_min_scale = jp.asarray(
+            getattr(self._config.env, "loc_ref_overspeed_phase_min_scale", 0.2),
+            dtype=jp.float32,
+        )
+        self._loc_ref_pitch_brake_start_rad = jp.asarray(
+            getattr(self._config.env, "loc_ref_pitch_brake_start_rad", 0.12), dtype=jp.float32
+        )
+        self._loc_ref_pitch_brake_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_pitch_brake_gain", 1.0), dtype=jp.float32
+        )
         self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
         self._idx_right_hip_pitch = self._actuator_name_to_index.get("right_hip_pitch", -1)
         self._idx_left_hip_roll = self._actuator_name_to_index.get("left_hip_roll", -1)
@@ -1505,6 +1570,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        _, pitch_reset, _ = root_pose.euler_angles()
+        ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
+            velocity_cmd=velocity_cmd,
+            forward_vel_h=root_vel_h.linear_xyz[0],
+            pitch_rad=pitch_reset,
+            overspeed_deadband=self._loc_ref_overspeed_deadband,
+            overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
+            overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
+            overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
+            pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
+            pitch_brake_gain=self._loc_ref_pitch_brake_gain,
+        )
         left_foot_h, right_foot_h = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -1530,6 +1607,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "loc_ref_dcm_placement_gain", 1.0),
                 dtype=jp.float32,
             ),
+            phase_scale=ref_phase_scale,
+            speed_scale=ref_speed_scale,
         )
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
@@ -1780,6 +1859,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(nominal_q_ref))
         metrics["tracking/residual_q_abs_mean"] = jp.zeros((), dtype=jp.float32)
         metrics["tracking/residual_q_abs_max"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
+        metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+        metrics["debug/loc_ref_overspeed"] = ref_overspeed
         metrics["debug/m3_pelvis_orientation_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_pelvis_height_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_swing_pos_error"] = jp.zeros((), dtype=jp.float32)
@@ -1883,6 +1965,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_vel_pre_h = self._cal.get_root_velocity(
             state.data, frame=CoordinateFrame.HEADING_LOCAL
         )
+        _, pitch_pre, _ = root_pose_pre.euler_angles()
+        ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
+            velocity_cmd=velocity_cmd,
+            forward_vel_h=root_vel_pre_h.linear_xyz[0],
+            pitch_rad=pitch_pre,
+            overspeed_deadband=self._loc_ref_overspeed_deadband,
+            overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
+            overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
+            overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
+            pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
+            pitch_brake_gain=self._loc_ref_pitch_brake_gain,
+        )
         left_foot_pre_h, right_foot_pre_h = self._cal.get_foot_positions(
             state.data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -1907,6 +2001,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "loc_ref_dcm_placement_gain", 1.0),
                 dtype=jp.float32,
             ),
+            phase_scale=ref_phase_scale,
+            speed_scale=ref_speed_scale,
         )
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
@@ -1983,6 +2079,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             action_raw=raw_action,
         )
         applied_action = pending_action if self._action_delay_enabled else filtered_action
+        applied_target_q = JaxCalibOps.action_to_ctrl(
+            spec=self._policy_spec, action=applied_action
+        ).astype(jp.float32)
 
         # =====================================================================
         # Apply action as control via CAL (v0.11.0)
@@ -2145,6 +2244,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "tracking/residual_q_abs_max": jp.max(jp.abs(residual_delta_q)),
             "tracking/loc_ref_left_reachable": left_ref_reachable,
             "tracking/loc_ref_right_reachable": right_ref_reachable,
+            "debug/loc_ref_speed_scale": ref_speed_scale,
+            "debug/loc_ref_phase_scale": ref_phase_scale,
+            "debug/loc_ref_overspeed": ref_overspeed,
+            "debug/loc_ref_nominal_vs_applied_q_l1": jp.mean(
+                jp.abs(applied_target_q - nominal_q_ref)
+            ),
+            "debug/loc_ref_applied_q_abs_mean": jp.mean(jp.abs(applied_target_q)),
+            "debug/loc_ref_nominal_q_abs_mean": jp.mean(jp.abs(nominal_q_ref)),
         }
         if mpc_debug is not None:
             metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
@@ -3009,6 +3116,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "debug/m3_impact_force": metrics.get(
                 "debug/m3_impact_force", jp.zeros(())
+            ),
+            "debug/loc_ref_speed_scale": metrics.get(
+                "debug/loc_ref_speed_scale", jp.zeros(())
+            ),
+            "debug/loc_ref_phase_scale": metrics.get(
+                "debug/loc_ref_phase_scale", jp.zeros(())
+            ),
+            "debug/loc_ref_overspeed": metrics.get(
+                "debug/loc_ref_overspeed", jp.zeros(())
+            ),
+            "debug/loc_ref_nominal_vs_applied_q_l1": metrics.get(
+                "debug/loc_ref_nominal_vs_applied_q_l1", jp.zeros(())
+            ),
+            "debug/loc_ref_applied_q_abs_mean": metrics.get(
+                "debug/loc_ref_applied_q_abs_mean", jp.zeros(())
+            ),
+            "debug/loc_ref_nominal_q_abs_mean": metrics.get(
+                "debug/loc_ref_nominal_q_abs_mean", jp.zeros(())
             ),
         }
 

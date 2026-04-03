@@ -72,6 +72,9 @@ def test_step_emits_m3_metrics_and_preserves_standing_regression() -> None:
     assert "debug/m3_swing_pos_error" in metrics
     assert "debug/m3_swing_vel_error" in metrics
     assert "debug/m3_foothold_error" in metrics
+    assert "debug/loc_ref_speed_scale" in metrics
+    assert "debug/loc_ref_phase_scale" in metrics
+    assert "debug/loc_ref_nominal_vs_applied_q_l1" in metrics
     assert "term/height_low" in metrics
     assert jp.isfinite(metrics["reward/m3_pelvis_orientation_tracking"])
     assert jp.isfinite(metrics["tracking/residual_q_abs_mean"])
@@ -84,3 +87,9 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert cfg.env.loc_ref_step_time_s > 0.0
     assert cfg.env.loc_ref_max_step_length_m >= cfg.env.loc_ref_min_step_length_m
     assert 0.0 <= cfg.env.loc_ref_dcm_placement_gain <= 1.0
+    assert cfg.env.loc_ref_overspeed_deadband >= 0.0
+    assert cfg.env.loc_ref_overspeed_brake_gain >= 0.0
+    assert cfg.env.loc_ref_overspeed_phase_slowdown_gain >= 0.0
+    assert 0.0 < cfg.env.loc_ref_overspeed_phase_min_scale <= 1.0
+    assert cfg.env.loc_ref_pitch_brake_start_rad >= 0.0
+    assert cfg.env.loc_ref_pitch_brake_gain >= 0.0

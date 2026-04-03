@@ -61,6 +61,13 @@ env:
   loc_ref_max_swing_x_delta_m: 0.015
   loc_ref_max_swing_z_delta_m: 0.010
   loc_ref_swing_y_to_hip_roll: 0.08
+  # v0.19.3d: overspeed/pitch-aware nominal braking in full env dynamics
+  loc_ref_overspeed_deadband: 0.02
+  loc_ref_overspeed_brake_gain: 3.0
+  loc_ref_overspeed_phase_slowdown_gain: 5.0
+  loc_ref_overspeed_phase_min_scale: 0.15
+  loc_ref_pitch_brake_start_rad: 0.08
+  loc_ref_pitch_brake_gain: 2.5
 
   clock_stride_period_steps: 36
   clock_phase_gate_width: 0.20

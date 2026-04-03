@@ -30,6 +30,10 @@ def test_nominal_probe_runs_and_emits_required_keys() -> None:
         "reward_m3_foothold_consistency",
         "tracking_loc_ref_phase_progress_last",
         "tracking_loc_ref_stance_foot_last",
+        "debug_loc_ref_speed_scale_mean",
+        "debug_loc_ref_phase_scale_mean",
+        "debug_loc_ref_overspeed_mean",
+        "debug_loc_ref_nominal_vs_applied_q_l1_mean",
     ]
     for key in required:
         assert key in summary
@@ -48,3 +52,5 @@ def test_probe_phase_progresses() -> None:
     assert 0.0 <= s["tracking_loc_ref_phase_progress_last"] <= 1.0
     assert 0.0 <= s["tracking_loc_ref_phase_progress_mean"] <= 1.0
     assert s["tracking_loc_ref_phase_progress_std"] > 0.0
+    assert 0.0 <= s["debug_loc_ref_speed_scale_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_phase_scale_mean"] <= 1.0
