@@ -183,6 +183,20 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ),
         loc_ref_pitch_brake_start_rad=float(env.get("loc_ref_pitch_brake_start_rad", 0.12)),
         loc_ref_pitch_brake_gain=float(env.get("loc_ref_pitch_brake_gain", 1.0)),
+        loc_ref_swing_x_brake_pitch_start_rad=float(
+            env.get("loc_ref_swing_x_brake_pitch_start_rad", 0.08)
+        ),
+        loc_ref_swing_x_brake_overspeed_deadband=float(
+            env.get("loc_ref_swing_x_brake_overspeed_deadband", 0.03)
+        ),
+        loc_ref_swing_x_brake_gain=float(env.get("loc_ref_swing_x_brake_gain", 5.0)),
+        loc_ref_swing_x_min_scale=float(env.get("loc_ref_swing_x_min_scale", 0.05)),
+        loc_ref_pelvis_pitch_brake_gain=float(
+            env.get("loc_ref_pelvis_pitch_brake_gain", 6.0)
+        ),
+        loc_ref_pelvis_pitch_min_scale=float(
+            env.get("loc_ref_pelvis_pitch_min_scale", 0.0)
+        ),
         action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),

@@ -11,7 +11,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.envs.env_info import WR_INFO_KEY
-from training.envs.wildrobot_env import WildRobotEnv
+from training.envs.wildrobot_env import WildRobotEnv, _loc_ref_support_scales
 from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
 from policy_contract.calib import JaxCalibOps
 
@@ -75,6 +75,15 @@ def test_step_emits_m3_metrics_and_preserves_standing_regression() -> None:
     assert "debug/loc_ref_speed_scale" in metrics
     assert "debug/loc_ref_phase_scale" in metrics
     assert "debug/loc_ref_nominal_vs_applied_q_l1" in metrics
+    assert "debug/loc_ref_swing_x_target" in metrics
+    assert "debug/loc_ref_swing_x_actual" in metrics
+    assert "debug/loc_ref_swing_x_error" in metrics
+    assert "debug/loc_ref_pelvis_pitch_target" in metrics
+    assert "debug/loc_ref_root_pitch" in metrics
+    assert "debug/loc_ref_root_pitch_rate" in metrics
+    assert "debug/loc_ref_swing_x_scale" in metrics
+    assert "debug/loc_ref_pelvis_pitch_scale" in metrics
+    assert "debug/loc_ref_support_gate_active" in metrics
     assert "term/height_low" in metrics
     assert jp.isfinite(metrics["reward/m3_pelvis_orientation_tracking"])
     assert jp.isfinite(metrics["tracking/residual_q_abs_mean"])
@@ -93,3 +102,45 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert 0.0 < cfg.env.loc_ref_overspeed_phase_min_scale <= 1.0
     assert cfg.env.loc_ref_pitch_brake_start_rad >= 0.0
     assert cfg.env.loc_ref_pitch_brake_gain >= 0.0
+    assert cfg.env.loc_ref_swing_x_brake_pitch_start_rad >= 0.0
+    assert cfg.env.loc_ref_swing_x_brake_overspeed_deadband >= 0.0
+    assert cfg.env.loc_ref_swing_x_brake_gain >= 0.0
+    assert 0.0 <= cfg.env.loc_ref_swing_x_min_scale <= 1.0
+    assert cfg.env.loc_ref_pelvis_pitch_brake_gain >= 0.0
+    assert 0.0 <= cfg.env.loc_ref_pelvis_pitch_min_scale <= 1.0
+
+
+def test_loc_ref_support_scales_brake_instability() -> None:
+    swing_scale, pelvis_scale, overspeed, gate = _loc_ref_support_scales(
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.80, dtype=jp.float32),
+        pitch_rad=jp.asarray(0.25, dtype=jp.float32),
+        swing_x_brake_pitch_start_rad=jp.asarray(0.06, dtype=jp.float32),
+        swing_x_brake_overspeed_deadband=jp.asarray(0.01, dtype=jp.float32),
+        swing_x_brake_gain=jp.asarray(12.0, dtype=jp.float32),
+        swing_x_min_scale=jp.asarray(0.0, dtype=jp.float32),
+        pelvis_pitch_brake_gain=jp.asarray(14.0, dtype=jp.float32),
+        pelvis_pitch_min_scale=jp.asarray(0.0, dtype=jp.float32),
+    )
+    assert overspeed > 0.0
+    assert gate > 0.0
+    assert swing_scale < 0.5
+    assert pelvis_scale < 0.5
+
+
+def test_loc_ref_support_scales_idle_when_stable() -> None:
+    swing_scale, pelvis_scale, overspeed, gate = _loc_ref_support_scales(
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.09, dtype=jp.float32),
+        pitch_rad=jp.asarray(0.01, dtype=jp.float32),
+        swing_x_brake_pitch_start_rad=jp.asarray(0.06, dtype=jp.float32),
+        swing_x_brake_overspeed_deadband=jp.asarray(0.01, dtype=jp.float32),
+        swing_x_brake_gain=jp.asarray(12.0, dtype=jp.float32),
+        swing_x_min_scale=jp.asarray(0.0, dtype=jp.float32),
+        pelvis_pitch_brake_gain=jp.asarray(14.0, dtype=jp.float32),
+        pelvis_pitch_min_scale=jp.asarray(0.0, dtype=jp.float32),
+    )
+    assert overspeed == 0.0
+    assert gate == 0.0
+    assert jp.abs(swing_scale - 1.0) < 1e-6
+    assert jp.abs(pelvis_scale - 1.0) < 1e-6

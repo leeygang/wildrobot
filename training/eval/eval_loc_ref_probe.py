@@ -121,6 +121,33 @@ def run_nominal_probe(
         "debug_loc_ref_nominal_q_abs_mean_debug": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_nominal_q_abs_mean"]])
         ),
+        "debug_loc_ref_swing_x_target_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_target"]])
+        ),
+        "debug_loc_ref_swing_x_actual_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_actual"]])
+        ),
+        "debug_loc_ref_swing_x_error_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_error"]])
+        ),
+        "debug_loc_ref_pelvis_pitch_target_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_pelvis_pitch_target"]])
+        ),
+        "debug_loc_ref_root_pitch_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_root_pitch"]])
+        ),
+        "debug_loc_ref_root_pitch_rate_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_root_pitch_rate"]])
+        ),
+        "debug_loc_ref_swing_x_scale_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_scale"]])
+        ),
+        "debug_loc_ref_pelvis_pitch_scale_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_pelvis_pitch_scale"]])
+        ),
+        "debug_loc_ref_support_gate_active_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_support_gate_active"]])
+        ),
         "debug_m3_swing_pos_error": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/m3_swing_pos_error"]])
         ),

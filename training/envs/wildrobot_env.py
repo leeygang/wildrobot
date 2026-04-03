@@ -242,6 +242,53 @@ def _loc_ref_brake_scales(
     return speed_scale.astype(jp.float32), phase_scale.astype(jp.float32), overspeed.astype(jp.float32)
 
 
+def _loc_ref_support_scales(
+    *,
+    velocity_cmd: jax.Array,
+    forward_vel_h: jax.Array,
+    pitch_rad: jax.Array,
+    swing_x_brake_pitch_start_rad: jax.Array,
+    swing_x_brake_overspeed_deadband: jax.Array,
+    swing_x_brake_gain: jax.Array,
+    swing_x_min_scale: jax.Array,
+    pelvis_pitch_brake_gain: jax.Array,
+    pelvis_pitch_min_scale: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Compute support-first nominal scaling for swing-x and pelvis-pitch channels."""
+    cmd = jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
+    fwd = jp.asarray(forward_vel_h, dtype=jp.float32)
+    pitch = jp.asarray(pitch_rad, dtype=jp.float32)
+    overspeed = jp.maximum(
+        fwd - cmd - jp.asarray(swing_x_brake_overspeed_deadband, dtype=jp.float32), 0.0
+    )
+    pitch_excess = jp.maximum(
+        jp.abs(pitch) - jp.asarray(swing_x_brake_pitch_start_rad, dtype=jp.float32), 0.0
+    )
+    instability = overspeed + pitch_excess
+
+    swing_x_scale = 1.0 / (
+        1.0 + jp.asarray(swing_x_brake_gain, dtype=jp.float32) * instability
+    )
+    swing_x_scale = jp.maximum(
+        jp.asarray(swing_x_min_scale, dtype=jp.float32), swing_x_scale
+    )
+
+    pelvis_pitch_scale = 1.0 / (
+        1.0 + jp.asarray(pelvis_pitch_brake_gain, dtype=jp.float32) * instability
+    )
+    pelvis_pitch_scale = jp.maximum(
+        jp.asarray(pelvis_pitch_min_scale, dtype=jp.float32), pelvis_pitch_scale
+    )
+
+    gate_active = (instability > 1e-6).astype(jp.float32)
+    return (
+        swing_x_scale.astype(jp.float32),
+        pelvis_pitch_scale.astype(jp.float32),
+        overspeed.astype(jp.float32),
+        gate_active,
+    )
+
+
 def _swing_state_in_stance_frame(
     *,
     left_foot_pos_h: jax.Array,
@@ -1397,6 +1444,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._loc_ref_pitch_brake_gain = jp.asarray(
             getattr(self._config.env, "loc_ref_pitch_brake_gain", 1.0), dtype=jp.float32
         )
+        self._loc_ref_swing_x_brake_pitch_start_rad = jp.asarray(
+            getattr(self._config.env, "loc_ref_swing_x_brake_pitch_start_rad", 0.08),
+            dtype=jp.float32,
+        )
+        self._loc_ref_swing_x_brake_overspeed_deadband = jp.asarray(
+            getattr(self._config.env, "loc_ref_swing_x_brake_overspeed_deadband", 0.03),
+            dtype=jp.float32,
+        )
+        self._loc_ref_swing_x_brake_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_swing_x_brake_gain", 5.0), dtype=jp.float32
+        )
+        self._loc_ref_swing_x_min_scale = jp.asarray(
+            getattr(self._config.env, "loc_ref_swing_x_min_scale", 0.05), dtype=jp.float32
+        )
+        self._loc_ref_pelvis_pitch_brake_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_pelvis_pitch_brake_gain", 6.0),
+            dtype=jp.float32,
+        )
+        self._loc_ref_pelvis_pitch_min_scale = jp.asarray(
+            getattr(self._config.env, "loc_ref_pelvis_pitch_min_scale", 0.0),
+            dtype=jp.float32,
+        )
         self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
         self._idx_right_hip_pitch = self._actuator_name_to_index.get("right_hip_pitch", -1)
         self._idx_left_hip_roll = self._actuator_name_to_index.get("left_hip_roll", -1)
@@ -1624,7 +1693,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_phase_sin,
             loc_ref_phase_cos,
         )
-        nominal_q_ref, left_ref_reachable, right_ref_reachable = (
+        (
+            nominal_q_ref,
+            left_ref_reachable,
+            right_ref_reachable,
+            nominal_swing_x_target,
+            nominal_pelvis_pitch_target,
+            nominal_stance_sagittal_target,
+            nominal_swing_x_scale,
+            nominal_pelvis_pitch_scale,
+            nominal_support_gate_active,
+        ) = (
             self._compute_nominal_q_ref_from_loc_ref(
                 stance_foot_id=ref_stance_foot,
                 swing_pos=loc_ref_swing_pos,
@@ -1634,6 +1713,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 pelvis_pitch=loc_ref_pelvis_pitch,
                 left_foot_pos_h=left_foot_h,
                 right_foot_pos_h=right_foot_h,
+                root_pitch=pitch_reset,
+                root_pitch_rate=root_vel_h.angular_xyz[1],
+                forward_vel_h=root_vel_h.linear_xyz[0],
+                velocity_cmd=velocity_cmd,
             )
         )
 
@@ -1868,6 +1951,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["debug/m3_swing_vel_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_foothold_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_impact_force"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/loc_ref_swing_x_target"] = nominal_swing_x_target
+        metrics["debug/loc_ref_swing_x_actual"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/loc_ref_swing_x_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/loc_ref_pelvis_pitch_target"] = nominal_pelvis_pitch_target
+        metrics["debug/loc_ref_root_pitch"] = jp.asarray(pitch_reset, dtype=jp.float32)
+        metrics["debug/loc_ref_root_pitch_rate"] = jp.asarray(
+            root_vel_h.angular_xyz[1], dtype=jp.float32
+        )
+        metrics["debug/loc_ref_stance_sagittal_target"] = nominal_stance_sagittal_target
+        metrics["debug/loc_ref_swing_x_scale"] = nominal_swing_x_scale
+        metrics["debug/loc_ref_pelvis_pitch_scale"] = nominal_pelvis_pitch_scale
+        metrics["debug/loc_ref_support_gate_active"] = nominal_support_gate_active
 
         # Merge: base_info (wrapper fields) + wr namespace (env fields)
         if base_info is not None:
@@ -2016,7 +2111,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         loc_ref_history = _update_loc_ref_history(
             wr.loc_ref_history, loc_ref_phase_sin, loc_ref_phase_cos
         )
-        nominal_q_ref, left_ref_reachable, right_ref_reachable = (
+        (
+            nominal_q_ref,
+            left_ref_reachable,
+            right_ref_reachable,
+            nominal_swing_x_target,
+            nominal_pelvis_pitch_target,
+            nominal_stance_sagittal_target,
+            nominal_swing_x_scale,
+            nominal_pelvis_pitch_scale,
+            nominal_support_gate_active,
+        ) = (
             self._compute_nominal_q_ref_from_loc_ref(
                 stance_foot_id=ref_stance_foot,
                 swing_pos=loc_ref_swing_pos,
@@ -2026,6 +2131,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 pelvis_pitch=loc_ref_pelvis_pitch,
                 left_foot_pos_h=left_foot_pre_h,
                 right_foot_pos_h=right_foot_pre_h,
+                root_pitch=pitch_pre,
+                root_pitch_rate=root_vel_pre_h.angular_xyz[1],
+                forward_vel_h=root_vel_pre_h.linear_xyz[0],
+                velocity_cmd=velocity_cmd,
             )
         )
         residual_delta_q = jp.zeros((self.action_size,), dtype=jp.float32)
@@ -2197,6 +2306,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         forward_vel, _, _ = self._cal.get_root_velocity(
             data, frame=CoordinateFrame.HEADING_LOCAL
         ).linear_xyz
+        curr_root_vel_h = self._cal.get_root_velocity(
+            data, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        _, curr_pitch, _ = curr_root_pose.euler_angles()
+        left_foot_post_h, right_foot_post_h = self._cal.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
+        )
+        swing_pos_post, _ = _swing_state_in_stance_frame(
+            left_foot_pos_h=left_foot_post_h,
+            right_foot_pos_h=right_foot_post_h,
+            left_foot_vel_h=jp.zeros((3,), dtype=jp.float32),
+            right_foot_vel_h=jp.zeros((3,), dtype=jp.float32),
+            stance_foot_id=ref_stance_foot,
+        )
         _, _, _, cycle_start_forward_x = compute_cycle_progress_terms(
             cycle_progress_accum=wr.cycle_start_forward_x,
             forward_vel=forward_vel,
@@ -2252,6 +2375,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "debug/loc_ref_applied_q_abs_mean": jp.mean(jp.abs(applied_target_q)),
             "debug/loc_ref_nominal_q_abs_mean": jp.mean(jp.abs(nominal_q_ref)),
+            "debug/loc_ref_swing_x_target": nominal_swing_x_target,
+            "debug/loc_ref_swing_x_actual": jp.asarray(swing_pos_post[0], dtype=jp.float32),
+            "debug/loc_ref_swing_x_error": jp.asarray(
+                swing_pos_post[0] - nominal_swing_x_target, dtype=jp.float32
+            ),
+            "debug/loc_ref_pelvis_pitch_target": nominal_pelvis_pitch_target,
+            "debug/loc_ref_root_pitch": jp.asarray(curr_pitch, dtype=jp.float32),
+            "debug/loc_ref_root_pitch_rate": jp.asarray(
+                curr_root_vel_h.angular_xyz[1], dtype=jp.float32
+            ),
+            "debug/loc_ref_stance_sagittal_target": nominal_stance_sagittal_target,
+            "debug/loc_ref_swing_x_scale": nominal_swing_x_scale,
+            "debug/loc_ref_pelvis_pitch_scale": nominal_pelvis_pitch_scale,
+            "debug/loc_ref_support_gate_active": nominal_support_gate_active,
         }
         if mpc_debug is not None:
             metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
@@ -3135,6 +3272,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/loc_ref_nominal_q_abs_mean": metrics.get(
                 "debug/loc_ref_nominal_q_abs_mean", jp.zeros(())
             ),
+            "debug/loc_ref_swing_x_target": metrics.get(
+                "debug/loc_ref_swing_x_target", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_x_actual": metrics.get(
+                "debug/loc_ref_swing_x_actual", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_x_error": metrics.get(
+                "debug/loc_ref_swing_x_error", jp.zeros(())
+            ),
+            "debug/loc_ref_pelvis_pitch_target": metrics.get(
+                "debug/loc_ref_pelvis_pitch_target", jp.zeros(())
+            ),
+            "debug/loc_ref_root_pitch": metrics.get(
+                "debug/loc_ref_root_pitch", jp.zeros(())
+            ),
+            "debug/loc_ref_root_pitch_rate": metrics.get(
+                "debug/loc_ref_root_pitch_rate", jp.zeros(())
+            ),
+            "debug/loc_ref_stance_sagittal_target": metrics.get(
+                "debug/loc_ref_stance_sagittal_target", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_x_scale": metrics.get(
+                "debug/loc_ref_swing_x_scale", jp.zeros(())
+            ),
+            "debug/loc_ref_pelvis_pitch_scale": metrics.get(
+                "debug/loc_ref_pelvis_pitch_scale", jp.zeros(())
+            ),
+            "debug/loc_ref_support_gate_active": metrics.get(
+                "debug/loc_ref_support_gate_active", jp.zeros(())
+            ),
         }
 
         # v0.10.2: Also preserve truncated flag in wr info for success rate calculation
@@ -3300,6 +3467,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         return jp.reshape(critic_obs, (PRIVILEGED_OBS_DIM,))
 
+    # Exposed for focused tests.
+    _loc_ref_support_scales = staticmethod(_loc_ref_support_scales)
+
     def _compute_nominal_q_ref_from_loc_ref(
         self,
         *,
@@ -3311,7 +3481,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pelvis_pitch: jax.Array,
         left_foot_pos_h: jax.Array,
         right_foot_pos_h: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        root_pitch: jax.Array,
+        root_pitch_rate: jax.Array,
+        forward_vel_h: jax.Array,
+        velocity_cmd: jax.Array,
+    ) -> tuple[
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array,
+    ]:
         """Compute nominal joint-space target from locomotion reference fields."""
         stance_margin = self._loc_ref_stance_extension_margin_m
         nominal_stance_z = -jp.maximum(
@@ -3330,12 +3514,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         swing_pos_stance = swing_pos_actual - stance_pos
         swing_x_actual = jp.asarray(swing_pos_stance[0], dtype=jp.float32)
         swing_z_actual = jp.asarray(swing_pos_stance[2], dtype=jp.float32)
+        swing_x_scale, pelvis_pitch_scale, _, support_gate_active = _loc_ref_support_scales(
+            velocity_cmd=velocity_cmd,
+            forward_vel_h=forward_vel_h,
+            pitch_rad=root_pitch,
+            swing_x_brake_pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
+            swing_x_brake_overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
+            swing_x_brake_gain=self._loc_ref_swing_x_brake_gain,
+            swing_x_min_scale=self._loc_ref_swing_x_min_scale,
+            pelvis_pitch_brake_gain=self._loc_ref_pelvis_pitch_brake_gain,
+            pelvis_pitch_min_scale=self._loc_ref_pelvis_pitch_min_scale,
+        )
         swing_x_blended = (
             (1.0 - self._loc_ref_swing_target_blend) * swing_x_actual
             + self._loc_ref_swing_target_blend * swing_x_ref
         )
+        swing_x_support_target = swing_x_actual + swing_x_scale * (
+            swing_x_blended - swing_x_actual
+        )
         swing_x_target = jp.clip(
-            swing_x_blended,
+            swing_x_support_target,
             swing_x_actual - self._loc_ref_max_swing_x_delta_m,
             swing_x_actual + self._loc_ref_max_swing_x_delta_m,
         )
@@ -3386,7 +3584,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         roll = jp.asarray(pelvis_roll, dtype=jp.float32)
         roll = roll + self._loc_ref_swing_y_to_hip_roll * jp.asarray(swing_pos[1], dtype=jp.float32)
-        pitch = jp.asarray(pelvis_pitch, dtype=jp.float32)
+        pitch = jp.asarray(pelvis_pitch, dtype=jp.float32) * pelvis_pitch_scale
         if self._idx_left_hip_roll >= 0:
             q_ref = q_ref.at[self._idx_left_hip_roll].set(-roll)
         if self._idx_right_hip_roll >= 0:
@@ -3399,7 +3597,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             q_ref = q_ref.at[self._idx_right_shoulder_pitch].set(-0.10 * pitch)
 
         q_ref = jp.clip(q_ref, self._joint_range_mins, self._joint_range_maxs).astype(jp.float32)
-        return q_ref, left_reachable.astype(jp.float32), right_reachable.astype(jp.float32)
+        _ = root_pitch_rate  # Reserved for future sagittal gating terms.
+        return (
+            q_ref,
+            left_reachable.astype(jp.float32),
+            right_reachable.astype(jp.float32),
+            swing_x_target.astype(jp.float32),
+            pitch.astype(jp.float32),
+            stance_target_z.astype(jp.float32),
+            swing_x_scale.astype(jp.float32),
+            pelvis_pitch_scale.astype(jp.float32),
+            support_gate_active.astype(jp.float32),
+        )
 
     def _compose_loc_ref_residual_action(
         self,

@@ -34,6 +34,15 @@ def test_nominal_probe_runs_and_emits_required_keys() -> None:
         "debug_loc_ref_phase_scale_mean",
         "debug_loc_ref_overspeed_mean",
         "debug_loc_ref_nominal_vs_applied_q_l1_mean",
+        "debug_loc_ref_swing_x_target_mean",
+        "debug_loc_ref_swing_x_actual_mean",
+        "debug_loc_ref_swing_x_error_mean",
+        "debug_loc_ref_pelvis_pitch_target_mean",
+        "debug_loc_ref_root_pitch_mean",
+        "debug_loc_ref_root_pitch_rate_mean",
+        "debug_loc_ref_swing_x_scale_mean",
+        "debug_loc_ref_pelvis_pitch_scale_mean",
+        "debug_loc_ref_support_gate_active_mean",
     ]
     for key in required:
         assert key in summary
@@ -54,3 +63,6 @@ def test_probe_phase_progresses() -> None:
     assert s["tracking_loc_ref_phase_progress_std"] > 0.0
     assert 0.0 <= s["debug_loc_ref_speed_scale_mean"] <= 1.0
     assert 0.0 <= s["debug_loc_ref_phase_scale_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_swing_x_scale_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_pelvis_pitch_scale_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_support_gate_active_mean"] <= 1.0

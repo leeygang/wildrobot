@@ -150,6 +150,13 @@ class EnvConfig(Freezable):
     loc_ref_overspeed_phase_min_scale: float = 0.2
     loc_ref_pitch_brake_start_rad: float = 0.12
     loc_ref_pitch_brake_gain: float = 1.0
+    # v0.19.3e support-first local clamps for nominal forward-drive channels.
+    loc_ref_swing_x_brake_pitch_start_rad: float = 0.08
+    loc_ref_swing_x_brake_overspeed_deadband: float = 0.03
+    loc_ref_swing_x_brake_gain: float = 5.0
+    loc_ref_swing_x_min_scale: float = 0.05
+    loc_ref_pelvis_pitch_brake_gain: float = 6.0
+    loc_ref_pelvis_pitch_min_scale: float = 0.0
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

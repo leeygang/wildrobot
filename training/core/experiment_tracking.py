@@ -190,6 +190,16 @@ ENV_METRICS_KEYS = {
     "debug/loc_ref_nominal_vs_applied_q_l1": "Mean |applied_target_q - nominal_q_ref| per step",
     "debug/loc_ref_applied_q_abs_mean": "Mean absolute applied target-q magnitude",
     "debug/loc_ref_nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude (debug copy)",
+    "debug/loc_ref_swing_x_target": "Nominal support-gated swing-foot x target in stance frame",
+    "debug/loc_ref_swing_x_actual": "Actual swing-foot x in stance frame",
+    "debug/loc_ref_swing_x_error": "Swing-foot x tracking error (actual - target) in stance frame",
+    "debug/loc_ref_pelvis_pitch_target": "Support-gated nominal pelvis pitch target",
+    "debug/loc_ref_root_pitch": "Actual root pitch (heading-local Euler y)",
+    "debug/loc_ref_root_pitch_rate": "Actual root pitch rate (heading-local angvel y)",
+    "debug/loc_ref_stance_sagittal_target": "Nominal stance-leg sagittal z target",
+    "debug/loc_ref_swing_x_scale": "Support-first scale applied to forward swing-x progression",
+    "debug/loc_ref_pelvis_pitch_scale": "Support-first scale applied to nominal pelvis pitch",
+    "debug/loc_ref_support_gate_active": "Support-first clamp activation flag",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -652,6 +662,16 @@ def get_initial_env_metrics_jax(
         "debug/loc_ref_nominal_vs_applied_q_l1": jp.zeros(()),
         "debug/loc_ref_applied_q_abs_mean": jp.zeros(()),
         "debug/loc_ref_nominal_q_abs_mean": jp.zeros(()),
+        "debug/loc_ref_swing_x_target": jp.zeros(()),
+        "debug/loc_ref_swing_x_actual": jp.zeros(()),
+        "debug/loc_ref_swing_x_error": jp.zeros(()),
+        "debug/loc_ref_pelvis_pitch_target": jp.zeros(()),
+        "debug/loc_ref_root_pitch": jp.zeros(()),
+        "debug/loc_ref_root_pitch_rate": jp.zeros(()),
+        "debug/loc_ref_stance_sagittal_target": jp.zeros(()),
+        "debug/loc_ref_swing_x_scale": jp.zeros(()),
+        "debug/loc_ref_pelvis_pitch_scale": jp.zeros(()),
+        "debug/loc_ref_support_gate_active": jp.zeros(()),
     }
 
 

@@ -1168,6 +1168,66 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Mean absolute nominal q_ref magnitude (debug copy)",
     ),
+    MetricSpec(
+        name="debug/loc_ref_swing_x_target",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Nominal support-gated swing-foot x target in stance frame",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_swing_x_actual",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Actual swing-foot x in stance frame",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_swing_x_error",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Swing-foot x tracking error (actual - target) in stance frame",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_pelvis_pitch_target",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-gated nominal pelvis pitch target",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_root_pitch",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Actual root pitch (heading-local Euler y)",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_root_pitch_rate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Actual root pitch rate (heading-local angvel y)",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_stance_sagittal_target",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Nominal stance-leg sagittal z target",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_swing_x_scale",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-first scale applied to forward swing-x progression",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_pelvis_pitch_scale",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-first scale applied to nominal pelvis pitch",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_support_gate_active",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-first clamp activation flag",
+    ),
 ]
 
 # =============================================================================
