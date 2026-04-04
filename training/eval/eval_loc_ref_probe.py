@@ -344,6 +344,12 @@ def run_nominal_probe(
         "debug_loc_ref_progression_permission_mean": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_progression_permission"]])
         ),
+        "debug_loc_ref_swing_x_scale_active_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_scale_active"]])
+        ),
+        "debug_loc_ref_phase_scale_active_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_phase_scale_active"]])
+        ),
         "debug_m3_swing_pos_error": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/m3_swing_pos_error"]])
         ),

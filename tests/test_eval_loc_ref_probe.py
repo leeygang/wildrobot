@@ -59,6 +59,8 @@ def test_nominal_probe_runs_and_emits_required_keys() -> None:
         "debug_loc_ref_support_gate_active_mean",
         "debug_loc_ref_hybrid_mode_id_mean",
         "debug_loc_ref_progression_permission_mean",
+        "debug_loc_ref_swing_x_scale_active_mean",
+        "debug_loc_ref_phase_scale_active_mean",
         "debug_nonfinite_step",
         "debug_nonfinite_count",
         "debug_nonfinite_metric_names_first_step",
@@ -96,6 +98,8 @@ def test_probe_phase_progresses() -> None:
     assert s["tracking_loc_ref_mode_id_mean"] >= 0.0
     assert 0.0 <= s["tracking_loc_ref_progression_permission_mean"] <= 1.0
     assert 0.0 <= s["debug_loc_ref_progression_permission_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_swing_x_scale_active_mean"] <= 1.0
+    assert 0.0 <= s["debug_loc_ref_phase_scale_active_mean"] <= 1.0
     assert 0.0 <= s["debug_phase_progress_min"] <= 1.0
     assert 0.0 <= s["debug_phase_progress_max"] <= 1.0
 

@@ -333,7 +333,11 @@ def _loc_ref_support_health(
     left_foot_loaded: jax.Array | None = None,
     right_foot_loaded: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Compute support health in [0,1], where lower means progression should freeze."""
+    """Compute support health helper shared with v1-plumbing and v2 diagnostics.
+
+    For v2 control progression, `step_reference_v2_jax` remains the authoritative owner.
+    This helper is kept for legacy/v1 plumbing and lightweight parity checks.
+    """
     cmd = jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
     fwd = jp.asarray(forward_vel_h, dtype=jp.float32)
     pitch = jp.asarray(pitch_rad, dtype=jp.float32)
@@ -2202,9 +2206,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if self._loc_ref_version == "v1":
             metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
             metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+            metrics["debug/loc_ref_swing_x_scale_active"] = ref_speed_scale
+            metrics["debug/loc_ref_phase_scale_active"] = ref_phase_scale
         else:
-            metrics["debug/loc_ref_speed_scale"] = nominal_swing_x_scale
-            metrics["debug/loc_ref_phase_scale"] = ref_progression_permission
+            metrics["debug/loc_ref_speed_scale"] = jp.zeros((), dtype=jp.float32)
+            metrics["debug/loc_ref_phase_scale"] = jp.zeros((), dtype=jp.float32)
+            metrics["debug/loc_ref_swing_x_scale_active"] = nominal_swing_x_scale
+            metrics["debug/loc_ref_phase_scale_active"] = ref_progression_permission
         metrics["debug/loc_ref_overspeed"] = ref_overspeed
         metrics["debug/loc_ref_support_health"] = ref_support_health
         metrics["debug/loc_ref_support_instability"] = ref_support_instability
@@ -2724,9 +2732,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if self._loc_ref_version == "v1":
             metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
             metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+            metrics["debug/loc_ref_swing_x_scale_active"] = ref_speed_scale
+            metrics["debug/loc_ref_phase_scale_active"] = ref_phase_scale
         else:
-            metrics["debug/loc_ref_speed_scale"] = nominal_swing_x_scale
-            metrics["debug/loc_ref_phase_scale"] = ref_progression_permission
+            metrics["debug/loc_ref_speed_scale"] = jp.zeros((), dtype=jp.float32)
+            metrics["debug/loc_ref_phase_scale"] = jp.zeros((), dtype=jp.float32)
+            metrics["debug/loc_ref_swing_x_scale_active"] = nominal_swing_x_scale
+            metrics["debug/loc_ref_phase_scale_active"] = ref_progression_permission
         if mpc_debug is not None:
             metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
             metrics["debug/mpc_controller_active"] = mpc_debug.controller_active
@@ -3658,6 +3670,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "debug/loc_ref_progression_permission": metrics.get(
                 "debug/loc_ref_progression_permission", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_x_scale_active": metrics.get(
+                "debug/loc_ref_swing_x_scale_active", jp.zeros(())
+            ),
+            "debug/loc_ref_phase_scale_active": metrics.get(
+                "debug/loc_ref_phase_scale_active", jp.zeros(())
             ),
         }
 

@@ -1146,13 +1146,13 @@ METRIC_SPECS: List[MetricSpec] = [
         name="debug/loc_ref_speed_scale",
         reducer=Reducer.MEAN,
         log_prefix="debug",
-        description="Loc-ref speed scale after overspeed/pitch braking",
+        description="Legacy v1 loc-ref speed scale after overspeed/pitch braking (v2 leaves this at 0)",
     ),
     MetricSpec(
         name="debug/loc_ref_phase_scale",
         reducer=Reducer.MEAN,
         log_prefix="debug",
-        description="Loc-ref phase-time scale after overspeed/pitch braking",
+        description="Legacy v1 loc-ref phase-time scale after overspeed/pitch braking (v2 leaves this at 0)",
     ),
     MetricSpec(
         name="debug/loc_ref_overspeed",
@@ -1261,6 +1261,18 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="debug",
         description="Support-conditioned progression permission",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_swing_x_scale_active",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Active forward swing-x scale used by current loc-ref version",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_phase_scale_active",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Active phase-advance scale/permission used by current loc-ref version",
     ),
 ]
 

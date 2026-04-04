@@ -184,8 +184,8 @@ ENV_METRICS_KEYS = {
     "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter, legacy)",
     "debug/torque_abs_max": "Max |torque| as fraction of limit (0-1, preferred)",
     "debug/torque_sat_frac": "Fraction of |torque|>0.95 of limit (preferred)",
-    "debug/loc_ref_speed_scale": "Loc-ref speed scale after overspeed/pitch braking",
-    "debug/loc_ref_phase_scale": "Loc-ref phase-time scale after overspeed/pitch braking",
+    "debug/loc_ref_speed_scale": "Legacy v1 loc-ref speed scale after overspeed/pitch braking (v2 path keeps this at 0)",
+    "debug/loc_ref_phase_scale": "Legacy v1 loc-ref phase-time scale after overspeed/pitch braking (v2 path keeps this at 0)",
     "debug/loc_ref_overspeed": "Loc-ref overspeed signal max(fwd-cmd-deadband, 0)",
     "debug/loc_ref_support_health": "Support-conditioned progression health (1=healthy, 0=freeze)",
     "debug/loc_ref_support_instability": "Support instability signal used by progression gate",
@@ -204,6 +204,8 @@ ENV_METRICS_KEYS = {
     "debug/loc_ref_support_gate_active": "Support-first clamp activation flag",
     "debug/loc_ref_hybrid_mode_id": "Hybrid nominal reference mode id",
     "debug/loc_ref_progression_permission": "Support-conditioned progression permission",
+    "debug/loc_ref_swing_x_scale_active": "Active forward swing-x scale from currently selected loc-ref implementation",
+    "debug/loc_ref_phase_scale_active": "Active phase-scale/progression permission from currently selected loc-ref implementation",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -686,6 +688,8 @@ def get_initial_env_metrics_jax(
         "debug/loc_ref_support_gate_active": jp.zeros(()),
         "debug/loc_ref_hybrid_mode_id": jp.zeros(()),
         "debug/loc_ref_progression_permission": jp.zeros(()),
+        "debug/loc_ref_swing_x_scale_active": jp.zeros(()),
+        "debug/loc_ref_phase_scale_active": jp.zeros(()),
     }
 
 

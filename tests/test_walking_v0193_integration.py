@@ -87,6 +87,8 @@ def test_step_emits_m3_metrics_and_preserves_standing_regression() -> None:
     assert "debug/loc_ref_swing_x_scale" in metrics
     assert "debug/loc_ref_pelvis_pitch_scale" in metrics
     assert "debug/loc_ref_support_gate_active" in metrics
+    assert "debug/loc_ref_swing_x_scale_active" in metrics
+    assert "debug/loc_ref_phase_scale_active" in metrics
     assert "term/height_low" in metrics
     assert jp.isfinite(metrics["reward/m3_pelvis_orientation_tracking"])
     assert jp.isfinite(metrics["tracking/residual_q_abs_mean"])
