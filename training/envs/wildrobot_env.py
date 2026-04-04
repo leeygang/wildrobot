@@ -330,6 +330,8 @@ def _loc_ref_support_health(
     pitch_start_rad: jax.Array,
     pitch_rate_start_rad_s: jax.Array,
     health_gain: jax.Array,
+    left_foot_loaded: jax.Array | None = None,
+    right_foot_loaded: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Compute support health in [0,1], where lower means progression should freeze."""
     cmd = jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
@@ -341,7 +343,15 @@ def _loc_ref_support_health(
     pitch_rate_excess = jp.maximum(
         jp.abs(pitch_rate) - jp.asarray(pitch_rate_start_rad_s, dtype=jp.float32), 0.0
     )
-    instability = overspeed + pitch_excess + 0.5 * pitch_rate_excess
+    if left_foot_loaded is None or right_foot_loaded is None:
+        contact_penalty = jp.asarray(0.0, dtype=jp.float32)
+    else:
+        single_support = jp.logical_xor(
+            jp.asarray(left_foot_loaded, dtype=jp.bool_),
+            jp.asarray(right_foot_loaded, dtype=jp.bool_),
+        )
+        contact_penalty = jp.where(single_support, 0.0, 0.25).astype(jp.float32)
+    instability = overspeed + pitch_excess + 0.5 * pitch_rate_excess + contact_penalty
     health = 1.0 / (1.0 + jp.asarray(health_gain, dtype=jp.float32) * instability)
     return health.astype(jp.float32), instability.astype(jp.float32)
 
@@ -1825,27 +1835,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
         _, pitch_reset, _ = root_pose.euler_angles()
-        ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
-            velocity_cmd=velocity_cmd,
-            forward_vel_h=root_vel_h.linear_xyz[0],
-            pitch_rad=pitch_reset,
-            overspeed_deadband=self._loc_ref_overspeed_deadband,
-            overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
-            overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
-            overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
-            pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
-            pitch_brake_gain=self._loc_ref_pitch_brake_gain,
-        )
-        ref_support_health, ref_support_instability = _loc_ref_support_health(
-            velocity_cmd=velocity_cmd,
-            forward_vel_h=root_vel_h.linear_xyz[0],
-            pitch_rad=pitch_reset,
-            pitch_rate_rad_s=root_vel_h.angular_xyz[1],
-            overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
-            pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
-            pitch_rate_start_rad_s=self._loc_ref_support_pitch_rate_start_rad_s,
-            health_gain=self._loc_ref_support_health_gain,
-        )
         left_foot_h, right_foot_h = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -1884,8 +1873,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 right_foot_loaded=right_loaded_reset,
                 dt_s=self.dt,
             )
+            ref_overspeed = jp.maximum(
+                jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32)
+                - jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
+                - jp.asarray(self._loc_ref_swing_x_brake_overspeed_deadband, dtype=jp.float32),
+                0.0,
+            ).astype(jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
         else:
+            ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
+                velocity_cmd=velocity_cmd,
+                forward_vel_h=root_vel_h.linear_xyz[0],
+                pitch_rad=pitch_reset,
+                overspeed_deadband=self._loc_ref_overspeed_deadband,
+                overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
+                overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
+                overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
+                pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
+                pitch_brake_gain=self._loc_ref_pitch_brake_gain,
+            )
+            ref_support_health, ref_support_instability = _loc_ref_support_health(
+                velocity_cmd=velocity_cmd,
+                forward_vel_h=root_vel_h.linear_xyz[0],
+                pitch_rad=pitch_reset,
+                pitch_rate_rad_s=root_vel_h.angular_xyz[1],
+                overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
+                pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
+                pitch_rate_start_rad_s=self._loc_ref_support_pitch_rate_start_rad_s,
+                health_gain=self._loc_ref_support_health_gain,
+            )
             ref_state, ref_phase_time, ref_stance_foot, ref_switch_count = _step_walking_reference_jax(
                 phase_time_s=jp.zeros((), dtype=jp.float32),
                 stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
@@ -1953,6 +1969,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 root_pitch_rate=root_vel_h.angular_xyz[1],
                 forward_vel_h=root_vel_h.linear_xyz[0],
                 velocity_cmd=velocity_cmd,
+                support_health=ref_support_health,
             )
         )
 
@@ -2182,8 +2199,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(nominal_q_ref))
         metrics["tracking/residual_q_abs_mean"] = jp.zeros((), dtype=jp.float32)
         metrics["tracking/residual_q_abs_max"] = jp.zeros((), dtype=jp.float32)
-        metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
-        metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+        if self._loc_ref_version == "v1":
+            metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
+            metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+        else:
+            metrics["debug/loc_ref_speed_scale"] = nominal_swing_x_scale
+            metrics["debug/loc_ref_phase_scale"] = ref_progression_permission
         metrics["debug/loc_ref_overspeed"] = ref_overspeed
         metrics["debug/loc_ref_support_health"] = ref_support_health
         metrics["debug/loc_ref_support_instability"] = ref_support_instability
@@ -2305,27 +2326,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             state.data, frame=CoordinateFrame.HEADING_LOCAL
         )
         _, pitch_pre, _ = root_pose_pre.euler_angles()
-        ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
-            velocity_cmd=velocity_cmd,
-            forward_vel_h=root_vel_pre_h.linear_xyz[0],
-            pitch_rad=pitch_pre,
-            overspeed_deadband=self._loc_ref_overspeed_deadband,
-            overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
-            overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
-            overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
-            pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
-            pitch_brake_gain=self._loc_ref_pitch_brake_gain,
-        )
-        ref_support_health, ref_support_instability = _loc_ref_support_health(
-            velocity_cmd=velocity_cmd,
-            forward_vel_h=root_vel_pre_h.linear_xyz[0],
-            pitch_rad=pitch_pre,
-            pitch_rate_rad_s=root_vel_pre_h.angular_xyz[1],
-            overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
-            pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
-            pitch_rate_start_rad_s=self._loc_ref_support_pitch_rate_start_rad_s,
-            health_gain=self._loc_ref_support_health_gain,
-        )
         left_foot_pre_h, right_foot_pre_h = self._cal.get_foot_positions(
             state.data, normalize=False, frame=CoordinateFrame.HEADING_LOCAL
         )
@@ -2367,8 +2367,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 right_foot_loaded=right_loaded_pre,
                 dt_s=self.dt,
             )
+            ref_overspeed = jp.maximum(
+                jp.asarray(root_vel_pre_h.linear_xyz[0], dtype=jp.float32)
+                - jp.maximum(jp.asarray(velocity_cmd, dtype=jp.float32), 0.0)
+                - jp.asarray(self._loc_ref_swing_x_brake_overspeed_deadband, dtype=jp.float32),
+                0.0,
+            ).astype(jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
         else:
+            ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
+                velocity_cmd=velocity_cmd,
+                forward_vel_h=root_vel_pre_h.linear_xyz[0],
+                pitch_rad=pitch_pre,
+                overspeed_deadband=self._loc_ref_overspeed_deadband,
+                overspeed_brake_gain=self._loc_ref_overspeed_brake_gain,
+                overspeed_phase_slowdown_gain=self._loc_ref_overspeed_phase_slowdown_gain,
+                overspeed_phase_min_scale=self._loc_ref_overspeed_phase_min_scale,
+                pitch_brake_start_rad=self._loc_ref_pitch_brake_start_rad,
+                pitch_brake_gain=self._loc_ref_pitch_brake_gain,
+            )
+            ref_support_health, ref_support_instability = _loc_ref_support_health(
+                velocity_cmd=velocity_cmd,
+                forward_vel_h=root_vel_pre_h.linear_xyz[0],
+                pitch_rad=pitch_pre,
+                pitch_rate_rad_s=root_vel_pre_h.angular_xyz[1],
+                overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
+                pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
+                pitch_rate_start_rad_s=self._loc_ref_support_pitch_rate_start_rad_s,
+                health_gain=self._loc_ref_support_health_gain,
+            )
             ref_state, ref_phase_time, ref_stance_foot, ref_switch_count = _step_walking_reference_jax(
                 phase_time_s=wr.loc_ref_phase_time,
                 stance_foot_id=wr.loc_ref_stance_foot,
@@ -2434,6 +2461,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 root_pitch_rate=root_vel_pre_h.angular_xyz[1],
                 forward_vel_h=root_vel_pre_h.linear_xyz[0],
                 velocity_cmd=velocity_cmd,
+                support_health=ref_support_health,
             )
         )
         residual_delta_q = jp.zeros((self.action_size,), dtype=jp.float32)
@@ -2668,8 +2696,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "tracking/residual_q_abs_max": jp.max(jp.abs(residual_delta_q)),
             "tracking/loc_ref_left_reachable": left_ref_reachable,
             "tracking/loc_ref_right_reachable": right_ref_reachable,
-            "debug/loc_ref_speed_scale": ref_speed_scale,
-            "debug/loc_ref_phase_scale": ref_phase_scale,
             "debug/loc_ref_overspeed": ref_overspeed,
             "debug/loc_ref_support_health": ref_support_health,
             "debug/loc_ref_support_instability": ref_support_instability,
@@ -2695,6 +2721,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/loc_ref_hybrid_mode_id": ref_mode_id_dbg,
             "debug/loc_ref_progression_permission": ref_progression_permission,
         }
+        if self._loc_ref_version == "v1":
+            metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
+            metrics["debug/loc_ref_phase_scale"] = ref_phase_scale
+        else:
+            metrics["debug/loc_ref_speed_scale"] = nominal_swing_x_scale
+            metrics["debug/loc_ref_phase_scale"] = ref_progression_permission
         if mpc_debug is not None:
             metrics["debug/mpc_planner_active"] = mpc_debug.planner_active
             metrics["debug/mpc_controller_active"] = mpc_debug.controller_active
@@ -3798,53 +3830,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
     _loc_ref_support_scales = staticmethod(_loc_ref_support_scales)
     _loc_ref_support_health = staticmethod(_loc_ref_support_health)
 
-    @staticmethod
-    def _loc_ref_hybrid_transition_mode(
-        *,
-        mode_id: jax.Array,
-        mode_time_s: jax.Array,
-        phase_progress: jax.Array,
-        progression_permission: jax.Array,
-        swing_loaded: jax.Array,
-        dt_s: float,
-        open_threshold: jax.Array,
-        release_phase_start: jax.Array,
-        touchdown_phase_min: jax.Array,
-        capture_hold_s: jax.Array,
-        settle_hold_s: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
-        mode = jp.asarray(mode_id, dtype=jp.int32)
-        mode_time = jp.asarray(mode_time_s, dtype=jp.float32) + jp.asarray(dt_s, dtype=jp.float32)
-        phase = jp.asarray(phase_progress, dtype=jp.float32)
-        permission = jp.asarray(progression_permission, dtype=jp.float32)
-
-        support_mode = jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32)
-        swing_mode = jp.asarray(int(WalkingRefV2Mode.SWING_RELEASE), dtype=jp.int32)
-        capture_mode = jp.asarray(int(WalkingRefV2Mode.TOUCHDOWN_CAPTURE), dtype=jp.int32)
-        settle_mode = jp.asarray(int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE), dtype=jp.int32)
-
-        to_swing = (permission >= jp.asarray(open_threshold, dtype=jp.float32)) & (
-            phase >= jp.asarray(release_phase_start, dtype=jp.float32)
-        )
-        mode = jp.where((mode == support_mode) & to_swing, swing_mode, mode)
-        mode_time = jp.where((mode == swing_mode) & to_swing, jp.asarray(0.0, dtype=jp.float32), mode_time)
-
-        to_capture = (
-            jp.asarray(swing_loaded, dtype=jp.bool_)
-            & (phase >= jp.asarray(touchdown_phase_min, dtype=jp.float32))
-        )
-        mode = jp.where((mode == swing_mode) & to_capture, capture_mode, mode)
-        mode_time = jp.where((mode == capture_mode) & to_capture, jp.asarray(0.0, dtype=jp.float32), mode_time)
-
-        to_settle = mode_time >= jp.asarray(capture_hold_s, dtype=jp.float32)
-        mode = jp.where((mode == capture_mode) & to_settle, settle_mode, mode)
-        mode_time = jp.where((mode == settle_mode) & to_settle, jp.asarray(0.0, dtype=jp.float32), mode_time)
-
-        to_support = mode_time >= jp.asarray(settle_hold_s, dtype=jp.float32)
-        mode = jp.where((mode == settle_mode) & to_support, support_mode, mode)
-        mode_time = jp.where((mode == support_mode) & to_support, jp.asarray(0.0, dtype=jp.float32), mode_time)
-        return mode.astype(jp.int32), mode_time.astype(jp.float32)
-
     def _compute_nominal_q_ref_from_loc_ref(
         self,
         *,
@@ -3860,6 +3845,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_pitch_rate: jax.Array,
         forward_vel_h: jax.Array,
         velocity_cmd: jax.Array,
+        support_health: jax.Array,
     ) -> tuple[
         jax.Array,
         jax.Array,
@@ -3872,16 +3858,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         jax.Array,
     ]:
         """Compute nominal joint-space target from locomotion reference fields."""
-        support_health, _ = _loc_ref_support_health(
-            velocity_cmd=velocity_cmd,
-            forward_vel_h=forward_vel_h,
-            pitch_rad=root_pitch,
-            pitch_rate_rad_s=root_pitch_rate,
-            overspeed_deadband=self._loc_ref_swing_x_brake_overspeed_deadband,
-            pitch_start_rad=self._loc_ref_swing_x_brake_pitch_start_rad,
-            pitch_rate_start_rad_s=self._loc_ref_support_pitch_rate_start_rad_s,
-            health_gain=self._loc_ref_support_health_gain,
-        )
+        support_health = jp.clip(jp.asarray(support_health, dtype=jp.float32), 0.0, 1.0)
         stance_margin = self._loc_ref_stance_extension_margin_m * (
             0.2 + 0.8 * support_health
         )

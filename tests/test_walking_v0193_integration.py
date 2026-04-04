@@ -16,6 +16,7 @@ from training.envs.wildrobot_env import (
     _loc_ref_support_health,
     _loc_ref_support_scales,
 )
+from control.references.walking_ref_v2 import compute_support_health_v2_jax, WalkingRefV2Config
 from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
 from policy_contract.calib import JaxCalibOps
 
@@ -76,8 +77,6 @@ def test_step_emits_m3_metrics_and_preserves_standing_regression() -> None:
     assert "debug/m3_swing_pos_error" in metrics
     assert "debug/m3_swing_vel_error" in metrics
     assert "debug/m3_foothold_error" in metrics
-    assert "debug/loc_ref_speed_scale" in metrics
-    assert "debug/loc_ref_phase_scale" in metrics
     assert "debug/loc_ref_nominal_vs_applied_q_l1" in metrics
     assert "debug/loc_ref_swing_x_target" in metrics
     assert "debug/loc_ref_swing_x_actual" in metrics
@@ -187,3 +186,35 @@ def test_loc_ref_support_scales_idle_when_stable() -> None:
     assert gate == 0.0
     assert jp.abs(swing_scale - 1.0) < 1e-6
     assert jp.abs(pelvis_scale - 1.0) < 1e-6
+
+
+def test_v2_support_health_matches_reference_definition() -> None:
+    cfg = WalkingRefV2Config(
+        support_overspeed_deadband=0.01,
+        support_pitch_start_rad=0.06,
+        support_pitch_rate_start_rad_s=0.60,
+        support_health_gain=10.0,
+    )
+    health_env, instability_env = _loc_ref_support_health(
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.10, dtype=jp.float32),
+        pitch_rad=jp.asarray(0.01, dtype=jp.float32),
+        pitch_rate_rad_s=jp.asarray(0.10, dtype=jp.float32),
+        overspeed_deadband=jp.asarray(cfg.support_overspeed_deadband, dtype=jp.float32),
+        pitch_start_rad=jp.asarray(cfg.support_pitch_start_rad, dtype=jp.float32),
+        pitch_rate_start_rad_s=jp.asarray(cfg.support_pitch_rate_start_rad_s, dtype=jp.float32),
+        health_gain=jp.asarray(cfg.support_health_gain, dtype=jp.float32),
+        left_foot_loaded=jp.asarray(True),
+        right_foot_loaded=jp.asarray(True),
+    )
+    health_ref, instability_ref = compute_support_health_v2_jax(
+        config=cfg,
+        forward_speed_mps=jp.asarray(0.10, dtype=jp.float32),
+        root_pitch_rad=jp.asarray(0.01, dtype=jp.float32),
+        root_pitch_rate_rad_s=jp.asarray(0.10, dtype=jp.float32),
+        com_velocity_stance_frame=jp.asarray([0.10, 0.0], dtype=jp.float32),
+        left_foot_loaded=jp.asarray(True),
+        right_foot_loaded=jp.asarray(True),
+    )
+    assert jp.abs(instability_ref - instability_env) < 1e-6
+    assert jp.abs(health_ref - health_env) < 1e-6

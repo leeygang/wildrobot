@@ -90,6 +90,11 @@ of the locomotion stack, but not the final controller product by themselves.
 
 ## Reference Strategy
 
+For the current nominal-reference architecture, single-source-of-truth rule,
+support-first design direction, and `M2.5` validation gates, see:
+
+- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
+
 ### Reference v1: `LIPM / DCM / capture-point`
 
 The first reference generator should use:
@@ -422,6 +427,13 @@ Status:
   yet dynamically viable
 - this is therefore a validation and root-cause stage, not a reward-tuning
   stage
+
+Primary design note:
+
+- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
+  This is the canonical design note for the nominal-reference architecture,
+  support-first `walking_ref_v2` direction, validation ladder, and `M2.5`
+  execution milestones.
 
 Current findings:
 
