@@ -216,6 +216,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_support_phase_min_scale=float(
             env.get("loc_ref_support_phase_min_scale", 0.15)
         ),
+        loc_ref_max_lateral_release_m=float(
+            env.get("loc_ref_max_lateral_release_m", 0.02)
+        ),
         loc_ref_v2_support_open_threshold=float(
             env.get("loc_ref_v2_support_open_threshold", 0.60)
         ),

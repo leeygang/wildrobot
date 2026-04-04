@@ -83,6 +83,7 @@ env:
   loc_ref_support_foothold_min_scale: 0.15
   loc_ref_support_swing_progress_min_scale: 0.00
   loc_ref_support_phase_min_scale: 0.05
+  loc_ref_max_lateral_release_m: 0.015
   # v0.19.3g: walking_ref_v2 support-first hybrid progression
   loc_ref_v2_support_open_threshold: 0.60
   loc_ref_v2_support_release_threshold: 0.30

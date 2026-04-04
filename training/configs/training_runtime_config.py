@@ -166,6 +166,8 @@ class EnvConfig(Freezable):
     loc_ref_support_foothold_min_scale: float = 0.35
     loc_ref_support_swing_progress_min_scale: float = 0.0
     loc_ref_support_phase_min_scale: float = 0.15
+    # Maximum support-conditioned lateral release delta (added to base support y).
+    loc_ref_max_lateral_release_m: float = 0.02
     # v0.19.4-prep: walking_ref_v2 hybrid-state thresholds.
     loc_ref_v2_support_open_threshold: float = 0.60
     loc_ref_v2_support_release_threshold: float = 0.30

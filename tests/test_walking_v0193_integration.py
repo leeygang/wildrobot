@@ -119,6 +119,9 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert 0.0 <= cfg.env.loc_ref_support_foothold_min_scale <= 1.0
     assert 0.0 <= cfg.env.loc_ref_support_swing_progress_min_scale <= 1.0
     assert 0.0 < cfg.env.loc_ref_support_phase_min_scale <= 1.0
+    assert cfg.env.loc_ref_max_lateral_release_m >= 0.0
+    assert cfg.env.loc_ref_max_lateral_release_m <= cfg.env.loc_ref_max_lateral_step_m
+    assert abs(cfg.env.loc_ref_max_lateral_release_m - 0.015) <= 1e-9
     # Ablation-overridable channels should parse cleanly.
     assert cfg.env.loc_ref_swing_target_blend >= 0.0
     assert cfg.env.loc_ref_step_time_s > 0.0

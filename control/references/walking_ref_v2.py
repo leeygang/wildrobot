@@ -52,6 +52,7 @@ class WalkingRefV2Config:
     support_foothold_min_scale: float = 0.15
     support_phase_min_scale: float = 0.05
     support_swing_progress_min_scale: float = 0.0
+    max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
     settle_hold_s: float = 0.04
@@ -79,6 +80,8 @@ class WalkingRefV2Config:
             raise ValueError("support_phase_min_scale must be in (0, 1]")
         if not 0.0 <= self.support_swing_progress_min_scale <= 1.0:
             raise ValueError("support_swing_progress_min_scale must be in [0, 1]")
+        if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:
+            raise ValueError("max_lateral_release_m must be in [0, max_lateral_step_m]")
         if not 0.0 <= self.touchdown_phase_min <= 1.0:
             raise ValueError("touchdown_phase_min must be in [0, 1]")
         if self.capture_hold_s < 0.0 or self.settle_hold_s < 0.0:
@@ -354,15 +357,25 @@ def step_reference_v2_jax(
     swing_release = jnp.where(mode == capture_mode, 1.0, swing_release)
     swing_release = jnp.where(mode == settle_mode, 0.15 * progression_permission, swing_release)
 
+    base_support_y = y_foot
+    lateral_release_y = y_sign * jnp.asarray(config.max_lateral_release_m, dtype=jnp.float32) * swing_release
     swing_x = x_foot * swing_release
-    swing_y = y_foot * phase
+    swing_y = jnp.clip(
+        base_support_y + lateral_release_y,
+        -jnp.asarray(config.max_lateral_step_m, dtype=jnp.float32),
+        jnp.asarray(config.max_lateral_step_m, dtype=jnp.float32),
+    )
     swing_z = jnp.asarray(config.swing_height_m, dtype=jnp.float32) * jnp.sin(
         jnp.asarray(pi, dtype=jnp.float32) * phase
     )
+    swing_release_vel_scale = jnp.where(mode == swing_mode, progression_permission * base_release, 0.0)
     swing_vel = jnp.asarray(
         [
             x_foot * swing_release / jnp.maximum(step_time, 1e-6),
-            y_foot / jnp.maximum(step_time, 1e-6),
+            y_sign
+            * jnp.asarray(config.max_lateral_release_m, dtype=jnp.float32)
+            * swing_release_vel_scale
+            / jnp.maximum(step_time, 1e-6),
             (jnp.asarray(config.swing_height_m, dtype=jnp.float32) * jnp.asarray(pi, dtype=jnp.float32) / jnp.maximum(step_time, 1e-6))
             * jnp.cos(jnp.asarray(pi, dtype=jnp.float32) * phase),
         ],
@@ -489,12 +502,15 @@ def step_reference_v2(
     else:
         swing_release = 0.15 * progression_permission
 
+    base_support_y = y_foot
+    lateral_release_y = y_sign * config.max_lateral_release_m * swing_release
     swing_x = x_foot * swing_release
-    swing_y = y_foot * phase
+    swing_y = _clip(base_support_y + lateral_release_y, -config.max_lateral_step_m, config.max_lateral_step_m)
     swing_z = config.swing_height_m * sin(pi * phase)
+    swing_release_vel_scale = progression_permission * base if mode == WalkingRefV2Mode.SWING_RELEASE else 0.0
     swing_vel = (
         x_foot * swing_release / max(config.step_time_s, 1e-6),
-        y_foot / max(config.step_time_s, 1e-6),
+        y_sign * config.max_lateral_release_m * swing_release_vel_scale / max(config.step_time_s, 1e-6),
         (config.swing_height_m * pi / max(config.step_time_s, 1e-6)) * cos(pi * phase),
     )
 

@@ -1538,6 +1538,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             support_swing_progress_min_scale=float(
                 getattr(self._config.env, "loc_ref_support_swing_progress_min_scale", 0.0)
             ),
+            max_lateral_release_m=float(
+                getattr(self._config.env, "loc_ref_max_lateral_release_m", 0.02)
+            ),
             touchdown_phase_min=float(
                 getattr(self._config.env, "loc_ref_v2_touchdown_phase_min", 0.55)
             ),
@@ -1976,6 +1979,36 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
             )
         )
+        nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
+        nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
+        if self._idx_left_hip_roll >= 0:
+            nominal_left_hip_roll_target = jp.asarray(
+                nominal_q_ref[self._idx_left_hip_roll], dtype=jp.float32
+            )
+        else:
+            nominal_left_hip_roll_target = jp.zeros((), dtype=jp.float32)
+        if self._idx_right_hip_roll >= 0:
+            nominal_right_hip_roll_target = jp.asarray(
+                nominal_q_ref[self._idx_right_hip_roll], dtype=jp.float32
+            )
+        else:
+            nominal_right_hip_roll_target = jp.zeros((), dtype=jp.float32)
+        left_foot_y_reset = jp.asarray(left_foot_h[1], dtype=jp.float32)
+        right_foot_y_reset = jp.asarray(right_foot_h[1], dtype=jp.float32)
+        support_width_y_actual_reset = jp.abs(right_foot_y_reset - left_foot_y_reset)
+        support_width_y_nominal_reset = jp.abs(
+            jp.asarray(loc_ref_next_foothold[1], dtype=jp.float32)
+        )
+        support_width_y_commanded_reset = jp.abs(nominal_swing_y_target)
+        base_support_y_reset = jp.asarray(loc_ref_next_foothold[1], dtype=jp.float32)
+        lateral_release_y_reset = nominal_swing_y_target - base_support_y_reset
+        swing_pos_reset, _ = _swing_state_in_stance_frame(
+            left_foot_pos_h=left_foot_h,
+            right_foot_pos_h=right_foot_h,
+            left_foot_vel_h=jp.zeros((3,), dtype=jp.float32),
+            right_foot_vel_h=jp.zeros((3,), dtype=jp.float32),
+            stance_foot_id=ref_stance_foot,
+        )
 
         obs = self._get_obs(
             data,
@@ -2223,8 +2256,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["debug/m3_foothold_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_impact_force"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/loc_ref_swing_x_target"] = nominal_swing_x_target
-        metrics["debug/loc_ref_swing_x_actual"] = jp.zeros((), dtype=jp.float32)
-        metrics["debug/loc_ref_swing_x_error"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/loc_ref_swing_x_actual"] = jp.asarray(
+            swing_pos_reset[0], dtype=jp.float32
+        )
+        metrics["debug/loc_ref_swing_x_error"] = jp.asarray(
+            swing_pos_reset[0] - nominal_swing_x_target, dtype=jp.float32
+        )
+        metrics["debug/loc_ref_swing_y_target"] = nominal_swing_y_target
+        metrics["debug/loc_ref_swing_y_actual"] = jp.asarray(
+            swing_pos_reset[1], dtype=jp.float32
+        )
+        metrics["debug/loc_ref_swing_y_error"] = jp.asarray(
+            swing_pos_reset[1] - nominal_swing_y_target, dtype=jp.float32
+        )
+        metrics["debug/loc_ref_left_foot_y_actual"] = left_foot_y_reset
+        metrics["debug/loc_ref_right_foot_y_actual"] = right_foot_y_reset
+        metrics["debug/loc_ref_support_width_y_actual"] = support_width_y_actual_reset
+        metrics["debug/loc_ref_support_width_y_nominal"] = support_width_y_nominal_reset
+        metrics["debug/loc_ref_support_width_y_commanded"] = support_width_y_commanded_reset
+        metrics["debug/loc_ref_base_support_y"] = base_support_y_reset
+        metrics["debug/loc_ref_lateral_release_y"] = lateral_release_y_reset
+        metrics["debug/loc_ref_pelvis_roll_target"] = nominal_pelvis_roll_target
+        metrics["debug/loc_ref_hip_roll_left_target"] = nominal_left_hip_roll_target
+        metrics["debug/loc_ref_hip_roll_right_target"] = nominal_right_hip_roll_target
         metrics["debug/loc_ref_pelvis_pitch_target"] = nominal_pelvis_pitch_target
         metrics["debug/loc_ref_root_pitch"] = jp.asarray(pitch_reset, dtype=jp.float32)
         metrics["debug/loc_ref_root_pitch_rate"] = jp.asarray(
@@ -2472,6 +2526,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
             )
         )
+        nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
+        nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
+        if self._idx_left_hip_roll >= 0:
+            nominal_left_hip_roll_target = jp.asarray(
+                nominal_q_ref[self._idx_left_hip_roll], dtype=jp.float32
+            )
+        else:
+            nominal_left_hip_roll_target = jp.zeros((), dtype=jp.float32)
+        if self._idx_right_hip_roll >= 0:
+            nominal_right_hip_roll_target = jp.asarray(
+                nominal_q_ref[self._idx_right_hip_roll], dtype=jp.float32
+            )
+        else:
+            nominal_right_hip_roll_target = jp.zeros((), dtype=jp.float32)
         residual_delta_q = jp.zeros((self.action_size,), dtype=jp.float32)
 
         controller_stack = self._controller_stack
@@ -2655,6 +2723,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             right_foot_vel_h=jp.zeros((3,), dtype=jp.float32),
             stance_foot_id=ref_stance_foot,
         )
+        left_foot_y_actual = jp.asarray(left_foot_post_h[1], dtype=jp.float32)
+        right_foot_y_actual = jp.asarray(right_foot_post_h[1], dtype=jp.float32)
+        support_width_y_actual = jp.abs(right_foot_y_actual - left_foot_y_actual)
+        support_width_y_nominal = jp.abs(jp.asarray(loc_ref_next_foothold[1], dtype=jp.float32))
+        support_width_y_commanded = jp.abs(nominal_swing_y_target)
+        base_support_y = jp.asarray(loc_ref_next_foothold[1], dtype=jp.float32)
+        lateral_release_y = nominal_swing_y_target - base_support_y
         _, _, _, cycle_start_forward_x = compute_cycle_progress_terms(
             cycle_progress_accum=wr.cycle_start_forward_x,
             forward_vel=forward_vel,
@@ -2717,6 +2792,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/loc_ref_swing_x_error": jp.asarray(
                 swing_pos_post[0] - nominal_swing_x_target, dtype=jp.float32
             ),
+            "debug/loc_ref_swing_y_target": nominal_swing_y_target,
+            "debug/loc_ref_swing_y_actual": jp.asarray(swing_pos_post[1], dtype=jp.float32),
+            "debug/loc_ref_swing_y_error": jp.asarray(
+                swing_pos_post[1] - nominal_swing_y_target, dtype=jp.float32
+            ),
+            "debug/loc_ref_left_foot_y_actual": left_foot_y_actual,
+            "debug/loc_ref_right_foot_y_actual": right_foot_y_actual,
+            "debug/loc_ref_support_width_y_actual": support_width_y_actual,
+            "debug/loc_ref_support_width_y_nominal": support_width_y_nominal,
+            "debug/loc_ref_support_width_y_commanded": support_width_y_commanded,
+            "debug/loc_ref_base_support_y": base_support_y,
+            "debug/loc_ref_lateral_release_y": lateral_release_y,
+            "debug/loc_ref_pelvis_roll_target": nominal_pelvis_roll_target,
+            "debug/loc_ref_hip_roll_left_target": nominal_left_hip_roll_target,
+            "debug/loc_ref_hip_roll_right_target": nominal_right_hip_roll_target,
             "debug/loc_ref_pelvis_pitch_target": nominal_pelvis_pitch_target,
             "debug/loc_ref_root_pitch": jp.asarray(curr_pitch, dtype=jp.float32),
             "debug/loc_ref_root_pitch_rate": jp.asarray(
@@ -3643,6 +3733,45 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             "debug/loc_ref_swing_x_error": metrics.get(
                 "debug/loc_ref_swing_x_error", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_y_target": metrics.get(
+                "debug/loc_ref_swing_y_target", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_y_actual": metrics.get(
+                "debug/loc_ref_swing_y_actual", jp.zeros(())
+            ),
+            "debug/loc_ref_swing_y_error": metrics.get(
+                "debug/loc_ref_swing_y_error", jp.zeros(())
+            ),
+            "debug/loc_ref_left_foot_y_actual": metrics.get(
+                "debug/loc_ref_left_foot_y_actual", jp.zeros(())
+            ),
+            "debug/loc_ref_right_foot_y_actual": metrics.get(
+                "debug/loc_ref_right_foot_y_actual", jp.zeros(())
+            ),
+            "debug/loc_ref_support_width_y_actual": metrics.get(
+                "debug/loc_ref_support_width_y_actual", jp.zeros(())
+            ),
+            "debug/loc_ref_support_width_y_nominal": metrics.get(
+                "debug/loc_ref_support_width_y_nominal", jp.zeros(())
+            ),
+            "debug/loc_ref_support_width_y_commanded": metrics.get(
+                "debug/loc_ref_support_width_y_commanded", jp.zeros(())
+            ),
+            "debug/loc_ref_base_support_y": metrics.get(
+                "debug/loc_ref_base_support_y", jp.zeros(())
+            ),
+            "debug/loc_ref_lateral_release_y": metrics.get(
+                "debug/loc_ref_lateral_release_y", jp.zeros(())
+            ),
+            "debug/loc_ref_pelvis_roll_target": metrics.get(
+                "debug/loc_ref_pelvis_roll_target", jp.zeros(())
+            ),
+            "debug/loc_ref_hip_roll_left_target": metrics.get(
+                "debug/loc_ref_hip_roll_left_target", jp.zeros(())
+            ),
+            "debug/loc_ref_hip_roll_right_target": metrics.get(
+                "debug/loc_ref_hip_roll_right_target", jp.zeros(())
             ),
             "debug/loc_ref_pelvis_pitch_target": metrics.get(
                 "debug/loc_ref_pelvis_pitch_target", jp.zeros(())
