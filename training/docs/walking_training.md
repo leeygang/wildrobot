@@ -457,16 +457,18 @@ Interpretation:
 
 Immediate next step:
 
-- run the remaining `slow-phase` ablation on the fixed nominal-only probe
-- compare it against the same baseline and current ablations
-- use that result to choose one of:
-  - one final bounded nominal-path fix around timing/support coupling
-  - or a larger nominal-layer redesign before resuming M3
+- run the canonical `M2.5` multi-speed nominal-only sweep for `walking_ref_v2`
+- inspect per-speed traces and the aggregate summary
+- use that result to decide whether `walking_ref_v2` is:
+  - too conservative and ready for one bounded release-threshold tuning pass
+  - or still not dynamically valid and in need of a larger redesign
 
 Canonical commands:
 
 - baseline probe:
   - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
+- canonical multi-speed sweep:
+  - `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
 - next ablation:
   - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0 --ablation slow-phase`
 
@@ -604,6 +606,10 @@ Canonical probe command:
 
 - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
 
+Canonical multi-speed sweep:
+
+- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
+
 Required outputs:
 
 - `done_step`
@@ -734,6 +740,10 @@ Minimum sweep after Level 3 improves:
 - forward command `0.10`
 - forward command `0.14`
 - multiple seeds if runtime cost is acceptable
+
+Preferred command:
+
+- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
 
 Optional:
 

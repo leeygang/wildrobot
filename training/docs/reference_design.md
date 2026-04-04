@@ -344,6 +344,16 @@ Run canonical nominal-only probes with:
 - fixed horizon
 - reproducible config
 
+Canonical sweep command:
+
+- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
+
+Expected artifacts:
+
+- per-speed JSON summaries under `/tmp/m25_v2_probe_sweep/`
+- per-speed traces under `/tmp/m25_v2_probe_sweep/`
+- aggregate sweep summary at `/tmp/m25_v2_probe_sweep/summary.json`
+
 The nominal reference is not considered validated until this level is credible.
 
 ### Level 4: Channel-isolation diagnostics
@@ -359,6 +369,10 @@ After one-point success, run a small command sweep:
 - `0.06 m/s`
 - `0.10 m/s`
 - `0.14 m/s`
+
+Preferred command:
+
+- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
 
 If the prior only works at one exact operating point, it is not ready for PPO.
 
@@ -454,6 +468,8 @@ Expected tasks:
 - unit tests for mode transitions
 - unit tests for support-health bounds
 - nominal-only fixed probe runs
+- canonical multi-speed sweep:
+  - `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
 - trace inspection against the support-first checklist
 
 ### `M2.5-A2`: Support-first tuning
@@ -491,6 +507,8 @@ not more local patches.
 1. Finish architecture cleanup so `walking_ref_v2` fully owns progression semantics.
 2. Remove duplicated support/gating logic from env-side nominal shaping.
 3. Re-run nominal-only probes under the cleaned architecture.
+   Preferred command:
+   `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
 4. Use the support-first checklist as the only decision gate for resuming PPO.
 
 ---
