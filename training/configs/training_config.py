@@ -151,6 +151,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         loc_ref_enabled=bool(env.get("loc_ref_enabled", False)),
+        loc_ref_version=str(env.get("loc_ref_version", "v1")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_nominal_com_height_m=float(env.get("loc_ref_nominal_com_height_m", 0.40)),
@@ -196,6 +197,45 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ),
         loc_ref_pelvis_pitch_min_scale=float(
             env.get("loc_ref_pelvis_pitch_min_scale", 0.0)
+        ),
+        loc_ref_support_pitch_rate_start_rad_s=float(
+            env.get("loc_ref_support_pitch_rate_start_rad_s", 0.8)
+        ),
+        loc_ref_support_health_gain=float(
+            env.get("loc_ref_support_health_gain", 4.0)
+        ),
+        loc_ref_support_release_phase_start=float(
+            env.get("loc_ref_support_release_phase_start", 0.35)
+        ),
+        loc_ref_support_foothold_min_scale=float(
+            env.get("loc_ref_support_foothold_min_scale", 0.35)
+        ),
+        loc_ref_support_swing_progress_min_scale=float(
+            env.get("loc_ref_support_swing_progress_min_scale", 0.0)
+        ),
+        loc_ref_support_phase_min_scale=float(
+            env.get("loc_ref_support_phase_min_scale", 0.15)
+        ),
+        loc_ref_v2_support_open_threshold=float(
+            env.get("loc_ref_v2_support_open_threshold", 0.60)
+        ),
+        loc_ref_v2_support_release_threshold=float(
+            env.get("loc_ref_v2_support_release_threshold", 0.30)
+        ),
+        loc_ref_v2_touchdown_phase_min=float(
+            env.get("loc_ref_v2_touchdown_phase_min", 0.55)
+        ),
+        loc_ref_v2_capture_hold_s=float(
+            env.get("loc_ref_v2_capture_hold_s", 0.04)
+        ),
+        loc_ref_v2_settle_hold_s=float(
+            env.get("loc_ref_v2_settle_hold_s", 0.04)
+        ),
+        loc_ref_v2_support_stabilize_max_foothold_scale=float(
+            env.get("loc_ref_v2_support_stabilize_max_foothold_scale", 0.35)
+        ),
+        loc_ref_v2_post_settle_swing_scale=float(
+            env.get("loc_ref_v2_post_settle_swing_scale", 0.15)
         ),
         action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),

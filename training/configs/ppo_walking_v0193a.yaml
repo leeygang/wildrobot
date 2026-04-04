@@ -41,6 +41,7 @@ env:
   actor_obs_layout_id: wr_obs_v4
   action_mapping_id: pos_target_home_v1
   loc_ref_enabled: true
+  loc_ref_version: v2
   loc_ref_residual_scale: 0.10
   # v0.19.3c nominal-path conservative stabilization
   loc_ref_step_time_s: 0.50
@@ -75,6 +76,21 @@ env:
   loc_ref_swing_x_min_scale: 0.00
   loc_ref_pelvis_pitch_brake_gain: 14.0
   loc_ref_pelvis_pitch_min_scale: 0.00
+  # v0.19.3f: support-conditioned progression redesign (M2.5)
+  loc_ref_support_pitch_rate_start_rad_s: 0.60
+  loc_ref_support_health_gain: 10.0
+  loc_ref_support_release_phase_start: 0.45
+  loc_ref_support_foothold_min_scale: 0.15
+  loc_ref_support_swing_progress_min_scale: 0.00
+  loc_ref_support_phase_min_scale: 0.05
+  # v0.19.3g: walking_ref_v2 support-first hybrid progression
+  loc_ref_v2_support_open_threshold: 0.60
+  loc_ref_v2_support_release_threshold: 0.30
+  loc_ref_v2_touchdown_phase_min: 0.55
+  loc_ref_v2_capture_hold_s: 0.04
+  loc_ref_v2_settle_hold_s: 0.04
+  loc_ref_v2_support_stabilize_max_foothold_scale: 0.35
+  loc_ref_v2_post_settle_swing_scale: 0.15
 
   clock_stride_period_steps: 36
   clock_phase_gate_width: 0.20

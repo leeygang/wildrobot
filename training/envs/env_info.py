@@ -106,6 +106,8 @@ try:
         loc_ref_phase_time: jnp.ndarray  # shape=()
         loc_ref_stance_foot: jnp.ndarray  # shape=(), int32 (0 left, 1 right)
         loc_ref_switch_count: jnp.ndarray  # shape=(), int32
+        loc_ref_mode_id: jnp.ndarray  # shape=(), int32 (v2 hybrid mode)
+        loc_ref_mode_time: jnp.ndarray  # shape=()
         loc_ref_gait_phase_sin: jnp.ndarray  # shape=()
         loc_ref_gait_phase_cos: jnp.ndarray  # shape=()
         loc_ref_next_foothold: jnp.ndarray  # shape=(2,)
@@ -247,6 +249,8 @@ except ImportError:
         loc_ref_phase_time: jnp.ndarray
         loc_ref_stance_foot: jnp.ndarray
         loc_ref_switch_count: jnp.ndarray
+        loc_ref_mode_id: jnp.ndarray
+        loc_ref_mode_time: jnp.ndarray
         loc_ref_gait_phase_sin: jnp.ndarray
         loc_ref_gait_phase_cos: jnp.ndarray
         loc_ref_next_foothold: jnp.ndarray
@@ -354,6 +358,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "loc_ref_phase_time": (),
         "loc_ref_stance_foot": (),
         "loc_ref_switch_count": (),
+        "loc_ref_mode_id": (),
+        "loc_ref_mode_time": (),
         "loc_ref_gait_phase_sin": (),
         "loc_ref_gait_phase_cos": (),
         "loc_ref_next_foothold": (2,),

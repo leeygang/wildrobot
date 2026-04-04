@@ -11,7 +11,11 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.envs.env_info import WR_INFO_KEY
-from training.envs.wildrobot_env import WildRobotEnv, _loc_ref_support_scales
+from training.envs.wildrobot_env import (
+    WildRobotEnv,
+    _loc_ref_support_health,
+    _loc_ref_support_scales,
+)
 from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
 from policy_contract.calib import JaxCalibOps
 
@@ -108,6 +112,45 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert 0.0 <= cfg.env.loc_ref_swing_x_min_scale <= 1.0
     assert cfg.env.loc_ref_pelvis_pitch_brake_gain >= 0.0
     assert 0.0 <= cfg.env.loc_ref_pelvis_pitch_min_scale <= 1.0
+    assert cfg.env.loc_ref_support_pitch_rate_start_rad_s >= 0.0
+    assert cfg.env.loc_ref_support_health_gain >= 0.0
+    assert 0.0 <= cfg.env.loc_ref_support_release_phase_start <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_support_foothold_min_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_support_swing_progress_min_scale <= 1.0
+    assert 0.0 < cfg.env.loc_ref_support_phase_min_scale <= 1.0
+    # Ablation-overridable channels should parse cleanly.
+    assert cfg.env.loc_ref_swing_target_blend >= 0.0
+    assert cfg.env.loc_ref_step_time_s > 0.0
+
+
+def test_loc_ref_support_health_drops_under_instability() -> None:
+    health, instability = _loc_ref_support_health(
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.80, dtype=jp.float32),
+        pitch_rad=jp.asarray(0.18, dtype=jp.float32),
+        pitch_rate_rad_s=jp.asarray(1.8, dtype=jp.float32),
+        overspeed_deadband=jp.asarray(0.01, dtype=jp.float32),
+        pitch_start_rad=jp.asarray(0.06, dtype=jp.float32),
+        pitch_rate_start_rad_s=jp.asarray(0.60, dtype=jp.float32),
+        health_gain=jp.asarray(10.0, dtype=jp.float32),
+    )
+    assert instability > 0.0
+    assert health < 0.5
+
+
+def test_loc_ref_support_health_is_one_when_stable() -> None:
+    health, instability = _loc_ref_support_health(
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.09, dtype=jp.float32),
+        pitch_rad=jp.asarray(0.01, dtype=jp.float32),
+        pitch_rate_rad_s=jp.asarray(0.10, dtype=jp.float32),
+        overspeed_deadband=jp.asarray(0.01, dtype=jp.float32),
+        pitch_start_rad=jp.asarray(0.06, dtype=jp.float32),
+        pitch_rate_start_rad_s=jp.asarray(0.60, dtype=jp.float32),
+        health_gain=jp.asarray(10.0, dtype=jp.float32),
+    )
+    assert instability == 0.0
+    assert jp.abs(health - 1.0) < 1e-6
 
 
 def test_loc_ref_support_scales_brake_instability() -> None:

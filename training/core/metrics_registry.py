@@ -525,6 +525,16 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Locomotion reference stance foot id (0/1)",
     ),
     MetricSpec(
+        name="tracking/loc_ref_mode_id",
+        reducer=Reducer.MEAN,
+        description="Locomotion reference hybrid mode id",
+    ),
+    MetricSpec(
+        name="tracking/loc_ref_progression_permission",
+        reducer=Reducer.MEAN,
+        description="Support-conditioned progression permission in [0, 1]",
+    ),
+    MetricSpec(
         name="tracking/nominal_q_abs_mean",
         reducer=Reducer.MEAN,
         description="Mean absolute nominal q_ref magnitude",
@@ -1151,6 +1161,18 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Loc-ref overspeed signal max(fwd-cmd-deadband, 0)",
     ),
     MetricSpec(
+        name="debug/loc_ref_support_health",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-conditioned progression health (1=healthy, 0=freeze)",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_support_instability",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support instability signal used by progression gate",
+    ),
+    MetricSpec(
         name="debug/loc_ref_nominal_vs_applied_q_l1",
         reducer=Reducer.MEAN,
         log_prefix="debug",
@@ -1227,6 +1249,18 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="debug",
         description="Support-first clamp activation flag",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_hybrid_mode_id",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Hybrid nominal reference mode id",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_progression_permission",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Support-conditioned progression permission",
     ),
 ]
 

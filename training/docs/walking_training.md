@@ -1,7 +1,7 @@
 # WildRobot Walking Training Plan
 
 **Status:** Active locomotion plan for `v0.19.x`  
-**Last updated:** 2026-04-02
+**Last updated:** 2026-04-03
 
 ---
 
@@ -315,12 +315,27 @@ Expected additions:
   - achieved forward speed overshot command by about `2x`
   - `m3_swing_foot_tracking` and `m3_foothold_consistency` stayed nearly
     inactive
-- Active next branch: `v0.19.3a`
-  - bounded config-only recovery pass
-  - lower residual authority around `q_ref`
-  - stronger stance-frame reference tracking
-  - stronger slip / impact penalties
-  - remove generic clearance reward from the next screening run
+- `v0.19.3a` failed to clear the same gate:
+  - run: `training/wandb/offline-run-20260402_104958-qhb3w0zc`
+  - `term_pitch_frac = 100%`
+  - `eval_clean/success_rate = 0%`
+  - reduced command range and stronger tracking penalties did not create a
+    viable stepping prior
+- `v0.19.3b` established the root blocker:
+  - nominal-only probe with zero residual still pitch-fails early
+  - `q_ref` is not dynamically viable under the full M3 env
+- `v0.19.3c` and `v0.19.3d` improved semantics and braking diagnostics, but
+  did not materially improve the nominal-only probe gate
+- `v0.19.3e` added support-first local clamping for swing-x and pelvis pitch:
+  - clamp is active
+  - survival still does not improve
+  - PPO must remain paused
+- Current active stage is now **`M2.5`: nominal reference validation**.
+  - `v0.19.3` remains implemented, but it is blocked by insufficient confidence
+    in the nominal prior under full env dynamics
+  - active work is no longer PPO config tuning
+  - active work is a fixed nominal-reference validation ladder and ablation
+    program before any further M3 training
 
 ### `v0.19.0` Platform Pivot
 
@@ -392,6 +407,57 @@ Exit gate:
 - initial smoke command:
   - `uv run python tools/reference_smoke/run_reference_smoke.py --robot-config assets/v2/mujoco_robot_config.json --steps 300 --dt-s 0.02 --forward-speed-mps 0.12`
 
+### `M2.5` Nominal Reference Validation
+
+Purpose:
+
+- validate that the `v0.19.2` nominal reference is good enough for M3
+- localize the root cause when the nominal prior fails under full env dynamics
+- block further PPO work until the nominal-only gate is cleared
+
+Status:
+
+- active stage
+- `v0.19.3` integration exists, but it exposed that the nominal prior is not
+  yet dynamically viable
+- this is therefore a validation and root-cause stage, not a reward-tuning
+  stage
+
+Current findings:
+
+- `v0.19.3b` nominal-only probe established the blocker:
+  - zero residual still pitch-fails early
+  - `q_ref` is not currently viable under the full M3 env
+- `v0.19.3c` and `v0.19.3d` improved semantics and braking diagnostics, but
+  did not materially improve the nominal-only gate
+- `v0.19.3e` improved the validation harness and isolated the current failure:
+  - `no-dcm`: no meaningful effect
+  - `zero-pelvis-pitch`: no meaningful effect
+  - `freeze-swing-x`: reduces overspeed, but does not improve survival
+  - `tight-stance`: improves survival, but worsens overspeed
+
+Interpretation:
+
+- the current blocker is not PPO optimization
+- the current blocker is not primarily DCM or pelvis-pitch feedforward
+- the dominant remaining issue appears to be coupled sagittal support and
+  forward-progression timing under full env dynamics
+
+Immediate next step:
+
+- run the remaining `slow-phase` ablation on the fixed nominal-only probe
+- compare it against the same baseline and current ablations
+- use that result to choose one of:
+  - one final bounded nominal-path fix around timing/support coupling
+  - or a larger nominal-layer redesign before resuming M3
+
+Canonical commands:
+
+- baseline probe:
+  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
+- next ablation:
+  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0 --ablation slow-phase`
+
 ### `v0.19.3` Walking Policy v1
 
 Software stack:
@@ -455,6 +521,227 @@ Exit gate:
 - `m3_swing_foot_tracking` and `m3_foothold_consistency` become meaningfully
   active
 - slip falls sharply relative to the failed `v0.19.3` run
+
+Result:
+
+- `v0.19.3a` did not clear the gate
+- subsequent `v0.19.3b` through `v0.19.3e` debug branches show that the
+  blocker is the nominal prior, not PPO optimization
+- from this point on, M3 work is gated by the nominal reference validation
+  ladder below
+
+### `M2.5` Validation Ladder
+
+Purpose:
+
+- prove the nominal reference is good enough to unblock `v0.19.3`
+- localize the root cause when it is not
+- avoid wasting PPO runs on a broken prior
+
+This validation ladder defines the active `M2.5` stage and applies to all
+remaining `v0.19.3x` work.
+
+#### Level 1: Reference Generator Correctness
+
+Goal:
+
+- verify `walking_ref_v1` is internally consistent before full-env rollout
+
+Checks:
+
+- phase stays in `[0, 1]`
+- stance alternates correctly
+- step length stays within configured bounds
+- lateral placement stays within bounds
+- swing trajectory is continuous and bounded
+- pelvis targets are bounded and smooth
+
+Typical validation:
+
+- unit tests around `control/references/walking_ref_v1.py`
+- bounded test cases for phase progression, foothold limits, and swing shape
+
+#### Level 2: IK And Nominal Target Correctness
+
+Goal:
+
+- verify `q_ref` is kinematically coherent and not already bad in joint space
+
+Checks:
+
+- reachability stays high
+- no systematic clipping or limit hugging
+- left/right symmetry remains sane
+- unsolved joints stay in safe home-centered defaults
+- `q_ref` evolves smoothly over phase
+- stance/swing geometry maps to plausible sagittal targets
+
+Typical validation:
+
+- integration tests around the env-side nominal target path
+- explicit checks on `tracking/loc_ref_left_reachable`,
+  `tracking/loc_ref_right_reachable`, and nominal target magnitude
+
+#### Level 3: Nominal-Only Full-Env Viability
+
+Goal:
+
+- verify the nominal prior survives full actuator/contact dynamics without PPO
+
+Canonical probe command:
+
+- `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
+
+Required outputs:
+
+- `done_step`
+- dominant termination
+- `forward_velocity_mean`
+- `forward_velocity_last`
+- `tracking_nominal_q_abs_mean`
+- `tracking_loc_ref_left_reachable`
+- `tracking_loc_ref_right_reachable`
+- `tracking_loc_ref_phase_progress_*`
+- `reward_m3_swing_foot_tracking`
+- `reward_m3_foothold_consistency`
+- `debug_loc_ref_nominal_vs_applied_q_l1_mean`
+
+Current status:
+
+- this level is still failing
+- PPO must not resume until this level improves materially
+
+#### Level 4: Channel-Isolation Ablations
+
+Goal:
+
+- identify which nominal channel causes the forward pitch-dive
+
+Required ablation families:
+
+- freeze or heavily damp swing-x progression
+- zero or heavily damp nominal pelvis pitch
+- remove or greatly reduce DCM contribution
+- slow phase progression
+- increase stance/support conservatism
+
+Rules:
+
+- run one ablation at a time
+- always rerun the same canonical nominal-only probe
+- compare against a fixed baseline rather than reward totals
+
+Current ablation status:
+
+- `no-dcm`: no meaningful effect
+- `zero-pelvis-pitch`: no meaningful effect
+- `freeze-swing-x`: lowers overspeed, but does not improve survival
+- `tight-stance`: improves survival, but worsens overspeed
+- `slow-phase`: lowers overspeed slightly, but does not improve survival
+
+#### Support-First And Dynamically Valid Checklist
+
+Purpose:
+
+- define what the nominal prior must do before PPO is allowed to resume
+- make the next nominal-layer work measurable and repeatable
+
+`Support-first` means:
+
+- stance/support geometry is prioritized before forward progression
+- forward swing advance slows or freezes when support is already failing
+- nominal progression is conditional on support state, not just phase time
+
+`Dynamically valid` means:
+
+- the nominal prior survives the full training env dynamics without PPO rescue
+- contacts, actuator realization, and body motion remain in the same regime as
+  the commanded task
+
+Required support-first checks:
+
+- root pitch remains bounded enough that support can still be recovered
+- root pitch rate remains bounded enough that the nominal prior is not
+  accelerating into collapse
+- support-gate activation correlates with reduced swing-x progression and/or
+  reduced phase advance when instability is present
+- forward progression slows or stops when overspeed and pitch indicate support
+  is already failing
+
+Required dynamic-validity checks:
+
+- nominal-only rollout survives materially longer than the current low-30-step
+  regime
+- immediate `term/pitch` collapse is gone
+- achieved forward speed stays in the same regime as command
+- swing-foot tracking is clearly above numerical noise
+- foothold consistency is clearly above the current near-zero regime
+- nominal-vs-applied target gap remains small enough to explain realized motion
+
+Required trace-level checks:
+
+- inspect one fixed probe trace for:
+  - phase progress
+  - stance foot
+  - root pitch and pitch rate
+  - forward velocity
+  - swing-x target vs actual
+  - foothold target vs realized touchdown
+  - support-gate activity
+  - nominal `q_ref` vs applied target gap
+- expected interpretation:
+  - support is established first
+  - then controlled progression is permitted
+  - not the other way around
+
+Required robustness checks after one-point success:
+
+- rerun nominal-only probes at:
+  - `0.06 m/s`
+  - `0.10 m/s`
+  - `0.14 m/s`
+- optionally add one or two mild friction variations
+- do not treat the prior as validated if it only works at one exact command
+
+Decision rule:
+
+- if the prior passes the support-first and dynamic-validity checks above,
+  resume `v0.19.3` PPO work
+- if it fails after one more bounded nominal redesign pass, stop local tuning
+  and redesign the nominal layer more substantially
+
+#### Level 5: Robustness Sweep
+
+Goal:
+
+- verify the nominal prior is not only working at one exact operating point
+
+Minimum sweep after Level 3 improves:
+
+- forward command `0.06`
+- forward command `0.10`
+- forward command `0.14`
+- multiple seeds if runtime cost is acceptable
+
+Optional:
+
+- one or two mild friction variations
+
+#### Resume-PPO Gate
+
+PPO training under `v0.19.3` remains blocked until all of these are true:
+
+- nominal-only survives materially longer than the current low-30-step failure
+  regime
+- immediate pitch-dive is gone
+- achieved forward speed is in the same regime as command, not large overspeed
+- swing tracking is clearly above numerical noise
+- foothold consistency is no longer near zero
+- nominal-vs-applied target gap is small enough to explain the realized motion
+
+If this ladder still fails after bounded channel-isolation work, the next step
+is not more `v0.19.3x` tuning. It is a larger redesign of the nominal layer
+before resuming M3.
 
 ### `v0.19.4` Transfer Hardening
 

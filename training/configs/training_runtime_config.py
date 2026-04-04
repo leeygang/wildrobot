@@ -119,6 +119,8 @@ class EnvConfig(Freezable):
     actor_obs_layout_id: str = "wr_obs_v1"
     # v0.19.3: reference-guided locomotion (M2 nominal + PPO residual)
     loc_ref_enabled: bool = False
+    # Reference implementation selector: "v1" (legacy) or "v2" (support-first hybrid).
+    loc_ref_version: str = "v1"
     # Residual joint delta scale (fraction of per-joint half-range).
     # Effective delta_q = residual_action * loc_ref_residual_scale * half_span.
     loc_ref_residual_scale: float = 0.18
@@ -157,6 +159,21 @@ class EnvConfig(Freezable):
     loc_ref_swing_x_min_scale: float = 0.05
     loc_ref_pelvis_pitch_brake_gain: float = 6.0
     loc_ref_pelvis_pitch_min_scale: float = 0.0
+    # v0.19.3f: support-conditioned progression gate for nominal stepping.
+    loc_ref_support_pitch_rate_start_rad_s: float = 0.8
+    loc_ref_support_health_gain: float = 4.0
+    loc_ref_support_release_phase_start: float = 0.35
+    loc_ref_support_foothold_min_scale: float = 0.35
+    loc_ref_support_swing_progress_min_scale: float = 0.0
+    loc_ref_support_phase_min_scale: float = 0.15
+    # v0.19.4-prep: walking_ref_v2 hybrid-state thresholds.
+    loc_ref_v2_support_open_threshold: float = 0.60
+    loc_ref_v2_support_release_threshold: float = 0.30
+    loc_ref_v2_touchdown_phase_min: float = 0.55
+    loc_ref_v2_capture_hold_s: float = 0.04
+    loc_ref_v2_settle_hold_s: float = 0.04
+    loc_ref_v2_support_stabilize_max_foothold_scale: float = 0.35
+    loc_ref_v2_post_settle_swing_scale: float = 0.15
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"
