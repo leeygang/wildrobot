@@ -14,6 +14,8 @@ from training.eval.visualize_nominal_ref import (
     _configure_nominal_only,
     _dominant_termination_from_metrics,
     _enable_temp_logging,
+    _geom_bottom_z,
+    _print_log_only,
     _extract_lateral_semantics,
     _extract_reset_lateral_semantics,
     _format_grounded_nominal_init_line,
@@ -65,6 +67,24 @@ def test_compute_stance_ground_shift_uses_selected_stance_foot() -> None:
     assert abs(
         _compute_stance_ground_shift(stance_foot=1, left_foot_z=0.12, right_foot_z=-0.03) - 0.03
     ) < 1e-9
+
+
+def test_geom_bottom_z_uses_box_extent() -> None:
+    class _MjModel:
+        geom_size = jnp.asarray([[0.0, 0.0, 0.0], [0.2, 0.3, 0.4]], dtype=jnp.float32)
+        geom_type = jnp.asarray([0, int(__import__("mujoco").mjtGeom.mjGEOM_BOX)], dtype=jnp.int32)
+
+    class _MjData:
+        geom_xpos = jnp.asarray([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=jnp.float32)
+        geom_xmat = jnp.asarray(
+            [
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=jnp.float32,
+        )
+
+    assert abs(_geom_bottom_z(_MjModel(), _MjData(), 1) - 2.6) < 1e-6
 
 
 def test_dominant_termination_from_metrics() -> None:
@@ -280,23 +300,38 @@ def test_enable_temp_logging_returns_path_and_tees_output() -> None:
     assert "stderr-log" in content
 
 
+def test_print_log_only_skips_primary_stdout_and_writes_secondary() -> None:
+    primary = io.StringIO()
+    secondary = io.StringIO()
+    orig_stdout = sys.stdout
+    try:
+        from training.eval.visualize_nominal_ref import _TeeTextIO
+
+        sys.stdout = _TeeTextIO(primary, secondary)
+        _print_log_only("step=0001 hidden-from-screen")
+    finally:
+        sys.stdout = orig_stdout
+    assert primary.getvalue() == ""
+    assert "step=0001 hidden-from-screen" in secondary.getvalue()
+
+
 def test_format_grounded_nominal_init_line_includes_geometry_fields() -> None:
     line = _format_grounded_nominal_init_line(
         {
             "stance_foot": 1.0,
             "root_height": 0.401,
             "root_dz_applied": -0.1234,
-            "stance_foot_z_before": 0.1234,
+            "stance_support_z_before": 0.1234,
             "stance_foot_z": 0.0,
-            "left_foot_z": 0.005,
-            "right_foot_z": 0.0,
+            "left_support_z": 0.005,
+            "right_support_z": 0.0,
         }
     )
     assert "nominal_qref init grounded" in line
     assert "stance=1" in line
     assert "root_h=0.401" in line
     assert "root_dz=-0.1234" in line
-    assert "stance_foot_z=+0.0000" in line
+    assert "stance_support_z=+0.0000" in line
 
 
 def test_replace_state_with_nominal_qref_overwrites_actuated_qpos() -> None:
@@ -337,8 +372,14 @@ def test_replace_state_with_nominal_qref_grounded_shifts_root_to_stance_contact(
     class _RootSpec:
         qpos_addr = 0
 
+    class _FootSpec:
+        def __init__(self, toe_geom_id, heel_geom_id):
+            self.toe_geom_id = toe_geom_id
+            self.heel_geom_id = heel_geom_id
+
     class _Cal:
         root_spec = _RootSpec()
+        _foot_specs = [_FootSpec(0, 1), _FootSpec(2, 3)]
 
         @staticmethod
         def get_foot_positions(data, normalize=False):
@@ -378,11 +419,19 @@ def test_replace_state_with_nominal_qref_grounded_shifts_root_to_stance_contact(
     class _Env:
         _actuator_qpos_addrs = jnp.asarray([3, 4], dtype=jnp.int32)
         _mjx_model = object()
+        _mj_model = object()
         _cal = _Cal()
 
-    with patch("training.eval.visualize_nominal_ref.mjx.forward", side_effect=lambda _m, d: d):
+    with (
+        patch("training.eval.visualize_nominal_ref.mjx.forward", side_effect=lambda _m, d: d),
+        patch(
+            "training.eval.visualize_nominal_ref._compute_support_bottom_zs",
+            side_effect=[(0.40, 0.30), (0.10, 0.0)],
+        ),
+    ):
         grounded_state, geometry = _replace_state_with_nominal_qref_grounded(_Env(), _State())
     assert jnp.allclose(grounded_state.data.qpos[3:], jnp.asarray([0.11, 0.22], dtype=jnp.float32))
     assert abs(float(grounded_state.data.qpos[2]) - 0.20) < 1e-6
     assert abs(float(geometry["stance_foot_z"])) < 1e-6
     assert abs(float(geometry["root_dz_applied"]) + 0.30) < 1e-6
+    assert abs(float(geometry["stance_support_z_before"]) - 0.30) < 1e-6

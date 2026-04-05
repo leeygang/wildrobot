@@ -46,6 +46,15 @@ class _TeeTextIO(io.TextIOBase):
         self._secondary.flush()
 
 
+def _print_log_only(message: str) -> None:
+    stdout = sys.stdout
+    if isinstance(stdout, _TeeTextIO):
+        stdout._secondary.write(message + "\n")  # noqa: SLF001
+        stdout._secondary.flush()  # noqa: SLF001
+        return
+    print(message)
+
+
 def _enable_temp_logging() -> Path:
     log_path = Path(tempfile.gettempdir()) / (
         f"wildrobot_nominal_ref_{int(time.time())}.log"
@@ -192,44 +201,79 @@ def _compute_stance_ground_shift(*, stance_foot: int, left_foot_z: float, right_
     return -stance_foot_z
 
 
+def _geom_bottom_z(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, geom_id: int) -> float:
+    geom_center = np.asarray(mj_data.geom_xpos[geom_id], dtype=np.float64)
+    geom_xmat = np.asarray(mj_data.geom_xmat[geom_id], dtype=np.float64).reshape(3, 3)
+    geom_size = np.asarray(mj_model.geom_size[geom_id], dtype=np.float64)
+    geom_type = int(mj_model.geom_type[geom_id])
+
+    if geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
+        z_extent = np.abs(geom_xmat[2, 0]) * geom_size[0]
+        z_extent += np.abs(geom_xmat[2, 1]) * geom_size[1]
+        z_extent += np.abs(geom_xmat[2, 2]) * geom_size[2]
+    elif geom_type in (
+        int(mujoco.mjtGeom.mjGEOM_SPHERE),
+        int(mujoco.mjtGeom.mjGEOM_CAPSULE),
+        int(mujoco.mjtGeom.mjGEOM_CYLINDER),
+    ):
+        z_extent = float(geom_size[0])
+    else:
+        # Fallback for unsupported geom types. For the current foot contact geoms
+        # we expect boxes, but keep the helper safe.
+        z_extent = 0.0
+
+    return float(geom_center[2] - z_extent)
+
+
+def _compute_support_bottom_zs(env: WildRobotEnv, state) -> tuple[float, float]:
+    mj_model = env._mj_model  # noqa: SLF001
+    mj_data = mujoco.MjData(mj_model)
+    _sync_viewer_data(mj_model, mj_data, state.data)
+
+    left_foot, right_foot = env._cal._foot_specs  # noqa: SLF001
+    left_z = min(
+        _geom_bottom_z(mj_model, mj_data, int(left_foot.toe_geom_id)),
+        _geom_bottom_z(mj_model, mj_data, int(left_foot.heel_geom_id)),
+    )
+    right_z = min(
+        _geom_bottom_z(mj_model, mj_data, int(right_foot.toe_geom_id)),
+        _geom_bottom_z(mj_model, mj_data, int(right_foot.heel_geom_id)),
+    )
+    return float(left_z), float(right_z)
+
+
 def _replace_state_with_nominal_qref_grounded(env: WildRobotEnv, state):
     state = _replace_state_with_nominal_qref(env, state)
     wr = state.info[WR_INFO_KEY]
     stance_foot = int(jnp.asarray(wr.loc_ref_stance_foot, dtype=jnp.int32))
-    left_foot_pos, right_foot_pos = env._cal.get_foot_positions(  # noqa: SLF001
-        state.data, normalize=False
-    )
-    left_foot_z = float(left_foot_pos[2])
-    right_foot_z = float(right_foot_pos[2])
+    left_support_z, right_support_z = _compute_support_bottom_zs(env, state)
     root_spec = env._cal.root_spec  # noqa: SLF001
     if root_spec is None:
         raise ValueError("ControlAbstractionLayer root_spec is required for grounded nominal init")
     root_z_addr = int(root_spec.qpos_addr + 2)
     root_dz = _compute_stance_ground_shift(
-        stance_foot=stance_foot, left_foot_z=left_foot_z, right_foot_z=right_foot_z
+        stance_foot=stance_foot, left_foot_z=left_support_z, right_foot_z=right_support_z
     )
     qpos = state.data.qpos.at[root_z_addr].add(jnp.asarray(root_dz, dtype=state.data.qpos.dtype))
     data = state.data.replace(qpos=qpos)
     data = mjx.forward(env._mjx_model, data)  # noqa: SLF001
     grounded_state = state.replace(data=data)
 
-    grounded_left_foot_pos, grounded_right_foot_pos = env._cal.get_foot_positions(  # noqa: SLF001
-        grounded_state.data, normalize=False
+    grounded_left_support_z, grounded_right_support_z = _compute_support_bottom_zs(
+        env, grounded_state
     )
-    grounded_left_foot_z = float(grounded_left_foot_pos[2])
-    grounded_right_foot_z = float(grounded_right_foot_pos[2])
     grounded_stance_foot_z = (
-        grounded_left_foot_z if stance_foot == 0 else grounded_right_foot_z
+        grounded_left_support_z if stance_foot == 0 else grounded_right_support_z
     )
     grounded_root_height = float(env._cal.get_root_height(grounded_state.data))  # noqa: SLF001
     geometry = {
         "stance_foot": float(stance_foot),
         "root_height": grounded_root_height,
         "root_dz_applied": root_dz,
-        "stance_foot_z_before": left_foot_z if stance_foot == 0 else right_foot_z,
+        "stance_support_z_before": left_support_z if stance_foot == 0 else right_support_z,
         "stance_foot_z": grounded_stance_foot_z,
-        "left_foot_z": grounded_left_foot_z,
-        "right_foot_z": grounded_right_foot_z,
+        "left_support_z": grounded_left_support_z,
+        "right_support_z": grounded_right_support_z,
     }
     return grounded_state, geometry
 
@@ -241,10 +285,10 @@ def _format_grounded_nominal_init_line(geometry: dict[str, float]) -> str:
         f"stance={stance} "
         f"root_h={float(geometry['root_height']):.3f} "
         f"root_dz={float(geometry['root_dz_applied']):+.4f} "
-        f"stance_foot_z_before={float(geometry['stance_foot_z_before']):+.4f} "
-        f"stance_foot_z={float(geometry['stance_foot_z']):+.4f} "
-        f"left_foot_z={float(geometry['left_foot_z']):+.4f} "
-        f"right_foot_z={float(geometry['right_foot_z']):+.4f}"
+        f"stance_support_z_before={float(geometry['stance_support_z_before']):+.4f} "
+        f"stance_support_z={float(geometry['stance_foot_z']):+.4f} "
+        f"left_support_z={float(geometry['left_support_z']):+.4f} "
+        f"right_support_z={float(geometry['right_support_z']):+.4f}"
     )
 
 
@@ -516,8 +560,14 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
             term_totals[key] += float(metrics_vec[METRIC_INDEX[key]])
         done = bool(np.asarray(state.done > 0.5))
         if (step_idx % print_every == 0) or done or (step_idx == 1):
-            print(_format_step_line(step_idx, state, metrics_vec))
-            print(_format_support_posture_line(env, state, metrics_vec))
+            step_line = _format_step_line(step_idx, state, metrics_vec)
+            posture_line = _format_support_posture_line(env, state, metrics_vec)
+            if args.log:
+                _print_log_only(step_line)
+                _print_log_only(posture_line)
+            else:
+                print(step_line)
+                print(posture_line)
         if renderer is not None:
             renderer.update_scene(mj_data)
             frames.append(renderer.render())

@@ -38,7 +38,7 @@ This is the closest match to the practical industry recipe for this robot class:
 
 Active planning docs:
 - [walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md)
-- [TodderlBot_direction.md](/home/leeygang/projects/wildrobot/training/docs/TodderlBot_direction.md)
+- [ToddlerBot_direction.md](/home/leeygang/projects/wildrobot/training/docs/ToddlerBot_direction.md)
 - [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
 - [footstep_planner_rl_adoption.md](/home/leeygang/projects/wildrobot/training/docs/footstep_planner_rl_adoption.md)
 - [open_duck_op3_comparison.md](/home/leeygang/projects/wildrobot/training/docs/open_duck_op3_comparison.md)
@@ -314,7 +314,7 @@ docs/
 
 training/docs/
   walking_training.md
-  TodderlBot_direction.md
+  ToddlerBot_direction.md
   standing_training.md
   footstep_planner_rl_adoption.md
   ocs2_humanoid_mpc_adoption.md     # deferred / reference only

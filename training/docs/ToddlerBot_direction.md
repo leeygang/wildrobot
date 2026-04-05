@@ -1,12 +1,29 @@
 # ToddlerBot Direction Analysis
 
-**Status:** Research note — assessing feasibility of adopting ToddlerBot's approach
+**Status:** Active reference note for the ToddlerBot-style WildRobot pivot
 **Created:** 2026-03-31
+**Last updated:** 2026-04-05
 **Context:** After `v0.17.4t-crouch` failed the gate (eval_hard = 54.2%), evaluating
 whether ToddlerBot's ZMP + reference-tracking recipe is a better path forward than
 continuing bounded RL teacher iterations.
 
 ---
+
+## Route Call
+
+If WildRobot follows ToddlerBot's direction, the main architecture rule is:
+
+- the deployed runtime artifact remains a learned policy
+- model-based pieces move into the reference / teacher / validation layer
+
+That means:
+
+- reduced-order planning, capture-point logic, and IK remain useful
+- but they should not become the long-term runtime controller
+- PPO should be structured around a nominal scaffold rather than asked to
+  discover locomotion from scratch
+
+This is the practical meaning of a ToddlerBot-style pivot on current hardware.
 
 ## Three-Way Comparison: ToddlerBot vs LeRobot vs WildRobot
 
@@ -145,6 +162,10 @@ continuing bounded RL teacher iterations.
 
 7. **Much longer training** (500M vs 75M steps) — More experience budget.
 
+8. **Reference motion as a scaffold, not a crutch** — The nominal trajectory
+   should already contain a coherent transition into support and stepping.
+   PPO improves robustness around it instead of inventing that sequence.
+
 ### From LeRobot (different problem class)
 
 1. **HIL-SERL for real-robot fine-tuning** — Once a sim-trained policy deploys,
@@ -160,6 +181,29 @@ continuing bounded RL teacher iterations.
 ---
 
 ## Switching to ToddlerBot's Approach: Feasibility
+
+### What "Following ToddlerBot" Actually Means
+
+ToddlerBot should not be read as "pure PPO discovered locomotion from scratch."
+Its public direction is better understood as:
+
+- calibrated robot platform
+- high-fidelity digital twin
+- actuator system identification
+- structured locomotion reference or prior
+- history / delay / realism modeling
+- learned runtime policy as the deployed artifact
+
+For WildRobot, "follow ToddlerBot" means:
+
+- build a robot-learning platform, not only a standing experiment
+- make the runtime artifact a deployable learned policy
+- treat reduced-order planners and IK as nominal-reference infrastructure
+- make sim-to-real an explicit engineering loop
+
+This is compatible with capture-point, `LIPM`, `ALIP`, keyframes, and hybrid
+walking references. It is not compatible with using heavy runtime MPC as the
+center of the stack.
 
 ### What Would Change
 
@@ -223,6 +267,32 @@ incremental.
 3. **No manipulation.** WildRobot doesn't need arm coordination during recovery,
    simplifying the reference motion.
 
+### Concrete Hardware Delta vs WildRobot v2
+
+The most important difference is not only "ToddlerBot uses RL." The more
+important difference is that ToddlerBot has more mechanically useful authority
+for locomotion and a platform built around learning.
+
+For WildRobot v2, the main practical deltas are:
+
+- no ankle roll in the current lower-body design
+- less frontal-plane authority
+- less whole-body redundancy for recovery
+- weaker platform tooling around actuator realism and sim-to-real evaluation
+
+The most valuable software-only moves toward ToddlerBot are:
+
+- policy-centered runtime architecture
+- actuator SysID for `HTD-45H`
+- backlash, delay, and torque-limit realism
+- history / delay observations
+- reference-guided locomotion rather than free PPO search
+- explicit sim-vs-real replay and evaluation tooling
+
+The most valuable future hardware move, if a v3 is considered, is:
+
+- add ankle roll to each leg
+
 ### Key Risks
 
 1. **ZMP may be too simple for push recovery.** ZMP assumes flat-foot contact
@@ -279,3 +349,70 @@ The ToddlerBot comparison validates two things:
 **Recommended: Option A** — it's the smallest delta from the current codebase,
 uses ToddlerBot's proven ideas (reference tracking, domain rand, motor sysID)
 without the migration cost, and aligns with the existing plan trajectory.
+
+### Recommended Goal Shift
+
+If this pivot is accepted, the top-level goal should shift from:
+
+- "find a controller that can survive pushes while standing"
+
+to:
+
+- "build an ML-compatible locomotion platform for WildRobot"
+
+On current WildRobot v2 hardware, the first realistic product goal is:
+
+- zero-shot or low-touch sim-to-real forward walking
+- reliable stop and quiet standing
+- in-place yaw turning
+- moderate push recovery during standing and slow walking
+
+This is a better first target than trying to match ToddlerBot's full locomotion
+class directly.
+
+## Concrete Milestones
+
+### Milestone 0: Platform Pivot
+
+- freeze the standing-only branch as a completed exploration path
+- define a locomotion-first repo structure around runtime, assets, references,
+  training, policies, and tools
+- standardize one shared sim/real log schema
+- define reference-guided RL as the mainline direction
+
+### Milestone 1: Digital Twin and Actuator Realism
+
+- add `HTD-45H` actuator realism files and SysID workflow
+- add replay tools for sim-vs-real comparison
+- model delay, backlash, frictionloss, armature, and IMU realism
+
+### Milestone 2: Reference Generator
+
+- implement reduced-order locomotion references
+- generate bounded task-space foot and pelvis targets
+- convert them into nominal joint targets via IK
+- validate the nominal prior before resuming PPO
+
+### Milestone 3: Walking Policy
+
+- train residual PPO around the nominal reference
+- add history, delay, and reference-conditioned observations
+- target forward walking, stop, and quiet standing first
+
+### Milestone 4: Transfer Hardening
+
+- broaden domain randomization
+- strengthen sim-vs-real replay and failure analysis
+- add stop/start transitions and in-place yaw
+
+### Milestone 5: Recovery and Robustness
+
+- add moderate disturbance recovery during standing and slow walking
+- improve the nominal reference rather than replacing the policy-centered stack
+
+### Milestone 6: Platformization
+
+- standardize train/eval/replay/deploy entry points
+- add reusable policy packaging and logging workflows
+- keep the repo usable as a robot-learning platform rather than a one-off
+  experiment branch
