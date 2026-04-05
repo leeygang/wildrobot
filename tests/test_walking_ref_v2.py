@@ -192,3 +192,40 @@ def test_swing_release_mode_applies_bounded_lateral_release_delta() -> None:
     assert abs(lateral_release_y - expected_release) <= 1e-5
     assert abs(lateral_release_y) <= cfg.max_lateral_release_m + 1e-6
     assert abs(float(ref["swing_pos"][1]) - (base_support_y + lateral_release_y)) <= 1e-6
+
+
+def test_debug_force_support_only_prevents_release_and_phase_progress() -> None:
+    cfg = WalkingRefV2Config(debug_force_support_only=True)
+    (
+        ref,
+        phase_time,
+        _stance_foot,
+        _switch_count,
+        mode_id,
+        mode_time,
+        _health,
+        _instability,
+        permission,
+    ) = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.49, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.SWING_RELEASE), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.10, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(False),
+        dt_s=0.02,
+    )
+    assert int(mode_id) == int(WalkingRefV2Mode.SUPPORT_STABILIZE)
+    assert abs(float(phase_time)) <= 1e-6
+    assert abs(float(mode_time)) <= 1e-6
+    assert float(permission) >= 0.99
+    assert abs(float(ref["phase_progress"])) <= 1e-6
+    assert abs(float(ref["swing_pos"][0])) <= 1e-6
+    assert abs(float(ref["swing_vel"][0])) <= 1e-6

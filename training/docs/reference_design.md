@@ -192,6 +192,15 @@ Observed limitations:
 Its role is not to become a heavy runtime controller.
 Its role is to become a stronger nominal prior for residual RL.
 
+In ToddlerBot-style terms, `walking_ref_v2` should act as a reference-motion
+scaffold:
+
+- the reference should already contain a coherent startup transition
+- the reference should already contain a viable support posture
+- the reference should already contain a conservative support-to-step release
+- PPO should improve robustness around that scaffold, not invent it from
+  scratch
+
 Core properties:
 
 - explicit hybrid gait modes
@@ -205,14 +214,63 @@ Core properties:
 
 ## `walking_ref_v2` Design
 
+### Startup transition
+
+The nominal reference must explicitly own the transition from reset posture into
+loaded support posture.
+
+This is part of reference design, not PPO design.
+
+If the robot resets in an upright keyframe but the nominal support posture uses
+a more compressed stance leg, the reference should not jump there in one step.
+It should provide a bounded transition path.
+
+Recommended startup sequence:
+
+1. `startup_support_ramp`
+2. `support_stabilize`
+3. `swing_release`
+4. `touchdown_capture`
+5. `post_touchdown_settle`
+
+The startup transition should:
+
+- start close to the reset / keyframe-0 posture
+- preserve planted-foot contact and nominal stance width
+- gradually compress the stance leg
+- gradually move pelvis height toward the loaded support target
+- keep swing release fully suppressed
+- complete only when the robot has settled into a viable support posture
+
+The startup transition should not:
+
+- instantly command a deep crouch-like support posture
+- use PPO residuals as the primary mechanism for entering support
+- open stepping progression before support posture is established
+
+Recommended implementation shape:
+
+- define a startup interpolation scalar `startup_alpha in [0, 1]`
+- blend from reset/home posture toward support posture over a short bounded
+  interval
+- keep `swing_x_release = 0` and `lateral_release_y = 0` during this phase
+- keep `swing_y_target = base_support_y`
+- only allow transition into `support_stabilize` once startup posture error,
+  pitch rate, and support health are within acceptable bounds
+
+The purpose of this phase is not to "walk slowly."
+Its purpose is to provide a dynamically plausible path from reset posture to the
+first real support posture.
+
 ### Hybrid modes
 
 The intended `walking_ref_v2` mode sequence is:
 
-1. `support_stabilize`
-2. `swing_release`
-3. `touchdown_capture`
-4. `post_touchdown_settle`
+1. `startup_support_ramp`
+2. `support_stabilize`
+3. `swing_release`
+4. `touchdown_capture`
+5. `post_touchdown_settle`
 
 Mode transitions should depend on state, not just phase.
 
@@ -279,6 +337,23 @@ Pelvis targets are secondary.
 They may help posture, but should not be major forward-drive channels.
 Pelvis behavior should remain small, bounded, and support-aware.
 
+### Support posture construction
+
+The support posture should be designed as a realizable loaded stance, not just
+an IK output that looks reasonable in isolation.
+
+That means:
+
+- stance-leg compression should be introduced gradually
+- pelvis height must be consistent with reachable stance-leg geometry
+- stance hip pitch, knee pitch, and ankle pitch should stay in a range the
+  position servos can actually enter and hold under load
+- baseline lateral support width must remain nonzero in support mode
+
+If a grounded nominal-qref initialization can instantiate the support posture
+but the robot immediately collapses under contact dynamics, the remaining issue
+is still in support-posture design or the transition into it.
+
 ---
 
 ## Adapter Design
@@ -320,6 +395,7 @@ Verify in isolation:
 
 - phase stays bounded
 - hybrid mode transitions are coherent
+- startup transition stays bounded and completes coherently
 - foothold targets stay bounded
 - swing trajectories stay bounded
 - pelvis targets stay bounded
@@ -332,6 +408,25 @@ Verify:
 - no systematic joint-limit hugging
 - left/right symmetry remains sane
 - `q_ref` varies smoothly enough to be trackable
+- startup-to-support interpolation does not inject large instantaneous
+  joint-target jumps
+
+### Level 2.5: Grounded support-posture viability
+
+Before treating a nominal-only walking failure as a stepping failure, verify the
+support posture itself.
+
+Recommended checks:
+
+- grounded nominal-qref initialization starts with stance foot on the ground
+- support-only mode can hold the nominal support posture materially longer than
+  an immediate collapse
+- stance-leg target-vs-actual mismatch remains bounded enough to explain the
+  resulting motion
+
+The nominal viewer is the canonical local tool for this check:
+
+- `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 32 --headless --print-every 1 --force-support-only --init-from-nominal-qref --log`
 
 ### Level 3: Nominal-only full-env viability
 

@@ -56,6 +56,7 @@ class WalkingRefV2Config:
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
     settle_hold_s: float = 0.04
+    debug_force_support_only: bool = False
 
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
@@ -295,6 +296,12 @@ def step_reference_v2_jax(
     mode = jnp.where(switched, settle_mode, mode)
     mode_time = jnp.where(switched, 0.0, mode_time)
     phase = jnp.where(switched, 0.0, phase)
+
+    if config.debug_force_support_only:
+        mode = support_mode
+        mode_time = jnp.asarray(0.0, dtype=jnp.float32)
+        phase_time = jnp.asarray(0.0, dtype=jnp.float32)
+        phase = jnp.asarray(0.0, dtype=jnp.float32)
 
     speed = jnp.clip(
         jnp.asarray(forward_speed_mps, dtype=jnp.float32),
