@@ -176,6 +176,9 @@ class EnvConfig(Freezable):
     loc_ref_v2_settle_hold_s: float = 0.04
     loc_ref_v2_support_stabilize_max_foothold_scale: float = 0.35
     loc_ref_v2_post_settle_swing_scale: float = 0.15
+    loc_ref_v2_startup_ramp_s: float = 0.18
+    loc_ref_v2_startup_pelvis_height_offset_m: float = 0.035
+    loc_ref_v2_startup_support_open_health: float = 0.45
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

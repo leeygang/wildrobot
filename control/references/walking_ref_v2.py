@@ -22,10 +22,11 @@ RIGHT_STANCE = 1
 class WalkingRefV2Mode(IntEnum):
     """Hybrid nominal reference mode."""
 
-    SUPPORT_STABILIZE = 0
-    SWING_RELEASE = 1
-    TOUCHDOWN_CAPTURE = 2
-    POST_TOUCHDOWN_SETTLE = 3
+    STARTUP_SUPPORT_RAMP = 0
+    SUPPORT_STABILIZE = 1
+    SWING_RELEASE = 2
+    TOUCHDOWN_CAPTURE = 3
+    POST_TOUCHDOWN_SETTLE = 4
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,11 @@ class WalkingRefV2Config:
     support_foothold_min_scale: float = 0.15
     support_phase_min_scale: float = 0.05
     support_swing_progress_min_scale: float = 0.0
+    support_stabilize_max_foothold_scale: float = 0.35
+    post_settle_swing_scale: float = 0.15
+    startup_ramp_s: float = 0.18
+    startup_pelvis_height_offset_m: float = 0.035
+    startup_support_open_health: float = 0.45
     max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
@@ -81,6 +87,16 @@ class WalkingRefV2Config:
             raise ValueError("support_phase_min_scale must be in (0, 1]")
         if not 0.0 <= self.support_swing_progress_min_scale <= 1.0:
             raise ValueError("support_swing_progress_min_scale must be in [0, 1]")
+        if not 0.0 <= self.support_stabilize_max_foothold_scale <= 1.0:
+            raise ValueError("support_stabilize_max_foothold_scale must be in [0, 1]")
+        if not 0.0 <= self.post_settle_swing_scale <= 1.0:
+            raise ValueError("post_settle_swing_scale must be in [0, 1]")
+        if self.startup_ramp_s < 0.0:
+            raise ValueError("startup_ramp_s must be >= 0")
+        if self.startup_pelvis_height_offset_m < 0.0:
+            raise ValueError("startup_pelvis_height_offset_m must be >= 0")
+        if not 0.0 <= self.startup_support_open_health <= 1.0:
+            raise ValueError("startup_support_open_health must be in [0, 1]")
         if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:
             raise ValueError("max_lateral_release_m must be in [0, max_lateral_step_m]")
         if not 0.0 <= self.touchdown_phase_min <= 1.0:
@@ -94,7 +110,7 @@ class WalkingRefV2State:
     phase_time_s: float = 0.0
     stance_foot_id: int = LEFT_STANCE
     stance_switch_count: int = 0
-    mode_id: int = int(WalkingRefV2Mode.SUPPORT_STABILIZE)
+    mode_id: int = int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
     mode_time_s: float = 0.0
 
     def __post_init__(self) -> None:
@@ -236,9 +252,13 @@ def step_reference_v2_jax(
         1.0 - jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32)
     ) * progression_permission
 
-    phase_time = jnp.asarray(phase_time_s, dtype=jnp.float32) + jnp.asarray(
-        dt_s, dtype=jnp.float32
-    ) * phase_scale
+    startup_mode = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    phase_time = jnp.where(
+        jnp.asarray(mode_id, dtype=jnp.int32) == startup_mode,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(phase_time_s, dtype=jnp.float32)
+        + jnp.asarray(dt_s, dtype=jnp.float32) * phase_scale,
+    )
     stance = jnp.asarray(stance_foot_id, dtype=jnp.int32)
     switches = jnp.asarray(stance_switch_count, dtype=jnp.int32)
     mode = jnp.asarray(mode_id, dtype=jnp.int32)
@@ -259,11 +279,30 @@ def step_reference_v2_jax(
     capture_mode = jnp.asarray(int(WalkingRefV2Mode.TOUCHDOWN_CAPTURE), dtype=jnp.int32)
     settle_mode = jnp.asarray(int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE), dtype=jnp.int32)
 
+    startup_denom = jnp.maximum(jnp.asarray(config.startup_ramp_s, dtype=jnp.float32), 1e-6)
+    startup_alpha = jnp.clip(mode_time / startup_denom, 0.0, 1.0)
+    startup_stable = (
+        (support_health >= jnp.asarray(config.startup_support_open_health, dtype=jnp.float32))
+        & (
+            jnp.abs(jnp.asarray(root_pitch_rad, dtype=jnp.float32))
+            <= jnp.asarray(config.support_pitch_start_rad, dtype=jnp.float32)
+        )
+        & (
+            jnp.abs(jnp.asarray(root_pitch_rate_rad_s, dtype=jnp.float32))
+            <= jnp.asarray(config.support_pitch_rate_start_rad_s, dtype=jnp.float32)
+        )
+    )
+
+    from_startup = mode == startup_mode
     from_support = mode == support_mode
     from_swing = mode == swing_mode
     from_capture = mode == capture_mode
     from_settle = mode == settle_mode
 
+    to_support_from_startup = from_startup & (
+        (mode_time >= jnp.asarray(config.startup_ramp_s, dtype=jnp.float32))
+        | ((startup_alpha >= jnp.asarray(0.85, dtype=jnp.float32)) & startup_stable)
+    )
     to_swing = (
         from_support
         & (progression_permission >= jnp.asarray(config.support_open_threshold, dtype=jnp.float32))
@@ -278,15 +317,19 @@ def step_reference_v2_jax(
     to_support = from_settle & (mode_time >= jnp.asarray(config.settle_hold_s, dtype=jnp.float32))
 
     mode = jnp.where(
-        to_swing,
-        swing_mode,
+        to_support_from_startup,
+        support_mode,
         jnp.where(
-            to_capture,
-            capture_mode,
-            jnp.where(to_settle, settle_mode, jnp.where(to_support, support_mode, mode)),
+            to_swing,
+            swing_mode,
+            jnp.where(
+                to_capture,
+                capture_mode,
+                jnp.where(to_settle, settle_mode, jnp.where(to_support, support_mode, mode)),
+            ),
         ),
     )
-    transitioned = to_swing | to_capture | to_settle | to_support
+    transitioned = to_support_from_startup | to_swing | to_capture | to_settle | to_support
     mode_time = jnp.where(transitioned, 0.0, mode_time)
 
     switched = phase_time >= step_time
@@ -334,9 +377,23 @@ def step_reference_v2_jax(
     foothold_scale = jnp.asarray(config.support_foothold_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_foothold_min_scale, dtype=jnp.float32)
     ) * progression_permission
-    foothold_scale = jnp.where(mode == support_mode, jnp.minimum(foothold_scale, 0.35), foothold_scale)
+    foothold_scale = jnp.where(
+        mode == support_mode,
+        jnp.minimum(
+            foothold_scale,
+            jnp.asarray(config.support_stabilize_max_foothold_scale, dtype=jnp.float32),
+        ),
+        foothold_scale,
+    )
     x_foot = jnp.asarray(config.min_step_length_m, dtype=jnp.float32) + foothold_scale * (
         x_foot_nom - jnp.asarray(config.min_step_length_m, dtype=jnp.float32)
+    )
+    x_foot = jnp.where(
+        mode == startup_mode,
+        jnp.asarray(config.min_step_length_m, dtype=jnp.float32)
+        + startup_alpha
+        * (x_foot - jnp.asarray(config.min_step_length_m, dtype=jnp.float32)),
+        x_foot,
     )
     x_foot = jnp.clip(
         x_foot,
@@ -360,9 +417,17 @@ def step_reference_v2_jax(
     base_release = jnp.asarray(config.support_swing_progress_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_swing_progress_min_scale, dtype=jnp.float32)
     ) * release_prog
-    swing_release = jnp.where(mode == support_mode, 0.0, progression_permission * base_release)
+    swing_release = jnp.where(
+        (mode == startup_mode) | (mode == support_mode),
+        0.0,
+        progression_permission * base_release,
+    )
     swing_release = jnp.where(mode == capture_mode, 1.0, swing_release)
-    swing_release = jnp.where(mode == settle_mode, 0.15 * progression_permission, swing_release)
+    swing_release = jnp.where(
+        mode == settle_mode,
+        jnp.asarray(config.post_settle_swing_scale, dtype=jnp.float32) * progression_permission,
+        swing_release,
+    )
 
     base_support_y = y_foot
     lateral_release_y = y_sign * jnp.asarray(config.max_lateral_release_m, dtype=jnp.float32) * swing_release
@@ -388,15 +453,26 @@ def step_reference_v2_jax(
         ],
         dtype=jnp.float32,
     )
-    pelvis_roll = jnp.where(
+    pelvis_roll_target = jnp.where(
         stance == jnp.asarray(LEFT_STANCE, dtype=jnp.int32),
         -jnp.asarray(config.pelvis_roll_bias_rad, dtype=jnp.float32),
         jnp.asarray(config.pelvis_roll_bias_rad, dtype=jnp.float32),
     )
-    pelvis_pitch = jnp.clip(
+    pelvis_pitch_target = jnp.clip(
         jnp.asarray(config.pelvis_pitch_gain, dtype=jnp.float32) * speed * progression_permission,
         -jnp.asarray(config.max_pelvis_pitch_rad, dtype=jnp.float32),
         jnp.asarray(config.max_pelvis_pitch_rad, dtype=jnp.float32),
+    )
+    pelvis_roll = jnp.where(mode == startup_mode, startup_alpha * pelvis_roll_target, pelvis_roll_target)
+    pelvis_pitch = jnp.where(mode == startup_mode, startup_alpha * pelvis_pitch_target, pelvis_pitch_target)
+    pelvis_height_startup = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+        config.startup_pelvis_height_offset_m, dtype=jnp.float32
+    )
+    pelvis_height = jnp.where(
+        mode == startup_mode,
+        pelvis_height_startup
+        + startup_alpha * (jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) - pelvis_height_startup),
+        jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
     )
 
     ref = {
@@ -407,7 +483,7 @@ def step_reference_v2_jax(
         "next_foothold": jnp.asarray([x_foot, y_foot], dtype=jnp.float32),
         "swing_pos": jnp.asarray([swing_x, swing_y, swing_z], dtype=jnp.float32),
         "swing_vel": swing_vel,
-        "pelvis_height": jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
+        "pelvis_height": pelvis_height.astype(jnp.float32),
         "pelvis_roll": pelvis_roll.astype(jnp.float32),
         "pelvis_pitch": pelvis_pitch.astype(jnp.float32),
     }
@@ -439,17 +515,28 @@ def step_reference_v2(
     progression_permission = _permission_from_health(config, support_health)
     phase_scale = config.support_phase_min_scale + (1.0 - config.support_phase_min_scale) * progression_permission
 
-    phase_time = state.phase_time_s + dt_s * phase_scale
+    mode = WalkingRefV2Mode(state.mode_id)
+    phase_time = 0.0 if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP else state.phase_time_s + dt_s * phase_scale
     stance = state.stance_foot_id
     switch_count = state.stance_switch_count
-    mode = WalkingRefV2Mode(state.mode_id)
     mode_time = state.mode_time_s + dt_s
 
     phase = _clip(phase_time / max(config.step_time_s, 1e-6), 0.0, 1.0)
     stance_is_left = stance == LEFT_STANCE
     swing_loaded = bool(inputs.right_foot_loaded if stance_is_left else inputs.left_foot_loaded)
 
-    if mode == WalkingRefV2Mode.SUPPORT_STABILIZE:
+    startup_alpha = _clip(mode_time / max(config.startup_ramp_s, 1e-6), 0.0, 1.0)
+    startup_stable = (
+        support_health >= config.startup_support_open_health
+        and abs(float(inputs.root_pitch_rad)) <= config.support_pitch_start_rad
+        and abs(float(inputs.root_pitch_rate_rad_s)) <= config.support_pitch_rate_start_rad_s
+    )
+
+    if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
+        if mode_time >= config.startup_ramp_s or (startup_alpha >= 0.85 and startup_stable):
+            mode = WalkingRefV2Mode.SUPPORT_STABILIZE
+            mode_time = 0.0
+    elif mode == WalkingRefV2Mode.SUPPORT_STABILIZE:
         if progression_permission >= config.support_open_threshold and phase >= config.support_release_phase_start:
             mode = WalkingRefV2Mode.SWING_RELEASE
             mode_time = 0.0
@@ -485,8 +572,10 @@ def step_reference_v2(
 
     foothold_scale = config.support_foothold_min_scale + (1.0 - config.support_foothold_min_scale) * progression_permission
     if mode == WalkingRefV2Mode.SUPPORT_STABILIZE:
-        foothold_scale = min(foothold_scale, 0.35)
+        foothold_scale = min(foothold_scale, config.support_stabilize_max_foothold_scale)
     x_foot = config.min_step_length_m + foothold_scale * (x_foot_nom - config.min_step_length_m)
+    if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
+        x_foot = config.min_step_length_m + startup_alpha * (x_foot - config.min_step_length_m)
     x_foot = _clip(x_foot, config.min_step_length_m, config.max_step_length_m)
 
     y_sign = -1.0 if stance == LEFT_STANCE else 1.0
@@ -497,7 +586,7 @@ def step_reference_v2(
         0.0,
         1.0,
     )
-    if mode == WalkingRefV2Mode.SUPPORT_STABILIZE:
+    if mode in (WalkingRefV2Mode.STARTUP_SUPPORT_RAMP, WalkingRefV2Mode.SUPPORT_STABILIZE):
         swing_release = 0.0
     elif mode == WalkingRefV2Mode.SWING_RELEASE:
         base = config.support_swing_progress_min_scale + (
@@ -507,7 +596,7 @@ def step_reference_v2(
     elif mode == WalkingRefV2Mode.TOUCHDOWN_CAPTURE:
         swing_release = 1.0
     else:
-        swing_release = 0.15 * progression_permission
+        swing_release = config.post_settle_swing_scale * progression_permission
 
     base_support_y = y_foot
     lateral_release_y = y_sign * config.max_lateral_release_m * swing_release
@@ -521,12 +610,20 @@ def step_reference_v2(
         (config.swing_height_m * pi / max(config.step_time_s, 1e-6)) * cos(pi * phase),
     )
 
-    pelvis_roll = (-config.pelvis_roll_bias_rad if stance == LEFT_STANCE else config.pelvis_roll_bias_rad)
-    pelvis_pitch = _clip(
+    pelvis_roll_target = (-config.pelvis_roll_bias_rad if stance == LEFT_STANCE else config.pelvis_roll_bias_rad)
+    pelvis_pitch_target = _clip(
         config.pelvis_pitch_gain * speed * progression_permission,
         -config.max_pelvis_pitch_rad,
         config.max_pelvis_pitch_rad,
     )
+    if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
+        pelvis_roll = startup_alpha * pelvis_roll_target
+        pelvis_pitch = startup_alpha * pelvis_pitch_target
+        pelvis_height = config.nominal_com_height_m + (1.0 - startup_alpha) * config.startup_pelvis_height_offset_m
+    else:
+        pelvis_roll = pelvis_roll_target
+        pelvis_pitch = pelvis_pitch_target
+        pelvis_height = config.nominal_com_height_m
 
     ref = LocomotionReferenceState(
         gait_phase_sin=float(sin(2.0 * pi * phase)),
@@ -535,7 +632,7 @@ def step_reference_v2(
         desired_next_foothold_stance_frame=(x_foot, y_foot),
         desired_swing_foot_position=(swing_x, swing_y, swing_z),
         desired_swing_foot_velocity=swing_vel,
-        desired_pelvis_height_m=config.nominal_com_height_m,
+        desired_pelvis_height_m=pelvis_height,
         desired_pelvis_roll_rad=pelvis_roll,
         desired_pelvis_pitch_rad=pelvis_pitch,
     )

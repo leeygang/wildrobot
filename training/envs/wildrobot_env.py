@@ -1538,6 +1538,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             support_swing_progress_min_scale=float(
                 getattr(self._config.env, "loc_ref_support_swing_progress_min_scale", 0.0)
             ),
+            support_stabilize_max_foothold_scale=float(
+                getattr(self._config.env, "loc_ref_v2_support_stabilize_max_foothold_scale", 0.35)
+            ),
+            post_settle_swing_scale=float(
+                getattr(self._config.env, "loc_ref_v2_post_settle_swing_scale", 0.15)
+            ),
+            startup_ramp_s=float(
+                getattr(self._config.env, "loc_ref_v2_startup_ramp_s", 0.18)
+            ),
+            startup_pelvis_height_offset_m=float(
+                getattr(self._config.env, "loc_ref_v2_startup_pelvis_height_offset_m", 0.035)
+            ),
+            startup_support_open_health=float(
+                getattr(self._config.env, "loc_ref_v2_startup_support_open_health", 0.45)
+            ),
             max_lateral_release_m=float(
                 getattr(self._config.env, "loc_ref_max_lateral_release_m", 0.02)
             ),
@@ -1865,7 +1880,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 phase_time_s=jp.zeros((), dtype=jp.float32),
                 stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
                 stance_switch_count=jp.zeros((), dtype=jp.int32),
-                mode_id=jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32),
+                mode_id=jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
                 mode_time_s=jp.zeros((), dtype=jp.float32),
                 forward_speed_mps=velocity_cmd,
                 com_position_stance_frame=jp.asarray(
