@@ -178,7 +178,22 @@ class EnvConfig(Freezable):
     loc_ref_v2_post_settle_swing_scale: float = 0.15
     loc_ref_v2_startup_ramp_s: float = 0.18
     loc_ref_v2_startup_pelvis_height_offset_m: float = 0.035
-    loc_ref_v2_startup_support_open_health: float = 0.45
+    loc_ref_v2_startup_support_open_health: float = 0.25
+    loc_ref_v2_startup_handoff_pitch_max_rad: float = 0.30
+    loc_ref_v2_startup_handoff_pitch_rate_max_rad_s: float = 1.50
+    loc_ref_v2_startup_readiness_knee_err_good_rad: float = 0.10
+    loc_ref_v2_startup_readiness_knee_err_bad_rad: float = 0.45
+    loc_ref_v2_startup_readiness_ankle_err_good_rad: float = 0.08
+    loc_ref_v2_startup_readiness_ankle_err_bad_rad: float = 0.35
+    loc_ref_v2_startup_readiness_pitch_good_rad: float = 0.05
+    loc_ref_v2_startup_readiness_pitch_bad_rad: float = 0.25
+    loc_ref_v2_startup_readiness_pitch_rate_good_rad_s: float = 0.60
+    loc_ref_v2_startup_readiness_pitch_rate_bad_rad_s: float = 2.00
+    loc_ref_v2_startup_readiness_min_health: float = 0.20
+    loc_ref_v2_startup_progress_min_scale: float = 0.20
+    loc_ref_v2_startup_handoff_min_readiness: float = 0.10
+    loc_ref_v2_startup_handoff_min_alpha: float = 0.85
+    loc_ref_v2_startup_handoff_timeout_s: float = 0.18
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.050
     loc_ref_v2_support_stance_extension_margin_m: float = 0.055
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or

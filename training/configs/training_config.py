@@ -247,7 +247,58 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_startup_pelvis_height_offset_m", 0.035)
         ),
         loc_ref_v2_startup_support_open_health=float(
-            env.get("loc_ref_v2_startup_support_open_health", 0.45)
+            env.get("loc_ref_v2_startup_support_open_health", 0.25)
+        ),
+        loc_ref_v2_startup_handoff_pitch_max_rad=float(
+            env.get("loc_ref_v2_startup_handoff_pitch_max_rad", 0.30)
+        ),
+        loc_ref_v2_startup_handoff_pitch_rate_max_rad_s=float(
+            env.get("loc_ref_v2_startup_handoff_pitch_rate_max_rad_s", 1.50)
+        ),
+        loc_ref_v2_startup_readiness_knee_err_good_rad=float(
+            env.get("loc_ref_v2_startup_readiness_knee_err_good_rad", 0.10)
+        ),
+        loc_ref_v2_startup_readiness_knee_err_bad_rad=float(
+            env.get("loc_ref_v2_startup_readiness_knee_err_bad_rad", 0.45)
+        ),
+        loc_ref_v2_startup_readiness_ankle_err_good_rad=float(
+            env.get("loc_ref_v2_startup_readiness_ankle_err_good_rad", 0.08)
+        ),
+        loc_ref_v2_startup_readiness_ankle_err_bad_rad=float(
+            env.get("loc_ref_v2_startup_readiness_ankle_err_bad_rad", 0.35)
+        ),
+        loc_ref_v2_startup_readiness_pitch_good_rad=float(
+            env.get("loc_ref_v2_startup_readiness_pitch_good_rad", 0.05)
+        ),
+        loc_ref_v2_startup_readiness_pitch_bad_rad=float(
+            env.get("loc_ref_v2_startup_readiness_pitch_bad_rad", 0.25)
+        ),
+        loc_ref_v2_startup_readiness_pitch_rate_good_rad_s=float(
+            env.get("loc_ref_v2_startup_readiness_pitch_rate_good_rad_s", 0.60)
+        ),
+        loc_ref_v2_startup_readiness_pitch_rate_bad_rad_s=float(
+            env.get("loc_ref_v2_startup_readiness_pitch_rate_bad_rad_s", 2.00)
+        ),
+        loc_ref_v2_startup_readiness_min_health=float(
+            env.get("loc_ref_v2_startup_readiness_min_health", 0.20)
+        ),
+        loc_ref_v2_startup_progress_min_scale=float(
+            env.get("loc_ref_v2_startup_progress_min_scale", 0.20)
+        ),
+        loc_ref_v2_startup_handoff_min_readiness=float(
+            env.get("loc_ref_v2_startup_handoff_min_readiness", 0.10)
+        ),
+        loc_ref_v2_startup_handoff_min_alpha=float(
+            env.get("loc_ref_v2_startup_handoff_min_alpha", 0.85)
+        ),
+        loc_ref_v2_startup_handoff_timeout_s=float(
+            env.get("loc_ref_v2_startup_handoff_timeout_s", 0.18)
+        ),
+        loc_ref_v2_support_pelvis_height_offset_m=float(
+            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)
+        ),
+        loc_ref_v2_support_stance_extension_margin_m=float(
+            env.get("loc_ref_v2_support_stance_extension_margin_m", 0.055)
         ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
             env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)

@@ -1551,7 +1551,64 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "loc_ref_v2_startup_pelvis_height_offset_m", 0.035)
             ),
             startup_support_open_health=float(
-                getattr(self._config.env, "loc_ref_v2_startup_support_open_health", 0.45)
+                getattr(self._config.env, "loc_ref_v2_startup_support_open_health", 0.25)
+            ),
+            startup_handoff_pitch_max_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_handoff_pitch_max_rad", 0.30)
+            ),
+            startup_handoff_pitch_rate_max_rad_s=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_handoff_pitch_rate_max_rad_s",
+                    1.50,
+                )
+            ),
+            startup_readiness_knee_err_good_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_knee_err_good_rad", 0.10)
+            ),
+            startup_readiness_knee_err_bad_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_knee_err_bad_rad", 0.45)
+            ),
+            startup_readiness_ankle_err_good_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_ankle_err_good_rad", 0.08)
+            ),
+            startup_readiness_ankle_err_bad_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_ankle_err_bad_rad", 0.35)
+            ),
+            startup_readiness_pitch_good_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_pitch_good_rad", 0.05)
+            ),
+            startup_readiness_pitch_bad_rad=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_pitch_bad_rad", 0.25)
+            ),
+            startup_readiness_pitch_rate_good_rad_s=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_readiness_pitch_rate_good_rad_s",
+                    0.60,
+                )
+            ),
+            startup_readiness_pitch_rate_bad_rad_s=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_readiness_pitch_rate_bad_rad_s",
+                    2.00,
+                )
+            ),
+            startup_readiness_min_health=float(
+                getattr(self._config.env, "loc_ref_v2_startup_readiness_min_health", 0.20)
+            ),
+            startup_progress_min_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_progress_min_scale", 0.20)
+            ),
+            startup_handoff_min_readiness=float(
+                getattr(self._config.env, "loc_ref_v2_startup_handoff_min_readiness", 0.10)
+            ),
+            startup_handoff_min_alpha=float(
+                getattr(self._config.env, "loc_ref_v2_startup_handoff_min_alpha", 0.85)
+            ),
+            startup_handoff_timeout_s=float(
+                getattr(self._config.env, "loc_ref_v2_startup_handoff_timeout_s", 0.18)
             ),
             max_lateral_release_m=float(
                 getattr(self._config.env, "loc_ref_max_lateral_release_m", 0.02)
@@ -1905,6 +1962,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 left_foot_loaded=left_loaded_reset,
                 right_foot_loaded=right_loaded_reset,
                 dt_s=self.dt,
+                stance_knee_tracking_error_rad=jp.zeros((), dtype=jp.float32),
+                stance_ankle_tracking_error_rad=jp.zeros((), dtype=jp.float32),
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32)
@@ -2424,6 +2483,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         stance_pre_is_left = jp.asarray(wr.loc_ref_stance_foot, dtype=jp.int32) == jp.asarray(
             REF_LEFT_STANCE, dtype=jp.int32
         )
+        actuated_qpos_pre = jp.asarray(
+            state.data.qpos[self._actuator_qpos_addrs], dtype=jp.float32
+        )
+        stance_knee_err_pre, stance_ankle_err_pre = self._stance_leg_tracking_errors(
+            actual_q=actuated_qpos_pre,
+            target_q=jp.asarray(wr.nominal_q_ref, dtype=jp.float32),
+            stance_foot_id=wr.loc_ref_stance_foot,
+        )
         stance_pre_pos_h = jp.where(stance_pre_is_left, left_foot_pre_h, right_foot_pre_h)
         if self._loc_ref_version == "v2":
             (
@@ -2455,6 +2522,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 left_foot_loaded=left_loaded_pre,
                 right_foot_loaded=right_loaded_pre,
                 dt_s=self.dt,
+                stance_knee_tracking_error_rad=stance_knee_err_pre,
+                stance_ankle_tracking_error_rad=stance_ankle_err_pre,
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_pre_h.linear_xyz[0], dtype=jp.float32)
@@ -4004,6 +4073,42 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # Exposed for focused tests.
     _loc_ref_support_scales = staticmethod(_loc_ref_support_scales)
     _loc_ref_support_health = staticmethod(_loc_ref_support_health)
+
+    def _joint_tracking_error(
+        self, actual_q: jax.Array, target_q: jax.Array, idx: jax.Array | int
+    ) -> jax.Array:
+        """Absolute tracking error for one actuator index (safe when idx is missing)."""
+        idx_arr = jp.asarray(idx, dtype=jp.int32)
+        idx_safe = jp.maximum(idx_arr, jp.asarray(0, dtype=jp.int32))
+        err = jp.abs(
+            jp.asarray(actual_q[idx_safe], dtype=jp.float32)
+            - jp.asarray(target_q[idx_safe], dtype=jp.float32)
+        )
+        return jp.where(idx_arr >= 0, err, jp.asarray(0.0, dtype=jp.float32))
+
+    def _stance_leg_tracking_errors(
+        self,
+        actual_q: jax.Array,
+        target_q: jax.Array,
+        stance_foot_id: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Stance knee/ankle target-vs-actual errors used by startup readiness governor."""
+        stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
+            REF_LEFT_STANCE, dtype=jp.int32
+        )
+        knee_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_left_knee_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_right_knee_pitch, dtype=jp.int32),
+        )
+        ankle_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_left_ankle_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_right_ankle_pitch, dtype=jp.int32),
+        )
+        knee_err = self._joint_tracking_error(actual_q, target_q, knee_idx)
+        ankle_err = self._joint_tracking_error(actual_q, target_q, ankle_idx)
+        return knee_err, ankle_err
 
     def _compute_nominal_q_ref_from_loc_ref(
         self,

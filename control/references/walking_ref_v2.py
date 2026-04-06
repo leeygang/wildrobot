@@ -57,7 +57,22 @@ class WalkingRefV2Config:
     post_settle_swing_scale: float = 0.15
     startup_ramp_s: float = 0.18
     startup_pelvis_height_offset_m: float = 0.035
-    startup_support_open_health: float = 0.45
+    startup_support_open_health: float = 0.25
+    startup_handoff_pitch_max_rad: float = 0.30
+    startup_handoff_pitch_rate_max_rad_s: float = 1.50
+    startup_readiness_knee_err_good_rad: float = 0.10
+    startup_readiness_knee_err_bad_rad: float = 0.45
+    startup_readiness_ankle_err_good_rad: float = 0.08
+    startup_readiness_ankle_err_bad_rad: float = 0.35
+    startup_readiness_pitch_good_rad: float = 0.05
+    startup_readiness_pitch_bad_rad: float = 0.25
+    startup_readiness_pitch_rate_good_rad_s: float = 0.60
+    startup_readiness_pitch_rate_bad_rad_s: float = 2.00
+    startup_readiness_min_health: float = 0.20
+    startup_progress_min_scale: float = 0.20
+    startup_handoff_min_readiness: float = 0.10
+    startup_handoff_min_alpha: float = 0.85
+    startup_handoff_timeout_s: float = 0.18
     max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
@@ -98,6 +113,39 @@ class WalkingRefV2Config:
             raise ValueError("startup_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.startup_support_open_health <= 1.0:
             raise ValueError("startup_support_open_health must be in [0, 1]")
+        if self.startup_handoff_pitch_max_rad < 0.0:
+            raise ValueError("startup_handoff_pitch_max_rad must be >= 0")
+        if self.startup_handoff_pitch_rate_max_rad_s < 0.0:
+            raise ValueError("startup_handoff_pitch_rate_max_rad_s must be >= 0")
+        if self.startup_readiness_knee_err_good_rad < 0.0:
+            raise ValueError("startup_readiness_knee_err_good_rad must be >= 0")
+        if self.startup_readiness_knee_err_bad_rad < self.startup_readiness_knee_err_good_rad:
+            raise ValueError("startup_readiness_knee_err_bad_rad must be >= knee_err_good")
+        if self.startup_readiness_ankle_err_good_rad < 0.0:
+            raise ValueError("startup_readiness_ankle_err_good_rad must be >= 0")
+        if self.startup_readiness_ankle_err_bad_rad < self.startup_readiness_ankle_err_good_rad:
+            raise ValueError("startup_readiness_ankle_err_bad_rad must be >= ankle_err_good")
+        if self.startup_readiness_pitch_good_rad < 0.0:
+            raise ValueError("startup_readiness_pitch_good_rad must be >= 0")
+        if self.startup_readiness_pitch_bad_rad < self.startup_readiness_pitch_good_rad:
+            raise ValueError("startup_readiness_pitch_bad_rad must be >= pitch_good")
+        if self.startup_readiness_pitch_rate_good_rad_s < 0.0:
+            raise ValueError("startup_readiness_pitch_rate_good_rad_s must be >= 0")
+        if (
+            self.startup_readiness_pitch_rate_bad_rad_s
+            < self.startup_readiness_pitch_rate_good_rad_s
+        ):
+            raise ValueError("startup_readiness_pitch_rate_bad_rad_s must be >= pitch_rate_good")
+        if not 0.0 <= self.startup_readiness_min_health <= 1.0:
+            raise ValueError("startup_readiness_min_health must be in [0, 1]")
+        if not 0.0 <= self.startup_progress_min_scale <= 1.0:
+            raise ValueError("startup_progress_min_scale must be in [0, 1]")
+        if not 0.0 <= self.startup_handoff_min_readiness <= 1.0:
+            raise ValueError("startup_handoff_min_readiness must be in [0, 1]")
+        if not 0.0 <= self.startup_handoff_min_alpha <= 1.0:
+            raise ValueError("startup_handoff_min_alpha must be in [0, 1]")
+        if self.startup_handoff_timeout_s < 0.0:
+            raise ValueError("startup_handoff_timeout_s must be >= 0")
         if self.support_pelvis_height_offset_m < 0.0:
             raise ValueError("support_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:
@@ -148,6 +196,13 @@ class WalkingReferenceV2Output:
 
 def _clip(value: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, value)))
+
+
+def _readiness_component(value_abs: float, good: float, bad: float) -> float:
+    """Map abs(error) to [0,1] readiness where good->1 and bad-or-worse->0."""
+    if bad <= good:
+        return 1.0 if value_abs <= good else 0.0
+    return _clip((bad - value_abs) / (bad - good), 0.0, 1.0)
 
 
 def compute_support_health_v2(*, config: WalkingRefV2Config, inputs: WalkingRefV2Input) -> tuple[float, float]:
@@ -214,6 +269,16 @@ def compute_support_health_v2_jax(
     return jnp.clip(health, 0.0, 1.0).astype(jnp.float32), instability.astype(jnp.float32)
 
 
+def _readiness_component_jax(
+    value_abs: jnp.ndarray, *, good: float, bad: float
+) -> jnp.ndarray:
+    good_v = jnp.asarray(good, dtype=jnp.float32)
+    bad_v = jnp.asarray(bad, dtype=jnp.float32)
+    denom = jnp.maximum(bad_v - good_v, jnp.asarray(1e-6, dtype=jnp.float32))
+    comp = (bad_v - jnp.asarray(value_abs, dtype=jnp.float32)) / denom
+    return jnp.clip(comp, 0.0, 1.0).astype(jnp.float32)
+
+
 def step_reference_v2_jax(
     *,
     config: WalkingRefV2Config,
@@ -230,6 +295,8 @@ def step_reference_v2_jax(
     left_foot_loaded: jnp.ndarray,
     right_foot_loaded: jnp.ndarray,
     dt_s: float,
+    stance_knee_tracking_error_rad: jnp.ndarray | None = None,
+    stance_ankle_tracking_error_rad: jnp.ndarray | None = None,
 ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """JAX-friendly walking_ref_v2 stepping used by training env rollouts."""
     support_health, support_instability = compute_support_health_v2_jax(
@@ -254,6 +321,57 @@ def step_reference_v2_jax(
     phase_scale = jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32)
     ) * progression_permission
+    knee_err = (
+        jnp.asarray(stance_knee_tracking_error_rad, dtype=jnp.float32)
+        if stance_knee_tracking_error_rad is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    ankle_err = (
+        jnp.asarray(stance_ankle_tracking_error_rad, dtype=jnp.float32)
+        if stance_ankle_tracking_error_rad is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    readiness_knee = _readiness_component_jax(
+        jnp.abs(knee_err),
+        good=config.startup_readiness_knee_err_good_rad,
+        bad=config.startup_readiness_knee_err_bad_rad,
+    )
+    readiness_ankle = _readiness_component_jax(
+        jnp.abs(ankle_err),
+        good=config.startup_readiness_ankle_err_good_rad,
+        bad=config.startup_readiness_ankle_err_bad_rad,
+    )
+    readiness_pitch = _readiness_component_jax(
+        jnp.abs(jnp.asarray(root_pitch_rad, dtype=jnp.float32)),
+        good=config.startup_readiness_pitch_good_rad,
+        bad=config.startup_readiness_pitch_bad_rad,
+    )
+    readiness_pitch_rate = _readiness_component_jax(
+        jnp.abs(jnp.asarray(root_pitch_rate_rad_s, dtype=jnp.float32)),
+        good=config.startup_readiness_pitch_rate_good_rad_s,
+        bad=config.startup_readiness_pitch_rate_bad_rad_s,
+    )
+    readiness_health = jnp.clip(
+        (
+            support_health
+            - jnp.asarray(config.startup_readiness_min_health, dtype=jnp.float32)
+        )
+        / jnp.maximum(
+            jnp.asarray(1.0 - config.startup_readiness_min_health, dtype=jnp.float32),
+            jnp.asarray(1e-6, dtype=jnp.float32),
+        ),
+        0.0,
+        1.0,
+    ).astype(jnp.float32)
+    startup_readiness = jnp.minimum(
+        jnp.minimum(readiness_knee, readiness_ankle),
+        jnp.minimum(readiness_pitch, jnp.minimum(readiness_pitch_rate, readiness_health)),
+    ).astype(jnp.float32)
+    startup_progress_scale = (
+        jnp.asarray(config.startup_progress_min_scale, dtype=jnp.float32)
+        + (1.0 - jnp.asarray(config.startup_progress_min_scale, dtype=jnp.float32))
+        * startup_readiness
+    )
 
     startup_mode = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
     phase_time = jnp.where(
@@ -265,8 +383,10 @@ def step_reference_v2_jax(
     stance = jnp.asarray(stance_foot_id, dtype=jnp.int32)
     switches = jnp.asarray(stance_switch_count, dtype=jnp.int32)
     mode = jnp.asarray(mode_id, dtype=jnp.int32)
-    mode_time = jnp.asarray(mode_time_s, dtype=jnp.float32) + jnp.asarray(
-        dt_s, dtype=jnp.float32
+    mode_time = jnp.asarray(mode_time_s, dtype=jnp.float32) + jnp.asarray(dt_s, dtype=jnp.float32) * jnp.where(
+        mode == startup_mode,
+        startup_progress_scale,
+        jnp.asarray(1.0, dtype=jnp.float32),
     )
     step_time = jnp.asarray(config.step_time_s, dtype=jnp.float32)
     phase = jnp.clip(phase_time / jnp.maximum(step_time, 1e-6), 0.0, 1.0)
@@ -288,12 +408,18 @@ def step_reference_v2_jax(
         (support_health >= jnp.asarray(config.startup_support_open_health, dtype=jnp.float32))
         & (
             jnp.abs(jnp.asarray(root_pitch_rad, dtype=jnp.float32))
-            <= jnp.asarray(config.support_pitch_start_rad, dtype=jnp.float32)
+            <= jnp.asarray(config.startup_handoff_pitch_max_rad, dtype=jnp.float32)
         )
         & (
             jnp.abs(jnp.asarray(root_pitch_rate_rad_s, dtype=jnp.float32))
-            <= jnp.asarray(config.support_pitch_rate_start_rad_s, dtype=jnp.float32)
+            <= jnp.asarray(config.startup_handoff_pitch_rate_max_rad_s, dtype=jnp.float32)
         )
+    )
+    startup_ready_for_handoff = startup_readiness >= jnp.asarray(
+        config.startup_handoff_min_readiness, dtype=jnp.float32
+    )
+    startup_timeout_reached = mode_time >= jnp.asarray(
+        config.startup_handoff_timeout_s, dtype=jnp.float32
     )
 
     from_startup = mode == startup_mode
@@ -303,8 +429,20 @@ def step_reference_v2_jax(
     from_settle = mode == settle_mode
 
     to_support_from_startup = from_startup & (
-        (mode_time >= jnp.asarray(config.startup_ramp_s, dtype=jnp.float32))
-        | ((startup_alpha >= jnp.asarray(0.85, dtype=jnp.float32)) & startup_stable)
+        startup_stable
+        & (
+            (
+                startup_ready_for_handoff
+                & (
+                    (mode_time >= jnp.asarray(config.startup_ramp_s, dtype=jnp.float32))
+                    | (
+                        startup_alpha
+                        >= jnp.asarray(config.startup_handoff_min_alpha, dtype=jnp.float32)
+                    )
+                )
+            )
+            | startup_timeout_reached
+        )
     )
     to_swing = (
         from_support
@@ -517,6 +655,8 @@ def step_reference_v2(
     state: WalkingRefV2State,
     inputs: WalkingRefV2Input,
     dt_s: float,
+    stance_knee_tracking_error_rad: float = 0.0,
+    stance_ankle_tracking_error_rad: float = 0.0,
 ) -> WalkingReferenceV2Output:
     """Advance support-first hybrid reference state and emit locomotion reference."""
     if dt_s <= 0.0:
@@ -525,12 +665,52 @@ def step_reference_v2(
     support_health, support_instability = compute_support_health_v2(config=config, inputs=inputs)
     progression_permission = _permission_from_health(config, support_health)
     phase_scale = config.support_phase_min_scale + (1.0 - config.support_phase_min_scale) * progression_permission
+    readiness_knee = _readiness_component(
+        abs(float(stance_knee_tracking_error_rad)),
+        config.startup_readiness_knee_err_good_rad,
+        config.startup_readiness_knee_err_bad_rad,
+    )
+    readiness_ankle = _readiness_component(
+        abs(float(stance_ankle_tracking_error_rad)),
+        config.startup_readiness_ankle_err_good_rad,
+        config.startup_readiness_ankle_err_bad_rad,
+    )
+    readiness_pitch = _readiness_component(
+        abs(float(inputs.root_pitch_rad)),
+        config.startup_readiness_pitch_good_rad,
+        config.startup_readiness_pitch_bad_rad,
+    )
+    readiness_pitch_rate = _readiness_component(
+        abs(float(inputs.root_pitch_rate_rad_s)),
+        config.startup_readiness_pitch_rate_good_rad_s,
+        config.startup_readiness_pitch_rate_bad_rad_s,
+    )
+    readiness_health = _clip(
+        (support_health - config.startup_readiness_min_health)
+        / max(1.0 - config.startup_readiness_min_health, 1e-6),
+        0.0,
+        1.0,
+    )
+    startup_readiness = min(
+        readiness_knee,
+        readiness_ankle,
+        readiness_pitch,
+        readiness_pitch_rate,
+        readiness_health,
+    )
+    startup_progress_scale = config.startup_progress_min_scale + (
+        1.0 - config.startup_progress_min_scale
+    ) * startup_readiness
 
     mode = WalkingRefV2Mode(state.mode_id)
     phase_time = 0.0 if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP else state.phase_time_s + dt_s * phase_scale
     stance = state.stance_foot_id
     switch_count = state.stance_switch_count
-    mode_time = state.mode_time_s + dt_s
+    mode_time = state.mode_time_s + (
+        dt_s * startup_progress_scale
+        if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP
+        else dt_s
+    )
 
     phase = _clip(phase_time / max(config.step_time_s, 1e-6), 0.0, 1.0)
     stance_is_left = stance == LEFT_STANCE
@@ -539,12 +719,24 @@ def step_reference_v2(
     startup_alpha = _clip(mode_time / max(config.startup_ramp_s, 1e-6), 0.0, 1.0)
     startup_stable = (
         support_health >= config.startup_support_open_health
-        and abs(float(inputs.root_pitch_rad)) <= config.support_pitch_start_rad
-        and abs(float(inputs.root_pitch_rate_rad_s)) <= config.support_pitch_rate_start_rad_s
+        and abs(float(inputs.root_pitch_rad)) <= config.startup_handoff_pitch_max_rad
+        and abs(float(inputs.root_pitch_rate_rad_s))
+        <= config.startup_handoff_pitch_rate_max_rad_s
     )
+    startup_ready_for_handoff = startup_readiness >= config.startup_handoff_min_readiness
+    startup_timeout_reached = mode_time >= config.startup_handoff_timeout_s
 
     if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
-        if mode_time >= config.startup_ramp_s or (startup_alpha >= 0.85 and startup_stable):
+        if startup_stable and (
+            (
+                startup_ready_for_handoff
+                and (
+                    mode_time >= config.startup_ramp_s
+                    or startup_alpha >= config.startup_handoff_min_alpha
+                )
+            )
+            or startup_timeout_reached
+        ):
             mode = WalkingRefV2Mode.SUPPORT_STABILIZE
             mode_time = 0.0
     elif mode == WalkingRefV2Mode.SUPPORT_STABILIZE:

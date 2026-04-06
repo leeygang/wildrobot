@@ -326,6 +326,178 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
     assert abs(float(ref["pelvis_height"]) - expected_height) <= 1e-6
 
 
+def test_startup_readiness_governor_pauses_progress_when_tracking_lags() -> None:
+    cfg = WalkingRefV2Config(
+        startup_ramp_s=0.20,
+        startup_progress_min_scale=0.0,
+    )
+    (
+        _ref,
+        _phase_time,
+        _stance_foot,
+        _switch_count,
+        mode_id,
+        mode_time,
+        _health,
+        _instability,
+        _permission,
+    ) = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(False),
+        dt_s=0.02,
+        stance_knee_tracking_error_rad=jnp.asarray(1.0, dtype=jnp.float32),
+        stance_ankle_tracking_error_rad=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert int(mode_id) == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
+    assert abs(float(mode_time)) <= 1e-6
+
+
+def test_startup_handoff_requires_readiness_not_time_only() -> None:
+    cfg = WalkingRefV2Config(
+        startup_ramp_s=0.20,
+        startup_handoff_min_alpha=0.85,
+        startup_handoff_min_readiness=0.60,
+        startup_progress_min_scale=0.0,
+        startup_handoff_timeout_s=1.0,
+    )
+    (
+        _ref,
+        _phase_time,
+        _stance_foot,
+        _switch_count,
+        mode_id,
+        mode_time,
+        _health,
+        _instability,
+        _permission,
+    ) = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.19, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(False),
+        dt_s=0.02,
+        stance_knee_tracking_error_rad=jnp.asarray(0.9, dtype=jnp.float32),
+        stance_ankle_tracking_error_rad=jnp.asarray(0.9, dtype=jnp.float32),
+    )
+    assert int(mode_id) == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
+    assert abs(float(mode_time) - 0.19) <= 1e-6
+
+
+def test_startup_timeout_fallback_prevents_permanent_startup_lock() -> None:
+    cfg = WalkingRefV2Config(
+        startup_ramp_s=0.20,
+        startup_handoff_min_readiness=0.95,
+        startup_handoff_timeout_s=0.06,
+        startup_progress_min_scale=0.20,
+    )
+    phase_time = jnp.asarray(0.0, dtype=jnp.float32)
+    stance_foot = jnp.asarray(0, dtype=jnp.int32)
+    switch_count = jnp.asarray(0, dtype=jnp.int32)
+    mode_id = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    mode_time = jnp.asarray(0.0, dtype=jnp.float32)
+
+    transitioned = False
+    for _ in range(64):
+        (
+            _ref,
+            phase_time,
+            stance_foot,
+            switch_count,
+            mode_id,
+            mode_time,
+            _health,
+            _instability,
+            _permission,
+        ) = step_reference_v2_jax(
+            config=cfg,
+            phase_time_s=phase_time,
+            stance_foot_id=stance_foot,
+            stance_switch_count=switch_count,
+            mode_id=mode_id,
+            mode_time_s=mode_time,
+            forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+            com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+            com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+            root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+            root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+            left_foot_loaded=jnp.asarray(True),
+            right_foot_loaded=jnp.asarray(True),
+            dt_s=0.02,
+            stance_knee_tracking_error_rad=jnp.asarray(1.0, dtype=jnp.float32),
+            stance_ankle_tracking_error_rad=jnp.asarray(1.0, dtype=jnp.float32),
+        )
+        if int(mode_id) == int(WalkingRefV2Mode.SUPPORT_STABILIZE):
+            transitioned = True
+            break
+
+    assert transitioned is True
+
+
+def test_startup_double_support_does_not_stall_with_default_progress_floor() -> None:
+    cfg = WalkingRefV2Config()
+    phase_time = jnp.asarray(0.0, dtype=jnp.float32)
+    stance_foot = jnp.asarray(0, dtype=jnp.int32)
+    switch_count = jnp.asarray(0, dtype=jnp.int32)
+    mode_id = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    mode_time = jnp.asarray(0.0, dtype=jnp.float32)
+
+    transitioned = False
+    for _ in range(64):
+        (
+            _ref,
+            phase_time,
+            stance_foot,
+            switch_count,
+            mode_id,
+            mode_time,
+            _health,
+            _instability,
+            _permission,
+        ) = step_reference_v2_jax(
+            config=cfg,
+            phase_time_s=phase_time,
+            stance_foot_id=stance_foot,
+            stance_switch_count=switch_count,
+            mode_id=mode_id,
+            mode_time_s=mode_time,
+            forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+            com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+            com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+            root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+            root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+            left_foot_loaded=jnp.asarray(True),
+            right_foot_loaded=jnp.asarray(True),  # realistic startup double-support
+            dt_s=0.02,
+            stance_knee_tracking_error_rad=jnp.asarray(0.0, dtype=jnp.float32),
+            stance_ankle_tracking_error_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        )
+        if int(mode_id) == int(WalkingRefV2Mode.SUPPORT_STABILIZE):
+            transitioned = True
+            break
+
+    assert transitioned is True
+
+
 def test_support_stabilize_foothold_clamp_uses_config() -> None:
     cfg = WalkingRefV2Config(
         support_foothold_min_scale=0.0,
