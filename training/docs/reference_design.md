@@ -442,6 +442,48 @@ support posture:
 The startup phase should not compensate for an unrealistic destination posture.
 The destination posture itself must be realizable.
 
+#### Concrete geometry levers
+
+The current support-leg geometry is not set by an abstract "compression" value
+alone. In the current stack it is controlled mainly through:
+
+- `_loc_ref_stance_extension_margin_m`
+- its health-dependent scaling
+- the resulting `nominal_stance_z`
+- pelvis/support height targets coming from `walking_ref_v2`
+
+Conceptually:
+
+```text
+stance_margin
+    = stance_extension_margin_m * f(support_health)
+
+nominal_stance_z
+    = -(pelvis_height - stance_margin)
+```
+
+So the concrete posture levers for the next redesign pass are:
+
+1. `pelvis_height`
+   - first lever to raise if stance knee/ankle targets are too deep
+2. `stance_extension_margin_m`
+   - second lever to reduce if the support leg is over-compressed
+3. health-dependent margin scaling
+   - keep it bounded so poor support does not produce erratic geometry changes
+4. startup support height offset
+   - use startup to approach the support posture gradually, but do not hide an
+     unrealistic final support height
+
+Recommended tuning order remains:
+
+1. raise support pelvis height
+2. reduce `stance_extension_margin_m`
+3. reduce health-driven compression sensitivity
+4. then retune startup ramp timing around the new support posture
+
+The next redesign pass should document the chosen config values once a working
+range is found.
+
 ---
 
 ## Adapter Design
@@ -470,6 +512,39 @@ If additional execution safeguards are needed, they should be:
 - explicitly documented as adapter logic
 
 not implicit locomotion semantics.
+
+### Adapter-side support scaling rule
+
+The env currently contains adapter-side helper logic such as
+`_loc_ref_support_scales()` that scales swing-x and pelvis-pitch channels from
+overspeed and pitch signals.
+
+This is risky because it can become a second locomotion controller:
+
+- the reference already computes `support_health`
+- the reference already computes `progression_permission`
+- the reference already decides whether swing should release
+
+So the design position for `M2.5` is:
+
+- the reference remains the authoritative owner of progression semantics
+- adapter-side support scaling is allowed only as an execution-safety layer
+- adapter-side support scaling may only further restrict a command
+- adapter-side support scaling must never reopen or reinterpret progression
+
+In practice, this means:
+
+- `walking_ref_v2` decides release
+- the adapter may apply a bounded multiplicative brake for actuator safety
+- the brake should consume reference-owned signals where possible
+- if adapter-side braking continues to affect debugging materially, the next
+  cleanup step should remove independent instability estimation and consume only
+  reference-owned support signals
+
+The preferred end state is still single-source-of-truth:
+
+- one authoritative support-health / progression signal in the reference
+- adapter logic reduced to mechanical execution safeguards
 
 ---
 
@@ -714,7 +789,8 @@ Target metrics for `M2.5-A2`:
 
 - startup-path:
   - support handoff occurs without immediate pitch jump
-  - stance knee actual moves materially toward target during startup
+  - stance knee actual moves visibly toward target during startup, rather than
+    remaining near straight while target is strongly flexed
   - foot spreading is reduced relative to the current failure mode
 - support-only:
   - no immediate collapse from grounded nominal posture
@@ -722,25 +798,58 @@ Target metrics for `M2.5-A2`:
   - root roll growth is reduced
   - stance knee and ankle target-vs-actual mismatch is smaller
 - nominal sweep:
-  - pitch-failure timing materially improves beyond the current step-30/40
-    regime
-  - achieved speed remains in the same order as command
-  - foothold and swing metrics remain nontrivial
+  - pitch-failure timing improves beyond the current step-30/40 regime
+  - achieved speed remains within `1.5x` command
+  - swing-foot tracking reward exceeds `1e-5`
+  - foothold consistency reward exceeds `0.05`
 
 ### `M2.5-A3`: Exit decision
 
 Resume PPO only if all are true:
 
-- nominal-only survives materially longer
-- immediate pitch-fall is gone
-- speed is in the same regime as command
-- swing tracking is above noise
-- foothold consistency is clearly nontrivial
+- nominal-only no longer reaches early `term/pitch` in the canonical sweep
+- mean forward speed stays within `1.5x` commanded speed
+- swing-foot tracking reward is above `1e-5`
+- foothold consistency reward is above `0.05`
 - no major contract drift between training, runtime, and replay
 
 If these gates are not met, do not resume PPO.
 At that point, treat the nominal-layer design as requiring a larger redesign,
 not more local patches.
+
+These thresholds are intentionally aligned with the current canonical sweep
+assessment in:
+
+- [`run_m25_v2_probe_sweep.py`](/home/leeygang/projects/wildrobot/training/eval/run_m25_v2_probe_sweep.py)
+
+Trace-level review is still required after the numeric gate passes.
+
+### `M2.5-A4`: If support-posture redesign still fails
+
+If `M2.5-A2` still cannot produce a credible nominal prior, do not continue with
+small local patches indefinitely.
+
+Escalation options should be considered in this order:
+
+1. larger nominal redesign
+   - simplify the gait scaffold further
+   - use a longer in-place support-capture / weight-shift phase before forward
+     progression
+2. reduced-order model upgrade
+   - consider stronger ALIP / capture dynamics if the current support-first
+     hybrid logic remains too heuristic
+3. actuator / sim fidelity improvement
+   - revisit actuator SysID and servo-response realism if the posture appears
+     plausible but is still not realized under dynamics
+4. morphology-specific gait simplification
+   - explicitly design for hip-strategy-dominant walking if conventional
+     assumptions do not fit the platform well
+
+The key rule is:
+
+- if the nominal prior cannot survive support-first validation after bounded
+  posture and transition redesign, switch to a larger redesign path rather than
+  resume PPO prematurely
 
 ---
 
