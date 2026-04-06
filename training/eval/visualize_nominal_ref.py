@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import atexit
 import io
+import os
+import platform
 import shlex
 import sys
 import tempfile
@@ -19,6 +21,41 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 from mujoco import mjx
+
+
+def _has_display() -> bool:
+    """Check whether a graphical display is available."""
+    if platform.system() == "Darwin":
+        return True
+    display = os.environ.get("DISPLAY", "")
+    wayland = os.environ.get("WAYLAND_DISPLAY", "")
+    return bool(display or wayland)
+
+
+def _configure_gl_backend() -> None:
+    """Set MUJOCO_GL for headless Linux when not already configured.
+
+    On macOS the native CGL backend is used automatically.
+    On Linux without a display, prefer EGL (GPU-accelerated) and fall back
+    to OSMesa (software) if EGL is unavailable.
+    """
+    if platform.system() != "Linux":
+        return
+    if os.environ.get("MUJOCO_GL"):
+        return  # user already chose
+    if _has_display():
+        return  # GLFW will work
+    # Headless Linux: try EGL first, then OSMesa.
+    try:
+        os.environ["MUJOCO_GL"] = "egl"
+        # Quick probe — import mujoco.egl is not a thing, but creating a
+        # Renderer will fail fast if EGL is missing.  We defer the real check
+        # to _try_create_renderer().
+    except Exception:
+        os.environ["MUJOCO_GL"] = "osmesa"
+
+
+_configure_gl_backend()
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -480,6 +517,53 @@ def _format_support_posture_line(
     )
 
 
+def _try_create_renderer(
+    mj_model: mujoco.MjModel, width: int = 960, height: int = 720
+) -> mujoco.Renderer | None:
+    """Create an offscreen renderer, returning *None* on GL failure."""
+    try:
+        return mujoco.Renderer(mj_model, height, width)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[nominal-viewer] WARNING: could not create offscreen renderer "
+            f"({exc!r}); --record will be skipped.  "
+            f"On headless Linux try: MUJOCO_GL=egl or MUJOCO_GL=osmesa"
+        )
+        return None
+
+
+def _try_launch_viewer(mj_model, mj_data):
+    """Try to open the interactive MuJoCo viewer, return None on failure."""
+    try:
+        from mujoco import viewer as mj_viewer
+
+        viewer = mj_viewer.launch_passive(mj_model, mj_data)
+        viewer.cam.distance = 2.5
+        viewer.cam.elevation = -15
+        viewer.cam.azimuth = 135
+        viewer.cam.lookat[:] = [0.0, 0.0, 0.4]
+        return viewer
+    except RuntimeError as exc:
+        if "mjpython" in str(exc):
+            print(
+                f"[nominal-viewer] ERROR: interactive viewer requires mjpython on macOS.\n"
+                f"  Run with:  mjpython {' '.join(sys.argv)}\n"
+                f"  Or add --headless to skip the viewer."
+            )
+        else:
+            print(
+                f"[nominal-viewer] WARNING: could not launch interactive viewer "
+                f"({exc!r}); falling back to headless mode."
+            )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[nominal-viewer] WARNING: could not launch interactive viewer "
+            f"({exc!r}); falling back to headless mode."
+        )
+        return None
+
+
 def _save_video(record_path: str, frames: list[np.ndarray], fps: int) -> None:
     if not frames:
         return
@@ -490,9 +574,17 @@ def _save_video(record_path: str, frames: list[np.ndarray], fps: int) -> None:
         return
     except ModuleNotFoundError:
         pass
-    import imageio
+    try:
+        import imageio
 
-    imageio.mimsave(record_path, frames, fps=fps)
+        imageio.mimsave(record_path, frames, fps=fps)
+        return
+    except ModuleNotFoundError:
+        pass
+    print(
+        f"[nominal-viewer] WARNING: neither mediapy nor imageio installed; "
+        f"cannot write video to {record_path}"
+    )
 
 
 def run_nominal_viewer(args: argparse.Namespace) -> int:
@@ -543,7 +635,9 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     print(_format_support_posture_line(env, state, stance_foot=reset_stance))
 
     frames: list[np.ndarray] = []
-    renderer = mujoco.Renderer(mj_model, 960, 720) if args.record else None
+    renderer = _try_create_renderer(mj_model) if args.record else None
+    if args.record and renderer is None:
+        print("[nominal-viewer] recording disabled due to renderer failure")
     term_totals = {"term/height_low": 0.0, "term/pitch": 0.0, "term/roll": 0.0}
     done_reached = False
     done_step = -1
@@ -580,29 +674,38 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
                 return False
         return True
 
-    if args.headless:
+    use_headless = args.headless
+    if not use_headless and not _has_display():
+        print(
+            "[nominal-viewer] no display detected; switching to --headless. "
+            "Set DISPLAY or WAYLAND_DISPLAY to use the interactive viewer."
+        )
+        use_headless = True
+
+    if use_headless:
         for step_idx in range(1, int(args.horizon) + 1):
             if not run_step(step_idx):
                 break
     else:
-        from mujoco import viewer as mj_viewer
-
-        with mj_viewer.launch_passive(mj_model, mj_data) as viewer:
-            viewer.cam.distance = 2.5
-            viewer.cam.elevation = -15
-            viewer.cam.azimuth = 135
-            viewer.cam.lookat[:] = [0.0, 0.0, 0.4]
+        viewer = _try_launch_viewer(mj_model, mj_data)
+        if viewer is None:
+            # Fallback: run headless
             for step_idx in range(1, int(args.horizon) + 1):
-                if not viewer.is_running():
-                    break
-                t0 = time.time()
                 if not run_step(step_idx):
-                    viewer.sync()
                     break
-                viewer.sync()
-                dt_sleep = (ctrl_dt / 1.0) - (time.time() - t0)
-                if dt_sleep > 0.0:
-                    time.sleep(dt_sleep)
+        else:
+            with viewer:
+                for step_idx in range(1, int(args.horizon) + 1):
+                    if not viewer.is_running():
+                        break
+                    t0 = time.time()
+                    if not run_step(step_idx):
+                        viewer.sync()
+                        break
+                    viewer.sync()
+                    dt_sleep = (ctrl_dt / 1.0) - (time.time() - t0)
+                    if dt_sleep > 0.0:
+                        time.sleep(dt_sleep)
 
     if renderer is not None:
         renderer.close()
