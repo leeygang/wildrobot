@@ -58,6 +58,12 @@ def test_parse_args_nominal_ref_viewer() -> None:
     assert args.force_support_only is False
     assert args.init_from_nominal_qref is False
     assert args.log is False
+    assert args.disable_action_filter is False
+
+
+def test_parse_args_disable_action_filter_flag() -> None:
+    args = parse_args(["--disable-action-filter"])
+    assert args.disable_action_filter is True
 
 
 def test_compute_stance_ground_shift_uses_selected_stance_foot() -> None:
@@ -101,6 +107,7 @@ def test_configure_nominal_only_forces_no_push_and_no_action_delay() -> None:
     # Deliberately set conflicting values to verify normalization.
     cfg.env.push_enabled = True
     cfg.env.action_delay_steps = 1
+    cfg.env.action_filter_alpha = 0.3
     cfg.env.loc_ref_enabled = False
     cfg.env.base_ctrl_enabled = True
     cfg.env.fsm_enabled = True
@@ -115,6 +122,19 @@ def test_configure_nominal_only_forces_no_push_and_no_action_delay() -> None:
     assert cfg.env.fsm_enabled is False
     assert cfg.env.push_enabled is False
     assert cfg.env.action_delay_steps == 0
+    assert abs(cfg.env.action_filter_alpha - 0.3) < 1e-9
+
+
+def test_configure_nominal_only_can_disable_action_filter() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    cfg.env.action_filter_alpha = 0.3
+    _configure_nominal_only(
+        cfg,
+        forward_cmd=0.10,
+        horizon=32,
+        disable_action_filter=True,
+    )
+    assert abs(cfg.env.action_filter_alpha - 0.0) < 1e-9
 
 
 def test_format_step_line_includes_lateral_and_hip_roll_diagnostics() -> None:
@@ -243,7 +263,10 @@ def test_format_support_posture_line_reports_joint_errors() -> None:
 
     class _State:
         info = {WR_INFO_KEY: _WR()}
-        data = type("D", (), {"qpos": jnp.asarray([1.0, 0.11, 0.22, 0.33, 0.44], dtype=jnp.float32)})()
+        data = type("D", (), {
+            "qpos": jnp.asarray([1.0, 0.11, 0.22, 0.33, 0.44], dtype=jnp.float32),
+            "ctrl": jnp.asarray([0.10, 0.20, 0.30, 0.40], dtype=jnp.float32),
+        })()
 
     class _Env:
         _cal = _Cal()
@@ -263,12 +286,12 @@ def test_format_support_posture_line_reports_joint_errors() -> None:
     assert pose["stance_leg"] == "L"
     assert abs(pose["root_roll"] - 0.12) < 1e-6
     assert abs(pose["root_height"] - 0.45) < 1e-6
-    assert abs(pose["hip_pitch_err"] - 0.02) < 1e-6
+    assert abs(pose["hip_pitch_ref_err"] - 0.02) < 1e-6  # Updated field name
     line = _format_support_posture_line(_Env(), _State(), vec)
     assert "support-posture" in line
     assert "leg=L" in line
     assert "root_roll=+0.120" in line
-    assert "hp_err=+0.020" in line
+    assert "hp_ref=+0.200" in line  # Check ref instead of err
 
 
 def test_enable_temp_logging_returns_path_and_tees_output() -> None:
@@ -435,3 +458,40 @@ def test_replace_state_with_nominal_qref_grounded_shifts_root_to_stance_contact(
     assert abs(float(geometry["stance_foot_z"])) < 1e-6
     assert abs(float(geometry["root_dz_applied"]) + 0.30) < 1e-6
     assert abs(float(geometry["stance_support_z_before"]) - 0.30) < 1e-6
+
+
+def test_check_tracking_threshold() -> None:
+    """Test threshold rule for joint tracking."""
+    from training.eval.visualize_nominal_ref import _check_tracking_threshold
+    
+    # Test abs_floor dominates for small targets
+    assert not _check_tracking_threshold(0.00, 0.10, abs_floor=0.05, frac_tol=0.10)  # err=0.10 > max(0.05, 0.01)=0.05
+    assert _check_tracking_threshold(0.06, 0.10, abs_floor=0.05, frac_tol=0.10)  # err=0.04 < 0.05
+    
+    # Test frac_tol dominates for large targets
+    assert _check_tracking_threshold(0.90, 1.00, abs_floor=0.05, frac_tol=0.10)  # err=0.10 == max(0.05, 0.10)=0.10
+    assert not _check_tracking_threshold(0.85, 1.00, abs_floor=0.05, frac_tol=0.10)  # err=0.15 > 0.10
+    
+    # Test exact threshold boundary
+    assert _check_tracking_threshold(0.95, 1.00, abs_floor=0.05, frac_tol=0.10)  # err=0.05 < 0.10
+    assert _check_tracking_threshold(1.00, 1.00, abs_floor=0.05, frac_tol=0.10)  # err=0.00
+
+
+def test_is_stable_window() -> None:
+    """Test stable window detection."""
+    from training.eval.visualize_nominal_ref import _is_stable_window
+    
+    # Not enough history
+    assert not _is_stable_window([0], [0.1], [0.5], min_dwell=5)
+    
+    # Mode changed recently
+    assert not _is_stable_window([0, 0, 0, 1, 1], [0.1] * 5, [0.5] * 5, min_dwell=5)
+    
+    # Pitch too high
+    assert not _is_stable_window([0] * 5, [0.35, 0.35, 0.35, 0.35, 0.35], [0.5] * 5, min_dwell=5, pitch_thresh=0.30)
+    
+    # Pitch rate too high
+    assert not _is_stable_window([0] * 5, [0.1] * 5, [2.0, 2.0, 2.0, 2.0, 2.0], min_dwell=5, pitch_rate_thresh=1.5)
+    
+    # All conditions met
+    assert _is_stable_window([0] * 5, [0.1] * 5, [0.5] * 5, min_dwell=5, pitch_thresh=0.30, pitch_rate_thresh=1.5)

@@ -62,6 +62,7 @@ class WalkingRefV2Config:
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
     settle_hold_s: float = 0.04
+    support_pelvis_height_offset_m: float = 0.050
     debug_force_support_only: bool = False
 
     def __post_init__(self) -> None:
@@ -97,6 +98,8 @@ class WalkingRefV2Config:
             raise ValueError("startup_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.startup_support_open_health <= 1.0:
             raise ValueError("startup_support_open_health must be in [0, 1]")
+        if self.support_pelvis_height_offset_m < 0.0:
+            raise ValueError("support_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:
             raise ValueError("max_lateral_release_m must be in [0, max_lateral_step_m]")
         if not 0.0 <= self.touchdown_phase_min <= 1.0:
@@ -465,14 +468,22 @@ def step_reference_v2_jax(
     )
     pelvis_roll = jnp.where(mode == startup_mode, startup_alpha * pelvis_roll_target, pelvis_roll_target)
     pelvis_pitch = jnp.where(mode == startup_mode, startup_alpha * pelvis_pitch_target, pelvis_pitch_target)
+    
     pelvis_height_startup = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
         config.startup_pelvis_height_offset_m, dtype=jnp.float32
+    )
+    pelvis_height_support = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+        config.support_pelvis_height_offset_m, dtype=jnp.float32
     )
     pelvis_height = jnp.where(
         mode == startup_mode,
         pelvis_height_startup
-        + startup_alpha * (jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) - pelvis_height_startup),
-        jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
+        + startup_alpha * (pelvis_height_support - pelvis_height_startup),
+        jnp.where(
+            mode == support_mode,
+            pelvis_height_support,
+            jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
+        ),
     )
 
     ref = {
@@ -616,10 +627,17 @@ def step_reference_v2(
         -config.max_pelvis_pitch_rad,
         config.max_pelvis_pitch_rad,
     )
+    pelvis_height_startup = config.nominal_com_height_m + config.startup_pelvis_height_offset_m
+    pelvis_height_support = config.nominal_com_height_m + config.support_pelvis_height_offset_m
+    
     if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
         pelvis_roll = startup_alpha * pelvis_roll_target
         pelvis_pitch = startup_alpha * pelvis_pitch_target
-        pelvis_height = config.nominal_com_height_m + (1.0 - startup_alpha) * config.startup_pelvis_height_offset_m
+        pelvis_height = pelvis_height_startup + startup_alpha * (pelvis_height_support - pelvis_height_startup)
+    elif mode == WalkingRefV2Mode.SUPPORT_STABILIZE:
+        pelvis_roll = pelvis_roll_target
+        pelvis_pitch = pelvis_pitch_target
+        pelvis_height = pelvis_height_support
     else:
         pelvis_roll = pelvis_roll_target
         pelvis_pitch = pelvis_pitch_target

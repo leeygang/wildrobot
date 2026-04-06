@@ -223,3 +223,90 @@ def test_v2_support_health_matches_reference_definition() -> None:
     )
     assert jp.abs(instability_ref - instability_env) < 1e-6
     assert jp.abs(health_ref - health_env) < 1e-6
+
+
+def test_v0193a_support_specific_margin_wiring() -> None:
+    """Test that support-specific stance extension margin is wired and used correctly.
+    
+    Note on geometry: Larger stance_margin → less negative nominal_stance_z 
+    → shorter effective leg length → MORE knee flexion (more crouched support).
+    """
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    assert hasattr(cfg.env, "loc_ref_v2_support_stance_extension_margin_m")
+    assert cfg.env.loc_ref_v2_support_stance_extension_margin_m == 0.055
+    
+    load_robot_config(Path(cfg.env.assets_root) / "mujoco_robot_config.json")
+    cfg.freeze()
+    env = WildRobotEnv(config=cfg)
+    
+    # Verify env stores both margins
+    assert env._loc_ref_stance_extension_margin_m == jp.asarray(0.045, dtype=jp.float32)
+    assert env._loc_ref_v2_support_stance_extension_margin_m == jp.asarray(0.055, dtype=jp.float32)
+    
+    # Test that adapter uses support margin for support modes
+    # Mode 0 = STARTUP_SUPPORT_RAMP, Mode 1 = SUPPORT_STABILIZE
+    support_q_refs = []
+    for mode_id in [0, 1]:
+        result = env._compute_nominal_q_ref_from_loc_ref(
+            stance_foot_id=jp.asarray(0, dtype=jp.int32),
+            swing_pos=jp.zeros(3, dtype=jp.float32),
+            swing_vel=jp.zeros(3, dtype=jp.float32),
+            pelvis_height=jp.asarray(0.44, dtype=jp.float32),
+            pelvis_roll=jp.asarray(0.0, dtype=jp.float32),
+            pelvis_pitch=jp.asarray(0.0, dtype=jp.float32),
+            left_foot_pos_h=jp.asarray([0.0, 0.08, 0.0], dtype=jp.float32),
+            right_foot_pos_h=jp.asarray([0.0, -0.08, 0.0], dtype=jp.float32),
+            root_pitch=jp.asarray(0.0, dtype=jp.float32),
+            root_pitch_rate=jp.asarray(0.0, dtype=jp.float32),
+            forward_vel_h=jp.asarray(0.0, dtype=jp.float32),
+            velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+            support_health=jp.asarray(1.0, dtype=jp.float32),
+            mode_id=jp.asarray(mode_id, dtype=jp.int32),
+        )
+        # With support_health=1.0 and support margin=0.055:
+        # stance_margin = 0.055 * (0.2 + 0.8*1.0) = 0.055
+        # nominal_stance_z = -(0.44 - 0.055) = -0.385
+        # Shorter effective leg (vs -0.395 with 0.045 margin) → MORE knee flexion
+        assert result[0].shape == (env.action_size,)
+        support_q_refs.append(result[0])
+    
+    # Test that adapter uses general margin for other modes (e.g., mode 2)
+    result_other = env._compute_nominal_q_ref_from_loc_ref(
+        stance_foot_id=jp.asarray(0, dtype=jp.int32),
+        swing_pos=jp.zeros(3, dtype=jp.float32),
+        swing_vel=jp.zeros(3, dtype=jp.float32),
+        pelvis_height=jp.asarray(0.44, dtype=jp.float32),
+        pelvis_roll=jp.asarray(0.0, dtype=jp.float32),
+        pelvis_pitch=jp.asarray(0.0, dtype=jp.float32),
+        left_foot_pos_h=jp.asarray([0.0, 0.08, 0.0], dtype=jp.float32),
+        right_foot_pos_h=jp.asarray([0.0, -0.08, 0.0], dtype=jp.float32),
+        root_pitch=jp.asarray(0.0, dtype=jp.float32),
+        root_pitch_rate=jp.asarray(0.0, dtype=jp.float32),
+        forward_vel_h=jp.asarray(0.0, dtype=jp.float32),
+        velocity_cmd=jp.asarray(0.10, dtype=jp.float32),
+        support_health=jp.asarray(1.0, dtype=jp.float32),
+        mode_id=jp.asarray(2, dtype=jp.int32),
+    )
+    # With general margin=0.045:
+    # stance_margin = 0.045 * (0.2 + 0.8*1.0) = 0.045
+    # nominal_stance_z = -(0.44 - 0.045) = -0.395 (longer leg, less knee flexion)
+    assert result_other[0].shape == (env.action_size,)
+    nonsupport_q_ref = result_other[0]
+    
+    # CRITICAL: Verify geometric effect - support mode should produce MORE knee flexion
+    # Find stance knee joint (left_knee_pitch when stance_foot_id=0)
+    left_knee_idx = env._actuator_name_to_index.get("left_knee_pitch")
+    if left_knee_idx is not None and left_knee_idx >= 0:
+        support_knee = support_q_refs[0][left_knee_idx]  # mode 0
+        nonsupport_knee = nonsupport_q_ref[left_knee_idx]  # mode 2
+        # Support mode (margin=0.055) should have MORE positive knee angle than non-support (margin=0.045)
+        # because shorter effective leg requires more flexion
+        assert float(support_knee) > float(nonsupport_knee), (
+            f"Support margin (0.055) should produce MORE knee flexion than general margin (0.045): "
+            f"support_knee={float(support_knee):.4f} should be > nonsupport_knee={float(nonsupport_knee):.4f}"
+        )
+        # Verify the difference is material (at least 0.05 rad = ~3 degrees)
+        assert float(support_knee) - float(nonsupport_knee) > 0.05, (
+            f"Knee flexion difference too small: {float(support_knee) - float(nonsupport_knee):.4f} rad"
+        )
+

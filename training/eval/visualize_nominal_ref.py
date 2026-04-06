@@ -66,6 +66,7 @@ from training.configs.training_config import TrainingConfig, load_training_confi
 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.envs.env_info import WR_INFO_KEY
 from training.envs.wildrobot_env import WildRobotEnv
+from control.references.walking_ref_v2 import WalkingRefV2Mode
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -181,6 +182,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write the invoked command and viewer console output to a temp log file",
     )
+    parser.add_argument(
+        "--disable-action-filter",
+        action="store_true",
+        help="Debug-only: force env.action_filter_alpha=0.0 for this nominal viewer run",
+    )
     return parser
 
 
@@ -201,7 +207,13 @@ def _dominant_termination_from_metrics(metrics_vec: jnp.ndarray) -> str:
     return best_name
 
 
-def _configure_nominal_only(cfg: TrainingConfig, *, forward_cmd: float, horizon: int) -> None:
+def _configure_nominal_only(
+    cfg: TrainingConfig,
+    *,
+    forward_cmd: float,
+    horizon: int,
+    disable_action_filter: bool = False,
+) -> None:
     """Force config into strict nominal-validation mode for M2.5 debugging."""
     cfg.ppo.num_envs = 1
     cfg.ppo.rollout_steps = int(horizon)
@@ -213,6 +225,8 @@ def _configure_nominal_only(cfg: TrainingConfig, *, forward_cmd: float, horizon:
     cfg.env.fsm_enabled = False
     cfg.env.push_enabled = False
     cfg.env.action_delay_steps = 0
+    if disable_action_filter:
+        cfg.env.action_filter_alpha = 0.0
 
 
 def _sync_viewer_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state_data) -> None:
@@ -442,6 +456,7 @@ def _extract_support_posture(
 ) -> dict[str, float | str]:
     wr = state.info[WR_INFO_KEY]
     nominal_q_ref = jnp.asarray(wr.nominal_q_ref, dtype=jnp.float32)
+    ctrl = jnp.asarray(state.data.ctrl, dtype=jnp.float32)
     actual_q = jnp.asarray(state.data.qpos, dtype=jnp.float32)[env._actuator_qpos_addrs]  # noqa: SLF001
     if stance_foot is None:
         if metrics_vec is not None:
@@ -467,33 +482,43 @@ def _extract_support_posture(
         idx_knee_pitch = env._idx_right_knee_pitch  # noqa: SLF001
         idx_ankle_pitch = env._idx_right_ankle_pitch  # noqa: SLF001
 
-    def joint_triplet(idx: int) -> tuple[float, float, float]:
+    def joint_quintuplet(idx: int) -> tuple[float, float, float, float, float]:
+        """Return (q_ref, ctrl, actual, ref_err, ctrl_err) for a joint."""
         if idx < 0:
-            return 0.0, 0.0, 0.0
-        target = float(nominal_q_ref[idx])
-        actual = float(actual_q[idx])
-        return target, actual, actual - target
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        q_ref = float(nominal_q_ref[idx])
+        q_ctrl = float(ctrl[idx])
+        q_actual = float(actual_q[idx])
+        return q_ref, q_ctrl, q_actual, q_actual - q_ref, q_actual - q_ctrl
 
-    hr_tgt, hr_act, hr_err = joint_triplet(idx_hip_roll)
-    hp_tgt, hp_act, hp_err = joint_triplet(idx_hip_pitch)
-    kp_tgt, kp_act, kp_err = joint_triplet(idx_knee_pitch)
-    ap_tgt, ap_act, ap_err = joint_triplet(idx_ankle_pitch)
+    hr_ref, hr_ctrl, hr_act, hr_ref_err, hr_ctrl_err = joint_quintuplet(idx_hip_roll)
+    hp_ref, hp_ctrl, hp_act, hp_ref_err, hp_ctrl_err = joint_quintuplet(idx_hip_pitch)
+    kp_ref, kp_ctrl, kp_act, kp_ref_err, kp_ctrl_err = joint_quintuplet(idx_knee_pitch)
+    ap_ref, ap_ctrl, ap_act, ap_ref_err, ap_ctrl_err = joint_quintuplet(idx_ankle_pitch)
     return {
         "stance_leg": leg,
         "root_roll": float(root_roll),
         "root_height": float(root_height),
-        "hip_roll_tgt": hr_tgt,
+        "hip_roll_ref": hr_ref,
+        "hip_roll_ctrl": hr_ctrl,
         "hip_roll_act": hr_act,
-        "hip_roll_err": hr_err,
-        "hip_pitch_tgt": hp_tgt,
+        "hip_roll_ref_err": hr_ref_err,
+        "hip_roll_ctrl_err": hr_ctrl_err,
+        "hip_pitch_ref": hp_ref,
+        "hip_pitch_ctrl": hp_ctrl,
         "hip_pitch_act": hp_act,
-        "hip_pitch_err": hp_err,
-        "knee_pitch_tgt": kp_tgt,
+        "hip_pitch_ref_err": hp_ref_err,
+        "hip_pitch_ctrl_err": hp_ctrl_err,
+        "knee_pitch_ref": kp_ref,
+        "knee_pitch_ctrl": kp_ctrl,
         "knee_pitch_act": kp_act,
-        "knee_pitch_err": kp_err,
-        "ankle_pitch_tgt": ap_tgt,
+        "knee_pitch_ref_err": kp_ref_err,
+        "knee_pitch_ctrl_err": kp_ctrl_err,
+        "ankle_pitch_ref": ap_ref,
+        "ankle_pitch_ctrl": ap_ctrl,
         "ankle_pitch_act": ap_act,
-        "ankle_pitch_err": ap_err,
+        "ankle_pitch_ref_err": ap_ref_err,
+        "ankle_pitch_ctrl_err": ap_ctrl_err,
     }
 
 
@@ -510,10 +535,10 @@ def _format_support_posture_line(
         f"leg={pose['stance_leg']} "
         f"root_roll={pose['root_roll']:+.3f} "
         f"root_h={pose['root_height']:.3f} "
-        f"hr_tgt={pose['hip_roll_tgt']:+.3f} hr_act={pose['hip_roll_act']:+.3f} hr_err={pose['hip_roll_err']:+.3f} "
-        f"hp_tgt={pose['hip_pitch_tgt']:+.3f} hp_act={pose['hip_pitch_act']:+.3f} hp_err={pose['hip_pitch_err']:+.3f} "
-        f"kp_tgt={pose['knee_pitch_tgt']:+.3f} kp_act={pose['knee_pitch_act']:+.3f} kp_err={pose['knee_pitch_err']:+.3f} "
-        f"ap_tgt={pose['ankle_pitch_tgt']:+.3f} ap_act={pose['ankle_pitch_act']:+.3f} ap_err={pose['ankle_pitch_err']:+.3f}"
+        f"hr_ref={pose['hip_roll_ref']:+.3f} hr_ctrl={pose['hip_roll_ctrl']:+.3f} hr_act={pose['hip_roll_act']:+.3f} "
+        f"hp_ref={pose['hip_pitch_ref']:+.3f} hp_ctrl={pose['hip_pitch_ctrl']:+.3f} hp_act={pose['hip_pitch_act']:+.3f} "
+        f"kp_ref={pose['knee_pitch_ref']:+.3f} kp_ctrl={pose['knee_pitch_ctrl']:+.3f} kp_act={pose['knee_pitch_act']:+.3f} "
+        f"ap_ref={pose['ankle_pitch_ref']:+.3f} ap_ctrl={pose['ankle_pitch_ctrl']:+.3f} ap_act={pose['ankle_pitch_act']:+.3f}"
     )
 
 
@@ -587,13 +612,285 @@ def _save_video(record_path: str, frames: list[np.ndarray], fps: int) -> None:
     )
 
 
+def _check_tracking_threshold(q_act: float, q_tgt: float, abs_floor: float = 0.05, frac_tol: float = 0.10) -> bool:
+    """Check if actual joint tracks target within threshold.
+    
+    Rule: abs(q_act - q_tgt) <= max(abs_floor, frac_tol * abs(q_tgt))
+    """
+    error = abs(q_act - q_tgt)
+    threshold = max(abs_floor, frac_tol * abs(q_tgt))
+    return error <= threshold
+
+
+def _is_stable_window(
+    mode_history: list[int],
+    pitch_history: list[float],
+    pitch_rate_history: list[float],
+    min_dwell: int = 5,
+    pitch_thresh: float = 0.30,  # ~17 degrees
+    pitch_rate_thresh: float = 1.5,  # rad/s
+) -> bool:
+    """Check if recent history indicates a stable window for evaluation.
+    
+    Stable if:
+    - Same mode maintained for at least min_dwell steps
+    - abs(pitch) < pitch_thresh for all recent steps
+    - abs(pitch_rate) < pitch_rate_thresh for all recent steps
+    """
+    if len(mode_history) < min_dwell:
+        return False
+    recent_modes = mode_history[-min_dwell:]
+    if len(set(recent_modes)) > 1:
+        return False
+    recent_pitch = pitch_history[-min_dwell:]
+    recent_pitch_rate = pitch_rate_history[-min_dwell:]
+    return (
+        all(abs(p) < pitch_thresh for p in recent_pitch)
+        and all(abs(pr) < pitch_rate_thresh for pr in recent_pitch_rate)
+    )
+
+
+class _StageTracker:
+    """Tracks per-stage posture diagnostics."""
+    
+    def __init__(self):
+        self.stages = {}  # mode_id -> stage data
+        self.current_mode = None
+        self.current_mode_entry_step = None
+        self.mode_history = []
+        self.pitch_history = []
+        self.pitch_rate_history = []
+        
+    def update(self, step: int, mode_id: int, pitch: float, pitch_rate: float, posture: dict):
+        """Update stage tracking with current step data."""
+        # Track mode transitions
+        if mode_id != self.current_mode:
+            if self.current_mode is not None:
+                # Exiting previous stage
+                stage = self.stages[self.current_mode]
+                stage["exit_step"] = step - 1
+            self.current_mode = mode_id
+            self.current_mode_entry_step = step
+            if mode_id not in self.stages:
+                self.stages[mode_id] = {
+                    "entry_step": step,
+                    "exit_step": None,
+                    "samples": [],
+                    "stable_samples": [],
+                }
+        
+        # Update history for stable window detection
+        self.mode_history.append(mode_id)
+        self.pitch_history.append(pitch)
+        self.pitch_rate_history.append(pitch_rate)
+        if len(self.mode_history) > 10:
+            self.mode_history.pop(0)
+            self.pitch_history.pop(0)
+            self.pitch_rate_history.pop(0)
+        
+        # Record sample
+        sample = {
+            "step": step,
+            "hr_tgt": posture["hip_roll_ref"],
+            "hr_act": posture["hip_roll_act"],
+            "hp_tgt": posture["hip_pitch_ref"],
+            "hp_act": posture["hip_pitch_act"],
+            "kp_tgt": posture["knee_pitch_ref"],
+            "kp_act": posture["knee_pitch_act"],
+            "ap_tgt": posture["ankle_pitch_ref"],
+            "ap_act": posture["ankle_pitch_act"],
+        }
+        self.stages[mode_id]["samples"].append(sample)
+        
+        # Check if this is a stable window sample
+        if _is_stable_window(self.mode_history, self.pitch_history, self.pitch_rate_history):
+            self.stages[mode_id]["stable_samples"].append(sample)
+    
+    def finalize(self, final_step: int):
+        """Finalize tracking at end of run."""
+        if self.current_mode is not None and self.stages[self.current_mode]["exit_step"] is None:
+            self.stages[self.current_mode]["exit_step"] = final_step
+    
+    def get_summary(self) -> str:
+        """Generate stage diagnostics summary."""
+        lines = []
+        lines.append("\n" + "=" * 80)
+        lines.append("STAGE DIAGNOSTICS SUMMARY")
+        lines.append("=" * 80)
+        lines.append("Threshold rule: abs(q_act - q_tgt) <= max(0.05 rad, 0.10 * abs(q_tgt))")
+        lines.append("Stable window: 5+ steps same mode, abs(pitch)<0.30, abs(pitch_rate)<1.5")
+        lines.append("")
+        
+        mode_names = {
+            int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP): "STARTUP_SUPPORT_RAMP",
+            int(WalkingRefV2Mode.SUPPORT_STABILIZE): "SUPPORT_STABILIZE",
+            int(WalkingRefV2Mode.SWING_RELEASE): "SWING_RELEASE",
+            int(WalkingRefV2Mode.TOUCHDOWN_CAPTURE): "TOUCHDOWN_CAPTURE",
+            int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE): "POST_TOUCHDOWN_SETTLE",
+        }
+        
+        for mode_id in sorted(self.stages.keys()):
+            stage = self.stages[mode_id]
+            mode_name = mode_names.get(mode_id, f"MODE_{mode_id}")
+            
+            entry = stage["entry_step"]
+            exit_step = stage["exit_step"] if stage["exit_step"] is not None else "ongoing"
+            has_stable = len(stage["stable_samples"]) > 0
+            
+            lines.append(f"Stage: {mode_name} (mode_id={mode_id})")
+            lines.append(f"  Entry/Exit: step {entry} -> {exit_step}")
+            lines.append(f"  Total samples: {len(stage['samples'])}")
+            lines.append(f"  Stable window found: {'yes' if has_stable else 'no'} ({len(stage['stable_samples'])} samples)")
+            
+            if has_stable:
+                samples = stage["stable_samples"]
+                joints = ["hr", "hp", "kp", "ap"]
+                joint_names = {
+                    "hr": "hip_roll",
+                    "hp": "hip_pitch",
+                    "kp": "knee_pitch",
+                    "ap": "ankle_pitch",
+                }
+                
+                for joint in joints:
+                    tgts = [s[f"{joint}_tgt"] for s in samples]
+                    acts = [s[f"{joint}_act"] for s in samples]
+                    errs = [abs(a - t) for a, t in zip(acts, tgts)]
+                    
+                    tgt_mean = np.mean(tgts)
+                    act_mean = np.mean(acts)
+                    err_mean = np.mean(errs)
+                    err_max = np.max(errs)
+                    
+                    # Check threshold
+                    passes = [
+                        _check_tracking_threshold(a, t)
+                        for a, t in zip(acts, tgts)
+                    ]
+                    pass_rate = sum(passes) / len(passes) if passes else 0.0
+                    
+                    status = "PASS" if pass_rate >= 0.8 else "FAIL"
+                    lines.append(
+                        f"  {joint_names[joint]:12s}: tgt_mean={tgt_mean:+.3f} act_mean={act_mean:+.3f} "
+                        f"err_mean={err_mean:.3f} err_max={err_max:.3f} pass_rate={pass_rate:.0%} [{status}]"
+                    )
+            else:
+                lines.append("  (No stable window - cannot evaluate tracking)")
+            lines.append("")
+        
+        lines.append("=" * 80)
+        return "\n".join(lines)
+
+
+class _CommandPathTracker:
+    """Track command path signals (q_ref → ctrl → q_actual) for startup/support diagnosis."""
+    
+    def __init__(self):
+        self.samples = []
+        self.prev_ctrl = None
+    
+    def update(self, step: int, mode_id: int, posture: dict):
+        """Update tracking with current step data."""
+        # Extract command-path signals for each joint
+        for joint in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]:
+            q_ref = posture[f"{joint}_ref"]
+            q_ctrl = posture[f"{joint}_ctrl"]
+            q_act = posture[f"{joint}_act"]
+            ref_err = posture[f"{joint}_ref_err"]
+            ctrl_err = posture[f"{joint}_ctrl_err"]
+            
+            # Compute per-step ctrl delta
+            if self.prev_ctrl is None or joint not in self.prev_ctrl:
+                ctrl_delta = 0.0
+            else:
+                ctrl_delta = q_ctrl - self.prev_ctrl[joint]
+            
+            self.samples.append({
+                "step": step,
+                "mode": mode_id,
+                "joint": joint,
+                "q_ref": q_ref,
+                "q_ctrl": q_ctrl,
+                "q_act": q_act,
+                "ref_to_ctrl_gap": q_ctrl - q_ref,
+                "ctrl_to_act_gap": q_act - q_ctrl,
+                "ctrl_delta": ctrl_delta,
+            })
+        
+        # Store current ctrl for next delta computation
+        self.prev_ctrl = {
+            joint: posture[f"{joint}_ctrl"]
+            for joint in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]
+        }
+    
+    def get_summary(self, startup_mode: int = 0, support_mode: int = 1) -> str:
+        """Generate command-path summary for startup/support modes."""
+        lines = []
+        lines.append("\n" + "=" * 80)
+        lines.append("COMMAND PATH DIAGNOSTICS SUMMARY")
+        lines.append("=" * 80)
+        lines.append("Tracing: q_ref (nominal) → ctrl (final target) → q_actual")
+        lines.append("")
+        
+        # Filter to startup and support modes
+        startup_samples = [s for s in self.samples if s["mode"] == startup_mode]
+        support_samples = [s for s in self.samples if s["mode"] == support_mode]
+        
+        for mode_name, samples in [("STARTUP_SUPPORT_RAMP", startup_samples), ("SUPPORT_STABILIZE", support_samples)]:
+            if not samples:
+                lines.append(f"Stage: {mode_name}")
+                lines.append("  (No samples)")
+                lines.append("")
+                continue
+            
+            lines.append(f"Stage: {mode_name} ({len(samples) // 4} steps)")
+            
+            for joint_name in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]:
+                joint_samples = [s for s in samples if s["joint"] == joint_name]
+                if not joint_samples:
+                    continue
+                
+                ref_to_ctrl_gaps = [abs(s["ref_to_ctrl_gap"]) for s in joint_samples]
+                ctrl_to_act_gaps = [abs(s["ctrl_to_act_gap"]) for s in joint_samples]
+                ctrl_deltas = [abs(s["ctrl_delta"]) for s in joint_samples]
+                
+                mean_ref_to_ctrl = sum(ref_to_ctrl_gaps) / len(ref_to_ctrl_gaps)
+                max_ref_to_ctrl = max(ref_to_ctrl_gaps)
+                mean_ctrl_to_act = sum(ctrl_to_act_gaps) / len(ctrl_to_act_gaps)
+                max_ctrl_to_act = max(ctrl_to_act_gaps)
+                max_ctrl_delta = max(ctrl_deltas)
+                
+                # Find first major divergence (>0.1 rad)
+                first_ref_ctrl_div = next((s["step"] for s in joint_samples if abs(s["ref_to_ctrl_gap"]) > 0.1), None)
+                first_ctrl_act_div = next((s["step"] for s in joint_samples if abs(s["ctrl_to_act_gap"]) > 0.1), None)
+                
+                lines.append(f"  {joint_name:12s}:")
+                lines.append(f"    ref→ctrl: mean={mean_ref_to_ctrl:.3f} max={max_ref_to_ctrl:.3f} " +
+                           (f"[diverge@step{first_ref_ctrl_div}]" if first_ref_ctrl_div else "[OK]"))
+                lines.append(f"    ctrl→act: mean={mean_ctrl_to_act:.3f} max={max_ctrl_to_act:.3f} " +
+                           (f"[diverge@step{first_ctrl_act_div}]" if first_ctrl_act_div else "[OK]"))
+                lines.append(f"    max_Δctrl/step: {max_ctrl_delta:.3f} rad/step")
+            
+            lines.append("")
+        
+        lines.append("=" * 80)
+        return "\n".join(lines)
+
+
 def run_nominal_viewer(args: argparse.Namespace) -> int:
     cfg = load_training_config(args.config)
+    original_action_filter_alpha = float(cfg.env.action_filter_alpha)
     robot_cfg_path = Path(cfg.env.robot_config_path)
     if not robot_cfg_path.is_absolute():
         robot_cfg_path = project_root / robot_cfg_path
     load_robot_config(robot_cfg_path)
-    _configure_nominal_only(cfg, forward_cmd=args.forward_cmd, horizon=args.horizon)
+    _configure_nominal_only(
+        cfg,
+        forward_cmd=args.forward_cmd,
+        horizon=args.horizon,
+        disable_action_filter=args.disable_action_filter,
+    )
+    action_filter_alpha = float(cfg.env.action_filter_alpha)
     cfg.freeze()
 
     env = WildRobotEnv(config=cfg)
@@ -621,6 +918,13 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         "[nominal-viewer] residual policy action fixed to zeros -> q_target = q_ref "
         "(pushes disabled, action_delay_steps=0)"
     )
+    if args.disable_action_filter:
+        print(
+            "[nominal-viewer] action filter override active: "
+            f"alpha {original_action_filter_alpha:.3f} -> {action_filter_alpha:.3f}"
+        )
+    else:
+        print(f"[nominal-viewer] action filter from config: alpha={action_filter_alpha:.3f}")
     if args.force_support_only:
         print("[nominal-viewer] forcing walking_ref_v2 into SUPPORT_STABILIZE for posture-only diagnosis")
     if args.init_from_nominal_qref:
@@ -644,12 +948,24 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     done_dom = "none"
     ctrl_dt = float(cfg.env.ctrl_dt)
     print_every = max(1, int(args.print_every))
+    stage_tracker = _StageTracker()
+    cmd_path_tracker = _CommandPathTracker()
 
     def run_step(step_idx: int) -> bool:
         nonlocal state, done_reached, done_step, done_dom
         state = step_once(state)
         _sync_viewer_data(mj_model, mj_data, state.data)
         metrics_vec = state.metrics[METRICS_VEC_KEY]
+        
+        # Update stage tracker
+        wr_info = state.info[WR_INFO_KEY]
+        mode_id = int(jnp.asarray(wr_info.loc_ref_mode_id, dtype=jnp.int32))
+        pitch = float(metrics_vec[METRIC_INDEX["debug/pitch"]])
+        pitch_rate = float(metrics_vec[METRIC_INDEX["debug/pitch_rate"]])
+        posture = _extract_support_posture(env, state, metrics_vec)
+        stage_tracker.update(step_idx, mode_id, pitch, pitch_rate, posture)
+        cmd_path_tracker.update(step_idx, mode_id, posture)
+        
         for key in term_totals:
             term_totals[key] += float(metrics_vec[METRIC_INDEX[key]])
         done = bool(np.asarray(state.done > 0.5))
@@ -712,6 +1028,10 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         _save_video(args.record, frames, fps=max(1, int(round(1.0 / ctrl_dt))))
         print(f"[nominal-viewer] wrote video: {args.record} ({len(frames)} frames)")
 
+    # Finalize stage tracking
+    final_step = done_step if done_reached else args.horizon
+    stage_tracker.finalize(final_step)
+    
     if done_reached:
         print(f"[nominal-viewer] summary: done_step={done_step} dominant_termination={done_dom}")
     else:
@@ -720,6 +1040,21 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
             f"[nominal-viewer] summary: done_step=none dominant_termination={dom} "
             f"(horizon={args.horizon})"
         )
+    
+    # Print stage diagnostics
+    stage_summary = stage_tracker.get_summary()
+    if args.log:
+        _print_log_only(stage_summary)
+    else:
+        print(stage_summary)
+    
+    # Print command-path diagnostics
+    cmd_path_summary = cmd_path_tracker.get_summary()
+    if args.log:
+        _print_log_only(cmd_path_summary)
+    else:
+        print(cmd_path_summary)
+    
     return 0
 
 

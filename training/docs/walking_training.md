@@ -542,9 +542,9 @@ Result:
 - subsequent `v0.19.3b` through `v0.19.3e` debug branches show that the
   blocker is the nominal prior, not PPO optimization
 - from this point on, M3 work is gated by the nominal reference validation
-  ladder below
+  ladder in [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
 
-### `M2.5` Validation Ladder
+### `M2.5` Nominal Reference Validation
 
 Purpose:
 
@@ -552,218 +552,67 @@ Purpose:
 - localize the root cause when it is not
 - avoid wasting PPO runs on a broken prior
 
-This validation ladder defines the active `M2.5` stage and applies to all
-remaining `v0.19.3x` work.
+The canonical `M2.5` design, validation ladder, execution milestones, and
+resume-PPO gate now live only in:
 
-#### Level 1: Reference Generator Correctness
+- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
 
-Goal:
+Use that file as the single source of truth for:
 
-- verify `walking_ref_v1` is internally consistent before full-env rollout
+- `walking_ref_v2` design
+- startup/support posture design
+- Level `1 / 2 / 2.5 / 3 / 4 / 5` validation
+- `M2.5-A0` through `M2.5-A4` execution milestones
+- numeric exit criteria for resuming PPO
 
-Checks:
-
-- phase stays in `[0, 1]`
-- stance alternates correctly
-- step length stays within configured bounds
-- lateral placement stays within bounds
-- swing trajectory is continuous and bounded
-- pelvis targets are bounded and smooth
-
-Typical validation:
-
-- unit tests around `control/references/walking_ref_v1.py`
-- bounded test cases for phase progression, foothold limits, and swing shape
-
-#### Level 2: IK And Nominal Target Correctness
-
-Goal:
-
-- verify `q_ref` is kinematically coherent and not already bad in joint space
-
-Checks:
-
-- reachability stays high
-- no systematic clipping or limit hugging
-- left/right symmetry remains sane
-- unsolved joints stay in safe home-centered defaults
-- `q_ref` evolves smoothly over phase
-- stance/swing geometry maps to plausible sagittal targets
-
-Typical validation:
-
-- integration tests around the env-side nominal target path
-- explicit checks on `tracking/loc_ref_left_reachable`,
-  `tracking/loc_ref_right_reachable`, and nominal target magnitude
-
-#### Level 3: Nominal-Only Full-Env Viability
-
-Goal:
-
-- verify the nominal prior survives full actuator/contact dynamics without PPO
-
-Canonical probe command:
-
-- `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
-
-Canonical multi-speed sweep:
-
-- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-
-Required outputs:
-
-- `done_step`
-- dominant termination
-- `forward_velocity_mean`
-- `forward_velocity_last`
-- `tracking_nominal_q_abs_mean`
-- `tracking_loc_ref_left_reachable`
-- `tracking_loc_ref_right_reachable`
-- `tracking_loc_ref_phase_progress_*`
-- `reward_m3_swing_foot_tracking`
-- `reward_m3_foothold_consistency`
-- `debug_loc_ref_nominal_vs_applied_q_l1_mean`
+This walking plan keeps only the active stage status and the canonical commands
+needed to execute the current `M2.5` work.
 
 Current status:
 
-- this level is still failing
-- PPO must not resume until this level improves materially
+- `M2.5` is active
+- PPO remains paused
+- the nominal prior is still blocked on support-posture / support-transition
+  validation under full env dynamics
+- current execution milestone and next actions should be read from
+  [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
 
-#### Level 4: Channel-Isolation Ablations
+Canonical nominal-probe realism baseline:
 
-Goal:
+- use [`ppo_walking_v0193a.yaml`](/home/leeygang/projects/wildrobot/training/configs/ppo_walking_v0193a.yaml) as the probe config
+- treat the probe baseline operationally as:
+  - v2 MuJoCo MJX asset stack and full actuator/contact dynamics
+  - fixed command
+  - residual disabled for nominal-only probes
+  - pushes disabled
+  - action delay disabled
+  - domain randomization disabled
+  - IMU noise/latency disabled unless explicitly re-enabled
+- the config also records
+  `realism_profile_path = assets/v2/realism_profile_v0.19.1.json`, but the
+  canonical `M2.5` probe contract should be read from the actual config/env
+  behavior above rather than from an implied promise that every realism-profile
+  feature is independently exercised in the probe path
 
-- identify which nominal channel causes the forward pitch-dive
+For any ambiguity about realism assumptions, defer to the explicit baseline in
+[`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md).
 
-Required ablation families:
+Canonical commands:
 
-- freeze or heavily damp swing-x progression
-- zero or heavily damp nominal pelvis pitch
-- remove or greatly reduce DCM contribution
-- slow phase progression
-- increase stance/support conservatism
-
-Rules:
-
-- run one ablation at a time
-- always rerun the same canonical nominal-only probe
-- compare against a fixed baseline rather than reward totals
-
-Current ablation status:
-
-- `no-dcm`: no meaningful effect
-- `zero-pelvis-pitch`: no meaningful effect
-- `freeze-swing-x`: lowers overspeed, but does not improve survival
-- `tight-stance`: improves survival, but worsens overspeed
-- `slow-phase`: lowers overspeed slightly, but does not improve survival
-
-#### Support-First And Dynamically Valid Checklist
-
-Purpose:
-
-- define what the nominal prior must do before PPO is allowed to resume
-- make the next nominal-layer work measurable and repeatable
-
-`Support-first` means:
-
-- stance/support geometry is prioritized before forward progression
-- forward swing advance slows or freezes when support is already failing
-- nominal progression is conditional on support state, not just phase time
-
-`Dynamically valid` means:
-
-- the nominal prior survives the full training env dynamics without PPO rescue
-- contacts, actuator realization, and body motion remain in the same regime as
-  the commanded task
-
-Required support-first checks:
-
-- root pitch remains bounded enough that support can still be recovered
-- root pitch rate remains bounded enough that the nominal prior is not
-  accelerating into collapse
-- support-gate activation correlates with reduced swing-x progression and/or
-  reduced phase advance when instability is present
-- forward progression slows or stops when overspeed and pitch indicate support
-  is already failing
-
-Required dynamic-validity checks:
-
-- nominal-only rollout survives materially longer than the current low-30-step
-  regime
-- immediate `term/pitch` collapse is gone
-- achieved forward speed stays in the same regime as command
-- swing-foot tracking is clearly above numerical noise
-- foothold consistency is clearly above the current near-zero regime
-- nominal-vs-applied target gap remains small enough to explain realized motion
-
-Required trace-level checks:
-
-- inspect one fixed probe trace for:
-  - phase progress
-  - stance foot
-  - root pitch and pitch rate
-  - forward velocity
-  - swing-x target vs actual
-  - foothold target vs realized touchdown
-  - support-gate activity
-  - nominal `q_ref` vs applied target gap
-- expected interpretation:
-  - support is established first
-  - then controlled progression is permitted
-  - not the other way around
-
-Required robustness checks after one-point success:
-
-- rerun nominal-only probes at:
-  - `0.06 m/s`
-  - `0.10 m/s`
-  - `0.14 m/s`
-- optionally add one or two mild friction variations
-- do not treat the prior as validated if it only works at one exact command
+- baseline probe:
+  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
+- canonical multi-speed sweep:
+  - `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
+- startup-path nominal viewer:
+  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 64 --headless --print-every 1 --log`
+- grounded support-only nominal viewer:
+  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 32 --headless --print-every 1 --force-support-only --init-from-nominal-qref --log`
 
 Decision rule:
 
-- if the prior passes the support-first and dynamic-validity checks above,
-  resume `v0.19.3` PPO work
-- if it fails after one more bounded nominal redesign pass, stop local tuning
-  and redesign the nominal layer more substantially
-
-#### Level 5: Robustness Sweep
-
-Goal:
-
-- verify the nominal prior is not only working at one exact operating point
-
-Minimum sweep after Level 3 improves:
-
-- forward command `0.06`
-- forward command `0.10`
-- forward command `0.14`
-- multiple seeds if runtime cost is acceptable
-
-Preferred command:
-
-- `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-
-Optional:
-
-- one or two mild friction variations
-
-#### Resume-PPO Gate
-
-PPO training under `v0.19.3` remains blocked until all of these are true:
-
-- nominal-only survives materially longer than the current low-30-step failure
-  regime
-- immediate pitch-dive is gone
-- achieved forward speed is in the same regime as command, not large overspeed
-- swing tracking is clearly above numerical noise
-- foothold consistency is no longer near zero
-- nominal-vs-applied target gap is small enough to explain the realized motion
-
-If this ladder still fails after bounded channel-isolation work, the next step
-is not more `v0.19.3x` tuning. It is a larger redesign of the nominal layer
-before resuming M3.
+- do not resume PPO based on this file alone
+- always use the canonical `M2.5` ladder and exit gate in
+  [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
 
 ### `v0.19.4` Transfer Hardening
 

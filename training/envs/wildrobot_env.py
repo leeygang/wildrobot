@@ -1565,6 +1565,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             settle_hold_s=float(
                 getattr(self._config.env, "loc_ref_v2_settle_hold_s", 0.04)
             ),
+            support_pelvis_height_offset_m=float(
+                getattr(self._config.env, "loc_ref_v2_support_pelvis_height_offset_m", 0.050)
+            ),
         )
         self._leg_ik_cfg = LegIkConfig()
         self._residual_q_scale = jp.asarray(
@@ -1681,6 +1684,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         self._loc_ref_v2_post_settle_swing_scale = jp.asarray(
             getattr(self._config.env, "loc_ref_v2_post_settle_swing_scale", 0.15),
+            dtype=jp.float32,
+        )
+        self._loc_ref_v2_support_pelvis_height_offset_m = jp.asarray(
+            getattr(self._config.env, "loc_ref_v2_support_pelvis_height_offset_m", 0.050),
+            dtype=jp.float32,
+        )
+        self._loc_ref_v2_support_stance_extension_margin_m = jp.asarray(
+            getattr(self._config.env, "loc_ref_v2_support_stance_extension_margin_m", 0.055),
             dtype=jp.float32,
         )
         self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
@@ -1992,6 +2003,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 forward_vel_h=root_vel_h.linear_xyz[0],
                 velocity_cmd=velocity_cmd,
                 support_health=ref_support_health,
+                mode_id=ref_mode_id,
             )
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
@@ -2539,6 +2551,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 forward_vel_h=root_vel_pre_h.linear_xyz[0],
                 velocity_cmd=velocity_cmd,
                 support_health=ref_support_health,
+                mode_id=ref_mode_id,
             )
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
@@ -4008,6 +4021,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         forward_vel_h: jax.Array,
         velocity_cmd: jax.Array,
         support_health: jax.Array,
+        mode_id: jax.Array,
     ) -> tuple[
         jax.Array,
         jax.Array,
@@ -4021,9 +4035,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ]:
         """Compute nominal joint-space target from locomotion reference fields."""
         support_health = jp.clip(jp.asarray(support_health, dtype=jp.float32), 0.0, 1.0)
-        stance_margin = self._loc_ref_stance_extension_margin_m * (
-            0.2 + 0.8 * support_health
+        # Use support-specific margin for STARTUP_SUPPORT_RAMP (0) and SUPPORT_STABILIZE (1).
+        # Larger margin → less negative nominal_stance_z → shorter effective leg → MORE knee flexion.
+        is_support_mode = jp.logical_or(
+            jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
+            jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32),
         )
+        base_margin = jp.where(
+            is_support_mode,
+            self._loc_ref_v2_support_stance_extension_margin_m,
+            self._loc_ref_stance_extension_margin_m,
+        )
+        stance_margin = base_margin * (0.2 + 0.8 * support_health)
         nominal_stance_z = -jp.maximum(
             jp.asarray(0.0, dtype=jp.float32),
             jp.asarray(pelvis_height, dtype=jp.float32) - stance_margin,

@@ -58,7 +58,7 @@ env:
   loc_ref_swing_target_blend: 0.25
   # 0.0 = pure nominal stance target height, 1.0 = blend fully toward actual stance-foot height.
   loc_ref_stance_height_blend: 0.0
-  loc_ref_stance_extension_margin_m: 0.035
+  loc_ref_stance_extension_margin_m: 0.045
   loc_ref_max_swing_x_delta_m: 0.015
   loc_ref_max_swing_z_delta_m: 0.010
   loc_ref_swing_y_to_hip_roll: 0.08
@@ -92,6 +92,8 @@ env:
   loc_ref_v2_settle_hold_s: 0.04
   loc_ref_v2_support_stabilize_max_foothold_scale: 0.35
   loc_ref_v2_post_settle_swing_scale: 0.15
+  loc_ref_v2_support_pelvis_height_offset_m: 0.050
+  loc_ref_v2_support_stance_extension_margin_m: 0.055
 
   clock_stride_period_steps: 36
   clock_phase_gate_width: 0.20

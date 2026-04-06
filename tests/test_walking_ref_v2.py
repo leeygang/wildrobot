@@ -277,6 +277,7 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
     cfg = WalkingRefV2Config(
         startup_ramp_s=0.20,
         startup_pelvis_height_offset_m=0.04,
+        support_pelvis_height_offset_m=0.020,
         support_release_phase_start=0.0,
     )
     (
@@ -317,7 +318,9 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
     startup_alpha = float(mode_time) / cfg.startup_ramp_s
     assert 0.0 <= startup_alpha <= 1.0
 
-    expected_height = cfg.nominal_com_height_m + (1.0 - startup_alpha) * cfg.startup_pelvis_height_offset_m
+    pelvis_height_startup = cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m
+    pelvis_height_support = cfg.nominal_com_height_m + cfg.support_pelvis_height_offset_m
+    expected_height = pelvis_height_startup + startup_alpha * (pelvis_height_support - pelvis_height_startup)
     assert float(ref["pelvis_height"]) > cfg.nominal_com_height_m
     assert float(ref["pelvis_height"]) <= cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m + 1e-6
     assert abs(float(ref["pelvis_height"]) - expected_height) <= 1e-6

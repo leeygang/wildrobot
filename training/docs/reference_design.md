@@ -416,6 +416,57 @@ Recommended design constraint:
 - if stance knee target grows large while the robot remains nearly straight,
   redesign the support height/geometry first rather than asking PPO to rescue it
 
+#### Lateral unloading for no-ankle-roll morphology
+
+WildRobot v2 has limited frontal-plane authority:
+
+- no active ankle roll
+- less lateral recovery authority than a 6-DOF humanoid leg
+
+So `support_stabilize` cannot be a purely sagittal bracing mode.
+Even while lateral release remains closed, the reference still needs an explicit
+unloading mechanism before swing release is allowed.
+
+Priority note:
+
+- this is a real design constraint for the current v2 hardware
+- but it is not the top `M2.5` blocker right now
+- current evidence still says the dominant immediate blocker is support-posture
+  realizability in the sagittal/support-loading chain
+- if active ankle roll is added soon, this lateral strategy should be revisited
+  under the new morphology rather than over-optimized for the temporary v2 limit
+
+The intended mechanism is:
+
+1. preserve baseline support width
+   - keep `swing_y_target = base_support_y`
+   - keep `lateral_release_y = 0` during support establishment
+2. create bounded stance loading with pelvis/trunk shift
+   - use small pelvis roll plus bounded trunk alignment to move load toward the
+     stance side
+   - do not use lateral foot release as the primary unloading tool in this phase
+3. verify unloading before swing release
+   - support establishment should require evidence that the swing side is less
+     loaded or the stance side is more loaded
+   - acceptable signals are stance/swing contact asymmetry, support-health
+     recovery, and bounded root-roll behavior
+4. only then allow swing release
+   - forward release remains gated by progression permission
+   - lateral release remains a small delta around baseline width, not the main
+     unloading mechanism
+
+Design rule:
+
+- root roll growth caused by collapse is not acceptable evidence of unloading
+- support establishment should produce controlled load transfer, not passive
+  lateral divergence
+
+For the next redesign pass, the support-first controller should explicitly tune:
+
+- pelvis roll bias magnitude
+- pelvis/trunk lateral alignment during support establishment
+- support-open criteria that require some unloading evidence before swing release
+
 #### Immediate tuning strategy
 
 For the next pass, tune in this order:
@@ -551,6 +602,35 @@ The preferred end state is still single-source-of-truth:
 ## Validation Approach
 
 Validation should follow a layered ladder.
+
+### Canonical nominal-probe realism baseline
+
+For `M2.5`, the canonical nominal probes are defined operationally by:
+
+- config: [`ppo_walking_v0193a.yaml`](/home/leeygang/projects/wildrobot/training/configs/ppo_walking_v0193a.yaml)
+- probe path: [`eval_loc_ref_probe.py`](/home/leeygang/projects/wildrobot/training/eval/eval_loc_ref_probe.py)
+- sweep path: [`run_m25_v2_probe_sweep.py`](/home/leeygang/projects/wildrobot/training/eval/run_m25_v2_probe_sweep.py)
+
+The baseline assumptions for those probes are:
+
+- v2 MuJoCo MJX asset stack and full actuator/contact dynamics
+- fixed forward command per probe
+- residual disabled for nominal-only evaluation
+- pushes disabled by config for the canonical `v0.19.3a` nominal path
+- action delay disabled (`action_delay_steps = 0`)
+- domain randomization disabled
+- IMU noise/latency disabled unless explicitly re-enabled in config
+
+Important clarification:
+
+- `ppo_walking_v0193a.yaml` records
+  `realism_profile_path = assets/v2/realism_profile_v0.19.1.json`
+- but the canonical probe contract for `M2.5` should be treated as the concrete
+  env/config behavior above, not as an assumption that every realism-profile
+  feature is independently applied and verified in the probe path
+
+If probe-time realism-profile application becomes a gating requirement, it
+should be made explicit in runtime/env logs and documented as a new baseline.
 
 ### Level 1: Reference-generator correctness
 

@@ -249,6 +249,12 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_startup_support_open_health=float(
             env.get("loc_ref_v2_startup_support_open_health", 0.45)
         ),
+        loc_ref_v2_support_pelvis_height_offset_m=float(
+            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)
+        ),
+        loc_ref_v2_support_stance_extension_margin_m=float(
+            env.get("loc_ref_v2_support_stance_extension_margin_m", 0.055)
+        ),
         action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),
