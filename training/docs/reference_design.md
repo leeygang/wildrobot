@@ -1,7 +1,7 @@
 # WildRobot Nominal Reference Design
 
 **Status:** Active design note for `M2.5` nominal reference validation  
-**Last updated:** 2026-04-04
+**Last updated:** 2026-04-05
 
 ---
 
@@ -354,6 +354,94 @@ If a grounded nominal-qref initialization can instantiate the support posture
 but the robot immediately collapses under contact dynamics, the remaining issue
 is still in support-posture design or the transition into it.
 
+### Concrete support-posture redesign
+
+Current `M2.5` evidence says the startup ramp is now present, but the robot
+still does not realize the intended loaded stance leg:
+
+- stance hip pitch partially tracks
+- stance knee pitch stays near straight while target remains strongly flexed
+- stance ankle pitch stays far from target
+- root roll and root pitch continue to grow under support-only and startup-path
+  runs
+
+So the next redesign pass should treat support posture as a bounded algorithmic
+construction problem, not an open-ended tuning exercise.
+
+#### Design objective
+
+`support_stabilize` should behave like a conservative loaded standing posture:
+
+- preserve nonzero baseline support width
+- keep both swing releases closed
+- keep the stance leg load-bearing without requiring a deep crouch
+- keep pelvis height high enough that knee and ankle targets remain trackable
+- give the startup ramp a reachable posture to converge to
+
+#### Support-posture algorithm
+
+Build support posture from a small set of state-aware scalars rather than from
+aggressive fixed compression.
+
+Recommended construction:
+
+1. Choose a baseline support width:
+   - preserve the existing nonzero `base_support_y`
+   - keep `lateral_release_y = 0` in `support_stabilize`
+   - keep `swing_y_target = base_support_y`
+2. Choose a conservative stance compression scalar:
+   - derive `stance_compression in [0, 1]` from support-health deficit
+   - clamp it to a shallow range rather than allowing a deep crouch
+3. Choose pelvis height from that compression:
+   - use a higher support pelvis target than the current failing posture
+   - lower pelvis only enough to load the stance leg, not enough to demand a
+     large knee bend
+4. Build sagittal support geometry:
+   - set stance foot sagittal target with small or zero forward offset
+   - solve stance hip pitch / knee pitch / ankle pitch from the support height
+     target
+   - prefer a shallower knee and smaller ankle counter-rotation
+5. Keep pelvis attitude small:
+   - pelvis roll only as a small support bias
+   - pelvis pitch only as a small bounded support bias
+   - do not use pelvis attitude as a hidden forward-drive channel
+6. Keep progression closed:
+   - `swing_x_release = 0`
+   - `lateral_release_y = 0`
+   - foothold progression bounded by support mode rules
+
+Recommended design constraint:
+
+- treat support posture as a loaded standing pose, not a crouch
+- if stance knee target grows large while the robot remains nearly straight,
+  redesign the support height/geometry first rather than asking PPO to rescue it
+
+#### Immediate tuning strategy
+
+For the next pass, tune in this order:
+
+1. raise support pelvis height slightly
+2. reduce stance compression target
+3. reduce implied stance knee bend
+4. reduce ankle counter-rotation magnitude
+5. retune startup ramp only after the new support posture is reachable
+
+This order matches the current failure pattern: hip pitch can partially track,
+but knee and ankle do not.
+
+#### Transition contract
+
+The startup ramp should remain, but it should now ramp into this shallower
+support posture:
+
+- start near keyframe-0 upright posture
+- preserve stance width
+- gradually increase stance loading
+- complete only when the support posture is reachable enough to hold
+
+The startup phase should not compensate for an unrealistic destination posture.
+The destination posture itself must be realizable.
+
 ---
 
 ## Adapter Design
@@ -427,6 +515,20 @@ Recommended checks:
 The nominal viewer is the canonical local tool for this check:
 
 - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 32 --headless --print-every 1 --force-support-only --init-from-nominal-qref --log`
+
+Additional required checks for the next redesign pass:
+
+- startup-path run from keyframe 0:
+  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 64 --headless --print-every 1 --log`
+- grounded support-only run from nominal posture:
+  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 32 --headless --print-every 1 --force-support-only --init-from-nominal-qref --log`
+
+These two runs answer different questions:
+
+- startup-path run:
+  - can the robot transition from keyframe 0 into support posture smoothly
+- grounded support-only run:
+  - can the robot actually hold the support posture once it starts there
 
 ### Level 3: Nominal-only full-env viability
 
@@ -514,6 +616,21 @@ For a fixed nominal-only probe, inspect:
 - progression permission
 - nominal-vs-applied `q` gap
 
+For the next support-posture redesign pass, inspect these additional
+support-specific metrics:
+
+- startup mode duration and handoff step
+- root roll
+- root height
+- stance hip-roll target vs actual
+- stance hip-pitch target vs actual
+- stance knee-pitch target vs actual
+- stance ankle-pitch target vs actual
+- support width actual vs commanded
+- swing-y target vs actual
+
+These are the main pass/fail diagnostics for the current bug.
+
 ---
 
 ## Current `M2.5` Readout
@@ -572,13 +689,43 @@ Expected tasks:
 Goals:
 
 - make `walking_ref_v2` conservative and dynamically plausible
+- make the loaded support posture reachable and holdable under full dynamics
 
 Expected tasks:
 
-- tune support-conditioned progression
-- tune support-first stance behavior
-- tune bounded foothold and swing release
-- re-run nominal-only probes at `0.06 / 0.10 / 0.14`
+1. Support-posture redesign
+   - raise support pelvis height slightly
+   - reduce support compression depth
+   - reduce stance knee target
+   - reduce stance ankle counter-rotation
+2. Startup-path validation
+   - run startup-path viewer from keyframe 0
+   - verify smoother support entry and reduced early collapse
+3. Support-only validation
+   - run grounded support-only viewer
+   - verify the posture can hold materially longer than the current failing
+     regime
+4. Only after support posture improves:
+   - retune support-conditioned progression
+   - retune bounded foothold and swing release
+5. Re-run nominal-only probes at `0.06 / 0.10 / 0.14`
+
+Target metrics for `M2.5-A2`:
+
+- startup-path:
+  - support handoff occurs without immediate pitch jump
+  - stance knee actual moves materially toward target during startup
+  - foot spreading is reduced relative to the current failure mode
+- support-only:
+  - no immediate collapse from grounded nominal posture
+  - root height drop is reduced
+  - root roll growth is reduced
+  - stance knee and ankle target-vs-actual mismatch is smaller
+- nominal sweep:
+  - pitch-failure timing materially improves beyond the current step-30/40
+    regime
+  - achieved speed remains in the same order as command
+  - foothold and swing metrics remain nontrivial
 
 ### `M2.5-A3`: Exit decision
 
@@ -599,12 +746,15 @@ not more local patches.
 
 ## Immediate Next Actions
 
-1. Finish architecture cleanup so `walking_ref_v2` fully owns progression semantics.
-2. Remove duplicated support/gating logic from env-side nominal shaping.
-3. Re-run nominal-only probes under the cleaned architecture.
+1. Redesign support posture as a shallower loaded standing pose.
+2. Keep startup ramp, but retarget it to the new support posture.
+3. Validate both:
+   - startup-path transition from keyframe 0
+   - grounded support-only holding
+4. Re-run nominal-only probes under the updated support posture.
    Preferred command:
    `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-4. Use the support-first checklist as the only decision gate for resuming PPO.
+5. Use the support-first checklist as the only decision gate for resuming PPO.
 
 ---
 
