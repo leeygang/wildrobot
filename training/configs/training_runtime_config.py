@@ -191,9 +191,13 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_readiness_pitch_rate_bad_rad_s: float = 2.00
     loc_ref_v2_startup_readiness_min_health: float = 0.20
     loc_ref_v2_startup_progress_min_scale: float = 0.20
+    loc_ref_v2_startup_realization_lead_alpha: float = 0.12
     loc_ref_v2_startup_handoff_min_readiness: float = 0.10
+    loc_ref_v2_startup_handoff_min_pelvis_realization: float = 0.60
     loc_ref_v2_startup_handoff_min_alpha: float = 0.85
     loc_ref_v2_startup_handoff_timeout_s: float = 0.18
+    loc_ref_v2_startup_target_rate_design_rad_s: float = 0.5235987756
+    loc_ref_v2_startup_target_rate_hard_cap_rad_s: float = 1.7453292520
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.050
     loc_ref_v2_support_stance_extension_margin_m: float = 0.055
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or

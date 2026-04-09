@@ -1601,14 +1601,38 @@ class WildRobotEnv(mjx_env.MjxEnv):
             startup_progress_min_scale=float(
                 getattr(self._config.env, "loc_ref_v2_startup_progress_min_scale", 0.20)
             ),
+            startup_realization_lead_alpha=float(
+                getattr(self._config.env, "loc_ref_v2_startup_realization_lead_alpha", 0.12)
+            ),
             startup_handoff_min_readiness=float(
                 getattr(self._config.env, "loc_ref_v2_startup_handoff_min_readiness", 0.10)
+            ),
+            startup_handoff_min_pelvis_realization=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_handoff_min_pelvis_realization",
+                    0.60,
+                )
             ),
             startup_handoff_min_alpha=float(
                 getattr(self._config.env, "loc_ref_v2_startup_handoff_min_alpha", 0.85)
             ),
             startup_handoff_timeout_s=float(
                 getattr(self._config.env, "loc_ref_v2_startup_handoff_timeout_s", 0.18)
+            ),
+            startup_target_rate_design_rad_s=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_target_rate_design_rad_s",
+                    0.5235987756,
+                )
+            ),
+            startup_target_rate_hard_cap_rad_s=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_target_rate_hard_cap_rad_s",
+                    1.7453292520,
+                )
             ),
             max_lateral_release_m=float(
                 getattr(self._config.env, "loc_ref_max_lateral_release_m", 0.02)
@@ -1959,6 +1983,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ),
                 root_pitch_rad=pitch_reset,
                 root_pitch_rate_rad_s=root_vel_h.angular_xyz[1],
+                root_height_m=root_pose.height,
                 left_foot_loaded=left_loaded_reset,
                 right_foot_loaded=right_loaded_reset,
                 dt_s=self.dt,
@@ -2064,6 +2089,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
             )
+        )
+        nominal_q_ref = self._apply_startup_support_rate_limiter(
+            nominal_q_ref=nominal_q_ref,
+            prev_nominal_q_ref=jp.asarray(
+                qpos[self._actuator_qpos_addrs],
+                dtype=jp.float32,
+            ),
+            stance_foot_id=ref_stance_foot,
+            mode_id=ref_mode_id,
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
         nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
@@ -2519,6 +2553,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ),
                 root_pitch_rad=pitch_pre,
                 root_pitch_rate_rad_s=root_vel_pre_h.angular_xyz[1],
+                root_height_m=root_pose_pre.height,
                 left_foot_loaded=left_loaded_pre,
                 right_foot_loaded=right_loaded_pre,
                 dt_s=self.dt,
@@ -2622,6 +2657,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
             )
+        )
+        nominal_q_ref = self._apply_startup_support_rate_limiter(
+            nominal_q_ref=nominal_q_ref,
+            prev_nominal_q_ref=jp.asarray(wr.nominal_q_ref, dtype=jp.float32),
+            stance_foot_id=ref_stance_foot,
+            mode_id=ref_mode_id,
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
         nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
@@ -4109,6 +4150,77 @@ class WildRobotEnv(mjx_env.MjxEnv):
         knee_err = self._joint_tracking_error(actual_q, target_q, knee_idx)
         ankle_err = self._joint_tracking_error(actual_q, target_q, ankle_idx)
         return knee_err, ankle_err
+
+    def _limit_joint_target_step(
+        self,
+        target_q: jax.Array,
+        prev_target_q: jax.Array,
+        idx: jax.Array | int,
+        max_delta_rad: jax.Array,
+    ) -> jax.Array:
+        """Clamp per-step target change for one joint index."""
+        idx_arr = jp.asarray(idx, dtype=jp.int32)
+        idx_safe = jp.maximum(idx_arr, jp.asarray(0, dtype=jp.int32))
+        desired_delta = jp.asarray(target_q[idx_safe] - prev_target_q[idx_safe], dtype=jp.float32)
+        clipped_delta = jp.clip(
+            desired_delta,
+            -jp.asarray(max_delta_rad, dtype=jp.float32),
+            jp.asarray(max_delta_rad, dtype=jp.float32),
+        )
+        limited_value = jp.asarray(prev_target_q[idx_safe], dtype=jp.float32) + clipped_delta
+        return jax.lax.cond(
+            idx_arr >= 0,
+            lambda q: q.at[idx_safe].set(limited_value),
+            lambda q: q,
+            target_q,
+        )
+
+    def _apply_startup_support_rate_limiter(
+        self,
+        nominal_q_ref: jax.Array,
+        prev_nominal_q_ref: jax.Array,
+        stance_foot_id: jax.Array,
+        mode_id: jax.Array,
+    ) -> jax.Array:
+        """Limit startup stance knee/ankle nominal target rates."""
+        in_startup = jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(
+            int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32
+        )
+        stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
+            REF_LEFT_STANCE, dtype=jp.int32
+        )
+        knee_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_left_knee_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_right_knee_pitch, dtype=jp.int32),
+        )
+        ankle_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_left_ankle_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_right_ankle_pitch, dtype=jp.int32),
+        )
+        design_step = jp.asarray(
+            self._walking_ref_v2_cfg.startup_target_rate_design_rad_s * self.dt,
+            dtype=jp.float32,
+        )
+        hard_step = jp.asarray(
+            self._walking_ref_v2_cfg.startup_target_rate_hard_cap_rad_s * self.dt,
+            dtype=jp.float32,
+        )
+        max_step = jp.minimum(design_step, hard_step)
+        limited = self._limit_joint_target_step(
+            target_q=nominal_q_ref,
+            prev_target_q=prev_nominal_q_ref,
+            idx=knee_idx,
+            max_delta_rad=max_step,
+        )
+        limited = self._limit_joint_target_step(
+            target_q=limited,
+            prev_target_q=prev_nominal_q_ref,
+            idx=ankle_idx,
+            max_delta_rad=max_step,
+        )
+        return jax.lax.cond(in_startup, lambda q: q, lambda _q: nominal_q_ref, limited)
 
     def _compute_nominal_q_ref_from_loc_ref(
         self,

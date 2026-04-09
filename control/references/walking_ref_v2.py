@@ -70,9 +70,13 @@ class WalkingRefV2Config:
     startup_readiness_pitch_rate_bad_rad_s: float = 2.00
     startup_readiness_min_health: float = 0.20
     startup_progress_min_scale: float = 0.20
+    startup_realization_lead_alpha: float = 0.12
     startup_handoff_min_readiness: float = 0.10
+    startup_handoff_min_pelvis_realization: float = 0.60
     startup_handoff_min_alpha: float = 0.85
     startup_handoff_timeout_s: float = 0.18
+    startup_target_rate_design_rad_s: float = 0.5235987756
+    startup_target_rate_hard_cap_rad_s: float = 1.7453292520
     max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
@@ -140,12 +144,20 @@ class WalkingRefV2Config:
             raise ValueError("startup_readiness_min_health must be in [0, 1]")
         if not 0.0 <= self.startup_progress_min_scale <= 1.0:
             raise ValueError("startup_progress_min_scale must be in [0, 1]")
+        if not 0.0 <= self.startup_realization_lead_alpha <= 1.0:
+            raise ValueError("startup_realization_lead_alpha must be in [0, 1]")
         if not 0.0 <= self.startup_handoff_min_readiness <= 1.0:
             raise ValueError("startup_handoff_min_readiness must be in [0, 1]")
+        if not 0.0 <= self.startup_handoff_min_pelvis_realization <= 1.0:
+            raise ValueError("startup_handoff_min_pelvis_realization must be in [0, 1]")
         if not 0.0 <= self.startup_handoff_min_alpha <= 1.0:
             raise ValueError("startup_handoff_min_alpha must be in [0, 1]")
         if self.startup_handoff_timeout_s < 0.0:
             raise ValueError("startup_handoff_timeout_s must be >= 0")
+        if self.startup_target_rate_design_rad_s < 0.0:
+            raise ValueError("startup_target_rate_design_rad_s must be >= 0")
+        if self.startup_target_rate_hard_cap_rad_s < self.startup_target_rate_design_rad_s:
+            raise ValueError("startup_target_rate_hard_cap_rad_s must be >= design rate")
         if self.support_pelvis_height_offset_m < 0.0:
             raise ValueError("support_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:
@@ -203,6 +215,18 @@ def _readiness_component(value_abs: float, good: float, bad: float) -> float:
     if bad <= good:
         return 1.0 if value_abs <= good else 0.0
     return _clip((bad - value_abs) / (bad - good), 0.0, 1.0)
+
+
+def _startup_pelvis_realization(
+    *,
+    root_height_m: float,
+    startup_height_m: float,
+    support_height_m: float,
+) -> float:
+    """Pelvis realization ratio in [0,1] from startup posture toward support posture."""
+    span = max(abs(support_height_m - startup_height_m), 1e-6)
+    dist_to_support = abs(root_height_m - support_height_m)
+    return _clip(1.0 - dist_to_support / span, 0.0, 1.0)
 
 
 def compute_support_health_v2(*, config: WalkingRefV2Config, inputs: WalkingRefV2Input) -> tuple[float, float]:
@@ -279,6 +303,17 @@ def _readiness_component_jax(
     return jnp.clip(comp, 0.0, 1.0).astype(jnp.float32)
 
 
+def _startup_pelvis_realization_jax(
+    *,
+    root_height_m: jnp.ndarray,
+    startup_height_m: jnp.ndarray,
+    support_height_m: jnp.ndarray,
+) -> jnp.ndarray:
+    span = jnp.maximum(jnp.abs(support_height_m - startup_height_m), jnp.asarray(1e-6, dtype=jnp.float32))
+    dist_to_support = jnp.abs(jnp.asarray(root_height_m, dtype=jnp.float32) - support_height_m)
+    return jnp.clip(1.0 - dist_to_support / span, 0.0, 1.0).astype(jnp.float32)
+
+
 def step_reference_v2_jax(
     *,
     config: WalkingRefV2Config,
@@ -292,6 +327,7 @@ def step_reference_v2_jax(
     com_velocity_stance_frame: jnp.ndarray,
     root_pitch_rad: jnp.ndarray,
     root_pitch_rate_rad_s: jnp.ndarray,
+    root_height_m: jnp.ndarray | None = None,
     left_foot_loaded: jnp.ndarray,
     right_foot_loaded: jnp.ndarray,
     dt_s: float,
@@ -318,9 +354,31 @@ def step_reference_v2_jax(
         0.0,
         1.0,
     ).astype(jnp.float32)
+    startup_mode = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    support_mode = jnp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jnp.int32)
+    swing_mode = jnp.asarray(int(WalkingRefV2Mode.SWING_RELEASE), dtype=jnp.int32)
+    capture_mode = jnp.asarray(int(WalkingRefV2Mode.TOUCHDOWN_CAPTURE), dtype=jnp.int32)
+    settle_mode = jnp.asarray(int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE), dtype=jnp.int32)
+
+    mode = jnp.asarray(mode_id, dtype=jnp.int32)
     phase_scale = jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32)
     ) * progression_permission
+    startup_height = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+        config.startup_pelvis_height_offset_m, dtype=jnp.float32
+    )
+    support_height = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+        config.support_pelvis_height_offset_m, dtype=jnp.float32
+    )
+    startup_pelvis_realization = _startup_pelvis_realization_jax(
+        root_height_m=(
+            jnp.asarray(root_height_m, dtype=jnp.float32)
+            if root_height_m is not None
+            else startup_height
+        ),
+        startup_height_m=startup_height,
+        support_height_m=support_height,
+    )
     knee_err = (
         jnp.asarray(stance_knee_tracking_error_rad, dtype=jnp.float32)
         if stance_knee_tracking_error_rad is not None
@@ -367,29 +425,36 @@ def step_reference_v2_jax(
         jnp.minimum(readiness_knee, readiness_ankle),
         jnp.minimum(readiness_pitch, jnp.minimum(readiness_pitch_rate, readiness_health)),
     ).astype(jnp.float32)
-    startup_progress_scale = (
+    startup_readiness_scale = (
         jnp.asarray(config.startup_progress_min_scale, dtype=jnp.float32)
         + (1.0 - jnp.asarray(config.startup_progress_min_scale, dtype=jnp.float32))
         * startup_readiness
-    )
+    ).astype(jnp.float32)
+    startup_alpha = jnp.clip(
+        startup_pelvis_realization
+        + jnp.asarray(config.startup_realization_lead_alpha, dtype=jnp.float32)
+        * startup_readiness_scale,
+        0.0,
+        1.0,
+    ).astype(jnp.float32)
 
-    startup_mode = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
     phase_time = jnp.where(
-        jnp.asarray(mode_id, dtype=jnp.int32) == startup_mode,
+        mode == startup_mode,
         jnp.asarray(0.0, dtype=jnp.float32),
         jnp.asarray(phase_time_s, dtype=jnp.float32)
         + jnp.asarray(dt_s, dtype=jnp.float32) * phase_scale,
     )
     stance = jnp.asarray(stance_foot_id, dtype=jnp.int32)
     switches = jnp.asarray(stance_switch_count, dtype=jnp.int32)
-    mode = jnp.asarray(mode_id, dtype=jnp.int32)
-    mode_time = jnp.asarray(mode_time_s, dtype=jnp.float32) + jnp.asarray(dt_s, dtype=jnp.float32) * jnp.where(
-        mode == startup_mode,
-        startup_progress_scale,
-        jnp.asarray(1.0, dtype=jnp.float32),
-    )
+    mode_time = (
+        jnp.asarray(mode_time_s, dtype=jnp.float32) + jnp.asarray(dt_s, dtype=jnp.float32)
+    ).astype(jnp.float32)
     step_time = jnp.asarray(config.step_time_s, dtype=jnp.float32)
-    phase = jnp.clip(phase_time / jnp.maximum(step_time, 1e-6), 0.0, 1.0)
+    phase = jnp.where(
+        mode == startup_mode,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.clip(phase_time / jnp.maximum(step_time, 1e-6), 0.0, 1.0),
+    ).astype(jnp.float32)
     stance_is_left = stance == jnp.asarray(LEFT_STANCE, dtype=jnp.int32)
     swing_loaded = jnp.where(
         stance_is_left,
@@ -397,13 +462,6 @@ def step_reference_v2_jax(
         jnp.asarray(left_foot_loaded, dtype=jnp.bool_),
     )
 
-    support_mode = jnp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jnp.int32)
-    swing_mode = jnp.asarray(int(WalkingRefV2Mode.SWING_RELEASE), dtype=jnp.int32)
-    capture_mode = jnp.asarray(int(WalkingRefV2Mode.TOUCHDOWN_CAPTURE), dtype=jnp.int32)
-    settle_mode = jnp.asarray(int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE), dtype=jnp.int32)
-
-    startup_denom = jnp.maximum(jnp.asarray(config.startup_ramp_s, dtype=jnp.float32), 1e-6)
-    startup_alpha = jnp.clip(mode_time / startup_denom, 0.0, 1.0)
     startup_stable = (
         (support_health >= jnp.asarray(config.startup_support_open_health, dtype=jnp.float32))
         & (
@@ -415,8 +473,13 @@ def step_reference_v2_jax(
             <= jnp.asarray(config.startup_handoff_pitch_rate_max_rad_s, dtype=jnp.float32)
         )
     )
-    startup_ready_for_handoff = startup_readiness >= jnp.asarray(
-        config.startup_handoff_min_readiness, dtype=jnp.float32
+    startup_ready_for_handoff = (
+        startup_readiness >= jnp.asarray(config.startup_handoff_min_readiness, dtype=jnp.float32)
+    ) & (
+        startup_pelvis_realization
+        >= jnp.asarray(config.startup_handoff_min_pelvis_realization, dtype=jnp.float32)
+    ) & (
+        startup_alpha >= jnp.asarray(config.startup_handoff_min_alpha, dtype=jnp.float32)
     )
     startup_timeout_reached = mode_time >= jnp.asarray(
         config.startup_handoff_timeout_s, dtype=jnp.float32
@@ -428,21 +491,8 @@ def step_reference_v2_jax(
     from_capture = mode == capture_mode
     from_settle = mode == settle_mode
 
-    to_support_from_startup = from_startup & (
-        startup_stable
-        & (
-            (
-                startup_ready_for_handoff
-                & (
-                    (mode_time >= jnp.asarray(config.startup_ramp_s, dtype=jnp.float32))
-                    | (
-                        startup_alpha
-                        >= jnp.asarray(config.startup_handoff_min_alpha, dtype=jnp.float32)
-                    )
-                )
-            )
-            | startup_timeout_reached
-        )
+    to_support_from_startup = from_startup & startup_stable & (
+        startup_ready_for_handoff | startup_timeout_reached
     )
     to_swing = (
         from_support
@@ -473,7 +523,7 @@ def step_reference_v2_jax(
     transitioned = to_support_from_startup | to_swing | to_capture | to_settle | to_support
     mode_time = jnp.where(transitioned, 0.0, mode_time)
 
-    switched = phase_time >= step_time
+    switched = (mode != startup_mode) & (phase_time >= step_time)
     phase_time = jnp.where(switched, 0.0, phase_time)
     stance = jnp.where(switched, 1 - stance, stance)
     switches = jnp.where(switched, switches + 1, switches)
@@ -655,6 +705,7 @@ def step_reference_v2(
     state: WalkingRefV2State,
     inputs: WalkingRefV2Input,
     dt_s: float,
+    root_height_m: float | None = None,
     stance_knee_tracking_error_rad: float = 0.0,
     stance_ankle_tracking_error_rad: float = 0.0,
 ) -> WalkingReferenceV2Output:
@@ -698,45 +749,49 @@ def step_reference_v2(
         readiness_pitch_rate,
         readiness_health,
     )
-    startup_progress_scale = config.startup_progress_min_scale + (
+    startup_readiness_scale = config.startup_progress_min_scale + (
         1.0 - config.startup_progress_min_scale
     ) * startup_readiness
+    startup_height = config.nominal_com_height_m + config.startup_pelvis_height_offset_m
+    support_height = config.nominal_com_height_m + config.support_pelvis_height_offset_m
+    pelvis_height_now = startup_height if root_height_m is None else float(root_height_m)
+    startup_pelvis_realization = _startup_pelvis_realization(
+        root_height_m=pelvis_height_now,
+        startup_height_m=startup_height,
+        support_height_m=support_height,
+    )
+    startup_alpha = _clip(
+        startup_pelvis_realization
+        + config.startup_realization_lead_alpha * startup_readiness_scale,
+        0.0,
+        1.0,
+    )
 
     mode = WalkingRefV2Mode(state.mode_id)
     phase_time = 0.0 if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP else state.phase_time_s + dt_s * phase_scale
     stance = state.stance_foot_id
     switch_count = state.stance_switch_count
-    mode_time = state.mode_time_s + (
-        dt_s * startup_progress_scale
-        if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP
-        else dt_s
-    )
+    mode_time = state.mode_time_s + dt_s
 
     phase = _clip(phase_time / max(config.step_time_s, 1e-6), 0.0, 1.0)
     stance_is_left = stance == LEFT_STANCE
     swing_loaded = bool(inputs.right_foot_loaded if stance_is_left else inputs.left_foot_loaded)
 
-    startup_alpha = _clip(mode_time / max(config.startup_ramp_s, 1e-6), 0.0, 1.0)
     startup_stable = (
         support_health >= config.startup_support_open_health
         and abs(float(inputs.root_pitch_rad)) <= config.startup_handoff_pitch_max_rad
         and abs(float(inputs.root_pitch_rate_rad_s))
         <= config.startup_handoff_pitch_rate_max_rad_s
     )
-    startup_ready_for_handoff = startup_readiness >= config.startup_handoff_min_readiness
+    startup_ready_for_handoff = (
+        startup_readiness >= config.startup_handoff_min_readiness
+        and startup_pelvis_realization >= config.startup_handoff_min_pelvis_realization
+        and startup_alpha >= config.startup_handoff_min_alpha
+    )
     startup_timeout_reached = mode_time >= config.startup_handoff_timeout_s
 
     if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
-        if startup_stable and (
-            (
-                startup_ready_for_handoff
-                and (
-                    mode_time >= config.startup_ramp_s
-                    or startup_alpha >= config.startup_handoff_min_alpha
-                )
-            )
-            or startup_timeout_reached
-        ):
+        if startup_stable and (startup_ready_for_handoff or startup_timeout_reached):
             mode = WalkingRefV2Mode.SUPPORT_STABILIZE
             mode_time = 0.0
     elif mode == WalkingRefV2Mode.SUPPORT_STABILIZE:

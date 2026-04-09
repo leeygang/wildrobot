@@ -285,8 +285,14 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_startup_progress_min_scale=float(
             env.get("loc_ref_v2_startup_progress_min_scale", 0.20)
         ),
+        loc_ref_v2_startup_realization_lead_alpha=float(
+            env.get("loc_ref_v2_startup_realization_lead_alpha", 0.12)
+        ),
         loc_ref_v2_startup_handoff_min_readiness=float(
             env.get("loc_ref_v2_startup_handoff_min_readiness", 0.10)
+        ),
+        loc_ref_v2_startup_handoff_min_pelvis_realization=float(
+            env.get("loc_ref_v2_startup_handoff_min_pelvis_realization", 0.60)
         ),
         loc_ref_v2_startup_handoff_min_alpha=float(
             env.get("loc_ref_v2_startup_handoff_min_alpha", 0.85)
@@ -294,11 +300,11 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_startup_handoff_timeout_s=float(
             env.get("loc_ref_v2_startup_handoff_timeout_s", 0.18)
         ),
-        loc_ref_v2_support_pelvis_height_offset_m=float(
-            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)
+        loc_ref_v2_startup_target_rate_design_rad_s=float(
+            env.get("loc_ref_v2_startup_target_rate_design_rad_s", 0.5235987756)
         ),
-        loc_ref_v2_support_stance_extension_margin_m=float(
-            env.get("loc_ref_v2_support_stance_extension_margin_m", 0.055)
+        loc_ref_v2_startup_target_rate_hard_cap_rad_s=float(
+            env.get("loc_ref_v2_startup_target_rate_hard_cap_rad_s", 1.7453292520)
         ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
             env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)

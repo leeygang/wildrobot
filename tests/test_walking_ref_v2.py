@@ -263,13 +263,20 @@ def test_startup_mode_exists_and_transitions_to_support() -> None:
             com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
             root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
             root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+            root_height_m=jnp.asarray(
+                cfg.nominal_com_height_m + cfg.support_pelvis_height_offset_m,
+                dtype=jnp.float32,
+            ),
             left_foot_loaded=jnp.asarray(True),
             right_foot_loaded=jnp.asarray(False),
             dt_s=0.02,
         )
         observed_modes.append(int(mode_id))
 
-    assert int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP) in observed_modes
+    assert all(
+        m in (int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), int(WalkingRefV2Mode.SUPPORT_STABILIZE))
+        for m in observed_modes
+    )
     assert int(WalkingRefV2Mode.SUPPORT_STABILIZE) == observed_modes[-1]
 
 
@@ -302,6 +309,10 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
         com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
         root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
         root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        root_height_m=jnp.asarray(
+            cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m,
+            dtype=jnp.float32,
+        ),
         left_foot_loaded=jnp.asarray(True),
         right_foot_loaded=jnp.asarray(False),
         dt_s=0.02,
@@ -315,8 +326,8 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
     assert abs(float(ref["swing_pos"][1] - ref["next_foothold"][1])) <= 1e-6
     assert abs(float(ref["swing_vel"][1])) <= 1e-6
 
-    startup_alpha = float(mode_time) / cfg.startup_ramp_s
-    assert 0.0 <= startup_alpha <= 1.0
+    startup_alpha = cfg.startup_realization_lead_alpha
+    assert abs(float(mode_time) - 0.02) <= 1e-6
 
     pelvis_height_startup = cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m
     pelvis_height_support = cfg.nominal_com_height_m + cfg.support_pelvis_height_offset_m
@@ -326,13 +337,59 @@ def test_startup_phase_keeps_release_suppressed_and_interpolation_bounded() -> N
     assert abs(float(ref["pelvis_height"]) - expected_height) <= 1e-6
 
 
-def test_startup_readiness_governor_pauses_progress_when_tracking_lags() -> None:
+def test_startup_pelvis_realization_drives_progress() -> None:
+    cfg = WalkingRefV2Config(startup_realization_lead_alpha=0.0)
+    startup_height = cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m
+    support_height = cfg.nominal_com_height_m + cfg.support_pelvis_height_offset_m
+
+    ref_low, *_ = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        root_height_m=jnp.asarray(startup_height, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(False),
+        dt_s=0.02,
+    )
+
+    ref_high, *_ = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        root_height_m=jnp.asarray(support_height, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(False),
+        dt_s=0.02,
+    )
+
+    low_dist = abs(float(ref_low["pelvis_height"]) - support_height)
+    high_dist = abs(float(ref_high["pelvis_height"]) - support_height)
+    assert high_dist < low_dist
+
+
+def test_startup_readiness_governor_softly_slows_progress_without_freezing_timeout() -> None:
     cfg = WalkingRefV2Config(
-        startup_ramp_s=0.20,
-        startup_progress_min_scale=0.0,
+        startup_progress_min_scale=0.20,
+        startup_realization_lead_alpha=0.12,
     )
     (
-        _ref,
+        ref,
         _phase_time,
         _stance_foot,
         _switch_count,
@@ -353,6 +410,10 @@ def test_startup_readiness_governor_pauses_progress_when_tracking_lags() -> None
         com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
         root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
         root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        root_height_m=jnp.asarray(
+            cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m,
+            dtype=jnp.float32,
+        ),
         left_foot_loaded=jnp.asarray(True),
         right_foot_loaded=jnp.asarray(False),
         dt_s=0.02,
@@ -360,15 +421,21 @@ def test_startup_readiness_governor_pauses_progress_when_tracking_lags() -> None
         stance_ankle_tracking_error_rad=jnp.asarray(1.0, dtype=jnp.float32),
     )
     assert int(mode_id) == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
-    assert abs(float(mode_time)) <= 1e-6
+    assert abs(float(mode_time) - 0.02) <= 1e-6
+    low_readiness_alpha = cfg.startup_realization_lead_alpha * cfg.startup_progress_min_scale
+    pelvis_height_startup = cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m
+    pelvis_height_support = cfg.nominal_com_height_m + cfg.support_pelvis_height_offset_m
+    expected_height = pelvis_height_startup + low_readiness_alpha * (
+        pelvis_height_support - pelvis_height_startup
+    )
+    assert abs(float(ref["pelvis_height"]) - expected_height) <= 1e-6
 
 
 def test_startup_handoff_requires_readiness_not_time_only() -> None:
     cfg = WalkingRefV2Config(
-        startup_ramp_s=0.20,
         startup_handoff_min_alpha=0.85,
         startup_handoff_min_readiness=0.60,
-        startup_progress_min_scale=0.0,
+        startup_handoff_min_pelvis_realization=0.60,
         startup_handoff_timeout_s=1.0,
     )
     (
@@ -393,6 +460,10 @@ def test_startup_handoff_requires_readiness_not_time_only() -> None:
         com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
         root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
         root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        root_height_m=jnp.asarray(
+            cfg.nominal_com_height_m + cfg.startup_pelvis_height_offset_m,
+            dtype=jnp.float32,
+        ),
         left_foot_loaded=jnp.asarray(True),
         right_foot_loaded=jnp.asarray(False),
         dt_s=0.02,
@@ -400,7 +471,7 @@ def test_startup_handoff_requires_readiness_not_time_only() -> None:
         stance_ankle_tracking_error_rad=jnp.asarray(0.9, dtype=jnp.float32),
     )
     assert int(mode_id) == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
-    assert abs(float(mode_time) - 0.19) <= 1e-6
+    assert abs(float(mode_time) - 0.21) <= 1e-6
 
 
 def test_startup_timeout_fallback_prevents_permanent_startup_lock() -> None:

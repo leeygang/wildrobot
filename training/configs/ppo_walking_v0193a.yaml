@@ -92,6 +92,10 @@ env:
   loc_ref_v2_settle_hold_s: 0.04
   loc_ref_v2_support_stabilize_max_foothold_scale: 0.35
   loc_ref_v2_post_settle_swing_scale: 0.15
+  loc_ref_v2_startup_realization_lead_alpha: 0.12
+  loc_ref_v2_startup_handoff_min_pelvis_realization: 0.60
+  loc_ref_v2_startup_target_rate_design_rad_s: 0.5235987756   # 30 deg/s
+  loc_ref_v2_startup_target_rate_hard_cap_rad_s: 1.7453292520 # 100 deg/s
   loc_ref_v2_support_pelvis_height_offset_m: 0.050
   loc_ref_v2_support_stance_extension_margin_m: 0.055
 
