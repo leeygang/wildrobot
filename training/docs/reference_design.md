@@ -241,26 +241,51 @@ The startup transition should:
 - gradually move pelvis height toward the loaded support target
 - keep swing release fully suppressed
 - complete only when the robot has settled into a viable support posture
+- react to actual posture realization, not only elapsed startup time
 
 The startup transition should not:
 
 - instantly command a deep crouch-like support posture
 - use PPO residuals as the primary mechanism for entering support
 - open stepping progression before support posture is established
+- continue deepening support posture when stance knee/ankle tracking is clearly
+  lagging
 
 Recommended implementation shape:
 
-- define a startup interpolation scalar `startup_alpha in [0, 1]`
-- blend from reset/home posture toward support posture over a short bounded
-  interval
+- define startup progress from realized posture, not elapsed time alone
+- use pelvis height realization as the primary startup task-progress signal for
+  upright-to-support transition
+- guard that progress with stance knee realization, stance ankle realization,
+  root pitch, root pitch rate, and support health
 - keep `swing_x_release = 0` and `lateral_release_y = 0` during this phase
 - keep `swing_y_target = base_support_y`
+- use a startup readiness scale only as a soft governor on progression speed,
+  not as the primary notion of progress
+- add explicit startup target-rate limiting
+  - nominal design rate should be around `30°/s`
+  - hard emergency cap should be around `100°/s`
 - only allow transition into `support_stabilize` once startup posture error,
   pitch rate, and support health are within acceptable bounds
+- keep elapsed time only as a watchdog / timeout, not as the main progress
+  driver
 
 The purpose of this phase is not to "walk slowly."
 Its purpose is to provide a dynamically plausible path from reset posture to the
 first real support posture.
+
+Feedforward interpolation alone is not sufficient.
+If nominal-only traces show that `q_ref -> ctrl` is clean but the robot is not
+realizing the intermediate support posture, startup progression should wait for
+the robot rather than blindly advancing on schedule.
+
+Best-practice note:
+
+- startup progress should be task-specific
+- for upright-to-support transition, pelvis `z` / height is the primary task
+  metric
+- joint realization and stability signals should guard that progress so collapse
+  is not mistaken for success
 
 ### Hybrid modes
 
@@ -798,11 +823,25 @@ Current ablation evidence says:
 - `slow-phase`: reduces aggression slightly, but no survival gain
 - `tight-stance`: improves survival, but worsens overspeed
 
+Latest nominal-viewer evidence also says:
+
+- disabling the action filter removes startup `q_ref -> ctrl` distortion
+- startup knee/ankle target steps become very abrupt once that filter is removed
+- in `support_stabilize`, `q_ref -> ctrl` is mostly clean
+- in `support_stabilize`, stance knee/ankle still show large `ctrl -> actual`
+  mismatch while stance hip tracks much better
+
 Interpretation:
 
-- the blocker is a coupled sagittal support + forward progression problem
-- support geometry matters
-- progression is still too aggressive relative to support recovery
+- the blocker is still a coupled support-realization + forward-progression
+  problem
+- support geometry matters, but startup/support execution is still too
+  feedforward
+- startup target delivery distortion was partly caused by the action filter
+- once that filter is removed, startup target changes are still too abrupt for
+  the current realization path
+- the next bounded pass should make startup/support progression feedback-aware
+  before more foothold/progression retuning
 - PPO should remain paused
 
 ---
@@ -845,6 +884,8 @@ Goals:
 
 - make `walking_ref_v2` conservative and dynamically plausible
 - make the loaded support posture reachable and holdable under full dynamics
+- isolate obvious command-path distortions that hide the real startup/support
+  behavior
 
 Expected tasks:
 
@@ -863,7 +904,12 @@ Expected tasks:
 4. Only after support posture improves:
    - retune support-conditioned progression
    - retune bounded foothold and swing release
-5. Re-run nominal-only probes at `0.06 / 0.10 / 0.14`
+5. Command-path isolation
+   - verify whether startup `q_ref -> ctrl` mismatch is caused by filtering or
+     other delivery-path reshaping
+   - identify whether the first major divergence is `q_ref -> ctrl` or
+     `ctrl -> actual`
+6. Re-run nominal-only probes at `0.06 / 0.10 / 0.14`
 
 Target metrics for `M2.5-A2`:
 
@@ -883,7 +929,63 @@ Target metrics for `M2.5-A2`:
   - swing-foot tracking reward exceeds `1e-5`
   - foothold consistency reward exceeds `0.05`
 
-### `M2.5-A3`: Exit decision
+### `M2.5-A3`: Feedback-aware startup/support execution
+
+Goals:
+
+- make startup/support transition react to actual posture realization
+- replace time-driven startup progress with posture-realization-driven progress
+- reduce abrupt startup target deepening while preserving early pitch stability
+- keep the current support-first state machine, but stop treating startup as a
+  purely feedforward interpolation
+
+Expected tasks:
+
+1. Define task-specific startup realization signals
+   - primary task metric: pelvis height realization toward the support target
+   - guard metrics: stance knee realization, stance ankle realization, root
+     pitch, root pitch rate, and support health
+2. Replace time-driven startup progress with realized-posture progress
+   - startup should advance because the body is actually entering support, not
+     because `mode_time` happened to grow
+   - elapsed time may remain only as a timeout / watchdog
+3. Add explicit startup rate limiting
+   - nominal support-entry design rate should be around `30°/s`
+   - hard emergency cap should be around `100°/s`
+   - apply the limiter to the startup support-joint targets or an equivalent
+     posture-driving variable
+4. Keep readiness as a soft governor
+   - readiness should slow progression when the robot lags
+   - readiness should not be able to deadlock startup indefinitely
+5. Re-run startup-path and support-only viewer probes
+   - compare startup `q_ref -> ctrl`
+   - compare `max Δctrl/step` at stance knee/ankle
+   - compare startup duration / handoff behavior
+   - compare stance knee/ankle target-vs-actual error
+6. Only after startup/support execution improves:
+   - revisit bounded progression / foothold release tuning
+
+Target metrics for `M2.5-A3`:
+
+- startup-path:
+  - startup `q_ref -> ctrl` remains clean in nominal-only debug mode
+  - stance knee and ankle target-rate stays near the `30°/s` design intent and
+    never exceeds the `100°/s` hard cap
+  - startup does not deadlock in `STARTUP_SUPPORT_RAMP`
+  - stance knee actual moves toward target more consistently during startup
+  - pelvis height progresses toward support target for the right reason, not
+    because the robot is collapsing
+  - support handoff occurs without immediate pitch jump
+- support-only:
+  - stance knee and ankle target-vs-actual mismatch is smaller or at least no
+    worse than the current braced-support regime
+  - root roll and width growth remain bounded
+- nominal sweep:
+  - early pitch stability is preserved
+  - progression quality does not regress further while startup execution is
+    being fixed
+
+### `M2.5-A4`: Exit decision
 
 Resume PPO only if all are true:
 
@@ -904,10 +1006,10 @@ assessment in:
 
 Trace-level review is still required after the numeric gate passes.
 
-### `M2.5-A4`: If support-posture redesign still fails
+### `M2.5-A5`: If bounded redesign still fails
 
-If `M2.5-A2` still cannot produce a credible nominal prior, do not continue with
-small local patches indefinitely.
+If `M2.5-A2` + `M2.5-A3` still cannot produce a credible nominal prior, do not
+continue with small local patches indefinitely.
 
 Escalation options should be considered in this order:
 
@@ -935,15 +1037,22 @@ The key rule is:
 
 ## Immediate Next Actions
 
-1. Redesign support posture as a shallower loaded standing pose.
-2. Keep startup ramp, but retarget it to the new support posture.
+1. Keep the current support-first posture branch as the baseline.
+2. Replace time-driven startup progression with posture-realization-driven
+   startup execution.
+   - use pelvis height realization as the primary startup task metric
+   - guard it with stance knee/ankle realization plus pitch/support stability
+   - add a nominal startup rate target around `30°/s` and a hard cap around
+     `100°/s`
 3. Validate both:
    - startup-path transition from keyframe 0
    - grounded support-only holding
-4. Re-run nominal-only probes under the updated support posture.
+4. Re-run nominal-only probes under the updated startup/support execution.
    Preferred command:
    `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-5. Use the support-first checklist as the only decision gate for resuming PPO.
+5. Only after startup/support execution improves, revisit bounded
+   foothold/progression tuning.
+6. Use the support-first checklist as the only decision gate for resuming PPO.
 
 ---
 
