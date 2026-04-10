@@ -231,6 +231,39 @@ def test_debug_force_support_only_prevents_release_and_phase_progress() -> None:
     assert abs(float(ref["swing_vel"][0])) <= 1e-6
 
 
+def test_debug_force_support_only_keeps_mode_time_progressing_in_support() -> None:
+    cfg = WalkingRefV2Config(debug_force_support_only=True)
+    (
+        _ref,
+        phase_time,
+        stance_foot,
+        switch_count,
+        mode_id,
+        mode_time,
+        _health,
+        _instability,
+        _permission,
+    ) = step_reference_v2_jax(
+        config=cfg,
+        phase_time_s=jnp.asarray(0.0, dtype=jnp.float32),
+        stance_foot_id=jnp.asarray(0, dtype=jnp.int32),
+        stance_switch_count=jnp.asarray(0, dtype=jnp.int32),
+        mode_id=jnp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jnp.int32),
+        mode_time_s=jnp.asarray(0.10, dtype=jnp.float32),
+        forward_speed_mps=jnp.asarray(0.10, dtype=jnp.float32),
+        com_position_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        com_velocity_stance_frame=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        root_pitch_rad=jnp.asarray(0.0, dtype=jnp.float32),
+        root_pitch_rate_rad_s=jnp.asarray(0.0, dtype=jnp.float32),
+        left_foot_loaded=jnp.asarray(True),
+        right_foot_loaded=jnp.asarray(True),
+        dt_s=0.02,
+    )
+    assert int(mode_id) == int(WalkingRefV2Mode.SUPPORT_STABILIZE)
+    assert abs(float(phase_time)) <= 1e-6
+    assert abs(float(mode_time) - 0.12) <= 1e-6
+
+
 def test_startup_mode_exists_and_transitions_to_support() -> None:
     cfg = WalkingRefV2Config(startup_ramp_s=0.06)
     phase_time = jnp.asarray(0.0, dtype=jnp.float32)

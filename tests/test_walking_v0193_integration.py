@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -17,6 +18,7 @@ from training.envs.wildrobot_env import (
     _loc_ref_support_scales,
 )
 from control.references.walking_ref_v2 import compute_support_health_v2_jax, WalkingRefV2Config
+from control.references.walking_ref_v2 import WalkingRefV2Mode, step_reference_v2_jax
 from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
 from policy_contract.calib import JaxCalibOps
 
@@ -402,6 +404,72 @@ def test_support_entry_rate_limiter_clamps_stance_hip_knee_ankle() -> None:
             float(cfg.env.loc_ref_v2_support_entry_shaping_window_s) + 0.01,
             dtype=jp.float32,
         ),
+    )
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            assert abs(float(unshaped_q[idx] - target_q[idx])) <= 1e-6
+
+
+def test_force_support_only_mode_time_progresses_past_support_entry_window() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    load_robot_config(Path(cfg.env.assets_root) / "mujoco_robot_config.json")
+    cfg.freeze()
+    env = WildRobotEnv(config=cfg)
+
+    ref_cfg = replace(env._walking_ref_v2_cfg, debug_force_support_only=True)  # noqa: SLF001
+    phase_time = jp.asarray(0.0, dtype=jp.float32)
+    stance_foot = jp.asarray(0, dtype=jp.int32)
+    switch_count = jp.asarray(0, dtype=jp.int32)
+    mode_id = jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32)
+    mode_time = jp.asarray(0.0, dtype=jp.float32)
+
+    steps = int(cfg.env.loc_ref_v2_support_entry_shaping_window_s / float(env.dt)) + 3
+    for _ in range(steps):
+        (
+            _ref,
+            phase_time,
+            stance_foot,
+            switch_count,
+            mode_id,
+            mode_time,
+            _health,
+            _instability,
+            _permission,
+        ) = step_reference_v2_jax(
+            config=ref_cfg,
+            phase_time_s=phase_time,
+            stance_foot_id=stance_foot,
+            stance_switch_count=switch_count,
+            mode_id=mode_id,
+            mode_time_s=mode_time,
+            forward_speed_mps=jp.asarray(0.10, dtype=jp.float32),
+            com_position_stance_frame=jp.asarray([0.0, 0.0], dtype=jp.float32),
+            com_velocity_stance_frame=jp.asarray([0.0, 0.0], dtype=jp.float32),
+            root_pitch_rad=jp.asarray(0.0, dtype=jp.float32),
+            root_pitch_rate_rad_s=jp.asarray(0.0, dtype=jp.float32),
+            left_foot_loaded=jp.asarray(True),
+            right_foot_loaded=jp.asarray(True),
+            dt_s=float(env.dt),
+        )
+
+    assert int(mode_id) == int(WalkingRefV2Mode.SUPPORT_STABILIZE)
+    assert float(mode_time) > float(cfg.env.loc_ref_v2_support_entry_shaping_window_s)
+
+    prev_q = jp.zeros((env.action_size,), dtype=jp.float32)
+    target_q = prev_q
+    left_hip_idx = env._actuator_name_to_index.get("left_hip_pitch", -1)
+    left_knee_idx = env._actuator_name_to_index.get("left_knee_pitch", -1)
+    left_ankle_idx = env._actuator_name_to_index.get("left_ankle_pitch", -1)
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            target_q = target_q.at[idx].set(jp.asarray(1.0, dtype=jp.float32))
+
+    unshaped_q = env._apply_startup_support_rate_limiter(  # noqa: SLF001
+        nominal_q_ref=target_q,
+        prev_nominal_q_ref=prev_q,
+        stance_foot_id=stance_foot,
+        mode_id=mode_id,
+        mode_time_s=mode_time,
     )
     for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
         if idx >= 0:

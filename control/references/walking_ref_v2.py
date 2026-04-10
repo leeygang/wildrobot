@@ -535,8 +535,8 @@ def step_reference_v2_jax(
     phase = jnp.where(switched, 0.0, phase)
 
     if config.debug_force_support_only:
+        # Keep mode_time progressing so support-entry shaping stays bounded in debug runs.
         mode = support_mode
-        mode_time = jnp.asarray(0.0, dtype=jnp.float32)
         phase_time = jnp.asarray(0.0, dtype=jnp.float32)
         phase = jnp.asarray(0.0, dtype=jnp.float32)
 
