@@ -306,6 +306,72 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_startup_target_rate_hard_cap_rad_s=float(
             env.get("loc_ref_v2_startup_target_rate_hard_cap_rad_s", 1.7453292520)
         ),
+        loc_ref_v2_startup_route_w1_alpha=float(
+            env.get("loc_ref_v2_startup_route_w1_alpha", 0.25)
+        ),
+        loc_ref_v2_startup_route_w2_alpha=float(
+            env.get("loc_ref_v2_startup_route_w2_alpha", 0.50)
+        ),
+        loc_ref_v2_startup_route_w3_alpha=float(
+            env.get("loc_ref_v2_startup_route_w3_alpha", 0.75)
+        ),
+        loc_ref_v2_startup_route_w1_scale=float(
+            env.get("loc_ref_v2_startup_route_w1_scale", 0.20)
+        ),
+        loc_ref_v2_startup_route_w2_scale=float(
+            env.get("loc_ref_v2_startup_route_w2_scale", 0.45)
+        ),
+        loc_ref_v2_startup_route_w3_scale=float(
+            env.get("loc_ref_v2_startup_route_w3_scale", 0.75)
+        ),
+        loc_ref_v2_startup_route_w1_support_y_scale=float(
+            env.get("loc_ref_v2_startup_route_w1_support_y_scale", 0.25)
+        ),
+        loc_ref_v2_startup_route_w2_support_y_scale=float(
+            env.get("loc_ref_v2_startup_route_w2_support_y_scale", 0.60)
+        ),
+        loc_ref_v2_startup_route_w3_support_y_scale=float(
+            env.get("loc_ref_v2_startup_route_w3_support_y_scale", 0.85)
+        ),
+        loc_ref_v2_startup_route_w1_pelvis_roll_scale=float(
+            env.get("loc_ref_v2_startup_route_w1_pelvis_roll_scale", 0.45)
+        ),
+        loc_ref_v2_startup_route_w2_pelvis_roll_scale=float(
+            env.get("loc_ref_v2_startup_route_w2_pelvis_roll_scale", 0.75)
+        ),
+        loc_ref_v2_startup_route_w3_pelvis_roll_scale=float(
+            env.get("loc_ref_v2_startup_route_w3_pelvis_roll_scale", 0.90)
+        ),
+        loc_ref_v2_startup_route_w1_pelvis_pitch_scale=float(
+            env.get("loc_ref_v2_startup_route_w1_pelvis_pitch_scale", 0.20)
+        ),
+        loc_ref_v2_startup_route_w2_pelvis_pitch_scale=float(
+            env.get("loc_ref_v2_startup_route_w2_pelvis_pitch_scale", 0.50)
+        ),
+        loc_ref_v2_startup_route_w3_pelvis_pitch_scale=float(
+            env.get("loc_ref_v2_startup_route_w3_pelvis_pitch_scale", 0.80)
+        ),
+        loc_ref_v2_startup_route_w1_pelvis_height_scale=float(
+            env.get("loc_ref_v2_startup_route_w1_pelvis_height_scale", 0.15)
+        ),
+        loc_ref_v2_startup_route_w2_pelvis_height_scale=float(
+            env.get("loc_ref_v2_startup_route_w2_pelvis_height_scale", 0.45)
+        ),
+        loc_ref_v2_startup_route_w3_pelvis_height_scale=float(
+            env.get("loc_ref_v2_startup_route_w3_pelvis_height_scale", 0.80)
+        ),
+        loc_ref_v2_startup_route_w2_min_pelvis_realization=float(
+            env.get("loc_ref_v2_startup_route_w2_min_pelvis_realization", 0.30)
+        ),
+        loc_ref_v2_startup_route_w3_min_pelvis_realization=float(
+            env.get("loc_ref_v2_startup_route_w3_min_pelvis_realization", 0.55)
+        ),
+        loc_ref_v2_startup_route_w2_pitch_relax=float(
+            env.get("loc_ref_v2_startup_route_w2_pitch_relax", 1.25)
+        ),
+        loc_ref_v2_startup_route_w2_pitch_rate_relax=float(
+            env.get("loc_ref_v2_startup_route_w2_pitch_rate_relax", 1.25)
+        ),
         loc_ref_v2_support_entry_shaping_window_s=float(
             env.get("loc_ref_v2_support_entry_shaping_window_s", 0.12)
         ),

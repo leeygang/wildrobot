@@ -11,6 +11,7 @@ from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.configs.training_config import load_training_config
 from training.eval.visualize_nominal_ref import (
     _CommandPathTracker,
+    _StartupRouteTracker,
     _compute_stance_ground_shift,
     _configure_nominal_only,
     _dominant_termination_from_metrics,
@@ -200,6 +201,10 @@ def test_command_path_tracker_reports_startup_early_late_support() -> None:
 def test_format_step_line_includes_lateral_and_hip_roll_diagnostics() -> None:
     class _WR:
         velocity_cmd = 0.10
+        loc_ref_startup_route_stage_id = jnp.asarray(2, dtype=jnp.int32)
+        loc_ref_startup_route_transition_reason = jnp.asarray(0, dtype=jnp.int32)
+        loc_ref_startup_route_progress = jnp.asarray(0.5, dtype=jnp.float32)
+        loc_ref_startup_route_ceiling = jnp.asarray(0.75, dtype=jnp.float32)
 
     class _State:
         info = {WR_INFO_KEY: _WR()}
@@ -233,6 +238,42 @@ def test_format_step_line_includes_lateral_and_hip_roll_diagnostics() -> None:
     assert "pelvis_roll_tgt=+0.020" in line
     assert "lhr_tgt=-0.010" in line
     assert "rhr_tgt=+0.010" in line
+    assert "route=W2" in line
+    assert "route_prog=0.500/0.750" in line
+    assert "route_reason=NONE" in line
+
+
+def test_startup_route_tracker_reports_stage_transitions_and_pose_channels() -> None:
+    tracker = _StartupRouteTracker()
+    posture_a = {
+        "pelvis_height_ref": 0.46,
+        "root_height": 0.44,
+        "hip_roll_ref": 0.02,
+        "hip_roll_act": 0.01,
+        "hip_pitch_ref": 0.10,
+        "hip_pitch_act": 0.07,
+        "knee_pitch_ref": 0.20,
+        "knee_pitch_act": 0.05,
+        "ankle_pitch_ref": -0.08,
+        "ankle_pitch_act": -0.03,
+    }
+    posture_w1 = dict(posture_a)
+    posture_w1["knee_pitch_ref"] = 0.25
+    posture_w1["knee_pitch_act"] = 0.12
+
+    transition_1 = tracker.update(step=1, stage_id=0, reason_id=0, mode_id=0, posture=posture_a)
+    transition_2 = tracker.update(step=2, stage_id=1, reason_id=0, mode_id=0, posture=posture_w1)
+    tracker.finalize(final_step=2)
+    summary = tracker.get_summary()
+
+    assert transition_1 is None
+    assert transition_2 is not None
+    assert "A->W1" in transition_2
+    assert "STARTUP ROUTE STAGE SUMMARY" in summary
+    assert "Stage A: entry=1 exit=1 dwell=1" in summary
+    assert "Stage W1: entry=2 exit=2 dwell=1" in summary
+    assert "pelvis_height" in summary
+    assert "knee_pitch" in summary
 
 
 def test_extract_lateral_semantics_and_reset_line() -> None:

@@ -66,7 +66,39 @@ from training.configs.training_config import TrainingConfig, load_training_confi
 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.envs.env_info import WR_INFO_KEY
 from training.envs.wildrobot_env import WildRobotEnv
-from control.references.walking_ref_v2 import WalkingRefV2Mode
+from control.references.walking_ref_v2 import (
+    StartupRouteReason,
+    StartupRouteStage,
+    WalkingRefV2Mode,
+)
+
+
+_ROUTE_STAGE_LABELS = {
+    int(StartupRouteStage.A): "A",
+    int(StartupRouteStage.W1): "W1",
+    int(StartupRouteStage.W2): "W2",
+    int(StartupRouteStage.W3): "W3",
+    int(StartupRouteStage.B): "B",
+}
+
+_ROUTE_REASON_LABELS = {
+    int(StartupRouteReason.NONE): "NONE",
+    int(StartupRouteReason.PELVIS_NOT_REALIZED): "PELVIS_NOT_REALIZED",
+    int(StartupRouteReason.JOINT_TRACKING_LAG): "JOINT_TRACKING_LAG",
+    int(StartupRouteReason.ROOT_PITCH_LIMIT): "ROOT_PITCH_LIMIT",
+    int(StartupRouteReason.ROOT_PITCH_RATE_LIMIT): "ROOT_PITCH_RATE_LIMIT",
+    int(StartupRouteReason.SUPPORT_HEALTH_LOW): "SUPPORT_HEALTH_LOW",
+    int(StartupRouteReason.TIMEOUT_FALLBACK): "TIMEOUT_FALLBACK",
+    int(StartupRouteReason.ROUTE_COMPLETE): "ROUTE_COMPLETE",
+}
+
+
+def _route_stage_label(stage_id: int) -> str:
+    return _ROUTE_STAGE_LABELS.get(int(stage_id), f"STAGE_{int(stage_id)}")
+
+
+def _route_reason_label(reason_id: int) -> str:
+    return _ROUTE_REASON_LABELS.get(int(reason_id), f"REASON_{int(reason_id)}")
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -459,6 +491,28 @@ def _format_reset_lateral_line_from_state(env: WildRobotEnv, state) -> str:
 def _format_step_line(step: int, state, metrics_vec: jnp.ndarray) -> str:
     wr = state.info[WR_INFO_KEY]
     sem = _extract_lateral_semantics(metrics_vec)
+    route_stage = _route_stage_label(
+        int(
+            jnp.asarray(
+                getattr(wr, "loc_ref_startup_route_stage_id", int(StartupRouteStage.B)),
+                dtype=jnp.int32,
+            )
+        )
+    )
+    route_reason = _route_reason_label(
+        int(
+            jnp.asarray(
+                getattr(wr, "loc_ref_startup_route_transition_reason", int(StartupRouteReason.NONE)),
+                dtype=jnp.int32,
+            )
+        )
+    )
+    route_prog = float(
+        jnp.asarray(getattr(wr, "loc_ref_startup_route_progress", 1.0), dtype=jnp.float32)
+    )
+    route_cap = float(
+        jnp.asarray(getattr(wr, "loc_ref_startup_route_ceiling", 1.0), dtype=jnp.float32)
+    )
     return (
         f"step={step:04d} "
         f"cmd={float(wr.velocity_cmd):.3f} "
@@ -474,6 +528,9 @@ def _format_step_line(step: int, state, metrics_vec: jnp.ndarray) -> str:
         f"pitch={float(metrics_vec[METRIC_INDEX['debug/loc_ref_root_pitch']]):+.3f} "
         f"pitch_rate={float(metrics_vec[METRIC_INDEX['debug/loc_ref_root_pitch_rate']]):+.3f} "
         f"mode={int(round(float(metrics_vec[METRIC_INDEX['debug/loc_ref_hybrid_mode_id']])))} "
+        f"route={route_stage} "
+        f"route_prog={route_prog:.3f}/{route_cap:.3f} "
+        f"route_reason={route_reason} "
         f"support={float(metrics_vec[METRIC_INDEX['debug/loc_ref_support_health']]):.3f} "
         f"perm={float(metrics_vec[METRIC_INDEX['debug/loc_ref_progression_permission']]):.3f} "
         f"swing_x_scale_active={float(metrics_vec[METRIC_INDEX['debug/loc_ref_swing_x_scale_active']]):.3f} "
@@ -508,6 +565,9 @@ def _extract_support_posture(
     root_pose = env._cal.get_root_pose(state.data)  # noqa: SLF001
     root_roll, _, _ = root_pose.euler_angles()
     root_height = root_pose.height
+    pelvis_height_ref = float(
+        jnp.asarray(getattr(wr, "loc_ref_pelvis_height", root_height), dtype=jnp.float32)
+    )
 
     if stance == 0:
         leg = "L"
@@ -537,6 +597,7 @@ def _extract_support_posture(
     ap_ref, ap_ctrl, ap_act, ap_ref_err, ap_ctrl_err = joint_quintuplet(idx_ankle_pitch)
     return {
         "stance_leg": leg,
+        "pelvis_height_ref": pelvis_height_ref,
         "root_roll": float(root_roll),
         "root_height": float(root_height),
         "hip_roll_ref": hr_ref,
@@ -950,6 +1011,132 @@ class _CommandPathTracker:
         return "\n".join(lines)
 
 
+class _StartupRouteTracker:
+    """Tracks staged startup route A/W1/W2/W3/B transitions and posture realization."""
+
+    _STAGE_ORDER = ("A", "W1", "W2", "W3", "B")
+    _CHANNELS = (
+        ("pelvis_height", "pelvis_height_ref", "root_height"),
+        ("hip_roll", "hip_roll_ref", "hip_roll_act"),
+        ("hip_pitch", "hip_pitch_ref", "hip_pitch_act"),
+        ("knee_pitch", "knee_pitch_ref", "knee_pitch_act"),
+        ("ankle_pitch", "ankle_pitch_ref", "ankle_pitch_act"),
+    )
+
+    def __init__(self) -> None:
+        self.current_stage: str | None = None
+        self.current_stage_id: int | None = None
+        self.current_entry_step: int | None = None
+        self.stage_records: dict[str, dict[str, object]] = {}
+        self.transitions: list[dict[str, object]] = []
+
+    def _ensure_stage(self, stage: str, entry_step: int) -> None:
+        if stage not in self.stage_records:
+            self.stage_records[stage] = {
+                "entry_step": int(entry_step),
+                "exit_step": None,
+                "samples": [],
+            }
+
+    def update(
+        self,
+        *,
+        step: int,
+        stage_id: int,
+        reason_id: int,
+        mode_id: int,
+        posture: dict[str, float | str],
+    ) -> str | None:
+        stage = _route_stage_label(stage_id)
+        reason = _route_reason_label(reason_id)
+        transition_line = None
+        if stage != self.current_stage:
+            prev_stage = self.current_stage
+            prev_stage_id = self.current_stage_id
+            if prev_stage is not None and prev_stage in self.stage_records:
+                self.stage_records[prev_stage]["exit_step"] = int(step - 1)
+                prev_entry = int(self.stage_records[prev_stage]["entry_step"])
+                dwell = int(max((step - 1) - prev_entry + 1, 0))
+                if reason == "NONE":
+                    if prev_stage_id is not None and stage_id > prev_stage_id:
+                        reason = "ADVANCE"
+                    elif prev_stage_id is not None and stage_id < prev_stage_id:
+                        reason = "REGRESS"
+                self.transitions.append(
+                    {
+                        "from": prev_stage,
+                        "to": stage,
+                        "step": int(step),
+                        "reason": reason,
+                        "dwell": dwell,
+                        "mode_id": int(mode_id),
+                    }
+                )
+                transition_line = (
+                    "[nominal-viewer] startup-route transition "
+                    f"{prev_stage}->{stage} at step={step} "
+                    f"reason={reason} dwell={dwell}"
+                )
+            self.current_stage = stage
+            self.current_stage_id = int(stage_id)
+            self.current_entry_step = int(step)
+            self._ensure_stage(stage, step)
+
+        self._ensure_stage(stage, step)
+        sample = {"step": int(step), "mode_id": int(mode_id)}
+        for _, ref_key, act_key in self._CHANNELS:
+            sample[ref_key] = float(posture[ref_key])
+            sample[act_key] = float(posture[act_key])
+        self.stage_records[stage]["samples"].append(sample)
+        return transition_line
+
+    def finalize(self, final_step: int) -> None:
+        if self.current_stage is not None and self.current_stage in self.stage_records:
+            if self.stage_records[self.current_stage]["exit_step"] is None:
+                self.stage_records[self.current_stage]["exit_step"] = int(final_step)
+
+    def get_summary(self) -> str:
+        lines = []
+        lines.append("\n" + "=" * 80)
+        lines.append("STARTUP ROUTE STAGE SUMMARY (A -> W1 -> W2 -> W3 -> B)")
+        lines.append("=" * 80)
+        if self.transitions:
+            lines.append("Transitions:")
+            for t in self.transitions:
+                lines.append(
+                    f"  step={int(t['step']):04d} {t['from']}->{t['to']} "
+                    f"reason={t['reason']} dwell={int(t['dwell'])} mode={int(t['mode_id'])}"
+                )
+        else:
+            lines.append("Transitions: none")
+        lines.append("")
+        for stage in self._STAGE_ORDER:
+            rec = self.stage_records.get(stage)
+            if rec is None:
+                continue
+            entry = int(rec["entry_step"])
+            exit_step = int(rec["exit_step"]) if rec["exit_step"] is not None else entry
+            dwell = max(exit_step - entry + 1, 0)
+            samples = rec["samples"]
+            lines.append(f"Stage {stage}: entry={entry} exit={exit_step} dwell={dwell} samples={len(samples)}")
+            if not samples:
+                lines.append("  (No samples)")
+                lines.append("")
+                continue
+            for channel_name, ref_key, act_key in self._CHANNELS:
+                refs = np.asarray([float(s[ref_key]) for s in samples], dtype=np.float32)
+                acts = np.asarray([float(s[act_key]) for s in samples], dtype=np.float32)
+                errs = np.abs(acts - refs)
+                lines.append(
+                    f"  {channel_name:12s}: "
+                    f"target_mean={float(np.mean(refs)):+.3f} actual_mean={float(np.mean(acts)):+.3f} "
+                    f"err_mean/max={float(np.mean(errs)):.3f}/{float(np.max(errs)):.3f}"
+                )
+            lines.append("")
+        lines.append("=" * 80)
+        return "\n".join(lines)
+
+
 def run_nominal_viewer(args: argparse.Namespace) -> int:
     cfg = load_training_config(args.config)
     original_action_filter_alpha = float(cfg.env.action_filter_alpha)
@@ -1031,6 +1218,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     ctrl_dt = float(cfg.env.ctrl_dt)
     print_every = max(1, int(args.print_every))
     stage_tracker = _StageTracker()
+    startup_route_tracker = _StartupRouteTracker()
     cmd_path_tracker = _CommandPathTracker(
         ctrl_dt=ctrl_dt,
         support_entry_window_s=float(env._walking_ref_v2_cfg.support_entry_shaping_window_s),  # noqa: SLF001
@@ -1046,10 +1234,34 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         wr_info = state.info[WR_INFO_KEY]
         mode_id = int(jnp.asarray(wr_info.loc_ref_mode_id, dtype=jnp.int32))
         mode_time_s = float(jnp.asarray(wr_info.loc_ref_mode_time, dtype=jnp.float32))
+        route_stage_id = int(
+            jnp.asarray(
+                getattr(wr_info, "loc_ref_startup_route_stage_id", int(StartupRouteStage.B)),
+                dtype=jnp.int32,
+            )
+        )
+        route_reason_id = int(
+            jnp.asarray(
+                getattr(wr_info, "loc_ref_startup_route_transition_reason", int(StartupRouteReason.NONE)),
+                dtype=jnp.int32,
+            )
+        )
         pitch = float(metrics_vec[METRIC_INDEX["debug/pitch"]])
         pitch_rate = float(metrics_vec[METRIC_INDEX["debug/pitch_rate"]])
         posture = _extract_support_posture(env, state, metrics_vec)
         stage_tracker.update(step_idx, mode_id, pitch, pitch_rate, posture)
+        transition_line = startup_route_tracker.update(
+            step=step_idx,
+            stage_id=route_stage_id,
+            reason_id=route_reason_id,
+            mode_id=mode_id,
+            posture=posture,
+        )
+        if transition_line is not None:
+            if args.log:
+                _print_log_only(transition_line)
+            else:
+                print(transition_line)
         cmd_path_tracker.update(step_idx, mode_id, mode_time_s, posture)
         
         for key in term_totals:
@@ -1117,6 +1329,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     # Finalize stage tracking
     final_step = done_step if done_reached else args.horizon
     stage_tracker.finalize(final_step)
+    startup_route_tracker.finalize(final_step)
     
     if done_reached:
         print(f"[nominal-viewer] summary: done_step={done_step} dominant_termination={done_dom}")
@@ -1140,6 +1353,11 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         _print_log_only(cmd_path_summary)
     else:
         print(cmd_path_summary)
+    startup_route_summary = startup_route_tracker.get_summary()
+    if args.log:
+        _print_log_only(startup_route_summary)
+    else:
+        print(startup_route_summary)
     
     return 0
 

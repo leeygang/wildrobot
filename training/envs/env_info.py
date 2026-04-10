@@ -108,6 +108,10 @@ try:
         loc_ref_switch_count: jnp.ndarray  # shape=(), int32
         loc_ref_mode_id: jnp.ndarray  # shape=(), int32 (v2 hybrid mode)
         loc_ref_mode_time: jnp.ndarray  # shape=()
+        loc_ref_startup_route_progress: jnp.ndarray  # shape=()
+        loc_ref_startup_route_ceiling: jnp.ndarray  # shape=()
+        loc_ref_startup_route_stage_id: jnp.ndarray  # shape=(), int32
+        loc_ref_startup_route_transition_reason: jnp.ndarray  # shape=(), int32
         loc_ref_gait_phase_sin: jnp.ndarray  # shape=()
         loc_ref_gait_phase_cos: jnp.ndarray  # shape=()
         loc_ref_next_foothold: jnp.ndarray  # shape=(2,)
@@ -251,6 +255,10 @@ except ImportError:
         loc_ref_switch_count: jnp.ndarray
         loc_ref_mode_id: jnp.ndarray
         loc_ref_mode_time: jnp.ndarray
+        loc_ref_startup_route_progress: jnp.ndarray
+        loc_ref_startup_route_ceiling: jnp.ndarray
+        loc_ref_startup_route_stage_id: jnp.ndarray
+        loc_ref_startup_route_transition_reason: jnp.ndarray
         loc_ref_gait_phase_sin: jnp.ndarray
         loc_ref_gait_phase_cos: jnp.ndarray
         loc_ref_next_foothold: jnp.ndarray
@@ -360,6 +368,10 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "loc_ref_switch_count": (),
         "loc_ref_mode_id": (),
         "loc_ref_mode_time": (),
+        "loc_ref_startup_route_progress": (),
+        "loc_ref_startup_route_ceiling": (),
+        "loc_ref_startup_route_stage_id": (),
+        "loc_ref_startup_route_transition_reason": (),
         "loc_ref_gait_phase_sin": (),
         "loc_ref_gait_phase_cos": (),
         "loc_ref_next_foothold": (2,),

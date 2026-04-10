@@ -1634,6 +1634,84 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     1.7453292520,
                 )
             ),
+            startup_route_w1_alpha=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_alpha", 0.25)
+            ),
+            startup_route_w2_alpha=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_alpha", 0.50)
+            ),
+            startup_route_w3_alpha=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_alpha", 0.75)
+            ),
+            startup_route_w1_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_scale", 0.20)
+            ),
+            startup_route_w2_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_scale", 0.45)
+            ),
+            startup_route_w3_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_scale", 0.75)
+            ),
+            startup_route_w1_support_y_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_support_y_scale", 0.25)
+            ),
+            startup_route_w2_support_y_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_support_y_scale", 0.60)
+            ),
+            startup_route_w3_support_y_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_support_y_scale", 0.85)
+            ),
+            startup_route_w1_pelvis_roll_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_pelvis_roll_scale", 0.45)
+            ),
+            startup_route_w2_pelvis_roll_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_pelvis_roll_scale", 0.75)
+            ),
+            startup_route_w3_pelvis_roll_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_pelvis_roll_scale", 0.90)
+            ),
+            startup_route_w1_pelvis_pitch_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_pelvis_pitch_scale", 0.20)
+            ),
+            startup_route_w2_pelvis_pitch_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_pelvis_pitch_scale", 0.50)
+            ),
+            startup_route_w3_pelvis_pitch_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_pelvis_pitch_scale", 0.80)
+            ),
+            startup_route_w1_pelvis_height_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w1_pelvis_height_scale", 0.15)
+            ),
+            startup_route_w2_pelvis_height_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_pelvis_height_scale", 0.45)
+            ),
+            startup_route_w3_pelvis_height_scale=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w3_pelvis_height_scale", 0.80)
+            ),
+            startup_route_w2_min_pelvis_realization=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_route_w2_min_pelvis_realization",
+                    0.30,
+                )
+            ),
+            startup_route_w3_min_pelvis_realization=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_route_w3_min_pelvis_realization",
+                    0.55,
+                )
+            ),
+            startup_route_w2_pitch_relax=float(
+                getattr(self._config.env, "loc_ref_v2_startup_route_w2_pitch_relax", 1.25)
+            ),
+            startup_route_w2_pitch_rate_relax=float(
+                getattr(
+                    self._config.env,
+                    "loc_ref_v2_startup_route_w2_pitch_rate_relax",
+                    1.25,
+                )
+            ),
             support_entry_shaping_window_s=float(
                 getattr(self._config.env, "loc_ref_v2_support_entry_shaping_window_s", 0.12)
             ),
@@ -2000,6 +2078,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 0.0,
             ).astype(jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
+            startup_route_progress = jp.asarray(
+                ref_state.get("startup_route_progress", jp.asarray(1.0, dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            startup_route_ceiling = jp.asarray(
+                ref_state.get("startup_route_ceiling", jp.asarray(1.0, dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            startup_route_stage_id = jp.asarray(
+                ref_state.get(
+                    "startup_route_stage_id",
+                    jp.asarray(4, dtype=jp.int32),
+                ),
+                dtype=jp.int32,
+            )
+            startup_route_transition_reason = jp.asarray(
+                ref_state.get(
+                    "startup_route_transition_reason",
+                    jp.asarray(0, dtype=jp.int32),
+                ),
+                dtype=jp.int32,
+            )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
                 velocity_cmd=velocity_cmd,
@@ -2051,6 +2151,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_mode_id = jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32)
             ref_mode_time = jp.asarray(0.0, dtype=jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
+            startup_route_progress = jp.asarray(1.0, dtype=jp.float32)
+            startup_route_ceiling = jp.asarray(1.0, dtype=jp.float32)
+            startup_route_stage_id = jp.asarray(4, dtype=jp.int32)
+            startup_route_transition_reason = jp.asarray(0, dtype=jp.int32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2283,6 +2387,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_switch_count=ref_switch_count.astype(jp.int32),
             loc_ref_mode_id=ref_mode_id.astype(jp.int32),
             loc_ref_mode_time=ref_mode_time,
+            loc_ref_startup_route_progress=startup_route_progress,
+            loc_ref_startup_route_ceiling=startup_route_ceiling,
+            loc_ref_startup_route_stage_id=startup_route_stage_id,
+            loc_ref_startup_route_transition_reason=startup_route_transition_reason,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -2373,6 +2481,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["debug/loc_ref_overspeed"] = ref_overspeed
         metrics["debug/loc_ref_support_health"] = ref_support_health
         metrics["debug/loc_ref_support_instability"] = ref_support_instability
+        metrics["debug/loc_ref_startup_route_progress"] = startup_route_progress
+        metrics["debug/loc_ref_startup_route_ceiling"] = startup_route_ceiling
+        metrics["debug/loc_ref_startup_route_stage_id"] = startup_route_stage_id.astype(jp.float32)
+        metrics["debug/loc_ref_startup_route_transition_reason"] = startup_route_transition_reason.astype(
+            jp.float32
+        )
         metrics["debug/m3_pelvis_orientation_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_pelvis_height_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_swing_pos_error"] = jp.zeros((), dtype=jp.float32)
@@ -2563,6 +2677,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 dt_s=self.dt,
                 stance_knee_tracking_error_rad=stance_knee_err_pre,
                 stance_ankle_tracking_error_rad=stance_ankle_err_pre,
+                startup_route_progress_prev=wr.loc_ref_startup_route_progress,
+                startup_route_ceiling_prev=wr.loc_ref_startup_route_ceiling,
+                startup_route_stage_id_prev=wr.loc_ref_startup_route_stage_id,
+                startup_route_transition_reason_prev=wr.loc_ref_startup_route_transition_reason,
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_pre_h.linear_xyz[0], dtype=jp.float32)
@@ -2571,6 +2689,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 0.0,
             ).astype(jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
+            startup_route_progress = jp.asarray(
+                ref_state.get("startup_route_progress", jp.asarray(1.0, dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            startup_route_ceiling = jp.asarray(
+                ref_state.get("startup_route_ceiling", jp.asarray(1.0, dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            startup_route_stage_id = jp.asarray(
+                ref_state.get(
+                    "startup_route_stage_id",
+                    jp.asarray(4, dtype=jp.int32),
+                ),
+                dtype=jp.int32,
+            )
+            startup_route_transition_reason = jp.asarray(
+                ref_state.get(
+                    "startup_route_transition_reason",
+                    jp.asarray(0, dtype=jp.int32),
+                ),
+                dtype=jp.int32,
+            )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
                 velocity_cmd=velocity_cmd,
@@ -2622,6 +2762,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_mode_id = jp.asarray(wr.loc_ref_mode_id, dtype=jp.int32)
             ref_mode_time = jp.asarray(wr.loc_ref_mode_time, dtype=jp.float32)
             ref_mode_id_dbg = ref_mode_id.astype(jp.float32)
+            startup_route_progress = jp.asarray(1.0, dtype=jp.float32)
+            startup_route_ceiling = jp.asarray(1.0, dtype=jp.float32)
+            startup_route_stage_id = jp.asarray(4, dtype=jp.int32)
+            startup_route_transition_reason = jp.asarray(0, dtype=jp.int32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2961,6 +3105,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/loc_ref_support_gate_active": nominal_support_gate_active,
             "debug/loc_ref_hybrid_mode_id": ref_mode_id_dbg,
             "debug/loc_ref_progression_permission": ref_progression_permission,
+            "debug/loc_ref_startup_route_progress": startup_route_progress,
+            "debug/loc_ref_startup_route_ceiling": startup_route_ceiling,
+            "debug/loc_ref_startup_route_stage_id": startup_route_stage_id.astype(jp.float32),
+            "debug/loc_ref_startup_route_transition_reason": startup_route_transition_reason.astype(
+                jp.float32
+            ),
         }
         if self._loc_ref_version == "v1":
             metrics["debug/loc_ref_speed_scale"] = ref_speed_scale
@@ -3470,6 +3620,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_switch_count=ref_switch_count.astype(jp.int32),
             loc_ref_mode_id=ref_mode_id.astype(jp.int32),
             loc_ref_mode_time=ref_mode_time,
+            loc_ref_startup_route_progress=startup_route_progress,
+            loc_ref_startup_route_ceiling=startup_route_ceiling,
+            loc_ref_startup_route_stage_id=startup_route_stage_id,
+            loc_ref_startup_route_transition_reason=startup_route_transition_reason,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -3983,6 +4137,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_switch_count=reset_wr_info.loc_ref_switch_count,
             loc_ref_mode_id=reset_wr_info.loc_ref_mode_id,
             loc_ref_mode_time=reset_wr_info.loc_ref_mode_time,
+            loc_ref_startup_route_progress=reset_wr_info.loc_ref_startup_route_progress,
+            loc_ref_startup_route_ceiling=reset_wr_info.loc_ref_startup_route_ceiling,
+            loc_ref_startup_route_stage_id=reset_wr_info.loc_ref_startup_route_stage_id,
+            loc_ref_startup_route_transition_reason=reset_wr_info.loc_ref_startup_route_transition_reason,
             loc_ref_gait_phase_sin=reset_wr_info.loc_ref_gait_phase_sin,
             loc_ref_gait_phase_cos=reset_wr_info.loc_ref_gait_phase_cos,
             loc_ref_next_foothold=reset_wr_info.loc_ref_next_foothold,

@@ -48,6 +48,10 @@ def test_wr_obs_v4_contains_reference_fields() -> None:
     assert wr.loc_ref_swing_vel.shape == (3,)
     assert wr.loc_ref_history.shape == (4,)
     assert wr.nominal_q_ref.shape == (env.action_size,)
+    assert wr.loc_ref_startup_route_progress.shape == ()
+    assert wr.loc_ref_startup_route_ceiling.shape == ()
+    assert wr.loc_ref_startup_route_stage_id.shape == ()
+    assert wr.loc_ref_startup_route_transition_reason.shape == ()
     assert state.obs.shape[-1] == env.observation_size
 
 
@@ -125,6 +129,27 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert cfg.env.loc_ref_max_lateral_release_m <= cfg.env.loc_ref_max_lateral_step_m
     assert abs(cfg.env.loc_ref_max_lateral_release_m - 0.015) <= 1e-9
     assert cfg.env.loc_ref_v2_support_entry_shaping_window_s >= 0.0
+    assert 0.0 < cfg.env.loc_ref_v2_startup_route_w1_alpha < cfg.env.loc_ref_v2_startup_route_w2_alpha
+    assert cfg.env.loc_ref_v2_startup_route_w2_alpha < cfg.env.loc_ref_v2_startup_route_w3_alpha < 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w1_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w1_support_y_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_support_y_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_support_y_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w1_pelvis_roll_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_pelvis_roll_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_pelvis_roll_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w1_pelvis_pitch_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_pelvis_pitch_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_pelvis_pitch_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w1_pelvis_height_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_pelvis_height_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_pelvis_height_scale <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w2_min_pelvis_realization <= 1.0
+    assert 0.0 <= cfg.env.loc_ref_v2_startup_route_w3_min_pelvis_realization <= 1.0
+    assert cfg.env.loc_ref_v2_startup_route_w2_pitch_relax >= 1.0
+    assert cfg.env.loc_ref_v2_startup_route_w2_pitch_rate_relax >= 1.0
     # Ablation-overridable channels should parse cleanly.
     assert cfg.env.loc_ref_swing_target_blend >= 0.0
     assert cfg.env.loc_ref_step_time_s > 0.0

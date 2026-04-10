@@ -29,6 +29,29 @@ class WalkingRefV2Mode(IntEnum):
     POST_TOUCHDOWN_SETTLE = 4
 
 
+class StartupRouteStage(IntEnum):
+    """Fixed startup/support route stages (A -> W1 -> W2 -> W3 -> B)."""
+
+    A = 0
+    W1 = 1
+    W2 = 2
+    W3 = 3
+    B = 4
+
+
+class StartupRouteReason(IntEnum):
+    """Reason code for staged-route progression/hold decisions."""
+
+    NONE = 0
+    PELVIS_NOT_REALIZED = 1
+    JOINT_TRACKING_LAG = 2
+    ROOT_PITCH_LIMIT = 3
+    ROOT_PITCH_RATE_LIMIT = 4
+    SUPPORT_HEALTH_LOW = 5
+    ROUTE_COMPLETE = 6
+    TIMEOUT_FALLBACK = 7
+
+
 @dataclass(frozen=True)
 class WalkingRefV2Config:
     step_time_s: float = 0.50
@@ -77,6 +100,31 @@ class WalkingRefV2Config:
     startup_handoff_timeout_s: float = 0.18
     startup_target_rate_design_rad_s: float = 0.5235987756
     startup_target_rate_hard_cap_rad_s: float = 1.7453292520
+    startup_route_w1_alpha: float = 0.20
+    startup_route_w2_alpha: float = 0.50
+    startup_route_w3_alpha: float = 0.80
+    # Legacy startup route scale triple (used for swing-x / support-chain demand).
+    startup_route_w1_scale: float = 0.15
+    startup_route_w2_scale: float = 0.45
+    startup_route_w3_scale: float = 0.80
+    # Stage-specific route geometry channels (A -> W1 -> W2 -> W3 -> B).
+    startup_route_w1_support_y_scale: float = 0.25
+    startup_route_w2_support_y_scale: float = 0.60
+    startup_route_w3_support_y_scale: float = 0.85
+    startup_route_w1_pelvis_roll_scale: float = 0.45
+    startup_route_w2_pelvis_roll_scale: float = 0.75
+    startup_route_w3_pelvis_roll_scale: float = 0.90
+    startup_route_w1_pelvis_pitch_scale: float = 0.20
+    startup_route_w2_pelvis_pitch_scale: float = 0.50
+    startup_route_w3_pelvis_pitch_scale: float = 0.80
+    startup_route_w1_pelvis_height_scale: float = 0.15
+    startup_route_w2_pelvis_height_scale: float = 0.45
+    startup_route_w3_pelvis_height_scale: float = 0.80
+    # Config-backed route admission thresholds.
+    startup_route_w2_min_pelvis_realization: float = 0.30
+    startup_route_w3_min_pelvis_realization: float = 0.55
+    startup_route_w2_pitch_relax: float = 1.25
+    startup_route_w2_pitch_rate_relax: float = 1.25
     support_entry_shaping_window_s: float = 0.12
     max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
@@ -159,6 +207,26 @@ class WalkingRefV2Config:
             raise ValueError("startup_target_rate_design_rad_s must be >= 0")
         if self.startup_target_rate_hard_cap_rad_s < self.startup_target_rate_design_rad_s:
             raise ValueError("startup_target_rate_hard_cap_rad_s must be >= design rate")
+        if not 0.0 <= self.startup_route_w1_alpha <= self.startup_route_w2_alpha <= self.startup_route_w3_alpha <= 1.0:
+            raise ValueError("startup_route_w*_alpha must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w1_scale <= self.startup_route_w2_scale <= self.startup_route_w3_scale <= 1.0:
+            raise ValueError("startup_route_w*_scale must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w1_support_y_scale <= self.startup_route_w2_support_y_scale <= self.startup_route_w3_support_y_scale <= 1.0:
+            raise ValueError("startup_route_w*_support_y_scale must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w1_pelvis_roll_scale <= self.startup_route_w2_pelvis_roll_scale <= self.startup_route_w3_pelvis_roll_scale <= 1.0:
+            raise ValueError("startup_route_w*_pelvis_roll_scale must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w1_pelvis_pitch_scale <= self.startup_route_w2_pelvis_pitch_scale <= self.startup_route_w3_pelvis_pitch_scale <= 1.0:
+            raise ValueError("startup_route_w*_pelvis_pitch_scale must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w1_pelvis_height_scale <= self.startup_route_w2_pelvis_height_scale <= self.startup_route_w3_pelvis_height_scale <= 1.0:
+            raise ValueError("startup_route_w*_pelvis_height_scale must satisfy 0<=w1<=w2<=w3<=1")
+        if not 0.0 <= self.startup_route_w2_min_pelvis_realization <= self.startup_route_w3_min_pelvis_realization <= 1.0:
+            raise ValueError(
+                "startup_route_w2/w3_min_pelvis_realization must satisfy 0<=w2<=w3<=1"
+            )
+        if self.startup_route_w2_pitch_relax < 1.0:
+            raise ValueError("startup_route_w2_pitch_relax must be >= 1.0")
+        if self.startup_route_w2_pitch_rate_relax < 1.0:
+            raise ValueError("startup_route_w2_pitch_rate_relax must be >= 1.0")
         if self.support_entry_shaping_window_s < 0.0:
             raise ValueError("support_entry_shaping_window_s must be >= 0")
         if self.support_pelvis_height_offset_m < 0.0:
@@ -317,6 +385,95 @@ def _startup_pelvis_realization_jax(
     return jnp.clip(1.0 - dist_to_support / span, 0.0, 1.0).astype(jnp.float32)
 
 
+def _piecewise_route_scale_jax(
+    progress: jnp.ndarray,
+    *,
+    w1_alpha: float,
+    w2_alpha: float,
+    w3_alpha: float,
+    w1_scale: float,
+    w2_scale: float,
+    w3_scale: float,
+) -> jnp.ndarray:
+    """Map startup route progress [0,1] into fixed A/W1/W2/W3/B waypoint scale."""
+    p = jnp.clip(jnp.asarray(progress, dtype=jnp.float32), 0.0, 1.0)
+    w1_a = jnp.asarray(w1_alpha, dtype=jnp.float32)
+    w2_a = jnp.asarray(w2_alpha, dtype=jnp.float32)
+    w3_a = jnp.asarray(w3_alpha, dtype=jnp.float32)
+    s1 = jnp.asarray(w1_scale, dtype=jnp.float32)
+    s2 = jnp.asarray(w2_scale, dtype=jnp.float32)
+    s3 = jnp.asarray(w3_scale, dtype=jnp.float32)
+
+    seg1 = s1 * p / jnp.maximum(w1_a, jnp.asarray(1e-6, dtype=jnp.float32))
+    seg2 = s1 + (s2 - s1) * (p - w1_a) / jnp.maximum(
+        w2_a - w1_a, jnp.asarray(1e-6, dtype=jnp.float32)
+    )
+    seg3 = s2 + (s3 - s2) * (p - w2_a) / jnp.maximum(
+        w3_a - w2_a, jnp.asarray(1e-6, dtype=jnp.float32)
+    )
+    seg4 = s3 + (1.0 - s3) * (p - w3_a) / jnp.maximum(
+        1.0 - w3_a, jnp.asarray(1e-6, dtype=jnp.float32)
+    )
+    out = jnp.where(p < w1_a, seg1, jnp.where(p < w2_a, seg2, jnp.where(p < w3_a, seg3, seg4)))
+    return jnp.clip(out, 0.0, 1.0).astype(jnp.float32)
+
+
+def _stage_id_from_progress_jax(
+    progress: jnp.ndarray, *, w1_alpha: float, w2_alpha: float, w3_alpha: float
+) -> jnp.ndarray:
+    """Convert route progress into discrete fixed-route stage id."""
+    p = jnp.clip(jnp.asarray(progress, dtype=jnp.float32), 0.0, 1.0)
+    return jnp.where(
+        p >= jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray(int(StartupRouteStage.B), dtype=jnp.int32),
+        jnp.where(
+            p >= jnp.asarray(w3_alpha, dtype=jnp.float32),
+            jnp.asarray(int(StartupRouteStage.W3), dtype=jnp.int32),
+            jnp.where(
+                p >= jnp.asarray(w2_alpha, dtype=jnp.float32),
+                jnp.asarray(int(StartupRouteStage.W2), dtype=jnp.int32),
+                jnp.where(
+                    p >= jnp.asarray(w1_alpha, dtype=jnp.float32),
+                    jnp.asarray(int(StartupRouteStage.W1), dtype=jnp.int32),
+                    jnp.asarray(int(StartupRouteStage.A), dtype=jnp.int32),
+                ),
+            ),
+        ),
+    ).astype(jnp.int32)
+
+
+def _first_failed_reason_jax(
+    *,
+    pelvis_ok: jnp.ndarray,
+    joints_ok: jnp.ndarray,
+    pitch_ok: jnp.ndarray,
+    pitch_rate_ok: jnp.ndarray,
+    health_ok: jnp.ndarray,
+) -> jnp.ndarray:
+    """Return first blocking reason for route progression gate."""
+    return jnp.where(
+        pelvis_ok,
+        jnp.where(
+            joints_ok,
+            jnp.where(
+                pitch_ok,
+                jnp.where(
+                    pitch_rate_ok,
+                    jnp.where(
+                        health_ok,
+                        jnp.asarray(int(StartupRouteReason.NONE), dtype=jnp.int32),
+                        jnp.asarray(int(StartupRouteReason.SUPPORT_HEALTH_LOW), dtype=jnp.int32),
+                    ),
+                    jnp.asarray(int(StartupRouteReason.ROOT_PITCH_RATE_LIMIT), dtype=jnp.int32),
+                ),
+                jnp.asarray(int(StartupRouteReason.ROOT_PITCH_LIMIT), dtype=jnp.int32),
+            ),
+            jnp.asarray(int(StartupRouteReason.JOINT_TRACKING_LAG), dtype=jnp.int32),
+        ),
+        jnp.asarray(int(StartupRouteReason.PELVIS_NOT_REALIZED), dtype=jnp.int32),
+    ).astype(jnp.int32)
+
+
 def step_reference_v2_jax(
     *,
     config: WalkingRefV2Config,
@@ -336,6 +493,10 @@ def step_reference_v2_jax(
     dt_s: float,
     stance_knee_tracking_error_rad: jnp.ndarray | None = None,
     stance_ankle_tracking_error_rad: jnp.ndarray | None = None,
+    startup_route_progress_prev: jnp.ndarray | None = None,
+    startup_route_ceiling_prev: jnp.ndarray | None = None,
+    startup_route_stage_id_prev: jnp.ndarray | None = None,
+    startup_route_transition_reason_prev: jnp.ndarray | None = None,
 ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """JAX-friendly walking_ref_v2 stepping used by training env rollouts."""
     support_health, support_instability = compute_support_health_v2_jax(
@@ -364,6 +525,26 @@ def step_reference_v2_jax(
     settle_mode = jnp.asarray(int(WalkingRefV2Mode.POST_TOUCHDOWN_SETTLE), dtype=jnp.int32)
 
     mode = jnp.asarray(mode_id, dtype=jnp.int32)
+    route_progress_prev = (
+        jnp.asarray(startup_route_progress_prev, dtype=jnp.float32)
+        if startup_route_progress_prev is not None
+        else jnp.asarray(1.0, dtype=jnp.float32)
+    )
+    route_ceiling_prev = (
+        jnp.asarray(startup_route_ceiling_prev, dtype=jnp.float32)
+        if startup_route_ceiling_prev is not None
+        else jnp.asarray(1.0, dtype=jnp.float32)
+    )
+    route_stage_prev = (
+        jnp.asarray(startup_route_stage_id_prev, dtype=jnp.int32)
+        if startup_route_stage_id_prev is not None
+        else jnp.asarray(int(StartupRouteStage.B), dtype=jnp.int32)
+    )
+    route_reason_prev = (
+        jnp.asarray(startup_route_transition_reason_prev, dtype=jnp.int32)
+        if startup_route_transition_reason_prev is not None
+        else jnp.asarray(int(StartupRouteReason.NONE), dtype=jnp.int32)
+    )
     phase_scale = jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32)
     ) * progression_permission
@@ -440,6 +621,165 @@ def step_reference_v2_jax(
         0.0,
         1.0,
     ).astype(jnp.float32)
+    joint_max_err = jnp.maximum(jnp.abs(knee_err), jnp.abs(ankle_err)).astype(jnp.float32)
+    pitch_abs = jnp.abs(jnp.asarray(root_pitch_rad, dtype=jnp.float32))
+    pitch_rate_abs = jnp.abs(jnp.asarray(root_pitch_rate_rad_s, dtype=jnp.float32))
+
+    # Fixed staged route: A -> W1 -> W2 -> W3 -> B.
+    w1_alpha = jnp.asarray(config.startup_route_w1_alpha, dtype=jnp.float32)
+    w2_alpha = jnp.asarray(config.startup_route_w2_alpha, dtype=jnp.float32)
+    w3_alpha = jnp.asarray(config.startup_route_w3_alpha, dtype=jnp.float32)
+
+    w2_joint_max = jnp.asarray(
+        max(config.startup_readiness_knee_err_bad_rad, config.startup_readiness_ankle_err_bad_rad),
+        dtype=jnp.float32,
+    )
+    w3_joint_max = jnp.asarray(
+        max(
+            0.5 * (config.startup_readiness_knee_err_good_rad + config.startup_readiness_knee_err_bad_rad),
+            0.5 * (config.startup_readiness_ankle_err_good_rad + config.startup_readiness_ankle_err_bad_rad),
+        ),
+        dtype=jnp.float32,
+    )
+    b_joint_max = jnp.asarray(
+        max(config.startup_readiness_knee_err_good_rad, config.startup_readiness_ankle_err_good_rad),
+        dtype=jnp.float32,
+    )
+    w2_pelvis_ok = startup_pelvis_realization >= jnp.asarray(
+        config.startup_route_w2_min_pelvis_realization, dtype=jnp.float32
+    )
+    w2_joints_ok = joint_max_err <= w2_joint_max
+    w2_pitch_ok = pitch_abs <= jnp.asarray(
+        config.startup_handoff_pitch_max_rad * config.startup_route_w2_pitch_relax,
+        dtype=jnp.float32,
+    )
+    w2_pitch_rate_ok = pitch_rate_abs <= jnp.asarray(
+        config.startup_handoff_pitch_rate_max_rad_s * config.startup_route_w2_pitch_rate_relax,
+        dtype=jnp.float32,
+    )
+    w2_health_ok = support_health >= jnp.asarray(config.startup_readiness_min_health, dtype=jnp.float32)
+    allow_w2 = w2_pelvis_ok & w2_joints_ok & w2_pitch_ok & w2_pitch_rate_ok & w2_health_ok
+
+    w3_pelvis_ok = startup_pelvis_realization >= jnp.asarray(
+        config.startup_route_w3_min_pelvis_realization, dtype=jnp.float32
+    )
+    w3_joints_ok = joint_max_err <= w3_joint_max
+    w3_pitch_ok = pitch_abs <= jnp.asarray(config.startup_handoff_pitch_max_rad, dtype=jnp.float32)
+    w3_pitch_rate_ok = pitch_rate_abs <= jnp.asarray(
+        config.startup_handoff_pitch_rate_max_rad_s, dtype=jnp.float32
+    )
+    w3_health_ok = support_health >= jnp.asarray(
+        max(config.startup_readiness_min_health, config.startup_support_open_health),
+        dtype=jnp.float32,
+    )
+    allow_w3 = allow_w2 & w3_pelvis_ok & w3_joints_ok & w3_pitch_ok & w3_pitch_rate_ok & w3_health_ok
+
+    b_pelvis_ok = startup_pelvis_realization >= jnp.asarray(
+        config.startup_handoff_min_pelvis_realization, dtype=jnp.float32
+    )
+    b_joints_ok = joint_max_err <= b_joint_max
+    b_pitch_ok = pitch_abs <= jnp.asarray(config.startup_handoff_pitch_max_rad, dtype=jnp.float32)
+    b_pitch_rate_ok = pitch_rate_abs <= jnp.asarray(
+        config.startup_handoff_pitch_rate_max_rad_s, dtype=jnp.float32
+    )
+    b_health_ok = support_health >= jnp.asarray(config.startup_support_open_health, dtype=jnp.float32)
+    allow_b = allow_w3 & b_pelvis_ok & b_joints_ok & b_pitch_ok & b_pitch_rate_ok & b_health_ok
+
+    route_ceiling = jnp.where(
+        allow_b,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.where(allow_w3, w3_alpha, jnp.where(allow_w2, w2_alpha, w1_alpha)),
+    )
+    route_progress = jnp.clip(
+        jnp.minimum(startup_alpha, route_ceiling), 0.0, 1.0
+    ).astype(jnp.float32)
+    route_stage_id = _stage_id_from_progress_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+    )
+    reason_w2 = _first_failed_reason_jax(
+        pelvis_ok=w2_pelvis_ok,
+        joints_ok=w2_joints_ok,
+        pitch_ok=w2_pitch_ok,
+        pitch_rate_ok=w2_pitch_rate_ok,
+        health_ok=w2_health_ok,
+    )
+    reason_w3 = _first_failed_reason_jax(
+        pelvis_ok=w3_pelvis_ok,
+        joints_ok=w3_joints_ok,
+        pitch_ok=w3_pitch_ok,
+        pitch_rate_ok=w3_pitch_rate_ok,
+        health_ok=w3_health_ok,
+    )
+    reason_b = _first_failed_reason_jax(
+        pelvis_ok=b_pelvis_ok,
+        joints_ok=b_joints_ok,
+        pitch_ok=b_pitch_ok,
+        pitch_rate_ok=b_pitch_rate_ok,
+        health_ok=b_health_ok,
+    )
+    blocked_reason = jnp.where(
+        allow_w3,
+        reason_b,
+        jnp.where(allow_w2, reason_w3, reason_w2),
+    )
+    route_blocked = startup_alpha > (route_ceiling + jnp.asarray(1e-6, dtype=jnp.float32))
+    route_reason = jnp.where(
+        allow_b,
+        jnp.asarray(int(StartupRouteReason.ROUTE_COMPLETE), dtype=jnp.int32),
+        jnp.where(
+            route_blocked,
+            blocked_reason,
+            jnp.asarray(int(StartupRouteReason.NONE), dtype=jnp.int32),
+        ),
+    )
+    route_swing_x_scale = _piecewise_route_scale_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+        w1_scale=config.startup_route_w1_scale,
+        w2_scale=config.startup_route_w2_scale,
+        w3_scale=config.startup_route_w3_scale,
+    )
+    route_support_y_scale = _piecewise_route_scale_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+        w1_scale=config.startup_route_w1_support_y_scale,
+        w2_scale=config.startup_route_w2_support_y_scale,
+        w3_scale=config.startup_route_w3_support_y_scale,
+    )
+    route_pelvis_roll_scale = _piecewise_route_scale_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+        w1_scale=config.startup_route_w1_pelvis_roll_scale,
+        w2_scale=config.startup_route_w2_pelvis_roll_scale,
+        w3_scale=config.startup_route_w3_pelvis_roll_scale,
+    )
+    route_pelvis_pitch_scale = _piecewise_route_scale_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+        w1_scale=config.startup_route_w1_pelvis_pitch_scale,
+        w2_scale=config.startup_route_w2_pelvis_pitch_scale,
+        w3_scale=config.startup_route_w3_pelvis_pitch_scale,
+    )
+    route_pelvis_height_scale = _piecewise_route_scale_jax(
+        route_progress,
+        w1_alpha=config.startup_route_w1_alpha,
+        w2_alpha=config.startup_route_w2_alpha,
+        w3_alpha=config.startup_route_w3_alpha,
+        w1_scale=config.startup_route_w1_pelvis_height_scale,
+        w2_scale=config.startup_route_w2_pelvis_height_scale,
+        w3_scale=config.startup_route_w3_pelvis_height_scale,
+    )
 
     phase_time = jnp.where(
         mode == startup_mode,
@@ -482,8 +822,9 @@ def step_reference_v2_jax(
         startup_pelvis_realization
         >= jnp.asarray(config.startup_handoff_min_pelvis_realization, dtype=jnp.float32)
     ) & (
-        startup_alpha >= jnp.asarray(config.startup_handoff_min_alpha, dtype=jnp.float32)
+        route_progress >= jnp.asarray(config.startup_handoff_min_alpha, dtype=jnp.float32)
     )
+    startup_route_complete = route_stage_id == jnp.asarray(int(StartupRouteStage.B), dtype=jnp.int32)
     startup_timeout_reached = mode_time >= jnp.asarray(
         config.startup_handoff_timeout_s, dtype=jnp.float32
     )
@@ -495,7 +836,7 @@ def step_reference_v2_jax(
     from_settle = mode == settle_mode
 
     to_support_from_startup = from_startup & startup_stable & (
-        startup_ready_for_handoff | startup_timeout_reached
+        (startup_ready_for_handoff & startup_route_complete) | startup_timeout_reached
     )
     to_swing = (
         from_support
@@ -585,7 +926,7 @@ def step_reference_v2_jax(
     x_foot = jnp.where(
         mode == startup_mode,
         jnp.asarray(config.min_step_length_m, dtype=jnp.float32)
-        + startup_alpha
+        + route_swing_x_scale
         * (x_foot - jnp.asarray(config.min_step_length_m, dtype=jnp.float32)),
         x_foot,
     )
@@ -600,6 +941,11 @@ def step_reference_v2_jax(
         y_sign * jnp.asarray(config.nominal_lateral_foot_offset_m, dtype=jnp.float32),
         -jnp.asarray(config.max_lateral_step_m, dtype=jnp.float32),
         jnp.asarray(config.max_lateral_step_m, dtype=jnp.float32),
+    )
+    y_foot = jnp.where(
+        mode == startup_mode,
+        route_support_y_scale * y_foot,
+        y_foot,
     )
 
     release_prog = jnp.clip(
@@ -657,8 +1003,16 @@ def step_reference_v2_jax(
         -jnp.asarray(config.max_pelvis_pitch_rad, dtype=jnp.float32),
         jnp.asarray(config.max_pelvis_pitch_rad, dtype=jnp.float32),
     )
-    pelvis_roll = jnp.where(mode == startup_mode, startup_alpha * pelvis_roll_target, pelvis_roll_target)
-    pelvis_pitch = jnp.where(mode == startup_mode, startup_alpha * pelvis_pitch_target, pelvis_pitch_target)
+    pelvis_roll = jnp.where(
+        mode == startup_mode,
+        route_pelvis_roll_scale * pelvis_roll_target,
+        pelvis_roll_target,
+    )
+    pelvis_pitch = jnp.where(
+        mode == startup_mode,
+        route_pelvis_pitch_scale * pelvis_pitch_target,
+        pelvis_pitch_target,
+    )
     
     pelvis_height_startup = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
         config.startup_pelvis_height_offset_m, dtype=jnp.float32
@@ -669,13 +1023,39 @@ def step_reference_v2_jax(
     pelvis_height = jnp.where(
         mode == startup_mode,
         pelvis_height_startup
-        + startup_alpha * (pelvis_height_support - pelvis_height_startup),
+        + route_pelvis_height_scale * (pelvis_height_support - pelvis_height_startup),
         jnp.where(
             mode == support_mode,
             pelvis_height_support,
             jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
         ),
     )
+    startup_route_transition_reason = jnp.where(
+        from_startup & to_support_from_startup & jnp.logical_not(startup_route_complete),
+        jnp.asarray(int(StartupRouteReason.TIMEOUT_FALLBACK), dtype=jnp.int32),
+        route_reason,
+    )
+    route_state_update = (mode == startup_mode) | (from_startup & to_support_from_startup)
+    startup_route_stage_id_out = jnp.where(
+        route_state_update,
+        route_stage_id,
+        route_stage_prev,
+    ).astype(jnp.int32)
+    startup_route_progress_out = jnp.where(
+        route_state_update,
+        route_progress,
+        route_progress_prev,
+    ).astype(jnp.float32)
+    startup_route_ceiling_out = jnp.where(
+        route_state_update,
+        route_ceiling,
+        route_ceiling_prev,
+    ).astype(jnp.float32)
+    startup_route_transition_reason_out = jnp.where(
+        route_state_update,
+        startup_route_transition_reason,
+        route_reason_prev,
+    ).astype(jnp.int32)
 
     ref = {
         "gait_phase_sin": jnp.sin(2.0 * jnp.asarray(pi, dtype=jnp.float32) * phase).astype(jnp.float32),
@@ -688,6 +1068,10 @@ def step_reference_v2_jax(
         "pelvis_height": pelvis_height.astype(jnp.float32),
         "pelvis_roll": pelvis_roll.astype(jnp.float32),
         "pelvis_pitch": pelvis_pitch.astype(jnp.float32),
+        "startup_route_progress": startup_route_progress_out,
+        "startup_route_ceiling": startup_route_ceiling_out,
+        "startup_route_stage_id": startup_route_stage_id_out,
+        "startup_route_transition_reason": startup_route_transition_reason_out,
     }
     return (
         ref,

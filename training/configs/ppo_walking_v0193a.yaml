@@ -96,6 +96,31 @@ env:
   loc_ref_v2_startup_handoff_min_pelvis_realization: 0.60
   loc_ref_v2_startup_target_rate_design_rad_s: 0.5235987756   # 30 deg/s
   loc_ref_v2_startup_target_rate_hard_cap_rad_s: 1.7453292520 # 100 deg/s
+  # M2.5-A3 staged fixed startup route A -> W1 -> W2 -> W3 -> B.
+  loc_ref_v2_startup_route_w1_alpha: 0.25
+  loc_ref_v2_startup_route_w2_alpha: 0.50
+  loc_ref_v2_startup_route_w3_alpha: 0.75
+  loc_ref_v2_startup_route_w1_scale: 0.20
+  loc_ref_v2_startup_route_w2_scale: 0.45
+  loc_ref_v2_startup_route_w3_scale: 0.75
+  # Distinct stage geometry channels (not one scalar interpolation).
+  loc_ref_v2_startup_route_w1_support_y_scale: 0.30
+  loc_ref_v2_startup_route_w2_support_y_scale: 0.65
+  loc_ref_v2_startup_route_w3_support_y_scale: 0.90
+  loc_ref_v2_startup_route_w1_pelvis_roll_scale: 0.50
+  loc_ref_v2_startup_route_w2_pelvis_roll_scale: 0.80
+  loc_ref_v2_startup_route_w3_pelvis_roll_scale: 0.95
+  loc_ref_v2_startup_route_w1_pelvis_pitch_scale: 0.20
+  loc_ref_v2_startup_route_w2_pelvis_pitch_scale: 0.50
+  loc_ref_v2_startup_route_w3_pelvis_pitch_scale: 0.80
+  loc_ref_v2_startup_route_w1_pelvis_height_scale: 0.15
+  loc_ref_v2_startup_route_w2_pelvis_height_scale: 0.45
+  loc_ref_v2_startup_route_w3_pelvis_height_scale: 0.80
+  # Config-backed route admission policy.
+  loc_ref_v2_startup_route_w2_min_pelvis_realization: 0.30
+  loc_ref_v2_startup_route_w3_min_pelvis_realization: 0.55
+  loc_ref_v2_startup_route_w2_pitch_relax: 1.25
+  loc_ref_v2_startup_route_w2_pitch_rate_relax: 1.25
   loc_ref_v2_support_entry_shaping_window_s: 0.12
   loc_ref_v2_support_pelvis_height_offset_m: 0.050
   loc_ref_v2_support_stance_extension_margin_m: 0.055
