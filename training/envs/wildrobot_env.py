@@ -1634,6 +1634,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     1.7453292520,
                 )
             ),
+            support_entry_shaping_window_s=float(
+                getattr(self._config.env, "loc_ref_v2_support_entry_shaping_window_s", 0.12)
+            ),
             max_lateral_release_m=float(
                 getattr(self._config.env, "loc_ref_max_lateral_release_m", 0.02)
             ),
@@ -2098,6 +2101,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ),
             stance_foot_id=ref_stance_foot,
             mode_id=ref_mode_id,
+            mode_time_s=ref_mode_time,
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
         nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
@@ -2663,6 +2667,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_nominal_q_ref=jp.asarray(wr.nominal_q_ref, dtype=jp.float32),
             stance_foot_id=ref_stance_foot,
             mode_id=ref_mode_id,
+            mode_time_s=ref_mode_time,
         )
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
         nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
@@ -4181,13 +4186,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_nominal_q_ref: jax.Array,
         stance_foot_id: jax.Array,
         mode_id: jax.Array,
+        mode_time_s: jax.Array,
     ) -> jax.Array:
-        """Limit startup stance knee/ankle nominal target rates."""
-        in_startup = jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(
+        """Limit startup and early-support stance hip/knee/ankle target rates."""
+        mode_i = jp.asarray(mode_id, dtype=jp.int32)
+        in_startup = mode_i == jp.asarray(
             int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32
         )
+        in_support_entry = (mode_i == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32)) & (
+            jp.asarray(mode_time_s, dtype=jp.float32)
+            < jp.asarray(self._walking_ref_v2_cfg.support_entry_shaping_window_s, dtype=jp.float32)
+        )
+        limiter_active = jp.logical_or(in_startup, in_support_entry)
         stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
             REF_LEFT_STANCE, dtype=jp.int32
+        )
+        hip_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_left_hip_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_right_hip_pitch, dtype=jp.int32),
         )
         knee_idx = jp.where(
             stance_is_left,
@@ -4211,6 +4228,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         limited = self._limit_joint_target_step(
             target_q=nominal_q_ref,
             prev_target_q=prev_nominal_q_ref,
+            idx=hip_idx,
+            max_delta_rad=max_step,
+        )
+        limited = self._limit_joint_target_step(
+            target_q=limited,
+            prev_target_q=prev_nominal_q_ref,
             idx=knee_idx,
             max_delta_rad=max_step,
         )
@@ -4220,7 +4243,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             idx=ankle_idx,
             max_delta_rad=max_step,
         )
-        return jax.lax.cond(in_startup, lambda q: q, lambda _q: nominal_q_ref, limited)
+        return jax.lax.cond(limiter_active, lambda q: q, lambda _q: nominal_q_ref, limited)
 
     def _compute_nominal_q_ref_from_loc_ref(
         self,

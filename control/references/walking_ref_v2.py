@@ -77,6 +77,7 @@ class WalkingRefV2Config:
     startup_handoff_timeout_s: float = 0.18
     startup_target_rate_design_rad_s: float = 0.5235987756
     startup_target_rate_hard_cap_rad_s: float = 1.7453292520
+    support_entry_shaping_window_s: float = 0.12
     max_lateral_release_m: float = 0.02
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
@@ -158,6 +159,8 @@ class WalkingRefV2Config:
             raise ValueError("startup_target_rate_design_rad_s must be >= 0")
         if self.startup_target_rate_hard_cap_rad_s < self.startup_target_rate_design_rad_s:
             raise ValueError("startup_target_rate_hard_cap_rad_s must be >= design rate")
+        if self.support_entry_shaping_window_s < 0.0:
+            raise ValueError("support_entry_shaping_window_s must be >= 0")
         if self.support_pelvis_height_offset_m < 0.0:
             raise ValueError("support_pelvis_height_offset_m must be >= 0")
         if not 0.0 <= self.max_lateral_release_m <= self.max_lateral_step_m:

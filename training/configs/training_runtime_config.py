@@ -198,6 +198,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_handoff_timeout_s: float = 0.18
     loc_ref_v2_startup_target_rate_design_rad_s: float = 0.5235987756
     loc_ref_v2_startup_target_rate_hard_cap_rad_s: float = 1.7453292520
+    loc_ref_v2_support_entry_shaping_window_s: float = 0.12
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.050
     loc_ref_v2_support_stance_extension_margin_m: float = 0.055
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or

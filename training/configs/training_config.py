@@ -306,6 +306,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_startup_target_rate_hard_cap_rad_s=float(
             env.get("loc_ref_v2_startup_target_rate_hard_cap_rad_s", 1.7453292520)
         ),
+        loc_ref_v2_support_entry_shaping_window_s=float(
+            env.get("loc_ref_v2_support_entry_shaping_window_s", 0.12)
+        ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
             env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)
         ),

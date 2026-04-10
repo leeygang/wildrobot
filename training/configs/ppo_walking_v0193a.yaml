@@ -96,6 +96,7 @@ env:
   loc_ref_v2_startup_handoff_min_pelvis_realization: 0.60
   loc_ref_v2_startup_target_rate_design_rad_s: 0.5235987756   # 30 deg/s
   loc_ref_v2_startup_target_rate_hard_cap_rad_s: 1.7453292520 # 100 deg/s
+  loc_ref_v2_support_entry_shaping_window_s: 0.12
   loc_ref_v2_support_pelvis_height_offset_m: 0.050
   loc_ref_v2_support_stance_extension_margin_m: 0.055
 

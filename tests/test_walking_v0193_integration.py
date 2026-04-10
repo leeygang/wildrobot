@@ -122,6 +122,7 @@ def test_v0193a_config_parses_nominal_path_knobs() -> None:
     assert cfg.env.loc_ref_max_lateral_release_m >= 0.0
     assert cfg.env.loc_ref_max_lateral_release_m <= cfg.env.loc_ref_max_lateral_step_m
     assert abs(cfg.env.loc_ref_max_lateral_release_m - 0.015) <= 1e-9
+    assert cfg.env.loc_ref_v2_support_entry_shaping_window_s >= 0.0
     # Ablation-overridable channels should parse cleanly.
     assert cfg.env.loc_ref_swing_target_blend >= 0.0
     assert cfg.env.loc_ref_step_time_s > 0.0
@@ -310,3 +311,98 @@ def test_v0193a_support_specific_margin_wiring() -> None:
             f"Knee flexion difference too small: {float(support_knee) - float(nonsupport_knee):.4f} rad"
         )
 
+
+def test_startup_rate_limiter_clamps_stance_hip_knee_ankle() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    load_robot_config(Path(cfg.env.assets_root) / "mujoco_robot_config.json")
+    cfg.freeze()
+    env = WildRobotEnv(config=cfg)
+
+    prev_q = jp.zeros((env.action_size,), dtype=jp.float32)
+    target_q = prev_q
+
+    left_hip_idx = env._actuator_name_to_index.get("left_hip_pitch", -1)
+    left_knee_idx = env._actuator_name_to_index.get("left_knee_pitch", -1)
+    left_ankle_idx = env._actuator_name_to_index.get("left_ankle_pitch", -1)
+    right_hip_idx = env._actuator_name_to_index.get("right_hip_pitch", -1)
+
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            target_q = target_q.at[idx].set(jp.asarray(1.0, dtype=jp.float32))
+    if right_hip_idx >= 0:
+        target_q = target_q.at[right_hip_idx].set(jp.asarray(0.7, dtype=jp.float32))
+
+    limited_q = env._apply_startup_support_rate_limiter(  # noqa: SLF001
+        nominal_q_ref=target_q,
+        prev_nominal_q_ref=prev_q,
+        stance_foot_id=jp.asarray(0, dtype=jp.int32),  # left stance
+        mode_id=jp.asarray(0, dtype=jp.int32),  # STARTUP_SUPPORT_RAMP
+        mode_time_s=jp.asarray(0.0, dtype=jp.float32),
+    )
+
+    max_step = min(
+        float(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s),
+        float(cfg.env.loc_ref_v2_startup_target_rate_hard_cap_rad_s),
+    ) * env.dt
+
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            limited_delta = abs(float(limited_q[idx] - prev_q[idx]))
+            assert limited_delta <= max_step + 1e-6
+            assert limited_delta >= max_step - 1e-6
+
+    if right_hip_idx >= 0:
+        assert abs(float(limited_q[right_hip_idx] - target_q[right_hip_idx])) <= 1e-6
+
+
+def test_support_entry_rate_limiter_clamps_stance_hip_knee_ankle() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    load_robot_config(Path(cfg.env.assets_root) / "mujoco_robot_config.json")
+    cfg.freeze()
+    env = WildRobotEnv(config=cfg)
+
+    prev_q = jp.zeros((env.action_size,), dtype=jp.float32)
+    target_q = prev_q
+
+    left_hip_idx = env._actuator_name_to_index.get("left_hip_pitch", -1)
+    left_knee_idx = env._actuator_name_to_index.get("left_knee_pitch", -1)
+    left_ankle_idx = env._actuator_name_to_index.get("left_ankle_pitch", -1)
+
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            target_q = target_q.at[idx].set(jp.asarray(1.0, dtype=jp.float32))
+
+    # SUPPORT_STABILIZE at mode_time=0 falls into support-entry shaping window.
+    limited_q = env._apply_startup_support_rate_limiter(  # noqa: SLF001
+        nominal_q_ref=target_q,
+        prev_nominal_q_ref=prev_q,
+        stance_foot_id=jp.asarray(0, dtype=jp.int32),
+        mode_id=jp.asarray(1, dtype=jp.int32),  # SUPPORT_STABILIZE
+        mode_time_s=jp.asarray(0.0, dtype=jp.float32),
+    )
+
+    max_step = min(
+        float(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s),
+        float(cfg.env.loc_ref_v2_startup_target_rate_hard_cap_rad_s),
+    ) * env.dt
+
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            limited_delta = abs(float(limited_q[idx] - prev_q[idx]))
+            assert limited_delta <= max_step + 1e-6
+            assert limited_delta >= max_step - 1e-6
+
+    # Outside support-entry shaping window, SUPPORT_STABILIZE should not clamp.
+    unshaped_q = env._apply_startup_support_rate_limiter(  # noqa: SLF001
+        nominal_q_ref=target_q,
+        prev_nominal_q_ref=prev_q,
+        stance_foot_id=jp.asarray(0, dtype=jp.int32),
+        mode_id=jp.asarray(1, dtype=jp.int32),
+        mode_time_s=jp.asarray(
+            float(cfg.env.loc_ref_v2_support_entry_shaping_window_s) + 0.01,
+            dtype=jp.float32,
+        ),
+    )
+    for idx in (left_hip_idx, left_knee_idx, left_ankle_idx):
+        if idx >= 0:
+            assert abs(float(unshaped_q[idx] - target_q[idx])) <= 1e-6
