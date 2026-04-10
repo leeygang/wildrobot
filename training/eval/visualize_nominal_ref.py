@@ -116,9 +116,35 @@ def _enable_temp_logging() -> Path:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    class _HelpFormatter(
+        argparse.ArgumentDefaultsHelpFormatter,
+        argparse.RawDescriptionHelpFormatter,
+    ):
+        """Keep defaults and preserve multi-line examples."""
+
     parser = argparse.ArgumentParser(
-        description="Visualize nominal-only locomotion reference (q_target=q_ref)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Visualize nominal-only locomotion reference (q_target=q_ref).\n\n"
+            "Runs the environment with zero residual policy action so command-path\n"
+            "diagnostics isolate nominal reference delivery and posture realization."
+        ),
+        formatter_class=_HelpFormatter,
+        add_help=False,
+        epilog=(
+            "Examples:\n"
+            "  uv run python training/eval/visualize_nominal_ref.py --headless\n"
+            "  uv run python training/eval/visualize_nominal_ref.py --forward-cmd 0.10 --horizon 64 --log --disable-action-filter\n"
+            "  uv run python training/eval/visualize_nominal_ref.py --force-support-only --init-from-nominal-qref --disable-action-filter\n"
+            "  uv run python training/eval/visualize_nominal_ref.py --startup-target-rate-deg-s 10 --disable-action-filter"
+        ),
+    )
+    parser.add_argument(
+        "-h",
+        "--help",
+        "--?",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Show command options, explanations, and examples",
     )
     parser.add_argument(
         "--config",

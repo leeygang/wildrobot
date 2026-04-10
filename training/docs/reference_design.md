@@ -237,10 +237,11 @@ The startup transition should:
 
 - start close to the reset / keyframe-0 posture
 - preserve planted-foot contact and nominal stance width
-- gradually compress the stance leg
+- move through a staged fixed route from `A -> W1 -> W2 -> W3 -> B`
+- establish load transfer / alignment before deeper support compression
 - gradually move pelvis height toward the loaded support target
 - keep swing release fully suppressed
-- complete only when the robot has settled into a viable support posture
+- complete only when the robot has settled into the support terminal region `B`
 - react to actual posture realization, not only elapsed startup time
 
 The startup transition should not:
@@ -253,11 +254,20 @@ The startup transition should not:
 
 Recommended implementation shape:
 
+- keep the endpoint `B` fixed as the full support target / terminal region
+  - `B` should include the full support posture, not only a knee-bend target
+- define a staged fixed route:
+  - `A`: startup posture / reset-side posture
+  - `W1`: preload / load-shift waypoint with minimal knee/ankle demand
+  - `W2`: partial support-entry waypoint with moderate pelvis drop and partial
+    support-chain realization
+  - `W3`: final support-convergence waypoint approaching full support geometry
+  - `B`: support terminal region
 - define startup progress from realized posture, not elapsed time alone
-- use pelvis height realization as the primary startup task-progress signal for
-  upright-to-support transition
-- guard that progress with stance knee realization, stance ankle realization,
-  root pitch, root pitch rate, and support health
+- use pelvis height realization as the primary early-stage task-progress signal
+  for upright-to-support transition
+- guard stage progression with stance knee realization, stance ankle
+  realization, root pitch, root pitch rate, and support health
 - keep `swing_x_release = 0` and `lateral_release_y = 0` during this phase
 - keep `swing_y_target = base_support_y`
 - use a startup readiness scale only as a soft governor on progression speed,
@@ -265,10 +275,17 @@ Recommended implementation shape:
 - add explicit startup target-rate limiting
   - nominal design rate should be around `30°/s`
   - hard emergency cap should be around `100°/s`
-- only allow transition into `support_stabilize` once startup posture error,
-  pitch rate, and support health are within acceptable bounds
+- only allow transition into `support_stabilize` once the route has entered the
+  `B` region and startup posture error, pitch rate, and support health are
+  within acceptable bounds
 - keep elapsed time only as a watchdog / timeout, not as the main progress
   driver
+- add explicit stage logging for diagnostics:
+  - current stage label: `A`, `W1`, `W2`, `W3`, or `B`
+  - stage entry / exit step and time
+  - transition reason
+  - target vs actual for pelvis height, hip roll, hip pitch, knee pitch, and
+    ankle pitch
 
 The purpose of this phase is not to "walk slowly."
 Its purpose is to provide a dynamically plausible path from reset posture to the
@@ -929,61 +946,72 @@ Target metrics for `M2.5-A2`:
   - swing-foot tracking reward exceeds `1e-5`
   - foothold consistency reward exceeds `0.05`
 
-### `M2.5-A3`: Feedback-aware startup/support execution
+### `M2.5-A3`: Staged fixed-route startup/support execution
 
 Goals:
 
-- make startup/support transition react to actual posture realization
-- replace time-driven startup progress with posture-realization-driven progress
-- reduce abrupt startup target deepening while preserving early pitch stability
-- keep the current support-first state machine, but stop treating startup as a
-  purely feedforward interpolation
+- keep startup posture `A` and support target `B` fixed
+- replace the direct startup-to-support route with a staged fixed route
+  `A -> W1 -> W2 -> W3 -> B`
+- make route progression react to actual posture realization
+- preserve the improved startup smoothness while testing whether route shape is
+  the missing factor
 
 Expected tasks:
 
-1. Define task-specific startup realization signals
-   - primary task metric: pelvis height realization toward the support target
+1. Define a fixed terminal support region `B`
+   - include the full support posture, not a single-joint condition
+   - include pelvis height and the key support-chain joints with tolerances
+2. Define explicit intermediate waypoints
+   - `W1`: preload / load-shift with minimal knee/ankle demand
+   - `W2`: partial support entry
+   - `W3`: final support convergence
+3. Drive progression by stage completion, not elapsed startup time
+   - stage completion should be event-based
+   - primary early-stage task metric: pelvis height realization
    - guard metrics: stance knee realization, stance ankle realization, root
      pitch, root pitch rate, and support health
-2. Replace time-driven startup progress with realized-posture progress
-   - startup should advance because the body is actually entering support, not
-     because `mode_time` happened to grow
-   - elapsed time may remain only as a timeout / watchdog
-3. Add explicit startup rate limiting
+4. Keep explicit startup/support-entry rate limiting
    - nominal support-entry design rate should be around `30°/s`
    - hard emergency cap should be around `100°/s`
-   - apply the limiter to the startup support-joint targets or an equivalent
-     posture-driving variable
-4. Keep readiness as a soft governor
-   - readiness should slow progression when the robot lags
-   - readiness should not be able to deadlock startup indefinitely
-5. Re-run startup-path and support-only viewer probes
-   - compare startup `q_ref -> ctrl`
-   - compare `max Δctrl/step` at stance knee/ankle
-   - compare startup duration / handoff behavior
-   - compare stance knee/ankle target-vs-actual error
-6. Only after startup/support execution improves:
-   - revisit bounded progression / foothold release tuning
+5. Add route / stage diagnostics
+   - current stage label: `A`, `W1`, `W2`, `W3`, `B`
+   - stage transition log with entry / exit step and transition reason
+   - target vs actual for pelvis height, hip roll, hip pitch, knee pitch, and
+     ankle pitch per stage
+6. Re-run startup-path and support-only viewer probes
+   - compare startup / early-support / late-support realizability by stage
+   - verify `q_ref -> ctrl` stays clean
+   - compare stance knee/ankle target-vs-actual error by stage
+7. Only after staged route behavior is understood:
+   - decide whether a fixed staged route is enough
+   - otherwise escalate to MPC / online route optimization
 
 Target metrics for `M2.5-A3`:
 
 - startup-path:
   - startup `q_ref -> ctrl` remains clean in nominal-only debug mode
+  - route progression follows `A -> W1 -> W2 -> W3 -> B` coherently
   - stance knee and ankle target-rate stays near the `30°/s` design intent and
     never exceeds the `100°/s` hard cap
-  - startup does not deadlock in `STARTUP_SUPPORT_RAMP`
-  - stance knee actual moves toward target more consistently during startup
+  - stage transitions are event-based and do not deadlock
   - pelvis height progresses toward support target for the right reason, not
     because the robot is collapsing
-  - support handoff occurs without immediate pitch jump
+  - support handoff occurs only after the route has effectively entered `B`
 - support-only:
-  - stance knee and ankle target-vs-actual mismatch is smaller or at least no
-    worse than the current braced-support regime
+  - support terminal region `B` remains holdable when initialized directly
+  - stage logs make it clear whether route failure or target failure is the
+    dominant issue
   - root roll and width growth remain bounded
+- route-validation:
+  - if ideal or near-ideal target delivery still cannot converge through
+    `A -> W1 -> W2 -> W3 -> B`, treat route shape as inadequate
+  - if the route reaches `B` in ideal-tracking replay but not in real MuJoCo,
+    treat `ctrl -> actual` realization as the dominant issue
 - nominal sweep:
   - early pitch stability is preserved
-  - progression quality does not regress further while startup execution is
-    being fixed
+  - progression quality does not regress further while staged route execution is
+    being validated
 
 ### `M2.5-A4`: Exit decision
 
@@ -1038,21 +1066,26 @@ The key rule is:
 ## Immediate Next Actions
 
 1. Keep the current support-first posture branch as the baseline.
-2. Replace time-driven startup progression with posture-realization-driven
-   startup execution.
-   - use pelvis height realization as the primary startup task metric
-   - guard it with stance knee/ankle realization plus pitch/support stability
-   - add a nominal startup rate target around `30°/s` and a hard cap around
+2. Replace the direct startup-to-support route with a staged fixed route:
+   `A -> W1 -> W2 -> W3 -> B`.
+   - keep `B` fixed as the full support target / terminal region
+   - use pelvis height realization as the primary early-stage task metric
+   - guard stage progression with stance knee/ankle realization plus
+     pitch/support stability
+   - keep a nominal startup rate target around `30°/s` and a hard cap around
      `100°/s`
-3. Validate both:
+3. Add explicit stage logs for `A`, `W1`, `W2`, `W3`, `B` and every stage
+   transition.
+4. Validate both:
    - startup-path transition from keyframe 0
    - grounded support-only holding
-4. Re-run nominal-only probes under the updated startup/support execution.
+5. Re-run nominal-only probes under the updated staged-route execution.
    Preferred command:
    `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-5. Only after startup/support execution improves, revisit bounded
-   foothold/progression tuning.
-6. Use the support-first checklist as the only decision gate for resuming PPO.
+6. If staged fixed-route still cannot drive the robot into `B`, escalate to a
+   longer-term MPC / online route-optimization design rather than continuing to
+   tune a failing direct route.
+7. Use the support-first checklist as the only decision gate for resuming PPO.
 
 ---
 

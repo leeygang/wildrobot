@@ -27,6 +27,7 @@ from training.eval.visualize_nominal_ref import (
     _format_reset_lateral_line_from_state,
     _replace_state_with_nominal_qref,
     _replace_state_with_nominal_qref_grounded,
+    build_arg_parser,
     parse_args,
 )
 from training.envs.env_info import WR_INFO_KEY
@@ -71,6 +72,13 @@ def test_parse_args_disable_action_filter_flag() -> None:
 def test_parse_args_startup_target_rate_deg_s_flag() -> None:
     args = parse_args(["--startup-target-rate-deg-s", "10"])
     assert abs(args.startup_target_rate_deg_s - 10.0) < 1e-9
+
+
+def test_help_text_includes_alias_explanations_and_examples() -> None:
+    help_text = build_arg_parser().format_help()
+    assert "--?" in help_text
+    assert "Examples:" in help_text
+    assert "--disable-action-filter" in help_text
 
 
 def test_compute_stance_ground_shift_uses_selected_stance_foot() -> None:
