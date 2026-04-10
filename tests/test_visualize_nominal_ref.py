@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.configs.training_config import load_training_config
 from training.eval.visualize_nominal_ref import (
+    _CommandPathTracker,
     _compute_stance_ground_shift,
     _configure_nominal_only,
     _dominant_termination_from_metrics,
@@ -59,11 +60,17 @@ def test_parse_args_nominal_ref_viewer() -> None:
     assert args.init_from_nominal_qref is False
     assert args.log is False
     assert args.disable_action_filter is False
+    assert args.startup_target_rate_deg_s is None
 
 
 def test_parse_args_disable_action_filter_flag() -> None:
     args = parse_args(["--disable-action-filter"])
     assert args.disable_action_filter is True
+
+
+def test_parse_args_startup_target_rate_deg_s_flag() -> None:
+    args = parse_args(["--startup-target-rate-deg-s", "10"])
+    assert abs(args.startup_target_rate_deg_s - 10.0) < 1e-9
 
 
 def test_compute_stance_ground_shift_uses_selected_stance_foot() -> None:
@@ -135,6 +142,51 @@ def test_configure_nominal_only_can_disable_action_filter() -> None:
         disable_action_filter=True,
     )
     assert abs(cfg.env.action_filter_alpha - 0.0) < 1e-9
+
+
+def test_configure_nominal_only_can_override_startup_target_rate() -> None:
+    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    _configure_nominal_only(
+        cfg,
+        forward_cmd=0.10,
+        horizon=32,
+        startup_target_rate_deg_s=10.0,
+    )
+    assert abs(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s - float(jnp.deg2rad(10.0))) < 1e-8
+
+
+def test_command_path_tracker_reports_startup_early_late_support() -> None:
+    tracker = _CommandPathTracker(ctrl_dt=0.02, support_entry_window_s=0.12)
+
+    def _posture(scale: float) -> dict[str, float]:
+        return {
+            "hip_roll_ref": 0.10 * scale,
+            "hip_roll_ctrl": 0.10 * scale,
+            "hip_roll_act": 0.08 * scale,
+            "hip_pitch_ref": 0.20 * scale,
+            "hip_pitch_ctrl": 0.20 * scale,
+            "hip_pitch_act": 0.18 * scale,
+            "knee_pitch_ref": 0.30 * scale,
+            "knee_pitch_ctrl": 0.30 * scale,
+            "knee_pitch_act": 0.05 * scale,
+            "ankle_pitch_ref": -0.10 * scale,
+            "ankle_pitch_ctrl": -0.10 * scale,
+            "ankle_pitch_act": -0.06 * scale,
+        }
+
+    tracker.update(step=1, mode_id=0, mode_time_s=0.02, posture=_posture(1.0))
+    p2 = _posture(1.1)
+    p2["knee_pitch_ctrl"] = p2["knee_pitch_ref"] + 0.15  # induce target->ctrl divergence
+    tracker.update(step=2, mode_id=0, mode_time_s=0.04, posture=p2)
+    tracker.update(step=3, mode_id=1, mode_time_s=0.05, posture=_posture(0.9))
+    tracker.update(step=4, mode_id=1, mode_time_s=0.16, posture=_posture(0.8))
+
+    summary = tracker.get_summary()
+    assert "Phase: STARTUP_SUPPORT_RAMP" in summary
+    assert "Phase: EARLY_SUPPORT_STABILIZE" in summary
+    assert "Phase: LATE_SUPPORT_STABILIZE" in summary
+    assert "target step Δ mean/max" in summary
+    assert "first_divergence target->ctrl=2" in summary
 
 
 def test_format_step_line_includes_lateral_and_hip_roll_diagnostics() -> None:

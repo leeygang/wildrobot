@@ -187,6 +187,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Debug-only: force env.action_filter_alpha=0.0 for this nominal viewer run",
     )
+    parser.add_argument(
+        "--startup-target-rate-deg-s",
+        type=float,
+        default=None,
+        help=(
+            "Debug-only: override loc_ref_v2_startup_target_rate_design_rad_s "
+            "(deg/s) for startup/support-entry shaping sweeps"
+        ),
+    )
     return parser
 
 
@@ -213,6 +222,7 @@ def _configure_nominal_only(
     forward_cmd: float,
     horizon: int,
     disable_action_filter: bool = False,
+    startup_target_rate_deg_s: float | None = None,
 ) -> None:
     """Force config into strict nominal-validation mode for M2.5 debugging."""
     cfg.ppo.num_envs = 1
@@ -227,6 +237,10 @@ def _configure_nominal_only(
     cfg.env.action_delay_steps = 0
     if disable_action_filter:
         cfg.env.action_filter_alpha = 0.0
+    if startup_target_rate_deg_s is not None:
+        cfg.env.loc_ref_v2_startup_target_rate_design_rad_s = float(
+            np.deg2rad(float(startup_target_rate_deg_s))
+        )
 
 
 def _sync_viewer_data(mj_model: mujoco.MjModel, mj_data: mujoco.MjData, state_data) -> None:
@@ -783,96 +797,129 @@ class _StageTracker:
 
 
 class _CommandPathTracker:
-    """Track command path signals (q_ref → ctrl → q_actual) for startup/support diagnosis."""
-    
-    def __init__(self):
-        self.samples = []
-        self.prev_ctrl = None
-    
-    def update(self, step: int, mode_id: int, posture: dict):
+    """Track command-path signals across startup and early/late support phases."""
+
+    _JOINTS = ("hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch")
+
+    def __init__(self, *, ctrl_dt: float, support_entry_window_s: float):
+        self.ctrl_dt = float(max(ctrl_dt, 1e-6))
+        self.support_entry_window_s = float(max(support_entry_window_s, 0.0))
+        self.samples: list[dict[str, float | int | str]] = []
+        self.prev_ctrl: dict[str, float] | None = None
+        self.prev_ref: dict[str, float] | None = None
+
+    def _phase_label(self, mode_id: int, mode_time_s: float) -> str:
+        startup_mode = int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP)
+        support_mode = int(WalkingRefV2Mode.SUPPORT_STABILIZE)
+        if mode_id == startup_mode:
+            return "STARTUP_SUPPORT_RAMP"
+        if mode_id == support_mode:
+            if mode_time_s < self.support_entry_window_s:
+                return "EARLY_SUPPORT_STABILIZE"
+            return "LATE_SUPPORT_STABILIZE"
+        return "OTHER"
+
+    def update(self, step: int, mode_id: int, mode_time_s: float, posture: dict) -> None:
         """Update tracking with current step data."""
-        # Extract command-path signals for each joint
-        for joint in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]:
-            q_ref = posture[f"{joint}_ref"]
-            q_ctrl = posture[f"{joint}_ctrl"]
-            q_act = posture[f"{joint}_act"]
-            ref_err = posture[f"{joint}_ref_err"]
-            ctrl_err = posture[f"{joint}_ctrl_err"]
-            
-            # Compute per-step ctrl delta
-            if self.prev_ctrl is None or joint not in self.prev_ctrl:
+        phase_label = self._phase_label(mode_id, mode_time_s)
+        for joint in self._JOINTS:
+            q_ref = float(posture[f"{joint}_ref"])
+            q_ctrl = float(posture[f"{joint}_ctrl"])
+            q_act = float(posture[f"{joint}_act"])
+
+            if self.prev_ctrl is None:
                 ctrl_delta = 0.0
             else:
-                ctrl_delta = q_ctrl - self.prev_ctrl[joint]
-            
-            self.samples.append({
-                "step": step,
-                "mode": mode_id,
-                "joint": joint,
-                "q_ref": q_ref,
-                "q_ctrl": q_ctrl,
-                "q_act": q_act,
-                "ref_to_ctrl_gap": q_ctrl - q_ref,
-                "ctrl_to_act_gap": q_act - q_ctrl,
-                "ctrl_delta": ctrl_delta,
-            })
-        
-        # Store current ctrl for next delta computation
-        self.prev_ctrl = {
-            joint: posture[f"{joint}_ctrl"]
-            for joint in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]
-        }
-    
-    def get_summary(self, startup_mode: int = 0, support_mode: int = 1) -> str:
-        """Generate command-path summary for startup/support modes."""
+                ctrl_delta = q_ctrl - float(self.prev_ctrl.get(joint, q_ctrl))
+            if self.prev_ref is None:
+                ref_delta = 0.0
+            else:
+                ref_delta = q_ref - float(self.prev_ref.get(joint, q_ref))
+
+            self.samples.append(
+                {
+                    "step": int(step),
+                    "mode": int(mode_id),
+                    "phase": phase_label,
+                    "joint": joint,
+                    "q_ref": q_ref,
+                    "q_ctrl": q_ctrl,
+                    "q_act": q_act,
+                    "ref_to_ctrl_gap": q_ctrl - q_ref,
+                    "ctrl_to_act_gap": q_act - q_ctrl,
+                    "ctrl_delta": ctrl_delta,
+                    "ref_delta": ref_delta,
+                }
+            )
+
+        self.prev_ctrl = {joint: float(posture[f"{joint}_ctrl"]) for joint in self._JOINTS}
+        self.prev_ref = {joint: float(posture[f"{joint}_ref"]) for joint in self._JOINTS}
+
+    def get_summary(self) -> str:
+        """Generate command-path summary for startup + early/late support."""
         lines = []
         lines.append("\n" + "=" * 80)
         lines.append("COMMAND PATH DIAGNOSTICS SUMMARY")
         lines.append("=" * 80)
-        lines.append("Tracing: q_ref (nominal) → ctrl (final target) → q_actual")
+        lines.append("Tracing: q_ref (target) -> ctrl -> q_actual")
+        lines.append(
+            f"Phases: startup, early support (<{self.support_entry_window_s:.3f}s), "
+            "late support (>= window)"
+        )
+        lines.append("Divergence threshold: |gap| > 0.100 rad")
         lines.append("")
-        
-        # Filter to startup and support modes
-        startup_samples = [s for s in self.samples if s["mode"] == startup_mode]
-        support_samples = [s for s in self.samples if s["mode"] == support_mode]
-        
-        for mode_name, samples in [("STARTUP_SUPPORT_RAMP", startup_samples), ("SUPPORT_STABILIZE", support_samples)]:
-            if not samples:
-                lines.append(f"Stage: {mode_name}")
+
+        phase_order = (
+            "STARTUP_SUPPORT_RAMP",
+            "EARLY_SUPPORT_STABILIZE",
+            "LATE_SUPPORT_STABILIZE",
+        )
+        for phase_name in phase_order:
+            phase_samples = [s for s in self.samples if s["phase"] == phase_name]
+            if not phase_samples:
+                lines.append(f"Phase: {phase_name}")
                 lines.append("  (No samples)")
                 lines.append("")
                 continue
-            
-            lines.append(f"Stage: {mode_name} ({len(samples) // 4} steps)")
-            
-            for joint_name in ["hip_roll", "hip_pitch", "knee_pitch", "ankle_pitch"]:
-                joint_samples = [s for s in samples if s["joint"] == joint_name]
+
+            lines.append(f"Phase: {phase_name} ({len(phase_samples) // len(self._JOINTS)} steps)")
+            for joint_name in self._JOINTS:
+                joint_samples = [s for s in phase_samples if s["joint"] == joint_name]
                 if not joint_samples:
                     continue
-                
-                ref_to_ctrl_gaps = [abs(s["ref_to_ctrl_gap"]) for s in joint_samples]
-                ctrl_to_act_gaps = [abs(s["ctrl_to_act_gap"]) for s in joint_samples]
-                ctrl_deltas = [abs(s["ctrl_delta"]) for s in joint_samples]
-                
-                mean_ref_to_ctrl = sum(ref_to_ctrl_gaps) / len(ref_to_ctrl_gaps)
-                max_ref_to_ctrl = max(ref_to_ctrl_gaps)
-                mean_ctrl_to_act = sum(ctrl_to_act_gaps) / len(ctrl_to_act_gaps)
-                max_ctrl_to_act = max(ctrl_to_act_gaps)
-                max_ctrl_delta = max(ctrl_deltas)
-                
-                # Find first major divergence (>0.1 rad)
-                first_ref_ctrl_div = next((s["step"] for s in joint_samples if abs(s["ref_to_ctrl_gap"]) > 0.1), None)
-                first_ctrl_act_div = next((s["step"] for s in joint_samples if abs(s["ctrl_to_act_gap"]) > 0.1), None)
-                
-                lines.append(f"  {joint_name:12s}:")
-                lines.append(f"    ref→ctrl: mean={mean_ref_to_ctrl:.3f} max={max_ref_to_ctrl:.3f} " +
-                           (f"[diverge@step{first_ref_ctrl_div}]" if first_ref_ctrl_div else "[OK]"))
-                lines.append(f"    ctrl→act: mean={mean_ctrl_to_act:.3f} max={max_ctrl_to_act:.3f} " +
-                           (f"[diverge@step{first_ctrl_act_div}]" if first_ctrl_act_div else "[OK]"))
-                lines.append(f"    max_Δctrl/step: {max_ctrl_delta:.3f} rad/step")
-            
+                q_ref = [float(s["q_ref"]) for s in joint_samples]
+                q_ctrl = [float(s["q_ctrl"]) for s in joint_samples]
+                q_act = [float(s["q_act"]) for s in joint_samples]
+                ref_to_ctrl = [abs(float(s["ref_to_ctrl_gap"])) for s in joint_samples]
+                ctrl_to_act = [abs(float(s["ctrl_to_act_gap"])) for s in joint_samples]
+                ref_deltas = [abs(float(s["ref_delta"])) for s in joint_samples]
+                ctrl_deltas = [abs(float(s["ctrl_delta"])) for s in joint_samples]
+
+                first_ref_ctrl_div = next((int(s["step"]) for s in joint_samples if abs(float(s["ref_to_ctrl_gap"])) > 0.1), None)
+                first_ctrl_act_div = next((int(s["step"]) for s in joint_samples if abs(float(s["ctrl_to_act_gap"])) > 0.1), None)
+
+                lines.append(f"  {joint_name:11s}:")
+                lines.append(
+                    f"    target mean/max_abs={float(np.mean(q_ref)):+.3f}/{float(np.max(np.abs(q_ref))):.3f}  "
+                    f"ctrl mean/max_abs={float(np.mean(q_ctrl)):+.3f}/{float(np.max(np.abs(q_ctrl))):.3f}  "
+                    f"actual mean/max_abs={float(np.mean(q_act)):+.3f}/{float(np.max(np.abs(q_act))):.3f}"
+                )
+                lines.append(
+                    f"    target->ctrl err mean/max={float(np.mean(ref_to_ctrl)):.3f}/{float(np.max(ref_to_ctrl)):.3f}  "
+                    f"ctrl->actual err mean/max={float(np.mean(ctrl_to_act)):.3f}/{float(np.max(ctrl_to_act)):.3f}"
+                )
+                lines.append(
+                    f"    target step Δ mean/max={float(np.mean(ref_deltas)):.3f}/{float(np.max(ref_deltas)):.3f} rad/step  "
+                    f"max_rate={float(np.max(ref_deltas) / self.ctrl_dt):.3f} rad/s  "
+                    f"max_Δctrl/step={float(np.max(ctrl_deltas)):.3f}"
+                )
+                lines.append(
+                    "    first_divergence "
+                    f"target->ctrl={first_ref_ctrl_div if first_ref_ctrl_div is not None else 'none'} "
+                    f"ctrl->actual={first_ctrl_act_div if first_ctrl_act_div is not None else 'none'}"
+                )
             lines.append("")
-        
+
         lines.append("=" * 80)
         return "\n".join(lines)
 
@@ -880,6 +927,7 @@ class _CommandPathTracker:
 def run_nominal_viewer(args: argparse.Namespace) -> int:
     cfg = load_training_config(args.config)
     original_action_filter_alpha = float(cfg.env.action_filter_alpha)
+    original_startup_target_rate_rad_s = float(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s)
     robot_cfg_path = Path(cfg.env.robot_config_path)
     if not robot_cfg_path.is_absolute():
         robot_cfg_path = project_root / robot_cfg_path
@@ -889,8 +937,10 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         forward_cmd=args.forward_cmd,
         horizon=args.horizon,
         disable_action_filter=args.disable_action_filter,
+        startup_target_rate_deg_s=args.startup_target_rate_deg_s,
     )
     action_filter_alpha = float(cfg.env.action_filter_alpha)
+    startup_target_rate_rad_s = float(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s)
     cfg.freeze()
 
     env = WildRobotEnv(config=cfg)
@@ -925,6 +975,12 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         )
     else:
         print(f"[nominal-viewer] action filter from config: alpha={action_filter_alpha:.3f}")
+    if args.startup_target_rate_deg_s is not None:
+        print(
+            "[nominal-viewer] startup/support-entry target-rate override active: "
+            f"{np.degrees(original_startup_target_rate_rad_s):.1f} -> "
+            f"{np.degrees(startup_target_rate_rad_s):.1f} deg/s"
+        )
     if args.force_support_only:
         print("[nominal-viewer] forcing walking_ref_v2 into SUPPORT_STABILIZE for posture-only diagnosis")
     if args.init_from_nominal_qref:
@@ -949,7 +1005,10 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     ctrl_dt = float(cfg.env.ctrl_dt)
     print_every = max(1, int(args.print_every))
     stage_tracker = _StageTracker()
-    cmd_path_tracker = _CommandPathTracker()
+    cmd_path_tracker = _CommandPathTracker(
+        ctrl_dt=ctrl_dt,
+        support_entry_window_s=float(env._walking_ref_v2_cfg.support_entry_shaping_window_s),  # noqa: SLF001
+    )
 
     def run_step(step_idx: int) -> bool:
         nonlocal state, done_reached, done_step, done_dom
@@ -960,11 +1019,12 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         # Update stage tracker
         wr_info = state.info[WR_INFO_KEY]
         mode_id = int(jnp.asarray(wr_info.loc_ref_mode_id, dtype=jnp.int32))
+        mode_time_s = float(jnp.asarray(wr_info.loc_ref_mode_time, dtype=jnp.float32))
         pitch = float(metrics_vec[METRIC_INDEX["debug/pitch"]])
         pitch_rate = float(metrics_vec[METRIC_INDEX["debug/pitch_rate"]])
         posture = _extract_support_posture(env, state, metrics_vec)
         stage_tracker.update(step_idx, mode_id, pitch, pitch_rate, posture)
-        cmd_path_tracker.update(step_idx, mode_id, posture)
+        cmd_path_tracker.update(step_idx, mode_id, mode_time_s, posture)
         
         for key in term_totals:
             term_totals[key] += float(metrics_vec[METRIC_INDEX[key]])
