@@ -1224,10 +1224,64 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         support_entry_window_s=float(env._walking_ref_v2_cfg.support_entry_shaping_window_s),  # noqa: SLF001
     )
 
+    # Pure-hold mode: when --force-support-only --init-from-nominal-qref,
+    # bypass env.step() entirely and run pure MuJoCo with frozen ctrl.
+    # This isolates servo capability from env/reference/adapter logic.
+    use_pure_hold = args.force_support_only and args.init_from_nominal_qref
+    if use_pure_hold:
+        print("[nominal-viewer] PURE HOLD MODE: bypassing env.step(), running raw MuJoCo with frozen ctrl")
+        # Freeze ctrl at the initial nominal_q_ref posture
+        hold_ctrl = np.asarray(state.data.ctrl, dtype=np.float64).copy()
+        mj_data.ctrl[:] = hold_ctrl
+        sim_substeps = max(1, int(round(ctrl_dt / float(mj_model.opt.timestep))))
+
     def run_step(step_idx: int) -> bool:
         nonlocal state, done_reached, done_step, done_dom
+
+        if use_pure_hold:
+            # Pure MuJoCo stepping — ctrl stays frozen, no env logic
+            for _ in range(sim_substeps):
+                mujoco.mj_step(mj_model, mj_data)
+            # Extract pitch for termination check
+            qw, qx, qy, qz = mj_data.qpos[3:7]
+            pitch = float(np.arctan2(2*(qw*qy - qz*qx), 1 - 2*(qx**2 + qy**2)))
+            root_h = float(mj_data.qpos[2])
+            done = abs(pitch) > 0.82 or root_h < 0.15
+            if (step_idx % print_every == 0) or done or (step_idx == 1):
+                # Print compact diagnostics
+                lk_idx = env._idx_left_knee_pitch  # noqa: SLF001
+                rk_idx = env._idx_right_knee_pitch  # noqa: SLF001
+                la_idx = env._idx_left_ankle_pitch  # noqa: SLF001
+                lk_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[lk_idx, 0]]])
+                rk_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[rk_idx, 0]]])
+                la_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[la_idx, 0]]])
+                lk_f = float(mj_data.actuator_force[lk_idx])
+                rk_f = float(mj_data.actuator_force[rk_idx])
+                line = (
+                    f"step={step_idx:04d} "
+                    f"root_h={root_h:.4f} pitch={pitch:+.4f} "
+                    f"Lk_ctrl={hold_ctrl[lk_idx]:+.4f} Lk_q={lk_q:+.4f} Lk_F={lk_f:+.3f}  "
+                    f"Rk_ctrl={hold_ctrl[rk_idx]:+.4f} Rk_q={rk_q:+.4f} Rk_F={rk_f:+.3f}  "
+                    f"La_q={la_q:+.4f}"
+                )
+                if args.log:
+                    _print_log_only(line)
+                else:
+                    print(line)
+            if renderer is not None:
+                renderer.update_scene(mj_data)
+                frames.append(renderer.render())
+            if done:
+                done_reached = True
+                done_step = step_idx
+                done_dom = "term/pitch" if abs(pitch) > 0.82 else "term/height_low"
+                print(f"[nominal-viewer] done at step={done_step} dominant_termination={done_dom}")
+                if args.stop_on_done:
+                    return False
+            return True
+
+        # Normal env-based stepping (non-pure-hold mode)
         state = step_once(state)
-        _sync_viewer_data(mj_model, mj_data, state.data)
         metrics_vec = state.metrics[METRICS_VEC_KEY]
         
         # Update stage tracker

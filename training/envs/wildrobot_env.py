@@ -4497,7 +4497,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._loc_ref_v2_support_stance_extension_margin_m,
             self._loc_ref_stance_extension_margin_m,
         )
-        stance_margin = base_margin * (0.2 + 0.8 * support_health)
+        stance_margin = base_margin
         nominal_stance_z = -jp.maximum(
             jp.asarray(0.0, dtype=jp.float32),
             jp.asarray(pelvis_height, dtype=jp.float32) - stance_margin,
