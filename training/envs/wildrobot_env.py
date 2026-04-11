@@ -4355,6 +4355,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         both are load-bearing.  After handoff to SUPPORT_STABILIZE, only the
         stance leg is rate-limited.
         """
+        if self._walking_ref_v2_cfg.debug_force_support_only:
+            return nominal_q_ref
         mode_i = jp.asarray(mode_id, dtype=jp.int32)
         in_startup = mode_i == jp.asarray(
             int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32
