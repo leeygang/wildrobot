@@ -1013,6 +1013,39 @@ Target metrics for `M2.5-A3`:
   - progression quality does not regress further while staged route execution is
     being validated
 
+Current status / investigation result (April 2026):
+
+- staged-route plumbing and diagnostics are now implemented
+  - route labels `A / W1 / W2 / W3 / B`
+  - route progress / ceiling
+  - transition reasons
+  - per-stage viewer summaries
+- `q_ref -> ctrl` is now clean in nominal-only debug runs
+  - command delivery is no longer the dominant startup problem
+- startup-path startup is smoother than earlier M2.5 passes
+  - no immediate pitch termination in the sampled horizon
+  - startup target-rate limiting remains effective
+- but the startup-path run did **not** show a real staged traversal yet
+  - the route stayed in `A`
+  - `route_progress` fell rather than rising
+  - the only observed startup transition was `A -> B` via `TIMEOUT_FALLBACK`
+- so the current staged-route pass does **not** yet validate true
+  `A -> W1 -> W2 -> W3 -> B` progression
+- support-only validation shows:
+  - early support can look reasonable when entry shaping is active
+  - late support still degrades badly
+  - stance knee / ankle remain far from target while hip pitch tracks much
+    better
+- the current dominant symptom remains:
+  - the robot braces / spreads laterally
+  - rather than converging into the intended support posture
+- current interpretation:
+  - `target -> ctrl` is mostly fixed
+  - the remaining issue is still in transition realization / route progression
+    and late-support `ctrl -> actual` divergence
+  - do **not** escalate to MPC yet; first rule out bugs in progress metrics,
+    gating, and startup/support sequencing
+
 ### `M2.5-A4`: Exit decision
 
 Resume PPO only if all are true:
@@ -1066,26 +1099,29 @@ The key rule is:
 ## Immediate Next Actions
 
 1. Keep the current support-first posture branch as the baseline.
-2. Replace the direct startup-to-support route with a staged fixed route:
-   `A -> W1 -> W2 -> W3 -> B`.
-   - keep `B` fixed as the full support target / terminal region
-   - use pelvis height realization as the primary early-stage task metric
-   - guard stage progression with stance knee/ankle realization plus
-     pitch/support stability
-   - keep a nominal startup rate target around `30°/s` and a hard cap around
-     `100°/s`
-3. Add explicit stage logs for `A`, `W1`, `W2`, `W3`, `B` and every stage
-   transition.
-4. Validate both:
+2. Keep the staged-route instrumentation in place, but treat the next pass as a
+   bug-focused diagnosis rather than an architecture change.
+3. Diagnose why startup route progress reverses / shrinks instead of advancing.
+   - inspect pelvis-height target vs actual over the first `10-20` startup
+     steps
+   - inspect route progress / ceiling / reason at the same steps
+   - identify the first step where support-directed progress breaks down
+4. Diagnose the first compensating event that replaces support convergence.
+   - support width growth
+   - root roll / pitch growth
+   - stance knee / ankle target-vs-actual gap growth
+   - support-health drop
+5. Validate both:
    - startup-path transition from keyframe 0
    - grounded support-only holding
-5. Re-run nominal-only probes under the updated staged-route execution.
+6. Re-run nominal-only probes under the updated startup bug-diagnosis tooling.
    Preferred command:
    `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-6. If staged fixed-route still cannot drive the robot into `B`, escalate to a
-   longer-term MPC / online route-optimization design rather than continuing to
-   tune a failing direct route.
-7. Use the support-first checklist as the only decision gate for resuming PPO.
+7. Only after ruling out metric / gating / sequencing bugs:
+   - decide whether to introduce true geometric `W1/W2/W3` waypoints
+   - and only then consider MPC / online route optimization if the fixed-route
+     design is still internally consistent but unrealizable
+8. Use the support-first checklist as the only decision gate for resuming PPO.
 
 ---
 
