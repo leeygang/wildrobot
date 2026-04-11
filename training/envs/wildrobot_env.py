@@ -4351,12 +4351,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Uses the design rate (30 deg/s) during startup and early support entry,
         and the hard-cap rate (100 deg/s) for the remainder of SUPPORT_STABILIZE.
 
-        Staged contact transition: during the first ``startup_toe_preload_s``
-        of startup, knee and ankle targets are frozen while the hip leans
-        forward.  This shifts the centre of pressure to the toes and unloads
-        the heel, breaking the flat-foot ground constraint that prevents ankle
-        dorsiflexion.  Once the toe-preload window expires, knee and ankle are
-        released at the design rate and can track the IK squat targets.
+        During startup (double support), BOTH legs are rate-limited because
+        both are load-bearing.  After handoff to SUPPORT_STABILIZE, only the
+        stance leg is rate-limited.
         """
         mode_i = jp.asarray(mode_id, dtype=jp.int32)
         in_startup = mode_i == jp.asarray(
@@ -4375,17 +4372,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
             REF_LEFT_STANCE, dtype=jp.int32
         )
-        hip_idx = jp.where(
+        # Stance leg indices (used in support mode).
+        stance_hip_idx = jp.where(
             stance_is_left,
             jp.asarray(self._idx_left_hip_pitch, dtype=jp.int32),
             jp.asarray(self._idx_right_hip_pitch, dtype=jp.int32),
         )
-        knee_idx = jp.where(
+        stance_knee_idx = jp.where(
             stance_is_left,
             jp.asarray(self._idx_left_knee_pitch, dtype=jp.int32),
             jp.asarray(self._idx_right_knee_pitch, dtype=jp.int32),
         )
-        ankle_idx = jp.where(
+        stance_ankle_idx = jp.where(
             stance_is_left,
             jp.asarray(self._idx_left_ankle_pitch, dtype=jp.int32),
             jp.asarray(self._idx_right_ankle_pitch, dtype=jp.int32),
@@ -4399,24 +4397,61 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dtype=jp.float32,
         )
         max_step = jp.where(use_design_rate, jp.minimum(design_step, hard_step), hard_step)
+        # During startup, rate-limit BOTH legs (both are load-bearing).
+        # After handoff to support, only rate-limit the stance leg.
         limited = self._limit_joint_target_step(
             target_q=nominal_q_ref,
             prev_target_q=prev_nominal_q_ref,
-            idx=hip_idx,
+            idx=stance_hip_idx,
             max_delta_rad=max_step,
         )
         limited = self._limit_joint_target_step(
             target_q=limited,
             prev_target_q=prev_nominal_q_ref,
-            idx=knee_idx,
+            idx=stance_knee_idx,
             max_delta_rad=max_step,
         )
         limited = self._limit_joint_target_step(
             target_q=limited,
             prev_target_q=prev_nominal_q_ref,
-            idx=ankle_idx,
+            idx=stance_ankle_idx,
             max_delta_rad=max_step,
         )
+        # During startup (double support): also rate-limit the swing leg.
+        swing_hip_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_right_hip_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_left_hip_pitch, dtype=jp.int32),
+        )
+        swing_knee_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_right_knee_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_left_knee_pitch, dtype=jp.int32),
+        )
+        swing_ankle_idx = jp.where(
+            stance_is_left,
+            jp.asarray(self._idx_right_ankle_pitch, dtype=jp.int32),
+            jp.asarray(self._idx_left_ankle_pitch, dtype=jp.int32),
+        )
+        swing_limited = self._limit_joint_target_step(
+            target_q=limited,
+            prev_target_q=prev_nominal_q_ref,
+            idx=swing_hip_idx,
+            max_delta_rad=max_step,
+        )
+        swing_limited = self._limit_joint_target_step(
+            target_q=swing_limited,
+            prev_target_q=prev_nominal_q_ref,
+            idx=swing_knee_idx,
+            max_delta_rad=max_step,
+        )
+        swing_limited = self._limit_joint_target_step(
+            target_q=swing_limited,
+            prev_target_q=prev_nominal_q_ref,
+            idx=swing_ankle_idx,
+            max_delta_rad=max_step,
+        )
+        limited = jp.where(in_startup, swing_limited, limited)
         return jax.lax.cond(limiter_active, lambda q: q, lambda _q: nominal_q_ref, limited)
 
     def _compute_nominal_q_ref_from_loc_ref(
