@@ -875,8 +875,9 @@ def step_reference_v2_jax(
     from_capture = mode == capture_mode
     from_settle = mode == settle_mode
 
-    to_support_from_startup = from_startup & startup_stable & (
-        (startup_ready_for_handoff & startup_route_complete) | startup_timeout_reached
+    to_support_from_startup = from_startup & (
+        (startup_stable & startup_ready_for_handoff & startup_route_complete)
+        | startup_timeout_reached  # unconditional safety valve
     )
     to_swing = (
         from_support
@@ -1225,7 +1226,7 @@ def step_reference_v2(
     startup_timeout_reached = mode_time >= config.startup_handoff_timeout_s
 
     if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
-        if startup_stable and (startup_ready_for_handoff or startup_timeout_reached):
+        if (startup_stable and startup_ready_for_handoff) or startup_timeout_reached:
             mode = WalkingRefV2Mode.SUPPORT_STABILIZE
             mode_time = 0.0
     elif mode == WalkingRefV2Mode.SUPPORT_STABILIZE:

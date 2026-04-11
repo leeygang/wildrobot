@@ -4350,8 +4350,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         Uses the design rate (30 deg/s) during startup and early support entry,
         and the hard-cap rate (100 deg/s) for the remainder of SUPPORT_STABILIZE.
-        This prevents catastrophic target jumps when the entry-shaping window
-        expires while the IK demands deep stance-leg compression.
+
+        Staged contact transition: during the first ``startup_toe_preload_s``
+        of startup, knee and ankle targets are frozen while the hip leans
+        forward.  This shifts the centre of pressure to the toes and unloads
+        the heel, breaking the flat-foot ground constraint that prevents ankle
+        dorsiflexion.  Once the toe-preload window expires, knee and ankle are
+        released at the design rate and can track the IK squat targets.
         """
         mode_i = jp.asarray(mode_id, dtype=jp.int32)
         in_startup = mode_i == jp.asarray(
@@ -4366,6 +4371,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         limiter_active = jp.logical_or(in_startup, in_support)
         use_design_rate = jp.logical_or(in_startup, in_support_entry)
+
         stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
             REF_LEFT_STANCE, dtype=jp.int32
         )
