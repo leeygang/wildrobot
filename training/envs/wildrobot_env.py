@@ -1618,7 +1618,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "loc_ref_v2_startup_handoff_min_alpha", 0.85)
             ),
             startup_handoff_timeout_s=float(
-                getattr(self._config.env, "loc_ref_v2_startup_handoff_timeout_s", 0.18)
+                getattr(self._config.env, "loc_ref_v2_startup_handoff_timeout_s", 1.20)
             ),
             startup_target_rate_design_rad_s=float(
                 getattr(

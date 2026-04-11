@@ -78,7 +78,7 @@ class WalkingRefV2Config:
     support_swing_progress_min_scale: float = 0.0
     support_stabilize_max_foothold_scale: float = 0.35
     post_settle_swing_scale: float = 0.15
-    startup_ramp_s: float = 0.18
+    startup_ramp_s: float = 1.20
     startup_pelvis_height_offset_m: float = 0.07
     startup_support_open_health: float = 0.25
     startup_handoff_pitch_max_rad: float = 0.30
@@ -97,7 +97,7 @@ class WalkingRefV2Config:
     startup_handoff_min_readiness: float = 0.10
     startup_handoff_min_pelvis_realization: float = 0.60
     startup_handoff_min_alpha: float = 0.85
-    startup_handoff_timeout_s: float = 0.18
+    startup_handoff_timeout_s: float = 1.20
     startup_target_rate_design_rad_s: float = 0.5235987756
     startup_target_rate_hard_cap_rad_s: float = 1.7453292520
     startup_route_w1_alpha: float = 0.20

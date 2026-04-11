@@ -241,7 +241,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_post_settle_swing_scale", 0.15)
         ),
         loc_ref_v2_startup_ramp_s=float(
-            env.get("loc_ref_v2_startup_ramp_s", 0.18)
+            env.get("loc_ref_v2_startup_ramp_s", 1.20)
         ),
         loc_ref_v2_startup_pelvis_height_offset_m=float(
             env.get("loc_ref_v2_startup_pelvis_height_offset_m", 0.07)
@@ -298,7 +298,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_startup_handoff_min_alpha", 0.85)
         ),
         loc_ref_v2_startup_handoff_timeout_s=float(
-            env.get("loc_ref_v2_startup_handoff_timeout_s", 0.18)
+            env.get("loc_ref_v2_startup_handoff_timeout_s", 1.20)
         ),
         loc_ref_v2_startup_target_rate_design_rad_s=float(
             env.get("loc_ref_v2_startup_target_rate_design_rad_s", 0.5235987756)

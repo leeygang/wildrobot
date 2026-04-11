@@ -176,7 +176,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_settle_hold_s: float = 0.04
     loc_ref_v2_support_stabilize_max_foothold_scale: float = 0.35
     loc_ref_v2_post_settle_swing_scale: float = 0.15
-    loc_ref_v2_startup_ramp_s: float = 0.18
+    loc_ref_v2_startup_ramp_s: float = 1.20
     loc_ref_v2_startup_pelvis_height_offset_m: float = 0.07
     loc_ref_v2_startup_support_open_health: float = 0.25
     loc_ref_v2_startup_handoff_pitch_max_rad: float = 0.30
@@ -195,7 +195,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_handoff_min_readiness: float = 0.10
     loc_ref_v2_startup_handoff_min_pelvis_realization: float = 0.60
     loc_ref_v2_startup_handoff_min_alpha: float = 0.85
-    loc_ref_v2_startup_handoff_timeout_s: float = 0.18
+    loc_ref_v2_startup_handoff_timeout_s: float = 1.20
     loc_ref_v2_startup_target_rate_design_rad_s: float = 0.5235987756
     loc_ref_v2_startup_target_rate_hard_cap_rad_s: float = 1.7453292520
     loc_ref_v2_startup_route_w1_alpha: float = 0.25
