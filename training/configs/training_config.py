@@ -286,7 +286,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_startup_progress_min_scale", 0.20)
         ),
         loc_ref_v2_startup_realization_lead_alpha=float(
-            env.get("loc_ref_v2_startup_realization_lead_alpha", 0.12)
+            env.get("loc_ref_v2_startup_realization_lead_alpha", 0.25)
         ),
         loc_ref_v2_startup_handoff_min_readiness=float(
             env.get("loc_ref_v2_startup_handoff_min_readiness", 0.10)

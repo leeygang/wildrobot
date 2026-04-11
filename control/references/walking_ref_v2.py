@@ -93,7 +93,7 @@ class WalkingRefV2Config:
     startup_readiness_pitch_rate_bad_rad_s: float = 2.00
     startup_readiness_min_health: float = 0.20
     startup_progress_min_scale: float = 0.20
-    startup_realization_lead_alpha: float = 0.12
+    startup_realization_lead_alpha: float = 0.25
     startup_handoff_min_readiness: float = 0.10
     startup_handoff_min_pelvis_realization: float = 0.60
     startup_handoff_min_alpha: float = 0.85
@@ -727,6 +727,12 @@ def step_reference_v2_jax(
     route_progress = jnp.clip(
         jnp.minimum(startup_alpha, route_ceiling), 0.0, 1.0
     ).astype(jnp.float32)
+    # Ratchet progress too: once a stage is reached, don't regress.
+    route_progress = jnp.where(
+        mode == startup_mode,
+        jnp.maximum(route_progress, route_progress_prev),
+        route_progress,
+    )
     route_stage_id = _stage_id_from_progress_jax(
         route_progress,
         w1_alpha=config.startup_route_w1_alpha,

@@ -1602,7 +1602,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "loc_ref_v2_startup_progress_min_scale", 0.20)
             ),
             startup_realization_lead_alpha=float(
-                getattr(self._config.env, "loc_ref_v2_startup_realization_lead_alpha", 0.12)
+                getattr(self._config.env, "loc_ref_v2_startup_realization_lead_alpha", 0.25)
             ),
             startup_handoff_min_readiness=float(
                 getattr(self._config.env, "loc_ref_v2_startup_handoff_min_readiness", 0.10)
