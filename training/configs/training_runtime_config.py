@@ -177,7 +177,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_support_stabilize_max_foothold_scale: float = 0.35
     loc_ref_v2_post_settle_swing_scale: float = 0.15
     loc_ref_v2_startup_ramp_s: float = 0.18
-    loc_ref_v2_startup_pelvis_height_offset_m: float = 0.035
+    loc_ref_v2_startup_pelvis_height_offset_m: float = 0.07
     loc_ref_v2_startup_support_open_health: float = 0.25
     loc_ref_v2_startup_handoff_pitch_max_rad: float = 0.30
     loc_ref_v2_startup_handoff_pitch_rate_max_rad_s: float = 1.50
@@ -221,7 +221,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_route_w2_pitch_relax: float = 1.25
     loc_ref_v2_startup_route_w2_pitch_rate_relax: float = 1.25
     loc_ref_v2_support_entry_shaping_window_s: float = 0.12
-    loc_ref_v2_support_pelvis_height_offset_m: float = 0.050
+    loc_ref_v2_support_pelvis_height_offset_m: float = 0.02
     loc_ref_v2_support_stance_extension_margin_m: float = 0.055
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)

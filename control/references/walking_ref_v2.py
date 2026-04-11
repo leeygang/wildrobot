@@ -79,7 +79,7 @@ class WalkingRefV2Config:
     support_stabilize_max_foothold_scale: float = 0.35
     post_settle_swing_scale: float = 0.15
     startup_ramp_s: float = 0.18
-    startup_pelvis_height_offset_m: float = 0.035
+    startup_pelvis_height_offset_m: float = 0.07
     startup_support_open_health: float = 0.25
     startup_handoff_pitch_max_rad: float = 0.30
     startup_handoff_pitch_rate_max_rad_s: float = 1.50
@@ -130,7 +130,7 @@ class WalkingRefV2Config:
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
     settle_hold_s: float = 0.04
-    support_pelvis_height_offset_m: float = 0.050
+    support_pelvis_height_offset_m: float = 0.02
     debug_force_support_only: bool = False
 
     def __post_init__(self) -> None:
@@ -294,10 +294,16 @@ def _startup_pelvis_realization(
     startup_height_m: float,
     support_height_m: float,
 ) -> float:
-    """Pelvis realization ratio in [0,1] from startup posture toward support posture."""
+    """Directional pelvis realization in [0,1]: 0 at startup height, 1 at support height.
+
+    Uses signed progress so overshooting past support clips to 1.0 instead of
+    regressing.  Works for both downward ramps (startup > support, normal) and
+    upward ramps.
+    """
     span = max(abs(support_height_m - startup_height_m), 1e-6)
-    dist_to_support = abs(root_height_m - support_height_m)
-    return _clip(1.0 - dist_to_support / span, 0.0, 1.0)
+    direction = 1.0 if startup_height_m >= support_height_m else -1.0
+    progress = direction * (startup_height_m - root_height_m)
+    return _clip(progress / span, 0.0, 1.0)
 
 
 def compute_support_health_v2(*, config: WalkingRefV2Config, inputs: WalkingRefV2Input) -> tuple[float, float]:
@@ -380,9 +386,14 @@ def _startup_pelvis_realization_jax(
     startup_height_m: jnp.ndarray,
     support_height_m: jnp.ndarray,
 ) -> jnp.ndarray:
+    """Directional pelvis realization: 0 at startup height, 1 at support height.
+
+    Uses signed progress so overshooting past support clips to 1.0.
+    """
     span = jnp.maximum(jnp.abs(support_height_m - startup_height_m), jnp.asarray(1e-6, dtype=jnp.float32))
-    dist_to_support = jnp.abs(jnp.asarray(root_height_m, dtype=jnp.float32) - support_height_m)
-    return jnp.clip(1.0 - dist_to_support / span, 0.0, 1.0).astype(jnp.float32)
+    direction = jnp.sign(startup_height_m - support_height_m)
+    progress = direction * (startup_height_m - jnp.asarray(root_height_m, dtype=jnp.float32))
+    return jnp.clip(progress / span, 0.0, 1.0).astype(jnp.float32)
 
 
 def _piecewise_route_scale_jax(
@@ -508,6 +519,22 @@ def step_reference_v2_jax(
         left_foot_loaded=left_foot_loaded,
         right_foot_loaded=right_foot_loaded,
     )
+    # During startup, double-support (both feet loaded) is the expected state.
+    # The health function penalises non-single-support by 0.25, which unfairly
+    # weakens every admission gate.  Remove that penalty while in startup.
+    _startup_mode_cst = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    _is_double_support = jnp.logical_not(jnp.logical_xor(
+        jnp.asarray(left_foot_loaded, dtype=jnp.bool_),
+        jnp.asarray(right_foot_loaded, dtype=jnp.bool_),
+    ))
+    _startup_ds = (jnp.asarray(mode_id, dtype=jnp.int32) == _startup_mode_cst) & _is_double_support
+    _adj_instab = jnp.maximum(support_instability - jnp.asarray(0.25, dtype=jnp.float32), 0.0)
+    _adj_health = jnp.clip(
+        1.0 / (1.0 + jnp.asarray(config.support_health_gain, dtype=jnp.float32) * _adj_instab),
+        0.0, 1.0,
+    ).astype(jnp.float32)
+    support_health = jnp.where(_startup_ds, _adj_health, support_health)
+    support_instability = jnp.where(_startup_ds, _adj_instab, support_instability)
     denom = jnp.maximum(
         jnp.asarray(config.support_open_threshold - config.support_release_threshold, dtype=jnp.float32),
         jnp.asarray(1e-6, dtype=jnp.float32),
@@ -689,6 +716,13 @@ def step_reference_v2_jax(
         allow_b,
         jnp.asarray(1.0, dtype=jnp.float32),
         jnp.where(allow_w3, w3_alpha, jnp.where(allow_w2, w2_alpha, w1_alpha)),
+    )
+    # Ratchet: during startup the ceiling can only advance, never drop back.
+    # This prevents transient pitch spikes from resetting progress.
+    route_ceiling = jnp.where(
+        mode == startup_mode,
+        jnp.maximum(route_ceiling, route_ceiling_prev),
+        route_ceiling,
     )
     route_progress = jnp.clip(
         jnp.minimum(startup_alpha, route_ceiling), 0.0, 1.0
@@ -1101,6 +1135,13 @@ def step_reference_v2(
         raise ValueError("dt_s must be > 0")
 
     support_health, support_instability = compute_support_health_v2(config=config, inputs=inputs)
+    # During startup, double-support is expected — remove the contact penalty.
+    if state.mode_id == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP):
+        is_double = not (bool(inputs.left_foot_loaded) ^ bool(inputs.right_foot_loaded))
+        if is_double:
+            adj_instab = max(support_instability - 0.25, 0.0)
+            support_instability = adj_instab
+            support_health = _clip(1.0 / (1.0 + config.support_health_gain * adj_instab), 0.0, 1.0)
     progression_permission = _permission_from_health(config, support_health)
     phase_scale = config.support_phase_min_scale + (1.0 - config.support_phase_min_scale) * progression_permission
     readiness_knee = _readiness_component(

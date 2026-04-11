@@ -244,7 +244,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_startup_ramp_s", 0.18)
         ),
         loc_ref_v2_startup_pelvis_height_offset_m=float(
-            env.get("loc_ref_v2_startup_pelvis_height_offset_m", 0.035)
+            env.get("loc_ref_v2_startup_pelvis_height_offset_m", 0.07)
         ),
         loc_ref_v2_startup_support_open_health=float(
             env.get("loc_ref_v2_startup_support_open_health", 0.25)
@@ -376,7 +376,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_support_entry_shaping_window_s", 0.12)
         ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
-            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.050)
+            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.02)
         ),
         loc_ref_v2_support_stance_extension_margin_m=float(
             env.get("loc_ref_v2_support_stance_extension_margin_m", 0.055)
