@@ -1853,7 +1853,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dtype=jp.float32,
         )
         self._loc_ref_v2_support_stance_extension_margin_m = jp.asarray(
-            getattr(self._config.env, "loc_ref_v2_support_stance_extension_margin_m", 0.055),
+            getattr(self._config.env, "loc_ref_v2_support_stance_extension_margin_m", 0.020),
             dtype=jp.float32,
         )
         self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
@@ -4346,16 +4346,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         mode_id: jax.Array,
         mode_time_s: jax.Array,
     ) -> jax.Array:
-        """Limit startup and early-support stance hip/knee/ankle target rates."""
+        """Limit startup and support stance hip/knee/ankle target rates.
+
+        Uses the design rate (30 deg/s) during startup and early support entry,
+        and the hard-cap rate (100 deg/s) for the remainder of SUPPORT_STABILIZE.
+        This prevents catastrophic target jumps when the entry-shaping window
+        expires while the IK demands deep stance-leg compression.
+        """
         mode_i = jp.asarray(mode_id, dtype=jp.int32)
         in_startup = mode_i == jp.asarray(
             int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32
         )
-        in_support_entry = (mode_i == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32)) & (
+        in_support = mode_i == jp.asarray(
+            int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32
+        )
+        in_support_entry = in_support & (
             jp.asarray(mode_time_s, dtype=jp.float32)
             < jp.asarray(self._walking_ref_v2_cfg.support_entry_shaping_window_s, dtype=jp.float32)
         )
-        limiter_active = jp.logical_or(in_startup, in_support_entry)
+        limiter_active = jp.logical_or(in_startup, in_support)
+        use_design_rate = jp.logical_or(in_startup, in_support_entry)
         stance_is_left = jp.asarray(stance_foot_id, dtype=jp.int32) == jp.asarray(
             REF_LEFT_STANCE, dtype=jp.int32
         )
@@ -4382,7 +4392,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._walking_ref_v2_cfg.startup_target_rate_hard_cap_rad_s * self.dt,
             dtype=jp.float32,
         )
-        max_step = jp.minimum(design_step, hard_step)
+        max_step = jp.where(use_design_rate, jp.minimum(design_step, hard_step), hard_step)
         limited = self._limit_joint_target_step(
             target_q=nominal_q_ref,
             prev_target_q=prev_nominal_q_ref,
