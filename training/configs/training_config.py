@@ -376,7 +376,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("loc_ref_v2_support_entry_shaping_window_s", 0.12)
         ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
-            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.02)
+            env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.04)
         ),
         loc_ref_v2_support_stance_extension_margin_m=float(
             env.get("loc_ref_v2_support_stance_extension_margin_m", 0.020)

@@ -130,7 +130,7 @@ class WalkingRefV2Config:
     touchdown_phase_min: float = 0.55
     capture_hold_s: float = 0.04
     settle_hold_s: float = 0.04
-    support_pelvis_height_offset_m: float = 0.02
+    support_pelvis_height_offset_m: float = 0.04
     debug_force_support_only: bool = False
 
     def __post_init__(self) -> None:

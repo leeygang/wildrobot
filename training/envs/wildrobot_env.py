@@ -1741,6 +1741,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._loc_ref_stance_height_blend = jp.asarray(
             getattr(self._config.env, "loc_ref_stance_height_blend", 0.25), dtype=jp.float32
         )
+        # Stance foot COM-forward gain: compensates for the torso mass
+        # shifting the COM forward of the hip when the hip pitches.
+        # gain ≈ upper_body_mass_fraction × torso_com_height_above_hip.
+        # Calibrated via sweep_support_posture.py: gain=0.20 stabilizes
+        # support_height=0.43 (target_z=-0.41, knee=0.38 rad).
+        self._loc_ref_stance_com_forward_gain = jp.asarray(
+            getattr(self._config.env, "loc_ref_stance_com_forward_gain", 0.20), dtype=jp.float32
+        )
         self._loc_ref_stance_extension_margin_m = jp.asarray(
             getattr(self._config.env, "loc_ref_stance_extension_margin_m", 0.015),
             dtype=jp.float32,
@@ -4565,9 +4573,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + self._loc_ref_stance_height_blend * stance_z_actual
         )
 
-        left_target_x = jp.where(stance_is_left, 0.0, swing_x_target)
+        # Stance foot sagittal offset: shift foot forward to keep COM above
+        # the support point.  Without this, the foot is placed directly under
+        # the hip (target_x=0), but the torso mass shifts the COM forward
+        # when the hip pitches.  The offset compensates for this.
+        _l1 = jp.asarray(self._leg_ik_cfg.upper_leg_length_m, dtype=jp.float32)
+        _l2 = jp.asarray(self._leg_ik_cfg.lower_leg_length_m, dtype=jp.float32)
+        _reach = jp.minimum(jp.abs(stance_target_z), _l1 + _l2 - 1e-4)
+        _cos_hip_aux = jp.clip(
+            (_l1 * _l1 + _reach * _reach - _l2 * _l2)
+            / (2.0 * _l1 * _reach + 1e-6),
+            -1.0, 1.0,
+        )
+        _approx_hip_pitch = jp.arccos(_cos_hip_aux)
+        _stance_foot_x = (
+            self._loc_ref_stance_com_forward_gain
+            * jp.sin(_approx_hip_pitch)
+        )
+
+        left_target_x = jp.where(stance_is_left, _stance_foot_x, swing_x_target)
         left_target_z = jp.where(stance_is_left, stance_target_z, swing_target_z)
-        right_target_x = jp.where(stance_is_left, swing_x_target, 0.0)
+        right_target_x = jp.where(stance_is_left, swing_x_target, _stance_foot_x)
         right_target_z = jp.where(stance_is_left, swing_target_z, stance_target_z)
 
         left_hip, left_knee, left_ankle, left_reachable = solve_leg_sagittal_ik_jax(
