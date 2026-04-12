@@ -223,6 +223,10 @@ class EnvConfig(Freezable):
     loc_ref_v2_support_entry_shaping_window_s: float = 0.12
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.00
     loc_ref_v2_support_stance_extension_margin_m: float = 0.020
+    # M2.5: start episodes from the support posture B (squat) instead of
+    # keyframe A (standing).  Requires loc_ref_enabled=True and
+    # loc_ref_version="v2".
+    start_from_support_posture: bool = False
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

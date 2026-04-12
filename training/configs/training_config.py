@@ -381,6 +381,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_v2_support_stance_extension_margin_m=float(
             env.get("loc_ref_v2_support_stance_extension_margin_m", 0.020)
         ),
+        start_from_support_posture=bool(env.get("start_from_support_posture", False)),
         action_mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         clock_stride_period_steps=int(env.get("clock_stride_period_steps", 36)),
         clock_phase_gate_width=float(env.get("clock_phase_gate_width", 0.20)),

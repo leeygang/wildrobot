@@ -935,7 +935,8 @@ integrated into the env.
 PPO remains blocked until:
 1. The startup transition is integrated into the env reset path
 2. The nominal walking probe survives materially longer than before
-3. The M2.5-A4 gate criteria are met
+3. Support posture B is computed by the reference + IK pipeline, not hardcoded
+4. The M2.5-A4 gate criteria are met
 
 ---
 
@@ -1170,16 +1171,21 @@ The key rule is:
 
 ## Immediate Next Actions
 
-**Focus: integrate startup into env and run nominal walking probe**
+**Focus: integrate startup into env, test stepping, then make reference-driven**
 
 Both the support posture (B) and the startup transition (A→B) are validated
 in the viewer.  The remaining work to unblock PPO:
 
-1. **Integrate the qpos-interpolation startup into the env reset path.**
-   - At episode reset, run the same A→B interpolation that the viewer uses
-   - The env should start episodes from the stable B posture
-   - This replaces the servo-driven startup that cannot work through the
-     closed kinematic chain
+1. **Integrate the qpos-interpolation startup into the env reset path.** — done
+   - At episode reset, the env now starts from the stable B posture
+   - `start_from_support_posture: true` in config enables it
+   - B is pre-computed at env init via dummy reset with
+     `debug_force_support_only=True` (un-rate-limited IK output), then
+     re-grounded via MuJoCo C API
+   - Walking reference starts in SUPPORT_STABILIZE mode (skipping startup)
+   - Both `reset()` and auto-reset use B
+   - Verified: root_h≈0.43, knee≈0.99 rad, mode_id=1, no immediate
+     termination
 
 2. **Run the nominal walking probe from B.**
    - Test whether the nominal reference can release a swing foot, step,
@@ -1187,11 +1193,26 @@ in the viewer.  The remaining work to unblock PPO:
    - Run the canonical multi-speed sweep:
      `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
    - Check against the M2.5-A4 gate criteria
+   - This answers the critical yes/no question: can the robot step at all
+     from a stable support posture?
 
-3. **If the nominal walking probe passes the M2.5-A4 gate, resume PPO.**
+3. **Make support posture B reference-driven, not hardcoded.**
+   - The current B posture (target_z=-0.37, knee=0.99 rad, COM-forward offset)
+     was found through manual experimentation and is hardcoded
+   - The reference + IK pipeline should compute B automatically:
+     the reference specifies task-space targets (pelvis height, foot placement,
+     support width), and IK solves for the joint angles
+   - The manually-found stable parameters become inputs/constraints to the
+     reference, not frozen joint-angle constants
+   - This is required so the same pipeline that computes support posture also
+     computes stepping targets — the whole system must be consistent
+   - Re-run the nominal walking probe after this step to verify consistency
 
-4. **Do not continue manually tuning support posture parameters.**
-   - The current B posture (target_z=-0.37) is validated stable
+4. **If the nominal walking probe passes the M2.5-A4 gate, resume PPO.**
+
+5. **Do not continue manually tuning support posture parameters.**
+   - The current B posture (target_z=-0.37) is validated stable as a reference
+     point for the reference-driven computation
    - Further changes should be motivated by walking probe results
 
 ---

@@ -32,13 +32,14 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import jax
 import jax.numpy as jp
 import mujoco
+import numpy as np
 from flax import struct
 from ml_collections import config_dict
 from mujoco import mjx
@@ -1925,6 +1926,80 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 push_body_ids.append(int(body_id))
             self._push_body_ids = jp.asarray(push_body_ids, dtype=jp.int32)
 
+        # M2.5: optionally start episodes from support posture B (squat)
+        self._start_from_support = (
+            bool(getattr(self._config.env, "start_from_support_posture", False))
+            and self._loc_ref_version == "v2"
+            and self._config.env.loc_ref_enabled
+        )
+        if self._start_from_support:
+            self._precompute_support_posture_B()
+
+    def _precompute_support_posture_B(self) -> None:
+        """Pre-compute the B (support / squat) posture for episode initialization.
+
+        Uses a dummy reset with ``debug_force_support_only=True`` to obtain the
+        un-rate-limited IK output for the support posture, then builds a
+        re-grounded full-model qpos via the MuJoCo C API.
+        """
+        # 1. Temporarily bypass rate limiter and disable support-start
+        #    (since _default_joint_qpos_B doesn't exist yet).
+        orig_cfg = self._walking_ref_v2_cfg
+        self._walking_ref_v2_cfg = replace(orig_cfg, debug_force_support_only=True)
+        self._start_from_support = False
+
+        # 2. Dummy initial state to get nominal_q_ref for support posture.
+        dummy_vel = jp.asarray(0.10, dtype=jp.float32)
+        dummy_state = self._make_initial_state(self._init_qpos.copy(), dummy_vel)
+        support_q_ref = np.asarray(dummy_state.info[WR_INFO_KEY].nominal_q_ref)
+
+        # 3. Restore original config and re-enable support-start.
+        self._walking_ref_v2_cfg = orig_cfg
+        self._start_from_support = True
+
+        # 4. Build re-grounded B qpos using MuJoCo C API.
+        tmp_data = mujoco.MjData(self._mj_model)
+        if self._mj_model.nkey > 0:
+            tmp_data.qpos[:] = self._mj_model.key_qpos[0]
+        else:
+            tmp_data.qpos[:] = self._mj_model.qpos0
+        tmp_data.qvel[:] = 0.0
+
+        # Replace actuated joints with support posture values.
+        actuator_addrs = np.asarray(self._actuator_qpos_addrs)
+        for i, addr in enumerate(actuator_addrs):
+            tmp_data.qpos[int(addr)] = float(support_q_ref[i])
+
+        mujoco.mj_forward(self._mj_model, tmp_data)
+
+        # Re-ground: adjust root z so lowest foot geom bottom touches z=0.
+        foot_geom_names = ["left_heel", "left_toe", "right_heel", "right_toe"]
+        foot_geom_ids = [
+            mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)
+            for g in foot_geom_names
+        ]
+        min_z = min(
+            tmp_data.geom_xpos[gid][2] - self._mj_model.geom_size[gid][0]
+            for gid in foot_geom_ids
+        )
+        tmp_data.qpos[2] -= min_z
+        mujoco.mj_forward(self._mj_model, tmp_data)
+
+        # 5. Store B posture.
+        self._init_qpos_B = jp.array(tmp_data.qpos)
+        self._default_joint_qpos_B = jp.array(support_q_ref, dtype=jp.float32)
+
+        # Debug output.
+        root_h = float(tmp_data.qpos[2])
+        knee_l_addr = int(actuator_addrs[self._idx_left_knee_pitch])
+        knee_r_addr = int(actuator_addrs[self._idx_right_knee_pitch])
+        knee_l = float(tmp_data.qpos[knee_l_addr])
+        knee_r = float(tmp_data.qpos[knee_r_addr])
+        print(
+            f"  Support posture B pre-computed: "
+            f"root_h={root_h:.4f} L_knee={knee_l:.4f} R_knee={knee_r:.4f}"
+        )
+
     # =========================================================================
     # MjxEnv Interface
     # =========================================================================
@@ -2011,7 +2086,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Create MJX data and run forward kinematics
         data = mjx.make_data(randomized_model)
-        data = data.replace(qpos=qpos, qvel=qvel, ctrl=self._default_joint_qpos)
+        ctrl_init = self._default_joint_qpos_B if self._start_from_support else self._default_joint_qpos
+        data = data.replace(qpos=qpos, qvel=qvel, ctrl=ctrl_init)
         data = mjx.forward(randomized_model, data)
 
         if push_schedule is None:
@@ -2061,7 +2137,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 phase_time_s=jp.zeros((), dtype=jp.float32),
                 stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
                 stance_switch_count=jp.zeros((), dtype=jp.int32),
-                mode_id=jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
+                mode_id=jp.asarray(
+                    int(WalkingRefV2Mode.SUPPORT_STABILIZE if self._start_from_support else WalkingRefV2Mode.STARTUP_SUPPORT_RAMP),
+                    dtype=jp.int32,
+                ),
                 mode_time_s=jp.zeros((), dtype=jp.float32),
                 forward_speed_mps=velocity_cmd,
                 com_position_stance_frame=jp.asarray(
@@ -2581,20 +2660,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         domain_rand_params = self._sample_domain_rand_params(key4)
 
-        # Use initial qpos from model (keyframe or qpos0)
-        qpos = self._init_qpos.copy()
+        # Choose starting posture: B (support squat) or A (keyframe standing).
+        if self._start_from_support:
+            base_qpos = self._init_qpos_B.copy()
+            base_joint_qpos = self._default_joint_qpos_B
+        else:
+            base_qpos = self._init_qpos.copy()
+            base_joint_qpos = self._default_joint_qpos
 
         # Add small random noise to joint positions (not floating base)
         joint_noise = jax.random.uniform(
-            key2, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
+            key2, shape=base_joint_qpos.shape, minval=-0.05, maxval=0.05
         )
         joint_qpos = (
-            self._default_joint_qpos
+            base_joint_qpos
             + joint_noise
             + domain_rand_params["joint_offsets"]
         )
         joint_qpos = jp.clip(joint_qpos, self._joint_range_mins, self._joint_range_maxs)
-        qpos = qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
+        qpos = base_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
         schedule = sample_push_schedule(key3, self._config.env, self._push_body_ids)
 
@@ -3722,9 +3806,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             reset_push_rng, self._config.env, self._push_body_ids
         )
         reset_domain_rand_params = self._sample_domain_rand_params(reset_domain_rng)
-        reset_qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(
+        reset_base_qpos = self._init_qpos_B if self._start_from_support else self._init_qpos
+        reset_base_joint = self._default_joint_qpos_B if self._start_from_support else self._default_joint_qpos
+        reset_qpos = reset_base_qpos.at[self._actuator_qpos_addrs].set(
             jp.clip(
-                self._default_joint_qpos + reset_domain_rand_params["joint_offsets"],
+                reset_base_joint + reset_domain_rand_params["joint_offsets"],
                 self._joint_range_mins,
                 self._joint_range_maxs,
             )
