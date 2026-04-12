@@ -4607,9 +4607,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * jp.sin(_approx_hip_pitch)
         )
 
-        left_target_x = jp.where(stance_is_left, _stance_foot_x, swing_x_target)
+        # During startup/support (both feet on ground), apply the COM offset
+        # to BOTH legs for a symmetric squat.  During walking modes, only the
+        # stance leg gets the offset; the swing leg uses its reference target.
+        _both_feet_grounded = jp.logical_or(
+            jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
+            jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32),
+        )
+        _swing_x_for_mode = jp.where(_both_feet_grounded, _stance_foot_x, swing_x_target)
+
+        left_target_x = jp.where(stance_is_left, _stance_foot_x, _swing_x_for_mode)
         left_target_z = jp.where(stance_is_left, stance_target_z, swing_target_z)
-        right_target_x = jp.where(stance_is_left, swing_x_target, _stance_foot_x)
+        right_target_x = jp.where(stance_is_left, _swing_x_for_mode, _stance_foot_x)
         right_target_z = jp.where(stance_is_left, swing_target_z, stance_target_z)
 
         left_hip, left_knee, left_ankle, left_reachable = solve_leg_sagittal_ik_jax(
