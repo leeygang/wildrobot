@@ -1416,9 +1416,36 @@ If `M3.0-B` gate is not met after bounded tuning:
    speed)
 3. Consider longer step time (0.50s → 0.70s) to give more time for foot
    tracking
+4. Lower `support_release_phase_start` to give swing more of the gait cycle
+   (tested at 0.25 — produced bigger steps but body rocked without COM drive;
+   may work with COM trajectory providing momentum control)
 
 Do not skip to full MPC or major redesign until these simpler options are
 tried.
+
+---
+
+## Historical Notes
+
+### Ctrl ordering mismatch (discovered April 12)
+
+PolicySpec (`mujoco_robot_config.json`) and MuJoCo model (`wildrobot.xml`)
+listed actuators in different orders.  The env wrote PolicySpec-ordered ctrl
+directly to `data.ctrl`, which expects MuJoCo model order.  This sent each
+joint's target to the wrong actuator — e.g. the knee bend (0.99 rad) went to
+the hip pitch actuator.
+
+**Impact:**
+- All v0.19.3+ loc_ref training runs: completely broken (scrambled ctrl)
+- All M2.5 nominal probes and conclusions: based on scrambled ctrl
+- The entire M2.5 support-posture redesign effort: tuning around a bug
+- v0.17/v0.18 standing PPO: worked but with secretly scrambled action
+  semantics (PPO learns any consistent mapping, but action-by-name analysis
+  and hardware deployment would be wrong)
+
+**Fix:** `CtrlOrderMapper` (`training/utils/ctrl_order.py`) provides a single
+API for all ctrl writes.  Regression test: `test_actuator_ordering.py`.
+See `training/docs/system_architecture.md` for the design principle.
 
 ---
 
