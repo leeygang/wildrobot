@@ -566,7 +566,10 @@ def _extract_support_posture(
 ) -> dict[str, float | str]:
     wr = state.info[WR_INFO_KEY]
     nominal_q_ref = jnp.asarray(wr.nominal_q_ref, dtype=jnp.float32)
-    ctrl = jnp.asarray(state.data.ctrl, dtype=jnp.float32)
+    # data.ctrl is in MuJoCo order; re-index to PolicySpec order for diagnostics.
+    ctrl_mj = jnp.asarray(state.data.ctrl, dtype=jnp.float32)
+    perm = env._ctrl_mapper.policy_to_mj_order_jax  # noqa: SLF001
+    ctrl = ctrl_mj[perm]  # ctrl[policy_idx] = ctrl_mj[mj_idx_for_that_actuator]
     actual_q = jnp.asarray(state.data.qpos, dtype=jnp.float32)[env._actuator_qpos_addrs]  # noqa: SLF001
     if stance_foot is None:
         if metrics_vec is not None:
