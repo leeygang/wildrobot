@@ -54,6 +54,7 @@ from policy_contract.layout import get_slices as get_obs_slices
 from training.sim_adapter.mjx_signals import MjxSignalsAdapter
 from policy_contract.spec import PolicySpec
 from training.cal.cal import ControlAbstractionLayer
+from training.utils.ctrl_order import CtrlOrderMapper
 from training.cal.specs import Pose3D
 from training.cal.types import CoordinateFrame
 
@@ -1896,26 +1897,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._joint_half_spans = 0.5 * (self._joint_range_maxs - self._joint_range_mins)
         actuator_qpos_addrs = []
         actuator_dof_addrs = []
-        policy_to_mj_ctrl = []
         for name in self._policy_spec.robot.actuator_names:
             act_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            if act_id < 0:
-                raise ValueError(
-                    f"Actuator '{name}' from PolicySpec not found in MuJoCo model. "
-                    f"Check that mujoco_robot_config.json actuated_joints match the MJCF."
-                )
             joint_id = int(self._mj_model.actuator_trnid[act_id][0])
             actuator_qpos_addrs.append(int(self._mj_model.jnt_qposadr[joint_id]))
             actuator_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
-            policy_to_mj_ctrl.append(act_id)
         self._actuator_qpos_addrs = jp.asarray(actuator_qpos_addrs, dtype=jp.int32)
         self._actuator_dof_addrs = jp.asarray(actuator_dof_addrs, dtype=jp.int32)
-        # Permutation: PolicySpec index → MuJoCo ctrl index.
-        # PolicySpec and MuJoCo may list actuators in different orders.
-        # All internal arrays (nominal_q_ref, _default_joint_qpos, _idx_*)
-        # use PolicySpec order.  data.ctrl uses MuJoCo order.
-        # Use _to_mj_ctrl() for every write to data.ctrl.
-        self._policy_to_mj_ctrl_order = jp.asarray(policy_to_mj_ctrl, dtype=jp.int32)
+        # Unified ctrl-ordering bridge: PolicySpec order ↔ MuJoCo model order.
+        # Use self._ctrl_mapper for ALL ctrl writes (env, viewer, eval).
+        self._ctrl_mapper = CtrlOrderMapper(
+            self._mj_model, list(self._policy_spec.robot.actuator_names)
+        )
         self._base_geom_friction = self._mjx_model.geom_friction
         self._base_body_mass = self._mjx_model.body_mass
         self._base_actuator_gainprm = self._mjx_model.actuator_gainprm
@@ -2070,15 +2063,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
     def _to_mj_ctrl(self, ctrl_policy_order: jax.Array) -> jax.Array:
-        """Permute ctrl from PolicySpec order to MuJoCo model order.
-
-        All internal arrays (nominal_q_ref, _default_joint_qpos, action_to_ctrl
-        output) use PolicySpec order.  MuJoCo's ``data.ctrl`` expects model
-        order.  This helper must be called for **every** write to ``data.ctrl``.
-        """
-        return jp.zeros(self._mj_model.nu, dtype=ctrl_policy_order.dtype).at[
-            self._policy_to_mj_ctrl_order
-        ].set(ctrl_policy_order)
+        """Permute ctrl from PolicySpec order to MuJoCo model order (JAX)."""
+        return self._ctrl_mapper.to_mj_jax(ctrl_policy_order)
 
     def _make_initial_state(
         self,

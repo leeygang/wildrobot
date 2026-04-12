@@ -65,6 +65,7 @@ from training.cal.cal import CoordinateFrame
 from training.configs.training_config import TrainingConfig, load_training_config
 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.envs.env_info import WR_INFO_KEY
+from training.utils.ctrl_order import CtrlOrderMapper
 from training.envs.wildrobot_env import WildRobotEnv
 from control.references.walking_ref_v2 import (
     StartupRouteReason,
@@ -1183,6 +1184,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
 
     mj_model = env._mj_model  # noqa: SLF001
     mj_data = mujoco.MjData(mj_model)
+    _ctrl_mapper = CtrlOrderMapper(mj_model, list(env._policy_spec.robot.actuator_names))  # noqa: SLF001
     _sync_viewer_data(mj_model, mj_data, state.data)
 
     print(
@@ -1272,11 +1274,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
             # Start from A (standing keyframe)
             mj_data.qpos[:] = _qpos_A
             mj_data.qvel[:] = 0.0
-            for _i in range(mj_model.nu):
-                _jname = mj_model.actuator(_i).name
-                _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
-                if _jid >= 0:
-                    mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
+            _ctrl_mapper.set_ctrl_from_qpos(mj_data)
             mujoco.mj_forward(mj_model, mj_data)
 
             # hold_ctrl will be set after transition completes
@@ -1305,11 +1303,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
             mj_data.qvel[:] = 0.0
 
         # Set ctrl = current joint positions (hold the final posture)
-        for _i in range(mj_model.nu):
-            _jname = mj_model.actuator(_i).name
-            _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
-            if _jid >= 0:
-                mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
+        _ctrl_mapper.set_ctrl_from_qpos(mj_data)
         mujoco.mj_forward(mj_model, mj_data)
 
         # For instant-init, hold_ctrl is ready now.
@@ -1361,11 +1355,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
                     mujoco.mj_step(mj_model, mj_data)
                 # Finalize hold_ctrl when transition completes
                 if step_idx == settle_steps:
-                    for _i in range(mj_model.nu):
-                        _jname_i = mj_model.actuator(_i).name
-                        _jid_i = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname_i)
-                        if _jid_i >= 0:
-                            mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid_i])]
+                    _ctrl_mapper.set_ctrl_from_qpos(mj_data)
                     hold_ctrl = mj_data.ctrl.copy()
                     print(
                         f"[nominal-viewer] A→B complete at step {step_idx}: "
