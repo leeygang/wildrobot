@@ -991,6 +991,11 @@ def step_reference_v2_jax(
     # This is a first-order approximation of LIPM dynamics — it gives
     # the stance leg a forward drive without exponential blowup.
     # Upgrade to full LIPM (cosh/sinh) once the basic drive is stable.
+    #
+    # Note: pitch/velocity damping was tested but caused limit-cycle
+    # oscillation (drive→lean→stop→recover→drive) that amplified wobble.
+    # The undamped linear ramp is more stable.  Wobble reduction is
+    # left to PPO residuals.
     _com_drive = (
         phase
         * speed
