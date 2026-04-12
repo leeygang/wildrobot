@@ -1263,14 +1263,13 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
 
         settle_steps = args.startup_settle_steps
         if settle_steps > 0 and not args.init_from_nominal_qref:
-            # Smooth A→B transition: gradually interpolate from keyframe to B
+            # Smooth A→B transition will happen inside run_step (visible in viewer)
             print(f"[nominal-viewer] SMOOTH A→B TRANSITION: {settle_steps} steps, then pure hold")
             _qpos_A = np.array(mj_model.key_qpos[0], dtype=np.float64) if mj_model.nkey > 0 else mj_data.qpos.copy()
 
-            # Reset to A
+            # Start from A (standing keyframe)
             mj_data.qpos[:] = _qpos_A
             mj_data.qvel[:] = 0.0
-            # Set ctrl to A joint positions
             for _i in range(mj_model.nu):
                 _jname = mj_model.actuator(_i).name
                 _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
@@ -1278,46 +1277,8 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
                     mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
             mujoco.mj_forward(mj_model, mj_data)
 
-            for _step in range(1, settle_steps + 1):
-                alpha = _step / settle_steps  # 0→1 over settle period
-                # Interpolate leg joints from A to B
-                for _jname in _leg_joint_names:
-                    _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
-                    _addr = int(mj_model.jnt_qposadr[_jid])
-                    _q_interp = (1.0 - alpha) * _qpos_A[_addr] + alpha * _qpos_B[_addr]
-                    mj_data.qpos[_addr] = _q_interp
-                    # Also update ctrl to track the interpolated target
-                    _aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, _jname)
-                    if _aid >= 0:
-                        mj_data.ctrl[_aid] = _q_interp
-                mj_data.qvel[:] = 0.0
-                mujoco.mj_forward(mj_model, mj_data)
-
-                # Run a few substeps to let contacts settle at this posture
-                for _ in range(sim_substeps):
-                    mujoco.mj_step(mj_model, mj_data)
-
-                if _step % max(1, settle_steps // 5) == 0 or _step == settle_steps:
-                    _p_qw, _p_qx, _p_qy, _p_qz = mj_data.qpos[3:7]
-                    _p = float(np.arctan2(2*(_p_qw*_p_qy - _p_qz*_p_qx), 1 - 2*(_p_qx**2 + _p_qy**2)))
-                    _lk = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
-                    _rk = float(mj_data.qpos[_jnt_addr("right_knee_pitch")])
-                    print(
-                        f"  settle {_step:3d}/{settle_steps} alpha={alpha:.2f} "
-                        f"root_h={mj_data.qpos[2]:.3f} pitch={_p:+.4f} "
-                        f"Lk={_lk:+.3f} Rk={_rk:+.3f}"
-                    )
-
-            # Ground the final posture
-            _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
-            _min_z = min(
-                mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
-                - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
-                for g in _foot_geoms
-            )
-            if _min_z > 0.001:
-                mj_data.qpos[2] -= _min_z
-            mj_data.qvel[:] = 0.0
+            # hold_ctrl will be set after transition completes
+            hold_ctrl = None
 
         else:
             # Instant init: set joints directly to B (original pure-hold)
@@ -1349,7 +1310,10 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
                 mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
         mujoco.mj_forward(mj_model, mj_data)
 
-        hold_ctrl = mj_data.ctrl.copy()
+        # For instant-init, hold_ctrl is ready now.
+        # For settle transition, hold_ctrl stays None until transition completes inside run_step.
+        if hold_ctrl is not None or settle_steps <= 0:
+            hold_ctrl = mj_data.ctrl.copy()
 
         _root_h = float(mj_data.qpos[2])
         _lk_q = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
@@ -1360,32 +1324,83 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         )
 
     def run_step(step_idx: int) -> bool:
-        nonlocal state, done_reached, done_step, done_dom
+        nonlocal state, done_reached, done_step, done_dom, hold_ctrl
 
         if use_pure_hold:
-            # Pure MuJoCo stepping — ctrl stays frozen, no env logic
-            for _ in range(sim_substeps):
-                mujoco.mj_step(mj_model, mj_data)
+            # During A→B transition: interpolate qpos and ctrl each step
+            if hold_ctrl is None and settle_steps > 0 and step_idx <= settle_steps:
+                alpha = step_idx / settle_steps
+                for _jname in _leg_joint_names:
+                    _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
+                    _addr = int(mj_model.jnt_qposadr[_jid])
+                    _q_interp = (1.0 - alpha) * _qpos_A[_addr] + alpha * _qpos_B[_addr]
+                    mj_data.qpos[_addr] = _q_interp
+                    _aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, _jname)
+                    if _aid >= 0:
+                        mj_data.ctrl[_aid] = _q_interp
+                if step_idx <= 3 or step_idx % 20 == 0:
+                    _dbg_lk = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
+                    _dbg_rk = float(mj_data.qpos[_jnt_addr("right_knee_pitch")])
+                    _dbg_lk_aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_knee_pitch")
+                    _dbg_ctrl = float(mj_data.ctrl[_dbg_lk_aid]) if _dbg_lk_aid >= 0 else -999
+                    print(f"  [A→B] step={step_idx} alpha={alpha:.2f} qpos_Lk={_dbg_lk:.4f} qpos_Rk={_dbg_rk:.4f} ctrl[{_dbg_lk_aid}]={_dbg_ctrl:.4f}")
+                mj_data.qvel[:] = 0.0
+                mujoco.mj_forward(mj_model, mj_data)
+                # Re-ground: adjust root z so feet stay on the ground
+                _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
+                _min_z = min(
+                    mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
+                    - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
+                    for g in _foot_geoms
+                )
+                mj_data.qpos[2] -= _min_z
+                mujoco.mj_forward(mj_model, mj_data)
+                for _ in range(sim_substeps):
+                    mujoco.mj_step(mj_model, mj_data)
+                # Finalize hold_ctrl when transition completes
+                if step_idx == settle_steps:
+                    for _i in range(mj_model.nu):
+                        _jname_i = mj_model.actuator(_i).name
+                        _jid_i = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname_i)
+                        if _jid_i >= 0:
+                            mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid_i])]
+                    hold_ctrl = mj_data.ctrl.copy()
+                    print(
+                        f"[nominal-viewer] A→B complete at step {step_idx}: "
+                        f"root_h={mj_data.qpos[2]:.3f} "
+                        f"Lk={mj_data.qpos[_jnt_addr('left_knee_pitch')]:.3f} "
+                        f"Rk={mj_data.qpos[_jnt_addr('right_knee_pitch')]:.3f}"
+                    )
+            else:
+                # Pure hold: frozen ctrl
+                for _ in range(sim_substeps):
+                    mujoco.mj_step(mj_model, mj_data)
             # Extract pitch for termination check
             qw, qx, qy, qz = mj_data.qpos[3:7]
             pitch = float(np.arctan2(2*(qw*qy - qz*qx), 1 - 2*(qx**2 + qy**2)))
             root_h = float(mj_data.qpos[2])
             done = abs(pitch) > 0.82 or root_h < 0.15
             if (step_idx % print_every == 0) or done or (step_idx == 1):
-                # Print compact diagnostics
-                lk_idx = env._idx_left_knee_pitch  # noqa: SLF001
-                rk_idx = env._idx_right_knee_pitch  # noqa: SLF001
-                la_idx = env._idx_left_ankle_pitch  # noqa: SLF001
-                lk_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[lk_idx, 0]]])
-                rk_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[rk_idx, 0]]])
-                la_q = float(mj_data.qpos[mj_model.jnt_qposadr[mj_model.actuator_trnid[la_idx, 0]]])
-                lk_f = float(mj_data.actuator_force[lk_idx])
-                rk_f = float(mj_data.actuator_force[rk_idx])
+                # Print diagnostics using MuJoCo joint names (not env indices)
+                _lk_jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, "left_knee_pitch")
+                _rk_jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, "right_knee_pitch")
+                _la_jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, "left_ankle_pitch")
+                _lk_aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_knee_pitch")
+                _rk_aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_knee_pitch")
+                lk_q = float(mj_data.qpos[mj_model.jnt_qposadr[_lk_jid]])
+                rk_q = float(mj_data.qpos[mj_model.jnt_qposadr[_rk_jid]])
+                la_q = float(mj_data.qpos[mj_model.jnt_qposadr[_la_jid]])
+                lk_f = float(mj_data.actuator_force[_lk_aid]) if _lk_aid >= 0 else 0.0
+                rk_f = float(mj_data.actuator_force[_rk_aid]) if _rk_aid >= 0 else 0.0
+                _lk_ctrl = float(mj_data.ctrl[_lk_aid]) if _lk_aid >= 0 else 0.0
+                _rk_ctrl = float(mj_data.ctrl[_rk_aid]) if _rk_aid >= 0 else 0.0
+                _hold_lk = float(hold_ctrl[_lk_aid]) if hold_ctrl is not None and _lk_aid >= 0 else _lk_ctrl
+                _hold_rk = float(hold_ctrl[_rk_aid]) if hold_ctrl is not None and _rk_aid >= 0 else _rk_ctrl
                 line = (
                     f"step={step_idx:04d} "
                     f"root_h={root_h:.4f} pitch={pitch:+.4f} "
-                    f"Lk_ctrl={hold_ctrl[lk_idx]:+.4f} Lk_q={lk_q:+.4f} Lk_F={lk_f:+.3f}  "
-                    f"Rk_ctrl={hold_ctrl[rk_idx]:+.4f} Rk_q={rk_q:+.4f} Rk_F={rk_f:+.3f}  "
+                    f"Lk_ctrl={_lk_ctrl:+.4f} Lk_q={lk_q:+.4f} Lk_F={lk_f:+.3f}  "
+                    f"Rk_ctrl={_rk_ctrl:+.4f} Rk_q={rk_q:+.4f} Rk_F={rk_f:+.3f}  "
                     f"La_q={la_q:+.4f}"
                 )
                 if args.log:
