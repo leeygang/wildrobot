@@ -832,34 +832,94 @@ These are the main pass/fail diagnostics for the current bug.
 
 ## Current `M2.5` Readout
 
-Current ablation evidence says:
+**Last updated:** 2026-04-11
 
-- `no-dcm`: no meaningful effect
-- `zero-pelvis-pitch`: no meaningful effect
-- `freeze-swing-x`: reduces overspeed, but no survival gain
-- `slow-phase`: reduces aggression slightly, but no survival gain
-- `tight-stance`: improves survival, but worsens overspeed
+### Support posture (B) — resolved
 
-Latest nominal-viewer evidence also says:
+The support posture is now self-stable in pure MuJoCo hold tests.
 
-- disabling the action filter removes startup `q_ref -> ctrl` distortion
-- startup knee/ankle target steps become very abrupt once that filter is removed
-- in `support_stabilize`, `q_ref -> ctrl` is mostly clean
-- in `support_stabilize`, stance knee/ankle still show large `ctrl -> actual`
-  mismatch while stance hip tracks much better
+Root causes found and fixed:
 
-Interpretation:
+1. **Height inversion**: startup height was below support height — the ramp
+   went upward while gravity pulled down.  Fixed: startup=0.46m (near reset),
+   support=0.39m (walking height).
 
-- the blocker is still a coupled support-realization + forward-progression
-  problem
-- support geometry matters, but startup/support execution is still too
-  feedforward
-- startup target delivery distortion was partly caused by the action filter
-- once that filter is removed, startup target changes are still too abrupt for
-  the current realization path
-- the next bounded pass should make startup/support progression feedback-aware
-  before more foothold/progression retuning
-- PPO should remain paused
+2. **Stance foot placement bug**: the adapter hardcoded `target_x=0` for the
+   stance leg IK, placing the foot directly under the hip joint.  But the
+   torso mass shifts the COM forward of the hip when the hip pitches.  For
+   medium squat depths, the COM fell outside the support polygon → forward
+   tipping.  Fixed: added a COM-forward offset (`gain × sin(hip_pitch)`) with
+   depth-dependent fade — full offset for shallow squats, zero for deep squats
+   where the posture is naturally stable.
+
+3. **Support posture in unstable zone**: target_z=-0.39 was in an unstable
+   equilibrium band (z=-0.41 to z=-0.38).  Two stable regions exist:
+   - z≥-0.42 (nearly straight, trivially stable)
+   - z≤-0.37 (deep squat, COM drops inside support polygon)
+   Fixed: support at z=-0.37 (knee=0.99 rad, 57°).
+
+4. **Adapter-side health-dependent margin**: `stance_margin = base × (0.2 +
+   0.8 × health)` created a positive feedback loop — any perturbation changed
+   health → changed margin → changed IK targets → destabilized posture.
+   Fixed: constant margin.
+
+5. **Double-support penalty during startup**: support_health penalized both
+   feet loaded (the most stable configuration).  Fixed: removed the penalty
+   during STARTUP_SUPPORT_RAMP.
+
+Current B posture:
+- target_z = -0.37 (support_height=0.39, margin=0.02)
+- knee ≈ 0.99 rad (57°), meaningful squat
+- pure MuJoCo hold: 200/200 steps, pitch stable at ~0.05 rad
+- symmetric: both feet get the same COM-forward offset during support
+
+Verification command:
+```
+JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
+  --config training/configs/ppo_walking_v0193a.yaml \
+  --forward-cmd 0.10 --horizon 200 --print-every 10 \
+  --force-support-only --init-from-nominal-qref --disable-action-filter
+```
+
+### Startup transition (A→B) — current blocker
+
+The startup route logic (A→W1→W2→W3→B) is implemented and the route
+progression bugs are fixed:
+- height inversion, directional pelvis realization, lead_alpha, ratchets
+- bilateral rate limiting during double support
+- unconditional timeout as safety valve
+
+But the **physical transition from standing to squat** does not work yet
+through the env path.  Specifically:
+
+- **Pure MuJoCo init works**: setting joints directly via `mj_data.qpos` and
+  holding with constant `ctrl` produces a stable squat (200 steps)
+- **Env/MJX init fails**: the same posture initialized through MJX causes
+  violent joint explosions on the first step (knee hyperextends to -0.5 rad)
+- **Servo-driven transition from standing fails**: the servos cannot drive the
+  robot from straight legs into the squat — the closed kinematic chain with
+  both feet planted prevents the ankle dorsiflexion needed for the knee to
+  bend.  The servo applies force but the leg acts as a rigid truss.
+
+The remaining question for startup transition is:
+
+- can the env initialize the robot directly in the B posture (like pure
+  MuJoCo does) and skip the A→B physical transition?
+- or does the startup transition need to use a different mechanism (e.g.,
+  reduce stance width first, shift weight to one leg, then squat)?
+
+### Nominal walking probe — not yet tested
+
+The nominal walking probe (with stepping) has not been run with the new stable
+B posture.  This is the next validation step after the startup transition is
+resolved.
+
+### PPO — still blocked
+
+PPO remains blocked until:
+1. The startup transition reliably enters B
+2. The nominal walking probe survives materially longer than before
+3. The M2.5-A4 gate criteria are met
 
 ---
 
@@ -1017,34 +1077,27 @@ Current status / investigation result (April 2026):
 
 - staged-route plumbing and diagnostics are now implemented
   - route labels `A / W1 / W2 / W3 / B`
-  - route progress / ceiling
+  - route progress / ceiling ratchets
   - transition reasons
   - per-stage viewer summaries
-- `q_ref -> ctrl` is now clean in nominal-only debug runs
-  - command delivery is no longer the dominant startup problem
-- startup-path startup is smoother than earlier M2.5 passes
-  - no immediate pitch termination in the sampled horizon
-  - startup target-rate limiting remains effective
-- but the startup-path run did **not** show a real staged traversal yet
-  - the route stayed in `A`
-  - `route_progress` fell rather than rising
-  - the only observed startup transition was `A -> B` via `TIMEOUT_FALLBACK`
-- so the current staged-route pass does **not** yet validate true
-  `A -> W1 -> W2 -> W3 -> B` progression
-- support-only validation shows:
-  - early support can look reasonable when entry shaping is active
-  - late support still degrades badly
-  - stance knee / ankle remain far from target while hip pitch tracks much
-    better
-- the current dominant symptom remains:
-  - the robot braces / spreads laterally
-  - rather than converging into the intended support posture
-- current interpretation:
-  - `target -> ctrl` is mostly fixed
-  - the remaining issue is still in transition realization / route progression
-    and late-support `ctrl -> actual` divergence
-  - do **not** escalate to MPC yet; first rule out bugs in progress metrics,
-    gating, and startup/support sequencing
+- route progression bugs are **resolved** (April 10-11):
+  - height inversion fixed (startup=0.46m > support=0.39m)
+  - directional pelvis realization (no abs(), overshoot clips to 1.0)
+  - double-support penalty removed during startup
+  - route ceiling and progress ratcheted (monotonic, no regression)
+  - lead_alpha increased (0.12→0.25) to bootstrap past W1
+  - bilateral rate limiting during double support
+  - unconditional timeout as safety valve
+- support posture B is **validated stable** (April 11):
+  - target_z=-0.37 (deep squat, knee=0.99 rad)
+  - COM-forward offset fixes stance foot placement
+  - pure MuJoCo hold: 200/200 steps, pitch ≈ 0.05 rad
+  - symmetric: both legs get identical targets during support
+- startup physical transition A→B **remains blocked**:
+  - servos cannot drive the squat transition from standing through the env
+  - env/MJX initialization causes joint explosions at deep squat angles
+  - pure MuJoCo initialization (bypassing MJX) works correctly
+  - next step: fix the env init or initialize directly in B posture
 
 ### `M2.5-A4`: Exit decision
 
@@ -1098,30 +1151,38 @@ The key rule is:
 
 ## Immediate Next Actions
 
-1. Keep the current support-first posture branch as the baseline.
-2. Keep the staged-route instrumentation in place, but treat the next pass as a
-   bug-focused diagnosis rather than an architecture change.
-3. Diagnose why startup route progress reverses / shrinks instead of advancing.
-   - inspect pelvis-height target vs actual over the first `10-20` startup
-     steps
-   - inspect route progress / ceiling / reason at the same steps
-   - identify the first step where support-directed progress breaks down
-4. Diagnose the first compensating event that replaces support convergence.
-   - support width growth
-   - root roll / pitch growth
-   - stance knee / ankle target-vs-actual gap growth
-   - support-health drop
-5. Validate both:
-   - startup-path transition from keyframe 0
-   - grounded support-only holding
-6. Re-run nominal-only probes under the updated startup bug-diagnosis tooling.
-   Preferred command:
-   `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-7. Only after ruling out metric / gating / sequencing bugs:
-   - decide whether to introduce true geometric `W1/W2/W3` waypoints
-   - and only then consider MPC / online route optimization if the fixed-route
-     design is still internally consistent but unrealizable
-8. Use the support-first checklist as the only decision gate for resuming PPO.
+**Focus: startup transition (A→B)**
+
+The support posture B is validated.  The remaining blocker is getting the robot
+from the reset pose (A) into the support posture (B) through the env/training
+path.
+
+1. **Fix the env initialization to match pure MuJoCo behavior.**
+   - The MJX path causes joint explosions at deep squat angles
+   - Either fix the MJX initialization or initialize the robot directly in the
+     B posture at episode reset (skip the physical A→B transition)
+   - Verify with the nominal viewer
+
+2. **If direct B initialization works, run the nominal walking probe.**
+   - Test whether the robot can release a swing foot, step, and recover from
+     the stable B posture
+   - Run the canonical multi-speed sweep:
+     `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
+
+3. **If the nominal walking probe passes the M2.5-A4 gate, resume PPO.**
+
+4. **If the physical A→B transition is needed** (e.g., for episodes that reset
+   to standing), consider:
+   - initializing the robot in the B posture at reset instead of keyframe-0
+   - or using a brief settling phase (run mj_step with B targets for ~50 steps
+     before starting the episode)
+   - or redesigning the startup to shift weight to one leg first (break the
+     closed kinematic chain) before squatting
+
+5. **Do not continue manually tuning support height / margin / offset.**
+   - The current B posture (target_z=-0.37) is validated stable
+   - Further changes should be motivated by walking probe results, not
+     support-only tuning
 
 ---
 
