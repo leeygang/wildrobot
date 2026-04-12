@@ -1732,6 +1732,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             support_pelvis_height_offset_m=float(
                 getattr(self._config.env, "loc_ref_v2_support_pelvis_height_offset_m", 0.050)
             ),
+            com_trajectory_enabled=bool(
+                getattr(self._config.env, "com_trajectory_enabled", False)
+            ),
         )
         self._leg_ik_cfg = LegIkConfig()
         self._residual_q_scale = jp.asarray(
@@ -2177,6 +2180,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 dt_s=self.dt,
                 stance_knee_tracking_error_rad=jp.zeros((), dtype=jp.float32),
                 stance_ankle_tracking_error_rad=jp.zeros((), dtype=jp.float32),
+                com_x0_at_stance_start=jp.asarray(-stance_pos_h[0], dtype=jp.float32),
+                com_vx0_at_stance_start=jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32),
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32)
@@ -2206,6 +2211,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     jp.asarray(0, dtype=jp.int32),
                 ),
                 dtype=jp.int32,
+            )
+            com_x0_at_stance_start = jp.asarray(
+                ref_state.get("com_x0_at_stance_start", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            com_vx0_at_stance_start = jp.asarray(
+                ref_state.get("com_vx0_at_stance_start", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            com_x_planned = jp.asarray(
+                ref_state.get("com_x_planned", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
             )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
@@ -2262,6 +2279,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             startup_route_ceiling = jp.asarray(1.0, dtype=jp.float32)
             startup_route_stage_id = jp.asarray(4, dtype=jp.int32)
             startup_route_transition_reason = jp.asarray(0, dtype=jp.int32)
+            com_x0_at_stance_start = jp.zeros((), dtype=jp.float32)
+            com_vx0_at_stance_start = jp.zeros((), dtype=jp.float32)
+            com_x_planned = jp.zeros((), dtype=jp.float32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2302,6 +2322,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 velocity_cmd=velocity_cmd,
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
+                com_x_planned=com_x_planned,
             )
         )
         nominal_q_ref = self._apply_startup_support_rate_limiter(
@@ -2504,6 +2525,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_ceiling=startup_route_ceiling,
             loc_ref_startup_route_stage_id=startup_route_stage_id,
             loc_ref_startup_route_transition_reason=startup_route_transition_reason,
+            loc_ref_com_x0_at_stance_start=com_x0_at_stance_start,
+            loc_ref_com_vx0_at_stance_start=com_vx0_at_stance_start,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -2799,6 +2822,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 startup_route_ceiling_prev=wr.loc_ref_startup_route_ceiling,
                 startup_route_stage_id_prev=wr.loc_ref_startup_route_stage_id,
                 startup_route_transition_reason_prev=wr.loc_ref_startup_route_transition_reason,
+                com_x0_at_stance_start=wr.loc_ref_com_x0_at_stance_start,
+                com_vx0_at_stance_start=wr.loc_ref_com_vx0_at_stance_start,
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_pre_h.linear_xyz[0], dtype=jp.float32)
@@ -2828,6 +2853,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     jp.asarray(0, dtype=jp.int32),
                 ),
                 dtype=jp.int32,
+            )
+            com_x0_at_stance_start = jp.asarray(
+                ref_state.get("com_x0_at_stance_start", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            com_vx0_at_stance_start = jp.asarray(
+                ref_state.get("com_vx0_at_stance_start", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
+            com_x_planned = jp.asarray(
+                ref_state.get("com_x_planned", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
             )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
@@ -2884,6 +2921,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             startup_route_ceiling = jp.asarray(1.0, dtype=jp.float32)
             startup_route_stage_id = jp.asarray(4, dtype=jp.int32)
             startup_route_transition_reason = jp.asarray(0, dtype=jp.int32)
+            com_x0_at_stance_start = jp.zeros((), dtype=jp.float32)
+            com_vx0_at_stance_start = jp.zeros((), dtype=jp.float32)
+            com_x_planned = jp.zeros((), dtype=jp.float32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2922,6 +2962,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 velocity_cmd=velocity_cmd,
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
+                com_x_planned=com_x_planned,
             )
         )
         nominal_q_ref = self._apply_startup_support_rate_limiter(
@@ -3742,6 +3783,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_ceiling=startup_route_ceiling,
             loc_ref_startup_route_stage_id=startup_route_stage_id,
             loc_ref_startup_route_transition_reason=startup_route_transition_reason,
+            loc_ref_com_x0_at_stance_start=com_x0_at_stance_start,
+            loc_ref_com_vx0_at_stance_start=com_vx0_at_stance_start,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -4261,6 +4304,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_ceiling=reset_wr_info.loc_ref_startup_route_ceiling,
             loc_ref_startup_route_stage_id=reset_wr_info.loc_ref_startup_route_stage_id,
             loc_ref_startup_route_transition_reason=reset_wr_info.loc_ref_startup_route_transition_reason,
+            loc_ref_com_x0_at_stance_start=reset_wr_info.loc_ref_com_x0_at_stance_start,
+            loc_ref_com_vx0_at_stance_start=reset_wr_info.loc_ref_com_vx0_at_stance_start,
             loc_ref_gait_phase_sin=reset_wr_info.loc_ref_gait_phase_sin,
             loc_ref_gait_phase_cos=reset_wr_info.loc_ref_gait_phase_cos,
             loc_ref_next_foothold=reset_wr_info.loc_ref_next_foothold,
@@ -4593,6 +4638,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd: jax.Array,
         support_health: jax.Array,
         mode_id: jax.Array,
+        com_x_planned: jax.Array | None = None,
     ) -> tuple[
         jax.Array,
         jax.Array,
@@ -4718,6 +4764,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * _depth_fade
             * jp.sin(_approx_hip_pitch)
         )
+        # DCM COM trajectory: shift stance foot target forward proportionally
+        # to planned COM displacement.  Positive com_x_planned → foot further
+        # forward → more hip flexion → body leans forward over the foot.
+        if com_x_planned is not None:
+            _com_x = jp.asarray(com_x_planned, dtype=jp.float32)
+            _stance_foot_x = _stance_foot_x + _com_x
 
         # During startup/support (both feet on ground), apply the COM offset
         # to BOTH legs for a symmetric squat.  During walking modes, only the

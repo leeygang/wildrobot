@@ -227,6 +227,9 @@ class EnvConfig(Freezable):
     # keyframe A (standing).  Requires loc_ref_enabled=True and
     # loc_ref_version="v2".
     start_from_support_posture: bool = False
+    # M3.0: DCM COM trajectory — let the body fall forward over the stance
+    # foot following LIPM dynamics during stance phase.
+    com_trajectory_enabled: bool = False
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

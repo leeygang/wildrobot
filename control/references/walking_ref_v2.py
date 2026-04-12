@@ -132,6 +132,12 @@ class WalkingRefV2Config:
     settle_hold_s: float = 0.04
     support_pelvis_height_offset_m: float = 0.00
     debug_force_support_only: bool = False
+    # DCM COM trajectory: let the body fall forward over the stance foot
+    # following LIPM dynamics.  The IK automatically produces stance-leg
+    # hip extension and ankle rocker from the time-varying pelvis_x.
+    com_trajectory_enabled: bool = False
+    com_trajectory_max_behind_m: float = 0.01
+    com_trajectory_max_ahead_m: float = 0.03
 
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
@@ -508,6 +514,8 @@ def step_reference_v2_jax(
     startup_route_ceiling_prev: jnp.ndarray | None = None,
     startup_route_stage_id_prev: jnp.ndarray | None = None,
     startup_route_transition_reason_prev: jnp.ndarray | None = None,
+    com_x0_at_stance_start: jnp.ndarray | None = None,
+    com_vx0_at_stance_start: jnp.ndarray | None = None,
 ) -> tuple[dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """JAX-friendly walking_ref_v2 stepping used by training env rollouts."""
     support_health, support_instability = compute_support_health_v2_jax(
@@ -977,6 +985,55 @@ def step_reference_v2_jax(
         jnp.asarray(config.max_step_length_m, dtype=jnp.float32),
     )
 
+    # ── DCM COM trajectory ─────────────────────────────────────────────
+    # Simple phase-proportional forward drive: the COM moves forward
+    # linearly with phase, proportional to commanded speed.
+    # This is a first-order approximation of LIPM dynamics — it gives
+    # the stance leg a forward drive without exponential blowup.
+    # Upgrade to full LIPM (cosh/sinh) once the basic drive is stable.
+    _com_drive = (
+        phase
+        * speed
+        * step_time
+    )
+    com_x_planned = jnp.where(
+        jnp.asarray(config.com_trajectory_enabled, dtype=jnp.bool_),
+        jnp.clip(
+            _com_drive,
+            -jnp.asarray(config.com_trajectory_max_behind_m, dtype=jnp.float32),
+            jnp.asarray(config.com_trajectory_max_ahead_m, dtype=jnp.float32),
+        ),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    # Suppress COM drive during startup/support (double support).
+    com_x_planned = jnp.where(
+        (mode == startup_mode) | (mode == support_mode),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        com_x_planned,
+    )
+    # State tracking for future LIPM upgrade (not used by linear drive).
+    _com_x0 = (
+        jnp.asarray(com_x0_at_stance_start, dtype=jnp.float32)
+        if com_x0_at_stance_start is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    _com_vx0 = (
+        jnp.asarray(com_vx0_at_stance_start, dtype=jnp.float32)
+        if com_vx0_at_stance_start is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    _stance_switched = switches > jnp.asarray(stance_switch_count, dtype=jnp.int32)
+    com_x0_out = jnp.where(
+        _stance_switched,
+        jnp.asarray(com_position_stance_frame[0], dtype=jnp.float32),
+        _com_x0,
+    )
+    com_vx0_out = jnp.where(
+        _stance_switched,
+        jnp.asarray(com_velocity_stance_frame[0], dtype=jnp.float32),
+        _com_vx0,
+    )
+
     y_sign = jnp.where(stance == jnp.asarray(LEFT_STANCE, dtype=jnp.int32), -1.0, 1.0)
     y_foot = jnp.clip(
         y_sign * jnp.asarray(config.nominal_lateral_foot_offset_m, dtype=jnp.float32),
@@ -1113,6 +1170,9 @@ def step_reference_v2_jax(
         "startup_route_ceiling": startup_route_ceiling_out,
         "startup_route_stage_id": startup_route_stage_id_out,
         "startup_route_transition_reason": startup_route_transition_reason_out,
+        "com_x_planned": com_x_planned.astype(jnp.float32),
+        "com_x0_at_stance_start": com_x0_out.astype(jnp.float32),
+        "com_vx0_at_stance_start": com_vx0_out.astype(jnp.float32),
     }
     return (
         ref,

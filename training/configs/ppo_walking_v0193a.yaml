@@ -126,6 +126,8 @@ env:
   loc_ref_v2_support_stance_extension_margin_m: 0.020
   # M2.5: start episodes from support posture B (squat)
   start_from_support_posture: true
+  # M3.0: DCM COM trajectory for stance-leg forward drive
+  com_trajectory_enabled: true
 
   clock_stride_period_steps: 36
   clock_phase_gate_width: 0.20

@@ -112,6 +112,8 @@ try:
         loc_ref_startup_route_ceiling: jnp.ndarray  # shape=()
         loc_ref_startup_route_stage_id: jnp.ndarray  # shape=(), int32
         loc_ref_startup_route_transition_reason: jnp.ndarray  # shape=(), int32
+        loc_ref_com_x0_at_stance_start: jnp.ndarray  # shape=()
+        loc_ref_com_vx0_at_stance_start: jnp.ndarray  # shape=()
         loc_ref_gait_phase_sin: jnp.ndarray  # shape=()
         loc_ref_gait_phase_cos: jnp.ndarray  # shape=()
         loc_ref_next_foothold: jnp.ndarray  # shape=(2,)
@@ -259,6 +261,8 @@ except ImportError:
         loc_ref_startup_route_ceiling: jnp.ndarray
         loc_ref_startup_route_stage_id: jnp.ndarray
         loc_ref_startup_route_transition_reason: jnp.ndarray
+        loc_ref_com_x0_at_stance_start: jnp.ndarray
+        loc_ref_com_vx0_at_stance_start: jnp.ndarray
         loc_ref_gait_phase_sin: jnp.ndarray
         loc_ref_gait_phase_cos: jnp.ndarray
         loc_ref_next_foothold: jnp.ndarray
@@ -372,6 +376,8 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "loc_ref_startup_route_ceiling": (),
         "loc_ref_startup_route_stage_id": (),
         "loc_ref_startup_route_transition_reason": (),
+        "loc_ref_com_x0_at_stance_start": (),
+        "loc_ref_com_vx0_at_stance_start": (),
         "loc_ref_gait_phase_sin": (),
         "loc_ref_gait_phase_cos": (),
         "loc_ref_next_foothold": (2,),
