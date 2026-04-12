@@ -832,7 +832,7 @@ These are the main pass/fail diagnostics for the current bug.
 
 ## Current `M2.5` Readout
 
-**Last updated:** 2026-04-11
+**Last updated:** 2026-04-12
 
 ### Support posture (B) — resolved
 
@@ -933,10 +933,10 @@ integrated into the env.
 ### PPO — still blocked
 
 PPO remains blocked until:
-1. The startup transition is integrated into the env reset path
-2. The nominal walking probe survives materially longer than before
-3. Support posture B is computed by the reference + IK pipeline, not hardcoded
-4. The M2.5-A4 gate criteria are met
+1. DCM COM trajectory is implemented (stance-leg forward drive)
+2. The nominal walking probe produces visible stepping with controlled forward
+   speed
+3. The M2.5-A4 gate criteria are met
 
 ---
 
@@ -1171,49 +1171,254 @@ The key rule is:
 
 ## Immediate Next Actions
 
-**Focus: integrate startup into env, test stepping, then make reference-driven**
+**Focus: implement DCM COM trajectory for stance-leg forward drive**
 
-Both the support posture (B) and the startup transition (A→B) are validated
-in the viewer.  The remaining work to unblock PPO:
+### Resolved (April 12)
 
-1. **Integrate the qpos-interpolation startup into the env reset path.** — done
-   - At episode reset, the env now starts from the stable B posture
-   - `start_from_support_posture: true` in config enables it
-   - B is pre-computed at env init via dummy reset with
-     `debug_force_support_only=True` (un-rate-limited IK output), then
-     re-grounded via MuJoCo C API
-   - Walking reference starts in SUPPORT_STABILIZE mode (skipping startup)
-   - Both `reset()` and auto-reset use B
-   - Verified: root_h≈0.43, knee≈0.99 rad, mode_id=1, no immediate
-     termination
+1. **Ctrl ordering fix** — PolicySpec and MuJoCo listed actuators in different
+   orders.  The env wrote PolicySpec-ordered ctrl to MuJoCo's data.ctrl,
+   sending joint targets to wrong actuators (e.g. knee bend → hip pitch).
+   This was the root cause of ALL v0.19.3+ loc_ref training failures.
+   Fixed via `CtrlOrderMapper` (`training/utils/ctrl_order.py`).
+   Regression test: `training/tests/test_actuator_ordering.py`.
 
-2. **Run the nominal walking probe from B.**
-   - Test whether the nominal reference can release a swing foot, step,
-     and recover from the stable B posture
-   - Run the canonical multi-speed sweep:
-     `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-   - Check against the M2.5-A4 gate criteria
-   - This answers the critical yes/no question: can the robot step at all
-     from a stable support posture?
+2. **Env starts from support posture B** — episodes begin in
+   SUPPORT_STABILIZE mode with bent-knee squat posture.
+   Config: `start_from_support_posture: true`.
 
-3. **Make support posture B reference-driven, not hardcoded.**
-   - The current B posture (target_z=-0.37, knee=0.99 rad, COM-forward offset)
-     was found through manual experimentation and is hardcoded
-   - The reference + IK pipeline should compute B automatically:
-     the reference specifies task-space targets (pelvis height, foot placement,
-     support width), and IK solves for the joint angles
-   - The manually-found stable parameters become inputs/constraints to the
-     reference, not frozen joint-angle constants
-   - This is required so the same pipeline that computes support posture also
-     computes stepping targets — the whole system must be consistent
-   - Re-run the nominal walking probe after this step to verify consistency
+3. **Reference tuning** — conservative thresholds tuned during the ctrl bug
+   era have been relaxed (swing_target_blend, brake gains, step limits,
+   support_open_threshold, pelvis height).
 
-4. **If the nominal walking probe passes the M2.5-A4 gate, resume PPO.**
+### Current status after fixes
 
-5. **Do not continue manually tuning support posture parameters.**
-   - The current B posture (target_z=-0.37) is validated stable as a reference
-     point for the reference-driven computation
-   - Further changes should be motivated by walking probe results
+- Robot survives 120 steps (full horizon), no pitch termination
+- Gait mode cycles: SUPPORT → SWING_RELEASE → TOUCHDOWN → SETTLE → repeat
+- Reference commands 5-6cm foothold targets during swing release
+- Swing foot tracks partially (~3cm actual of 6cm target)
+- **But**: forward speed ≈ 0, body rocks ±12° pitch, steps too small to walk
+- Root cause: stance leg is a static pillar — no forward COM drive
+
+### Remaining work
+
+1. **Implement DCM COM trajectory** (M3.0-A, described below)
+   - Let the body fall forward over the stance foot following LIPM dynamics
+   - The IK automatically produces stance-leg hip extension + ankle rocker
+   - This is the missing piece that makes walking work
+
+2. **Re-run nominal walking probe** after COM trajectory is implemented
+   - Check M2.5-A4 gate: forward speed tracks command, foothold > 0.05
+
+3. **Resume PPO** once the nominal reference produces viable walking
+
+---
+
+## DCM COM Trajectory Design
+
+### Problem
+
+The current reference computes a **static** pelvis position: the body stays
+directly above the stance foot the entire stance phase.  Walking requires the
+body to **fall forward** over the stance foot — a controlled inverted pendulum
+motion.  Without this, the stance leg has no forward drive and the robot can
+only produce tiny steps from swing-foot placement alone.
+
+### Algorithm: LIPM COM trajectory
+
+The Linear Inverted Pendulum Model (LIPM) gives the closed-form COM trajectory
+during stance:
+
+```
+x_com(t) = x0 × cosh(ω×t) + (ẋ0/ω) × sinh(ω×t)
+
+where:
+  ω = sqrt(g / h)           ≈ 4.83 rad/s for WildRobot (h=0.42m)
+  x0 = COM position relative to stance foot at start of stance
+  ẋ0 = COM velocity at start of stance
+  t  = time elapsed in current stance phase
+```
+
+This is not a new algorithm — it's the **same LIPM dynamics** already used for
+the DCM foothold computation.  The foothold uses the endpoint of this
+trajectory to decide WHERE to step.  The COM trajectory uses the trajectory
+itself to decide HOW THE BODY SHOULD MOVE during stance.
+
+### How it connects to existing code
+
+The reference already computes (in `walking_ref_v2.py`):
+
+```python
+omega = sqrt(9.81 / com_height)                    # pendulum frequency
+cp_x = com_x + com_vx / omega                      # capture point
+b = exp(-omega * step_time)                         # time decay factor
+x_foot = (nominal_step - b * cp_x) / (1 - b)       # foothold placement
+```
+
+The COM trajectory adds (new code):
+
+```python
+t = phase * step_time                               # time in stance
+com_x_planned = x0 * cosh(omega * t) + (vx0 / omega) * sinh(omega * t)
+```
+
+Both use the same `omega`, same state variables, same physical model.
+
+### What changes in each layer
+
+**Layer 1: Reference generation** (`walking_ref_v2.py`)
+
+New output: `com_x_planned` — the planned COM x position relative to the
+stance foot at the current phase.
+
+New state: `com_x0` and `com_vx0` — COM position and velocity at the start
+of each stance phase, recorded at stance transitions.
+
+```python
+# At stance transition (touchdown → new stance):
+com_x0 = com_position_stance_frame[0]   # COM pos relative to new stance foot
+com_vx0 = com_velocity_stance_frame[0]  # COM velocity at transition
+
+# During stance:
+t = phase * step_time
+com_x_planned = com_x0 * cosh(omega * t) + (com_vx0 / omega) * sinh(omega * t)
+```
+
+**Layer 2: IK adapter** (`_compute_nominal_q_ref_from_loc_ref`)
+
+Replace the static stance foot offset:
+
+```python
+# BEFORE (static):
+_stance_foot_x = com_forward_gain * depth_fade * sin(hip_pitch)
+
+# AFTER (dynamic):
+_stance_foot_x = -com_x_planned  # foot moves behind as COM advances
+```
+
+As the COM moves forward over the stance foot, the IK automatically produces:
+- Hip pitch increases (hip extends) → pushes body forward
+- Ankle pitch changes from dorsiflexion to plantarflexion → ankle rocker
+- Knee adjusts to maintain height → natural flexion wave
+
+**Layer 3: No change** — IK solver, PPO architecture, action contract all
+stay the same.
+
+### Expected stance leg behavior
+
+```
+Phase 0% (loading):     COM behind foot → hip flexed, ankle dorsiflexed
+Phase 50% (mid-stance): COM over foot   → hip neutral, ankle neutral
+Phase 100% (push-off):  COM ahead       → hip extended, ankle plantarflexed
+```
+
+This matches the natural human gait cycle without any manual joint trajectory
+scripting.  The IK derives the joint angles from the COM trajectory
+automatically.
+
+### Safety bounds
+
+The COM trajectory should be bounded to prevent excessive forward lean:
+
+```python
+com_x_planned = clip(com_x_planned, -max_com_behind, max_com_ahead)
+```
+
+Recommended initial bounds:
+- `max_com_behind = 0.03m` (3cm behind stance foot)
+- `max_com_ahead = 0.08m` (8cm ahead of stance foot)
+
+These can be relaxed as confidence grows.
+
+---
+
+## Execution Milestones For DCM COM Trajectory (`M3.0`)
+
+### `M3.0-A`: COM trajectory implementation
+
+**Goal:** add LIPM COM trajectory to the reference and IK adapter.
+
+**Tasks:**
+
+1. Add `com_x0`, `com_vx0` state fields to the walking reference
+2. Record COM state at each stance transition (SETTLE → SUPPORT switch)
+3. Compute `com_x_planned = x0 * cosh(ω*t) + (vx0/ω) * sinh(ω*t)`
+4. Output `com_x_planned` from the reference step function
+5. In the IK adapter, replace static `_stance_foot_x` with `-com_x_planned`
+6. Add safety bounds (clip to ±max range)
+7. Add `com_x_planned` to diagnostics/viewer logging
+
+**Verification:**
+
+```bash
+# Viewer: watch stance leg change through phase
+JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
+  --config training/configs/ppo_walking_v0193a.yaml \
+  --forward-cmd 0.15 --horizon 120 --print-every 5 --log --record --headless
+```
+
+- Stance hip should visibly extend during late stance
+- Ankle should dorsiflex → plantarflex through the phase
+- Body should translate forward over the stance foot
+
+**Exit criteria:**
+- `com_x_planned` varies from negative (COM behind) to positive (COM ahead)
+  during each stance phase
+- Stance hip pitch changes by > 0.1 rad through the phase
+- Stance ankle pitch changes by > 0.05 rad through the phase
+
+### `M3.0-B`: Nominal walking probe
+
+**Goal:** verify the reference produces viable walking with forward speed.
+
+**Tasks:**
+
+1. Run canonical probe sweep at 0.10, 0.15, 0.20 m/s
+2. Run viewer for visual evaluation at 0.15 m/s
+3. Check M2.5-A4 gate criteria
+
+**Verification:**
+
+```bash
+JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py \
+  --speeds 0.10 0.15 0.20
+```
+
+**Exit criteria:**
+- No pitch termination at any speed (120 steps survival)
+- Forward speed mean > 0 and within 1.5× command at all speeds
+- Foothold consistency > 0.05 at at least two speeds
+- Swing tracking > 1e-5 at all speeds
+- Pitch oscillation < ±0.15 rad (reduced from current ±0.22)
+
+### `M3.0-C`: PPO integration
+
+**Goal:** resume PPO training with the DCM-driven nominal reference.
+
+**Tasks:**
+
+1. Verify env reset + auto-reset work with COM trajectory state
+2. Run a short PPO training (1000 iterations) to check learning signal
+3. Check that PPO residuals improve stepping (larger steps, better tracking)
+
+**Exit criteria:**
+- PPO training runs without errors
+- `eval_clean/success_rate` > 0% within 1000 iterations
+- Step length improves with training (residuals help foot tracking)
+- Forward speed tracks command better than nominal-only
+
+### `M3.0-D`: If COM trajectory alone is insufficient
+
+If `M3.0-B` gate is not met after bounded tuning:
+
+1. Add explicit ankle push-off command during terminal stance (not just IK-
+   derived — direct ankle target override)
+2. Add pelvis pitch feedforward (small forward lean proportional to commanded
+   speed)
+3. Consider longer step time (0.50s → 0.70s) to give more time for foot
+   tracking
+
+Do not skip to full MPC or major redesign until these simpler options are
+tried.
 
 ---
 

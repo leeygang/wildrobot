@@ -45,10 +45,10 @@ env:
   loc_ref_residual_scale: 0.10
   # v0.19.3c nominal-path conservative stabilization
   loc_ref_step_time_s: 0.50
-  loc_ref_nominal_com_height_m: 0.39
+  loc_ref_nominal_com_height_m: 0.42
   loc_ref_nominal_lateral_foot_offset_m: 0.08
-  loc_ref_min_step_length_m: 0.01
-  loc_ref_max_step_length_m: 0.06
+  loc_ref_min_step_length_m: 0.03
+  loc_ref_max_step_length_m: 0.12
   loc_ref_max_lateral_step_m: 0.10
   loc_ref_swing_height_m: 0.025
   loc_ref_pelvis_roll_bias_rad: 0.02
@@ -79,13 +79,13 @@ env:
   # v0.19.3f: support-conditioned progression redesign (M2.5)
   loc_ref_support_pitch_rate_start_rad_s: 0.60
   loc_ref_support_health_gain: 10.0
-  loc_ref_support_release_phase_start: 0.45
+  loc_ref_support_release_phase_start: 0.25
   loc_ref_support_foothold_min_scale: 0.15
   loc_ref_support_swing_progress_min_scale: 0.00
   loc_ref_support_phase_min_scale: 0.05
   loc_ref_max_lateral_release_m: 0.015
   # v0.19.3g: walking_ref_v2 support-first hybrid progression
-  loc_ref_v2_support_open_threshold: 0.60
+  loc_ref_v2_support_open_threshold: 0.50
   loc_ref_v2_support_release_threshold: 0.30
   loc_ref_v2_touchdown_phase_min: 0.55
   loc_ref_v2_capture_hold_s: 0.04
