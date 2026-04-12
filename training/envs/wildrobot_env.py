@@ -4577,17 +4577,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # the support point.  Without this, the foot is placed directly under
         # the hip (target_x=0), but the torso mass shifts the COM forward
         # when the hip pitches.  The offset compensates for this.
+        #
+        # The offset is depth-dependent: needed for shallow squats (legs
+        # nearly straight, COM ahead of foot) but NOT for deep squats
+        # (COM drops low enough to be naturally stable).  Scale by how
+        # close the reach is to max extension.
         _l1 = jp.asarray(self._leg_ik_cfg.upper_leg_length_m, dtype=jp.float32)
         _l2 = jp.asarray(self._leg_ik_cfg.lower_leg_length_m, dtype=jp.float32)
-        _reach = jp.minimum(jp.abs(stance_target_z), _l1 + _l2 - 1e-4)
+        _max_reach = _l1 + _l2 - jp.asarray(1e-4, dtype=jp.float32)
+        _reach = jp.minimum(jp.abs(stance_target_z), _max_reach)
         _cos_hip_aux = jp.clip(
             (_l1 * _l1 + _reach * _reach - _l2 * _l2)
             / (2.0 * _l1 * _reach + 1e-6),
             -1.0, 1.0,
         )
         _approx_hip_pitch = jp.arccos(_cos_hip_aux)
+        # Depth fade: 1.0 when nearly straight (reach > 95% max), tapering
+        # to 0.0 for deeper squats (reach < 90% max) where the deep squat
+        # is naturally stable and the offset hurts.
+        _shallow_thresh = jp.asarray(0.95, dtype=jp.float32) * _max_reach
+        _deep_thresh = jp.asarray(0.90, dtype=jp.float32) * _max_reach
+        _depth_fade = jp.clip(
+            (_reach - _deep_thresh) / jp.maximum(_shallow_thresh - _deep_thresh, jp.asarray(1e-6, dtype=jp.float32)),
+            0.0, 1.0,
+        ).astype(jp.float32)
         _stance_foot_x = (
             self._loc_ref_stance_com_forward_gain
+            * _depth_fade
             * jp.sin(_approx_hip_pitch)
         )
 

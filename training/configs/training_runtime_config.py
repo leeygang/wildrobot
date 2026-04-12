@@ -221,7 +221,7 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_route_w2_pitch_relax: float = 1.25
     loc_ref_v2_startup_route_w2_pitch_rate_relax: float = 1.25
     loc_ref_v2_support_entry_shaping_window_s: float = 0.12
-    loc_ref_v2_support_pelvis_height_offset_m: float = 0.04
+    loc_ref_v2_support_pelvis_height_offset_m: float = 0.00
     loc_ref_v2_support_stance_extension_margin_m: float = 0.020
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)

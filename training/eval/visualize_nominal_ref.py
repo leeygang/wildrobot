@@ -1227,13 +1227,69 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     # Pure-hold mode: when --force-support-only --init-from-nominal-qref,
     # bypass env.step() entirely and run pure MuJoCo with frozen ctrl.
     # This isolates servo capability from env/reference/adapter logic.
+    # Also uses pure MuJoCo init (not MJX) to avoid self-collision
+    # explosions that occur when MJX initializes deep squat postures.
     use_pure_hold = args.force_support_only and args.init_from_nominal_qref
     if use_pure_hold:
         print("[nominal-viewer] PURE HOLD MODE: bypassing env.step(), running raw MuJoCo with frozen ctrl")
-        # Freeze ctrl at the initial nominal_q_ref posture
-        hold_ctrl = np.asarray(state.data.ctrl, dtype=np.float64).copy()
-        mj_data.ctrl[:] = hold_ctrl
+        # Re-initialize via pure MuJoCo: set joints from nominal_q_ref,
+        # ground the robot, set ctrl = joint positions.
+        from math import acos, atan2, pi as _pi, sqrt as _sqrt, sin as _sin
+
+        _ik_cfg = env._leg_ik_cfg  # noqa: SLF001
+        _l1 = _ik_cfg.upper_leg_length_m
+        _l2 = _ik_cfg.lower_leg_length_m
+        _wr = state.info[WR_INFO_KEY]
+        _pelvis_h = float(jnp.asarray(_wr.loc_ref_pelvis_height, dtype=jnp.float32))
+        _margin = float(env._loc_ref_v2_support_stance_extension_margin_m)  # noqa: SLF001
+        _target_z = -(_pelvis_h - _margin)
+        _r = min(abs(_target_z), _l1 + _l2 - 1e-4)
+        _cos_k = max(-1, min(1, (_l1**2 + _l2**2 - _r**2) / (2*_l1*_l2)))
+        _knee = max(0, _pi - acos(_cos_k))
+        _cos_h = max(-1, min(1, (_l1**2 + _r**2 - _l2**2) / (2*_l1*_r)))
+        _hip = atan2(0.0, -_target_z) - acos(_cos_h)
+        _ankle = -(_hip + _knee)
+
+        # Reset mj_data from keyframe, then set leg joints
+        if mj_model.nkey > 0:
+            mj_data.qpos[:] = mj_model.key_qpos[0]
+        mj_data.qvel[:] = 0.0
+        _jnt_addr = lambda n: int(mj_model.jnt_qposadr[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, n)])
+        for _name, _angle in [
+            ("left_hip_pitch", -_hip), ("right_hip_pitch", -_hip),
+            ("left_knee_pitch", _knee), ("right_knee_pitch", _knee),
+            ("left_ankle_pitch", _ankle), ("right_ankle_pitch", _ankle),
+        ]:
+            mj_data.qpos[_jnt_addr(_name)] = _angle
+        mujoco.mj_forward(mj_model, mj_data)
+
+        # Ground: shift root z so lowest foot contact is at z=0
+        _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
+        _min_z = min(
+            mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
+            - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
+            for g in _foot_geoms
+        )
+        mj_data.qpos[2] -= _min_z
+        mj_data.qvel[:] = 0.0
+
+        # Set ctrl = current joint positions (hold this pose)
+        for _i in range(mj_model.nu):
+            _jname = mj_model.actuator(_i).name
+            _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
+            if _jid >= 0:
+                mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
+        mujoco.mj_forward(mj_model, mj_data)
+
+        hold_ctrl = mj_data.ctrl.copy()
         sim_substeps = max(1, int(round(ctrl_dt / float(mj_model.opt.timestep))))
+
+        _root_h = float(mj_data.qpos[2])
+        _lk_q = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
+        print(
+            f"[nominal-viewer] pure-hold init: target_z={_target_z:.3f} "
+            f"knee_ik={_knee:.3f} knee_actual={_lk_q:.3f} root_h={_root_h:.3f}"
+        )
 
     def run_step(step_idx: int) -> bool:
         nonlocal state, done_reached, done_step, done_dom
