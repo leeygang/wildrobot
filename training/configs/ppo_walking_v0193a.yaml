@@ -55,12 +55,12 @@ env:
   loc_ref_pelvis_pitch_gain: 0.015
   loc_ref_max_pelvis_pitch_rad: 0.02
   loc_ref_dcm_placement_gain: 0.10
-  loc_ref_swing_target_blend: 0.25
+  loc_ref_swing_target_blend: 1.0
   # 0.0 = pure nominal stance target height, 1.0 = blend fully toward actual stance-foot height.
   loc_ref_stance_height_blend: 0.0
   loc_ref_stance_extension_margin_m: 0.045
-  loc_ref_max_swing_x_delta_m: 0.015
-  loc_ref_max_swing_z_delta_m: 0.010
+  loc_ref_max_swing_x_delta_m: 0.06
+  loc_ref_max_swing_z_delta_m: 0.03
   loc_ref_swing_y_to_hip_roll: 0.08
   # v0.19.3d: overspeed/pitch-aware nominal braking in full env dynamics
   loc_ref_overspeed_deadband: 0.02
@@ -70,11 +70,11 @@ env:
   loc_ref_pitch_brake_start_rad: 0.08
   loc_ref_pitch_brake_gain: 2.5
   # v0.19.3e: support-first clamps for forward nominal channels (swing-x/pelvis-pitch)
-  loc_ref_swing_x_brake_pitch_start_rad: 0.06
-  loc_ref_swing_x_brake_overspeed_deadband: 0.01
-  loc_ref_swing_x_brake_gain: 12.0
+  loc_ref_swing_x_brake_pitch_start_rad: 0.30
+  loc_ref_swing_x_brake_overspeed_deadband: 0.05
+  loc_ref_swing_x_brake_gain: 2.0
   loc_ref_swing_x_min_scale: 0.00
-  loc_ref_pelvis_pitch_brake_gain: 14.0
+  loc_ref_pelvis_pitch_brake_gain: 2.0
   loc_ref_pelvis_pitch_min_scale: 0.00
   # v0.19.3f: support-conditioned progression redesign (M2.5)
   loc_ref_support_pitch_rate_start_rad_s: 0.60
@@ -90,7 +90,7 @@ env:
   loc_ref_v2_touchdown_phase_min: 0.55
   loc_ref_v2_capture_hold_s: 0.04
   loc_ref_v2_settle_hold_s: 0.04
-  loc_ref_v2_support_stabilize_max_foothold_scale: 0.35
+  loc_ref_v2_support_stabilize_max_foothold_scale: 0.70
   loc_ref_v2_post_settle_swing_scale: 0.15
   loc_ref_v2_startup_realization_lead_alpha: 0.25
   loc_ref_v2_startup_handoff_min_pelvis_realization: 0.60
