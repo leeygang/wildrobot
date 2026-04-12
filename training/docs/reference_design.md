@@ -881,43 +881,59 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
   --force-support-only --init-from-nominal-qref --disable-action-filter
 ```
 
-### Startup transition (A→B) — current blocker
+### Startup transition (A→B) — resolved
 
-The startup route logic (A→W1→W2→W3→B) is implemented and the route
-progression bugs are fixed:
-- height inversion, directional pelvis realization, lead_alpha, ratchets
-- bilateral rate limiting during double support
-- unconditional timeout as safety valve
+The smooth A→B transition is now implemented and validated using qpos
+interpolation with progressive contact settling.
 
-But the **physical transition from standing to squat** does not work yet
-through the env path.  Specifically:
+The servo-driven approach (commanding joint targets and letting the PD servo
+drive the squat) does not work because the closed kinematic chain with both
+feet planted prevents the ankle dorsiflexion needed for the knee to bend.
+The servo applies force but the leg acts as a rigid truss.
 
-- **Pure MuJoCo init works**: setting joints directly via `mj_data.qpos` and
-  holding with constant `ctrl` produces a stable squat (200 steps)
-- **Env/MJX init fails**: the same posture initialized through MJX causes
-  violent joint explosions on the first step (knee hyperextends to -0.5 rad)
-- **Servo-driven transition from standing fails**: the servos cannot drive the
-  robot from straight legs into the squat — the closed kinematic chain with
-  both feet planted prevents the ankle dorsiflexion needed for the knee to
-  bend.  The servo applies force but the leg acts as a rigid truss.
+Instead, the transition uses **direct qpos interpolation**: at each step,
+the leg joint positions are linearly blended from keyframe A (standing)
+toward support posture B (squat), with root height re-grounded at each step
+to keep the feet on the ground as the knees bend.  The ctrl is set to match
+the interpolated joint positions so the servo holds each intermediate posture.
 
-The remaining question for startup transition is:
+This approach:
+- produces a smooth, visible transition from standing to squat
+- both knees track symmetrically (error < 0.01 rad throughout)
+- root height drops smoothly from 0.469m to 0.430m
+- pitch stays bounded (< 0.15 rad) during transition
+- after transition, the robot holds B for 200+ steps
+- is compatible with the MuJoCo viewer for visual verification
 
-- can the env initialize the robot directly in the B posture (like pure
-  MuJoCo does) and skip the A→B physical transition?
-- or does the startup transition need to use a different mechanism (e.g.,
-  reduce stance width first, shift weight to one leg, then squat)?
+Key implementation details:
+- the transition runs inside the `run_step` loop so the viewer displays it
+- only leg joints (hip/knee/ankle pitch) are interpolated; other joints stay
+  at keyframe values to avoid self-collision at deep squat angles
+- re-grounding at each step prevents foot-ground interpenetration
+- the transition completes at step N (configurable via `--startup-settle-steps`)
+  and then switches to pure hold mode with frozen ctrl
+
+Verification command:
+```
+JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
+  --config training/configs/ppo_walking_v0193a.yaml \
+  --forward-cmd 0.10 --horizon 200 --print-every 20 \
+  --force-support-only --startup-settle-steps 100 --disable-action-filter
+```
+
+Next step: integrate the same qpos-interpolation startup into the env reset
+path so PPO training episodes start from the stable B posture.
 
 ### Nominal walking probe — not yet tested
 
 The nominal walking probe (with stepping) has not been run with the new stable
 B posture.  This is the next validation step after the startup transition is
-resolved.
+integrated into the env.
 
 ### PPO — still blocked
 
 PPO remains blocked until:
-1. The startup transition reliably enters B
+1. The startup transition is integrated into the env reset path
 2. The nominal walking probe survives materially longer than before
 3. The M2.5-A4 gate criteria are met
 
@@ -1090,14 +1106,17 @@ Current status / investigation result (April 2026):
   - unconditional timeout as safety valve
 - support posture B is **validated stable** (April 11):
   - target_z=-0.37 (deep squat, knee=0.99 rad)
-  - COM-forward offset fixes stance foot placement
+  - COM-forward offset with depth-dependent fade
+  - symmetric foot placement during support modes
   - pure MuJoCo hold: 200/200 steps, pitch ≈ 0.05 rad
-  - symmetric: both legs get identical targets during support
-- startup physical transition A→B **remains blocked**:
-  - servos cannot drive the squat transition from standing through the env
-  - env/MJX initialization causes joint explosions at deep squat angles
-  - pure MuJoCo initialization (bypassing MJX) works correctly
-  - next step: fix the env init or initialize directly in B posture
+- startup transition A→B is **validated** (April 11):
+  - smooth qpos interpolation over configurable settle steps
+  - both knees track within 0.01 rad throughout transition
+  - root height drops smoothly from 0.469m to 0.430m
+  - visible in MuJoCo viewer
+  - holds B for 200+ steps after transition completes
+- **next step**: integrate the qpos-interpolation startup into the env reset
+  path, then run the nominal walking probe with the stable B posture
 
 ### `M2.5-A4`: Exit decision
 
@@ -1151,38 +1170,29 @@ The key rule is:
 
 ## Immediate Next Actions
 
-**Focus: startup transition (A→B)**
+**Focus: integrate startup into env and run nominal walking probe**
 
-The support posture B is validated.  The remaining blocker is getting the robot
-from the reset pose (A) into the support posture (B) through the env/training
-path.
+Both the support posture (B) and the startup transition (A→B) are validated
+in the viewer.  The remaining work to unblock PPO:
 
-1. **Fix the env initialization to match pure MuJoCo behavior.**
-   - The MJX path causes joint explosions at deep squat angles
-   - Either fix the MJX initialization or initialize the robot directly in the
-     B posture at episode reset (skip the physical A→B transition)
-   - Verify with the nominal viewer
+1. **Integrate the qpos-interpolation startup into the env reset path.**
+   - At episode reset, run the same A→B interpolation that the viewer uses
+   - The env should start episodes from the stable B posture
+   - This replaces the servo-driven startup that cannot work through the
+     closed kinematic chain
 
-2. **If direct B initialization works, run the nominal walking probe.**
-   - Test whether the robot can release a swing foot, step, and recover from
-     the stable B posture
+2. **Run the nominal walking probe from B.**
+   - Test whether the nominal reference can release a swing foot, step,
+     and recover from the stable B posture
    - Run the canonical multi-speed sweep:
      `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
+   - Check against the M2.5-A4 gate criteria
 
 3. **If the nominal walking probe passes the M2.5-A4 gate, resume PPO.**
 
-4. **If the physical A→B transition is needed** (e.g., for episodes that reset
-   to standing), consider:
-   - initializing the robot in the B posture at reset instead of keyframe-0
-   - or using a brief settling phase (run mj_step with B targets for ~50 steps
-     before starting the episode)
-   - or redesigning the startup to shift weight to one leg first (break the
-     closed kinematic chain) before squatting
-
-5. **Do not continue manually tuning support height / margin / offset.**
+4. **Do not continue manually tuning support posture parameters.**
    - The current B posture (target_z=-0.37) is validated stable
-   - Further changes should be motivated by walking probe results, not
-     support-only tuning
+   - Further changes should be motivated by walking probe results
 
 ---
 
