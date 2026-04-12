@@ -2099,11 +2099,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 rng=jp.zeros((2,), dtype=jp.uint32),
             )
 
-        # Build observation using default pose action (matches ctrl at reset)
-        default_action = JaxCalibOps.ctrl_to_policy_action(
-            spec=self._policy_spec,
-            ctrl_rad=self._default_joint_qpos,
-        )
+        # Build observation using default pose action (matches ctrl at reset).
+        # When starting from support posture B with loc_ref, use zero action
+        # so the action filter produces no residual (ctrl = q_ref exactly).
+        if self._start_from_support:
+            default_action = jp.zeros_like(self._default_pose_action)
+        else:
+            default_action = JaxCalibOps.ctrl_to_policy_action(
+                spec=self._policy_spec,
+                ctrl_rad=ctrl_init,
+            )
+        # The action filter's pending_action must match the raw action that
+        # _compose_loc_ref_residual_action would produce with zero policy
+        # action, so the filter has no transient at step 1.  This is computed
+        # after nominal_q_ref is available (see pending_action_init below).
+        pending_action_init = default_action  # overridden later if loc_ref + support
 
         # Read raw sensors and initialize IMU history using push_schedule.rng
         raw_signals = self._signals_adapter.read(data)
@@ -2294,6 +2304,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             mode_id=ref_mode_id,
             mode_time_s=ref_mode_time,
         )
+        # Set action-filter seed so ctrl = q_ref at step 1 (no transient).
+        if self._start_from_support and self._loc_ref_enabled:
+            pending_action_init = JaxCalibOps.ctrl_to_policy_action(
+                spec=self._policy_spec,
+                ctrl_rad=nominal_q_ref,
+            ).astype(jp.float32)
         nominal_swing_y_target = jp.asarray(loc_ref_swing_pos[1], dtype=jp.float32)
         nominal_pelvis_roll_target = jp.asarray(loc_ref_pelvis_roll, dtype=jp.float32)
         if self._idx_left_hip_roll >= 0:
@@ -2450,7 +2466,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         wr_info = WildRobotInfo(
             step_count=jp.zeros(()),
             prev_action=default_action,
-            pending_action=default_action,
+            pending_action=pending_action_init,
             truncated=jp.zeros(()),  # No truncation at reset
             velocity_cmd=velocity_cmd,  # Target velocity for this episode
             prev_root_pos=root_pose.position,  # (3,)

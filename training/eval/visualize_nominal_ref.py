@@ -204,8 +204,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--record",
         type=str,
+        nargs="?",
+        const="",
         default=None,
-        help="Optional video output path (mp4/gif)",
+        help="Record video (mp4). Optionally specify output path; if omitted, a temp file is used.",
     )
     parser.add_argument(
         "--print-every",
@@ -1421,6 +1423,7 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
 
         # Normal env-based stepping (non-pure-hold mode)
         state = step_once(state)
+        _sync_viewer_data(mj_model, mj_data, state.data)
         metrics_vec = state.metrics[METRICS_VEC_KEY]
         
         # Update stage tracker
@@ -1559,6 +1562,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.log:
         _enable_temp_logging()
+    # Auto-generate record path if --record is used without a filename.
+    if args.record is not None and args.record == "":
+        import tempfile
+        args.record = os.path.join(
+            tempfile.gettempdir(),
+            f"wildrobot_nominal_{int(time.time())}.mp4",
+        )
+    if args.record is not None:
+        print(f"[nominal-viewer] record file: {args.record}")
     return run_nominal_viewer(args)
 
 
