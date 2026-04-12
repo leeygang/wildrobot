@@ -236,6 +236,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Replace reset joints with nominal_q_ref and ground stance foot before visualization",
     )
     parser.add_argument(
+        "--startup-settle-steps",
+        type=int,
+        default=0,
+        help=(
+            "Smooth A->B transition: gradually interpolate from keyframe (A) to "
+            "support posture (B) over N steps via pure MuJoCo, then continue with "
+            "normal control.  Only used with --force-support-only.  0 = disabled."
+        ),
+    )
+    parser.add_argument(
         "--log",
         action="store_true",
         help="Write the invoked command and viewer console output to a temp log file",
@@ -1229,49 +1239,109 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
     # This isolates servo capability from env/reference/adapter logic.
     # Also uses pure MuJoCo init (not MJX) to avoid self-collision
     # explosions that occur when MJX initializes deep squat postures.
-    use_pure_hold = args.force_support_only and args.init_from_nominal_qref
+    use_pure_hold = args.force_support_only and (args.init_from_nominal_qref or args.startup_settle_steps > 0)
     if use_pure_hold:
-        print("[nominal-viewer] PURE HOLD MODE: bypassing env.step(), running raw MuJoCo with frozen ctrl")
-        # Use the env's nominal_q_ref (which includes COM-forward offset
-        # and symmetric foot placement) but initialize via pure MuJoCo
-        # to avoid MJX self-collision explosions.
         _wr = state.info[WR_INFO_KEY]
         _nominal_q_ref = np.asarray(jnp.asarray(_wr.nominal_q_ref, dtype=jnp.float32), dtype=np.float64)
         _actuator_qpos_addrs = env._actuator_qpos_addrs  # noqa: SLF001
+        sim_substeps = max(1, int(round(ctrl_dt / float(mj_model.opt.timestep))))
+        _jnt_addr = lambda n: int(mj_model.jnt_qposadr[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, n)])
 
-        # Reset mj_data from keyframe, then set ONLY leg joints from nominal_q_ref.
-        # Setting all 19 actuated joints (including hip roll, shoulders, etc.)
-        # can cause self-collision at deep squat angles.
-        if mj_model.nkey > 0:
-            mj_data.qpos[:] = mj_model.key_qpos[0]
-        mj_data.qvel[:] = 0.0
+        # Compute B posture: keyframe with leg joints from nominal_q_ref
+        _qpos_B = np.array(mj_model.key_qpos[0], dtype=np.float64) if mj_model.nkey > 0 else mj_data.qpos.copy()
         _leg_joint_names = [
             "left_hip_pitch", "left_knee_pitch", "left_ankle_pitch",
             "right_hip_pitch", "right_knee_pitch", "right_ankle_pitch",
         ]
-        _leg_env_indices = []
         for _jname in _leg_joint_names:
             _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
             _addr = int(mj_model.jnt_qposadr[_jid])
-            # Find which env actuator index corresponds to this joint
             for _ei, _ea in enumerate(_actuator_qpos_addrs):
                 if int(_ea) == _addr:
-                    mj_data.qpos[_addr] = float(_nominal_q_ref[_ei])
-                    _leg_env_indices.append(_ei)
+                    _qpos_B[_addr] = float(_nominal_q_ref[_ei])
                     break
-        mujoco.mj_forward(mj_model, mj_data)
 
-        # Ground: shift root z so lowest foot contact is at z=0
-        _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
-        _min_z = min(
-            mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
-            - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
-            for g in _foot_geoms
-        )
-        mj_data.qpos[2] -= _min_z
-        mj_data.qvel[:] = 0.0
+        settle_steps = args.startup_settle_steps
+        if settle_steps > 0 and not args.init_from_nominal_qref:
+            # Smooth A→B transition: gradually interpolate from keyframe to B
+            print(f"[nominal-viewer] SMOOTH A→B TRANSITION: {settle_steps} steps, then pure hold")
+            _qpos_A = np.array(mj_model.key_qpos[0], dtype=np.float64) if mj_model.nkey > 0 else mj_data.qpos.copy()
 
-        # Set ctrl: leg joints from nominal_q_ref, others from current qpos
+            # Reset to A
+            mj_data.qpos[:] = _qpos_A
+            mj_data.qvel[:] = 0.0
+            # Set ctrl to A joint positions
+            for _i in range(mj_model.nu):
+                _jname = mj_model.actuator(_i).name
+                _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
+                if _jid >= 0:
+                    mj_data.ctrl[_i] = mj_data.qpos[int(mj_model.jnt_qposadr[_jid])]
+            mujoco.mj_forward(mj_model, mj_data)
+
+            for _step in range(1, settle_steps + 1):
+                alpha = _step / settle_steps  # 0→1 over settle period
+                # Interpolate leg joints from A to B
+                for _jname in _leg_joint_names:
+                    _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
+                    _addr = int(mj_model.jnt_qposadr[_jid])
+                    _q_interp = (1.0 - alpha) * _qpos_A[_addr] + alpha * _qpos_B[_addr]
+                    mj_data.qpos[_addr] = _q_interp
+                    # Also update ctrl to track the interpolated target
+                    _aid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, _jname)
+                    if _aid >= 0:
+                        mj_data.ctrl[_aid] = _q_interp
+                mj_data.qvel[:] = 0.0
+                mujoco.mj_forward(mj_model, mj_data)
+
+                # Run a few substeps to let contacts settle at this posture
+                for _ in range(sim_substeps):
+                    mujoco.mj_step(mj_model, mj_data)
+
+                if _step % max(1, settle_steps // 5) == 0 or _step == settle_steps:
+                    _p_qw, _p_qx, _p_qy, _p_qz = mj_data.qpos[3:7]
+                    _p = float(np.arctan2(2*(_p_qw*_p_qy - _p_qz*_p_qx), 1 - 2*(_p_qx**2 + _p_qy**2)))
+                    _lk = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
+                    _rk = float(mj_data.qpos[_jnt_addr("right_knee_pitch")])
+                    print(
+                        f"  settle {_step:3d}/{settle_steps} alpha={alpha:.2f} "
+                        f"root_h={mj_data.qpos[2]:.3f} pitch={_p:+.4f} "
+                        f"Lk={_lk:+.3f} Rk={_rk:+.3f}"
+                    )
+
+            # Ground the final posture
+            _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
+            _min_z = min(
+                mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
+                - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
+                for g in _foot_geoms
+            )
+            if _min_z > 0.001:
+                mj_data.qpos[2] -= _min_z
+            mj_data.qvel[:] = 0.0
+
+        else:
+            # Instant init: set joints directly to B (original pure-hold)
+            print("[nominal-viewer] PURE HOLD MODE: bypassing env.step(), running raw MuJoCo with frozen ctrl")
+            if mj_model.nkey > 0:
+                mj_data.qpos[:] = mj_model.key_qpos[0]
+            mj_data.qvel[:] = 0.0
+            for _jname in _leg_joint_names:
+                _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
+                _addr = int(mj_model.jnt_qposadr[_jid])
+                mj_data.qpos[_addr] = _qpos_B[_addr]
+            mujoco.mj_forward(mj_model, mj_data)
+
+            # Ground
+            _foot_geoms = ["left_heel", "left_toe", "right_heel", "right_toe"]
+            _min_z = min(
+                mj_data.geom_xpos[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][2]
+                - mj_model.geom_size[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_GEOM, g)][0]
+                for g in _foot_geoms
+            )
+            mj_data.qpos[2] -= _min_z
+            mj_data.qvel[:] = 0.0
+
+        # Set ctrl = current joint positions (hold the final posture)
         for _i in range(mj_model.nu):
             _jname = mj_model.actuator(_i).name
             _jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, _jname)
@@ -1280,17 +1350,13 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         mujoco.mj_forward(mj_model, mj_data)
 
         hold_ctrl = mj_data.ctrl.copy()
-        sim_substeps = max(1, int(round(ctrl_dt / float(mj_model.opt.timestep))))
 
-        _jnt_addr = lambda n: int(mj_model.jnt_qposadr[mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, n)])
         _root_h = float(mj_data.qpos[2])
         _lk_q = float(mj_data.qpos[_jnt_addr("left_knee_pitch")])
         _rk_q = float(mj_data.qpos[_jnt_addr("right_knee_pitch")])
         print(
-            f"[nominal-viewer] pure-hold init: "
-            f"root_h={_root_h:.3f} Lk={_lk_q:.3f} Rk={_rk_q:.3f} "
-            f"Lk_ctrl={hold_ctrl[env._idx_left_knee_pitch]:.3f} "  # noqa: SLF001
-            f"Rk_ctrl={hold_ctrl[env._idx_right_knee_pitch]:.3f}"  # noqa: SLF001
+            f"[nominal-viewer] hold init: "
+            f"root_h={_root_h:.3f} Lk={_lk_q:.3f} Rk={_rk_q:.3f}"
         )
 
     def run_step(step_idx: int) -> bool:
