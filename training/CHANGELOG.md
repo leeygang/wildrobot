@@ -7,6 +7,75 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [M3.0-A] - 2026-04-12: Nominal Walking Reference Achieved ✅
+
+### Summary
+First nominal walking reference that produces sustained forward walking
+on WildRobot v2.  The robot walks 461 steps (9.2 seconds) at cmd=0.15 m/s
+with 15 full gait cycles and 30 stance switches before lateral roll
+termination.
+
+### Key Milestones Resolved
+
+**Ctrl ordering fix (root cause of ALL v0.19.3+ failures):**
+- PolicySpec and MuJoCo listed actuators in different orders
+- The env wrote PolicySpec-ordered ctrl to MuJoCo's data.ctrl, sending
+  joint targets to wrong actuators (e.g. knee bend → hip pitch)
+- Fixed via `CtrlOrderMapper` (`training/utils/ctrl_order.py`)
+- Regression test: `training/tests/test_actuator_ordering.py`
+- Architecture doc: `training/docs/system_architecture.md`
+
+**DCM COM trajectory for stance-leg forward drive:**
+- Phase-proportional COM trajectory shifts stance foot IK target forward
+  during walking modes, producing natural hip extension and forward drive
+- Linear ramp (not full LIPM cosh/sinh — too aggressive for open-loop)
+- Config: `com_trajectory_enabled: true`
+
+**Two-margin support posture system:**
+- Support mode: height=0.42, margin=0.020 → knee 36° (more leg reach)
+- Walking mode: height=0.42, crouch=0.045 → knee 53° (lower COM, stability)
+- The deeper walking posture braces for dynamic phases
+
+**Episode starts from support posture B:**
+- Pre-computed via IK pipeline with `debug_force_support_only=True`
+- Walking reference starts in SUPPORT_STABILIZE mode (skip startup)
+- Config: `start_from_support_posture: true`
+
+### Nominal Walking Probe Results (cmd=0.15, seed=0)
+- Survived: 461/500 steps (9.2 seconds)
+- Forward speed mean: +0.038 m/s
+- Pitch oscillation: ±0.17 rad (10°)
+- Gait cycles: ~15 complete cycles, 30 stance switches
+- Termination: term/roll (lateral drift accumulation)
+
+### Known Quality Issues (PPO scope)
+- **Wobble** (±10° pitch oscillation) — open-loop, no active balance
+- **Lateral drift** — per-step asymmetries accumulate → roll termination
+- **Small steps** (~1-3cm actual) — servo tracking limits foot displacement
+- These are the intended scope for PPO residual corrections
+
+### Config
+- Config: `training/configs/ppo_walking_v0193a.yaml`
+- Key values: `walking_pelvis_height=0.42, support_margin=0.020,
+  walking_crouch=0.045, swing_target_blend=1.0, com_trajectory_enabled=true`
+
+### Files Changed
+- `control/references/walking_ref_v2.py` — COM trajectory, rename height field
+- `training/envs/wildrobot_env.py` — ctrl ordering, B-start, two-margin IK,
+  stance randomization, pending_action init, walking_crouch
+- `training/utils/ctrl_order.py` — NEW: CtrlOrderMapper
+- `training/tests/test_actuator_ordering.py` — NEW: 5 regression tests
+- `training/docs/system_architecture.md` — NEW: ctrl ordering principle
+- `training/eval/visualize_nominal_ref.py` — display sync, --from-keyframe,
+  --record auto-generate, ctrl diagnostics fix
+
+### Next Step
+M3.0-C: PPO integration — train residual policy on top of the walking
+reference to improve balance (wobble), lateral stability (drift), and
+foot tracking (step size).
+
+---
+
 ## [v0.17.4t] - 2026-03-26: Bounded Step-Target Teacher Result ✅
 
 ### Summary
