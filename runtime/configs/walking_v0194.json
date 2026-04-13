@@ -1,0 +1,17 @@
+{
+  "controller_mode": "nominal_only",
+  "forward_speed_mps": 0.15,
+  "policy_path": null,
+  "dt_s": 0.02,
+  "residual_scale": 0.18,
+  "ref_config": {
+    "walking_pelvis_height_m": 0.42,
+    "com_trajectory_enabled": true,
+    "com_trajectory_max_behind_m": 0.01,
+    "com_trajectory_max_ahead_m": 0.03
+  },
+  "ik_config": {
+    "support_margin_m": 0.020,
+    "walking_crouch_extra_m": 0.045
+  }
+}

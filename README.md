@@ -57,6 +57,11 @@ wildrobot/
 │   ├── reduced_model/                  # LIPM / DCM / ALIP-style helpers
 │   ├── references/                     # Walking reference generators (Milestone 2+)
 │   ├── kinematics/                     # Leg IK and nominal-motion utilities (Milestone 2+)
+│   ├── locomotion/                     # Unified walking controller (v0.19.5)
+│   │   ├── __init__.py
+│   │   ├── walking_controller.py       # Orchestrator: ref → IK → [optional residual] → ctrl
+│   │   │                               #   mode: nominal_only (v0.19.4) | residual_ppo (v0.19.5)
+│   │   └── nominal_ik_adapter.py       # IK adapter: task-space targets → joint angles (NumPy)
 │   ├── adapters/                       # Reference -> joint-target adapters
 │   ├── execution/                      # Servo-friendly execution / tracking layer
 │   └── mpc/                            # Reserved for future advanced planner work
@@ -86,7 +91,8 @@ wildrobot/
 │   │   ├── training_config.py          # Training config schema
 │   │   ├── training_runtime_config.py  # Runtime config
 │   │   ├── feature_config.py           # Feature configuration
-│   │   ├── ppo_walking.yaml            # Walking task config
+│   │   ├── ppo_walking.yaml            # Walking task config (v0.19.3)
+│   │   ├── ppo_walking_v0195.yaml      # Walking PPO v2 residual config (v0.19.5)
 │   │   └── ppo_standing.yaml           # Standing task config
 │   │
 │   ├── data/                           # Reference motion data
@@ -192,8 +198,16 @@ wildrobot/
 ├── runtime/                            # Hardware runtime and shared execution logs
 │   ├── README.md                       # Runtime install + run instructions
 │   ├── configs/                        # Runtime JSON config templates (hardware calibration source of truth)
+│   │   ├── runtime_config_v2.json      # Standing/general runtime config
+│   │   ├── walking_v0194.json          # Nominal-only walking deploy config (v0.19.4)
+│   │   └── walking_v0195.json          # Residual PPO walking deploy config (v0.19.5)
 │   ├── scripts/                        # Calibration tools (IMU/servo/footswitch)
 │   └── wr_runtime/                     # Importable runtime package + CLIs
+│       ├── control/
+│       │   ├── run_policy.py           # Standing/general policy runner
+│       │   ├── run_walking.py          # Walking controller entry point (v0.19.5)
+│       │   ├── loc_ref_runtime.py      # Walking ref v1 runtime wrapper
+│       │   └── loc_ref_runtime_v2.py   # Walking ref v2 runtime wrapper (v0.19.5)
 │       └── locomotion/                 # Planned locomotion runner / command / log schema layer
 │
 ├── tools/                              # Sim2real and platform tooling (Milestone 0+)
