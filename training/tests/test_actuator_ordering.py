@@ -23,7 +23,6 @@ import pytest
 from training.configs.training_config import load_training_config, load_robot_config
 from training.envs.wildrobot_env import WildRobotEnv
 from training.envs.env_info import WR_INFO_KEY
-from training.utils.ctrl_order import CtrlOrderMapper
 
 WALKING_CONFIG = PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0193a.yaml"
 ROBOT_CONFIG = PROJECT_ROOT / "assets" / "v2" / "mujoco_robot_config.json"
@@ -37,17 +36,12 @@ def env():
     return WildRobotEnv(config=cfg)
 
 
-@pytest.fixture(scope="module")
-def ctrl_mapper(env):
-    return env._ctrl_mapper
-
-
 # ── Test 1: permutation is valid ──────────────────────────────────────────
 
 
-def test_permutation_is_valid(ctrl_mapper):
+def test_permutation_is_valid(env):
     """_policy_to_mj_ctrl_order must be a valid permutation of 0..nu-1."""
-    perm = ctrl_mapper.policy_to_mj_order
+    perm = env._ctrl_mapper.policy_to_mj_order
     assert set(perm.tolist()) == set(range(len(perm)))
 
 
@@ -66,12 +60,13 @@ def test_all_policy_names_in_mujoco(env):
 # ── Test 3: _to_mj_ctrl maps to correct MuJoCo indices ───────────────────
 
 
-def test_to_mj_ctrl_correctness(ctrl_mapper, env):
+def test_to_mj_ctrl_correctness(env):
     """Setting a unique value per PolicySpec index must land at the right
     MuJoCo ctrl slot."""
     nu = env._mj_model.nu
+    # Create a PolicySpec-ordered ctrl with unique values per actuator.
     policy_ctrl = jnp.arange(1, nu + 1, dtype=jnp.float32)
-    mj_ctrl = np.asarray(ctrl_mapper.to_mj_jax(policy_ctrl))
+    mj_ctrl = np.asarray(env._ctrl_mapper.to_mj_jax(policy_ctrl))
 
     for policy_idx, name in enumerate(env._policy_spec.robot.actuator_names):
         mj_id = mujoco.mj_name2id(
