@@ -7,13 +7,14 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [M3.0-A] - 2026-04-12: Nominal Walking Reference Achieved ✅
+## [v0.19.4] - 2026-04-12: Nominal Walking Reference Achieved ✅
 
 ### Summary
 First nominal walking reference that produces sustained forward walking
 on WildRobot v2.  The robot walks 461 steps (9.2 seconds) at cmd=0.15 m/s
 with 15 full gait cycles and 30 stance switches before lateral roll
-termination.
+termination.  Includes M2.5 reference validation, M3.0-A COM trajectory,
+and M3.0-B nominal walking probe.
 
 ### Key Milestones Resolved
 
@@ -70,7 +71,7 @@ termination.
   --record auto-generate, ctrl diagnostics fix
 
 ### Next Step
-M3.0-C: PPO integration — train residual policy on top of the walking
+v0.19.5: Walking PPO v2 — train residual policy on top of the walking
 reference to improve balance (wobble), lateral stability (drift), and
 foot tracking (step size).
 

@@ -1197,7 +1197,7 @@ approaches destabilized lateral balance.  The robot has no ankle roll, so
 any lateral foot placement change directly affects the support polygon
 without a compensating mechanism.
 
-### Next step: PPO integration (M3.0-C)
+### Next step: PPO integration (v0.19.5)
 
 These quality issues are the intended scope for PPO residuals:
 - Wobble → PPO learns pitch-rate damping corrections
@@ -1362,9 +1362,9 @@ These can be relaxed as confidence grows.
 
 ---
 
-## Execution Milestones For DCM COM Trajectory (`M3.0`)
+## Execution Milestones For DCM COM Trajectory (`v0.19.4`)
 
-### `M3.0-A`: COM trajectory implementation
+### `v0.19.4-A`: COM trajectory implementation (was M3.0-A)
 
 **Goal:** add LIPM COM trajectory to the reference and IK adapter.
 
@@ -1397,7 +1397,7 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
 - Stance hip pitch changes by > 0.1 rad through the phase
 - Stance ankle pitch changes by > 0.05 rad through the phase
 
-### `M3.0-B`: Nominal walking probe — done
+### `v0.19.4-B`: Nominal walking probe — done (was M3.0-B)
 
 **Goal:** verify the nominal reference produces sustained walking.
 
@@ -1415,11 +1415,11 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
 - Swing tracking 0.050 ✅
 - Terminated: term/roll (lateral drift)
 
-**Not gated here (moved to M3.0-C):**
+**Not gated here (moved to v0.19.5):**
 - Foothold consistency > 0.05 — requires PPO foot tracking corrections
 - Pitch oscillation < ±0.15 — requires PPO balance corrections
 
-### `M3.0-C`: PPO integration
+### `v0.19.5`: PPO integration (was M3.0-C)
 
 **Goal:** train residual PPO policy on top of the walking reference to
 improve balance, lateral stability, and foot tracking.
@@ -1438,9 +1438,9 @@ improve balance, lateral stability, and foot tracking.
 - Mean step length > 5cm (current baseline: 2.5cm, metric: `debug/step_length_m`)
 - Pitch oscillation < ±0.15 rad (current baseline: ±0.17 rad)
 
-### `M3.0-D`: If COM trajectory alone is insufficient
+### `v0.19.5-D`: If COM trajectory alone is insufficient (was M3.0-D)
 
-If `M3.0-B` gate is not met after bounded tuning:
+If `v0.19.4-B` gate is not met after bounded tuning:
 
 1. Add explicit ankle push-off command during terminal stance (not just IK-
    derived — direct ankle target override)

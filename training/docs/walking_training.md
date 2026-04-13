@@ -335,12 +335,13 @@ Expected additions:
   - clamp is active
   - survival still does not improve
   - PPO must remain paused
-- Current active stage is now **`M2.5`: nominal reference validation**.
-  - `v0.19.3` remains implemented, but it is blocked by insufficient confidence
-    in the nominal prior under full env dynamics
-  - active work is no longer PPO config tuning
-  - active work is a fixed nominal-reference validation ladder and ablation
-    program before any further M3 training
+- `v0.19.4` complete: nominal reference validation (M2.5) and walking
+  reference achieved (M3.0-A/B).  Ctrl ordering bug found and fixed.
+  DCM COM trajectory implemented.  Nominal walking: 461 steps, 15 gait
+  cycles, forward speed +0.038 m/s at cmd=0.15.
+- Current active stage is now **`v0.19.5`: Walking PPO v2 (residual policy)**.
+  - the nominal reference is validated and walks on its own
+  - PPO should now improve balance, step quality, and lateral stability
 
 ### `v0.19.0` Platform Pivot
 
@@ -412,209 +413,51 @@ Exit gate:
 - initial smoke command:
   - `uv run python tools/reference_smoke/run_reference_smoke.py --robot-config assets/v2/mujoco_robot_config.json --steps 300 --dt-s 0.02 --forward-speed-mps 0.12`
 
-### `M2.5` Nominal Reference Validation
+### `v0.19.4` Nominal Reference Validation & Walking Reference
 
 Purpose:
 
-- validate that the `v0.19.2` nominal reference is good enough for M3
+- validate that the nominal reference is good enough to unblock walking PPO
 - localize the root cause when the nominal prior fails under full env dynamics
 - block further PPO work until the nominal-only gate is cleared
 
-Status:
+Status: **complete** (April 2026)
 
-- active stage
-- `v0.19.3` integration exists, but it exposed that the nominal prior is not
-  yet dynamically viable
-- this is therefore a validation and root-cause stage, not a reward-tuning
-  stage
+Key results:
+
+- ctrl ordering bug found and fixed (`CtrlOrderMapper`)
+- support posture B validated stable (200/200 steps)
+- startup transition A→B validated (smooth qpos interpolation)
+- DCM COM trajectory implemented (stance-leg forward drive)
+- nominal walking probe: 461/500 steps, 15 gait cycles, +0.038 m/s
 
 Primary design note:
 
 - [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
-  This is the canonical design note for the nominal-reference architecture,
-  support-first `walking_ref_v2` direction, validation ladder, and `M2.5`
-  execution milestones.
 
-Current findings:
+### `v0.19.5` Walking PPO v2 — Residual Policy
 
-- `v0.19.3b` nominal-only probe established the blocker:
-  - zero residual still pitch-fails early
-  - `q_ref` is not currently viable under the full M3 env
-- `v0.19.3c` and `v0.19.3d` improved semantics and braking diagnostics, but
-  did not materially improve the nominal-only gate
-- `v0.19.3e` improved the validation harness and isolated the current failure:
-  - `no-dcm`: no meaningful effect
-  - `zero-pelvis-pitch`: no meaningful effect
-  - `freeze-swing-x`: reduces overspeed, but does not improve survival
-  - `tight-stance`: improves survival, but worsens overspeed
+**Goal:** train residual PPO policy on top of the walking reference to
+improve balance, lateral stability, and foot tracking.
 
-Interpretation:
+Status: **next**
 
-- the current blocker is not PPO optimization
-- the current blocker is not primarily DCM or pelvis-pitch feedforward
-- the dominant remaining issue appears to be coupled sagittal support and
-  forward-progression timing under full env dynamics
+Tasks:
 
-Immediate next step:
+1. Verify env reset + auto-reset work with COM trajectory state
+2. Run a short PPO training (1000 iterations) to check learning signal
+3. Check that PPO residuals improve stepping (larger steps, better tracking)
 
-- run the canonical `M2.5` multi-speed nominal-only sweep for `walking_ref_v2`
-- inspect per-speed traces and the aggregate summary
-- use that result to decide whether `walking_ref_v2` is:
-  - too conservative and ready for one bounded release-threshold tuning pass
-  - or still not dynamically valid and in need of a larger redesign
+Exit criteria:
 
-Canonical commands:
+- PPO training runs without errors
+- `eval_clean/success_rate` > 0% within 1000 iterations
+- Step length improves with training (residuals help foot tracking)
+- Forward speed tracks command better than nominal-only
+- Mean step length > 5cm (current baseline: 2.5cm, metric: `debug/step_length_m`)
+- Pitch oscillation < ±0.15 rad (current baseline: ±0.17 rad)
 
-- baseline probe:
-  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
-- canonical multi-speed sweep:
-  - `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-- next ablation:
-  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0 --ablation slow-phase`
-
-### `v0.19.3` Walking Policy v1
-
-Software stack:
-
-- add reference state into the locomotion env
-- add history stacking and one-step delay support
-- add policy export and offline replay tools
-
-Training approach:
-
-- train reference-guided PPO for forward walking and stop
-- use residual joint targets around IK nominal motion
-- reward task-space tracking first
-
-Sim2real:
-
-- begin guarded hardware tests
-- compare action statistics and reference-tracking mismatch between sim and real
-
-Exit gate:
-
-- stable forward walking in simulation
-- first hardware rollouts show repeatable stepping and controlled stopping
-
-Result:
-
-- implemented end-to-end, but the first screening run did not clear the gate
-- the initial config overpaid uncontrolled forward motion relative to nominal
-  reference tracking
-- no checkpoint from the first `v0.19.3` run should be treated as a promotion
-  candidate
-
-### `v0.19.3a` Walking Policy v1 Recovery Pass
-
-Software stack:
-
-- keep the `v0.19.3` code path unchanged
-- apply a bounded config-only recovery pass in
-  `training/configs/ppo_walking_v0193a.yaml`
-
-Training approach:
-
-- reduce `loc_ref_residual_scale` so PPO cannot overpower nominal motion as
-  easily
-- reduce maximum commanded forward speed for the first recovery screen
-- increase `m3_swing_foot_tracking` and `m3_foothold_consistency` so the policy
-  is paid for following the reference instead of free-running forward
-- strengthen slip, impact, and residual-magnitude penalties
-- set generic `clearance` reward to zero for this recovery run
-
-Sim2real:
-
-- no hardware walking promotion from `v0.19.3`
-- regain stable simulation behavior first, then re-open guarded hardware tests
-
-Exit gate:
-
-- `term_pitch_frac` drops materially below the failed `v0.19.3` regime
-- clean eval episode length rises well above `40` steps
-- achieved forward speed tracks command instead of overshooting it
-- `m3_swing_foot_tracking` and `m3_foothold_consistency` become meaningfully
-  active
-- slip falls sharply relative to the failed `v0.19.3` run
-
-Result:
-
-- `v0.19.3a` did not clear the gate
-- subsequent `v0.19.3b` through `v0.19.3e` debug branches show that the
-  blocker is the nominal prior, not PPO optimization
-- from this point on, M3 work is gated by the nominal reference validation
-  ladder in [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
-
-### `M2.5` Nominal Reference Validation
-
-Purpose:
-
-- prove the nominal reference is good enough to unblock `v0.19.3`
-- localize the root cause when it is not
-- avoid wasting PPO runs on a broken prior
-
-The canonical `M2.5` design, validation ladder, execution milestones, and
-resume-PPO gate now live only in:
-
-- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
-
-Use that file as the single source of truth for:
-
-- `walking_ref_v2` design
-- startup/support posture design
-- Level `1 / 2 / 2.5 / 3 / 4 / 5` validation
-- `M2.5-A0` through `M2.5-A4` execution milestones
-- numeric exit criteria for resuming PPO
-
-This walking plan keeps only the active stage status and the canonical commands
-needed to execute the current `M2.5` work.
-
-Current status:
-
-- `M2.5` is active
-- PPO remains paused
-- the nominal prior is still blocked on support-posture / support-transition
-  validation under full env dynamics
-- current execution milestone and next actions should be read from
-  [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
-
-Canonical nominal-probe realism baseline:
-
-- use [`ppo_walking_v0193a.yaml`](/home/leeygang/projects/wildrobot/training/configs/ppo_walking_v0193a.yaml) as the probe config
-- treat the probe baseline operationally as:
-  - v2 MuJoCo MJX asset stack and full actuator/contact dynamics
-  - fixed command
-  - residual disabled for nominal-only probes
-  - pushes disabled
-  - action delay disabled
-  - domain randomization disabled
-  - IMU noise/latency disabled unless explicitly re-enabled
-- the config also records
-  `realism_profile_path = assets/v2/realism_profile_v0.19.1.json`, but the
-  canonical `M2.5` probe contract should be read from the actual config/env
-  behavior above rather than from an implied promise that every realism-profile
-  feature is independently exercised in the probe path
-
-For any ambiguity about realism assumptions, defer to the explicit baseline in
-[`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md).
-
-Canonical commands:
-
-- baseline probe:
-  - `uv run python training/eval/eval_loc_ref_probe.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 120 --num-envs 1 --residual-scale 0.0`
-- canonical multi-speed sweep:
-  - `JAX_PLATFORMS=cpu uv run python training/eval/run_m25_v2_probe_sweep.py`
-- startup-path nominal viewer:
-  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 64 --headless --print-every 1 --log`
-- grounded support-only nominal viewer:
-  - `PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu uv run python training/eval/visualize_nominal_ref.py --config training/configs/ppo_walking_v0193a.yaml --forward-cmd 0.10 --horizon 32 --headless --print-every 1 --force-support-only --init-from-nominal-qref --log`
-
-Decision rule:
-
-- do not resume PPO based on this file alone
-- always use the canonical `M2.5` ladder and exit gate in
-  [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
-
-### `v0.19.4` Transfer Hardening
+### `v0.19.6` Transfer Hardening (forward walk)
 
 Software stack:
 
@@ -637,7 +480,7 @@ Exit gate:
 
 - zero-shot or near-zero-touch forward walking is reliable on hardware
 
-### `v0.19.5` Yaw and Command Breadth
+### `v0.19.7` Yaw and Command Breadth
 
 Software stack:
 
@@ -656,7 +499,7 @@ Exit gate:
 
 - walk, stop, and yaw are all repeatable on current hardware
 
-### `v0.19.6` Recovery and Robustness
+### `v0.19.8` Recovery and Robustness
 
 Software stack:
 

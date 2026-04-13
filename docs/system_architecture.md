@@ -364,21 +364,31 @@ the locomotion policy stack, not to replace it with a heavyweight controller.
 - IK nominal motion path
 
 ### `v0.19.3`
-- reference-guided walking PPO
-- forward walk and stop
+- reference-guided walking PPO v1 (failed — ctrl ordering bug)
+- forward walk + stop attempt
 - residual policy export
 
 ### `v0.19.4`
+- nominal reference validation (M2.5)
+- ctrl ordering fix (`CtrlOrderMapper`)
+- DCM COM trajectory
+- nominal walking achieved (461 steps, 15 gait cycles)
+
+### `v0.19.5`
+- walking PPO v2 — residual policy on validated reference
+- balance, lateral stability, foot tracking improvements
+
+### `v0.19.6`
 - transfer hardening
 - history and delay
 - domain randomization expansion
 
-### `v0.19.5`
+### `v0.19.7`
 - in-place yaw
 - broader command range
 - repeatable zero-shot or near-zero-touch transfer
 
-### `v0.19.6`
+### `v0.19.8`
 - disturbance-aware stepping
 - moderate push recovery during standing and slow walking
 - optional `ALIP` upgrade if the simpler reference saturates
