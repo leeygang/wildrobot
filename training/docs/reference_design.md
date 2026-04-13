@@ -1477,7 +1477,7 @@ the hip pitch actuator.
 
 **Fix:** `CtrlOrderMapper` (`training/utils/ctrl_order.py`) provides a single
 API for all ctrl writes.  Regression test: `test_actuator_ordering.py`.
-See `training/docs/system_architecture.md` for the design principle.
+See `docs/system_architecture.md` for the design principle.
 
 ---
 

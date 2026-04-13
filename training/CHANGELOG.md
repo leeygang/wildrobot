@@ -23,7 +23,7 @@ termination.
   joint targets to wrong actuators (e.g. knee bend → hip pitch)
 - Fixed via `CtrlOrderMapper` (`training/utils/ctrl_order.py`)
 - Regression test: `training/tests/test_actuator_ordering.py`
-- Architecture doc: `training/docs/system_architecture.md`
+- Architecture doc: `docs/system_architecture.md`
 
 **DCM COM trajectory for stance-leg forward drive:**
 - Phase-proportional COM trajectory shifts stance foot IK target forward
@@ -65,7 +65,7 @@ termination.
   stance randomization, pending_action init, walking_crouch
 - `training/utils/ctrl_order.py` — NEW: CtrlOrderMapper
 - `training/tests/test_actuator_ordering.py` — NEW: 5 regression tests
-- `training/docs/system_architecture.md` — NEW: ctrl ordering principle
+- `docs/system_architecture.md` — ctrl ordering principle (merged)
 - `training/eval/visualize_nominal_ref.py` — display sync, --from-keyframe,
   --record auto-generate, ctrl diagnostics fix
 
