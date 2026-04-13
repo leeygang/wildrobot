@@ -345,7 +345,8 @@ class TestIntegration:
         assert result["mode"] == "nominal_only"
         assert result["q_ref_log"].shape == (100, 9)
 
-    def test_residual_ppo_with_zero_policy(self):
+    def test_residual_ppo_compose_with_zero_delta(self):
+        """Residual composition with zero delta should match q_ref."""
         ctrl = WalkingController(WalkingControllerConfig(
             mode=ControllerMode.RESIDUAL_PPO, dt_s=0.02,
         ))

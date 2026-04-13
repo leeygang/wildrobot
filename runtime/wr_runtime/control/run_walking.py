@@ -33,7 +33,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 
@@ -86,68 +86,21 @@ def build_controller_from_config(cfg: Dict[str, Any]) -> WalkingController:
     return WalkingController(controller_config)
 
 
-def _build_residual_obs(
-    *,
-    controller: WalkingController,
-    gravity_local: np.ndarray,
-    angvel_local: np.ndarray,
-    joint_pos_normalized: np.ndarray,
-    joint_vel_normalized: np.ndarray,
-    foot_switches: np.ndarray,
-    prev_action: np.ndarray,
-    velocity_cmd: float,
-) -> np.ndarray:
-    """Build the 57-dim wr_obs_v4 observation for ONNX policy inference.
-
-    This must match the observation layout defined in
-    policy_contract/spec_builder.py (wr_obs_v4).
-    """
-    ref_feats = controller.get_reference_features()
-    obs = np.zeros(57, dtype=np.float32)
-    obs[0:3] = gravity_local
-    obs[3:6] = angvel_local
-    n = len(joint_pos_normalized)
-    obs[6:6 + n] = joint_pos_normalized
-    obs[15:15 + n] = joint_vel_normalized
-    obs[24:28] = foot_switches
-    obs[28:28 + n] = prev_action
-    obs[37] = velocity_cmd
-    obs[38:40] = ref_feats["phase_sin_cos"]
-    obs[40:41] = ref_feats["stance_foot"]
-    obs[41:43] = ref_feats["next_foothold"]
-    obs[43:46] = ref_feats["swing_pos"]
-    obs[46:49] = ref_feats["swing_vel"]
-    obs[49:52] = ref_feats["pelvis_targets"]
-    obs[52:56] = ref_feats["phase_history"]
-    obs[56] = 0.0  # padding
-    return obs
-
-
 def run_walking_loop(
     controller: WalkingController,
     *,
     forward_speed_mps: float = 0.15,
     max_steps: int = 500,
-    policy_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Run the walking loop (dry_run=True for testing without hardware).
 
-    Args:
-        controller: Configured WalkingController.
-        forward_speed_mps: Commanded forward speed.
-        max_steps: Maximum steps to run.
-        policy_fn: callable(obs_57d) -> action_9d for residual_ppo mode.
-        dry_run: If True, simulates sensor readings instead of reading hardware.
-
-    Returns:
-        Summary dict with step count and timing info.
+    Currently nominal-only.  Residual PPO support will be added after
+    a trained checkpoint exists (see run_walking.py main() guard).
     """
     controller.reset()
     dt = controller.config.dt_s
-    n_joints = 9  # WildRobot v2 actuated DOFs
     q_ref_log = []
-    prev_action = np.zeros(n_joints, dtype=np.float32)
 
     for step_i in range(max_steps):
         t0 = time.monotonic()
@@ -157,15 +110,6 @@ def run_walking_loop(
             root_pitch_rate = 0.0
             left_loaded = True
             right_loaded = step_i % 50 > 25
-            gravity_local = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-            angvel_local = np.zeros(3, dtype=np.float32)
-            joint_pos_norm = np.zeros(n_joints, dtype=np.float32)
-            joint_vel_norm = np.zeros(n_joints, dtype=np.float32)
-            foot_switches = np.array(
-                [float(left_loaded), float(left_loaded),
-                 float(right_loaded), float(right_loaded)],
-                dtype=np.float32,
-            )
         else:
             raise NotImplementedError("Hardware mode not yet implemented")
 
@@ -176,23 +120,6 @@ def run_walking_loop(
             left_foot_loaded=left_loaded,
             right_foot_loaded=right_loaded,
         )
-
-        if controller.mode == ControllerMode.RESIDUAL_PPO and policy_fn is not None:
-            obs = _build_residual_obs(
-                controller=controller,
-                gravity_local=gravity_local,
-                angvel_local=angvel_local,
-                joint_pos_normalized=joint_pos_norm,
-                joint_vel_normalized=joint_vel_norm,
-                foot_switches=foot_switches,
-                prev_action=prev_action,
-                velocity_cmd=forward_speed_mps,
-            )
-            delta_q = policy_fn(obs)
-            q_target = controller.compose_residual(out.q_ref, delta_q)
-            prev_action = delta_q.copy()
-        else:
-            q_target = out.q_target
 
         q_ref_log.append(out.q_ref.copy())
 
@@ -226,26 +153,22 @@ def main() -> None:
 
     policy_fn = None
     if controller.mode == ControllerMode.RESIDUAL_PPO:
-        policy_path = cfg["policy_path"]
-        if not Path(policy_path).exists():
-            print(f"Error: policy not found at {policy_path}", file=sys.stderr)
-            print("Train first, then export with training/exports/export_onnx.py", file=sys.stderr)
-            sys.exit(1)
-        try:
-            from runtime.wr_runtime.inference.onnx_policy import OnnxPolicy
-            onnx_policy = OnnxPolicy(policy_path)
-            policy_fn = lambda obs: onnx_policy.predict(obs)  # noqa: E731
-            print(f"Loaded ONNX policy from {policy_path}")
-        except ImportError:
-            print("Error: onnxruntime not available, cannot run residual_ppo mode", file=sys.stderr)
-            sys.exit(1)
+        raise NotImplementedError(
+            "Residual PPO runtime is deferred until a trained checkpoint exists.\n"
+            "Deployment checklist (see training/docs/walking_training.md v0.19.5):\n"
+            "  1. Train with ppo_walking_v0195.yaml\n"
+            "  2. Export bundle with training/exports/export_policy_bundle_cli.py\n"
+            "  3. Read obs_dim/action_dim from the bundle's policy_spec.json\n"
+            "  4. Build obs matching the exported spec (not hardcoded dims)\n"
+            "  5. Store prev_action as filtered composed action (not raw delta_q)\n"
+            "Use --config with controller_mode=nominal_only for v0.19.4 deployment."
+        )
 
     print(f"Walking controller: mode={controller.mode.value}, speed={speed:.2f} m/s")
     result = run_walking_loop(
         controller,
         forward_speed_mps=speed,
         max_steps=args.max_steps,
-        policy_fn=policy_fn,
         dry_run=args.dry_run,
     )
     print(f"Completed {result['steps']} steps in {result['mode']} mode")
