@@ -1125,6 +1125,12 @@ METRIC_SPECS: List[MetricSpec] = [
         description="M3 touchdown foothold error in stance-foot frame",
     ),
     MetricSpec(
+        name="debug/step_length_m",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Forward distance between successive foot touchdowns (meters)",
+    ),
+    MetricSpec(
         name="debug/m3_pelvis_orientation_error",
         reducer=Reducer.MEAN,
         log_prefix="debug",

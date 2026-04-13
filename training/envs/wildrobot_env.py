@@ -2533,6 +2533,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cycle_start_forward_x=jp.zeros(()),
             last_touchdown_root_pos=root_pose.position,
             last_touchdown_foot=jp.asarray(-1, dtype=jp.int32),
+            prev_touchdown_foot_x=jp.zeros((), dtype=jp.float32),
             critic_obs=critic_obs,
             loc_ref_phase_time=ref_phase_time,
             loc_ref_stance_foot=ref_stance_foot.astype(jp.int32),
@@ -2647,6 +2648,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["debug/m3_swing_vel_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_foothold_error"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/m3_impact_force"] = jp.zeros((), dtype=jp.float32)
+        metrics["debug/step_length_m"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/loc_ref_swing_x_target"] = nominal_swing_x_target
         metrics["debug/loc_ref_swing_x_actual"] = jp.asarray(
             swing_pos_reset[0], dtype=jp.float32
@@ -3352,6 +3354,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         next_last_touchdown_foot = jp.where(
             touchdown_any_now, touchdown_foot_now, wr.last_touchdown_foot
         )
+        # Step length: forward distance between successive touchdowns.
+        _td_foot_x = jp.where(
+            touchdown_left_now,
+            left_foot_post_h[0],
+            jp.where(touchdown_right_now, right_foot_post_h[0], wr.prev_touchdown_foot_x),
+        )
+        _step_length = jp.where(
+            touchdown_any_now & (wr.last_touchdown_foot >= 0),
+            jp.abs(_td_foot_x - wr.prev_touchdown_foot_x),
+            jp.zeros((), dtype=jp.float32),
+        )
+        _next_prev_td_foot_x = jp.where(
+            touchdown_any_now, _td_foot_x, wr.prev_touchdown_foot_x
+        )
+        metrics["debug/step_length_m"] = _step_length
         critic_obs = self._get_privileged_critic_obs(
             data, step_count + 1, wr.push_schedule
         )
@@ -3792,6 +3809,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cycle_start_forward_x=cycle_start_forward_x,
             last_touchdown_root_pos=next_last_touchdown_root_pos,
             last_touchdown_foot=next_last_touchdown_foot,
+            prev_touchdown_foot_x=_next_prev_td_foot_x,
             critic_obs=critic_obs,
             loc_ref_phase_time=ref_phase_time,
             loc_ref_stance_foot=ref_stance_foot.astype(jp.int32),
@@ -4314,6 +4332,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cycle_start_forward_x=reset_wr_info.cycle_start_forward_x,
             last_touchdown_root_pos=reset_wr_info.last_touchdown_root_pos,
             last_touchdown_foot=reset_wr_info.last_touchdown_foot,
+            prev_touchdown_foot_x=reset_wr_info.prev_touchdown_foot_x,
             critic_obs=reset_wr_info.critic_obs,
             loc_ref_phase_time=reset_wr_info.loc_ref_phase_time,
             loc_ref_stance_foot=reset_wr_info.loc_ref_stance_foot,

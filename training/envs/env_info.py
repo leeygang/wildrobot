@@ -101,6 +101,7 @@ try:
         cycle_start_forward_x: jnp.ndarray  # shape=(), accumulated heading-local cycle progress
         last_touchdown_root_pos: jnp.ndarray  # shape=(3,), world root position at last touchdown
         last_touchdown_foot: jnp.ndarray  # shape=(), -1 none, 0 left, 1 right
+        prev_touchdown_foot_x: jnp.ndarray  # shape=(), forward pos of last touchdown foot
         critic_obs: jnp.ndarray  # shape=(PRIVILEGED_OBS_DIM,)
         # v0.19.3: Locomotion reference state + nominal IK joint target
         loc_ref_phase_time: jnp.ndarray  # shape=()
@@ -366,6 +367,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "cycle_start_forward_x": (),
         "last_touchdown_root_pos": (3,),
         "last_touchdown_foot": (),
+        "prev_touchdown_foot_x": (),
         "critic_obs": (PRIVILEGED_OBS_DIM,),
         "loc_ref_phase_time": (),
         "loc_ref_stance_foot": (),
