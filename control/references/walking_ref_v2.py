@@ -281,6 +281,7 @@ class WalkingReferenceV2Output:
     support_instability: float
     progression_permission: float
     hybrid_mode_id: int
+    com_x_planned: float = 0.0
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -1390,6 +1391,20 @@ def step_reference_v2(
         pelvis_pitch = pelvis_pitch_target
         pelvis_height = config.walking_pelvis_height_m
 
+    # DCM COM trajectory: phase-proportional forward drive (matches JAX lines 999-1018)
+    if config.com_trajectory_enabled:
+        com_drive = phase * speed * config.step_time_s
+        com_x_planned_val = _clip(
+            com_drive,
+            -config.com_trajectory_max_behind_m,
+            config.com_trajectory_max_ahead_m,
+        )
+    else:
+        com_x_planned_val = 0.0
+    # Suppress during startup/support (double support)
+    if mode in (WalkingRefV2Mode.STARTUP_SUPPORT_RAMP, WalkingRefV2Mode.SUPPORT_STABILIZE):
+        com_x_planned_val = 0.0
+
     ref = LocomotionReferenceState(
         gait_phase_sin=float(sin(2.0 * pi * phase)),
         gait_phase_cos=float(cos(2.0 * pi * phase)),
@@ -1415,4 +1430,5 @@ def step_reference_v2(
         support_instability=support_instability,
         progression_permission=progression_permission,
         hybrid_mode_id=int(mode),
+        com_x_planned=com_x_planned_val,
     )

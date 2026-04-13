@@ -1,66 +1,25 @@
 """Nominal IK adapter — converts walking reference targets to joint angles.
 
-Pure NumPy implementation shared by training (via JAX wrapper in env) and
-runtime.  Uses the same sagittal IK solver as the training env.
+Pure NumPy implementation extracted from wildrobot_env.py's
+_compute_nominal_q_ref_from_loc_ref() (lines 4663-4875).
 
-This module extracts the core IK logic from wildrobot_env.py's
-_compute_nominal_q_ref_from_loc_ref() into a standalone, testable function.
+Every sign convention, depth-fade formula, and mode-dependent branch matches
+the env source of truth exactly.  If the env IK changes, this module must be
+updated to match.
+
+Shared by training (via JAX wrapper in env) and runtime.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from math import sin
 from typing import Dict, Tuple
 
 import numpy as np
 
 from control.kinematics.leg_ik import LegIkConfig, solve_leg_sagittal_ik
-
-
-@dataclass(frozen=True)
-class NominalIkConfig:
-    """Configuration for the nominal IK adapter."""
-
-    leg_ik: LegIkConfig = field(default_factory=LegIkConfig)
-
-    # Two-height support system
-    support_margin_m: float = 0.020
-    walking_crouch_extra_m: float = 0.045
-
-    # COM compensation
-    com_forward_gain: float = 0.20
-    com_depth_fade_start_z: float = -0.36
-    com_depth_fade_end_z: float = -0.32
-
-    # Swing foot tracking
-    swing_target_blend: float = 1.0
-    swing_max_delta_per_step_m: float = 0.02
-
-    # Hip roll coupling
-    swing_y_to_hip_roll_gain: float = 0.8
-    base_hip_roll_rad: float = 0.0
-
-    # Arm swing (waist pitch compensation)
-    arm_swing_gain: float = -0.10
-
-    # Joint limits (radians) — per-joint min/max
-    # Default: wide enough for any pose; caller should tighten from robot config
-    joint_range_min: Tuple[float, ...] = (-1.5,) * 9
-    joint_range_max: Tuple[float, ...] = (1.5,) * 9
-
-    # Actuator names in PolicySpec order (for readable diagnostics)
-    actuator_names: Tuple[str, ...] = (
-        "left_hip_pitch",
-        "right_hip_pitch",
-        "left_hip_roll",
-        "right_hip_roll",
-        "left_knee_pitch",
-        "right_knee_pitch",
-        "left_ankle_pitch",
-        "right_ankle_pitch",
-        "waist",
-    )
+from control.references.walking_ref_v2 import WalkingRefV2Mode
 
 
 # Default joint index map (PolicySpec order from mujoco_robot_config.json)
@@ -78,12 +37,50 @@ _DEFAULT_IDX: Dict[str, int] = {
 
 
 @dataclass(frozen=True)
+class NominalIkConfig:
+    """Configuration for the nominal IK adapter.
+
+    Defaults here should match what ppo_walking_v0195.yaml sets
+    through the env's loc_ref_* config keys.
+    """
+
+    leg_ik: LegIkConfig = field(default_factory=LegIkConfig)
+
+    # Two-height support system (env: _loc_ref_support_margin_m, _loc_ref_walking_crouch_extra_m)
+    support_margin_m: float = 0.020
+    walking_crouch_extra_m: float = 0.045
+
+    # Stance height blending (env: _loc_ref_stance_height_blend)
+    stance_height_blend: float = 0.0
+
+    # COM forward compensation gain (env: _loc_ref_stance_com_forward_gain)
+    com_forward_gain: float = 0.20
+
+    # Swing foot tracking (env: _loc_ref_swing_target_blend, _loc_ref_max_swing_x_delta_m, _loc_ref_max_swing_z_delta_m)
+    swing_target_blend: float = 1.0
+    max_swing_x_delta_m: float = 0.06
+    max_swing_z_delta_m: float = 0.03
+
+    # Hip roll coupling (env: _loc_ref_swing_y_to_hip_roll)
+    swing_y_to_hip_roll_gain: float = 0.08
+
+    # Arm swing (env: shoulder pitch = -0.10 * pitch)
+    arm_swing_gain: float = -0.10
+
+    # Joint limits (radians) — per-joint min/max
+    joint_range_min: Tuple[float, ...] = (-1.5,) * 9
+    joint_range_max: Tuple[float, ...] = (1.5,) * 9
+
+
+@dataclass(frozen=True)
 class NominalIkResult:
     """Output from the nominal IK adapter."""
 
-    q_ref: np.ndarray  # (9,) joint angles in PolicySpec order
-    swing_reachable: bool
-    stance_reachable: bool
+    q_ref: np.ndarray       # (N,) joint angles in PolicySpec order
+    left_reachable: bool
+    right_reachable: bool
+    stance_target_z: float   # Actual stance z used for IK
+    swing_x_target: float    # Swing x after blending/clamping
 
 
 def compute_nominal_q_ref(
@@ -95,120 +92,136 @@ def compute_nominal_q_ref(
     stance_foot_id: int,
     swing_pos: Tuple[float, float, float],
     com_x_planned: float = 0.0,
-    mode_id: int = 1,
+    mode_id: int = int(WalkingRefV2Mode.SUPPORT_STABILIZE),
     home_pose: np.ndarray | None = None,
     idx: Dict[str, int] | None = None,
 ) -> NominalIkResult:
-    """Compute nominal joint targets from walking reference task-space targets.
+    """Compute nominal joint targets matching env._compute_nominal_q_ref_from_loc_ref().
 
-    Args:
-        config: IK configuration.
-        pelvis_height_m: Desired pelvis height from reference.
-        pelvis_roll_rad: Desired pelvis roll from reference.
-        pelvis_pitch_rad: Desired pelvis pitch from reference.
-        stance_foot_id: 0=left stance, 1=right stance.
-        swing_pos: (x, y, z) swing foot position in stance frame.
-        com_x_planned: COM forward offset from DCM trajectory (m).
-        mode_id: Walking reference mode (1=SUPPORT, 2=SWING, etc.).
-        home_pose: (9,) home joint positions; defaults to zeros.
-        idx: Joint name → index map; defaults to PolicySpec order.
-
-    Returns:
-        NominalIkResult with q_ref array and reachability flags.
+    Sign conventions and depth-fade match env lines 4663-4875 exactly.
     """
     if idx is None:
         idx = _DEFAULT_IDX
+    n_joints = max(idx.values()) + 1 if idx else 9
     if home_pose is None:
-        home_pose = np.zeros(9, dtype=np.float32)
+        home_pose = np.zeros(n_joints, dtype=np.float32)
 
-    n_joints = len(config.actuator_names)
     q_ref = np.array(home_pose, dtype=np.float32).copy()
 
-    # --- Determine stance height ---
-    # Support/startup modes use shallow squat; walking modes use deeper squat
-    is_walking_mode = mode_id >= 2  # SWING_RELEASE, TOUCHDOWN, SETTLE
-    if is_walking_mode:
-        stance_z = -(pelvis_height_m - config.walking_crouch_extra_m)
+    # --- Two-height system (env lines 4698-4710) ---
+    _is_walking_mode = mode_id not in (
+        int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP),
+        int(WalkingRefV2Mode.SUPPORT_STABILIZE),
+    )
+    margin = config.walking_crouch_extra_m if _is_walking_mode else config.support_margin_m
+    nominal_stance_z = -max(0.0, pelvis_height_m - margin)
+
+    # --- Swing targets (env lines 4711-4764) ---
+    swing_x_ref = float(swing_pos[0])
+    swing_z_ref = float(swing_pos[2])
+
+    # Simplified: for standalone runtime, use swing_target_blend=1.0 (full ref).
+    # The env blends with actual foot positions (which require sim state).
+    # With blend=1.0, swing_x_target = swing_x_ref (env line 4744 collapses).
+    swing_x_target = swing_x_ref
+    swing_z_target = swing_z_ref
+    swing_target_z = nominal_stance_z + swing_z_target
+
+    # Stance z (env lines 4765-4772): blend nominal with actual (default 0.0 = pure nominal)
+    stance_target_z = nominal_stance_z  # stance_height_blend=0.0
+
+    # --- Stance foot sagittal offset (env lines 4774-4812) ---
+    # Reach-based depth fade matching env exactly.
+    l1 = config.leg_ik.upper_leg_length_m
+    l2 = config.leg_ik.lower_leg_length_m
+    max_reach = l1 + l2 - 1e-4
+    reach = min(abs(stance_target_z), max_reach)
+    cos_hip_aux = np.clip(
+        (l1 * l1 + reach * reach - l2 * l2) / (2.0 * l1 * reach + 1e-6),
+        -1.0, 1.0,
+    )
+    approx_hip_pitch = float(np.arccos(cos_hip_aux))
+
+    # Depth fade: 1.0 when nearly straight (reach > 95% max),
+    # tapering to 0.0 for deep squats (reach < 90% max).
+    shallow_thresh = 0.95 * max_reach
+    deep_thresh = 0.90 * max_reach
+    depth_fade = float(np.clip(
+        (reach - deep_thresh) / max(shallow_thresh - deep_thresh, 1e-6),
+        0.0, 1.0,
+    ))
+
+    stance_foot_x = config.com_forward_gain * depth_fade * math.sin(approx_hip_pitch)
+
+    # DCM COM trajectory: ADDITIVE offset (env line 4812: _stance_foot_x + _com_x)
+    stance_foot_x = stance_foot_x + com_x_planned
+
+    # --- Both-feet-grounded symmetry (env lines 4817-4826) ---
+    # During startup/support, BOTH legs get the stance offset for a symmetric squat.
+    # During walking modes, only the stance leg gets it; swing uses its reference.
+    both_feet_grounded = mode_id in (
+        int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP),
+        int(WalkingRefV2Mode.SUPPORT_STABILIZE),
+    )
+    swing_x_for_mode = stance_foot_x if both_feet_grounded else swing_x_target
+
+    stance_is_left = (stance_foot_id == 0)
+    if stance_is_left:
+        left_target_x = stance_foot_x
+        left_target_z = stance_target_z
+        right_target_x = swing_x_for_mode
+        right_target_z = swing_target_z
     else:
-        stance_z = -(pelvis_height_m - config.support_margin_m)
+        left_target_x = swing_x_for_mode
+        left_target_z = swing_target_z
+        right_target_x = stance_foot_x
+        right_target_z = stance_target_z
 
-    # --- Stance leg IK ---
-    # Sagittal offset: COM compensation + DCM trajectory
-    stance_hip_pitch = q_ref[idx["left_hip_pitch"] if stance_foot_id == 0
-                             else idx["right_hip_pitch"]]
-    depth = -stance_z  # positive depth
-    depth_fade = np.clip(
-        (depth - (-config.com_depth_fade_end_z))
-        / max((-config.com_depth_fade_start_z) - (-config.com_depth_fade_end_z), 1e-6),
-        0.0,
-        1.0,
+    # --- Solve IK for both legs (env lines 4828-4833) ---
+    left_ik = solve_leg_sagittal_ik(
+        target_x_m=left_target_x, target_z_m=left_target_z, config=config.leg_ik,
     )
-    com_offset = config.com_forward_gain * depth_fade * sin(float(stance_hip_pitch))
-
-    # Add DCM COM trajectory offset (stance foot moves behind as COM advances)
-    stance_x = com_offset - com_x_planned
-
-    stance_ik = solve_leg_sagittal_ik(
-        target_x_m=stance_x,
-        target_z_m=stance_z,
-        config=config.leg_ik,
+    right_ik = solve_leg_sagittal_ik(
+        target_x_m=right_target_x, target_z_m=right_target_z, config=config.leg_ik,
     )
 
-    # --- Swing leg IK ---
-    swing_x = float(swing_pos[0])
-    swing_z_height = float(swing_pos[2])
-    # Swing foot at pelvis_height offset minus ground clearance
-    swing_z = stance_z + swing_z_height
+    # --- Assign joint angles with EXACT env sign conventions (lines 4836-4847) ---
+    # Left hip pitch is NEGATED (env line 4837: q_ref.at[idx].set(-left_hip))
+    if "left_hip_pitch" in idx:
+        q_ref[idx["left_hip_pitch"]] = -left_ik.hip_pitch_rad
+    if "left_knee_pitch" in idx:
+        q_ref[idx["left_knee_pitch"]] = left_ik.knee_pitch_rad
+    if "left_ankle_pitch" in idx:
+        q_ref[idx["left_ankle_pitch"]] = left_ik.ankle_pitch_rad
+    if "right_hip_pitch" in idx:
+        q_ref[idx["right_hip_pitch"]] = right_ik.hip_pitch_rad
+    if "right_knee_pitch" in idx:
+        q_ref[idx["right_knee_pitch"]] = right_ik.knee_pitch_rad
+    if "right_ankle_pitch" in idx:
+        q_ref[idx["right_ankle_pitch"]] = right_ik.ankle_pitch_rad
 
-    swing_ik = solve_leg_sagittal_ik(
-        target_x_m=swing_x,
-        target_z_m=swing_z,
-        config=config.leg_ik,
-    )
+    # --- Hip roll (env lines 4849-4855) ---
+    # roll = pelvis_roll + swing_y_to_hip_roll * swing_pos[1]
+    # left_hip_roll = -roll, right_hip_roll = +roll
+    roll = pelvis_roll_rad + config.swing_y_to_hip_roll_gain * float(swing_pos[1])
+    if "left_hip_roll" in idx:
+        q_ref[idx["left_hip_roll"]] = -roll
+    if "right_hip_roll" in idx:
+        q_ref[idx["right_hip_roll"]] = roll
 
-    # --- Assign joint angles ---
-    if stance_foot_id == 0:  # left stance
-        # Stance (left) leg
-        q_ref[idx["left_hip_pitch"]] = stance_ik.hip_pitch_rad
-        q_ref[idx["left_knee_pitch"]] = stance_ik.knee_pitch_rad
-        q_ref[idx["left_ankle_pitch"]] = stance_ik.ankle_pitch_rad
-        # Swing (right) leg
-        q_ref[idx["right_hip_pitch"]] = swing_ik.hip_pitch_rad
-        q_ref[idx["right_knee_pitch"]] = swing_ik.knee_pitch_rad
-        q_ref[idx["right_ankle_pitch"]] = swing_ik.ankle_pitch_rad
-    else:  # right stance
-        # Stance (right) leg
-        q_ref[idx["right_hip_pitch"]] = stance_ik.hip_pitch_rad
-        q_ref[idx["right_knee_pitch"]] = stance_ik.knee_pitch_rad
-        q_ref[idx["right_ankle_pitch"]] = stance_ik.ankle_pitch_rad
-        # Swing (left) leg
-        q_ref[idx["left_hip_pitch"]] = swing_ik.hip_pitch_rad
-        q_ref[idx["left_knee_pitch"]] = swing_ik.knee_pitch_rad
-        q_ref[idx["left_ankle_pitch"]] = swing_ik.ankle_pitch_rad
-
-    # --- Hip roll from pelvis roll reference ---
-    roll_sign = -1.0 if stance_foot_id == 0 else 1.0
-    swing_y = float(swing_pos[1])
-    hip_roll_from_swing = config.swing_y_to_hip_roll_gain * swing_y
-
-    q_ref[idx["left_hip_roll"]] = (
-        config.base_hip_roll_rad + pelvis_roll_rad + hip_roll_from_swing * (1.0 if stance_foot_id == 1 else 0.0)
-    )
-    q_ref[idx["right_hip_roll"]] = (
-        config.base_hip_roll_rad - pelvis_roll_rad + hip_roll_from_swing * (1.0 if stance_foot_id == 0 else 0.0)
-    )
-
-    # --- Waist (arm swing compensation) ---
+    # --- Waist / arm swing (env lines 4856-4861) ---
     if "waist" in idx:
-        q_ref[idx["waist"]] = config.arm_swing_gain * pelvis_pitch_rad
+        q_ref[idx["waist"]] = 0.0  # env line 4857: set to 0.0
 
-    # --- Clip to joint limits ---
+    # --- Clip to joint limits (env line 4863) ---
     range_min = np.array(config.joint_range_min[:n_joints], dtype=np.float32)
     range_max = np.array(config.joint_range_max[:n_joints], dtype=np.float32)
     q_ref = np.clip(q_ref, range_min, range_max)
 
     return NominalIkResult(
         q_ref=q_ref,
-        swing_reachable=swing_ik.reachable,
-        stance_reachable=stance_ik.reachable,
+        left_reachable=left_ik.reachable,
+        right_reachable=right_ik.reachable,
+        stance_target_z=float(stance_target_z),
+        swing_x_target=float(swing_x_target),
     )

@@ -57,12 +57,14 @@ class WalkingControllerState:
         default_factory=lambda: np.zeros(4, dtype=np.float32)
     )
     prev_q_ref: np.ndarray | None = None
+    last_ref_output: WalkingReferenceV2Output | None = None
 
     def reset(self, initial_mode: WalkingRefV2Mode = WalkingRefV2Mode.SUPPORT_STABILIZE) -> None:
         """Reset controller state for a new episode."""
         self.ref_state = WalkingRefV2State(mode_id=int(initial_mode))
         self.phase_history = np.zeros(4, dtype=np.float32)
         self.prev_q_ref = None
+        self.last_ref_output = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,7 @@ class WalkingController:
 
         # Update reference state
         state.ref_state = ref_output.next_state
+        state.last_ref_output = ref_output
 
         # Update phase history
         ref = ref_output.reference
@@ -187,8 +190,7 @@ class WalkingController:
             dtype=np.float32,
         )
 
-        # Compute nominal q_ref via IK
-        com_x_planned = 0.0  # TODO: extract from ref_output when available
+        # Compute nominal q_ref via IK, threading COM trajectory from ref
         ik_result = compute_nominal_q_ref(
             config=cfg.ik_config,
             pelvis_height_m=ref.desired_pelvis_height_m,
@@ -196,7 +198,7 @@ class WalkingController:
             pelvis_pitch_rad=ref.desired_pelvis_pitch_rad,
             stance_foot_id=ref.stance_foot_id,
             swing_pos=ref.desired_swing_foot_position,
-            com_x_planned=com_x_planned,
+            com_x_planned=ref_output.com_x_planned,
             mode_id=ref_output.hybrid_mode_id,
             home_pose=home_pose,
             idx=idx,
@@ -242,17 +244,32 @@ class WalkingController:
         return q_target
 
     def get_reference_features(self) -> Dict[str, np.ndarray]:
-        """Get current reference state as obs features (for building policy obs).
+        """Get current reference state as obs features for wr_obs_v4.
 
-        Returns dict matching the loc_ref fields in wr_obs_v4.
+        Returns dict with arrays matching the loc_ref observation slots.
         """
         state = self._state
-        if state.prev_q_ref is None:
+        if state.last_ref_output is None:
             raise RuntimeError("Must call step() before get_reference_features()")
 
-        ref = state.ref_state
-        # We need the last reference output; store it in state
-        # For now return the phase history and state
+        ref = state.last_ref_output.reference
         return {
+            "phase_sin_cos": np.array(
+                [ref.gait_phase_sin, ref.gait_phase_cos], dtype=np.float32
+            ),
+            "stance_foot": np.array([float(ref.stance_foot_id)], dtype=np.float32),
+            "next_foothold": np.array(
+                ref.desired_next_foothold_stance_frame, dtype=np.float32
+            ),
+            "swing_pos": np.array(ref.desired_swing_foot_position, dtype=np.float32),
+            "swing_vel": np.array(ref.desired_swing_foot_velocity, dtype=np.float32),
+            "pelvis_targets": np.array(
+                [
+                    ref.desired_pelvis_height_m,
+                    ref.desired_pelvis_roll_rad,
+                    ref.desired_pelvis_pitch_rad,
+                ],
+                dtype=np.float32,
+            ),
             "phase_history": state.phase_history.copy(),
         }
