@@ -3,15 +3,16 @@
 # Sync wildrobot files from Ubuntu GPU machine to Mac
 #
 # Usage:
-#   ./scp_from_remote.sh [--public] <filename>           # Copy single file/directory
-#   ./scp_from_remote.sh [--public] --checkpoints        # List available checkpoints
-#   ./scp_from_remote.sh [--public] --latest             # Copy latest checkpoint
-#   ./scp_from_remote.sh [--public] <checkpoint_name>    # Copy specific checkpoint folder
-#   ./scp_from_remote.sh [--public] --logs               # List available wandb runs
-#   ./scp_from_remote.sh [--public] --run <run_name>     # Copy both checkpoint and wandb log for a run
+#   ./scp_from_remote.sh [--public [IP]] <filename>           # Copy single file/directory
+#   ./scp_from_remote.sh [--public [IP]] --checkpoints        # List available checkpoints
+#   ./scp_from_remote.sh [--public [IP]] --latest             # Copy latest checkpoint
+#   ./scp_from_remote.sh [--public [IP]] <checkpoint_name>    # Copy specific checkpoint folder
+#   ./scp_from_remote.sh [--public [IP]] --logs               # List available wandb runs
+#   ./scp_from_remote.sh [--public [IP]] --run <run_name>     # Copy both checkpoint and wandb log for a run
 #
 # Options:
-#   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --public         Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --public <IP>    Use the specified IP address
 #
 # Examples:
 #   ./scp_from_remote.sh --public --checkpoints
@@ -35,13 +36,18 @@ REMOTE_BASE="/home/leeygang/projects/wildrobot"
 
 # Parse --public option
 if [[ "$1" == "--public" ]]; then
-    if [ -z "$LINUX_PUBLIC_IP" ]; then
-        echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
-        echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
+    shift
+    # Check if next arg is an IP address (not a flag)
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        REMOTE_HOST="$1"
+        shift
+    elif [ -n "$LINUX_PUBLIC_IP" ]; then
+        REMOTE_HOST="$LINUX_PUBLIC_IP"
+    else
+        echo -e "${RED}Error: --public requires an IP argument or LINUX_PUBLIC_IP env var${NC}"
+        echo "Usage: --public <IP> or export LINUX_PUBLIC_IP=<your-ip>"
         exit 1
     fi
-    REMOTE_HOST="$LINUX_PUBLIC_IP"
-    shift
 fi
 
 echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
