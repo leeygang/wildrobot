@@ -163,7 +163,7 @@ def _step_walking_reference_jax(
         0.0,
         cfg.max_forward_speed_mps,
     )
-    omega = jp.sqrt(jp.asarray(9.81, dtype=jp.float32) / jp.asarray(cfg.nominal_com_height_m, dtype=jp.float32))
+    omega = jp.sqrt(jp.asarray(9.81, dtype=jp.float32) / jp.asarray(cfg.walking_pelvis_height_m, dtype=jp.float32))
     dcm_vel_scale = jp.clip(jp.asarray(speed_scale, dtype=jp.float32), 0.0, 1.0)
     cp_x = com_position_stance_frame[0] + (
         com_velocity_stance_frame[0] * dcm_vel_scale
@@ -229,7 +229,7 @@ def _step_walking_reference_jax(
         "next_foothold": jp.asarray([x_foot, y_foot], dtype=jp.float32),
         "swing_pos": swing_pos,
         "swing_vel": swing_vel,
-        "pelvis_height": jp.asarray(cfg.nominal_com_height_m, dtype=jp.float32),
+        "pelvis_height": jp.asarray(cfg.walking_pelvis_height_m, dtype=jp.float32),
         "pelvis_roll": pelvis_roll.astype(jp.float32),
         "pelvis_pitch": pelvis_pitch.astype(jp.float32),
     }
@@ -1448,8 +1448,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         }
         self._walking_ref_cfg = WalkingRefV1Config(
             step_time_s=float(getattr(self._config.env, "loc_ref_step_time_s", 0.36)),
-            nominal_com_height_m=float(
-                getattr(self._config.env, "loc_ref_nominal_com_height_m", 0.40)
+            walking_pelvis_height_m=float(
+                getattr(self._config.env, "loc_ref_walking_pelvis_height_m", 0.40)
             ),
             nominal_lateral_foot_offset_m=float(
                 getattr(self._config.env, "loc_ref_nominal_lateral_foot_offset_m", 0.09)
@@ -1479,8 +1479,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         self._walking_ref_v2_cfg = WalkingRefV2Config(
             step_time_s=float(getattr(self._config.env, "loc_ref_step_time_s", 0.36)),
-            nominal_com_height_m=float(
-                getattr(self._config.env, "loc_ref_nominal_com_height_m", 0.40)
+            walking_pelvis_height_m=float(
+                getattr(self._config.env, "loc_ref_walking_pelvis_height_m", 0.40)
             ),
             nominal_lateral_foot_offset_m=float(
                 getattr(self._config.env, "loc_ref_nominal_lateral_foot_offset_m", 0.09)
@@ -1754,9 +1754,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._loc_ref_stance_com_forward_gain = jp.asarray(
             getattr(self._config.env, "loc_ref_stance_com_forward_gain", 0.20), dtype=jp.float32
         )
-        self._loc_ref_stance_extension_margin_m = jp.asarray(
-            getattr(self._config.env, "loc_ref_stance_extension_margin_m", 0.015),
-            dtype=jp.float32,
+        self._loc_ref_walking_crouch_extra_m = jp.asarray(
+            getattr(self._config.env, "loc_ref_walking_crouch_extra_m", 0.045), dtype=jp.float32
+        )
+        self._loc_ref_support_margin_m = jp.asarray(
+            getattr(self._config.env, "loc_ref_support_margin_m", 0.020), dtype=jp.float32
         )
         self._loc_ref_max_swing_x_delta_m = jp.asarray(
             getattr(self._config.env, "loc_ref_max_swing_x_delta_m", 0.04), dtype=jp.float32
@@ -1863,10 +1865,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         self._loc_ref_v2_support_pelvis_height_offset_m = jp.asarray(
             getattr(self._config.env, "loc_ref_v2_support_pelvis_height_offset_m", 0.050),
-            dtype=jp.float32,
-        )
-        self._loc_ref_v2_support_stance_extension_margin_m = jp.asarray(
-            getattr(self._config.env, "loc_ref_v2_support_stance_extension_margin_m", 0.020),
             dtype=jp.float32,
         )
         self._idx_left_hip_pitch = self._actuator_name_to_index.get("left_hip_pitch", -1)
@@ -2076,6 +2074,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         base_info: dict | None = None,
         push_schedule: DisturbanceSchedule | None = None,
         domain_rand_params: dict[str, jax.Array] | None = None,
+        stance_rng: jax.Array | None = None,
     ) -> WildRobotEnvState:
         """Create initial environment state from qpos (shared by reset and auto-reset).
 
@@ -2158,7 +2157,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ) = step_reference_v2_jax(
                 config=self._walking_ref_v2_cfg,
                 phase_time_s=jp.zeros((), dtype=jp.float32),
-                stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
+                stance_foot_id=jp.asarray(
+                    jax.random.bernoulli(stance_rng).astype(jp.int32) if stance_rng is not None else REF_LEFT_STANCE,
+                    dtype=jp.int32,
+                ),
                 stance_switch_count=jp.zeros((), dtype=jp.int32),
                 mode_id=jp.asarray(
                     int(WalkingRefV2Mode.SUPPORT_STABILIZE if self._start_from_support else WalkingRefV2Mode.STARTUP_SUPPORT_RAMP),
@@ -2182,6 +2184,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 stance_ankle_tracking_error_rad=jp.zeros((), dtype=jp.float32),
                 com_x0_at_stance_start=jp.asarray(-stance_pos_h[0], dtype=jp.float32),
                 com_vx0_at_stance_start=jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32),
+                # When starting from keyframe (not B), initialize the startup
+                # route at the beginning (stage A, progress 0) so the ramp
+                # gradually transitions to support height.
+                startup_route_progress_prev=jp.asarray(
+                    1.0 if self._start_from_support else 0.0, dtype=jp.float32
+                ),
+                startup_route_ceiling_prev=jp.asarray(
+                    1.0 if self._start_from_support else 0.0, dtype=jp.float32
+                ),
+                startup_route_stage_id_prev=jp.asarray(
+                    4 if self._start_from_support else 0, dtype=jp.int32
+                ),
+                startup_route_transition_reason_prev=jp.asarray(0, dtype=jp.int32),
             )
             ref_overspeed = jp.maximum(
                 jp.asarray(root_vel_h.linear_xyz[0], dtype=jp.float32)
@@ -2248,7 +2263,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
             ref_state, ref_phase_time, ref_stance_foot, ref_switch_count = _step_walking_reference_jax(
                 phase_time_s=jp.zeros((), dtype=jp.float32),
-                stance_foot_id=jp.asarray(REF_LEFT_STANCE, dtype=jp.int32),
+                stance_foot_id=jp.asarray(
+                    jax.random.bernoulli(stance_rng).astype(jp.int32) if stance_rng is not None else REF_LEFT_STANCE,
+                    dtype=jp.int32,
+                ),
                 stance_switch_count=jp.zeros((), dtype=jp.int32),
                 forward_speed_mps=velocity_cmd,
                 com_position_stance_frame=jp.asarray(
@@ -2697,7 +2715,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Returns:
             Initial WildRobotEnvState.
         """
-        rng, key1, key2, key3, key4 = jax.random.split(rng, 5)
+        rng, key1, key2, key3, key4, key5 = jax.random.split(rng, 6)
 
         # Sample velocity command
         velocity_cmd = jax.random.uniform(
@@ -2736,6 +2754,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd,
             push_schedule=schedule,
             domain_rand_params=domain_rand_params,
+            stance_rng=key5,
         )
 
     def step(
@@ -3870,7 +3889,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # =================================================================
         # Pass state.info as base_info to preserve wrapper fields during auto-reset
         # Use updated RNG after consuming IMU noise
-        rng_after, reset_push_rng, reset_domain_rng = jax.random.split(rng_after, 3)
+        rng_after, reset_push_rng, reset_domain_rng, reset_stance_rng = jax.random.split(rng_after, 4)
         reset_schedule = sample_push_schedule(
             reset_push_rng, self._config.env, self._push_body_ids
         )
@@ -3890,6 +3909,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             base_info=state.info,
             push_schedule=reset_schedule,
             domain_rand_params=reset_domain_rand_params,
+            stance_rng=reset_stance_rng,
         )
 
         # v0.10.2: Preserve termination diagnostics in metrics even after reset
@@ -4652,21 +4672,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ]:
         """Compute nominal joint-space target from locomotion reference fields."""
         support_health = jp.clip(jp.asarray(support_health, dtype=jp.float32), 0.0, 1.0)
-        # Use support-specific margin for STARTUP_SUPPORT_RAMP (0) and SUPPORT_STABILIZE (1).
-        # Larger margin → less negative nominal_stance_z → shorter effective leg → MORE knee flexion.
-        is_support_mode = jp.logical_or(
+        # Two-height system: shallower during support (more leg reach for
+        # step preparation), deeper during walking (lower COM + knee compliance).
+        # Support margin: small baseline knee bend for all modes.
+        # Walking crouch: additional knee bend during swing/touchdown/settle.
+        _is_walking_mode = jp.logical_not(jp.logical_or(
             jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
             jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32),
+        ))
+        _margin = jp.where(
+            _is_walking_mode,
+            self._loc_ref_walking_crouch_extra_m,
+            self._loc_ref_support_margin_m,
         )
-        base_margin = jp.where(
-            is_support_mode,
-            self._loc_ref_v2_support_stance_extension_margin_m,
-            self._loc_ref_stance_extension_margin_m,
-        )
-        stance_margin = base_margin
         nominal_stance_z = -jp.maximum(
             jp.asarray(0.0, dtype=jp.float32),
-            jp.asarray(pelvis_height, dtype=jp.float32) - stance_margin,
+            jp.asarray(pelvis_height, dtype=jp.float32) - _margin,
         )
         swing_x_ref = jp.asarray(swing_pos[0], dtype=jp.float32)
         swing_z_ref = jp.asarray(swing_pos[2], dtype=jp.float32)

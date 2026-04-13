@@ -45,7 +45,7 @@ env:
   loc_ref_residual_scale: 0.10
   # v0.19.3c nominal-path conservative stabilization
   loc_ref_step_time_s: 0.50
-  loc_ref_nominal_com_height_m: 0.42
+  loc_ref_walking_pelvis_height_m: 0.42
   loc_ref_nominal_lateral_foot_offset_m: 0.08
   loc_ref_min_step_length_m: 0.03
   loc_ref_max_step_length_m: 0.12
@@ -58,7 +58,9 @@ env:
   loc_ref_swing_target_blend: 1.0
   # 0.0 = pure nominal stance target height, 1.0 = blend fully toward actual stance-foot height.
   loc_ref_stance_height_blend: 0.0
-  loc_ref_stance_extension_margin_m: 0.045
+  # Two-height system: support margin (baseline knee bend) + walking crouch (extra during swing)
+  loc_ref_support_margin_m: 0.020
+  loc_ref_walking_crouch_extra_m: 0.045
   loc_ref_max_swing_x_delta_m: 0.06
   loc_ref_max_swing_z_delta_m: 0.03
   loc_ref_swing_y_to_hip_roll: 0.08
@@ -123,7 +125,6 @@ env:
   loc_ref_v2_startup_route_w2_pitch_rate_relax: 1.25
   loc_ref_v2_support_entry_shaping_window_s: 0.12
   loc_ref_v2_support_pelvis_height_offset_m: 0.00
-  loc_ref_v2_support_stance_extension_margin_m: 0.020
   # M2.5: start episodes from support posture B (squat)
   start_from_support_posture: true
   # M3.0: DCM COM trajectory for stance-leg forward drive

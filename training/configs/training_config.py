@@ -154,7 +154,8 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_version=str(env.get("loc_ref_version", "v1")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
-        loc_ref_nominal_com_height_m=float(env.get("loc_ref_nominal_com_height_m", 0.40)),
+        loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",
+            env.get("loc_ref_nominal_com_height_m", 0.40))),
         loc_ref_nominal_lateral_foot_offset_m=float(
             env.get("loc_ref_nominal_lateral_foot_offset_m", 0.09)
         ),
@@ -168,9 +169,8 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_dcm_placement_gain=float(env.get("loc_ref_dcm_placement_gain", 1.0)),
         loc_ref_swing_target_blend=float(env.get("loc_ref_swing_target_blend", 0.65)),
         loc_ref_stance_height_blend=float(env.get("loc_ref_stance_height_blend", 0.25)),
-        loc_ref_stance_extension_margin_m=float(
-            env.get("loc_ref_stance_extension_margin_m", 0.015)
-        ),
+        loc_ref_support_margin_m=float(env.get("loc_ref_support_margin_m", 0.020)),
+        loc_ref_walking_crouch_extra_m=float(env.get("loc_ref_walking_crouch_extra_m", 0.045)),
         loc_ref_max_swing_x_delta_m=float(env.get("loc_ref_max_swing_x_delta_m", 0.04)),
         loc_ref_max_swing_z_delta_m=float(env.get("loc_ref_max_swing_z_delta_m", 0.03)),
         loc_ref_swing_y_to_hip_roll=float(env.get("loc_ref_swing_y_to_hip_roll", 0.30)),
@@ -377,9 +377,6 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ),
         loc_ref_v2_support_pelvis_height_offset_m=float(
             env.get("loc_ref_v2_support_pelvis_height_offset_m", 0.00)
-        ),
-        loc_ref_v2_support_stance_extension_margin_m=float(
-            env.get("loc_ref_v2_support_stance_extension_margin_m", 0.020)
         ),
         start_from_support_posture=bool(env.get("start_from_support_posture", False)),
         com_trajectory_enabled=bool(env.get("com_trajectory_enabled", False)),

@@ -126,7 +126,7 @@ class EnvConfig(Freezable):
     loc_ref_residual_scale: float = 0.18
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
-    loc_ref_nominal_com_height_m: float = 0.40
+    loc_ref_walking_pelvis_height_m: float = 0.40
     loc_ref_nominal_lateral_foot_offset_m: float = 0.09
     loc_ref_min_step_length_m: float = 0.02
     loc_ref_max_step_length_m: float = 0.14
@@ -141,7 +141,9 @@ class EnvConfig(Freezable):
     # Conservative nominal-path shaping for M3 reference execution.
     loc_ref_swing_target_blend: float = 0.65
     loc_ref_stance_height_blend: float = 0.25
-    loc_ref_stance_extension_margin_m: float = 0.015
+    # Two-height system: baseline knee bend + extra during walking.
+    loc_ref_support_margin_m: float = 0.020
+    loc_ref_walking_crouch_extra_m: float = 0.045
     loc_ref_max_swing_x_delta_m: float = 0.04
     loc_ref_max_swing_z_delta_m: float = 0.03
     loc_ref_swing_y_to_hip_roll: float = 0.30
@@ -222,7 +224,6 @@ class EnvConfig(Freezable):
     loc_ref_v2_startup_route_w2_pitch_rate_relax: float = 1.25
     loc_ref_v2_support_entry_shaping_window_s: float = 0.12
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.00
-    loc_ref_v2_support_stance_extension_margin_m: float = 0.020
     # M2.5: start episodes from the support posture B (squat) instead of
     # keyframe A (standing).  Requires loc_ref_enabled=True and
     # loc_ref_version="v2".

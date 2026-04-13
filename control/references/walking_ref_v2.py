@@ -55,7 +55,7 @@ class StartupRouteReason(IntEnum):
 @dataclass(frozen=True)
 class WalkingRefV2Config:
     step_time_s: float = 0.50
-    nominal_com_height_m: float = 0.39
+    walking_pelvis_height_m: float = 0.39
     nominal_lateral_foot_offset_m: float = 0.08
     min_step_length_m: float = 0.01
     max_step_length_m: float = 0.06
@@ -142,8 +142,8 @@ class WalkingRefV2Config:
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
             raise ValueError("step_time_s must be > 0")
-        if self.nominal_com_height_m <= 0.0:
-            raise ValueError("nominal_com_height_m must be > 0")
+        if self.walking_pelvis_height_m <= 0.0:
+            raise ValueError("walking_pelvis_height_m must be > 0")
         if self.min_step_length_m < 0.0 or self.max_step_length_m <= self.min_step_length_m:
             raise ValueError("step length bounds are invalid")
         if self.max_lateral_step_m <= 0.0:
@@ -583,10 +583,10 @@ def step_reference_v2_jax(
     phase_scale = jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32) + (
         1.0 - jnp.asarray(config.support_phase_min_scale, dtype=jnp.float32)
     ) * progression_permission
-    startup_height = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+    startup_height = jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32) + jnp.asarray(
         config.startup_pelvis_height_offset_m, dtype=jnp.float32
     )
-    support_height = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+    support_height = jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32) + jnp.asarray(
         config.support_pelvis_height_offset_m, dtype=jnp.float32
     )
     startup_pelvis_realization = _startup_pelvis_realization_jax(
@@ -942,7 +942,7 @@ def step_reference_v2_jax(
     )
     omega = jnp.sqrt(
         jnp.asarray(9.81, dtype=jnp.float32)
-        / jnp.maximum(jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32), 1e-6)
+        / jnp.maximum(jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32), 1e-6)
     )
     cp_x = jnp.asarray(com_position_stance_frame[0], dtype=jnp.float32) + jnp.asarray(
         com_velocity_stance_frame[0], dtype=jnp.float32
@@ -1117,10 +1117,10 @@ def step_reference_v2_jax(
         pelvis_pitch_target,
     )
     
-    pelvis_height_startup = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+    pelvis_height_startup = jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32) + jnp.asarray(
         config.startup_pelvis_height_offset_m, dtype=jnp.float32
     )
-    pelvis_height_support = jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32) + jnp.asarray(
+    pelvis_height_support = jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32) + jnp.asarray(
         config.support_pelvis_height_offset_m, dtype=jnp.float32
     )
     pelvis_height = jnp.where(
@@ -1130,7 +1130,7 @@ def step_reference_v2_jax(
         jnp.where(
             mode == support_mode,
             pelvis_height_support,
-            jnp.asarray(config.nominal_com_height_m, dtype=jnp.float32),
+            jnp.asarray(config.walking_pelvis_height_m, dtype=jnp.float32),
         ),
     )
     startup_route_transition_reason = jnp.where(
@@ -1252,8 +1252,8 @@ def step_reference_v2(
     startup_readiness_scale = config.startup_progress_min_scale + (
         1.0 - config.startup_progress_min_scale
     ) * startup_readiness
-    startup_height = config.nominal_com_height_m + config.startup_pelvis_height_offset_m
-    support_height = config.nominal_com_height_m + config.support_pelvis_height_offset_m
+    startup_height = config.walking_pelvis_height_m + config.startup_pelvis_height_offset_m
+    support_height = config.walking_pelvis_height_m + config.support_pelvis_height_offset_m
     pelvis_height_now = startup_height if root_height_m is None else float(root_height_m)
     startup_pelvis_realization = _startup_pelvis_realization(
         root_height_m=pelvis_height_now,
@@ -1321,7 +1321,7 @@ def step_reference_v2(
 
     speed = _clip(inputs.forward_speed_mps, 0.0, config.max_forward_speed_mps)
     nominal_step = _clip(speed * config.step_time_s, config.min_step_length_m, config.max_step_length_m)
-    omega = (9.81 / max(config.nominal_com_height_m, 1e-6)) ** 0.5
+    omega = (9.81 / max(config.walking_pelvis_height_m, 1e-6)) ** 0.5
     cp_x = float(inputs.com_position_stance_frame[0]) + float(inputs.com_velocity_stance_frame[0]) / max(omega, 1e-6)
     b = float(pow(2.718281828459045, -omega * config.step_time_s))
     x_foot_dcm = (nominal_step - b * cp_x) / max(1.0 - b, 1e-6)
@@ -1374,8 +1374,8 @@ def step_reference_v2(
         -config.max_pelvis_pitch_rad,
         config.max_pelvis_pitch_rad,
     )
-    pelvis_height_startup = config.nominal_com_height_m + config.startup_pelvis_height_offset_m
-    pelvis_height_support = config.nominal_com_height_m + config.support_pelvis_height_offset_m
+    pelvis_height_startup = config.walking_pelvis_height_m + config.startup_pelvis_height_offset_m
+    pelvis_height_support = config.walking_pelvis_height_m + config.support_pelvis_height_offset_m
     
     if mode == WalkingRefV2Mode.STARTUP_SUPPORT_RAMP:
         pelvis_roll = startup_alpha * pelvis_roll_target
@@ -1388,7 +1388,7 @@ def step_reference_v2(
     else:
         pelvis_roll = pelvis_roll_target
         pelvis_pitch = pelvis_pitch_target
-        pelvis_height = config.nominal_com_height_m
+        pelvis_height = config.walking_pelvis_height_m
 
     ref = LocomotionReferenceState(
         gait_phase_sin=float(sin(2.0 * pi * phase)),

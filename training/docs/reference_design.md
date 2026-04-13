@@ -1171,9 +1171,40 @@ The key rule is:
 
 ## Immediate Next Actions
 
-**Focus: implement DCM COM trajectory for stance-leg forward drive**
+**Focus: resume PPO training with the walking reference**
 
 ### Resolved (April 12)
+
+1. **Ctrl ordering fix** — root cause of ALL v0.19.3+ failures.
+   Fixed via `CtrlOrderMapper`.
+
+2. **Env starts from support posture B** — `start_from_support_posture: true`.
+
+3. **Reference tuning** — conservative thresholds relaxed post-ctrl-fix.
+
+4. **COM trajectory** — phase-proportional stance-leg forward drive.
+   Robot now walks: gait cycles complete, stance switches, 500+ steps.
+
+### Current walking status
+
+The nominal reference produces walking with known quality issues:
+- **Wobble** (±10° pitch oscillation) — open-loop reference, no active balance
+- **Lateral drift** — small per-step asymmetries accumulate into turning
+- **Small steps** — servo tracking limits foot displacement to ~3cm
+
+Heading correction via foothold lateral bias was attempted twice but both
+approaches destabilized lateral balance.  The robot has no ankle roll, so
+any lateral foot placement change directly affects the support polygon
+without a compensating mechanism.
+
+### Next step: PPO integration (M3.0-C)
+
+These quality issues are the intended scope for PPO residuals:
+- Wobble → PPO learns pitch-rate damping corrections
+- Drift → PPO learns lateral balance corrections
+- Step size → PPO improves servo tracking during swing
+
+The nominal reference provides a viable walking scaffold. Resume PPO.
 
 1. **Ctrl ordering fix** — PolicySpec and MuJoCo listed actuators in different
    orders.  The env wrote PolicySpec-ordered ctrl to MuJoCo's data.ctrl,

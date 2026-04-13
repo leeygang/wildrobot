@@ -234,6 +234,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Force walking_ref_v2 to remain in SUPPORT_STABILIZE for posture diagnosis",
     )
     parser.add_argument(
+        "--from-keyframe",
+        action="store_true",
+        default=False,
+        help="Start from keyframe 0 (upright) instead of support posture B. Shows startup transition.",
+    )
+    parser.add_argument(
         "--init-from-nominal-qref",
         action="store_true",
         help="Replace reset joints with nominal_q_ref and ground stance foot before visualization",
@@ -1168,6 +1174,10 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         disable_action_filter=args.disable_action_filter,
         startup_target_rate_deg_s=args.startup_target_rate_deg_s,
     )
+    # Start from support posture B (same as training) by default.
+    # Use --from-keyframe to show the full startup transition instead.
+    if args.from_keyframe:
+        cfg.env.start_from_support_posture = False
     action_filter_alpha = float(cfg.env.action_filter_alpha)
     startup_target_rate_rad_s = float(cfg.env.loc_ref_v2_startup_target_rate_design_rad_s)
     cfg.freeze()
@@ -1514,6 +1524,9 @@ def run_nominal_viewer(args: argparse.Namespace) -> int:
         renderer.close()
         _save_video(args.record, frames, fps=max(1, int(round(1.0 / ctrl_dt))))
         print(f"[nominal-viewer] wrote video: {args.record} ({len(frames)} frames)")
+        if frames:
+            import subprocess
+            subprocess.Popen(["open", args.record])
 
     # Finalize stage tracking
     final_step = done_step if done_reached else args.horizon

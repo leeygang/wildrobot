@@ -21,7 +21,7 @@ RIGHT_STANCE = 1
 @dataclass(frozen=True)
 class WalkingRefV1Config:
     step_time_s: float = 0.36
-    nominal_com_height_m: float = 0.40
+    walking_pelvis_height_m: float = 0.40
     nominal_lateral_foot_offset_m: float = 0.09
     min_step_length_m: float = 0.02
     max_step_length_m: float = 0.14
@@ -36,8 +36,8 @@ class WalkingRefV1Config:
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
             raise ValueError("step_time_s must be > 0")
-        if self.nominal_com_height_m <= 0.0:
-            raise ValueError("nominal_com_height_m must be > 0")
+        if self.walking_pelvis_height_m <= 0.0:
+            raise ValueError("walking_pelvis_height_m must be > 0")
         if self.swing_height_m < 0.0:
             raise ValueError("swing_height_m must be >= 0")
         if self.min_step_length_m < 0.0 or self.max_step_length_m <= self.min_step_length_m:
@@ -118,7 +118,7 @@ def step_reference(
         switch_count += 1
     phase = _clip(phase_time / config.step_time_s, 0.0, 1.0)
 
-    lipm_cfg = LipmConfig(com_height_m=config.nominal_com_height_m)
+    lipm_cfg = LipmConfig(com_height_m=config.walking_pelvis_height_m)
     omega = natural_frequency(lipm_cfg)
     cp = capture_point(
         com_position_stance_frame=inputs.com_position_stance_frame,
@@ -161,7 +161,7 @@ def step_reference(
         desired_next_foothold_stance_frame=(x_foot, y_foot),
         desired_swing_foot_position=swing_pos,
         desired_swing_foot_velocity=swing_vel,
-        desired_pelvis_height_m=config.nominal_com_height_m,
+        desired_pelvis_height_m=config.walking_pelvis_height_m,
         desired_pelvis_roll_rad=pelvis_roll,
         desired_pelvis_pitch_rad=pelvis_pitch,
     )
