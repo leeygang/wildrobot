@@ -1435,8 +1435,8 @@ improve balance, lateral stability, and foot tracking.
 - `eval_clean/success_rate` > 0% within 1000 iterations
 - Step length improves with training (residuals help foot tracking)
 - Forward speed tracks command better than nominal-only
-- Foothold consistency > 0.05 (moved from M3.0-B — requires PPO tracking)
-- Pitch oscillation < ±0.15 rad (moved from M3.0-B — requires PPO balance)
+- Mean step length > 5cm (current baseline: 2.5cm, metric: `debug/step_length_m`)
+- Pitch oscillation < ±0.15 rad (current baseline: ±0.17 rad)
 
 ### `M3.0-D`: If COM trajectory alone is insufficient
 
