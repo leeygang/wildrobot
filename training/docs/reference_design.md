@@ -1430,7 +1430,7 @@ but still owed significant propulsion.
 
 ---
 
-### Nominal-to-PPO Handoff Gate (revised)
+### Nominal-to-PPO Handoff Gate (revised, strict)
 
 This gate replaces the original v0.19.4-B exit criteria.  It must be
 met before any future PPO integration milestone.
@@ -1470,9 +1470,71 @@ met before any future PPO integration milestone.
 
 **Quantitative gate (all must pass):**
 
-1. Actuator ordering / IK / reset / startup all verified
-2. Nominal survives target horizon on multiple seeds (≥5 seeds, >80%
-   survive to target horizon)
+Evaluation setup:
+
+- nominal-only (`loc_ref_enabled=true`, PPO residual disabled or zeroed)
+- `cmd=0.15 m/s`
+- horizon `500` steps
+- `5-10` seeds / initial conditions
+
+1. Interface correctness
+- actuator ordering, IK signs, reset path, startup path, and COM
+  trajectory state threading are all verified
+
+2. Multi-seed robustness
+- at least `80%` of seeds survive `>= 400 / 500` steps
+- no seed fails before `300` steps
+- mean survival steps across seeds `>= 430`
+
+3. Forward locomotion ownership
+- mean `env/forward_velocity >= 0.075 m/s`
+- equivalently: nominal reaches at least `50%` of commanded forward
+  speed
+- mean `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
+
+4. Step generation ownership
+
+Reference command adequacy:
+- nominal commanded step / foothold target mean `>= 0.045 m` at
+  `cmd=0.15`
+- if the reference is only asking for `2-3 cm`, this is still a nominal
+  reference failure, even if PPO could later correct it
+
+Plant realization adequacy:
+- realized touchdown step length mean `>= 0.03 m`
+- or realized / commanded step-length ratio `>= 0.5`
+
+5. Stability quality
+- pitch oscillation `p95(|pitch|) <= 0.20 rad`
+- roll oscillation `p95(|roll|) <= 0.12 rad`
+- `term_pitch_frac <= 0.20`
+- `term_roll_frac <= 0.20`
+
+6. Gait quality
+- repeated stance switches and full gait cycles occur on all passing
+  seeds
+- `tracking/loc_ref_left_reachable` and
+  `tracking/loc_ref_right_reachable` stay near `1.0`
+- swing / foothold errors remain bounded over time
+- mild wobble and mild drift are acceptable only if they stay bounded
+  and do not dominate the outcome
+
+Interpretation:
+
+- `v0.19.4` does **not** need deployment-grade polish
+- `v0.19.4` **does** need to own gait generation
+- PPO should inherit a gait that already walks with meaningful forward
+  speed and meaningful realized step amplitude
+
+Required diagnostics:
+
+- add explicit nominal-commanded step metrics
+  - `debug/nominal_step_length_cmd_mean_m`
+  - `debug/nominal_foothold_x_cmd_mean_m`
+- add touchdown-only realized step metric
+  - `debug/step_length_touchdown_mean_m`
+- do **not** gate handoff on the current `debug/step_length_m` alone,
+  because it is diluted by zeros on non-touchdown steps
 3. Nominal forward velocity ≥ 50% of commanded speed
 4. Nominal reference commands adequate foothold targets (commanded step
    size in the intended band)

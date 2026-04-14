@@ -454,6 +454,14 @@ Current work (v0.19.4-C):
 - Then propulsion strengthening: COM trajectory, pelvis feedforward,
   step time, ankle push-off, swing phase allocation
 
+Explicit nominal handoff expectation:
+
+- `v0.19.4` must own gait generation, not just gait existence
+- nominal-only MuJoCo evaluation should already show clear forward walk
+  with meaningful commanded and realized step amplitude
+- bounded wobble and mild drift are acceptable only if they do not
+  dominate the outcome and do not prevent multi-seed horizon completion
+
 Primary design note:
 
 - [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
@@ -483,6 +491,64 @@ Exit criteria:
 - Mean step length > 5cm
 - PPO improvement comes from correction channels (balance, tracking),
   not from PPO inventing propulsion that the reference should have owned
+
+### `v0.19.4-C/D` quantitative handoff gate
+
+This gate must pass before PPO work is considered unblocked.
+
+Evaluation setup:
+
+- nominal-only (`loc_ref_enabled=true`, PPO residual disabled or zeroed)
+- `cmd=0.15 m/s`
+- horizon `500` steps
+- `5-10` seeds / initial conditions
+
+Required pass criteria:
+
+1. Multi-seed robustness
+- at least `80%` of seeds survive `>= 400 / 500` steps
+- no seed fails before `300` steps
+- mean survival steps across seeds `>= 430`
+
+2. Forward locomotion ownership
+- mean `env/forward_velocity >= 0.075 m/s`
+- equivalently: nominal reaches at least `50%` of command
+- mean `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
+
+3. Step generation ownership
+
+Reference command adequacy:
+- nominal commanded step / foothold target mean `>= 0.045 m` at
+  `cmd=0.15`
+
+Plant realization adequacy:
+- realized touchdown step length mean `>= 0.03 m`
+- or realized / commanded step-length ratio `>= 0.5`
+
+4. Stability quality
+- pitch oscillation `p95(|pitch|) <= 0.20 rad`
+- roll oscillation `p95(|roll|) <= 0.12 rad`
+- `term_pitch_frac <= 0.20`
+- `term_roll_frac <= 0.20`
+
+5. Gait quality
+- repeated stance switches and full gait cycles occur on all passing
+  seeds
+- swing / foothold errors remain bounded over time
+
+Required diagnostics before sign-off:
+
+- commanded step-length metric:
+  - `debug/nominal_step_length_cmd_mean_m`
+- commanded foothold-x metric:
+  - `debug/nominal_foothold_x_cmd_mean_m`
+- touchdown-only realized step metric:
+  - `debug/step_length_touchdown_mean_m`
+
+Metric caveat:
+
+- do not use the current `debug/step_length_m` alone as the handoff gate,
+  because it is diluted by zeros on non-touchdown steps
 
 ### `v0.19.6` Transfer Hardening (forward walk)
 
