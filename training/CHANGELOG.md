@@ -7,6 +7,38 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.19.5b] - 2026-04-13: Fix backward-lean reward exploit
+
+### Problem
+First v0.19.5 PPO run (280 iterations) found a reward exploit:
+- PPO learned to lean backward (pitch: +0.025 → -0.142 rad)
+- Forward velocity collapsed (+0.038 → -0.040 m/s, walking backward)
+- Eval success peaked at 73.7% (iter 180) then collapsed to 0% (iter 280)
+- 99% of episodes terminated from pitch (backward falls)
+
+Root cause: `alive` reward at +0.5/step dominated all other signals.
+Symmetric `orientation` penalty (pitch²) didn't distinguish backward lean.
+Net reward for "lean back and stand" was positive.
+
+### Changes
+- `alive`: 0.5 → 0.2 (reduce survival dominance)
+- `velocity_standing_penalty`: 0.3 → 0.8 (make standing/backward costly)
+- NEW `backward_lean`: -2.0 (asymmetric penalty on negative pitch)
+- NEW `negative_velocity`: -8.0 (penalize backward walking when forward commanded)
+
+### Files Changed
+- `training/envs/wildrobot_env.py` — add backward_lean and negative_velocity rewards
+- `training/configs/ppo_walking_v0195.yaml` — updated weights
+
+### Training Results (first run, before fix)
+| Iter | eval_success% | step_length_m | pitch | forward_vel |
+|------|--------------|---------------|-------|-------------|
+| 1 | 2.5 | 0.002 | +0.025 | +0.038 |
+| 180 | 73.7 (peak) | 0.004 | -0.031 | +0.032 |
+| 280 | 0.0 | 0.004 | -0.142 | -0.040 |
+
+---
+
 ## [v0.19.4] - 2026-04-12: Nominal Walking Reference Achieved ✅
 
 ### Summary

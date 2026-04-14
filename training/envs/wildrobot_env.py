@@ -3958,6 +3958,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Keep dict structure stable when adding new reward/debug keys.
             "reward/posture": metrics.get("reward/posture", jp.zeros(())),
             "reward/pitch_rate": metrics.get("reward/pitch_rate", jp.zeros(())),
+            "reward/backward_lean": metrics.get("reward/backward_lean", jp.zeros(())),
+            "reward/negative_velocity": metrics.get("reward/negative_velocity", jp.zeros(())),
             "reward/height_floor": metrics.get("reward/height_floor", jp.zeros(())),
             "reward/com_velocity_damping": metrics.get("reward/com_velocity_damping", jp.zeros(())),
             "reward/teacher_target_step_xy": metrics.get(
@@ -5444,6 +5446,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pitch_rate = angvel_y
         pitch_rate_penalty = jp.square(pitch_rate)
 
+        # v0.19.5b: Asymmetric backward-lean penalty — penalize negative pitch
+        # (backward lean) more than forward lean to prevent the backward-lean
+        # exploit where PPO learns to lean back to avoid forward-pitch falls.
+        backward_pitch = jp.maximum(-pitch, 0.0)
+        backward_lean_penalty = jp.square(backward_pitch)
+
+        # v0.19.5b: Negative-velocity penalty — penalize backward walking when
+        # commanded to move forward.  Quadratic so penalty grows rapidly with
+        # backward speed.  Only active when a forward command is issued.
+        _neg_vel_cmd_gate = compute_command_active_gate(
+            velocity_cmd,
+            jp.asarray(self._config.reward_weights.velocity_cmd_min, dtype=jp.float32),
+        )
+        backward_vel = jp.maximum(-forward_vel, 0.0) * _neg_vel_cmd_gate
+        negative_velocity_penalty = jp.square(backward_vel)
+
         # =====================================================================
         # EFFORT REWARDS (Tier 1 - critical for sim2real)
         # =====================================================================
@@ -6056,6 +6074,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + effective_orientation_weight * orientation_penalty
             + weights.angular_velocity * angvel_penalty
             + getattr(weights, "pitch_rate", 0.0) * pitch_rate_penalty
+            + getattr(weights, "backward_lean", 0.0) * backward_lean_penalty
+            + getattr(weights, "negative_velocity", 0.0) * negative_velocity_penalty
             + weights.collapse_height * collapse_height_pen
             + weights.collapse_vz * collapse_vz_pen
             # v0.10.4: Smooth standing penalty (negative reward for standing still)
@@ -6121,6 +6141,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "reward/orientation": orientation_penalty,
             "reward/angvel": angvel_penalty,
             "reward/pitch_rate": pitch_rate_penalty,
+            "reward/backward_lean": backward_lean_penalty,
+            "reward/negative_velocity": negative_velocity_penalty,
             "reward/com_velocity_damping": com_velocity_damping_reward,
             # v0.10.4: Standing penalty
             "reward/standing": standing_penalty,
