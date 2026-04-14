@@ -253,9 +253,10 @@ reward_weights:
   pitch_rate: -0.25
   # base_height: zeroed — redundant with alive (both reward survival)
   base_height: 0.0
-  # height_target: zeroed — conflicts with m3_pelvis_height_tracking
-  # (targets 0.45m vs reference 0.42m, pulling pelvis in different directions)
-  height_target: 0.0
+  # height_target: one-sided lower-bound shaping (anti-collapse scaffold).
+  # Only penalizes being BELOW target_height=0.45m, does not pull pelvis up
+  # to exactly 0.45m.  Complements collapse_height as early squat warning.
+  height_target: 0.05
   height_target_sigma: 0.05
   collapse_height: -0.3
   collapse_vz: -0.2

@@ -600,12 +600,15 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
     # Support both 'rewards:' (old) and 'reward_weights:' (new) format
     rewards = config.get("reward_weights", config.get("rewards", {}))
     return RewardWeightsConfig(
+        alive=rewards.get("alive", 0.0),
         tracking_lin_vel=rewards.get("tracking_lin_vel", 2.0),
         lateral_velocity=rewards.get("lateral_velocity", -0.5),
         base_height=rewards.get("base_height", 0.5),
         orientation=rewards.get("orientation", -0.5),
         angular_velocity=rewards.get("angular_velocity", -0.05),
         pitch_rate=rewards.get("pitch_rate", 0.0),
+        backward_lean=rewards.get("backward_lean", 0.0),
+        negative_velocity=rewards.get("negative_velocity", 0.0),
         height_target=rewards.get("height_target", 0.0),
         height_target_sigma=rewards.get("height_target_sigma", 0.05),
         disturbed_height_target_scale=rewards.get("disturbed_height_target_scale", 1.0),

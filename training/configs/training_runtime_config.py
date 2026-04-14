@@ -558,6 +558,10 @@ class RewardWeightsConfig(Freezable):
     orientation: float = -0.5
     angular_velocity: float = -0.05
     pitch_rate: float = 0.0
+    # v0.19.5b: asymmetric backward-lean penalty (negative pitch only)
+    backward_lean: float = 0.0
+    # v0.19.5b: penalize backward walking when commanded forward
+    negative_velocity: float = 0.0
     height_target: float = 0.0
     height_target_sigma: float = 0.05
     # Disturbed-window gating for standing recovery branches.
