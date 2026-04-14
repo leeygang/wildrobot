@@ -223,7 +223,7 @@ reward_weights:
   # --- Locomotion progress (existing built-in terms, previously disabled) ---
   # dense_progress is the key term that best separates good vs bad policies.
   step_event: 0.02
-  foot_place: 0.10
+  foot_place: 0.0
   step_progress: 0.30
   dense_progress: 1.0
   cycle_progress: 0.0
@@ -245,18 +245,25 @@ reward_weights:
 
   # --- Regularizers ---
   lateral_velocity: -0.25
-  orientation: -0.8
+  # Reduced from -0.8 to -0.3: the zero-target orientation penalty fights
+  # m3_pelvis_orientation_tracking which rewards the reference's deliberate
+  # roll bias (~0.02 rad) and pitch.  Let the reference tracking be primary.
+  orientation: -0.3
   angular_velocity: -0.05
   pitch_rate: -0.25
-  base_height: 0.03
-  height_target: 0.05
+  # base_height: zeroed — redundant with alive (both reward survival)
+  base_height: 0.0
+  # height_target: zeroed — conflicts with m3_pelvis_height_tracking
+  # (targets 0.45m vs reference 0.42m, pulling pelvis in different directions)
+  height_target: 0.0
   height_target_sigma: 0.05
   collapse_height: -0.3
   collapse_vz: -0.2
   torque: -0.0007
   saturation: -0.05
   action_rate: -0.005
-  joint_velocity: -0.0003
+  # joint_velocity: zeroed — weight negligible (0.0003), no meaningful gradient
+  joint_velocity: 0.0
   slip: -0.05
   clearance: 0.0
 
