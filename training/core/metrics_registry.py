@@ -1358,6 +1358,17 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="debug",
         description="Active phase-advance scale/permission used by current loc-ref version",
     ),
+    # v0.19.5: reward-term parity with experiment tracking
+    MetricSpec(
+        name="reward/backward_lean",
+        reducer=Reducer.MEAN,
+        description="Backward-lean penalty when pitch tilts behind neutral",
+    ),
+    MetricSpec(
+        name="reward/negative_velocity",
+        reducer=Reducer.MEAN,
+        description="Penalty for moving backward under forward command",
+    ),
 ]
 
 # =============================================================================
