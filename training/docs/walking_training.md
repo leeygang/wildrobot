@@ -339,9 +339,16 @@ Expected additions:
   reference achieved (M3.0-A/B).  Ctrl ordering bug found and fixed.
   DCM COM trajectory implemented.  Nominal walking: 461 steps, 15 gait
   cycles, forward speed +0.038 m/s at cmd=0.15.
-- Current active stage is now **`v0.19.5`: Walking PPO v2 (residual policy)**.
-  - the nominal reference is validated and walks on its own
-  - PPO should now improve balance, step quality, and lateral stability
+- `v0.19.5` attempted but handoff was premature (April 13-14):
+  - PPO found lean-back exploit (v0.19.5b) and move-less exploit (v0.19.5c)
+  - Root cause: nominal only delivered 25% of commanded speed, 30-50% of
+    commanded step amplitude — propulsion was mis-assigned to PPO
+  - Handoff gate tightened: now requires ≥50% command tracking, multi-seed
+    robustness, step-amplitude diagnosis
+  - See `reference_design.md` for the revised handoff gate and v0.19.4-C plan
+- Current active stage is now **`v0.19.4-C`: Reference propulsion rework**.
+  - the nominal reference must meet the quantitative handoff gate
+  - PPO is blocked until v0.19.4-C clears
 
 ### `v0.19.0` Platform Pivot
 
@@ -421,15 +428,31 @@ Purpose:
 - localize the root cause when the nominal prior fails under full env dynamics
 - block further PPO work until the nominal-only gate is cleared
 
-Status: **complete** (April 2026)
+Status: **v0.19.4-A/B complete, v0.19.4-C in progress** (April 2026)
 
-Key results:
+Key results (v0.19.4-A/B):
 
 - ctrl ordering bug found and fixed (`CtrlOrderMapper`)
 - support posture B validated stable (200/200 steps)
 - startup transition A→B validated (smooth qpos interpolation)
 - DCM COM trajectory implemented (stance-leg forward drive)
 - nominal walking probe: 461/500 steps, 15 gait cycles, +0.038 m/s
+
+Retrospective (April 14):
+
+- v0.19.4-B gate was qualitative and too loose
+- +0.038 m/s at cmd=0.15 is only 25% command tracking
+- 1-3cm steps against 5-6cm commanded is 30-50% realization
+- Premature handoff to PPO caused three rounds of reward surgery
+- Handoff gate tightened: see `reference_design.md` for quantitative criteria
+
+Current work (v0.19.4-C):
+
+- Reference propulsion rework to meet the quantitative handoff gate
+- Diagnostics first: multi-seed probe, step-amplitude diagnosis,
+  lateral drift diagnosis
+- Then propulsion strengthening: COM trajectory, pelvis feedforward,
+  step time, ankle push-off, swing phase allocation
 
 Primary design note:
 
@@ -440,22 +463,26 @@ Primary design note:
 **Goal:** train residual PPO policy on top of the walking reference to
 improve balance, lateral stability, and foot tracking.
 
-Status: **next**
+**Precondition:** v0.19.4-C quantitative handoff gate passes.
+
+Status: **blocked on v0.19.4-C**
 
 Tasks:
 
 1. Verify env reset + auto-reset work with COM trajectory state
-2. Run a short PPO training (1000 iterations) to check learning signal
-3. Check that PPO residuals improve stepping (larger steps, better tracking)
+2. Enable propulsion rewards from iter 0 (do not repeat v0.19.5b/c mistake)
+3. Run a short PPO training (1000 iterations) to check learning signal
+4. Check that PPO residuals improve balance and tracking, not propulsion
 
 Exit criteria:
 
 - PPO training runs without errors
 - `eval_clean/success_rate` > 0% within 1000 iterations
-- Step length improves with training (residuals help foot tracking)
 - Forward speed tracks command better than nominal-only
-- Mean step length > 5cm (current baseline: 2.5cm, metric: `debug/step_length_m`)
-- Pitch oscillation < ±0.15 rad (current baseline: ±0.17 rad)
+- Pitch oscillation < ±0.15 rad
+- Mean step length > 5cm
+- PPO improvement comes from correction channels (balance, tracking),
+  not from PPO inventing propulsion that the reference should have owned
 
 ### `v0.19.6` Transfer Hardening (forward walk)
 

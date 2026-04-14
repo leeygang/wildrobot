@@ -832,7 +832,7 @@ These are the main pass/fail diagnostics for the current bug.
 
 ## Current `M2.5` Readout
 
-**Last updated:** 2026-04-12
+**Last updated:** 2026-04-14
 
 ### Support posture (B) — resolved
 
@@ -930,13 +930,25 @@ The nominal walking probe (with stepping) has not been run with the new stable
 B posture.  This is the next validation step after the startup transition is
 integrated into the env.
 
-### PPO — still blocked
+### PPO — blocked pending v0.19.4-C propulsion rework
 
-PPO remains blocked until:
-1. DCM COM trajectory is implemented (stance-leg forward drive)
-2. The nominal walking probe produces visible stepping with controlled forward
-   speed
-3. The M2.5-A4 gate criteria are met
+PPO was unblocked after v0.19.4-B but the handoff gate was too loose.
+v0.19.5 PPO ran three iterations (v0.19.5, v0.19.5b, v0.19.5c) and
+found exploit basins because propulsion ownership was not met:
+- v0.19.5: lean-back exploit (alive reward dominated)
+- v0.19.5b: added backward_lean/negative_velocity penalties (symptoms)
+- v0.19.5c: re-enabled propulsion rewards, rebalanced weights (partial fix)
+
+Root cause: the nominal reference only delivered 25% of commanded speed
+and 30-50% of commanded step amplitude.  PPO was asked to generate
+propulsion with 10% residual authority and (initially) no propulsion
+objective.
+
+PPO is now re-blocked until v0.19.4-C quantitative handoff gate clears:
+1. Nominal forward velocity ≥ 50% of command on ≥5 seeds
+2. Realized step size ≥ 50% of commanded step size
+3. Lateral drift stochastic across seeds
+4. Remaining failures are correction-type only
 
 ---
 
@@ -1171,7 +1183,7 @@ The key rule is:
 
 ## Immediate Next Actions
 
-**Focus: resume PPO training with the walking reference**
+**Focus: v0.19.4-C reference propulsion rework**
 
 ### Resolved (April 12)
 
@@ -1185,62 +1197,44 @@ The key rule is:
 4. **COM trajectory** — phase-proportional stance-leg forward drive.
    Robot now walks: gait cycles complete, stance switches, 500+ steps.
 
+### v0.19.5 PPO retrospective (April 13-14)
+
+v0.19.5 PPO was attempted but the handoff was premature:
+- Nominal delivered +0.038 m/s at cmd=0.15 (25% tracking)
+- Steps were 1-3cm actual against 5-6cm commanded (30-50%)
+- Single seed only, no multi-seed robustness check
+- PPO found lean-back and move-less exploits (v0.19.5b, v0.19.5c)
+- Three rounds of reward surgery partially patched symptoms
+
+Lesson: "gait existence" ≠ "gait generation complete."  The handoff gate
+has been tightened (see v0.19.4-C in the milestones section).
+
 ### Current walking status
 
 The nominal reference produces walking with known quality issues:
 - **Wobble** (±10° pitch oscillation) — open-loop reference, no active balance
 - **Lateral drift** — small per-step asymmetries accumulate into turning
 - **Small steps** — servo tracking limits foot displacement to ~3cm
+- **Low propulsion** — only 25% of commanded forward speed achieved
 
-Heading correction via foothold lateral bias was attempted twice but both
-approaches destabilized lateral balance.  The robot has no ankle roll, so
-any lateral foot placement change directly affects the support polygon
-without a compensating mechanism.
+Wobble and lateral drift are PPO scope.  Small steps and low propulsion
+must be diagnosed and addressed in the reference before resuming PPO.
 
-### Next step: PPO integration (v0.19.5)
+### Next step: v0.19.4-C diagnostics
 
-These quality issues are the intended scope for PPO residuals:
-- Wobble → PPO learns pitch-rate damping corrections
-- Drift → PPO learns lateral balance corrections
-- Step size → PPO improves servo tracking during swing
+1. **Multi-seed probe**: run ≥5 seeds at cmd=0.15, 500 steps.  Record
+   survival, forward velocity, step length, drift direction per seed.
 
-The nominal reference provides a viable walking scaffold. Resume PPO.
+2. **Step-amplitude diagnosis**: determine reference-side vs plant-side:
+   - Slow step time (0.50s → 0.70s) and check if realization improves
+   - If yes → plant tracking bottleneck
+   - If no → COM trajectory / reference propulsion insufficiency
 
-1. **Ctrl ordering fix** — PolicySpec and MuJoCo listed actuators in different
-   orders.  The env wrote PolicySpec-ordered ctrl to MuJoCo's data.ctrl,
-   sending joint targets to wrong actuators (e.g. knee bend → hip pitch).
-   This was the root cause of ALL v0.19.3+ loc_ref training failures.
-   Fixed via `CtrlOrderMapper` (`training/utils/ctrl_order.py`).
-   Regression test: `training/tests/test_actuator_ordering.py`.
+3. **Lateral drift diagnosis**: check drift direction consistency across
+   seeds to determine if systematic (reference) or stochastic (PPO).
 
-2. **Env starts from support posture B** — episodes begin in
-   SUPPORT_STABILIZE mode with bent-knee squat posture.
-   Config: `start_from_support_posture: true`.
-
-3. **Reference tuning** — conservative thresholds tuned during the ctrl bug
-   era have been relaxed (swing_target_blend, brake gains, step limits,
-   support_open_threshold, pelvis height).
-
-### Current status after fixes
-
-- Robot survives 120 steps (full horizon), no pitch termination
-- Gait mode cycles: SUPPORT → SWING_RELEASE → TOUCHDOWN → SETTLE → repeat
-- Reference commands 5-6cm foothold targets during swing release
-- Swing foot tracks partially (~3cm actual of 6cm target)
-- **But**: forward speed ≈ 0, body rocks ±12° pitch, steps too small to walk
-- Root cause: stance leg is a static pillar — no forward COM drive
-
-### Remaining work
-
-1. **Implement DCM COM trajectory** (M3.0-A, described below)
-   - Let the body fall forward over the stance foot following LIPM dynamics
-   - The IK automatically produces stance-leg hip extension + ankle rocker
-   - This is the missing piece that makes walking work
-
-2. **Re-run nominal walking probe** after COM trajectory is implemented
-   - Check M2.5-A4 gate: forward speed tracks command, foothold > 0.05
-
-3. **Resume PPO** once the nominal reference produces viable walking
+4. **Propulsion strengthening** (after diagnosis): see v0.19.4-C
+   milestone for the ordered list of interventions.
 
 ---
 
@@ -1397,11 +1391,11 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
 - Stance hip pitch changes by > 0.1 rad through the phase
 - Stance ankle pitch changes by > 0.05 rad through the phase
 
-### `v0.19.4-B`: Nominal walking probe — done (was M3.0-B)
+### `v0.19.4-B`: Nominal walking probe — done but gate was too loose
 
 **Goal:** verify the nominal reference produces sustained walking.
 
-**Exit criteria (nominal-only, no PPO):**
+**Original exit criteria (nominal-only, no PPO):**
 - Survives 300+ steps at cmd=0.15 without pitch termination
 - Forward speed mean > 0
 - Gait cycles complete (mode transitions 1→2→3→4→1)
@@ -1415,45 +1409,194 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
 - Swing tracking 0.050 ✅
 - Terminated: term/roll (lateral drift)
 
-**Not gated here (moved to v0.19.5):**
-- Foothold consistency > 0.05 — requires PPO foot tracking corrections
-- Pitch oscillation < ±0.15 — requires PPO balance corrections
+**Retrospective (April 14):**
 
-### `v0.19.5`: PPO integration (was M3.0-C)
+v0.19.4-B passed its gate, but the gate was qualitative and too loose.
+"Forward speed mean > 0" accepted +0.038 m/s at cmd=0.15 (25% command
+tracking).  "Gait cycles complete" accepted 1-3cm actual steps against
+5-6cm commanded footholds.  This classified weak shuffling as "gait
+generation complete" and handed propulsion ownership to PPO.
+
+v0.19.5 PPO then failed predictably:
+- PPO had 10% residual authority and all propulsion rewards disabled
+- First run found a lean-back exploit (v0.19.5b)
+- Second run found a move-less exploit via slip reward (v0.19.5c)
+- Three rounds of reward surgery partially patched the objective gap but
+  did not address the authority gap or the reference gap
+
+Root cause: the handoff gate did not distinguish "gait existence" from
+"gait generation complete."  The nominal reference proved it *can* walk
+but still owed significant propulsion.
+
+---
+
+### Nominal-to-PPO Handoff Gate (revised)
+
+This gate replaces the original v0.19.4-B exit criteria.  It must be
+met before any future PPO integration milestone.
+
+**v0.19.4 (reference) must own:**
+
+- A nominal gait that produces clear forward locomotion, not just
+  positive velocity.  The reference should create believable step
+  amplitude and stance-leg drive on its own.
+- Deterministic geometry and sign correctness: pelvis targets, foot
+  targets, COM trajectory threading, IK signs, actuator ordering.
+- Systematic bias removal: if left/right asymmetry or persistent lateral
+  drift is baked into the nominal path, fix it there.
+- Startup and reset consistency: support-posture start, COM-state carry,
+  clean first-step behavior.
+- A coherent command contract: if command includes stop, the nominal
+  reference must truly support stop.
+
+**v0.19.5 (PPO) should own:**
+
+- Residual balance correction: damp pitch wobble, reduce roll excursions,
+  improve recovery from small disturbances.
+- Foot-placement cleanup around the nominal foothold, not inventing the
+  whole step.
+- Servo/tracking compensation: correct what the nominal planner asks for
+  but the plant does not realize perfectly.
+- Small gait adaptation to sim dynamics: timing cleanup, asymmetry
+  trimming, contact smoothing.
+
+**v0.19.4 must NOT push to PPO:**
+
+- Creating real step length from a nominal gait that only shuffles.
+- Generating most of the forward drive.
+- Correcting a persistent nominal reference bug or IK mismatch.
+- Resolving contradictory task definitions (e.g. stop command + nonzero
+  nominal step).
+
+**Quantitative gate (all must pass):**
+
+1. Actuator ordering / IK / reset / startup all verified
+2. Nominal survives target horizon on multiple seeds (≥5 seeds, >80%
+   survive to target horizon)
+3. Nominal forward velocity ≥ 50% of commanded speed
+4. Nominal reference commands adequate foothold targets (commanded step
+   size in the intended band)
+5. Realized step size ≥ 50% of commanded step size (if not, diagnose
+   whether the gap is reference-side or plant-side before handing to PPO)
+6. Lateral drift direction is stochastic across seeds (if deterministic,
+   fix in reference before handoff)
+7. Remaining failures are correction-type: wobble, mild drift, tracking
+   cleanup — not propulsion or geometry
+
+**Applied retroactively to v0.19.4:**
+
+- ✅ Actuator ordering, IK, reset, startup
+- ❌ Multi-seed robustness (single seed only)
+- ❌ Forward velocity ≥ 50% of command (25% achieved)
+- ✅ Reference commands adequate footholds (5-6cm)
+- ❌ Realized step size ≥ 50% of commanded (1-3cm of 5-6cm, ~30-50%)
+- ❓ Lateral drift direction (not tested across seeds)
+- ❌ Remaining failures are correction-type (propulsion is still missing)
+
+Verdict: v0.19.4 passed gait existence but did not pass propulsion
+ownership.  Reference rework is needed before resuming PPO.
+
+---
+
+### `v0.19.4-C`: Reference propulsion rework
+
+**Goal:** strengthen the nominal reference to meet the quantitative
+handoff gate before resuming PPO.
+
+**Diagnostic first (before changing anything):**
+
+1. Multi-seed nominal probe: run ≥5 seeds at cmd=0.15, 500 steps each.
+   Record per-seed: survival steps, mean forward velocity, mean step
+   length (commanded vs realized), drift direction.
+
+2. Step-amplitude diagnosis: determine whether the 1-3cm realization gap
+   is reference-side or plant-side:
+   - If the COM trajectory only delivers 25% forward speed, the body is
+     not in position for a full step → reference problem
+   - If slowing step time (0.50s → 0.70s) materially improves step
+     realization → plant tracking problem
+   - If neither helps → actuator model / servo bandwidth problem
+
+3. Lateral drift diagnosis: check if drift direction is consistent across
+   seeds.  If always the same direction → systematic reference bias.
+   If random → stochastic, acceptable for PPO.
+
+**Propulsion strengthening (ordered by expected impact):**
+
+1. Strengthen COM trajectory: the current linear ramp may be too
+   conservative.  Try the full LIPM cosh/sinh trajectory with bounded
+   `max_com_ahead` gradually increased (0.08 → 0.12m).  The original
+   design noted "too aggressive for open-loop" but the reference now
+   survives 461 steps, so there is headroom.
+
+2. Add pelvis pitch feedforward: small forward lean proportional to
+   commanded speed.  This directly shifts the COM forward and reduces
+   the propulsion burden on the stance leg.
+
+3. Consider longer step time (0.50s → 0.70s): gives more time for swing
+   foot tracking, which may improve step realization if the gap is
+   plant-side.
+
+4. Add explicit ankle push-off: direct ankle target override during
+   terminal stance (not just IK-derived).  This is the primary push-off
+   mechanism in human gait and is currently missing.
+
+5. Lower `support_release_phase_start`: give swing more of the gait
+   cycle.  Previously tested at 0.25 — produced bigger steps but body
+   rocked without COM drive.  May work now with COM trajectory providing
+   momentum control.
+
+**Exit criteria:**
+- All items in the quantitative handoff gate above pass
+- Specifically: nominal forward velocity ≥ 50% of command on ≥5 seeds
+- Specifically: realized step size ≥ 50% of commanded step size
+
+Do not resume PPO until this gate clears.  Do not skip to full MPC or
+major redesign until these simpler propulsion options are tried.
+
+---
+
+### `v0.19.5`: PPO integration (resumed after v0.19.4-C gate clears)
 
 **Goal:** train residual PPO policy on top of the walking reference to
 improve balance, lateral stability, and foot tracking.
 
+**Precondition:** v0.19.4-C handoff gate passes.
+
 **Tasks:**
 
 1. Verify env reset + auto-reset work with COM trajectory state
-2. Run a short PPO training (1000 iterations) to check learning signal
-3. Check that PPO residuals improve stepping (larger steps, better tracking)
+2. Enable propulsion rewards from the start (do not repeat the v0.19.5b/c
+   mistake of disabling them):
+   - `dense_progress`, `step_progress`, `foot_place`, `step_event` must
+     be nonzero from iter 0
+   - `min_velocity` must be consistent with the nominal reference
+     (no stop command if the reference does not support stop)
+3. Run a short PPO training (1000 iterations) to check learning signal
+4. Check that PPO residuals improve balance and tracking, not that they
+   create propulsion
 
 **Exit criteria:**
 - PPO training runs without errors
 - `eval_clean/success_rate` > 0% within 1000 iterations
-- Step length improves with training (residuals help foot tracking)
 - Forward speed tracks command better than nominal-only
-- Mean step length > 5cm (current baseline: 2.5cm, metric: `debug/step_length_m`)
-- Pitch oscillation < ±0.15 rad (current baseline: ±0.17 rad)
+- Pitch oscillation < ±0.15 rad
+- Mean step length > 5cm
+- PPO improvement comes from correction channels (balance, tracking),
+  not from PPO inventing propulsion that the reference should have owned
 
-### `v0.19.5-D`: If COM trajectory alone is insufficient (was M3.0-D)
+### `v0.19.5-D`: If reference strengthening alone is insufficient
 
-If `v0.19.4-B` gate is not met after bounded tuning:
+If `v0.19.4-C` gate is not met after all five propulsion options above
+are tried:
 
-1. Add explicit ankle push-off command during terminal stance (not just IK-
-   derived — direct ankle target override)
-2. Add pelvis pitch feedforward (small forward lean proportional to commanded
-   speed)
-3. Consider longer step time (0.50s → 0.70s) to give more time for foot
-   tracking
-4. Lower `support_release_phase_start` to give swing more of the gait cycle
-   (tested at 0.25 — produced bigger steps but body rocked without COM drive;
-   may work with COM trajectory providing momentum control)
-
-Do not skip to full MPC or major redesign until these simpler options are
-tried.
+1. Revisit actuator model / servo bandwidth — the plant may not be
+   capable of the commanded motion at the commanded speed
+2. Consider explicit actuator SysID update if servo tracking is the
+   bottleneck
+3. Consider morphology-specific gait simplification (hip-strategy-dominant
+   walking) if conventional assumptions do not fit the platform
+4. Only then escalate to MPC or larger redesign
 
 ---
 
