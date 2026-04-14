@@ -7,6 +7,61 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.19.5c] - 2026-04-13: Reward rebalance — propulsion-first
+
+### Problem
+v0.19.5 first run found a low-motion exploit: the policy learned to reduce
+slip (weighted slip improved +1.39/step from iter 180 to 280) while losing
+only -0.06 on forward tracking.  The dominant exploit channel was slip
+at -0.15 weight, not alive alone.  Backward lean was a symptom of the
+broader "move less = more reward" basin.
+
+### Root Cause Analysis
+- `slip: -0.15` was the largest marginal reward improvement for the bad policy
+- `alive: 0.5` provided unconditional survival bonus exceeding standing penalty
+- `tracking_lin_vel: 4.0` was too weak relative to slip/alive
+- Task contract mismatch: `min_velocity: 0.0` + `loc_ref_min_step_length_m: 0.03`
+  sent contradictory signals (stop command + nonzero nominal step)
+- Existing locomotion rewards (`dense_progress`, `step_progress`) were disabled
+
+### Changes
+Task contract:
+- `min_velocity`: 0.0 → 0.08 (forward-walking only, no stop)
+- `velocity_cmd_min`: 0.05 → 0.08 (align gate with min velocity)
+
+Propulsion rewards (previously disabled, now enabled):
+- `dense_progress`: 0.0 → 1.0 (key term that best separates good/bad policies)
+- `step_progress`: 0.0 → 0.30
+- `foot_place`: 0.0 → 0.10
+- `step_event`: 0.0 → 0.02
+
+Rebalanced weights:
+- `tracking_lin_vel`: 4.0 → 6.0 (must dominate over low-motion incentives)
+- `slip`: -0.15 → -0.05 (was dominant exploit channel)
+- `alive`: 0.5 → 0.25 (reduce survival dominance)
+- `velocity_standing_penalty`: 0.3 → 0.6
+- `orientation`: -0.6 → -0.8
+- `pitch_rate`: -0.2 → -0.25
+- `base_height`: 0.05 → 0.03
+- `height_target`: 0.10 → 0.05
+- `m3_pelvis_height_tracking`: 0.20 → 0.15
+
+Removed:
+- `backward_lean`: -2.0 → 0.0 (proper rebalance addresses root cause)
+- `negative_velocity`: -8.0 → 0.0 (same)
+
+### Stopping Criteria
+- By iter 40-60: abort if `term_pitch_frac > 0.8`
+- By iter 60-80: require `env/forward_velocity > 0.03`
+- By iter 80: require `reward/step_progress > 0` AND `reward/dense_progress > 0.08`
+- Checkpoint selection: `eval_clean/success_rate > 0.4` AND
+  `env/forward_velocity > 0.05` AND `reward/step_progress > 0`
+
+### Config
+- `training/configs/ppo_walking_v0195c.yaml`
+
+---
+
 ## [v0.19.5b] - 2026-04-13: Fix backward-lean reward exploit
 
 ### Problem
