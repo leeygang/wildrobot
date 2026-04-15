@@ -231,6 +231,15 @@ class EnvConfig(Freezable):
     # M3.0: DCM COM trajectory — let the body fall forward over the stance
     # foot following LIPM dynamics during stance phase.
     com_trajectory_enabled: bool = False
+    # v0.19.4-C: COM trajectory mode — "linear" (phase ramp) or "lipm" (cosh/sinh).
+    com_trajectory_mode: str = "linear"
+    # v0.19.4-C: COM trajectory clipping bounds.
+    com_trajectory_max_behind_m: float = 0.01
+    com_trajectory_max_ahead_m: float = 0.03
+    # v0.19.4-C: ankle push-off during terminal stance.
+    ankle_pushoff_enabled: bool = False
+    ankle_pushoff_phase_start: float = 0.70
+    ankle_pushoff_max_rad: float = 0.15
     # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
     # "pos_target_home_v1" (home-centered, per-joint span)
     action_mapping_id: str = "pos_target_rad_v1"

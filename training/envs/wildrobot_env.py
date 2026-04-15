@@ -1735,6 +1735,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
             com_trajectory_enabled=bool(
                 getattr(self._config.env, "com_trajectory_enabled", False)
             ),
+            com_trajectory_max_behind_m=float(
+                getattr(self._config.env, "com_trajectory_max_behind_m", 0.01)
+            ),
+            com_trajectory_max_ahead_m=float(
+                getattr(self._config.env, "com_trajectory_max_ahead_m", 0.03)
+            ),
+            com_trajectory_mode=str(
+                getattr(self._config.env, "com_trajectory_mode", "linear")
+            ),
+            ankle_pushoff_enabled=bool(
+                getattr(self._config.env, "ankle_pushoff_enabled", False)
+            ),
+            ankle_pushoff_phase_start=float(
+                getattr(self._config.env, "ankle_pushoff_phase_start", 0.70)
+            ),
+            ankle_pushoff_max_rad=float(
+                getattr(self._config.env, "ankle_pushoff_max_rad", 0.15)
+            ),
         )
         self._leg_ik_cfg = LegIkConfig()
         self._residual_q_scale = jp.asarray(
@@ -2239,6 +2257,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ref_state.get("com_x_planned", jp.zeros((), dtype=jp.float32)),
                 dtype=jp.float32,
             )
+            ankle_pushoff_rad = jp.asarray(
+                ref_state.get("ankle_pushoff_rad", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
                 velocity_cmd=velocity_cmd,
@@ -2300,6 +2322,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             com_x0_at_stance_start = jp.zeros((), dtype=jp.float32)
             com_vx0_at_stance_start = jp.zeros((), dtype=jp.float32)
             com_x_planned = jp.zeros((), dtype=jp.float32)
+            ankle_pushoff_rad = jp.zeros((), dtype=jp.float32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2341,6 +2364,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
                 com_x_planned=com_x_planned,
+                ankle_pushoff_rad=ankle_pushoff_rad,
             )
         )
         nominal_q_ref = self._apply_startup_support_rate_limiter(
@@ -2887,6 +2911,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ref_state.get("com_x_planned", jp.zeros((), dtype=jp.float32)),
                 dtype=jp.float32,
             )
+            ankle_pushoff_rad = jp.asarray(
+                ref_state.get("ankle_pushoff_rad", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            )
         else:
             ref_speed_scale, ref_phase_scale, ref_overspeed = _loc_ref_brake_scales(
                 velocity_cmd=velocity_cmd,
@@ -2945,6 +2973,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             com_x0_at_stance_start = jp.zeros((), dtype=jp.float32)
             com_vx0_at_stance_start = jp.zeros((), dtype=jp.float32)
             com_x_planned = jp.zeros((), dtype=jp.float32)
+            ankle_pushoff_rad = jp.zeros((), dtype=jp.float32)
         loc_ref_phase_sin = ref_state["gait_phase_sin"]
         loc_ref_phase_cos = ref_state["gait_phase_cos"]
         loc_ref_phase_progress = ref_state["phase_progress"]
@@ -2984,6 +3013,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 support_health=ref_support_health,
                 mode_id=ref_mode_id,
                 com_x_planned=com_x_planned,
+                ankle_pushoff_rad=ankle_pushoff_rad,
             )
         )
         nominal_q_ref = self._apply_startup_support_rate_limiter(
@@ -4680,6 +4710,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         support_health: jax.Array,
         mode_id: jax.Array,
         com_x_planned: jax.Array | None = None,
+        ankle_pushoff_rad: jax.Array | None = None,
     ) -> tuple[
         jax.Array,
         jax.Array,
@@ -4833,6 +4864,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         right_hip, right_knee, right_ankle, right_reachable = solve_leg_sagittal_ik_jax(
             target_x_m=right_target_x, target_z_m=right_target_z, config=self._leg_ik_cfg
         )
+
+        # Ankle push-off: add explicit plantarflexion to the stance ankle.
+        if ankle_pushoff_rad is not None:
+            _pushoff = jp.asarray(ankle_pushoff_rad, dtype=jp.float32)
+            left_ankle = jp.where(stance_is_left, left_ankle + _pushoff, left_ankle)
+            right_ankle = jp.where(stance_is_left, right_ankle, right_ankle + _pushoff)
 
         q_ref = jp.asarray(self._default_joint_qpos, dtype=jp.float32)
         if self._idx_left_hip_pitch >= 0:

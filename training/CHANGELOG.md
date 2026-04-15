@@ -7,6 +7,84 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.19.4c] - 2026-04-14: Reference propulsion rework
+
+### Problem
+v0.19.4-B achieved nominal walking (461 steps, 15 gait cycles) but only
+delivered 25% of commanded forward speed (+0.038 m/s at cmd=0.15) and
+30-50% of commanded step amplitude (1-3cm actual vs 5-6cm commanded).
+Premature handoff to PPO caused three rounds of reward surgery (v0.19.5,
+v0.19.5b, v0.19.5c) that found lean-back and move-less exploits.
+
+Root cause: "gait existence" was mistaken for "gait generation complete."
+The nominal reference proved it *can* walk but still owed significant
+propulsion that PPO could not create with 10% residual authority.
+
+### Changes
+
+Reference propulsion (walking_ref_v2.py):
+- **Full LIPM COM trajectory**: replaced linear ramp with `x0*cosh(ω*t) +
+  (vx0/ω)*sinh(ω*t)` using tracked stance-start COM state.  Configurable
+  via `com_trajectory_mode: lipm` (was `linear`).
+- **Increased COM bounds**: `max_ahead` 0.03→0.08m, `max_behind` 0.01→0.02m
+- **Pelvis pitch feedforward**: gain 0.015→0.05, max 0.02→0.06 rad (~3.4°)
+- **Ankle push-off**: explicit plantarflexion during terminal stance (phase
+  >0.70), proportional to speed, max 0.12 rad.  Configurable via
+  `ankle_pushoff_enabled`, `ankle_pushoff_phase_start`, `ankle_pushoff_max_rad`.
+- **Longer step time**: 0.50→0.60s (more time for servo tracking)
+- **Lower support_release_phase_start**: 0.25→0.20 (more swing time)
+
+Diagnostics tooling:
+- **Multi-seed handoff gate evaluator**: `training/eval/eval_handoff_gate.py`
+  — runs ≥5 seeds, evaluates 6 quantitative gate criteria, reports per-seed
+  breakdown and aggregate pass/fail
+- **Extended probe traces**: added root_roll, lateral_velocity, step_length_m
+  to the nominal probe trace output
+
+Config:
+- `training/configs/ppo_walking_v0194c.yaml` — propulsion-reworked config
+  with LIPM mode, ankle push-off, and v0.19.5c reward rebalance applied
+
+Reward (carried from v0.19.5c):
+- Propulsion rewards enabled from iter 0: `dense_progress: 1.0`,
+  `step_progress: 0.30`, `foot_place: 0.10`, `step_event: 0.02`
+- `min_velocity: 0.08` (forward-only, no stop)
+
+### Quantitative Handoff Gate (must pass before PPO)
+1. Multi-seed: ≥80% seeds survive ≥400/500, no seed <300, mean ≥430
+2. Forward velocity: ≥0.075 m/s (50% of cmd=0.15)
+3. Step generation: commanded ≥0.045m, realized ≥0.03m or ratio ≥0.5
+4. Stability: pitch p95 ≤0.20, roll p95 ≤0.12, term fracs ≤0.20
+5. Gait quality: stance switches on all passing seeds
+6. Lateral drift: direction varies across seeds
+
+### Files Changed
+- `control/references/walking_ref_v2.py` — LIPM COM trajectory, ankle push-off
+- `training/envs/wildrobot_env.py` — wire new config fields and ankle push-off
+  through IK adapter
+- `training/eval/eval_handoff_gate.py` — NEW: multi-seed gate evaluator
+- `training/eval/eval_loc_ref_probe.py` — add trace fields for gate metrics
+- `training/configs/ppo_walking_v0194c.yaml` — NEW: propulsion-reworked config
+
+### Verification
+```bash
+# Diagnostics: multi-seed nominal probe
+JAX_PLATFORMS=cpu uv run python training/eval/eval_handoff_gate.py \
+  --config training/configs/ppo_walking_v0194c.yaml \
+  --seeds 5 --forward-cmd 0.15 --horizon 500
+
+# Single-seed nominal viewer
+JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
+  --config training/configs/ppo_walking_v0194c.yaml \
+  --forward-cmd 0.15 --horizon 500 --print-every 20 --log --record --headless
+```
+
+### Next Step
+If handoff gate passes: resume v0.19.5 PPO with propulsion rewards enabled.
+If gate fails after all 5 interventions: escalate per v0.19.5-D fallback plan.
+
+---
+
 ## [v0.19.5c] - 2026-04-13: Reward rebalance — propulsion-first
 
 ### Problem

@@ -349,6 +349,10 @@ Expected additions:
 - Current active stage is now **`v0.19.4-C`: Reference propulsion rework**.
   - the nominal reference must meet the quantitative handoff gate
   - PPO is blocked until v0.19.4-C clears
+  - v0.19.4-C code implemented (April 14): full LIPM COM trajectory,
+    pelvis pitch feedforward, ankle push-off, longer step time
+  - Config: `training/configs/ppo_walking_v0194c.yaml`
+  - Diagnostics: `training/eval/eval_handoff_gate.py` (multi-seed gate evaluator)
 
 ### `v0.19.0` Platform Pivot
 

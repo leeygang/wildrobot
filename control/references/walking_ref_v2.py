@@ -138,6 +138,14 @@ class WalkingRefV2Config:
     com_trajectory_enabled: bool = False
     com_trajectory_max_behind_m: float = 0.01
     com_trajectory_max_ahead_m: float = 0.03
+    # v0.19.4-C: COM trajectory mode — "linear" (phase-proportional ramp)
+    # or "lipm" (full LIPM cosh/sinh dynamics using stance-start COM state).
+    com_trajectory_mode: str = "linear"
+    # v0.19.4-C: ankle push-off — explicit plantarflexion during terminal
+    # stance, on top of IK-derived ankle angle.
+    ankle_pushoff_enabled: bool = False
+    ankle_pushoff_phase_start: float = 0.70
+    ankle_pushoff_max_rad: float = 0.15
 
     def __post_init__(self) -> None:
         if self.step_time_s <= 0.0:
@@ -243,6 +251,13 @@ class WalkingRefV2Config:
             raise ValueError("touchdown_phase_min must be in [0, 1]")
         if self.capture_hold_s < 0.0 or self.settle_hold_s < 0.0:
             raise ValueError("capture_hold_s/settle_hold_s must be >= 0")
+        if self.com_trajectory_mode not in ("linear", "lipm"):
+            raise ValueError("com_trajectory_mode must be 'linear' or 'lipm'")
+        if self.ankle_pushoff_enabled:
+            if not 0.0 <= self.ankle_pushoff_phase_start <= 1.0:
+                raise ValueError("ankle_pushoff_phase_start must be in [0, 1]")
+            if self.ankle_pushoff_max_rad < 0.0:
+                raise ValueError("ankle_pushoff_max_rad must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -282,6 +297,7 @@ class WalkingReferenceV2Output:
     progression_permission: float
     hybrid_mode_id: int
     com_x_planned: float = 0.0
+    ankle_pushoff_rad: float = 0.0
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -987,21 +1003,29 @@ def step_reference_v2_jax(
     )
 
     # ── DCM COM trajectory ─────────────────────────────────────────────
-    # Simple phase-proportional forward drive: the COM moves forward
-    # linearly with phase, proportional to commanded speed.
-    # This is a first-order approximation of LIPM dynamics — it gives
-    # the stance leg a forward drive without exponential blowup.
-    # Upgrade to full LIPM (cosh/sinh) once the basic drive is stable.
-    #
-    # Note: pitch/velocity damping was tested but caused limit-cycle
-    # oscillation (drive→lean→stop→recover→drive) that amplified wobble.
-    # The undamped linear ramp is more stable.  Wobble reduction is
-    # left to PPO residuals.
-    _com_drive = (
-        phase
-        * speed
-        * step_time
+    # Two modes:
+    #   "linear" — phase-proportional ramp (v0.19.4-B baseline).
+    #   "lipm"   — full LIPM cosh/sinh using stance-start COM state
+    #              (v0.19.4-C propulsion upgrade).
+    _com_x0 = (
+        jnp.asarray(com_x0_at_stance_start, dtype=jnp.float32)
+        if com_x0_at_stance_start is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
     )
+    _com_vx0 = (
+        jnp.asarray(com_vx0_at_stance_start, dtype=jnp.float32)
+        if com_vx0_at_stance_start is not None
+        else jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    _com_drive_linear = phase * speed * step_time
+    _t_stance = phase * step_time
+    _com_drive_lipm = (
+        _com_x0 * jnp.cosh(omega * _t_stance)
+        + (_com_vx0 / jnp.maximum(omega, jnp.asarray(1e-6, dtype=jnp.float32)))
+        * jnp.sinh(omega * _t_stance)
+    )
+    _use_lipm = jnp.asarray(config.com_trajectory_mode == "lipm", dtype=jnp.bool_)
+    _com_drive = jnp.where(_use_lipm, _com_drive_lipm, _com_drive_linear)
     com_x_planned = jnp.where(
         jnp.asarray(config.com_trajectory_enabled, dtype=jnp.bool_),
         jnp.clip(
@@ -1017,17 +1041,7 @@ def step_reference_v2_jax(
         jnp.asarray(0.0, dtype=jnp.float32),
         com_x_planned,
     )
-    # State tracking for future LIPM upgrade (not used by linear drive).
-    _com_x0 = (
-        jnp.asarray(com_x0_at_stance_start, dtype=jnp.float32)
-        if com_x0_at_stance_start is not None
-        else jnp.asarray(0.0, dtype=jnp.float32)
-    )
-    _com_vx0 = (
-        jnp.asarray(com_vx0_at_stance_start, dtype=jnp.float32)
-        if com_vx0_at_stance_start is not None
-        else jnp.asarray(0.0, dtype=jnp.float32)
-    )
+    # State tracking: record COM state at each stance transition.
     _stance_switched = switches > jnp.asarray(stance_switch_count, dtype=jnp.int32)
     com_x0_out = jnp.where(
         _stance_switched,
@@ -1038,6 +1052,30 @@ def step_reference_v2_jax(
         _stance_switched,
         jnp.asarray(com_velocity_stance_frame[0], dtype=jnp.float32),
         _com_vx0,
+    )
+
+    # ── Ankle push-off ────────────────────────────────────────────────
+    # During terminal stance, add explicit plantarflexion on top of IK.
+    # This is the primary push-off mechanism in human gait.
+    _pushoff_phase_start = jnp.asarray(config.ankle_pushoff_phase_start, dtype=jnp.float32)
+    _pushoff_max = jnp.asarray(config.ankle_pushoff_max_rad, dtype=jnp.float32)
+    _pushoff_progress = jnp.clip(
+        (phase - _pushoff_phase_start)
+        / jnp.maximum(1.0 - _pushoff_phase_start, jnp.asarray(1e-6, dtype=jnp.float32)),
+        0.0,
+        1.0,
+    )
+    # Ramp up linearly during terminal stance, scale by speed.
+    _speed_scale = jnp.clip(
+        speed / jnp.maximum(jnp.asarray(config.max_forward_speed_mps, dtype=jnp.float32), jnp.asarray(1e-6, dtype=jnp.float32)),
+        0.0,
+        1.0,
+    )
+    ankle_pushoff = jnp.where(
+        jnp.asarray(config.ankle_pushoff_enabled, dtype=jnp.bool_)
+        & (mode == swing_mode),
+        _pushoff_progress * _pushoff_max * _speed_scale,
+        jnp.asarray(0.0, dtype=jnp.float32),
     )
 
     y_sign = jnp.where(stance == jnp.asarray(LEFT_STANCE, dtype=jnp.int32), -1.0, 1.0)
@@ -1179,6 +1217,7 @@ def step_reference_v2_jax(
         "com_x_planned": com_x_planned.astype(jnp.float32),
         "com_x0_at_stance_start": com_x0_out.astype(jnp.float32),
         "com_vx0_at_stance_start": com_vx0_out.astype(jnp.float32),
+        "ankle_pushoff_rad": ankle_pushoff.astype(jnp.float32),
     }
     return (
         ref,
@@ -1391,9 +1430,18 @@ def step_reference_v2(
         pelvis_pitch = pelvis_pitch_target
         pelvis_height = config.walking_pelvis_height_m
 
-    # DCM COM trajectory: phase-proportional forward drive (matches JAX lines 999-1018)
+    # DCM COM trajectory (matches JAX implementation)
+    from math import cosh, sinh, exp as math_exp
     if config.com_trajectory_enabled:
-        com_drive = phase * speed * config.step_time_s
+        if config.com_trajectory_mode == "lipm":
+            t_stance = phase * config.step_time_s
+            com_drive = (
+                float(inputs.com_position_stance_frame[0]) * cosh(omega * t_stance)
+                + float(inputs.com_velocity_stance_frame[0]) / max(omega, 1e-6)
+                * sinh(omega * t_stance)
+            )
+        else:
+            com_drive = phase * speed * config.step_time_s
         com_x_planned_val = _clip(
             com_drive,
             -config.com_trajectory_max_behind_m,
@@ -1404,6 +1452,18 @@ def step_reference_v2(
     # Suppress during startup/support (double support)
     if mode in (WalkingRefV2Mode.STARTUP_SUPPORT_RAMP, WalkingRefV2Mode.SUPPORT_STABILIZE):
         com_x_planned_val = 0.0
+
+    # Ankle push-off: explicit plantarflexion during terminal stance.
+    ankle_pushoff_val = 0.0
+    if config.ankle_pushoff_enabled and mode == WalkingRefV2Mode.SWING_RELEASE:
+        pushoff_progress = _clip(
+            (phase - config.ankle_pushoff_phase_start)
+            / max(1.0 - config.ankle_pushoff_phase_start, 1e-6),
+            0.0,
+            1.0,
+        )
+        speed_scale = _clip(speed / max(config.max_forward_speed_mps, 1e-6), 0.0, 1.0)
+        ankle_pushoff_val = pushoff_progress * config.ankle_pushoff_max_rad * speed_scale
 
     ref = LocomotionReferenceState(
         gait_phase_sin=float(sin(2.0 * pi * phase)),
@@ -1431,4 +1491,5 @@ def step_reference_v2(
         progression_permission=progression_permission,
         hybrid_mode_id=int(mode),
         com_x_planned=com_x_planned_val,
+        ankle_pushoff_rad=ankle_pushoff_val,
     )
