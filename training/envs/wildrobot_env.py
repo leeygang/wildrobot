@@ -2347,6 +2347,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_swing_x_scale,
             nominal_pelvis_pitch_scale,
             nominal_support_gate_active,
+            stance_margin_smooth,
         ) = (
             self._compute_nominal_q_ref_from_loc_ref(
                 stance_foot_id=ref_stance_foot,
@@ -2570,6 +2571,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_transition_reason=startup_route_transition_reason,
             loc_ref_com_x0_at_stance_start=com_x0_at_stance_start,
             loc_ref_com_vx0_at_stance_start=com_vx0_at_stance_start,
+            loc_ref_stance_margin_smooth=stance_margin_smooth,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -3004,6 +3006,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_swing_x_scale,
             nominal_pelvis_pitch_scale,
             nominal_support_gate_active,
+            stance_margin_smooth,
         ) = (
             self._compute_nominal_q_ref_from_loc_ref(
                 stance_foot_id=ref_stance_foot,
@@ -3022,6 +3025,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 mode_id=ref_mode_id,
                 com_x_planned=com_x_planned,
                 ankle_pushoff_rad=ankle_pushoff_rad,
+                prev_stance_margin_smooth=wr.loc_ref_stance_margin_smooth,
             )
         )
         nominal_q_ref = self._apply_startup_support_rate_limiter(
@@ -3869,6 +3873,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_transition_reason=startup_route_transition_reason,
             loc_ref_com_x0_at_stance_start=com_x0_at_stance_start,
             loc_ref_com_vx0_at_stance_start=com_vx0_at_stance_start,
+            loc_ref_stance_margin_smooth=stance_margin_smooth,
             loc_ref_gait_phase_sin=loc_ref_phase_sin,
             loc_ref_gait_phase_cos=loc_ref_phase_cos,
             loc_ref_next_foothold=loc_ref_next_foothold,
@@ -4396,6 +4401,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_startup_route_transition_reason=reset_wr_info.loc_ref_startup_route_transition_reason,
             loc_ref_com_x0_at_stance_start=reset_wr_info.loc_ref_com_x0_at_stance_start,
             loc_ref_com_vx0_at_stance_start=reset_wr_info.loc_ref_com_vx0_at_stance_start,
+            loc_ref_stance_margin_smooth=reset_wr_info.loc_ref_stance_margin_smooth,
             loc_ref_gait_phase_sin=reset_wr_info.loc_ref_gait_phase_sin,
             loc_ref_gait_phase_cos=reset_wr_info.loc_ref_gait_phase_cos,
             loc_ref_next_foothold=reset_wr_info.loc_ref_next_foothold,
@@ -4730,6 +4736,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         mode_id: jax.Array,
         com_x_planned: jax.Array | None = None,
         ankle_pushoff_rad: jax.Array | None = None,
+        prev_stance_margin_smooth: jax.Array | None = None,
     ) -> tuple[
         jax.Array,
         jax.Array,
@@ -4751,11 +4758,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jp.int32),
             jp.asarray(mode_id, dtype=jp.int32) == jp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jp.int32),
         ))
-        _margin = jp.where(
+        _margin_target = jp.where(
             _is_walking_mode,
             self._loc_ref_walking_crouch_extra_m,
             self._loc_ref_support_margin_m,
         )
+        # Smooth the margin transition to avoid abrupt height jumps.
+        # Alpha=0.25 at 50Hz gives ~0.08s time constant (~4 steps).
+        _margin_smooth_alpha = jp.asarray(0.25, dtype=jp.float32)
+        _prev_margin = (
+            jp.asarray(prev_stance_margin_smooth, dtype=jp.float32)
+            if prev_stance_margin_smooth is not None
+            else _margin_target
+        )
+        _margin = _prev_margin + _margin_smooth_alpha * (_margin_target - _prev_margin)
         nominal_stance_z = -jp.maximum(
             jp.asarray(0.0, dtype=jp.float32),
             jp.asarray(pelvis_height, dtype=jp.float32) - _margin,
@@ -4930,6 +4946,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             swing_x_scale.astype(jp.float32),
             pelvis_pitch_scale.astype(jp.float32),
             support_gate_active.astype(jp.float32),
+            _margin.astype(jp.float32),
         )
 
     def _compose_loc_ref_residual_action(

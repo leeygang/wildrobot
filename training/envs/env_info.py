@@ -115,6 +115,7 @@ try:
         loc_ref_startup_route_transition_reason: jnp.ndarray  # shape=(), int32
         loc_ref_com_x0_at_stance_start: jnp.ndarray  # shape=()
         loc_ref_com_vx0_at_stance_start: jnp.ndarray  # shape=()
+        loc_ref_stance_margin_smooth: jnp.ndarray  # shape=(), smoothed stance margin
         loc_ref_gait_phase_sin: jnp.ndarray  # shape=()
         loc_ref_gait_phase_cos: jnp.ndarray  # shape=()
         loc_ref_next_foothold: jnp.ndarray  # shape=(2,)
@@ -380,6 +381,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "loc_ref_startup_route_transition_reason": (),
         "loc_ref_com_x0_at_stance_start": (),
         "loc_ref_com_vx0_at_stance_start": (),
+        "loc_ref_stance_margin_smooth": (),
         "loc_ref_gait_phase_sin": (),
         "loc_ref_gait_phase_cos": (),
         "loc_ref_next_foothold": (2,),
