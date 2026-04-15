@@ -66,7 +66,9 @@ def _evaluate_gate(
         survivals.append(survival)
         forward_vels.append(float(r.get("forward_velocity_mean", 0.0)))
         step_lengths.append(float(r.get("debug_step_length_m_mean", 0.0)))
-        foothold_cmds.append(float(r.get("debug_loc_ref_swing_x_target_mean", 0.0)))
+        # Use raw nominal foothold (before support scaling), not the gated swing target
+        foothold_cmds.append(float(r.get("debug_loc_ref_foothold_x_raw_mean",
+                                         r.get("debug_loc_ref_swing_x_target_mean", 0.0))))
         pitch_vals.append(float(r.get("debug_loc_ref_root_pitch_abs_p95", 0.0)))
         roll_vals.append(float(r.get("debug_loc_ref_root_roll_abs_p95", 0.0)))
         # Lateral drift direction from mean lateral velocity

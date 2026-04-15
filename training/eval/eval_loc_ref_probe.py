@@ -43,6 +43,8 @@ TRACE_FIELDS: tuple[tuple[str, str], ...] = (
     ("lateral_velocity", "debug/lateral_vel"),
     ("step_length_m", "debug/step_length_m"),
     ("nominal_swing_x_target", "debug/loc_ref_swing_x_target"),
+    ("foothold_x_raw", "debug/loc_ref_foothold_x_raw"),
+    ("nominal_step_length", "debug/loc_ref_nominal_step_length"),
     ("actual_swing_x", "debug/loc_ref_swing_x_actual"),
     ("swing_x_error", "debug/loc_ref_swing_x_error"),
     ("nominal_pelvis_pitch_target", "debug/loc_ref_pelvis_pitch_target"),
@@ -316,6 +318,12 @@ def run_nominal_probe(
         ),
         "debug_loc_ref_swing_x_target_mean": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_target"]])
+        ),
+        "debug_loc_ref_foothold_x_raw_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_foothold_x_raw"]])
+        ),
+        "debug_loc_ref_nominal_step_length_mean": float(
+            jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_nominal_step_length"]])
         ),
         "debug_loc_ref_swing_x_actual_mean": float(
             jnp.mean(metrics_vec[..., METRIC_INDEX["debug/loc_ref_swing_x_actual"]])

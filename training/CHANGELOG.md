@@ -16,39 +16,49 @@ delivered 25% of commanded forward speed (+0.038 m/s at cmd=0.15) and
 Premature handoff to PPO caused three rounds of reward surgery (v0.19.5,
 v0.19.5b, v0.19.5c) that found lean-back and move-less exploits.
 
-Root cause: "gait existence" was mistaken for "gait generation complete."
-The nominal reference proved it *can* walk but still owed significant
-propulsion that PPO could not create with 10% residual authority.
+Root cause diagnosis (after first run):
+- The support gate penalised double-support in SUPPORT_STABILIZE mode,
+  collapsing `progression_permission` to zero and preventing real stepping
+- But `com_x_planned` was added to the stance foot independently of
+  permission, so the torso pitched forward without a recovery step
+- Result: robot stood/shuffled while accumulating forward pitch → termination
+- Initial propulsion changes (LIPM cosh/sinh, large pelvis pitch, ankle
+  push-off) amplified this mismatch rather than fixing it
 
 ### Changes
 
-Reference propulsion (walking_ref_v2.py):
-- **Full LIPM COM trajectory**: replaced linear ramp with `x0*cosh(ω*t) +
-  (vx0/ω)*sinh(ω*t)` using tracked stance-start COM state.  Configurable
-  via `com_trajectory_mode: lipm` (was `linear`).
-- **Increased COM bounds**: `max_ahead` 0.03→0.08m, `max_behind` 0.01→0.02m
-- **Pelvis pitch feedforward**: gain 0.015→0.05, max 0.02→0.06 rad (~3.4°)
-- **Ankle push-off**: explicit plantarflexion during terminal stance (phase
-  >0.70), proportional to speed, max 0.12 rad.  Configurable via
-  `ankle_pushoff_enabled`, `ankle_pushoff_phase_start`, `ankle_pushoff_max_rad`.
-- **Longer step time**: 0.50→0.60s (more time for servo tracking)
-- **Lower support_release_phase_start**: 0.25→0.20 (more swing time)
+Support gate fix (walking_ref_v2.py):
+- **Remove double-support penalty in SUPPORT_STABILIZE**: the contact
+  penalty (0.25 instability) is now exempt during both STARTUP and
+  SUPPORT_STABILIZE modes, not just STARTUP.  This unblocks
+  `progression_permission` for real stepping.
+- **Couple COM drive to progression**: `com_x_planned` is now scaled by
+  `progression_permission`, so forward torso drive is reduced when stepping
+  is suppressed.  Prevents pitch-without-step failure mode.
 
-Diagnostics tooling:
+Config tuning (ppo_walking_v0194c.yaml):
+- **Reduced support_health_gain**: 10.0 → 5.0 (less aggressive health
+  collapse under mild instability)
+- **Raised foothold min scale**: 0.15 → 0.30 (always take a visible step)
+- **Raised phase min scale**: 0.05 → 0.15 (phase doesn't freeze)
+- **Added swing progress min scale**: 0.00 → 0.10 (swing always progresses)
+- **Modest pelvis pitch**: gain 0.015 → 0.03, max 0.02 → 0.04 rad
+- **Longer step time**: 0.50 → 0.60s
+- **Lower support_release_phase_start**: 0.25 → 0.20
+
+New propulsion capabilities (available but NOT enabled in shipped config):
+- **LIPM COM trajectory mode**: `com_trajectory_mode: lipm` (cosh/sinh).
+  Available for future use; default remains `linear`.
+- **Ankle push-off**: `ankle_pushoff_enabled: true` with configurable
+  phase start and max plantarflexion.  Disabled by default.
+
+Diagnostics:
 - **Multi-seed handoff gate evaluator**: `training/eval/eval_handoff_gate.py`
-  — runs ≥5 seeds, evaluates 6 quantitative gate criteria, reports per-seed
-  breakdown and aggregate pass/fail
-- **Extended probe traces**: added root_roll, lateral_velocity, step_length_m
-  to the nominal probe trace output
-
-Config:
-- `training/configs/ppo_walking_v0194c.yaml` — propulsion-reworked config
-  with LIPM mode, ankle push-off, and v0.19.5c reward rebalance applied
-
-Reward (carried from v0.19.5c):
-- Propulsion rewards enabled from iter 0: `dense_progress: 1.0`,
-  `step_progress: 0.30`, `foot_place: 0.10`, `step_event: 0.02`
-- `min_velocity: 0.08` (forward-only, no stop)
+- **Raw nominal metrics**: added `debug/loc_ref_foothold_x_raw` and
+  `debug/loc_ref_nominal_step_length` for pre-scaling foothold measurement
+- **Extended probe traces**: root_roll, lateral_velocity, step_length_m
+- **Gate instrumentation fix**: handoff gate uses raw foothold metric,
+  not the support-gated swing target
 
 ### Quantitative Handoff Gate (must pass before PPO)
 1. Multi-seed: ≥80% seeds survive ≥400/500, no seed <300, mean ≥430
@@ -59,12 +69,17 @@ Reward (carried from v0.19.5c):
 6. Lateral drift: direction varies across seeds
 
 ### Files Changed
-- `control/references/walking_ref_v2.py` — LIPM COM trajectory, ankle push-off
-- `training/envs/wildrobot_env.py` — wire new config fields and ankle push-off
-  through IK adapter
+- `control/references/walking_ref_v2.py` — remove double-support penalty in
+  SUPPORT_STABILIZE, couple COM drive to progression_permission, add LIPM
+  mode and ankle push-off capabilities
+- `training/envs/wildrobot_env.py` — wire new config fields, ankle push-off
+  through IK adapter, add raw nominal foothold/step-length metrics
+- `training/core/metrics_registry.py` — register raw nominal metrics
 - `training/eval/eval_handoff_gate.py` — NEW: multi-seed gate evaluator
-- `training/eval/eval_loc_ref_probe.py` — add trace fields for gate metrics
-- `training/configs/ppo_walking_v0194c.yaml` — NEW: propulsion-reworked config
+- `training/eval/eval_loc_ref_probe.py` — add trace fields, raw metric summaries
+- `training/configs/training_runtime_config.py` — new EnvConfig fields
+- `training/configs/training_config.py` — loader wiring for new fields
+- `training/configs/ppo_walking_v0194c.yaml` — NEW: support-gate-fixed config
 
 ### Verification
 ```bash

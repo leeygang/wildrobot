@@ -15,7 +15,7 @@
 # =============================================================================
 
 version: "0.19.4c"
-version_name: "Reference propulsion rework — LIPM + pitch + ankle pushoff"
+version_name: "Reference propulsion rework — support gate fix + COM coupling"
 
 seed: 42
 
@@ -59,7 +59,10 @@ env:
   loc_ref_max_step_length_m: 0.12
   loc_ref_max_lateral_step_m: 0.10
   loc_ref_swing_height_m: 0.025
-  loc_ref_pelvis_roll_bias_rad: 0.02
+  # Pelvis roll: 0.02 → 0.06 rad (~3.4°) for lateral weight shift
+  # Without ankle roll, pelvis roll + hip roll are the only frontal-plane
+  # authority for single-support balance.
+  loc_ref_pelvis_roll_bias_rad: 0.06
   # Pelvis pitch feedforward: 0.015 → 0.03 (Lever 2: modest increase)
   loc_ref_pelvis_pitch_gain: 0.03
   # Max pelvis pitch: 0.02 → 0.04 rad (~2.3°)
@@ -71,7 +74,8 @@ env:
   loc_ref_walking_crouch_extra_m: 0.045
   loc_ref_max_swing_x_delta_m: 0.06
   loc_ref_max_swing_z_delta_m: 0.03
-  loc_ref_swing_y_to_hip_roll: 0.08
+  # Hip roll lateral coupling: 0.08 → 0.12 (moderate COM shift, avoid narrowing stance)
+  loc_ref_swing_y_to_hip_roll: 0.12
   loc_ref_overspeed_deadband: 0.02
   loc_ref_overspeed_brake_gain: 3.0
   loc_ref_overspeed_phase_slowdown_gain: 5.0
@@ -85,12 +89,14 @@ env:
   loc_ref_pelvis_pitch_brake_gain: 2.0
   loc_ref_pelvis_pitch_min_scale: 0.00
   loc_ref_support_pitch_rate_start_rad_s: 0.60
-  loc_ref_support_health_gain: 10.0
+  # Reduced from 10.0 — high gain collapses health under mild instability
+  loc_ref_support_health_gain: 5.0
   # Support release phase: 0.25 → 0.20 (Lever 5: more swing time)
   loc_ref_support_release_phase_start: 0.20
-  loc_ref_support_foothold_min_scale: 0.15
-  loc_ref_support_swing_progress_min_scale: 0.00
-  loc_ref_support_phase_min_scale: 0.05
+  # Raised min scales so the robot always takes a visible step
+  loc_ref_support_foothold_min_scale: 0.30
+  loc_ref_support_swing_progress_min_scale: 0.10
+  loc_ref_support_phase_min_scale: 0.15
   loc_ref_max_lateral_release_m: 0.015
   loc_ref_v2_support_open_threshold: 0.50
   loc_ref_v2_support_release_threshold: 0.30
@@ -270,7 +276,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, walking, v0.19.4c, wr_obs_v4, residual_q_ref, lipm, propulsion]
+  tags: [ppo, walking, v0.19.4c, wr_obs_v4, residual_q_ref, support_gate_fix]
 
 video:
   enabled: true

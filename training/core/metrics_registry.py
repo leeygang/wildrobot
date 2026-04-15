@@ -1203,6 +1203,18 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Nominal support-gated swing-foot x target in stance frame",
     ),
     MetricSpec(
+        name="debug/loc_ref_foothold_x_raw",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Raw nominal foothold x before support scaling (meters)",
+    ),
+    MetricSpec(
+        name="debug/loc_ref_nominal_step_length",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Raw nominal step length from speed*step_time before DCM/scaling (meters)",
+    ),
+    MetricSpec(
         name="debug/loc_ref_swing_x_actual",
         reducer=Reducer.MEAN,
         log_prefix="debug",

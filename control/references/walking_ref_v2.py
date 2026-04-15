@@ -544,22 +544,28 @@ def step_reference_v2_jax(
         left_foot_loaded=left_foot_loaded,
         right_foot_loaded=right_foot_loaded,
     )
-    # During startup, double-support (both feet loaded) is the expected state.
-    # The health function penalises non-single-support by 0.25, which unfairly
-    # weakens every admission gate.  Remove that penalty while in startup.
+    # During startup and support-stabilize, double-support (both feet loaded)
+    # is the expected state.  The health function penalises non-single-support
+    # by 0.25, which unfairly prevents swing release.  Remove that penalty
+    # while in startup or support-stabilize modes.
     _startup_mode_cst = jnp.asarray(int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), dtype=jnp.int32)
+    _support_mode_cst = jnp.asarray(int(WalkingRefV2Mode.SUPPORT_STABILIZE), dtype=jnp.int32)
     _is_double_support = jnp.logical_not(jnp.logical_xor(
         jnp.asarray(left_foot_loaded, dtype=jnp.bool_),
         jnp.asarray(right_foot_loaded, dtype=jnp.bool_),
     ))
-    _startup_ds = (jnp.asarray(mode_id, dtype=jnp.int32) == _startup_mode_cst) & _is_double_support
+    _in_ds_exempt_mode = (
+        (jnp.asarray(mode_id, dtype=jnp.int32) == _startup_mode_cst)
+        | (jnp.asarray(mode_id, dtype=jnp.int32) == _support_mode_cst)
+    )
+    _ds_exempt = _in_ds_exempt_mode & _is_double_support
     _adj_instab = jnp.maximum(support_instability - jnp.asarray(0.25, dtype=jnp.float32), 0.0)
     _adj_health = jnp.clip(
         1.0 / (1.0 + jnp.asarray(config.support_health_gain, dtype=jnp.float32) * _adj_instab),
         0.0, 1.0,
     ).astype(jnp.float32)
-    support_health = jnp.where(_startup_ds, _adj_health, support_health)
-    support_instability = jnp.where(_startup_ds, _adj_instab, support_instability)
+    support_health = jnp.where(_ds_exempt, _adj_health, support_health)
+    support_instability = jnp.where(_ds_exempt, _adj_instab, support_instability)
     denom = jnp.maximum(
         jnp.asarray(config.support_open_threshold - config.support_release_threshold, dtype=jnp.float32),
         jnp.asarray(1e-6, dtype=jnp.float32),
@@ -1041,6 +1047,9 @@ def step_reference_v2_jax(
         jnp.asarray(0.0, dtype=jnp.float32),
         com_x_planned,
     )
+    # Scale COM drive by progression_permission so forward torso drive
+    # is reduced when stepping is suppressed.  Prevents pitch-without-step.
+    com_x_planned = com_x_planned * progression_permission
     # State tracking: record COM state at each stance transition.
     _stance_switched = switches > jnp.asarray(stance_switch_count, dtype=jnp.int32)
     com_x0_out = jnp.where(
@@ -1205,6 +1214,8 @@ def step_reference_v2_jax(
         "phase_progress": phase.astype(jnp.float32),
         "stance_foot_id": stance.astype(jnp.int32),
         "next_foothold": jnp.asarray([x_foot, y_foot], dtype=jnp.float32),
+        "next_foothold_raw": jnp.asarray([x_foot_nom, y_foot], dtype=jnp.float32),
+        "nominal_step_length": nominal_step.astype(jnp.float32),
         "swing_pos": jnp.asarray([swing_x, swing_y, swing_z], dtype=jnp.float32),
         "swing_vel": swing_vel,
         "pelvis_height": pelvis_height.astype(jnp.float32),
@@ -1247,8 +1258,9 @@ def step_reference_v2(
         raise ValueError("dt_s must be > 0")
 
     support_health, support_instability = compute_support_health_v2(config=config, inputs=inputs)
-    # During startup, double-support is expected — remove the contact penalty.
-    if state.mode_id == int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP):
+    # During startup and support-stabilize, double-support is expected —
+    # remove the contact penalty so progression_permission is not blocked.
+    if state.mode_id in (int(WalkingRefV2Mode.STARTUP_SUPPORT_RAMP), int(WalkingRefV2Mode.SUPPORT_STABILIZE)):
         is_double = not (bool(inputs.left_foot_loaded) ^ bool(inputs.right_foot_loaded))
         if is_double:
             adj_instab = max(support_instability - 0.25, 0.0)
@@ -1452,6 +1464,9 @@ def step_reference_v2(
     # Suppress during startup/support (double support)
     if mode in (WalkingRefV2Mode.STARTUP_SUPPORT_RAMP, WalkingRefV2Mode.SUPPORT_STABILIZE):
         com_x_planned_val = 0.0
+    # Scale COM drive by progression_permission so forward torso drive
+    # is reduced when stepping is suppressed.
+    com_x_planned_val *= progression_permission
 
     # Ankle push-off: explicit plantarflexion during terminal stance.
     ankle_pushoff_val = 0.0

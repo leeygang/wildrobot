@@ -1,42 +1,11 @@
-# Repository Guidelines
+Code Change:
+1. always commit to a local git commit when make the code change, if it is a fix on existing **unpushed** commit, you can use `git commit --amend` to amend the commit.
 
-## Active Plan (AI Quickstart)
-- Follow the execution plan in `training/docs/standing_training.md`; this is the canonical active training plan for the current branch. Align experiments and changes with its stage gates, metrics, and decision rules.
-- Use the commands in `CLAUDE.md` as the canonical entry points (validation, PPO training, visualization). Keep new scripts/configs consistent with that flow.
+Design:
+1. ALWAYS research the public paper or projects to avoid reinventing the wheel. When discuss the solution, always provide the reference. Prefer to stick with the highest confident solution.
+2. make the metrics accurate as the first step when analyzing the data.
+3. keep the design simple
 
-## Project Structure & Module Organization
-- `training/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
-- `assets/`: Robot definitions and generated configs. Use variant folders (`assets/v1`, `assets/v2`, ...). Keep the variant `mujoco_robot_config.json` in sync with its MJCF (e.g., `assets/v1/mujoco_robot_config.json`).
-- `scripts/`: Validation and one-off tooling (e.g., parity checks, PD tuning, feature verification).
-- `tests/`: Fast regression/consistency tests; `tests/envs/` covers env parity, root-level tests cover AMP features and quaternion math.
-- `mujoco-brax/` and `isaac/`: Alternate runtimes/notes; coordinate before modifying these experimental paths.
 
-## Build, Test, and Development Commands
-- Environment: `uv sync` to create/update `.venv` (Python 3.12+). Run tools with `uv run ...` to ensure the repo env is used.
-- Validate training setup before long runs: `uv run python scripts/validate_training_setup.py`.
-- Stage 1 PPO walking (current focus): `uv run python training/train.py --config training/configs/ppo_walking.yaml`; add `--verify` for a quick smoke test.
-- Visualize a checkpoint: `uv run python training/visualize_policy.py --checkpoint <path>`.
-- Fast deterministic checks: `uv run python scripts/run_unit_tests.py`. Full suite: `uv run pytest tests`.
-
-## Coding Style & Naming Conventions
-- Python-first codebase; follow PEP 8 (4-space indent, snake_case for functions/vars, PascalCase for classes). Add type hints on new/changed functions.
-- Keep modules importable as scripts (tests rely on `sys.path` manipulation); avoid hard-coded working directories.
-- Prefer small, pure helpers in `training/utils` and reuse existing math helpers before adding new dependencies.
-- When touching configs, document required assets (e.g., regenerated `mujoco_robot_config.json`) and default values inline.
-
-## Testing Guidelines
-- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/v1/mujoco_robot_config.json`, regenerate via `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` before running.
-- For new features, add pytest cases mirroring existing patterns; favor deterministic inputs over random seeds.
-- Capture expected output shapes/thresholds in assertions rather than printouts; keep prints only for helpful debugging context.
-
-## Commit & Pull Request Guidelines
-- Use concise, imperative commits (e.g., `Tighten AMP feature bounds`, `Add PPO smoke test`) and include the stage/version tag if relevant (history uses short release-style summaries).
-- PRs should state scope, risk, and how to reproduce tests (commands + key outputs). Link issues or roadmap stages (`v0.10.x`) when applicable.
-- Include screenshots or short logs for training/visualization changes; note any required asset regeneration or external data.
-
-## Related Repositories (in `/home/leeygang/projects`)
-- `IsaacLab/`: External simulator dependency; keep versions compatible with `assets/usd/` and Isaac scripts.
-- `env_isaaclab/`: Environment setup helpers; useful when syncing IsaacLab configs.
-- `GMR/`: Reference models/data; align protocol when importing datasets or motion references.
-- `amass/`: Motion capture assets; ensure usage complies with data licensing and preprocessing steps.
-- `ide_config/`, `gnome-terminal/`: Local tooling/config; adjust only if dev environment changes are required.
+Result:
+1. Update the training result to CHANGELOG.md, if the CHANGELOG.md file is too big, you can create a new CHANGELOG.md file and link it in README.md.

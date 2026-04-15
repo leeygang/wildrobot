@@ -2674,6 +2674,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics["debug/m3_impact_force"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/step_length_m"] = jp.zeros((), dtype=jp.float32)
         metrics["debug/loc_ref_swing_x_target"] = nominal_swing_x_target
+        metrics["debug/loc_ref_foothold_x_raw"] = jp.asarray(
+            ref_state.get("next_foothold_raw", jp.zeros(2, dtype=jp.float32))[0],
+            dtype=jp.float32,
+        )
+        metrics["debug/loc_ref_nominal_step_length"] = jp.asarray(
+            ref_state.get("nominal_step_length", jp.zeros((), dtype=jp.float32)),
+            dtype=jp.float32,
+        )
         metrics["debug/loc_ref_swing_x_actual"] = jp.asarray(
             swing_pos_reset[0], dtype=jp.float32
         )
@@ -3285,6 +3293,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/loc_ref_applied_q_abs_mean": jp.mean(jp.abs(applied_target_q)),
             "debug/loc_ref_nominal_q_abs_mean": jp.mean(jp.abs(nominal_q_ref)),
             "debug/loc_ref_swing_x_target": nominal_swing_x_target,
+            "debug/loc_ref_foothold_x_raw": jp.asarray(
+                ref_state.get("next_foothold_raw", jp.zeros(2, dtype=jp.float32))[0],
+                dtype=jp.float32,
+            ),
+            "debug/loc_ref_nominal_step_length": jp.asarray(
+                ref_state.get("nominal_step_length", jp.zeros((), dtype=jp.float32)),
+                dtype=jp.float32,
+            ),
             "debug/loc_ref_swing_x_actual": jp.asarray(swing_pos_post[0], dtype=jp.float32),
             "debug/loc_ref_swing_x_error": jp.asarray(
                 swing_pos_post[0] - nominal_swing_x_target, dtype=jp.float32
