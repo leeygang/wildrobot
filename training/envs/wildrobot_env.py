@@ -3202,6 +3202,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_swing_vel=loc_ref_swing_vel,
             loc_ref_next_foothold=loc_ref_next_foothold,
             loc_ref_stance_foot=ref_stance_foot,
+            prev_root_height=wr.root_height,
         )
 
         # Check termination (get done, terminated, truncated, and diagnostics)
@@ -4059,6 +4060,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "debug/effective_posture_weight": metrics.get(
                 "debug/effective_posture_weight", jp.zeros(())
             ),
+            "debug/root_height": metrics.get("debug/root_height", jp.zeros(())),
+            "debug/root_height_rate": metrics.get("debug/root_height_rate", jp.zeros(())),
             # v0.14.x: M3 FSM debug metrics – preserve on auto-reset for accurate logging
             "debug/bc_phase": metrics.get("debug/bc_phase", jp.zeros(())),
             "debug/bc_swing_foot": metrics.get("debug/bc_swing_foot", jp.zeros(())),
@@ -5440,6 +5443,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         loc_ref_swing_vel: Optional[jax.Array] = None,
         loc_ref_next_foothold: Optional[jax.Array] = None,
         loc_ref_stance_foot: Optional[jax.Array] = None,
+        prev_root_height: Optional[jax.Array] = None,
     ) -> tuple[jax.Array, Dict[str, jax.Array]]:
         """Compute reward following gold standard for bipedal locomotion.
 
@@ -6261,6 +6265,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Debug metrics
             "debug/pitch": pitch,
             "debug/roll": roll,
+            "debug/root_height": height,
+            "debug/root_height_rate": jp.where(
+                prev_root_height is not None,
+                jp.abs(height - prev_root_height) / jp.asarray(self._ctrl_dt, dtype=jp.float32),
+                jp.zeros((), dtype=jp.float32),
+            ),
             "debug/forward_vel": forward_vel,
             "debug/lateral_vel": lateral_vel,
             "debug/left_force": left_force,

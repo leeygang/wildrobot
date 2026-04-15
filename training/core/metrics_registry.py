@@ -231,6 +231,18 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Body roll angle",
     ),
     MetricSpec(
+        name="debug/root_height",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Root body height (meters)",
+    ),
+    MetricSpec(
+        name="debug/root_height_rate",
+        reducer=Reducer.MEAN,
+        log_prefix="debug",
+        description="Root height rate of change (m/s), gate target 0.03-0.05",
+    ),
+    MetricSpec(
         name="debug/forward_vel",
         reducer=Reducer.MEAN,
         log_prefix="debug",

@@ -40,6 +40,8 @@ TRACE_FIELDS: tuple[tuple[str, str], ...] = (
     ("root_pitch", "debug/loc_ref_root_pitch"),
     ("root_pitch_rate", "debug/loc_ref_root_pitch_rate"),
     ("root_roll", "debug/roll"),
+    ("root_height", "debug/root_height"),
+    ("root_height_rate", "debug/root_height_rate"),
     ("lateral_velocity", "debug/lateral_vel"),
     ("step_length_m", "debug/step_length_m"),
     ("nominal_swing_x_target", "debug/loc_ref_swing_x_target"),
