@@ -2,10 +2,240 @@
 
 **Status:** Active reference note for the ToddlerBot-style WildRobot pivot
 **Created:** 2026-03-31
-**Last updated:** 2026-04-05
+**Last updated:** 2026-04-15
 **Context:** After `v0.17.4t-crouch` failed the gate (eval_hard = 54.2%), evaluating
 whether ToddlerBot's ZMP + reference-tracking recipe is a better path forward than
 continuing bounded RL teacher iterations.
+
+---
+
+## 2026-04-15 Update: ToddlerBot, Cassie, and Residual-RL Boundary
+
+This update reflects a fresh review of:
+
+- ToddlerBot repo: `hshi74/toddlerbot`
+- ToddlerBot 2025 paper / site
+- Locomotion Beyond Feet 2026 paper / site
+- Cassie 2024 versatile locomotion paper from the Berkeley Hybrid Robotics lab
+- current WildRobot `v0.19.x` walking design and training stack
+
+### ToddlerBot 2025/2026: what they are actually doing
+
+ToddlerBot is not a good example of "PPO discovers walking from scratch."
+
+The 2025 walking stack is better described as:
+
+- a strong ZMP-based motion reference (`WalkZMPReference`)
+- reference-conditioned walking rewards
+- PPO learning robustness and execution around that prior
+- broad domain randomization and sim-to-real realism
+
+The 2026 "Locomotion Beyond Feet" system pushes this further:
+
+- physics-grounded keyframes / reference motions
+- reinforcement learning to make them robust and dynamically feasible
+- terrain-specific motion-tracking policies
+- failure recovery + vision-based skill selection on top
+
+So ToddlerBot's public success is "reference first, RL robustifies," not
+"weak nominal gait plus residual PPO invents locomotion."
+
+### External references for "controller first, RL corrects"
+
+There are real success cases for a hybrid stack where a conventional controller
+or motion prior owns the base behavior and RL learns a corrective term:
+
+- **Residual Reinforcement Learning for Robot Control (2019)**  
+  canonical residual-RL paper; strongest evidence on manipulation
+- **Agile and Versatile Robot Locomotion via Kernel-based Residual Learning
+  (2023)**  
+  closest quadruped locomotion example of controller/prior + RL residual
+- **HiLMa-Res (2024)**  
+  general locomotion + manipulation hierarchy, with RL corrections layered on
+  top of a stronger nominal locomotion stack
+- **RuN: Residual Policy for Natural Humanoid Locomotion (2025)**  
+  strongest recent humanoid example; a motion prior provides natural gait and
+  RL learns a lightweight residual correction
+- **RL2AC (RSS 2024)**  
+  not a pure residual policy, but same hybrid lesson: a base locomotion policy
+  is complemented by a fast adaptive controller for robustness
+
+Important caveat:
+
+- these examples only support residual RL when the base controller / prior
+  already owns most locomotion semantics
+- they do **not** support expecting a small residual policy to create missing
+  gait generation from a weak nominal controller
+
+#### External proof points: what is actually proven
+
+The cleanest statement is:
+
+- controller / prior + residual **RL** is well supported
+- controller / prior + residual **PPO** is supported by newer examples, but the
+  evidence is still thinner than the broader residual-RL literature
+
+| Project / Paper | Pattern | Domain | Real-world evidence | Why it matters for WildRobot | PPO note |
+|---|---|---|---|---|---|
+| Residual RL for Robot Control (2019) | conventional feedback controller + additive RL residual | contact-rich manipulation | yes | canonical proof that additive residual control works on hardware | not presented as a locomotion or PPO result |
+| Kernel-based Residual Learning (2023) | frozen MPC-derived kernel + RL residual | quadruped locomotion | paper proves robust locomotion against perturbations and terrains | strongest locomotion proof that a model-based base policy can be widened by a residual learner | RL is explicit; PPO should not be inferred unless checked separately |
+| HiLMa-Res (2024) | operational-space locomotion controller + residual RL for downstream loco-manip tasks | quadruped loco-manipulation | yes | shows hybrid controller + residual learning can scale beyond pure walking | residual RL is explicit; PPO is not the key claim in the abstract |
+| RuN (2025) | pre-trained motion generator + lightweight residual correction policy | humanoid locomotion | yes, simulation and reality on Unitree G1 | closest humanoid analogue to "strong motion prior + residual correction" | strongest recent residual-humanoid example; use as evidence for the pattern more than for PPO specifically |
+| RL2AC (2024) | learned locomotion policy + fast adaptive controller | quadruped locomotion | yes | not residual PPO, but confirms the broader hybrid lesson: split nominal skill from fast robustness correction | adjacent, not a residual-policy example |
+
+Practical interpretation:
+
+- if the question is "does hybrid control + learned correction work?" the
+  answer is clearly yes
+- if the question is "does small-residual PPO reliably rescue weak nominal
+  bipeds?" the evidence is much weaker
+- the external record supports using residual PPO only when the nominal prior is
+  already strong enough that RL is genuinely correcting, not inventing, gait
+  semantics
+
+#### Closest PPO-flavored comparison points
+
+For WildRobot, the most relevant "controller/prior + PPO-family training"
+examples are:
+
+- **ToddlerBot 2025**  
+  PPO trained with a strong ZMP-based walking prior; not a small residual-action
+  setup, but clear evidence that PPO works well when the prior already owns the
+  locomotion semantics
+- **RuN (2025)**  
+  closest humanoid example of a motion prior plus lightweight learned
+  correction; strongest external reference for "strong prior + learned
+  correction" in humanoid walking, even though the main lesson is the residual
+  boundary more than PPO branding
+- **Cassie 2024**  
+  not residual PPO, but the most important biped comparison because it shows a
+  stronger reference-conditioned policy can outperform a tightly constrained
+  residual action space
+
+So the most defensible statement is:
+
+- PPO with a strong locomotion prior is well supported
+- residual learning with a strong controller/prior is well supported
+- strict "small residual PPO rescues weak nominal biped gait" is still not
+  strongly supported by external evidence
+
+### Cassie 2024: the important comparison for WildRobot
+
+The most relevant Cassie reference is:
+
+- **Reinforcement Learning for Versatile, Dynamic, and Robust Bipedal
+  Locomotion Control** (Li et al., 2024)
+
+This paper is highly relevant because it is a strong real-world biped result,
+but its design boundary is **not** the same as current WildRobot.
+
+#### What Cassie does
+
+Cassie uses:
+
+- direct RL control for a torque-controlled human-sized biped
+- a dual-history policy with both short and long robot I/O history
+- a skill-specific reference-motion preview as policy input
+- joint-level PD control under the learned policy
+
+For walking specifically:
+
+- the walking skill is parameterized by commands
+- the policy receives a preview of a reference motion `q_t^r`
+- that reference is built from a gait library
+- the paper describes a walking reference set of **1331** Bezier gait motions
+- running uses motion-capture retargeting
+- jumping uses hand-authored animation
+
+So Cassie is **not** "no prior." It is:
+
+- strong motion prior
+- direct adaptive RL policy
+- rich temporal context
+- broad task randomization
+
+#### What Cassie says about residual learning
+
+Cassie's ablations are especially important for WildRobot because the paper does
+**not** generally endorse residual action spaces for dynamic biped locomotion.
+
+Their discussion argues that performance is best when RL can jointly learn
+trajectory optimization and real-time control, and they note that this holds
+as long as the action space is not corrupted by the added reference motion, as
+in their residual-action ablation. In practical terms:
+
+- they found strong benefit from reference motion as **input / prior**
+- but not from tightly constraining the action space as a small residual around
+  that reference
+
+This is the clearest external warning sign for the current WildRobot boundary.
+
+#### Cassie vs WildRobot
+
+| Dimension | Cassie 2024 | WildRobot `v0.19.x` |
+|---|---|---|
+| Robot class | Human-sized, torque-controlled biped | Small servo-driven position-controlled biped |
+| Base gait prior | Large gait library / mocap / animation priors | Online analytical `walking_ref_v2` controller |
+| Policy authority | Direct locomotion policy with broad adaptive authority | Residual around nominal `q_ref` |
+| Policy memory | Short + long I/O history | Current walking PPO is mostly feedforward, no comparable long-history adaptive structure |
+| Reference role | Reference preview guides policy | Nominal controller already commits to gait semantics and PPO only corrects |
+| RL burden | Robustify and adapt a strong prior | Currently still tempted to rescue nominal gait-generation gaps |
+
+The key implication:
+
+- Cassie succeeds because the policy is allowed to be the main locomotion
+  controller while using a strong reference prior
+- WildRobot currently asks a **smaller** residual policy to fix a nominal gait
+  that is still not fully owning propulsion and visible step release
+
+That is a much harder and less supported problem.
+
+### Updated interpretation for WildRobot
+
+ToddlerBot and Cassie both support the same strategic lesson:
+
+- a strong locomotion prior is valuable
+- RL is excellent at robustness, adaptation, and dynamic feasibility
+- but RL should not be asked to invent missing gait semantics from a weak base
+  under small residual authority
+
+For WildRobot, that means:
+
+1. `walking_ref_v2` still has to pass the `v0.19.4-C/D` nominal handoff gate.
+2. Residual PPO is justified only after nominal visibly owns:
+   - swing release
+   - step amplitude
+   - propulsion
+3. If WildRobot wants to move closer to Cassie, the next architectural step is
+   not "bigger residual weight." It is:
+   - stronger reference priors
+   - richer history-conditioned policy inputs
+   - possibly a later transition from strict residual correction toward a more
+     direct reference-conditioned locomotion policy
+
+### Practical takeaway
+
+ToddlerBot and Cassie do **not** invalidate the current WildRobot direction.
+They sharpen the boundary:
+
+- **good use of residual RL:** correction around an already valid gait
+- **bad use of residual RL:** trying to repair a nominal controller that still
+  cannot reliably produce visible stepping and sufficient propulsion
+
+This is exactly why the tightened `v0.19.4-C/D` handoff gate is the right
+discipline for WildRobot.
+
+### References
+
+- ToddlerBot repo: `https://github.com/hshi74/toddlerbot`
+- ToddlerBot 2025 site: `https://toddlerbot.github.io/`
+- Locomotion Beyond Feet 2026 site: `https://locomotion-beyond-feet.github.io/`
+- Cassie 2024 paper: `https://hybrid-robotics.berkeley.edu/publications/Cassie_RL_Versatile_Locomotion.pdf`
+- Residual RL 2019: `https://residualrl.github.io/`
+- Kernel-based Residual Learning 2023: `https://arxiv.org/abs/2302.07343`
+- HiLMa-Res 2024: `https://arxiv.org/abs/2407.06584`
+- RL2AC 2024: `https://www.roboticsproceedings.org/rss20/p060.html`
+- RuN 2025: `https://arxiv.org/abs/2509.20696`
 
 ---
 
