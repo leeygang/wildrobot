@@ -54,15 +54,14 @@ env:
   # Step time: 0.50 → 0.60 (Lever 3: more time for servo to track)
   loc_ref_step_time_s: 0.60
   loc_ref_walking_pelvis_height_m: 0.42
-  loc_ref_nominal_lateral_foot_offset_m: 0.08
+  # Wider nominal stance (0.08 → 0.10 per side)
+  loc_ref_nominal_lateral_foot_offset_m: 0.10
   loc_ref_min_step_length_m: 0.03
   loc_ref_max_step_length_m: 0.12
   loc_ref_max_lateral_step_m: 0.10
   loc_ref_swing_height_m: 0.025
-  # Pelvis roll: 0.02 → 0.06 rad (~3.4°) for lateral weight shift
-  # Without ankle roll, pelvis roll + hip roll are the only frontal-plane
-  # authority for single-support balance.
-  loc_ref_pelvis_roll_bias_rad: 0.06
+  # Pelvis roll: keep small — large values narrow actual stance through hip chain
+  loc_ref_pelvis_roll_bias_rad: 0.03
   # Pelvis pitch feedforward: 0.015 → 0.03 (Lever 2: modest increase)
   loc_ref_pelvis_pitch_gain: 0.03
   # Max pelvis pitch: 0.02 → 0.04 rad (~2.3°)
@@ -74,8 +73,8 @@ env:
   loc_ref_walking_crouch_extra_m: 0.045
   loc_ref_max_swing_x_delta_m: 0.06
   loc_ref_max_swing_z_delta_m: 0.03
-  # Hip roll lateral coupling: 0.08 → 0.12 (moderate COM shift, avoid narrowing stance)
-  loc_ref_swing_y_to_hip_roll: 0.12
+  # Hip roll: original value — avoid narrowing stance
+  loc_ref_swing_y_to_hip_roll: 0.08
   loc_ref_overspeed_deadband: 0.02
   loc_ref_overspeed_brake_gain: 3.0
   loc_ref_overspeed_phase_slowdown_gain: 5.0
