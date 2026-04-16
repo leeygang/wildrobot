@@ -94,6 +94,29 @@ JAX_PLATFORMS=cpu uv run mjpython training/eval/visualize_nominal_ref.py \
   --forward-cmd 0.15 --horizon 500 --print-every 20 --log --record --headless
 ```
 
+### Training Result (PPO Attempt, Premature)
+
+Run analyzed:
+- Offline run: `training/wandb/offline-run-20260414_055804-fam8kwkt` (W&B tags: `v0.19.5`, started `2026-04-14`)
+- Checkpoints: `training/checkpoints/ppo_walking_v0195_v00195_20260414_060040-fam8kwkt`
+
+Metrics sanity (important):
+- `eval_clean/*` and `eval_push/*` use `teacher_com_velocity_target_mean=0.0` in this run, so they are **standing/recovery** evals, not forward-walking command tracking. Do not pick a “walking” checkpoint based on `eval_clean/success_rate` here.
+
+Walking-rollout summary (iters 10..680, logged cmd is ~0.10 m/s):
+- Mean `env/velocity_cmd`: `0.099 m/s`
+- Mean `env/forward_velocity`: `0.046 m/s` (about `46%` of cmd)
+- Mean `tracking/cmd_vs_achieved_forward`: `0.153 m/s` (fails the `<= 0.075` handoff criterion)
+- Mean `term_pitch_frac`: `66%` (dominant termination)
+- Mean `debug/step_length_m`: `0.0034 m` (note: diluted by non-touchdown steps; touchdown-only metric not logged here)
+
+Regime split (why this run is not deployable for walking):
+- “Fast” phases (e.g. iter 330): `env/forward_velocity=0.232` but `term_pitch_frac=99.8%` and `env/episode_length=66` (forward-dive / pitch-fall).
+- “Stable” phases (e.g. iter 680): `env/episode_length=487`, `env/success_rate=92%`, `term_pitch_frac=7.7%` but `env/forward_velocity=0.011` (standing / low-motion basin).
+
+Verdict:
+- This PPO run does not demonstrate residual improvements on top of a nominal reference that already owns locomotion, so it does not satisfy the `v0.19.4-C`→`v0.19.5` precondition. Do not treat `checkpoint_680_89128960.pkl` as a walking checkpoint.
+
 ### Next Step
 If handoff gate passes: resume v0.19.5 PPO with propulsion rewards enabled.
 If gate fails after all 5 interventions: escalate per v0.19.5-D fallback plan.
