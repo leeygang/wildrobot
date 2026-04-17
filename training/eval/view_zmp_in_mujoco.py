@@ -86,6 +86,23 @@ def run_viewer(
     physics_dt = model.opt.timestep
     physics_steps_per_ref = max(1, int(round(ref_dt / physics_dt)))
 
+    # Startup ramp: gradually blend from standing to walking posture
+    # over startup_steps to avoid a violent initial transition.
+    startup_steps = 50
+    standing_q = np.zeros(19, dtype=np.float32)  # standing: all joints near zero
+    first_q = traj.q_ref[0]
+
+    print(f"Startup ramp: {startup_steps} steps blending to walking posture")
+    for i in range(startup_steps):
+        alpha = (i + 1) / startup_steps
+        blended = standing_q * (1 - alpha) + first_q * alpha
+        mapper.set_all_ctrl(data, blended)
+        for _ in range(physics_steps_per_ref):
+            mujoco.mj_step(model, data)
+
+    root_z_after_ramp = data.qpos[2]
+    print(f"After ramp: root_z={root_z_after_ramp:.4f}")
+
     step_log = []
 
     def step_fn(step_idx: int) -> dict:
