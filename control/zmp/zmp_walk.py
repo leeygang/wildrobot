@@ -34,7 +34,7 @@ class ZMPWalkConfig:
     lower_leg_m: float = 0.21
     hip_lateral_offset_m: float = 0.0536
     ankle_to_ground_m: float = 0.06
-    com_height_m: float = 0.42
+    com_height_m: float = 0.45  # near-upright walking (ankle limit constrains squat depth)
 
     # Gait timing
     cycle_time_s: float = 0.50
@@ -76,11 +76,14 @@ def _solve_sagittal_ik(
     l1: float,
     l2: float,
     min_margin: float = 0.01,
+    ankle_limit_rad: float = 0.698,
 ) -> Tuple[float, float, float, bool]:
     """Analytical 2-link sagittal IK.
 
     Returns (hip_pitch, knee_pitch, ankle_pitch, reachable).
-    Ankle pitch keeps the foot level: ankle = -(hip + knee).
+    Ankle pitch is clamped to ±ankle_limit_rad rather than forced to
+    keep the foot perfectly flat.  This avoids saturating the ankle
+    joint on robots with limited dorsiflexion range.
     """
     max_reach = l1 + l2 - min_margin
     dist = np.sqrt(target_x**2 + target_z**2)
@@ -105,7 +108,9 @@ def _solve_sagittal_ik(
     beta = np.arccos(cos_beta)
     hip_pitch = alpha - beta
 
-    ankle_pitch = -(hip_pitch + knee_pitch)
+    # Ankle: ideally -(hip+knee) for flat foot, but clamped to joint limits
+    ankle_flat = -(hip_pitch + knee_pitch)
+    ankle_pitch = np.clip(ankle_flat, -ankle_limit_rad, ankle_limit_rad)
 
     return hip_pitch, knee_pitch, ankle_pitch, reachable
 
@@ -251,6 +256,22 @@ class ZMPWalkGenerator:
                     q_ref[i, indices[1]] = hip_r
                 q_ref[i, indices[2]] = knee_p
                 q_ref[i, indices[3]] = ank_p
+
+        # Clip q_ref to joint limits (radians)
+        # Left leg: hip_p [-5,85]°, hip_r [-90,10]°, knee [0,80]°, ankle [-40,45]°
+        # Right leg: hip_p [-85,5]°, hip_r [-10,90]°, knee [0,80]°, ankle [-40,45]°
+        joint_limits_rad = np.array([
+            [-0.087, 1.484],   # [0] left_hip_pitch
+            [-1.484, 0.087],   # [1] right_hip_pitch
+            [-1.571, 0.175],   # [2] left_hip_roll
+            [-0.175, 1.571],   # [3] right_hip_roll
+            [0.0, 1.396],      # [4] left_knee_pitch
+            [0.0, 1.396],      # [5] right_knee_pitch
+            [-0.698, 0.785],   # [6] left_ankle_pitch
+            [-0.698, 0.785],   # [7] right_ankle_pitch
+        ], dtype=np.float32)
+        for j in range(8):
+            q_ref[:, j] = np.clip(q_ref[:, j], joint_limits_rad[j, 0], joint_limits_rad[j, 1])
 
         # Now convert foot positions to COM-relative for periodic storage
         left_out = left_world.copy()
