@@ -333,12 +333,16 @@ The mainline deployment loop should also include:
 - sim-vs-real trace comparison
 - versioned actuator realism parameters
 
-SysID is a gate, not an optional improvement:
+SysID is a gate for sim-to-real deployment (`v0.20.2`), not for prior
+generation or PPO training in simulation:
 
-- before promoting an offline prior library, verify that the simulated servo
+- before `v0.20.2` sim-to-real deployment, verify that the simulated servo
   model can plausibly track the reference on WildRobot v2
-- if the servo model is wrong, do not trust beautiful `ZMP` trajectories in
-  MuJoCo or PPO results trained against them
+- if the servo model is wrong, do not trust PPO results trained against it
+  for hardware deployment
+- ZMP prior generation and PPO training in simulation may proceed using the
+  existing MuJoCo actuator model, but hardware deployment requires verified
+  SysID
 
 ---
 
@@ -547,13 +551,21 @@ Why:
 Execution milestones:
 
 1. `v0.20.0-A`: Prior contract freeze
-2. `v0.20.0-B`: Servo-model and SysID verification
-3. `v0.20.0-C`: `ZMP` prior library generation and viewer
-4. `v0.20.0-D`: Reference + IK + short-horizon feasibility validation
-5. `v0.20.0-E`: PPO unblocks only after the prior gate clears
+2. `v0.20.0-B`: `ZMP` prior library generation and viewer
+3. `v0.20.0-C`: Reference + IK + short-horizon feasibility validation
+4. `v0.20.0-D`: PPO unblocks only after the prior gate clears
 
 These milestone labels are canonical and should match
 [reference_design.md](/home/leeygang/projects/wildrobot/training/docs/reference_design.md).
+
+SysID note:
+
+- servo-model verification is required before sim-to-real transfer
+  (`v0.20.2`), not before ZMP prior generation
+- the ZMP library can be generated and validated in simulation using the
+  existing MuJoCo actuator model
+- hardware SysID data collection should happen in parallel and must gate
+  `v0.20.2` deployment, not `v0.20.0` prior work
 
 Exit rule:
 
@@ -620,27 +632,7 @@ Metric validation:
   - bounded residual policy
   - future broader-authority policy
 
-### `v0.20.0-B` Servo-model and SysID verification
-
-Tasks:
-
-- verify the simulated servo model against hardware replay data
-- confirm delay, backlash, and output limits are realistic enough to trust the
-  offline prior in MuJoCo
-
-Visual validation:
-
-- sim-vs-real step-response plots are qualitatively aligned
-- reference-like replay does not show an obvious tracking mode that hardware
-  cannot realize
-
-Metric validation:
-
-- leg-joint replay RMSE stays inside the accepted servo-model budget
-- delay estimate and backlash estimate are versioned and stable
-- no promotion to `v0.20.0-C` if the servo model is clearly inaccurate
-
-### `v0.20.0-C` `ZMP` prior generator and viewer
+### `v0.20.0-B` `ZMP` prior generator and viewer
 
 Tasks:
 
@@ -679,7 +671,7 @@ Metric validation:
 - commanded step period remains within `0.45-0.75 s`
 - previewed COM and pelvis targets stay bounded and phase-consistent
 
-### `v0.20.0-D` Reference + IK + short-horizon feasibility validation
+### `v0.20.0-C` Reference + IK + short-horizon feasibility validation
 
 Tasks:
 
@@ -702,15 +694,14 @@ Metric validation:
 - touchdown step length mean `>= 0.03 m`
 - realized / commanded step ratio `>= 0.5`
 
-### `v0.20.0-E` PPO unblock decision
+### `v0.20.0-D` PPO unblock decision
 
 PPO is unblocked only if:
 
-- `v0.20.0-A` through `v0.20.0-D` pass
+- `v0.20.0-A` through `v0.20.0-C` pass
 - the offline prior visually looks like a real walk family, not a balance
   exploit
-- the servo model is good enough that the prior is a believable imitation
-  target
+- the remaining issues are plausibly correction-layer problems
 
 ### `v0.20.1` ToddlerBot-style PPO
 
@@ -746,7 +737,36 @@ Metric validation:
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
   - touchdown step length mean `>= 0.03 m`
 
-### `v0.20.2` Command breadth and transfer hardening
+### `v0.20.2` SysID verification + command breadth + transfer hardening
+
+SysID is a hard gate for sim-to-real deployment. No hardware deployment
+until the servo model is verified.
+
+SysID tasks:
+
+- collect hardware step-response data (step, hold, chirp captures) using
+  `tools/sysid/run_capture.py`
+- fit delay, backlash, frictionloss, armature, and effective output limits
+  from hardware captures
+- update `assets/v2/realism_profile_v0.19.1.json` with fitted values
+  (or create a new versioned profile)
+- apply fitted parameters to `wildrobot.xml` actuator model
+- run sim-vs-real comparison via `tools/sim2real_eval/replay_compare.py`
+- verify leg-joint replay RMSE stays within the accepted servo-model budget
+
+SysID metric gate:
+
+- sim-vs-real step-response RMSE per leg joint is within 15% of commanded
+  amplitude
+- delay estimate is stable across capture sessions
+- backlash estimate is versioned and matches the MJCF backlash range
+- the fitted servo model does not invalidate the ZMP prior library
+  (re-run v0.20.0-C feasibility check with fitted parameters if the
+  parameters change materially)
+
+If SysID reveals that the servo model is wrong enough to invalidate the
+prior library, regenerate the ZMP library with corrected parameters
+before deploying.
 
 Required diagnostics before sign-off:
 

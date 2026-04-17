@@ -430,7 +430,7 @@ For the active offline-prior path, it must pass all five layers:
 
 1. `offline reference asset quality`
 2. `reference + IK playback`
-3. `servo-model and short-horizon feasibility`
+3. `short-horizon MuJoCo feasibility`
 4. `ToddlerBot policy learning gate`
 5. `policy multi-command sweep`
 
@@ -473,14 +473,16 @@ What to verify metrically:
 - joint targets remain inside configured safety margins
 - nominal foot-clearance floor remains positive throughout swing
 
-### Layer 3: `servo-model and short-horizon feasibility`
+### Layer 3: `short-horizon MuJoCo feasibility`
 
 This replaces the old "open-loop must walk 400+ steps" gate for the active
-offline-prior path.
+offline-prior path.  Uses the existing MuJoCo actuator model for feasibility
+checking.  Hardware SysID verification is deferred to `v0.20.2` and gates
+sim-to-real deployment, not ZMP library generation.
 
 What to verify visually:
 
-- the simulated servo model can track the reference for short rollouts without
+- the MuJoCo actuator model can track the reference for short rollouts without
   immediate geometric collapse
 - startup, stop, and one-to-two gait cycles look trackable rather than rigid or
   obviously impossible
@@ -494,7 +496,6 @@ What to verify metrically:
 - no systematic joint-limit hits occur in the validated command range
 - short-horizon replay survives at least one full gait cycle without immediate
   pitch-faceplant termination
-- actuator SysID replay error is good enough to trust the simulated servo model
 
 ### Layer 4: `ToddlerBot policy learning gate`
 
@@ -615,27 +616,7 @@ Exit criteria:
 - rate limits and bounds are explicitly defined
 - active runtime FSM path is marked deprecated in the design docs
 
-### `v0.20.0-B`: Servo-model and SysID verification
-
-Goal:
-
-- verify that the simulated servo model is good enough to trust the offline
-  prior in MuJoCo before reference generation is promoted
-
-Visual gate:
-
-- sim-vs-real step-response plots are qualitatively aligned
-- reference-like replay does not reveal a tracking mode that hardware clearly
-  cannot realize
-
-Metric gate:
-
-- actuator SysID replay error is within the accepted servo-model budget for the
-  tracked leg joints
-- delay and backlash estimates are versioned and stable
-- no promotion to `v0.20.0-C` if the servo model is clearly inaccurate
-
-### `v0.20.0-C`: `ZMP` prior generator and viewer
+### `v0.20.0-B`: `ZMP` prior generator and viewer
 
 Goal:
 
@@ -668,7 +649,7 @@ Metric gate:
 - preview continuity and rate limits pass on command sweeps
 - no validated reference trajectory requires systematic joint-limit violation
 
-### `v0.20.0-D`: Reference + IK + short-horizon feasibility validation
+### `v0.20.0-C`: Reference + IK + short-horizon feasibility validation
 
 Goal:
 
@@ -697,15 +678,14 @@ Metric gate:
 - simulated tracking RMSE stays within the actuator-feasibility budget
 - no repeated hard saturation dominates the replay
 
-### `v0.20.0-E`: PPO unblock decision
+### `v0.20.0-D`: PPO unblock decision
 
 PPO is unblocked only if:
 
-- `v0.20.0-A` through `v0.20.0-D` pass
+- `v0.20.0-A` through `v0.20.0-C` pass
 - the offline prior visually looks like a real walk family, not a balance
   exploit
-- the servo model is good enough that the prior is a believable imitation
-  target
+- the remaining issues are plausibly correction-layer problems
 
 ### `v0.20.1`: ToddlerBot-style PPO
 
@@ -740,14 +720,32 @@ Metric gate:
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
   - touchdown step length mean `>= 0.03 m`
 
-### `v0.20.2`: Policy coverage and breadth gate
+### `v0.20.2`: SysID verification + policy coverage + transfer hardening
 
 Goal:
 
+- verify the servo model against real hardware before sim-to-real deployment
 - make sure the first ToddlerBot-style policy is not only valid at one exact
   operating point
 
-Visual gate:
+SysID is a hard gate for sim-to-real deployment:
+
+- collect hardware step-response captures (step, hold, chirp) using
+  `tools/sysid/run_capture.py`
+- fit servo parameters from captures and update the realism profile
+- run sim-vs-real comparison via `tools/sim2real_eval/replay_compare.py`
+- if fitted parameters differ materially from the existing MJCF model,
+  re-run v0.20.0-C feasibility with the corrected model and regenerate the
+  ZMP library if needed
+
+SysID metric gate:
+
+- sim-vs-real step-response RMSE per leg joint is within 15% of commanded
+  amplitude
+- delay and backlash estimates are versioned and stable
+- fitted parameters are applied to the MJCF actuator model
+
+Policy coverage visual gate:
 
 - zero command means standing, not creeping
 - low command means slow but visible stepping
