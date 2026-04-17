@@ -1,18 +1,19 @@
 # WildRobot Nominal Reference Design
 
-**Status:** Active design note for `M2.5` nominal reference validation  
-**Last updated:** 2026-04-05
+**Status:** Active design note for `v0.20.x` prior reference validation  
+**Last updated:** 2026-04-15
 
 ---
 
 ## Purpose
 
 This document defines the intended architecture and validation plan for the
-WildRobot locomotion nominal reference layer during `M2.5`.
+WildRobot locomotion prior-reference layer after the failed `v0.19.5`
+reward-first PPO attempt.
 
-`M2.5` exists because `v0.19.3` training integration is implemented, but PPO is
-currently blocked by insufficient confidence in the nominal prior under full env
-dynamics.
+`v0.20.0` exists because `v0.19.5` showed that residual PPO is not a good
+mainline when the base walking reference does not yet own propulsion, step
+release, and command tracking strongly enough.
 
 The goal of this document is to make the design explicit enough that:
 
@@ -20,6 +21,7 @@ The goal of this document is to make the design explicit enough that:
 - downstream layers remain adapters, not competing controllers
 - validation is repeatable and gate-based
 - future refactors reduce code debt rather than add more local patches
+- prior selection is explicit rather than implicit
 
 ---
 
@@ -27,11 +29,11 @@ The goal of this document is to make the design explicit enough that:
 
 This document is about:
 
-- locomotion reference architecture
+- locomotion prior / reference architecture
 - `walking_ref_v1` limitations
 - `walking_ref_v2` target design
-- validation of nominal-only behavior
-- `M2.5` execution milestones
+- validation of prior-only and nominal-only behavior
+- `v0.20.0` execution milestones
 
 This document is not about:
 
@@ -49,7 +51,7 @@ The locomotion stack should follow this contract:
 ```text
 command + robot state
     ->
-walking reference
+walking prior / reference
     ->
 task-space nominal targets
     ->
@@ -64,9 +66,10 @@ q_target = q_ref + delta_q
 
 The intended ownership is:
 
-- `walking_ref_v2` owns locomotion semantics
+- the prior reference owns locomotion semantics
 - IK / nominal target shaping owns execution adaptation
-- PPO owns residual robustness and recovery
+- PPO owns correction, robustness, and adaptation only after the prior is
+  validated
 
 Only one layer should decide:
 
@@ -76,6 +79,111 @@ Only one layer should decide:
 - how foothold progression is shaped under instability
 
 That layer is the reference layer.
+
+---
+
+## Pivot Decision
+
+`v0.19.5` did not fail because PPO was configured slightly wrong. It failed
+because the walking prior still did not own enough of the locomotion task.
+
+Observed lesson from `v0.19.4` and `v0.19.5`:
+
+- gait existence is not enough
+- visible step release is not enough
+- the prior must already own meaningful command tracking, step amplitude, and
+  multi-seed stability before PPO resumes
+
+So the `v0.20.0` design decision is:
+
+- stop treating reward tuning as the mainline next step
+- choose a solid prior family first
+- validate that prior visually and metrically before PPO work resumes
+
+---
+
+## Prior Options
+
+### Comparison
+
+| Option | Development cost | Debuggability | Validation difficulty | Generalization upside | Fit for WildRobot v2 | Recommendation |
+|---|---|---|---|---|---|---|
+| `ZMP` / preview-style flat-ground prior | low-medium | high | medium | medium | good | recommended first prior |
+| `ALIP` / capture-point / angular-momentum-aware prior | medium-high | medium | high | high | very good | recommended upgrade path |
+| `Placo` / Mini-Duck-style whole-body kinematic prior | medium | medium-low | high | low-medium | mixed | use as a prototyping aid, not first source of truth |
+
+### `ZMP`
+
+Strengths:
+
+- easiest prior to reason about on flat ground
+- easiest to debug with COM, foothold, and phase plots
+- easiest to verify visually on a position-controlled biped
+- lowest implementation risk for stop, resume, and slow forward walk
+
+Weaknesses:
+
+- conservative
+- less expressive for dynamic catch steps and momentum-rich locomotion
+- likely to saturate before the full adaptation goal is met
+
+WildRobot fit:
+
+- good first fit because WildRobot v2 is small, servo-driven, and lacks active
+  ankle roll
+- a `ZMP`-shaped prior is easier to keep inside reachable geometry and visible
+  stepping than a more aggressive model on day one
+
+### `ALIP`
+
+Strengths:
+
+- better dynamic step-placement logic
+- better long-term fit for speed adaptation and disturbance handling
+- stronger ceiling for broader locomotion behavior
+
+Weaknesses:
+
+- harder to tune and diagnose than `ZMP`
+- easier to inject forward-drive channels that look plausible in plots but are
+  unstable in full env dynamics
+
+WildRobot fit:
+
+- best medium-term direction once the first prior family is proven
+- especially relevant if `ZMP` clears flat-ground walking but stalls on command
+  breadth, push response, or dynamic step placement
+
+### `Placo` / Mini-Duck-style prior
+
+Strengths:
+
+- fast way to author coherent whole-body motion
+- useful for visualizing startup, stop, and turn sequences
+- useful as a prototyping environment for candidate references
+
+Weaknesses:
+
+- easiest option to over-trust visually
+- kinematic coherence does not prove dynamic viability
+- harder to make it the single source of truth for support permission and step
+  release under real contact dynamics
+
+WildRobot fit:
+
+- useful as a sidecar tool for prototyping and inspection
+- not the recommended mainline prior source of truth on current hardware
+
+### Recommendation
+
+For WildRobot `v0.20.x`:
+
+1. start with a `ZMP`-shaped command-conditioned prior family
+2. freeze the contract so the same PPO stack can consume an `ALIP` upgrade
+   later
+3. use `Placo` only for rapid kinematic prototyping and visual authoring
+4. do not start from mocap or pure kinematic clips as the mainline walking
+   prior
 
 ---
 
@@ -645,6 +753,116 @@ The preferred end state is still single-source-of-truth:
 
 Validation should follow a layered ladder.
 
+### Active `v0.20.0` validation ladder
+
+This is the active validation contract for the prior pivot.
+
+The prior is not considered valid because it "looks reasonable" in a viewer.
+It must pass all four layers:
+
+1. `reference-only preview`
+2. `reference + IK playback`
+3. `nominal-in-env` with PPO disabled
+4. `multi-command sweep`
+
+### Layer 1: `reference-only preview`
+
+What to verify visually:
+
+- step timing is regular
+- alternating step-out is visible
+- stop commands settle into quiet standing
+- resume commands re-open stepping without a jump
+- pelvis / COM preview stays bounded
+
+What to verify metrically:
+
+- commanded foothold mean at `cmd=0.15` is `>= 0.045 m`
+- previewed step period stays within `0.45-0.75 s`
+- pelvis and COM preview are continuous
+- target-rate limits are not violated
+
+### Layer 2: `reference + IK playback`
+
+What to verify visually:
+
+- feet land where the prior intended
+- stance switching is clearly visible
+- no foot scissoring, severe toe drag, or obvious self-collision posture
+- stop, resume, and low-speed stepping remain coherent after IK
+
+What to verify metrically:
+
+- realized nominal touchdown step length mean `>= 0.03 m`
+- realized / commanded step ratio `>= 0.5`
+- IK reachability stays near `1.0`
+- joint targets remain inside configured safety margins
+
+### Layer 3: `nominal-in-env` with PPO disabled
+
+This is the main unblock gate.
+
+What to verify visually:
+
+- the robot clearly walks forward rather than shuffling in place
+- wobble is bounded and not the dominant visual pattern
+- failures, if any, look like correction-layer problems rather than missing
+  step release
+
+What to verify metrically:
+
+- at least `80%` of seeds survive `>= 400 / 500` steps
+- no seed fails before `300` steps
+- mean survival steps `>= 430`
+- mean `env/forward_velocity >= 0.075 m/s` at `cmd=0.15`
+- mean `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
+- touchdown step length mean `>= 0.03 m`
+- pitch `p95(|pitch|) <= 0.20 rad`
+- roll `p95(|roll|) <= 0.12 rad`
+- `term_pitch_frac <= 0.20`
+- `term_roll_frac <= 0.20`
+
+### Layer 4: `multi-command sweep`
+
+What to verify visually:
+
+- zero command means standing, not creeping
+- low command means slow but visible stepping
+- increasing command does not immediately collapse into pitch dive
+- stop/resume works without a discontinuous posture jump
+
+What to verify metrically:
+
+- zero-command drift `< 0.01 m/s`
+- stop latency to quiet posture `< 1.0 s`
+- resume-to-first-step latency `< 1.0 s`
+- forward-speed response is monotonic non-decreasing over the tested range
+
+### Option-specific validation emphasis
+
+`ZMP`
+
+- strongest on layers 1 and 3
+- easiest to validate with COM, foothold, and stop/resume diagnostics
+
+`ALIP`
+
+- requires extra scrutiny on pitch-rate spikes, overspeed, and dynamic
+  catch-step plausibility
+- only upgrade here after `ZMP` clears the main gate or clearly saturates
+
+`Placo`
+
+- never accept viewer quality alone as validation
+- always require full layer-3 and layer-4 env checks before trusting it as a
+  walking prior
+
+### Historical `M2.5` probe notes
+
+The detailed `M2.5` probe definitions below remain useful as historical context
+and as implementation-level diagnostics for `walking_ref_v2`, but the active
+unblock contract is the `v0.20.0` ladder above.
+
 ### Canonical nominal-probe realism baseline
 
 For `M2.5`, the canonical nominal probes are defined operationally by:
@@ -830,7 +1048,131 @@ These are the main pass/fail diagnostics for the current bug.
 
 ---
 
-## Current `M2.5` Readout
+## Execution Milestones For `v0.20.0`
+
+### `v0.20.0-A`: Prior contract freeze
+
+Goal:
+
+- define one stable prior contract that both `ZMP` and later `ALIP` variants
+  can satisfy
+
+Required outputs:
+
+- command-conditioned foothold preview
+- phase / mode signal
+- pelvis / COM preview
+- stop / resume handling contract
+- nominal target adapter interface
+
+Exit criteria:
+
+- one documented prior schema exists
+- one viewer and one trace logger can consume that schema
+- rate limits and bounds are explicitly defined
+
+### `v0.20.0-B`: `ZMP` prior implementation
+
+Goal:
+
+- implement the first production prior as a `ZMP`-shaped flat-ground reference
+
+Visual gate:
+
+- at `cmd=0.15`, feet clearly step out instead of shuffling
+- stop command settles to quiet standing
+- resume command restarts stepping without a jump
+
+Metric gate:
+
+- commanded foothold mean `>= 0.045 m`
+- step period remains within `0.45-0.75 s`
+- preview continuity and rate limits pass on command sweeps
+
+### `v0.20.0-C`: Prior + IK playback validation
+
+Goal:
+
+- prove the prior remains coherent after IK and nominal target adaptation
+
+Visual gate:
+
+- touchdown locations match the intended stepping pattern
+- no obvious toe drag, scissoring, or pathological posture
+
+Metric gate:
+
+- realized touchdown step length mean `>= 0.03 m`
+- realized / commanded step ratio `>= 0.5`
+- IK reachability stays near `1.0`
+- safety margin violations remain zero
+
+### `v0.20.0-D`: Prior-in-env nominal gate
+
+Goal:
+
+- prove the prior already owns real walking in full MuJoCo dynamics with PPO
+  disabled
+
+Visual gate:
+
+- walk is clearly forward, not a stand-shuffle exploit
+- stance switches are visible and repeatable
+- wobble is bounded and not the dominant motion pattern
+
+Metric gate:
+
+- at least `80%` of seeds survive `>= 400 / 500`
+- no seed fails before `300`
+- mean survival steps `>= 430`
+- mean `env/forward_velocity >= 0.075 m/s` at `cmd=0.15`
+- mean `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
+- touchdown step length mean `>= 0.03 m`
+- pitch `p95(|pitch|) <= 0.20 rad`
+- roll `p95(|roll|) <= 0.12 rad`
+- `term_pitch_frac <= 0.20`
+- `term_roll_frac <= 0.20`
+
+### `v0.20.0-E`: Coverage and breadth gate
+
+Goal:
+
+- make sure the prior is not only valid at one exact operating point
+
+Visual gate:
+
+- zero command means standing, not creeping
+- low command means slow but visible stepping
+- stop/resume looks controlled
+
+Metric gate:
+
+- zero-command drift `< 0.01 m/s`
+- stop latency `< 1.0 s`
+- resume-to-first-step latency `< 1.0 s`
+- forward speed response is monotonic non-decreasing over the tested range
+
+### `v0.20.1`: Prior-conditioned PPO
+
+PPO resumes only after all `v0.20.0` gates pass.
+
+What PPO should own:
+
+- tracking correction
+- disturbance recovery
+- contact adaptation
+- delay / backlash / model-mismatch robustness
+
+What PPO should not own:
+
+- basic step release
+- core propulsion generation
+- stop semantics
+- command-conditioned gait structure
+
+---
+
+## Historical `M2.5` Readout
 
 **Last updated:** 2026-04-14
 
@@ -930,7 +1272,7 @@ The nominal walking probe (with stepping) has not been run with the new stable
 B posture.  This is the next validation step after the startup transition is
 integrated into the env.
 
-### PPO — blocked pending v0.19.4-C propulsion rework
+### PPO — historical block before the `v0.20.0` pivot
 
 PPO was unblocked after v0.19.4-B but the handoff gate was too loose.
 v0.19.5 PPO ran three iterations (v0.19.5, v0.19.5b, v0.19.5c) and
@@ -952,7 +1294,7 @@ PPO is now re-blocked until v0.19.4-C quantitative handoff gate clears:
 
 ---
 
-## Execution Milestone For `M2.5`
+## Historical Execution Milestone For `M2.5`
 
 ### `M2.5-A0`: Architecture cleanup
 

@@ -213,6 +213,280 @@ For WildRobot, that means:
    - possibly a later transition from strict residual correction toward a more
      direct reference-conditioned locomotion policy
 
+### Strategic options if WildRobot wants broader adaptation
+
+If the goal is broader adaptation across speed changes, disturbances, and later
+terrain variations, there are three realistic architecture paths.
+
+| Option | Runtime structure | What the "base" is | What PPO learns | Broader adaptation upside | Development cost | Debug cost | Maintenance cost |
+|---|---|---|---|---|---|---|---|
+| A. Stay controller + small residual PPO | analytic walking controller + bounded residual action | online controller (`walking_ref_v2` + IK) | correction only | lowest | low-medium | medium-high | medium |
+| B. Stronger prior + residual / tracking PPO | stronger reference family + policy trained to track / correct around it | command-conditioned prior or reference library | tracking robustness + moderate adaptation | medium-high | medium | medium | medium-high |
+| C. Cassie-style reference-conditioned direct locomotion policy | reference preview as input, policy owns main action generation | gait library / keyframes / mocap / planner-generated reference | main locomotion control with prior guidance | highest | high | high | medium-high |
+
+Interpretation:
+
+- **Option A** is the easiest to keep stable and interpretable, but it inherits
+  the controller's assumptions. It is the weakest path for broad adaptation.
+- **Option B** is the best middle ground for WildRobot if the goal is "broader
+  than current residual PPO" without taking on the full risk of a direct policy.
+- **Option C** has the highest long-term upside, but it requires the strongest
+  reference assets, observation design, training budget, and debugging
+  discipline.
+
+My professional recommendation:
+
+- for near-term delivery, keep `v0.19.x` disciplined enough to prove nominal
+  gait ownership
+- for the next architecture step, target **Option B**
+- treat **Option C** as a later-generation platform move, not the next patch
+
+### What "controller" vs "prior" means for WildRobot
+
+This distinction matters because it changes both training behavior and long-term
+ adaptability.
+
+- **Controller**: can run the robot by itself and produce actual actions
+  online.  
+  Example for WildRobot: `walking_ref_v2` + phase logic + IK.
+- **Prior / reference**: provides structured motion guidance, but the learned
+  policy still has substantial control authority.  
+  Example: command-conditioned gait library, keyframe sequence, motion preview,
+  or reduced-order trajectory family.
+
+Practical difference:
+
+- controller-first systems are easier to debug one failure at a time
+- prior-first systems are usually better for scaling to broader conditions,
+  because the policy is allowed to become the main controller instead of a small
+  correction layer
+
+### Options to build a prior / reference for WildRobot
+
+If WildRobot wants broader adaptation, the next question is not only
+"controller or prior?" It is also "what kind of prior is realistic to build and
+maintain on this robot?"
+
+#### Concrete prior candidates: ZMP, ALIP, Open Duck Mini-style references, AMASS
+
+These are not equally good fits for WildRobot.
+
+| Candidate | What it provides | Fit for WildRobot | Main upside | Main downside | Recommended role |
+|---|---|---|---|---|---|
+| ZMP reference family | stable flat-ground COM / footstep / pelvis trajectories | good for first deployable prior | simple, interpretable, good for stop/start and quiet walking | conservative, less dynamic, weaker for broad disturbance adaptation | good first prior layer |
+| ALIP / capture-point / step-placement prior | dynamic COM and footstep planning prior | best medium-term fit | better disturbance handling and speed adaptation, stronger locomotion semantics | harder to tune and realize on a small servo robot | best core prior direction |
+| Open Duck Mini-style reference motions / imitation clips | hand-authored or generated motion clips used for imitation / reference tracking | useful for style bootstrapping, not enough alone | quick way to define gait phase and behavior clips | high manual burden, dynamic mismatch risk, limited coverage | secondary tool, not core prior |
+| AMASS / human mocap prior | large human motion dataset | poor first fit | broad motion diversity and style | major morphology-retargeting mismatch for a 9-DOF small robot | later-stage research tool, not first walking prior |
+
+Practical recommendation:
+
+- do **not** start from AMASS
+- do **not** rely only on hand-authored imitation clips
+- start from a **ZMP / reduced-order analytical reference family**
+- then move that family toward **ALIP-like step-placement and COM dynamics**
+- use motion clips only as supplemental assets for start / stop / turn / style
+  shaping if needed
+
+#### Option 1: stronger analytical reference family
+
+Build on the current controller path:
+
+- keep reduced-order structure (`LIPM` / `ALIP` / capture-point / DCM)
+- generate a cleaner command-conditioned family of nominal trajectories
+- expose more of that reference to PPO as inputs
+
+What it looks like:
+
+- speed-conditioned step length, step time, pelvis, and COM trajectories
+- explicit preview of future nominal states
+- still no external dataset requirement
+
+Cost profile:
+
+- development: **medium**
+- debug: **medium**
+- maintenance: **medium**
+
+Pros:
+
+- closest to the current WildRobot codebase
+- easiest bridge from current residual PPO
+- preserves interpretability and debugging leverage
+
+Cons:
+
+- still limited by the analytical model family
+- harder to cover very diverse scenarios cleanly
+- can become brittle if too many heuristics accumulate
+
+Best fit:
+
+- next step after `v0.19.x` if the goal is broader adaptation without a full
+  architecture reset
+
+Concrete guidance:
+
+- if the team wants the safest first prior, start with **ZMP-like flat-ground
+  reference families**
+- if the team wants the best long-term locomotion prior, evolve that family
+  toward **ALIP / capture-point-driven step placement**
+
+#### Option 2: offline gait library from the analytical planner
+
+Use the analytical controller to generate many trajectories offline, then train
+against that library as a prior.
+
+What it looks like:
+
+- sweep command space offline
+- store nominal state/action trajectories
+- give PPO current + previewed reference states from the library
+
+Cost profile:
+
+- development: **medium-high**
+- debug: **medium**
+- maintenance: **medium-high**
+
+Pros:
+
+- cleaner separation between "reference asset" and "runtime control"
+- easier to inspect coverage gaps in command space
+- closer to ToddlerBot / Cassie reference-preview training
+
+Cons:
+
+- requires tooling for trajectory generation, indexing, interpolation, and
+  validation
+- library refresh becomes a maintenance task whenever the robot or model
+  changes
+
+Best fit:
+
+- strongest near-term route to a real prior without needing mocap or a large
+  data pipeline
+
+Concrete guidance:
+
+- this is the most natural place to use **ZMP** or **ALIP** for WildRobot
+- build the library from your own analytical planner rather than from human
+  mocap first
+- make the library command-conditioned over:
+  - forward speed
+  - stop / resume
+  - in-place stepping
+  - yaw turning
+  - moderate push-recovery responses
+
+#### Option 3: keyframe / animation / hand-authored motion prior
+
+Build a small set of target motions first, then use RL to make them physically
+feasible and robust.
+
+What it looks like:
+
+- authored gait cycles
+- skill-specific sequences for start, stop, walk, turn, recovery
+- reference tracking reward around those motions
+
+Cost profile:
+
+- development: **medium-high**
+- debug: **high**
+- maintenance: **high**
+
+Pros:
+
+- fast way to define desired style and phase structure
+- useful if the team wants explicit control over gait appearance
+
+Cons:
+
+- easy to create references that are kinematically nice but dynamically wrong
+- large manual burden as behaviors multiply
+- high risk of style lock-in unless the library becomes broad
+
+Best fit:
+
+- style-sensitive work, demos, or a small skill set with strong manual design
+  control
+
+Concrete guidance:
+
+- this is the closest category to what projects like **Open Duck Mini** are
+  experimenting with when they mention reference-motion generation for
+  imitation-learning-style training
+- useful for bootstrapping:
+  - start
+  - stop
+  - turning
+  - recovery gestures
+- not the best single source of truth for WildRobot's whole walking stack
+  because coverage and maintenance cost grow quickly
+
+#### Option 4: trajectory-optimization or teacher-generated reference dataset
+
+Generate references from a stronger teacher:
+
+- trajectory optimization
+- MPC
+- offline optimal control
+- higher-fidelity planning stack
+
+Then use those trajectories as the training prior for the deployable policy.
+
+Cost profile:
+
+- development: **high**
+- debug: **high**
+- maintenance: **high**
+
+Pros:
+
+- potentially strongest prior quality
+- can cover disturbances and richer scenarios if the teacher is strong
+
+Cons:
+
+- highest infrastructure cost
+- hardest to keep synchronized with robot/model changes
+- debugging failures becomes a multi-layer problem: teacher, dataset, student,
+  runtime
+
+Best fit:
+
+- later-stage platform investment, not the cheapest next move for WildRobot
+
+Concrete guidance:
+
+- if WildRobot later wants a stronger teacher than hand-tuned ZMP / ALIP,
+  teacher-generated datasets are a better next step than jumping directly to
+  human mocap
+- for a small servo biped, this is usually a better fit than **AMASS** because
+  the generated references already respect the robot's morphology and control
+  limits
+
+### Recommendation if broader adaptation is the goal
+
+For WildRobot, the best path is:
+
+1. keep the current controller-first branch strict enough to prove nominal gait
+   ownership
+2. then move toward a **prior/reference family**, not just a larger residual
+3. specifically, prefer:
+   - **Option 1** as the shortest path
+   - **Option 2** as the best medium-term architecture target
+4. avoid jumping directly from today's `walking_ref_v2` residual setup to a
+   fully direct policy unless the team is ready for a larger training and
+   tooling investment
+
+In short:
+
+- if you want the cheapest near-term progress, improve the controller
+- if you want broader adaptation, build a real prior/reference family
+- if you want the highest eventual ceiling, move toward reference-conditioned
+  direct control, but expect higher development and debugging cost
+
 ### Practical takeaway
 
 ToddlerBot and Cassie do **not** invalidate the current WildRobot direction.
