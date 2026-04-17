@@ -107,6 +107,8 @@ class ReferenceTrajectory:
     def n_joints(self) -> int:
         """Number of joints in q_ref."""
         if self.q_ref is not None:
+            if self.q_ref.ndim < 2:
+                return 0
             return self.q_ref.shape[1]
         return 0
 
@@ -126,13 +128,21 @@ class ReferenceTrajectory:
                    expected_shape: Tuple[int, ...]) -> None:
             if arr is None:
                 return
+            if not isinstance(arr, np.ndarray):
+                issues.append(f"{name}: expected ndarray, got {type(arr).__name__}")
+                return
             if arr.shape != expected_shape:
                 issues.append(
                     f"{name}: expected shape {expected_shape}, got {arr.shape}"
                 )
 
         nj = self.n_joints
-        if nj > 0:
+        if self.q_ref is not None and self.q_ref.ndim != 2:
+            issues.append(
+                f"q_ref: expected 2-D array [n_steps, n_joints], "
+                f"got {self.q_ref.ndim}-D with shape {self.q_ref.shape}"
+            )
+        elif nj > 0:
             _check("q_ref", self.q_ref, (n, nj))
             _check("dq_ref", self.dq_ref, (n, nj))
 
@@ -198,7 +208,8 @@ class ReferencePreviewWindow:
     def to_obs_array(self) -> np.ndarray:
         """Flatten to a 1-D observation vector for policy consumption.
 
-        Layout (ordered for backward compatibility where possible):
+        Layout:
+          q_ref                          (n_joints)
           phase_sin, phase_cos           (2)
           stance_foot_id                 (1)
           next_foothold                  (2)
@@ -206,24 +217,29 @@ class ReferencePreviewWindow:
           swing_foot_vel                 (3)
           pelvis_height, roll, pitch     (3)
           contact_mask                   (2)
-          --- total base: 16 ---
+          --- total base: n_joints + 16 ---
+          future_q_ref                   (n_preview * n_joints)
           future_phase_sin/cos           (2 * n_preview)
           future_contact_mask            (2 * n_preview)
         """
-        base = np.array([
-            self.phase_sin, self.phase_cos,
-            float(self.stance_foot_id),
-            *self.next_foothold,
-            *self.swing_foot_pos,
-            *self.swing_foot_vel,
-            self.pelvis_height, self.pelvis_roll, self.pelvis_pitch,
-            *self.contact_mask,
-        ], dtype=np.float32)
+        base = np.concatenate([
+            self.q_ref.ravel().astype(np.float32),
+            np.array([
+                self.phase_sin, self.phase_cos,
+                float(self.stance_foot_id),
+                *self.next_foothold,
+                *self.swing_foot_pos,
+                *self.swing_foot_vel,
+                self.pelvis_height, self.pelvis_roll, self.pelvis_pitch,
+                *self.contact_mask,
+            ], dtype=np.float32),
+        ])
         future = np.concatenate([
-            self.future_phase_sin,
-            self.future_phase_cos,
-            self.future_contact_mask.ravel(),
-        ]).astype(np.float32)
+            self.future_q_ref.ravel().astype(np.float32),
+            self.future_phase_sin.astype(np.float32),
+            self.future_phase_cos.astype(np.float32),
+            self.future_contact_mask.ravel().astype(np.float32),
+        ])
         return np.concatenate([base, future])
 
 
@@ -384,21 +400,30 @@ class ReferenceLibrary:
         current_idx: int,
         swing_id: int,
     ) -> np.ndarray:
-        """Find the touchdown position of the current swing foot."""
+        """Find the touchdown position of the current swing foot.
+
+        Touchdown is detected as the 0→1 transition in the contact mask
+        for the swing foot, not just the first frame where contact is 1.
+        This avoids returning the wrong foothold during double-support
+        phases where the swing foot is already in contact.
+        """
         n = traj.n_steps
         if traj.contact_mask is None:
             return np.zeros(2, dtype=np.float32)
 
-        # Walk forward to find when the swing foot makes contact
+        # Walk forward to find the 0→1 contact transition
+        prev_contact = traj.contact_mask[current_idx, swing_id]
         for offset in range(1, n):
             future_idx = (current_idx + offset) % n
-            if traj.contact_mask[future_idx, swing_id] > 0.5:
-                # Found touchdown — return foot position at that step
+            curr_contact = traj.contact_mask[future_idx, swing_id]
+            if prev_contact < 0.5 and curr_contact > 0.5:
+                # Found touchdown transition — return foot position
                 if swing_id == 0 and traj.left_foot_pos is not None:
                     return traj.left_foot_pos[future_idx, :2]
                 elif swing_id == 1 and traj.right_foot_pos is not None:
                     return traj.right_foot_pos[future_idx, :2]
                 break
+            prev_contact = curr_contact
 
         return np.zeros(2, dtype=np.float32)
 

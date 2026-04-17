@@ -280,12 +280,16 @@ def test_preview_obs():
     pw = lib.get_preview(vx=0.15, step_index=0, n_preview=n_preview)
     obs = pw.to_obs_array()
 
-    expected_len = 16 + 4 * n_preview  # base + future
+    # base: n_joints + 16, future: n_preview*(n_joints+4)
+    expected_len = (nj + 16) + n_preview * (nj + 4)
     assert obs.shape == (expected_len,), (
         f"Expected obs shape ({expected_len},), got {obs.shape}"
     )
     assert obs.dtype == np.float32, f"Expected float32, got {obs.dtype}"
     assert np.all(np.isfinite(obs)), "Obs vector contains non-finite values"
+
+    # q_ref should be present in the obs vector (first nj elements)
+    assert np.allclose(obs[:nj], pw.q_ref), "q_ref not at start of obs vector"
 
     # Phase sin/cos should be valid trig values
     assert -1.0 <= pw.phase_sin <= 1.0
@@ -357,6 +361,85 @@ def test_nearest_neighbor_lookup():
     assert lib.lookup(0.16).command_vx == 0.20  # closer to 0.20
 
 
+def test_foothold_finds_touchdown_transition():
+    """next_foothold should find the 0->1 contact transition, not first contact=1."""
+    from control.references.reference_library import (
+        ReferenceLibrary,
+        ReferenceTrajectory,
+    )
+
+    n, nj = 20, 4
+    # Contact pattern: right foot has double-support, then swing, then touchdown
+    # Steps 0-5: double support (both feet contact=1)
+    # Steps 6-14: right foot swing (contact=0)
+    # Steps 15-19: right foot touchdown (contact=1 again)
+    contact = np.ones((n, 2), dtype=np.float32)
+    contact[6:15, 1] = 0.0  # right foot swings
+
+    right_foot = np.zeros((n, 3), dtype=np.float32)
+    right_foot[:, 1] = -0.08
+    # Right foot moves forward during swing, lands at x=0.05
+    right_foot[6:15, 0] = np.linspace(0, 0.05, 9)
+    right_foot[15:, 0] = 0.05  # landed position
+
+    traj = ReferenceTrajectory(
+        command_vx=0.10, dt=0.02, cycle_time=0.40,
+        q_ref=np.zeros((n, nj), dtype=np.float32),
+        phase=np.linspace(0, 1, n, endpoint=False).astype(np.float32),
+        stance_foot_id=np.zeros(n, dtype=np.float32),
+        contact_mask=contact,
+        left_foot_pos=np.tile([0, 0.08, 0], (n, 1)).astype(np.float32),
+        right_foot_pos=right_foot,
+        pelvis_pos=np.zeros((n, 3), dtype=np.float32),
+        pelvis_rpy=np.zeros((n, 3), dtype=np.float32),
+    )
+    lib = ReferenceLibrary([traj])
+
+    # Query during double-support (step 2): swing_id=1 (right)
+    # Should find touchdown at step 15 (0->1 transition), NOT step 2 (already 1)
+    pw = lib.get_preview(vx=0.10, step_index=2, n_preview=3)
+    assert pw.next_foothold[0] == np.float32(0.05), (
+        f"Foothold x should be 0.05 (touchdown position), got {pw.next_foothold[0]}"
+    )
+
+
+def test_validate_malformed_qref():
+    """validate() handles 1-D q_ref gracefully instead of crashing."""
+    from control.references.reference_library import ReferenceTrajectory
+
+    # 1-D q_ref (wrong shape)
+    bad = ReferenceTrajectory(
+        command_vx=0.1, dt=0.02, cycle_time=0.20,
+        q_ref=np.zeros(10, dtype=np.float32),  # should be 2-D
+        phase=np.linspace(0, 1, 10, endpoint=False).astype(np.float32),
+        stance_foot_id=np.zeros(10, dtype=np.float32),
+        contact_mask=np.ones((10, 2), dtype=np.float32),
+    )
+    issues = bad.validate()
+    assert len(issues) > 0, "1-D q_ref should produce validation issues"
+    assert any("2-D" in issue or "q_ref" in issue for issue in issues), (
+        f"Issues should mention q_ref shape problem: {issues}"
+    )
+
+
+def test_validate_non_array():
+    """validate() handles non-ndarray fields gracefully."""
+    from control.references.reference_library import ReferenceTrajectory
+
+    bad = ReferenceTrajectory(
+        command_vx=0.1, dt=0.02, cycle_time=0.20,
+        q_ref=np.zeros((10, 4), dtype=np.float32),
+        phase=np.linspace(0, 1, 10, endpoint=False).astype(np.float32),
+        stance_foot_id=np.zeros(10, dtype=np.float32),
+        contact_mask=np.ones((10, 2), dtype=np.float32),
+        pelvis_pos=[[0, 0, 0.42]] * 10,  # list, not ndarray
+    )
+    issues = bad.validate()
+    assert any("ndarray" in issue for issue in issues), (
+        f"Non-ndarray should produce validation issue: {issues}"
+    )
+
+
 # ---- Runner ----------------------------------------------------------------
 
 def main() -> None:
@@ -382,9 +465,14 @@ def main() -> None:
     check("walking_ref_v2 marked deprecated", test_deprecation)
 
     print("\n6. Preview obs vector")
-    check("obs vector shape and dtype", test_preview_obs)
+    check("obs vector shape, dtype, and q_ref presence", test_preview_obs)
     check("cyclic wrap at trajectory end", test_preview_wraps_cyclically)
     check("nearest-neighbor command lookup", test_nearest_neighbor_lookup)
+
+    print("\n7. Edge cases from review")
+    check("foothold finds 0->1 touchdown transition", test_foothold_finds_touchdown_transition)
+    check("validate handles 1-D q_ref gracefully", test_validate_malformed_qref)
+    check("validate handles non-ndarray gracefully", test_validate_non_array)
 
     print("\n" + "=" * 50)
     total = PASSED + FAILED

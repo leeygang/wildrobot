@@ -238,7 +238,9 @@ def main() -> None:
     _print_summary(lib)
 
     if args.validate:
-        _validate(lib)
+        ok = _validate(lib)
+        if not ok:
+            sys.exit(1)
     elif args.sweep:
         _sweep_summary(lib)
     else:
