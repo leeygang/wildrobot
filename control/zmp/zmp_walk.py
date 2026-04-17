@@ -1,0 +1,489 @@
+"""ZMP-based walking trajectory generator for WildRobot v2.
+
+Generates offline walking reference trajectories by:
+  1. Planning footsteps from velocity command
+  2. Computing optimal COM trajectory via ZMP preview control
+  3. Generating swing-foot trajectories (triangle lift)
+  4. Solving IK for WildRobot's 4-DOF legs
+  5. Packaging as a ``ReferenceTrajectory`` for the offline library
+
+Reference: ToddlerBot ``toddlerbot.algorithms.zmp_walk``
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Tuple
+
+import numpy as np
+
+from control.references.reference_library import (
+    ReferenceLibrary,
+    ReferenceLibraryMeta,
+    ReferenceTrajectory,
+)
+from control.zmp.zmp_planner import ZMPPlanner
+
+
+@dataclass
+class ZMPWalkConfig:
+    """Configuration for ZMP walking trajectory generation."""
+
+    # Robot morphology
+    upper_leg_m: float = 0.21
+    lower_leg_m: float = 0.21
+    hip_lateral_offset_m: float = 0.0536
+    ankle_to_ground_m: float = 0.06
+    com_height_m: float = 0.42
+
+    # Gait timing
+    cycle_time_s: float = 0.50
+    single_double_ratio: float = 2.0
+    dt_s: float = 0.02
+
+    # Gait geometry
+    foot_step_height_m: float = 0.025
+    default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
+
+    # ZMP planner costs
+    zmp_cost_Q: float = 1.0
+    zmp_cost_R: float = 0.1
+
+    # Trajectory generation: plan extra cycles to ensure enough steps
+    n_plan_extra_cycles: int = 2  # extra cycles beyond needed output
+    n_output_cycles: int = 1  # cycles to keep in library entry
+
+    # Limits
+    max_step_length_m: float = 0.10
+    min_reach_margin_m: float = 0.01
+
+    @property
+    def double_support_s(self) -> float:
+        return self.cycle_time_s / 2.0 / (self.single_double_ratio + 1.0)
+
+    @property
+    def single_support_s(self) -> float:
+        return self.single_double_ratio * self.double_support_s
+
+    @property
+    def steps_per_cycle(self) -> int:
+        return int(round(self.cycle_time_s / self.dt_s))
+
+
+def _solve_sagittal_ik(
+    target_x: float,
+    target_z: float,
+    l1: float,
+    l2: float,
+    min_margin: float = 0.01,
+) -> Tuple[float, float, float, bool]:
+    """Analytical 2-link sagittal IK.
+
+    Returns (hip_pitch, knee_pitch, ankle_pitch, reachable).
+    Ankle pitch keeps the foot level: ankle = -(hip + knee).
+    """
+    max_reach = l1 + l2 - min_margin
+    dist = np.sqrt(target_x**2 + target_z**2)
+    reachable = dist <= max_reach
+
+    if dist > max_reach:
+        scale = max_reach / max(dist, 1e-8)
+        target_x *= scale
+        target_z *= scale
+        dist = max_reach
+
+    if dist < abs(l1 - l2) + min_margin:
+        dist = abs(l1 - l2) + min_margin
+
+    cos_knee = (l1**2 + l2**2 - dist**2) / (2.0 * l1 * l2)
+    cos_knee = np.clip(cos_knee, -1.0, 1.0)
+    knee_pitch = np.pi - np.arccos(cos_knee)
+
+    alpha = np.arctan2(-target_x, -target_z)
+    cos_beta = (l1**2 + dist**2 - l2**2) / (2.0 * l1 * dist)
+    cos_beta = np.clip(cos_beta, -1.0, 1.0)
+    beta = np.arccos(cos_beta)
+    hip_pitch = alpha - beta
+
+    ankle_pitch = -(hip_pitch + knee_pitch)
+
+    return hip_pitch, knee_pitch, ankle_pitch, reachable
+
+
+class ZMPWalkGenerator:
+    """Generate walking trajectories for WildRobot v2 using ZMP preview control."""
+
+    def __init__(self, config: ZMPWalkConfig | None = None) -> None:
+        self.cfg = config or ZMPWalkConfig()
+        self.planner = ZMPPlanner()
+
+    def generate(self, command_vx: float) -> ReferenceTrajectory:
+        """Generate one gait-cycle trajectory for the given forward speed.
+
+        Parameters
+        ----------
+        command_vx : forward speed in m/s (0 = standing)
+
+        Returns
+        -------
+        ReferenceTrajectory with all arrays populated.
+        """
+        cfg = self.cfg
+
+        if abs(command_vx) < 1e-4:
+            return self._generate_standing()
+
+        # Clamp step length
+        half_cycle = cfg.cycle_time_s / 2.0
+        raw_step = command_vx * half_cycle
+        step_length = np.clip(raw_step, -cfg.max_step_length_m, cfg.max_step_length_m)
+
+        # Plan footsteps
+        total_cycles = cfg.n_output_cycles + cfg.n_plan_extra_cycles
+        footsteps, time_steps, zmp_refs = self._plan_footsteps(
+            step_length, total_cycles
+        )
+
+        # Run ZMP planner
+        total_time = time_steps[-1]
+        n_total = int(np.ceil(total_time / cfg.dt_s))
+        x0 = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+        self.planner.plan(
+            time_steps, zmp_refs, x0, cfg.com_height_m,
+            Qy=np.eye(2) * cfg.zmp_cost_Q,
+            R=np.eye(2) * cfg.zmp_cost_R,
+        )
+
+        # Forward-integrate COM trajectory
+        com_traj = np.zeros((n_total, 4), dtype=np.float64)
+        com_traj[0] = x0
+        for i in range(1, n_total):
+            t = i * cfg.dt_s
+            u = self.planner.get_optim_com_acc(t, com_traj[i - 1])
+            com_traj[i, :2] = com_traj[i - 1, :2] + com_traj[i - 1, 2:] * cfg.dt_s
+            com_traj[i, 2:] = com_traj[i - 1, 2:] + u * cfg.dt_s
+
+        # Compute foot trajectories
+        left_foot, right_foot, stance_ids, contacts = self._compute_foot_trajectories(
+            footsteps, time_steps, n_total
+        )
+
+        # Extract one gait cycle from the middle of the trajectory
+        # Skip the first cycle (transient), take the next output_cycles
+        out_steps = cfg.steps_per_cycle * cfg.n_output_cycles
+        start_step = cfg.steps_per_cycle  # skip first cycle
+        # Clamp to available data
+        start_step = min(start_step, n_total - out_steps)
+        start_step = max(start_step, 0)
+        end_step = min(start_step + out_steps, n_total)
+        actual_out = end_step - start_step
+        sl = slice(start_step, end_step)
+
+        com_out = com_traj[sl]
+        left_out = left_foot[sl]
+        right_out = right_foot[sl]
+        stance_out = stance_ids[sl]
+        contact_out = contacts[sl]
+
+        # Shift COM to be relative to start of output cycle
+        com_x_offset = com_out[0, 0]
+        com_out[:, 0] -= com_x_offset
+        left_out[:, 0] -= com_x_offset
+        right_out[:, 0] -= com_x_offset
+
+        # Solve IK for each step
+        n = actual_out
+        n_joints = 19  # full WildRobot action space
+        q_ref = np.zeros((n, n_joints), dtype=np.float32)
+
+        for i in range(n):
+            # IK target: foot position relative to hip in sagittal plane
+            # Hip is at COM + lateral offset
+            com_x = com_out[i, 0]
+            com_y = com_out[i, 1]
+
+            for side, foot_pos, sign, indices in [
+                ("left", left_out[i], -1.0, [0, 2, 4, 6]),
+                ("right", right_out[i], 1.0, [1, 3, 5, 7]),
+            ]:
+                # Foot x relative to COM (sagittal IK target)
+                foot_rel_x = foot_pos[0] - com_x
+                # Foot z relative to hip: ground is at 0, hip is at com_height
+                # target_z = -(com_height - ankle_to_ground - foot_z)
+                # foot_z=0 when on ground, >0 when lifted
+                foot_z_above_ground = foot_pos[2]
+                hip_to_foot_z = -(cfg.com_height_m - cfg.ankle_to_ground_m
+                                  - foot_z_above_ground)
+
+                hip_p, knee_p, ank_p, _ = _solve_sagittal_ik(
+                    foot_rel_x, hip_to_foot_z,
+                    cfg.upper_leg_m, cfg.lower_leg_m,
+                    cfg.min_reach_margin_m,
+                )
+
+                # Hip roll: small lean toward stance side
+                lat_offset = cfg.hip_lateral_offset_m
+                foot_rel_y = foot_pos[1] - com_y
+                # hip_roll keeps pelvis level — approximate from lateral offset
+                hip_r = np.arctan2(
+                    foot_rel_y - (lat_offset if side == "left" else -lat_offset),
+                    -hip_to_foot_z
+                )
+                hip_r = np.clip(hip_r, -0.15, 0.15)
+
+                # Apply to q_ref with WildRobot sign conventions
+                # Left: hip_pitch negated, hip_roll negated
+                # Right: hip_pitch sign from policy_action_sign=-1 → stored positive
+                q_ref[i, indices[0]] = sign * hip_p   # hip_pitch
+                q_ref[i, indices[1]] = hip_r           # hip_roll
+                q_ref[i, indices[2]] = knee_p          # knee_pitch
+                q_ref[i, indices[3]] = ank_p           # ankle_pitch
+
+        # Build phase array
+        phase = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float32)
+
+        # Pelvis position and orientation
+        pelvis_pos = np.zeros((n, 3), dtype=np.float32)
+        pelvis_pos[:, 0] = com_out[:, 0].astype(np.float32)
+        pelvis_pos[:, 1] = com_out[:, 1].astype(np.float32)
+        pelvis_pos[:, 2] = cfg.com_height_m
+        pelvis_rpy = np.zeros((n, 3), dtype=np.float32)
+
+        com_pos = np.zeros((n, 3), dtype=np.float32)
+        com_pos[:, 0] = com_out[:, 0].astype(np.float32)
+        com_pos[:, 1] = com_out[:, 1].astype(np.float32)
+        com_pos[:, 2] = cfg.com_height_m
+
+        foot_rpy = np.zeros((n, 3), dtype=np.float32)
+
+        return ReferenceTrajectory(
+            command_vx=command_vx,
+            dt=cfg.dt_s,
+            cycle_time=cfg.cycle_time_s * cfg.n_output_cycles,
+            q_ref=q_ref,
+            phase=phase,
+            pelvis_pos=pelvis_pos,
+            pelvis_rpy=pelvis_rpy,
+            com_pos=com_pos,
+            left_foot_pos=left_out.astype(np.float32),
+            left_foot_rpy=foot_rpy.copy(),
+            right_foot_pos=right_out.astype(np.float32),
+            right_foot_rpy=foot_rpy.copy(),
+            stance_foot_id=stance_out.astype(np.float32),
+            contact_mask=contact_out.astype(np.float32),
+            generator_version="zmp_v0.20.0",
+        )
+
+    def _generate_standing(self) -> ReferenceTrajectory:
+        """Generate a single-frame standing posture."""
+        cfg = self.cfg
+        n = 1
+        n_joints = 19
+
+        # Standing: straight legs, both feet on ground
+        q_ref = np.zeros((n, n_joints), dtype=np.float32)
+        phase = np.array([0.0], dtype=np.float32)
+        stance = np.array([0.0], dtype=np.float32)  # left stance
+        contact = np.ones((n, 2), dtype=np.float32)
+
+        lat = cfg.hip_lateral_offset_m
+        pelvis_pos = np.array([[0.0, 0.0, cfg.com_height_m]], dtype=np.float32)
+        pelvis_rpy = np.zeros((n, 3), dtype=np.float32)
+        com_pos = pelvis_pos.copy()
+        left_foot = np.array([[0.0, lat, 0.0]], dtype=np.float32)
+        right_foot = np.array([[0.0, -lat, 0.0]], dtype=np.float32)
+        foot_rpy = np.zeros((n, 3), dtype=np.float32)
+
+        return ReferenceTrajectory(
+            command_vx=0.0,
+            dt=cfg.dt_s,
+            cycle_time=cfg.dt_s,
+            q_ref=q_ref,
+            phase=phase,
+            pelvis_pos=pelvis_pos,
+            pelvis_rpy=pelvis_rpy,
+            com_pos=com_pos,
+            left_foot_pos=left_foot,
+            left_foot_rpy=foot_rpy.copy(),
+            right_foot_pos=right_foot,
+            right_foot_rpy=foot_rpy.copy(),
+            stance_foot_id=stance,
+            contact_mask=contact,
+            generator_version="zmp_v0.20.0",
+        )
+
+    def _plan_footsteps(
+        self,
+        step_length: float,
+        n_cycles: int,
+    ) -> Tuple[List[np.ndarray], np.ndarray, List[np.ndarray]]:
+        """Plan footstep positions and timing.
+
+        Returns (footsteps, time_steps, zmp_refs).
+        """
+        cfg = self.cfg
+        lat = cfg.default_stance_width_m
+
+        footsteps: List[np.ndarray] = []
+        # Start: left foot at origin+lat, right at origin-lat
+        left_x = 0.0
+        right_x = 0.0
+
+        for i in range(n_cycles):
+            # Left step
+            left_x = i * 2 * step_length
+            footsteps.append(np.array([left_x, lat], dtype=np.float64))
+            # Right step
+            right_x = (i * 2 + 1) * step_length
+            footsteps.append(np.array([right_x, -lat], dtype=np.float64))
+
+        # Build timing: alternating DS/SS phases
+        ds = cfg.double_support_s
+        ss = cfg.single_support_s
+        time_list = [0.0, ds]
+        for _ in range(len(footsteps) - 1):
+            time_list.extend([ss, ds])
+        time_steps = np.cumsum(time_list)
+
+        # ZMP refs: one per transition (same count as time_steps)
+        zmp_refs: List[np.ndarray] = []
+        for step in footsteps:
+            zmp_refs.append(step.copy())  # DS: under previous stance
+            zmp_refs.append(step.copy())  # SS: under current stance
+
+        # Trim to match time_steps length
+        zmp_refs = zmp_refs[:len(time_steps)]
+
+        return footsteps, time_steps, zmp_refs
+
+    def _compute_foot_trajectories(
+        self,
+        footsteps: List[np.ndarray],
+        time_steps: np.ndarray,
+        n_total: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Compute per-timestep foot positions, stance IDs, and contact masks.
+
+        Returns (left_foot_pos, right_foot_pos, stance_foot_id, contact_mask).
+        """
+        cfg = self.cfg
+        lat = cfg.default_stance_width_m
+
+        left_pos = np.zeros((n_total, 3), dtype=np.float64)
+        right_pos = np.zeros((n_total, 3), dtype=np.float64)
+        stance_ids = np.zeros(n_total, dtype=np.float64)
+        contacts = np.ones((n_total, 2), dtype=np.float64)
+
+        # Initialize feet at first footstep positions
+        left_pos[:, 1] = lat
+        right_pos[:, 1] = -lat
+
+        # Current foot positions
+        cur_left = np.array([0.0, lat, 0.0], dtype=np.float64)
+        cur_right = np.array([0.0, -lat, 0.0], dtype=np.float64)
+
+        step_idx = 0
+        for phase_idx in range(len(time_steps) - 1):
+            t_start = time_steps[phase_idx]
+            t_end = time_steps[phase_idx + 1]
+            i_start = int(round(t_start / cfg.dt_s))
+            i_end = min(int(round(t_end / cfg.dt_s)), n_total)
+
+            is_double = (phase_idx % 2 == 0)
+
+            if is_double:
+                # Double support: feet stay put
+                for i in range(i_start, i_end):
+                    left_pos[i] = cur_left.copy()
+                    right_pos[i] = cur_right.copy()
+                    contacts[i] = [1.0, 1.0]
+                    # Stance is the foot that was just placed
+                    stance_ids[i] = float(step_idx % 2)
+            else:
+                # Single support: one foot swings
+                fs = footsteps[step_idx]
+                swing_is_right = (step_idx % 2 == 1)
+                step_idx += 1
+
+                if swing_is_right:
+                    # Right foot swings to next footstep
+                    next_footstep = footsteps[min(step_idx, len(footsteps) - 1)]
+                    start_pos = cur_right.copy()
+                    end_pos = np.array([next_footstep[0], -lat, 0.0])
+
+                    n_swing = max(1, i_end - i_start)
+                    for i in range(i_start, i_end):
+                        frac = (i - i_start) / n_swing
+                        right_pos[i, 0] = start_pos[0] + (end_pos[0] - start_pos[0]) * frac
+                        right_pos[i, 1] = -lat
+                        right_pos[i, 2] = cfg.foot_step_height_m * np.sin(np.pi * frac)
+                        left_pos[i] = cur_left.copy()
+                        contacts[i] = [1.0, 0.0]
+                        stance_ids[i] = 0.0  # left stance
+
+                    cur_right = end_pos.copy()
+                else:
+                    # Left foot swings
+                    next_footstep = footsteps[min(step_idx, len(footsteps) - 1)]
+                    start_pos = cur_left.copy()
+                    end_pos = np.array([next_footstep[0], lat, 0.0])
+
+                    n_swing = max(1, i_end - i_start)
+                    for i in range(i_start, i_end):
+                        frac = (i - i_start) / n_swing
+                        left_pos[i, 0] = start_pos[0] + (end_pos[0] - start_pos[0]) * frac
+                        left_pos[i, 1] = lat
+                        left_pos[i, 2] = cfg.foot_step_height_m * np.sin(np.pi * frac)
+                        right_pos[i] = cur_right.copy()
+                        contacts[i] = [0.0, 1.0]
+                        stance_ids[i] = 1.0  # right stance
+
+                    cur_left = end_pos.copy()
+
+        return left_pos, right_pos, stance_ids, contacts
+
+    def build_library(
+        self,
+        command_range_vx: Tuple[float, float] = (0.0, 0.25),
+        interval: float = 0.05,
+    ) -> ReferenceLibrary:
+        """Build a complete reference library across command bins.
+
+        Parameters
+        ----------
+        command_range_vx : (min_vx, max_vx)
+        interval : command bin spacing in m/s
+        """
+        vx_values = np.arange(
+            command_range_vx[0],
+            command_range_vx[1] + interval * 0.5,
+            interval,
+        )
+
+        trajectories = []
+        for vx in vx_values:
+            vx_rounded = round(float(vx), 4)
+            print(f"  Generating vx={vx_rounded:+.3f} m/s ...", end="", flush=True)
+            traj = self.generate(vx_rounded)
+            issues = traj.validate()
+            if issues:
+                print(f" ISSUES: {issues}")
+                traj.is_valid = False
+                traj.validation_notes = "; ".join(issues)
+            else:
+                print(f" OK (steps={traj.n_steps})")
+            trajectories.append(traj)
+
+        meta = ReferenceLibraryMeta(
+            generator="zmp_walk",
+            generator_version="0.20.0",
+            robot="wildrobot_v2",
+            dt=self.cfg.dt_s,
+            cycle_time=self.cfg.cycle_time_s,
+            n_joints=19,
+            command_range_vx=command_range_vx,
+            command_interval=interval,
+        )
+
+        return ReferenceLibrary(trajectories, meta)
