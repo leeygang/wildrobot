@@ -552,6 +552,9 @@ Execution milestones:
 4. `v0.20.0-D`: Reference + IK + short-horizon feasibility validation
 5. `v0.20.0-E`: PPO unblocks only after the prior gate clears
 
+These milestone labels are canonical and should match
+[reference_design.md](/home/leeygang/projects/wildrobot/training/docs/reference_design.md).
+
 Exit rule:
 
 - no `v0.20.1` PPO training until the `v0.20.0` prior gate passes
@@ -576,6 +579,31 @@ Tasks:
   probes
 - freeze the first reference family as `ZMP`-shaped, with later `ALIP`
   compatibility in the contract
+
+Required schema contents:
+
+- command key:
+  - `vx` in the first branch
+  - reserved extension fields for `vy` and `yaw_rate`
+- timing:
+  - `dt`
+  - normalized phase
+  - step period / cycle length
+- nominal targets:
+  - `q_ref`
+  - optional `dq_ref`
+- task-space targets:
+  - pelvis pose
+  - COM target
+  - left/right foot pose targets
+- annotations:
+  - stance side
+  - contact mask / contact state
+  - stop / resume markers
+- metadata:
+  - generator version
+  - command-bin bounds
+  - validation and feasibility flags
 
 Visual validation:
 
@@ -617,10 +645,26 @@ Metric validation:
 Tasks:
 
 - implement the first `ZMP`-shaped offline prior library
+- use a concrete, reviewable `ZMP` generation pipeline rather than a vague
+  “preview-like” approximation
 - provide a viewer for:
   - prior-only playback
   - prior + IK playback
   - prior traces over command sweeps
+
+Reference implementation target:
+
+- algorithm family: Kajita et al. `ZMP` preview control over a cart-table /
+  `LIPM` model
+- public implementation reference: ToddlerBot
+  `toddlerbot.algorithms.zmp_planner` and
+  `toddlerbot.algorithms.zmp_walk`
+- intended WildRobot pipeline:
+  - command bin / footstep plan
+  - `ZMP` preview-control COM plan
+  - swing-foot trajectory generation
+  - IK / nominal joint target generation
+  - lookup-table export indexed by command
 
 Visual validation:
 

@@ -79,14 +79,15 @@ Planned upgrade compatibility:
 - keep the same offline prior asset and preview interface if later policy
   versions move toward a Cassie-style broader-authority contract
 
-Only one layer should decide:
+Only one layer should own locomotion semantics, and for the active `v0.20`
+path it does so at generation time:
 
-- whether progression is allowed
-- which hybrid gait mode is active
-- how much forward swing release is permitted
-- how foothold progression is shaped under instability
+- whether progression opens at all
+- which gait phase / contact schedule is encoded
+- how much forward swing release is planned
+- how foothold progression is shaped across the command family
 
-That layer is the reference layer.
+That layer is the offline prior generator, not the runtime adapter.
 
 ---
 
@@ -262,6 +263,20 @@ Allowed implementations:
 - later `ALIP` upgrade
 - optional `Placo`-assisted authoring or prototyping
 
+Reference starting point:
+
+- algorithm family: Kajita et al. `ZMP` preview control over a cart-table /
+  `LIPM` model
+- public implementation reference: ToddlerBot
+  `toddlerbot.algorithms.zmp_planner` and
+  `toddlerbot.algorithms.zmp_walk`
+- intended WildRobot pipeline:
+  - command bin / footstep plan
+  - `ZMP` preview-control COM plan
+  - swing-foot trajectory generation
+  - IK / nominal joint target generation
+  - offline lookup-table export indexed by command
+
 **Layer 1: Reference library asset**
 
 Responsibilities:
@@ -271,6 +286,31 @@ Responsibilities:
 - expose both task-space targets and nominal joint-space targets where useful
 
 This is the active source of locomotion semantics.
+
+Minimum schema per library entry:
+
+- command key:
+  - `vx` for the first branch
+  - later extension points for `vy` and `yaw_rate`
+- timing:
+  - `dt`
+  - step period / cycle length
+  - normalized phase
+- nominal targets:
+  - `q_ref`
+  - optional `dq_ref`
+- task-space preview:
+  - pelvis pose target
+  - COM target
+  - left/right foot pose targets
+- annotations:
+  - stance foot / support side
+  - contact state or contact mask
+  - stop / resume markers where applicable
+- metadata:
+  - generation version
+  - command-bin bounds
+  - feasibility / validation flags
 
 **Layer 2: Runtime reference service**
 
@@ -340,63 +380,40 @@ kept as the mainline controller.
 
 ## Adapter Design
 
-The nominal target adapter is responsible for converting reference intent into
-executable joint targets.
+The active runtime adapter is intentionally simple.
+
+Its job is to convert offline-prior outputs into executable targets without
+reintroducing gait semantics.
 
 It should:
 
-- use reference outputs directly
-- solve IK
-- clip to actuator/joint limits
-- apply safe fallbacks for unreachable targets
-- preserve home-centered defaults
+- consume the library lookup output directly
+- run IK where the library stores task-space targets
+- emit joint targets from stored `q_ref` where joint-space targets are already
+  available
+- clip to actuator and joint limits
+- apply lightweight smoothing or rate limiting when required for actuator
+  safety
+- apply explicit safe fallbacks for unreachable targets
 
 It should not:
 
-- recompute its own gait mode
-- recompute a different support-health controller
-- invent separate progression logic
+- infer or reopen gait phase
+- recompute support-health, progression, or release gates
+- reinterpret stop / resume semantics
+- introduce a second locomotion controller through hidden scaling rules
 
-If additional execution safeguards are needed, they should be:
+If runtime shaping exists, it must be:
 
 - mechanical
 - safety-oriented
-- explicitly documented as adapter logic
+- explicitly bounded and documented
+- unable to change the gait family encoded by the offline prior
 
-not implicit locomotion semantics.
-
-### Adapter-side support scaling rule
-
-The env currently contains adapter-side helper logic such as
-`_loc_ref_support_scales()` that scales swing-x and pelvis-pitch channels from
-overspeed and pitch signals.
-
-This is risky because it can become a second locomotion controller:
-
-- the reference already computes `support_health`
-- the reference already computes `progression_permission`
-- the reference already decides whether swing should release
-
-So the design position for `M2.5` is:
-
-- the reference remains the authoritative owner of progression semantics
-- adapter-side support scaling is allowed only as an execution-safety layer
-- adapter-side support scaling may only further restrict a command
-- adapter-side support scaling must never reopen or reinterpret progression
-
-In practice, this means:
-
-- `walking_ref_v2` decides release
-- the adapter may apply a bounded multiplicative brake for actuator safety
-- the brake should consume reference-owned signals where possible
-- if adapter-side braking continues to affect debugging materially, the next
-  cleanup step should remove independent instability estimation and consume only
-  reference-owned support signals
-
-The preferred end state is still single-source-of-truth:
-
-- one authoritative support-health / progression signal in the reference
-- adapter logic reduced to mechanical execution safeguards
+Historical adapter-side support-scaling logic from the `walking_ref_v2` era now
+belongs to
+[reference_design_history.md](reference_design_history.md), not to the active
+`v0.20` architecture.
 
 ---
 
@@ -546,6 +563,9 @@ What to verify metrically:
 
 ## Execution Milestones For `v0.20.0`
 
+The milestone labels below are the canonical `v0.20.0` sequence and should
+match [`walking_training.md`](/home/leeygang/projects/wildrobot/training/docs/walking_training.md).
+
 ### `v0.20.0-A`: Prior contract freeze
 
 Goal:
@@ -563,6 +583,31 @@ Required outputs:
 - phase / contact annotation contract
 - stop / resume handling contract
 
+Minimum schema details:
+
+- command key:
+  - `vx` in the first branch
+  - reserved extension fields for `vy` and `yaw_rate`
+- timing:
+  - `dt`
+  - normalized phase
+  - step period / cycle length
+- nominal targets:
+  - `q_ref`
+  - optional `dq_ref`
+- task-space targets:
+  - pelvis pose
+  - COM target
+  - left/right foot pose targets
+- annotations:
+  - stance side
+  - contact mask / contact state
+  - stop / resume markers
+- metadata:
+  - generator version
+  - command-bin bounds
+  - validation and feasibility flags
+
 Exit criteria:
 
 - one documented prior schema exists
@@ -570,13 +615,45 @@ Exit criteria:
 - rate limits and bounds are explicitly defined
 - active runtime FSM path is marked deprecated in the design docs
 
-### `v0.20.0-B`: `ZMP` prior implementation
+### `v0.20.0-B`: Servo-model and SysID verification
+
+Goal:
+
+- verify that the simulated servo model is good enough to trust the offline
+  prior in MuJoCo before reference generation is promoted
+
+Visual gate:
+
+- sim-vs-real step-response plots are qualitatively aligned
+- reference-like replay does not reveal a tracking mode that hardware clearly
+  cannot realize
+
+Metric gate:
+
+- actuator SysID replay error is within the accepted servo-model budget for the
+  tracked leg joints
+- delay and backlash estimates are versioned and stable
+- no promotion to `v0.20.0-C` if the servo model is clearly inaccurate
+
+### `v0.20.0-C`: `ZMP` prior generator and viewer
 
 Goal:
 
 - implement the first production prior as a `ZMP`-shaped offline reference
-  library
-- verify that the servo model is good enough to trust the library in MuJoCo
+  library using a concrete, reviewable pipeline
+
+Reference implementation target:
+
+- planning family: Kajita et al. `ZMP` preview control
+- public code reference: ToddlerBot
+  `toddlerbot.algorithms.zmp_planner` and
+  `toddlerbot.algorithms.zmp_walk`
+- intended WildRobot pipeline:
+  - command bin / footstep plan
+  - `ZMP` preview-control COM plan
+  - swing-foot trajectory generation
+  - IK / nominal joint target generation
+  - lookup-table export indexed by command
 
 Visual gate:
 
@@ -589,38 +666,21 @@ Metric gate:
 - commanded foothold mean `>= 0.045 m`
 - step period remains within `0.45-0.75 s`
 - preview continuity and rate limits pass on command sweeps
-- actuator SysID replay error is within the accepted servo-model budget for the
-  tracked leg joints
 - no validated reference trajectory requires systematic joint-limit violation
 
-### `v0.20.0-C`: Prior + IK playback validation
+### `v0.20.0-D`: Reference + IK + short-horizon feasibility validation
 
 Goal:
 
 - prove the prior remains coherent after IK and nominal target adaptation
-
-Visual gate:
-
-- touchdown locations match the intended stepping pattern
-- no obvious toe drag, scissoring, or pathological posture
-
-Metric gate:
-
-- realized touchdown step length mean `>= 0.03 m`
-- realized / commanded step ratio `>= 0.5`
-- IK reachability stays near `1.0`
-- safety margin violations remain zero
-
-### `v0.20.0-D`: Servo-feasibility and short-horizon env gate
-
-Goal:
-
 - prove the offline prior is trackable enough in full MuJoCo dynamics to be a
   valid imitation target for PPO
 - do not require long-horizon open-loop walking from the offline prior
 
 Visual gate:
 
+- touchdown locations match the intended stepping pattern
+- no obvious toe drag, scissoring, or pathological posture
 - startup, stop, and one-to-two gait cycles remain coherent in the full env
 - motion looks trackable rather than instantly impossible under the simulated
   servo model
@@ -628,12 +688,24 @@ Visual gate:
 
 Metric gate:
 
+- realized touchdown step length mean `>= 0.03 m`
+- realized / commanded step ratio `>= 0.5`
+- IK reachability stays near `1.0`
+- safety margin violations remain zero
 - short-horizon env replay survives at least one gait cycle without immediate
   catastrophic pitch termination
 - simulated tracking RMSE stays within the actuator-feasibility budget
 - no repeated hard saturation dominates the replay
-- touchdown step length mean `>= 0.03 m`
-- realized / commanded step ratio `>= 0.5`
+
+### `v0.20.0-E`: PPO unblock decision
+
+PPO is unblocked only if:
+
+- `v0.20.0-A` through `v0.20.0-D` pass
+- the offline prior visually looks like a real walk family, not a balance
+  exploit
+- the servo model is good enough that the prior is a believable imitation
+  target
 
 ### `v0.20.1`: ToddlerBot-style PPO
 
