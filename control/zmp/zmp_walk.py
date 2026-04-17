@@ -155,7 +155,9 @@ class ZMPWalkGenerator:
             R=np.eye(2) * cfg.zmp_cost_R,
         )
 
-        # Forward-integrate COM trajectory
+        # Forward-integrate COM trajectory using the planner's optimal
+        # feedback law. Also record the planner's nominal COM for
+        # comparison.
         com_traj = np.zeros((n_total, 4), dtype=np.float64)
         com_traj[0] = x0
         for i in range(1, n_total):
@@ -164,33 +166,69 @@ class ZMPWalkGenerator:
             com_traj[i, :2] = com_traj[i - 1, :2] + com_traj[i - 1, 2:] * cfg.dt_s
             com_traj[i, 2:] = com_traj[i - 1, 2:] + u * cfg.dt_s
 
+        # Use the planner's nominal COM (from the LQR solution) to get
+        # a cleaner trajectory that's exactly consistent with the ZMP plan.
+        com_nominal = np.zeros((n_total, 2), dtype=np.float64)
+        for i in range(n_total):
+            t = i * cfg.dt_s
+            com_nominal[i] = self.planner.get_nominal_com(t)
+
         # Compute foot trajectories
         left_foot, right_foot, stance_ids, contacts = self._compute_foot_trajectories(
             footsteps, time_steps, n_total
         )
 
-        # Extract one gait cycle from the middle of the trajectory
-        # Skip the first cycle (transient), take the next output_cycles
-        out_steps = cfg.steps_per_cycle * cfg.n_output_cycles
-        start_step = cfg.steps_per_cycle  # skip first cycle
-        # Clamp to available data
-        start_step = min(start_step, n_total - out_steps)
-        start_step = max(start_step, 0)
-        end_step = min(start_step + out_steps, n_total)
+        # Extract one gait cycle that is truly periodic.
+        # A full cycle = left step + right step. Find consecutive points
+        # where the gait repeats: stance transitions from L→R, which
+        # marks the same phase point each cycle.
+        stance_lr_transitions = []
+        for i in range(1, n_total):
+            # Detect L→R stance transition (stance goes 0→1)
+            if stance_ids[i] > 0.5 and stance_ids[i - 1] < 0.5:
+                stance_lr_transitions.append(i)
+
+        # Need at least 3 transitions to skip warmup and extract one cycle
+        if len(stance_lr_transitions) >= 3:
+            start_step = stance_lr_transitions[1]
+            end_step = stance_lr_transitions[2]
+        elif len(stance_lr_transitions) >= 2:
+            start_step = stance_lr_transitions[0]
+            end_step = stance_lr_transitions[1]
+        else:
+            # Fallback: use fixed extraction
+            out_steps = cfg.steps_per_cycle * cfg.n_output_cycles
+            start_step = min(cfg.steps_per_cycle, n_total - out_steps)
+            start_step = max(start_step, 0)
+            end_step = min(start_step + out_steps, n_total)
+
         actual_out = end_step - start_step
         sl = slice(start_step, end_step)
 
-        com_out = com_traj[sl]
-        left_out = left_foot[sl]
-        right_out = right_foot[sl]
-        stance_out = stance_ids[sl]
-        contact_out = contacts[sl]
+        com_out = com_traj[sl].copy()
+        left_out = left_foot[sl].copy()
+        right_out = right_foot[sl].copy()
+        stance_out = stance_ids[sl].copy()
+        contact_out = contacts[sl].copy()
 
-        # Shift COM to be relative to start of output cycle
-        com_x_offset = com_out[0, 0]
-        com_out[:, 0] -= com_x_offset
-        left_out[:, 0] -= com_x_offset
-        right_out[:, 0] -= com_x_offset
+        # Express everything relative to the instantaneous nominal COM
+        # at each step. This makes foot positions periodic because the
+        # relative geometry repeats each cycle.
+        com_slice = com_nominal[sl].copy()
+        for i in range(actual_out):
+            left_out[i, 0] -= com_slice[i, 0]
+            left_out[i, 1] -= com_slice[i, 1]
+            right_out[i, 0] -= com_slice[i, 0]
+            right_out[i, 1] -= com_slice[i, 1]
+
+        # COM in the de-trended frame: just the oscillation around zero
+        com_detrended = np.zeros((actual_out, 4), dtype=np.float64)
+        stride_x = com_slice[-1, 0] - com_slice[0, 0]
+        stride_y = com_slice[-1, 1] - com_slice[0, 1]
+        for i in range(actual_out):
+            frac = i / actual_out
+            com_detrended[i, 0] = com_slice[i, 0] - com_slice[0, 0] - frac * stride_x
+            com_detrended[i, 1] = com_slice[i, 1] - com_slice[0, 1] - frac * stride_y
 
         # Solve IK for each step
         n = actual_out
@@ -198,20 +236,14 @@ class ZMPWalkGenerator:
         q_ref = np.zeros((n, n_joints), dtype=np.float32)
 
         for i in range(n):
-            # IK target: foot position relative to hip in sagittal plane
-            # Hip is at COM + lateral offset
-            com_x = com_out[i, 0]
-            com_y = com_out[i, 1]
-
-            for side, foot_pos, sign, indices in [
-                ("left", left_out[i], -1.0, [0, 2, 4, 6]),
-                ("right", right_out[i], 1.0, [1, 3, 5, 7]),
+            # Foot positions are COM-relative (periodic frame).
+            # IK needs foot position relative to hip.
+            for side, foot_pos, indices in [
+                ("left", left_out[i], [0, 2, 4, 6]),
+                ("right", right_out[i], [1, 3, 5, 7]),
             ]:
-                # Foot x relative to COM (sagittal IK target)
-                foot_rel_x = foot_pos[0] - com_x
-                # Foot z relative to hip: ground is at 0, hip is at com_height
-                # target_z = -(com_height - ankle_to_ground - foot_z)
-                # foot_z=0 when on ground, >0 when lifted
+                foot_rel_x = foot_pos[0]
+                foot_rel_y = foot_pos[1]
                 foot_z_above_ground = foot_pos[2]
                 hip_to_foot_z = -(cfg.com_height_m - cfg.ankle_to_ground_m
                                   - foot_z_above_ground)
@@ -222,45 +254,45 @@ class ZMPWalkGenerator:
                     cfg.min_reach_margin_m,
                 )
 
-                # Hip roll: small lean toward stance side
+                # Hip roll from lateral foot offset
                 lat_offset = cfg.hip_lateral_offset_m
-                foot_rel_y = foot_pos[1] - com_y
-                # hip_roll keeps pelvis level — approximate from lateral offset
                 hip_r = np.arctan2(
                     foot_rel_y - (lat_offset if side == "left" else -lat_offset),
                     -hip_to_foot_z
                 )
                 hip_r = np.clip(hip_r, -0.15, 0.15)
 
-                # Apply to q_ref with WildRobot sign conventions
-                # Left: hip_pitch negated, hip_roll negated
-                # Right: hip_pitch sign from policy_action_sign=-1 → stored positive
-                q_ref[i, indices[0]] = sign * hip_p   # hip_pitch
-                q_ref[i, indices[1]] = hip_r           # hip_roll
-                q_ref[i, indices[2]] = knee_p          # knee_pitch
-                q_ref[i, indices[3]] = ank_p           # ankle_pitch
+                # Apply WildRobot sign conventions (from nominal_ik_adapter.py):
+                # left_hip_pitch = -hip_p, right_hip_pitch = +hip_p
+                # left_hip_roll = -roll,   right_hip_roll = +roll
+                if side == "left":
+                    q_ref[i, indices[0]] = -hip_p      # left_hip_pitch
+                    q_ref[i, indices[1]] = -hip_r       # left_hip_roll
+                else:
+                    q_ref[i, indices[0]] = hip_p        # right_hip_pitch
+                    q_ref[i, indices[1]] = hip_r         # right_hip_roll
+                q_ref[i, indices[2]] = knee_p            # knee_pitch
+                q_ref[i, indices[3]] = ank_p             # ankle_pitch
 
         # Build phase array
         phase = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float32)
 
-        # Pelvis position and orientation
+        # Pelvis position: de-trended COM oscillation + height
         pelvis_pos = np.zeros((n, 3), dtype=np.float32)
-        pelvis_pos[:, 0] = com_out[:, 0].astype(np.float32)
-        pelvis_pos[:, 1] = com_out[:, 1].astype(np.float32)
+        pelvis_pos[:, 0] = com_detrended[:, 0].astype(np.float32)
+        pelvis_pos[:, 1] = com_detrended[:, 1].astype(np.float32)
         pelvis_pos[:, 2] = cfg.com_height_m
         pelvis_rpy = np.zeros((n, 3), dtype=np.float32)
 
-        com_pos = np.zeros((n, 3), dtype=np.float32)
-        com_pos[:, 0] = com_out[:, 0].astype(np.float32)
-        com_pos[:, 1] = com_out[:, 1].astype(np.float32)
-        com_pos[:, 2] = cfg.com_height_m
+        # COM position: same as pelvis for LIPM
+        com_pos = pelvis_pos.copy()
 
         foot_rpy = np.zeros((n, 3), dtype=np.float32)
 
         return ReferenceTrajectory(
             command_vx=command_vx,
             dt=cfg.dt_s,
-            cycle_time=cfg.cycle_time_s * cfg.n_output_cycles,
+            cycle_time=actual_out * cfg.dt_s,
             q_ref=q_ref,
             phase=phase,
             pelvis_pos=pelvis_pos,

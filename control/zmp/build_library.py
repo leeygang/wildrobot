@@ -59,6 +59,8 @@ def main() -> None:
         print(f"\nValidation issues found:")
         for key, entry_issues in issues.items():
             print(f"  {key}: {entry_issues}")
+        print("\nLibrary NOT saved due to validation failures.")
+        sys.exit(1)
     else:
         print(f"\nAll {len(lib)} entries pass validation.")
 
