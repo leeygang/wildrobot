@@ -1,6 +1,13 @@
-"""Typed locomotion contracts for the v0.19.0 platform pivot.
+"""Typed locomotion contracts for WildRobot walking.
 
-These contracts are schema-only and must remain lightweight/stable in Milestone 0.
+v0.19.0: Initial schema for platform pivot (LocomotionReferenceState et al.)
+v0.20.0: Added ReferencePreviewWindow and ReferenceLibrary contracts for the
+         offline-prior architecture.  The v0.19 contracts remain for backward
+         compatibility with existing logging and eval code.
+
+For the active v0.20.x offline-prior path, the primary runtime interface is
+``ReferencePreviewWindow`` from ``reference_library.py``, not the
+``LocomotionReferenceState`` defined here.
 """
 
 from __future__ import annotations

@@ -30,8 +30,8 @@ The goal of this document is to make the design explicit enough that:
 This document is about:
 
 - locomotion prior / reference architecture
-- `walking_ref_v1` limitations
-- `walking_ref_v2` target design
+- `walking_ref_v1` / `walking_ref_v2` limitations and lessons
+- offline prior / reference library design
 - validation of prior assets, short-horizon feasibility, and first-policy
   learning
 - `v0.20.0` execution milestones

@@ -1,4 +1,17 @@
-"""Support-first hybrid walking reference generator v2 (M2.5)."""
+"""Support-first hybrid walking reference generator v2 (M2.5).
+
+.. deprecated:: v0.20.0
+    This module implements a *runtime* walking FSM that is deprecated for the
+    active v0.20.x locomotion path.  The active architecture uses an *offline*
+    reference library (see ``reference_library.py``).
+
+    This code may still be used for:
+    - offline trajectory generation
+    - historical diagnostics and A/B comparison
+    - reference during ZMP prior library development
+
+    It is NOT the active runtime controller.
+"""
 
 from __future__ import annotations
 
