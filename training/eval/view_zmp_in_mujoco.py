@@ -65,6 +65,7 @@ def run_viewer(
     lib: ReferenceLibrary,
     vx: float,
     headless: bool = False,
+    kinematic: bool = False,
     horizon: int = 200,
     print_every: int = 10,
     sim_dt_factor: int = 1,
@@ -75,16 +76,99 @@ def run_viewer(
 
     traj = lib.lookup(vx)
     n_cycle = traj.n_steps
+    mode_str = "kinematic" if kinematic else "physics"
     print(f"Trajectory: vx={traj.command_vx:.3f}, steps={n_cycle}, "
           f"cycle_time={traj.cycle_time:.3f}s")
-    print(f"Viewer: horizon={horizon}, dt_factor={sim_dt_factor}")
+    print(f"Viewer: horizon={horizon}, mode={mode_str}")
 
     _init_standing(model, data)
 
-    # Physics dt and reference dt
+    # Build qpos index mapping: policy order -> qpos index
+    # MuJoCo actuator order is act[i] -> qpos[qpos_adr[act_joint_id]]
+    act_to_qpos = []
+    for i in range(model.nu):
+        joint_id = model.actuator_trnid[i, 0]
+        act_to_qpos.append(model.jnt_qposadr[joint_id])
+    act_to_qpos = np.array(act_to_qpos)
+
+    # Policy order -> MuJoCo actuator order permutation
+    policy_to_mj = mapper._perm_np
+
     ref_dt = traj.dt
+
+    if kinematic:
+        _run_kinematic(model, data, traj, vx, horizon, print_every,
+                       ref_dt, policy_to_mj, act_to_qpos, headless)
+    else:
+        _run_physics(model, data, traj, mapper, horizon, print_every,
+                     ref_dt, sim_dt_factor, headless)
+
+
+def _run_kinematic(model, data, traj, vx, horizon, print_every,
+                   ref_dt, policy_to_mj, act_to_qpos, headless):
+    """Kinematic replay: set qpos directly, no physics.
+
+    Shows the intended reference motion without balance issues.
+    The root advances forward at the commanded speed.
+    """
+    import time as time_mod
+
+    n_cycle = traj.n_steps
+
+    def set_pose(step_idx):
+        cycle_idx = step_idx % n_cycle
+        q_ref = traj.q_ref[cycle_idx]  # policy order
+
+        # Map policy-order q_ref to MuJoCo qpos
+        mj_ctrl_order = np.zeros(len(policy_to_mj))
+        mj_ctrl_order[policy_to_mj] = q_ref
+        for act_i in range(len(act_to_qpos)):
+            data.qpos[act_to_qpos[act_i]] = mj_ctrl_order[act_i]
+
+        # Advance root forward at commanded speed
+        data.qpos[0] = step_idx * ref_dt * vx  # x
+        data.qpos[2] = traj.pelvis_pos[cycle_idx, 2] if traj.pelvis_pos is not None else 0.45
+
+        # Keep root upright
+        data.qpos[3:7] = [1, 0, 0, 0]
+
+        mujoco.mj_forward(model, data)
+
+    if headless:
+        print(f"\n{'step':>5} {'cyc':>4} {'root_x':>7}")
+        for i in range(horizon):
+            set_pose(i)
+            if i % print_every == 0:
+                print(f"{i:5d} {i % n_cycle:4d} {data.qpos[0]:+7.4f}")
+        print("Kinematic replay complete.")
+    else:
+        step_idx = [0]
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            viewer.cam.distance = 1.5
+            viewer.cam.elevation = -20
+            viewer.cam.lookat[:] = [0, 0, 0.4]
+
+            while viewer.is_running() and step_idx[0] < horizon:
+                set_pose(step_idx[0])
+                # Track robot with camera
+                viewer.cam.lookat[0] = data.qpos[0]
+                viewer.sync()
+                step_idx[0] += 1
+                time_mod.sleep(ref_dt)
+
+            print(f"Kinematic replay done: {step_idx[0]} steps")
+
+
+def _run_physics(model, data, traj, mapper, horizon, print_every,
+                 ref_dt, sim_dt_factor, headless):
+    """Physics replay: set ctrl, step physics, observe response."""
+    import time as time_mod
+
+    n_cycle = traj.n_steps
     physics_dt = model.opt.timestep
     physics_steps_per_ref = max(1, int(round(ref_dt / physics_dt)))
+
+    _init_standing(model, data)
 
     # Startup ramp: gradually blend from standing to walking posture
     # over startup_steps to avoid a violent initial transition.
@@ -210,6 +294,9 @@ def main():
                         help="Forward speed command")
     parser.add_argument("--headless", action="store_true",
                         help="Run headless with text output")
+    parser.add_argument("--kinematic", action="store_true",
+                        help="Kinematic replay (set qpos directly, no physics). "
+                             "Shows the intended reference motion without balance issues.")
     parser.add_argument("--horizon", type=int, default=200,
                         help="Number of reference steps to run")
     parser.add_argument("--print-every", type=int, default=10,
@@ -231,6 +318,7 @@ def main():
     run_viewer(
         lib, args.vx,
         headless=args.headless,
+        kinematic=args.kinematic,
         horizon=args.horizon,
         print_every=args.print_every,
         sim_dt_factor=args.sim_dt_factor,
