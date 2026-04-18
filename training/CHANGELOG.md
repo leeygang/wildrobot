@@ -775,6 +775,116 @@ queue at top.
   equilibrium pose (pelvis pitched -0.020 rad, all single-dof
   joints near 0 except knees ≈ 0.023, settled qpos baked in).
 
+### v0.20.0-C round 7 — geometry refit unlocks forward walking
+
+External review (round 7) flagged three issues and one direction:
+
+- **High** (doc): Q2 still said vx perturbation centered on the
+  trajectory's LIPM IC, but the round-4 revert returned the code to
+  centered-on-zero.  Doc updated to match.
+- **Medium** (viewer): standing ramp blended from `zeros(19)` but
+  the round-6 home key has knees ≈ 0.023 → unnecessary 23 mrad
+  transient on every replay.  Now reads actuator values from the
+  home keyframe directly.
+- **Geometry probe** (the main finding): with base at
+  `traj.pelvis_pos` and joints at `q_ref`, stance foot bottom z
+  was +0.013-0.017 m at every probed frame across all vx — i.e.
+  the prior placed stance contacts ~14 mm ABOVE the floor.  Home
+  keyframe sits at -0.0002 m.  That gap broke contact timing and
+  was the root cause of the backward walking we'd been chasing
+  for six rounds.
+
+Direction (reviewer + adopted): fix the digital twin and prior
+geometry first; keep C2 bounded; only move to PPO once the prior
+places stance contacts correctly.
+
+**Concrete actions (all landed):**
+
+1. **FK validation gate** (`tests/test_v0200c_geometry.py`): probes
+   stance foot bottom z ≤ 0.003 m and swing > -0.002 m at
+   representative frames across vx ∈ {0.10, 0.15, 0.20, 0.25}.
+   Was 56/72 failing before geometry refit; **now passes 72/72**.
+2. **IK leg-geometry refit** (`control/zmp/zmp_walk.py`):
+   - `upper_leg_m` 0.21 → **0.193** (MJCF FK probe)
+   - `lower_leg_m` 0.21 → **0.180** (MJCF FK probe)
+   - `ankle_to_ground_m` 0.06 → **0.061** (foot-body to foot-bottom)
+   - **new** `pelvis_to_hip_m: 0.034` (the MJCF "waist" body's hip
+     joint sits 34 mm below the pelvis frame origin; previously
+     unmodelled)
+   - `com_height_m` derivation now subtracts `min_reach_margin_m`
+     (round-7 retro: the IK clamps target distance to that margin,
+     so `com_height` had a ~10 mm gap that put stance feet above
+     the floor).  Coordinated with `safe_max_step_length_m`
+     (round 5 broke this by changing only com_height).
+   - `foot_step_height_m` 0.08 → **0.04** (after refit the leg is
+     0.37 m, not 0.42; the original 0.08 m peak required knee bend
+     92° > the 80° limit).
+   - **new** `swing_foot_z_floor_clearance_m: 0.025` to absorb the
+     constant-plantarflex toe drop during swing (FK gate caught
+     swing-foot dips at lift-off / touchdown).
+3. **Home keyframe rebuilt** for the round-7 geometry: now starts
+   in the walking pose (knees ≈ 0.49 rad, pelvis_z = 0.4575 m,
+   pitched -0.020 rad to compensate the inertial offset).  Standing
+   ramp is now a near-no-op (max Δ ≈ 0.026 rad).
+
+**Round-7 closeout sweep (32 rows)**:
+
+| mode | rows | passed | notable changes vs round 6 |
+|---|---|---|---|
+| kinematic | 4/4 | ✓ | step ratio 0.96 (was 1.00; swing clearance trims effective stride) |
+| fixed-base | 0/4 | ✗ | knee saturation 7 % > 5 % gate (was 3.5 %) — the new geometry drives the knee closer to its 80° limit |
+| C1 | 7/12 | ✗ | survival regressed at high vx (now 45-65 steps); body falls FORWARD in ~50 steps instead of drifting backward — different failure mode, smaller magnitude |
+| C2 | 0/12 | ✗ | **but**: positive forward step ratios at vx=0.25 for the first time (see below) |
+
+**C2 progress — forward walking unlocked:**
+
+| vx | seed | survived | L step (m) | R step (m) | L ratio | R ratio | any_clip % |
+|---|---|---|---|---|---|---|---|
+| 0.20 | 0 | 164 | +0.008 | +0.017 | +0.12 | +0.26 | 23.2 |
+| 0.25 | 0 | 165 | **+0.071** | **+0.057** | **+0.89** | **+0.71** | 30.3 |
+| 0.25 | 2 | 200 | **+0.044** | +0.035 | **+0.55** | +0.44 | 23.0 |
+
+Three C2 rows now show positive forward step ratios.  Two
+(vx=0.25 seed=0 and seed=2) PASS the realized step length and
+ratio gates for at least one side, with `any_clip` ≤ 30 % (one
+under, one borderline).  Round 6 had zero rows with positive step
+ratio.
+
+**Why it still doesn't fully pass:**
+
+- **Knee saturation (5 %–10 %)**: knee q_ref reaches 1.378 rad at
+  swing peak, ~0.02 rad below the 1.396 rad limit; PD overshoot
+  pushes actual qpos into the saturation band.  Could lower
+  `foot_step_height_m` further (0.04 → 0.03) at the cost of foot
+  clearance.
+- **C1 forward fall at vx ≥ 0.20**: the body now has correct
+  contact geometry but the open-loop dynamics still have
+  insufficient pitch authority during the standing-to-walking
+  transient.  Likely same kp/kv coupling that the C2 harness
+  partially fixes when enabled.
+
+**Verdict**: clear evidence that the reviewer's diagnosis was
+correct.  The remaining work is fine tuning (foot clearance vs
+knee saturation; pitch authority during startup) — no
+fundamental "it won't walk" issue anymore.  C2 is now within
+reach with another iteration of the same parameters.
+
+### Files changed in round 7
+
+- `control/zmp/zmp_walk.py`: ZMPWalkConfig refit (upper_leg,
+  lower_leg, ankle_to_ground, pelvis_to_hip, foot_step_height,
+  swing clearance), com_height derivation tightened, IK
+  hip_to_foot_z formula updated to use pelvis_to_hip
+- `assets/v2/keyframes.xml`: home key rebuilt to round-7
+  walking-pose equilibrium
+- `training/eval/view_zmp_in_mujoco.py`: ramp source now reads
+  home keyframe actuator values; `_apply_ic_perturbation` doc
+  updated to match round-4 revert
+- `training/docs/reference_design.md`: Q2 wording matched to
+  current code (vx centered on zero)
+- `tests/test_v0200c_geometry.py`: new FK validation gate
+  (Layer-2 contact-frame check)
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework

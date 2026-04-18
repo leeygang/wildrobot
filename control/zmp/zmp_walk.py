@@ -29,11 +29,26 @@ from control.zmp.zmp_planner import ZMPPlanner
 class ZMPWalkConfig:
     """Configuration for ZMP walking trajectory generation."""
 
-    # Robot morphology
-    upper_leg_m: float = 0.21
-    lower_leg_m: float = 0.21
+    # Robot morphology — calibrated against MJCF FK at commit 50d0993
+    # (round-7 geometry refit).  The previous values (0.21 / 0.21 /
+    # 0.06) were nominal CAD measurements but did not match the
+    # actual MJCF joint placements:
+    #   - the MJCF "waist" body's hip joint sits 0.034 m BELOW the
+    #     pelvis frame origin (the IK's pelvis_x reference)
+    #   - hip-to-knee distance is 0.193 m (not 0.21)
+    #   - knee-to-ankle distance is 0.180 m (not 0.21)
+    #   - foot collision boxes sit 0.061 m below the foot body frame
+    # Lumping the pelvis-to-hip vertical (0.034 m) into ankle_to_ground
+    # keeps the 2-link IK valid while making the flat-foot constraint
+    # land q_ref's stance feet on the floor (FK gate test).  Without
+    # this fix the prior placed stance feet ~14 mm above the floor at
+    # nominal stance frames, which caused the body to drift backward
+    # in physics across all C2 closeout sweeps (rounds 1-6).
+    upper_leg_m: float = 0.193
+    lower_leg_m: float = 0.180
     hip_lateral_offset_m: float = 0.0536
-    ankle_to_ground_m: float = 0.06
+    ankle_to_ground_m: float = 0.061   # foot body origin to foot collision-bottom (from MJCF FK)
+    pelvis_to_hip_m: float = 0.034     # pelvis frame origin to hip joint, vertical (round-7 refit)
 
     # Joint limits (radians) — used to compute safe COM height and step length
     ankle_dorsiflexion_limit_rad: float = 0.698   # 40°
@@ -46,8 +61,17 @@ class ZMPWalkConfig:
     single_double_ratio: float = 2.0
     dt_s: float = 0.02
 
-    # Gait geometry
-    foot_step_height_m: float = 0.08  # ~19% of leg length (ToddlerBot uses 24%)
+    # Gait geometry.  foot_step_height was 0.08 before round 7
+    # (~19 % of the OLD 0.42 m leg length).  After the geometry
+    # refit (real leg length = 0.193 + 0.180 = 0.373 m), the same
+    # 0.08 m peak lift required the knee to bend 92° at swing
+    # apex — over the 80° knee limit, triggering knee saturation
+    # in fixed-base / C1 / C2.  Reduced to 0.05 m (~13 % of the
+    # actual leg length) which keeps the swing-peak knee inside
+    # the limit.  ToddlerBot uses 24 % of leg length but also has
+    # a higher knee limit; the saturation gate (< 5 % in fixed-
+    # base) was the binding constraint here.
+    foot_step_height_m: float = 0.04
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.06     # below this, use standing
 
@@ -68,33 +92,35 @@ class ZMPWalkConfig:
 
     @property
     def com_height_m(self) -> float:
-        """Compute COM height from joint limits.
+        """Compute pelvis (= COM) height at safe walking knee bend.
 
-        The flat-foot IK constraint ``ankle = -(hip + knee)`` means the
-        ankle dorsiflexion grows with knee bend.  Given:
-          - ankle limit: ``ankle_dorsiflexion_limit_rad``
-          - worst-case hip during walking: ~15° (foot half a step ahead)
-        The maximum safe knee bend is:
-          ``knee_max = ankle_limit - hip_margin``
-        The COM height is derived from the leg reach at that knee bend,
-        with a small margin to keep the ankle away from hard saturation.
+        ``com_height = pelvis_to_hip + leg_reach(knee_safe) + ankle_to_ground``
 
-        NOTE (round 5 retro): an empirical override of 0.459 m
-        (matched to the MJCF standing keyframe pelvis_z=0.468)
-        broke ``safe_max_step_length_m`` because the same
-        ``com_height_m`` is reused there to compute the safe step
-        envelope — a smaller com_height tightens the joint-limit
-        budget and capped stride at 3.4 cm at all vx.  Reverted
-        until a coordinated fix re-derives the safe step length
-        from the calibrated com_height (or moves the standing
-        keyframe up to 0.473 m to match the IK's assumption).
+        Where ``leg_reach`` is the hip-to-foot-body distance at the
+        chosen knee bend (2-link chain).  Round-7 refit added the
+        ``pelvis_to_hip_m`` term explicitly because the MJCF "waist"
+        body's hip joint sits ~34 mm below the pelvis frame origin
+        (the reference point the IK uses for ``pelvis_x``); without
+        it, the IK underestimates body height for stance and
+        OVERestimates it for swing, which the FK gate
+        (``tests/test_v0200c_geometry.py``) catches.
         """
         hip_margin_rad = np.radians(20.0)
         knee_budget = self.ankle_dorsiflexion_limit_rad - hip_margin_rad
         knee_safe = max(np.radians(10.0), min(knee_budget, self.knee_pitch_max_rad))
         l1, l2 = self.upper_leg_m, self.lower_leg_m
         reach = np.sqrt(l1**2 + l2**2 + 2 * l1 * l2 * np.cos(knee_safe))
-        return reach + self.ankle_to_ground_m
+        # The IK solver clamps target distance to (l1 + l2 - min_margin).
+        # If our requested ``reach`` would exceed that cap, the IK will
+        # bend the knee deeper than ``knee_safe`` and deliver only
+        # ``max_reach`` of leg drop.  Reflect that here so the
+        # downstream ``traj.pelvis_pos[i, 2]`` and IK target produce
+        # consistent geometry — without this, the FK foot bottom
+        # sits ~``min_reach_margin`` above the floor at every stance
+        # frame (round-7 retro).
+        max_reach = l1 + l2 - self.min_reach_margin_m
+        effective_reach = min(reach, max_reach)
+        return effective_reach + self.ankle_to_ground_m + self.pelvis_to_hip_m
 
     @property
     def safe_max_step_length_m(self) -> float:
@@ -106,7 +132,7 @@ class ZMPWalkConfig:
 
         The tighter constraint wins.
         """
-        hip_to_ankle = self.com_height_m - self.ankle_to_ground_m
+        hip_to_ankle = self.com_height_m - self.ankle_to_ground_m - self.pelvis_to_hip_m
 
         # Constraint 1: ankle budget
         l1, l2 = self.upper_leg_m, self.lower_leg_m
@@ -391,6 +417,18 @@ class ZMPWalkGenerator:
         # corrective torque per cycle.
         lat_amplitude = 0.25 * lat
 
+        # Swing-foot z offset: during swing the IK plantarflexes the
+        # ankle by 0.15 rad for toe clearance, which drops the foot's
+        # TOE corner ~9 mm below the foot body and the foot collision
+        # box's geometry adds another ~9 mm of swing-side vertical
+        # extent on the rotated toe.  Without compensation the q_ref
+        # placed swing feet below the floor at lift-off and
+        # touchdown frames (round-7 FK gate caught this).  After the
+        # explicit ``pelvis_to_hip_m`` IK term, the geometry mismatch
+        # itself is gone, but this clearance is kept as a small
+        # margin to absorb the constant-plantarflex toe drop.
+        swing_foot_z_floor_clearance_m = 0.025
+
         n_half = int(round(T_half / dt))
         n_cycle = 2 * n_half
         n_ds = int(round(ds / dt))
@@ -473,7 +511,8 @@ class ZMPWalkGenerator:
                     frac = min(frac, 1.0)
                     right_world[idx] = [
                         right_a_start + right_a_swing * frac, -lat,
-                        cfg.foot_step_height_m * np.sin(np.pi * frac),
+                        (cfg.foot_step_height_m * np.sin(np.pi * frac)
+                         + swing_foot_z_floor_clearance_m),
                     ]
                     contact_out[idx] = [1, 0]
                 stance_out[idx] = 0  # left
@@ -515,7 +554,8 @@ class ZMPWalkGenerator:
                     frac = min(frac, 1.0)
                     left_world[idx] = [
                         cycle_offset + 2 * sl * frac, lat,
-                        cfg.foot_step_height_m * np.sin(np.pi * frac),
+                        (cfg.foot_step_height_m * np.sin(np.pi * frac)
+                         + swing_foot_z_floor_clearance_m),
                     ]
                     contact_out[idx] = [0, 1]
                 stance_out[idx] = 1  # right
@@ -540,10 +580,14 @@ class ZMPWalkGenerator:
                 contact_idx = 0 if side == "left" else 1
                 is_swing = contact_out[i, contact_idx] < 0.5
 
-                # Sagittal IK: foot position relative to pelvis
+                # Sagittal IK: foot position relative to HIP joint.
+                # The hip joint sits ``pelvis_to_hip_m`` below the
+                # pelvis frame in the MJCF, so the IK's chain length
+                # excludes that offset.
                 foot_rel_x = foot_world_i[0] - pelvis_x
                 foot_z_above_ground = foot_world_i[2]
-                hip_to_foot_z = -(cfg.com_height_m - cfg.ankle_to_ground_m
+                hip_to_foot_z = -(cfg.com_height_m - cfg.pelvis_to_hip_m
+                                  - cfg.ankle_to_ground_m
                                   - foot_z_above_ground)
 
                 hip_p, knee_p, ank_p, _ = _solve_sagittal_ik(

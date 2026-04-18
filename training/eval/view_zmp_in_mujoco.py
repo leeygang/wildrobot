@@ -357,12 +357,24 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     root_qpos_init = data.qpos[:7].copy()
 
-    # Startup ramp
+    # Startup ramp.  Round-6 review noted that ramping from
+    # ``standing_q = zeros(19)`` is wrong now that the home keyframe
+    # has knees ≈ 0.023 rad (so ctrl=0 at ramp step 0 jerks the
+    # knees away from their settled values, then the ramp pulls
+    # them back to ~0.44 rad over 1 s).  Use the actual home
+    # keyframe actuator values as the ramp start so step 0 has zero
+    # PD error and the ramp is monotone toward the walking pose.
     startup_steps = 50
-    standing_q = np.zeros(19, dtype=np.float32)
+    if act_to_qpos is not None and policy_to_mj is not None:
+        mj_qpos_home = data.qpos[act_to_qpos]
+        standing_q = mj_qpos_home[policy_to_mj].astype(np.float32)
+    else:
+        standing_q = np.zeros(19, dtype=np.float32)
     first_q = traj.q_ref[0]
 
-    logger.log(f"Startup ramp: {startup_steps} steps blending to walking posture")
+    logger.log(f"Startup ramp: {startup_steps} steps blending from "
+               f"home keyframe to walking posture (max Δ = "
+               f"{float(np.max(np.abs(first_q - standing_q))):.3f} rad)")
     for i in range(startup_steps):
         alpha = (i + 1) / startup_steps
         blended = standing_q * (1 - alpha) + first_q * alpha

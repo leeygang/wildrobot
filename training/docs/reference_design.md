@@ -933,10 +933,11 @@ belongs to `v0.20.1` / `v0.20.2`.
 
 Closeout-row IC parameters per seed:
 - pelvis position: `±0.02 m` (x, y), `±5°` yaw, uniform
-- pelvis forward velocity: `±0.10 m/s` x-component, **centered on the
-  trajectory's LIPM steady-state initial vx** (read from
-  `traj.pelvis_pos` finite difference at t=0), uniform.  See
-  "Post-closeout addendum" below.
+- pelvis forward velocity: `±0.10 m/s` x-component, **centered on
+  zero** (the standing keyframe vx) per the round-4 revert.  See
+  "Closeout history" below for the LIPM-IC centering experiment
+  (rounds 2-3) and why it was reverted once cycle 0 actually
+  started from rest.
 - everything else (joints, mass, friction, motor delay) deterministic
 
 **Closeout history (Q2 vx center):**
