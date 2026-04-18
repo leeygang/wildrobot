@@ -52,7 +52,13 @@ class PPoly:
         c = self.c
         if c.shape[0] == 0:
             c = np.zeros((1,) + c.shape[1:], dtype=c.dtype)
-        result = c[0, idx, :]
+        # NOTE: copy required so that the degree-0 case (loop body
+        # below is skipped) doesn't return a view into self.c.  In
+        # ExpPlusPPoly.value() we do ``result += ...`` which would
+        # mutate the coefficient array in place, corrupting all
+        # subsequent evaluations.  ToddlerBot's reference port has
+        # the same defensive copy.
+        result = c[0, idx, :].copy()
         for i in range(1, c.shape[0]):
             result = result * dt + c[i, idx, :]
         return result
