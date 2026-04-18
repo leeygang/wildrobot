@@ -798,11 +798,20 @@ Metric gate (C1):
   - any-joint saturation `< 5 %` of replayed control steps
   - per-joint MAE stable (within ±20 %) across the command range
 - *Open-loop coherence* (free-floating, no feedback):
-  - short-horizon env replay survives at least `45` control steps
-    before catastrophic pitch termination (`>= 0.9 s` at
-    `ctrl_dt=0.02`)
+  - short-horizon env replay survives at least
+    `ceil(2.0 * cycle_time / ctrl_dt)` control steps before
+    catastrophic pitch termination.  This is a **horizon tied to
+    gait period**, not a fixed 45 steps — at the default
+    `cycle_time=0.64 s, ctrl_dt=0.02 s` it evaluates to 64 steps
+    (1.28 s); at the spec's longest allowed period
+    `cycle_time=0.75 s` (see `v0.20.0-B` metric gate) it evaluates
+    to 75 steps (1.50 s).  The 2× multiplier guarantees at least
+    two full gait cycles regardless of seed phase offset, so the
+    "≥ 1 L + 1 R touchdown" requirement below is reachable in every
+    replay rather than phase-dependent
   - touchdown progression includes at least one left and one right
-    physical foot/floor contact in the same replay
+    physical foot/floor contact in the same replay (guaranteed by
+    the cycle-tied horizon above)
   - failure cause is balance loss (pitch > 0.8 rad or root_z < 0.15
     m), NOT joint runaway, q_ref discontinuity, or NaN
   - no preview wrap discontinuity (linear-replay contract intact —
@@ -822,6 +831,19 @@ Harness scope (HARD bounds — must be enforced by code review):
 | Torso pitch PD | `K_p · pitch_err + K_d · pitch_rate` → ankle pitch offset on stance side | `±0.10 rad` | gait phase from FSM, foothold preview, contact-mask annotations |
 | Torso roll PD | same form → hip roll offset on stance side | `±0.05 rad` | foothold preview, contact-mask annotations |
 | Capture-point swing nudge | `(x_cp − x_target_swing) · gain` → swing-x offset, applied only at foot lift | `±0.03 m` | timing changes, foothold re-planning, runtime FSM state |
+
+**Allowed signals for "stance side" and "foot lift" identification
+(and only these signals)**: (a) measured MuJoCo foot/floor contacts
+via `data.contact` geom-pair lookup, mirroring the touchdown
+detection used for C1 metrics; (b) time-derived gait phase
+`(sin, cos)(2π · t / cycle_time)` where `t` is the replay clock and
+`cycle_time` is read from the trajectory metadata.  These are the
+same signals the runtime PPO policy will see — measured contact and
+phase — so the harness cannot use any source of stance information
+that PPO will not also have.  Reading
+`traj.stance_foot_id`, `traj.contact_mask`, any FSM annotation, or
+any per-step lookup into the stored reference's contact schedule is
+forbidden.
 
 Forbidden everywhere: re-reading gait phase to decide what to do,
 recomputing footstep timing, scaling by stance side via a runtime
@@ -865,16 +887,23 @@ parameters):
 
 #### Open questions for external review (decide before kickoff)
 
-These three numbers / choices are intentionally left open for the
-external reviewer.  They control how strict the gate is and how the
-sweep is parameterized.  Each option is annotated with the
-internal recommendation and the trade-off so the reviewer can pick
-or override.
+The four numbers / choices below are intentionally left open for
+the external reviewer.  They control how strict the gate is and how
+the sweep is parameterized.  Each option is annotated with the
+internal recommendation, the external-review verdict (when known),
+and the trade-off so the reviewer can pick or override.
 
 **Q1 — Tracking-RMSE budget (per-joint and overall)**
 
 Internal recommendation: **per-joint `≤ 0.40 rad`, overall `≤ 0.25
 rad`**.
+
+External-review verdict: **accept**, but treat as a C-only
+feasibility budget rather than a signoff that servo tracking is
+healthy.  Knee error is already near the edge — closeout artifact
+must explicitly print **worst-joint RMSE per (vx bin, seed)** so
+the SysID debt remains visible and is carried into `v0.20.2` rather
+than hidden by an aggregate "pass".
 
 Trade-off: current fixed-base data shows knee RMSE 0.34-0.36 rad and
 overall 0.19-0.20 rad.  At 0.40 / 0.25 the gate just passes today.
@@ -888,19 +917,32 @@ tracking issue to bleed into v0.20.1 PPO training.
 Internal recommendation: **initial pelvis perturbation** (small ±x /
 ±y / ±yaw on the standing keyframe).
 
-Options:
-1. Initial pelvis perturbation (±2 cm position, ±5° yaw at startup)
-   — directly probes the LIPM-IC mismatch that is driving today's
-   open-loop fall, cheapest to implement
-2. Initial joint-pos noise (±2° on legs at standing keyframe) —
-   tests robustness to standing-pose variation, less targeted
+External-review verdict: **accept**, with one refinement: include a
+small **initial forward-velocity perturbation** as part of the same
+IC probe.  This directly probes the LIPM-IC mismatch (standing
+starts at `vx=0` while the q_ref expects `vx ≈ +0.18 m/s` at the
+default command).  Do NOT add domain randomization at C — that
+belongs to `v0.20.1` / `v0.20.2`.
+
+Closeout-row IC parameters per seed:
+- pelvis position: `±0.02 m` (x, y), `±5°` yaw, uniform
+- pelvis forward velocity: `±0.10 m/s` x-component, uniform
+- everything else (joints, mass, friction, motor delay) deterministic
+
+Options considered:
+1. Initial pelvis perturbation (recommended above) — directly probes
+   the LIPM-IC mismatch driving today's open-loop fall, cheapest
+2. Initial joint-pos noise (±2° on legs) — tests standing-pose
+   variation, less targeted
 3. Domain randomization (friction, mass, motor delay) — closest to
-   v0.20.1 training conditions, biggest scope, may surface issues
-   that belong to v0.20.2 SysID rather than C2
+   v0.20.1 training conditions, biggest scope, properly belongs to
+   later milestones
 
 **Q3 — Saturation hard-fail threshold**
 
 Internal recommendation: **target `< 20 %`, hard fail `>= 25 %`**.
+
+External-review verdict: **accept as written**.
 
 Trade-off: free-floating without C2 currently shows 28-61 %
 saturation, almost entirely fall-driven.  If C2 is doing its job the
@@ -909,21 +951,55 @@ A 25 % hard fail catches the case where C2 only partially stabilizes
 (prior stays upright but legs are still pegged at limits).  Looser
 (`>= 35 %`) makes C2 mostly redundant with C1 survival.
 
-**Q4 (extra, not in the original plan)** — Should the harness allow
-any feedback on the swing trajectory beyond the capture-point nudge?
+**Q4 — Should the harness allow any feedback on the swing trajectory
+beyond the capture-point nudge?**
 
 Internal recommendation: **no — capture-point only, ±0.03 m clip**.
-Anything more becomes step adjustment, which is a runtime controller.
 
-#### Closeout artifact required
+External-review verdict: **accept**, flagged as the most important
+boundary in the section.  Any richer swing adaptation turns C2 from
+a validation harness into the runtime controller the design just
+deprecated.
 
-Single CHANGELOG block with:
+#### Closeout matrix and artifact
 
-- raw matrix table (4 vx bins × 2 modes × 3 seeds = 24 rows)
+The closeout sweep covers four measurement modes.  Two are
+deterministic baselines (one row per vx); two are seed-randomized
+closeout rows (one row per (vx, seed)).  Total **32 rows**, with
+the **24 free-floating rows carrying the gate decision**.
+
+| Mode | Rows | Purpose | Seeds | Total |
+|------|------|---------|-------|-------|
+| Kinematic playback | 1 per vx, deterministic | sanity baseline: q_ref encodes correct forward motion | n/a | 4 |
+| Fixed-base PD (pelvis pinned) | 1 per vx, deterministic | servo-trackability baseline: per-joint RMSE and saturation | n/a | 4 |
+| Free-floating, no stabilizer (C1) | 3 per vx | open-loop coherence, survival, real-contact touchdowns | seeds 0, 1, 2 | 12 |
+| Free-floating, C2 stabilizer (`--c2-stabilizer`) | 3 per vx | closed-loop realized step length, ratio, saturation, harness clip-saturation | seeds 0, 1, 2 | 12 |
+
+Bins: `vx ∈ {0.10, 0.15, 0.20, 0.25}`.  Horizon per row: 200
+control steps (4 s at `ctrl_dt=0.02`).  Initial-condition
+randomization (Q2 outcome) applies to the 24 free-floating rows
+only; the 8 baseline rows are deterministic given the standing
+keyframe.
+
+The C1 + C2 gate decision is computed from the 24 free-floating
+rows.  The 8 baseline rows confirm prior correctness and servo
+trackability; if they fail, fix the prior or servo model before
+collecting the free-floating sweep (per the decision rule above).
+
+CHANGELOG block (single contiguous section under the v0.20.0-C
+heading) must contain:
+
+- raw matrix table, all 32 rows, one row per (mode, vx, seed)
+- per-row metrics: survival ctrl steps, L+R touchdown counts,
+  realized step length per side, realized/cmd ratio per side,
+  overall RMSE, **worst-joint RMSE with joint name** (Q1 amendment),
+  any-joint saturation %, harness clip-saturation % (C2 only)
 - exact command lines used to produce each row
-- seed list
-- pass / fail annotation per criterion in the C1 and C2 metric gates
-- sha of the validation harness commit and reference library hash
+- seed list (integers, RNG family used for IC perturbation)
+- pass / fail annotation per criterion in both the C1 and C2 metric
+  gates, evaluated row-by-row and aggregated
+- sha of the validation harness commit and the on-disk reference
+  library directory hash
 
 ### `v0.20.0-D`: PPO unblock decision
 
