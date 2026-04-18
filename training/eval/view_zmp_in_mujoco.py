@@ -66,6 +66,7 @@ def run_viewer(
     vx: float,
     headless: bool = False,
     kinematic: bool = False,
+    fixed_base: bool = False,
     horizon: int = 200,
     print_every: int = 10,
     sim_dt_factor: int = 1,
@@ -101,7 +102,7 @@ def run_viewer(
                        ref_dt, policy_to_mj, act_to_qpos, headless)
     else:
         _run_physics(model, data, traj, mapper, horizon, print_every,
-                     ref_dt, sim_dt_factor, headless)
+                     ref_dt, sim_dt_factor, headless, fixed_base=fixed_base)
 
 
 def _run_kinematic(model, data, traj, vx, horizon, print_every,
@@ -160,13 +161,24 @@ def _run_kinematic(model, data, traj, vx, horizon, print_every,
 
 
 def _run_physics(model, data, traj, mapper, horizon, print_every,
-                 ref_dt, sim_dt_factor, headless):
-    """Physics replay: set ctrl, step physics, observe response."""
+                 ref_dt, sim_dt_factor, headless, fixed_base=False):
+    """Physics replay: set ctrl, step physics, observe response.
+
+    If fixed_base=True, the root position/orientation is reset after each
+    step so the robot can't fall. The legs still respond to PD control,
+    showing servo tracking behavior without balance issues.
+    """
     import time as time_mod
 
     n_cycle = traj.n_steps
     physics_dt = model.opt.timestep
     physics_steps_per_ref = max(1, int(round(ref_dt / physics_dt)))
+
+    _init_standing(model, data)
+
+    # Save the initial root state for fixed-base mode
+    root_qpos_init = data.qpos[:7].copy()
+    root_qvel_init = data.qvel[:6].copy()
 
     _init_standing(model, data)
 
@@ -202,6 +214,15 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         # Step physics
         for _ in range(physics_steps_per_ref * sim_dt_factor):
             mujoco.mj_step(model, data)
+
+        # Fixed-base: reset root to upright, advance x at command speed
+        if fixed_base:
+            data.qpos[0] = root_qpos_init[0] + (step_idx + 1) * ref_dt * traj.command_vx
+            data.qpos[1] = root_qpos_init[1]
+            data.qpos[2] = root_qpos_init[2]
+            data.qpos[3:7] = [1, 0, 0, 0]  # upright
+            data.qvel[:6] = 0  # zero root velocity
+            mujoco.mj_forward(model, data)
 
         # Collect diagnostics
         root_pos = data.qpos[:3].copy()
@@ -297,6 +318,9 @@ def main():
     parser.add_argument("--kinematic", action="store_true",
                         help="Kinematic replay (set qpos directly, no physics). "
                              "Shows the intended reference motion without balance issues.")
+    parser.add_argument("--fixed-base", action="store_true",
+                        help="Fixed-base physics: root held upright, legs track via PD. "
+                             "Shows servo tracking of the reference without balance issues.")
     parser.add_argument("--horizon", type=int, default=200,
                         help="Number of reference steps to run")
     parser.add_argument("--print-every", type=int, default=10,
@@ -319,6 +343,7 @@ def main():
         lib, args.vx,
         headless=args.headless,
         kinematic=args.kinematic,
+        fixed_base=args.fixed_base,
         horizon=args.horizon,
         print_every=args.print_every,
         sim_dt_factor=args.sim_dt_factor,
