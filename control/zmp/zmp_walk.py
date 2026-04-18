@@ -34,7 +34,7 @@ class ZMPWalkConfig:
     lower_leg_m: float = 0.21
     hip_lateral_offset_m: float = 0.0536
     ankle_to_ground_m: float = 0.06
-    com_height_m: float = 0.45  # near-upright walking (ankle limit constrains squat depth)
+    com_height_m: float = 0.46  # near-upright (ankle ±40° constrains squat to knee≤34°)
 
     # Gait timing
     cycle_time_s: float = 0.50
