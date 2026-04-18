@@ -255,12 +255,31 @@ _IC_YAW_BOUND_DEG = 5.0
 _IC_VX_BOUND_MPS = 0.10
 
 
-def _apply_ic_perturbation(data, seed: int, logger: "Logger") -> None:
+def _lipm_initial_vx(traj) -> float:
+    """LIPM steady-state initial vx for this trajectory, finite-differenced
+    from the stored pelvis_pos at t=0.  Used to center the IC perturbation
+    on the LIPM IC instead of zero (the standing keyframe vx)."""
+    if traj.pelvis_pos is None or traj.pelvis_pos.shape[0] < 2:
+        return 0.0
+    return float((traj.pelvis_pos[1, 0] - traj.pelvis_pos[0, 0]) / traj.dt)
+
+
+def _apply_ic_perturbation(data, seed: int, traj, logger: "Logger") -> None:
     """Apply the v0.20.0-C closeout initial-condition perturbation.
 
-    Per Q2 outcome in reference_design.md: pelvis x/y +/- 0.02 m,
-    yaw +/- 5 deg, vx +/- 0.10 m/s, all uniform.  Joint state and
-    everything else stays at the standing keyframe.
+    Per Q2 outcome in reference_design.md (with the post-closeout
+    addendum aligning vx to the LIPM steady-state): pelvis x/y +/-
+    0.02 m, yaw +/- 5 deg, vx centered on the trajectory's LIPM
+    initial vx, perturbed by +/- 0.10 m/s, all uniform.  Joint state
+    and everything else stays at the standing keyframe.
+
+    The vx CENTER (not the ±0.10 m/s envelope) was added after the
+    first closeout (commit 6000177) showed the prior cannot walk
+    open-loop because the standing keyframe starts at vx=0 while the
+    LIPM expects vx ≈ +0.18 m/s at vx_cmd=0.15.  Centering the IC
+    envelope on the LIPM steady-state gives the harness a fighting
+    chance — the propulsion deficit is in the IC mismatch, not in the
+    harness's authority.
 
     Reproducible per seed via numpy.random.default_rng(seed).
     """
@@ -270,6 +289,8 @@ def _apply_ic_perturbation(data, seed: int, logger: "Logger") -> None:
     dyaw = float(rng.uniform(-np.deg2rad(_IC_YAW_BOUND_DEG),
                              +np.deg2rad(_IC_YAW_BOUND_DEG)))
     dvx = float(rng.uniform(-_IC_VX_BOUND_MPS, _IC_VX_BOUND_MPS))
+
+    vx_center = _lipm_initial_vx(traj)
 
     data.qpos[0] += dx
     data.qpos[1] += dy
@@ -283,11 +304,13 @@ def _apply_ic_perturbation(data, seed: int, logger: "Logger") -> None:
     new_z = cy * qz + sy * qw
     data.qpos[3:7] = [new_w, new_x, new_y, new_z]
 
-    data.qvel[0] += dvx
+    data.qvel[0] += vx_center + dvx
 
     logger.log(f"IC perturbation (seed={seed}): "
                f"dx={dx:+.4f}m dy={dy:+.4f}m "
-               f"dyaw={np.rad2deg(dyaw):+.2f}deg dvx={dvx:+.4f}m/s")
+               f"dyaw={np.rad2deg(dyaw):+.2f}deg "
+               f"vx_center={vx_center:+.4f}m/s dvx={dvx:+.4f}m/s "
+               f"(applied vx={vx_center + dvx:+.4f}m/s)")
 
 
 def _run_physics(model, data, traj, mapper, horizon, print_every,
@@ -315,7 +338,7 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     # Apply v0.20.0-C IC perturbation (Q2 outcome) before the ramp.
     if seed is not None and not fixed_base:
-        _apply_ic_perturbation(data, seed, logger)
+        _apply_ic_perturbation(data, seed, traj, logger)
 
     root_qpos_init = data.qpos[:7].copy()
 

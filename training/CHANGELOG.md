@@ -323,6 +323,119 @@ stabilizer-tuning issues):
   further; the empirical sign is correct and the channel
   authority is at the contract limit.
 
+### v0.20.0-C closeout sweep round 2 — both prior fixes applied
+
+Applied both prior fixes recommended in the round-1 closeout
+follow-up section above:
+
+- **Lateral COM amplitude reduced** from `0.5*lat` to `0.25*lat`
+  in `control/zmp/zmp_walk.py`, keeping the smooth single-cosine
+  shape (one full lateral cycle per gait cycle).  An A/B with a
+  per-phase sin pattern (peak-at-mid-stance, two peaks per cycle)
+  was rejected because it doubled the lateral frequency and
+  worsened C2 roll_PD clip-saturation rather than fixing it.
+- **IC vx aligned with LIPM steady-state** in the viewer:
+  perturbation now centered on the trajectory's LIPM IC vx
+  (read from `traj.pelvis_pos` finite difference at t=0) plus
+  `±0.10 m/s` envelope, instead of centered on zero.  Recorded as
+  a "post-closeout addendum" under the Q2 entry in
+  `reference_design.md`.
+- **CP-nudge gain** raised from 0.30 → 0.7 within the ±0.03 m
+  hard clip; clip-saturation moved from 0-3 % to 4-7 % so the
+  channel actually uses some of its budget.  No clip change.
+
+Re-running the 32-row matrix:
+
+| mode | rows | passed | failed | gate verdict |
+|---|---|---|---|---|
+| kinematic     |  4 |  4 |  0 | **PASS** |
+| fixed-base    |  4 |  4 |  0 | **PASS** |
+| C1            | 12 | 10 |  2 | **FAIL** (regressed from 12/12) |
+| C2            | 12 |  0 | 12 | **FAIL** (no row clears closed-loop step gate) |
+
+C1 regression — both rows are at the IC alignment edge:
+
+- C1 vx=0.20 seed=1: 50 ctrl steps (under the 64-step C1 budget)
+- C1 vx=0.25 seed=1: 18 ctrl steps (catastrophic)
+
+At `vx_cmd=0.25` the LIPM IC vx is `≈ +0.30 m/s`.  Centered
+perturbation + worst-seed dvx still gives `+0.20 m/s` of forward
+velocity injected into a body still at the standing keyframe pose.
+The body face-plants forward inside the standing-to-walking
+ramp.  Fix in next iteration: cap the IC vx envelope so it cannot
+exceed a fraction of the LIPM steady-state, or move the IC
+alignment to cap-by-vx_cmd.
+
+C2 progress (no row passes, but the failure surface moved):
+
+| metric | round 1 (commit 6000177) | round 2 (this commit) |
+|---|---|---|
+| C2 roll_PD ≥ 25 % hard-fail rows | 7/12 | 1/12 |
+| C2 pitch_PD ≥ 25 % hard-fail rows | 1/12 | 6/12 |
+| C2 any-joint sat ≥ 25 % hard-fail rows | 5/12 | 1/12 |
+| C2 rows surviving 200/200 | 1/12 (vx=0.15 seed=2) | 3/12 (vx=0.15 seed=0,1,2 are 86/72/91; vx=0.25 seed=0,2 are 200/200) |
+| best realized/cmd ratio (forward direction) | +0.18 (vx=0.20 s=0) | +0.35 (vx=0.10 s=2) |
+
+Lateral asymmetry is largely fixed (1/12 rows now hit roll_PD
+hard-fail vs 7/12 before).  Pitch_PD is now the dominant
+bottleneck — the IC alignment lets the body try to walk at LIPM
+vx, but the standing-to-walking transient demands more pitch
+correction than the ±0.10 rad clip provides.  Survival is
+substantially better in many bins (vx=0.25 seed=0 and seed=2
+both run the full 200 ctrl steps with realized step ≈ 0), but the
+body still cannot sustain forward translation under bounded
+feedback.
+
+### Why we are still NO-GO to v0.20.0-D
+
+Per the decision rule (`reference_design.md` v0.20.0-C):
+
+| C1 | C2 | Action |
+|---|---|---|
+| **fail** | n/a | **fix prior generation; do NOT spend effort on the stabilizer first** |
+
+C1 regressed to 10/12 because the IC alignment overshoots at high
+vx, so we hit the top entry of the rule table.  The decision is
+unambiguous: the prior needs another iteration before another C2
+sweep is even meaningful.
+
+### Concrete next prior-fix queue (in order)
+
+1. **Cap IC vx envelope at high vx_cmd** so vx=0.25 doesn't face-
+   plant.  Either: (a) clamp the IC vx center to `min(vx_lipm,
+   0.18 m/s)`, or (b) scale the perturbation envelope down with
+   vx_cmd.  Cheapest fix for the C1 regression.
+2. **From-standing startup transient inside the prior** (the
+   long-term right answer).  Modify `_generate_at_step_length`
+   in `control/zmp/zmp_walk.py` so cycle 0's COM trajectory
+   starts at (x=0, vx=0) and accelerates smoothly into the LIPM
+   steady-state by end of cycle 0 or 1.  Mirrors the trick
+   ToddlerBot uses (truncate first-cycle warmup) but baked into
+   the generator instead of into the validation harness.  This
+   removes the standing-to-walking transient from the body's
+   closed-loop problem.
+3. **Knee feasibility** (deferred to v0.20.2): worst-joint RMSE
+   knee remains 0.32-0.40 rad, with one row (vx=0.25 seed=1)
+   actually crossing the 0.40 budget.  Not blocking C right now
+   but tightens the SysID requirement.
+
+### Implementation in this commit
+
+Files changed (all in this round 2 iteration):
+
+- `control/zmp/zmp_walk.py`: lateral amplitude `0.5*lat → 0.25*lat`,
+  cosine pattern preserved (one cycle/gait); inline sin A/B
+  documented in the comment block
+- `training/eval/view_zmp_in_mujoco.py`: `_apply_ic_perturbation`
+  takes `traj` and centers vx on LIPM IC; logging shows both
+  vx_center and dvx
+- `training/eval/c2_stabilizer.py`: cp_gain `0.30 → 0.7`
+- `training/docs/reference_design.md`: post-closeout addendum
+  under Q2
+
+The harness contract (hard clips, allowed inputs, forbidden
+inputs) is unchanged.  No runtime imports are introduced.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework

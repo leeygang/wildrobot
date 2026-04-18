@@ -317,7 +317,22 @@ class ZMPWalkGenerator:
         x_mid = x0 * C + (vx0 / w) * S
         vx_mid = x0 * w * S + vx0 * C
 
-        lat_amplitude = 0.5 * lat
+        # Lateral COM amplitude.  Cosine weight-shift (one cycle per
+        # gait cycle): com_y starts at +lat_amplitude (over the LEFT
+        # stance foot at Phase A start), transitions through 0, ends
+        # at -lat_amplitude (over RIGHT stance foot at Phase B start).
+        # Periodic and continuous across cycle boundaries.
+        #
+        # Amplitude was 0.5*lat in the v0.20.0-C closeout 6000177 —
+        # that biased the L hip-roll channel and pinned the C2
+        # roll_PD harness on 7/12 rows.  Reduced to 0.25*lat to keep
+        # the corrective demand inside the C2 ±0.05 rad clip while
+        # preserving the directionally-correct weight transfer that
+        # ZMP walking requires.  An A/B with sin-based pattern
+        # (peak-at-mid-stance) showed worse C2 results because the
+        # sin pattern has 2x the lateral frequency and demands more
+        # corrective torque per cycle.
+        lat_amplitude = 0.25 * lat
 
         n_half = int(round(T_half / dt))
         n_cycle = 2 * n_half
@@ -355,6 +370,9 @@ class ZMPWalkGenerator:
 
                 com_world[idx, 0] = cycle_offset + x0 * cw + (vx0 / w) * sw
                 phase_frac = i / n_half
+                # Cos pattern: +lat_amp at start (Phase A = L stance),
+                # through 0 at mid-Phase-A, -lat_amp at end (= Phase B
+                # start, R stance).  One full lateral cycle per gait cycle.
                 com_world[idx, 1] = lat_amplitude * np.cos(np.pi * phase_frac)
 
                 left_world[idx] = [cycle_offset, lat, 0]
@@ -382,6 +400,9 @@ class ZMPWalkGenerator:
                 com_world[idx, 0] = (cycle_offset + sl
                                      + (x_mid - sl) * cw + (vx_mid / w) * sw)
                 phase_frac = i / n_half
+                # Cos pattern: -lat_amp at start (Phase B = R stance),
+                # through 0 at mid-Phase-B, +lat_amp at end (= next
+                # Phase A start, L stance).  Continuous with Phase A.
                 com_world[idx, 1] = -lat_amplitude * np.cos(np.pi * phase_frac)
 
                 right_world[idx] = [cycle_offset + sl, -lat, 0]

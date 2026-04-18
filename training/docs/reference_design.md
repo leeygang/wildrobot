@@ -933,8 +933,23 @@ belongs to `v0.20.1` / `v0.20.2`.
 
 Closeout-row IC parameters per seed:
 - pelvis position: `±0.02 m` (x, y), `±5°` yaw, uniform
-- pelvis forward velocity: `±0.10 m/s` x-component, uniform
+- pelvis forward velocity: `±0.10 m/s` x-component, **centered on the
+  trajectory's LIPM steady-state initial vx** (read from
+  `traj.pelvis_pos` finite difference at t=0), uniform.  See
+  "Post-closeout addendum" below.
 - everything else (joints, mass, friction, motor delay) deterministic
+
+**Post-closeout addendum (after first sweep, commit `6000177`):**
+the original Q2 wording centered the vx perturbation on zero (the
+standing keyframe).  The first closeout showed every C2 row failed
+the realized step-length / ratio gates because the standing IC
+(vx=0) is ~0.18 m/s short of the LIPM steady-state IC at
+`vx_cmd=0.15`, and the harness's bounded swing nudge (±0.03 m,
+~0.6 % of a stride) cannot close that gap in one cycle.  Centering
+the IC envelope on the LIPM steady-state (allowed by the decision
+rule's "align initial pelvis state with LIPM IC" clause) is a
+direct fix for the IC mismatch and does not loosen any harness
+clip or widen the contract.
 
 Options considered:
 1. Initial pelvis perturbation (recommended above) — directly probes

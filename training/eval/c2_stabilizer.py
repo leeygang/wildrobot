@@ -81,8 +81,15 @@ class C2StabilizerConfig:
     roll_clip: float = 0.05      # HARD clip per contract
     apply_roll_sign: float = +1.0    # empirically determined
 
-    # Capture-point swing nudge
-    cp_gain: float = 0.30        # dimensionless; nudge = gain * (x_cp - x_swing)
+    # Capture-point swing nudge.  Gain bumped from 0.30 → 0.7 after
+    # the closeout 6000177 retro showed the CP channel was rarely
+    # using its ±0.03 m clip budget (clip-sat 0-3 %).  Bumped further
+    # to 1.5 in a probe but pitch_PD started saturating because the
+    # CP nudge moves swing further from foot-flat IK and increases
+    # ankle demand — settled on 0.7 as the largest gain that does
+    # not push pitch_PD past hard-fail in the seed=0 vx=0.15 probe.
+    # Clip is unchanged (the contract bound, not the gain).
+    cp_gain: float = 0.7         # dimensionless; nudge = gain * (x_cp - x_swing)
     cp_clip: float = 0.03        # HARD clip per contract (m of swing-x)
 
     # Geometry constants (used only for capture-point and swing-x → hip-pitch
