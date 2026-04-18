@@ -56,6 +56,63 @@ sync.
   (no balance feedback yet — that is v0.20.1's PPO job; the v0.20.0-C
   gate is q_ref trackability, not open-loop walking).
 
+### Strict-pass diagnostics (2026-04-18)
+
+Added per-joint tracking RMSE and touchdown event detection to
+`view_zmp_in_mujoco.py` for the strict pass before promoting to
+v0.20.0-D.  Fixed-base sweep, 200 control steps (4 s, ~6 gait cycles).
+
+Per-joint tracking RMSE under PD physics (rad):
+
+| vx | hip_p L/R | hip_r L/R | knee L/R | ankle L/R | overall |
+|----|-----------|-----------|----------|-----------|---------|
+| 0.10 | 0.146 / 0.148 | 0.078 / 0.043 | **0.346 / 0.334** | 0.036 / 0.036 | 0.189 |
+| 0.15 | 0.142 / 0.142 | 0.081 / 0.043 | **0.345 / 0.347** | 0.041 / 0.040 | 0.191 |
+| 0.20 | 0.136 / 0.137 | 0.082 / 0.043 | **0.352 / 0.351** | 0.046 / 0.045 | 0.193 |
+| 0.25 | 0.130 / 0.132 | 0.071 / 0.033 | **0.357 / 0.357** | 0.052 / 0.051 | 0.194 |
+
+Touchdown step length (sl_cmd = vx · T / 2, T = 0.64 s):
+
+| vx | sl_cmd | L step / ratio | R step / ratio | L+R count |
+|----|--------|---------------|---------------|-----------|
+| 0.10 | 0.032 | 0.036 / 1.13 | 0.029 / 0.90 | 6+6 |
+| 0.15 | 0.048 | 0.050 / 1.04 | 0.044 / 0.93 | 6+6 |
+| 0.20 | 0.064 | 0.064 / 1.00 | 0.061 / 0.96 | 6+6 |
+| 0.25 | 0.080 | 0.080 / 0.99 | 0.078 / 0.97 | 6+6 |
+
+Pelvis under fixed-base PD (all vx): pitch/roll p95 = 0.0000,
+height = 0.4683 m flat, no drift.  Zero joint-limit violations across
+the library; library `validate()` clean.
+
+### v0.20.0-C gate scoring against `reference_design.md` L716-737
+
+| Gate | Result |
+|------|--------|
+| Touchdown locations match intended pattern | ✓ |
+| No toe drag / scissoring / pathological posture | ✓ |
+| Startup / 1-2 cycles coherent in full env | ✓ fixed-base; free-floating falls in 2.5 s as expected |
+| Failures look like tracking limits, not incoherent ref | ✓ |
+| Realized step length ≥ 0.03 m | ⚠ vx=0.10 right side = 0.029 m (≈ gate, just below) |
+| Realized/cmd step ratio ≥ 0.5 | ✓ all in [0.90, 1.13] |
+| IK reachability ≈ 1.0 | ✓ |
+| Safety margin violations = 0 | ✓ |
+| Survives ≥ 45 ctrl steps | ✓ 200/200 |
+| ≥ 1 L + 1 R touchdown in same replay | ✓ 6+6 |
+| Tracking RMSE within actuator budget | ⚠ knee RMSE ~0.35 rad (max_abs 0.94) — no explicit budget defined; functional gait but knee servo lags swing demand |
+| No repeated hard saturation | ✓ |
+
+### Findings flagged for v0.20.1 / v0.20.2
+
+- Knee servo lags during swing-foot lift (max_abs error 0.94 rad ≈ 54°).
+  Functional gait still emerges, but PPO will need authority on the
+  knee channel; SysID (`v0.20.2`) should verify that the htd45hServo
+  PD gains in MJCF match hardware.
+- Hip-roll RMSE asymmetric L (~0.08) vs R (~0.04).  Likely cosine
+  lateral COM starting at +lat_amplitude loads left side more.  Not
+  blocking — flagging for v0.20.1 reward sanity.
+- Right-side stride consistently slightly shorter than left (0.93-0.97
+  ratio vs left's 0.99-1.13).  Same lateral asymmetry root cause.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework

@@ -148,6 +148,7 @@ def run_viewer(
     else:
         _run_physics(model, data, traj, mapper, horizon, print_every,
                      ref_dt, sim_dt_factor, headless, logger,
+                     act_to_qpos=act_to_qpos, policy_to_mj=policy_to_mj,
                      fixed_base=fixed_base)
 
 
@@ -206,9 +207,22 @@ def _run_kinematic(model, data, traj, vx, horizon, print_every,
 # Physics replay
 # ---------------------------------------------------------------------------
 
+_LEG_JOINT_NAMES = (
+    "L_hip_pitch", "R_hip_pitch", "L_hip_roll", "R_hip_roll",
+    "L_knee_pitch", "R_knee_pitch", "L_ankle_pitch", "R_ankle_pitch",
+)
+
+
 def _run_physics(model, data, traj, mapper, horizon, print_every,
-                 ref_dt, sim_dt_factor, headless, logger, fixed_base=False):
-    """Physics replay: set ctrl, step physics, observe response."""
+                 ref_dt, sim_dt_factor, headless, logger,
+                 act_to_qpos=None, policy_to_mj=None, fixed_base=False):
+    """Physics replay: set ctrl, step physics, observe response.
+
+    Captures v0.20.0-C strict-pass diagnostics:
+      - per-joint tracking RMSE (8 leg joints, qpos vs commanded q_ref)
+      - touchdown events (0->1 contact_mask transitions per foot)
+      - per-side realized step length and command ratio
+    """
     import time as time_mod
 
     n_steps = traj.n_steps
@@ -235,6 +249,19 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     root_z_after_ramp = data.qpos[2]
     logger.log(f"After ramp: root_z={root_z_after_ramp:.4f}")
 
+    # ---- Strict-pass instrumentation ----
+    n_leg = 8
+    leg_qpos_log = np.zeros((horizon, n_leg), dtype=np.float64)
+    leg_qref_log = np.zeros((horizon, n_leg), dtype=np.float64)
+    log_count = [0]
+
+    left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_foot")
+    right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_foot")
+
+    left_touchdown_x = []   # foot world x at each L 0->1 transition
+    right_touchdown_x = []
+    prev_contact = traj.contact_mask[0].astype(np.float32).copy()
+
     step_log = []
 
     def step_fn(step_idx: int) -> dict:
@@ -254,6 +281,22 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             data.qpos[3:7] = [1, 0, 0, 0]
             data.qvel[:6] = 0
             mujoco.mj_forward(model, data)
+
+        # Capture leg qpos in policy order for RMSE
+        if act_to_qpos is not None and policy_to_mj is not None and log_count[0] < horizon:
+            mj_qpos = data.qpos[act_to_qpos]
+            policy_qpos = mj_qpos[policy_to_mj]
+            leg_qpos_log[log_count[0]] = policy_qpos[:n_leg]
+            leg_qref_log[log_count[0]] = q_ref[:n_leg]
+            log_count[0] += 1
+
+        # Touchdown detection on q_ref's contact mask (0->1 per foot)
+        cur_contact = traj.contact_mask[idx]
+        if cur_contact[0] > 0.5 and prev_contact[0] < 0.5:
+            left_touchdown_x.append(float(data.xpos[left_foot_id, 0]))
+        if cur_contact[1] > 0.5 and prev_contact[1] < 0.5:
+            right_touchdown_x.append(float(data.xpos[right_foot_id, 0]))
+        prev_contact[:] = cur_contact
 
         root_pos = data.qpos[:3].copy()
         qw, qx, qy, qz = data.qpos[3:7]
@@ -309,6 +352,42 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             logger.log(f"  height: mean={np.mean(heights):.4f} "
                        f"min={np.min(heights):.4f}")
             logger.log(f"  forward: x={x_final:+.4f}m in {survived} steps")
+
+        # ---- v0.20.0-C strict-pass diagnostics ----
+        n_logged = log_count[0]
+        if n_logged > 0:
+            err = leg_qpos_log[:n_logged] - leg_qref_log[:n_logged]
+            rmse = np.sqrt(np.mean(err ** 2, axis=0))
+            mae = np.mean(np.abs(err), axis=0)
+            logger.log(f"\nLeg-joint tracking ({n_logged} steps, rad):")
+            logger.log(f"  {'joint':<14} {'rmse':>7} {'mae':>7} {'max_abs':>8}")
+            for j in range(n_leg):
+                logger.log(f"  {_LEG_JOINT_NAMES[j]:<14} "
+                           f"{rmse[j]:7.4f} {mae[j]:7.4f} "
+                           f"{np.max(np.abs(err[:, j])):8.4f}")
+            logger.log(f"  overall rmse  : {np.sqrt(np.mean(err ** 2)):.4f} rad")
+
+        # Touchdowns: per-side stride = consecutive same-foot touchdowns;
+        # step length = stride/2 (compare to commanded sl = vx * T / 2).
+        sl_cmd = abs(traj.command_vx) * traj.cycle_time / 2.0
+        stride_cmd = 2.0 * sl_cmd
+        logger.log(f"\nTouchdowns (commanded step={sl_cmd:.4f} m, "
+                   f"stride={stride_cmd:.4f} m):")
+        for name, xs in (("left",  left_touchdown_x),
+                         ("right", right_touchdown_x)):
+            if len(xs) >= 2:
+                strides = np.diff(np.array(xs))
+                step_len = strides / 2.0
+                ratio = (np.mean(step_len) / sl_cmd
+                         if sl_cmd > 1e-6 else float('nan'))
+                logger.log(f"  {name:<5} touchdowns={len(xs):2d}  "
+                           f"stride={np.mean(strides):+.4f}m "
+                           f"(min={np.min(strides):+.4f})  "
+                           f"step={np.mean(step_len):+.4f}m  "
+                           f"realized/cmd={ratio:+.2f}")
+            else:
+                logger.log(f"  {name:<5} touchdowns={len(xs):2d} "
+                           f"(need ≥ 2 for stride)")
     else:
         step_idx = [0]
 
