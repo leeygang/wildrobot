@@ -344,16 +344,19 @@ class ZMPWalkGenerator:
         stance_out = stance_ids[sl].copy()
         contact_out = contacts[sl].copy()
 
-        # Solve IK from world-frame positions (before COM-relative conversion).
-        # IK target = foot position relative to hip joint.
-        # Hip joint is at (COM_x, COM_y ± hip_lateral_offset, COM_height).
+        # Solve IK from world-frame positions.
+        # Use the midpoint between the two feet as the pelvis x reference,
+        # NOT the integrated COM (which drifts ahead of the feet).
+        # The pelvis should be approximately between the stance and swing
+        # foot during walking, not 15cm ahead of both.
         n = actual_out
         n_joints = 19
         q_ref = np.zeros((n, n_joints), dtype=np.float32)
 
         for i in range(n):
-            com_x = com_world[i, 0]
-            com_y = com_world[i, 1]
+            # Pelvis x = midpoint of the two feet (approximates real pelvis)
+            pelvis_x = (left_world[i, 0] + right_world[i, 0]) / 2.0
+            com_y = com_world[i, 1]  # lateral COM is still correct
 
             for side, foot_world_i, indices in [
                 ("left", left_world[i], [0, 2, 4, 6]),
@@ -366,8 +369,8 @@ class ZMPWalkGenerator:
                 contact_idx = 0 if side == "left" else 1
                 is_swing = contact_out[i, contact_idx] < 0.5
 
-                # Sagittal IK: foot position relative to hip in x-z plane
-                foot_rel_x = foot_world_i[0] - com_x
+                # Sagittal IK: foot position relative to pelvis
+                foot_rel_x = foot_world_i[0] - pelvis_x
                 foot_z_above_ground = foot_world_i[2]
                 hip_to_foot_z = -(cfg.com_height_m - cfg.ankle_to_ground_m
                                   - foot_z_above_ground)
