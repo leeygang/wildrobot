@@ -37,7 +37,7 @@ class ZMPWalkConfig:
 
     # Joint limits (radians) — used to compute safe COM height and step length
     ankle_dorsiflexion_limit_rad: float = 0.698   # 40°
-    hip_extension_limit_rad: float = 0.087        # 5° backward extension
+    hip_extension_limit_rad: float = 0.5236        # 30° backward extension
     knee_pitch_max_rad: float = 1.396             # 80°
 
     # Gait timing
@@ -234,8 +234,8 @@ class ZMPWalkGenerator:
     def _count_joint_violations(self, traj: ReferenceTrajectory) -> int:
         """Count timesteps where any leg joint exceeds its limit."""
         limits = np.array([
-            [-0.087, 1.484],   # left_hip_pitch
-            [-1.484, 0.087],   # right_hip_pitch
+            [-0.5236, 1.5708],   # left_hip_pitch
+            [-1.5708, 0.5236],   # right_hip_pitch
             [-1.571, 0.175],   # left_hip_roll
             [-0.175, 1.571],   # right_hip_roll
             [0.0, 1.396],      # left_knee_pitch
@@ -379,7 +379,7 @@ class ZMPWalkGenerator:
 
         # Safety clip — catches any residual IK rounding.
         joint_limits_rad = np.array([
-            [-0.087, 1.484], [-1.484, 0.087],
+            [-0.5236, 1.5708], [-1.5708, 0.5236],
             [-1.571, 0.175], [-0.175, 1.571],
             [0.0, 1.396], [0.0, 1.396],
             [-0.698, 0.785], [-0.698, 0.785],

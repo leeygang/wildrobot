@@ -78,7 +78,7 @@ Per-joint span examples:
 
 | Joint | range (rad) | span | action for max | action for min |
 |---|---|---|---|---|
-| left_hip_pitch | [-0.087, 1.484] | 1.484 | +1.0 | -0.059 (clips) |
+| left_hip_pitch | [-0.524, 1.571] | 1.571 | +1.0 | -0.333 |
 | left_knee_pitch | [0.0, 1.396] | 1.396 | +1.0 | 0.0 (at limit) |
 | left_ankle_pitch | [-0.698, 0.785] | 0.785 | +1.0 | -0.889 |
 | waist_yaw | [-0.524, 0.524] | 0.524 | +1.0 | -1.0 (symmetric) |
