@@ -90,11 +90,20 @@ def _load_policy_spec():
     return [j["name"] for j in spec["actuated_joint_specs"]]
 
 
-def _init_standing(model, data):
-    """Initialize robot to standing keyframe."""
-    key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
-    if key_id >= 0:
-        mujoco.mj_resetDataKeyframe(model, data, key_id)
+def _init_standing(model, data, prefer: str = "walk_start"):
+    """Initialize robot from a named keyframe.
+
+    The v0.20.0-C viewer prefers ``walk_start`` (round-7
+    walking-pose equilibrium paired with the refit IK geometry),
+    but falls back to ``home`` if ``walk_start`` is not present.
+    The runtime / calibration / export paths still use ``home``
+    via their own callers.
+    """
+    for name in (prefer, "home"):
+        key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, name)
+        if key_id >= 0:
+            mujoco.mj_resetDataKeyframe(model, data, key_id)
+            break
     mujoco.mj_forward(model, data)
 
 
@@ -373,7 +382,8 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     first_q = traj.q_ref[0]
 
     logger.log(f"Startup ramp: {startup_steps} steps blending from "
-               f"home keyframe to walking posture (max Δ = "
+               f"init keyframe (walk_start if available, else home) "
+               f"to walking posture (max Δ = "
                f"{float(np.max(np.abs(first_q - standing_q))):.3f} rad)")
     for i in range(startup_steps):
         alpha = (i + 1) / startup_steps

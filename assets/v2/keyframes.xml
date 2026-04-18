@@ -1,33 +1,34 @@
 <mujoco>
-  <!-- Standing keyframe (round 7).
+  <!-- Two named keyframes:
 
-       Round 6 fixed CAD-export noise + the model's intrinsic mass
-       asymmetry (waist body inertial pos = -0.00188 m in x → CoM 6 mm
-       ahead of mid-feet) by tilting the pelvis -0.020 rad and using a
-       symmetric joint pose with knees ≈ 0.023 rad.  That settled at
-       ~0.0001 m/s drift but used a near-straight-legs pose that did
-       NOT match the walking q_ref[0] (bent knees ≈ 0.49 rad).  The
-       resulting standing-to-walking ramp then had to drop the body
-       ~10 mm and bend knees ~0.46 rad in 1 s — which itself
-       generated transients the C2 harness had to fight.
+       "home"        — neutral standing pose (legs near-straight,
+                       knees ≈ 0.023 rad).  Consumed by the runtime
+                       (calibration, policy spec, export bundle) and
+                       by anything that wants the robot in a clean
+                       upright pose.  Round-6 settled equilibrium:
+                       1000 physics steps with ctrl=qpos → pelvis
+                       drift -0.002 m, |vx| ≤ 0.0001 m/s, z stable
+                       at 0.4684 m.  Replaces the original CAD-noise
+                       export which had a sustained -0.5 m/s²
+                       backward bias.
 
-       Round 7 takes a different approach: bake the walking pose
-       (q_ref[0] of the multi-cycle plan) directly into the home key,
-       with the pelvis settled to its physics equilibrium under
-       ctrl=qpos.  After this, the standing-to-walking ramp is a
-       no-op (max Δ ≈ 0).  The body starts at the prior's t=0 state
-       and the 50-step ramp simply stabilizes the walking pose.
-
-       Verified: 1000 physics steps with ctrl=qpos → pelvis drift
-       ~0.0004 m, |vx| ≤ 0.0002 m/s, z stable at 0.4575 m.
-
-       Geometry note: this keyframe is paired with the round-7
-       refitted IK (upper_leg=0.193, lower_leg=0.180,
-       ankle_to_ground=0.061, pelvis_to_hip=0.034 in
-       control/zmp/zmp_walk.py).  Using a different IK geometry
-       will require re-deriving this equilibrium. -->
+       "walk_start"  — round-7 walking-pose equilibrium (legs bent,
+                       knees ≈ 0.49 rad, pelvis_z = 0.4575 m, pitched
+                       -0.020 rad).  Used by the v0.20.0-C viewer so
+                       the standing-to-walking ramp is essentially a
+                       no-op (max Δ ≈ 0.026 rad).  Paired with the
+                       round-7 IK geometry refit (upper_leg = 0.193,
+                       lower_leg = 0.180, ankle_to_ground = 0.061,
+                       pelvis_to_hip = 0.034 in
+                       control/zmp/zmp_walk.py).  If you change the
+                       IK geometry, this keyframe must be re-derived.
+                       Verified: 1000 physics steps with ctrl=qpos →
+                       pelvis drift ~0.0004 m, |vx| ≤ 0.0002 m/s. -->
     <keyframe>
         <key name="home"
+            qpos="-0.00790504 -0.000385849 0.468425 0.999912 -0.000950524 -0.0132519 -3.10656e-05 -0.000416611 -0.00225267 0.0230579 0.00364868 0.000357434 -0.00361724 0.0230856 0.00363835 -0.00179161 0.000784238 0.010199 -4.40666e-06 3.39252e-06 0.000209012 -0.000527081 0.00436148 -9.19413e-06 -9.40916e-06 0.000210427"
+        />
+        <key name="walk_start"
             qpos="0.000369415 -0.000297357 0.457459 0.999955 -0.00107825 -0.00937863 -0.000217794 0.222728 -0.00242304 0.488172 -0.24567 -0.224005 -0.00394509 0.490765 -0.246979 0.00169261 5.85179e-05 0.0103576 -4.15217e-06 4.37833e-06 0.000205844 -0.000523511 0.00443801 -4.43715e-06 -8.29438e-06 0.000206798"
         />
     </keyframe>

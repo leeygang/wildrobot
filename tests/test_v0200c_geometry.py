@@ -86,6 +86,61 @@ def _apply_frame(model, data, mapper, act_to_qpos, traj, idx: int) -> None:
     mujoco.mj_forward(model, data)
 
 
+def _collect_failures() -> list[str]:
+    """Run the FK gate over the matrix and return human-readable
+    failure strings (empty list = PASS).  Shared by the pytest
+    test functions and the standalone ``main()`` CLI entry point."""
+    model, data, mapper, act_to_qpos, L_geoms, R_geoms = _setup()
+    gen = ZMPWalkGenerator()
+    failures: list[str] = []
+    for vx in _VX_BINS:
+        traj = gen.generate(vx)
+        for f in _PROBE_FRAMES:
+            if f >= traj.n_steps:
+                continue
+            _apply_frame(model, data, mapper, act_to_qpos, traj, f)
+            Lz = min(_box_min_z(model, data, g) for g in L_geoms)
+            Rz = min(_box_min_z(model, data, g) for g in R_geoms)
+            for side, z, contact in (("L", Lz, traj.contact_mask[f, 0]),
+                                     ("R", Rz, traj.contact_mask[f, 1])):
+                role = "stance" if contact > 0.5 else "swing"
+                if role == "stance" and z > _STANCE_TOL_M:
+                    failures.append(
+                        f"vx={vx:.2f} frame={f} {side} stance "
+                        f"z={z:+.4f} > {_STANCE_TOL_M}")
+                if role == "swing" and z < _SWING_MIN_M:
+                    failures.append(
+                        f"vx={vx:.2f} frame={f} {side} swing "
+                        f"z={z:+.4f} < {_SWING_MIN_M}")
+    return failures
+
+
+# ---- pytest entry points ------------------------------------------------
+
+def test_geometry_gate_passes():
+    """v0.20.0-C Layer-2 contact gate: stance feet on floor, swing
+    feet above floor across all probed frames in the closeout matrix.
+    """
+    failures = _collect_failures()
+    assert not failures, (
+        f"v0.20.0-C geometry gate failed in {len(failures)} cases. "
+        f"First few: " + "; ".join(failures[:5])
+    )
+
+
+def test_keyframes_load():
+    """Both ``home`` and ``walk_start`` keyframes must exist.
+
+    ``home`` is consumed by runtime / calibration / export paths;
+    ``walk_start`` is the v0.20.0-C viewer's preferred init pose
+    (round-7 walking-pose equilibrium).
+    """
+    model = mujoco.MjModel.from_xml_path("assets/v2/scene_flat_terrain.xml")
+    for name in ("home", "walk_start"):
+        kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, name)
+        assert kid >= 0, f"keyframe '{name}' not found in MJCF"
+
+
 def main() -> int:
     model, data, mapper, act_to_qpos, L_geoms, R_geoms = _setup()
     gen = ZMPWalkGenerator()

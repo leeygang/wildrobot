@@ -852,22 +852,41 @@ ratio.
 
 **Why it still doesn't fully pass:**
 
-- **Knee saturation (5 %–10 %)**: knee q_ref reaches 1.378 rad at
-  swing peak, ~0.02 rad below the 1.396 rad limit; PD overshoot
-  pushes actual qpos into the saturation band.  Could lower
-  `foot_step_height_m` further (0.04 → 0.03) at the cost of foot
-  clearance.
-- **C1 forward fall at vx ≥ 0.20**: the body now has correct
-  contact geometry but the open-loop dynamics still have
-  insufficient pitch authority during the standing-to-walking
-  transient.  Likely same kp/kv coupling that the C2 harness
-  partially fixes when enabled.
+- **Nominal vx (0.15) still does not walk forward.** Deterministic
+  C1 at vx=0.15 falls at step 85 with `root_x=-0.295 m`;
+  deterministic C2 at vx=0.15 falls at step 115 with
+  `root_x=-0.069 m`.  Forward stepping is currently unlocked
+  *only* at the high-speed bin (vx=0.25); the low- and mid-speed
+  bins still drift backward / sideways and fall after 1-2 s.
+- **Fixed-base saturation 7 %** (gate is < 5 %): knee q_ref
+  reaches 1.378 rad at swing peak, ~0.02 rad below the 1.396 rad
+  limit; PD overshoot puts actual qpos into the saturation band.
+- **C1 forward fall at vx ≥ 0.20** (45-65 ctrl steps survival):
+  the body now has correct contact geometry, but the open-loop
+  dynamics still have insufficient pitch authority during the
+  standing-to-walking transient.
 
-**Verdict**: clear evidence that the reviewer's diagnosis was
-correct.  The remaining work is fine tuning (foot clearance vs
-knee saturation; pitch authority during startup) — no
-fundamental "it won't walk" issue anymore.  C2 is now within
-reach with another iteration of the same parameters.
+**Verdict**: the geometry refit was the right diagnosis and a
+real improvement — high-speed forward stepping is unlocked for
+the first time in seven rounds, and the FK gate now passes
+72/72.  But the **nominal command (vx=0.15) is not yet walking**,
+either visually or in the closeout matrix (fixed-base 0/4,
+C1 7/12, C2 0/12).  The remaining work is **not** trivial
+parameter tuning — at minimum:
+
+1. The knee-vs-clearance trade-off needs reconciling so the FK
+   gate stays passing while keeping fixed-base saturation under
+   5 %.
+2. The standing-to-walking transient at low vx loses too much
+   pitch authority before the LIPM dynamics engage; an
+   alternative cycle-0 transient may be required.
+3. The high-vx success suggests the ZMP planner's foot-placement
+   geometry may need command-conditioning that today's prior
+   does not provide.
+
+This is **not ready for v0.20.0-D**.  The next iteration should
+focus on the vx=0.15 nominal bin specifically, and we should not
+characterise the remaining work as cosmetic.
 
 ### Files changed in round 7
 
@@ -875,15 +894,38 @@ reach with another iteration of the same parameters.
   lower_leg, ankle_to_ground, pelvis_to_hip, foot_step_height,
   swing clearance), com_height derivation tightened, IK
   hip_to_foot_z formula updated to use pelvis_to_hip
-- `assets/v2/keyframes.xml`: home key rebuilt to round-7
-  walking-pose equilibrium
+- `assets/v2/keyframes.xml`: round-7 walking-pose equilibrium
+  (round 7b note below: split into `home` + `walk_start`)
 - `training/eval/view_zmp_in_mujoco.py`: ramp source now reads
-  home keyframe actuator values; `_apply_ic_perturbation` doc
+  the keyframe actuator values; `_apply_ic_perturbation` doc
   updated to match round-4 revert
 - `training/docs/reference_design.md`: Q2 wording matched to
   current code (vx centered on zero)
 - `tests/test_v0200c_geometry.py`: new FK validation gate
   (Layer-2 contact-frame check)
+
+### Round 7b — reviewer follow-ups
+
+External review on round 7 flagged three issues, all landed:
+
+- **High** (keyframe scope): round 7 redefined `home` as the
+  walking-pose equilibrium, but `home` is also consumed by
+  `runtime/scripts/calibrate.py`, `training/policy_spec_utils.py`
+  and `training/exports/export_policy_bundle.py` for the standing
+  / calibration pose.  Restored `home` to the round-6 standing
+  equilibrium; added a separate `walk_start` keyframe with the
+  round-7 walking-pose equilibrium; the v0.20.0-C viewer now
+  prefers `walk_start` and falls back to `home` so no caller is
+  affected.
+- **Medium** (test collection): `tests/test_v0200c_geometry.py`
+  used `main()` so pytest didn't collect it.  Added
+  `test_geometry_gate_passes` and `test_keyframes_load` pytest
+  functions; `main()` is kept as a CLI diagnostic.  Both run via
+  `uv run python -m pytest tests/test_v0200c_geometry.py` and
+  via `uv run python tests/test_v0200c_geometry.py`.
+- **Medium** (CHANGELOG tone): the round-7 verdict above is
+  rewritten to drop "small/tunable" language and explicitly state
+  the nominal-vx prior is not yet ready.
 
 ---
 
