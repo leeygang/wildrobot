@@ -275,10 +275,36 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_foot")
     right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_foot")
+    floor_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
 
-    left_touchdown_x = []   # foot world x at each L 0->1 transition
+    # Real foot/floor contact: collect collision geoms attached to each
+    # foot body (contype != 0).  Reviewer R1: previously we used the
+    # reference contact_mask, which still ticks normally during a fall,
+    # so touchdown counts could be optimistic.
+    def _collision_geoms(body_id: int) -> set:
+        return {g for g in range(model.ngeom)
+                if model.geom_bodyid[g] == body_id
+                and int(model.geom_contype[g]) != 0}
+
+    left_foot_geoms = _collision_geoms(left_foot_id)
+    right_foot_geoms = _collision_geoms(right_foot_id)
+
+    def _foot_floor_in_contact(geom_set: set) -> bool:
+        for c_idx in range(data.ncon):
+            c = data.contact[c_idx]
+            g1, g2 = int(c.geom1), int(c.geom2)
+            if (g1 == floor_geom_id and g2 in geom_set) or \
+               (g2 == floor_geom_id and g1 in geom_set):
+                return True
+        return False
+
+    left_touchdown_x = []   # foot world x at each L physical 0->1 transition
     right_touchdown_x = []
-    prev_contact = traj.contact_mask[0].astype(np.float32).copy()
+    # Initialize from the post-ramp standing state: both feet on floor.
+    prev_phys_contact = [
+        _foot_floor_in_contact(left_foot_geoms),
+        _foot_floor_in_contact(right_foot_geoms),
+    ]
 
     step_log = []
 
@@ -315,13 +341,17 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             )
             log_count[0] += 1
 
-        # Touchdown detection on q_ref's contact mask (0->1 per foot)
-        cur_contact = traj.contact_mask[idx]
-        if cur_contact[0] > 0.5 and prev_contact[0] < 0.5:
+        # Touchdown detection from REAL MuJoCo contacts (R1 fix):
+        # detect a foot-floor 0->1 transition per side.  This reflects
+        # the physics state during a fall, not the kinematic reference.
+        l_in = _foot_floor_in_contact(left_foot_geoms)
+        r_in = _foot_floor_in_contact(right_foot_geoms)
+        if l_in and not prev_phys_contact[0]:
             left_touchdown_x.append(float(data.xpos[left_foot_id, 0]))
-        if cur_contact[1] > 0.5 and prev_contact[1] < 0.5:
+        if r_in and not prev_phys_contact[1]:
             right_touchdown_x.append(float(data.xpos[right_foot_id, 0]))
-        prev_contact[:] = cur_contact
+        prev_phys_contact[0] = l_in
+        prev_phys_contact[1] = r_in
 
         root_pos = data.qpos[:3].copy()
         qw, qx, qy, qz = data.qpos[3:7]

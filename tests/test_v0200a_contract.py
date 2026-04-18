@@ -303,6 +303,58 @@ def test_preview_obs():
     assert pw.future_q_ref.shape == (n_preview, nj)
 
 
+def test_preview_warns_on_overrun():
+    """get_preview should emit a one-shot RuntimeWarning past n_steps.
+
+    R2 horizon guard: linear-replay contract means callers must keep
+    episode_horizon <= n_steps.  If they don't, the preview silently
+    freezes — the warning makes the misconfiguration visible.
+    """
+    import warnings
+    from control.references.reference_library import (
+        ReferenceLibrary,
+        ReferenceTrajectory,
+    )
+
+    n, nj = 8, 4
+    traj = ReferenceTrajectory(
+        command_vx=0.10, dt=0.02, cycle_time=0.16,
+        q_ref=np.zeros((n, nj), dtype=np.float32),
+        phase=np.linspace(0, 1, n, endpoint=False).astype(np.float32),
+        stance_foot_id=np.zeros(n, dtype=np.float32),
+        contact_mask=np.ones((n, 2), dtype=np.float32),
+        pelvis_pos=np.zeros((n, 3), dtype=np.float32),
+        pelvis_rpy=np.zeros((n, 3), dtype=np.float32),
+        left_foot_pos=np.zeros((n, 3), dtype=np.float32),
+        right_foot_pos=np.zeros((n, 3), dtype=np.float32),
+    )
+    lib = ReferenceLibrary([traj])
+
+    # In-bounds query: no warning
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        lib.get_preview(vx=0.10, step_index=n - 1, n_preview=2)
+        assert not any("get_preview" in str(w.message) for w in caught), (
+            "Should not warn when step_index is in-bounds"
+        )
+
+    # First overrun: warning fires
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        lib.get_preview(vx=0.10, step_index=n + 5, n_preview=2)
+        assert any("get_preview" in str(w.message) for w in caught), (
+            f"Should warn on overrun, got: {[str(w.message) for w in caught]}"
+        )
+
+    # Second overrun on same key: silent (one-shot)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        lib.get_preview(vx=0.10, step_index=n + 10, n_preview=2)
+        assert not any("get_preview" in str(w.message) for w in caught), (
+            "Overrun warning should be one-shot per command_key"
+        )
+
+
 def test_preview_clamps_at_end():
     """Preview at/past end of trajectory clamps to the last frame.
 
@@ -487,6 +539,7 @@ def main() -> None:
     print("\n6. Preview obs vector")
     check("obs vector shape, dtype, and q_ref presence", test_preview_obs)
     check("clamp at trajectory end (no wrap)", test_preview_clamps_at_end)
+    check("one-shot overrun warning past n_steps", test_preview_warns_on_overrun)
     check("nearest-neighbor command lookup", test_nearest_neighbor_lookup)
 
     print("\n7. Edge cases from review")

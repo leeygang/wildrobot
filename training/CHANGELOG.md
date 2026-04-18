@@ -92,12 +92,22 @@ Pelvis pitch p95 = 0.0018 rad, height flat 0.4683 m.
 
 **Free-floating (full physics, no balance feedback — survival-bounded)**
 
-| vx | survival ctrl steps | L+R touchdowns | L step / ratio | R step / ratio | overall RMSE | any-joint sat % |
-|----|---------------------|----------------|-----------------|-----------------|---------------|-----------------|
-| 0.10 | 88 (1.76 s) | 2+3 | -0.019 / -0.59 | -0.029 / -0.90 | 0.191 | 39.8 |
-| 0.15 | 124 (2.48 s) | 3+4 | -0.040 / -0.84 | -0.031 / -0.65 | 0.190 | 28.2 |
-| 0.20 | 127 (2.54 s) | 3+4 | -0.010 / -0.15 | -0.009 / -0.14 | 0.188 | 30.7 |
-| 0.25 | 108 (2.16 s) | 3+3 | +0.005 / +0.06 | +0.001 / +0.01 | 0.197 | 61.1 |
+Touchdowns now detected from real MuJoCo `data.contact` foot/floor
+geom pairs (R1 fix); previous reference-mask numbers were biased
+because the q_ref ticks normally during a fall.
+
+| vx | survival ctrl steps | L+R touchdowns (physics) | L step / ratio | R step / ratio | overall RMSE | any-joint sat % |
+|----|---------------------|--------------------------|-----------------|-----------------|---------------|-----------------|
+| 0.10 | 88 (1.76 s) | 6+4 | -0.016 / -0.51 | -0.019 / -0.59 | 0.191 | 39.8 |
+| 0.15 | 124 (2.48 s) | 7+4 | -0.025 / -0.53 | -0.018 / -0.37 | 0.190 | 28.2 |
+| 0.20 | 127 (2.54 s) | 7+6 | -0.010 / -0.16 | -0.006 / -0.09 | 0.188 | 30.7 |
+| 0.25 | 108 (2.16 s) | 6+6 | -0.001 / -0.01 | +0.009 / +0.11 | 0.197 | 61.1 |
+
+Real-contact counts are **higher** than the reference-mask counts
+recorded earlier (e.g. 6+4 vs 2+3 at vx=0.10) — the feet bounce
+during the fall, generating touchdown events the q_ref does not
+encode.  Strides remain negative / near-zero, confirming the
+open-loop direction is not forward.
 
 Termination cause is consistently a pitch / roll fall, not a q_ref
 discontinuity.  Library validate() clean for all 5 entries; zero
@@ -158,6 +168,24 @@ PPO authority on the knee channel.
   context; with a pure offline prior they are unmeetable.  Either
   add minimal stabilization to the validation harness or reword the
   gate to acknowledge the open-loop limitation.
+
+### Reviewer round 2 (2026-04-18 PM): R1-R3 closeout
+
+- **R1 (medium)**: touchdowns were inferred from the q_ref's
+  contact mask, so a falling robot still appeared to land on
+  schedule.  Replaced with `data.contact` / floor-geom pair detection
+  in `view_zmp_in_mujoco.py`.  Real-contact counts are 1.5-3× higher
+  than ref-mask counts (feet bounce during the fall), and strides
+  shift modestly (e.g. vx=0.10 R ratio -0.90 → -0.59).  Forward-stride
+  conclusion is unchanged.
+- **R2 (medium)**: `get_preview` now emits a one-shot RuntimeWarning
+  per command_key when `step_index >= n_steps`.  Test
+  `test_preview_warns_on_overrun` asserts the warning fires once and
+  is silent on subsequent overruns.  Docstring spells out the
+  episode-horizon contract for callers.
+- **R3 (low)**: stale "Library entry: one gait-cycle trajectory"
+  section header replaced with multi-cycle linear-replay wording.
+- Contract test suite: 15/15 pass after the new overrun-warning test.
 
 ---
 

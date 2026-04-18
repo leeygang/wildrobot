@@ -38,7 +38,8 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Library entry: one gait-cycle trajectory for a single command bin
+# Library entry: a multi-cycle reference trajectory for a single command bin
+# (played linearly — see top-of-file design note for the no-wrap contract)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -285,6 +286,8 @@ class ReferenceLibrary:
     ) -> None:
         self.meta = meta or ReferenceLibraryMeta()
         self._entries: Dict[Tuple[float, float, float], ReferenceTrajectory] = {}
+        # One-shot overrun warning per command_key (R2 horizon guard).
+        self._warned_overrun_keys: set = set()
         if trajectories:
             for traj in trajectories:
                 self.add(traj)
@@ -340,6 +343,16 @@ class ReferenceLibrary:
         does NOT wrap to cycle 0 at the end (see top-of-file design
         notes).
 
+        **Episode-horizon contract**: callers (training env, eval) must
+        ensure ``episode_horizon <= traj.n_steps`` for the trajectory
+        being consumed.  Past that index the preview freezes and the
+        policy receives identical observations every step, which is
+        almost always a misconfiguration.  ``get_preview`` issues a
+        one-shot warning per command bin if ``step_index >= n_steps``
+        so the misconfiguration surfaces in logs instead of silently
+        biasing training.  Use ``traj.n_steps`` and ``traj.dt`` to size
+        the episode (e.g. ``episode_horizon = traj.n_steps``).
+
         Parameters
         ----------
         vx : forward speed command
@@ -348,6 +361,17 @@ class ReferenceLibrary:
         """
         traj = self.lookup(vx, vy, yaw_rate)
         n = traj.n_steps
+        if step_index >= n and traj.command_key not in self._warned_overrun_keys:
+            import warnings
+            warnings.warn(
+                f"ReferenceLibrary.get_preview: step_index={step_index} "
+                f">= n_steps={n} for command_key={traj.command_key}. "
+                f"Preview is now frozen at the terminal frame; ensure "
+                f"episode_horizon <= traj.n_steps.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._warned_overrun_keys.add(traj.command_key)
         idx = min(max(0, step_index), n - 1)
 
         phase_val = traj.phase[idx] if traj.phase is not None else 0.0
