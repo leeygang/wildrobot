@@ -845,11 +845,18 @@ that PPO will not also have.  Reading
 any per-step lookup into the stored reference's contact schedule is
 forbidden.
 
-Forbidden everywhere: re-reading gait phase to decide what to do,
-recomputing footstep timing, scaling by stance side via a runtime
-FSM, importing the harness into `runtime/`.  The harness is
-instantiated only inside `view_zmp_in_mujoco.py` and `eval_*` paths,
-gated by `--c2-stabilizer`.
+Forbidden everywhere: reading the **stored reference's** per-step
+gait phase or contact schedule (`traj.phase`, `traj.contact_mask`,
+`traj.stance_foot_id`, or any FSM annotation derived from them);
+recomputing footstep timing; scaling by stance side via a runtime
+FSM; importing the harness into `runtime/`.  The time-derived phase
+oscillator `(sin, cos)(2π · t / cycle_time)` is **not** a
+"reference-derived" gait phase — it is a function of the replay
+clock and the constant `cycle_time` metadata, computed without any
+per-step lookup into the trajectory — and is allowed per the
+"Allowed signals" clause above.  The harness is instantiated only
+inside `view_zmp_in_mujoco.py` and `eval_*` paths, gated by
+`--c2-stabilizer`.
 
 If the stabilizer ever needs more than the inputs above to make C2
 pass, the prior has failed the gate — do not loosen the harness.
@@ -989,7 +996,10 @@ collecting the free-floating sweep (per the decision rule above).
 CHANGELOG block (single contiguous section under the v0.20.0-C
 heading) must contain:
 
-- raw matrix table, all 32 rows, one row per (mode, vx, seed)
+- raw matrix table, all 32 measurement cases — one row per
+  (mode, vx, seed) for the 24 free-floating closeout rows, and
+  one row per (mode, vx) with `seed = n/a` for the 8 deterministic
+  baseline rows
 - per-row metrics: survival ctrl steps, L+R touchdown counts,
   realized step length per side, realized/cmd ratio per side,
   overall RMSE, **worst-joint RMSE with joint name** (Q1 amendment),
