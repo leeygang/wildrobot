@@ -264,24 +264,15 @@ def _lipm_initial_vx(traj) -> float:
     return float((traj.pelvis_pos[1, 0] - traj.pelvis_pos[0, 0]) / traj.dt)
 
 
-def _apply_ic_perturbation(data, seed: int, traj, logger: "Logger") -> None:
-    """Apply the v0.20.0-C closeout initial-condition perturbation.
+def _ic_perturbations(seed: int, traj):
+    """Sample the v0.20.0-C closeout IC perturbation values for a seed.
 
-    Per Q2 outcome in reference_design.md (with the post-closeout
-    addendum aligning vx to the LIPM steady-state): pelvis x/y +/-
-    0.02 m, yaw +/- 5 deg, vx centered on the trajectory's LIPM
-    initial vx, perturbed by +/- 0.10 m/s, all uniform.  Joint state
-    and everything else stays at the standing keyframe.
-
-    The vx CENTER (not the ±0.10 m/s envelope) was added after the
-    first closeout (commit 6000177) showed the prior cannot walk
-    open-loop because the standing keyframe starts at vx=0 while the
-    LIPM expects vx ≈ +0.18 m/s at vx_cmd=0.15.  Centering the IC
-    envelope on the LIPM steady-state gives the harness a fighting
-    chance — the propulsion deficit is in the IC mismatch, not in the
-    harness's authority.
-
-    Reproducible per seed via numpy.random.default_rng(seed).
+    Returns ``(dx, dy, dyaw, dvx, vx_center)`` — all reproducible
+    via ``numpy.random.default_rng(seed)``.  ``vx_center`` is the
+    trajectory's LIPM steady-state initial vx (Q2 post-closeout
+    addendum).  Caller decides when each component is applied
+    (position/yaw before the standing ramp, vx after it — see
+    ``_apply_ic_pose`` and ``_apply_ic_vx``).
     """
     rng = np.random.default_rng(int(seed))
     dx = float(rng.uniform(-_IC_POS_BOUND_M, _IC_POS_BOUND_M))
@@ -289,13 +280,18 @@ def _apply_ic_perturbation(data, seed: int, traj, logger: "Logger") -> None:
     dyaw = float(rng.uniform(-np.deg2rad(_IC_YAW_BOUND_DEG),
                              +np.deg2rad(_IC_YAW_BOUND_DEG)))
     dvx = float(rng.uniform(-_IC_VX_BOUND_MPS, _IC_VX_BOUND_MPS))
-
     vx_center = _lipm_initial_vx(traj)
+    return dx, dy, dyaw, dvx, vx_center
 
+
+def _apply_ic_pose(data, dx: float, dy: float, dyaw: float,
+                   logger: "Logger", seed: int) -> None:
+    """Apply pelvis position + yaw perturbation BEFORE the standing
+    ramp, so the body settles into the walking pose at the perturbed
+    pose with vx still 0.  vx is injected separately after the ramp
+    (round-2 closeout fix for the high-vx face-plants)."""
     data.qpos[0] += dx
     data.qpos[1] += dy
-
-    # Apply yaw rotation: q_new = q_yaw * q_cur (world-frame yaw).
     cy, sy = np.cos(dyaw / 2.0), np.sin(dyaw / 2.0)
     qw, qx, qy, qz = data.qpos[3:7].copy()
     new_w = cy * qw - sy * qz
@@ -303,14 +299,25 @@ def _apply_ic_perturbation(data, seed: int, traj, logger: "Logger") -> None:
     new_y = cy * qy + sy * qx
     new_z = cy * qz + sy * qw
     data.qpos[3:7] = [new_w, new_x, new_y, new_z]
-
-    data.qvel[0] += vx_center + dvx
-
-    logger.log(f"IC perturbation (seed={seed}): "
+    logger.log(f"IC pose (seed={seed}): "
                f"dx={dx:+.4f}m dy={dy:+.4f}m "
-               f"dyaw={np.rad2deg(dyaw):+.2f}deg "
+               f"dyaw={np.rad2deg(dyaw):+.2f}deg")
+
+
+def _apply_ic_vx(data, dvx: float, vx_center: float,
+                 logger: "Logger", seed: int) -> None:
+    """Inject the LIPM-aligned vx perturbation AFTER the standing
+    ramp.  Round-2 closeout (commit 944a52c) showed that injecting
+    vx at the standing pose face-plants the body at high vx_cmd
+    because the standing-to-walking ramp has to settle the body
+    while it's already moving forward; doing this after the ramp
+    avoids the transient.
+    """
+    applied = vx_center + dvx
+    data.qvel[0] += applied
+    logger.log(f"IC vx (seed={seed}): "
                f"vx_center={vx_center:+.4f}m/s dvx={dvx:+.4f}m/s "
-               f"(applied vx={vx_center + dvx:+.4f}m/s)")
+               f"(applied vx={applied:+.4f}m/s, post-ramp)")
 
 
 def _run_physics(model, data, traj, mapper, horizon, print_every,
@@ -336,9 +343,13 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     _init_standing(model, data)
 
-    # Apply v0.20.0-C IC perturbation (Q2 outcome) before the ramp.
+    # v0.20.0-C IC perturbation (Q2 outcome, split round-2): pose
+    # before the ramp so the body settles, vx after the ramp so the
+    # high-vx face-plants from round-2 closeout do not recur.
+    ic_dvx = ic_vx_center = 0.0
     if seed is not None and not fixed_base:
-        _apply_ic_perturbation(data, seed, traj, logger)
+        dx, dy, dyaw, ic_dvx, ic_vx_center = _ic_perturbations(seed, traj)
+        _apply_ic_pose(data, dx, dy, dyaw, logger, seed)
 
     root_qpos_init = data.qpos[:7].copy()
 
@@ -357,6 +368,13 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     root_z_after_ramp = data.qpos[2]
     logger.log(f"After ramp: root_z={root_z_after_ramp:.4f}")
+
+    # Inject IC vx after the ramp (round-2 split): the body has now
+    # settled into the walking pose, so injecting LIPM-aligned vx
+    # here does not transient through the standing-to-walking
+    # blend.
+    if seed is not None and not fixed_base:
+        _apply_ic_vx(data, ic_dvx, ic_vx_center, logger, seed)
 
     # ---- Strict-pass instrumentation (RMSE / saturation / touchdowns) ----
     n_leg = 8

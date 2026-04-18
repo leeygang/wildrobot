@@ -436,6 +436,114 @@ Files changed (all in this round 2 iteration):
 The harness contract (hard clips, allowed inputs, forbidden
 inputs) is unchanged.  No runtime imports are introduced.
 
+### v0.20.0-C closeout sweep round 3 — IC perturbation split
+
+Round 2 regressed C1 because the LIPM-aligned vx was injected at
+the standing keyframe, then the standing-to-walking ramp had to
+reconcile a body already moving forward at `+0.20-0.30 m/s` with
+joints still in the standing pose.  At high vx_cmd the body face-
+planted before the ramp finished.
+
+Fix: split the IC perturbation around the ramp.  Position and yaw
+apply BEFORE the ramp (body settles at the perturbed pose with
+vx=0); vx applies AFTER the ramp (body is already in the walking
+pose, so the LIPM-aligned vx injection no longer transients
+through the ramp).  Implemented in
+`training/eval/view_zmp_in_mujoco.py` via `_apply_ic_pose` and
+`_apply_ic_vx` (replacing the single `_apply_ic_perturbation`).
+
+Re-running the 32-row matrix:
+
+| mode | rows | passed | failed | gate verdict |
+|---|---|---|---|---|
+| kinematic     |  4 |  4 |  0 | **PASS** |
+| fixed-base    |  4 |  4 |  0 | **PASS** |
+| C1            | 12 | 12 |  0 | **PASS** (recovered from 10/12) |
+| C2            | 12 |  0 | 12 | **FAIL** (no row clears closed-loop step gate) |
+
+C1 fully recovered.  Survival range now 78-200 ctrl steps across
+all 12 C1 rows.  Both regressed rows from round 2 are fixed:
+
+- C1 vx=0.20 seed=1: 50 → 98 ctrl steps
+- C1 vx=0.25 seed=1: 18 → 200 ctrl steps
+
+C2 progress over the three iterations:
+
+| metric | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| C2 rows surviving 200/200 | 1/12 | 3/12 | 1/12* |
+| C2 rows surviving ≥ C1 budget (64) | 9/12 | 8/12 | **12/12** |
+| C2 roll_PD ≥ 25 % hard-fail rows | 7/12 | 1/12 | 3/12 |
+| C2 pitch_PD ≥ 25 % hard-fail rows | 1/12 | 6/12 | 4/12 |
+| C2 any-joint sat ≥ 25 % hard-fail rows | 5/12 | 1/12 | 1/12 |
+| best realized/cmd forward ratio | +0.18 | +0.35 | +0.30 |
+
+\*round-3 200/200 count is lower than round 2 because the split
+also widened the "survive a long time" bin: many rows in round 3
+land in the 100-190 range instead of either 200 or <100.  The
+**all C2 rows now clear the C1 survival budget** is the more
+useful metric: the harness consistently keeps the body upright
+for 1.5+ gait cycles even at the worst seed.
+
+C2 verdict (per the decision rule): **C1 pass + C2 fail-on-all-
+bins → stay in C; investigate prior quality (lateral asymmetry,
+knee feasibility) — stabilizer cannot rescue what is not
+rescuable.**
+
+### Where the propulsion deficit comes from
+
+Three iterations of incremental prior fixes have eliminated the
+lateral asymmetry, the high-vx face-plants, and most of the
+roll_PD saturation.  C2 is still 0/12 because **the prior
+fundamentally cannot generate net forward momentum from a
+zero-vx start**, even with the IC vx alignment helping:
+
+- Body is initialized at the standing keyframe with vx = 0.
+- The standing-to-walking ramp settles the body into the first
+  walking q_ref frame (50 ctrl steps = 1 s).
+- After the ramp, an LIPM-aligned vx is injected.
+- But the body is now already a full second past t=0 of the
+  prior, and the q_ref pattern from t=0 expects a body at
+  `(x = -0.024 m, vx = +0.176 m/s)` — not at the post-ramp
+  state.  This residual mismatch consumes the harness's pitch
+  budget before any forward stride accumulates.
+
+The cleanest remaining fix is **item 2 of the round-1 queue**:
+modify the prior so cycle 0 has a smooth from-standing startup
+transient inside the q_ref itself (mirrors ToddlerBot's truncated
+first-cycle warmup, baked into `_generate_at_step_length` rather
+than into the validation harness).  This is a substantial change
+to the prior generator and was not attempted in round 3 — round
+3 confirmed that the cheaper IC-split fix lifts C1 fully but
+cannot close the C2 propulsion gap on its own.
+
+### Decision point for next iteration
+
+Two viable paths from here:
+
+A. **Implement the from-standing startup transient in the prior**
+   (the queued long-term fix).  Rough scope: smooth quintic blend
+   of COM trajectory in cycle 0 from (x=0, vx=0) to the LIPM
+   steady-state, plus consistent leg-pose interpolation.  This is
+   the principled fix and aligns with how ToddlerBot's library
+   generator handles startup.  Estimated work: half a day to a
+   day, plus regression testing on the kinematic / fixed-base
+   gates.
+
+B. **Treat C1 as the v0.20.0-C signoff and move to v0.20.1 with
+   PPO carrying the closed-loop work.**  This is closer to
+   ToddlerBot's actual practice — they only validate kinematically
+   and let PPO handle the rest.  C2 stays in the codebase as a
+   future-PPO regression check and as a tool for quantifying
+   "how far PPO has to lift" relative to the bounded baseline.
+   Risk: gives up the explicit "prior is rescuable by minor
+   correction" gate, which was the whole reason the C1+C2 split
+   was added.
+
+The choice is a project-level call about how strictly to enforce
+the "minor correction" PPO architecture before spending more time
+on prior generation.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework
