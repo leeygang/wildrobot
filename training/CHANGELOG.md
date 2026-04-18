@@ -56,62 +56,108 @@ sync.
   (no balance feedback yet — that is v0.20.1's PPO job; the v0.20.0-C
   gate is q_ref trackability, not open-loop walking).
 
-### Strict-pass diagnostics (2026-04-18)
+### Strict-pass diagnostics (2026-04-18, revised after review)
 
-Added per-joint tracking RMSE and touchdown event detection to
-`view_zmp_in_mujoco.py` for the strict pass before promoting to
-v0.20.0-D.  Fixed-base sweep, 200 control steps (4 s, ~6 gait cycles).
+The first strict-pass attempt was invalidated by reviewer findings:
 
-Per-joint tracking RMSE under PD physics (rad):
+- **F1**: `ReferenceLibrary.get_preview` still wrapped indices with
+  modulo, contradicting the multi-cycle "no wrap" contract.  Fixed:
+  `get_preview` and `_find_next_foothold` now clamp to the last frame
+  and the contract test was rewritten as `test_preview_clamps_at_end`.
+- **F2**: fixed-base mode hard-coded `qpos[0] += dt * command_vx`
+  every step, so the previously reported "exact 0.10/0.15/0.20/0.25
+  m/s tracking" was synthetic, not a PD result.  Fixed: pelvis is now
+  pinned at the standing pose; root_x stays at 0.0006 m across 200
+  control steps.  Fixed-base is restricted to RMSE / saturation
+  evidence; stride length must come from free-floating.
+- **F3**: top-of-file docstring still said trajectories "are stored
+  per gait cycle and meant to be looped" — replaced with the linear
+  multi-cycle contract.
+- **F4**: per-joint RMSE / saturation / touchdowns now logged in
+  free-floating replay so the strict-pass evidence comes from one
+  consistent mode.
 
-| vx | hip_p L/R | hip_r L/R | knee L/R | ankle L/R | overall |
-|----|-----------|-----------|----------|-----------|---------|
-| 0.10 | 0.146 / 0.148 | 0.078 / 0.043 | **0.346 / 0.334** | 0.036 / 0.036 | 0.189 |
-| 0.15 | 0.142 / 0.142 | 0.081 / 0.043 | **0.345 / 0.347** | 0.041 / 0.040 | 0.191 |
-| 0.20 | 0.136 / 0.137 | 0.082 / 0.043 | **0.352 / 0.351** | 0.046 / 0.045 | 0.193 |
-| 0.25 | 0.130 / 0.132 | 0.071 / 0.033 | **0.357 / 0.357** | 0.052 / 0.051 | 0.194 |
+Re-run sweep with the corrected viewer:
 
-Touchdown step length (sl_cmd = vx · T / 2, T = 0.64 s):
+**Fixed-base (pelvis pinned, PD legs only — RMSE / saturation only)**
 
-| vx | sl_cmd | L step / ratio | R step / ratio | L+R count |
-|----|--------|---------------|---------------|-----------|
-| 0.10 | 0.032 | 0.036 / 1.13 | 0.029 / 0.90 | 6+6 |
-| 0.15 | 0.048 | 0.050 / 1.04 | 0.044 / 0.93 | 6+6 |
-| 0.20 | 0.064 | 0.064 / 1.00 | 0.061 / 0.96 | 6+6 |
-| 0.25 | 0.080 | 0.080 / 0.99 | 0.078 / 0.97 | 6+6 |
+| vx | overall RMSE | knee RMSE L/R | hip-roll RMSE L/R | sat % |
+|----|--------------|---------------|-------------------|-------|
+| 0.10 | 0.189 | 0.345 / 0.335 | 0.080 / 0.044 | 3.5 |
+| 0.15 | 0.190 | 0.345 / 0.346 | 0.080 / 0.042 | 3.0 |
+| 0.20 | 0.193 | 0.352 / 0.351 | 0.082 / 0.043 | 2.0 |
+| 0.25 | 0.194 | 0.356 / 0.357 | 0.071 / 0.034 | 2.0 |
 
-Pelvis under fixed-base PD (all vx): pitch/roll p95 = 0.0000,
-height = 0.4683 m flat, no drift.  Zero joint-limit violations across
-the library; library `validate()` clean.
+Pelvis pitch p95 = 0.0018 rad, height flat 0.4683 m.
 
-### v0.20.0-C gate scoring against `reference_design.md` L716-737
+**Free-floating (full physics, no balance feedback — survival-bounded)**
 
-| Gate | Result |
-|------|--------|
-| Touchdown locations match intended pattern | ✓ |
-| No toe drag / scissoring / pathological posture | ✓ |
-| Startup / 1-2 cycles coherent in full env | ✓ fixed-base; free-floating falls in 2.5 s as expected |
-| Failures look like tracking limits, not incoherent ref | ✓ |
-| Realized step length ≥ 0.03 m | ⚠ vx=0.10 right side = 0.029 m (≈ gate, just below) |
-| Realized/cmd step ratio ≥ 0.5 | ✓ all in [0.90, 1.13] |
-| IK reachability ≈ 1.0 | ✓ |
-| Safety margin violations = 0 | ✓ |
-| Survives ≥ 45 ctrl steps | ✓ 200/200 |
-| ≥ 1 L + 1 R touchdown in same replay | ✓ 6+6 |
-| Tracking RMSE within actuator budget | ⚠ knee RMSE ~0.35 rad (max_abs 0.94) — no explicit budget defined; functional gait but knee servo lags swing demand |
-| No repeated hard saturation | ✓ |
+| vx | survival ctrl steps | L+R touchdowns | L step / ratio | R step / ratio | overall RMSE | any-joint sat % |
+|----|---------------------|----------------|-----------------|-----------------|---------------|-----------------|
+| 0.10 | 88 (1.76 s) | 2+3 | -0.019 / -0.59 | -0.029 / -0.90 | 0.191 | 39.8 |
+| 0.15 | 124 (2.48 s) | 3+4 | -0.040 / -0.84 | -0.031 / -0.65 | 0.190 | 28.2 |
+| 0.20 | 127 (2.54 s) | 3+4 | -0.010 / -0.15 | -0.009 / -0.14 | 0.188 | 30.7 |
+| 0.25 | 108 (2.16 s) | 3+3 | +0.005 / +0.06 | +0.001 / +0.01 | 0.197 | 61.1 |
 
-### Findings flagged for v0.20.1 / v0.20.2
+Termination cause is consistently a pitch / roll fall, not a q_ref
+discontinuity.  Library validate() clean for all 5 entries; zero
+joint-limit violations encoded in q_ref.
 
-- Knee servo lags during swing-foot lift (max_abs error 0.94 rad ≈ 54°).
-  Functional gait still emerges, but PPO will need authority on the
-  knee channel; SysID (`v0.20.2`) should verify that the htd45hServo
-  PD gains in MJCF match hardware.
-- Hip-roll RMSE asymmetric L (~0.08) vs R (~0.04).  Likely cosine
-  lateral COM starting at +lat_amplitude loads left side more.  Not
-  blocking — flagging for v0.20.1 reward sanity.
-- Right-side stride consistently slightly shorter than left (0.93-0.97
-  ratio vs left's 0.99-1.13).  Same lateral asymmetry root cause.
+### v0.20.0-C gate scoring against `reference_design.md` L716-737 (revised)
+
+| Gate | free-floating | fixed-base | kinematic | Verdict |
+|------|---------------|------------|-----------|---------|
+| Touchdown locations match intended pattern | ✓ count, but in fall direction | ✓ count | ✓ | ⚠ |
+| No toe drag / scissoring / pathological posture | ✓ until fall | ✓ | ✓ | ✓ |
+| Startup / 1-2 cycles coherent in env | ⚠ falls in 1.7-2.5 s | ✓ | n/a | ⚠ |
+| Failures = tracking limits, not incoherent ref | ✓ (balance loss, not q_ref) | ✓ | n/a | ✓ |
+| Realized step ≥ 0.03 m | ❌ negative / near-zero | n/a (pinned) | ✓ exact sl | ❌ free-floating |
+| Realized/cmd step ratio ≥ 0.5 | ❌ negative or ≤ 0.06 | n/a | ✓ 1.00 | ❌ free-floating |
+| IK reachability ≈ 1.0 | ✓ | ✓ | ✓ | ✓ |
+| Safety margin violations = 0 | ✓ at q_ref level | ✓ | ✓ | ✓ |
+| Survives ≥ 45 ctrl steps | ✓ 88-127 | ✓ 200/200 | n/a | ✓ |
+| ≥ 1L + 1R touchdown in same replay | ✓ all bins | ✓ 6+6 | ✓ | ✓ |
+| Tracking RMSE within actuator budget | ⚠ knee 0.34, no budget | ⚠ knee 0.35 | n/a | ⚠ |
+| No repeated hard saturation | ❌ 28-61% in free-floating | ✓ 2-3.5% pinned | n/a | ❌ free-floating |
+
+### Honest assessment
+
+Three gates fail under strict free-floating measurement:
+realized step length, realized/cmd ratio, and saturation %.
+All three failures share a single cause: open-loop LIPM is unstable
+without a state-feedback controller.  Evidence:
+
+- Pinned pelvis (fixed-base) shows the q_ref is trackable at
+  3 % saturation — the saturation in free-floating (28-61 %) is a
+  **consequence of the fall**, not a property of q_ref.
+- Kinematic playback (no physics) shows the q_ref encodes exactly
+  the commanded forward speed and step length.
+- Free-floating tumbles in 1.7-2.5 s with negative strides because
+  the actual robot starts at standing (vx=0) while the q_ref expects
+  LIPM steady-state initial conditions (vx≈+0.18 m/s).  No mechanism
+  in v0.20.0-C exists to bridge this — that is `v0.20.1`'s PPO job.
+
+The remaining real signal is the **knee tracking RMSE 0.34 rad**
+(max_abs 0.94 rad ≈ 54°): present in both fixed-base and
+free-floating, so it is a servo-vs-q_ref issue, not balance.
+It does not block v0.20.0-C (no explicit RMSE budget in the gate),
+but it is a hard flag for `v0.20.2` SysID and for `v0.20.1`
+PPO authority on the knee channel.
+
+### Findings flagged for later milestones
+
+- **`v0.20.2` (SysID)**: knee servo lags ~0.94 rad peak under PD;
+  verify htd45hServo gains and rotor inertia in MJCF match hardware.
+- **`v0.20.1` (PPO)**: lateral asymmetry — L hip-roll RMSE is 1.8-2.0×
+  R across all vx in fixed-base, growing to 3-4× in free-floating
+  (which falls left-first).  Likely root cause: cosine lateral COM
+  starts at `+lat_amplitude` (toward left), loading the left hip
+  roll first.  Worth A/B-testing a phase-shifted or sin-based
+  lateral pattern.
+- **Gate-language**: the v0.20.0-C metric gates assume a closed-loop
+  context; with a pure offline prior they are unmeetable.  Either
+  add minimal stabilization to the validation harness or reword the
+  gate to acknowledge the open-loop limitation.
 
 ---
 

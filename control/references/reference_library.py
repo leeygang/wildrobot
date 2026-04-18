@@ -13,7 +13,10 @@ Design notes
 ------------
 - Schema is ZMP-first but ALIP-compatible: no field assumes a specific
   reduced-order model.
-- Trajectories are stored per gait cycle and meant to be looped.
+- Trajectories may span multiple gait cycles and are played linearly.
+  Consumers must NOT wrap with modulo at the end of the trajectory —
+  the first cycle of a from-rest plan is not periodic with the last
+  steady-state cycle, so wrapping reintroduces discontinuities.
 - The library is the single source of locomotion semantics for v0.20.x.
   Runtime layers must NOT reintroduce gait FSM logic.
 
@@ -328,17 +331,24 @@ class ReferenceLibrary:
         vy: float = 0.0,
         yaw_rate: float = 0.0,
     ) -> ReferencePreviewWindow:
-        """Extract a preview window at the given phase step.
+        """Extract a preview window at the given trajectory step.
+
+        ``step_index`` is clamped to the last frame; queries past the
+        end of the trajectory return the terminal frame and the future
+        preview holds the same terminal frame for every slot.  This
+        matches the multi-cycle linear-playback contract — the library
+        does NOT wrap to cycle 0 at the end (see top-of-file design
+        notes).
 
         Parameters
         ----------
         vx : forward speed command
-        step_index : integer index into the gait-cycle trajectory
+        step_index : integer index into the trajectory
         n_preview : number of future steps to include in the preview
         """
         traj = self.lookup(vx, vy, yaw_rate)
         n = traj.n_steps
-        idx = step_index % n
+        idx = min(max(0, step_index), n - 1)
 
         phase_val = traj.phase[idx] if traj.phase is not None else 0.0
         phase_sin = float(np.sin(2.0 * np.pi * phase_val))
@@ -361,8 +371,8 @@ class ReferenceLibrary:
         else:
             swing_pos = traj.right_foot_pos[idx] if traj.right_foot_pos is not None else np.zeros(3)
 
-        # Swing velocity from finite difference (or zero)
-        next_idx = (idx + 1) % n
+        # Swing velocity from finite difference; clamp at end (no wrap).
+        next_idx = min(idx + 1, n - 1)
         if swing_id == 0 and traj.left_foot_pos is not None:
             swing_vel = (traj.left_foot_pos[next_idx] - traj.left_foot_pos[idx]) / traj.dt
         elif swing_id == 1 and traj.right_foot_pos is not None:
@@ -370,12 +380,11 @@ class ReferenceLibrary:
         else:
             swing_vel = np.zeros(3)
 
-        # Next foothold: stance-frame x,y of the next swing touchdown
-        # For now, extract from the foot position at the next stance switch
+        # Next foothold: x,y of the next swing-foot touchdown (clamped at end).
         next_foothold = self._find_next_foothold(traj, idx, swing_id)
 
-        # Future preview arrays
-        future_indices = [(idx + 1 + k) % n for k in range(n_preview)]
+        # Future preview arrays — clamp past end (no wrap).
+        future_indices = [min(idx + 1 + k, n - 1) for k in range(n_preview)]
         future_q = traj.q_ref[future_indices] if traj.q_ref is not None else np.zeros((n_preview, 1))
         future_phases = traj.phase[future_indices] if traj.phase is not None else np.zeros(n_preview)
         future_contacts = traj.contact_mask[future_indices] if traj.contact_mask is not None else np.ones((n_preview, 2))
@@ -410,18 +419,21 @@ class ReferenceLibrary:
         for the swing foot, not just the first frame where contact is 1.
         This avoids returning the wrong foothold during double-support
         phases where the swing foot is already in contact.
+
+        The search walks forward from ``current_idx`` to the end of the
+        trajectory — it does NOT wrap to the start (matches the
+        linear-playback contract).  Returns zeros if no touchdown
+        remains in the rest of the trajectory.
         """
         n = traj.n_steps
         if traj.contact_mask is None:
             return np.zeros(2, dtype=np.float32)
 
-        # Walk forward to find the 0→1 contact transition
+        # Walk forward to find the 0→1 contact transition (no wrap)
         prev_contact = traj.contact_mask[current_idx, swing_id]
-        for offset in range(1, n):
-            future_idx = (current_idx + offset) % n
+        for future_idx in range(current_idx + 1, n):
             curr_contact = traj.contact_mask[future_idx, swing_id]
             if prev_contact < 0.5 and curr_contact > 0.5:
-                # Found touchdown transition — return foot position
                 if swing_id == 0 and traj.left_foot_pos is not None:
                     return traj.left_foot_pos[future_idx, :2]
                 elif swing_id == 1 and traj.right_foot_pos is not None:

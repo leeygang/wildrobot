@@ -12,7 +12,10 @@ Usage:
   # Interactive viewer at cmd=0.15
   uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.15
 
-  # Fixed-base (root pinned, legs track via PD)
+  # Fixed-base: pelvis pinned at the standing pose, legs track via PD.
+  # Use this for tracking-RMSE / saturation diagnostics ONLY — the
+  # pelvis is held in place, so foot world positions do not advance,
+  # and stride length must be measured in free-floating (or kinematic).
   uv run mjpython training/eval/view_zmp_in_mujoco.py --fixed-base --vx 0.10
 
   # Headless recording
@@ -249,11 +252,26 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     root_z_after_ramp = data.qpos[2]
     logger.log(f"After ramp: root_z={root_z_after_ramp:.4f}")
 
-    # ---- Strict-pass instrumentation ----
+    # ---- Strict-pass instrumentation (RMSE / saturation / touchdowns) ----
     n_leg = 8
     leg_qpos_log = np.zeros((horizon, n_leg), dtype=np.float64)
     leg_qref_log = np.zeros((horizon, n_leg), dtype=np.float64)
+    leg_sat_log = np.zeros((horizon, n_leg), dtype=bool)
     log_count = [0]
+
+    # Pull leg-joint limits from the MJCF in the same policy order as q_ref.
+    leg_joint_names = list(_LEG_JOINT_NAMES)
+    name_map = {
+        "L_hip_pitch": "left_hip_pitch", "R_hip_pitch": "right_hip_pitch",
+        "L_hip_roll":  "left_hip_roll",  "R_hip_roll":  "right_hip_roll",
+        "L_knee_pitch": "left_knee_pitch", "R_knee_pitch": "right_knee_pitch",
+        "L_ankle_pitch": "left_ankle_pitch", "R_ankle_pitch": "right_ankle_pitch",
+    }
+    leg_jnt_limits = np.zeros((n_leg, 2), dtype=np.float64)
+    for j, short in enumerate(leg_joint_names):
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name_map[short])
+        leg_jnt_limits[j] = model.jnt_range[jid]
+    sat_margin = 0.01  # rad ≈ 0.6° from limit counts as saturated
 
     left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_foot")
     right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_foot")
@@ -275,19 +293,26 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             mujoco.mj_step(model, data)
 
         if fixed_base:
-            data.qpos[0] = root_qpos_init[0] + (step_idx + 1) * ref_dt * traj.command_vx
-            data.qpos[1] = root_qpos_init[1]
-            data.qpos[2] = root_qpos_init[2]
-            data.qpos[3:7] = [1, 0, 0, 0]
+            # Pin pelvis at the standing pose (no synthetic forward
+            # injection — earlier code teleported root_x by command_vx
+            # each step, which made any "speed tracking" reading
+            # tautological).  After this, root_x stays at the initial
+            # value and only RMSE / saturation are valid metrics from
+            # this mode; stride length must come from free-floating.
+            data.qpos[:7] = root_qpos_init
             data.qvel[:6] = 0
             mujoco.mj_forward(model, data)
 
-        # Capture leg qpos in policy order for RMSE
+        # Capture leg qpos in policy order for RMSE + saturation
         if act_to_qpos is not None and policy_to_mj is not None and log_count[0] < horizon:
             mj_qpos = data.qpos[act_to_qpos]
             policy_qpos = mj_qpos[policy_to_mj]
             leg_qpos_log[log_count[0]] = policy_qpos[:n_leg]
             leg_qref_log[log_count[0]] = q_ref[:n_leg]
+            leg_sat_log[log_count[0]] = (
+                (policy_qpos[:n_leg] <= leg_jnt_limits[:, 0] + sat_margin) |
+                (policy_qpos[:n_leg] >= leg_jnt_limits[:, 1] - sat_margin)
+            )
             log_count[0] += 1
 
         # Touchdown detection on q_ref's contact mask (0->1 per foot)
@@ -359,35 +384,49 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             err = leg_qpos_log[:n_logged] - leg_qref_log[:n_logged]
             rmse = np.sqrt(np.mean(err ** 2, axis=0))
             mae = np.mean(np.abs(err), axis=0)
+            sat_frac = leg_sat_log[:n_logged].mean(axis=0)
             logger.log(f"\nLeg-joint tracking ({n_logged} steps, rad):")
-            logger.log(f"  {'joint':<14} {'rmse':>7} {'mae':>7} {'max_abs':>8}")
+            logger.log(f"  {'joint':<14} {'rmse':>7} {'mae':>7} "
+                       f"{'max_abs':>8} {'sat%':>6}")
             for j in range(n_leg):
                 logger.log(f"  {_LEG_JOINT_NAMES[j]:<14} "
                            f"{rmse[j]:7.4f} {mae[j]:7.4f} "
-                           f"{np.max(np.abs(err[:, j])):8.4f}")
+                           f"{np.max(np.abs(err[:, j])):8.4f} "
+                           f"{100.0 * sat_frac[j]:6.1f}")
+            any_sat = leg_sat_log[:n_logged].any(axis=1).mean()
             logger.log(f"  overall rmse  : {np.sqrt(np.mean(err ** 2)):.4f} rad")
+            logger.log(f"  any-joint saturation: {100.0 * any_sat:.1f}% of steps")
 
         # Touchdowns: per-side stride = consecutive same-foot touchdowns;
-        # step length = stride/2 (compare to commanded sl = vx * T / 2).
+        # step length = stride/2.  In fixed-base mode the pelvis is
+        # pinned, so foot world positions reflect IK only — strides
+        # measured here are not meaningful.  Use free-floating mode to
+        # measure realized stride.
         sl_cmd = abs(traj.command_vx) * traj.cycle_time / 2.0
         stride_cmd = 2.0 * sl_cmd
-        logger.log(f"\nTouchdowns (commanded step={sl_cmd:.4f} m, "
-                   f"stride={stride_cmd:.4f} m):")
-        for name, xs in (("left",  left_touchdown_x),
-                         ("right", right_touchdown_x)):
-            if len(xs) >= 2:
-                strides = np.diff(np.array(xs))
-                step_len = strides / 2.0
-                ratio = (np.mean(step_len) / sl_cmd
-                         if sl_cmd > 1e-6 else float('nan'))
-                logger.log(f"  {name:<5} touchdowns={len(xs):2d}  "
-                           f"stride={np.mean(strides):+.4f}m "
-                           f"(min={np.min(strides):+.4f})  "
-                           f"step={np.mean(step_len):+.4f}m  "
-                           f"realized/cmd={ratio:+.2f}")
-            else:
-                logger.log(f"  {name:<5} touchdowns={len(xs):2d} "
-                           f"(need ≥ 2 for stride)")
+        if fixed_base:
+            logger.log(f"\nTouchdowns (count only — strides not meaningful "
+                       f"in fixed-base):")
+            logger.log(f"  left  count={len(left_touchdown_x):2d}  "
+                       f"right count={len(right_touchdown_x):2d}")
+        else:
+            logger.log(f"\nTouchdowns (commanded step={sl_cmd:.4f} m, "
+                       f"stride={stride_cmd:.4f} m):")
+            for name, xs in (("left",  left_touchdown_x),
+                             ("right", right_touchdown_x)):
+                if len(xs) >= 2:
+                    strides = np.diff(np.array(xs))
+                    step_len = strides / 2.0
+                    ratio = (np.mean(step_len) / sl_cmd
+                             if sl_cmd > 1e-6 else float('nan'))
+                    logger.log(f"  {name:<5} touchdowns={len(xs):2d}  "
+                               f"stride={np.mean(strides):+.4f}m "
+                               f"(min={np.min(strides):+.4f})  "
+                               f"step={np.mean(step_len):+.4f}m  "
+                               f"realized/cmd={ratio:+.2f}")
+                else:
+                    logger.log(f"  {name:<5} touchdowns={len(xs):2d} "
+                               f"(need ≥ 2 for stride)")
     else:
         step_idx = [0]
 

@@ -303,8 +303,15 @@ def test_preview_obs():
     assert pw.future_q_ref.shape == (n_preview, nj)
 
 
-def test_preview_wraps_cyclically():
-    """Preview at end of trajectory wraps to beginning."""
+def test_preview_clamps_at_end():
+    """Preview at/past end of trajectory clamps to the last frame.
+
+    v0.20.0-C contract: trajectories may span multiple gait cycles and
+    are NOT periodic — the first cycle of a from-rest plan does not
+    join the last steady-state cycle.  Wrapping with modulo would
+    feed start-of-plan states again after end-of-plan and reintroduce
+    the discontinuity the multi-cycle generator was designed to avoid.
+    """
     from control.references.reference_library import (
         ReferenceLibrary,
         ReferenceTrajectory,
@@ -325,12 +332,25 @@ def test_preview_wraps_cyclically():
     )
     lib = ReferenceLibrary([traj])
 
-    # Preview at last step should wrap future indices to beginning
+    # Preview at the last frame: current and all future slots clamp to q[n-1]
     pw = lib.get_preview(vx=0.10, step_index=n - 1, n_preview=3)
     assert np.allclose(pw.q_ref, q[n - 1]), "Current q_ref wrong at last step"
-    # Future should wrap: indices 0, 1, 2
-    assert np.allclose(pw.future_q_ref[0], q[0]), "Future[0] should wrap to step 0"
-    assert np.allclose(pw.future_q_ref[1], q[1]), "Future[1] should wrap to step 1"
+    for k in range(3):
+        assert np.allclose(pw.future_q_ref[k], q[n - 1]), (
+            f"Future[{k}] should clamp to last frame, not wrap to start"
+        )
+
+    # Query past the end: still clamps
+    pw_past = lib.get_preview(vx=0.10, step_index=n + 5, n_preview=2)
+    assert np.allclose(pw_past.q_ref, q[n - 1])
+    assert np.allclose(pw_past.future_q_ref[0], q[n - 1])
+
+    # Mid-trajectory: future indices advance normally (no wrap activated yet)
+    pw_mid = lib.get_preview(vx=0.10, step_index=2, n_preview=3)
+    assert np.allclose(pw_mid.q_ref, q[2])
+    assert np.allclose(pw_mid.future_q_ref[0], q[3])
+    assert np.allclose(pw_mid.future_q_ref[1], q[4])
+    assert np.allclose(pw_mid.future_q_ref[2], q[5])
 
 
 def test_nearest_neighbor_lookup():
@@ -466,7 +486,7 @@ def main() -> None:
 
     print("\n6. Preview obs vector")
     check("obs vector shape, dtype, and q_ref presence", test_preview_obs)
-    check("cyclic wrap at trajectory end", test_preview_wraps_cyclically)
+    check("clamp at trajectory end (no wrap)", test_preview_clamps_at_end)
     check("nearest-neighbor command lookup", test_nearest_neighbor_lookup)
 
     print("\n7. Edge cases from review")
