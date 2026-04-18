@@ -78,20 +78,22 @@ class ZMPWalkConfig:
           ``knee_max = ankle_limit - hip_margin``
         The COM height is derived from the leg reach at that knee bend,
         with a small margin to keep the ankle away from hard saturation.
+
+        NOTE (round 5 retro): an empirical override of 0.459 m
+        (matched to the MJCF standing keyframe pelvis_z=0.468)
+        broke ``safe_max_step_length_m`` because the same
+        ``com_height_m`` is reused there to compute the safe step
+        envelope — a smaller com_height tightens the joint-limit
+        budget and capped stride at 3.4 cm at all vx.  Reverted
+        until a coordinated fix re-derives the safe step length
+        from the calibrated com_height (or moves the standing
+        keyframe up to 0.473 m to match the IK's assumption).
         """
-        # Reserve ankle budget for hip pitch excursion during walking.
-        # During stance, hip pitch can reach ~15° when the foot is half
-        # a step ahead of COM.  Keep 5° additional margin from the limit.
-        hip_margin_rad = np.radians(20.0)  # 15° typical + 5° margin
+        hip_margin_rad = np.radians(20.0)
         knee_budget = self.ankle_dorsiflexion_limit_rad - hip_margin_rad
         knee_safe = max(np.radians(10.0), min(knee_budget, self.knee_pitch_max_rad))
-
-        # Leg reach at this knee bend (foot directly under hip)
-        # Law of cosines: reach² = l1² + l2² + 2·l1·l2·cos(knee)
-        # (knee=0 → straight → reach=l1+l2, knee=π → folded → reach=0)
         l1, l2 = self.upper_leg_m, self.lower_leg_m
         reach = np.sqrt(l1**2 + l2**2 + 2 * l1 * l2 * np.cos(knee_safe))
-
         return reach + self.ankle_to_ground_m
 
     @property
@@ -266,6 +268,46 @@ class ZMPWalkGenerator:
             ))
         return count
 
+    @staticmethod
+    def _quintic_coeffs(T: float, p0: float, v0: float, a0: float,
+                        pT: float, vT: float, aT: float) -> np.ndarray:
+        """Quintic polynomial through ``(p0, v0, a0)`` at t=0 and
+        ``(pT, vT, aT)`` at t=T.
+
+        Returns ``[a0, a1, a2, a3, a4, a5]`` for
+        ``p(t) = a0 + a1*t + a2*t^2 + a3*t^3 + a4*t^4 + a5*t^5``.
+        Used for the cycle-0 from-rest blend in
+        ``_generate_at_step_length``.
+        """
+        a0_c = p0
+        a1_c = v0
+        a2_c = a0 / 2.0
+        # Solve the 3x3 system for (a3, a4, a5).
+        T2 = T * T
+        T3 = T2 * T
+        T4 = T3 * T
+        T5 = T4 * T
+        M = np.array([
+            [T3,        T4,         T5],
+            [3 * T2,    4 * T3,     5 * T4],
+            [6 * T,     12 * T2,    20 * T3],
+        ], dtype=np.float64)
+        rhs = np.array([
+            pT - (a0_c + a1_c * T + a2_c * T2),
+            vT - (a1_c + 2 * a2_c * T),
+            aT - (2 * a2_c),
+        ], dtype=np.float64)
+        a3_c, a4_c, a5_c = np.linalg.solve(M, rhs)
+        return np.array([a0_c, a1_c, a2_c, a3_c, a4_c, a5_c],
+                        dtype=np.float64)
+
+    @staticmethod
+    def _quintic_eval(coeffs: np.ndarray, t: float) -> float:
+        a0_c, a1_c, a2_c, a3_c, a4_c, a5_c = coeffs
+        t2 = t * t
+        return float(a0_c + a1_c * t + a2_c * t2
+                     + a3_c * t2 * t + a4_c * t2 * t2 + a5_c * t2 * t2 * t)
+
     def _generate_at_step_length(
         self, command_vx: float, step_length: float,
         cycle_time_override: float | None = None,
@@ -273,23 +315,38 @@ class ZMPWalkGenerator:
         """Generate a multi-cycle monotonic walking trajectory.
 
         Matches ToddlerBot's approach (``toddlerbot.algorithms.zmp_walk``):
-        plan ``cfg.total_plan_time_s`` of continuous forward walking, where
-        cycle 0 starts from rest and cycles 1+ are LIPM steady-state.  The
-        consumer (viewer / env) plays the trajectory linearly without
-        wrapping, so there is no cycle-boundary discontinuity to make
-        periodic.
+        plan ``cfg.total_plan_time_s`` of continuous forward walking,
+        with cycle 0 starting from rest and cycles 1+ in LIPM steady
+        state.  The consumer (viewer / env) plays the trajectory
+        linearly without wrapping, so there is no cycle-boundary
+        discontinuity to make periodic.
 
-        COM (sagittal) follows the analytical LIPM solution with the
-        steady-state initial condition ``(x0, vx0)`` re-applied at the
-        start of each cycle's stance frame; the cycle's world offset is
-        ``2*k*sl``.  Foot positions advance monotonically: left at
-        ``0, 2*sl, 4*sl, ...``; right at ``sl, 3*sl, 5*sl, ...``.  The
-        first right swing in cycle 0 is a half-step from rest (0 → sl);
-        every other swing is a full ``2*sl``.
+        Sagittal COM:
+          - Cycle 0: a quintic blend that starts at ``(x=0, vx=0,
+            ax=0)`` and ends at the LIPM steady-state IC at the
+            start of cycle 1 (``x=2·sl + x0_ss``, ``vx=vx0_ss``,
+            ``ax=w² · x0_ss``).  This is a true from-rest startup
+            transient — the previous version (commit 5aa9f69)
+            *labelled* cycle 0 "from rest" but used the LIPM
+            steady-state IC for every cycle, which is what the
+            external review (round 4) flagged as the root cause of
+            the C2 startup mismatch.
+          - Cycles k>=1: analytical LIPM solution with steady-state
+            ``(x0_ss, vx0_ss)`` re-applied at each cycle's stance
+            frame; cycle world offset is ``2·k·sl``.
 
-        Lateral COM uses a cosine weight-shift that stays inside the
-        support polygon — the exact LIPM lateral orbit overshoots the
-        stance foot.
+        Lateral COM:
+          - Cycle 0: cosine weight-shift scaled by the same quintic
+            ramp factor used for the sagittal blend, so cycle 0's
+            lateral starts at ``y=0`` (matching the standing
+            keyframe) and ends at ``+lat_amplitude`` (matching the
+            cycle-1 cosine start).
+          - Cycles k>=1: full-amplitude cosine weight-shift.
+
+        Foot positions advance monotonically.  Cycle 0 is the only
+        "asymmetric" cycle: the right swing is a half-step (0→sl)
+        because the left foot has not yet placed at ``2·sl`` —
+        cycle 1's left swing then starts the steady-state pattern.
         """
         cfg = self.cfg
         cycle_time = cycle_time_override or cfg.cycle_time_s
@@ -347,6 +404,27 @@ class ZMPWalkGenerator:
         contact_out = np.zeros((n_total, 2), dtype=np.float64)
         stance_out = np.zeros(n_total, dtype=np.float64)
 
+        # --- Cycle 0 quintic blend (sagittal): from rest at t=0 to
+        # the LIPM steady-state IC at the start of cycle 1 (t = T_cycle).
+        # Boundaries:
+        #   t=0:        x = 0,                    vx = 0,         ax = 0
+        #   t=T_cycle:  x = 2*sl + x0_ss,         vx = vx0_ss,    ax = w² * x0_ss
+        # ax at cycle-1 start follows from LIPM Phase A (ZMP=2*sl):
+        # ax = w² * (x - ZMP) = w² * x0_ss.
+        T_cycle = 2.0 * T_half
+        ax_end_cycle0 = (w ** 2) * x0
+        cycle0_x_coeffs = self._quintic_coeffs(
+            T_cycle,
+            0.0, 0.0, 0.0,
+            2.0 * sl + x0, vx0, ax_end_cycle0,
+        )
+        # Lateral ramp factor: 0 at t=0, 1 at t=T_cycle, smooth quintic
+        # so cycle 0's lateral starts at y=0 (matches standing) and
+        # joins cycle 1's lateral cosine at +lat_amplitude.
+        cycle0_lat_ramp = self._quintic_coeffs(
+            T_cycle, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        )
+
         for k in range(n_cycles):
             cycle_offset = 2 * k * sl
 
@@ -368,12 +446,23 @@ class ZMPWalkGenerator:
                 sw = np.sinh(w * t)
                 idx = k * n_cycle + i
 
-                com_world[idx, 0] = cycle_offset + x0 * cw + (vx0 / w) * sw
+                if k == 0:
+                    # From-rest quintic blend (cycle 0 only).
+                    com_world[idx, 0] = self._quintic_eval(
+                        cycle0_x_coeffs, t)
+                    lat_scale = self._quintic_eval(cycle0_lat_ramp, t)
+                else:
+                    com_world[idx, 0] = (cycle_offset
+                                         + x0 * cw + (vx0 / w) * sw)
+                    lat_scale = 1.0
                 phase_frac = i / n_half
-                # Cos pattern: +lat_amp at start (Phase A = L stance),
-                # through 0 at mid-Phase-A, -lat_amp at end (= Phase B
-                # start, R stance).  One full lateral cycle per gait cycle.
-                com_world[idx, 1] = lat_amplitude * np.cos(np.pi * phase_frac)
+                # Cos pattern (steady state): +lat_amp at start
+                # (Phase A = L stance), through 0 at mid-Phase A,
+                # -lat_amp at end (= Phase B start, R stance).
+                # In cycle 0 the same shape is multiplied by a smooth
+                # ramp factor that starts at 0 (matches standing).
+                com_world[idx, 1] = (lat_scale * lat_amplitude
+                                     * np.cos(np.pi * phase_frac))
 
                 left_world[idx] = [cycle_offset, lat, 0]
                 if i < n_ds:
@@ -397,13 +486,25 @@ class ZMPWalkGenerator:
                 sw = np.sinh(w * t)
                 idx = k * n_cycle + n_half + i
 
-                com_world[idx, 0] = (cycle_offset + sl
-                                     + (x_mid - sl) * cw + (vx_mid / w) * sw)
+                if k == 0:
+                    # Continue cycle-0 quintic blend through Phase B.
+                    t_global = T_half + t  # time since cycle 0 start
+                    com_world[idx, 0] = self._quintic_eval(
+                        cycle0_x_coeffs, t_global)
+                    lat_scale = self._quintic_eval(
+                        cycle0_lat_ramp, t_global)
+                else:
+                    com_world[idx, 0] = (cycle_offset + sl
+                                         + (x_mid - sl) * cw + (vx_mid / w) * sw)
+                    lat_scale = 1.0
                 phase_frac = i / n_half
-                # Cos pattern: -lat_amp at start (Phase B = R stance),
-                # through 0 at mid-Phase-B, +lat_amp at end (= next
-                # Phase A start, L stance).  Continuous with Phase A.
-                com_world[idx, 1] = -lat_amplitude * np.cos(np.pi * phase_frac)
+                # Cos pattern (steady state): -lat_amp at start (Phase B
+                # = R stance), through 0 at mid-Phase B, +lat_amp at end
+                # (= next Phase A start, L stance).  Cycle 0's lateral
+                # ramp scales this so cycle 0 ends at +lat_amplitude
+                # (continuous with cycle 1's cosine start).
+                com_world[idx, 1] = (-lat_scale * lat_amplitude
+                                     * np.cos(np.pi * phase_frac))
 
                 right_world[idx] = [cycle_offset + sl, -lat, 0]
                 if i < n_ds:

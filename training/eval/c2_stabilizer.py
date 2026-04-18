@@ -143,11 +143,16 @@ class C2Stabilizer:
         self._held_swing_offset = [0.0, 0.0]   # swing-x meters, per side
         self._swing_active = [False, False]    # currently in swing for nudge
 
-        # Counters for harness-clip-saturation reporting.
+        # Per-channel clip counters AND a per-step "any clipped" mask.
+        # The doc contract reports "any harness output pinned at its
+        # clip" as the union of channel-clipped step indices, NOT
+        # max(channel_counts)/n.  Track both so per-channel and
+        # aggregate metrics are correct independently.
         self._n_steps = 0
         self._clipped_pitch = 0
         self._clipped_roll = 0
         self._clipped_cp = 0
+        self._clipped_any = 0
 
     # ----- public API ----------------------------------------------------
 
@@ -167,6 +172,7 @@ class C2Stabilizer:
         self._clipped_pitch = 0
         self._clipped_roll = 0
         self._clipped_cp = 0
+        self._clipped_any = 0
 
     def step(self, model, data, q_ref: np.ndarray,
              t_now: float) -> Tuple[np.ndarray, Dict]:
@@ -198,12 +204,18 @@ class C2Stabilizer:
         _phase_sin = np.sin(2.0 * np.pi * t_now / cfg.cycle_time_s)
         _phase_cos = np.cos(2.0 * np.pi * t_now / cfg.cycle_time_s)
 
+        # Per-step "any channel clipped" flag — accumulated across
+        # the three channels below so the aggregate metric is the
+        # union of step indices, not the max per-channel count.
+        any_clipped_this_step = False
+
         # --- 4. Torso pitch PD → ankle pitch offset on stance side ---
         pitch_raw = cfg.apply_pitch_sign * \
             -(cfg.pitch_kp * pitch + cfg.pitch_kd * pitch_rate)
         pitch_off = float(np.clip(pitch_raw, -cfg.pitch_clip, +cfg.pitch_clip))
         if pitch_off != pitch_raw:
             self._clipped_pitch += 1
+            any_clipped_this_step = True
         if l_in:
             q_mod[_L_ANK_PITCH] = q_mod[_L_ANK_PITCH] + pitch_off
         if r_in:
@@ -215,6 +227,7 @@ class C2Stabilizer:
         roll_off = float(np.clip(roll_raw, -cfg.roll_clip, +cfg.roll_clip))
         if roll_off != roll_raw:
             self._clipped_roll += 1
+            any_clipped_this_step = True
         # WildRobot sign convention (zmp_walk.py): q[L_hip_roll] = -hip_r,
         # q[R_hip_roll] = +hip_r.  Apply offset with matching signs so
         # positive roll_off rotates the pelvis correction consistently.
@@ -258,6 +271,10 @@ class C2Stabilizer:
 
         if cp_clipped_this_step:
             self._clipped_cp += 1
+            any_clipped_this_step = True
+
+        if any_clipped_this_step:
+            self._clipped_any += 1
 
         # Update prev-contact for next step.
         self._prev_in_contact[0] = l_in
@@ -277,14 +294,16 @@ class C2Stabilizer:
         return q_mod, info
 
     def clip_saturation(self) -> Dict[str, float]:
-        """Per-channel fraction of steps where the channel was clipped."""
+        """Per-channel fraction of steps where the channel was clipped,
+        plus the aggregate ``any`` = fraction of steps where at least
+        one of the three channels clipped (the contract metric in
+        reference_design.md, NOT max(channel_counts) / n)."""
         n = max(1, self._n_steps)
         return {
             "pitch": self._clipped_pitch / n,
             "roll":  self._clipped_roll / n,
             "cp":    self._clipped_cp / n,
-            "any":   max(self._clipped_pitch, self._clipped_roll,
-                         self._clipped_cp) / n,
+            "any":   self._clipped_any / n,
         }
 
     # ----- internals -----------------------------------------------------

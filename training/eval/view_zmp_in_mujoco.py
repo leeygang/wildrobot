@@ -268,11 +268,15 @@ def _ic_perturbations(seed: int, traj):
     """Sample the v0.20.0-C closeout IC perturbation values for a seed.
 
     Returns ``(dx, dy, dyaw, dvx, vx_center)`` — all reproducible
-    via ``numpy.random.default_rng(seed)``.  ``vx_center`` is the
-    trajectory's LIPM steady-state initial vx (Q2 post-closeout
-    addendum).  Caller decides when each component is applied
-    (position/yaw before the standing ramp, vx after it — see
-    ``_apply_ic_pose`` and ``_apply_ic_vx``).
+    via ``numpy.random.default_rng(seed)``.
+
+    ``vx_center`` is now ALWAYS 0.  After the round-4 prior fix
+    (cycle 0 actually starts from rest with x=0, vx=0), the body's
+    standing IC matches the prior's t=0 state directly, so the
+    LIPM-aligned vx injection that round 2 added is no longer
+    needed and would re-introduce the old IC mismatch.  ``traj``
+    is kept in the signature for backward compatibility and in
+    case future iterations want to compute a different center.
     """
     rng = np.random.default_rng(int(seed))
     dx = float(rng.uniform(-_IC_POS_BOUND_M, _IC_POS_BOUND_M))
@@ -280,7 +284,7 @@ def _ic_perturbations(seed: int, traj):
     dyaw = float(rng.uniform(-np.deg2rad(_IC_YAW_BOUND_DEG),
                              +np.deg2rad(_IC_YAW_BOUND_DEG)))
     dvx = float(rng.uniform(-_IC_VX_BOUND_MPS, _IC_VX_BOUND_MPS))
-    vx_center = _lipm_initial_vx(traj)
+    vx_center = 0.0
     return dx, dy, dyaw, dvx, vx_center
 
 
@@ -580,11 +584,14 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         if stabilizer is not None:
             cs = stabilizer.clip_saturation()
             logger.log(f"\nC2 harness clip-saturation:")
-            logger.log(f"  pitch_PD  : {100.0 * cs['pitch']:5.1f}% of steps "
-                       f"(target <10%, hard fail >=25%)")
+            logger.log(f"  pitch_PD  : {100.0 * cs['pitch']:5.1f}% of steps")
             logger.log(f"  roll_PD   : {100.0 * cs['roll']:5.1f}%")
             logger.log(f"  CP_nudge  : {100.0 * cs['cp']:5.1f}%")
-            logger.log(f"  any       : {100.0 * cs['any']:5.1f}%")
+            # Aggregate "any" = union of per-channel clipped step indices.
+            # This is the contract metric per reference_design.md
+            # (target <10%, hard fail >=25%).
+            logger.log(f"  any (gate): {100.0 * cs['any']:5.1f}% "
+                       f"(target <10%, hard fail >=25%)")
 
         # Touchdowns: per-side stride = consecutive same-foot touchdowns;
         # step length = stride/2.  In fixed-base mode the pelvis is

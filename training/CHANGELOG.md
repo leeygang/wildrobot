@@ -544,6 +544,129 @@ The choice is a project-level call about how strictly to enforce
 the "minor correction" PPO architecture before spending more time
 on prior generation.
 
+### v0.20.0-C closeout sweep round 4 — reviewer R1+R2+R3 + true from-rest cycle 0
+
+External review (round 4) flagged three issues that all landed in
+this commit:
+
+- **Critical (R1)**: `_generate_at_step_length` documented "cycle 0
+  starts from rest" but used the LIPM steady-state IC `(x0_ss,
+  vx0_ss)` for *every* cycle including k=0.  Probe at vx=0.15
+  showed the stored prior at t=0 had `pelvis_pos[0] = (-0.024,
+  +0.013, +0.474)` with `vx ≈ +0.171 m/s` — root cause of the C2
+  startup mismatch the previous three rounds were chasing.
+  **Fix**: implemented a quintic blend in cycle 0 that actually
+  starts at `(x=0, vx=0, ax=0)` and smoothly reaches the cycle-1
+  LIPM IC at the cycle boundary
+  (`x = 2·sl + x0_ss, vx = vx0_ss, ax = w² · x0_ss`).  Lateral
+  COM in cycle 0 uses the same quintic ramp factor scaling the
+  cosine pattern, so it starts at `y=0` (matches standing) and
+  joins cycle 1's lateral cosine at `+lat_amplitude`.  Cycles
+  k>=1 unchanged.  Verified by probe: `pelvis_pos[0] = (0.000,
+  0.000, 0.474)`, `vx@0 ≈ 0.000`, `pelvis_pos[T_cycle] ≈
+  (2·sl+x0_ss, …)`, `vx@T_cycle ≈ +0.171` (matches LIPM IC).
+- **High (R2)**: `tools/v0200c_closeout.py` ignored subprocess
+  return codes and hardcoded `mjpython` — on a machine without
+  mjpython the runner silently scored 4/32 false passes.
+  **Fix**: `_shell` raises `SubprocessFailure` on non-zero rc
+  and the runner aborts immediately on a failed row.  Added
+  `_detect_runner` + `V0200C_RUNNER` env var so the runner
+  falls back to `uv run python` when mjpython is missing.
+- **Medium (R3)**: clip-saturation `any` metric was reported as
+  `max(channel_counts) / n` instead of the contract's "% of
+  steps where any harness output is pinned" (the union of
+  per-channel clipped step indices).  Closeout scored
+  per-channel hard fails instead of the contract's aggregate.
+  **Fix**: `c2_stabilizer` tracks a per-step `_clipped_any`
+  counter (union); viewer reports `any (gate)` line; closeout
+  scores against the aggregate `any` per
+  `reference_design.md`'s C2 metric gate.
+
+Also reverted the round-2 / round-3 IC vx centering on the LIPM
+steady-state.  With cycle 0 actually from rest, the standing
+keyframe `vx = 0` matches the prior's `vx@t=0`, so the LIPM-IC
+injection becomes the OLD bug.  `_apply_ic_vx` now centers on
+zero per the original Q2 wording.
+
+Re-running the 32-row matrix with the hardened runner:
+
+| mode | rows | passed | failed | gate verdict |
+|---|---|---|---|---|
+| kinematic     |  4 |  4 |  0 | **PASS** |
+| fixed-base    |  4 |  4 |  0 | **PASS** |
+| C1            | 12 | 10 |  2 | **FAIL** (vx=0.25 seed=0,2 at 59,60 ctrl steps — just under 64-step budget) |
+| C2            | 12 |  0 | 12 | **FAIL** (no row clears closed-loop step gate) |
+
+C2 progress (true from-rest + correct aggregate metric):
+
+| metric | round 3 | round 4 |
+|---|---|---|
+| C2 rows surviving 200/200 | 1/12 | **4/12** |
+| C2 rows with `any_clip < 25 %` (contract gate) | n/a (mis-measured) | **6/12** |
+| C2 best `any_clip` | n/a | 18.0 % (vx=0.15 s=2; vx=0.25 s=2 at 20.5 %) |
+| best realized/cmd forward ratio | +0.30 | -0.08 |
+
+The 4 C2 200-survival rows (vx=0.15 s=0,2; vx=0.25 s=0,2) all
+have aggregate `any_clip` between 18 % and 21 % — i.e. **the
+harness is comfortably inside its budget**.  The remaining
+failure on those rows is the closed-loop step length / ratio:
+realized step is small negative (−0.006 to −0.023 m).  The
+harness is no longer the bottleneck on those rows; the prior
+is.
+
+C1 regression at vx=0.25: cycle 0 from-rest is harder than the
+old "LIPM-IC at standing pose" pattern (the legs have to do real
+work in cycle 0 instead of inheriting forward momentum).  Two
+seeds at vx=0.25 fall at 59 / 60 ctrl steps — 5 steps under the
+2·cycle_time budget.  Borderline rather than catastrophic.
+
+### Round 5 — geometry calibration probe (reverted)
+
+Investigated whether the residual backward drift came from a
+geometry mismatch between the IK and the MJCF: IK assumed
+`com_height_m = 0.473` (derived from
+`upper_leg + lower_leg + ankle_to_ground` with knee margin) but
+MJCF standing keyframe pelvis_z is 0.468 m and the actual
+straight-leg pelvis-to-foot drop is 0.406 m (vs the IK's
+implicit 0.42).  Tried calibrating `com_height_m = 0.459` so
+q_ref[0]'s foot bottom matches the standing keyframe foot z.
+
+**Result: catastrophic regression.**  `safe_max_step_length_m`
+re-derives the joint-limit budget from the same `com_height_m`,
+so a smaller value tightens the available step length: kinematic
+stride capped at 3.4 cm at all vx (ratio 0.43 at vx=0.25), C1
+fell to ~60 ctrl steps everywhere, C2 fell to ~90.  **Reverted.**
+Added a docstring comment under `com_height_m` explaining the
+coupling so the next attempt at calibration also fixes
+`safe_max_step_length_m` (or moves the standing keyframe to
+match the IK's assumption).
+
+### Round-4 verdict and where the closeout sits
+
+Per the decision rule:
+
+- **C1 fails** (10/12 rows) → "fix prior generation; do NOT
+  spend effort on the stabilizer first."  Two cheap candidate
+  fixes for the vx=0.25 borderline:
+  1. Lengthen the survival budget at high vx_cmd (e.g.
+     `2.0 → 2.5 × cycle_time` for the worst seed) — borderline
+     justifiable as a contract refinement
+  2. Soften the cycle-0 quintic so the legs have a gentler
+     rise out of standing (e.g., extend cycle-0 duration by
+     0.5×cycle_time before the first stance switch)
+- **C2 fails** on closed-loop step gate, but harness budget is
+  no longer the bottleneck on the best 4/12 rows.  The remaining
+  prior-quality issue is the IK/MJCF geometry mismatch
+  documented in round 5: a coordinated fix that adjusts both
+  `com_height_m` and `safe_max_step_length_m` (or re-targets
+  the MJCF) is the principled next step.
+
+The earlier two-path decision (continue prior iteration vs treat
+C1 as signoff) is unchanged in spirit.  Round 4's true from-rest
+fix and the round-5 calibration probe sharpened our understanding
+of where the gap is: it's a **prior geometry calibration**
+problem now, not a "stabilizer needs more authority" problem.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework

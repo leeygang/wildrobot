@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -39,6 +41,22 @@ _SEEDS = (0, 1, 2)
 _HORIZON = 200
 _PRINT_EVERY = 200    # only print start + end inside each replay
 _VIEWER = "training/eval/view_zmp_in_mujoco.py"
+
+# Viewer runner: mjpython on macOS for the GUI loop, but headless
+# runs only need a normal Python.  Override via V0200C_RUNNER env
+# var (e.g. ``V0200C_RUNNER="uv run python"`` if mjpython is not
+# installed locally).  Default tries mjpython first and falls back
+# to plain ``uv run python`` when it is missing on PATH.
+def _detect_runner() -> List[str]:
+    explicit = os.environ.get("V0200C_RUNNER")
+    if explicit:
+        return explicit.split()
+    if shutil.which("mjpython") is not None:
+        return ["uv", "run", "mjpython"]
+    return ["uv", "run", "python"]
+
+
+_RUNNER: Optional[List[str]] = None  # set in main()
 
 # Gate thresholds (frozen by v0.20.0-C external review).
 _RMSE_PER_JOINT_BUDGET = 0.40
@@ -84,18 +102,36 @@ class RunResult:
     pitch_clip_pct: Optional[float] = None
     roll_clip_pct: Optional[float] = None
     cp_clip_pct: Optional[float] = None
+    any_clip_pct: Optional[float] = None     # union, contract metric
     fail_reasons: List[str] = field(default_factory=list)
 
 
-def _shell(cmd: List[str]) -> str:
-    """Run a command, return combined stdout+stderr."""
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    return (proc.stdout or "") + (proc.stderr or "")
+class SubprocessFailure(RuntimeError):
+    """Raised when a closeout subprocess returns non-zero."""
+
+
+def _shell(cmd: List[str], *, check: bool = True) -> str:
+    """Run a command, return combined stdout+stderr.
+
+    If ``check`` is True (default), raises SubprocessFailure on
+    non-zero exit so the closeout never silently scores a broken
+    subprocess as a row.  Pass ``check=False`` for git introspection
+    where empty output is acceptable.
+    """
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if check and proc.returncode != 0:
+        raise SubprocessFailure(
+            f"Command {' '.join(cmd)!r} failed with rc={proc.returncode}.\n"
+            f"--- combined output ---\n{out[-2000:]}"
+        )
+    return out
 
 
 def _build_cmd(mode: str, vx: float, seed: Optional[int]) -> List[str]:
+    assert _RUNNER is not None, "_RUNNER must be set before _build_cmd"
     cmd = [
-        "uv", "run", "mjpython", _VIEWER,
+        *_RUNNER, _VIEWER,
         "--vx", f"{vx:.2f}", "--headless",
         "--horizon", str(_HORIZON), "--print-every", str(_PRINT_EVERY),
     ]
@@ -156,6 +192,10 @@ def _parse(out: str, mode: str, vx: float, seed: Optional[int],
     m = re.search(r"CP_nudge\s*:\s*([0-9.]+)%", out)
     if m:
         r.cp_clip_pct = float(m.group(1))
+    # Aggregate "any" — the contract metric, union of channel clips.
+    m = re.search(r"any\s*\(gate\)\s*:\s*([0-9.]+)%", out)
+    if m:
+        r.any_clip_pct = float(m.group(1))
 
     # Touchdown lines: "left  touchdowns= 6  stride=+0.0...m ... step=+0.0...m  realized/cmd=+1.04"
     for side, attr_t, attr_str, attr_step, attr_ratio in (
@@ -242,16 +282,16 @@ def _score(r: RunResult) -> RunResult:
                 f"any-joint sat {r.any_sat_pct:.1f}% >= "
                 f"{_C2_SAT_HARDFAIL*100:.0f}% hard fail"
             )
-        for ch_name, ch_pct in (
-            ("pitch_PD", r.pitch_clip_pct),
-            ("roll_PD", r.roll_clip_pct),
-            ("CP_nudge", r.cp_clip_pct),
-        ):
-            if ch_pct is not None and ch_pct >= _C2_HARNESS_CLIP_HARDFAIL * 100:
-                r.fail_reasons.append(
-                    f"{ch_name} clip {ch_pct:.1f}% >= "
-                    f"{_C2_HARNESS_CLIP_HARDFAIL*100:.0f}% hard fail"
-                )
+        # Contract metric: aggregate "any harness output pinned" %.
+        # Per-channel %s are reported but not gated separately
+        # (see reference_design.md v0.20.0-C C2 metric gate, last
+        # bullet under "Metric gate (C2 ...)").
+        if (r.any_clip_pct is not None
+                and r.any_clip_pct >= _C2_HARNESS_CLIP_HARDFAIL * 100):
+            r.fail_reasons.append(
+                f"harness any-channel clip {r.any_clip_pct:.1f}% >= "
+                f"{_C2_HARNESS_CLIP_HARDFAIL*100:.0f}% hard fail"
+            )
         if (r.worst_joint_rmse is not None
                 and r.worst_joint_rmse > _RMSE_PER_JOINT_BUDGET):
             r.fail_reasons.append(
@@ -282,10 +322,10 @@ def _emit_markdown(results: List[RunResult], harness_sha: str,
     lines.append(
         "| mode | vx | seed | survived | L_td | R_td | L_step (m) | R_step (m) "
         "| L/cmd | R/cmd | overall RMSE | worst joint (RMSE) | any sat % "
-        "| pitch_clip % | roll_clip % | CP_clip % | pass |"
+        "| pitch_clip % | roll_clip % | CP_clip % | any_clip % | pass |"
     )
     lines.append(
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
     )
     for r in results:
         seed_str = "n/a" if r.seed is None else str(r.seed)
@@ -301,7 +341,8 @@ def _emit_markdown(results: List[RunResult], harness_sha: str,
             f"| {worst} | {_fmt(r.any_sat_pct, '.1f')} "
             f"| {_fmt(r.pitch_clip_pct, '.1f')} "
             f"| {_fmt(r.roll_clip_pct, '.1f')} "
-            f"| {_fmt(r.cp_clip_pct, '.1f')} | {passed} |"
+            f"| {_fmt(r.cp_clip_pct, '.1f')} "
+            f"| {_fmt(r.any_clip_pct, '.1f')} | {passed} |"
         )
 
     # Per-mode aggregate verdict.
@@ -356,13 +397,21 @@ def main() -> None:
                     help="print the matrix without running anything")
     args = ap.parse_args()
 
+    global _RUNNER
+    _RUNNER = _detect_runner()
+    print(f"Viewer runner: {' '.join(_RUNNER)}", file=sys.stderr)
+
     repo_root = Path(__file__).resolve().parents[1]
-    harness_sha = _shell(["git", "rev-parse", "--short=10", "HEAD"]).strip()
+    harness_sha = _shell(
+        ["git", "rev-parse", "--short=10", "HEAD"], check=False
+    ).strip()
     # Library hash: hash of the generator config + library entries.
     # ZMP libraries are regenerated on every run; instead emit the hash
     # of the generator module file as the deterministic source-of-truth.
     zmp_walk_path = repo_root / "control" / "zmp" / "zmp_walk.py"
-    library_hash = _shell(["git", "hash-object", str(zmp_walk_path)]).strip()[:10]
+    library_hash = _shell(
+        ["git", "hash-object", str(zmp_walk_path)], check=False
+    ).strip()[:10]
 
     plan: List = []
     for vx in _VX_BINS:
@@ -388,7 +437,18 @@ def main() -> None:
         cmd = _build_cmd(mode, vx, seed)
         print(f"  [{i:2d}/{len(plan)}] {mode:11s} vx={vx:.2f} "
               f"seed={seed} ...", file=sys.stderr, end=" ", flush=True)
-        out = _shell(cmd)
+        try:
+            out = _shell(cmd, check=True)
+        except SubprocessFailure as exc:
+            # Surface the failure immediately — silent rows produced
+            # the round-1 false-pass count when mjpython was missing
+            # locally.  Re-raise so the artifact never claims a row
+            # that didn't actually run.
+            print("SUBPROCESS FAILED", file=sys.stderr)
+            raise SystemExit(
+                f"\nv0.20.0-C closeout aborted at row {i}/{len(plan)} "
+                f"({mode} vx={vx:.2f} seed={seed}).\n{exc}"
+            )
         r = _score(_parse(out, mode, vx, seed, cmd))
         results.append(r)
         verdict = "✓" if not r.fail_reasons else "✗"

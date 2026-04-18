@@ -939,17 +939,31 @@ Closeout-row IC parameters per seed:
   "Post-closeout addendum" below.
 - everything else (joints, mass, friction, motor delay) deterministic
 
-**Post-closeout addendum (after first sweep, commit `6000177`):**
-the original Q2 wording centered the vx perturbation on zero (the
-standing keyframe).  The first closeout showed every C2 row failed
-the realized step-length / ratio gates because the standing IC
-(vx=0) is ~0.18 m/s short of the LIPM steady-state IC at
-`vx_cmd=0.15`, and the harness's bounded swing nudge (±0.03 m,
-~0.6 % of a stride) cannot close that gap in one cycle.  Centering
-the IC envelope on the LIPM steady-state (allowed by the decision
-rule's "align initial pelvis state with LIPM IC" clause) is a
-direct fix for the IC mismatch and does not loosen any harness
-clip or widen the contract.
+**Closeout history (Q2 vx center):**
+
+- **Round 1 (commit `6000177`)**: vx perturbation centered on zero
+  (original Q2 wording).  Every C2 row failed the realized
+  step-length / ratio gates: the standing IC (vx=0) was ~0.18 m/s
+  short of the LIPM steady-state IC at `vx_cmd=0.15`, and the
+  bounded harness could not close that gap.
+- **Round 2 (commit `944a52c`)**: addendum centered the vx
+  perturbation on the trajectory's LIPM steady-state initial vx.
+  C1 regressed (face-plants at high vx_cmd) because the LIPM IC
+  was injected at the standing keyframe before the standing-to-
+  walking ramp.
+- **Round 3 (commit `5aa9f69`)**: split the IC perturbation
+  around the standing ramp (pose before, vx after).  C1 recovered
+  to 12/12 but C2 still failed; the round-4 review identified the
+  *real* root cause as the prior itself.
+- **Round 4 (current)**: external review found that the prior's
+  cycle 0 used the LIPM steady-state IC for every cycle despite
+  the "from rest" docstring.  Fixed in
+  `control/zmp/zmp_walk.py` via a quintic blend in cycle 0
+  that actually starts at `(x=0, vx=0, ax=0)` and ends at the
+  cycle-1 LIPM IC.  With the prior now from-rest at t=0, the
+  Round-2 vx-center addendum is no longer needed and would
+  re-introduce the old IC mismatch — the vx perturbation is back
+  to centered-on-zero per the original Q2 wording.
 
 Options considered:
 1. Initial pelvis perturbation (recommended above) — directly probes
