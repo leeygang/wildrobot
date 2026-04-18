@@ -679,6 +679,16 @@ Tasks:
 - verify one-to-two gait cycles, startup, and stop/resume remain trackable
 - do not require long-horizon open-loop walking from the offline prior
 
+Measurement contract for this gate:
+
+- `control steps` means env control-loop ticks (`ctrl_dt`), not MuJoCo
+  substeps
+- `footfalls` means touchdown events (left/right contact transitions), not
+  control-step count
+- use both:
+  - control steps for short-horizon survival timing
+  - touchdown events for gait-cycle progression
+
 Visual validation:
 
 - startup, stop, and one-to-two gait cycles remain coherent in full env replay
@@ -688,8 +698,10 @@ Visual validation:
 
 Metric validation:
 
-- short-horizon env replay survives at least one gait cycle without immediate
-  catastrophic pitch termination
+- short-horizon env replay survives at least `45` control steps before
+  catastrophic pitch termination (equivalent to `>= 0.9 s` at `ctrl_dt=0.02`)
+- touchdown progression includes at least one left touchdown and one right
+  touchdown in the same replay
 - simulated tracking RMSE stays within the actuator-feasibility budget
 - touchdown step length mean `>= 0.03 m`
 - realized / commanded step ratio `>= 0.5`
