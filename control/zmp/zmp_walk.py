@@ -352,39 +352,31 @@ class ZMPWalkGenerator:
     ) -> ReferenceTrajectory:
         """Generate a multi-cycle monotonic walking trajectory.
 
-        Matches ToddlerBot's approach (``toddlerbot.algorithms.zmp_walk``):
-        plan ``cfg.total_plan_time_s`` of continuous forward walking,
-        with cycle 0 starting from rest and cycles 1+ in LIPM steady
-        state.  The consumer (viewer / env) plays the trajectory
-        linearly without wrapping, so there is no cycle-boundary
-        discontinuity to make periodic.
+        Matches ToddlerBot's approach (``toddlerbot.algorithms.zmp_walk``)
+        more directly as of round 9: the **sagittal COM** is computed
+        by the full Kajita preview-control LQR
+        (``control.zmp.zmp_planner.ZMPPlanner``) with a from-rest
+        initial condition.  The LQR's preview of the entire ZMP
+        schedule generates a non-zero acceleration at t=0 even with
+        the COM at rest, eliminating the from-rest startup transient
+        problem that the analytical-LIPM + cycle-0-quintic approach
+        could not solve (rounds 7-8 retro: vx=0.15 still fell forward
+        in ~1 s).
 
-        Sagittal COM:
-          - Cycle 0: a quintic blend that starts at ``(x=0, vx=0,
-            ax=0)`` and ends at the LIPM steady-state IC at the
-            start of cycle 1 (``x=2·sl + x0_ss``, ``vx=vx0_ss``,
-            ``ax=w² · x0_ss``).  This is a true from-rest startup
-            transient — the previous version (commit 5aa9f69)
-            *labelled* cycle 0 "from rest" but used the LIPM
-            steady-state IC for every cycle, which is what the
-            external review (round 4) flagged as the root cause of
-            the C2 startup mismatch.
-          - Cycles k>=1: analytical LIPM solution with steady-state
-            ``(x0_ss, vx0_ss)`` re-applied at each cycle's stance
-            frame; cycle world offset is ``2·k·sl``.
+        Lateral COM keeps the cosine weight-shift (amplitude
+        ``0.25 * lat``).  The pure-LIPM lateral overshoots ±2x the
+        stance width and tips the robot — confirmed by an LQR
+        probe; the cosine is a stability-preserving compromise
+        ToddlerBot's robot tolerates better than ours.
 
-        Lateral COM:
-          - Cycle 0: cosine weight-shift scaled by the same quintic
-            ramp factor used for the sagittal blend, so cycle 0's
-            lateral starts at ``y=0`` (matching the standing
-            keyframe) and ends at ``+lat_amplitude`` (matching the
-            cycle-1 cosine start).
-          - Cycles k>=1: full-amplitude cosine weight-shift.
+        Foot positions advance monotonically:
+          - Left feet at world x = 0, 2·sl, 4·sl, ...
+          - Right feet at world x = 0 (cycle 0 start, from rest),
+            then sl, 3·sl, 5·sl, ... after the first half-step.
 
-        Foot positions advance monotonically.  Cycle 0 is the only
-        "asymmetric" cycle: the right swing is a half-step (0→sl)
-        because the left foot has not yet placed at ``2·sl`` —
-        cycle 1's left swing then starts the steady-state pattern.
+        The cycle-0 right swing is a half-step (0 → sl) because the
+        right foot has not yet placed; cycles 1+ are full 2·sl
+        swings.  This matches ToddlerBot's footstep schedule.
         """
         cfg = self.cfg
         cycle_time = cycle_time_override or cfg.cycle_time_s
@@ -392,41 +384,13 @@ class ZMPWalkGenerator:
         ds = cycle_time / 2.0 / (cfg.single_double_ratio + 1.0)
         ss = cfg.single_double_ratio * ds
         T_half = ds + ss  # half-cycle time
+        T_cycle = 2.0 * T_half
         sl = step_length
         lat = cfg.default_stance_width_m
         dt = cfg.dt_s
 
-        g = 9.81
-        w = np.sqrt(g / cfg.com_height_m)
-
-        # --- LIPM steady-state initial conditions ---
-        C = np.cosh(w * T_half)
-        S = np.sinh(w * T_half)
-        C2 = np.cosh(2 * w * T_half)
-        S2 = np.sinh(2 * w * T_half)
-        det = 2.0 * (1.0 - C2)
-        x0 = sl * ((C2 - 1) * (1 + C) - S * S2) / det
-        vx0 = sl * w * ((C2 - 1) * S - S2 * (1 + C)) / det
-
-        # COM at start of phase B (= continuation from phase A end at t=T_half)
-        x_mid = x0 * C + (vx0 / w) * S
-        vx_mid = x0 * w * S + vx0 * C
-
-        # Lateral COM amplitude.  Cosine weight-shift (one cycle per
-        # gait cycle): com_y starts at +lat_amplitude (over the LEFT
-        # stance foot at Phase A start), transitions through 0, ends
-        # at -lat_amplitude (over RIGHT stance foot at Phase B start).
-        # Periodic and continuous across cycle boundaries.
-        #
-        # Amplitude was 0.5*lat in the v0.20.0-C closeout 6000177 —
-        # that biased the L hip-roll channel and pinned the C2
-        # roll_PD harness on 7/12 rows.  Reduced to 0.25*lat to keep
-        # the corrective demand inside the C2 ±0.05 rad clip while
-        # preserving the directionally-correct weight transfer that
-        # ZMP walking requires.  An A/B with sin-based pattern
-        # (peak-at-mid-stance) showed worse C2 results because the
-        # sin pattern has 2x the lateral frequency and demands more
-        # corrective torque per cycle.
+        # Lateral cosine amplitude — see top-level docstring for the
+        # rationale.  LQR-y was probed; it overshoots LIPM-style.
         lat_amplitude = 0.25 * lat
 
         # Swing-foot z offset: during swing the IK plantarflexes the
@@ -435,10 +399,7 @@ class ZMPWalkGenerator:
         # box's geometry adds another ~9 mm of swing-side vertical
         # extent on the rotated toe.  Without compensation the q_ref
         # placed swing feet below the floor at lift-off and
-        # touchdown frames (round-7 FK gate caught this).  After the
-        # explicit ``pelvis_to_hip_m`` IK term, the geometry mismatch
-        # itself is gone, but this clearance is kept as a small
-        # margin to absorb the constant-plantarflex toe drop.
+        # touchdown frames (round-7 FK gate caught this).
         swing_foot_z_floor_clearance_m = 0.025
 
         n_half = int(round(T_half / dt))
@@ -448,51 +409,54 @@ class ZMPWalkGenerator:
         n_cycles = max(1, int(np.ceil(cfg.total_plan_time_s / cycle_time)))
         n_total = n_cycles * n_cycle
 
+        # --- Build the ZMP schedule (matches ToddlerBot's pattern) ---
+        # Footsteps alternate left/right starting at the origin:
+        #   step 0: left  at (0,         +lat)
+        #   step 1: right at (sl,        -lat)
+        #   step 2: left  at (2·sl,      +lat)
+        #   step 3: right at (3·sl,      -lat)
+        # Phases alternate DS, SS, DS, SS ... starting with DS.  The
+        # ZMP is at the previous stance foot during DS, transitions to
+        # the next stance foot at SS start, and stays there during SS.
+        # Following ToddlerBot we duplicate each footstep ZMP so the
+        # LQR sees a piecewise-constant ZMP within each phase.
+        n_steps = 2 * n_cycles + 1  # +1 for the trailing duplicate
+        footsteps: list[np.ndarray] = []
+        for i in range(n_steps):
+            x = i * sl
+            y = lat if (i % 2 == 0) else -lat
+            footsteps.append(np.array([x, y], dtype=np.float64))
+
+        # time_steps: [0, ds, ds+ss, 2ds+ss, ...] matching ToddlerBot
+        time_list = [0.0, ds] + [ss, ds] * (len(footsteps) - 1)
+        zmp_times = np.cumsum(time_list).astype(np.float64)
+        zmp_times = zmp_times[:len(footsteps) * 2 - 1]
+        # desired_zmps: each footstep duplicated (DS-onset + SS-onset)
+        zmps_d = [step for step in footsteps for _ in range(2)]
+        zmps_d = zmps_d[:len(zmp_times)]
+
+        # --- Solve the LQR ---
+        x0_lqr = np.array([0.0, 0.0, 0.0, 0.0])  # COM at rest
+        self.planner.plan(
+            zmp_times, zmps_d, x0_lqr, cfg.com_height_m,
+            Qy=np.eye(2) * cfg.zmp_cost_Q,
+            R=np.eye(2) * cfg.zmp_cost_R,
+        )
+
         com_world = np.zeros((n_total, 2), dtype=np.float64)
         left_world = np.zeros((n_total, 3), dtype=np.float64)
         right_world = np.zeros((n_total, 3), dtype=np.float64)
         contact_out = np.zeros((n_total, 2), dtype=np.float64)
         stance_out = np.zeros(n_total, dtype=np.float64)
 
-        # --- Warmup quintic blend (sagittal): from rest at t=0 to
-        # the LIPM steady-state IC at the start of cycle n_warmup
-        # (t = n_warmup * T_cycle).  Boundaries:
-        #   t=0:           x = 0,                vx = 0,        ax = 0
-        #   t=n_w*T_cycle: x = 2*n_w*sl + x0_ss, vx = vx0_ss,   ax = w² * x0_ss
-        # ax at cycle-n_warmup start follows from LIPM Phase A
-        # (ZMP at 2*n_warmup*sl): ax = w² * (x - ZMP) = w² * x0_ss.
-        #
-        # Round-8 NOTE: tried n_warmup=2 (spread acceleration over
-        # 2 cycles) and a hold-DS variant (delay quintic until SS
-        # starts).  Both made vx=0.15 free-floating worse, not
-        # better — the timing of the COM ramp is not the
-        # bottleneck.  Reverted to n_warmup=1 (round-7 behavior).
-        n_warmup = max(1, int(cfg.n_warmup_cycles))
-        T_cycle = 2.0 * T_half
-        T_warmup = n_warmup * T_cycle
-        ax_end_warmup = (w ** 2) * x0
-        cycle0_x_coeffs = self._quintic_coeffs(
-            T_warmup,
-            0.0, 0.0, 0.0,
-            2.0 * n_warmup * sl + x0, vx0, ax_end_warmup,
-        )
-        cycle0_lat_ramp = self._quintic_coeffs(
-            T_warmup, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-        )
-
-        def _warmup_x(t_global: float) -> float:
-            return self._quintic_eval(cycle0_x_coeffs, t_global)
-
-        def _warmup_lat_scale(t_global: float) -> float:
-            return self._quintic_eval(cycle0_lat_ramp, t_global)
-
         for k in range(n_cycles):
             cycle_offset = 2 * k * sl
 
             # Right's start position in this cycle's phase A.
-            # Cycle 0: from rest (right at world x=0, half-step swing 0→sl).
-            # Cycle k≥1: steady state (right at (2k-1)*sl from previous
-            # cycle's phase B, full 2*sl swing).
+            # Cycle 0: from rest (right at world x=0, half-step
+            # swing 0→sl).  Cycle k≥1: steady state (right at
+            # (2k-1)·sl from previous cycle's phase B, full 2·sl
+            # swing).
             if k == 0:
                 right_a_start = 0.0
                 right_a_swing = sl
@@ -503,28 +467,13 @@ class ZMPWalkGenerator:
             # --- Phase A: left stance (ZMP at world x=cycle_offset) ---
             for i in range(n_half):
                 t = i * dt
-                cw = np.cosh(w * t)
-                sw = np.sinh(w * t)
                 idx = k * n_cycle + i
 
-                if k < n_warmup:
-                    # From-rest quintic blend with hold during cycle-0 DS.
-                    t_global = k * T_cycle + t
-                    com_world[idx, 0] = _warmup_x(t_global)
-                    lat_scale = _warmup_lat_scale(t_global)
-                else:
-                    com_world[idx, 0] = (cycle_offset
-                                         + x0 * cw + (vx0 / w) * sw)
-                    lat_scale = 1.0
+                # Sagittal COM from LQR; lateral from cosine.
+                t_global = k * T_cycle + t
+                com_world[idx, 0] = float(self.planner.get_nominal_com(t_global)[0])
                 phase_frac = i / n_half
-                # Cos pattern (steady state): +lat_amp at start
-                # (Phase A = L stance), through 0 at mid-Phase A,
-                # -lat_amp at end (= Phase B start, R stance).
-                # During warmup the same shape is multiplied by a
-                # smooth ramp factor that starts at 0 (matches
-                # standing).
-                com_world[idx, 1] = (lat_scale * lat_amplitude
-                                     * np.cos(np.pi * phase_frac))
+                com_world[idx, 1] = lat_amplitude * np.cos(np.pi * phase_frac)
 
                 left_world[idx] = [cycle_offset, lat, 0]
                 if i < n_ds:
@@ -542,29 +491,15 @@ class ZMPWalkGenerator:
                 stance_out[idx] = 0  # left
 
             # --- Phase B: right stance (ZMP at world x=cycle_offset+sl) ---
-            # Left always swings 2*sl (from cycle_offset to cycle_offset+2*sl).
+            # Left always swings 2·sl (from cycle_offset to cycle_offset+2·sl).
             for i in range(n_half):
                 t = i * dt
-                cw = np.cosh(w * t)
-                sw = np.sinh(w * t)
                 idx = k * n_cycle + n_half + i
 
-                if k < n_warmup:
-                    t_global = k * T_cycle + T_half + t
-                    com_world[idx, 0] = _warmup_x(t_global)
-                    lat_scale = _warmup_lat_scale(t_global)
-                else:
-                    com_world[idx, 0] = (cycle_offset + sl
-                                         + (x_mid - sl) * cw + (vx_mid / w) * sw)
-                    lat_scale = 1.0
+                t_global = k * T_cycle + T_half + t
+                com_world[idx, 0] = float(self.planner.get_nominal_com(t_global)[0])
                 phase_frac = i / n_half
-                # Cos pattern (steady state): -lat_amp at start (Phase B
-                # = R stance), through 0 at mid-Phase B, +lat_amp at end
-                # (= next Phase A start, L stance).  Cycle 0's lateral
-                # ramp scales this so cycle 0 ends at +lat_amplitude
-                # (continuous with cycle 1's cosine start).
-                com_world[idx, 1] = (-lat_scale * lat_amplitude
-                                     * np.cos(np.pi * phase_frac))
+                com_world[idx, 1] = -lat_amplitude * np.cos(np.pi * phase_frac)
 
                 right_world[idx] = [cycle_offset + sl, -lat, 0]
                 if i < n_ds:
