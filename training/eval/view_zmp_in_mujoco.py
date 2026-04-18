@@ -112,6 +112,8 @@ def run_viewer(
     horizon: int = 200,
     print_every: int = 10,
     sim_dt_factor: int = 1,
+    c2_stabilizer: bool = False,
+    seed: int | None = None,
 ) -> None:
     model, data = _load_model()
     actuator_names = _load_policy_spec()
@@ -125,11 +127,14 @@ def run_viewer(
         mode_str = "fixed-base"
     else:
         mode_str = "free-floating"
+        if c2_stabilizer:
+            mode_str += "+C2"
     logger.log(f"Trajectory: vx={traj.command_vx:.3f}, n_steps={n_steps}, "
                f"duration={n_steps * traj.dt:.2f}s, "
                f"gait_cycle={traj.cycle_time:.3f}s")
     horizon = min(horizon, n_steps)
-    logger.log(f"Viewer: horizon={horizon}, mode={mode_str}")
+    seed_str = f"seed={seed}" if seed is not None else "seed=n/a"
+    logger.log(f"Viewer: horizon={horizon}, mode={mode_str}, {seed_str}")
 
     _init_standing(model, data)
 
@@ -152,7 +157,8 @@ def run_viewer(
         _run_physics(model, data, traj, mapper, horizon, print_every,
                      ref_dt, sim_dt_factor, headless, logger,
                      act_to_qpos=act_to_qpos, policy_to_mj=policy_to_mj,
-                     fixed_base=fixed_base)
+                     fixed_base=fixed_base,
+                     c2_stabilizer=c2_stabilizer, seed=seed)
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +190,37 @@ def _run_kinematic(model, data, traj, vx, horizon, print_every,
 
     if headless:
         logger.log(f"\n{'step':>5} {'phase':>5} {'root_x':>7}")
+        x_first = None
+        x_last = None
         for i in range(horizon):
             set_pose(i)
+            if i == 0:
+                x_first = float(data.qpos[0])
+            x_last = float(data.qpos[0])
             if i % print_every == 0:
                 logger.log(f"{i:5d} {traj.phase[i]:5.2f} {data.qpos[0]:+7.4f}")
+        # Closeout: report parsed-by-tool stride truth.
+        steps_run = horizon
+        if x_first is not None and x_last is not None and steps_run > 1:
+            duration_s = steps_run * ref_dt
+            realized_speed = (x_last - x_first) / duration_s
+            sl_cmd = abs(vx) * traj.cycle_time / 2.0
+            stride_cmd = 2.0 * sl_cmd
+            # Kinematic stride: in T_half = cycle_time/2, foot advances 2*sl
+            # → per-side stride = vx * cycle_time = stride_cmd; step = sl_cmd.
+            stride_realized = realized_speed * traj.cycle_time
+            step_realized = stride_realized / 2.0
+            ratio = (step_realized / sl_cmd) if sl_cmd > 1e-6 else float('nan')
+            logger.log(f"\nSummary ({steps_run}/{horizon} steps):")
+            logger.log(f"  forward: x={x_last:+.4f}m in {steps_run} steps")
+            logger.log(f"\nKinematic stride truth (commanded "
+                       f"step={sl_cmd:.4f} m, stride={stride_cmd:.4f} m):")
+            logger.log(f"  left  touchdowns= 1  stride={stride_realized:+.4f}m "
+                       f"(min={stride_realized:+.4f})  "
+                       f"step={step_realized:+.4f}m  realized/cmd={ratio:+.2f}")
+            logger.log(f"  right touchdowns= 1  stride={stride_realized:+.4f}m "
+                       f"(min={stride_realized:+.4f})  "
+                       f"step={step_realized:+.4f}m  realized/cmd={ratio:+.2f}")
         logger.log("Kinematic replay complete.")
     else:
         step_idx = [0]
@@ -216,15 +249,61 @@ _LEG_JOINT_NAMES = (
 )
 
 
+# v0.20.0-C closeout IC perturbation bounds (Q2 outcome).
+_IC_POS_BOUND_M = 0.02
+_IC_YAW_BOUND_DEG = 5.0
+_IC_VX_BOUND_MPS = 0.10
+
+
+def _apply_ic_perturbation(data, seed: int, logger: "Logger") -> None:
+    """Apply the v0.20.0-C closeout initial-condition perturbation.
+
+    Per Q2 outcome in reference_design.md: pelvis x/y +/- 0.02 m,
+    yaw +/- 5 deg, vx +/- 0.10 m/s, all uniform.  Joint state and
+    everything else stays at the standing keyframe.
+
+    Reproducible per seed via numpy.random.default_rng(seed).
+    """
+    rng = np.random.default_rng(int(seed))
+    dx = float(rng.uniform(-_IC_POS_BOUND_M, _IC_POS_BOUND_M))
+    dy = float(rng.uniform(-_IC_POS_BOUND_M, _IC_POS_BOUND_M))
+    dyaw = float(rng.uniform(-np.deg2rad(_IC_YAW_BOUND_DEG),
+                             +np.deg2rad(_IC_YAW_BOUND_DEG)))
+    dvx = float(rng.uniform(-_IC_VX_BOUND_MPS, _IC_VX_BOUND_MPS))
+
+    data.qpos[0] += dx
+    data.qpos[1] += dy
+
+    # Apply yaw rotation: q_new = q_yaw * q_cur (world-frame yaw).
+    cy, sy = np.cos(dyaw / 2.0), np.sin(dyaw / 2.0)
+    qw, qx, qy, qz = data.qpos[3:7].copy()
+    new_w = cy * qw - sy * qz
+    new_x = cy * qx - sy * qy
+    new_y = cy * qy + sy * qx
+    new_z = cy * qz + sy * qw
+    data.qpos[3:7] = [new_w, new_x, new_y, new_z]
+
+    data.qvel[0] += dvx
+
+    logger.log(f"IC perturbation (seed={seed}): "
+               f"dx={dx:+.4f}m dy={dy:+.4f}m "
+               f"dyaw={np.rad2deg(dyaw):+.2f}deg dvx={dvx:+.4f}m/s")
+
+
 def _run_physics(model, data, traj, mapper, horizon, print_every,
                  ref_dt, sim_dt_factor, headless, logger,
-                 act_to_qpos=None, policy_to_mj=None, fixed_base=False):
+                 act_to_qpos=None, policy_to_mj=None, fixed_base=False,
+                 c2_stabilizer: bool = False, seed: int | None = None):
     """Physics replay: set ctrl, step physics, observe response.
 
     Captures v0.20.0-C strict-pass diagnostics:
       - per-joint tracking RMSE (8 leg joints, qpos vs commanded q_ref)
-      - touchdown events (0->1 contact_mask transitions per foot)
+      - touchdown events (real MuJoCo foot/floor contacts)
       - per-side realized step length and command ratio
+      - if ``c2_stabilizer=True``: harness clip-saturation per channel
+
+    With ``seed`` set, applies the v0.20.0-C closeout IC perturbation
+    (Q2 outcome): pelvis x/y +/- 0.02 m, yaw +/- 5 deg, vx +/- 0.10 m/s.
     """
     import time as time_mod
 
@@ -233,6 +312,10 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     physics_steps_per_ref = max(1, int(round(ref_dt / physics_dt)))
 
     _init_standing(model, data)
+
+    # Apply v0.20.0-C IC perturbation (Q2 outcome) before the ramp.
+    if seed is not None and not fixed_base:
+        _apply_ic_perturbation(data, seed, logger)
 
     root_qpos_init = data.qpos[:7].copy()
 
@@ -306,6 +389,20 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         _foot_floor_in_contact(right_foot_geoms),
     ]
 
+    # v0.20.0-C2 stabilizer harness (validation-only — see
+    # training/eval/c2_stabilizer.py).  Disabled in fixed-base /
+    # kinematic modes (CLI flag-checked in main()).
+    stabilizer = None
+    if c2_stabilizer:
+        from training.eval.c2_stabilizer import (
+            C2Stabilizer, C2StabilizerConfig,
+        )
+        stab_cfg = C2StabilizerConfig(cycle_time_s=float(traj.cycle_time))
+        stabilizer = C2Stabilizer(model, stab_cfg)
+        stabilizer.reset(data)
+        logger.log(f"C2 stabilizer enabled: pitch_kp={stab_cfg.pitch_kp} "
+                   f"roll_kp={stab_cfg.roll_kp} cp_gain={stab_cfg.cp_gain}")
+
     step_log = []
 
     def step_fn(step_idx: int) -> dict:
@@ -313,7 +410,12 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         # the end so we hold the last frame rather than wrap to cycle 0.
         idx = min(step_idx, n_steps - 1)
         q_ref = traj.q_ref[idx]
-        mapper.set_all_ctrl(data, q_ref)
+        if stabilizer is not None:
+            t_now = step_idx * ref_dt
+            q_cmd, _stab_info = stabilizer.step(model, data, q_ref, t_now)
+        else:
+            q_cmd = q_ref
+        mapper.set_all_ctrl(data, q_cmd)
 
         for _ in range(physics_steps_per_ref * sim_dt_factor):
             mujoco.mj_step(model, data)
@@ -424,8 +526,24 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
                            f"{np.max(np.abs(err[:, j])):8.4f} "
                            f"{100.0 * sat_frac[j]:6.1f}")
             any_sat = leg_sat_log[:n_logged].any(axis=1).mean()
-            logger.log(f"  overall rmse  : {np.sqrt(np.mean(err ** 2)):.4f} rad")
+            overall_rmse = float(np.sqrt(np.mean(err ** 2)))
+            # Q1 amendment: print worst-joint RMSE with joint name so
+            # the SysID debt stays visible in the closeout artifact.
+            worst_j = int(np.argmax(rmse))
+            logger.log(f"  overall rmse  : {overall_rmse:.4f} rad")
+            logger.log(f"  worst joint   : {_LEG_JOINT_NAMES[worst_j]} "
+                       f"rmse={rmse[worst_j]:.4f} rad")
             logger.log(f"  any-joint saturation: {100.0 * any_sat:.1f}% of steps")
+
+        # C2 harness clip-saturation per channel (only when stabilizer on).
+        if stabilizer is not None:
+            cs = stabilizer.clip_saturation()
+            logger.log(f"\nC2 harness clip-saturation:")
+            logger.log(f"  pitch_PD  : {100.0 * cs['pitch']:5.1f}% of steps "
+                       f"(target <10%, hard fail >=25%)")
+            logger.log(f"  roll_PD   : {100.0 * cs['roll']:5.1f}%")
+            logger.log(f"  CP_nudge  : {100.0 * cs['cp']:5.1f}%")
+            logger.log(f"  any       : {100.0 * cs['any']:5.1f}%")
 
         # Touchdowns: per-side stride = consecutive same-foot touchdowns;
         # step length = stride/2.  In fixed-base mode the pelvis is
@@ -518,6 +636,17 @@ def main():
                         help="Print diagnostics every N steps")
     parser.add_argument("--sim-dt-factor", type=int, default=1,
                         help="Physics substeps per reference step")
+    parser.add_argument("--c2-stabilizer", action="store_true",
+                        help="Free-floating only: enable the v0.20.0-C2 "
+                             "validation-only stabilizer harness "
+                             "(torso pitch/roll PD + capture-point swing nudge, "
+                             "all hard-clipped per the contract).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Free-floating only: apply v0.20.0-C closeout "
+                             "initial-condition perturbation: pelvis x/y "
+                             "+/- 0.02 m, yaw +/- 5 deg, vx +/- 0.10 m/s. "
+                             "If omitted, init is the deterministic standing "
+                             "keyframe.")
     args = parser.parse_args()
 
     logger = Logger()
@@ -532,6 +661,13 @@ def main():
 
     logger.log(lib.summary())
     logger.log("")
+    if args.c2_stabilizer and (args.kinematic or args.fixed_base):
+        raise SystemExit("--c2-stabilizer requires free-floating mode "
+                         "(omit --kinematic / --fixed-base).")
+    if args.seed is not None and (args.kinematic or args.fixed_base):
+        raise SystemExit("--seed requires free-floating mode "
+                         "(omit --kinematic / --fixed-base).")
+
     run_viewer(
         lib, args.vx,
         logger=logger,
@@ -541,6 +677,8 @@ def main():
         horizon=args.horizon,
         print_every=args.print_every,
         sim_dt_factor=args.sim_dt_factor,
+        c2_stabilizer=args.c2_stabilizer,
+        seed=args.seed,
     )
 
     logger.log(f"\nLog saved to: {logger.file_path}")

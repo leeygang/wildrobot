@@ -187,6 +187,142 @@ PPO authority on the knee channel.
   section header replaced with multi-cycle linear-replay wording.
 - Contract test suite: 15/15 pass after the new overrun-warning test.
 
+### v0.20.0-C closeout sweep — C1 + C2 contract execution
+
+Implemented the v0.20.0-C C1 + C2 gate per the contract frozen in
+`reference_design.md` after rounds 1-4 of external review.
+
+**Implementation**
+- `training/eval/c2_stabilizer.py`: bounded validation-only feedback
+  harness with three channels — torso pitch PD → ankle pitch offset
+  on stance side (clip ±0.10 rad), torso roll PD → hip roll offset
+  on stance side (clip ±0.05 rad), capture-point swing nudge held
+  from foot lift to next touchdown (clip ±0.03 m via hip pitch).
+  Inputs limited to measured `data.contact` foot/floor pairs and
+  time-derived `(sin, cos)(2π·t/cycle_time)`; trajectory annotations
+  forbidden.  Forbidden imports from `runtime/` enforced by docstring
+  + reviewer.  Sign of pitch / roll application empirically tuned
+  (`apply_pitch_sign=-1`, `apply_roll_sign=+1`) via single-bin probe
+  before locking and running the closeout matrix.
+- `training/eval/view_zmp_in_mujoco.py`: added `--c2-stabilizer` and
+  `--seed` flags.  IC perturbation (Q2 outcome): pelvis x/y ±0.02 m,
+  yaw ±5°, vx ±0.10 m/s.  Worst-joint RMSE (Q1 amendment) and per-
+  channel harness clip-saturation reported in summary.
+- `tools/v0200c_closeout.py`: 32-row sweep runner, parses metrics,
+  scores against C1 + C2 gates, emits CHANGELOG-ready artifact.
+
+**Closeout artifact (32 rows, all command lines reproducible)**
+
+- harness commit sha: `0d24d2b5d1` (parent of this commit)
+- reference library hash: `3b2f79fa89` (`control/zmp/zmp_walk.py`)
+- horizon per row: 200 ctrl steps (4.0 s)
+- C1 survival budget: `ceil(2.0 · 0.64 / 0.02) = 64` ctrl steps
+- seed family: `numpy.random.default_rng(seed)` for seeds [0, 1, 2]
+
+| mode | rows | passed | failed | gate verdict |
+|---|---|---|---|---|
+| kinematic     |  4 |  4 |  0 | **PASS** |
+| fixed-base    |  4 |  4 |  0 | **PASS** |
+| C1            | 12 | 12 |  0 | **PASS** |
+| C2            | 12 |  0 | 12 | **FAIL** |
+
+C1 (open-loop coherence) sweep — survival in ctrl steps:
+
+| vx | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| 0.10 |  90 |  79 |  90 |
+| 0.15 | 117 | 112 | 115 |
+| 0.20 | 132 | 161 | 129 |
+| 0.25 |  82 | 123 |  85 |
+
+All 12 C1 rows clear the 64-step survival budget and produce ≥ 1 L
++ 1 R real-contact touchdown per replay.  Failures are pitch / roll
+balance loss, not q_ref discontinuity or joint runaway.  C1 PASS.
+
+C2 (validation-only stabilizer harness) — closed-loop step length
+and ratio per side, harness clip-saturation per channel:
+
+| vx | seed | survived | L step (m) / ratio | R step (m) / ratio | pitch_clip % | roll_clip % | CP_clip % |
+|---|---|---|---|---|---|---|---|
+| 0.10 | 0 | 109 | -0.035 / -1.08 | -0.019 / -0.60 | 22.9 | **39.4** |  2.8 |
+| 0.10 | 1 |  95 | -0.003 / -0.10 | -0.028 / -0.88 | 21.1 | **55.8** |  1.1 |
+| 0.10 | 2 | 115 | -0.062 / -1.93 | -0.062 / -1.94 | **30.4** | 20.0 |  2.6 |
+| 0.15 | 0 | 154 | -0.023 / -0.48 | -0.024 / -0.50 | 19.5 | **32.5** |  2.6 |
+| 0.15 | 1 | 114 | -0.032 / -0.67 | -0.009 / -0.19 | 22.8 | **28.1** |  2.6 |
+| 0.15 | 2 | 200 |  0.000 /  0.00 | -0.000 / -0.01 |  7.5 |  5.5 |  2.0 |
+| 0.20 | 0 | 163 |  0.012 /  0.18 |  0.009 /  0.13 | 20.9 |  3.1 |  2.5 |
+| 0.20 | 1 | 177 | -0.010 / -0.16 | -0.004 / -0.06 |  7.3 | **31.6** |  1.1 |
+| 0.20 | 2 | 140 | -0.009 / -0.14 | -0.007 / -0.11 | 19.3 | **31.4** |  2.9 |
+| 0.25 | 0 | 129 |  0.003 /  0.03 | -0.008 / -0.10 | 22.5 |  4.7 |  0.8 |
+| 0.25 | 1 | 129 | -0.009 / -0.12 | -0.008 / -0.10 | 16.3 | **35.7** |  3.1 |
+| 0.25 | 2 | 108 | -0.004 / -0.05 | -0.005 / -0.06 | 10.2 | **44.4** |  0.9 |
+
+C2 fail breakdown (every row fails ≥ 1 metric):
+- 12/12 fail step-length gate (`>= 0.03 m`, both sides).
+- 12/12 fail realized/cmd ratio gate (`>= 0.5`, both sides).
+- 7/12 fail roll_PD clip-saturation (≥ 25 % hard fail).
+- 1/12 fails pitch_PD clip-saturation.
+- 0/12 fail CP_nudge clip-saturation (channel rarely pinned).
+
+Worst-joint RMSE (Q1 amendment) — knee dominates across all modes
+and bins, never exceeds the 0.40 rad per-joint feasibility budget,
+but is consistently 80-95 % of it.  Recorded for `v0.20.2` SysID:
+
+| mode | worst-joint RMSE range | dominant joint |
+|------|-----------------------|----------------|
+| fixed-base | 0.344 – 0.357 | L/R knee_pitch |
+| C1         | 0.330 – 0.380 | L/R knee_pitch |
+| C2         | 0.322 – 0.383 | L/R knee_pitch |
+
+**Decision per `reference_design.md` v0.20.0-D rule table**
+
+| C1 | C2 | Action |
+|---|---|---|
+| pass | fail on all bins | stay in C; investigate prior quality (lateral asymmetry, knee feasibility) — stabilizer cannot rescue what is not rescuable |
+
+**v0.20.0-C verdict: NO-GO to D.  Stay in C, fix prior quality.**
+
+What the artifact says about WHY C2 fails (none of these are
+stabilizer-tuning issues):
+
+1. **Lateral asymmetry dominates the failure surface.** 7/12 C2
+   rows hit the roll_PD hard-fail (≥ 25 %) within the ±0.05 rad
+   clip — the harness is pinned the entire replay trying to fight
+   a roll bias the prior creates.  The cosine lateral COM
+   trajectory in `control/zmp/zmp_walk.py` starts at
+   `+lat_amplitude` (toward LEFT), which loads the L hip roll
+   first.  This was already flagged in the prior closeout as a
+   v0.20.1 concern; the C2 sweep confirms the bound on what any
+   bounded correction can rescue.
+2. **Open-loop forward propulsion is missing.** Even when survival
+   is good (vx=0.15 seed=2: 200 ctrl steps), the realized step is
+   essentially 0 (`L=+0.0001 m`, `R=-0.0004 m`).  The IC mismatch
+   between standing (vx=0) and the LIPM steady-state (vx ≈ +0.18
+   m/s) cannot be closed by ±0.03 m of capture-point swing nudge
+   — the CP channel only saturates 1-3 % of the time, meaning it's
+   not even using the budget it has.  The propulsion deficit is in
+   the reference itself, not in the harness's authority.
+3. **Knee tracking holds within budget across the matrix.** The
+   knee servo lags ~0.34 rad RMSE in every mode but stays under
+   the 0.40 rad per-joint budget.  This remains a v0.20.2 SysID
+   concern but does not block C2 directly.
+
+**Recommended follow-up before next C2 attempt** (block until done):
+
+- Lateral COM trajectory: A/B-test sin-based weight shift vs the
+  current `+lat_amplitude·cos(πφ)` start, to reduce the L-side
+  bias that pins roll_PD.  Re-run only the C2 portion (12 rows)
+  to confirm the bias drops below the hard-fail.
+- Propulsion: align the kinematic IC closer to LIPM steady-state
+  in the viewer's standing init (or accept that a wider IC
+  perturbation envelope around +0.18 m/s vx is required to match
+  the LIPM frame).  The current ±0.10 m/s window centered on 0
+  cannot reach the LIPM target.
+- Do **not** loosen any harness clip per the decision rule.  Do
+  **not** widen the harness scope.  Do **not** tune gains
+  further; the empirical sign is correct and the channel
+  authority is at the contract limit.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework
