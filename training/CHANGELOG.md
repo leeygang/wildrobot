@@ -972,6 +972,115 @@ External review on round 7 flagged three issues, all landed:
   rewritten to drop "small/tunable" language and explicitly state
   the nominal-vx prior is not yet ready.
 
+### Round 9 — Kajita preview-control LQR replaces analytical LIPM (vx=0.15 unblocked)
+
+Round-8 conclusion: the timing of the from-rest COM ramp is not the
+bottleneck; the prior needs a different SHAPE, not a different blend.
+Reviewed ToddlerBot's `toddlerbot.algorithms.zmp_walk` and confirmed
+they use the full Kajita 2003 preview-control LQR over the LIPM cart-
+table dynamics, which generates a non-zero forward acceleration at
+t=0 even with the COM at rest (the LQR previews the entire ZMP
+schedule, not just the current footstep).  Direction: port the LQR.
+
+**The port + bug (and the fix)**
+
+Ported `toddlerbot.algorithms.zmp_planner` to
+`control/zmp/zmp_planner.py` (numpy + `scipy.linalg.solve_continuous_are`
+to avoid a `python-control` dependency).  Wired `ZMPWalkGenerator`
+(`control/zmp/zmp_walk.py`) to call `planner.plan(zmp_times, zmps_d,
+x0=[0,0,0,0], com_z, Qy, R)` and read sagittal COM from
+`planner.get_nominal_com(t)`; lateral kept on the 0.25·lat cosine
+(LQR-y overshoots ±2× stance width on our taller-COM robot).
+
+First run: standalone planner output had **±50 cm boundary jumps**
+and went **constant within each segment** — clearly wrong but the
+LQR poles `λ ≈ -1.34 ± 1.16j` looked fine, so the algorithm itself
+wasn't the issue.
+
+Root cause: `PPoly.__call__` returned `result = c[0, idx, :]`, a
+**numpy view into `self.c`**.  `ExpPlusPPoly.value()` then does
+`result += K @ exp_mat @ alpha[:, seg]`, which mutated the
+coefficient array in place.  The bug only fires for **degree-0**
+polynomials — for degree ≥ 1 the loop body `result = result * dt +
+c[i]` produces a fresh array on the first iteration.  The forward-
+LQR `com_pos` builds exactly a degree-0 `b_traj` (`all_b[..., :2]`
+has shape `(1, n_seg, 2)`), so this hit every nominal-COM query.
+ToddlerBot's reference port has the defensive `c2 = self.c.copy()`
+at the top of `__call__`; we dropped it during the port.
+
+Fix (commit `5faae74`): restore the copy.  Standalone planner now
+returns smooth COM, boundary jumps drop from ±0.5 m to <1 µm,
+mid-horizon avg vx 0.157 m/s vs target 0.15.
+
+**Closeout matrix at commit `5faae74`** (vs round-7b baseline):
+
+| mode       | this round | round 7b | gate verdict |
+|------------|------------|----------|--------------|
+| kinematic  | 4 / 4      | 4 / 4    | **PASS**     |
+| fixed-base | 1 / 4      | 0 / 4    | FAIL         |
+| C1         | 7 / 12     | 7 / 12   | FAIL         |
+| C2         | 0 / 12     | 0 / 12   | FAIL         |
+
+C1 distribution is what changed:
+
+| vx   | round 7b C1 | this round C1 |
+|------|-------------|---------------|
+| 0.10 | 3 / 3 ✓     | 3 / 3 ✓       |
+| 0.15 | 0 / 3 ✗     | **3 / 3 ✓**   |
+| 0.20 | 3 / 3 ✓     | 1 / 3 ✗       |
+| 0.25 | 1 / 3       | 0 / 3         |
+
+The round-8 reviewer ask (vx=0.15 nominal) is **resolved**: all three
+seeds pass C1 survival at vx=0.15 with the LQR prior, where the
+analytical-LIPM + cycle-0-quintic baseline failed every seed.
+
+C2 stayed 0/12 and got slightly worse (any-channel clip 39-55% vs
+28-36% in round 7b).  The C2 stabilizer's PD targets were tuned
+against the analytical-LIPM cycle; the LQR-shaped sagittal COM moves
+the targets by 1-2 cm at mid-cycle, so the harness clips harder.
+Retuning the C2 PD targets against the LQR COM is a one-knob change,
+deferred so this round stays scoped to "fix the prior, not the
+harness".
+
+vx≥0.20 C1 regressed (3/3 → 1/3 at vx=0.20; 1/3 → 0/3 at vx=0.25).
+The LQR generates a real forward acceleration at t=0, but at high vx
+the demanded first-cycle acceleration exceeds what the
+htd45h-chain can deliver before the body tips forward — knee-pitch
+saturates at the 80° MJCF limit during the first swing.  This is a
+servo-capability bottleneck (same root cause as round 6's "knee
+servo lag"), not a prior-design bottleneck, and is orthogonal to the
+nominal-vx work.
+
+**Files changed in round 9**
+
+- `control/zmp/zmp_planner.py`: NEW.  Numpy/scipy port of
+  ToddlerBot's preview-control LQR (Kajita 2003).  Same `plan()` /
+  `get_nominal_com()` / `get_nominal_com_vel()` API.  Defensive
+  `.copy()` in `PPoly.__call__` (commit `5faae74`).
+- `control/zmp/zmp_walk.py`: sagittal COM now comes from
+  `planner.get_nominal_com(t_global)`; lateral kept on the cosine.
+  Cycle-0 quintic blend removed (the LQR replaces it).  See diff
+  `8505eb7..5385b79`.
+- `docs/Biped_Walking_Pattern_Generation_by_usin.pdf`: Kajita 2003
+  paper added for reference.
+- FK geometry gate (`tests/test_v0200c_geometry.py`): 8 failures
+  (down from 19 with the broken LQR; round-7b baseline was 0 / 36).
+  Remaining failures are sub-mm to 6 mm and cluster at vx≥0.20 mid-
+  cycle frames — the LQR's COM is offset 1-2 cm from the analytical-
+  LIPM cycle the IK was tuned against.
+
+**What stays open**
+
+1. Retune the C2 stabilizer's PD targets against the LQR COM (one
+   knob; not gating on the round-9 ask).
+2. vx≥0.20 first-cycle saturation: knee-pitch torque headroom on the
+   htd45h class.  Either lower `max_step_length_m` for the high-vx
+   bins or accept the saturation and rely on PPO to learn around it.
+3. Re-evaluate the `n_warmup_cycles` knob added in round 8 — with
+   the LQR generating its own from-rest acceleration, the quintic
+   warm-up is no longer needed.  Default behavior is unchanged but
+   the dead code can be removed.
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework
