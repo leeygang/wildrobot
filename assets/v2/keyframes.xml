@@ -1,8 +1,34 @@
 <mujoco>
-  <keyframe>
-    <key name="home"
-      qpos="0.000648046 -0.000456387 0.468297 1 8.00659e-06 0.000907048 0.00016962 0.000312985 5.25144e-05 0.02 -0.000594914 -0.000344585 -0.00209672 0.02 -0.000582818 -9.11277e-07 -0.000555522 -0.00379795 0.000286301 7.59758e-06 0.000237902 0.000483019 0.00423369 0.000257574 -6.74139e-06 0.000238934"
-/>
-  </keyframe>
-</mujoco>
+  <!-- Standing keyframe.
 
+       The original "home" key (committed pre-v0.20.0-C) was exported
+       from CAD and contained 0.5–2 mm of CAD noise on pelvis x/y, a
+       0.0009-rad forward pitch on the pelvis quat, and a -0.0021 rad
+       right_hip_roll value.  Combined with the model's intrinsic
+       inertial asymmetry (waist body inertial pos = -0.00188 m in x,
+       producing a CoM that sits 6 mm ahead of the mid-feet contact
+       point), that "home" pose generated a sustained backward force
+       (~-0.5 m/s² acceleration on the pelvis x channel) even with
+       ctrl=qpos.  All v0.20.0-C C2 closeouts up to commit ab838e8
+       inherited this bias and showed the body drifting backward
+       under physics regardless of which prior we used.
+
+       This "home" key replaces it with the settled equilibrium of:
+         - clean joint values (zero on every leg / arm / waist joint
+           except the knees, which keep a 0.023-rad slight bend),
+         - a -0.020 rad pelvis pitch that compensates the model's
+           CoM-forward inertial offset.
+
+       Verified at commit (root):
+         - 1000 physics steps with ctrl=qpos: pelvis drift -0.002 m,
+           |vx| <= 0.0001 m/s, z stable at 0.4684 m.
+       Compare to old "home": same window saw vx -0.046 m/s drifting,
+       still accelerating.  ~100x reduction in baseline backward
+       drift, which removes the dominant bias from the v0.20.0-C C2
+       free-floating evidence. -->
+    <keyframe>
+        <key name="home"
+            qpos="-0.00790504 -0.000385849 0.468425 0.999912 -0.000950524 -0.0132519 -3.10656e-05 -0.000416611 -0.00225267 0.0230579 0.00364868 0.000357434 -0.00361724 0.0230856 0.00363835 -0.00179161 0.000784238 0.010199 -4.40666e-06 3.39252e-06 0.000209012 -0.000527081 0.00436148 -9.19413e-06 -9.40916e-06 0.000210427"
+        />
+    </keyframe>
+</mujoco>

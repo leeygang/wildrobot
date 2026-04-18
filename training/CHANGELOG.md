@@ -667,6 +667,114 @@ fix and the round-5 calibration probe sharpened our understanding
 of where the gap is: it's a **prior geometry calibration**
 problem now, not a "stabilizer needs more authority" problem.
 
+### Round 6 — servo-chain probe + standing keyframe asymmetry fix
+
+Per user request: before committing more time to a geometry
+refactor, verify the servo / actuator chain end-to-end (the
+v0.19 standing branch hit a "ctrl ordering" bug that wasted
+weeks).
+
+**Servo chain verified clean (no bug)**:
+- `CtrlOrderMapper._perm_np` correctly maps each policy index
+  to the matching MuJoCo actuator (probed by name, all 8 leg
+  joints align: policy[0] = `left_hip_pitch` → mj[0] =
+  `left_hip_pitch`, etc.).
+- `set_all_ctrl(d, ctrl)` writes `ctrl[i]` to `data.ctrl[perm[i]]`;
+  read-back via `mj_qpos[perm]` returns `policy_qpos[i]` as the
+  qpos of the joint linked to policy actuator `i`.
+- Sign convention probed: `ctrl[L_hip_pitch] = +0.5` →
+  `L_foot_x = +0.068 m` (forward) after 50 PD steps with pelvis
+  pinned, matching the WildRobot convention used in the IK.
+- IK ↔ FK alignment probed: across 6 frames of the prior, the
+  FK foot world x matches the IK intended foot world x within
+  0–9 mm.  Kinematic and fixed-base modes still pass cleanly.
+
+**Real bug found**: standing keyframe contained CAD-export noise
+(R_hip_roll = -0.0021 vs L = +0.00005, pelvis_y off by 0.5 mm,
+pelvis quat with 0.0009-rad forward pitch) AND the model has
+intrinsic mass asymmetry (waist body inertial pos = -0.00188 m
+in x → total CoM sits 6 mm AHEAD of mid-feet).  Combined, these
+created a sustained backward force: even with `ctrl = qpos`
+(zero PD error) the pelvis accelerated backward at ~0.5 m/s².
+After 100 physics steps with no walking ctrl: vx = -0.046 m/s.
+That bias contaminated every C2 free-floating evidence row in
+rounds 1–4.
+
+**Fix**: replaced `assets/v2/keyframes.xml`'s home key with the
+settled equilibrium of a clean symmetric pose pitched -0.020 rad
+to compensate the inertial offset.  Verified: 1000 physics
+steps with `ctrl = qpos` → pelvis drift -0.002 m, |vx| ≤ 0.0001
+m/s, z stable at 0.4684 m (vs old keyframe vx -0.046 m/s after
+100 steps).  ~100× reduction in baseline backward drift.
+
+Re-running the matrix (round 6, with cleaned keyframe + true
+from-rest cycle 0 + correct aggregate clip metric):
+
+| mode | rows | passed | failed | gate verdict |
+|---|---|---|---|---|
+| kinematic     |  4 |  4 |  0 | **PASS** |
+| fixed-base    |  4 |  4 |  0 | **PASS** |
+| C1            | 12 | 10 |  2 | **FAIL** (vx=0.25 seed=0,2 still at 59,60 steps — cycle-0 demand) |
+| C2            | 12 |  0 | 12 | **FAIL** (closed-loop step gate) |
+
+C2 survival markedly better than round 4 across most seeds
+(notably the previously-flaky seed=1 rows now reach 115-125
+ctrl steps), but the body **still drifts backward in walking**.
+Best forward step ratio is -0.04 (vx=0.25 seed=0 R side) —
+better than round 4's worst, still not at the gate.
+
+### Where the residual backward drift is NOT (ruled out by round 6)
+
+- **Servo chain**: name-checked end-to-end, sign convention
+  verified by FK probe.  Not the bug.
+- **Standing keyframe asymmetry**: was a real ~0.5 m/s² baseline
+  bias, now reduced 100× by the clean keyframe.  Not the
+  remaining bug.
+- **From-rest cycle 0**: round 4's quintic blend confirmed the
+  prior actually starts at `(x=0, vx=0)`.  Not the remaining
+  bug.
+
+### Where the residual backward drift might be (ranked by evidence)
+
+1. **IK ↔ MJCF leg-geometry mismatch**: probed in round 5 (the
+   IK assumes leg reach 0.42 m, MJCF straight-leg drop is 0.406
+   m → q_ref puts feet ~7 cm above ground in IK frame; bent-knee
+   q_ref still puts feet ~1 cm above ground).  Round-5 attempt
+   to lower `com_height_m` broke `safe_max_step_length_m`
+   coupling — the proper fix is to recalibrate
+   `upper_leg_m + lower_leg_m + ankle_to_ground_m` together
+   from MJCF FK probes, then re-derive
+   `safe_max_step_length_m` from the new geometry.  This is the
+   most likely remaining root cause.
+2. **Knee-pitch servo lag**: worst-joint RMSE 0.34 rad with
+   max_abs 0.94 rad (~54°) across all modes.  The knee can't
+   bend deep enough during swing → foot drag → backward force
+   on stance.  Round 6 saw small improvement on knee MAE but
+   max_abs still ~0.95 rad.  Tightly coupled to the geometry
+   issue (deeper knee bend would be needed if the IK assumed
+   shorter legs).
+3. **PD gain headroom**: kp=21.1, force-limit ±4 N·m on the
+   htd45hServo class.  At the demanded swing accelerations the
+   force-limit might cap; not directly probed in this round.
+
+### Honest verdict at end of round 6
+
+The user-suggested debug path eliminated the most plausible
+"easy" cause (servo bug) and uncovered + fixed a real but
+distinct issue (standing keyframe asymmetry).  The harness is
+not the bottleneck on the best 4 rows (any_clip 28-36% — over
+the 25% gate but not by much).  The remaining bottleneck is
+prior-geometry coupled with knee servo capability, exactly
+where round 5 pointed.  A coordinated geometry refit is the
+right next step but is not a one-line change — see CHANGELOG
+queue at top.
+
+### Files changed in round 6
+
+- `assets/v2/keyframes.xml`: replaced home key with the clean
+  equilibrium pose (pelvis pitched -0.020 rad, all single-dof
+  joints near 0 except knees ≈ 0.023, settled qpos baked in).
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework
