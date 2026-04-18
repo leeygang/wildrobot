@@ -40,15 +40,16 @@ class ZMPWalkConfig:
     hip_extension_limit_rad: float = 0.5236        # 30° backward extension
     knee_pitch_max_rad: float = 1.396             # 80°
 
-    # Gait timing
-    cycle_time_s: float = 0.50
+    # Gait timing — longer cycle gives bigger steps at same speed
+    # ToddlerBot uses 0.72s; WildRobot uses 0.64s (similar proportion)
+    cycle_time_s: float = 0.64
     single_double_ratio: float = 2.0
     dt_s: float = 0.02
 
     # Gait geometry
-    foot_step_height_m: float = 0.04          # visible foot clearance during swing
+    foot_step_height_m: float = 0.08  # ~19% of leg length (ToddlerBot uses 24%)
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
-    min_walking_speed_mps: float = 0.08     # below this, use standing (no tiny shuffles)
+    min_walking_speed_mps: float = 0.06     # below this, use standing
 
     # ZMP planner costs
     zmp_cost_Q: float = 1.0
