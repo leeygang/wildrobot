@@ -569,6 +569,21 @@ match [`walking_training.md`](/home/leeygang/projects/wildrobot/training/docs/wa
 
 ### `v0.20.0-A`: Prior contract freeze
 
+Expectation:
+
+- this milestone freezes interface and schema; it does not claim walking
+  robustness
+
+Quick visual check:
+
+- the same command-bin replay always produces the same reference trajectory and
+  phase evolution
+- viewer traces show no discontinuous target jumps
+
+How this advances the end goal:
+
+- removes interface churn so later milestones focus on locomotion quality
+
 Goal:
 
 - define one stable offline-prior contract that both `ZMP` and later `ALIP`
@@ -618,6 +633,21 @@ Exit criteria:
 
 ### `v0.20.0-B`: `ZMP` prior generator and viewer
 
+Expectation:
+
+- the offline prior should already encode recognizable walking semantics before
+  policy learning
+
+Quick visual check:
+
+- walk command shows clear alternating step-out pattern
+- stop command settles into quiet standing
+- resume restarts stepping without discontinuity
+
+How this advances the end goal:
+
+- proves gait structure is prior-owned, so PPO can remain correction-focused
+
 Goal:
 
 - implement the first production prior as a `ZMP`-shaped offline reference
@@ -650,6 +680,21 @@ Metric gate:
 - no validated reference trajectory requires systematic joint-limit violation
 
 ### `v0.20.0-C`: Reference + IK + short-horizon feasibility validation
+
+Expectation:
+
+- prior trajectories remain trackable after IK and full MuJoCo dynamics on
+  short horizons
+
+Quick visual check:
+
+- startup and one-to-two gait cycles remain coherent in full env replay
+- if failure appears, it is a bounded tracking/balance limit rather than an
+  incoherent reference breakdown
+
+How this advances the end goal:
+
+- verifies the prior is physically usable as an imitation target for PPO
 
 Goal:
 
@@ -692,6 +737,20 @@ Metric gate:
 
 ### `v0.20.0-D`: PPO unblock decision
 
+Expectation:
+
+- this is a go/no-go gate, not a behavior-creation stage
+
+Quick visual check:
+
+- unblock only when prior replay already looks like a real walk family and not
+  a balance exploit
+
+How this advances the end goal:
+
+- avoids launching PPO on an unready prior and repeating earlier reward-exploit
+  loops
+
 PPO is unblocked only if:
 
 - `v0.20.0-A` through `v0.20.0-C` pass
@@ -700,6 +759,22 @@ PPO is unblocked only if:
 - the remaining issues are plausibly correction-layer problems
 
 ### `v0.20.1`: ToddlerBot-style PPO
+
+Expectation:
+
+- PPO should improve stability and tracking around the prior, not replace the
+  gait structure
+
+Quick visual check:
+
+- learned motion still matches the reference family
+- stepping becomes more stable and less fragile, without drifting into a new
+  exploit style
+
+How this advances the end goal:
+
+- adds closed-loop correction required for sustained command-conditioned
+  walking
 
 Goal:
 
@@ -733,6 +808,21 @@ Metric gate:
   - touchdown step length mean `>= 0.03 m`
 
 ### `v0.20.2`: SysID verification + policy coverage + transfer hardening
+
+Expectation:
+
+- policy behavior extends beyond one command and the servo model is validated
+  for hardware deployment
+
+Quick visual check:
+
+- zero command stands quietly
+- low command shows slow but visible stepping
+- higher commands increase speed without immediate pitch collapse
+
+How this advances the end goal:
+
+- turns a narrow sim policy into a transferable walking capability
 
 Goal:
 
@@ -771,6 +861,20 @@ Metric gate:
 - forward speed response is monotonic non-decreasing over the tested range
 
 ### `v0.20.3`: Cassie-upgrade decision gate
+
+Expectation:
+
+- architecture upgrades are triggered by measured bottlenecks, not preference
+
+Quick visual check:
+
+- if residual policy is stable but adaptation-limited, consider Cassie-style
+  upgrade
+- if current issues are prior-quality issues, continue improving the prior
+
+How this advances the end goal:
+
+- keeps complexity proportional to evidence and preserves forward progress
 
 Goal:
 

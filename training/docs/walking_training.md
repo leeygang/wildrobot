@@ -577,6 +577,20 @@ Primary design note:
 
 ### `v0.20.0-A` Prior contract freeze
 
+Expectation:
+
+- this milestone defines a stable reference contract, not walking quality
+
+Quick visual check:
+
+- replaying the same command bin always produces the same reference trajectory
+- no target jumps or phase discontinuities are visible in the viewer traces
+
+How this advances the end goal:
+
+- removes interface ambiguity so later milestones measure motion quality, not
+  contract mismatch
+
 Tasks:
 
 - define one prior interface:
@@ -634,6 +648,22 @@ Metric validation:
 
 ### `v0.20.0-B` `ZMP` prior generator and viewer
 
+Expectation:
+
+- the prior itself should already look like a walk family, before PPO is
+  involved
+
+Quick visual check:
+
+- at walk command, feet clearly step out with alternating left/right pattern
+- at stop command, posture settles to quiet standing
+- resume restarts stepping without a jump
+
+How this advances the end goal:
+
+- proves locomotion semantics are encoded in the prior rather than invented by
+  PPO
+
 Tasks:
 
 - implement the first `ZMP`-shaped offline prior library
@@ -673,6 +703,21 @@ Metric validation:
 
 ### `v0.20.0-C` Reference + IK + short-horizon feasibility validation
 
+Expectation:
+
+- prior motion remains trackable after IK and full env dynamics for short
+  horizons
+
+Quick visual check:
+
+- startup and one-to-two gait cycles stay coherent in full env replay
+- if failure occurs, it looks like bounded balance/tracking limit, not
+  incoherent reference behavior
+
+How this advances the end goal:
+
+- confirms the prior is physically usable as a learning target for PPO
+
 Tasks:
 
 - run the prior with IK / nominal targets in full MuJoCo env
@@ -708,6 +753,20 @@ Metric validation:
 
 ### `v0.20.0-D` PPO unblock decision
 
+Expectation:
+
+- this is a gate decision, not a new behavior milestone
+
+Quick visual check:
+
+- only unblock if prior replay already looks like a real walk family and not a
+  balance exploit
+
+How this advances the end goal:
+
+- prevents restarting PPO on an unready prior and repeating `v0.19.5` failure
+  modes
+
 PPO is unblocked only if:
 
 - `v0.20.0-A` through `v0.20.0-C` pass
@@ -716,6 +775,22 @@ PPO is unblocked only if:
 - the remaining issues are plausibly correction-layer problems
 
 ### `v0.20.1` ToddlerBot-style PPO
+
+Expectation:
+
+- PPO improves robustness and tracking while preserving the prior’s gait
+  structure
+
+Quick visual check:
+
+- learned motion still resembles the prior family
+- steps become more stable and less fragile, rather than becoming a different
+  exploit gait
+
+How this advances the end goal:
+
+- adds closed-loop correction so walking survives longer and tracks commands
+  better
 
 Tasks:
 
@@ -750,6 +825,22 @@ Metric validation:
   - touchdown step length mean `>= 0.03 m`
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
+
+Expectation:
+
+- behavior works beyond one command point and the actuator model is trustworthy
+  for hardware transfer
+
+Quick visual check:
+
+- zero command stands quietly
+- low command walks slowly but visibly
+- higher commands increase speed without immediate pitch dive
+
+How this advances the end goal:
+
+- converts a single-point sim result into a transferable command-conditioned
+  walking capability
 
 SysID is a hard gate for sim-to-real deployment. No hardware deployment
 until the servo model is verified.
@@ -810,6 +901,20 @@ Exit gate:
 - zero-shot or near-zero-touch forward walking is reliable on hardware
 
 ### `v0.20.3` `ALIP` / Cassie-upgrade decision
+
+Expectation:
+
+- decide architecture upgrade only from measured bottlenecks, not preference
+
+Quick visual check:
+
+- if current policy is stable but capped in adaptation range, consider upgrade
+- if motion quality is still prior-limited, keep improving the prior first
+
+How this advances the end goal:
+
+- avoids premature complexity and upgrades only when it increases real walking
+  coverage
 
 Decision rule:
 
