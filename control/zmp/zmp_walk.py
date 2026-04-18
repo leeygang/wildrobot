@@ -46,7 +46,7 @@ class ZMPWalkConfig:
     dt_s: float = 0.02
 
     # Gait geometry
-    foot_step_height_m: float = 0.025
+    foot_step_height_m: float = 0.04          # visible foot clearance during swing
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.08     # below this, use standing (no tiny shuffles)
 
@@ -142,13 +142,19 @@ def _solve_sagittal_ik(
     l2: float,
     min_margin: float = 0.01,
     ankle_limit_rad: float = 0.698,
+    is_swing: bool = False,
 ) -> Tuple[float, float, float, bool]:
     """Analytical 2-link sagittal IK.
 
     Returns (hip_pitch, knee_pitch, ankle_pitch, reachable).
-    Ankle pitch is clamped to ±ankle_limit_rad rather than forced to
-    keep the foot perfectly flat.  This avoids saturating the ankle
-    joint on robots with limited dorsiflexion range.
+
+    During stance (is_swing=False): ankle keeps the foot flat on the
+    ground, clamped to ±ankle_limit_rad.
+
+    During swing (is_swing=True): ankle stays at a neutral position
+    (slight plantarflexion for toe clearance) rather than tracking
+    the flat-foot constraint.  This allows the knee to bend freely
+    for foot lift without exhausting the ankle budget.
     """
     max_reach = l1 + l2 - min_margin
     dist = np.sqrt(target_x**2 + target_z**2)
@@ -173,9 +179,14 @@ def _solve_sagittal_ik(
     beta = np.arccos(cos_beta)
     hip_pitch = alpha - beta
 
-    # Ankle: ideally -(hip+knee) for flat foot, but clamped to joint limits
-    ankle_flat = -(hip_pitch + knee_pitch)
-    ankle_pitch = np.clip(ankle_flat, -ankle_limit_rad, ankle_limit_rad)
+    if is_swing:
+        # During swing: ankle at neutral (slight plantarflexion).
+        # The foot is in the air — no need to stay flat.
+        ankle_pitch = np.clip(-0.15, -ankle_limit_rad, ankle_limit_rad)
+    else:
+        # During stance: keep foot flat, clamped to joint limits
+        ankle_flat = -(hip_pitch + knee_pitch)
+        ankle_pitch = np.clip(ankle_flat, -ankle_limit_rad, ankle_limit_rad)
 
     return hip_pitch, knee_pitch, ankle_pitch, reachable
 
@@ -350,6 +361,10 @@ class ZMPWalkGenerator:
                 lat = cfg.hip_lateral_offset_m
                 hip_y = com_y + (lat if side == "left" else -lat)
 
+                # Determine if this leg is in swing (not in contact)
+                contact_idx = 0 if side == "left" else 1
+                is_swing = contact_out[i, contact_idx] < 0.5
+
                 # Sagittal IK: foot position relative to hip in x-z plane
                 foot_rel_x = foot_world_i[0] - com_x
                 foot_z_above_ground = foot_world_i[2]
@@ -360,6 +375,7 @@ class ZMPWalkGenerator:
                     foot_rel_x, hip_to_foot_z,
                     cfg.upper_leg_m, cfg.lower_leg_m,
                     cfg.min_reach_margin_m,
+                    is_swing=is_swing,
                 )
 
                 # Hip roll: foot lateral offset from hip
