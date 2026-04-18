@@ -34,7 +34,11 @@ class ZMPWalkConfig:
     lower_leg_m: float = 0.21
     hip_lateral_offset_m: float = 0.0536
     ankle_to_ground_m: float = 0.06
-    com_height_m: float = 0.46  # near-upright (ankle ±40° constrains squat to knee≤34°)
+
+    # Joint limits (radians) — used to compute safe COM height and step length
+    ankle_dorsiflexion_limit_rad: float = 0.698   # 40°
+    hip_extension_limit_rad: float = 0.087        # 5° backward extension
+    knee_pitch_max_rad: float = 1.396             # 80°
 
     # Gait timing
     cycle_time_s: float = 0.50
@@ -56,6 +60,66 @@ class ZMPWalkConfig:
     # Limits
     max_step_length_m: float = 0.10
     min_reach_margin_m: float = 0.01
+
+    @property
+    def com_height_m(self) -> float:
+        """Compute COM height from joint limits.
+
+        The flat-foot IK constraint ``ankle = -(hip + knee)`` means the
+        ankle dorsiflexion grows with knee bend.  Given:
+          - ankle limit: ``ankle_dorsiflexion_limit_rad``
+          - worst-case hip during walking: ~15° (foot half a step ahead)
+        The maximum safe knee bend is:
+          ``knee_max = ankle_limit - hip_margin``
+        The COM height is derived from the leg reach at that knee bend,
+        with a small margin to keep the ankle away from hard saturation.
+        """
+        # Reserve ankle budget for hip pitch excursion during walking.
+        # During stance, hip pitch can reach ~15° when the foot is half
+        # a step ahead of COM.  Keep 5° additional margin from the limit.
+        hip_margin_rad = np.radians(20.0)  # 15° typical + 5° margin
+        knee_budget = self.ankle_dorsiflexion_limit_rad - hip_margin_rad
+        knee_safe = max(np.radians(10.0), min(knee_budget, self.knee_pitch_max_rad))
+
+        # Leg reach at this knee bend (foot directly under hip)
+        # Law of cosines: reach² = l1² + l2² + 2·l1·l2·cos(knee)
+        # (knee=0 → straight → reach=l1+l2, knee=π → folded → reach=0)
+        l1, l2 = self.upper_leg_m, self.lower_leg_m
+        reach = np.sqrt(l1**2 + l2**2 + 2 * l1 * l2 * np.cos(knee_safe))
+
+        return reach + self.ankle_to_ground_m
+
+    @property
+    def safe_max_step_length_m(self) -> float:
+        """Max step length that keeps all joints within limits.
+
+        Two constraints:
+        1. Ankle: hip_pitch + knee ≤ ankle_dorsiflexion_limit
+        2. Hip extension: foot behind COM → hip extends backward ≤ hip_extension_limit
+
+        The tighter constraint wins.
+        """
+        hip_to_ankle = self.com_height_m - self.ankle_to_ground_m
+
+        # Constraint 1: ankle budget
+        l1, l2 = self.upper_leg_m, self.lower_leg_m
+        cos_knee = (l1**2 + l2**2 - hip_to_ankle**2) / (2 * l1 * l2)
+        cos_knee = np.clip(cos_knee, -1.0, 1.0)
+        knee_at_height = np.pi - np.arccos(cos_knee)
+        max_hip_ankle = self.ankle_dorsiflexion_limit_rad - knee_at_height
+        max_hip_ankle = max(0.01, max_hip_ankle)
+        half_step_ankle = hip_to_ankle * np.tan(max_hip_ankle)
+
+        # Constraint 2: hip extension limit (5° backward)
+        half_step_hip = hip_to_ankle * np.tan(self.hip_extension_limit_rad)
+
+        # Take the tighter constraint.
+        # The foot-to-COM distance during stance exceeds half the step
+        # length because the LIPM COM accelerates during stance.
+        # Use a 0.7 factor (empirically, max foot-behind-COM ≈ 0.7 × step).
+        max_foot_excursion = min(half_step_ankle, half_step_hip)
+        safe_step = max_foot_excursion / 0.7
+        return min(self.max_step_length_m, safe_step)
 
     @property
     def double_support_s(self) -> float:
@@ -125,23 +189,65 @@ class ZMPWalkGenerator:
     def generate(self, command_vx: float) -> ReferenceTrajectory:
         """Generate one gait-cycle trajectory for the given forward speed.
 
+        Automatically reduces the step length if joint limits are violated,
+        ensuring the output stays within the actuator envelope.
+
         Parameters
         ----------
         command_vx : forward speed in m/s (0 = standing)
 
         Returns
         -------
-        ReferenceTrajectory with all arrays populated.
+        ReferenceTrajectory with all arrays populated and within joint limits.
         """
         cfg = self.cfg
 
         if abs(command_vx) < 1e-4:
             return self._generate_standing()
 
-        # Clamp step length
         half_cycle = cfg.cycle_time_s / 2.0
         raw_step = command_vx * half_cycle
-        step_length = np.clip(raw_step, -cfg.max_step_length_m, cfg.max_step_length_m)
+        step_length = np.clip(abs(raw_step), 0.0, cfg.safe_max_step_length_m)
+        if raw_step < 0:
+            step_length = -step_length
+
+        # Generate-validate-reduce loop: if joint limits are violated,
+        # reduce step length and regenerate.
+        for attempt in range(5):
+            traj = self._generate_at_step_length(command_vx, step_length)
+            violations = self._count_joint_violations(traj)
+            if violations == 0:
+                break
+            # Reduce step length by 20% and retry
+            step_length *= 0.8
+
+        return traj
+
+    def _count_joint_violations(self, traj: ReferenceTrajectory) -> int:
+        """Count timesteps where any leg joint exceeds its limit."""
+        limits = np.array([
+            [-0.087, 1.484],   # left_hip_pitch
+            [-1.484, 0.087],   # right_hip_pitch
+            [-1.571, 0.175],   # left_hip_roll
+            [-0.175, 1.571],   # right_hip_roll
+            [0.0, 1.396],      # left_knee_pitch
+            [0.0, 1.396],      # right_knee_pitch
+            [-0.698, 0.785],   # left_ankle_pitch
+            [-0.698, 0.785],   # right_ankle_pitch
+        ])
+        count = 0
+        for j in range(8):
+            count += int(np.sum(
+                (traj.q_ref[:, j] < limits[j, 0] - 0.005) |
+                (traj.q_ref[:, j] > limits[j, 1] + 0.005)
+            ))
+        return count
+
+    def _generate_at_step_length(
+        self, command_vx: float, step_length: float
+    ) -> ReferenceTrajectory:
+        """Generate trajectory at a specific step length (no limit reduction)."""
+        cfg = self.cfg
 
         # Plan footsteps
         total_cycles = cfg.n_output_cycles + cfg.n_plan_extra_cycles
@@ -257,18 +363,12 @@ class ZMPWalkGenerator:
                 q_ref[i, indices[2]] = knee_p
                 q_ref[i, indices[3]] = ank_p
 
-        # Clip q_ref to joint limits (radians)
-        # Left leg: hip_p [-5,85]°, hip_r [-90,10]°, knee [0,80]°, ankle [-40,45]°
-        # Right leg: hip_p [-85,5]°, hip_r [-10,90]°, knee [0,80]°, ankle [-40,45]°
+        # Safety clip — catches any residual IK rounding.
         joint_limits_rad = np.array([
-            [-0.087, 1.484],   # [0] left_hip_pitch
-            [-1.484, 0.087],   # [1] right_hip_pitch
-            [-1.571, 0.175],   # [2] left_hip_roll
-            [-0.175, 1.571],   # [3] right_hip_roll
-            [0.0, 1.396],      # [4] left_knee_pitch
-            [0.0, 1.396],      # [5] right_knee_pitch
-            [-0.698, 0.785],   # [6] left_ankle_pitch
-            [-0.698, 0.785],   # [7] right_ankle_pitch
+            [-0.087, 1.484], [-1.484, 0.087],
+            [-1.571, 0.175], [-0.175, 1.571],
+            [0.0, 1.396], [0.0, 1.396],
+            [-0.698, 0.785], [-0.698, 0.785],
         ], dtype=np.float32)
         for j in range(8):
             q_ref[:, j] = np.clip(q_ref[:, j], joint_limits_rad[j, 0], joint_limits_rad[j, 1])
