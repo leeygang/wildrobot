@@ -7,6 +7,57 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.0-C] - 2026-04-18: ToddlerBot-style multi-cycle ZMP plan
+
+### Problem
+Cyclic single-cycle replay of the ZMP reference at `vx=0.15` made the
+robot lift its legs in the right order but never translate, then fall.
+
+Root cause: the one-cycle library entry was not steady-state periodic.
+Phase A's right-foot trajectory started at world `x=0` and swung only
+`sl` (a "from-rest" half-step), while Phase B's left swing was a full
+`2*sl` steady-state stride.  Diagnostic dump at the wrap boundary
+showed right hip pitch jumping `+0.082 rad` (≈4.7°), right foot
+position jumping `-0.034 m` (COM-relative), and the contact mask
+flipping `(0,1) → (1,1)` — the legs got rewound forward each wrap, so
+no net world-frame translation accumulated.
+
+### Decision
+Adopt ToddlerBot's `toddlerbot.algorithms.zmp_walk` shape: one
+trajectory per command bin spans `cfg.total_plan_time_s = 22 s` of
+monotonic forward walking (cycle 0 from rest, cycles 1+ LIPM
+steady-state) and is replayed linearly.  No periodicity contract on
+the cycle boundary, so no asymmetric Phase A vs Phase B to keep in
+sync.
+
+### Changes
+- `control/zmp/zmp_walk.py`: rewrote `_generate_at_step_length` to emit
+  `n_cycles * 32` steps with cycle-offset world positions, a per-cycle
+  LIPM x0/vx0 sagittal pattern, and a cosine lateral weight-shift.
+  Pelvis pose is now monotonic (matches the IK frame).  Removed the
+  unused `n_warmup_cycles` knob.
+- `training/eval/view_zmp_in_mujoco.py`: replaced `step_idx % n_cycle`
+  with linear playback clamped to `n_steps`.  Logs phase instead of
+  cycle index.
+- `control/references/reference_library.py`: docstring now states
+  trajectories may span multiple gait cycles and must be played
+  linearly (no wrap to index 0 — first cycle is from-rest, not
+  periodic with the last steady-state cycle).
+
+### Validation
+- v0.20.0-A schema contract: 14/14 tests still pass.
+- Kinematic replay (`--kinematic`) at `vx=0.15`: 100 control steps →
+  `root_x` `-0.024 → +0.246 m` → realized speed `0.150 m/s` (matches
+  command exactly).
+- Fixed-base replay (`--fixed-base`) at `vx=0.15`: 100 steps,
+  `root_z` flat at `0.4683`, `root_x = +0.301 m`, pitch/roll at
+  zero — servos track the multi-cycle q_ref with no drift.
+- Free-floating replay still falls inside one gait cycle as expected
+  (no balance feedback yet — that is v0.20.1's PPO job; the v0.20.0-C
+  gate is q_ref trackability, not open-loop walking).
+
+---
+
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework
 
 ### Problem

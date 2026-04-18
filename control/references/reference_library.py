@@ -40,12 +40,16 @@ import numpy as np
 
 @dataclass
 class ReferenceTrajectory:
-    """One gait cycle of reference data for a single command bin.
+    """A reference trajectory for a single command bin.
 
-    All per-timestep arrays have shape ``[n_steps, ...]`` where
-    ``n_steps = int(round(cycle_time / dt))``.  The trajectory is
-    periodic: ``trajectory[0]`` follows ``trajectory[-1]`` for
-    continuous walking.
+    Per-timestep arrays have shape ``[n_steps, ...]``.  ``cycle_time`` is
+    the gait period (one left+right step), but ``n_steps`` may span many
+    cycles for generators that emit a long monotonic plan (e.g. the
+    ToddlerBot-style ZMP walker plans ~22 s of forward walking, so
+    ``n_steps == cycle_count * round(cycle_time / dt)``).  Consumers
+    should play the trajectory linearly and treat the end as terminal —
+    do not wrap to index 0, since the first cycle of a from-rest plan is
+    not periodic with the last steady-state cycle.
 
     For a **stop** command (vx == 0), the trajectory is a single-frame
     standing posture (``n_steps == 1``) that repeats indefinitely.

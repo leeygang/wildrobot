@@ -115,15 +115,17 @@ def run_viewer(
     mapper = CtrlOrderMapper(model, actuator_names)
 
     traj = lib.lookup(vx)
-    n_cycle = traj.n_steps
+    n_steps = traj.n_steps
     if kinematic:
         mode_str = "kinematic"
     elif fixed_base:
         mode_str = "fixed-base"
     else:
         mode_str = "free-floating"
-    logger.log(f"Trajectory: vx={traj.command_vx:.3f}, steps={n_cycle}, "
-               f"cycle_time={traj.cycle_time:.3f}s")
+    logger.log(f"Trajectory: vx={traj.command_vx:.3f}, n_steps={n_steps}, "
+               f"duration={n_steps * traj.dt:.2f}s, "
+               f"gait_cycle={traj.cycle_time:.3f}s")
+    horizon = min(horizon, n_steps)
     logger.log(f"Viewer: horizon={horizon}, mode={mode_str}")
 
     _init_standing(model, data)
@@ -158,28 +160,30 @@ def _run_kinematic(model, data, traj, vx, horizon, print_every,
     """Kinematic replay: set qpos directly, no physics."""
     import time as time_mod
 
-    n_cycle = traj.n_steps
+    n_steps = traj.n_steps
 
     def set_pose(step_idx):
-        cycle_idx = step_idx % n_cycle
-        q_ref = traj.q_ref[cycle_idx]
+        idx = min(step_idx, n_steps - 1)
+        q_ref = traj.q_ref[idx]
 
         mj_ctrl_order = np.zeros(len(policy_to_mj))
         mj_ctrl_order[policy_to_mj] = q_ref
         for act_i in range(len(act_to_qpos)):
             data.qpos[act_to_qpos[act_i]] = mj_ctrl_order[act_i]
 
-        data.qpos[0] = step_idx * ref_dt * vx
-        data.qpos[2] = traj.pelvis_pos[cycle_idx, 2] if traj.pelvis_pos is not None else 0.45
+        # Use the trajectory's monotonic pelvis x (matches IK frame).
+        data.qpos[0] = float(traj.pelvis_pos[idx, 0]) if traj.pelvis_pos is not None else step_idx * ref_dt * vx
+        data.qpos[1] = float(traj.pelvis_pos[idx, 1]) if traj.pelvis_pos is not None else 0.0
+        data.qpos[2] = float(traj.pelvis_pos[idx, 2]) if traj.pelvis_pos is not None else 0.45
         data.qpos[3:7] = [1, 0, 0, 0]
         mujoco.mj_forward(model, data)
 
     if headless:
-        logger.log(f"\n{'step':>5} {'cyc':>4} {'root_x':>7}")
+        logger.log(f"\n{'step':>5} {'phase':>5} {'root_x':>7}")
         for i in range(horizon):
             set_pose(i)
             if i % print_every == 0:
-                logger.log(f"{i:5d} {i % n_cycle:4d} {data.qpos[0]:+7.4f}")
+                logger.log(f"{i:5d} {traj.phase[i]:5.2f} {data.qpos[0]:+7.4f}")
         logger.log("Kinematic replay complete.")
     else:
         step_idx = [0]
@@ -207,7 +211,7 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     """Physics replay: set ctrl, step physics, observe response."""
     import time as time_mod
 
-    n_cycle = traj.n_steps
+    n_steps = traj.n_steps
     physics_dt = model.opt.timestep
     physics_steps_per_ref = max(1, int(round(ref_dt / physics_dt)))
 
@@ -234,8 +238,10 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
     step_log = []
 
     def step_fn(step_idx: int) -> dict:
-        cycle_idx = step_idx % n_cycle
-        q_ref = traj.q_ref[cycle_idx]
+        # Trajectory plays linearly through the multi-cycle plan; clamp at
+        # the end so we hold the last frame rather than wrap to cycle 0.
+        idx = min(step_idx, n_steps - 1)
+        q_ref = traj.q_ref[idx]
         mapper.set_all_ctrl(data, q_ref)
 
         for _ in range(physics_steps_per_ref * sim_dt_factor):
@@ -258,19 +264,19 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
         return {
             "step": step_idx,
-            "cycle_idx": cycle_idx,
+            "phase": float(traj.phase[idx]),
             "root_x": root_pos[0],
             "root_y": root_pos[1],
             "root_z": root_pos[2],
             "pitch": pitch,
             "roll": roll,
-            "stance": int(traj.stance_foot_id[cycle_idx]),
-            "contact_l": float(traj.contact_mask[cycle_idx, 0]),
-            "contact_r": float(traj.contact_mask[cycle_idx, 1]),
+            "stance": int(traj.stance_foot_id[idx]),
+            "contact_l": float(traj.contact_mask[idx, 0]),
+            "contact_r": float(traj.contact_mask[idx, 1]),
         }
 
     if headless:
-        logger.log(f"\n{'step':>5} {'cyc':>4} {'root_z':>7} {'pitch':>7} "
+        logger.log(f"\n{'step':>5} {'phase':>5} {'root_z':>7} {'pitch':>7} "
                    f"{'roll':>7} {'root_x':>7} {'stance':>6}")
         logger.log("-" * 55)
 
@@ -280,7 +286,7 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
             if i % print_every == 0 or i == horizon - 1:
                 st = "L" if info["stance"] == 0 else "R"
-                logger.log(f"{i:5d} {info['cycle_idx']:4d} {info['root_z']:7.4f} "
+                logger.log(f"{i:5d} {info['phase']:5.2f} {info['root_z']:7.4f} "
                            f"{info['pitch']:+7.4f} {info['roll']:+7.4f} "
                            f"{info['root_x']:+7.4f} {st:>6}")
 

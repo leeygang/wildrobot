@@ -55,9 +55,12 @@ class ZMPWalkConfig:
     zmp_cost_Q: float = 1.0
     zmp_cost_R: float = 0.1
 
-    # Trajectory generation: plan extra cycles to ensure enough steps
-    n_plan_extra_cycles: int = 2  # extra cycles beyond needed output
-    n_output_cycles: int = 1  # cycles to keep in library entry
+    # Trajectory generation: plan long horizon and replay linearly
+    # (matches ToddlerBot ``zmp_walk``: 22 s of monotonic forward walking).
+    # Cycle 0 is from-rest (half-step right swing), cycles 1+ are LIPM
+    # steady-state.  The viewer / env plays the trajectory through
+    # without wrapping, so cycle-boundary periodicity is not required.
+    total_plan_time_s: float = 22.0
 
     # Limits
     max_step_length_m: float = 0.10
@@ -267,96 +270,142 @@ class ZMPWalkGenerator:
         self, command_vx: float, step_length: float,
         cycle_time_override: float | None = None,
     ) -> ReferenceTrajectory:
-        """Generate trajectory at a specific step length (no limit reduction)."""
+        """Generate a multi-cycle monotonic walking trajectory.
+
+        Matches ToddlerBot's approach (``toddlerbot.algorithms.zmp_walk``):
+        plan ``cfg.total_plan_time_s`` of continuous forward walking, where
+        cycle 0 starts from rest and cycles 1+ are LIPM steady-state.  The
+        consumer (viewer / env) plays the trajectory linearly without
+        wrapping, so there is no cycle-boundary discontinuity to make
+        periodic.
+
+        COM (sagittal) follows the analytical LIPM solution with the
+        steady-state initial condition ``(x0, vx0)`` re-applied at the
+        start of each cycle's stance frame; the cycle's world offset is
+        ``2*k*sl``.  Foot positions advance monotonically: left at
+        ``0, 2*sl, 4*sl, ...``; right at ``sl, 3*sl, 5*sl, ...``.  The
+        first right swing in cycle 0 is a half-step from rest (0 → sl);
+        every other swing is a full ``2*sl``.
+
+        Lateral COM uses a cosine weight-shift that stays inside the
+        support polygon — the exact LIPM lateral orbit overshoots the
+        stance foot.
+        """
         cfg = self.cfg
         cycle_time = cycle_time_override or cfg.cycle_time_s
 
-        # Plan footsteps with timing derived from the (possibly adjusted) cycle_time
         ds = cycle_time / 2.0 / (cfg.single_double_ratio + 1.0)
         ss = cfg.single_double_ratio * ds
+        T_half = ds + ss  # half-cycle time
+        sl = step_length
+        lat = cfg.default_stance_width_m
+        dt = cfg.dt_s
 
-        total_cycles = cfg.n_output_cycles + cfg.n_plan_extra_cycles
-        footsteps, time_steps, zmp_refs = self._plan_footsteps(
-            step_length, total_cycles, ds=ds, ss=ss
-        )
+        g = 9.81
+        w = np.sqrt(g / cfg.com_height_m)
 
-        # Run ZMP planner
-        total_time = time_steps[-1]
-        n_total = int(np.ceil(total_time / cfg.dt_s))
-        x0 = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        # --- LIPM steady-state initial conditions ---
+        C = np.cosh(w * T_half)
+        S = np.sinh(w * T_half)
+        C2 = np.cosh(2 * w * T_half)
+        S2 = np.sinh(2 * w * T_half)
+        det = 2.0 * (1.0 - C2)
+        x0 = sl * ((C2 - 1) * (1 + C) - S * S2) / det
+        vx0 = sl * w * ((C2 - 1) * S - S2 * (1 + C)) / det
 
-        self.planner.plan(
-            time_steps, zmp_refs, x0, cfg.com_height_m,
-            Qy=np.eye(2) * cfg.zmp_cost_Q,
-            R=np.eye(2) * cfg.zmp_cost_R,
-        )
+        # COM at start of phase B (= continuation from phase A end at t=T_half)
+        x_mid = x0 * C + (vx0 / w) * S
+        vx_mid = x0 * w * S + vx0 * C
 
-        # Forward-integrate COM trajectory using the planner's optimal
-        # feedback law.  This gives better numerical behavior than the
-        # planner's analytical nominal trajectory (which can diverge
-        # due to ExpPlusPPoly accumulation errors).
-        com_traj = np.zeros((n_total, 4), dtype=np.float64)
-        com_traj[0] = x0
-        for i in range(1, n_total):
-            t = i * cfg.dt_s
-            u = self.planner.get_optim_com_acc(t, com_traj[i - 1])
-            com_traj[i, :2] = com_traj[i - 1, :2] + com_traj[i - 1, 2:] * cfg.dt_s
-            com_traj[i, 2:] = com_traj[i - 1, 2:] + u * cfg.dt_s
+        lat_amplitude = 0.5 * lat
 
-        # Compute foot trajectories
-        left_foot, right_foot, stance_ids, contacts = self._compute_foot_trajectories(
-            footsteps, time_steps, n_total
-        )
+        n_half = int(round(T_half / dt))
+        n_cycle = 2 * n_half
+        n_ds = int(round(ds / dt))
 
-        # Extract one gait cycle that is truly periodic.
-        # A full cycle = left step + right step. Find consecutive points
-        # where the gait repeats: stance transitions from L→R, which
-        # marks the same phase point each cycle.
-        stance_lr_transitions = []
-        for i in range(1, n_total):
-            # Detect L→R stance transition (stance goes 0→1)
-            if stance_ids[i] > 0.5 and stance_ids[i - 1] < 0.5:
-                stance_lr_transitions.append(i)
+        n_cycles = max(1, int(np.ceil(cfg.total_plan_time_s / cycle_time)))
+        n_total = n_cycles * n_cycle
 
-        # Need at least 3 transitions to skip warmup and extract one cycle
-        if len(stance_lr_transitions) >= 3:
-            start_step = stance_lr_transitions[1]
-            end_step = stance_lr_transitions[2]
-        elif len(stance_lr_transitions) >= 2:
-            start_step = stance_lr_transitions[0]
-            end_step = stance_lr_transitions[1]
-        else:
-            # Fallback: use fixed extraction
-            steps_per_cycle = int(round(cycle_time / cfg.dt_s))
-            out_steps = steps_per_cycle * cfg.n_output_cycles
-            start_step = min(steps_per_cycle, n_total - out_steps)
-            start_step = max(start_step, 0)
-            end_step = min(start_step + out_steps, n_total)
+        com_world = np.zeros((n_total, 2), dtype=np.float64)
+        left_world = np.zeros((n_total, 3), dtype=np.float64)
+        right_world = np.zeros((n_total, 3), dtype=np.float64)
+        contact_out = np.zeros((n_total, 2), dtype=np.float64)
+        stance_out = np.zeros(n_total, dtype=np.float64)
 
-        actual_out = end_step - start_step
-        sl = slice(start_step, end_step)
+        for k in range(n_cycles):
+            cycle_offset = 2 * k * sl
 
-        # Keep world-frame copies for IK computation.
-        # Use integrated COM (not planner's analytical nominal, which diverges).
-        com_world = com_traj[sl, :2].copy()  # [n, 2] integrated COM x,y
-        left_world = left_foot[sl].copy()    # [n, 3] foot xyz in world
-        right_world = right_foot[sl].copy()
-        stance_out = stance_ids[sl].copy()
-        contact_out = contacts[sl].copy()
+            # Right's start position in this cycle's phase A.
+            # Cycle 0: from rest (right at world x=0, half-step swing 0→sl).
+            # Cycle k≥1: steady state (right at (2k-1)*sl from previous
+            # cycle's phase B, full 2*sl swing).
+            if k == 0:
+                right_a_start = 0.0
+                right_a_swing = sl
+            else:
+                right_a_start = (2 * k - 1) * sl
+                right_a_swing = 2.0 * sl
 
-        # Solve IK from world-frame positions.
-        # Use the midpoint between the two feet as the pelvis x reference,
-        # NOT the integrated COM (which drifts ahead of the feet).
-        # The pelvis should be approximately between the stance and swing
-        # foot during walking, not 15cm ahead of both.
-        n = actual_out
+            # --- Phase A: left stance (ZMP at world x=cycle_offset) ---
+            for i in range(n_half):
+                t = i * dt
+                cw = np.cosh(w * t)
+                sw = np.sinh(w * t)
+                idx = k * n_cycle + i
+
+                com_world[idx, 0] = cycle_offset + x0 * cw + (vx0 / w) * sw
+                phase_frac = i / n_half
+                com_world[idx, 1] = lat_amplitude * np.cos(np.pi * phase_frac)
+
+                left_world[idx] = [cycle_offset, lat, 0]
+                if i < n_ds:
+                    right_world[idx] = [right_a_start, -lat, 0]
+                    contact_out[idx] = [1, 1]
+                else:
+                    frac = (i - n_ds) / max(1, n_half - n_ds - 1)
+                    frac = min(frac, 1.0)
+                    right_world[idx] = [
+                        right_a_start + right_a_swing * frac, -lat,
+                        cfg.foot_step_height_m * np.sin(np.pi * frac),
+                    ]
+                    contact_out[idx] = [1, 0]
+                stance_out[idx] = 0  # left
+
+            # --- Phase B: right stance (ZMP at world x=cycle_offset+sl) ---
+            # Left always swings 2*sl (from cycle_offset to cycle_offset+2*sl).
+            for i in range(n_half):
+                t = i * dt
+                cw = np.cosh(w * t)
+                sw = np.sinh(w * t)
+                idx = k * n_cycle + n_half + i
+
+                com_world[idx, 0] = (cycle_offset + sl
+                                     + (x_mid - sl) * cw + (vx_mid / w) * sw)
+                phase_frac = i / n_half
+                com_world[idx, 1] = -lat_amplitude * np.cos(np.pi * phase_frac)
+
+                right_world[idx] = [cycle_offset + sl, -lat, 0]
+                if i < n_ds:
+                    left_world[idx] = [cycle_offset, lat, 0]
+                    contact_out[idx] = [1, 1]
+                else:
+                    frac = (i - n_ds) / max(1, n_half - n_ds - 1)
+                    frac = min(frac, 1.0)
+                    left_world[idx] = [
+                        cycle_offset + 2 * sl * frac, lat,
+                        cfg.foot_step_height_m * np.sin(np.pi * frac),
+                    ]
+                    contact_out[idx] = [0, 1]
+                stance_out[idx] = 1  # right
+
+        # --- Solve IK ---
+        n = n_total
         n_joints = 19
         q_ref = np.zeros((n, n_joints), dtype=np.float32)
 
         for i in range(n):
-            # Pelvis x = midpoint of the two feet (approximates real pelvis)
-            pelvis_x = (left_world[i, 0] + right_world[i, 0]) / 2.0
-            com_y = com_world[i, 1]  # lateral COM is still correct
+            pelvis_x = com_world[i, 0]
+            com_y = com_world[i, 1]
 
             for side, foot_world_i, indices in [
                 ("left", left_world[i], [0, 2, 4, 6]),
@@ -407,43 +456,34 @@ class ZMPWalkGenerator:
         for j in range(8):
             q_ref[:, j] = np.clip(q_ref[:, j], joint_limits_rad[j, 0], joint_limits_rad[j, 1])
 
-        # Now convert foot positions to COM-relative for periodic storage
+        # Foot positions stored COM-relative (bounded across cycles).
         left_out = left_world.copy()
         right_out = right_world.copy()
-        for i in range(n):
-            left_out[i, 0] -= com_world[i, 0]
-            left_out[i, 1] -= com_world[i, 1]
-            right_out[i, 0] -= com_world[i, 0]
-            right_out[i, 1] -= com_world[i, 1]
+        left_out[:, 0] -= com_world[:, 0]
+        left_out[:, 1] -= com_world[:, 1]
+        right_out[:, 0] -= com_world[:, 0]
+        right_out[:, 1] -= com_world[:, 1]
 
-        # COM in the de-trended frame
-        com_detrended = np.zeros((n, 4), dtype=np.float64)
-        stride_x = com_world[-1, 0] - com_world[0, 0]
-        stride_y = com_world[-1, 1] - com_world[0, 1]
-        for i in range(n):
-            frac = i / n
-            com_detrended[i, 0] = com_world[i, 0] - com_world[0, 0] - frac * stride_x
-            com_detrended[i, 1] = com_world[i, 1] - com_world[0, 1] - frac * stride_y
+        # Phase: normalized within one gait cycle, repeating each cycle.
+        phase = np.tile(
+            np.linspace(0.0, 1.0, n_cycle, endpoint=False, dtype=np.float32),
+            n_cycles,
+        )
 
-        # Build phase array
-        phase = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float32)
-
-        # Pelvis position: de-trended COM oscillation + height
+        # Pelvis world pose: monotonically advances with COM.
         pelvis_pos = np.zeros((n, 3), dtype=np.float32)
-        pelvis_pos[:, 0] = com_detrended[:, 0].astype(np.float32)
-        pelvis_pos[:, 1] = com_detrended[:, 1].astype(np.float32)
+        pelvis_pos[:, 0] = com_world[:, 0].astype(np.float32)
+        pelvis_pos[:, 1] = com_world[:, 1].astype(np.float32)
         pelvis_pos[:, 2] = cfg.com_height_m
         pelvis_rpy = np.zeros((n, 3), dtype=np.float32)
 
-        # COM position: same as pelvis for LIPM
         com_pos = pelvis_pos.copy()
-
         foot_rpy = np.zeros((n, 3), dtype=np.float32)
 
         return ReferenceTrajectory(
             command_vx=command_vx,
             dt=cfg.dt_s,
-            cycle_time=actual_out * cfg.dt_s,
+            cycle_time=cycle_time,  # gait period (per-cycle), not total duration
             q_ref=q_ref,
             phase=phase,
             pelvis_pos=pelvis_pos,
@@ -455,7 +495,7 @@ class ZMPWalkGenerator:
             right_foot_rpy=foot_rpy.copy(),
             stance_foot_id=stance_out.astype(np.float32),
             contact_mask=contact_out.astype(np.float32),
-            generator_version="zmp_v0.20.0",
+            generator_version="zmp_v0.20.0_multicycle",
         )
 
     def _generate_standing(self) -> ReferenceTrajectory:
