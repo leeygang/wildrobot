@@ -6,9 +6,14 @@ MuJoCo model.  The viewer sets joint position targets (ctrl) from the
 library's q_ref and lets the PD servos track them, showing whether the
 reference is physically trackable.
 
+All output is logged to a timestamped file in /tmp/zmp_viewer_logs/.
+
 Usage:
   # Interactive viewer at cmd=0.15
   uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.15
+
+  # Fixed-base (root pinned, legs track via PD)
+  uv run mjpython training/eval/view_zmp_in_mujoco.py --fixed-base --vx 0.10
 
   # Headless recording
   uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.15 \
@@ -25,6 +30,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import mujoco
@@ -36,6 +42,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from control.references.reference_library import ReferenceLibrary
 from training.utils.ctrl_order import CtrlOrderMapper
 
+
+# ---------------------------------------------------------------------------
+# Logging helper
+# ---------------------------------------------------------------------------
+
+class Logger:
+    """Dual-output logger: prints to console and writes to a log file."""
+
+    def __init__(self, log_dir: str = "/tmp/zmp_viewer_logs") -> None:
+        log_path = Path(log_dir)
+        log_path.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.file_path = log_path / f"zmp_viewer_{timestamp}.log"
+        self._file = open(self.file_path, "w")
+        self.log(f"Log file: {self.file_path}")
+
+    def log(self, msg: str) -> None:
+        print(msg)
+        self._file.write(msg + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+# ---------------------------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------------------------
 
 def _load_model():
     """Load WildRobot MuJoCo model."""
@@ -61,9 +95,14 @@ def _init_standing(model, data):
     mujoco.mj_forward(model, data)
 
 
+# ---------------------------------------------------------------------------
+# Main viewer dispatch
+# ---------------------------------------------------------------------------
+
 def run_viewer(
     lib: ReferenceLibrary,
     vx: float,
+    logger: Logger,
     headless: bool = False,
     kinematic: bool = False,
     fixed_base: bool = False,
@@ -77,15 +116,19 @@ def run_viewer(
 
     traj = lib.lookup(vx)
     n_cycle = traj.n_steps
-    mode_str = "kinematic" if kinematic else "physics"
-    print(f"Trajectory: vx={traj.command_vx:.3f}, steps={n_cycle}, "
-          f"cycle_time={traj.cycle_time:.3f}s")
-    print(f"Viewer: horizon={horizon}, mode={mode_str}")
+    if kinematic:
+        mode_str = "kinematic"
+    elif fixed_base:
+        mode_str = "fixed-base"
+    else:
+        mode_str = "free-floating"
+    logger.log(f"Trajectory: vx={traj.command_vx:.3f}, steps={n_cycle}, "
+               f"cycle_time={traj.cycle_time:.3f}s")
+    logger.log(f"Viewer: horizon={horizon}, mode={mode_str}")
 
     _init_standing(model, data)
 
     # Build qpos index mapping: policy order -> qpos index
-    # MuJoCo actuator order is act[i] -> qpos[qpos_adr[act_joint_id]]
     act_to_qpos = []
     for i in range(model.nu):
         joint_id = model.actuator_trnid[i, 0]
@@ -99,49 +142,45 @@ def run_viewer(
 
     if kinematic:
         _run_kinematic(model, data, traj, vx, horizon, print_every,
-                       ref_dt, policy_to_mj, act_to_qpos, headless)
+                       ref_dt, policy_to_mj, act_to_qpos, headless, logger)
     else:
         _run_physics(model, data, traj, mapper, horizon, print_every,
-                     ref_dt, sim_dt_factor, headless, fixed_base=fixed_base)
+                     ref_dt, sim_dt_factor, headless, logger,
+                     fixed_base=fixed_base)
 
+
+# ---------------------------------------------------------------------------
+# Kinematic replay
+# ---------------------------------------------------------------------------
 
 def _run_kinematic(model, data, traj, vx, horizon, print_every,
-                   ref_dt, policy_to_mj, act_to_qpos, headless):
-    """Kinematic replay: set qpos directly, no physics.
-
-    Shows the intended reference motion without balance issues.
-    The root advances forward at the commanded speed.
-    """
+                   ref_dt, policy_to_mj, act_to_qpos, headless, logger):
+    """Kinematic replay: set qpos directly, no physics."""
     import time as time_mod
 
     n_cycle = traj.n_steps
 
     def set_pose(step_idx):
         cycle_idx = step_idx % n_cycle
-        q_ref = traj.q_ref[cycle_idx]  # policy order
+        q_ref = traj.q_ref[cycle_idx]
 
-        # Map policy-order q_ref to MuJoCo qpos
         mj_ctrl_order = np.zeros(len(policy_to_mj))
         mj_ctrl_order[policy_to_mj] = q_ref
         for act_i in range(len(act_to_qpos)):
             data.qpos[act_to_qpos[act_i]] = mj_ctrl_order[act_i]
 
-        # Advance root forward at commanded speed
-        data.qpos[0] = step_idx * ref_dt * vx  # x
+        data.qpos[0] = step_idx * ref_dt * vx
         data.qpos[2] = traj.pelvis_pos[cycle_idx, 2] if traj.pelvis_pos is not None else 0.45
-
-        # Keep root upright
         data.qpos[3:7] = [1, 0, 0, 0]
-
         mujoco.mj_forward(model, data)
 
     if headless:
-        print(f"\n{'step':>5} {'cyc':>4} {'root_x':>7}")
+        logger.log(f"\n{'step':>5} {'cyc':>4} {'root_x':>7}")
         for i in range(horizon):
             set_pose(i)
             if i % print_every == 0:
-                print(f"{i:5d} {i % n_cycle:4d} {data.qpos[0]:+7.4f}")
-        print("Kinematic replay complete.")
+                logger.log(f"{i:5d} {i % n_cycle:4d} {data.qpos[0]:+7.4f}")
+        logger.log("Kinematic replay complete.")
     else:
         step_idx = [0]
         with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -151,23 +190,21 @@ def _run_kinematic(model, data, traj, vx, horizon, print_every,
 
             while viewer.is_running() and step_idx[0] < horizon:
                 set_pose(step_idx[0])
-                # Track robot with camera
                 viewer.cam.lookat[0] = data.qpos[0]
                 viewer.sync()
                 step_idx[0] += 1
                 time_mod.sleep(ref_dt)
 
-            print(f"Kinematic replay done: {step_idx[0]} steps")
+            logger.log(f"Kinematic replay done: {step_idx[0]} steps")
 
+
+# ---------------------------------------------------------------------------
+# Physics replay
+# ---------------------------------------------------------------------------
 
 def _run_physics(model, data, traj, mapper, horizon, print_every,
-                 ref_dt, sim_dt_factor, headless, fixed_base=False):
-    """Physics replay: set ctrl, step physics, observe response.
-
-    If fixed_base=True, the root position/orientation is reset after each
-    step so the robot can't fall. The legs still respond to PD control,
-    showing servo tracking behavior without balance issues.
-    """
+                 ref_dt, sim_dt_factor, headless, logger, fixed_base=False):
+    """Physics replay: set ctrl, step physics, observe response."""
     import time as time_mod
 
     n_cycle = traj.n_steps
@@ -176,19 +213,14 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
     _init_standing(model, data)
 
-    # Save the initial root state for fixed-base mode
     root_qpos_init = data.qpos[:7].copy()
-    root_qvel_init = data.qvel[:6].copy()
 
-    _init_standing(model, data)
-
-    # Startup ramp: gradually blend from standing to walking posture
-    # over startup_steps to avoid a violent initial transition.
+    # Startup ramp
     startup_steps = 50
-    standing_q = np.zeros(19, dtype=np.float32)  # standing: all joints near zero
+    standing_q = np.zeros(19, dtype=np.float32)
     first_q = traj.q_ref[0]
 
-    print(f"Startup ramp: {startup_steps} steps blending to walking posture")
+    logger.log(f"Startup ramp: {startup_steps} steps blending to walking posture")
     for i in range(startup_steps):
         alpha = (i + 1) / startup_steps
         blended = standing_q * (1 - alpha) + first_q * alpha
@@ -197,38 +229,28 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             mujoco.mj_step(model, data)
 
     root_z_after_ramp = data.qpos[2]
-    print(f"After ramp: root_z={root_z_after_ramp:.4f}")
+    logger.log(f"After ramp: root_z={root_z_after_ramp:.4f}")
 
     step_log = []
 
     def step_fn(step_idx: int) -> dict:
-        """Execute one reference step."""
         cycle_idx = step_idx % n_cycle
-
-        # Get q_ref for this step (policy order)
         q_ref = traj.q_ref[cycle_idx]
-
-        # Set ctrl via the mapper (handles policy → MuJoCo ordering)
         mapper.set_all_ctrl(data, q_ref)
 
-        # Step physics
         for _ in range(physics_steps_per_ref * sim_dt_factor):
             mujoco.mj_step(model, data)
 
-        # Fixed-base: reset root to upright, advance x at command speed
         if fixed_base:
             data.qpos[0] = root_qpos_init[0] + (step_idx + 1) * ref_dt * traj.command_vx
             data.qpos[1] = root_qpos_init[1]
             data.qpos[2] = root_qpos_init[2]
-            data.qpos[3:7] = [1, 0, 0, 0]  # upright
-            data.qvel[:6] = 0  # zero root velocity
+            data.qpos[3:7] = [1, 0, 0, 0]
+            data.qvel[:6] = 0
             mujoco.mj_forward(model, data)
 
-        # Collect diagnostics
         root_pos = data.qpos[:3].copy()
-        root_quat = data.qpos[3:7].copy()
-        # Approximate pitch from quaternion
-        qw, qx, qy, qz = root_quat
+        qw, qx, qy, qz = data.qpos[3:7]
         pitch = np.arctan2(2 * (qw * qy - qz * qx),
                            1 - 2 * (qx**2 + qy**2))
         roll = np.arctan2(2 * (qw * qx + qy * qz),
@@ -248,9 +270,9 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         }
 
     if headless:
-        print(f"\n{'step':>5} {'cyc':>4} {'root_z':>7} {'pitch':>7} "
-              f"{'roll':>7} {'root_x':>7} {'stance':>6}")
-        print("-" * 55)
+        logger.log(f"\n{'step':>5} {'cyc':>4} {'root_z':>7} {'pitch':>7} "
+                   f"{'roll':>7} {'root_x':>7} {'stance':>6}")
+        logger.log("-" * 55)
 
         for i in range(horizon):
             info = step_fn(i)
@@ -258,42 +280,40 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
 
             if i % print_every == 0 or i == horizon - 1:
                 st = "L" if info["stance"] == 0 else "R"
-                print(f"{i:5d} {info['cycle_idx']:4d} {info['root_z']:7.4f} "
-                      f"{info['pitch']:+7.4f} {info['roll']:+7.4f} "
-                      f"{info['root_x']:+7.4f} {st:>6}")
+                logger.log(f"{i:5d} {info['cycle_idx']:4d} {info['root_z']:7.4f} "
+                           f"{info['pitch']:+7.4f} {info['roll']:+7.4f} "
+                           f"{info['root_x']:+7.4f} {st:>6}")
 
-            # Check termination
-            if abs(info["pitch"]) > 0.8 or info["root_z"] < 0.15:
-                print(f"\n  TERMINATED at step {i}: "
-                      f"pitch={info['pitch']:.3f} root_z={info['root_z']:.3f}")
+            if not fixed_base and (abs(info["pitch"]) > 0.8 or info["root_z"] < 0.15):
+                logger.log(f"\n  TERMINATED at step {i}: "
+                           f"pitch={info['pitch']:.3f} root_z={info['root_z']:.3f}")
                 break
 
-        # Summary
         if step_log:
             pitches = [s["pitch"] for s in step_log]
             rolls = [s["roll"] for s in step_log]
             heights = [s["root_z"] for s in step_log]
             x_final = step_log[-1]["root_x"]
             survived = len(step_log)
-            print(f"\nSummary ({survived}/{horizon} steps):")
-            print(f"  pitch: mean={np.mean(pitches):+.4f} "
-                  f"p95={np.percentile(np.abs(pitches), 95):.4f}")
-            print(f"  roll:  mean={np.mean(rolls):+.4f} "
-                  f"p95={np.percentile(np.abs(rolls), 95):.4f}")
-            print(f"  height: mean={np.mean(heights):.4f} "
-                  f"min={np.min(heights):.4f}")
-            print(f"  forward: x={x_final:+.4f}m in {survived} steps")
+            logger.log(f"\nSummary ({survived}/{horizon} steps):")
+            logger.log(f"  pitch: mean={np.mean(pitches):+.4f} "
+                       f"p95={np.percentile(np.abs(pitches), 95):.4f}")
+            logger.log(f"  roll:  mean={np.mean(rolls):+.4f} "
+                       f"p95={np.percentile(np.abs(rolls), 95):.4f}")
+            logger.log(f"  height: mean={np.mean(heights):.4f} "
+                       f"min={np.min(heights):.4f}")
+            logger.log(f"  forward: x={x_final:+.4f}m in {survived} steps")
     else:
-        # Interactive viewer
         step_idx = [0]
 
         def controller(model, data):
             info = step_fn(step_idx[0])
+            step_log.append(info)
             step_idx[0] += 1
             if step_idx[0] % print_every == 0:
                 st = "L" if info["stance"] == 0 else "R"
-                print(f"step={info['step']:5d} z={info['root_z']:.3f} "
-                      f"pitch={info['pitch']:+.3f} x={info['root_x']:+.3f} {st}")
+                logger.log(f"step={info['step']:5d} z={info['root_z']:.3f} "
+                           f"pitch={info['pitch']:+.3f} x={info['root_x']:+.3f} {st}")
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.cam.distance = 1.5
@@ -305,6 +325,23 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
                 viewer.sync()
                 time.sleep(ref_dt * sim_dt_factor)
 
+        # Write summary after viewer closes
+        if step_log:
+            survived = len(step_log)
+            pitches = [s["pitch"] for s in step_log]
+            heights = [s["root_z"] for s in step_log]
+            x_final = step_log[-1]["root_x"]
+            logger.log(f"\nSession summary ({survived} steps):")
+            logger.log(f"  pitch: mean={np.mean(pitches):+.4f} "
+                       f"p95={np.percentile(np.abs(pitches), 95):.4f}")
+            logger.log(f"  height: mean={np.mean(heights):.4f} "
+                       f"min={np.min(heights):.4f}")
+            logger.log(f"  forward: x={x_final:+.4f}m")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -329,18 +366,21 @@ def main():
                         help="Physics substeps per reference step")
     args = parser.parse_args()
 
+    logger = Logger()
+
     if args.library_path:
         lib = ReferenceLibrary.load(args.library_path)
     else:
-        print("No library path given, generating fresh...")
+        logger.log("No library path given, generating fresh...")
         from control.zmp.zmp_walk import ZMPWalkGenerator
         gen = ZMPWalkGenerator()
         lib = gen.build_library()
 
-    print(lib.summary())
-    print()
+    logger.log(lib.summary())
+    logger.log("")
     run_viewer(
         lib, args.vx,
+        logger=logger,
         headless=args.headless,
         kinematic=args.kinematic,
         fixed_base=args.fixed_base,
@@ -348,6 +388,9 @@ def main():
         print_every=args.print_every,
         sim_dt_factor=args.sim_dt_factor,
     )
+
+    logger.log(f"\nLog saved to: {logger.file_path}")
+    logger.close()
 
 
 if __name__ == "__main__":
