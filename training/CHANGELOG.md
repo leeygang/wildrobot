@@ -904,6 +904,51 @@ characterise the remaining work as cosmetic.
 - `tests/test_v0200c_geometry.py`: new FK validation gate
   (Layer-2 contact-frame check)
 
+### Round 8 — Proposal A (cycle-0 quintic span) tried, no improvement at vx=0.15
+
+Reviewer round-8 direction: stay in C, fix the prior at nominal
+vx=0.15 (don't grow C2 into a controller).  Proposal A from the
+candidate list: extend the cycle-0 quintic blend across multiple
+cycles to halve the required forward acceleration.
+
+Two variants attempted, both reverted:
+
+- **A1 (`n_warmup_cycles=2`)**: quintic blends from rest at t=0
+  to LIPM steady-state at t=2·T_cycle.  Spreads the forward
+  acceleration over 2 cycles instead of 1.  Result at vx=0.15:
+  60 ctrl steps survival (vs 81 round-7 baseline).  WORSE.
+  Diagnosis: foot placement stays uniform but the COM lags by ~0.04
+  m/s during cycle 1, so the IK demands the leg reach over a foot
+  that is now too far ahead — knees clip at the IK's max-reach
+  margin and the body still tips forward, but earlier.
+- **A2 (hold-DS variant)**: keep COM at rest during cycle-0
+  double-support (frames 0-4), then quintic-accelerate from
+  start of single-support to t=T_cycle.  Idea: don't tip the body
+  forward over both planted feet during DS.  Result at vx=0.15:
+  75 steps (slightly worse than 81).  Diagnosis: avoiding the DS
+  tip moved the same forward angular momentum into the SS phase;
+  the body still falls forward.
+
+What stays in the codebase from round 8:
+
+- `ZMPWalkConfig.n_warmup_cycles` knob (default 1 = same as
+  round 7) — no behavior change at default; useful for future
+  experiments without code changes.
+- Internal `_warmup_x` / `_warmup_lat_scale` helpers that wrap
+  the quintic evaluation; cosmetic refactor of the per-cycle
+  loop.
+
+Net effect on prior behavior at default settings: **zero**.
+Round-7 numbers are reproducible exactly.
+
+The conclusion from round 8: the timing of the from-rest COM
+ramp is **not** the bottleneck.  The next prior fix needs to be
+either a command-conditioned step length / footstep pattern
+(Proposal A original variant: cycle-0 step ramp), a pre-cycle
+lean (Proposal C), or a forward-shifted first foothold
+(Proposal D).  These all touch foot placement, not just COM
+timing — bigger surgeries than what fit in round 8.
+
 ### Round 7b — reviewer follow-ups
 
 External review on round 7 flagged three issues, all landed:

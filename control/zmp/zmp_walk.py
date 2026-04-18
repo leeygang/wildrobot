@@ -81,10 +81,22 @@ class ZMPWalkConfig:
 
     # Trajectory generation: plan long horizon and replay linearly
     # (matches ToddlerBot ``zmp_walk``: 22 s of monotonic forward walking).
-    # Cycle 0 is from-rest (half-step right swing), cycles 1+ are LIPM
-    # steady-state.  The viewer / env plays the trajectory through
-    # without wrapping, so cycle-boundary periodicity is not required.
+    # Cycles 0..n_warmup_cycles-1 follow a quintic blend from rest
+    # ``(x=0, vx=0, ax=0)`` to the LIPM steady-state IC at the
+    # boundary; cycles n_warmup_cycles+ follow the steady-state
+    # LIPM solution.  Foot placement is uniform across all cycles
+    # (cycle 0 right swing is still a half-step, cycles 1+ are full
+    # 2*sl swings).
+    #
+    # Round-7 used n_warmup_cycles=1 (quintic over a single cycle).
+    # That worked at high vx (≥0.20) but at vx=0.15 the body could
+    # not generate the required forward acceleration in 0.64 s and
+    # fell forward without translating.  Round 8 spreads the
+    # quintic over 2 cycles by default, halving the required
+    # forward acceleration without changing foot placement or
+    # cycle indexing.  See the round-8 CHANGELOG section.
     total_plan_time_s: float = 22.0
+    n_warmup_cycles: int = 1
 
     # Limits
     max_step_length_m: float = 0.10
@@ -442,26 +454,37 @@ class ZMPWalkGenerator:
         contact_out = np.zeros((n_total, 2), dtype=np.float64)
         stance_out = np.zeros(n_total, dtype=np.float64)
 
-        # --- Cycle 0 quintic blend (sagittal): from rest at t=0 to
-        # the LIPM steady-state IC at the start of cycle 1 (t = T_cycle).
-        # Boundaries:
-        #   t=0:        x = 0,                    vx = 0,         ax = 0
-        #   t=T_cycle:  x = 2*sl + x0_ss,         vx = vx0_ss,    ax = w² * x0_ss
-        # ax at cycle-1 start follows from LIPM Phase A (ZMP=2*sl):
-        # ax = w² * (x - ZMP) = w² * x0_ss.
+        # --- Warmup quintic blend (sagittal): from rest at t=0 to
+        # the LIPM steady-state IC at the start of cycle n_warmup
+        # (t = n_warmup * T_cycle).  Boundaries:
+        #   t=0:           x = 0,                vx = 0,        ax = 0
+        #   t=n_w*T_cycle: x = 2*n_w*sl + x0_ss, vx = vx0_ss,   ax = w² * x0_ss
+        # ax at cycle-n_warmup start follows from LIPM Phase A
+        # (ZMP at 2*n_warmup*sl): ax = w² * (x - ZMP) = w² * x0_ss.
+        #
+        # Round-8 NOTE: tried n_warmup=2 (spread acceleration over
+        # 2 cycles) and a hold-DS variant (delay quintic until SS
+        # starts).  Both made vx=0.15 free-floating worse, not
+        # better — the timing of the COM ramp is not the
+        # bottleneck.  Reverted to n_warmup=1 (round-7 behavior).
+        n_warmup = max(1, int(cfg.n_warmup_cycles))
         T_cycle = 2.0 * T_half
-        ax_end_cycle0 = (w ** 2) * x0
+        T_warmup = n_warmup * T_cycle
+        ax_end_warmup = (w ** 2) * x0
         cycle0_x_coeffs = self._quintic_coeffs(
-            T_cycle,
+            T_warmup,
             0.0, 0.0, 0.0,
-            2.0 * sl + x0, vx0, ax_end_cycle0,
+            2.0 * n_warmup * sl + x0, vx0, ax_end_warmup,
         )
-        # Lateral ramp factor: 0 at t=0, 1 at t=T_cycle, smooth quintic
-        # so cycle 0's lateral starts at y=0 (matches standing) and
-        # joins cycle 1's lateral cosine at +lat_amplitude.
         cycle0_lat_ramp = self._quintic_coeffs(
-            T_cycle, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            T_warmup, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
         )
+
+        def _warmup_x(t_global: float) -> float:
+            return self._quintic_eval(cycle0_x_coeffs, t_global)
+
+        def _warmup_lat_scale(t_global: float) -> float:
+            return self._quintic_eval(cycle0_lat_ramp, t_global)
 
         for k in range(n_cycles):
             cycle_offset = 2 * k * sl
@@ -484,11 +507,11 @@ class ZMPWalkGenerator:
                 sw = np.sinh(w * t)
                 idx = k * n_cycle + i
 
-                if k == 0:
-                    # From-rest quintic blend (cycle 0 only).
-                    com_world[idx, 0] = self._quintic_eval(
-                        cycle0_x_coeffs, t)
-                    lat_scale = self._quintic_eval(cycle0_lat_ramp, t)
+                if k < n_warmup:
+                    # From-rest quintic blend with hold during cycle-0 DS.
+                    t_global = k * T_cycle + t
+                    com_world[idx, 0] = _warmup_x(t_global)
+                    lat_scale = _warmup_lat_scale(t_global)
                 else:
                     com_world[idx, 0] = (cycle_offset
                                          + x0 * cw + (vx0 / w) * sw)
@@ -497,8 +520,9 @@ class ZMPWalkGenerator:
                 # Cos pattern (steady state): +lat_amp at start
                 # (Phase A = L stance), through 0 at mid-Phase A,
                 # -lat_amp at end (= Phase B start, R stance).
-                # In cycle 0 the same shape is multiplied by a smooth
-                # ramp factor that starts at 0 (matches standing).
+                # During warmup the same shape is multiplied by a
+                # smooth ramp factor that starts at 0 (matches
+                # standing).
                 com_world[idx, 1] = (lat_scale * lat_amplitude
                                      * np.cos(np.pi * phase_frac))
 
@@ -525,13 +549,10 @@ class ZMPWalkGenerator:
                 sw = np.sinh(w * t)
                 idx = k * n_cycle + n_half + i
 
-                if k == 0:
-                    # Continue cycle-0 quintic blend through Phase B.
-                    t_global = T_half + t  # time since cycle 0 start
-                    com_world[idx, 0] = self._quintic_eval(
-                        cycle0_x_coeffs, t_global)
-                    lat_scale = self._quintic_eval(
-                        cycle0_lat_ramp, t_global)
+                if k < n_warmup:
+                    t_global = k * T_cycle + T_half + t
+                    com_world[idx, 0] = _warmup_x(t_global)
+                    lat_scale = _warmup_lat_scale(t_global)
                 else:
                     com_world[idx, 0] = (cycle_offset + sl
                                          + (x_mid - sl) * cw + (vx_mid / w) * sw)
