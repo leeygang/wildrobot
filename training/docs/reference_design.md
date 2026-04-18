@@ -685,55 +685,245 @@ Expectation:
 
 - prior trajectories remain trackable after IK and full MuJoCo dynamics on
   short horizons
-
-Quick visual check:
-
-- startup and one-to-two gait cycles remain coherent in full env replay
-- if failure appears, it is a bounded tracking/balance limit rather than an
-  incoherent reference breakdown
+- a small, bounded validation-only feedback can produce visible forward
+  walking — proving the prior is rescuable by a "minor correction" layer
+  before PPO is asked to learn that correction
 
 How this advances the end goal:
 
 - verifies the prior is physically usable as an imitation target for PPO
+- catches priors whose kinematic motion looks plausible but cannot be
+  rescued by realistic closed-loop feedback (the v0.19.5 failure mode)
+
+Status: **proposed split into C1 + C2 — pending external review**.
+The original single-gate wording (open-loop "realized step length ≥ 0.03 m"
+and "realized/cmd ratio ≥ 0.5" measured in free-floating replay) was
+unmeetable because LIPM is unstable open-loop and `v0.20.0` explicitly
+forbids a runtime balance controller.  See "Pivot rationale" below.
 
 Goal:
 
 - prove the prior remains coherent after IK and nominal target adaptation
-- prove the offline prior is trackable enough in full MuJoCo dynamics to be a
-  valid imitation target for PPO
+- prove the offline prior is trackable enough in full MuJoCo dynamics to be
+  a valid imitation target for PPO
 - do not require long-horizon open-loop walking from the offline prior
+- do require that a bounded validation-only stabilizer can extract forward
+  walking from the prior (C2)
 
 Measurement contract for this gate:
 
 - `control steps` means env control-loop ticks (`ctrl_dt`), not MuJoCo
   substeps
-- `footfalls` means touchdown events (left/right contact transitions), not
-  control-step count
-- use both:
-  - control steps for short-horizon survival timing
-  - touchdown events for gait-cycle progression
+- `footfalls` / `touchdowns` are detected from MuJoCo `data.contact`
+  foot-geom / floor-geom pairs, NOT from the kinematic reference
+  contact mask (the reference still ticks normally during a fall)
+- per-mode usage of metrics:
+  - kinematic playback: q_ref correctness only (forward speed, IK
+    reachability, joint limits)
+  - fixed-base PD (pelvis pinned): per-joint tracking RMSE and
+    saturation only — pelvis is held in place, so foot world
+    positions do not advance and stride is not measurable here
+  - free-floating C1 (no feedback): survival, touchdown counts,
+    failure classification only
+  - free-floating C2 (validation-only stabilizer): closed-loop
+    realized step length, realized/cmd ratio, saturation under
+    feedback
 
-Visual gate:
+#### Pivot rationale (why a C1 + C2 split)
 
-- touchdown locations match the intended stepping pattern
-- no obvious toe drag, scissoring, or pathological posture
-- startup, stop, and one-to-two gait cycles remain coherent in the full env
-- motion looks trackable rather than instantly impossible under the simulated
-  servo model
-- failures look like bounded tracking limits, not incoherent reference design
+The original single-gate wording mixed open-loop survival metrics with
+closed-loop walking metrics in the same free-floating replay.  Two
+concrete problems surfaced:
 
-Metric gate:
+1. **LIPM is unstable open-loop.** Without state feedback, an LIPM
+   trajectory falls within 1-3 seconds because the COM diverges from
+   the foot.  This is a property of the inverted pendulum, not of the
+   prior's quality.  ToddlerBot's reference implementation
+   (`toddlerbot.algorithms.zmp_walk` + `walk_env.py`) never validates
+   the prior in free-floating physics — the prior is consumed
+   kinematically during library generation, and PPO is the
+   stabilizer.  Open-loop forward-stride metrics are not meetable for
+   any pure offline LIPM/ZMP prior.
+2. **Pure kinematic validation does not catch all failure modes.**
+   `v0.19.5` shipped a kinematically coherent reference that PPO
+   could not stabilize.  Validating only kinematically would have
+   passed the same defective prior.
 
-- realized touchdown step length mean `>= 0.03 m`
+The split resolves both:
+
+- **C1** keeps an open-loop coherence check — no closed-loop
+  performance metrics, only that the prior does not corrupt itself
+  during the first cycles (no NaN, no joint runaway, no q_ref
+  discontinuity, no instant pitch-faceplant).
+- **C2** adds a bounded validation-only stabilizer harness that
+  measures whether a "minor correction" layer can extract forward
+  walking from the prior.  The harness exists ONLY in the validation
+  toolchain (`view_zmp_in_mujoco.py --c2-stabilizer`), is forbidden
+  from the runtime adapter, and tests the same hypothesis PPO will
+  later verify by training: that the prior is rescuable.
+
+D is unblocked only if **both C1 and C2 pass on the matrix** (see
+"Decision rule" below).
+
+#### C1 — open-loop coherence
+
+C1 verifies the prior does not corrupt itself before PPO is involved.
+It is a strict prior-quality gate, not a closed-loop performance
+gate.
+
+Visual gate (C1):
+
+- in **kinematic replay**: touchdown locations match the intended
+  stepping pattern, no toe drag / scissoring / pathological posture,
+  stop and resume settle cleanly
+- in **fixed-base PD** (pelvis pinned): legs visibly swing through
+  the q_ref pattern with no servo runaway, oscillation, or growing
+  error envelope
+- in **free-floating, no feedback**: startup and the first 1-2 gait
+  cycles remain coherent before the open-loop fall — failure looks
+  like a bounded balance loss (pitch / roll exceeds bound), not
+  q_ref breakdown
+
+Metric gate (C1):
+
+- *Reference correctness* (kinematic playback):
+  - realized forward speed = commanded vx within numerical noise
+  - realized touchdown step length mean `>= 0.03 m` (kinematic stride
+    truth)
+  - realized / commanded step ratio `>= 0.95`
+  - IK reachability `≈ 1.0`; safety margin violations = 0
+- *Servo trackability* (fixed-base PD):
+  - per-leg-joint tracking RMSE `<= 0.40 rad` per joint, `<= 0.25 rad`
+    overall — see open question Q1
+  - any-joint saturation `< 5 %` of replayed control steps
+  - per-joint MAE stable (within ±20 %) across the command range
+- *Open-loop coherence* (free-floating, no feedback):
+  - short-horizon env replay survives at least `45` control steps
+    before catastrophic pitch termination (`>= 0.9 s` at
+    `ctrl_dt=0.02`)
+  - touchdown progression includes at least one left and one right
+    physical foot/floor contact in the same replay
+  - failure cause is balance loss (pitch > 0.8 rad or root_z < 0.15
+    m), NOT joint runaway, q_ref discontinuity, or NaN
+  - no preview wrap discontinuity (linear-replay contract intact —
+    enforced by `ReferenceLibrary.get_preview` overrun warning)
+
+#### C2 — validation-only stabilizer harness
+
+C2 adds a small bounded feedback channel inside the validation
+viewer to measure realized walking under the prior.  The harness is
+NOT a runtime controller and MUST NOT be exported into the runtime
+adapter.
+
+Harness scope (HARD bounds — must be enforced by code review):
+
+| Channel | Form | Hard clip | Forbidden inputs |
+|---|---|---|---|
+| Torso pitch PD | `K_p · pitch_err + K_d · pitch_rate` → ankle pitch offset on stance side | `±0.10 rad` | gait phase from FSM, foothold preview, contact-mask annotations |
+| Torso roll PD | same form → hip roll offset on stance side | `±0.05 rad` | foothold preview, contact-mask annotations |
+| Capture-point swing nudge | `(x_cp − x_target_swing) · gain` → swing-x offset, applied only at foot lift | `±0.03 m` | timing changes, foothold re-planning, runtime FSM state |
+
+Forbidden everywhere: re-reading gait phase to decide what to do,
+recomputing footstep timing, scaling by stance side via a runtime
+FSM, importing the harness into `runtime/`.  The harness is
+instantiated only inside `view_zmp_in_mujoco.py` and `eval_*` paths,
+gated by `--c2-stabilizer`.
+
+If the stabilizer ever needs more than the inputs above to make C2
+pass, the prior has failed the gate — do not loosen the harness.
+
+Visual gate (C2):
+
+- learned motion (= prior + harness) shows visible forward walking,
+  not standing-shuffle, lean-back exploit, or backward drift
+- gait still resembles the prior family (alternating stepping
+  pattern preserved); harness output stays within hard clips for the
+  whole replay
+- stop / resume remains recognizable
+
+Metric gate (C2, on the closeout matrix — see Q2/Q3 for sweep
+parameters):
+
+- realized touchdown step length mean `>= 0.03 m` (physical contacts)
 - realized / commanded step ratio `>= 0.5`
-- IK reachability stays near `1.0`
-- safety margin violations remain zero
-- short-horizon env replay survives at least `45` control steps before
-  catastrophic pitch termination (equivalent to `>= 0.9 s` at `ctrl_dt=0.02`)
-- touchdown progression includes at least one left touchdown and one right
-  touchdown in the same replay
-- simulated tracking RMSE stays within the actuator-feasibility budget
-- no repeated hard saturation dominates the replay
+- any-joint saturation: target `< 20 %`, hard fail `>= 25 %` (see
+  open question Q3)
+- tracking RMSE within the C1 budget above (no relaxation under C2)
+- at least one left and one right physical touchdown in each replay
+- harness clip-saturation (% of steps where any harness output is
+  pinned at its clip): target `< 10 %`, hard fail `>= 25 %` — high
+  clip-saturation indicates the prior is being patched, not rescued
+
+#### Decision rule for v0.20.0-D
+
+| C1 | C2 | Action |
+|---|---|---|
+| pass | pass on all bins | promote to v0.20.0-D |
+| pass | partial pass / variance across seeds | stay in C; tune stabilizer gains within the hard clips, or align initial pelvis state with LIPM IC; do NOT relax clips |
+| pass | fail on all bins | stay in C; investigate prior quality (lateral asymmetry, knee feasibility) — stabilizer cannot rescue what is not rescuable |
+| fail | n/a | fix prior generation; do NOT spend effort on the stabilizer first |
+
+#### Open questions for external review (decide before kickoff)
+
+These three numbers / choices are intentionally left open for the
+external reviewer.  They control how strict the gate is and how the
+sweep is parameterized.  Each option is annotated with the
+internal recommendation and the trade-off so the reviewer can pick
+or override.
+
+**Q1 — Tracking-RMSE budget (per-joint and overall)**
+
+Internal recommendation: **per-joint `≤ 0.40 rad`, overall `≤ 0.25
+rad`**.
+
+Trade-off: current fixed-base data shows knee RMSE 0.34-0.36 rad and
+overall 0.19-0.20 rad.  At 0.40 / 0.25 the gate just passes today.
+At 0.30 / 0.20 the knee fails immediately and v0.20.0-C is blocked
+on knee SysID — which is real signal but defers C2 work indefinitely.
+Tightening here is conservative; loosening invites a real knee
+tracking issue to bleed into v0.20.1 PPO training.
+
+**Q2 — What the 3 seeds randomize**
+
+Internal recommendation: **initial pelvis perturbation** (small ±x /
+±y / ±yaw on the standing keyframe).
+
+Options:
+1. Initial pelvis perturbation (±2 cm position, ±5° yaw at startup)
+   — directly probes the LIPM-IC mismatch that is driving today's
+   open-loop fall, cheapest to implement
+2. Initial joint-pos noise (±2° on legs at standing keyframe) —
+   tests robustness to standing-pose variation, less targeted
+3. Domain randomization (friction, mass, motor delay) — closest to
+   v0.20.1 training conditions, biggest scope, may surface issues
+   that belong to v0.20.2 SysID rather than C2
+
+**Q3 — Saturation hard-fail threshold**
+
+Internal recommendation: **target `< 20 %`, hard fail `>= 25 %`**.
+
+Trade-off: free-floating without C2 currently shows 28-61 %
+saturation, almost entirely fall-driven.  If C2 is doing its job the
+fall is prevented and saturation should drop into the single digits.
+A 25 % hard fail catches the case where C2 only partially stabilizes
+(prior stays upright but legs are still pegged at limits).  Looser
+(`>= 35 %`) makes C2 mostly redundant with C1 survival.
+
+**Q4 (extra, not in the original plan)** — Should the harness allow
+any feedback on the swing trajectory beyond the capture-point nudge?
+
+Internal recommendation: **no — capture-point only, ±0.03 m clip**.
+Anything more becomes step adjustment, which is a runtime controller.
+
+#### Closeout artifact required
+
+Single CHANGELOG block with:
+
+- raw matrix table (4 vx bins × 2 modes × 3 seeds = 24 rows)
+- exact command lines used to produce each row
+- seed list
+- pass / fail annotation per criterion in the C1 and C2 metric gates
+- sha of the validation harness commit and reference library hash
 
 ### `v0.20.0-D`: PPO unblock decision
 
@@ -753,10 +943,18 @@ How this advances the end goal:
 
 PPO is unblocked only if:
 
-- `v0.20.0-A` through `v0.20.0-C` pass
-- the offline prior visually looks like a real walk family, not a balance
-  exploit
+- `v0.20.0-A` and `v0.20.0-B` pass
+- `v0.20.0-C1` (open-loop coherence) passes on all bins of the
+  closeout matrix
+- `v0.20.0-C2` (validation-only stabilizer harness) passes on all
+  bins of the closeout matrix without exceeding the hard clips on
+  the harness channels
+- the offline prior visually looks like a real walk family, not a
+  balance exploit
 - the remaining issues are plausibly correction-layer problems
+  (i.e. the things PPO is supposed to learn — touchdown
+  stabilization, contact adaptation, servo-delay rejection — and not
+  basic gait structure or propulsion)
 
 ### `v0.20.1`: ToddlerBot-style PPO
 
