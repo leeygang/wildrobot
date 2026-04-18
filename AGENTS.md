@@ -7,6 +7,7 @@ Design:
 1. ALWAYS research the public paper or projects to avoid reinventing the wheel. When discuss the solution, always provide the reference. Prefer to stick with the highest confident solution.
 2. make the metrics accurate as the first step when analyzing the data.
 3. keep the design simple
+4. current design and implementations follows ToddlerBot(projects/ToddlerBot), if we have our own design or implementation, we should have explicit rationale.
 
 
 Result:
