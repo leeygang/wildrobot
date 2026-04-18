@@ -48,6 +48,7 @@ class ZMPWalkConfig:
     # Gait geometry
     foot_step_height_m: float = 0.025
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
+    min_walking_speed_mps: float = 0.08     # below this, use standing (no tiny shuffles)
 
     # ZMP planner costs
     zmp_cost_Q: float = 1.0
@@ -189,8 +190,10 @@ class ZMPWalkGenerator:
     def generate(self, command_vx: float) -> ReferenceTrajectory:
         """Generate one gait-cycle trajectory for the given forward speed.
 
-        Automatically reduces the step length if joint limits are violated,
-        ensuring the output stays within the actuator envelope.
+        At low speeds, the cycle time is lengthened to maintain a minimum
+        step length (normal-sized steps at lower cadence, not tiny shuffles
+        at normal cadence).  Joint limits are enforced via a generate-
+        validate-reduce loop.
 
         Parameters
         ----------
@@ -205,20 +208,25 @@ class ZMPWalkGenerator:
         if abs(command_vx) < 1e-4:
             return self._generate_standing()
 
+        if abs(command_vx) < cfg.min_walking_speed_mps:
+            return self._generate_standing()
+
+        # Compute step length at the normal cadence
+        abs_vx = abs(command_vx)
         half_cycle = cfg.cycle_time_s / 2.0
-        raw_step = command_vx * half_cycle
-        step_length = np.clip(abs(raw_step), 0.0, cfg.safe_max_step_length_m)
-        if raw_step < 0:
+        step_length = min(abs_vx * half_cycle, cfg.safe_max_step_length_m)
+        cycle_time = cfg.cycle_time_s
+
+        if command_vx < 0:
             step_length = -step_length
 
-        # Generate-validate-reduce loop: if joint limits are violated,
-        # reduce step length and regenerate.
+        # Generate-validate-reduce loop
         for attempt in range(5):
-            traj = self._generate_at_step_length(command_vx, step_length)
+            traj = self._generate_at_step_length(
+                command_vx, step_length, cycle_time_override=cycle_time)
             violations = self._count_joint_violations(traj)
             if violations == 0:
                 break
-            # Reduce step length by 20% and retry
             step_length *= 0.8
 
         return traj
@@ -244,15 +252,20 @@ class ZMPWalkGenerator:
         return count
 
     def _generate_at_step_length(
-        self, command_vx: float, step_length: float
+        self, command_vx: float, step_length: float,
+        cycle_time_override: float | None = None,
     ) -> ReferenceTrajectory:
         """Generate trajectory at a specific step length (no limit reduction)."""
         cfg = self.cfg
+        cycle_time = cycle_time_override or cfg.cycle_time_s
 
-        # Plan footsteps
+        # Plan footsteps with timing derived from the (possibly adjusted) cycle_time
+        ds = cycle_time / 2.0 / (cfg.single_double_ratio + 1.0)
+        ss = cfg.single_double_ratio * ds
+
         total_cycles = cfg.n_output_cycles + cfg.n_plan_extra_cycles
         footsteps, time_steps, zmp_refs = self._plan_footsteps(
-            step_length, total_cycles
+            step_length, total_cycles, ds=ds, ss=ss
         )
 
         # Run ZMP planner
@@ -302,8 +315,9 @@ class ZMPWalkGenerator:
             end_step = stance_lr_transitions[1]
         else:
             # Fallback: use fixed extraction
-            out_steps = cfg.steps_per_cycle * cfg.n_output_cycles
-            start_step = min(cfg.steps_per_cycle, n_total - out_steps)
+            steps_per_cycle = int(round(cycle_time / cfg.dt_s))
+            out_steps = steps_per_cycle * cfg.n_output_cycles
+            start_step = min(steps_per_cycle, n_total - out_steps)
             start_step = max(start_step, 0)
             end_step = min(start_step + out_steps, n_total)
 
@@ -466,6 +480,8 @@ class ZMPWalkGenerator:
         self,
         step_length: float,
         n_cycles: int,
+        ds: float | None = None,
+        ss: float | None = None,
     ) -> Tuple[List[np.ndarray], np.ndarray, List[np.ndarray]]:
         """Plan footstep positions and timing.
 
@@ -473,6 +489,10 @@ class ZMPWalkGenerator:
         """
         cfg = self.cfg
         lat = cfg.default_stance_width_m
+        if ds is None:
+            ds = cfg.double_support_s
+        if ss is None:
+            ss = cfg.single_support_s
 
         footsteps: List[np.ndarray] = []
         # Start: left foot at origin+lat, right at origin-lat
@@ -488,8 +508,6 @@ class ZMPWalkGenerator:
             footsteps.append(np.array([right_x, -lat], dtype=np.float64))
 
         # Build timing: alternating DS/SS phases
-        ds = cfg.double_support_s
-        ss = cfg.single_support_s
         time_list = [0.0, ds]
         for _ in range(len(footsteps) - 1):
             time_list.extend([ss, ds])
