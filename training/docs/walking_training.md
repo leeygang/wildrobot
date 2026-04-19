@@ -879,12 +879,21 @@ Smoke contract:
     - decision: **compute velocity references on-the-fly in the env** from
       finite differences of the position fields stored in the library;
       angular velocity references default to zero (the prior is yaw-stationary)
-    - rationale: keeps the library asset narrow and matches what
-      ToddlerBot's open-source library generator actually exports (positions
-      + contact mask, no velocity fields); finite-diff velocity is good
-      enough for a stable Gaussian-shaped tracking reward
+    - rationale: keeps the library asset narrow and avoids growing the
+      schema before we know the velocity-tracking reward is actually
+      pulling its weight; finite-diff velocity is good enough for a
+      stable Gaussian-shaped tracking reward at our `dt = 0.02 s`
+    - **NOT a "matches ToddlerBot" decision**: ToddlerBot's library
+      generator (``toddlerbot/algorithms/zmp_walk.py:174``,
+      ``mujoco_replay``) records ``body_lin_vel`` and ``body_ang_vel``
+      from the kinematic forward step explicitly; we are choosing
+      finite-diff because we don't currently run that mujoco_replay
+      step and don't want the schema growth right now.  This is a
+      WildRobot-specific simplification, not a ToddlerBot inheritance.
     - revisit if a future prior generator (ALIP, etc.) emits velocity
-      directly with better fidelity than finite-diff
+      directly with better fidelity than finite-diff, or if the smoke
+      shows velocity-tracking reward gradients are noisy at the
+      finite-diff numerical-derivative quality
   - **G3 — `ref/contact_phase_match` definition**:
     - smooth match per foot per step, summed:
       - `r = 0.5 * (gauss(L_cmd_contact - L_actual_contact, σ)

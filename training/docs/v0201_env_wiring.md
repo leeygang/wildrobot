@@ -118,40 +118,85 @@ The v0.20.1 smoke YAML uses `loc_ref_residual_mode: absolute`.  v1/v2
 configurations stay on the existing implicit `half_span` mode (no behavior
 change).
 
-## 5. Observation layout
+## 5. Observation layout — REVISED per round-1 design review
 
-The existing `wr_obs_v4` builds obs from these `loc_ref_*` kwargs to
-`build_observation`:
+### 5.0 Why `wr_obs_v4` reuse was rejected
 
-- `loc_ref_phase_sin_cos` `[2]`
-- `loc_ref_stance_foot` `[]` (int)
-- `loc_ref_next_foothold` `[2]`
-- `loc_ref_swing_pos` `[3]`
-- `loc_ref_swing_vel` `[3]`
-- `loc_ref_pelvis_targets` (height/roll/pitch tuple)
-- `loc_ref_history` `[STANCE_REF_HISTORY_LEN * 2]`
+The first version of this note proposed reusing `wr_obs_v4` unchanged.
+Round-1 review (correctly) flagged this as a blocker: the v0.20.1 smoke
+contract (``walking_training.md`` v0.20.1 Observation §) requires the actor
+to see a current reference slice that **includes the current `q_ref`**, but
+`wr_obs_v4`'s `loc_ref_*` channels (line 5378 of `wildrobot_env.py`) carry
+only `phase_sin_cos`, `stance_foot`, `next_foothold`, `swing_pos`,
+`swing_vel`, `pelvis_targets`, `history` — **no path for `q_ref`** at all.
+Reusing the layout would silently violate the smoke contract.
 
-**For the smoke we keep `wr_obs_v4` as-is** — every field maps cleanly to the
-offline library:
+### 5.1 Decision: new `wr_obs_v5_offline_ref` layout for v3 only
 
-| Existing field | v3 source |
-|---|---|
-| `loc_ref_phase_sin_cos` | `service.window.phase_sin/cos` |
-| `loc_ref_stance_foot` | `service.window.stance_foot_id` |
-| `loc_ref_next_foothold` | derived: `traj.left_foot_pos[idx_at_next_touchdown]` (computed once at env init via the existing `ReferenceLibrary._find_next_foothold` helper) |
-| `loc_ref_swing_pos` | `service.window.left_foot_pos` or `right_foot_pos`, selected by stance |
-| `loc_ref_swing_vel` | `service.window.left_foot_vel` or `right_foot_vel`, selected by stance |
-| `loc_ref_pelvis_targets` | `(pelvis_pos[2], pelvis_rpy[0], pelvis_rpy[1])` — note `pelvis_rpy` is currently zero in the offline library; OK for the smoke |
-| `loc_ref_history` | maintained by `_update_loc_ref_history` (unchanged — uses phase_sin/cos which we already have) |
+Add a new layout id `wr_obs_v5_offline_ref` that extends `wr_obs_v4` with
+the missing channels.  v1/v2 paths keep `wr_obs_v4` (no behavior change for
+v0.19.5c).  The smoke YAML sets:
 
-**Optional G7-style anchor preview** (`n_anchor=2` future frames of `q_ref` +
-`contact_mask`): per the doc explicitly NOT in the first smoke obs.  Reserved
-for a v3.1 obs upgrade.  Service exposes the future fields in `RuntimeReferenceWindow`
-already; env just doesn't read them in v3 init.
+```yaml
+env:
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v5_offline_ref
+```
 
-**No new obs layout** — keep `wr_obs_v4` so the policy network shape matches
-existing code.  Obs *contents* change (sourced from offline library), but the
-shape is identical.
+### 5.2 Channels added vs `wr_obs_v4`
+
+| New channel | Shape | Source from `RuntimeReferenceWindow` |
+|---|---|---|
+| `loc_ref_q_ref`           | `[n_joints]` | `window.q_ref` |
+| `loc_ref_pelvis_pos`      | `[3]`        | `window.pelvis_pos` |
+| `loc_ref_pelvis_vel`      | `[3]`        | `window.pelvis_vel` (finite-diff per G2) |
+| `loc_ref_left_foot_pos`   | `[3]`        | `window.left_foot_pos` |
+| `loc_ref_right_foot_pos`  | `[3]`        | `window.right_foot_pos` |
+| `loc_ref_left_foot_vel`   | `[3]`        | `window.left_foot_vel` (finite-diff) |
+| `loc_ref_right_foot_vel`  | `[3]`        | `window.right_foot_vel` (finite-diff) |
+| `loc_ref_contact_mask`    | `[2]`        | `window.contact_mask` |
+
+This is a strict superset of `wr_obs_v4`'s `loc_ref_*` content: the existing
+`v4` channels are still computed and concatenated, and the v5 additions are
+appended at the end so that `wr_obs_v4`-shaped consumers (e.g., the
+`build_observation` builder) remain compatible if we re-route them.
+
+### 5.3 Channels NOT added (deferred)
+
+Per the smoke obs contract ("do not start the first smoke with a large
+dense future preview window"), the following `RuntimeReferenceWindow` fields
+are NOT included in `wr_obs_v5_offline_ref`:
+
+- `future_q_ref`, `future_phase_sin/cos`, `future_contact_mask`
+  (the 1-2 future anchor frames)
+
+These are reserved for a `wr_obs_v6_*` upgrade if the smoke shows the
+policy needs anticipation.  `RuntimeReferenceService` already computes
+them; the env just doesn't read them in v5.
+
+### 5.4 Deferred: `loc_ref_pelvis_rpy` channel
+
+The library currently emits `pelvis_rpy = zeros` (yaw-stationary, no
+explicit roll/pitch shaping).  The reward (`ref/body_quat_track`) reads
+pelvis RPY directly from the trajectory, not via the obs.  **No
+`loc_ref_pelvis_rpy` obs channel for v5** — adding it would be a noisy zero
+input for the policy.  If a future prior emits non-zero pelvis_rpy targets,
+add the channel then.
+
+### 5.5 Implementation surface
+
+- `training/policy_spec_utils.py`: register `wr_obs_v5_offline_ref` in the
+  layout id enum
+- `training/envs/wildrobot_env.py`: in `_get_obs`, when
+  `layout_id == "wr_obs_v5_offline_ref"`, read the v3 service window and
+  pass the new channels to `build_observation`
+- `training/configs/training_runtime_config.py`: validation for the new
+  layout id
+- `training/exports/export_policy_bundle.py`: defer until smoke actually
+  ships a checkpoint worth exporting
+
+The policy network shape changes (more obs dimensions); since `v0.19.5c`
+still uses `wr_obs_v4`, no existing checkpoint is invalidated.
 
 ## 6. Reset & step deltas
 
@@ -186,20 +231,37 @@ Both reset and step preserve the existing `WildRobotEnvState` shape — the new
 fields are added to `WildRobotInfo` (the dataclass already has spare slots; the
 NamedTuple fallback gets new fields too).
 
-## 7. Pre-smoke "zero-action reproduces q_ref" check
+## 7. Pre-smoke "zero-action" wiring check — REFINED per round-1 review
 
-Implementation:
+The check is **wiring-focused**, not locomotion-quality-focused.  Round-1
+review noted that mixing the two would let a balance failure mask a wiring
+failure (or vice versa).
 
-1. Add `tests/test_v0201_env_zero_action.py`: builds env in v3 mode, runs 50
-   steps with `policy_action = zeros`, asserts that
-   `data.qpos[actuator_qpos_addrs] - q_ref_from_library` stays bounded by the
-   PD tracking budget (e.g., max abs error < 0.05 rad steady-state).
-2. The control flow: zero action → residual_delta_q=0 → target_q=nominal_q_ref →
-   PD tracks within budget.  This is the env-side equivalent of the closeout's
-   kinematic/fixed-base smoke — a precondition for any meaningful PPO run.
+Implementation (`tests/test_v0201_env_zero_action.py`):
 
-The test fails CI if the env wiring is wrong (e.g., wrong joint ordering,
-wrong residual mode, q_ref shifted).  Lands as part of the implementation PR.
+1. **Wiring assertion (primary)**: with `policy_action = zeros`, the env
+   computes `target_q == nominal_q_ref == q_ref_from_library[step_idx]`
+   exactly (or within float32 round-off), at every step in a 50-step
+   probe.  This is testable without running physics — just call the env's
+   action-composition path and inspect `target_q`.
+2. **Residual-zero assertion**: `_compose_loc_ref_residual_action`
+   returns `residual_delta_q` that is byte-zero when `policy_action = 0`
+   (verifies the absolute-mode plumbing in §4.1).
+3. **Trajectory-advance assertion**: across 50 steps,
+   `wr.loc_ref_offline_step_idx` advances `0, 1, 2, ..., 49`; the
+   `loc_ref_*` obs channels read from the service track those step
+   indices (not stuck on step 0 due to a missed increment).
+4. **PD-trackability probe (informational, NOT a balance test)**: optional
+   short physics rollout (≤20 steps) that records `data.qpos -
+   q_ref_lib`.  The test does not assert any specific tracking RMSE bound
+   — that's the kinematic/fixed-base closeout's job.  We log the value so
+   regressions in actuator/PD config show up, but failure to track
+   tightly is NOT the wiring test failing.
+
+The test catches: wrong joint ordering, wrong residual mode, q_ref
+shifted by one step, missed step-idx increment, FSM-mode plumbing
+leaking into the v3 path.  It does NOT catch: balance instability,
+reward bugs, learning failures (those are the smoke runner's job).
 
 ## 8. Files touched
 
@@ -228,14 +290,41 @@ within an episode?
 **Proposed answer**: per the library's clamp contract, the service freezes at
 the terminal frame.  Episode horizon `max_episode_steps = 500` × `ctrl_dt = 0.02`
 = 10 s, well under the trajectory's 22 s.  No clamp triggered in normal
-operation.  Service emits a one-shot warning if it does (already implemented).
+operation.  ``RuntimeReferenceService.lookup_np`` emits a one-shot
+``RuntimeWarning`` per service instance if a query lands past the end
+(added in commit ``<TBD>`` after round-1 review; covered by
+``test_terminal_clamp_emits_warning_once``).  The JAX path can't issue
+warnings inside JIT, so callers running JAX-only loops must either size the
+horizon to ``service.n_steps`` or run a NumPy-side overrun probe out of
+band.
 
 **Q3.** Multi-command smoke later — is the per-command service registry
 forward-compatible?  
-**Proposed answer**: yes.  `self._offline_services_by_command_id` is a dict
-keyed by an integer command_id; the env carries `loc_ref_offline_command_id` in
-WR info; lookup picks the right service's jax_arrays.  For the smoke this dict
-has one entry; expansion is additive.
+**Revised answer (round-1 review)**: NO, not as originally proposed.  A
+Python dict keyed by an integer cannot be indexed inside a JAX JIT'd step
+using a JAX-traced integer; the lookup would have to happen outside the
+JIT, defeating the per-step efficiency the service is built for.
+
+For the v0.20.1 smoke (single command), the dict-of-services approach is
+fine — ``loc_ref_offline_command_id`` is a Python constant (always 0), the
+JIT folds it, and the JAX arrays for that one command are threaded through
+the step exactly as designed.  This is a **smoke-only simplification**, not
+forward-compatible multi-command machinery.
+
+If multi-command training resumes (later milestone), the right design is
+**stacked JAX arrays** at the env level:
+
+- ``self._offline_jax_arrays_stacked`` shape ``[n_cmd, n_step, ...]``
+  for each field, built once at env init by stacking the per-command
+  service outputs
+- ``loc_ref_offline_command_id`` is a JAX-traced int, used as the leading
+  index in the stacked arrays inside the JIT
+- the per-command Python ``RuntimeReferenceService`` instances are kept
+  for NumPy-side use (eval, viewer, tests) but the JAX path no longer
+  routes through them
+
+That is additive over this design (the service interface doesn't change;
+only the env-side storage does).  Explicitly out of scope for v0.20.1.
 
 **Q4.** What about reset RNG?  Should the offline trajectory have a per-env
 random start offset (e.g., to avoid all envs walking the same prefix)?  

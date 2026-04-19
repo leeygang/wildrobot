@@ -74,9 +74,14 @@ def test_lookup_np_jax_parity(service):
 
 def test_clamp_past_end(service):
     """Queries past n_steps return the terminal frame, not a wrap."""
+    import warnings
     last = service.n_steps - 1
     win_last = service.lookup_np(last)
-    win_over = service.lookup_np(last + 50)
+    # Use a fresh service so the one-shot overrun warning fires here too,
+    # but suppress it -- this test is about clamp values, not the warning.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        win_over = service.lookup_np(last + 50)
     np.testing.assert_array_equal(win_last.q_ref, win_over.q_ref)
     np.testing.assert_array_equal(win_last.pelvis_pos, win_over.pelvis_pos)
     # Future preview at the end clamps to the terminal frame too —
@@ -168,3 +173,36 @@ def test_zero_anchor(smoke_trajectory):
 def test_negative_anchor_rejected(smoke_trajectory):
     with pytest.raises(ValueError, match="n_anchor"):
         RuntimeReferenceService(smoke_trajectory, n_anchor=-1)
+
+
+# -- terminal-clamp warning --------------------------------------------------
+
+def _capture_overrun_warnings(fn):
+    """Helper: capture all warnings raised by ``fn`` and return the
+    overrun-related subset.  Avoids ``pytest.warns(None)`` which was
+    removed in newer pytest."""
+    import warnings as _w
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        fn()
+    return [w for w in caught if "step_idx" in str(w.message)]
+
+
+def test_terminal_clamp_emits_warning_once(smoke_trajectory):
+    """Querying past n_steps emits a RuntimeWarning exactly once per
+    service instance, then stays silent on subsequent overruns."""
+    svc = RuntimeReferenceService(smoke_trajectory, n_anchor=2)
+    last = svc.n_steps - 1
+
+    # In-bounds query: no warning.
+    in_bounds = _capture_overrun_warnings(lambda: svc.lookup_np(last))
+    assert not in_bounds, "in-bounds query should not warn"
+
+    # First overrun: warns.
+    first_over = _capture_overrun_warnings(lambda: svc.lookup_np(last + 1))
+    assert len(first_over) == 1
+    assert issubclass(first_over[0].category, RuntimeWarning)
+
+    # Second overrun on the same instance: silent (one-shot).
+    second_over = _capture_overrun_warnings(lambda: svc.lookup_np(last + 50))
+    assert not second_over, "second overrun should be silent"

@@ -135,6 +135,12 @@ class RuntimeReferenceService:
         self.cycle_time = float(trajectory.cycle_time)
         self.n_anchor = int(n_anchor)
         self._stacked = self._build_stack(trajectory)
+        # One-shot terminal-clamp warning: caller responsibility is
+        # to size ``episode_horizon <= n_steps``; if a query lands
+        # past the end, surface it once per service instance so a
+        # misconfigured horizon shows up in logs instead of being
+        # masked by the silent clamp.
+        self._warned_overrun: bool = False
 
     # -- construction ---------------------------------------------------------
 
@@ -219,8 +225,26 @@ class RuntimeReferenceService:
 
         Future-preview indices are ``step_idx+1, step_idx+2, ...``,
         each clamped to ``n_steps-1``.  Matches the multi-cycle library
-        contract (no wrap to cycle 0)."""
+        contract (no wrap to cycle 0).
+
+        Emits a one-shot ``RuntimeWarning`` per service instance if
+        ``step_idx >= n_steps``; the JAX path can't issue Python
+        warnings inside JIT, so this is the only place the overrun
+        surfaces.  Callers running JAX-only loops should size their
+        episode horizon to ``service.n_steps`` and check ``service``
+        out-of-band if they want overrun detection."""
         s = self._stacked
+        if step_idx >= s.n_steps and not self._warned_overrun:
+            import warnings
+            warnings.warn(
+                f"RuntimeReferenceService.lookup_np: step_idx={step_idx} "
+                f">= n_steps={s.n_steps} for command_key={self.command_key}. "
+                f"Returning the terminal frame (no wrap to cycle 0).  "
+                f"Ensure episode_horizon <= service.n_steps.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._warned_overrun = True
         idx = int(np.clip(step_idx, 0, s.n_steps - 1))
         future_idx = np.clip(
             np.arange(idx + 1, idx + 1 + self.n_anchor, dtype=np.int32),
