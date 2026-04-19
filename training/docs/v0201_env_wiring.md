@@ -183,20 +183,68 @@ pelvis RPY directly from the trajectory, not via the obs.  **No
 input for the policy.  If a future prior emits non-zero pelvis_rpy targets,
 add the channel then.
 
-### 5.5 Implementation surface
+### 5.5 Implementation surface — REVISED per round-2 review
 
-- `training/policy_spec_utils.py`: register `wr_obs_v5_offline_ref` in the
-  layout id enum
-- `training/envs/wildrobot_env.py`: in `_get_obs`, when
-  `layout_id == "wr_obs_v5_offline_ref"`, read the v3 service window and
-  pass the new channels to `build_observation`
-- `training/configs/training_runtime_config.py`: validation for the new
-  layout id
+The previous version of this section understated the code surface.  The
+actual observation builders are split across two files (JAX and NumPy
+parity is mandatory because `policy_contract` is consumed both at training
+time and at export / runtime), and both must accept the new channels and
+the new layout id.
+
+**Mandatory dual-builder changes** (these are the round-2 review's
+explicitly-named files; both need synchronized edits):
+
+- **`policy_contract/jax/obs.py`**:
+  - line 32: extend the layout id whitelist
+    `{"wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4"}` →
+    add `"wr_obs_v5_offline_ref"`
+  - line 12 (`build_observation_from_components`): add new kwargs
+    `loc_ref_q_ref`, `loc_ref_pelvis_pos`, `loc_ref_pelvis_vel`,
+    `loc_ref_left_foot_pos`, `loc_ref_right_foot_pos`,
+    `loc_ref_left_foot_vel`, `loc_ref_right_foot_vel`,
+    `loc_ref_contact_mask` (each defaulting to `None` with a `zeros(...)`
+    fallback identical in pattern to the existing `loc_ref_*` fallbacks)
+  - line 94-95 (the per-layout `parts.extend(...)` block): add a new
+    branch for `wr_obs_v5_offline_ref` that extends with both the
+    `wr_obs_v4` parts (phase, stance, foothold, swing_pos, swing_vel,
+    pelvis, history) AND the eight new v5 channels in the order listed
+    in §5.2
+  - line 102 (`build_observation` wrapper): add the same eight new
+    kwargs and forward them to `build_observation_from_components`
+- **`policy_contract/numpy/obs.py`**: identical edits (mirror the JAX
+  changes line-for-line; the existing parity test will fail if they
+  diverge).  The NumPy builder is what the export bundle and runtime
+  policy adapter consume.
+
+**Other implementation surface** (orchestration, config, env-side):
+
+- `training/envs/wildrobot_env.py`:
+  - `_get_obs` (line 5378 area): when
+    `layout_id == "wr_obs_v5_offline_ref"`, read the v3 service window
+    and pass the eight new channels to `build_observation`
+  - the existing `wr_obs_v4` callsite stays unchanged (it just doesn't
+    pass the new kwargs)
+- `training/policy_spec_utils.py` (line 130 area): allow
+  `actor_obs_layout_id = "wr_obs_v5_offline_ref"`
+- `training/configs/training_runtime_config.py` (line 119 area): no
+  validation change required (the field is already a free-form string),
+  but add a comment noting the v5 layout exists and what mode it pairs
+  with
 - `training/exports/export_policy_bundle.py`: defer until smoke actually
-  ships a checkpoint worth exporting
+  ships a checkpoint worth exporting (export bundle just needs to know
+  the obs dim — driven by the spec, not hard-coded)
 
-The policy network shape changes (more obs dimensions); since `v0.19.5c`
-still uses `wr_obs_v4`, no existing checkpoint is invalidated.
+**Parity test obligation**: there is a JAX/NumPy parity test for the
+observation builders.  Whatever it asserts for `wr_obs_v4` (concatenation
+ordering, dtype, shape) must hold for `wr_obs_v5_offline_ref` too;
+the implementer should extend the parity test fixture to include the
+new layout id and the new channel set.
+
+**Net change footprint**: 2 builder files (synchronized), 1 env file
+(one new branch), 1 spec-utils file (one whitelist entry), 1 config-doc
+update, 1 parity-test extension.  No checkpoint format change; existing
+`v0.19.5c` configs / checkpoints unaffected because they continue to
+use `wr_obs_v4`.
 
 ## 6. Reset & step deltas
 
