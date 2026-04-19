@@ -68,15 +68,15 @@ env:
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
 
-  # Action filtering — disabled for the smoke (alpha=0.0 ⇒ no-op).
-  # lowpass_v1's formula is `action = alpha * prev + (1 - alpha) * raw`,
-  # so alpha is the *retention* coefficient: 0.0 = passthrough, 1.0 = frozen.
-  # The standing-era default of 0.5 introduces a 1-step lag in the applied
-  # target, which would violate the G6 "iter-0 = bare q_ref replay" contract
-  # (walking_training.md v0.20.1 §) — with zero residual the filter would
-  # still output 0.5 * q_ref[t-1] + 0.5 * q_ref[t] instead of q_ref[t].
-  # Action smoothing is a sim2real concern (v0.20.2) and can be re-enabled
-  # for hardware deployment; the smoke is sim-only.
+  # Action filtering — alpha=0.0 keeps the smoke baseline clean (no
+  # filter dynamics), but with the v0.20.1 residual-only filter
+  # contract (env applies lowpass_v1 to the policy residual command,
+  # not to the composed q_target) ANY alpha value satisfies G6: when
+  # the policy outputs zero, the filtered residual stays zero, so
+  # target_q == q_ref exactly.  See tests/test_v0201_env_zero_action.py
+  # test_zero_action_residual_metric_stays_zero_for_50_steps for the
+  # invariant.  alpha can be lifted to v0.20.2's hardware-realism
+  # value without re-checking G6.
   action_filter_alpha: 0.0
 
   # ---- v0.20.1 v3 offline reference + v5 obs ----
