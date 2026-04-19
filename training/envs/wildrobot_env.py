@@ -406,6 +406,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         self._residual_q_scale_per_joint = jp.asarray(per_joint_arr, dtype=jp.float32)
 
+        # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
+        # Pre-resolve hip-pitch + knee actuator indices in PolicySpec order so
+        # the env can emit per-joint residual magnitudes each step.  Fail
+        # loudly if the WildRobot v2 leg joints are missing from the policy
+        # spec — that would mean the smoke can't be evaluated against G5.
+        actuator_names_list = list(self._policy_spec.robot.actuator_names)
+        g5_joint_names = (
+            "left_hip_pitch", "right_hip_pitch",
+            "left_knee_pitch", "right_knee_pitch",
+        )
+        missing = [n for n in g5_joint_names if n not in actuator_names_list]
+        if missing:
+            raise ValueError(
+                f"G5 anti-exploit gate requires {g5_joint_names} in the policy spec; "
+                f"missing: {missing}"
+            )
+        self._g5_residual_idx = jp.asarray(
+            [actuator_names_list.index(n) for n in g5_joint_names], dtype=jp.int32
+        )
+
     # -------------------------------------------------- offline reference svc
 
     def _init_offline_service(self) -> None:
@@ -989,6 +1009,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(q_ref0)).astype(jp.float32)
         metrics_dict["tracking/residual_q_abs_mean"] = jp.float32(0.0)
         metrics_dict["tracking/residual_q_abs_max"] = jp.float32(0.0)
+        metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
+            root_vel_h.linear[0] - velocity_cmd
+        ).astype(jp.float32)
+        # G5 anti-exploit metrics — zeros at reset (no residual yet).
+        metrics_dict["tracking/residual_hip_pitch_left_abs"] = jp.float32(0.0)
+        metrics_dict["tracking/residual_hip_pitch_right_abs"] = jp.float32(0.0)
+        metrics_dict["tracking/residual_knee_left_abs"] = jp.float32(0.0)
+        metrics_dict["tracking/residual_knee_right_abs"] = jp.float32(0.0)
+        metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
+            root_vel_h.linear[0]
+            / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
+        ).astype(jp.float32)
         metrics = {
             METRICS_VEC_KEY: build_metrics_vec(metrics_dict),
         }
@@ -1215,6 +1247,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/residual_q_abs_max"] = jp.max(residual_q_abs).astype(jp.float32)
         terminal_metrics_dict["tracking/loc_ref_left_reachable"] = jp.float32(1.0)
         terminal_metrics_dict["tracking/loc_ref_right_reachable"] = jp.float32(1.0)
+        # G4 promotion-horizon gate: |achieved_vx - cmd_vx|.  The gate is
+        # ``<= 0.075 m/s`` per walking_training.md v0.20.1 §.
+        terminal_metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
+            forward_velocity - velocity_cmd
+        ).astype(jp.float32)
+        # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
+        # Per-joint |residual_delta_q| for hip_pitch L+R and knee L+R; the
+        # spec calls for p50 ≤ 0.20 rad post-rollout, the registry's MEAN
+        # reducer is the closest aggregator we have without adding a
+        # MEDIAN reducer (the mean is a slightly weaker but still useful
+        # signal for "policy uses too much leg authority").
+        g5_residuals = residual_q_abs[self._g5_residual_idx]
+        terminal_metrics_dict["tracking/residual_hip_pitch_left_abs"] = g5_residuals[0]
+        terminal_metrics_dict["tracking/residual_hip_pitch_right_abs"] = g5_residuals[1]
+        terminal_metrics_dict["tracking/residual_knee_left_abs"] = g5_residuals[2]
+        terminal_metrics_dict["tracking/residual_knee_right_abs"] = g5_residuals[3]
+        # Realized-vs-commanded forward speed ratio.  Spec gate: 0.6 ≤ ratio
+        # ≤ 1.5 to catch both undershoot and v0.19.5 "lean and skate"
+        # overshoot.  Guard against cmd≈0 to avoid log explosions.
+        terminal_metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
+            forward_velocity / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
+        ).astype(jp.float32)
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

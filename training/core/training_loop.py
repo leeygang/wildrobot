@@ -1183,13 +1183,19 @@ def train(
         critic_obs_dim=critic_obs_dim,
     )
 
-    # Initialize network parameters
+    # Initialize network parameters.  policy_init_std is exp(log_std_init)
+    # so the actor's softplus-parameterized scale starts at the spec's
+    # exploration pressure (G6: walking_training.md v0.20.1 §, log_std_init
+    # = -1.0 → std ≈ 0.368).  Without this thread the scale would default
+    # to 0.10 (~ log_std=-2.30) regardless of the YAML.
+    policy_init_std = float(jnp.exp(jnp.float32(config.networks.actor.log_std_init)))
     processor_params, policy_params, value_params = init_network_params(
         ppo_network,
         obs_dim,
         action_dim,
         seed=int(init_rng[0]),
         policy_init_action=policy_init_action,
+        policy_init_std=policy_init_std,
     )
 
     # Create discriminator only when AMP is enabled.

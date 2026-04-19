@@ -490,10 +490,16 @@ def start_training(
         eval_env_step_fn=batched_eval_step_fn,
         eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
-        policy_init_action=JaxCalibOps.ctrl_to_policy_action(
-            spec=policy_spec,
-            ctrl_rad=jnp.asarray(env._default_joint_qpos, dtype=jnp.float32),
-        )
+        # v0.20.1 v3-only env treats `action` as a bounded residual on top
+        # of the offline reference (target_q = q_ref + clip(action) * scale).
+        # iter-0 must therefore output zero so the rollout starts from
+        # bare-q_ref replay — this is the G6 contract in
+        # walking_training.md (v0.20.1 §) and what the pre-smoke wiring
+        # test (tests/test_v0201_env_zero_action.py) verifies.
+        # The legacy bias toward default_joint_qpos was only correct for
+        # the v0.19.5c standing path where action = absolute pose; under
+        # the residual contract it injects a non-zero residual at iter 0.
+        policy_init_action=jnp.zeros(env.action_size, dtype=jnp.float32)
         if resume_checkpoint is None
         else None,
     )

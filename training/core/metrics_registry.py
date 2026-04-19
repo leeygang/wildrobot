@@ -1450,6 +1450,44 @@ METRIC_SPECS: List[MetricSpec] = [
         topline=True,
         description="Smooth contact-phase match (per-step value of the reward term)",
     ),
+    # =========================================================================
+    # v0.20.1 G5 anti-exploit hard-gate metrics (walking_training.md v0.20.1
+    # §, line 980).  Per-joint residual magnitudes for the four leg joints
+    # the spec calls out, plus the realized-vs-commanded forward velocity
+    # ratio.  MEAN aggregation approximates the spec's p50 (close for the
+    # symmetric residual distribution we expect under PPO exploration).
+    # =========================================================================
+    MetricSpec(
+        name="tracking/residual_hip_pitch_left_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="|residual_delta_q[left_hip_pitch]| (rad)",
+    ),
+    MetricSpec(
+        name="tracking/residual_hip_pitch_right_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="|residual_delta_q[right_hip_pitch]| (rad)",
+    ),
+    MetricSpec(
+        name="tracking/residual_knee_left_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="|residual_delta_q[left_knee_pitch]| (rad)",
+    ),
+    MetricSpec(
+        name="tracking/residual_knee_right_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="|residual_delta_q[right_knee_pitch]| (rad)",
+    ),
+    MetricSpec(
+        name="tracking/forward_velocity_cmd_ratio",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        topline=True,
+        description="forward_velocity / max(|cmd_vx|, 1e-3); G5 gate is 0.6..1.5",
+    ),
 ]
 
 # =============================================================================
