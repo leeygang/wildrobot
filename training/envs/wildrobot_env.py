@@ -1761,6 +1761,69 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._residual_q_scale = jp.asarray(
             getattr(self._config.env, "loc_ref_residual_scale", 0.18), dtype=jp.float32
         )
+
+        # v0.20.1 §4.1 — residual mode + per-joint override array.
+        # half_span (default) preserves v1/v2 behavior; absolute is the
+        # v3 smoke contract where the scale value is the rad bound directly.
+        self._loc_ref_residual_mode = str(
+            getattr(self._config.env, "loc_ref_residual_mode", "half_span")
+        ).lower()
+        if self._loc_ref_residual_mode not in ("half_span", "absolute"):
+            raise ValueError(
+                "env.loc_ref_residual_mode must be 'half_span' or 'absolute'"
+            )
+        # Per-joint scale array (always built in actuator order).  In
+        # half_span mode the values are unitless fractions; in absolute
+        # mode they are rad bounds directly.  Joints not present in the
+        # per-joint override map fall back to the scalar
+        # loc_ref_residual_scale.
+        per_joint_overrides = dict(
+            getattr(self._config.env, "loc_ref_residual_scale_per_joint", {}) or {}
+        )
+        scalar_default = float(
+            getattr(self._config.env, "loc_ref_residual_scale", 0.18)
+        )
+        per_joint_arr = np.array(
+            [
+                float(per_joint_overrides.get(name, scalar_default))
+                for name in self._policy_spec.robot.actuator_names
+            ],
+            dtype=np.float32,
+        )
+        self._residual_q_scale_per_joint = jp.asarray(per_joint_arr,
+                                                      dtype=jp.float32)
+
+        # v0.20.1 v3_offline_library — load the offline ReferenceLibrary
+        # and build the runtime service.  Done at __init__ time so the
+        # JAX arrays can be threaded through the JIT'd reset/step.
+        self._offline_service = None
+        self._offline_jax_arrays = None
+        if self._loc_ref_version == "v3_offline_library":
+            from control.references.runtime_reference_service import (
+                RuntimeReferenceService,
+            )
+            offline_path = getattr(
+                self._config.env, "loc_ref_offline_library_path", None
+            )
+            offline_vx = float(
+                getattr(self._config.env, "loc_ref_offline_command_vx", 0.15)
+            )
+            if offline_path:
+                from control.references.reference_library import ReferenceLibrary
+                lib = ReferenceLibrary.load(offline_path)
+            else:
+                # Build on-the-fly via the ZMP generator (deterministic;
+                # the smoke YAML omits the path so this is the default).
+                from control.zmp.zmp_walk import ZMPWalkGenerator
+                lib = ZMPWalkGenerator().build_library()
+            traj = lib.lookup(offline_vx)
+            self._offline_service = RuntimeReferenceService(traj, n_anchor=2)
+            self._offline_jax_arrays = self._offline_service.to_jax_arrays()
+            print(
+                f"  v3_offline_library: loaded vx={offline_vx} "
+                f"trajectory ({self._offline_service.n_steps} steps, "
+                f"dt={self._offline_service.dt})"
+            )
         self._loc_ref_swing_target_blend = jp.asarray(
             getattr(self._config.env, "loc_ref_swing_target_blend", 0.65), dtype=jp.float32
         )
