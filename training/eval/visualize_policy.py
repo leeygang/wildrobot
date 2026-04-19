@@ -274,6 +274,10 @@ def main():
 
     # Load training config
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    from training.configs.cli_helpers import fail_if_config_missing
+    fail_if_config_missing(
+        config_path, user_passed_explicit=bool(args.config)
+    )
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
 

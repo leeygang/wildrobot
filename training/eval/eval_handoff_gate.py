@@ -362,6 +362,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    from training.configs.cli_helpers import fail_if_config_missing
+    fail_if_config_missing(args.config)
     aggregate = run_handoff_gate(
         config_path=args.config,
         forward_cmd=args.forward_cmd,

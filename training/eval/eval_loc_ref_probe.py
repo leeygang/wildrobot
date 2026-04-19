@@ -448,6 +448,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    from training.configs.cli_helpers import fail_if_config_missing
+    # ``--compare-*`` paths bypass the config load, so only guard the
+    # config when we'll actually consume it.
+    if not (args.compare_base or args.compare_new):
+        fail_if_config_missing(args.config)
     if (args.compare_base is None) ^ (args.compare_new is None):
         raise SystemExit("--compare-base and --compare-new must be provided together")
     if args.compare_base is not None and args.compare_new is not None:

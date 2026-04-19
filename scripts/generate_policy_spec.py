@@ -3,8 +3,17 @@ from __future__ import annotations
 import argparse
 import math
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+# Ensure the repo root is on sys.path so ``policy_contract`` resolves
+# when this script is invoked directly (``uv run python
+# scripts/generate_policy_spec.py``).  Without this the import below
+# raises ModuleNotFoundError before argparse runs.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import yaml
 
@@ -162,6 +171,14 @@ def main() -> None:
         help="Output path for policy_spec.json",
     )
     args = parser.parse_args()
+
+    # Repo root was added to sys.path at import time, so this is safe.
+    from training.configs.cli_helpers import fail_if_config_missing
+    default_config = "training/configs/ppo_walking_v0201_smoke.yaml"
+    fail_if_config_missing(
+        args.config, user_passed_explicit=(args.config != default_config)
+    )
+    fail_if_config_missing(args.robot_config, user_passed_explicit=True)
 
     spec = generate_policy_spec(
         config_path=Path(args.config),

@@ -28,7 +28,10 @@ def main() -> None:
     # v0.20.1: ppo_walking_v0193a.yaml was deleted; pass an explicit
     # config via this script's CLI (currently hardcoded -- update when
     # the smoke YAML or a v0.20.x diagnostic config lands).
-    cfg = load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
+    from training.configs.cli_helpers import fail_if_config_missing
+    _CFG = "training/configs/ppo_walking_v0201_smoke.yaml"
+    fail_if_config_missing(_CFG)
+    cfg = load_training_config(_CFG)
     robot_cfg_path = Path(cfg.env.robot_config_path)
     if not robot_cfg_path.is_absolute():
         robot_cfg_path = project_root / robot_cfg_path

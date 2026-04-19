@@ -48,6 +48,10 @@ def main():
     args = parser.parse_args()
 
     # Load configs
+    from training.configs.cli_helpers import fail_if_config_missing
+    fail_if_config_missing(
+        args.config, user_passed_explicit=(args.config != DEFAULT_CONFIG)
+    )
     training_cfg = load_training_config(args.config)
     robot_cfg = load_robot_config(project_root / "assets" / "v2" / "mujoco_robot_config.json")
 
