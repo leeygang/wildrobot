@@ -836,6 +836,21 @@ Smoke contract:
     especially on the leg joints
   - this higher-authority residual is a smoke-stage debugging compromise, not
     the final intended contract
+  - **G1 — concrete starting bounds for the smoke** (per-joint clip on
+    `delta_q_policy`, applied symmetrically; tighten if anti-exploit metric
+    G5 trips):
+    - leg joints (hip pitch / hip roll / knee / ankle pitch): `±0.50 rad`
+    - all other joints: `±0.20 rad`
+    - rationale: the open-loop prior at vx=0.15 currently lags the body's
+      pelvis-x by ~36 cm by step 70 (per
+      `tools/v0200c_per_frame_probe.py`), so the residual must have enough
+      authority to add forward thrust the prior cannot deliver alone; ±0.50
+      rad on the leg joints is roughly the difference between a flat-leg
+      stance posture and a deeply-bent recovery posture
+    - alternative if the smoke shows the policy quickly saturating the
+      bound: rerun pre-smoke calibration "find the residual bound at which
+      a zero-prior policy can produce forward translation" and use that as
+      the starting ceiling instead
 - Reward:
   - use an imitation-dominant ToddlerBot-like reward family
   - primary terms:
@@ -857,6 +872,31 @@ Smoke contract:
   - compute body / site / velocity tracking in torso-relative or root-relative
     coordinates where applicable
   - do not reuse the `v0.19.x` task-space reward family for this smoke
+  - **G2 — reference velocity fields**:
+    - the offline `ReferenceLibrary` schema currently stores only positions
+      (`pelvis_pos`, `com_pos`, `left_foot_pos`, `right_foot_pos`); body
+      and site linear / angular velocities are not stored
+    - decision: **compute velocity references on-the-fly in the env** from
+      finite differences of the position fields stored in the library;
+      angular velocity references default to zero (the prior is yaw-stationary)
+    - rationale: keeps the library asset narrow and matches what
+      ToddlerBot's open-source library generator actually exports (positions
+      + contact mask, no velocity fields); finite-diff velocity is good
+      enough for a stable Gaussian-shaped tracking reward
+    - revisit if a future prior generator (ALIP, etc.) emits velocity
+      directly with better fidelity than finite-diff
+  - **G3 — `ref/contact_phase_match` definition**:
+    - smooth match per foot per step, summed:
+      - `r = 0.5 * (gauss(L_cmd_contact - L_actual_contact, σ)
+                    + gauss(R_cmd_contact - R_actual_contact, σ))`
+      - where `gauss(x, σ) = exp(-x² / σ²)`
+      - `cmd_contact ∈ {0, 1}` from `traj.contact_mask`
+      - `actual_contact ∈ {0, 1}` from MuJoCo foot-floor contact
+      - default `σ = 0.5` so the gradient stays smooth across the 0↔1
+        transition without dominating the other ref/* terms
+    - rationale: hard Heaviside has no gradient on misalignment; smooth
+      Gaussian gives a well-behaved imitation signal even when the policy's
+      contact timing is slightly off the prior's schedule
 
 Tasks:
 
@@ -875,6 +915,20 @@ Pre-smoke checks:
   replay index
 - reference horizon never overruns the trajectory length
 - reward logs expose the primary `ref/*` tracking metrics from iteration 1
+- **G7 — prior-vs-body sanity at the smoke command**:
+  - run `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100` and
+    record the deterministic baselines that will be used to judge whether
+    PPO is recovering vs degrading:
+    - first lever-sign-flip step (currently ~step 2 on `cee580f`)
+    - pelvis-x lag at step 30 (currently -9 cm)
+    - pelvis-x lag at step 70 (currently -36 cm)
+    - free-float survival ctrl steps (currently ~77)
+    - free-float terminal pelvis-x (currently -0.30 m)
+  - the smoke succeeds if PPO measurably reduces these gaps (positive
+    pelvis-x progress, longer survival); it fails if PPO collapses below
+    these baselines or matches them after meaningful training compute
+  - this is a non-blocking sanity probe, not a reward signal — it just
+    pins the "what we're trying to beat" baseline before training starts
 
 Visual validation:
 
@@ -894,15 +948,47 @@ Metric validation:
   - `ref/body_lin_vel_track`
   - `ref/body_ang_vel_track`
   - `ref/contact_phase_match`
-- by the early smoke horizon:
-  - `env/forward_velocity >= 0.04 m/s`
-  - `eval_walk/episode_length >= 150`
-  - `term_pitch_frac < 0.50`
-- by the promotion horizon:
+- **G4 — early-horizon gate (informational only)**:
+  - the open-loop bare-q_ref baseline at `cee580f` is roughly
+    `forward_velocity ≈ -0.09 m/s, episode_length ≈ 77, term_pitch_frac ≈ 1.0`
+    over a 200-step deterministic run; PPO is being asked to invert the
+    sign on forward velocity AND extend survival by ~75 ctrl steps in the
+    early horizon
+  - softened early-horizon targets (informational, do not abort runs that
+    miss these — only abort if collapsing below the open-loop baseline):
+    - `env/forward_velocity >= 0.0 m/s`
+    - `eval_walk/episode_length >= 100`
+    - `term_pitch_frac < 0.80`
+  - the originally-stated stricter early-horizon thresholds
+    (`forward_velocity >= 0.04 m/s, episode_length >= 150,
+    term_pitch_frac < 0.50`) move to the **mid-horizon** gate; only the
+    promotion horizon below stays hard
+- by the promotion horizon (hard gate — pass or fail the smoke):
   - `env/forward_velocity >= 0.075 m/s`
   - `eval_walk/success_rate >= 0.60`
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
   - touchdown step length mean `>= 0.03 m`
+- **G5 — anti-exploit metric (hard gate)**:
+  - to reject the "policy invents propulsion the prior should own" failure
+    mode, log and gate on:
+    - median absolute residual on hip-pitch + knee channels:
+      `|delta_q_policy[hip_pitch_L,R, knee_L,R]| p50` ≤ `0.20 rad`
+      across the eval horizon (residual stays a correction, not a
+      replacement gait)
+    - realized-vs-commanded forward speed ratio:
+      `0.6 ≤ env/forward_velocity / cmd_vx ≤ 1.5`
+      (catches both undershoot and the v0.19.5 "lean and skate" overshoot)
+  - if either bound is violated at the promotion horizon, the smoke fails
+    even if the forward-velocity gate passes — explicitly to prevent a
+    false-positive caused by a residual-driven exploit gait
+- **G6 — policy init details**:
+  - actor: hidden `[256, 256, 128]`, ELU
+  - critic: same shape, ELU
+  - `log_std_init = -1.0` (matches v0.19.5c; not changing exploration
+    pressure for the smoke)
+  - residual head zero-initialized so the iter-0 policy is exactly
+    bare-q_ref replay (this is what the pre-smoke "zero-action policy
+    reproduces nominal q_ref" check verifies)
 
 Post-smoke policy direction:
 
@@ -912,6 +998,49 @@ Post-smoke policy direction:
   architecture
 - the offline prior asset, reference-tracking reward family, and observation
   interface should be reusable in that upgrade
+
+**M2 — compute budget cap**:
+
+- single bounded smoke run: ~5M env steps (~150 PPO iterations at
+  `num_envs=1024 × rollout_steps=128`), cap configured in the smoke YAML
+- if the promotion-horizon gates haven't been met by 5M env steps, the
+  smoke is considered failed (do not extend the run hoping it converges
+  later — prefer to come back to the prior or contract design)
+- single seed for the smoke; if it passes, multi-seed validation belongs
+  to the next milestone, not this one
+
+**M1 — failure-mode decision tree**:
+
+If the smoke fails (does not meet the promotion-horizon gates within the
+M2 compute budget), the next action depends on which gate failed:
+
+- `env/forward_velocity` flat near zero AND `episode_length` short
+  → **prior issue**: the LQR prior is not producing executable forward
+    push; the body recovers balance but doesn't translate.  Action:
+    return to v0.20.0-x prior surgery — specifically the prior-vs-body
+    gap at the smoke command (`tools/v0200c_per_frame_probe.py`).  Do
+    not relax G5 to "fix" this with more residual authority.
+- `forward_velocity` reaches the gate BUT G5 fails (residual magnitude
+  too large or realized/commanded ratio out of band)
+  → **action-authority leak**: the policy is doing the propulsion, not
+    the prior.  Action: tighten the G1 residual bound (start with -50%),
+    rerun.  If still failing, the prior is too weak to be a residual
+    target — return to prior surgery, not reward surgery.
+- `forward_velocity` reaches the gate, G5 passes, BUT
+  `term_pitch_frac >= 0.50` at promotion horizon
+  → **balance issue**: closed-loop policy has learned to translate but
+    not to stay upright.  Action: increase regularizer weight on
+    `pitch_rate` and `slip`; consider widening the residual bound on
+    ankle pitch only (the joint that owns body-pitch correction).
+- `ref/contact_phase_match` decreases over training while
+  `forward_velocity` increases
+  → **gait drift**: the policy is achieving forward motion by abandoning
+    the prior's contact schedule.  Action: increase weight on
+    `ref/contact_phase_match` and `ref/joint_track`; do not relax other
+    ref/* terms.
+- mixed / unclear failure
+  → defer to manual diagnosis with the per-frame probe and the eval
+    rollout video before deciding next milestone
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
 
