@@ -99,6 +99,12 @@ REWARD_TERM_KEYS = [
     "reward/post_touchdown_survival",
     "reward/dense_progress",
     "reward/cycle_progress",
+    # v0.20.1: imitation-dominant residual reward family.
+    "reward/ref_q_track",
+    "reward/ref_body_quat_track",
+    "reward/ref_feet_pos_track",
+    "reward/ref_contact_match",
+    "reward/cmd_forward_velocity_track",
 ]
 
 
@@ -473,6 +479,7 @@ def get_initial_env_metrics_jax(
     healthy_reward,
     action_rate,
     total_reward,
+    alive_reward=None,
 ):
     """Create initial environment metrics dictionary with JAX arrays.
 
@@ -491,6 +498,13 @@ def get_initial_env_metrics_jax(
     def _scalar(x):
         return x if hasattr(x, "shape") else jp.array(x)
 
+    # On reset there are no per-step penalties yet, so the alive contribution
+    # equals the total reward.  The legacy hard-coded value (jp.ones())
+    # silently desynced from the YAML's reward_weights.alive whenever it
+    # wasn't 1.0 (e.g. v0.20.1 smoke uses 0.05), so the reset breakdown
+    # didn't sum.  Caller can override via the explicit ``alive_reward`` kwarg.
+    alive_value = _scalar(total_reward) if alive_reward is None else _scalar(alive_reward)
+
     return {
         # Core state
         "velocity_command": _scalar(velocity_cmd),
@@ -499,7 +513,7 @@ def get_initial_env_metrics_jax(
         "episode_step_count": jp.zeros(()),  # Starts at 0 for new episode
         # Reward components
         "reward/total": _scalar(total_reward),
-        "reward/alive": jp.ones(()),  # v0.17.3a: constant survival reward
+        "reward/alive": alive_value,
         "reward/forward": _scalar(forward_reward),
         "reward/lateral": jp.zeros(()),
         "reward/healthy": _scalar(healthy_reward),
@@ -546,6 +560,18 @@ def get_initial_env_metrics_jax(
         "reward/post_touchdown_survival": jp.zeros(()),
         "reward/dense_progress": jp.zeros(()),
         "reward/cycle_progress": jp.zeros(()),
+        # v0.20.1: imitation-dominant residual reward family.  Zeros at
+        # reset because no env step has fired yet; populated each step
+        # by wildrobot_env.WildRobotEnv._aggregate_reward.
+        "reward/ref_q_track": jp.zeros(()),
+        "reward/ref_body_quat_track": jp.zeros(()),
+        "reward/ref_feet_pos_track": jp.zeros(()),
+        "reward/ref_contact_match": jp.zeros(()),
+        "reward/cmd_forward_velocity_track": jp.zeros(()),
+        "ref/q_track_err_rmse": jp.zeros(()),
+        "ref/body_quat_err_deg": jp.zeros(()),
+        "ref/feet_pos_err_l2": jp.zeros(()),
+        "ref/contact_phase_match": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),
         "debug/roll": _scalar(roll),
@@ -1296,6 +1322,7 @@ def build_wandb_metrics(
             or key.startswith("eval/")
             or key.startswith("eval_push/")
             or key.startswith("eval_clean/")
+            or key.startswith("ref/")  # v0.20.1: imitation diagnostics
         ):
             try:
                 wandb_metrics[key] = float(value)
