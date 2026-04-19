@@ -151,10 +151,10 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         loc_ref_enabled=bool(env.get("loc_ref_enabled", False)),
-        loc_ref_version=str(env.get("loc_ref_version", "v1")),
+        loc_ref_version=str(env.get("loc_ref_version", "v3_offline_library")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
         # v0.20.1 G1 / §4.1 — residual mode + per-joint override.
-        loc_ref_residual_mode=str(env.get("loc_ref_residual_mode", "half_span")),
+        loc_ref_residual_mode=str(env.get("loc_ref_residual_mode", "absolute")),
         loc_ref_residual_scale_per_joint=dict(
             env.get("loc_ref_residual_scale_per_joint", {})
         ),

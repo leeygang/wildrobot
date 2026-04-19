@@ -60,8 +60,11 @@ from ml_collections import config_dict
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Default config paths
-DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking.yaml"
+# Default config paths.
+# v0.20.1: ppo_walking.yaml was deleted along with the v1/v2 reference
+# stack.  Set to the v0.20.1 PPO smoke YAML when Task 3 lands; until
+# then ``--config`` is required (no default).
+DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking_v0201_smoke.yaml"
 DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v2" / "mujoco_robot_config.json"
 
 # Import config loaders from configs module
