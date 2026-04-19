@@ -68,9 +68,16 @@ env:
   contact_threshold_force: 5.0
   foot_switch_threshold: 2.0
 
-  # Action filtering — alpha=0.5 is the standing default.  Task #49 may
-  # tune; the env construction is alpha-agnostic.
-  action_filter_alpha: 0.5
+  # Action filtering — disabled for the smoke (alpha=0.0 ⇒ no-op).
+  # lowpass_v1's formula is `action = alpha * prev + (1 - alpha) * raw`,
+  # so alpha is the *retention* coefficient: 0.0 = passthrough, 1.0 = frozen.
+  # The standing-era default of 0.5 introduces a 1-step lag in the applied
+  # target, which would violate the G6 "iter-0 = bare q_ref replay" contract
+  # (walking_training.md v0.20.1 §) — with zero residual the filter would
+  # still output 0.5 * q_ref[t-1] + 0.5 * q_ref[t] instead of q_ref[t].
+  # Action smoothing is a sim2real concern (v0.20.2) and can be re-enabled
+  # for hardware deployment; the smoke is sim-only.
+  action_filter_alpha: 0.0
 
   # ---- v0.20.1 v3 offline reference + v5 obs ----
   loc_ref_version: v3_offline_library
@@ -114,11 +121,12 @@ env:
   action_delay_steps: 0
 
 # =============================================================================
-# PPO — sized to the M2 ~5M env-step compute budget
+# PPO — sized to the M2 ~20M env-step compute budget
 # =============================================================================
-# 1024 envs * 128 rollout * 150 iter = 19.7M policy steps.
-# At n_substeps=10 (sim_dt=0.002, ctrl_dt=0.02) the env-step count
-# matches the M2 cap.
+# 1024 envs * 128 rollout * 150 iter = 1.97e7 policy decisions
+# (each policy decision = one ctrl_dt = n_substeps physics steps;
+# the env-step count for M2 is the policy-decision count, not the
+# inner physics-step count).
 ppo:
   num_envs: 1024
   rollout_steps: 128

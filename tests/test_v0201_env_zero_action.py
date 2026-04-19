@@ -152,3 +152,78 @@ def test_loc_ref_obs_channels_track_service_window(env: WildRobotEnv) -> None:
         atol=1e-5,
         err_msg="WildRobotInfo.nominal_q_ref out of sync with service lookup",
     )
+
+
+# -----------------------------------------------------------------------------
+# 5. End-to-end G6 contract: zero-action ⇒ applied_target_q == q_ref AFTER
+#    the full step pipeline (residual composition + action filter + delay).
+#
+#    This is the BLOCKING test the residual-only assertion above misses:
+#    even when _compose_loc_ref_residual_action returns target_q == q_ref,
+#    a non-no-op action filter (lowpass_v1 with retention alpha > 0) blends
+#    raw_action with prev_action, yielding a lagged applied_target_q.  The
+#    smoke contract requires iter-0 to be bare q_ref replay; this test
+#    guards the whole path.
+# -----------------------------------------------------------------------------
+
+
+def test_zero_action_applied_target_q_equals_q_ref_under_full_step(
+    env: WildRobotEnv,
+) -> None:
+    """Run env.step with zero policy_action and verify the ctrl actually
+    written to mjx.Data matches q_ref at the new step_idx (within
+    float32 round-off).  Catches: a non-zero action_filter_alpha
+    creating a 1-step lag, action_delay_steps=1 holding the previous
+    target, or any other regression in the post-residual pipeline.
+
+    NOTE: the comparison must happen at a step where the trajectory is
+    actually moving (q_ref[t] != q_ref[t-1]).  The ZMP prior begins with
+    a few stationary frames; if we asserted at step 1 with alpha=0.5,
+    the filter blend would still equal q_ref because q_ref[0] == q_ref[1].
+    We advance until we see a meaningful frame-to-frame delta, then assert.
+    """
+    reset_fn = jax.jit(env.reset)
+    step_fn = jax.jit(env.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env.action_size, dtype=jp.float32)
+    perm = np.asarray(env._ctrl_mapper.policy_to_mj_order_jax)
+
+    # Advance to a step where the prior is actually moving.  The ZMP prior
+    # at vx=0.15 has its first lever flip around step 2-3 (per
+    # walking_training.md G7 baseline note).  Loop a small fixed number of
+    # steps and assert at the first one with a non-trivial trajectory delta.
+    found_moving_frame = False
+    for _ in range(20):
+        state = step_fn(state, zero_action)
+        if int(state.done) > 0:
+            pytest.skip("env terminated before reaching a moving trajectory frame")
+        step_idx = int(state.info[WR_INFO_KEY].loc_ref_offline_step_idx)
+        prev_q_ref = np.asarray(
+            env._lookup_offline_window(jp.asarray(step_idx - 1, dtype=jp.int32))["q_ref"]
+        ).astype(np.float32)
+        curr_q_ref = np.asarray(
+            env._lookup_offline_window(jp.asarray(step_idx, dtype=jp.int32))["q_ref"]
+        ).astype(np.float32)
+        if float(np.max(np.abs(curr_q_ref - prev_q_ref))) > 1e-3:
+            found_moving_frame = True
+            break
+
+    assert found_moving_frame, (
+        "Did not find a moving q_ref frame within 20 steps; the assertion "
+        "would not detect filter lag on stationary frames."
+    )
+
+    ctrl_mj = np.asarray(state.data.ctrl).astype(np.float32)
+    applied_target_q = ctrl_mj[perm]
+    np.testing.assert_allclose(
+        applied_target_q,
+        curr_q_ref,
+        atol=1e-5,
+        err_msg=(
+            f"G6 violation at step_idx={step_idx}: zero residual + filter/delay "
+            f"produced applied_target_q != q_ref[{step_idx}].  "
+            "Check env.action_filter_alpha (must be 0.0 for passthrough; "
+            "lowpass_v1 retains alpha*prev + (1-alpha)*current) and "
+            "env.action_delay_steps (must be 0)."
+        ),
+    )
