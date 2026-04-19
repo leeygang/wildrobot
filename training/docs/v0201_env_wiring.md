@@ -431,18 +431,26 @@ Asymmetric clipping is a v3.1 lever if needed.
 
 ## 10. Implementation sequence — REVISED (rewrite, round-3)
 
-**Status at the session boundary** (commit ``a3101cd``):
+**Status at the session boundary** (commit ``7c81dff``, post round-3
+cleanup):
 
 - Steps 1-3a of the original surgical plan are landed:
   config fields + WR info field declarations (``8c69a06``); dual obs
   builders + parity test (``0cf47e7``); env ``__init__`` infrastructure
   (``a3101cd``).
-- Step 1 of the deletion plan landed (``0ffc473``): v1/v2 source +
-  direct tests deleted.
-- ``training/envs/wildrobot_env.py`` currently still imports
-  ``walking_ref_v1`` / ``walking_ref_v2`` and will fail to import
-  the env until the rewrite lands.  This is intentional — there is
-  no half-state where the old env compiles without the v1/v2 source.
+- Deletion wave landed in 4 commits:
+  - ``0ffc473`` — v1/v2 source files + 5 direct test files
+  - ``61ed948`` — 12 v1/v2-bound consumers (runtime/, control/, training/eval/,
+    tools/) + 4 dependent tests + 4 ``__init__.py`` cleanups
+  - ``a943831`` — config defaults (loc_ref_version, loc_ref_residual_mode)
+    + 6 v1/v2-bound YAML configs deleted + train.py default updated
+  - ``7c81dff`` — replaced ``wildrobot_env.py`` with an 80-line
+    placeholder; deleted ``test_reward_terms.py`` (tested deleted
+    helpers); env imports cleanly, construction raises
+    ``NotImplementedError`` pointing to this design note
+- **Branch is now safe for shared use**: any module imports
+  cleanly; tests that try to construct ``WildRobotEnv`` fail
+  loudly with a clear pointer to the rewrite plan.
 
 **Next-session execution plan (rewrite-shaped, replaces the original
 6-commit surgical plan)**:
