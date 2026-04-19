@@ -4,40 +4,44 @@
 This script provides a command-line interface for training walking policies
 using PPO with optional Adversarial Motion Priors (AMP) for natural motion learning.
 
-Training Modes:
-    1. PPO-only (Stage 1): Learn robot-native walking without reference motion
-       python train.py --config configs/ppo_walking.yaml
-
-    2. AMP+PPO (default): Use human motion priors for natural-looking gait
-       python train.py --config configs/ppo_amass_training.yaml
-
 Usage Examples:
-    # Stage 1: PPO-only training (robot-native walking)
-    python train.py --config training/configs/ppo_walking.yaml
 
-    # Stage 1: Quick smoke test
-    python train.py --config training/configs/ppo_walking.yaml --verify
+    # v0.20.1 PPO smoke (vx=0.15 only) -- requires the smoke YAML to
+    # exist (open task #49):
+    python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
-    # AMP+PPO training with human motion priors
-    python train.py --config training/configs/ppo_amass_training.yaml
+    # Standing-branch training (separate from the locomotion path):
+    python training/train.py --config training/configs/ppo_standing.yaml
 
-    # With custom parameters
-    python train.py --num-envs 512 --iterations 5000
+    # AMP+PPO training with human motion priors:
+    python training/train.py --config training/configs/ppo_amass_training.yaml
+
+    # CLI overrides:
+    python training/train.py --config <yaml> --num-envs 512 --iterations 5000
+
+    # Quick verify (overrides via the config's quick_verify section):
+    python training/train.py --config <yaml> --verify
 
 Architecture:
-    This script supports two training modes:
+    Two training modes:
 
-    1. PPO-only (amp.enabled=False): Stage 1 training for discovering robot's natural gait.
-       Uses Brax's PPO trainer with mujoco_playground wrapper. No reference motion.
-
-    2. AMP+PPO (default): Uses custom JIT-compiled training loop that integrates
-       AMP discriminator for natural motion learning from reference data.
+    1. PPO-only (amp.enabled=False): Brax PPO trainer with mujoco_playground
+       wrapper.  v0.20.1 onward this is the active locomotion path
+       (offline ZMP reference + bounded residual policy).
+    2. AMP+PPO (amp.enabled=True): Custom JIT'd training loop with AMP
+       discriminator.  Used by the standing branch.
 
 See also:
-    - training/docs/standing_training.md: Canonical active training roadmap
-    - training/docs/archive/learn_first_plan.md: Archived walking-first roadmap
-    - training/configs/ppo_walking.yaml: Stage 1 config
+    - training/docs/walking_training.md: locomotion roadmap (v0.20.x)
+    - training/docs/v0201_env_wiring.md: v0.20.1 env design + status
+    - training/configs/ppo_standing*.yaml: standing-branch configs
     - training/configs/ppo_amass_training.yaml: AMP+PPO config
+
+History:
+    Pre-v0.20.1 ``ppo_walking*.yaml`` configs were deleted along with the
+    v1/v2 walking_ref runtime stack.  Old training-config snapshots remain
+    in ``training/checkpoints/*/training_config.yaml`` for reference but
+    are not runnable against the current env.
 """
 
 from __future__ import annotations
@@ -567,8 +571,29 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    # Load config file
+    # Load config file.
+    # v0.20.1: the previous default ``ppo_walking.yaml`` was deleted
+    # along with the v1/v2 reference stack.  ``DEFAULT_TRAINING_CONFIG_PATH``
+    # now points at ``ppo_walking_v0201_smoke.yaml`` which Task 3
+    # (open task #49) hasn't created yet.  If --config is omitted AND
+    # the default doesn't exist on disk, fail early with a clear
+    # message rather than fall through to a missing file.
     config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
+    if not config_path.exists():
+        print(
+            f"ERROR: Config file not found: {config_path}",
+            file=sys.stderr,
+        )
+        if not args.config:
+            print(
+                "  --config was omitted and the default "
+                f"({DEFAULT_TRAINING_CONFIG_PATH.name}) does not exist on disk.\n"
+                "  v0.20.1 cleanup deleted ppo_walking*.yaml; the v0.20.1 PPO\n"
+                "  smoke YAML is open task #49.  Pass --config explicitly,\n"
+                "  or land the smoke YAML first.",
+                file=sys.stderr,
+            )
+        sys.exit(2)
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
     training_cfg.config_path = str(config_path)
