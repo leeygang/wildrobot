@@ -7,6 +7,100 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-prep] - 2026-04-19: high-confidence smoke prep
+
+### Context
+
+Pre-kickoff prep for the v0.20.1 PPO smoke (single-command vx=0.15
+imitation-residual run, M2 ~20M env-step budget).  Smoke design
+review surfaced three soft spots vs the ToddlerBot reference recipe
+(gaps A/B/C in `training/docs/walking_training.md` v0.20.1 §); this
+changeset closes all three, plus tightens G6 and pre-wires the M1
+fail-mode response.
+
+### Changes
+
+1. **G6 residual-only filter contract** (`080f4f8`).
+   Restructured `step()` so the action filter operates on the raw
+   policy residual command, not the composed `q_target`.  Iter-0
+   bare-q_ref replay now holds for any `action_filter_alpha` (legacy
+   path required `alpha=0`).  New 50-step `tracking/residual_q_abs_max`
+   metric assertion in `tests/test_v0201_env_zero_action.py`
+   (test #6) prevents regression.
+
+2. **Contact-alignment baseline probe** (`697060e`).
+   New `tools/v0201_contact_alignment_probe.py` runs the smoke env
+   with zero action and reports `ref/contact_phase_match` against
+   the prior's commanded contact mask.
+
+   **Baseline result (commit `080f4f8`, vx=0.15, seed=42, 100 steps):**
+     - mean ref/contact_phase_match = 0.8000  (FAIL: < 0.90)
+     - longest mismatch streak = 6/6 steps  (FAIL: > 5)
+     - env terminates at probe step 67 under bare q_ref replay
+     - first divergence: steps 2-3 (cmd=(1,1) meas=(0,0)) — startup
+       transient leaves both feet briefly off the floor
+     - second divergence: step 15+ (cmd=(1,0) meas=(0,1)) — lateral
+       fall starts inverting stance side
+
+   This is real signal about ref/contact_match noise from iter-0;
+   remediation (loosen sigma, tighten prior, accept the noise) is a
+   follow-up decision, not a kickoff blocker.
+
+3. **slip + pitch_rate reward hooks at zero weight** (`c972be1`).
+   The M1 fail-mode tree's "balance issue" branch says "increase
+   regularizer weight on pitch_rate and slip"; both terms are now
+   computed in `_compute_reward_terms` and exposed via
+   `reward_weights.{slip,pitch_rate}`.  Default weights stay at 0 —
+   the M1 response becomes a YAML knob, not a code edit.  Raw
+   penalty values logged at `reward/penalty_slip_raw` /
+   `reward/penalty_pitch_rate_raw` so the M1 weight can be sized
+   from the smoke baseline before promoting either term.
+
+4. **YAML alpha comment update** (`46ee980`).
+   No behavior change.  Stale "must be 0.0 for G6" comment replaced
+   with a note that the residual-only contract makes alpha free.
+
+5. **Actor proprio history (wr_obs_v6_offline_ref_history)** (`0f36c4e`).
+   ToddlerBot's actor stacks ~15 past frames; the v5 actor saw a
+   single proprio frame, with no way to estimate base velocity (gap
+   A in the smoke review).  Added v6 layout: strict superset of v5
+   with a flat 3-frame past-proprio stack (gyro + foot_switches +
+   joint_pos_norm + joint_vel_norm + prev_action) appended.
+
+   **Numbers:** proprio_bundle = 3 + 4 + 3*N = 64 floats for N=19.
+   v6 obs_dim = 126 (v5) + 192 (3*64) = **318**.  PPO sees 4 frames
+   of proprio total (1 current + 3 past); enough for finite-diff
+   velocity from joint pos and one integration of gyro.
+
+   v5 checkpoints CANNOT be loaded into v6 (intentional schema bump);
+   v5 layout still supported in the env for ablation.
+
+### Validation
+
+- 6/6 v0.20.1 zero-action tests pass under v6
+  (`tests/test_v0201_env_zero_action.py`)
+- 10/10 policy-contract parity tests pass including 3 new v6 tests
+  (`tests/test_policy_contract_parity.py`)
+- 30/30 contract / spec / reward-schema tests pass
+- `python training/train.py --config ... --verify` completes cleanly
+  (3 iters × 4 envs × 8 rollout = 96 steps, obs_dim=318)
+
+### Known soft spots carried into kickoff
+
+- **ref/contact_match noise from iter-0** (probe baseline FAIL): the
+  prior's contact schedule is ~80% aligned with measured contacts at
+  bare q_ref replay.  Tracking signal is weaker than the design's G3
+  sigma assumes; if the smoke stalls on the contact term, the probe
+  baseline tells us where to look.
+- **Prior body translation gap** (unchanged from `walking_training.md`
+  G7): bare q_ref replay terminates at probe step 67; PPO is asked
+  to extend survival from there.
+- **No domain randomization / IMU noise / action delay**
+  (intentionally OFF for the smoke).  These are v0.20.2 sim2real
+  concerns.
+
+---
+
 ## [v0.20.0-C] - 2026-04-18: ToddlerBot-style multi-cycle ZMP plan
 
 ### Problem
