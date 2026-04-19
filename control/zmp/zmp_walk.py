@@ -363,11 +363,19 @@ class ZMPWalkGenerator:
         could not solve (rounds 7-8 retro: vx=0.15 still fell forward
         in ~1 s).
 
-        Lateral COM keeps the cosine weight-shift (amplitude
-        ``0.25 * lat``).  The pure-LIPM lateral overshoots ±2x the
-        stance width and tips the robot — confirmed by an LQR
-        probe; the cosine is a stability-preserving compromise
-        ToddlerBot's robot tolerates better than ours.
+        Both x and y COM come from the **forward-integrated** LQR:
+        the LIPM state is propagated by Euler at ``dt`` under the
+        closed-loop feedback ``planner.get_optim_com_acc(t, x)``.
+        This matches ToddlerBot's ``zmp_walk.update_step`` exactly.
+        At the same Qy=I, R=0.1·I that ToddlerBot uses, the
+        lateral COM swing emerges small (~1 mm peak-to-peak) — the
+        lateral support transfer comes from which foot is in stance,
+        not from a large COM-y excursion.  Round-9b retro: the
+        previous "0.25·lat cosine" override demanded a lateral
+        body sway ToddlerBot's design does not require, and the
+        original "LQR-y overshoots" justification was based on a
+        probe done while a view-mutation bug in the planner port
+        was active (commit ``5faae74`` fixed it).
 
         Foot positions advance monotonically:
           - Left feet at world x = 0, 2·sl, 4·sl, ...
@@ -388,10 +396,6 @@ class ZMPWalkGenerator:
         sl = step_length
         lat = cfg.default_stance_width_m
         dt = cfg.dt_s
-
-        # Lateral cosine amplitude — see top-level docstring for the
-        # rationale.  LQR-y was probed; it overshoots LIPM-style.
-        lat_amplitude = 0.25 * lat
 
         # Swing-foot z offset: during swing the IK plantarflexes the
         # ankle by 0.15 rad for toe clearance, which drops the foot's
@@ -443,6 +447,28 @@ class ZMPWalkGenerator:
             R=np.eye(2) * cfg.zmp_cost_R,
         )
 
+        # --- Forward-integrate the closed-loop LQR (ToddlerBot style) ---
+        # See ``toddlerbot/algorithms/zmp_walk.py`` ``update_step``: the
+        # COM trajectory is the closed-loop simulation of LIPM under
+        # the LQR's state feedback ``get_optim_com_acc(t, x)``, NOT
+        # the analytical ``get_nominal_com(t)``.  Both methods would
+        # be equivalent in continuous time, but at our 0.02 s control
+        # dt the analytical solution depends on which segment ``t``
+        # falls in (per-segment ``(a, b)`` parameters), while the
+        # state-feedback path is robust to that segmenting because it
+        # only queries ``k2(t)`` and ``K @ x``.  Use the same path.
+        n_lqr = int(np.ceil((zmp_times[-1] - zmp_times[0]) / dt))
+        com_lqr = np.zeros((n_lqr, 2), dtype=np.float64)
+        x_state = x0_lqr.copy()
+        u = self.planner.get_optim_com_acc(0.0, x_state)
+        com_lqr[0] = x_state[:2]
+        for j in range(1, n_lqr):
+            t_j = j * dt
+            xd = np.hstack([x_state[2:], u])
+            x_state = x_state + xd * dt
+            u = self.planner.get_optim_com_acc(t_j, x_state)
+            com_lqr[j] = x_state[:2]
+
         com_world = np.zeros((n_total, 2), dtype=np.float64)
         left_world = np.zeros((n_total, 3), dtype=np.float64)
         right_world = np.zeros((n_total, 3), dtype=np.float64)
@@ -469,11 +495,14 @@ class ZMPWalkGenerator:
                 t = i * dt
                 idx = k * n_cycle + i
 
-                # Sagittal COM from LQR; lateral from cosine.
+                # Both x and y COM from the forward-integrated LQR
+                # (ToddlerBot's design — small lateral COM swing is
+                # correct; the lateral support transfer comes from
+                # which foot is in stance, not from a large COM-y).
                 t_global = k * T_cycle + t
-                com_world[idx, 0] = float(self.planner.get_nominal_com(t_global)[0])
-                phase_frac = i / n_half
-                com_world[idx, 1] = lat_amplitude * np.cos(np.pi * phase_frac)
+                lqr_idx = min(int(round(t_global / dt)), n_lqr - 1)
+                com_world[idx, 0] = com_lqr[lqr_idx, 0]
+                com_world[idx, 1] = com_lqr[lqr_idx, 1]
 
                 left_world[idx] = [cycle_offset, lat, 0]
                 if i < n_ds:
@@ -497,9 +526,9 @@ class ZMPWalkGenerator:
                 idx = k * n_cycle + n_half + i
 
                 t_global = k * T_cycle + T_half + t
-                com_world[idx, 0] = float(self.planner.get_nominal_com(t_global)[0])
-                phase_frac = i / n_half
-                com_world[idx, 1] = -lat_amplitude * np.cos(np.pi * phase_frac)
+                lqr_idx = min(int(round(t_global / dt)), n_lqr - 1)
+                com_world[idx, 0] = com_lqr[lqr_idx, 0]
+                com_world[idx, 1] = com_lqr[lqr_idx, 1]
 
                 right_world[idx] = [cycle_offset + sl, -lat, 0]
                 if i < n_ds:
