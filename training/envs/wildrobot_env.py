@@ -1084,10 +1084,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # progress std).  The reward terms (m3_*, posture, slip, …) stay
         # zero under the placeholder-alive contract; Task #49 fills them
         # in with the imitation reward family.
-        residual_q_abs = jp.abs(
-            jp.clip(jp.asarray(action, dtype=jp.float32), -1.0, 1.0)
-            * self._residual_q_scale_per_joint
-        )
+        #
+        # Residual is measured against what the env *actually applied*
+        # (post action-filter and post action-delay), not the raw policy
+        # action.  Otherwise tracking/residual_q_abs_* would lie when
+        # action_filter_alpha > 0 or action_delay_steps == 1.
+        residual_q_abs = jp.abs(applied_target_q - nominal_q_ref)
         terminal_metrics_dict = get_initial_env_metrics_jax(
             velocity_cmd=velocity_cmd,
             height=root_pose.height,
