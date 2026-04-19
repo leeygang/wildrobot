@@ -311,18 +311,60 @@ shifted by one step, missed step-idx increment, FSM-mode plumbing
 leaking into the v3 path.  It does NOT catch: balance instability,
 reward bugs, learning failures (those are the smoke runner's job).
 
-## 8. Files touched
+## 8. Files touched — REVISED (rewrite scope, round-3)
 
-| File | Change | Risk |
-|---|---|---|
-| `training/envs/wildrobot_env.py` | New v3 branch in `__init__`, `reset`, `step`; new helper `_lookup_offline_reference`; bypass IK + rate limiter in v3; per-joint residual scale + `absolute` mode | Medium — new branches, but isolated by `if loc_ref_version == "v3_offline_library"` |
-| `training/envs/env_info.py` | 2 new fields on `WildRobotInfo` (both versions: dataclass + NamedTuple) | Low — additive |
-| `training/configs/training_runtime_config.py` | New env config fields: `loc_ref_residual_scale_per_joint`, `loc_ref_residual_mode`, `loc_ref_offline_library_path`, `loc_ref_offline_command_vx` | Low — additive defaults |
-| `tests/test_v0201_env_zero_action.py` | New test (above) | New file |
+After committing steps 1-3a (config / WR info / dual obs builders / `__init__`
+infrastructure), it became clear the original "surgical add v3 branches"
+plan was infeasible: ``training/envs/wildrobot_env.py`` is 6533 lines
+deeply entangled with several deprecated subsystems beyond v1/v2
+(M3 FSM, MPC standing controller, teacher targets, recovery metrics,
+v0.19.5c reward family).  Stripping them piecemeal in 6 commits would
+leave the env in indeterminate states between commits and risk silent
+regressions in the v0.19.5c reward pipeline.
 
-**Untouched**: `walking_ref_v1.py`, `walking_ref_v2.py`, the v1/v2 code paths
-in `wildrobot_env.py`, all existing configs (`ppo_walking_v0195c.yaml` etc.).
-v0.19.5c remains runnable byte-for-byte after this change.
+User direction (round-3): **rewrite ``wildrobot_env.py`` from scratch
+as a v3-only module**, dropping the deprecated subsystems entirely
+rather than carrying them forward through deprecation cycles.  No
+backward-compat with v0.19.5c.
+
+**Already deleted** (commit ``0ffc473``):
+
+- ``control/references/walking_ref_v1.py`` (173 lines)
+- ``control/references/walking_ref_v2.py`` (1523 lines)
+- ``control/references/locomotion_contract.py`` (146 lines)
+- ``tests/test_walking_ref_v1.py``, ``tests/test_walking_ref_v2.py``,
+  ``tests/test_walking_v0193_integration.py``,
+  ``training/tests/test_v0195_walking_controller.py``,
+  ``tests/test_runtime_loc_ref_builder.py``
+
+**To delete in the next session** (consequent on the rewrite):
+
+| File | Why |
+|---|---|
+| ``runtime/wr_runtime/control/loc_ref_runtime.py`` | wraps walking_ref_v1 |
+| ``runtime/wr_runtime/control/loc_ref_runtime_v2.py`` | wraps walking_ref_v2 |
+| ``runtime/wr_runtime/control/run_walking.py`` | uses both |
+| ``tools/reference_smoke/`` (whole directory) | v0.19.2 smoke |
+| ``training/eval/run_m25_v2_probe_sweep.py`` | M2.5 v2 probe |
+| ``training/eval/visualize_nominal_ref.py`` | v1/v2 plotter |
+| ``control/locomotion/nominal_ik_adapter.py`` | v1/v2 IK adapter |
+| ``control/locomotion/walking_controller.py`` | v0.19 walking ctrl |
+| ``training/configs/ppo_walking_v0193a.yaml`` | v1-bound |
+| ``training/configs/ppo_walking_v0195.yaml`` | v2-bound |
+| ``training/configs/ppo_walking_v0195c.yaml`` | v2-bound (kept as design reference; can be archived) |
+| ``training/envs/teacher_step_target.py`` | M3 teacher |
+| ``training/envs/teacher_whole_body_target.py`` | M3 teacher |
+
+**To update in the next session** (drop loc_ref builder dependency):
+
+- ``runtime/wr_runtime/control/run_policy.py`` — strip
+  ``RuntimeLocRefBuilder`` import; wire to a v3 service when the
+  hardware-deployable runtime adapter lands (v0.20.2 milestone)
+- ``runtime/wr_runtime/validation/replay_policy.py`` — same
+
+**To rewrite** (the big one):
+
+- ``training/envs/wildrobot_env.py`` — see §10 below for scope
 
 ## 9. Open design questions (decide before code)
 
@@ -387,21 +429,116 @@ training; defer.
 G5 anti-exploit metric do its job (catch the policy when it leans too far).
 Asymmetric clipping is a v3.1 lever if needed.
 
-## 10. Implementation sequence (post-review)
+## 10. Implementation sequence — REVISED (rewrite, round-3)
 
-1. Add config fields (training_runtime_config.py + env_info.py) — no behavior
-   change.  Commit.
-2. Add v3 branch to `__init__` (load library, build service, build jax_arrays).
-   Add v3 branch to reset.  Commit.
-3. Add v3 branch to step (lookup, populate loc_ref_* slots, call existing
-   residual composition).  Commit.
-4. Add `loc_ref_residual_mode = "absolute"` plumbing in
-   `_compose_loc_ref_residual_action`.  Commit.
-5. Write `tests/test_v0201_env_zero_action.py` and confirm it passes.  Commit.
-6. Hand off to Task 3 (imitation reward + smoke YAML).
+**Status at the session boundary** (commit ``a3101cd``):
 
-Each commit is independently runnable; the existing v0.19.5c training path
-keeps working at every step.
+- Steps 1-3a of the original surgical plan are landed:
+  config fields + WR info field declarations (``8c69a06``); dual obs
+  builders + parity test (``0cf47e7``); env ``__init__`` infrastructure
+  (``a3101cd``).
+- Step 1 of the deletion plan landed (``0ffc473``): v1/v2 source +
+  direct tests deleted.
+- ``training/envs/wildrobot_env.py`` currently still imports
+  ``walking_ref_v1`` / ``walking_ref_v2`` and will fail to import
+  the env until the rewrite lands.  This is intentional — there is
+  no half-state where the old env compiles without the v1/v2 source.
+
+**Next-session execution plan (rewrite-shaped, replaces the original
+6-commit surgical plan)**:
+
+1. **Reuse audit** — read the existing 6533-line ``wildrobot_env.py``
+   and identify what to extract verbatim into the new env:
+   - model load, calibration ops, signals adapter, MJX physics step
+   - action filter (lowpass v1) + residual action composition
+   - domain randomization sampling
+   - push schedule sampling
+   - termination conditions (height + pitch/roll bounds)
+   - obs builder dispatch (v5 layout)
+   - core ``WildRobotEnvState`` shape
+
+2. **Drop list** — explicit list of subsystems to NOT carry forward:
+   - ``_fsm_compute_ctrl`` + ``fsm_*`` state (M3 era)
+   - ``_mpc_standing_compute_ctrl`` + ``mpc_*`` state (v0.17.3 pivot)
+   - teacher targets (``teacher_*`` state, helper modules)
+   - recovery-metrics tracking (``recovery_*`` state)
+   - the v0.19.5c reward family (``compute_*_reward`` helpers, m3_*
+     tracking, dense_progress, slip nuance) — replaced by the
+     imitation-dominant family in Task 3
+   - ``_compute_nominal_q_ref_from_loc_ref`` (v1/v2 IK)
+   - ``_apply_startup_support_rate_limiter`` (FSM-mode helper)
+   - ``_step_walking_reference_jax`` (v1 helper)
+   - all v1/v2 brake-scale / support-scale / support-health helpers
+
+3. **New env structure** (target ~1500-2000 lines, single file):
+   - ``WildRobotEnv.__init__``: model load + calib + signals adapter
+     + Layer-2 service init (already designed in §1 / commit ``a3101cd``)
+   - ``WildRobotEnv.reset``: keyframe init → seed step 0 of the offline
+     trajectory → build initial ``WildRobotEnvState``
+   - ``WildRobotEnv.step``: read window from service →
+     ``q_target = q_ref + residual(policy_action)`` (absolute mode) →
+     MJX physics step → obs / placeholder reward / termination
+   - ``WildRobotInfo``: pruned to only the fields the rewrite uses
+     (existing M3/MPC/recovery/teacher fields removed in step 4 below)
+
+4. **WildRobotInfo cleanup** (separate commit after the rewrite):
+   - keep: ``step_count``, ``prev_action``, ``pending_action``,
+     ``truncated``, ``velocity_cmd``, ``prev_root_*``, ``imu_*_hist``,
+     ``foot_contacts``, ``root_height``, ``prev_left/right_loaded``,
+     ``cycle_start_forward_x``, ``last_touchdown_*``, ``critic_obs``,
+     ``loc_ref_*`` (the obs-feeding ones), ``nominal_q_ref``,
+     ``loc_ref_offline_step_idx``, ``loc_ref_offline_command_id``,
+     ``push_schedule``, ``domain_rand_*``
+   - drop: ``fsm_*`` (9 fields), ``mpc_*`` (5 fields), ``teacher_*``
+     (7 fields), ``recovery_*`` (~25 fields), ``loc_ref_mode_*``,
+     ``loc_ref_startup_route_*`` (FSM-era), ``loc_ref_com_x0_at_*``
+     (v2-specific)
+
+5. **Placeholder reward** for the rewrite commit:
+   - ``r = alive`` only (1.0 per step until termination)
+   - This lets the env JIT, reset, and step end-to-end so we can validate
+     wiring before Task 3 designs the real imitation reward family.
+
+6. **Validation** before declaring the rewrite done:
+   - env constructs cleanly with the v0.20.1 smoke config (Task 3 YAML)
+   - ``jax.jit(env.reset)(rng)`` returns a valid state
+   - ``jax.jit(env.step)(state, zero_action)`` runs N steps without
+     error and ``state.info[WR_INFO_KEY].loc_ref_offline_step_idx``
+     advances 0 → N
+   - the §7 wiring test (``tests/test_v0201_env_zero_action.py``)
+     passes: ``target_q == q_ref_lib`` exactly when
+     ``policy_action == 0``
+   - parity tests (``tests/test_policy_contract_parity.py`` 7 cases)
+     still pass
+
+7. **Cleanup commits** after the rewrite:
+   - delete deprecated runtime helpers (``loc_ref_runtime[_v2].py``,
+     ``run_walking.py``) + update ``run_policy.py`` /
+     ``replay_policy.py`` to drop ``RuntimeLocRefBuilder``
+   - delete obsolete configs / tools / control/locomotion helpers
+     (per §8 list)
+   - clean dead config fields and dead ``WildRobotInfo`` fields per §4 above
+
+8. **Hand-off** to Task 3 (imitation-dominant reward + smoke YAML +
+   PPO runner).
+
+**Estimated scope of the rewrite commit**: ~1500-2000 lines of new
+``wildrobot_env.py``, with ~6533 lines deleted (the old file).
+Net repo line change: roughly -4500.
+
+**Pre-rewrite checklist for the next session**:
+
+- Read ``training/eval/visualize_policy.py`` and ``train.py`` to confirm
+  what env interface they call into (``env.reset``, ``env.step``,
+  ``env.observation_size``, ``env.action_size``, ``env.dt``,
+  ``env.mj_model``, ``env.mjx_model``)
+- Read the v0.20.1 smoke YAML (Task 3 will write it before the rewrite
+  begins) so the env is built to consume the right config fields
+- Verify ``policy_contract.calib.JaxCalibOps`` can be reused as-is (it
+  was designed to be env-agnostic)
+- Identify which ``compute_*_reward`` helpers in the existing env file
+  are pure functions worth keeping in a shared ``training/envs/rewards.py``
+  vs which ones are v0.19.5c-specific dead code
 
 ## 11. What this note does NOT cover
 
