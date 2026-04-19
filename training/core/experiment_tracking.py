@@ -122,6 +122,7 @@ ENV_METRICS_KEYS = {
     "episode_step_count": "Steps in current episode",
     # Reward components
     "reward/total": "Total weighted reward",
+    "reward/alive": "Per-step survival reward (paid when not terminated)",
     "reward/forward": "Forward velocity tracking reward",
     "reward/lateral": "Lateral velocity penalty",
     "reward/healthy": "Healthy/alive reward",
@@ -168,6 +169,18 @@ ENV_METRICS_KEYS = {
     "reward/post_touchdown_survival": "Per-step survival reward after first recovery touchdown",
     "reward/dense_progress": "Dense heading-local forward progress shaping reward",
     "reward/cycle_progress": "Per-clock-cycle forward displacement reward",
+    # v0.20.1: imitation-dominant residual reward family (DeepMimic-style;
+    # see training/envs/wildrobot_env.py:_compute_reward_terms).
+    "reward/ref_q_track": "Joint-target tracking exp(-alpha*sum((q-q_ref)^2))",
+    "reward/ref_body_quat_track": "Pelvis orientation tracking exp(-alpha*angle^2)",
+    "reward/ref_feet_pos_track": "Root-relative foot position tracking",
+    "reward/ref_contact_match": "Smooth per-foot contact-phase match",
+    "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
+    # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
+    "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",
+    "ref/body_quat_err_deg": "Geodesic orientation error vs reference (deg)",
+    "ref/feet_pos_err_l2": "L2 foot-pos error (root-relative, summed L+R) in m",
+    "ref/contact_phase_match": "Smooth contact-phase match (per-step value)",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
     "debug/roll": "Root roll angle",
@@ -314,6 +327,7 @@ def get_initial_env_metrics(
     healthy_reward: float = 0.0,
     action_rate: float = 0.0,
     total_reward: float = 0.0,
+    alive_reward: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Create initial environment metrics dictionary for reset().
 
@@ -344,6 +358,11 @@ def get_initial_env_metrics(
         This function returns Python floats by default. The caller should
         convert to JAX arrays as needed.
     """
+    # Match the JAX helper's reset semantics: on reset no per-step penalties
+    # have fired, so alive == total unless the caller overrides.  This keeps
+    # the reset breakdown internally consistent for any non-JAX caller.
+    alive_value = total_reward if alive_reward is None else alive_reward
+
     return {
         # Core state
         "velocity_command": velocity_cmd,
@@ -352,6 +371,7 @@ def get_initial_env_metrics(
         "episode_step_count": 0.0,  # Starts at 0 for new episode
         # Reward components
         "reward/total": total_reward,
+        "reward/alive": alive_value,
         "reward/forward": forward_reward,
         "reward/lateral": 0.0,
         "reward/healthy": healthy_reward,
@@ -398,6 +418,16 @@ def get_initial_env_metrics(
         "reward/post_touchdown_survival": 0.0,
         "reward/dense_progress": 0.0,
         "reward/cycle_progress": 0.0,
+        # v0.20.1 imitation reward family + diagnostics (zeros at reset).
+        "reward/ref_q_track": 0.0,
+        "reward/ref_body_quat_track": 0.0,
+        "reward/ref_feet_pos_track": 0.0,
+        "reward/ref_contact_match": 0.0,
+        "reward/cmd_forward_velocity_track": 0.0,
+        "ref/q_track_err_rmse": 0.0,
+        "ref/body_quat_err_deg": 0.0,
+        "ref/feet_pos_err_l2": 0.0,
+        "ref/contact_phase_match": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
         "debug/roll": roll,
