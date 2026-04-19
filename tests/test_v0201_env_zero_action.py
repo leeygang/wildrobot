@@ -27,8 +27,8 @@ if not _SMOKE_CFG.exists():
     )
 
 from assets.robot_config import load_robot_config
-from policy_contract.calib import JaxCalibOps
 from training.configs.training_config import load_training_config
+from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.envs.env_info import WR_INFO_KEY
 from training.envs.wildrobot_env import WildRobotEnv
 
@@ -49,18 +49,17 @@ def env() -> WildRobotEnv:
 def test_zero_action_target_q_equals_nominal_q_ref(env: WildRobotEnv) -> None:
     """With ``policy_action == 0``, the env's residual composition must
     return ``target_q == nominal_q_ref`` (within float32 round-off) at
-    every step in a 50-step probe.  This is the G6 contract: iter-0 of
-    the smoke is bare-q_ref replay."""
+    every step in a 50-step probe.  This is the G6 contract at the
+    compose layer (no filter / no delay).  See the end-to-end test
+    below for the full step-path G6 assertion."""
     zero_action = jp.zeros(env.action_size, dtype=jp.float32)
     for step_idx in range(50):
         win = env._lookup_offline_window(jp.asarray(step_idx, dtype=jp.int32))
         nominal_q_ref = win["q_ref"].astype(jp.float32)
-        raw_action, residual_delta_q = env._compose_loc_ref_residual_action(
+        target_q, _residual_delta_q = env._compose_target_q_from_residual(
             policy_action=zero_action,
             nominal_q_ref=nominal_q_ref,
         )
-        # Reverse the policy-space encoding: action_to_ctrl ∘ ctrl_to_policy_action == id.
-        target_q = JaxCalibOps.action_to_ctrl(spec=env._policy_spec, action=raw_action)
         np.testing.assert_allclose(
             np.asarray(target_q),
             np.asarray(nominal_q_ref),
@@ -81,7 +80,7 @@ def test_zero_action_residual_delta_q_is_byte_zero(env: WildRobotEnv) -> None:
     back to half_span or that the per-joint scale array is misshapen."""
     zero_action = jp.zeros(env.action_size, dtype=jp.float32)
     win = env._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
-    _, residual_delta_q = env._compose_loc_ref_residual_action(
+    _, residual_delta_q = env._compose_target_q_from_residual(
         policy_action=zero_action,
         nominal_q_ref=win["q_ref"].astype(jp.float32),
     )
@@ -172,15 +171,16 @@ def test_zero_action_applied_target_q_equals_q_ref_under_full_step(
 ) -> None:
     """Run env.step with zero policy_action and verify the ctrl actually
     written to mjx.Data matches q_ref at the new step_idx (within
-    float32 round-off).  Catches: a non-zero action_filter_alpha
-    creating a 1-step lag, action_delay_steps=1 holding the previous
-    target, or any other regression in the post-residual pipeline.
+    float32 round-off).  Under the residual-only filter contract this
+    must hold for ANY ``action_filter_alpha`` value — the filter
+    operates on the residual command (which stays at 0 when the policy
+    outputs 0), not on the composed target.
 
     NOTE: the comparison must happen at a step where the trajectory is
-    actually moving (q_ref[t] != q_ref[t-1]).  The ZMP prior begins with
-    a few stationary frames; if we asserted at step 1 with alpha=0.5,
-    the filter blend would still equal q_ref because q_ref[0] == q_ref[1].
-    We advance until we see a meaningful frame-to-frame delta, then assert.
+    actually moving (q_ref[t] != q_ref[t-1]).  Without movement, even
+    the buggy "filter the composed target" path would coincidentally
+    pass because q_ref[t] == q_ref[t-1].  We advance until we see a
+    meaningful frame-to-frame delta, then assert.
     """
     reset_fn = jax.jit(env.reset)
     step_fn = jax.jit(env.step)
@@ -222,8 +222,49 @@ def test_zero_action_applied_target_q_equals_q_ref_under_full_step(
         err_msg=(
             f"G6 violation at step_idx={step_idx}: zero residual + filter/delay "
             f"produced applied_target_q != q_ref[{step_idx}].  "
-            "Check env.action_filter_alpha (must be 0.0 for passthrough; "
-            "lowpass_v1 retains alpha*prev + (1-alpha)*current) and "
-            "env.action_delay_steps (must be 0)."
+            "Under the residual-only filter contract this must hold for "
+            "any action_filter_alpha; if it fails, the filter is back on "
+            "the composed target instead of the policy residual."
         ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6. End-to-end G6 metric contract: 50 zero-action steps must keep the
+#    env's tracking/residual_q_abs_max metric at <= 1e-5 every step.  This
+#    asserts the same invariant as test #5 but via the metrics path the
+#    smoke run actually logs to W&B — guarding against any regression
+#    where the env's own bookkeeping disagrees with the ctrl write.
+# -----------------------------------------------------------------------------
+
+
+def test_zero_action_residual_metric_stays_zero_for_50_steps(
+    env: WildRobotEnv,
+) -> None:
+    """Run env.step for 50 steps with zero policy_action and assert
+    ``tracking/residual_q_abs_max`` stays at numerical zero every step.
+    Catches any regression in the residual-only filter contract that
+    leaks through to the logged metric (which is what training
+    monitors)."""
+    reset_fn = jax.jit(env.reset)
+    step_fn = jax.jit(env.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env.action_size, dtype=jp.float32)
+    metric_idx = METRIC_INDEX["tracking/residual_q_abs_max"]
+
+    max_residual_seen = 0.0
+    last_step_idx = 0
+    for _ in range(50):
+        state = step_fn(state, zero_action)
+        if int(state.done) > 0:
+            pytest.skip("env terminated before 50-step horizon")
+        last_step_idx = int(state.info[WR_INFO_KEY].loc_ref_offline_step_idx)
+        residual_max = float(state.metrics[METRICS_VEC_KEY][metric_idx])
+        max_residual_seen = max(max_residual_seen, residual_max)
+
+    assert max_residual_seen <= 1e-5, (
+        f"tracking/residual_q_abs_max peaked at {max_residual_seen:.3e} "
+        f"over 50 zero-action steps (last step_idx={last_step_idx}); "
+        "G6 contract requires <= 1e-5.  Likely cause: composed target is "
+        "being filtered instead of the policy residual."
     )

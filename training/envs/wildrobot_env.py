@@ -517,18 +517,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     # ----------------------------------------------- residual action composition
 
-    def _compose_loc_ref_residual_action(
+    def _compose_target_q_from_residual(
         self,
         *,
         policy_action: jax.Array,
         nominal_q_ref: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        """Absolute-mode residual: target_q = q_ref + clip(action) * scale_per_joint.
+        """Absolute-mode residual compose: ``target_q = clip(q_ref + clip(a) * scale)``.
 
-        Returns ``(raw_action, residual_delta_q)`` where ``raw_action``
-        is in PolicySpec [-1, 1] action space (so the action filter
-        sees policy-space and the env still goes through
-        ``JaxCalibOps`` for sign / span correction)."""
+        ``policy_action`` is the residual command in PolicySpec [-1, 1]
+        space (post-filter, post-delay).  Scaling is per-joint
+        (``self._residual_q_scale_per_joint``) and the result is
+        clipped to the joint range.  Returns
+        ``(target_q_rad, residual_delta_q_rad)``.
+
+        G6 contract: with ``policy_action == 0`` (and the filter's
+        ``prev_action == 0``, set up by ``_make_initial_state``),
+        ``residual_delta_q == 0`` and ``target_q == q_ref`` exactly,
+        independent of ``action_filter_alpha``.  The legacy path
+        filtered the composed target in policy-action space, so iter-0
+        bare-q_ref replay only held when ``alpha == 0``.
+        """
         residual_delta_q = (
             jp.clip(jp.asarray(policy_action, dtype=jp.float32), -1.0, 1.0)
             * self._residual_q_scale_per_joint
@@ -537,11 +546,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.asarray(nominal_q_ref, dtype=jp.float32) + residual_delta_q,
             self._joint_range_mins,
             self._joint_range_maxs,
-        )
-        raw_action = JaxCalibOps.ctrl_to_policy_action(
-            spec=self._policy_spec, ctrl_rad=target_q
         ).astype(jp.float32)
-        return raw_action, residual_delta_q
+        return target_q, residual_delta_q
 
     # --------------------------------------------------- offline window helpers
 
@@ -885,8 +891,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qvel = jp.zeros(self._mj_model.nv)
         randomized_model = self._get_randomized_mjx_model(dr_params)
 
-        # Seed ctrl with the offline trajectory's frame-0 q_ref so the
-        # action filter has no transient when policy_action == 0.
+        # Seed ctrl with the offline trajectory's frame-0 q_ref.  Under
+        # the residual-only filter contract (G6) the policy's residual
+        # command starts at zero, so the composed target on iter-0 is
+        # exactly q_ref0 — matching the ctrl we set here.
         win0 = self._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
         q_ref0 = win0["q_ref"].astype(jp.float32)
         ctrl_init = q_ref0
@@ -896,10 +904,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         data = mjx.forward(randomized_model, data)
 
-        # Action filter init: policy-space action that maps to ctrl_init.
-        default_action = JaxCalibOps.ctrl_to_policy_action(
-            spec=self._policy_spec, ctrl_rad=ctrl_init
-        ).astype(jp.float32)
+        # Filter / pending-action init: zero in policy [-1, 1] space.
+        # The filter operates on the residual; iter-0 policy hasn't
+        # acted, so prev_residual_command = 0.  This is what makes G6
+        # hold: filtered_action = α·0 + (1-α)·action stays 0 for any
+        # alpha when action == 0.  The legacy default_action was
+        # ctrl_to_policy_action(q_ref0); under the new compose path
+        # that warm-start is unnecessary (the filter is already at
+        # the residual's natural zero).
+        default_action = jp.zeros(self.action_size, dtype=jp.float32)
 
         signals_raw = self._signals_adapter.read(data)
         signals_override, imu_quat_hist, imu_gyro_hist, _ = _apply_imu_noise_and_delay(
@@ -1053,12 +1066,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
             1. read wr.loc_ref_offline_step_idx, advance by 1
             2. lookup the offline window at the new step_idx
-            3. compose residual action around q_ref (absolute mode)
-            4. action filter + optional 1-step delay
-            5. set ctrl + push xfrc; scan mjx.step n_substeps times
-            6. v5 obs from the new data + window
-            7. termination + alive reward
-            8. build new WildRobotInfo, advance step_count
+            3. filter raw policy_action (residual command in [-1, 1])
+            4. optional 1-step action delay
+            5. compose target_q = clip(q_ref + filtered_residual * scale)
+            6. set ctrl + push xfrc; scan mjx.step n_substeps times
+            7. v5 obs from the new data + window
+            8. termination + imitation reward
+            9. build new WildRobotInfo, advance step_count
         """
         wr = state.info[WR_INFO_KEY]
         velocity_cmd = wr.velocity_cmd
@@ -1068,24 +1082,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
         win = self._lookup_offline_window(next_step_idx)
         nominal_q_ref = win["q_ref"].astype(jp.float32)
 
-        raw_action, _residual_delta = self._compose_loc_ref_residual_action(
-            policy_action=action,
-            nominal_q_ref=nominal_q_ref,
-        )
-
+        # G6 contract: filter the residual ONLY (in policy [-1, 1] space).
+        # ``pending_action`` carries last step's filtered residual command;
+        # at reset it is zero (see ``_make_initial_state``), so iter-0 with
+        # ``action == 0`` keeps ``filtered_action == 0`` and the composed
+        # target_q is exactly q_ref, independent of action_filter_alpha.
+        # The legacy path filtered the composed target in policy-space,
+        # which low-passed q_ref over time and broke G6 for any alpha > 0.
         policy_state = PolicyState(prev_action=pending_action)
         filtered_action, policy_state = postprocess_action(
             spec=self._policy_spec,
             state=policy_state,
-            action_raw=raw_action,
+            action_raw=action,
         )
         applied_action = (
             pending_action if self._action_delay_enabled else filtered_action
         )
 
-        applied_target_q = JaxCalibOps.action_to_ctrl(
-            spec=self._policy_spec, action=applied_action
-        ).astype(jp.float32)
+        applied_target_q, _residual_delta = self._compose_target_q_from_residual(
+            policy_action=applied_action,
+            nominal_q_ref=nominal_q_ref,
+        )
         ctrl_mj = self._to_mj_ctrl(applied_target_q)
 
         # Apply push (gated by schedule + disable_pushes flag).
