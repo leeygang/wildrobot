@@ -19,9 +19,13 @@ dependencies = [
 ]
 
 [project.scripts]
-wildrobot-run-policy = "wr_runtime.control.run_policy:main"
+# v0.20.1: ``wildrobot-run-policy`` and ``wildrobot-replay-policy`` were
+# removed when their underlying modules (``wr_runtime.control.run_policy``
+# and ``wr_runtime.validation.replay_policy``) were deleted along with
+# the v1/v2 walking_ref runtime stack.  They will be re-added with the
+# v3-aligned hardware policy runner at the v0.20.2 milestone (see
+# ``training/docs/walking_training.md`` v0.20.2 SysID + transfer).
 wildrobot-validate-bundle = "wr_runtime.validation.validate_bundle:main"
-wildrobot-replay-policy = "wr_runtime.validation.replay_policy:main"
 wildrobot-inspect-log = "wr_runtime.validation.inspect_log:main"
 
 [tool.setuptools]
