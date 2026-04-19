@@ -153,6 +153,19 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_enabled=bool(env.get("loc_ref_enabled", False)),
         loc_ref_version=str(env.get("loc_ref_version", "v1")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
+        # v0.20.1 G1 / §4.1 — residual mode + per-joint override.
+        loc_ref_residual_mode=str(env.get("loc_ref_residual_mode", "half_span")),
+        loc_ref_residual_scale_per_joint=dict(
+            env.get("loc_ref_residual_scale_per_joint", {})
+        ),
+        # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
+        loc_ref_offline_library_path=(
+            None if env.get("loc_ref_offline_library_path") in (None, "")
+            else str(env.get("loc_ref_offline_library_path"))
+        ),
+        loc_ref_offline_command_vx=float(
+            env.get("loc_ref_offline_command_vx", 0.15)
+        ),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",
             env.get("loc_ref_nominal_com_height_m", 0.40))),

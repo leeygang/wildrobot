@@ -1441,8 +1441,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._policy_spec.observation.layout_id == "wr_obs_v4"
         )
         self._loc_ref_version = str(getattr(self._config.env, "loc_ref_version", "v1")).lower()
-        if self._loc_ref_version not in ("v1", "v2"):
-            raise ValueError("env.loc_ref_version must be 'v1' or 'v2'")
+        if self._loc_ref_version not in ("v1", "v2", "v3_offline_library"):
+            raise ValueError(
+                "env.loc_ref_version must be 'v1', 'v2', or "
+                "'v3_offline_library' (v0.20.1)"
+            )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
         }
@@ -2582,6 +2585,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_pelvis_pitch=loc_ref_pelvis_pitch,
             loc_ref_history=loc_ref_history,
             nominal_q_ref=nominal_q_ref,
+            # v0.20.1 v3_offline_library — sentinel zeros for v1/v2 paths.
+            loc_ref_offline_step_idx=jp.zeros((), dtype=jp.int32),
+            loc_ref_offline_command_id=jp.zeros((), dtype=jp.int32),
             push_schedule=push_schedule,
             # M3 FSM state: initialised to STANCE (all zeros)
             fsm_phase=jp.zeros((), dtype=jp.int32),
@@ -3884,6 +3890,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_pelvis_pitch=loc_ref_pelvis_pitch,
             loc_ref_history=loc_ref_history,
             nominal_q_ref=nominal_q_ref,
+            # v0.20.1 v3_offline_library — carry-forward from prior step;
+            # the v3 step branch will overwrite loc_ref_offline_step_idx
+            # with the incremented value before the WildRobotInfo is built.
+            loc_ref_offline_step_idx=wr.loc_ref_offline_step_idx,
+            loc_ref_offline_command_id=wr.loc_ref_offline_command_id,
             push_schedule=wr.push_schedule,
             # M3 FSM state (updated by _fsm_compute_ctrl or carried from wr)
             fsm_phase=new_fsm[0],
@@ -4412,6 +4423,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_pelvis_pitch=reset_wr_info.loc_ref_pelvis_pitch,
             loc_ref_history=reset_wr_info.loc_ref_history,
             nominal_q_ref=reset_wr_info.nominal_q_ref,
+            # v0.20.1 v3_offline_library — restart playback at frame 0 on
+            # episode reset (preserved by reset_wr_info, which the v3
+            # branch initialises to zeros).
+            loc_ref_offline_step_idx=reset_wr_info.loc_ref_offline_step_idx,
+            loc_ref_offline_command_id=reset_wr_info.loc_ref_offline_command_id,
             push_schedule=reset_wr_info.push_schedule,
             # M3 FSM: reset to STANCE on new episode
             fsm_phase=reset_wr_info.fsm_phase,

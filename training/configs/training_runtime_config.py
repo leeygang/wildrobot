@@ -119,11 +119,42 @@ class EnvConfig(Freezable):
     actor_obs_layout_id: str = "wr_obs_v1"
     # v0.19.3: reference-guided locomotion (M2 nominal + PPO residual)
     loc_ref_enabled: bool = False
-    # Reference implementation selector: "v1" (legacy) or "v2" (support-first hybrid).
+    # Reference implementation selector:
+    #   "v1"                 - legacy walking_ref_v1 (parametric)
+    #   "v2"                 - support-first hybrid walking_ref_v2 (parametric, deprecated)
+    #   "v3_offline_library" - v0.20.1: offline ZMP ReferenceLibrary lookup
+    #                          (requires loc_ref_offline_library_path or
+    #                          loc_ref_offline_command_vx for on-the-fly build)
     loc_ref_version: str = "v1"
     # Residual joint delta scale (fraction of per-joint half-range).
     # Effective delta_q = residual_action * loc_ref_residual_scale * half_span.
     loc_ref_residual_scale: float = 0.18
+
+    # v0.20.1 G1 / §4.1 — residual interpretation mode.
+    #   "half_span" - legacy v1/v2 behavior; effective delta_q =
+    #                 action * loc_ref_residual_scale * half_span
+    #   "absolute"  - v3 default; effective delta_q =
+    #                 action * loc_ref_residual_scale (the scale value
+    #                 is the rad bound directly).  When set, the
+    #                 per-joint override map below replaces the scalar
+    #                 per the smoke G1 spec (legs ±0.50 rad, others
+    #                 ±0.20 rad).  v1/v2 default stays "half_span".
+    loc_ref_residual_mode: str = "half_span"
+    # v0.20.1 G1 — optional per-joint residual scale override (joint
+    # name -> rad bound).  Only consulted when
+    # loc_ref_residual_mode == "absolute".  Joints not in the map
+    # fall back to the scalar loc_ref_residual_scale.
+    loc_ref_residual_scale_per_joint: Dict[str, float] = field(default_factory=dict)
+
+    # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
+    # Set loc_ref_offline_library_path to load a saved library from
+    # disk; otherwise the env builds one on-the-fly via
+    # ZMPWalkGenerator() at init.  loc_ref_offline_command_vx selects
+    # which trajectory to use as the env's reference (single command
+    # for the v0.20.1 smoke; future multi-command work moves to a
+    # stacked-arrays representation per the design note's Q3).
+    loc_ref_offline_library_path: Optional[str] = None
+    loc_ref_offline_command_vx: float = 0.15
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
     loc_ref_walking_pelvis_height_m: float = 0.40

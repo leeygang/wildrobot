@@ -126,6 +126,15 @@ try:
         loc_ref_pelvis_pitch: jnp.ndarray  # shape=()
         loc_ref_history: jnp.ndarray  # shape=(4,)
         nominal_q_ref: jnp.ndarray  # shape=(action_size,)
+
+        # v0.20.1 v3_offline_library — offline ReferenceLibrary playback
+        # state.  Both fields are sentinels (= 0) for v1/v2 paths; the
+        # v3 step branch increments and reads them.  Keeping them on
+        # WildRobotInfo (vs as separate per-env state) means lax.scan
+        # rollouts thread them automatically.
+        loc_ref_offline_step_idx: jnp.ndarray  # shape=(), int32
+        loc_ref_offline_command_id: jnp.ndarray  # shape=(), int32
+
         push_schedule: DisturbanceSchedule
 
         # -----------------------------------------------------------------------
@@ -275,6 +284,9 @@ except ImportError:
         loc_ref_pelvis_pitch: jnp.ndarray
         loc_ref_history: jnp.ndarray
         nominal_q_ref: jnp.ndarray
+        # v0.20.1 v3_offline_library — see dataclass version above for context.
+        loc_ref_offline_step_idx: jnp.ndarray
+        loc_ref_offline_command_id: jnp.ndarray
         # M3 FSM state
         fsm_phase: jnp.ndarray
         fsm_swing_foot: jnp.ndarray
