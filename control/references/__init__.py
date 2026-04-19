@@ -1,37 +1,23 @@
-"""Locomotion reference contracts and library for WildRobot walking.
+"""Locomotion reference library for WildRobot walking.
 
-v0.19.x: Runtime walking FSM (walking_ref_v1, walking_ref_v2)
-v0.20.x: Offline reference library (reference_library)
+v0.20.x architecture (active): the offline ``ReferenceLibrary`` is the
+single source of truth for locomotion semantics; runtime is a thin
+lookup over it.  The previous runtime-FSM modules
+(``walking_ref_v1``, ``walking_ref_v2``, ``locomotion_contract``)
+were deleted at v0.20.1 since they had been deprecated since v0.20.0
+and were not on the active path.  See ``training/docs/walking_training.md``
+and ``training/docs/reference_design.md``.
 """
 
-from .locomotion_contract import (
-    LocomotionCommand,
-    LocomotionReferenceState,
-    LocomotionObservationContract,
-    LocomotionActionContract,
-    validate_locomotion_contract,
-)
 from .reference_library import (
     ReferenceLibrary,
     ReferenceLibraryMeta,
     ReferencePreviewWindow,
     ReferenceTrajectory,
 )
-from .walking_ref_v1 import (
-    WalkingRefV1Config,
-    WalkingRefV1Input,
-    WalkingRefV1State,
-    WalkingReferenceOutput,
-    step_reference,
-)
-from .walking_ref_v2 import (
-    WalkingRefV2Config,
-    WalkingRefV2Input,
-    WalkingRefV2State,
-    WalkingRefV2Mode,
-    WalkingReferenceV2Output,
-    compute_support_health_v2,
-    step_reference_v2,
+from .runtime_reference_service import (
+    RuntimeReferenceService,
+    RuntimeReferenceWindow,
 )
 
 __all__ = [
@@ -40,23 +26,7 @@ __all__ = [
     "ReferenceLibraryMeta",
     "ReferencePreviewWindow",
     "ReferenceTrajectory",
-    # v0.19 contracts (backward compatibility)
-    "LocomotionCommand",
-    "LocomotionReferenceState",
-    "LocomotionObservationContract",
-    "LocomotionActionContract",
-    "validate_locomotion_contract",
-    # v0.19 runtime FSM (deprecated for runtime, allowed for offline generation)
-    "WalkingRefV1Config",
-    "WalkingRefV1Input",
-    "WalkingRefV1State",
-    "WalkingReferenceOutput",
-    "step_reference",
-    "WalkingRefV2Config",
-    "WalkingRefV2Input",
-    "WalkingRefV2State",
-    "WalkingRefV2Mode",
-    "WalkingReferenceV2Output",
-    "compute_support_health_v2",
-    "step_reference_v2",
+    # v0.20.1 runtime lookup service (Layer 2)
+    "RuntimeReferenceService",
+    "RuntimeReferenceWindow",
 ]
