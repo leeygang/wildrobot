@@ -1,0 +1,203 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke Config — STUB
+# =============================================================================
+# Single-command (vx=0.15) imitation-residual smoke per
+# training/docs/walking_training.md (v0.20.1 section).
+#
+# This file lands alongside the v0.20.1 env rewrite (training/envs/
+# wildrobot_env.py).  It is a STUB: the env-side fields are correct
+# and load-bearing for env construction; the reward and PPO sections
+# are placeholders that Task #49 (imitation-dominant reward family +
+# tuned PPO hyperparams) will tune.
+#
+# Active reward: alive=1.0 only.  This pairs with the rewrite's
+# placeholder reward (§10 step 5) so end-to-end JIT compilation,
+# reset, and step succeed without depending on Task #49.
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke.yaml --verify
+#
+# See also:
+#   - training/docs/v0201_env_wiring.md        env design (§3-§5)
+#   - training/docs/v0201_env_rewrite_audit.md rewrite audit (§A.E)
+#   - training/docs/walking_training.md        v0.20.1 smoke contract
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke (vx=0.15, imitation residual) — STUB"
+
+seed: 42
+
+# =============================================================================
+# Environment — v3 offline reference + bounded residual policy
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  # Episode horizon must satisfy `horizon <= service.n_steps` per the
+  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.15
+  # ZMP trajectory is ~1100 steps at dt=0.02; 500 steps = 10 s is well
+  # under the trajectory's ~22 s.
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: false
+
+  # Single-command smoke: both ends pinned at vx=0.15 so reset samples
+  # a degenerate uniform.  Multi-command training is deferred (per
+  # design note Q3 / smoke_contract).
+  min_velocity: 0.15
+  max_velocity: 0.15
+
+  # Contacts
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Action filtering — alpha=0.5 is the standing default.  Task #49 may
+  # tune; the env construction is alpha-agnostic.
+  action_filter_alpha: 0.5
+
+  # ---- v0.20.1 v3 offline reference + v5 obs ----
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v5_offline_ref
+
+  # Build the library on the fly via ZMPWalkGenerator (omit
+  # loc_ref_offline_library_path).  The smoke uses a single command bin.
+  loc_ref_offline_command_vx: 0.15
+
+  # ---- Residual bounds (G1) ----
+  # Absolute mode: residual_delta_q = clip(action) * scale (rad).  The
+  # per-joint map matches the G1 spec in the design note (§4.1):
+  # legs ±0.50 rad; arms / waist fall back to the scalar ±0.20 rad.
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.50
+    right_hip_pitch: 0.50
+    left_hip_roll: 0.50
+    right_hip_roll: 0.50
+    left_knee_pitch: 0.50
+    right_knee_pitch: 0.50
+    left_ankle_pitch: 0.50
+    right_ankle_pitch: 0.50
+
+  # Disturbance pushes — disabled for the smoke per walking_training.md.
+  # The push_schedule plumbing is preserved in env state regardless;
+  # leaving push_enabled false simply gates the apply path off.
+  push_enabled: false
+
+  # IMU noise / latency disabled for the first smoke (focus on imitation
+  # tracking; defer realism profile to a later milestone).
+  imu_gyro_noise_std: 0.0
+  imu_quat_noise_deg: 0.0
+  imu_latency_steps: 0
+
+  # Domain randomization disabled for the first smoke.
+  domain_randomization_enabled: false
+
+  # No action delay for the first smoke.
+  action_delay_steps: 0
+
+# =============================================================================
+# PPO — STUB (Task #49 tunes)
+# =============================================================================
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 200
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# AMP — disabled for v0.20.1 smoke (not on the smoke critical path)
+# =============================================================================
+amp:
+  enabled: false
+  dataset_path: null
+  weight: 0.0
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — STUB (placeholder reward = alive only)
+# =============================================================================
+# The env rewrite (§10 step 5) emits `reward = alive_weight` per step until
+# termination.  The imitation-dominant reward family (`ref/q_ref_track`,
+# `ref/body_quat_track`, `ref/feet_pos_track`, `ref/contact_match`) is
+# Task #49.  All other terms are zero so they don't pollute the smoke.
+# =============================================================================
+reward_weights:
+  alive: 1.0
+
+# =============================================================================
+# Reward Composition
+# =============================================================================
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0
+  task_reward_clip: null
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+# =============================================================================
+# Logging — offline mode by default for the stub; flip to online for real runs
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke, stub]
+
+video:
+  enabled: false
+
+# =============================================================================
+# Quick verify
+# =============================================================================
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+  amp:
+    enabled: false
