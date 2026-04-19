@@ -4,7 +4,7 @@
 Usage:
   uv run python training/exports/export_policy_bundle.py \
     --checkpoint training/checkpoints/policy_latest.pkl \
-    --config training/configs/ppo_walking.yaml \
+    --config training/configs/ppo_walking_v0201_smoke.yaml \
     --output-dir training/checkpoints/wildrobot_policy_bundle
 """
 

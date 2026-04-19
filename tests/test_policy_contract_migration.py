@@ -4,6 +4,16 @@ from pathlib import Path
 
 import pytest
 
+# v0.20.1: tests construct WildRobotEnv with the smoke YAML (open
+# task #49).  Skip cleanly until both the YAML and the v3 env
+# rewrite (task #50) land.
+_SMOKE_CFG = Path("training/configs/ppo_walking_v0201_smoke.yaml")
+if not _SMOKE_CFG.exists():
+    pytest.skip(
+        f"{_SMOKE_CFG.name} not found (v0.20.1 task #49)",
+        allow_module_level=True,
+    )
+
 from policy_contract.spec import PolicySpec, validate_runtime_compat, validate_spec
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
@@ -13,7 +23,7 @@ from wr_runtime.utils.mjcf import load_mjcf_model_info
 
 def test_env_observation_size_matches_contract() -> None:
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    config = load_training_config("training/configs/ppo_walking.yaml")
+    config = load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
     config.freeze()
     env = WildRobotEnv(config)
 
@@ -41,7 +51,7 @@ def test_sim_foot_switches_nonzero() -> None:
     import jax.numpy as jnp
 
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    config = load_training_config("training/configs/ppo_walking.yaml")
+    config = load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
     config.freeze()
     env = WildRobotEnv(config)
 

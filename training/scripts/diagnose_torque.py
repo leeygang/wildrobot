@@ -22,7 +22,9 @@ from training.configs.training_config import load_training_config, load_robot_co
 
 # Configuration
 DEFAULT_CHECKPOINT = "training/checkpoints/wildrobot_ppo_20251228_011310/checkpoint_350_45875200.pkl"
-DEFAULT_CONFIG = "training/configs/ppo_walking.yaml"
+# v0.20.1: ppo_walking.yaml was deleted; pass --config to point at
+# the v0.20.1 smoke YAML (task #49) once it lands.
+DEFAULT_CONFIG = "training/configs/ppo_walking_v0201_smoke.yaml"
 MODEL_PATH = "assets/v1/scene_flat_terrain.xml"
 NUM_STEPS = 500
 VELOCITY_CMD = 0.65

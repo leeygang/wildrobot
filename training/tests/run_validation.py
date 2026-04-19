@@ -73,10 +73,12 @@ def test_env_basics():
     from training.configs.training_config import load_training_config
     from training.envs.wildrobot_env import WildRobotEnv
 
-    # Load configs
+    # Load configs.
+    # v0.20.1: ppo_walking.yaml was deleted; smoke YAML lands with
+    # task #49.  This script will fail at the load step until then.
     print("\n1. Loading configs...")
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    training_cfg = load_training_config("training/configs/ppo_walking.yaml")
+    training_cfg = load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
     training_cfg.freeze()  # Freeze config for JIT compatibility
 
     # Create env

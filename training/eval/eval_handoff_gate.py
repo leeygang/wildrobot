@@ -8,7 +8,7 @@ reference_design.md.
 Usage:
     JAX_PLATFORMS=cpu uv run python training/eval/eval_handoff_gate.py
     JAX_PLATFORMS=cpu uv run python training/eval/eval_handoff_gate.py \
-        --config training/configs/ppo_walking_v0194c.yaml \
+        --config training/configs/ppo_walking_v0201_smoke.yaml \
         --seeds 10 --forward-cmd 0.15 --horizon 500
 
 Gate criteria (all must pass):
@@ -344,7 +344,12 @@ def _print_gate_report(gate: dict[str, Any]) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Nominal-to-PPO handoff gate evaluator")
-    p.add_argument("--config", type=str, default="training/configs/ppo_walking_v0193a.yaml")
+    # v0.20.1: ppo_walking_v0193a.yaml was deleted along with the v1
+    # walking_ref it bound to.  Smoke YAML default lands with task #49.
+    p.add_argument(
+        "--config", type=str,
+        default="training/configs/ppo_walking_v0201_smoke.yaml",
+    )
     p.add_argument("--forward-cmd", type=float, default=0.15)
     p.add_argument("--horizon", type=int, default=500)
     p.add_argument("--seeds", type=int, default=5, help="Number of seeds to run")

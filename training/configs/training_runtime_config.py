@@ -8,7 +8,7 @@ This module provides a unified config system where:
 Usage:
     from training.configs.training_config import load_training_config
 
-    config = load_training_config("configs/ppo_walking.yaml")
+    config = load_training_config("configs/ppo_walking_v0201_smoke.yaml")
 
     # Modify via mutable configs
     config.ppo.learning_rate = 1e-4

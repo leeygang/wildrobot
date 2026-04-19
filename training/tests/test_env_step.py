@@ -22,12 +22,15 @@ import pytest
 
 @pytest.fixture(scope="module")
 def env(training_config, robot_config):
-    """Create WildRobot environment for testing."""
-    from assets.robot_config import load_robot_config
-    from training.configs.training_config import load_training_config
+    """Create WildRobot environment for testing.
 
+    v0.20.1: ``training_config`` is the conftest fixture that skips
+    when ``ppo_walking_v0201_smoke.yaml`` is missing (task #49 +
+    env rewrite pending), so this fixture cascades the skip cleanly.
+    """
+    from assets.robot_config import load_robot_config
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    training_cfg = load_training_config("training/configs/ppo_walking.yaml")
+    training_cfg = training_config
     training_cfg.freeze()  # Freeze config for JIT compatibility
 
     from training.envs.wildrobot_env import WildRobotEnv

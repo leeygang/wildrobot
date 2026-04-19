@@ -22,7 +22,7 @@ Architecture:
 
 Usage:
     # Stage 1: PPO-only
-    config = load_training_config("configs/ppo_walking.yaml")
+    config = load_training_config("configs/ppo_walking_v0201_smoke.yaml")
     config.freeze()
     train(env_step_fn, env_reset_fn, config, ref_motion_data=None)
 

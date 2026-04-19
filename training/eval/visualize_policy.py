@@ -14,8 +14,8 @@ Usage:
     # Visualize specific checkpoint
     mjpython training/eval/visualize_policy.py --checkpoint path/to/checkpoint.pkl
 
-    # Visualize with different config
-    mjpython training/eval/visualize_policy.py --config training/configs/ppo_walking.yaml
+    # Visualize with different config (v0.20.1: smoke YAML default)
+    mjpython training/eval/visualize_policy.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
     # With velocity command (for walking)
     mjpython training/eval/visualize_policy.py --velocity-cmd 0.5
@@ -62,8 +62,11 @@ from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 
 
-# Default paths (relative to project_root)
-DEFAULT_CONFIG_PATH = project_root / "training" / "configs" / "ppo_walking.yaml"
+# Default paths (relative to project_root).
+# v0.20.1: ppo_walking.yaml was deleted; the v0.20.1 smoke YAML
+# (open task #49) is the new default.  --config explicit override
+# is recommended until the smoke YAML lands.
+DEFAULT_CONFIG_PATH = project_root / "training" / "configs" / "ppo_walking_v0201_smoke.yaml"
 DEFAULT_CHECKPOINT_PATH = (
     project_root / "training" / "checkpoints" / "final_ppo_policy.pkl"
 )

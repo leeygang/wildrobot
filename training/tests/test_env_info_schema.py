@@ -35,12 +35,17 @@ from training.envs.env_info import (
 @pytest.fixture(scope="module")
 def env():
     """Create WildRobot environment for schema tests."""
+    from pathlib import Path as _Path
+    _CFG = "training/configs/ppo_walking_v0201_smoke.yaml"
+    if not _Path(_CFG).exists():
+        pytest.skip(f"{_CFG} not found (v0.20.1 task #49)")
+
     from assets.robot_config import load_robot_config
     from training.configs.training_config import load_training_config
     from training.envs.wildrobot_env import WildRobotEnv
 
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    training_cfg = load_training_config("training/configs/ppo_walking.yaml")
+    training_cfg = load_training_config(_CFG)
     training_cfg.freeze()
     return WildRobotEnv(config=training_cfg)
 

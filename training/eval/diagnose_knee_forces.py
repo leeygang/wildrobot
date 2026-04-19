@@ -25,7 +25,10 @@ from training.envs.env_info import WR_INFO_KEY
 
 
 def main() -> None:
-    cfg = load_training_config("training/configs/ppo_walking_v0193a.yaml")
+    # v0.20.1: ppo_walking_v0193a.yaml was deleted; pass an explicit
+    # config via this script's CLI (currently hardcoded -- update when
+    # the smoke YAML or a v0.20.x diagnostic config lands).
+    cfg = load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
     robot_cfg_path = Path(cfg.env.robot_config_path)
     if not robot_cfg_path.is_absolute():
         robot_cfg_path = project_root / robot_cfg_path

@@ -145,7 +145,8 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="training/configs/ppo_walking.yaml",
+        # v0.20.1: ppo_walking.yaml deleted; smoke YAML lands with task #49.
+        default="training/configs/ppo_walking_v0201_smoke.yaml",
         help="Path to training config YAML",
     )
     parser.add_argument(

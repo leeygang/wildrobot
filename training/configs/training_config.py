@@ -14,7 +14,7 @@ Usage:
     robot_config = load_robot_config("assets/v2/mujoco_robot_config.json")
 
     # Load training config
-    config = load_training_config("configs/ppo_walking.yaml")
+    config = load_training_config("configs/ppo_walking_v0201_smoke.yaml")
 
     # Access config properties (new unified access pattern)
     print(config.networks.actor.hidden_sizes)  # (256, 256, 128)
@@ -830,7 +830,7 @@ def load_training_config(config_path: str | Path) -> TrainingConfig:
         TrainingConfig instance (mutable)
 
     Example:
-        config = load_training_config("configs/ppo_walking.yaml")
+        config = load_training_config("configs/ppo_walking_v0201_smoke.yaml")
         config.ppo.learning_rate = 1e-4  # Override via CLI
         config.freeze()  # Freeze before training
     """

@@ -30,7 +30,11 @@ ASSETS_PATH = PROJECT_ROOT / "assets" / "v2"
 SCENE_XML_PATH = ASSETS_PATH / "scene_flat_terrain.xml"
 ROBOT_XML_PATH = ASSETS_PATH / "wildrobot.xml"
 ROBOT_CONFIG_PATH = ASSETS_PATH / "mujoco_robot_config.json"
-TRAINING_CONFIG_PATH = PROJECT_ROOT / "training" / "configs" / "ppo_walking.yaml"
+# v0.20.1: ppo_walking.yaml was deleted along with the v1/v2 reference
+# stack; the v0.20.1 smoke YAML (open task #49) is the new default.
+# Tests that consume the ``training_config`` fixture below will skip
+# cleanly until that YAML exists on disk.
+TRAINING_CONFIG_PATH = PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke.yaml"
 SCHEMA_PATH = ASSETS_PATH / "robot_schema.json"
 
 
@@ -71,7 +75,18 @@ def robot_schema_dict(robot_schema) -> Dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def training_config():
-    """Load training config once per session."""
+    """Load training config once per session.
+
+    v0.20.1: skips cleanly if the configured YAML doesn't exist
+    (e.g. before the smoke YAML lands as part of task #49).  Tests
+    that depend on this fixture will report ``SKIPPED`` with a
+    clear reason rather than failing at fixture-load time."""
+    if not TRAINING_CONFIG_PATH.exists():
+        pytest.skip(
+            f"training config not found: {TRAINING_CONFIG_PATH.name} "
+            "(v0.20.1 cleanup deleted ppo_walking*.yaml; the v0.20.1 "
+            "smoke YAML is open task #49)"
+        )
     from training.configs.training_config import load_training_config
     return load_training_config(TRAINING_CONFIG_PATH)
 

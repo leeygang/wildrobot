@@ -418,10 +418,12 @@ def run_nominal_probe(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Nominal-only loc-ref probe")
+    # v0.20.1: ppo_walking_v0193a.yaml was deleted; smoke YAML lands
+    # with task #49.
     p.add_argument(
         "--config",
         type=str,
-        default="training/configs/ppo_walking_v0193a.yaml",
+        default="training/configs/ppo_walking_v0201_smoke.yaml",
     )
     p.add_argument("--forward-cmd", type=float, default=0.10)
     p.add_argument("--horizon", type=int, default=200)
