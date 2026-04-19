@@ -724,6 +724,17 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         teacher_knee_flex_min=rewards.get("teacher_knee_flex_min", 0.0),
         teacher_knee_flex_target=rewards.get("teacher_knee_flex_target", 0.30),
         teacher_knee_flex_sigma=rewards.get("teacher_knee_flex_sigma", 0.10),
+        # v0.20.1 imitation-dominant residual reward family.
+        ref_q_track=rewards.get("ref_q_track", 0.0),
+        ref_body_quat_track=rewards.get("ref_body_quat_track", 0.0),
+        ref_feet_pos_track=rewards.get("ref_feet_pos_track", 0.0),
+        ref_contact_match=rewards.get("ref_contact_match", 0.0),
+        cmd_forward_velocity_track=rewards.get("cmd_forward_velocity_track", 0.0),
+        ref_q_track_alpha=rewards.get("ref_q_track_alpha", 1.0),
+        ref_body_quat_alpha=rewards.get("ref_body_quat_alpha", 20.0),
+        ref_feet_pos_alpha=rewards.get("ref_feet_pos_alpha", 200.0),
+        ref_contact_match_sigma=rewards.get("ref_contact_match_sigma", 0.5),
+        cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
     )
 
 

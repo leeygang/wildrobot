@@ -1393,6 +1393,63 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Penalty for moving backward under forward command",
     ),
+    # =========================================================================
+    # v0.20.1: imitation-dominant residual reward family.
+    # See training/configs/training_runtime_config.py RewardWeightsConfig
+    # for the per-term weights / sigmas, and training/docs/walking_training.md
+    # (v0.20.1 Reward §) for the canonical term list.
+    # =========================================================================
+    MetricSpec(
+        name="reward/ref_q_track",
+        reducer=Reducer.MEAN,
+        description="Joint-target tracking exp(-alpha*sum((q-q_ref)^2))",
+    ),
+    MetricSpec(
+        name="reward/ref_body_quat_track",
+        reducer=Reducer.MEAN,
+        description="Pelvis orientation tracking exp(-alpha*angle^2)",
+    ),
+    MetricSpec(
+        name="reward/ref_feet_pos_track",
+        reducer=Reducer.MEAN,
+        description="Root-relative foot position tracking",
+    ),
+    MetricSpec(
+        name="reward/ref_contact_match",
+        reducer=Reducer.MEAN,
+        description="Smooth per-foot contact-phase match",
+    ),
+    MetricSpec(
+        name="reward/cmd_forward_velocity_track",
+        reducer=Reducer.MEAN,
+        description="Forward velocity command tracking",
+    ),
+    MetricSpec(
+        name="ref/q_track_err_rmse",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        topline=True,
+        description="RMSE between actual and reference joint positions (rad)",
+    ),
+    MetricSpec(
+        name="ref/body_quat_err_deg",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description="Geodesic orientation error vs reference (deg)",
+    ),
+    MetricSpec(
+        name="ref/feet_pos_err_l2",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description="L2 foot-pos error (root-relative, summed L+R) in m",
+    ),
+    MetricSpec(
+        name="ref/contact_phase_match",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        topline=True,
+        description="Smooth contact-phase match (per-step value of the reward term)",
+    ),
 ]
 
 # =============================================================================

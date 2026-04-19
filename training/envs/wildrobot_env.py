@@ -633,6 +633,145 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pad = jp.zeros(PRIVILEGED_OBS_DIM - head.shape[0], dtype=jp.float32)
         return jp.concatenate([head, pad])
 
+    # ----------------------------------------------------------- reward terms
+
+    def _compute_reward_terms(
+        self,
+        *,
+        data: mjx.Data,
+        win: Dict[str, jax.Array],
+        nominal_q_ref: jax.Array,
+        applied_action: jax.Array,
+        prev_applied_action: jax.Array,
+        forward_velocity: jax.Array,
+        velocity_cmd: jax.Array,
+        left_force: jax.Array,
+        right_force: jax.Array,
+        root_pose,
+    ) -> Dict[str, jax.Array]:
+        """v0.20.1 imitation-dominant reward family.
+
+        DeepMimic-style ``r = exp(-alpha * sum_of_squares)`` for each
+        tracking term; raw squared-sum penalties for the regularizers.
+        Sigmas/alphas are configurable via ``reward_weights.*`` and the
+        defaults are ToddlerBot-canonical.  See:
+
+          - Peng et al. 2018 "DeepMimic" (eq. 9)
+          - ``toddlerbot/locomotion/mjx_env.py:1501-1806`` — reward shapes
+          - ``toddlerbot/locomotion/mjx_config.py:104-118`` — sigmas
+          - ``loco-mujoco/loco_mujoco/core/reward/trajectory_based.py`` —
+            MimicReward (alpha-numerator form)
+          - ``mujoco_playground/_src/locomotion/g1/joystick.py:663-803``
+
+        All terms return scalars in [0, 1] (Gaussian) or unbounded
+        non-negative (regularizers) before the weight is applied.
+        """
+        weights = self._config.reward_weights
+        # ---- ref/q_ref_track --------------------------------------------------
+        q_actual = data.qpos[self._actuator_qpos_addrs]
+        q_err = q_actual - nominal_q_ref
+        q_err_sq_sum = jp.sum(q_err * q_err)
+        r_q_track = jp.exp(-jp.float32(weights.ref_q_track_alpha) * q_err_sq_sum)
+        q_track_rmse = jp.sqrt(jp.mean(q_err * q_err))
+
+        # ---- ref/body_quat_track (geodesic angle vs identity) ----------------
+        # Prior emits pelvis_rpy = zeros (yaw-stationary, no roll/pitch),
+        # so the reference quat is identity [w=1, x=0, y=0, z=0].
+        # angle = 2 * arccos(|qw|).  Unit-norm input from MuJoCo qpos.
+        quat_wxyz = root_pose.orientation
+        qw_abs = jp.abs(quat_wxyz[0])
+        # Numerical guard: arccos arg must be in [0, 1].
+        body_quat_angle = 2.0 * jp.arccos(jp.clip(qw_abs, 0.0, 1.0))
+        r_body_quat = jp.exp(
+            -jp.float32(weights.ref_body_quat_alpha) * body_quat_angle * body_quat_angle
+        )
+
+        # ---- ref/feet_pos_track (root-relative; loco-mujoco convention) -----
+        # Subtract the respective root/pelvis positions so the reward is
+        # invariant to base drift along the trajectory.
+        left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
+            data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        root_pos_xyz = root_pose.position
+        ref_pelvis_pos = win["pelvis_pos"]
+        left_rel = (left_foot_pos - root_pos_xyz) - (
+            win["left_foot_pos"] - ref_pelvis_pos
+        )
+        right_rel = (right_foot_pos - root_pos_xyz) - (
+            win["right_foot_pos"] - ref_pelvis_pos
+        )
+        feet_err_l2 = jp.sum(left_rel * left_rel) + jp.sum(right_rel * right_rel)
+        r_feet_track = jp.exp(
+            -jp.float32(weights.ref_feet_pos_alpha) * feet_err_l2
+        )
+
+        # ---- ref/contact_match (smooth Gaussian per spec G3) -----------------
+        contact_thresh = self._config.env.contact_threshold_force
+        left_actual = (left_force > contact_thresh).astype(jp.float32)
+        right_actual = (right_force > contact_thresh).astype(jp.float32)
+        left_cmd = win["contact_mask"][0].astype(jp.float32)
+        right_cmd = win["contact_mask"][1].astype(jp.float32)
+        sigma = jp.float32(weights.ref_contact_match_sigma)
+        denom = 2.0 * sigma * sigma + 1e-8
+        gauss_l = jp.exp(-(left_cmd - left_actual) ** 2 / denom)
+        gauss_r = jp.exp(-(right_cmd - right_actual) ** 2 / denom)
+        r_contact = 0.5 * (gauss_l + gauss_r)
+
+        # ---- cmd/forward_velocity_track --------------------------------------
+        vx_err = forward_velocity - velocity_cmd
+        r_vx = jp.exp(
+            -jp.float32(weights.cmd_forward_velocity_alpha) * vx_err * vx_err
+        )
+
+        # ---- regularizers (raw squared-sums; weights are negative) ----------
+        delta_action = applied_action - prev_applied_action
+        penalty_action_rate = jp.sum(delta_action * delta_action)
+        penalty_torque = jp.sum(data.actuator_force * data.actuator_force)
+        joint_vel = data.qvel[self._actuator_dof_addrs]
+        penalty_joint_vel = jp.sum(joint_vel * joint_vel)
+
+        return dict(
+            r_q_track=r_q_track,
+            r_body_quat_track=r_body_quat,
+            r_feet_pos_track=r_feet_track,
+            r_contact_match=r_contact,
+            r_cmd_forward_velocity_track=r_vx,
+            penalty_action_rate=penalty_action_rate,
+            penalty_torque=penalty_torque,
+            penalty_joint_vel=penalty_joint_vel,
+            # Diagnostic scalars (not weighted into the reward sum):
+            q_track_rmse=q_track_rmse.astype(jp.float32),
+            body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
+            feet_pos_err_l2=jp.sqrt(feet_err_l2).astype(jp.float32),
+        )
+
+    def _aggregate_reward(
+        self, terms: Dict[str, jax.Array], terminated: jax.Array
+    ) -> Dict[str, jax.Array]:
+        """Apply ``reward_weights`` to per-term values; return total + the
+        weighted per-term contributions used for logging.  ``alive`` is
+        gated by survival; everything else is paid even on the
+        terminating step (matches mujoco_playground convention)."""
+        w = self._config.reward_weights
+        contrib = dict(
+            alive=jp.float32(w.alive) * (1.0 - terminated),
+            ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
+            ref_body_quat_track=jp.float32(w.ref_body_quat_track)
+            * terms["r_body_quat_track"],
+            ref_feet_pos_track=jp.float32(w.ref_feet_pos_track)
+            * terms["r_feet_pos_track"],
+            ref_contact_match=jp.float32(w.ref_contact_match)
+            * terms["r_contact_match"],
+            cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
+            * terms["r_cmd_forward_velocity_track"],
+            action_rate=jp.float32(w.action_rate) * terms["penalty_action_rate"],
+            torque=jp.float32(w.torque) * terms["penalty_torque"],
+            joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
+        )
+        total = sum(contrib.values())
+        contrib["total"] = total
+        return contrib
+
     # ----------------------------------------------------------- termination
 
     def _get_termination(
@@ -957,13 +1096,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_toe_switch = (left_force > contact_thresh).astype(jp.float32)
         right_toe_switch = (right_force > contact_thresh).astype(jp.float32)
 
-        # Termination + alive reward.
+        # Termination + imitation reward family (v0.20.1).
         new_step_count = wr.step_count + 1
         done, terminated, truncated, term_info = self._get_termination(
             data, new_step_count
         )
-        alive_weight = jp.float32(self._config.reward_weights.alive)
-        reward = alive_weight * (1.0 - terminated)
+        reward_terms = self._compute_reward_terms(
+            data=data,
+            win=win,
+            nominal_q_ref=nominal_q_ref,
+            applied_action=applied_action,
+            prev_applied_action=wr.prev_action,
+            forward_velocity=forward_velocity,
+            velocity_cmd=velocity_cmd,
+            left_force=left_force,
+            right_force=right_force,
+            root_pose=root_pose,
+        )
+        reward_contrib = self._aggregate_reward(reward_terms, terminated)
+        reward = reward_contrib["total"]
+        # Action-rate diagnostic (mean absolute filter delta — kept for
+        # parity with the legacy v0.19.5c metric; the *reward* uses the
+        # squared sum from reward_terms["penalty_action_rate"]).
         action_rate = jp.mean(jp.abs(applied_action - wr.prev_action)).astype(jp.float32)
 
         # v5 obs from the new state.
@@ -1061,6 +1215,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/residual_q_abs_max"] = jp.max(residual_q_abs).astype(jp.float32)
         terminal_metrics_dict["tracking/loc_ref_left_reachable"] = jp.float32(1.0)
         terminal_metrics_dict["tracking/loc_ref_right_reachable"] = jp.float32(1.0)
+        # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
+        terminal_metrics_dict["reward/total"] = reward
+        terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]
+        terminal_metrics_dict["reward/ref_q_track"] = reward_contrib["ref_q_track"]
+        terminal_metrics_dict["reward/ref_body_quat_track"] = reward_contrib[
+            "ref_body_quat_track"
+        ]
+        terminal_metrics_dict["reward/ref_feet_pos_track"] = reward_contrib[
+            "ref_feet_pos_track"
+        ]
+        terminal_metrics_dict["reward/ref_contact_match"] = reward_contrib[
+            "ref_contact_match"
+        ]
+        terminal_metrics_dict["reward/cmd_forward_velocity_track"] = reward_contrib[
+            "cmd_forward_velocity_track"
+        ]
+        terminal_metrics_dict["reward/action_rate"] = reward_contrib["action_rate"]
+        terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
+        terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]
+        terminal_metrics_dict["ref/q_track_err_rmse"] = reward_terms["q_track_rmse"]
+        terminal_metrics_dict["ref/body_quat_err_deg"] = reward_terms["body_quat_err_deg"]
+        terminal_metrics_dict["ref/feet_pos_err_l2"] = reward_terms["feet_pos_err_l2"]
+        terminal_metrics_dict["ref/contact_phase_match"] = reward_terms["r_contact_match"]
         terminal_metrics = {METRICS_VEC_KEY: build_metrics_vec(terminal_metrics_dict)}
 
         # Auto-reset: on done, the next-episode starting data + obs +

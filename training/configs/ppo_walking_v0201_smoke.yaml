@@ -1,18 +1,21 @@
 # =============================================================================
-# WildRobot v0.20.1 PPO Smoke Config — STUB
+# WildRobot v0.20.1 PPO Smoke Config
 # =============================================================================
 # Single-command (vx=0.15) imitation-residual smoke per
 # training/docs/walking_training.md (v0.20.1 section).
 #
-# This file lands alongside the v0.20.1 env rewrite (training/envs/
-# wildrobot_env.py).  It is a STUB: the env-side fields are correct
-# and load-bearing for env construction; the reward and PPO sections
-# are placeholders that Task #49 (imitation-dominant reward family +
-# tuned PPO hyperparams) will tune.
+# Reward family: DeepMimic-style imitation-dominant residual reward
+# (Task #49).  Term weights follow the DeepMimic 2018 baseline ratio
+# (pose 0.65 / pose-orient 0.10 / end-effector 0.15 / contact 0.10)
+# adapted for the WildRobot v3 prior, plus a separate task block on
+# forward-velocity tracking and standard regularizers.  See:
+#   - Peng et al. 2018 "DeepMimic" eq. 9
+#   - toddlerbot/locomotion/walk.gin (canonical ToddlerBot weights)
+#   - mujoco_playground g1 joystick (tracking_sigma=0.25 form)
+#   - loco-mujoco MimicReward (numerator-α form)
 #
-# Active reward: alive=1.0 only.  This pairs with the rewrite's
-# placeholder reward (§10 step 5) so end-to-end JIT compilation,
-# reset, and step succeed without depending on Task #49.
+# Compute budget: M2 cap = ~5M env steps = 150 iterations at
+# num_envs=1024 × rollout_steps=128 × n_substeps=10.
 #
 # Usage:
 #   uv run python training/train.py \
@@ -24,7 +27,7 @@
 #   - training/docs/walking_training.md        v0.20.1 smoke contract
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke (vx=0.15, imitation residual) — STUB"
+version_name: "v0.20.1 PPO smoke (vx=0.15, imitation residual)"
 
 seed: 42
 
@@ -109,13 +112,19 @@ env:
   action_delay_steps: 0
 
 # =============================================================================
-# PPO — STUB (Task #49 tunes)
+# PPO — sized to the M2 ~5M env-step compute budget
 # =============================================================================
+# 1024 envs * 128 rollout * 150 iter = 19.7M policy steps.
+# At n_substeps=10 (sim_dt=0.002, ctrl_dt=0.02) the env-step count
+# matches the M2 cap.
 ppo:
   num_envs: 1024
   rollout_steps: 128
-  iterations: 200
+  iterations: 150
 
+  # Learning rate / entropy match the ToddlerBot walk.gin defaults
+  # (3e-4 / 0.01) which are the standard PPO-locomotion starting point
+  # in the recent humanoid literature.
   learning_rate: 3e-4
   gamma: 0.99
   gae_lambda: 0.95
@@ -153,15 +162,28 @@ networks:
     activation: elu
 
 # =============================================================================
-# Reward Weights — STUB (placeholder reward = alive only)
+# Reward Weights — v0.20.1 imitation-dominant residual family
 # =============================================================================
-# The env rewrite (§10 step 5) emits `reward = alive_weight` per step until
-# termination.  The imitation-dominant reward family (`ref/q_ref_track`,
-# `ref/body_quat_track`, `ref/feet_pos_track`, `ref/contact_match`) is
-# Task #49.  All other terms are zero so they don't pollute the smoke.
-# =============================================================================
+# Imitation block (sums to 1.0 per the DeepMimic 2018 baseline ratio):
+#   pose / pose-orientation / end-effector / contact = 0.65 / 0.10 / 0.15 / 0.10
+# Task block (separate; mujoco_playground convention): cmd_forward_velocity_track.
+# Regularizers: ToddlerBot walk.gin scales (action_rate -0.01, torque -0.001,
+# joint_vel -0.0005).  Alive is small + survives termination (the ref/* terms
+# already saturate near 1 when imitating well, so a large alive would dwarf
+# the imitation gradient).
+#
+# Sigmas/alphas use the dataclass defaults (training_runtime_config.py:
+# RewardWeightsConfig v0.20.1 block) — pinned here only when overriding.
 reward_weights:
-  alive: 1.0
+  alive: 0.05
+  ref_q_track: 0.65
+  ref_body_quat_track: 0.10
+  ref_feet_pos_track: 0.15
+  ref_contact_match: 0.10
+  cmd_forward_velocity_track: 0.30
+  action_rate: -0.01
+  torque: -0.001
+  joint_velocity: -0.0005
 
 # =============================================================================
 # Reward Composition
@@ -185,7 +207,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke, stub]
+  tags: [ppo, v0.20.1, smoke, imitation_residual]
 
 video:
   enabled: false

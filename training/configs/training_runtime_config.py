@@ -725,6 +725,31 @@ class RewardWeightsConfig(Freezable):
     teacher_knee_flex_target: float = 0.30
     teacher_knee_flex_sigma: float = 0.10
 
+    # =========================================================================
+    # v0.20.1: imitation-dominant residual reward family
+    # =========================================================================
+    # Term weights (linear; multiplied against the per-term value).  Defaults
+    # are 0 so existing v0.19.5c configs are untouched; the v0.20.1 smoke YAML
+    # sets them to the DeepMimic-style ratios cited in v0201_env_wiring.md.
+    # See training/docs/walking_training.md (v0.20.1 Reward §) for the term
+    # list and walking_training.md G3 for the contact-match definition.
+    ref_q_track: float = 0.0
+    ref_body_quat_track: float = 0.0
+    ref_feet_pos_track: float = 0.0
+    ref_contact_match: float = 0.0
+    cmd_forward_velocity_track: float = 0.0
+
+    # DeepMimic Gaussian kernel widths (numerator-α convention,
+    # r = exp(-α * sum_of_squares)).  Defaults match ToddlerBot
+    # (toddlerbot/locomotion/mjx_config.py:104-118): pos_tracking_sigma=200,
+    # rot_tracking_sigma=20, motor_pos sigma=1.0; mujoco_playground g1
+    # joystick lin_vel tracking_sigma=0.25 (denominator) ⇒ α=4.0.
+    ref_q_track_alpha: float = 1.0
+    ref_body_quat_alpha: float = 20.0
+    ref_feet_pos_alpha: float = 200.0
+    ref_contact_match_sigma: float = 0.5  # walking_training.md G3 default
+    cmd_forward_velocity_alpha: float = 4.0
+
 
 @dataclass
 class RewardCompositionConfig(Freezable):
