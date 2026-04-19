@@ -28,8 +28,20 @@ def build_observation_from_components(
     loc_ref_swing_vel: np.ndarray | None = None,
     loc_ref_pelvis_targets: np.ndarray | None = None,
     loc_ref_history: np.ndarray | None = None,
+    # v0.20.1 wr_obs_v5_offline_ref additions (mirror policy_contract/jax/obs.py).
+    loc_ref_q_ref: np.ndarray | None = None,
+    loc_ref_pelvis_pos: np.ndarray | None = None,
+    loc_ref_pelvis_vel: np.ndarray | None = None,
+    loc_ref_left_foot_pos: np.ndarray | None = None,
+    loc_ref_right_foot_pos: np.ndarray | None = None,
+    loc_ref_left_foot_vel: np.ndarray | None = None,
+    loc_ref_right_foot_vel: np.ndarray | None = None,
+    loc_ref_contact_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    if spec.observation.layout_id not in {"wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4"}:
+    if spec.observation.layout_id not in {
+        "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
+        "wr_obs_v5_offline_ref",
+    }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
     cp_error = (
@@ -78,6 +90,49 @@ def build_observation_from_components(
         else np.asarray(loc_ref_history, dtype=np.float32).reshape(4)
     )
 
+    # v0.20.1 wr_obs_v5_offline_ref channels — mirrors policy_contract/jax/obs.py.
+    n_actuators = len(spec.robot.actuator_names)
+    v5_q_ref = (
+        np.zeros((n_actuators,), dtype=np.float32)
+        if loc_ref_q_ref is None
+        else np.asarray(loc_ref_q_ref, dtype=np.float32).reshape(n_actuators)
+    )
+    v5_pelvis_pos = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_pelvis_pos is None
+        else np.asarray(loc_ref_pelvis_pos, dtype=np.float32).reshape(3)
+    )
+    v5_pelvis_vel = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_pelvis_vel is None
+        else np.asarray(loc_ref_pelvis_vel, dtype=np.float32).reshape(3)
+    )
+    v5_left_foot_pos = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_left_foot_pos is None
+        else np.asarray(loc_ref_left_foot_pos, dtype=np.float32).reshape(3)
+    )
+    v5_right_foot_pos = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_right_foot_pos is None
+        else np.asarray(loc_ref_right_foot_pos, dtype=np.float32).reshape(3)
+    )
+    v5_left_foot_vel = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_left_foot_vel is None
+        else np.asarray(loc_ref_left_foot_vel, dtype=np.float32).reshape(3)
+    )
+    v5_right_foot_vel = (
+        np.zeros((3,), dtype=np.float32)
+        if loc_ref_right_foot_vel is None
+        else np.asarray(loc_ref_right_foot_vel, dtype=np.float32).reshape(3)
+    )
+    v5_contact_mask = (
+        np.zeros((2,), dtype=np.float32)
+        if loc_ref_contact_mask is None
+        else np.asarray(loc_ref_contact_mask, dtype=np.float32).reshape(2)
+    )
+
     parts = [
         np.asarray(gravity_local, dtype=np.float32).reshape(3),
         np.asarray(angvel_heading_local, dtype=np.float32).reshape(3),
@@ -93,6 +148,18 @@ def build_observation_from_components(
         parts.append(clock)
     if spec.observation.layout_id == "wr_obs_v4":
         parts.extend([phase, stance, foothold, swing_pos, swing_vel, pelvis, history])
+    if spec.observation.layout_id == "wr_obs_v5_offline_ref":
+        # See policy_contract/jax/obs.py for the matching JAX branch.  Order
+        # is locked by v0201_env_wiring.md §5.2; do not reorder without
+        # updating both branches and the parity test.
+        parts.extend([phase, stance, foothold, swing_pos, swing_vel, pelvis, history])
+        parts.extend([
+            v5_q_ref,
+            v5_pelvis_pos, v5_pelvis_vel,
+            v5_left_foot_pos, v5_right_foot_pos,
+            v5_left_foot_vel, v5_right_foot_vel,
+            v5_contact_mask,
+        ])
     parts.append(np.zeros((1,), dtype=np.float32))
 
     obs = np.concatenate(parts)
@@ -114,6 +181,15 @@ def build_observation(
     loc_ref_swing_vel: np.ndarray | None = None,
     loc_ref_pelvis_targets: np.ndarray | None = None,
     loc_ref_history: np.ndarray | None = None,
+    # v0.20.1 wr_obs_v5_offline_ref additions:
+    loc_ref_q_ref: np.ndarray | None = None,
+    loc_ref_pelvis_pos: np.ndarray | None = None,
+    loc_ref_pelvis_vel: np.ndarray | None = None,
+    loc_ref_left_foot_pos: np.ndarray | None = None,
+    loc_ref_right_foot_pos: np.ndarray | None = None,
+    loc_ref_left_foot_vel: np.ndarray | None = None,
+    loc_ref_right_foot_vel: np.ndarray | None = None,
+    loc_ref_contact_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -139,4 +215,12 @@ def build_observation(
         loc_ref_swing_vel=loc_ref_swing_vel,
         loc_ref_pelvis_targets=loc_ref_pelvis_targets,
         loc_ref_history=loc_ref_history,
+        loc_ref_q_ref=loc_ref_q_ref,
+        loc_ref_pelvis_pos=loc_ref_pelvis_pos,
+        loc_ref_pelvis_vel=loc_ref_pelvis_vel,
+        loc_ref_left_foot_pos=loc_ref_left_foot_pos,
+        loc_ref_right_foot_pos=loc_ref_right_foot_pos,
+        loc_ref_left_foot_vel=loc_ref_left_foot_vel,
+        loc_ref_right_foot_vel=loc_ref_right_foot_vel,
+        loc_ref_contact_mask=loc_ref_contact_mask,
     )

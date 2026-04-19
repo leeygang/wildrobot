@@ -243,3 +243,132 @@ def test_build_observation_signals_parity(spec: PolicySpec) -> None:
     )
 
     np.testing.assert_allclose(obs_np, np.asarray(obs_jax), rtol=1e-6, atol=1e-6)
+
+
+# v0.20.1 wr_obs_v5_offline_ref parity ------------------------------------
+
+def _v5_spec_dict() -> dict:
+    """``_valid_spec_dict`` clone with layout_id replaced by the v5
+    layout id.  The ``layout`` block is left as the v1 default — the
+    parity test only exercises ``build_observation_from_components``,
+    which dispatches on ``layout_id`` to decide which parts to extend
+    with; the declared layout list is not consulted here."""
+    spec = _valid_spec_dict()
+    spec["observation"]["layout_id"] = "wr_obs_v5_offline_ref"
+    return spec
+
+
+@pytest.fixture()
+def spec_v5() -> PolicySpec:
+    spec = PolicySpec.from_json(json.dumps(_v5_spec_dict()))
+    # Skip strict validate_spec here -- the layout list still describes
+    # v1 channels, but layout_id is v5.  validate_spec is layout-aware
+    # and would reject the mismatch; the parity test cares only about
+    # builder dispatch, not full schema validation.
+    return spec
+
+
+def test_build_observation_parity_v5(spec_v5: PolicySpec) -> None:
+    """JAX/NumPy parity for the v5 layout including all new channels."""
+    jax = pytest.importorskip("jax.numpy")
+    from policy_contract.jax.obs import build_observation_from_components as build_obs_jax
+    from policy_contract.numpy.obs import build_observation_from_components as build_obs_np
+
+    rng = np.random.RandomState(5)
+    n_act = spec_v5.model.action_dim
+    gravity = rng.uniform(-1.0, 1.0, size=(3,)).astype(np.float32)
+    angvel = rng.uniform(-2.0, 2.0, size=(3,)).astype(np.float32)
+    joint_pos = rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32)
+    joint_vel = rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32)
+    foot = rng.uniform(0.0, 1.0, size=(4,)).astype(np.float32)
+    prev_action = rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32)
+    velocity_cmd = np.array([0.15], dtype=np.float32)
+
+    # v4 loc_ref_* slot values (v5 also extends with these).
+    phase = rng.uniform(-1.0, 1.0, size=(2,)).astype(np.float32)
+    stance = np.array([1.0], dtype=np.float32)
+    foothold = rng.uniform(-0.2, 0.2, size=(2,)).astype(np.float32)
+    swing_pos = rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32)
+    swing_vel = rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32)
+    pelvis_targets = rng.uniform(0.3, 0.5, size=(3,)).astype(np.float32)
+    history = rng.uniform(-1.0, 1.0, size=(4,)).astype(np.float32)
+
+    # v5 additions (per design note §5.2 channel table).
+    q_ref = rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32)
+    pelvis_pos = rng.uniform(-0.1, 0.1, size=(3,)).astype(np.float32)
+    pelvis_vel = rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32)
+    left_foot_pos = rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32)
+    right_foot_pos = rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32)
+    left_foot_vel = rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32)
+    right_foot_vel = rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32)
+    contact_mask = np.array([1.0, 0.0], dtype=np.float32)
+
+    common_kwargs = dict(
+        spec=spec_v5,
+        gravity_local=gravity,
+        angvel_heading_local=angvel,
+        joint_pos_normalized=joint_pos,
+        joint_vel_normalized=joint_vel,
+        foot_switches=foot,
+        prev_action=prev_action,
+        velocity_cmd=velocity_cmd,
+        loc_ref_phase_sin_cos=phase,
+        loc_ref_stance_foot=stance,
+        loc_ref_next_foothold=foothold,
+        loc_ref_swing_pos=swing_pos,
+        loc_ref_swing_vel=swing_vel,
+        loc_ref_pelvis_targets=pelvis_targets,
+        loc_ref_history=history,
+        loc_ref_q_ref=q_ref,
+        loc_ref_pelvis_pos=pelvis_pos,
+        loc_ref_pelvis_vel=pelvis_vel,
+        loc_ref_left_foot_pos=left_foot_pos,
+        loc_ref_right_foot_pos=right_foot_pos,
+        loc_ref_left_foot_vel=left_foot_vel,
+        loc_ref_right_foot_vel=right_foot_vel,
+        loc_ref_contact_mask=contact_mask,
+    )
+
+    obs_np = build_obs_np(**common_kwargs)
+    jax_kwargs = dict(common_kwargs)
+    jax_kwargs.update({
+        k: jax.asarray(v) if isinstance(v, np.ndarray) else v
+        for k, v in jax_kwargs.items()
+    })
+    obs_jax = build_obs_jax(**jax_kwargs)
+
+    np.testing.assert_allclose(obs_np, np.asarray(obs_jax),
+                               rtol=1e-6, atol=1e-6)
+
+
+def test_v5_obs_dim_matches_design_note(spec_v5: PolicySpec) -> None:
+    """Sanity: v5 obs dim equals v4 dim plus the new v5 channels.
+
+    Per design note §5.2, v5 adds: q_ref (n_act) + pelvis_pos (3) +
+    pelvis_vel (3) + left_foot_pos (3) + right_foot_pos (3) +
+    left_foot_vel (3) + right_foot_vel (3) + contact_mask (2)
+    = n_act + 20 floats over v4.
+    """
+    from policy_contract.numpy.obs import build_observation_from_components as build_obs_np
+    n_act = spec_v5.model.action_dim
+    base_kwargs = dict(
+        gravity_local=np.zeros(3, np.float32),
+        angvel_heading_local=np.zeros(3, np.float32),
+        joint_pos_normalized=np.zeros(n_act, np.float32),
+        joint_vel_normalized=np.zeros(n_act, np.float32),
+        foot_switches=np.zeros(4, np.float32),
+        prev_action=np.zeros(n_act, np.float32),
+        velocity_cmd=np.zeros(1, np.float32),
+    )
+
+    spec_v4_dict = _valid_spec_dict()
+    spec_v4_dict["observation"]["layout_id"] = "wr_obs_v4"
+    spec_v4 = PolicySpec.from_json(json.dumps(spec_v4_dict))
+    obs_v4 = build_obs_np(spec=spec_v4, **base_kwargs)
+    obs_v5 = build_obs_np(spec=spec_v5, **base_kwargs)
+
+    expected_delta = n_act + 20
+    assert obs_v5.shape[0] - obs_v4.shape[0] == expected_delta, (
+        f"v5 should add n_act + 20 = {expected_delta} channels over v4; "
+        f"got delta = {obs_v5.shape[0] - obs_v4.shape[0]}"
+    )
