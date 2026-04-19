@@ -1174,13 +1174,25 @@ def train(
     rng = jax.random.PRNGKey(config.seed)
     rng, init_rng, env_rng, disc_rng = jax.random.split(rng, 4)
 
-    # Create networks
+    # Create networks.  Brax's make_ppo_networks takes a single shared
+    # activation; the v0.20.1 spec (walking_training.md G6) uses ELU for
+    # both actor and critic, so we require them to match in the YAML
+    # rather than silently picking one.
+    actor_activation = str(config.networks.actor.activation).lower()
+    critic_activation = str(config.networks.critic.activation).lower()
+    if actor_activation != critic_activation:
+        raise ValueError(
+            f"actor.activation ({actor_activation!r}) and "
+            f"critic.activation ({critic_activation!r}) must match — "
+            "Brax's make_ppo_networks shares one activation across both."
+        )
     ppo_network = create_networks(
         obs_dim=obs_dim,
         action_dim=action_dim,
         policy_hidden_dims=config.networks.actor.hidden_sizes,
         value_hidden_dims=config.networks.critic.hidden_sizes,
         critic_obs_dim=critic_obs_dim,
+        activation=actor_activation,
     )
 
     # Initialize network parameters.  policy_init_std is exp(log_std_init)

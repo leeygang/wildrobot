@@ -938,6 +938,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=root_pose.height.astype(jp.float32),
             prev_left_loaded=(left_force > self._config.env.contact_threshold_force).astype(jp.float32),
             prev_right_loaded=(right_force > self._config.env.contact_threshold_force).astype(jp.float32),
+            last_left_touchdown_x=left_foot_pos[0].astype(jp.float32),
+            last_right_touchdown_x=right_foot_pos[0].astype(jp.float32),
+            last_step_length=jp.float32(0.0),
             critic_obs=critic_obs,
             # v3 offline playback state — primary read/write fields.
             loc_ref_offline_step_idx=jp.zeros((), dtype=jp.int32),
@@ -1021,6 +1024,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_vel_h.linear[0]
             / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
         ).astype(jp.float32)
+        metrics_dict["tracking/step_length_touchdown_event_m"] = jp.float32(0.0)
         metrics = {
             METRICS_VEC_KEY: build_metrics_vec(metrics_dict),
         }
@@ -1128,6 +1132,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_toe_switch = (left_force > contact_thresh).astype(jp.float32)
         right_toe_switch = (right_force > contact_thresh).astype(jp.float32)
 
+        # G4 step-length-on-touchdown (walking_training.md v0.20.1 §, line 979).
+        # Touchdown event = loaded transition (prev=0 → curr=1).  Step length =
+        # current_foot_x - last_touchdown_foot_x of THAT foot.  Carries
+        # ``last_step_length`` between events so the rollout MEAN is a usable
+        # proxy for the spec's "touchdown step length mean".
+        left_touchdown = ((wr.prev_left_loaded < 0.5) & (left_toe_switch > 0.5))
+        right_touchdown = ((wr.prev_right_loaded < 0.5) & (right_toe_switch > 0.5))
+        left_step_len = left_foot_pos[0] - wr.last_left_touchdown_x
+        right_step_len = right_foot_pos[0] - wr.last_right_touchdown_x
+        # Prefer right-foot value when both touch down on the same step (rare but
+        # possible at flight-phase transitions); fall back to last_step_length
+        # when neither foot touched down this step.
+        new_step_length = jp.where(
+            right_touchdown,
+            right_step_len,
+            jp.where(left_touchdown, left_step_len, wr.last_step_length),
+        ).astype(jp.float32)
+        new_last_left_touchdown_x = jp.where(
+            left_touchdown, left_foot_pos[0], wr.last_left_touchdown_x
+        ).astype(jp.float32)
+        new_last_right_touchdown_x = jp.where(
+            right_touchdown, right_foot_pos[0], wr.last_right_touchdown_x
+        ).astype(jp.float32)
+
         # Termination + imitation reward family (v0.20.1).
         new_step_count = wr.step_count + 1
         done, terminated, truncated, term_info = self._get_termination(
@@ -1176,6 +1204,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_height=root_pose.height.astype(jp.float32),
             prev_left_loaded=left_toe_switch,
             prev_right_loaded=right_toe_switch,
+            last_left_touchdown_x=new_last_left_touchdown_x,
+            last_right_touchdown_x=new_last_right_touchdown_x,
+            last_step_length=new_step_length,
             critic_obs=critic_obs,
             loc_ref_offline_step_idx=next_step_idx,
             loc_ref_gait_phase_sin=v4_compat["phase_sin_cos"][0],
@@ -1269,6 +1300,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
             forward_velocity / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
         ).astype(jp.float32)
+        # G4 step-length-on-touchdown.  Carries the most recent value
+        # between events; rollout MEAN approximates the spec's
+        # "touchdown step length mean ≥ 0.03 m" gate.
+        terminal_metrics_dict["tracking/step_length_touchdown_event_m"] = new_step_length
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

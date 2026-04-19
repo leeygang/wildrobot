@@ -1010,9 +1010,13 @@ Post-smoke policy direction:
 
 **M2 — compute budget cap**:
 
-- single bounded smoke run: ~5M env steps (~150 PPO iterations at
-  `num_envs=1024 × rollout_steps=128`), cap configured in the smoke YAML
-- if the promotion-horizon gates haven't been met by 5M env steps, the
+- single bounded smoke run: ~20M env steps (150 PPO iterations at
+  `num_envs=1024 × rollout_steps=128` = 1024 × 128 × 150 ≈ 1.97×10⁷
+  policy decisions), cap configured in the smoke YAML
+- (an earlier revision of this section mis-stated the budget as ~5M env
+  steps — that derivation conflated env steps with sub-physics steps;
+  the YAML's 150-iter cap is the authoritative budget)
+- if the promotion-horizon gates haven't been met by ~20M env steps, the
   smoke is considered failed (do not extend the run hoping it converges
   later — prefer to come back to the prior or contract design)
 - single seed for the smoke; if it passes, multi-seed validation belongs

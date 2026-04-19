@@ -80,6 +80,14 @@ try:
         prev_left_loaded: jnp.ndarray      # () — last-step contact gate (>= force thresh)
         prev_right_loaded: jnp.ndarray     # ()
 
+        # G4 step-length metric: world-x of each foot at the last
+        # touchdown event (loaded transition); ``last_step_length`` carries
+        # the most recent step-length value between events so the rollout
+        # mean is a usable proxy.
+        last_left_touchdown_x: jnp.ndarray   # ()
+        last_right_touchdown_x: jnp.ndarray  # ()
+        last_step_length: jnp.ndarray        # ()
+
         # Privileged critic obs (sim-only fields the actor doesn't see)
         critic_obs: jnp.ndarray            # (PRIVILEGED_OBS_DIM,)
 
@@ -131,6 +139,9 @@ except ImportError:
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
         prev_right_loaded: jnp.ndarray
+        last_left_touchdown_x: jnp.ndarray
+        last_right_touchdown_x: jnp.ndarray
+        last_step_length: jnp.ndarray
         critic_obs: jnp.ndarray
         loc_ref_offline_step_idx: jnp.ndarray
         loc_ref_offline_command_id: jnp.ndarray
@@ -184,6 +195,9 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "root_height": (),
         "prev_left_loaded": (),
         "prev_right_loaded": (),
+        "last_left_touchdown_x": (),
+        "last_right_touchdown_x": (),
+        "last_step_length": (),
         "critic_obs": (PRIVILEGED_OBS_DIM,),
         "loc_ref_offline_step_idx": (),
         "loc_ref_offline_command_id": (),

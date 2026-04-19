@@ -33,7 +33,7 @@ Use ppo_network.parametric_action_distribution to convert logits to actions/log_
 from __future__ import annotations
 
 import importlib.util
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -58,6 +58,26 @@ else:
     _flax_unfreeze = None
 
 
+_ACTIVATION_REGISTRY: Dict[str, Callable] = {
+    "elu": jax.nn.elu,
+    "relu": jax.nn.relu,
+    "gelu": jax.nn.gelu,
+    "swish": jax.nn.swish,
+    "silu": jax.nn.silu,
+    "tanh": jax.nn.tanh,
+}
+
+
+def _resolve_activation(name: str) -> Callable:
+    key = str(name).lower()
+    if key not in _ACTIVATION_REGISTRY:
+        raise ValueError(
+            f"Unsupported activation '{name}'. "
+            f"Known: {sorted(_ACTIVATION_REGISTRY.keys())}"
+        )
+    return _ACTIVATION_REGISTRY[key]
+
+
 def create_networks(
     obs_dim: int,
     action_dim: int,
@@ -65,6 +85,7 @@ def create_networks(
     value_hidden_dims: Tuple[int, ...],
     critic_obs_dim: Optional[int] = None,
     preprocess_observations_fn: Optional[Callable] = None,
+    activation: str = "silu",
 ):
     """Create PPO networks using Brax's factory.
 
@@ -79,6 +100,9 @@ def create_networks(
         critic_obs_dim: Optional privileged critic observation dimension.
         preprocess_observations_fn: Optional observation preprocessing.
             If None, uses Brax's identity preprocessor.
+        activation: Hidden-layer activation name ("elu", "silu", ...).
+            v0.20.1 spec (walking_training.md G6) calls for "elu".
+            Brax's default is "silu".
 
     Returns:
         PPONetworks: Brax's PPO network container with policy and value networks
@@ -86,11 +110,13 @@ def create_networks(
     # Build kwargs - only include preprocess_observations_fn if explicitly provided
     # If None, Brax will use its default identity_observation_preprocessor
     critic_dim = int(obs_dim if critic_obs_dim is None else critic_obs_dim)
+    activation_fn = _resolve_activation(activation)
     kwargs = {
         "observation_size": int(obs_dim),
         "action_size": action_dim,
         "policy_hidden_layer_sizes": policy_hidden_dims,
         "value_hidden_layer_sizes": value_hidden_dims,
+        "activation": activation_fn,
     }
 
     if preprocess_observations_fn is not None:
@@ -103,6 +129,7 @@ def create_networks(
     value_kwargs = {
         "obs_size": critic_dim,
         "hidden_layer_sizes": value_hidden_dims,
+        "activation": activation_fn,
     }
     if preprocess_observations_fn is not None:
         value_kwargs["preprocess_observations_fn"] = preprocess_observations_fn

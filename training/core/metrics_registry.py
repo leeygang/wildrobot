@@ -1488,6 +1488,16 @@ METRIC_SPECS: List[MetricSpec] = [
         topline=True,
         description="forward_velocity / max(|cmd_vx|, 1e-3); G5 gate is 0.6..1.5",
     ),
+    MetricSpec(
+        name="tracking/step_length_touchdown_event_m",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        topline=True,
+        description=(
+            "Most-recent touchdown step length in m (carries between events). "
+            "Rollout MEAN approximates the G4 'touchdown step length mean ≥ 0.03 m' gate."
+        ),
+    ),
 ]
 
 # =============================================================================
