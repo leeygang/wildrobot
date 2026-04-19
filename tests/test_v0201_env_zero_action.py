@@ -268,3 +268,105 @@ def test_zero_action_residual_metric_stays_zero_for_50_steps(
         "G6 contract requires <= 1e-5.  Likely cause: composed target is "
         "being filtered instead of the policy residual."
     )
+
+
+# -----------------------------------------------------------------------------
+# 7. v6 proprio history schema contract: the buffer holds PAST bundles only.
+#    The newest history slot must NOT duplicate the current frame's proprio
+#    channels.  Specifically:
+#      - reset: WildRobotInfo.proprio_history is all zeros
+#      - step 1: obs's history channel slice equals all zeros
+#                (the obs is built BEFORE the new bundle is rolled in)
+#      - step k > PROPRIO_HISTORY_FRAMES: the newest history slot equals
+#        the bundle from step k-1 (the previous step's post-step proprio),
+#        NOT step k's current proprio
+# -----------------------------------------------------------------------------
+
+
+def test_v6_proprio_history_does_not_duplicate_current_frame(
+    env: WildRobotEnv,
+) -> None:
+    """Pin the v6 schema contract: history holds PAST bundles only.
+
+    Skipped on layouts other than v6.  Catches the regression where
+    the rolled buffer (containing the just-computed current bundle in
+    the newest slot) is fed back into the same step's obs.  Under the
+    correct contract:
+      - at step 1, the history slot is all zeros (reset zero-fills);
+      - at step k>=2, the newest history slot equals the PREVIOUS
+        step's stored proprio_history newest slot — i.e. the buffer
+        is one-step lagged from the current frame.
+    """
+    from training.envs.env_info import PROPRIO_HISTORY_FRAMES
+    layout_id = env._policy_spec.observation.layout_id
+    if layout_id != "wr_obs_v6_offline_ref_history":
+        pytest.skip(f"v6 history contract not applicable to layout={layout_id}")
+
+    bundle_size = 3 + 4 + 3 * env.action_size
+
+    # Locate the proprio_history slice in the obs vector.
+    layout = env._policy_spec.observation.layout
+    offset = 0
+    history_offset = None
+    for field in layout:
+        if field.name == "proprio_history":
+            history_offset = offset
+            break
+        offset += int(field.size)
+    assert history_offset is not None, "v6 layout missing proprio_history slot"
+    history_size = PROPRIO_HISTORY_FRAMES * bundle_size
+
+    reset_fn = jax.jit(env.reset)
+    step_fn = jax.jit(env.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env.action_size, dtype=jp.float32)
+
+    # Reset: stored buffer is all zeros.
+    wr0 = state.info[WR_INFO_KEY]
+    np.testing.assert_array_equal(
+        np.asarray(wr0.proprio_history),
+        np.zeros((PROPRIO_HISTORY_FRAMES, bundle_size), dtype=np.float32),
+        err_msg="reset must zero-fill WildRobotInfo.proprio_history",
+    )
+
+    # Step 1: obs is built BEFORE rolling, so the obs's history slice is
+    # still all zeros.  After this step, the stored buffer's newest slot
+    # holds the post-step bundle from step 1.
+    state1 = step_fn(state, zero_action)
+    obs1 = np.asarray(state1.obs).astype(np.float32)
+    history_slice_1 = obs1[history_offset : history_offset + history_size]
+    np.testing.assert_array_equal(
+        history_slice_1,
+        np.zeros(history_size, dtype=np.float32),
+        err_msg=(
+            "step 1 obs's proprio_history slice must be all zeros "
+            "(the buffer hasn't been rolled yet — passing the rolled "
+            "buffer to the same step's obs would duplicate the current "
+            "frame in the newest history slot, which is the v6 schema "
+            "violation gap A intended to fix)"
+        ),
+    )
+
+    # Step 2: obs's newest history slot must equal the buffer that was
+    # rolled at the END of step 1 — which is the bundle from step 1's
+    # post-step proprio.  In particular, it must NOT equal the current
+    # (step 2 post-step) proprio that the standard channels report.
+    wr1 = state1.info[WR_INFO_KEY]
+    expected_newest_after_step1 = np.asarray(wr1.proprio_history[-1]).astype(np.float32)
+
+    state2 = step_fn(state1, zero_action)
+    obs2 = np.asarray(state2.obs).astype(np.float32)
+    history_slice_2 = obs2[history_offset : history_offset + history_size]
+    newest_in_obs_step2 = history_slice_2[-bundle_size:]
+    np.testing.assert_allclose(
+        newest_in_obs_step2,
+        expected_newest_after_step1,
+        atol=1e-6,
+        err_msg=(
+            "step 2 obs's NEWEST history slot must equal the bundle "
+            "stored at the end of step 1 (one-step lag), not the "
+            "current step's post-step proprio.  A mismatch means the "
+            "history is being rolled with the current bundle BEFORE "
+            "the obs is built — duplicating the current frame."
+        ),
+    )

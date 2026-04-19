@@ -1019,16 +1019,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         v4_compat = self._v4_compat_channels_from_window(win0, prev_history=None)
         critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
 
-        # v6 actor proprio history.  Allocate the buffer regardless of
-        # the active layout so WildRobotInfo's schema stays layout-
-        # agnostic (the v5 obs path simply doesn't read it).  The
-        # initial bundle uses default_action (zero) as ``prev_action``.
-        proprio_bundle_init = self._compute_proprio_bundle(
-            signals=signals_override, prev_action=default_action
+        # v6 actor proprio history.  Zero-filled at reset per the
+        # WildRobotInfo schema contract (env_info.py): the buffer
+        # holds PAST proprio bundles only, never duplicates the
+        # current frame.  At reset there is no past, so all slots are
+        # zero; step 1's obs sees zeros in the history channel and
+        # the current bundle in the standard proprio channels.  The
+        # buffer fills in over the first PROPRIO_HISTORY_FRAMES
+        # steps as new_bundle gets rolled in (oldest dropped, newest
+        # appended).  Allocated regardless of active layout so the
+        # WildRobotInfo schema stays layout-agnostic (v5 obs ignores).
+        proprio_bundle_size = 3 + 4 + 3 * self.action_size
+        proprio_history_init = jp.zeros(
+            (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
         )
-        proprio_history_init = jp.tile(
-            proprio_bundle_init[None, :], (PROPRIO_HISTORY_FRAMES, 1)
-        ).astype(jp.float32)
 
         wr_info = WildRobotInfo(
             step_count=jp.zeros((), dtype=jp.int32),
@@ -1307,10 +1311,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
 
-        # v6 actor proprio history: compute the new bundle (using the
-        # post-step signals + the freshly-applied policy command) and
-        # roll it into the buffer.  Always done — the v5 obs path just
-        # ignores the buffer.  See ``_compute_proprio_bundle``.
+        # v6 actor proprio history.  Schema contract (env_info.py):
+        # the buffer holds PAST bundles only, never the current frame
+        # (which is already in the obs's joint_pos / joint_vel / gyro /
+        # foot_switches / prev_action channels).  So:
+        #   1. obs at THIS step reads ``wr.proprio_history`` — the
+        #      pre-roll buffer, containing the past 3 bundles
+        #      (zero-padded at reset, fully populated after step >=
+        #      PROPRIO_HISTORY_FRAMES).
+        #   2. Compute the new bundle from the post-step signals +
+        #      this step's applied_action.
+        #   3. Roll the buffer (drop oldest, append new) and store the
+        #      ROLLED buffer in new_wr — that buffer becomes the
+        #      "past" for the NEXT step.
+        # This avoids the defect of feeding the rolled buffer back
+        # into the same step's obs (which would duplicate the current
+        # frame in the newest history slot).
         new_bundle = self._compute_proprio_bundle(
             signals=signals_override, prev_action=applied_action
         )
@@ -1360,8 +1376,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             win=win,
             v4_compat=v4_compat,
             signals=signals_override,
+            # PRE-roll buffer: history = past 3 bundles, current frame
+            # is supplied by the standard proprio channels.  See the
+            # comment on new_proprio_history above for why this isn't
+            # the rolled buffer.
             proprio_history=(
-                new_proprio_history if self._uses_proprio_history else None
+                wr.proprio_history if self._uses_proprio_history else None
             ),
         )
 
