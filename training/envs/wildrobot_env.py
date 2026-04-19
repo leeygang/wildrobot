@@ -674,6 +674,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_force: jax.Array,
         right_force: jax.Array,
         root_pose,
+        prev_left_foot_pos: jax.Array,
+        prev_right_foot_pos: jax.Array,
+        gyro_rad_s: jax.Array,
     ) -> Dict[str, jax.Array]:
         """v0.20.1 imitation-dominant reward family.
 
@@ -756,6 +759,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_vel = data.qvel[self._actuator_dof_addrs]
         penalty_joint_vel = jp.sum(joint_vel * joint_vel)
 
+        # ---- slip + pitch_rate (M1 fail-mode hooks; default weight 0) -------
+        # Always computed and logged; YAML weight 0 means no contribution to
+        # the total reward.  The M1 "balance issue" branch turns these on
+        # without an env edit.  See training/docs/walking_training.md
+        # v0.20.1 § (M1 fail-mode decision tree) and ToddlerBot's
+        # _reward_feet_slip / _reward_torso_pitch.
+        ctrl_dt = jp.float32(self.dt)
+        left_foot_vel_xy = (left_foot_pos[:2] - prev_left_foot_pos[:2]) / ctrl_dt
+        right_foot_vel_xy = (right_foot_pos[:2] - prev_right_foot_pos[:2]) / ctrl_dt
+        # Mask by stance contact (only stance-side slip matters).  ``left_actual``
+        # / ``right_actual`` are the measured contact bools from the contact
+        # match block above.
+        penalty_slip = (
+            jp.sum(left_foot_vel_xy * left_foot_vel_xy) * left_actual
+            + jp.sum(right_foot_vel_xy * right_foot_vel_xy) * right_actual
+        )
+        # Pitch rate = gyro Y in body frame (right-handed: X fwd, Y left, Z up).
+        pitch_rate = gyro_rad_s[1]
+        penalty_pitch_rate = pitch_rate * pitch_rate
+
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
@@ -765,6 +788,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             penalty_action_rate=penalty_action_rate,
             penalty_torque=penalty_torque,
             penalty_joint_vel=penalty_joint_vel,
+            penalty_slip=penalty_slip.astype(jp.float32),
+            penalty_pitch_rate=penalty_pitch_rate.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
             q_track_rmse=q_track_rmse.astype(jp.float32),
             body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
@@ -793,6 +818,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             action_rate=jp.float32(w.action_rate) * terms["penalty_action_rate"],
             torque=jp.float32(w.torque) * terms["penalty_torque"],
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
+            slip=jp.float32(w.slip) * terms["penalty_slip"],
+            pitch_rate=jp.float32(w.pitch_rate) * terms["penalty_pitch_rate"],
         )
         total = sum(contrib.values())
         contrib["total"] = total
@@ -1189,6 +1216,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             left_force=left_force,
             right_force=right_force,
             root_pose=root_pose,
+            prev_left_foot_pos=wr.prev_left_foot_pos,
+            prev_right_foot_pos=wr.prev_right_foot_pos,
+            # Use the RAW gyro for the reward (not the IMU-noisy override
+            # the policy sees) so the regularizer signal is clean.
+            gyro_rad_s=signals_raw.gyro_rad_s,
         )
         reward_contrib = self._aggregate_reward(reward_terms, terminated)
         reward = reward_contrib["total"]
@@ -1340,10 +1372,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/action_rate"] = reward_contrib["action_rate"]
         terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]
+        terminal_metrics_dict["reward/slip"] = reward_contrib["slip"]
+        terminal_metrics_dict["reward/pitch_rate"] = reward_contrib["pitch_rate"]
         terminal_metrics_dict["ref/q_track_err_rmse"] = reward_terms["q_track_rmse"]
         terminal_metrics_dict["ref/body_quat_err_deg"] = reward_terms["body_quat_err_deg"]
         terminal_metrics_dict["ref/feet_pos_err_l2"] = reward_terms["feet_pos_err_l2"]
         terminal_metrics_dict["ref/contact_phase_match"] = reward_terms["r_contact_match"]
+        # Raw penalty values (pre-weight) so the M1 fail-mode tree can
+        # pick a sensible weight when ``slip`` / ``pitch_rate`` are
+        # promoted to nonzero in the YAML.
+        terminal_metrics_dict["reward/penalty_slip_raw"] = reward_terms["penalty_slip"]
+        terminal_metrics_dict["reward/penalty_pitch_rate_raw"] = reward_terms[
+            "penalty_pitch_rate"
+        ]
         terminal_metrics = {METRICS_VEC_KEY: build_metrics_vec(terminal_metrics_dict)}
 
         # Auto-reset: on done, the next-episode starting data + obs +

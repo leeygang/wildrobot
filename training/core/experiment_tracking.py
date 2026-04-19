@@ -77,6 +77,8 @@ REWARD_TERM_KEYS = [
     "reward/action_rate",
     "reward/joint_vel",
     "reward/slip",
+    "reward/penalty_slip_raw",
+    "reward/penalty_pitch_rate_raw",
     "reward/posture",
     "reward/com_velocity_damping",
     "reward/step_event",
@@ -140,6 +142,14 @@ ENV_METRICS_KEYS = {
     "reward/action_rate": "Action smoothness penalty",
     "reward/joint_vel": "Joint velocity penalty",
     "reward/slip": "Foot slip penalty",
+    "reward/penalty_slip_raw": (
+        "Raw stance-foot slip penalty (Σ stance horizontal vel²); "
+        "logged independently of reward_weights.slip to size the M1 weight"
+    ),
+    "reward/penalty_pitch_rate_raw": (
+        "Raw pitch-rate penalty (gyro_y²); logged independently of "
+        "reward_weights.pitch_rate to size the M1 weight"
+    ),
     "reward/clearance": "Phase-gated swing foot clearance reward",
     "reward/gait_periodicity": "Alternating gait reward (deprecated for M3 total reward)",
     "reward/hip_swing": "Hip swing during leg swing (deprecated for M3 total reward)",
@@ -389,6 +399,8 @@ def get_initial_env_metrics(
         "reward/action_rate": action_rate,
         "reward/joint_vel": 0.0,
         "reward/slip": 0.0,
+        "reward/penalty_slip_raw": 0.0,
+        "reward/penalty_pitch_rate_raw": 0.0,
         "reward/clearance": 0.0,
         "reward/gait_periodicity": 0.0,
         "reward/hip_swing": 0.0,
@@ -561,6 +573,8 @@ def get_initial_env_metrics_jax(
         "reward/action_rate": _scalar(action_rate),
         "reward/joint_vel": jp.zeros(()),
         "reward/slip": jp.zeros(()),
+        "reward/penalty_slip_raw": jp.zeros(()),
+        "reward/penalty_pitch_rate_raw": jp.zeros(()),
         "reward/clearance": jp.zeros(()),
         "reward/gait_periodicity": jp.zeros(()),
         "reward/hip_swing": jp.zeros(()),

@@ -194,6 +194,14 @@ reward_weights:
   action_rate: -0.01
   torque: -0.001
   joint_velocity: -0.0005
+  # M1 fail-mode hooks (walking_training.md v0.20.1 §, M1 decision tree).
+  # Default 0 for the smoke; the M1 "balance issue" branch turns these on
+  # from the YAML alone — env wiring is already in place so no code edit
+  # is needed mid-debug.  Raw penalty values are always logged at
+  # ``reward/penalty_slip_raw`` / ``reward/penalty_pitch_rate_raw`` so the
+  # weight can be sized from baseline before promoting either.
+  slip: 0.0
+  pitch_rate: 0.0
 
 # =============================================================================
 # Reward Composition

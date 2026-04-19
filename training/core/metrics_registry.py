@@ -416,6 +416,24 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Pitch-rate penalty",
     ),
     MetricSpec(
+        name="reward/penalty_slip_raw",
+        reducer=Reducer.MEAN,
+        description=(
+            "Raw stance-foot slip penalty (Σ stance horizontal vel²); "
+            "logged independently of reward_weights.slip so the M1 "
+            "fail-mode tree can size the weight before turning it on."
+        ),
+    ),
+    MetricSpec(
+        name="reward/penalty_pitch_rate_raw",
+        reducer=Reducer.MEAN,
+        description=(
+            "Raw pitch-rate penalty (gyro_y²); logged independently of "
+            "reward_weights.pitch_rate so the M1 fail-mode tree can "
+            "size the weight before turning it on."
+        ),
+    ),
+    MetricSpec(
         name="debug/posture_mse",
         reducer=Reducer.MEAN,
         log_prefix="debug",

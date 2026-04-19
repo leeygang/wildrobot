@@ -750,6 +750,13 @@ class RewardWeightsConfig(Freezable):
     ref_contact_match_sigma: float = 0.5  # walking_training.md G3 default
     cmd_forward_velocity_alpha: float = 4.0
 
+    # NOTE: ``slip`` and ``pitch_rate`` already exist above (legacy v0.19.5x
+    # fields).  The v0.20.1 v3 env reuses those slots — see the M1 fail-
+    # mode decision tree (walking_training.md v0.20.1 §).  The smoke YAML
+    # pins both to 0.0 explicitly; the M1 "balance issue" branch turns
+    # them on without an env edit.  Raw penalty values are always logged
+    # at ``reward/penalty_slip_raw`` / ``reward/penalty_pitch_rate_raw``.
+
 
 @dataclass
 class RewardCompositionConfig(Freezable):
