@@ -780,39 +780,119 @@ Expectation:
 
 - PPO improves robustness and tracking while preserving the prior’s gait
   structure
+- the smoke validates that the offline prior is learnable by PPO at nominal
+  `vx = 0.15`
+- the smoke policy contract is a temporary validation bridge, not the final
+  locomotion policy endpoint
 
 Quick visual check:
 
 - learned motion still resembles the prior family
 - steps become more stable and less fragile, rather than becoming a different
   exploit gait
+- PPO should stabilize and track the prior better, not invent a new propulsion
+  strategy that the prior should own
 
 How this advances the end goal:
 
 - adds closed-loop correction so walking survives longer and tracks commands
   better
+- decides whether the current offline prior is good enough to justify the next
+  policy upgrade
+
+Smoke scope:
+
+- one command only: `vx = 0.15`
+- single seed
+- smoke objective is prior validation, not command-breadth validation
+- `vx >= 0.20` remains explicitly out of scope for this milestone
+
+Smoke contract:
+
+- Prior:
+  - offline lookup-table prior remains the only locomotion source of truth
+  - no runtime FSM or online gait-mode logic is reintroduced
+- Observation:
+  - use a ToddlerBot-like current-state observation first:
+    - IMU orientation and angular velocity
+    - joint positions and velocities
+    - previous action
+    - command forward speed
+    - command yaw rate
+    - phase as `sin/cos`
+    - current reference slice:
+      - current `q_ref`
+      - current pelvis / torso target
+      - current foot / site target
+      - current contact / stance annotation
+  - if anticipation is needed, allow only a very short preview:
+    - one or two future anchor frames
+  - do not start the first smoke with a large dense future preview window
+- Action:
+  - use a higher-authority residual action around the offline reference
+  - form:
+    - `q_target = q_ref_from_library + delta_q_policy`
+  - residual authority should be materially larger than a tiny rescue delta,
+    especially on the leg joints
+  - this higher-authority residual is a smoke-stage debugging compromise, not
+    the final intended contract
+- Reward:
+  - use an imitation-dominant ToddlerBot-like reward family
+  - primary terms:
+    - `ref/joint_track`
+    - `ref/body_quat_track`
+    - `ref/site_track`
+    - `ref/body_lin_vel_track`
+    - `ref/body_ang_vel_track`
+    - `ref/contact_phase_match`
+    - `survival`
+  - secondary terms:
+    - `cmd/forward_velocity_track`
+  - regularizers:
+    - `action_rate`
+    - `torque`
+    - `slip`
+    - `impact`
+    - `residual_magnitude`
+  - compute body / site / velocity tracking in torso-relative or root-relative
+    coordinates where applicable
+  - do not reuse the `v0.19.x` task-space reward family for this smoke
 
 Tasks:
 
-- expose prior preview in observations
-- keep bounded residual action around `q_ref_from_library`
-- use imitation-dominant hybrid reward
+- implement a `v0.20.1` env path that reads the offline prior directly
+- expose the ToddlerBot-like observation fields listed above
+- wire the higher-authority residual action around `q_ref_from_library`
+- add a dedicated `v0.20.1` reward branch with explicit `ref/*` metrics
+- lock the smoke config to `vx = 0.15`
 - reject runs where PPO improvement comes mainly from inventing propulsion that
   the prior should own
+
+Pre-smoke checks:
+
+- zero-action policy reproduces the nominal `q_ref` target path
+- current reference slice and optional short preview advance correctly with the
+  replay index
+- reference horizon never overruns the trajectory length
+- reward logs expose the primary `ref/*` tracking metrics from iteration 1
 
 Visual validation:
 
 - by the smoke horizon, the learned policy produces visible reference-like
   stepping
-- stop / resume remains recognizable
 - the learned gait still resembles the prior family rather than a new exploit
+- the smoke does not need stop / resume breadth or broader command coverage
+- the learned motion should look more stable than the pure prior replay, not
+  qualitatively different
 
 Metric validation:
 
 - reference-tracking metrics improve materially from initialization:
-  - `ref/joint_track_rmse`
-  - `ref/pelvis_pose_error`
-  - `ref/foot_site_error`
+  - `ref/joint_track`
+  - `ref/body_quat_track`
+  - `ref/site_track`
+  - `ref/body_lin_vel_track`
+  - `ref/body_ang_vel_track`
   - `ref/contact_phase_match`
 - by the early smoke horizon:
   - `env/forward_velocity >= 0.04 m/s`
@@ -823,6 +903,15 @@ Metric validation:
   - `eval_walk/success_rate >= 0.60`
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
   - touchdown step length mean `>= 0.03 m`
+
+Post-smoke policy direction:
+
+- if the `v0.20.1` smoke succeeds, the next policy milestone should explicitly
+  move toward a full ToddlerBot / Cassie-style higher-authority contract
+- the smoke-stage higher-authority residual should not be treated as the final
+  architecture
+- the offline prior asset, reference-tracking reward family, and observation
+  interface should be reusable in that upgrade
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
 
