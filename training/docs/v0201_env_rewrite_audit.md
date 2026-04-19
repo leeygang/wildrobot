@@ -439,4 +439,10 @@ branches removes a lot of conditional plumbing in `step()` and
 4. **Stale-test fanout** (separate commit, per §10 step 7): delete
    the FSM/MPC/teacher/recovery/AMP-debug consumers listed in Task #1
    findings.  Most are imports of dropped subsystems — they'll fail
-   loudly post-rewrite.
+   loudly post-rewrite.  Canonical list lives in
+   ``v0201_env_wiring.md`` §8 (split into "source modules and configs"
+   + "tests bound to dropped subsystems"); includes
+   ``training/eval/eval_loc_ref_probe.py`` and its test
+   ``tests/test_eval_loc_ref_probe.py`` (added 2026-04-19 — the v3 env
+   doesn't compute v2's hybrid-state diagnostics that the probe
+   summarizes).

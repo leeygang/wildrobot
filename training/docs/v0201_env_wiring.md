@@ -339,6 +339,8 @@ backward-compat with v0.19.5c.
 
 **To delete in the next session** (consequent on the rewrite):
 
+*Source modules and configs:*
+
 | File | Why |
 |---|---|
 | ``runtime/wr_runtime/control/loc_ref_runtime.py`` | wraps walking_ref_v1 |
@@ -347,6 +349,7 @@ backward-compat with v0.19.5c.
 | ``tools/reference_smoke/`` (whole directory) | v0.19.2 smoke |
 | ``training/eval/run_m25_v2_probe_sweep.py`` | M2.5 v2 probe |
 | ``training/eval/visualize_nominal_ref.py`` | v1/v2 plotter |
+| ``training/eval/eval_loc_ref_probe.py`` | v2 probe runner — emits v2-only summary keys (``debug_loc_ref_swing_x_scale_mean``, ``tracking_loc_ref_progression_permission_mean``, hybrid mode ids, etc.).  The v3 env doesn't compute any of these signals (no v2 hybrid state machine, no swing-x brake heuristic).  A v3 nominal-tracking probe can be re-introduced later if Task #49 needs one — different shape, different metrics. |
 | ``control/locomotion/nominal_ik_adapter.py`` | v1/v2 IK adapter |
 | ``control/locomotion/walking_controller.py`` | v0.19 walking ctrl |
 | ``training/configs/ppo_walking_v0193a.yaml`` | v1-bound |
@@ -354,6 +357,37 @@ backward-compat with v0.19.5c.
 | ``training/configs/ppo_walking_v0195c.yaml`` | v2-bound (kept as design reference; can be archived) |
 | ``training/envs/teacher_step_target.py`` | M3 teacher |
 | ``training/envs/teacher_whole_body_target.py`` | M3 teacher |
+
+*Tests bound to dropped subsystems* (audited 2026-04-19; many still
+import cleanly because the removed names live in the deleted env's
+internals, but they will fail at construction or assertion time
+because the v3 env no longer offers FSM / MPC / teacher / recovery /
+v2 ref state).  Delete in the same cleanup commit as the source modules:
+
+| Test file | Bound to |
+|---|---|
+| ``tests/test_eval_loc_ref_probe.py`` | v2 probe runner above; asserts v2-specific summary keys |
+| ``tests/test_v0171_boundary_push_eval.py`` | v0.17.1 push-recovery scaffold |
+| ``tests/test_mpc_standing_v0173.py`` | MPC standing pivot (drop list) |
+| ``tests/test_teacher_step_target.py`` | M3 teacher targets (drop list) |
+| ``tests/test_fsm_integration.py`` | M3 step FSM (drop list) |
+| ``tests/test_recovery_metrics_aggregation.py`` | recovery_* fields + RECOVERY_WINDOW_STEPS constant (already broken: ImportError) |
+| ``tests/test_imu_noise_latency.py`` | imports the env's ``_apply_imu_noise_and_delay`` helper; helper survived but the test setup uses v0.19.5c env construction |
+| ``training/tests/test_env_step.py`` | v0.19.5c env-step contract |
+| ``training/tests/test_env_info_schema.py`` | WildRobotInfo full-schema check (depends on M3/recovery fields that §10 step 4 will drop) |
+| ``training/tests/test_physics_validation.py`` | v0.19.5c physics smoke |
+| ``training/tests/test_actuator_ordering.py`` | M2.5 ctrl-ordering scaffold (now belongs in policy_contract tests) |
+| ``training/tests/test_ppo_training.py`` | v0.19.5c trainer smoke |
+| ``training/tests/test_foot_contacts.py`` | v0.19.5c foot-contact aggregation reward |
+| ``training/tests/run_validation.py`` | non-pytest smoke runner that constructs v0.19.5c env |
+| ``training/scripts/debug_amp_features.py`` | already broken: imports nonexistent ``get_feature_config`` and ``EnvConfig`` from removed modules |
+| ``training/scripts/diagnose_amp_features.py`` | AMP-debug coupled to v0.19.5c env metrics |
+
+Tests that **stay** (post-rewrite verified):
+``tests/test_policy_contract_parity.py``,
+``tests/test_runtime_reference_service.py``,
+``tests/test_policy_contract_migration.py`` —
+these decoupled from the v0.19.5c env-internal contract.
 
 **To update in the next session** (drop loc_ref builder dependency):
 
