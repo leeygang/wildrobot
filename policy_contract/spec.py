@@ -14,7 +14,16 @@ SUPPORTED_LAYOUT_IDS = {
     # superset of wr_obs_v4; see policy_contract/spec_builder.py and
     # training/docs/v0201_env_wiring.md §5.
     "wr_obs_v5_offline_ref",
+    # v0.20.1 high-confidence prep: v5 + 3 past proprio frames so the
+    # actor can estimate base velocity (lin_vel is privileged-only;
+    # without history the policy has to infer it from a single frame).
+    # Strict superset of wr_obs_v5_offline_ref; see spec_builder.py.
+    "wr_obs_v6_offline_ref_history",
 }
+# Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
+# channels that benefit from history (joint_pos + joint_vel + gyro +
+# foot_switches + prev_action).  Computed at build time from action_dim.
+PROPRIO_HISTORY_FRAMES: int = 3
 SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1", "pos_target_home_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
@@ -416,6 +425,50 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
         if got != expected:
             raise ValueError(
                 "observation.layout mismatch for layout_id='wr_obs_v5_offline_ref':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v6_offline_ref_history":
+        proprio_bundle = (
+            3  # angvel
+            + 4  # foot_switches
+            + 3 * int(model.action_dim)  # joint_pos + joint_vel + prev_action
+        )
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("loc_ref_stance_foot", 1),
+            ("loc_ref_next_foothold", 2),
+            ("loc_ref_swing_pos", 3),
+            ("loc_ref_swing_vel", 3),
+            ("loc_ref_pelvis_targets", 3),
+            ("loc_ref_history", 4),
+            ("loc_ref_q_ref", int(model.action_dim)),
+            ("loc_ref_pelvis_pos", 3),
+            ("loc_ref_pelvis_vel", 3),
+            ("loc_ref_left_foot_pos", 3),
+            ("loc_ref_right_foot_pos", 3),
+            ("loc_ref_left_foot_vel", 3),
+            ("loc_ref_right_foot_vel", 3),
+            ("loc_ref_contact_mask", 2),
+            # 3 past proprio bundles, oldest -> newest, flattened.  Does
+            # NOT duplicate the current frame (already present in the
+            # joint_pos/joint_vel/foot_switches/prev_action/angvel slots
+            # above) — only the past N frames are appended.
+            ("proprio_history", PROPRIO_HISTORY_FRAMES * proprio_bundle),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v6_offline_ref_history':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )

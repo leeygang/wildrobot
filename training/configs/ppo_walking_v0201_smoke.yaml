@@ -79,9 +79,15 @@ env:
   # value without re-checking G6.
   action_filter_alpha: 0.0
 
-  # ---- v0.20.1 v3 offline reference + v5 obs ----
+  # ---- v0.20.1 v3 offline reference + v6 obs (proprio history) ----
+  # v6 = v5 channels + a flat 3-frame past-proprio stack
+  # (joint_pos + joint_vel + gyro + foot_switches + prev_action) so the
+  # actor can estimate base velocity from short-horizon kinematics.
+  # ToddlerBot uses c_frame_stack=15; 3 is the minimum that gives finite-
+  # diff velocity from joint pos and one integration of gyro.  v5 -> v6
+  # is a strict superset; checkpoints from v5 cannot be loaded into v6.
   loc_ref_version: v3_offline_library
-  actor_obs_layout_id: wr_obs_v5_offline_ref
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
 
   # Build the library on the fly via ZMPWalkGenerator (omit
   # loc_ref_offline_library_path).  The smoke uses a single command bin.

@@ -70,6 +70,7 @@ from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
     PRIVILEGED_OBS_DIM,
+    PROPRIO_HISTORY_FRAMES,
     WR_INFO_KEY,
     WildRobotInfo,
 )
@@ -221,12 +222,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
 
         layout_id = str(self._config.env.actor_obs_layout_id)
-        if layout_id != "wr_obs_v5_offline_ref":
+        _SUPPORTED_LAYOUTS = {
+            "wr_obs_v5_offline_ref",
+            "wr_obs_v6_offline_ref_history",
+        }
+        if layout_id not in _SUPPORTED_LAYOUTS:
             raise ValueError(
-                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id="
-                "'wr_obs_v5_offline_ref'.  Other layouts are unsupported in the "
-                "v3-only rewrite (older layouts depended on v1/v2 reference state)."
+                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
+                f"{_SUPPORTED_LAYOUTS}.  Got {layout_id!r}.  Older layouts "
+                "depended on v1/v2 reference state and were removed by the "
+                "v3 rewrite."
             )
+        self._uses_proprio_history = layout_id == "wr_obs_v6_offline_ref_history"
 
         if not self._config.env.scene_xml_path:
             raise ValueError("env.scene_xml_path is required.")
@@ -606,6 +613,48 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     # ------------------------------------------------------------------ obs
 
+    def _compute_proprio_bundle(
+        self,
+        *,
+        signals,
+        prev_action: jax.Array,
+    ) -> jax.Array:
+        """Per-frame proprio bundle for ``wr_obs_v6_offline_ref_history``.
+
+        Channels: ``[gyro(3), foot_switches(4), joint_pos_norm(N),
+        joint_vel_norm(N), prev_action(N)]``.  Layout-agnostic; the env
+        always computes it but only feeds it into the obs when the v6
+        layout is active.  Total size = ``3 + 4 + 3*N``.
+        """
+        from policy_contract.calib import JaxCalibOps as _JaxCalibOps
+        joint_pos_norm = _JaxCalibOps.normalize_joint_pos(
+            spec=self._policy_spec, joint_pos_rad=signals.joint_pos_rad
+        ).astype(jp.float32)
+        joint_vel_norm = _JaxCalibOps.normalize_joint_vel(
+            spec=self._policy_spec, joint_vel_rad_s=signals.joint_vel_rad_s
+        ).astype(jp.float32)
+        return jp.concatenate(
+            [
+                signals.gyro_rad_s.astype(jp.float32),
+                signals.foot_switches.astype(jp.float32),
+                joint_pos_norm,
+                joint_vel_norm,
+                prev_action.astype(jp.float32),
+            ]
+        )
+
+    @staticmethod
+    def _roll_proprio_history(
+        history: jax.Array, new_bundle: jax.Array
+    ) -> jax.Array:
+        """Drop the oldest frame and append the new one.
+
+        ``history`` has shape ``(PROPRIO_HISTORY_FRAMES, bundle_size)``;
+        index 0 is the OLDEST, index -1 is the NEWEST.  After rolling,
+        ``history[-1] == new_bundle``.
+        """
+        return jp.concatenate([history[1:], new_bundle[None, :]], axis=0)
+
     def _get_obs(
         self,
         data: mjx.Data,
@@ -614,12 +663,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         win: Dict[str, jax.Array],
         v4_compat: Dict[str, jax.Array],
         signals=None,
+        proprio_history: Optional[jax.Array] = None,
     ) -> jax.Array:
         """v5 layout dispatch.  All v4 + v5 ``loc_ref_*`` slots are
         populated from the offline window."""
         if signals is None:
             signals = self._signals_adapter.read(data)
         policy_state = PolicyState(prev_action=action)
+        # Flatten the (PROPRIO_HISTORY_FRAMES, bundle) buffer for the
+        # v6 layout; v5 callers pass None and the layout branch ignores it.
+        flat_history = (
+            None if proprio_history is None
+            else proprio_history.astype(jp.float32).reshape(-1)
+        )
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
@@ -640,6 +696,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_left_foot_vel=win["left_foot_vel"].astype(jp.float32),
             loc_ref_right_foot_vel=win["right_foot_vel"].astype(jp.float32),
             loc_ref_contact_mask=win["contact_mask"].astype(jp.float32),
+            proprio_history=flat_history,
         )
 
     def _get_privileged_critic_obs(
@@ -962,6 +1019,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         v4_compat = self._v4_compat_channels_from_window(win0, prev_history=None)
         critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
 
+        # v6 actor proprio history.  Allocate the buffer regardless of
+        # the active layout so WildRobotInfo's schema stays layout-
+        # agnostic (the v5 obs path simply doesn't read it).  The
+        # initial bundle uses default_action (zero) as ``prev_action``.
+        proprio_bundle_init = self._compute_proprio_bundle(
+            signals=signals_override, prev_action=default_action
+        )
+        proprio_history_init = jp.tile(
+            proprio_bundle_init[None, :], (PROPRIO_HISTORY_FRAMES, 1)
+        ).astype(jp.float32)
+
         wr_info = WildRobotInfo(
             step_count=jp.zeros((), dtype=jp.int32),
             prev_action=default_action,
@@ -1003,6 +1071,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_kp_scales=dr_params["kp_scales"],
             domain_rand_frictionloss_scales=dr_params["frictionloss_scales"],
             domain_rand_joint_offsets=dr_params["joint_offsets"],
+            proprio_history=proprio_history_init,
         )
 
         obs = self._get_obs(
@@ -1012,6 +1081,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             win=win0,
             v4_compat=v4_compat,
             signals=signals_override,
+            proprio_history=(
+                proprio_history_init if self._uses_proprio_history else None
+            ),
         )
 
         roll_init, pitch_init, _ = root_pose.euler_angles()
@@ -1235,6 +1307,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
 
+        # v6 actor proprio history: compute the new bundle (using the
+        # post-step signals + the freshly-applied policy command) and
+        # roll it into the buffer.  Always done — the v5 obs path just
+        # ignores the buffer.  See ``_compute_proprio_bundle``.
+        new_bundle = self._compute_proprio_bundle(
+            signals=signals_override, prev_action=applied_action
+        )
+        new_proprio_history = self._roll_proprio_history(wr.proprio_history, new_bundle)
+
         new_wr = wr.replace(
             step_count=new_step_count,
             prev_action=applied_action,
@@ -1269,6 +1350,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_pelvis_pitch=v4_compat["pelvis_targets"][2],
             loc_ref_history=v4_compat["history"],
             nominal_q_ref=nominal_q_ref,
+            proprio_history=new_proprio_history,
         )
 
         obs = self._get_obs(
@@ -1278,6 +1360,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             win=win,
             v4_compat=v4_compat,
             signals=signals_override,
+            proprio_history=(
+                new_proprio_history if self._uses_proprio_history else None
+            ),
         )
 
         # Live diagnostics.  forward_velocity / phase_progress / pitch /

@@ -38,10 +38,15 @@ def build_observation_from_components(
     loc_ref_left_foot_vel: jnp.ndarray | None = None,
     loc_ref_right_foot_vel: jnp.ndarray | None = None,
     loc_ref_contact_mask: jnp.ndarray | None = None,
+    # v0.20.1 wr_obs_v6_offline_ref_history addition: 3 past proprio
+    # bundles (oldest -> newest), flattened.  See spec_builder.py for
+    # the layout.  Required for v6, ignored for v1-v5.
+    proprio_history: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v5_offline_ref",
+        "wr_obs_v6_offline_ref_history",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
@@ -162,6 +167,25 @@ def build_observation_from_components(
             v5_left_foot_vel, v5_right_foot_vel,
             v5_contact_mask,
         ])
+    if spec.observation.layout_id == "wr_obs_v6_offline_ref_history":
+        # v6 = v5 + a flat proprio_history channel at the end (before
+        # padding).  History is required at the v6 layout — caller must
+        # supply it; missing history would be a wiring bug.
+        parts.extend([phase, stance, foothold, swing_pos, swing_vel, pelvis, history])
+        parts.extend([
+            v5_q_ref,
+            v5_pelvis_pos, v5_pelvis_vel,
+            v5_left_foot_pos, v5_right_foot_pos,
+            v5_left_foot_vel, v5_right_foot_vel,
+            v5_contact_mask,
+        ])
+        if proprio_history is None:
+            raise ValueError(
+                "wr_obs_v6_offline_ref_history requires proprio_history; "
+                "got None.  Env must roll a per-step proprio buffer and "
+                "pass it through build_observation."
+            )
+        parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
     parts.append(jnp.zeros((1,), dtype=jnp.float32))
 
     obs = jnp.concatenate(parts)
@@ -192,6 +216,7 @@ def build_observation(
     loc_ref_left_foot_vel: jnp.ndarray | None = None,
     loc_ref_right_foot_vel: jnp.ndarray | None = None,
     loc_ref_contact_mask: jnp.ndarray | None = None,
+    proprio_history: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     gravity = gravity_local_from_quat(signals.quat_xyzw)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
@@ -225,4 +250,5 @@ def build_observation(
         loc_ref_left_foot_vel=loc_ref_left_foot_vel,
         loc_ref_right_foot_vel=loc_ref_right_foot_vel,
         loc_ref_contact_mask=loc_ref_contact_mask,
+        proprio_history=proprio_history,
     )

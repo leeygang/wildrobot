@@ -42,6 +42,10 @@ IMU_MAX_LATENCY = 4
 IMU_HIST_LEN = IMU_MAX_LATENCY + 1
 PRIVILEGED_OBS_DIM = 12
 
+# v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
+# rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
+PROPRIO_HISTORY_FRAMES = 3
+
 
 # Use flax.struct for JAX-compatible dataclass with pytree registration;
 # fall back to NamedTuple if flax is unavailable.
@@ -119,6 +123,17 @@ try:
         domain_rand_frictionloss_scales: jnp.ndarray  # (action_size,)
         domain_rand_joint_offsets: jnp.ndarray        # (action_size,)
 
+        # v0.20.1 wr_obs_v6 actor proprio history.  Stores the most
+        # recent ``PROPRIO_HISTORY_FRAMES`` past proprio bundles
+        # (oldest -> newest), each of size ``proprio_bundle`` =
+        # 3 (gyro) + 4 (foot_switches) + 3*action_size.  Rolled in
+        # ``step`` AFTER the new proprio is computed.  Zero-filled at
+        # reset (first PROPRIO_HISTORY_FRAMES steps see padding zeros
+        # in the older slots).  Unused for v5 / earlier layouts; kept
+        # always-allocated so the WildRobotInfo schema stays
+        # layout-agnostic.
+        proprio_history: jnp.ndarray  # (PROPRIO_HISTORY_FRAMES, proprio_bundle)
+
 except ImportError:
     from typing import NamedTuple
 
@@ -162,6 +177,7 @@ except ImportError:
         domain_rand_kp_scales: jnp.ndarray
         domain_rand_frictionloss_scales: jnp.ndarray
         domain_rand_joint_offsets: jnp.ndarray
+        proprio_history: jnp.ndarray
 
 
 # =============================================================================
@@ -218,6 +234,11 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "domain_rand_kp_scales": (action_size,),
         "domain_rand_frictionloss_scales": (action_size,),
         "domain_rand_joint_offsets": (action_size,),
+        # proprio_bundle = 3 (gyro) + 4 (foot_switches) + 3*action_size
+        "proprio_history": (
+            PROPRIO_HISTORY_FRAMES,
+            3 + 4 + 3 * action_size,
+        ),
         "push_schedule": {
             "start_step": (),
             "end_step": (),
