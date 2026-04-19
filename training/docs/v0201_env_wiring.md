@@ -465,26 +465,54 @@ Asymmetric clipping is a v3.1 lever if needed.
 
 ## 10. Implementation sequence — REVISED (rewrite, round-3)
 
-**Status at the session boundary** (commit ``7c81dff``, post round-3
-cleanup):
+**Status at the session boundary** (commit ``dccca5f``, post §10
+steps 1-7 except hardware runtime adapter):
 
-- Steps 1-3a of the original surgical plan are landed:
-  config fields + WR info field declarations (``8c69a06``); dual obs
-  builders + parity test (``0cf47e7``); env ``__init__`` infrastructure
-  (``a3101cd``).
-- Deletion wave landed in 4 commits:
-  - ``0ffc473`` — v1/v2 source files + 5 direct test files
-  - ``61ed948`` — 12 v1/v2-bound consumers (runtime/, control/, training/eval/,
-    tools/) + 4 dependent tests + 4 ``__init__.py`` cleanups
-  - ``a943831`` — config defaults (loc_ref_version, loc_ref_residual_mode)
-    + 6 v1/v2-bound YAML configs deleted + train.py default updated
-  - ``7c81dff`` — replaced ``wildrobot_env.py`` with an 80-line
-    placeholder; deleted ``test_reward_terms.py`` (tested deleted
-    helpers); env imports cleanly, construction raises
-    ``NotImplementedError`` pointing to this design note
-- **Branch is now safe for shared use**: any module imports
-  cleanly; tests that try to construct ``WildRobotEnv`` fail
-  loudly with a clear pointer to the rewrite plan.
+Task #50 (the env rewrite) and §10 cleanup steps 4 + 7 are landed.
+Branch is ready for Task #49 (imitation reward family).
+
+Landed commits since the placeholder:
+- ``6ee70a2`` — Step 1 audit (``training/docs/v0201_env_rewrite_audit.md``)
+- ``3a27a57`` — Steps 3+5: v3-only ``wildrobot_env.py`` (~1200 lines) +
+  stub ``ppo_walking_v0201_smoke.yaml`` + register
+  ``wr_obs_v5_offline_ref`` layout in ``policy_contract/spec*``
+- ``ab261a7`` — review fixes #1-#3: terminal metrics carry through
+  auto-reset; live diagnostics (forward_velocity, phase_progress,
+  pitch, roll, residual_*); env auto-loads robot_config
+- ``9e72fa3`` — review fix #4: ``residual_q_abs_*`` measures the
+  applied (post-filter, post-delay) delta, not the raw policy action
+- ``482f3b6`` — explicit cleanup list for §10 step 7
+- ``957a051`` — Step 7: deleted 5 source modules + 16 stale tests +
+  fixed dangling ``control/kinematics/__init__.py`` import
+- ``dccca5f`` — Step 4: pruned ``WildRobotInfo`` from ~95 fields to 35
+
+**Validation (CPU backend at ``dccca5f``):**
+- 20/20 surviving core tests pass:
+  ``tests/test_policy_contract_parity.py`` (7) +
+  ``tests/test_runtime_reference_service.py`` (10) +
+  ``tests/test_policy_contract_migration.py`` (3)
+- ``pytest --collect-only``: 296 tests collected, 0 errors
+- env constructs from smoke YAML; ``jax.jit(env.reset)(rng)`` returns a
+  valid 35-field ``WildRobotInfo``; ``jax.jit(env.step)`` advances
+  ``loc_ref_offline_step_idx`` 0 → N; vmap over 4 envs works
+- placeholder reward = ``reward_weights.alive`` per step until termination
+
+**Remaining for the v0.20.1 smoke:**
+- **Task #49** — imitation-dominant reward family
+  (``ref/q_ref_track``, ``ref/body_quat_track``,
+  ``ref/feet_pos_track``, ``ref/contact_match``, secondary
+  ``cmd/forward_velocity_track``, regularizers per
+  ``walking_training.md`` v0.20.1 section); tune the smoke YAML's
+  reward weights + PPO hyperparams.  Lands in a fresh session.
+
+**Deferred past v0.20.1 smoke:**
+- v0.20.2 hardware-deployable runtime adapter (no current code path
+  uses ``RuntimeReferenceService`` from a hardware runner; ``§8`` lists
+  ``runtime/wr_runtime/control/run_policy.py`` and
+  ``replay_policy.py`` as "to update" when this lands)
+- Multi-command training (Q3 stacked-arrays design)
+- Per-env random start offsets (Q4)
+- Asymmetric per-joint residual clip (Q5)
 
 **Next-session execution plan (rewrite-shaped, replaces the original
 6-commit surgical plan)**:
