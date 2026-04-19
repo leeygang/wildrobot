@@ -8,6 +8,17 @@ viewer-equivalent loop and logs, per ctrl step, the prior's intent
 vs the physics state so we can localise where forward intent is
 lost.
 
+Scope note (round-10 reviewer): this probe assigns "stance side"
+from ``traj.stance_foot_id[idx]`` (the schedule).  That is correct
+ground truth in the first few frames before physics diverges from
+the schedule, but once the body starts falling it stops being
+reliable — the schedule says one foot is in stance while real
+physics may have either foot off the floor.  Use this probe for
+the early-transient diagnosis (first ~20 ctrl steps); for
+post-divergence contact analysis, replace ``stance`` with the
+real MuJoCo foot-floor contact (see
+``training/eval/view_zmp_in_mujoco.py:_foot_floor_in_contact``).
+
 Per step it logs:
 
   - prior pelvis_x / pelvis_y     (com_pos from traj)

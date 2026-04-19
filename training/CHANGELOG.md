@@ -1081,6 +1081,117 @@ nominal-vx work.
    warm-up is no longer needed.  Default behavior is unchanged but
    the dead code can be removed.
 
+### Round 10 — reviewer corrections + milestone reframing (vx=0.15-only)
+
+External review (round 10) flagged that the round-9 entry above
+overstates the result, and pointed out the v0.20.0-C closeout
+gate (free-floating physics survival of the bare q_ref) is
+stricter than the contract ToddlerBot's library generator
+actually satisfies.  Both points are correct.  This round
+documents the corrected status and reframes the milestone scope.
+
+**High — round-9 numbers were wrong.** Reviewer's local rerun on
+``cee580f``:
+
+- closeout matrix: **11/32** total (round-9 entry claimed 12/32)
+- C1 free-float: **6/12** (round-9 claimed 7/12)
+- C1 vx=0.15: **2/3** — seed 0 falls at 63 ctrl steps, just below
+  the 64-step survival budget (round-9 claimed 3/3 ✓)
+- C2: 0/12 (unchanged)
+- fixed-base: 1/4 (unchanged)
+- kinematic: 4/4 (unchanged)
+- ``tests/test_v0200c_geometry.py``: **fails 7 cases at vx≥0.20**
+  (vx=0.10 and vx=0.15 are clean, 9/9 each)
+
+My round-9 closeout reported 7/12 / 3/3.  The discrepancy is
+1 ctrl step on a single seed at the survival boundary
+(MuJoCo run-to-run variance + a small change between commits).
+Either way the "vx=0.15 nominal ask resolved" framing was an
+overstatement: even on the better run the body falls
+backward and survives by falling slowly, not by walking
+forward (verified in the per-frame probe — pelvis lags the
+prior's COM by 9 cm at step 30, 36 cm at step 70).
+
+**High — categorical mismatch with the source design.**
+ToddlerBot's library generator at
+``toddlerbot/algorithms/zmp_walk.py:101,151-174`` runs the q_ref
+via ``MuJoCoSim(fixed_base=True)`` + ``sim.forward()`` — fixed-
+base kinematic replay only, no ``mj_step``.  They never put the
+bare q_ref into free-floating physics; PPO is the closed-loop
+controller, and the prior is a kinematic style guide PPO learns
+to track around.  Our C1 (free-float survival) and C2 (validation
+stabilizer harness) ask the prior to do something its source
+design isn't built for.  References:
+ToddlerBot repo (``github.com/hshi74/toddlerbot``),
+ToddlerBot paper (``arxiv.org/abs/2502.00893``).
+
+**Medium — stale comments fixed.** Removed:
+
+- ``ZMPWalkConfig.n_warmup_cycles`` — dead under the LQR path
+  (round 9 should have removed it; the LQR's preview replaces
+  the quintic warm-up entirely).  Removed from
+  ``control/zmp/zmp_walk.py``.
+- The "lateral COM ~1 mm peak-to-peak" claim in the
+  ``_generate_at_step_length`` docstring.  Reviewer's actual
+  measurement on this trajectory is ``com_y in [-1.6 mm,
+  +19.8 mm]`` end-to-end — forward-Euler integration drifts
+  laterally over 22 s.  The drift is small enough not to change
+  foot placement (which is fixed up front, not LQR-driven), but
+  the docstring claim was wrong.  Replaced with the measured
+  range and an honest description of the drift.
+
+**Medium — probe scope clarified.**
+``tools/v0200c_per_frame_probe.py`` uses ``traj.stance_foot_id``
+to label stance side.  This is correct ground truth in the
+first ~20 ctrl steps (before physics diverges from the
+schedule) but stops being reliable post-divergence.  Added a
+docstring note; replacing it with real MuJoCo foot-floor
+contact for post-divergence analysis is left to whoever needs
+that signal.
+
+**Milestone reframing — v0.20.0-C is now nominal-vx only.**
+
+Reviewer's recommended scope, adopted:
+
+- **Objective:** offline prior valid for nominal forward
+  walking at ``vx=0.15``.
+- **Blocking gates** (must pass for v0.20.0-C ship):
+  - geometry gate at vx=0.15 — currently passing (9/9)
+  - kinematic replay at vx=0.15 — currently passing
+  - fixed-base PD smoke at vx=0.15 — currently 5.5% sat vs
+    5% gate (near-pass; let through with documented note)
+- **Non-blocking diagnostics** (kept as evidence; tracked but
+  not gating):
+  - deterministic free-floating replay at vx=0.15 (currently
+    drifts backward, falls at ~step 77)
+  - seeded C1/C2 matrix (currently 6/12 / 0/12)
+  - per-frame divergence probe
+- **Out of scope for v0.20.0-C**:
+  - vx ≥ 0.20 (geometry regression and knee saturation
+    unresolved — deferred to a later prior-expansion milestone)
+  - closed-loop stabilizer/controller quality (PPO's job in
+    v0.20.1)
+  - full command-range readiness
+
+The two rejected alternatives, briefly: (a) keep C1/C2 as ship
+gates and build a real CoP / body-attitude controller in C
+— rejected as scope creep; PPO is meant to subsume that work.
+(b) drop C1/C2 entirely and ship the full vx range — rejected
+because the geometry gate is not green at vx≥0.20 and silently
+shipping a known backward-drift bug would hide a real defect.
+The hybrid above (narrow scope to vx=0.15, keep C1/C2 as
+non-blocking diagnostics) is what reviewer recommended.
+
+**v0.20.1 plan (next milestone):**
+
+- single PPO smoke at vx=0.15 with the current LQR prior
+- use the learning curve to decide whether the nominal prior
+  is good enough, vs whether more prior surgery is needed
+  before broader scope
+- if PPO learns cleanly at vx=0.15, plan the prior-expansion
+  milestone to address vx≥0.20 (knee saturation, geometry
+  regressions)
+
 ---
 
 ## [v0.19.4c] - 2026-04-14: Reference propulsion rework

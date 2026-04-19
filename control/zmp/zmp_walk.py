@@ -80,23 +80,16 @@ class ZMPWalkConfig:
     zmp_cost_R: float = 0.1
 
     # Trajectory generation: plan long horizon and replay linearly
-    # (matches ToddlerBot ``zmp_walk``: 22 s of monotonic forward walking).
-    # Cycles 0..n_warmup_cycles-1 follow a quintic blend from rest
-    # ``(x=0, vx=0, ax=0)`` to the LIPM steady-state IC at the
-    # boundary; cycles n_warmup_cycles+ follow the steady-state
-    # LIPM solution.  Foot placement is uniform across all cycles
-    # (cycle 0 right swing is still a half-step, cycles 1+ are full
-    # 2*sl swings).
-    #
-    # Round-7 used n_warmup_cycles=1 (quintic over a single cycle).
-    # That worked at high vx (≥0.20) but at vx=0.15 the body could
-    # not generate the required forward acceleration in 0.64 s and
-    # fell forward without translating.  Round 8 spreads the
-    # quintic over 2 cycles by default, halving the required
-    # forward acceleration without changing foot placement or
-    # cycle indexing.  See the round-8 CHANGELOG section.
+    # (matches ToddlerBot ``zmp_walk``: 22 s of monotonic forward
+    # walking).  Under the round-9 LQR path the COM trajectory is
+    # built by forward-integrating the closed-loop preview-control
+    # feedback from a from-rest initial condition; foot placement
+    # is uniform with cycle 0's right swing as a half-step (matches
+    # ToddlerBot's footstep schedule).  No quintic warm-up is used
+    # (the LQR's preview generates a non-zero acceleration at t=0
+    # by itself; the previous ``n_warmup_cycles`` knob is dead under
+    # this path and was removed).
     total_plan_time_s: float = 22.0
-    n_warmup_cycles: int = 1
 
     # Limits
     max_step_length_m: float = 0.10
@@ -367,15 +360,23 @@ class ZMPWalkGenerator:
         the LIPM state is propagated by Euler at ``dt`` under the
         closed-loop feedback ``planner.get_optim_com_acc(t, x)``.
         This matches ToddlerBot's ``zmp_walk.update_step`` exactly.
-        At the same Qy=I, R=0.1·I that ToddlerBot uses, the
-        lateral COM swing emerges small (~1 mm peak-to-peak) — the
-        lateral support transfer comes from which foot is in stance,
-        not from a large COM-y excursion.  Round-9b retro: the
-        previous "0.25·lat cosine" override demanded a lateral
-        body sway ToddlerBot's design does not require, and the
-        original "LQR-y overshoots" justification was based on a
-        probe done while a view-mutation bug in the planner port
-        was active (commit ``5faae74`` fixed it).
+
+        With the same Qy=I, R=0.1·I that ToddlerBot uses, the
+        per-cycle lateral COM swing is small (sub-mm in cycle 0).
+        Over the full 22-s plan, however, forward-Euler integration
+        of the LQR feedback drifts laterally; on the v0.15 m/s
+        trajectory we measure ``com_y`` in
+        ``[-1.6 mm, +19.8 mm]`` end-to-end (round-9 reviewer).  The
+        drift is small enough not to change foot placement (which
+        is fixed up front, not LQR-driven), but it should not be
+        described as "1 mm peak-to-peak" — earlier docs that did
+        were based on a too-short standalone probe.
+
+        Round-9b retro: the previous "0.25·lat cosine" override
+        demanded a lateral body sway ToddlerBot's design does not
+        require, and the original "LQR-y overshoots" justification
+        was based on a probe done while a view-mutation bug in the
+        planner port was active (commit ``5faae74`` fixed it).
 
         Foot positions advance monotonically:
           - Left feet at world x = 0, 2·sl, 4·sl, ...
