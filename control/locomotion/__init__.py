@@ -1,18 +1,11 @@
-"""Locomotion controller package (v0.19.5).
+"""Locomotion controller package.
 
-Provides a unified walking controller with two deployment modes:
-- nominal_only: walking reference + IK -> joint targets (no neural network)
-- residual_ppo: walking reference + IK -> q_ref + policy delta -> joint targets
+The v0.19.x ``walking_controller`` and ``nominal_ik_adapter`` modules
+were deleted at v0.20.1.  v0.20.x architecture: locomotion semantics
+live in the offline ``ReferenceLibrary``
+(``control.references.reference_library``) and are consumed at
+runtime via ``RuntimeReferenceService``
+(``control.references.runtime_reference_service``).  No runtime
+walking controller exists in the active path; PPO + the offline
+reference together replace it.
 """
-
-from control.locomotion.nominal_ik_adapter import NominalIkConfig, NominalIkResult, compute_nominal_q_ref
-from control.locomotion.walking_controller import WalkingController, WalkingControllerConfig, ControllerMode
-
-__all__ = [
-    "ControllerMode",
-    "NominalIkConfig",
-    "NominalIkResult",
-    "compute_nominal_q_ref",
-    "WalkingController",
-    "WalkingControllerConfig",
-]

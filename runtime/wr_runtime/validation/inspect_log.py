@@ -14,7 +14,25 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
         sys.path.insert(0, _p)
 
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
-from wr_runtime.logging import required_replay_log_fields
+
+# v0.20.1: ``required_replay_log_fields`` was deleted with the
+# ``locomotion_log_schema`` module.  Inline the v0.19.x replay log
+# field set here so this forensic tool can still inspect any
+# previously-captured logs.  v0.20.2 hardware runtime will define a
+# new log schema; update this list when that lands.
+_REQUIRED_REPLAY_LOG_FIELDS = (
+    "quat_xyzw",
+    "gyro_rad_s",
+    "joint_pos_rad",
+    "joint_vel_rad_s",
+    "foot_switches",
+    "velocity_cmd",
+    "yaw_rate_cmd",
+)
+
+
+def required_replay_log_fields():
+    return _REQUIRED_REPLAY_LOG_FIELDS
 
 
 def _load_npz(path: Path) -> Dict[str, np.ndarray]:

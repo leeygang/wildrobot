@@ -238,13 +238,20 @@ def test_roundtrip():
 
 
 # ---- 5. Deprecation marker ------------------------------------------------
+# (v0.20.1 cleanup: ``walking_ref_v2`` was DELETED, not just marked
+# deprecated.  The previous text-check on its module docstring is no
+# longer applicable.  ``ImportError`` on ``control.references.walking_ref_v2``
+# is now the active deprecation contract.)
 
 def test_deprecation():
-    import control.references.walking_ref_v2 as v2
-
-    doc = v2.__doc__ or ""
-    assert "deprecated" in doc.lower(), (
-        "walking_ref_v2 module docstring must contain 'deprecated'"
+    import importlib
+    try:
+        importlib.import_module("control.references.walking_ref_v2")
+    except ImportError:
+        return  # expected: module deleted at v0.20.1
+    raise AssertionError(
+        "walking_ref_v2 should not import (deleted at v0.20.1); "
+        "if it imports, the v1/v2 deprecation rollback is incomplete."
     )
 
 
@@ -534,7 +541,7 @@ def main() -> None:
     check("roundtrip preserves all data", test_roundtrip)
 
     print("\n5. Deprecation")
-    check("walking_ref_v2 marked deprecated", test_deprecation)
+    check("walking_ref_v2 import is rejected (deleted)", test_deprecation)
 
     print("\n6. Preview obs vector")
     check("obs vector shape, dtype, and q_ref presence", test_preview_obs)
