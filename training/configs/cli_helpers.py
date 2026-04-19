@@ -8,8 +8,6 @@ Used by:
   - training/train.py (inlined; doesn't import this to keep it
     self-contained)
   - training/eval/visualize_policy.py
-  - training/eval/eval_handoff_gate.py
-  - training/eval/eval_loc_ref_probe.py
   - training/eval/diagnose_knee_forces.py
   - training/scripts/diagnose_torque.py
   - training/scripts/gait_diagnostic.py
