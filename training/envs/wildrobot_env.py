@@ -50,7 +50,11 @@ from policy_contract.spec_builder import build_policy_spec
 
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.types import CoordinateFrame
-from training.configs.training_config import TrainingConfig, get_robot_config
+from training.configs.training_config import (
+    TrainingConfig,
+    get_robot_config,
+    load_robot_config,
+)
 from training.core.experiment_tracking import get_initial_env_metrics_jax
 from training.core.metrics_registry import METRICS_VEC_KEY, build_metrics_vec
 from training.envs.disturbance import (
@@ -257,7 +261,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._mj_model.opt.timestep = self.sim_dt
         self._mjx_model = mjx.put_model(self._mj_model)
 
-        self._robot_config = get_robot_config()
+        # Robot config: prefer the global singleton (train.py preloads it
+        # before constructing the env), but fall back to loading from the
+        # YAML-configured path so the env is self-contained for tests,
+        # eval, and ad-hoc construction.
+        try:
+            self._robot_config = get_robot_config()
+        except RuntimeError:
+            robot_config_path = Path(self._config.env.robot_config_path)
+            if not robot_config_path.is_absolute():
+                robot_config_path = (
+                    Path(__file__).parent.parent.parent / robot_config_path
+                )
+            if not robot_config_path.exists():
+                raise FileNotFoundError(
+                    f"robot_config not loaded and "
+                    f"env.robot_config_path does not exist: {robot_config_path}"
+                )
+            self._robot_config = load_robot_config(robot_config_path)
         self._signals_adapter = MjxSignalsAdapter(
             self._mj_model,
             self._robot_config,
@@ -855,23 +876,44 @@ class WildRobotEnv(mjx_env.MjxEnv):
             signals=signals_override,
         )
 
+        roll_init, pitch_init, _ = root_pose.euler_angles()
         alive_weight = jp.float32(self._config.reward_weights.alive)
+        contact_thresh = self._config.env.contact_threshold_force
+        left_switch_init = (left_force > contact_thresh).astype(jp.float32)
+        right_switch_init = (right_force > contact_thresh).astype(jp.float32)
         metrics_dict = get_initial_env_metrics_jax(
             velocity_cmd=velocity_cmd,
             height=root_pose.height,
-            pitch=jp.float32(0.0),
-            roll=jp.float32(0.0),
+            pitch=pitch_init.astype(jp.float32),
+            roll=roll_init.astype(jp.float32),
             left_force=left_force,
             right_force=right_force,
-            left_toe_switch=jp.float32(0.0),
-            left_heel_switch=jp.float32(0.0),
-            right_toe_switch=jp.float32(0.0),
-            right_heel_switch=jp.float32(0.0),
+            left_toe_switch=left_switch_init,
+            left_heel_switch=left_switch_init,
+            right_toe_switch=right_switch_init,
+            right_heel_switch=right_switch_init,
             forward_reward=jp.float32(0.0),
             healthy_reward=jp.float32(0.0),
             action_rate=jp.float32(0.0),
             total_reward=alive_weight,
         )
+        # Live diagnostics at reset.  episode_step_count is 0; phase
+        # progress is 0; loc_ref tracking fields read from the window
+        # at step 0.  Single-mode (offline playback) → mode_id=0,
+        # progression_permission=1.
+        metrics_dict["forward_velocity"] = root_vel_h.linear[0].astype(jp.float32)
+        metrics_dict["episode_step_count"] = jp.float32(0.0)
+        metrics_dict["tracking/loc_ref_phase_progress"] = jp.float32(0.0)
+        metrics_dict["tracking/loc_ref_stance_foot"] = (
+            win0["stance_foot_id"].astype(jp.float32)
+        )
+        metrics_dict["tracking/loc_ref_mode_id"] = jp.float32(0.0)
+        metrics_dict["tracking/loc_ref_progression_permission"] = jp.float32(1.0)
+        metrics_dict["tracking/loc_ref_left_reachable"] = jp.float32(1.0)
+        metrics_dict["tracking/loc_ref_right_reachable"] = jp.float32(1.0)
+        metrics_dict["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(q_ref0)).astype(jp.float32)
+        metrics_dict["tracking/residual_q_abs_mean"] = jp.float32(0.0)
+        metrics_dict["tracking/residual_q_abs_max"] = jp.float32(0.0)
         metrics = {
             METRICS_VEC_KEY: build_metrics_vec(metrics_dict),
         }
@@ -969,11 +1011,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
+        roll_post, pitch_post, _yaw_post = root_pose.euler_angles()
+        forward_velocity = root_vel_h.linear[0].astype(jp.float32)
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.WORLD
         )
         left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
         contact_thresh = self._config.env.contact_threshold_force
+        left_toe_switch = (left_force > contact_thresh).astype(jp.float32)
+        right_toe_switch = (right_force > contact_thresh).astype(jp.float32)
 
         # Termination + alive reward.
         new_step_count = wr.step_count + 1
@@ -982,6 +1028,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         alive_weight = jp.float32(self._config.reward_weights.alive)
         reward = alive_weight * (1.0 - terminated)
+        action_rate = jp.mean(jp.abs(applied_action - wr.prev_action)).astype(jp.float32)
 
         # v5 obs from the new state.
         v4_compat = self._v4_compat_channels_from_window(
@@ -1005,8 +1052,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 [left_force, jp.float32(0.0), right_force, jp.float32(0.0)]
             ).astype(jp.float32),
             root_height=root_pose.height.astype(jp.float32),
-            prev_left_loaded=(left_force > contact_thresh).astype(jp.float32),
-            prev_right_loaded=(right_force > contact_thresh).astype(jp.float32),
+            prev_left_loaded=left_toe_switch,
+            prev_right_loaded=right_toe_switch,
             critic_obs=critic_obs,
             loc_ref_offline_step_idx=next_step_idx,
             loc_ref_gait_phase_sin=v4_compat["phase_sin_cos"][0],
@@ -1031,47 +1078,79 @@ class WildRobotEnv(mjx_env.MjxEnv):
             signals=signals_override,
         )
 
-        # Auto-reset on done so Brax PPO sees a fresh trajectory after
-        # termination.  Reuses current rng_step to keep the per-env
-        # randomness flowing.
+        # Live diagnostics.  forward_velocity / phase_progress / pitch /
+        # roll were previously hardcoded to zero, which masked real env
+        # behavior and broke downstream eval (loc_ref probe phase
+        # progress std).  The reward terms (m3_*, posture, slip, …) stay
+        # zero under the placeholder-alive contract; Task #49 fills them
+        # in with the imitation reward family.
+        residual_q_abs = jp.abs(
+            jp.clip(jp.asarray(action, dtype=jp.float32), -1.0, 1.0)
+            * self._residual_q_scale_per_joint
+        )
+        terminal_metrics_dict = get_initial_env_metrics_jax(
+            velocity_cmd=velocity_cmd,
+            height=root_pose.height,
+            pitch=pitch_post.astype(jp.float32),
+            roll=roll_post.astype(jp.float32),
+            left_force=left_force,
+            right_force=right_force,
+            left_toe_switch=left_toe_switch,
+            left_heel_switch=left_toe_switch,
+            right_toe_switch=right_toe_switch,
+            right_heel_switch=right_toe_switch,
+            forward_reward=jp.float32(0.0),
+            healthy_reward=jp.float32(0.0),
+            action_rate=action_rate,
+            total_reward=reward,
+        )
+        terminal_metrics_dict.update(term_info)
+        terminal_metrics_dict["forward_velocity"] = forward_velocity
+        terminal_metrics_dict["episode_step_count"] = new_step_count.astype(jp.float32)
+        terminal_metrics_dict["tracking/loc_ref_phase_progress"] = (
+            next_step_idx.astype(jp.float32) / jp.float32(self._offline_n_steps)
+        )
+        terminal_metrics_dict["tracking/loc_ref_stance_foot"] = (
+            win["stance_foot_id"].astype(jp.float32)
+        )
+        # Single-mode in v3 (offline playback); progression always permitted.
+        terminal_metrics_dict["tracking/loc_ref_mode_id"] = jp.float32(0.0)
+        terminal_metrics_dict["tracking/loc_ref_progression_permission"] = jp.float32(1.0)
+        terminal_metrics_dict["tracking/nominal_q_abs_mean"] = jp.mean(
+            jp.abs(nominal_q_ref)
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/residual_q_abs_mean"] = jp.mean(residual_q_abs).astype(jp.float32)
+        terminal_metrics_dict["tracking/residual_q_abs_max"] = jp.max(residual_q_abs).astype(jp.float32)
+        terminal_metrics_dict["tracking/loc_ref_left_reachable"] = jp.float32(1.0)
+        terminal_metrics_dict["tracking/loc_ref_right_reachable"] = jp.float32(1.0)
+        terminal_metrics = {METRICS_VEC_KEY: build_metrics_vec(terminal_metrics_dict)}
+
+        # Auto-reset: on done, the next-episode starting data + obs +
+        # info[WR_INFO_KEY] + rng come from a fresh reset; reward, done,
+        # and metrics carry the TERMINAL step's values so PPO sees the
+        # right reward, done flag (for GAE bootstrap), and termination
+        # diagnostics on the rollout.  Without this, term/* and
+        # forward_velocity at the terminal step would be replaced by
+        # the reset's initial-metric zeros.
         def _do_reset(_):
             return self.reset(rng_step)
 
         def _no_reset(_):
-            metrics_dict = get_initial_env_metrics_jax(
-                velocity_cmd=velocity_cmd,
-                height=root_pose.height,
-                pitch=jp.float32(0.0),
-                roll=jp.float32(0.0),
-                left_force=left_force,
-                right_force=right_force,
-                left_toe_switch=jp.float32(0.0),
-                left_heel_switch=jp.float32(0.0),
-                right_toe_switch=jp.float32(0.0),
-                right_heel_switch=jp.float32(0.0),
-                forward_reward=jp.float32(0.0),
-                healthy_reward=jp.float32(0.0),
-                action_rate=jp.float32(0.0),
-                total_reward=reward,
-            )
-            metrics_dict.update(term_info)
-            new_metrics = {METRICS_VEC_KEY: build_metrics_vec(metrics_dict)}
             return WildRobotEnvState(
                 data=data,
                 obs=obs,
                 reward=reward,
                 done=done,
-                metrics=new_metrics,
+                metrics=terminal_metrics,
                 info={WR_INFO_KEY: new_wr},
                 pipeline_state=data,
                 rng=rng_step,
             )
 
         next_state = jax.lax.cond(done > 0.5, _do_reset, _no_reset, operand=None)
-        # Preserve done / reward on auto-reset so the trainer still
-        # observes the terminal step's reward and the done flag for
-        # GAE bootstrapping.
-        return next_state.replace(reward=reward, done=done)
+        return next_state.replace(
+            reward=reward, done=done, metrics=terminal_metrics
+        )
 
     # ------------------------------------------------------------------ props
 
