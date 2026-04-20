@@ -22,7 +22,11 @@ SUPPORTED_LAYOUT_IDS = {
 # Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
 # channels that benefit from history (joint_pos + joint_vel + gyro +
 # foot_switches + prev_action).  Computed at build time from action_dim.
-PROPRIO_HISTORY_FRAMES: int = 3
+# Bumped 3 → 15 in the v0.20.1 ToddlerBot-alignment pass
+# (training/docs/walking_training.md Appendix A.1) to match
+# ToddlerBot c_frame_stack.  Must stay in sync with
+# training/envs/env_info.py PROPRIO_HISTORY_FRAMES.
+PROPRIO_HISTORY_FRAMES: int = 15
 SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1", "pos_target_home_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
