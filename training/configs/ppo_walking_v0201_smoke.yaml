@@ -56,13 +56,40 @@ env:
   max_height: 0.70
   max_pitch: 0.8
   max_roll: 0.8
-  use_relaxed_termination: false
+  # ToddlerBot-aligned (walking_training.md Appendix A.1): pitch/roll
+  # become a SOFT band penalty via reward_weights.torso_pitch_soft /
+  # torso_roll_soft (gates from env.torso_*_soft_min/max_rad below);
+  # only torso height terminates the episode.  ToddlerBot has trained
+  # successfully with this contract — terminating on pitch/roll
+  # bites PPO before it can learn to recover.
+  use_relaxed_termination: true
+  # Soft pitch/roll gates (toddlerbot/locomotion/mjx_config.py:110-111).
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  # Lateral foot-spacing band for feet_distance reward
+  # (toddlerbot/locomotion/mjx_config.py:108-109, scaled to WR v2 hip
+  # width).  Defaults match ToddlerBot directly; if WR v2 nominal hip
+  # spacing differs materially this can be tightened later.
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
 
   # Single-command smoke: both ends pinned at vx=0.15 so reset samples
   # a degenerate uniform.  Multi-command training is deferred (per
   # design note Q3 / smoke_contract).
   min_velocity: 0.15
   max_velocity: 0.15
+  # ToddlerBot-aligned cmd resampling plumbing
+  # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:11).
+  # ``cmd_resample_steps`` = 0 disables resampling so the smoke stays
+  # episode-constant; the field exists so v0.20.4 multi-command work
+  # doesn't have to extend the schema.  ToddlerBot uses
+  # resample_time=3.0 s ⇒ ~150 ctrl steps at ctrl_dt=0.02.
+  cmd_resample_steps: 0
+  cmd_zero_chance: 0.0
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.0
 
   # Contacts
   # contact_threshold_force: cutoff (N) the env uses to classify a foot
@@ -99,12 +126,12 @@ env:
   action_filter_alpha: 0.0
 
   # ---- v0.20.1 v3 offline reference + v6 obs (proprio history) ----
-  # v6 = v5 channels + a flat 3-frame past-proprio stack
+  # v6 = v5 channels + a flat past-proprio stack
   # (joint_pos + joint_vel + gyro + foot_switches + prev_action) so the
   # actor can estimate base velocity from short-horizon kinematics.
-  # ToddlerBot uses c_frame_stack=15; 3 is the minimum that gives finite-
-  # diff velocity from joint pos and one integration of gyro.  v5 -> v6
-  # is a strict superset; checkpoints from v5 cannot be loaded into v6.
+  # PROPRIO_HISTORY_FRAMES = 15 (training/envs/env_info.py + policy_contract/spec.py)
+  # to match ToddlerBot c_frame_stack (toddlerbot/locomotion/mjx_config.py:74).
+  # The 3 → 15 bump is documented in walking_training.md Appendix A.1.
   loc_ref_version: v3_offline_library
   actor_obs_layout_id: wr_obs_v6_offline_ref_history
 
@@ -113,20 +140,28 @@ env:
   loc_ref_offline_command_vx: 0.15
 
   # ---- Residual bounds (G1) ----
-  # Absolute mode: residual_delta_q = clip(action) * scale (rad).  The
-  # per-joint map matches the G1 spec in the design note (§4.1):
-  # legs ±0.50 rad; arms / waist fall back to the scalar ±0.20 rad.
+  # Absolute mode: residual_delta_q = clip(action) * scale (rad).
+  # ToddlerBot-aligned (walking_training.md Appendix A.6): leg residual
+  # tightened from ±0.50 → ±0.25 rad to match ToddlerBot's uniform
+  # action_scale = 0.25.  The looser ±0.50 was added to compensate
+  # for the prior failing to deliver forward push at vx=0.15 (per the
+  # earlier G1 commentary), but the v0.20.0-D unblock requires the
+  # prior to already be rescuable — relying on residual authority to
+  # paper over a weak prior is exactly the G5 anti-exploit failure
+  # mode.  If the smoke shows the bound is the binding constraint
+  # (G5 passes but forward velocity stalls) we re-loosen one step
+  # at a time, not in a single ±0.50 jump.
   loc_ref_residual_mode: absolute
   loc_ref_residual_scale: 0.20
   loc_ref_residual_scale_per_joint:
-    left_hip_pitch: 0.50
-    right_hip_pitch: 0.50
-    left_hip_roll: 0.50
-    right_hip_roll: 0.50
-    left_knee_pitch: 0.50
-    right_knee_pitch: 0.50
-    left_ankle_pitch: 0.50
-    right_ankle_pitch: 0.50
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
 
   # Disturbance pushes — disabled for the smoke per walking_training.md.
   # The push_schedule plumbing is preserved in env state regardless;
@@ -142,8 +177,12 @@ env:
   # Domain randomization disabled for the first smoke.
   domain_randomization_enabled: false
 
-  # No action delay for the first smoke.
-  action_delay_steps: 0
+  # ToddlerBot uses n_steps_delay = 1 (toddlerbot/locomotion/mjx_config.py:96).
+  # One-step action delay matches the closed-loop dynamics PPO will face
+  # on hardware and forces smoother policies in sim.  The action-delay
+  # path is already implemented (`_action_delay_enabled` in
+  # wildrobot_env.py:213-215).  walking_training.md Appendix A.1.
+  action_delay_steps: 1
 
 # =============================================================================
 # PPO — sized to the M2 ~20M env-step compute budget
@@ -238,23 +277,50 @@ networks:
 #      ref/contact_phase_match retains some noise that's invisible
 #      until weighted into the loss.
 reward_weights:
-  alive: 0.05
-  ref_q_track: 0.65
-  ref_body_quat_track: 0.10
+  # ToddlerBot-aligned scales (walking_training.md Appendix A.3).
+  # Imitation block scaled up to ToddlerBot's motor_pos / torso_quat
+  # weights (5.0); the velocity-track weight follows lin_vel_xy=5.0 so
+  # the forward push has parity with the imitation gradient.  Survival
+  # uses asymmetric +alive_w / -alive_w-on-done semantics in
+  # _aggregate_reward (matches ToddlerBot _reward_survival = -done at
+  # weight 10).
+  alive: 10.0
+  ref_q_track: 5.0
+  ref_body_quat_track: 5.0
   ref_feet_pos_track: 0.15
   ref_contact_match: 0.0  # gated until contact-alignment probe passes; see comment above
-  cmd_forward_velocity_track: 0.30
-  action_rate: -0.01
+  cmd_forward_velocity_track: 5.0
+  action_rate: -1.0
   torque: -0.001
   joint_velocity: -0.0005
-  # M1 fail-mode hooks (walking_training.md v0.20.1 §, M1 decision tree).
-  # Default 0 for the smoke; the M1 "balance issue" branch turns these on
-  # from the YAML alone — env wiring is already in place so no code edit
-  # is needed mid-debug.  Raw penalty values are always logged at
-  # ``reward/penalty_slip_raw`` / ``reward/penalty_pitch_rate_raw`` so the
-  # weight can be sized from baseline before promoting either.
-  slip: 0.0
+  # ToddlerBot-aligned shaping (walking_training.md Appendix A.3).  These
+  # were missing from the v0.20.1 reward family and are the four terms
+  # ToddlerBot relies on most for visible alternating step release on
+  # small bipeds: the air-time bonus (500.0 because air time is in
+  # seconds), the swing-clearance bonus, the lateral foot-spacing band,
+  # and the soft pitch / roll posture penalty.  See the env's reward
+  # functions in wildrobot_env.py for the exact ToddlerBot reference
+  # equations.
+  feet_air_time: 500.0
+  feet_clearance: 1.0
+  feet_distance: 1.0
+  torso_pitch_soft: 0.5
+  torso_roll_soft: 0.5
+  # ToddlerBot-aligned slip penalty (walk.gin: feet_slip = 0.05).
+  # Replaces the v0.20.1 default-0 stance-side slip penalty.  Pitch_rate
+  # remains a 0-default M1 hook (only promoted on the M1 "balance issue"
+  # branch) — the soft pitch reward above already shapes posture.
+  slip: 0.05
   pitch_rate: 0.0
+  # Tracking-sigma override: bump cmd_forward_velocity_alpha 4 → 200
+  # to match ToddlerBot lin_vel_tracking_sigma (mjx_config.py:106).
+  # The previous α=4 made the velocity tracking gradient ~50x flatter
+  # than ToddlerBot's, leaving PPO with little incentive to track the
+  # cmd at small (sub-0.2 m/s) speed errors.  α=200 with cmd error of
+  # 0.075 (the G4 promotion gate) gives r ≈ exp(-200 * 0.075²) ≈ 0.32
+  # — enough headroom to differentiate "close" from "very close" while
+  # still bottoming out at 0 by ~0.15 m/s error.
+  cmd_forward_velocity_alpha: 200.0
 
 # =============================================================================
 # Reward Composition
