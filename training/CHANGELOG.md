@@ -119,6 +119,47 @@ fail-mode response.
   (intentionally OFF for the smoke).  These are v0.20.2 sim2real
   concerns.
 
+### Follow-up: ref_contact_match gated to 0 for the first smoke
+
+After committing the contact-alignment probe and reading the FAIL
+baseline (mean = 0.80, 6/6-step mismatch streaks, env terminates at
+probe step 67), the smoke YAML now sets
+`reward_weights.ref_contact_match: 0.0`.  This is a smoke-stage
+design choice, not a code-path removal:
+
+- The reward term is still computed every step; only its weighted
+  contribution to the total is gated.
+- `reward/ref_contact_match` (always 0 at this weight) and
+  `ref/contact_phase_match` (raw Gaussian signal in [0, 1]) stay
+  fully logged for diagnosis.
+- `ref_contact_match_sigma` (G3 default 0.5) is unchanged.
+- The contact-alignment probe (`tools/v0201_contact_alignment_probe.py`)
+  is unchanged.
+- The env reward code is unchanged — the gating is a single YAML
+  knob.
+
+**Rationale:** under bare q_ref replay the prior's commanded contact
+schedule already disagrees with the measured contacts (post-reset
+force-threshold transient + open-loop LIPM lateral fall by ~step
+15).  At weight 0.10 that disagreement is structured noise in the
+imitation gradient from iter-0, exactly the gap-C risk flagged in
+the smoke design review.  Better to learn `ref_q_track` /
+`ref_body_quat_track` / `ref_feet_pos_track` / `cmd_forward_velocity_track`
+cleanly first and re-introduce the contact term once the probe
+passes.
+
+**Re-enable plan** (matches `walking_training.md` v0.20.1 §):
+1. Probe must pass first (mean ≥ 0.90, no ≥5-step mismatch streaks)
+   — addressed by lowering `contact_threshold_force` to kill the
+   post-reset false-negative, tightening the prior so the open-loop
+   fall happens later, or shortening the smoke horizon below the
+   divergence point.
+2. Restore at `0.02` first (an order of magnitude below the
+   imitation block) and confirm the term doesn't dominate the
+   gradient.
+3. Return to `0.10` only once the probe stays clean across multiple
+   seeds.
+
 ---
 
 ## [v0.20.0-C] - 2026-04-18: ToddlerBot-style multi-cycle ZMP plan

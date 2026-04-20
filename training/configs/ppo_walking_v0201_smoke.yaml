@@ -180,8 +180,8 @@ networks:
 # =============================================================================
 # Reward Weights — v0.20.1 imitation-dominant residual family
 # =============================================================================
-# Imitation block (sums to 1.0 per the DeepMimic 2018 baseline ratio):
-#   pose / pose-orientation / end-effector / contact = 0.65 / 0.10 / 0.15 / 0.10
+# Imitation block (DeepMimic 2018 baseline ratio for the ACTIVE terms):
+#   pose / pose-orientation / end-effector = 0.65 / 0.10 / 0.15
 # Task block (separate; mujoco_playground convention): cmd_forward_velocity_track.
 # Regularizers: ToddlerBot walk.gin scales (action_rate -0.01, torque -0.001,
 # joint_vel -0.0005).  Alive is small + survives termination (the ref/* terms
@@ -190,12 +190,40 @@ networks:
 #
 # Sigmas/alphas use the dataclass defaults (training_runtime_config.py:
 # RewardWeightsConfig v0.20.1 block) — pinned here only when overriding.
+#
+# ref_contact_match is intentionally OFF for the first smoke (weight 0.0).
+# The committed contact-alignment baseline
+# (tools/v0201_contact_alignment_probe.py at commit 080f4f8: vx=0.15,
+# seed=42, 100 steps) reports mean ref/contact_phase_match ≈ 0.80 with
+# 6/6-step mismatch streaks — well below the >= 0.90 acceptance bar.
+# Under bare q_ref replay the prior's commanded contact schedule already
+# disagrees with the measured foot/floor contacts (post-reset force-
+# threshold transient + open-loop LIPM lateral fall by ~step 15), so a
+# nonzero weight would feed structured noise into the imitation gradient
+# from iter-0 — exactly the gap-C risk flagged in the smoke design
+# review.  The reward TERM is still computed every step and the Gaussian
+# value is still logged at reward/ref_contact_match (always 0 at this
+# weight) and ref/contact_phase_match (raw signal) for diagnosis; only
+# the contribution to total reward is gated.
+#
+# Re-enable plan (walking_training.md v0.20.1 §):
+#   1. Probe must pass first (mean >= 0.90, no >=5-step mismatch
+#      streaks) — addressed by either (a) lowering contact_threshold_force
+#      to kill the post-reset false-negative, (b) tightening the prior so
+#      the open-loop fall happens later, or (c) shortening the smoke
+#      horizon below the divergence point.
+#   2. Restore at 0.02 first (an order of magnitude below the imitation
+#      block) and confirm the term doesn't dominate the gradient.
+#   3. Return to 0.10 only once the probe stays clean across multiple
+#      seeds.  Do NOT skip step 2 — even after the probe passes,
+#      ref/contact_phase_match retains some noise that's invisible
+#      until weighted into the loss.
 reward_weights:
   alive: 0.05
   ref_q_track: 0.65
   ref_body_quat_track: 0.10
   ref_feet_pos_track: 0.15
-  ref_contact_match: 0.10
+  ref_contact_match: 0.0  # gated until contact-alignment probe passes; see comment above
   cmd_forward_velocity_track: 0.30
   action_rate: -0.01
   torque: -0.001
