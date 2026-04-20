@@ -1442,6 +1442,35 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Forward velocity command tracking",
     ),
+    # =========================================================================
+    # v0.20.1 ToddlerBot-alignment shaping rewards
+    # (walking_training.md Appendix A.3).
+    # =========================================================================
+    MetricSpec(
+        name="reward/feet_air_time",
+        reducer=Reducer.MEAN,
+        description="Σ per-foot air time at touchdown (cmd-gated)",
+    ),
+    MetricSpec(
+        name="reward/feet_clearance",
+        reducer=Reducer.MEAN,
+        description="Σ per-foot peak swing height at touchdown (cmd-gated)",
+    ),
+    MetricSpec(
+        name="reward/feet_distance",
+        reducer=Reducer.MEAN,
+        description="Lateral foot-spacing band (torso-frame y)",
+    ),
+    MetricSpec(
+        name="reward/torso_pitch_soft",
+        reducer=Reducer.MEAN,
+        description="Soft pitch band penalty (replaces hard pitch term)",
+    ),
+    MetricSpec(
+        name="reward/torso_roll_soft",
+        reducer=Reducer.MEAN,
+        description="Soft roll band penalty (replaces hard roll term)",
+    ),
     MetricSpec(
         name="ref/q_track_err_rmse",
         reducer=Reducer.MEAN,

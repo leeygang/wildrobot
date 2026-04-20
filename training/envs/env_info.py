@@ -44,7 +44,16 @@ PRIVILEGED_OBS_DIM = 12
 
 # v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
 # rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
-PROPRIO_HISTORY_FRAMES = 3
+#
+# Bumped 3 → 15 in the v0.20.1 ToddlerBot-alignment pass
+# (walking_training.md Appendix A.1).  ToddlerBot uses
+# c_frame_stack=15 (toddlerbot/locomotion/mjx_config.py:74); 3 was the
+# minimum that supports finite-diff base-velocity estimation but is too
+# thin for the actor to estimate base velocity robustly under domain
+# randomization.  The bump invalidates v6 checkpoints — the smoke run
+# that would consume them is not yet trained, so there is no migration
+# burden.
+PROPRIO_HISTORY_FRAMES = 15
 
 
 # Use flax.struct for JAX-compatible dataclass with pytree registration;
@@ -134,6 +143,29 @@ try:
         # fills in.
         proprio_history: jnp.ndarray  # (PROPRIO_HISTORY_FRAMES, proprio_bundle)
 
+        # ToddlerBot-aligned per-foot air-time / clearance bookkeeping
+        # (toddlerbot/locomotion/mjx_env.py:1052-1062 + walk_env.py
+        # _reward_feet_air_time / _reward_feet_clearance).  ``air_time``
+        # accumulates ``ctrl_dt`` while the foot is OUT of contact, and
+        # is read on the touchdown step (first_contact = was-contact OR
+        # is-contact after the wipe).  ``air_dist`` accumulates the
+        # vertical excursion above ``feet_height_init`` while airborne
+        # (peak swing height proxy).  ``feet_height_init`` is the foot
+        # z at episode start so clearance is measured against the
+        # spawn-pose floor.
+        feet_air_time: jnp.ndarray   # (2,) [left, right] seconds
+        feet_air_dist: jnp.ndarray   # (2,) metres above feet_height_init
+        feet_height_init: jnp.ndarray  # (2,) foot z at reset
+
+        # Multi-command resampling RNG (ToddlerBot-style cmd resample
+        # every ``env.cmd_resample_steps`` ticks).  When
+        # ``cmd_resample_steps == 0`` the RNG is ignored and
+        # velocity_cmd stays episode-constant.
+        cmd_rng: jnp.ndarray         # (2,) uint32
+
+    # Mirror v0.20.1 ToddlerBot-alignment additions on the NamedTuple
+    # fallback (declared below in the except branch) so both backends
+    # stay shape-compatible.
 except ImportError:
     from typing import NamedTuple
 
@@ -178,6 +210,10 @@ except ImportError:
         domain_rand_frictionloss_scales: jnp.ndarray
         domain_rand_joint_offsets: jnp.ndarray
         proprio_history: jnp.ndarray
+        feet_air_time: jnp.ndarray
+        feet_air_dist: jnp.ndarray
+        feet_height_init: jnp.ndarray
+        cmd_rng: jnp.ndarray
 
 
 # =============================================================================
@@ -239,6 +275,10 @@ def get_expected_shapes(action_size: int = None) -> dict:
             PROPRIO_HISTORY_FRAMES,
             3 + 4 + 3 * action_size,
         ),
+        "feet_air_time": (2,),
+        "feet_air_dist": (2,),
+        "feet_height_init": (2,),
+        "cmd_rng": (2,),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

@@ -728,6 +728,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_left_foot_pos: jax.Array,
         prev_right_foot_pos: jax.Array,
         gyro_rad_s: jax.Array,
+        # ToddlerBot-aligned reward inputs (Appendix A).  Pre-update
+        # air-time / air-dist mirror walk_env._reward_feet_air_time /
+        # _reward_feet_clearance read semantics; first_contact /
+        # stance_mask are the touchdown event mask + current-step
+        # contact (per-foot, [left, right]).
+        feet_air_time: jax.Array,
+        feet_air_dist: jax.Array,
+        first_contact: jax.Array,
+        stance_mask: jax.Array,
+        left_foot_pos: jax.Array,
+        right_foot_pos: jax.Array,
     ) -> Dict[str, jax.Array]:
         """v0.20.1 imitation-dominant reward family.
 
@@ -830,6 +841,77 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pitch_rate = gyro_rad_s[1]
         penalty_pitch_rate = pitch_rate * pitch_rate
 
+        # ---- ToddlerBot-aligned shaping terms (Appendix A) -------------------
+        # cmd_active gates feet_air_time / feet_clearance: ToddlerBot
+        # zeros these on standstill (mjx_env.py walk_env.py:303 +330)
+        # so the policy doesn't pay the air-time bonus for marching in
+        # place at zero command.  ``velocity_cmd`` is a scalar here; v3
+        # only commands forward vx.  The Gauss-band terms (torso_pitch
+        # / torso_roll / feet_distance) are NOT gated since they are
+        # posture-keeping rewards independent of cmd magnitude.
+        cmd_active = (jp.abs(velocity_cmd) > jp.float32(1e-6)).astype(jp.float32)
+
+        # ``feet_air_time`` (toddlerbot/locomotion/walk_env.py:283-303).
+        # Σ_per_foot (air_time * first_contact), only paid on touchdown.
+        r_feet_air_time = jp.sum(feet_air_time * first_contact) * cmd_active
+
+        # ``feet_clearance`` (walk_env.py:305-329).  Σ_per_foot peak air
+        # excursion above feet_height_init at touchdown.  Same gate.
+        r_feet_clearance = jp.sum(feet_air_dist * first_contact) * cmd_active
+
+        # ``feet_distance`` (walk_env.py:331-358).  Penalize lateral
+        # foot spacing outside [min_feet_y_dist, max_feet_y_dist].
+        # Compute in TORSO frame (yaw-rotated) so heading-relative
+        # spacing is what's measured.  ToddlerBot rotates by the
+        # torso's quaternion; here we use the root pose's yaw via the
+        # measured root quaternion -> Euler.  For the smoke (yaw≈0)
+        # this collapses to the world-frame y delta.
+        feet_vec = left_foot_pos - right_foot_pos
+        # yaw rotation (in-plane).  R_yaw^{-1} @ (vx, vy) = (cy*vx + sy*vy, -sy*vx + cy*vy).
+        _, _, yaw = root_pose.euler_angles()
+        cy, sy = jp.cos(yaw), jp.sin(yaw)
+        feet_dy_torso = -sy * feet_vec[0] + cy * feet_vec[1]
+        feet_dist = jp.abs(feet_dy_torso)
+        d_min_clip = jp.clip(
+            feet_dist - jp.float32(self._config.env.min_feet_y_dist), max=0.0
+        )
+        d_max_clip = jp.clip(
+            feet_dist - jp.float32(self._config.env.max_feet_y_dist), min=0.0
+        )
+        r_feet_distance = 0.5 * (
+            jp.exp(-jp.abs(d_min_clip) * 100.0)
+            + jp.exp(-jp.abs(d_max_clip) * 100.0)
+        )
+
+        # ``torso_pitch_soft`` / ``torso_roll_soft``
+        # (walk_env.py:229-281).  Smooth band penalty: reward = 1 inside
+        # the band, drops as exp(-100*|deviation|) outside.  Replaces
+        # the v0.20.1 hard pitch/roll termination with a soft signal so
+        # PPO sees a gradient before the hard limit trips.
+        roll, pitch_val, _ = root_pose.euler_angles()
+        pitch_min_clip = jp.clip(
+            pitch_val - jp.float32(self._config.env.torso_pitch_soft_min_rad),
+            max=0.0,
+        )
+        pitch_max_clip = jp.clip(
+            pitch_val - jp.float32(self._config.env.torso_pitch_soft_max_rad),
+            min=0.0,
+        )
+        r_torso_pitch_soft = 0.5 * (
+            jp.exp(-jp.abs(pitch_min_clip) * 100.0)
+            + jp.exp(-jp.abs(pitch_max_clip) * 100.0)
+        )
+        roll_min_clip = jp.clip(
+            roll - jp.float32(self._config.env.torso_roll_soft_min_rad), max=0.0
+        )
+        roll_max_clip = jp.clip(
+            roll - jp.float32(self._config.env.torso_roll_soft_max_rad), min=0.0
+        )
+        r_torso_roll_soft = 0.5 * (
+            jp.exp(-jp.abs(roll_min_clip) * 100.0)
+            + jp.exp(-jp.abs(roll_max_clip) * 100.0)
+        )
+
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
@@ -841,22 +923,40 @@ class WildRobotEnv(mjx_env.MjxEnv):
             penalty_joint_vel=penalty_joint_vel,
             penalty_slip=penalty_slip.astype(jp.float32),
             penalty_pitch_rate=penalty_pitch_rate.astype(jp.float32),
+            r_feet_air_time=r_feet_air_time.astype(jp.float32),
+            r_feet_clearance=r_feet_clearance.astype(jp.float32),
+            r_feet_distance=r_feet_distance.astype(jp.float32),
+            r_torso_pitch_soft=r_torso_pitch_soft.astype(jp.float32),
+            r_torso_roll_soft=r_torso_roll_soft.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
             q_track_rmse=q_track_rmse.astype(jp.float32),
             body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
             feet_pos_err_l2=jp.sqrt(feet_err_l2).astype(jp.float32),
+            feet_distance_torso_m=feet_dist.astype(jp.float32),
         )
 
     def _aggregate_reward(
         self, terms: Dict[str, jax.Array], terminated: jax.Array
     ) -> Dict[str, jax.Array]:
         """Apply ``reward_weights`` to per-term values; return total + the
-        weighted per-term contributions used for logging.  ``alive`` is
-        gated by survival; everything else is paid even on the
-        terminating step (matches mujoco_playground convention)."""
+        weighted per-term contributions used for logging.
+
+        ``alive`` semantics intentionally mirror ToddlerBot's
+        ``_reward_survival`` (mjx_env.py:1897-1914): a *positive* per-step
+        bonus while alive, *minus* a one-shot ``alive`` deduction on the
+        terminating step (the negative-on-done semantics ToddlerBot uses
+        with weight 10.0).  This lets the YAML pick an asymmetric
+        survival bias without adding a second weight.
+        """
         w = self._config.reward_weights
+        alive_w = jp.float32(w.alive)
         contrib = dict(
-            alive=jp.float32(w.alive) * (1.0 - terminated),
+            # +alive_w per surviving step, -alive_w on the terminating
+            # step.  Net incentive: +alive_w * (episode_length -
+            # 2 * terminated_count).  Matches ToddlerBot's
+            # `survival = -done` reward semantics scaled by the
+            # configured weight.
+            alive=alive_w * (1.0 - 2.0 * terminated),
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],
@@ -871,6 +971,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
             slip=jp.float32(w.slip) * terms["penalty_slip"],
             pitch_rate=jp.float32(w.pitch_rate) * terms["penalty_pitch_rate"],
+            # ToddlerBot-aligned shaping (Appendix A).  Defaults are 0
+            # so existing v0.19.x / v0.20.0 configs are unaffected.
+            feet_air_time=jp.float32(w.feet_air_time) * terms["r_feet_air_time"],
+            feet_clearance=jp.float32(w.feet_clearance) * terms["r_feet_clearance"],
+            feet_distance=jp.float32(w.feet_distance) * terms["r_feet_distance"],
+            torso_pitch_soft=jp.float32(w.torso_pitch_soft)
+            * terms["r_torso_pitch_soft"],
+            torso_roll_soft=jp.float32(w.torso_roll_soft)
+            * terms["r_torso_roll_soft"],
         )
         total = sum(contrib.values())
         contrib["total"] = total
@@ -921,14 +1030,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def reset(self, rng: jax.Array) -> WildRobotEnvState:
         """Sample velocity_cmd / push schedule / DR params; build initial
         WildRobotInfo at offline step 0."""
-        rng, key_vel, key_qnoise, key_push, key_dr, key_imu = jax.random.split(rng, 6)
-
-        velocity_cmd = jax.random.uniform(
-            key_vel,
-            shape=(),
-            minval=self._config.env.min_velocity,
-            maxval=self._config.env.max_velocity,
+        rng, key_vel, key_qnoise, key_push, key_dr, key_imu, key_cmd = (
+            jax.random.split(rng, 7)
         )
+
+        velocity_cmd = self._sample_velocity_cmd(key_vel)
 
         dr_params = self._sample_domain_rand_params(key_dr)
 
@@ -954,7 +1060,44 @@ class WildRobotEnv(mjx_env.MjxEnv):
             push_schedule=push_schedule,
             dr_params=dr_params,
             imu_init_rng=key_imu,
+            cmd_rng=key_cmd,
         )
+
+    # ----------------------------------------------------- cmd resampling
+
+    def _sample_velocity_cmd(self, rng: jax.Array) -> jax.Array:
+        """ToddlerBot-style multi-command sampler (`_sample_command`,
+        `walk_env.py:140-226`).  Returns a scalar forward-velocity
+        command in m/s.
+
+        Behavior:
+          - draw uniform on ``[min_velocity, max_velocity]``
+          - with probability ``cmd_zero_chance`` zero it (stand-still)
+          - apply ``cmd_deadzone``: any |cmd| below the deadzone snaps
+            to 0 (matches ToddlerBot's deadzone[0] for vx)
+        ``cmd_turn_chance`` is reserved for the v0.20.4 yaw upgrade
+        and is ignored on the single-axis cmd path.
+
+        Degenerate range (min == max) collapses to a deterministic
+        constant, so the v0.20.1 smoke (vx pinned at 0.15) sees no
+        change in behavior even when this sampler runs.
+        """
+        rng, k_vel, k_zero = jax.random.split(rng, 3)
+        cmd = jax.random.uniform(
+            k_vel,
+            shape=(),
+            minval=self._config.env.min_velocity,
+            maxval=self._config.env.max_velocity,
+        )
+        zero_chance = jp.float32(self._config.env.cmd_zero_chance)
+        cmd = jp.where(
+            jax.random.uniform(k_zero, shape=()) < zero_chance,
+            jp.float32(0.0),
+            cmd,
+        )
+        deadzone = jp.float32(self._config.env.cmd_deadzone)
+        cmd = jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+        return cmd.astype(jp.float32)
 
     def _make_initial_state(
         self,
@@ -965,6 +1108,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         push_schedule: DisturbanceSchedule,
         dr_params: Dict[str, jax.Array],
         imu_init_rng: jax.Array,
+        cmd_rng: jax.Array,
     ) -> WildRobotEnvState:
         qvel = jp.zeros(self._mj_model.nv)
         randomized_model = self._get_randomized_mjx_model(dr_params)
@@ -1069,6 +1213,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_frictionloss_scales=dr_params["frictionloss_scales"],
             domain_rand_joint_offsets=dr_params["joint_offsets"],
             proprio_history=proprio_history_init,
+            # ToddlerBot-aligned per-foot air-time / clearance bookkeeping
+            # (env_info.WildRobotInfo).  At reset both feet are assumed
+            # in stance: air_time / air_dist = 0; feet_height_init pins
+            # the spawn-pose floor reference for clearance.
+            feet_air_time=jp.zeros((2,), dtype=jp.float32),
+            feet_air_dist=jp.zeros((2,), dtype=jp.float32),
+            feet_height_init=jp.stack(
+                [left_foot_pos[2], right_foot_pos[2]]
+            ).astype(jp.float32),
+            cmd_rng=cmd_rng.astype(jp.uint32),
         )
 
         obs = self._get_obs(
@@ -1272,6 +1426,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         done, terminated, truncated, term_info = self._get_termination(
             data, new_step_count
         )
+
+        # ToddlerBot-style per-foot air-time / clearance bookkeeping.
+        # ``stance`` = boolean foot-in-contact this step (post-step).
+        # ``last_stance`` = previous-step boolean.  ``first_contact`` =
+        # foot was airborne at any point of the swing AND is on the
+        # ground now.  Reward is paid on ``first_contact``; air-time
+        # and air-dist accumulators wipe to 0 on stance.  Mirrors
+        # toddlerbot/locomotion/mjx_env.py:1052-1062 and
+        # walk_env.py:_reward_feet_air_time / _reward_feet_clearance.
+        ctrl_dt_f = jp.float32(self.dt)
+        stance_mask = jp.stack([left_toe_switch, right_toe_switch]).astype(jp.float32)
+        last_stance_mask = jp.stack(
+            [wr.prev_left_loaded, wr.prev_right_loaded]
+        ).astype(jp.float32)
+        first_contact = jp.logical_or(
+            stance_mask > 0.5, last_stance_mask > 0.5
+        ).astype(jp.float32) * (wr.feet_air_time > 0).astype(jp.float32)
+        new_feet_air_time = (wr.feet_air_time + ctrl_dt_f) * (1.0 - stance_mask)
+        feet_z = jp.stack([left_foot_pos[2], right_foot_pos[2]]).astype(jp.float32)
+        feet_z_delta = feet_z - wr.feet_height_init
+        new_feet_air_dist = (wr.feet_air_dist + feet_z_delta) * (1.0 - stance_mask)
+
         reward_terms = self._compute_reward_terms(
             data=data,
             win=win,
@@ -1288,6 +1464,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Use the RAW gyro for the reward (not the IMU-noisy override
             # the policy sees) so the regularizer signal is clean.
             gyro_rad_s=signals_raw.gyro_rad_s,
+            # Pre-update air-time / air-dist values match ToddlerBot's
+            # read-side semantics (mjx_env.py:1047 reads
+            # ``info["feet_air_time"]`` BEFORE the += dt / *(1-stance)
+            # update at lines 1053-1054).  ``wr.feet_air_time`` is what
+            # was written at the end of the previous step, so by the
+            # time the reward reads it on the touchdown step it already
+            # holds the full accumulated swing time.
+            feet_air_time=wr.feet_air_time,
+            feet_air_dist=wr.feet_air_dist,
+            first_contact=first_contact,
+            stance_mask=stance_mask,
+            left_foot_pos=left_foot_pos,
+            right_foot_pos=right_foot_pos,
         )
         reward_contrib = self._aggregate_reward(reward_terms, terminated)
         reward = reward_contrib["total"]
@@ -1319,12 +1508,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         new_proprio_history = self._roll_proprio_history(wr.proprio_history, new_bundle)
 
+        # ToddlerBot-style cmd resampling.  ``cmd_resample_steps == 0``
+        # disables resampling (episode-constant cmd, the v0.19.x and
+        # v0.20.1 smoke contract).  When > 0 the cmd is redrawn every N
+        # ticks via ``_sample_velocity_cmd`` (which honors zero_chance
+        # and deadzone).  See toddlerbot/locomotion/mjx_env.py:1068-1077.
+        # The smoke YAML pins min_velocity == max_velocity so the redraw
+        # collapses to the same vx; the plumbing exists for v0.20.4
+        # multi-command work without a future env edit.
+        cmd_period = jp.int32(self._config.env.cmd_resample_steps)
+        new_cmd_rng_carry, sample_rng = jax.random.split(wr.cmd_rng.astype(jp.uint32))
+        should_resample = jp.logical_and(
+            cmd_period > 0,
+            jp.equal(jp.mod(new_step_count, jp.maximum(cmd_period, 1)), 0),
+        )
+        resampled_cmd = self._sample_velocity_cmd(sample_rng)
+        new_velocity_cmd = jp.where(
+            should_resample, resampled_cmd, velocity_cmd
+        ).astype(jp.float32)
+        new_cmd_rng = jp.where(
+            should_resample, new_cmd_rng_carry, wr.cmd_rng
+        ).astype(jp.uint32)
+
         new_wr = wr.replace(
             step_count=new_step_count,
             prev_action=applied_action,
             pending_action=policy_state.prev_action,
             truncated=truncated,
-            velocity_cmd=velocity_cmd,
+            velocity_cmd=new_velocity_cmd,
             prev_root_pos=root_pose.position.astype(jp.float32),
             prev_root_quat=root_pose.orientation.astype(jp.float32),
             prev_left_foot_pos=left_foot_pos.astype(jp.float32),
@@ -1354,6 +1565,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             loc_ref_history=v4_compat["history"],
             nominal_q_ref=nominal_q_ref,
             proprio_history=new_proprio_history,
+            feet_air_time=new_feet_air_time.astype(jp.float32),
+            feet_air_dist=new_feet_air_dist.astype(jp.float32),
+            cmd_rng=new_cmd_rng,
         )
 
         obs = self._get_obs(
@@ -1464,6 +1678,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]
         terminal_metrics_dict["reward/slip"] = reward_contrib["slip"]
         terminal_metrics_dict["reward/pitch_rate"] = reward_contrib["pitch_rate"]
+        terminal_metrics_dict["reward/feet_air_time"] = reward_contrib["feet_air_time"]
+        terminal_metrics_dict["reward/feet_clearance"] = reward_contrib["feet_clearance"]
+        terminal_metrics_dict["reward/feet_distance"] = reward_contrib["feet_distance"]
+        terminal_metrics_dict["reward/torso_pitch_soft"] = reward_contrib[
+            "torso_pitch_soft"
+        ]
+        terminal_metrics_dict["reward/torso_roll_soft"] = reward_contrib[
+            "torso_roll_soft"
+        ]
         terminal_metrics_dict["ref/q_track_err_rmse"] = reward_terms["q_track_rmse"]
         terminal_metrics_dict["ref/body_quat_err_deg"] = reward_terms["body_quat_err_deg"]
         terminal_metrics_dict["ref/feet_pos_err_l2"] = reward_terms["feet_pos_err_l2"]
