@@ -58,11 +58,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ml_collections import config_dict
-
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+from training.runtime_env import configure_training_runtime_env
+
+configure_training_runtime_env()
+
+from ml_collections import config_dict
 
 # Default config paths.
 # v0.20.1: ppo_walking.yaml was deleted along with the v1/v2 reference
