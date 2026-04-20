@@ -859,10 +859,10 @@ Smoke contract:
     - `ref/site_track`
     - `ref/body_lin_vel_track`
     - `ref/body_ang_vel_track`
-    - `ref/contact_phase_match`
     - `survival`
   - secondary terms:
     - `cmd/forward_velocity_track`
+    - `ref/contact_phase_match` (diagnostic-only for the first smoke; see G3)
   - regularizers:
     - `action_rate`
     - `torque`
@@ -906,6 +906,25 @@ Smoke contract:
     - rationale: hard Heaviside has no gradient on misalignment; smooth
       Gaussian gives a well-behaved imitation signal even when the policy's
       contact timing is slightly off the prior's schedule
+    - **smoke-stage disposition**:
+      - the zero-action contact-alignment probe is the gate for whether this
+        term is allowed into the smoke reward
+      - if the probe baseline is below the acceptance bar
+        (`mean ref/contact_phase_match < 0.90` or mismatch streak `> 5`),
+        set `reward_weights.ref_contact_match = 0.0` for the smoke
+      - still log:
+        - `reward/ref_contact_match`
+        - `ref/contact_phase_match`
+        - the contact-alignment probe output
+      - rationale: a known-misaligned contact schedule is structured reward
+        noise, not helpful shaping; the smoke should validate prior +
+        residual + core imitation tracking first, not spend compute fighting a
+        noisy contact target
+      - re-enable policy:
+        - after the probe passes cleanly, restore `ref_contact_match` at a
+          small weight first (`0.02`), keep `σ = 0.5`
+        - only return to the nominal `0.10` weight once the probe remains
+          clean and training no longer shows gait-drift pressure
 
 Tasks:
 
@@ -924,6 +943,9 @@ Pre-smoke checks:
   replay index
 - reference horizon never overruns the trajectory length
 - reward logs expose the primary `ref/*` tracking metrics from iteration 1
+- if the contact-alignment probe fails the G3 bar, the smoke YAML must set
+  `reward_weights.ref_contact_match = 0.0` before launch; do not carry a
+  known-noisy contact term into the first PPO run
 - **G7 — prior-vs-body sanity at the smoke command**:
   - run `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100` and
     record the deterministic baselines that will be used to judge whether
@@ -956,7 +978,9 @@ Metric validation:
   - `ref/site_track`
   - `ref/body_lin_vel_track`
   - `ref/body_ang_vel_track`
-  - `ref/contact_phase_match`
+  - `ref/contact_phase_match` (diagnostic in the first smoke unless G3 probe
+    passes; do not require it to improve when the term is intentionally at
+    zero weight)
 - **G4 — early-horizon gate (informational only)**:
   - the open-loop bare-q_ref baseline at `cee580f` is roughly
     `forward_velocity ≈ -0.09 m/s, episode_length ≈ 77, term_pitch_frac ≈ 1.0`
@@ -1048,9 +1072,13 @@ M2 compute budget), the next action depends on which gate failed:
 - `ref/contact_phase_match` decreases over training while
   `forward_velocity` increases
   → **gait drift**: the policy is achieving forward motion by abandoning
-    the prior's contact schedule.  Action: increase weight on
-    `ref/contact_phase_match` and `ref/joint_track`; do not relax other
-    ref/* terms.
+    the prior's contact schedule.  Action:
+    - if `reward_weights.ref_contact_match == 0.0`, first fix the contact
+      baseline (prior / sigma / acceptance decision) before promoting the term
+      into the reward
+    - if the term is already enabled, increase weight on
+      `ref/contact_phase_match` and `ref/joint_track`; do not relax other
+      ref/* terms.
 - mixed / unclear failure
   → defer to manual diagnosis with the per-frame probe and the eval
     rollout video before deciding next milestone
