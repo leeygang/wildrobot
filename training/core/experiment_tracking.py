@@ -59,6 +59,7 @@ EXIT_CRITERIA_TARGETS = {
 }
 
 REWARD_TERM_KEYS = [
+    "reward/alive",
     "reward/forward",
     "reward/lateral",
     "reward/healthy",
@@ -77,6 +78,11 @@ REWARD_TERM_KEYS = [
     "reward/action_rate",
     "reward/joint_vel",
     "reward/slip",
+    "reward/feet_air_time",
+    "reward/feet_clearance",
+    "reward/feet_distance",
+    "reward/torso_pitch_soft",
+    "reward/torso_roll_soft",
     "reward/penalty_slip_raw",
     "reward/penalty_pitch_rate_raw",
     "reward/posture",
@@ -124,7 +130,7 @@ ENV_METRICS_KEYS = {
     "episode_step_count": "Steps in current episode",
     # Reward components
     "reward/total": "Total weighted reward",
-    "reward/alive": "Per-step survival reward (paid when not terminated)",
+    "reward/alive": "Strict ToddlerBot survival term: 0 while alive, -alive_w*dt on termination",
     "reward/forward": "Forward velocity tracking reward",
     "reward/lateral": "Lateral velocity penalty",
     "reward/healthy": "Healthy/alive reward",
@@ -142,6 +148,11 @@ ENV_METRICS_KEYS = {
     "reward/action_rate": "Action smoothness penalty",
     "reward/joint_vel": "Joint velocity penalty",
     "reward/slip": "Foot slip penalty",
+    "reward/feet_air_time": "Touchdown air-time reward accumulated per foot before first contact",
+    "reward/feet_clearance": "Touchdown clearance reward from per-foot air-distance before contact",
+    "reward/feet_distance": "Lateral foot-spacing reward in the torso frame",
+    "reward/torso_pitch_soft": "Soft torso-pitch band reward inside configured limits",
+    "reward/torso_roll_soft": "Soft torso-roll band reward inside configured limits",
     "reward/penalty_slip_raw": (
         "Raw stance-foot slip penalty (Σ stance horizontal vel²); "
         "logged independently of reward_weights.slip to size the M1 weight"
@@ -368,9 +379,9 @@ def get_initial_env_metrics(
         This function returns Python floats by default. The caller should
         convert to JAX arrays as needed.
     """
-    # Match the JAX helper's reset semantics: on reset no per-step penalties
-    # have fired, so alive == total unless the caller overrides.  This keeps
-    # the reset breakdown internally consistent for any non-JAX caller.
+    # Strict ToddlerBot -done semantics imply zero alive reward at reset.
+    # Keep alive == total unless the caller overrides so the reset breakdown
+    # remains internally consistent for any non-JAX caller.
     alive_value = total_reward if alive_reward is None else alive_reward
 
     return {
@@ -399,6 +410,11 @@ def get_initial_env_metrics(
         "reward/action_rate": action_rate,
         "reward/joint_vel": 0.0,
         "reward/slip": 0.0,
+        "reward/feet_air_time": 0.0,
+        "reward/feet_clearance": 0.0,
+        "reward/feet_distance": 0.0,
+        "reward/torso_pitch_soft": 0.0,
+        "reward/torso_roll_soft": 0.0,
         "reward/penalty_slip_raw": 0.0,
         "reward/penalty_pitch_rate_raw": 0.0,
         "reward/clearance": 0.0,
@@ -540,11 +556,9 @@ def get_initial_env_metrics_jax(
     def _scalar(x):
         return x if hasattr(x, "shape") else jp.array(x)
 
-    # On reset there are no per-step penalties yet, so the alive contribution
-    # equals the total reward.  The legacy hard-coded value (jp.ones())
-    # silently desynced from the YAML's reward_weights.alive whenever it
-    # wasn't 1.0 (e.g. v0.20.1 smoke uses 0.05), so the reset breakdown
-    # didn't sum.  Caller can override via the explicit ``alive_reward`` kwarg.
+    # Strict ToddlerBot -done semantics imply zero alive reward at reset.  Keep
+    # alive == total unless the caller overrides so the reset breakdown stays
+    # internally consistent.  Caller can override via ``alive_reward``.
     alive_value = _scalar(total_reward) if alive_reward is None else _scalar(alive_reward)
 
     return {
@@ -573,6 +587,11 @@ def get_initial_env_metrics_jax(
         "reward/action_rate": _scalar(action_rate),
         "reward/joint_vel": jp.zeros(()),
         "reward/slip": jp.zeros(()),
+        "reward/feet_air_time": jp.zeros(()),
+        "reward/feet_clearance": jp.zeros(()),
+        "reward/feet_distance": jp.zeros(()),
+        "reward/torso_pitch_soft": jp.zeros(()),
+        "reward/torso_roll_soft": jp.zeros(()),
         "reward/penalty_slip_raw": jp.zeros(()),
         "reward/penalty_pitch_rate_raw": jp.zeros(()),
         "reward/clearance": jp.zeros(()),

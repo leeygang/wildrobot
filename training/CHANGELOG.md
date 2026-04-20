@@ -7,6 +7,71 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke1] - 2026-04-20: single-command walking smoke result
+
+### Run
+
+- Run: `training/wandb/offline-run-20260419_200601-zgs2m3gp`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260419_200603-zgs2m3gp`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260419_200603-zgs2m3gp/checkpoint_130_17039360.pkl`
+- Alternate max-horizon checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260419_200603-zgs2m3gp/checkpoint_120_15728640.pkl`
+
+### Result
+
+- **Walking verdict:** locomotion emerging; the smoke succeeds as a
+  single-command `vx=0.15 m/s` proof-of-life rather than falling into
+  the standing local minimum.
+- **Velocity tracking:** good.  `env/forward_velocity` improves from
+  `-0.035` at iter 1 to `0.148` at iter 130 against a fixed
+  `0.150` command.  `tracking/cmd_vs_achieved_forward` drops from
+  `0.260` to `0.073`.
+- **Stability:** good in the training env.  `env/episode_length`
+  rises from `85.6` to `~498/500`, so the gait is sustainable over
+  nearly the full rollout horizon.
+- **Gait structure:** partial but real.  `tracking/step_length_touchdown_event_m`
+  improves from `-0.0065` to `0.0226 m` by iter 130.  That indicates
+  actual stepping, but it still sits below the stricter `>= 0.03 m`
+  smoke gate documented elsewhere, so the stride remains conservative.
+- **PPO stability:** acceptable after the first update shock.
+  `ppo/approx_kl` settles around `0.033-0.035` and
+  `ppo/clip_fraction` around `0.39-0.41` from iter 10 onward.
+
+### Checkpoint choice
+
+The generic analyzer picks iter 120 because it sorts primarily on
+`env/success_rate` and `env/episode_length`, but `env/success_rate`
+is not meaningful for this smoke and iter 120 overshoots the target
+velocity slightly (`0.1557` vs `0.1500`).  Iter 130 is the better
+deployment / eval pick because it preserves the same near-max episode
+length (`498.4`) while matching the command more closely
+(`0.1480 / 0.1500`, ratio `0.9868`).
+
+### Instrumentation gaps
+
+- `env/success_rate` is truncation-based and stays `0.0` throughout
+  the run, so it is not a valid walking selector for near-horizon
+  episodes.
+- `env/velocity_error` is `0.0` throughout the run and should not be
+  used for walking analysis; `tracking/cmd_vs_achieved_forward` and
+  `tracking/forward_velocity_cmd_ratio` carry the real signal here.
+- The smoke ran after the ToddlerBot-alignment reward expansion, but
+  W&B logging did not yet expose `reward/alive`,
+  `reward/feet_air_time`, `reward/feet_clearance`,
+  `reward/feet_distance`, `reward/torso_pitch_soft`, or
+  `reward/torso_roll_soft`, so this run cannot confirm whether any of
+  those shaping terms dominated.
+
+### Next version
+
+- Keep `checkpoint_130_17039360.pkl` as the baseline for immediate
+  eval / video inspection or a short continuation run.
+- Promote the missing v0.20.1 reward terms into W&B logging before
+  the next smoke so reward dominance can be inspected directly.
+- Add or enable `eval_clean/*` for walking so checkpoint selection is
+  eval-based rather than inferred from train-rollout metrics.
+- Replace or de-emphasize truncation-based `success_rate` and the
+  broken `env/velocity_error` in walking top-line summaries.
+
 ## [v0.20.1-tb-align-fix1] - 2026-04-19: alignment-pass corrections
 
 Three issues surfaced in review of the v0.20.1-tb-align changeset are
