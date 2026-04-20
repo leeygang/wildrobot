@@ -60,7 +60,8 @@ fail-mode response.
    No behavior change.  Stale "must be 0.0 for G6" comment replaced
    with a note that the residual-only contract makes alpha free.
 
-5. **Actor proprio history (wr_obs_v6_offline_ref_history)** (`0f36c4e`).
+5. **Actor proprio history (wr_obs_v6_offline_ref_history)** (`0f36c4e`,
+   defect fix `2aa2e32`, v5 removal pending).
    ToddlerBot's actor stacks ~15 past frames; the v5 actor saw a
    single proprio frame, with no way to estimate base velocity (gap
    A in the smoke review).  Added v6 layout: strict superset of v5
@@ -68,20 +69,39 @@ fail-mode response.
    joint_pos_norm + joint_vel_norm + prev_action) appended.
 
    **Numbers:** proprio_bundle = 3 + 4 + 3*N = 64 floats for N=19.
-   v6 obs_dim = 126 (v5) + 192 (3*64) = **318**.  PPO sees 4 frames
-   of proprio total (1 current + 3 past); enough for finite-diff
+   v6 obs_dim = 126 + 192 (3*64) = **318**.  PPO sees 4 frames of
+   proprio total (1 current + 3 past); enough for finite-diff
    velocity from joint pos and one integration of gyro.
 
-   v5 checkpoints CANNOT be loaded into v6 (intentional schema bump);
-   v5 layout still supported in the env for ablation.
+   **Defect fix (`2aa2e32`):** the initial wiring (`0f36c4e`) tiled
+   the current bundle into the buffer at reset and fed the rolled
+   buffer (containing the just-computed current bundle) back into
+   the same step's obs — so the actor was actually getting "current
+   frame + 2 past + duplicated current," not the documented 3 past
+   frames.  Fix: zero-fill at reset, pass PRE-roll buffer to obs,
+   store ROLLED buffer for the next step.  New test #7 in
+   `tests/test_v0201_env_zero_action.py` pins the schema contract
+   (reset buffer = zeros; step 1 obs history slice = zeros; step 2
+   newest history slot = post-step-1 stored bundle, never the
+   step-2 current frame).
 
-### Validation
+   **v5 removal:** v6 is now the only supported offline-ref layout.
+   v5 (`wr_obs_v5_offline_ref`) was kept loadable for one commit as
+   "ablation insurance" but had no live consumer — removed entirely
+   from the policy contract, env accept-list, and parity tests.
+   v6 dim test now anchors against v4 (`v6 - v4 = (n_act + 20)
+   ref-window + PROPRIO_HISTORY_FRAMES * proprio_bundle`).
+   v5-trained checkpoints (none exist outside the smoke `--verify`
+   artifacts on disk) cannot be loaded.
 
-- 6/6 v0.20.1 zero-action tests pass under v6
+### Validation (after v5 removal)
+
+- 7/7 v0.20.1 zero-action tests pass under v6
   (`tests/test_v0201_env_zero_action.py`)
-- 10/10 policy-contract parity tests pass including 3 new v6 tests
-  (`tests/test_policy_contract_parity.py`)
-- 30/30 contract / spec / reward-schema tests pass
+- 8/8 policy-contract parity tests pass (v5 fixture + 2 v5 tests
+  removed; v6 dim test re-anchored against v4)
+- contract / spec / reward-schema tests pass (35 total in the
+  combined suite)
 - `python training/train.py --config ... --verify` completes cleanly
   (3 iters × 4 envs × 8 rollout = 96 steps, obs_dim=318)
 

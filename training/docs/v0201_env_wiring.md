@@ -1,8 +1,16 @@
 # v0.20.1 Env Wiring Design Note
 
-**Status:** Design proposal — pending review before implementation
+**Status:** Implemented; supersedes the v5 layout proposal below.
 **Scope:** `training/envs/wildrobot_env.py` changes for the v0.20.1 PPO smoke
 **Companion docs:** `walking_training.md` (v0.20.1 section), `reference_design.md`
+
+> **Note (high-confidence prep, 2026-04-19):** the active layout is
+> `wr_obs_v6_offline_ref_history`, not `wr_obs_v5_offline_ref`.  v6 is
+> a strict superset of v5 with a flat 3-frame proprio history appended
+> (gyro + foot_switches + joint_pos_norm + joint_vel_norm + prev_action).
+> v5 was deprecated and removed from the policy contract; treat all
+> `wr_obs_v5_offline_ref` references in this doc as historical context
+> for the v6 channel ordering.  See CHANGELOG `v0.20.1-prep`.
 
 This note is the implementation plan for wiring the offline `ReferenceLibrary`
 into `WildRobotEnv` so the v0.20.1 smoke (single command `vx=0.15`,

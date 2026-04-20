@@ -1,11 +1,17 @@
 # v0.20.1 Env Rewrite — Reuse Audit (Step 1)
 
-**Status:** Pre-rewrite audit.  Companion to `v0201_env_wiring.md` §10
-(8-step rewrite plan).
+**Status:** Historical audit completed.  Companion to `v0201_env_wiring.md`
+§10 (8-step rewrite plan).
 **Source:** Git revision ``a943831:training/envs/wildrobot_env.py`` (the
 last revision before the placeholder; 6533 lines).
 **Goal:** map what to extract verbatim into the v3-only rewrite, and what
 to drop wholesale.
+
+> **Note (high-confidence prep, 2026-04-19):** the active layout is
+> `wr_obs_v6_offline_ref_history`, not `wr_obs_v5_offline_ref`.  v5 was
+> deprecated and removed; treat the `wr_obs_v5_offline_ref` references
+> below as historical naming for what is now v6's reference-window
+> block.  See CHANGELOG `v0.20.1-prep`.
 
 This audit is reading-only — no code moves until the rewrite commit.
 

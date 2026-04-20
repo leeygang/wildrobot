@@ -127,11 +127,11 @@ try:
         # recent ``PROPRIO_HISTORY_FRAMES`` past proprio bundles
         # (oldest -> newest), each of size ``proprio_bundle`` =
         # 3 (gyro) + 4 (foot_switches) + 3*action_size.  Rolled in
-        # ``step`` AFTER the new proprio is computed.  Zero-filled at
-        # reset (first PROPRIO_HISTORY_FRAMES steps see padding zeros
-        # in the older slots).  Unused for v5 / earlier layouts; kept
-        # always-allocated so the WildRobotInfo schema stays
-        # layout-agnostic.
+        # ``step`` AFTER the new proprio is computed; the rolled
+        # buffer is stored in new_wr to be the "past" for the NEXT
+        # step.  Zero-filled at reset; first PROPRIO_HISTORY_FRAMES
+        # steps see padding zeros in the older slots as the buffer
+        # fills in.
         proprio_history: jnp.ndarray  # (PROPRIO_HISTORY_FRAMES, proprio_bundle)
 
 except ImportError:

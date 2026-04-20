@@ -2,11 +2,11 @@
 
 Single-file ``mjx_env.MjxEnv`` for the v0.20.1 PPO smoke
 (``training/configs/ppo_walking_v0201_smoke.yaml``).  The actor sees
-the offline ``ReferenceLibrary`` window (``wr_obs_v5_offline_ref``
-layout) and emits a bounded residual on top of the library's
-``q_ref``; the env composes ``q_target = q_ref + clip(action) *
-scale_per_joint`` (absolute mode), runs MJX physics, and emits the
-placeholder ``alive`` reward.
+the offline ``ReferenceLibrary`` window plus a 3-frame past-proprio
+stack (``wr_obs_v6_offline_ref_history`` layout) and emits a bounded
+residual on top of the library's ``q_ref``; the env composes
+``q_target = q_ref + clip(action) * scale_per_joint`` (absolute
+mode), runs MJX physics, and emits the imitation-dominant reward.
 
 Design refs:
   - ``training/docs/v0201_env_wiring.md``        env design (§3-§5, §10)
@@ -222,18 +222,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
 
         layout_id = str(self._config.env.actor_obs_layout_id)
-        _SUPPORTED_LAYOUTS = {
-            "wr_obs_v5_offline_ref",
-            "wr_obs_v6_offline_ref_history",
-        }
-        if layout_id not in _SUPPORTED_LAYOUTS:
+        if layout_id != "wr_obs_v6_offline_ref_history":
             raise ValueError(
-                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
-                f"{_SUPPORTED_LAYOUTS}.  Got {layout_id!r}.  Older layouts "
-                "depended on v1/v2 reference state and were removed by the "
-                "v3 rewrite."
+                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id="
+                "'wr_obs_v6_offline_ref_history'.  v5 was deprecated along "
+                "with the high-confidence prep (proprio history is now "
+                "always wired); older layouts depended on v1/v2 reference "
+                "state and were removed by the v3 rewrite."
             )
-        self._uses_proprio_history = layout_id == "wr_obs_v6_offline_ref_history"
 
         if not self._config.env.scene_xml_path:
             raise ValueError("env.scene_xml_path is required.")
@@ -622,9 +618,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """Per-frame proprio bundle for ``wr_obs_v6_offline_ref_history``.
 
         Channels: ``[gyro(3), foot_switches(4), joint_pos_norm(N),
-        joint_vel_norm(N), prev_action(N)]``.  Layout-agnostic; the env
-        always computes it but only feeds it into the obs when the v6
-        layout is active.  Total size = ``3 + 4 + 3*N``.
+        joint_vel_norm(N), prev_action(N)]``.  Total size = ``3 + 4 + 3*N``.
         """
         from policy_contract.calib import JaxCalibOps as _JaxCalibOps
         joint_pos_norm = _JaxCalibOps.normalize_joint_pos(
@@ -1022,13 +1016,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v6 actor proprio history.  Zero-filled at reset per the
         # WildRobotInfo schema contract (env_info.py): the buffer
         # holds PAST proprio bundles only, never duplicates the
-        # current frame.  At reset there is no past, so all slots are
-        # zero; step 1's obs sees zeros in the history channel and
-        # the current bundle in the standard proprio channels.  The
-        # buffer fills in over the first PROPRIO_HISTORY_FRAMES
+        # current frame.  At reset there is no past, so all slots
+        # are zero; step 1's obs sees zeros in the history channel
+        # and the current bundle in the standard proprio channels.
+        # The buffer fills in over the first PROPRIO_HISTORY_FRAMES
         # steps as new_bundle gets rolled in (oldest dropped, newest
-        # appended).  Allocated regardless of active layout so the
-        # WildRobotInfo schema stays layout-agnostic (v5 obs ignores).
+        # appended).
         proprio_bundle_size = 3 + 4 + 3 * self.action_size
         proprio_history_init = jp.zeros(
             (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
@@ -1085,9 +1078,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             win=win0,
             v4_compat=v4_compat,
             signals=signals_override,
-            proprio_history=(
-                proprio_history_init if self._uses_proprio_history else None
-            ),
+            proprio_history=proprio_history_init,
         )
 
         roll_init, pitch_init, _ = root_pose.euler_angles()
@@ -1311,22 +1302,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
 
-        # v6 actor proprio history.  Schema contract (env_info.py):
-        # the buffer holds PAST bundles only, never the current frame
-        # (which is already in the obs's joint_pos / joint_vel / gyro /
+        # v6 actor proprio history (env_info.py schema): the buffer
+        # holds PAST bundles only, never the current frame (which is
+        # already in the obs's joint_pos / joint_vel / gyro /
         # foot_switches / prev_action channels).  So:
         #   1. obs at THIS step reads ``wr.proprio_history`` — the
-        #      pre-roll buffer, containing the past 3 bundles
-        #      (zero-padded at reset, fully populated after step >=
-        #      PROPRIO_HISTORY_FRAMES).
+        #      pre-roll buffer, past 3 bundles (zero-padded at reset,
+        #      fully populated after step >= PROPRIO_HISTORY_FRAMES).
         #   2. Compute the new bundle from the post-step signals +
         #      this step's applied_action.
-        #   3. Roll the buffer (drop oldest, append new) and store the
-        #      ROLLED buffer in new_wr — that buffer becomes the
+        #   3. Roll the buffer (drop oldest, append new) and store
+        #      the rolled buffer in new_wr — that buffer becomes the
         #      "past" for the NEXT step.
-        # This avoids the defect of feeding the rolled buffer back
-        # into the same step's obs (which would duplicate the current
-        # frame in the newest history slot).
         new_bundle = self._compute_proprio_bundle(
             signals=signals_override, prev_action=applied_action
         )
@@ -1380,9 +1367,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # is supplied by the standard proprio channels.  See the
             # comment on new_proprio_history above for why this isn't
             # the rolled buffer.
-            proprio_history=(
-                wr.proprio_history if self._uses_proprio_history else None
-            ),
+            proprio_history=wr.proprio_history,
         )
 
         # Live diagnostics.  forward_velocity / phase_progress / pitch /
