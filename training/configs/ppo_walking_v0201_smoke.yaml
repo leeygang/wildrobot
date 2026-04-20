@@ -65,7 +65,26 @@ env:
   max_velocity: 0.15
 
   # Contacts
-  contact_threshold_force: 5.0
+  # contact_threshold_force: cutoff (N) the env uses to classify a foot
+  # as "in contact with the floor" — drives the ref_contact_match
+  # reward, prev_*_loaded state, and the G4 touchdown-event detector.
+  # Lowered from the v0.17.x standing-era default of 5.0 N (≈ 12.5%
+  # of body weight, 4.1 kg robot) to 1.0 N for the walking smoke:
+  #   - matches ToddlerBot's contact_force_threshold (1.0 N) per
+  #     toddlerbot/locomotion/mjx_config.py:95
+  #   - 5.0 N produced a 2-3 ctrl-step false-negative at reset (the
+  #     contact force ramps from 0 over the first physics ticks; with
+  #     n_substeps=10 it crosses 5 N around step 3 even though the
+  #     feet are geometrically touching the floor at step 0).  This
+  #     was the dominant source of the contact-alignment probe's
+  #     early-step mismatches at the 5.0 N baseline.
+  #   - 1.0 N is well above MJX's contact-solver noise floor (mN
+  #     range) so it doesn't introduce false positives on swing-side
+  #     micro-contacts.
+  # Re-run tools/v0201_contact_alignment_probe.py after changing this
+  # value — the baseline number is what gates ref_contact_match's
+  # weight (currently 0.0; see the reward_weights comment below).
+  contact_threshold_force: 1.0
   foot_switch_threshold: 2.0
 
   # Action filtering — alpha=0.0 keeps the smoke baseline clean (no

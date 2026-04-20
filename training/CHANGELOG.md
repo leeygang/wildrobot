@@ -119,11 +119,54 @@ fail-mode response.
   (intentionally OFF for the smoke).  These are v0.20.2 sim2real
   concerns.
 
+### Follow-up: contact_threshold_force lowered 5.0 N → 1.0 N
+
+The smoke YAML now pins `contact_threshold_force: 1.0` (was 5.0,
+inherited from the v0.17.x standing-PPO defaults).  Matches
+ToddlerBot's `contact_force_threshold` (1.0 N per
+`toddlerbot/locomotion/mjx_config.py:95`) and is consistent with
+WildRobot's own `foot_switch_threshold` (2.0 N) within the same
+order of magnitude.
+
+**Why:** `contact_threshold_force` is the cutoff that classifies a
+foot as "in contact with the floor" — drives the
+`ref_contact_match` reward, `prev_*_loaded` state, and G4
+touchdown-event detector.  At 5.0 N (≈ 12.5% of the 4.1 kg robot's
+weight) the post-reset force ramp took 2-3 ctrl steps to cross
+threshold, producing a false-negative on `meas_contact` even though
+the feet were geometrically touching.  That was the dominant source
+of the early-step mismatches in the contact-alignment probe at the
+5.0 N baseline.  At 1.0 N the cutoff sits well above MJX's contact-
+solver noise floor (mN range) without rejecting genuine light
+contacts.
+
+**Probe baseline (vx=0.15, seed=42, 100 steps):**
+
+| Metric                | 5.0 N (was) | 1.0 N (now)  |
+|-----------------------|-------------|--------------|
+| mean ref/cpm          | 0.8000      | 0.8387       |
+| min  ref/cpm          | 0.1353      | 0.1353       |
+| L hard match rate     | 0.746       | 0.836        |
+| R hard match rate     | 0.791       | 0.791        |
+| L mismatch streak     | 6 steps     | 3 steps      |
+| R mismatch streak     | 6 steps     | 6 steps      |
+| Env terminates at     | step 67     | step 67      |
+| Probe verdict         | FAIL        | FAIL (0.84)  |
+
+The threshold fix removed the post-reset transient slice (steps
+2-3 at 5.0 N: `cmd=(1,1) meas=(0,0)` → at 1.0 N: `meas=(1,1)`,
+`r=1.0`); the L-streak and L-match rate moved as expected.  The
+remaining mismatches are structural — brief single-foot load shifts
+during DS→SS transitions (steps 3-6) and the open-loop LIPM lateral
+fall starting around step 15 (which threshold lowering cannot fix;
+that's what PPO is for).  The env still terminates at the same
+step 67 because the physics path is unchanged.
+
 ### Follow-up: ref_contact_match gated to 0 for the first smoke
 
 After committing the contact-alignment probe and reading the FAIL
-baseline (mean = 0.80, 6/6-step mismatch streaks, env terminates at
-probe step 67), the smoke YAML now sets
+baseline (now mean = 0.84 at the corrected 1.0 N threshold; was
+0.80 at 5.0 N), the smoke YAML now sets
 `reward_weights.ref_contact_match: 0.0`.  This is a smoke-stage
 design choice, not a code-path removal:
 
