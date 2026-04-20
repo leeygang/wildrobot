@@ -1259,3 +1259,154 @@ WildRobot's locomotion pivot should use:
 
 That is the most practical ToddlerBot-style route for current WildRobot v2
 hardware.
+
+---
+
+## Appendix A — ToddlerBot vs WildRobot v0.20.1 Threshold Audit
+
+**Status:** captured 2026-04-19 before launching the v0.20.1 smoke. Driver:
+align reward shape, termination, and observation contract to the
+ToddlerBot recipe that has trained successfully on a similar small
+position-controlled biped (`toddlerbot/locomotion/walk.gin`,
+`toddlerbot/locomotion/mjx_config.py`,
+`toddlerbot/locomotion/walk_env.py`).
+
+The audit covers everything that materially shapes training convergence:
+episode/termination, command sampling, reward weights, tracking-sigma
+kernel widths, behavior-detection thresholds, action contract, and
+domain randomization.  Each row cites WildRobot file/line and
+ToddlerBot file/line so future drift is reviewable.
+
+### A.1 Episode / termination thresholds
+
+| Threshold | WildRobot v0.20.1 (pre-alignment) | ToddlerBot walk | Decision |
+|---|---|---|---|
+| `sim_dt` | 0.002 s (`ppo_walking_v0201_smoke.yaml:46`) | 0.005 s (`mjx_config.py:22`) | keep WR — finer solver step is safe |
+| `ctrl_dt` | 0.020 s | 0.020 s (`n_frames=4 × 0.005`) | match |
+| `n_substeps` | 10 | 4 | inherent from the dt pair; no change |
+| `max_episode_steps` | 500 (10 s) | gin `episode_length` ≈ 1000 | keep WR for the smoke |
+| `min_height` / `max_height` | 0.30 / 0.70 (`yaml:56`) | `healthy_z_range = [0.2, 1.0]` (`mjx_config.py:103`) | keep WR (tight v2 robot) |
+| `max_pitch` / `max_roll` term | 0.8 rad each, **active** (`wildrobot_env.py:891`) | **none** — only height terminates (`mjx_env.py:1029`) | **change** — relax to height-only via `use_relaxed_termination: true` |
+| `action_delay_steps` | 0 (`yaml:146`) | `n_steps_delay = 1` (`mjx_config.py:96`) | **change** — set to 1 |
+| `action_filter_alpha` | 0.0 | active exp filter | keep WR=0 for the smoke (G6 invariant); revisit at v0.20.2 |
+| `contact_threshold_force` | 1.0 N | 1.0 N (`mjx_config.py:95`) | match |
+| Frame stack (history) | `PROPRIO_HISTORY_FRAMES = 3` (`env_info.py:47`) | `frame_stack = 15`, `c_frame_stack = 15` (`mjx_config.py:74`) | **change** — bump to 15 |
+
+### A.2 Command / curriculum thresholds
+
+| Item | WildRobot v0.20.1 | ToddlerBot | Decision |
+|---|---|---|---|
+| `min_velocity` / `max_velocity` | 0.15 / 0.15 (degenerate, smoke contract) | `command_range[5] = [-0.2, 0.3]` for vx | keep degenerate for the smoke; add multi-command plumbing inert at vx=0.15 |
+| `resample_steps` | none | `resample_time = 3.0 s` ⇒ `resample_steps = 150` (`mjx_config.py:159`) | **add** — wire `resample_steps`, default 150; degenerate range still resamples to the same vx |
+| `zero_chance` / `turn_chance` | none | 0.2 / 0.2 (`walk.gin:11`) | **add** as configurable, default to ToddlerBot values; smoke keeps single-cmd range |
+| `deadzone` | none | `[0.05, 0.05, 0.2]` | **add** as configurable, default to ToddlerBot values |
+
+### A.3 Reward weights — ToddlerBot vs WildRobot v0.20.1
+
+ToddlerBot weights from `toddlerbot/locomotion/walk.gin`; reward fn
+shapes from `toddlerbot/locomotion/{mjx_env,walk_env}.py`.  WR weights
+from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
+`training/envs/wildrobot_env.py:715-877`.
+
+| Term (ToddlerBot ↔ WR name) | ToddlerBot | WR pre-alignment | WR post-alignment |
+|---|---|---|---|
+| `motor_pos` ↔ `ref_q_track` | 5.0 | 0.65 | 5.0 |
+| `torso_quat` ↔ `ref_body_quat_track` | 5.0 | 0.10 | 5.0 |
+| `torso_pos_xy` | 2.0 | — | (ref/feet+pelvis covers it; defer) |
+| `torso_roll` (soft, gate `[-0.1, 0.1]`) | 0.5 | — | **add 0.5** |
+| `torso_pitch` (soft, gate `[-0.2, 0.2]`) | 0.5 | — | **add 0.5** |
+| `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0 | 0.30 | 5.0 |
+| `lin_vel_z` | 1.0 | — | (covered by tight pelvis_z; defer) |
+| `ang_vel_xy` | 2.0 | — | (covered by body_quat; defer) |
+| `ang_vel_z` | 5.0 | — | defer (smoke has no yaw cmd) |
+| `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (gated, Gaussian) | leave gated for the smoke; wire boolean fallback for v0.20.2 |
+| `feet_air_time` | 500.0 | — | **add 500.0** (cmd-gated) |
+| `feet_clearance` | 1.0 | — | **add 1.0** (cmd-gated) |
+| `feet_distance` (`min=0.07`, `max=0.13`) | 1.0 | — | **add 1.0** |
+| `feet_slip` ↔ `slip` | 0.05 | 0.0 (M1 hook) | **add 0.05** |
+| `survival` ↔ `alive` | 10.0 (negative on done) | 0.05 (positive only) | **change to 10.0** with negative-on-done semantics |
+| `motor_torque` ↔ `torque` | 0.1 (× neg-MSE) | -0.001 (× sum-sq) | keep — different scaling but similar effective penalty |
+| `energy` | 0.01 | — | defer |
+| `action_rate` | 1.0 (× neg-MSE) | -0.01 (× sum-sq) | **bump to -1.0** to match ToddlerBot grad scale |
+| `collision` | 0.1 | — | defer (no self-collision shaping yet) |
+| `feet_pos_track` (DeepMimic site) | (env-specific) | 0.15 | keep |
+| `joint_velocity` | — | -0.0005 | keep |
+
+### A.4 Tracking-sigma / kernel widths
+
+Both projects use the DeepMimic-style numerator-α form
+`r = exp(-α · Σx²)`.
+
+| Kernel | ToddlerBot α (`mjx_config.py:104`) | WR α (`training_runtime_config.py:747`) | Decision |
+|---|---|---|---|
+| `pos_tracking_sigma` (xy/z) | 200 | — | n/a (no torso_pos reward in WR) |
+| `rot_tracking_sigma` | 20 | 20 (`ref_body_quat_alpha`) | match |
+| `motor_pos` sigma (effective) | 1.0 | 1.0 (`ref_q_track_alpha`) | match |
+| `lin_vel_tracking_sigma` | 200 | 4.0 (`cmd_forward_velocity_alpha`) | **change** — bump to 200 |
+| `ang_vel_tracking_sigma` | 0.5 | — | n/a (no ang_vel reward yet) |
+| `feet_pos` α | 200 | 200 (`ref_feet_pos_alpha`) | match |
+| `ref_contact_match_sigma` | n/a (boolean) | 0.5 | WR-specific Gaussian; keep |
+
+### A.5 Behavior-detection thresholds
+
+| Signal | WR pre-alignment | ToddlerBot | Decision |
+|---|---|---|---|
+| Stance / contact mask | `force > 1.0 N` (`wildrobot_env.py:1242`) | `force > 1.0 N` (`mjx_config.py:95`) | match |
+| `min_feet_y_dist` / `max` | — | 0.07 / 0.13 (`mjx_config.py:108`) | **add** (with feet_distance reward) |
+| `torso_roll_range` (reward gate) | — | `[-0.1, 0.1]` | **add** (with torso_roll soft reward) |
+| `torso_pitch_range` (reward gate) | — | `[-0.2, 0.2]` | **add** (with torso_pitch soft reward) |
+| Cmd-magnitude gating on stepping rewards | inert (`step_need_*` defined but not consumed) | air_time/clearance/standstill all gate on `||cmd_obs|| > 1e-6` | apply on the new feet_* terms |
+| Touchdown event | physical foot/floor contact transition (`view_zmp_in_mujoco.py:519`; env G4 in `wildrobot_env.py:1251`) | `stance_mask xor last_stance_mask` | equivalent |
+| G4 success metrics | `forward_velocity ≥ 0.075`, `success_rate ≥ 0.60`, `cmd_vs_achieved ≤ 0.075`, `step_length ≥ 0.03` (this doc, v0.20.1 §) | n/a | WR-specific gates, kept |
+| G5 anti-exploit | `|residual_p50|_{hip,knee} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep |
+
+### A.6 Action contract
+
+| Item | WR pre-alignment | ToddlerBot | Decision |
+|---|---|---|---|
+| Form | `q = q_ref + clip(action) · scale_per_joint` | `q = default_q + action · 0.25` | semantically similar |
+| Leg `action_scale` | ±0.50 rad | ±0.25 rad | **change** — clip legs to ±0.25 rad to match ToddlerBot and reduce G5 trip risk |
+| Other-joint scale | ±0.20 rad | ±0.25 rad | keep ±0.20 (close enough; conservative) |
+
+### A.7 Domain randomization — defer to `v0.20.2`
+
+WR smoke has all DR off (`yaml:138-146`); ToddlerBot defaults
+(`mjx_config.py:168-200`) include friction `[0.4, 1.0]`, kp/kd
+`[0.9, 1.1]`, mass `[-0.2, 0.2]`, backlash `[0.02, 0.1]`,
+`push_torso=[1.0, 3.0]`, IMU level=0.05.  WR has all the plumbing —
+re-enable as a v0.20.2 task, not at the smoke gate.
+
+### A.8 Required code changes (this audit)
+
+The following changes land before the v0.20.1 smoke is launched.
+Commit-by-commit:
+
+1. **Config dataclass (`training_runtime_config.py`)**: add new
+   `RewardWeightsConfig` fields for `feet_air_time`, `feet_clearance`,
+   `feet_distance`, `torso_pitch_soft`, `torso_roll_soft`, plus
+   `EnvConfig` fields for `min_feet_y_dist`, `max_feet_y_dist`,
+   `torso_roll_range`, `torso_pitch_range`, `feet_air_time_threshold`,
+   `cmd_resample_steps`, `cmd_zero_chance`, `cmd_turn_chance`,
+   `cmd_deadzone`.  Defaults are inert (zero weight / no-op resample)
+   so non-smoke configs are unaffected.
+2. **Env code (`wildrobot_env.py`)**: extend `WildRobotInfo` with
+   per-foot `feet_air_time` / `feet_air_dist` / `feet_height_init`
+   and `cmd_resample_rng`; add `_reward_feet_air_time`,
+   `_reward_feet_clearance`, `_reward_feet_distance`,
+   `_reward_torso_pitch_soft`, `_reward_torso_roll_soft`; thread
+   results through `_aggregate_reward`; relax termination per
+   `use_relaxed_termination`; resample velocity_cmd every
+   `cmd_resample_steps` ticks (degenerate when min == max).
+3. **Frame stack (`env_info.py`, `policy_contract/spec.py`)**: bump
+   `PROPRIO_HISTORY_FRAMES` 3 → 15.  Smoke checkpoint is not yet
+   trained, so no migration burden.
+4. **Smoke YAML**: rescale weights/sigmas per A.3/A.4, set
+   `use_relaxed_termination: true`, `action_delay_steps: 1`, leg
+   residual scale 0.50 → 0.25, enable the new feet_* / torso_* /
+   slip terms with ToddlerBot-aligned weights.
+
+After landing, the open-loop pre-smoke probe
+(`tools/v0201_contact_alignment_probe.py`) and the env zero-action
+test (`tests/test_v0201_env_zero_action.py`) must still pass — the
+G6 invariant (zero residual ⇒ `target_q == q_ref`) is unchanged by
+this audit.
