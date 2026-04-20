@@ -1308,6 +1308,28 @@ shapes from `toddlerbot/locomotion/{mjx_env,walk_env}.py`.  WR weights
 from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 `training/envs/wildrobot_env.py:715-877`.
 
+> **Reward integration (load-bearing)**: ToddlerBot's PPO consumes
+> `reward = sum(reward_dict.values()) * self.dt`
+> (`toddlerbot/locomotion/mjx_env.py:1048`).  WR's `_aggregate_reward`
+> applies the same `* self.dt` rescale uniformly across all weighted
+> contributions before returning the per-term and total values.  This
+> is what makes the `Term ↔ Term` weight comparison below
+> apples-to-apples; if you remove the `* dt` from WR the published
+> ToddlerBot weights are NOT directly portable here (event-based
+> terms like `feet_air_time` get inflated ~50x at `ctrl_dt = 0.02`).
+>
+> **Survival semantics (load-bearing)**: ToddlerBot's
+> `_reward_survival = -done` (`mjx_env.py:1897-1914`) at weight 10
+> means the survival term contributes `0` while alive and `-10 * dt`
+> on the terminating step.  WR mirrors this in `_aggregate_reward`
+> (`wildrobot_env.py:_aggregate_reward`) — the `alive` weight is a
+> failure penalty only, NOT a dense per-step bonus.  An earlier
+> revision of this section was misleadingly summarised as "asymmetric
+> +alive_w / -alive_w" semantics; that turns survival into a dense
+> positive reward that biases PPO toward any long-lived behavior
+> regardless of imitation tracking.  The current implementation is
+> the strict ToddlerBot contract.
+
 | Term (ToddlerBot ↔ WR name) | ToddlerBot | WR pre-alignment | WR post-alignment |
 |---|---|---|---|
 | `motor_pos` ↔ `ref_q_track` | 5.0 | 0.65 | 5.0 |
@@ -1324,7 +1346,7 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `feet_clearance` | 1.0 | — | **add 1.0** (cmd-gated) |
 | `feet_distance` (`min=0.07`, `max=0.13`) | 1.0 | — | **add 1.0** |
 | `feet_slip` ↔ `slip` | 0.05 | 0.0 (M1 hook) | **add 0.05** |
-| `survival` ↔ `alive` | 10.0 (negative on done) | 0.05 (positive only) | **change to 10.0** with negative-on-done semantics |
+| `survival` ↔ `alive` | 10.0 (`-1 * done`, paid `-10 * dt` on the terminating step) | 0.05 (positive only) | **change to 10.0** with strict ToddlerBot `-done` semantics (no dense per-step bonus) |
 | `motor_torque` ↔ `torque` | 0.1 (× neg-MSE) | -0.001 (× sum-sq) | keep — different scaling but similar effective penalty |
 | `energy` | 0.01 | — | defer |
 | `action_rate` | 1.0 (× neg-MSE) | -0.01 (× sum-sq) | **bump to -1.0** to match ToddlerBot grad scale |

@@ -7,6 +7,67 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-tb-align-fix1] - 2026-04-19: alignment-pass corrections
+
+Three issues surfaced in review of the v0.20.1-tb-align changeset are
+addressed here.  No new features; corrections to the prior pass so the
+"ToddlerBot-aligned" claim actually holds.
+
+### Corrections
+
+1. **`alive` semantics fixed to strict ToddlerBot `-done`**
+   (`wildrobot_env.py:_aggregate_reward`).  The prior implementation
+   paid a dense `+alive_w` per surviving step and `-alive_w` on done
+   ("asymmetric" — incorrectly described as ToddlerBot-aligned).
+   ToddlerBot's `_reward_survival` is just `-done` at weight 10
+   (`toddlerbot/locomotion/mjx_env.py:1897-1914`); WR now matches
+   exactly: `0` while alive, `-alive_w * dt` on the terminating step.
+   Reset reward also dropped from `alive_weight` to `0`.  Without
+   this, PPO would have been biased toward any long-lived behavior
+   regardless of imitation tracking — exactly the failure mode the
+   v0.20.1 audit was supposed to prevent.
+
+2. **`* dt` reward integration added** (`wildrobot_env.py:_aggregate_reward`).
+   ToddlerBot computes `reward = sum(reward_dict.values()) * self.dt`
+   (`mjx_env.py:1048`); WR's prior `_aggregate_reward` summed terms
+   without dt scaling, so the published ToddlerBot weights were
+   ~50x larger in WR effective per-step magnitude at `ctrl_dt = 0.02`.
+   Event-based terms were the worst affected: `feet_air_time = 500`
+   with an air time of ~0.5 s contributed `+250` per touchdown
+   pre-fix vs `+5` in ToddlerBot.  Now the dt scale is applied
+   uniformly across all weighted contributions so the audit's
+   `Term ↔ Term` weight equivalence is real, not just a label.
+
+3. **`feet_distance` uses the full torso rotation**
+   (`wildrobot_env.py:_compute_reward_terms`).  The prior version
+   rotated the foot delta by yaw only; ToddlerBot uses the inverse
+   of the full torso quaternion (`walk_env.py:331-358`).  Yaw-only is
+   torso-frame-invariant only when the robot is upright, so the
+   reward fed pose-dependent noise into exactly the off-nominal
+   states it was supposed to help.  The fix reconstructs the
+   xyzw quat from MuJoCo's wxyz convention, normalizes, conjugates
+   for the world→body inverse rotation, and uses
+   `jax_frames.rotate_vec_by_quat` (already imported as `jax_frames`)
+   to obtain the body-frame foot delta.
+
+### Documentation updates
+
+- `walking_training.md` Appendix A.3 now has a load-bearing
+  "Reward integration" + "Survival semantics" callout block stating
+  the `* dt` and `-done` contracts explicitly.  The summary row for
+  `survival ↔ alive` was reworded ("strict ToddlerBot `-done`
+  semantics; no dense per-step bonus") to retire the misleading
+  earlier wording.
+
+### Validation
+
+- `tests/test_v0201_env_zero_action.py` (7/7 PASS) — the G6
+  invariant survives the `* dt` rescale and the new survival
+  semantics; the `feet_distance` quat-frame change is invisible to
+  the zero-action probe but doesn't perturb the obs / step plumbing.
+
+---
+
 ## [v0.20.1-tb-align] - 2026-04-19: ToddlerBot-alignment pass
 
 ### Context

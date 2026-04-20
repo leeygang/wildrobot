@@ -861,17 +861,31 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # ``feet_distance`` (walk_env.py:331-358).  Penalize lateral
         # foot spacing outside [min_feet_y_dist, max_feet_y_dist].
-        # Compute in TORSO frame (yaw-rotated) so heading-relative
-        # spacing is what's measured.  ToddlerBot rotates by the
-        # torso's quaternion; here we use the root pose's yaw via the
-        # measured root quaternion -> Euler.  For the smoke (yaw≈0)
-        # this collapses to the world-frame y delta.
+        # Match ToddlerBot exactly: rotate the world-frame foot delta
+        # into the FULL torso frame (not just yaw) using the inverse
+        # of the root quaternion, then take |y|.  Yaw-only rotation is
+        # invariant to roll/pitch only when the torso is upright; under
+        # the off-nominal poses where this reward is supposed to keep
+        # spacing healthy, a yaw-only frame would feed pose-dependent
+        # noise into the reward.  ``rotate_vec_by_quat`` expects xyzw,
+        # so convert from MuJoCo's wxyz convention and conjugate for
+        # the world->body inverse rotation.
         feet_vec = left_foot_pos - right_foot_pos
-        # yaw rotation (in-plane).  R_yaw^{-1} @ (vx, vy) = (cy*vx + sy*vy, -sy*vx + cy*vy).
-        _, _, yaw = root_pose.euler_angles()
-        cy, sy = jp.cos(yaw), jp.sin(yaw)
-        feet_dy_torso = -sy * feet_vec[0] + cy * feet_vec[1]
-        feet_dist = jp.abs(feet_dy_torso)
+        root_quat_wxyz = root_pose.orientation
+        root_quat_xyzw = jp.concatenate(
+            [root_quat_wxyz[1:], root_quat_wxyz[:1]]
+        ).astype(jp.float32)
+        root_quat_xyzw = jax_frames.normalize_quat_xyzw(root_quat_xyzw)
+        # quat conjugate for the inverse: (x, y, z, w) -> (-x, -y, -z, w).
+        root_quat_inv_xyzw = jp.array(
+            [-root_quat_xyzw[0], -root_quat_xyzw[1], -root_quat_xyzw[2],
+             root_quat_xyzw[3]],
+            dtype=jp.float32,
+        )
+        feet_vec_torso = jax_frames.rotate_vec_by_quat(
+            root_quat_inv_xyzw, feet_vec.astype(jp.float32)
+        )
+        feet_dist = jp.abs(feet_vec_torso[1])
         d_min_clip = jp.clip(
             feet_dist - jp.float32(self._config.env.min_feet_y_dist), max=0.0
         )
@@ -938,25 +952,39 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def _aggregate_reward(
         self, terms: Dict[str, jax.Array], terminated: jax.Array
     ) -> Dict[str, jax.Array]:
-        """Apply ``reward_weights`` to per-term values; return total + the
-        weighted per-term contributions used for logging.
+        """Apply ``reward_weights`` and the ToddlerBot ``* dt`` scale to
+        per-term values; return total + the dt-scaled per-term
+        contributions used for logging.
 
-        ``alive`` semantics intentionally mirror ToddlerBot's
-        ``_reward_survival`` (mjx_env.py:1897-1914): a *positive* per-step
-        bonus while alive, *minus* a one-shot ``alive`` deduction on the
-        terminating step (the negative-on-done semantics ToddlerBot uses
-        with weight 10.0).  This lets the YAML pick an asymmetric
-        survival bias without adding a second weight.
+        ``alive`` is a one-shot **negative-on-done** penalty mirroring
+        ToddlerBot ``_reward_survival = -done`` at weight 10
+        (toddlerbot/locomotion/mjx_env.py:1897-1914 + walk.gin
+        ``RewardScales.survival = 10.0``).  PRE-fix this term paid a
+        dense +alive_w bonus every surviving step, which biased PPO
+        toward any long-lived behavior independently of the imitation
+        objective.  Now: 0 while alive, ``-alive_w * dt`` on the
+        terminating step (after the global ``* dt`` scaling below).
+
+        ``* dt`` matches ``mjx_env.py:1048``
+        (``reward = sum(reward_dict.values()) * self.dt``).  This is
+        load-bearing for ToddlerBot's published weights to be in the
+        right scale: WR's per-step weights here MUST be the same
+        numbers as ToddlerBot's ``RewardScales.*`` for the audit in
+        walking_training.md Appendix A.3 to hold.  Without ``* dt`` the
+        WR effective per-step magnitudes were ~50x ToddlerBot's at
+        ``ctrl_dt = 0.02`` and event-based terms (notably
+        ``feet_air_time`` whose seconds-airborne values are ~0.3-0.5)
+        dominated the imitation gradient.
         """
         w = self._config.reward_weights
         alive_w = jp.float32(w.alive)
-        contrib = dict(
-            # +alive_w per surviving step, -alive_w on the terminating
-            # step.  Net incentive: +alive_w * (episode_length -
-            # 2 * terminated_count).  Matches ToddlerBot's
-            # `survival = -done` reward semantics scaled by the
-            # configured weight.
-            alive=alive_w * (1.0 - 2.0 * terminated),
+        # Pre-dt weighted contributions (ToddlerBot's
+        # ``state.info["rewards"]`` stores these unscaled values).
+        pre_dt = dict(
+            # ToddlerBot semantics: -alive_w on the terminal step, 0
+            # while alive.  Matches ``_reward_survival = -done`` *
+            # ``RewardScales.survival = 10`` at weight 10 in walk.gin.
+            alive=-alive_w * terminated,
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],
@@ -981,6 +1009,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             torso_roll_soft=jp.float32(w.torso_roll_soft)
             * terms["r_torso_roll_soft"],
         )
+        # Apply the * dt rescale uniformly so the per-term contributions
+        # logged at reward/* are exactly what each term contributes to
+        # the PPO reward.  Equivalent to ToddlerBot's
+        # ``reward = sum(reward_dict.values()) * self.dt`` but pushed
+        # into the per-term contributions for log fidelity.
+        dt = jp.float32(self.dt)
+        contrib = {k: v * dt for k, v in pre_dt.items()}
         total = sum(contrib.values())
         contrib["total"] = total
         return contrib
@@ -1236,7 +1271,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         roll_init, pitch_init, _ = root_pose.euler_angles()
-        alive_weight = jp.float32(self._config.reward_weights.alive)
+        # Reset reward = 0 under ToddlerBot survival semantics (alive
+        # only pays -w on the terminating step; reset is not a
+        # terminating step so total reward at iter-0 is 0).
+        reset_reward = jp.float32(0.0)
         contact_thresh = self._config.env.contact_threshold_force
         left_switch_init = (left_force > contact_thresh).astype(jp.float32)
         right_switch_init = (right_force > contact_thresh).astype(jp.float32)
@@ -1254,7 +1292,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             forward_reward=jp.float32(0.0),
             healthy_reward=jp.float32(0.0),
             action_rate=jp.float32(0.0),
-            total_reward=alive_weight,
+            total_reward=reset_reward,
         )
         # Live diagnostics at reset.  episode_step_count is 0; phase
         # progress is 0; loc_ref tracking fields read from the window
@@ -1294,7 +1332,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         return WildRobotEnvState(
             data=data,
             obs=obs,
-            reward=alive_weight,
+            reward=reset_reward,
             done=jp.float32(0.0),
             metrics=metrics,
             info=info,
