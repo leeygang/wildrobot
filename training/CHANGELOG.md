@@ -7,6 +7,124 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-tb-align] - 2026-04-19: ToddlerBot-alignment pass
+
+### Context
+
+Pre-smoke audit comparing the v0.20.1 reward family, termination, and
+observation contract against the ToddlerBot reference recipe
+(`toddlerbot/locomotion/{walk.gin,mjx_config.py,walk_env.py}`)
+identified ten gaps materially affecting convergence (gradient-scale
+mismatch on the velocity-tracking term, missing air-time / clearance
+/ feet-distance / soft-pitch / soft-roll shaping rewards, hard
+pitch/roll termination instead of soft band, no action delay, thin
+proprio history, missing multi-command plumbing, leg residual
+±0.50 rad vs ToddlerBot's ±0.25 rad uniform).  The audit and
+per-row decisions are documented in `walking_training.md` Appendix A.
+
+### Changes
+
+1. **Comparison appended to `walking_training.md`** (`Appendix A`).
+   Side-by-side audit of every reward weight, sigma, threshold, and
+   action contract value vs ToddlerBot, with citations to the
+   ToddlerBot file:line.  This is the source of truth for the
+   alignment decisions below.
+
+2. **EnvConfig + RewardWeightsConfig field additions**
+   (`training_runtime_config.py`).  All defaults are inert (zero
+   weight / no-op resample) so non-smoke configs are unaffected:
+   - reward weights: `feet_air_time`, `feet_clearance`,
+     `feet_distance`, `torso_pitch_soft`, `torso_roll_soft`
+   - cmd resampling: `cmd_resample_steps`, `cmd_zero_chance`,
+     `cmd_turn_chance`, `cmd_deadzone`
+   - posture gates: `torso_pitch_soft_min/max_rad`,
+     `torso_roll_soft_min/max_rad`, `min_feet_y_dist`,
+     `max_feet_y_dist`
+
+3. **WildRobotInfo schema extension** (`env_info.py`).  Added
+   per-foot air-time / air-dist / spawn-pose foot-z bookkeeping
+   plus a cmd-resample RNG carry.  The new fields are zero-init at
+   reset and updated post-step by `wildrobot_env.py:step()`.
+
+4. **New reward functions in env**
+   (`wildrobot_env.py:_compute_reward_terms`).  Five ToddlerBot-
+   shaped terms added (each defaults to zero weight via
+   `RewardWeightsConfig`; weight-on-time enables them):
+   - `feet_air_time` — `Σ_per_foot air_time * first_contact`,
+     gated on `||cmd|| > 1e-6`.  Reads pre-update air time, mirrors
+     `walk_env.py:_reward_feet_air_time` semantics.
+   - `feet_clearance` — `Σ_per_foot air_dist * first_contact`,
+     same cmd gate.
+   - `feet_distance` — exp band penalty around lateral foot
+     spacing in torso frame; uses `min/max_feet_y_dist`.
+   - `torso_pitch_soft` / `torso_roll_soft` — exp band penalty
+     inside `[soft_min, soft_max]`.  Replaces the hard pitch/roll
+     termination (now disabled via `use_relaxed_termination: true`).
+
+5. **Asymmetric `alive` semantics** (`_aggregate_reward`).  Survival
+   is now `+alive_w` per surviving step, `-alive_w` on the
+   terminating step (matches ToddlerBot's `_reward_survival = -done`
+   at weight 10).  Net incentive: `alive_w * (length - 2 *
+   terminated_count)`.
+
+6. **Multi-command resampling plumbing** (`_sample_velocity_cmd` +
+   `step()`).  Mirrors `toddlerbot/locomotion/mjx_env.py:1068-1077`
+   resample-every-N-ticks with zero/turn/deadzone fields.
+   `cmd_resample_steps == 0` disables (smoke contract).  Smoke YAML
+   keeps single point at vx=0.15; the plumbing exists for v0.20.4
+   without future env edits.
+
+7. **PROPRIO_HISTORY_FRAMES bumped 3 → 15**
+   (`training/envs/env_info.py` + `policy_contract/spec.py`).
+   Matches ToddlerBot `c_frame_stack=15`.  No checkpoint migration
+   burden (smoke not yet trained).
+
+8. **Smoke YAML rescaled to ToddlerBot weights**
+   (`training/configs/ppo_walking_v0201_smoke.yaml`):
+   - `alive` 0.05 → 10.0; `ref_q_track` 0.65 → 5.0;
+     `ref_body_quat_track` 0.10 → 5.0;
+     `cmd_forward_velocity_track` 0.30 → 5.0;
+     `cmd_forward_velocity_alpha` 4 → 200;
+     `action_rate` -0.01 → -1.0
+   - new shaping ON: `feet_air_time` 500.0, `feet_clearance` 1.0,
+     `feet_distance` 1.0, `torso_pitch_soft` 0.5,
+     `torso_roll_soft` 0.5, `slip` 0.05
+   - termination: `use_relaxed_termination: true` (height-only)
+   - action contract: `action_delay_steps: 1`,
+     leg residuals tightened ±0.50 → ±0.25 rad
+
+### Validation
+
+- `tests/test_v0201_env_zero_action.py` (all 7 tests) PASS — G6
+  invariant (zero residual ⇒ `target_q == q_ref`) survives every
+  alignment edit; v6 proprio-history wiring still does not duplicate
+  the current frame; offline service step-idx still advances
+  monotonically; ref obs channels still track the service window.
+
+### What this does NOT change
+
+- Smoke command remains pinned at vx=0.15 (single point); multi-
+  command training is `v0.20.2` per Appendix A.2.
+- DR remains disabled in the smoke (`v0.20.2`).
+- Contact-match Gaussian remains gated to weight 0 until the
+  contact-alignment probe passes (separate decision tree).
+- The policy network shape, PPO hyperparameters, and AMP path are
+  unchanged.
+
+### Open follow-ups
+
+- After smoke launches, monitor `reward/feet_air_time` and
+  `reward/feet_clearance` for runaway dominance — both depend on
+  large absolute values (air_time in seconds, air_dist in metres);
+  if either dwarfs the imitation block, downsample the weight by
+  10x.  ToddlerBot's `feet_air_time=500` is calibrated to
+  `cycle_time≈0.72 s`; WR's prior may run at a different cadence.
+- `feet_distance` uses world-frame `y` at yaw=0 (smoke condition);
+  when yaw becomes nonzero in v0.20.4 verify the torso-frame
+  rotation is right-handed for both feet.
+
+---
+
 ## [v0.20.1-prep] - 2026-04-19: high-confidence smoke prep
 
 ### Context
