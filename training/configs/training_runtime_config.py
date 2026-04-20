@@ -431,6 +431,40 @@ class EnvConfig(Freezable):
     # v0.17.3b: Action delay (disabled by default, 0 = no delay)
     action_delay_steps: int = 0  # 1 = apply prev_action instead of current
 
+    # =========================================================================
+    # v0.20.1 ToddlerBot-alignment additions (walking_training.md Appendix A)
+    # =========================================================================
+    # Multi-command resampling.  Mirrors ToddlerBot's CommandsConfig
+    # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:1-12).
+    # ``cmd_resample_steps == 0`` disables resampling (episode-constant
+    # cmd, the v0.19.x / pre-alignment behavior).  ``cmd_resample_steps
+    # > 0`` resamples every N control steps from
+    # ``[min_velocity, max_velocity]`` with optional zero/turn chances
+    # (zero/turn channels are no-ops in the v0.20.1 single-axis cmd path
+    # but the fields exist now so v0.20.4 yaw work doesn't have to
+    # extend the schema).  Defaults match ToddlerBot
+    # (resample_time=3.0s ⇒ 150 ctrl steps at ctrl_dt=0.02).
+    cmd_resample_steps: int = 0
+    cmd_zero_chance: float = 0.0  # P(resampled cmd == 0)
+    cmd_turn_chance: float = 0.0  # P(resampled cmd == turn) — placeholder
+    cmd_deadzone: float = 0.0     # |cmd| below this is zeroed (ToddlerBot 0.05)
+
+    # ToddlerBot soft-pitch / soft-roll behavior gates
+    # (toddlerbot/locomotion/mjx_config.py:110-111).  When these
+    # thresholds are paired with the corresponding ``torso_pitch_soft``
+    # / ``torso_roll_soft`` weights they become the smooth penalty
+    # ToddlerBot uses instead of hard pitch/roll termination.
+    torso_pitch_soft_min_rad: float = -0.2
+    torso_pitch_soft_max_rad: float = 0.2
+    torso_roll_soft_min_rad: float = -0.1
+    torso_roll_soft_max_rad: float = 0.1
+
+    # Feet geometry gates for the ``feet_distance`` reward
+    # (mjx_config.py:108-109).  Lateral foot spacing in body frame; the
+    # reward is exp(-100 * |dist - bound|) penalty outside the band.
+    min_feet_y_dist: float = 0.07
+    max_feet_y_dist: float = 0.13
+
 
 # =============================================================================
 # PPO Config
@@ -756,6 +790,29 @@ class RewardWeightsConfig(Freezable):
     # pins both to 0.0 explicitly; the M1 "balance issue" branch turns
     # them on without an env edit.  Raw penalty values are always logged
     # at ``reward/penalty_slip_raw`` / ``reward/penalty_pitch_rate_raw``.
+
+    # =========================================================================
+    # ToddlerBot-aligned shaping additions (walking_training.md Appendix A)
+    # =========================================================================
+    # Each weight defaults to 0 so existing v0.19.x / v0.20.0 configs are
+    # unaffected.  Smoke YAML enables these per A.3.  Reward shapes match
+    # toddlerbot/locomotion/{mjx_env,walk_env}.py exactly:
+    #
+    #   feet_air_time      — Σ (air_time_per_foot * first_contact),
+    #                        gated on ||cmd|| > 1e-6.  ToddlerBot weight
+    #                        500.0 — large because the term scales with
+    #                        seconds-airborne (~0.3-0.5 s per step).
+    #   feet_clearance     — Σ (peak_air_z * first_contact), cmd-gated.
+    #   feet_distance      — exp band penalty around y-distance in
+    #                        torso frame; uses min/max_feet_y_dist.
+    #   torso_pitch_soft   — exp(-100*|pitch - bound|) inside
+    #                        [pitch_min, pitch_max] band.
+    #   torso_roll_soft    — same shape, roll axis.
+    feet_air_time: float = 0.0
+    feet_clearance: float = 0.0
+    feet_distance: float = 0.0
+    torso_pitch_soft: float = 0.0
+    torso_roll_soft: float = 0.0
 
 
 @dataclass

@@ -505,6 +505,17 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         domain_rand_frictionloss_scale_range=env.get("domain_rand_frictionloss_scale_range", [0.9, 1.1]),
         domain_rand_joint_offset_rad=float(env.get("domain_rand_joint_offset_rad", 0.03)),
         action_delay_steps=int(env.get("action_delay_steps", 0)),
+        # ToddlerBot-aligned additions (walking_training.md Appendix A.1/A.5).
+        cmd_resample_steps=int(env.get("cmd_resample_steps", 0)),
+        cmd_zero_chance=float(env.get("cmd_zero_chance", 0.0)),
+        cmd_turn_chance=float(env.get("cmd_turn_chance", 0.0)),
+        cmd_deadzone=float(env.get("cmd_deadzone", 0.0)),
+        torso_pitch_soft_min_rad=float(env.get("torso_pitch_soft_min_rad", -0.2)),
+        torso_pitch_soft_max_rad=float(env.get("torso_pitch_soft_max_rad", 0.2)),
+        torso_roll_soft_min_rad=float(env.get("torso_roll_soft_min_rad", -0.1)),
+        torso_roll_soft_max_rad=float(env.get("torso_roll_soft_max_rad", 0.1)),
+        min_feet_y_dist=float(env.get("min_feet_y_dist", 0.07)),
+        max_feet_y_dist=float(env.get("max_feet_y_dist", 0.13)),
     )
 
 
@@ -735,6 +746,12 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         ref_feet_pos_alpha=rewards.get("ref_feet_pos_alpha", 200.0),
         ref_contact_match_sigma=rewards.get("ref_contact_match_sigma", 0.5),
         cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
+        # ToddlerBot-aligned shaping additions (walking_training.md Appendix A.3).
+        feet_air_time=rewards.get("feet_air_time", 0.0),
+        feet_clearance=rewards.get("feet_clearance", 0.0),
+        feet_distance=rewards.get("feet_distance", 0.0),
+        torso_pitch_soft=rewards.get("torso_pitch_soft", 0.0),
+        torso_roll_soft=rewards.get("torso_roll_soft", 0.0),
     )
 
 
