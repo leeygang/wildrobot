@@ -1586,10 +1586,10 @@ However, the environment also accesses other robot state that should be abstract
 
 | Current Location | State Type | Used For |
 |------------------|------------|----------|
-| `wildrobot_env.py` | Foot contacts | AMP discriminator, gait rewards |
+| `wildrobot_env.py` | Foot contacts | Gait rewards |
 | `wildrobot_env.py` | Foot positions | Slip/clearance rewards |
 | `wildrobot_env.py` | Foot velocities | Slip penalty |
-| `wildrobot_env.py` | Root quat/pos | Observations, AMP features |
+| `wildrobot_env.py` | Root quat/pos | Observations |
 | `wildrobot_env.py` | Heading-local vel | Observations, rewards |
 | `wildrobot_env.py` | Gravity vector | Observations |
 
@@ -1665,7 +1665,7 @@ class CoordinateFrame(Enum):
     WORLD: Global world frame (inertial, fixed)
     LOCAL: Body-attached frame (rotates with root body)
     HEADING_LOCAL: Root-relative frame rotated by -yaw (heading-invariant)
-                   Most common for RL observations and AMP features
+                   Most common for RL observations
     """
     WORLD = "world"
     LOCAL = "local"
@@ -1796,13 +1796,12 @@ class Pose3D:
     ) -> Velocity3D:
         """Compute finite-difference velocity between two poses.
 
-        This is the PRIMARY method for computing velocity from pose history,
-        matching reference data computation for AMP parity.
+        This is the PRIMARY method for computing velocity from pose history.
 
         Args:
             prev: Previous pose (at time t - dt)
             dt: Time step in seconds
-            frame: Coordinate frame for output velocity (default HEADING_LOCAL for AMP)
+            frame: Coordinate frame for output velocity (default HEADING_LOCAL)
 
         Returns:
             Velocity3D with linear and angular velocity in specified frame
@@ -2092,7 +2091,7 @@ class ControlAbstractionLayer:
     # - Make code self-documenting
     #
     # Convention:
-    # - normalize=True: For policy observations, AMP discriminator (NN input)
+    # - normalize=True: For policy observations (NN input)
     # - normalize=False: For rewards, debugging, Sim2Real (physical units)
     # =========================================================================
 
@@ -2496,20 +2495,17 @@ class ControlAbstractionLayer:
     ) -> Velocity3D:
         """Compute root velocity via finite difference.
 
-        USE FOR: AMP parity (matches reference data computation).
-
         Args:
             curr_pose: Current root pose from get_root_pose()
             prev_pose: Previous root pose
             dt: Time step
-            frame: Coordinate frame (default HEADING_LOCAL for AMP)
+            frame: Coordinate frame (default HEADING_LOCAL)
 
         Returns:
             Velocity3D with finite-difference velocities in m/s and rad/s
 
         Note:
-            Returns physical units to match reference data format.
-            No normalization - AMP discriminator expects physical scale.
+            Returns physical units; consumers may normalize as needed.
 
         Example:
             curr_pose = cal.get_root_pose(data)
@@ -2853,7 +2849,6 @@ dimensions:
 | **Config-driven** | Adding new feet/bodies = config change only |
 | **Testable** | CAL methods can be unit-tested in isolation |
 | **Sim2Real ready** | Same interface for real robot sensors |
-| **AMP compatible** | Finite-diff velocities match reference data |
 
 ### 10.8 Open Questions
 

@@ -77,28 +77,12 @@ wildrobot/
 │   │   ├── types.py                    # ActuatorType, VelocityProfile, CoordinateFrame
 │   │   └── cal.md                      # CAL documentation
 │   │
-│   ├── amp/                            # Adversarial Motion Priors
-│   │   ├── discriminator.py            # AMP discriminator network
-│   │   ├── discriminator_diagnostics.py # Discriminator debugging
-│   │   ├── policy_features.py          # Policy feature extraction
-│   │   ├── ref_features.py             # Reference motion features
-│   │   ├── ref_buffer.py               # Reference motion buffer
-│   │   ├── replay_buffer.py            # Experience replay buffer
-│   │   └── amp_mirror.py               # Motion mirroring utilities
-│   │
 │   ├── configs/                        # Configuration system
 │   │   ├── __init__.py
 │   │   ├── training_config.py          # Training config schema
 │   │   ├── training_runtime_config.py  # Runtime config
-│   │   ├── feature_config.py           # Feature configuration
-│   │   ├── ppo_walking.yaml            # Walking task config (v0.19.3)
-│   │   ├── ppo_walking_v0195.yaml      # Walking PPO v2 residual config (v0.19.5)
+│   │   ├── ppo_walking_v0201_smoke.yaml # v0.20.1 walking smoke
 │   │   └── ppo_standing.yaml           # Standing task config
-│   │
-│   ├── data/                           # Reference motion data
-│   │   ├── gmr/                        # GMR motion data
-│   │   ├── gmr_to_physics_ref_data.py  # Motion data conversion
-│   │   └── debug_gmr_physics.py        # Debug utilities
 │   │
 │   ├── docs/                           # Training documentation
 │   │   ├── walking_training.md         # Active locomotion roadmap
@@ -106,9 +90,8 @@ wildrobot/
 │   │   ├── standing_training.md        # Standing branch history / regression gates
 │   │   ├── footstep_planner_rl_adoption.md # RL-first + optional teacher plan
 │   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
-│   │   ├── archive/                    # Archived / superseded training docs
-│   │   │   └── learn_first_plan.md     # Historical walking-first roadmap
-│   │   └── TRAINING_SYSTEM_DESIGN.md   # Legacy training-stack design
+│   │   └── archive/                    # Archived / superseded training docs
+│   │       └── learn_first_plan.md     # Historical walking-first roadmap
 │   │
 │   ├── envs/                           # Environment implementation
 │   │   ├── wildrobot_env.py            # Main JAX environment
@@ -160,7 +143,6 @@ wildrobot/
 │   │   ├── test_training_components.py # Training infrastructure
 │   │   ├── test_trainer_invariance.py  # Training invariance
 │   │   ├── test_ppo_core.py            # PPO algorithm tests
-│   │   ├── test_amp_features.py        # AMP feature tests
 │   │   │
 │   │   │ # Math Utility Tests
 │   │   ├── test_quat_edges.py          # Quaternion edge cases
@@ -178,10 +160,8 @@ wildrobot/
 │   │   └── debug_contact_forces.ipynb  # Contact force debugging
 │   │
 │   ├── scripts/                        # Debug & diagnostic scripts
-│   │   ├── debug_amp_features.py
-│   │   ├── diagnose_amp_features.py
 │   │   ├── diagnose_torque.py
-│   │   ├── mocap_retarget.py           # Motion capture retargeting
+│   │   ├── gait_diagnostic.py
 │   │   └── test_actuator_range.py
 │   │
 │   ├── checkpoints/                    # Saved model checkpoints
@@ -216,7 +196,6 @@ wildrobot/
 │
 ├── mujoco-brax/                        # Legacy mujoco brax training version.(reference only not used)
 │   ├── README.md
-│   ├── amp/                            # Reference AMP code
 │   ├── common/                         # Shared utilities
 │   ├── playground/                     # Experimental code
 │   └── runtime/                        # Runtime utilities
@@ -313,19 +292,13 @@ uv run pytest training/tests --cov=training --cov-report=html
 
 ## Training
 
-The commands below are for the existing PPO/AMP baseline stack in `training/`.
-They remain valid for baseline comparison, regression, and for the current
-RL-first standing work, which still reuses the same MuJoCo/JAX training
-infrastructure and deployment path.
+The commands below are for the PPO training stack in `training/`.
 
-### Walking Task (PPO + AMP)
+### Walking Task
 
 ```bash
-# Start training with default config
-uv run python training/train.py
-
-# Train with specific config
-uv run python training/train.py --config training/configs/ppo_walking.yaml
+# v0.20.1 walking smoke
+uv run python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
 # Resume from checkpoint
 uv run python training/train.py --resume training/checkpoints/<checkpoint_dir>
@@ -335,7 +308,7 @@ uv run python training/train.py --resume training/checkpoints/<checkpoint_dir>
 
 Training is configured via YAML files in `training/configs/`:
 
-- `ppo_walking.yaml` - Walking locomotion task
+- `ppo_walking_v0201_smoke.yaml` - v0.20.1 walking smoke (offline ZMP prior + bounded residual)
 - `ppo_standing.yaml` - Standing balance task
 
 Key configuration options:
@@ -353,11 +326,6 @@ reward:
   velocity_tracking: 1.0
   orientation: 0.5
   action_smoothness: 0.1
-
-# AMP settings
-amp:
-  enabled: true
-  reward_weight: 0.5
 ```
 
 ### Monitoring Training
@@ -381,14 +349,13 @@ uv run python training/eval/visualize_policy.py \
 ## Project Goals
 
 - Develop a bipedal humanoid robot capable of robust locomotion
-- Implement physics-based Adversarial Motion Priors (AMP)
 - Achieve stable walking across flat and rough terrains
 - Validate simulation accuracy with comprehensive test suite
 
 ## Key Features
 
 - **JAX/MJX Acceleration**: Fast parallel simulation with JAX
-- **PPO + AMP Training**: Combines PPO with adversarial motion priors
+- **Prior-Guided PPO**: Offline ZMP reference + bounded residual policy
 - **Comprehensive Testing**: 10-layer test strategy from schema contracts to integration
 - **Schema Contracts**: Prevents silent breakage from XML changes
 - **W&B Integration**: Full experiment tracking and visualization
@@ -405,10 +372,9 @@ uv run python training/eval/visualize_policy.py \
 
 Detailed documentation is available in `training/docs/`:
 
-- [Training Guide](training/docs/TRAINING_README.md) - How to train policies
-- [System Design](training/docs/TRAINING_SYSTEM_DESIGN.md) - Architecture overview
-- [Test Strategy](training/tests/TEST_STRATEGY.md) - Comprehensive test plan
-- [AMP Design](training/docs/AMP_FEATURE_PARITY_DESIGN.md) - AMP implementation details
+- [Walking Training Plan](training/docs/walking_training.md) - v0.20.x locomotion roadmap
+- [Reference Design](training/docs/reference_design.md) - Offline ZMP prior + bounded residual contract
+- [Test Strategy](training/tests/test_plan.md) - Comprehensive test plan
 - [E2E Runbook](docs/e2e_training_to_sim2real.md) - Train → eval → export → sim2real
 
 ## Contributing

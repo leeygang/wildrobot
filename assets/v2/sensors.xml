@@ -10,7 +10,6 @@
       Velocimeter (simulation-only sensor):
       - Observations use FD → Policy learns with the same velocity computation it will see on real hardware
       - Rewards use velocimeter → Clean, instantaneous reward signal (rewards don't need Sim2Real)
-      - AMP discriminator sees FD → Matches reference data features exactly
     -->
     <velocimeter site="pelvis_mimic" name="pelvis_local_linvel" />
   </sensor>

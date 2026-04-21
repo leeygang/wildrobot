@@ -43,7 +43,6 @@ class RobotConfig:
         actuator_joints: List of joint names corresponding to actuators
         action_dim: Number of actuators (action space dimension)
         observation_dim: Total observation dimension
-        amp_feature_dim: AMP feature dimension
         floating_base_name: Name of the floating base joint
         floating_base_body: Name of the root body
         joint_limits: Dict mapping joint name to (min, max) limits
@@ -55,7 +54,6 @@ class RobotConfig:
     actuator_joints: List[str]
     action_dim: int
     observation_dim: int
-    amp_feature_dim: int
     floating_base_name: Optional[str]
     floating_base_body: Optional[str]
     floating_base_qpos_dim: int
@@ -63,7 +61,6 @@ class RobotConfig:
     joint_limits: Dict[str, Tuple[float, float]]
     observation_indices: Dict[str, Dict[str, int]]
     observation_breakdown: Dict[str, int]
-    amp_feature_breakdown: Dict[str, int]
 
     # Feet configuration (for contact detection)
     feet_left_geoms: List[str]
@@ -213,16 +210,12 @@ class RobotConfig:
         actuator_joints = actuator_names  # For position-controlled, name == joint
         action_dim = len(actuated_joints)
 
-        # Extract breakdowns (source of truth)
+        # Extract breakdown (source of truth)
         observation_breakdown = config.get("observation_breakdown", {})
-        amp_feature_breakdown = config.get("amp_feature_breakdown", {})
 
-        # Compute dimensions from breakdowns
+        # Compute dimension from breakdown
         observation_dim = (
             sum(observation_breakdown.values()) if observation_breakdown else 38
-        )
-        amp_feature_dim = (
-            sum(amp_feature_breakdown.values()) if amp_feature_breakdown else 29
         )
 
         # Compute observation indices from breakdown
@@ -264,7 +257,6 @@ class RobotConfig:
             actuator_joints=actuator_joints,
             action_dim=action_dim,
             observation_dim=observation_dim,
-            amp_feature_dim=amp_feature_dim,
             floating_base_name=floating_base_name,
             floating_base_body=floating_base_body,
             floating_base_qpos_dim=floating_base_qpos_dim,
@@ -272,7 +264,6 @@ class RobotConfig:
             joint_limits=joint_limits,
             observation_indices=observation_indices,
             observation_breakdown=observation_breakdown,
-            amp_feature_breakdown=amp_feature_breakdown,
             feet_left_geoms=feet_left_geoms,
             feet_right_geoms=feet_right_geoms,
             left_foot_body=left_foot_body,

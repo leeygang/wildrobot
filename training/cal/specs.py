@@ -566,13 +566,12 @@ class Pose3D:
         """Compute finite-difference velocity between two poses.
 
         Combines linvel_fd and angvel_fd into a single Velocity3D.
-        This is the primary method for computing velocity from pose history,
-        matching reference data computation for AMP parity.
+        This is the primary method for computing velocity from pose history.
 
         Args:
             prev: Previous pose (at time t - dt)
             dt: Time step in seconds
-            frame: Coordinate frame for output velocity (default HEADING_LOCAL for AMP)
+            frame: Coordinate frame for output velocity (default HEADING_LOCAL)
 
         Returns:
             Velocity3D with linear and angular velocity in specified frame

@@ -27,7 +27,7 @@ def _validate_robot_config(scene_xml: Path, robot_config_json: Path) -> None:
     robot_config = load_robot_config(robot_config_json)
     model = mujoco.MjModel.from_xml_path(str(scene_xml))
 
-    # Foot bodies + geoms must resolve (used for contacts + AMP features).
+    # Foot bodies + geoms must resolve (used for contacts).
     for body_name in (robot_config.left_foot_body, robot_config.right_foot_body):
         body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         if body_id < 0:

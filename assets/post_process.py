@@ -28,7 +28,7 @@ def add_collision_names(xml_file):
     """Add clear semantic names to foot collision geoms.
 
     v0.5.0: Changed from left_foot_btm_back/front to left_heel/toe
-    for clarity and to match AMP feature naming convention.
+    for clarity.
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -934,21 +934,7 @@ def generate_robot_config(
         "padding": 1,
     }
 
-    # AMP feature breakdown (what discriminator sees - motion signature)
-    # Order: pose → root motion → contacts (for gait pattern matching)
-    # Note: foot_contacts not in obs because policy infers contact from physics;
-    # AMP needs explicit contacts to distinguish gait patterns
-    amp_breakdown = {
-        "joint_positions": num_actuators,
-        "joint_velocities": num_actuators,
-        "root_linear_velocity": 3,
-        "root_angular_velocity": 3,
-        "root_height": 1,
-        "foot_contacts": 4,  # [left_toe, left_heel, right_toe, right_heel]
-    }
-
     config["observation_breakdown"] = obs_breakdown
-    config["amp_feature_breakdown"] = amp_breakdown
 
     # =========================================================================
     # Save to JSON/YAML by extension
@@ -959,7 +945,6 @@ def generate_robot_config(
     print(f"  Actuated joints: {num_actuators}")
     print(f"  Total joints (incl. passive): {num_joints}")
     print(f"  Observation dim: {sum(obs_breakdown.values())}")
-    print(f"  AMP feature dim: {sum(amp_breakdown.values())}")
 
     return config
 

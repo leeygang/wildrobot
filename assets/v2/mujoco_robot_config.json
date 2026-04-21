@@ -210,13 +210,5 @@
     "previous_action": 19,
     "velocity_command": 1,
     "padding": 1
-  },
-  "amp_feature_breakdown": {
-    "joint_positions": 19,
-    "joint_velocities": 19,
-    "root_linear_velocity": 3,
-    "root_angular_velocity": 3,
-    "root_height": 1,
-    "foot_contacts": 4
   }
 }

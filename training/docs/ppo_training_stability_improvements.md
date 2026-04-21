@@ -2,7 +2,7 @@
 
 This doc tracks why PPO training metrics can regress late in a run (even when intermediate checkpoints are good), and the highest-ROI changes to make progress more stable and reproducible.
 
-Scope: Stage 1 PPO-only standing / push robustness (no AMP).
+Scope: PPO standing / push robustness.
 
 ## Problem Statement
 

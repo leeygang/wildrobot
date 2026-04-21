@@ -894,7 +894,7 @@ class ControlAbstractionLayer:
     ) -> jax.Array:
         """Get foot contact values with per-geom granularity.
 
-        Use this for AMP features where per-contact-point detail matters.
+        Use this when per-contact-point detail matters.
         For reward computation (per-foot totals), use get_aggregated_foot_contacts() instead.
 
         Args:
@@ -926,7 +926,7 @@ class ControlAbstractionLayer:
 
         Use this for reward computation where you need per-foot totals
         for threshold comparison (slip gating, clearance, gait periodicity).
-        For AMP features (per-geom detail), use get_geom_based_foot_contacts() instead.
+        For per-geom detail, use get_geom_based_foot_contacts() instead.
 
         Args:
             data: MJX simulation data
