@@ -93,9 +93,6 @@ ppo:
 
   log_interval: 10
 
-amp:
-  enabled: false
-
 reward_weights:
   alive: 15.0
 

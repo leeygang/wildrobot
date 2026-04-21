@@ -123,32 +123,6 @@ ppo:
   log_interval: 10
 
 # =============================================================================
-# AMP (disabled for standing-reset branch)
-# =============================================================================
-amp:
-  enabled: false
-
-  dataset_path: null
-  weight: 0.0
-
-  discriminator:
-    learning_rate: 8e-5
-    batch_size: 256
-    updates_per_ppo_update: 2
-    r1_gamma: 10.0
-    input_noise_std: 0.03
-
-  feature_config:
-    use_finite_diff_vel: true
-    use_estimated_contacts: true
-    mask_waist: false
-    enable_mirror_augmentation: false
-
-  targets:
-    disc_acc_min: 0.55
-    disc_acc_max: 0.80
-
-# =============================================================================
 # Networks
 # =============================================================================
 networks:
@@ -159,10 +133,6 @@ networks:
   critic:
     hidden_sizes: [256, 256, 128]
     activation: elu
-
-  discriminator:
-    hidden_sizes: [512, 256]
-    activation: relu
 
 # =============================================================================
 # Task Reward Weights - Standing-focused, walking baggage removed
@@ -242,9 +212,7 @@ reward_weights:
 # =============================================================================
 reward:
   task_weight: 1.0
-  amp_weight: 0.0
   task_reward_clip: null
-  amp_reward_clip: [0.0, 1.0]
 
 # =============================================================================
 # Checkpoints

@@ -88,9 +88,6 @@ ppo:
     num_steps: 300
     deterministic: true
 
-amp:
-  enabled: false
-
 reward_weights:
   base_height: 1.0
   orientation: -2.0

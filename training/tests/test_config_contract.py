@@ -27,16 +27,13 @@ class TestTrainingConfigSchema:
         Purpose: Verify all required config sections exist.
 
         Assertions:
-        - Required keys: env, ppo, amp, networks, reward_weights, checkpoints, wandb
+        - Required keys: env, ppo, networks, reward_weights, checkpoints, wandb
         """
         # Check env section
         assert hasattr(training_config, "env"), "Missing required section: env"
 
         # Check ppo section
         assert hasattr(training_config, "ppo"), "Missing required section: ppo"
-
-        # Check amp section
-        assert hasattr(training_config, "amp"), "Missing required section: amp"
 
         # Check networks section
         assert hasattr(training_config, "networks"), "Missing required section: networks"

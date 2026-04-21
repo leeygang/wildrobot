@@ -86,9 +86,6 @@ ppo:
 
   log_interval: 10
 
-amp:
-  enabled: false
-
 networks:
   actor:
     hidden_sizes: [256, 256, 128]
@@ -142,7 +139,6 @@ reward_weights:
 
 reward:
   task_weight: 1.0
-  amp_weight: 0.0
 
 checkpoints:
   dir: training/checkpoints

@@ -1,7 +1,7 @@
 # =============================================================================
 # WildRobot PPO Standing Config (v0.12.2)
 # =============================================================================
-# Stage 1: Robot-Native Standing Policy (No AMP)
+# Robot-Native Standing Policy
 # v0.12.2: standing robustness with moderate push disturbances
 #
 # Goal: Robot maintains balance without falling for 500 steps
@@ -84,38 +84,6 @@ ppo:
   log_interval: 10
 
 # =============================================================================
-# AMP (disabled for Stage 1, enabled for Stage 3)
-# =============================================================================
-amp:
-  enabled: false
-
-  # Reference dataset (Stage 3 only)
-  dataset_path: null
-
-  # Global AMP reward mixing
-  weight: 0.0          # Stage 1 = 0.0, Stage 3 > 0
-
-  # Discriminator training (NOT architecture)
-  discriminator:
-    learning_rate: 8e-5
-    batch_size: 256
-    updates_per_ppo_update: 2
-    r1_gamma: 10.0
-    input_noise_std: 0.03
-
-  # Feature parity controls
-  feature_config:
-    use_finite_diff_vel: true
-    use_estimated_contacts: true
-    mask_waist: false
-    enable_mirror_augmentation: false
-
-  # Diagnostics (for alerts/logging only)
-  targets:
-    disc_acc_min: 0.55
-    disc_acc_max: 0.80
-
-# =============================================================================
 # Networks (Option A: algorithm-agnostic)
 # =============================================================================
 networks:
@@ -129,10 +97,6 @@ networks:
   critic:
     hidden_sizes: [256, 256, 128]
     activation: elu
-
-  discriminator:
-    hidden_sizes: [512, 256]
-    activation: relu
 
 # =============================================================================
 # Task Reward Weights (Environment-side reward only)
@@ -171,9 +135,7 @@ reward_weights:
 # =============================================================================
 reward:
   task_weight: 1.0
-  amp_weight: 0.0            # Alias of amp.weight (keep in sync)
   task_reward_clip: null
-  amp_reward_clip: [0.0, 1.0]
 
 # =============================================================================
 # Checkpoints
@@ -208,5 +170,3 @@ quick_verify:
     num_envs: 4
     rollout_steps: 8
     iterations: 3
-  amp:
-    enabled: false

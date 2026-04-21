@@ -76,9 +76,6 @@ ppo:
     success_rate_drop_threshold: 0.05
     lr_factor: 0.5
 
-amp:
-  enabled: false
-
 reward_weights:
   alive: 15.0
   base_height: 0.5
