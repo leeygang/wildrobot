@@ -56,7 +56,7 @@ A test is not "nice to have." It is a gate for moving to the next stage:
 **Inputs**
 - `assets/v1/wildrobot.xml` (MuJoCo model), referenced meshes and materials
 - environment scene XML (e.g. `assets/v1/scene_flat_terrain.xml`)
-- training config (`training/configs/ppo_walking.yaml`)
+- training config (`training/configs/ppo_walking_v0201_smoke.yaml`)
 - training and rollout code (`training/*`)
 
 **Outputs**
@@ -1288,7 +1288,7 @@ def mj_data(mj_model):
 def training_config():
     """Load training config once per session."""
     from training.configs.training_config import load_training_config
-    return load_training_config("training/configs/ppo_walking.yaml")
+    return load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
 
 @pytest.fixture(scope="module")
 def env(training_config):

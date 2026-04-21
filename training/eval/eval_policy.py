@@ -99,9 +99,6 @@ def _collect_eval_rollout(
         bootstrap_value=jnp.zeros((rollout["obs"].shape[1],), dtype=jnp.float32),
         metrics_vec=rollout["metrics_vec"],
         step_counts=rollout["step_count"],
-        foot_contacts=None,
-        root_heights=None,
-        prev_joint_positions=None,
     )
 
     return traj, final_state

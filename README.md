@@ -300,8 +300,10 @@ The commands below are for the PPO training stack in `training/`.
 # v0.20.1 walking smoke
 uv run python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
-# Resume from checkpoint
-uv run python training/train.py --resume training/checkpoints/<checkpoint_dir>
+# Resume from checkpoint (file path, not directory)
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0201_smoke.yaml \
+  --resume training/checkpoints/<job_dir>/checkpoint_<iter>_<steps>.pkl
 ```
 
 ### Configuration
