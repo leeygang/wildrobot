@@ -203,6 +203,20 @@ def _mean(values: Iterable[float]) -> Optional[float]:
     return sum(vals) / len(vals)
 
 
+def _first_present(*candidates: Optional[float]) -> Optional[float]:
+    """Return the first ``candidate`` that is not ``None``.
+
+    Use this instead of Python's ``or`` chain when the values may
+    legitimately be ``0.0``: ``0.0 or x`` evaluates to ``x``, which would
+    silently swap a perfectly-tracked metric for the next fallback (and
+    later get treated as "missing").
+    """
+    for c in candidates:
+        if c is not None:
+            return c
+    return None
+
+
 def _collect_series(
     rows: List[Dict[str, Any]], key: str, *, min_iter: int = 10
 ) -> List[float]:
@@ -371,12 +385,16 @@ def _classify_walking(
     velocity_cmd_mean = _mean(_collect_series(rows, "env/velocity_cmd", min_iter=min_iter))
     # Use the v0.20.1 walking-meaningful tracking signal
     # (|achieved_vx - cmd_vx|) when present; legacy env/velocity_error is
-    # always 0 for the v0.20.1 smoke.
-    velocity_error_mean = _mean(
-        _collect_series(rows, "Evaluate/cmd_vs_achieved_forward", min_iter=min_iter)
-    ) or _mean(
-        _collect_series(rows, "tracking/cmd_vs_achieved_forward", min_iter=min_iter)
-    ) or _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter))
+    # always 0 for the v0.20.1 smoke.  IMPORTANT: walk the candidates by
+    # ``is not None`` rather than Python's ``or`` truthiness, otherwise a
+    # perfectly-tracked run with ``Evaluate/cmd_vs_achieved_forward == 0.0``
+    # falls through to the next fallback and is later treated as "missing
+    # → infinity → tracking bad".
+    velocity_error_mean = _first_present(
+        _mean(_collect_series(rows, "Evaluate/cmd_vs_achieved_forward", min_iter=min_iter)),
+        _mean(_collect_series(rows, "tracking/cmd_vs_achieved_forward", min_iter=min_iter)),
+        _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter)),
+    )
     gait_periodicity_mean = _mean(_collect_series(rows, "reward/gait_periodicity", min_iter=min_iter))
     clearance_mean = _mean(_collect_series(rows, "reward/clearance", min_iter=min_iter))
     hip_swing_mean = _mean(_collect_series(rows, "reward/hip_swing", min_iter=min_iter))
@@ -386,10 +404,13 @@ def _classify_walking(
     # Evaluate/mean_episode_length + the cmd-tracking error already pulled
     # above; legacy success_rate is always 0 for these runs.
     if has_evaluate:
-        ep_len_mean = _mean(_collect_series(rows, "Evaluate/mean_episode_length", min_iter=min_iter)) or 0.0
+        ep_len_mean = _mean(_collect_series(rows, "Evaluate/mean_episode_length", min_iter=min_iter))
         max_ep = float(cfg.get("config", {}).get("env", {}).get("max_episode_steps", 500) or 500)
-        survival_frac = ep_len_mean / max_ep if max_ep > 0 else 0.0
-        track_ok = (velocity_error_mean or float("inf")) <= 0.075
+        survival_frac = (ep_len_mean / max_ep) if (ep_len_mean is not None and max_ep > 0) else 0.0
+        # Tracking is "ok" only if we actually have a tracking signal AND
+        # it's within the G4 floor.  ``None`` (missing field) is treated
+        # the same as "bad" so we don't claim success on incomplete logs.
+        track_ok = velocity_error_mean is not None and velocity_error_mean <= 0.075
         success_mean = survival_frac if track_ok else min(survival_frac, 0.5)
     else:
         success_mean = _mean(_collect_series(rows, "env/success_rate", min_iter=min_iter))
@@ -487,8 +508,14 @@ def _changelog_block(
         lines.append(f"- Checkpoints: `{ckpt_dir.as_posix()}`")
     if best_ckpt is not None:
         lines.append(f"- Best checkpoint ({keys.prefix or 'metric'}): `{best_ckpt.as_posix()}`")
+    # ``keys.success`` is a probability in [0,1] for the legacy
+    # ``*/success_rate`` keys (format as %), but a raw mean reward (often
+    # tens) for ``Evaluate/mean_reward``.  Format accordingly so we don't
+    # print "3400.00%" for a mean_reward = 34 row.
+    success_is_rate = keys.success.endswith("/success_rate") or keys.success == "success_rate"
+    fmt_success = (lambda v: _format_pct(v)) if success_is_rate else (lambda v: _format_f(v, 3))
     lines += [
-        f"- Best @ iter {best_it}: {keys.success}={_format_pct(eval_s)}, {keys.ep_len}={_format_f(eval_L, 1)}",
+        f"- Best @ iter {best_it}: {keys.success}={fmt_success(eval_s)}, {keys.ep_len}={_format_f(eval_L, 1)}",
         f"- Train @ iter {best_it}: success={_format_pct(train_s)}, ep_len={_format_f(train_L, 1)}",
     ]
     if walking.enabled:
@@ -618,9 +645,10 @@ def main() -> None:
         print(f"- verdict: {walking.verdict}")
         print(f"- tracking: {walking.tracking_status}")
         print(f"- stability: {walking.stability}")
-        print(f"- mean env/forward_velocity: {_format_f(walking.forward_vel_mean, 3)}")
+        # Labels reflect the actual key path used by ``_summarize_walking``.
+        print(f"- mean forward_velocity (Evaluate or env): {_format_f(walking.forward_vel_mean, 3)}")
         print(f"- mean env/velocity_cmd: {_format_f(walking.velocity_cmd_mean, 3)}")
-        print(f"- mean env/velocity_error: {_format_f(walking.velocity_error_mean, 3)}")
+        print(f"- mean cmd_vs_achieved_forward (Evaluate or tracking): {_format_f(walking.velocity_error_mean, 3)}")
         print(f"- mean reward/gait_periodicity: {_format_f(walking.gait_periodicity_mean, 4)}")
         print(f"- mean reward/clearance: {_format_f(walking.clearance_mean, 4)}")
         print(f"- mean reward/hip_swing: {_format_f(walking.hip_swing_mean, 4)}")

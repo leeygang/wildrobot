@@ -75,6 +75,16 @@ def _mean(values: List[float]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def _first_present(*candidates: Optional[float]) -> Optional[float]:
+    """Return the first non-``None`` candidate.  Same semantics as
+    ``analyze_offline_run.py:_first_present`` — guards against
+    ``0.0 or x → x`` swallowing legitimately-zero metrics."""
+    for c in candidates:
+        if c is not None:
+            return c
+    return None
+
+
 def _collect_series(rows: List[Dict[str, Any]], key: str, *, min_iter: int = 10) -> List[float]:
     out: List[float] = []
     for r in rows:
@@ -160,16 +170,28 @@ def _classify_walking(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[
     has_evaluate = any("Evaluate/forward_velocity" in r for r in rows)
     fwd_key = "Evaluate/forward_velocity" if has_evaluate else "env/forward_velocity"
     forward_velocity = _mean(_collect_series(rows, fwd_key))
-    velocity_error = (
-        _mean(_collect_series(rows, "Evaluate/cmd_vs_achieved_forward"))
-        or _mean(_collect_series(rows, "tracking/cmd_vs_achieved_forward"))
-        or _mean(_collect_series(rows, "env/velocity_error"))
+    # IMPORTANT: walk fallbacks by ``is not None`` rather than ``or`` —
+    # an exact ``Evaluate/cmd_vs_achieved_forward == 0.0`` (perfect
+    # tracking) is falsy under ``or`` and would silently fall through to
+    # the next candidate.  See _first_present in analyze_offline_run.py
+    # for the same fix.
+    velocity_error = _first_present(
+        _mean(_collect_series(rows, "Evaluate/cmd_vs_achieved_forward")),
+        _mean(_collect_series(rows, "tracking/cmd_vs_achieved_forward")),
+        _mean(_collect_series(rows, "env/velocity_error")),
     )
     term_pitch = _mean(_collect_series(rows, "term_pitch_frac")) or 0.0
     if has_evaluate:
-        ep_len = _mean(_collect_series(rows, "Evaluate/mean_episode_length")) or 0.0
+        ep_len = _mean(_collect_series(rows, "Evaluate/mean_episode_length"))
         max_ep = float(cfg.get("config", {}).get("env", {}).get("max_episode_steps", 500) or 500)
-        success = (ep_len / max_ep) if max_ep > 0 else 0.0
+        survival_frac = (ep_len / max_ep) if (ep_len is not None and max_ep > 0) else 0.0
+        # Mirror the analyzer's synthetic-success cap: tracking must be
+        # both present AND inside the G4 floor for full survival_frac
+        # credit; otherwise cap at 0.5 so a long-lived non-tracking run
+        # doesn't read as "trapped in standing" with success=0.99.
+        # ``analyze_offline_run.py:_summarize_walking`` does the same.
+        track_ok = velocity_error is not None and velocity_error <= 0.075
+        success = survival_frac if track_ok else min(survival_frac, 0.5)
     else:
         success = _mean(_collect_series(rows, "env/success_rate")) or 0.0
 
@@ -323,11 +345,21 @@ def main() -> None:
     a = summarize(args.run_dir_a, args.checkpoints_root)
     b = summarize(args.run_dir_b, args.checkpoints_root)
 
+    def _is_rate_keyset(keyset: str) -> bool:
+        # "Evaluate" stores a raw mean reward (often tens), NOT a probability.
+        # Other keysets (eval_clean / eval / env / train) store success_rate
+        # in [0, 1] and should be printed as a percentage.
+        return keyset != "Evaluate"
+
     def fmt(r: RunSummary) -> str:
         ck = r.best_checkpoint.as_posix() if r.best_checkpoint else "N/A"
+        if _is_rate_keyset(r.keyset):
+            score_str = f"succ={r.best_success * 100:.2f}%"
+        else:
+            score_str = f"mean_reward={r.best_success:.3f}"
         base = (
             f"{r.version} ({r.run_id}) | keyset={r.keyset} | "
-            f"best: it={r.best_iter} succ={r.best_success*100:.2f}% len={r.best_ep_len:.1f} | "
+            f"best: it={r.best_iter} {score_str} len={r.best_ep_len:.1f} | "
             f"ckpt={ck}"
         )
         if r.walking_enabled:
@@ -367,14 +399,21 @@ def main() -> None:
         print(f"- Checkpoint: {winner.best_checkpoint}")
     print()
     print("Delta vs other run:")
-    print(f"- success: {(winner.best_success - loser.best_success)*100:+.2f}%")
+    # Format the delta the same way as the per-run header — percentage for
+    # success_rate keysets, raw float for ``Evaluate/mean_reward``.  Mixed
+    # keysets shouldn't normally happen (both runs share a tooling
+    # version), but if they do the winner's keyset wins the formatting.
+    if _is_rate_keyset(winner.keyset):
+        print(f"- success: {(winner.best_success - loser.best_success) * 100:+.2f}%")
+    else:
+        print(f"- mean_reward: {winner.best_success - loser.best_success:+.3f}")
     print(f"- ep_len: {winner.best_ep_len - loser.best_ep_len:+.1f}")
     if winner.walking_enabled or loser.walking_enabled:
         print(f"- walking verdict: {winner.walking_verdict} vs {loser.walking_verdict}")
         if winner.forward_velocity_mean is not None and loser.forward_velocity_mean is not None:
-            print(f"- env/forward_velocity: {winner.forward_velocity_mean - loser.forward_velocity_mean:+.3f}")
+            print(f"- forward_velocity: {winner.forward_velocity_mean - loser.forward_velocity_mean:+.3f}")
         if winner.velocity_error_mean is not None and loser.velocity_error_mean is not None:
-            print(f"- env/velocity_error: {winner.velocity_error_mean - loser.velocity_error_mean:+.3f}")
+            print(f"- cmd_vs_achieved_forward: {winner.velocity_error_mean - loser.velocity_error_mean:+.3f}")
     if winner.fsm_enabled or loser.fsm_enabled:
         print(f"- fsm verdict: {winner.fsm_verdict} vs {loser.fsm_verdict}")
         print(f"- touchdown style: {winner.fsm_touchdown_style} vs {loser.fsm_touchdown_style}")
