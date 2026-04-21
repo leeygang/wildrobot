@@ -989,17 +989,38 @@ Metric validation:
     early horizon
   - softened early-horizon targets (informational, do not abort runs that
     miss these — only abort if collapsing below the open-loop baseline):
-    - `env/forward_velocity >= 0.0 m/s`
-    - `eval_walk/episode_length >= 100`
+    - `Evaluate/forward_velocity >= 0.0 m/s`
+    - `Evaluate/mean_episode_length >= 100`
     - `term_pitch_frac < 0.80`
   - the originally-stated stricter early-horizon thresholds
     (`forward_velocity >= 0.04 m/s, episode_length >= 150,
     term_pitch_frac < 0.50`) move to the **mid-horizon** gate; only the
     promotion horizon below stays hard
-- by the promotion horizon (hard gate — pass or fail the smoke):
-  - `env/forward_velocity >= 0.075 m/s`
-  - `eval_walk/success_rate >= 0.60`
-  - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
+- by the promotion horizon (hard gate — pass or fail the smoke).
+  v0.20.1-smoke2 update: ``eval_walk/success_rate >= 0.60`` was removed
+  in favour of two ToddlerBot-style ``Evaluate/*`` floors on the
+  deterministic eval rollout.  Rationale: ToddlerBot has no
+  ``success_rate`` concept anywhere in
+  ``toddlerbot/locomotion/{train_mjx,walk_env,mjx_env}.py`` —
+  checkpoint quality is read off ``Evaluate/mean_reward`` +
+  ``Evaluate/mean_episode_length`` + per-term ``Evaluate/<term>``
+  tracking.  Once we adopt the same reward shape (which we now have:
+  ``lin_vel_xy=5.0`` at α=200, ``motor_pos=5.0``, strict
+  ``-done`` survival), eval reward + eval episode length already
+  encode "alive AND tracking cmd_vx AND tracking q_ref"; a separate
+  binary success bool just adds a degenerate signal that the
+  truncation-based ``env/success_rate`` already showed (stuck at 0
+  through smoke1).  CLAUDE.md § "follows ToddlerBot" applies — we
+  no longer have a rationale to keep a WildRobot-specific gate when
+  the reward block matches.
+  - `env/forward_velocity >= 0.075 m/s` (train rollout)
+  - `Evaluate/forward_velocity >= 0.075 m/s` (deterministic eval
+    rollout — replaces ``eval_walk/success_rate >= 0.60`` with the
+    same forward-progress floor on the eval pass)
+  - `Evaluate/mean_episode_length >= 475` (95% of 500-step horizon;
+    second half of the dropped success_rate row)
+  - `Evaluate/cmd_vs_achieved_forward <= 0.075 m/s`
+  - `tracking/cmd_vs_achieved_forward <= 0.075 m/s` (train rollout)
   - touchdown step length mean `>= 0.03 m`
 - **G5 — anti-exploit metric (hard gate)**:
   - to reject the "policy invents propulsion the prior should own" failure
@@ -1379,7 +1400,7 @@ Both projects use the DeepMimic-style numerator-α form
 | `torso_pitch_range` (reward gate) | — | `[-0.2, 0.2]` | **add** (with torso_pitch soft reward) |
 | Cmd-magnitude gating on stepping rewards | inert (`step_need_*` defined but not consumed) | air_time/clearance/standstill all gate on `||cmd_obs|| > 1e-6` | apply on the new feet_* terms |
 | Touchdown event | physical foot/floor contact transition (`view_zmp_in_mujoco.py:519`; env G4 in `wildrobot_env.py:1251`) | `stance_mask xor last_stance_mask` | equivalent |
-| G4 success metrics | `forward_velocity ≥ 0.075`, `success_rate ≥ 0.60`, `cmd_vs_achieved ≤ 0.075`, `step_length ≥ 0.03` (this doc, v0.20.1 §) | n/a | WR-specific gates, kept |
+| G4 success metrics | `forward_velocity ≥ 0.075`, `Evaluate/mean_episode_length ≥ 475`, `Evaluate/cmd_vs_achieved ≤ 0.075`, `step_length ≥ 0.03` (this doc, v0.20.1 §; smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept) | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
 | G5 anti-exploit | `|residual_p50|_{hip,knee} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep |
 
 ### A.6 Action contract

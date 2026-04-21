@@ -59,6 +59,7 @@ EXIT_CRITERIA_TARGETS = {
 }
 
 REWARD_TERM_KEYS = [
+    "reward/total",
     "reward/alive",
     "reward/forward",
     "reward/lateral",
@@ -1312,6 +1313,12 @@ def create_training_metrics_from_iteration(
     Returns:
         Flat dictionary of metrics with prefixes for W&B logging
     """
+    cmd_vs_achieved = metrics.env_metrics.get("tracking/cmd_vs_achieved_forward")
+    extra: Dict[str, float] = {}
+    if cmd_vs_achieved is not None:
+        # Walking-meaningful tracking signal that replaces the broken
+        # ``topline/velocity_error``: |achieved_vx - cmd_vx| over the rollout.
+        extra["topline/cmd_vs_achieved_forward"] = float(cmd_vs_achieved)
     return create_training_metrics(
         iteration=iteration,
         episode_reward=float(metrics.episode_reward),
@@ -1333,6 +1340,7 @@ def create_training_metrics_from_iteration(
         velocity_cmd=float(metrics.env_metrics["velocity_command"]),
         velocity_error=float(metrics.env_metrics["tracking/vel_error"]),
         max_torque=float(metrics.env_metrics["tracking/max_torque"]),
+        **extra,
     )
 
 
@@ -1385,6 +1393,7 @@ def build_wandb_metrics(
             or key.startswith("eval/")
             or key.startswith("eval_push/")
             or key.startswith("eval_clean/")
+            or key.startswith("Evaluate/")  # ToddlerBot-style eval namespace
             or key.startswith("ref/")  # v0.20.1: imitation diagnostics
         ):
             try:
@@ -1425,11 +1434,11 @@ def create_training_metrics(
     - topline/episode_reward (target: >350)
     - topline/amp_reward (target: >0.7)
     - topline/forward_velocity (target: 0.3-0.8 m/s)
-    - topline/success_rate (target: >85%)
     - topline/avg_torque (target: <2.8 Nm)
 
-    v0.10.3 Walking Exit Criteria:
-    - topline/velocity_error: |forward_vel - velocity_cmd| (target: <0.2 m/s)
+    v0.20.1 Walking topline (replaces removed ``topline/success_rate`` /
+    ``topline/velocity_error`` — both degenerate for walking):
+    - topline/cmd_vs_achieved_forward (passed via extra_metrics; gate <= 0.075 m/s)
     - topline/max_torque: Peak torque as fraction of limit (target: <0.8)
 
     Args:
@@ -1466,15 +1475,20 @@ def create_training_metrics(
         "topline/episode_reward": episode_reward,  # Target: >350
         "topline/amp_reward": amp_reward_mean,  # Target: >0.7
         "topline/forward_velocity": forward_velocity,  # Target: 0.3-0.8 m/s
-        "topline/success_rate": success_rate * 100,  # Target: >85%
         "topline/avg_torque": avg_torque,  # Target: <2.8 Nm
         "topline/steps_per_sec": env_steps_per_sec,  # Performance metric
         # Stability metrics
         "topline/episode_length": episode_length,  # Target: >400 steps
         "topline/disc_accuracy": disc_accuracy,  # Target: 0.4-0.7 (NOT 100%!)
-        # v0.10.3: Walking tracking metrics
+        # v0.20.1 walking tracking metrics.  ``topline/success_rate`` and
+        # ``topline/velocity_error`` were intentionally removed: the former
+        # is truncation-based and stays 0 throughout walking smokes (so the
+        # analyzer was sorting checkpoints on a degenerate signal), and the
+        # latter is unwired for walking (always 0).  Walking checkpoint
+        # quality should be read from ``Evaluate/*`` (deterministic eval
+        # rollout, ToddlerBot pattern) and the per-iteration
+        # ``tracking/cmd_vs_achieved_forward`` exported below.
         "topline/velocity_cmd": velocity_cmd,  # Mean commanded velocity (m/s)
-        "topline/velocity_error": velocity_error,  # Target: <0.2 m/s
         "topline/max_torque": max_torque,  # Target: <0.8 (80% of limit)
         # =====================================================================
         # Environment metrics
@@ -1518,19 +1532,20 @@ def create_topline_metrics_only(
     episode_reward: float = 0.0,
     amp_reward: float = 0.0,
     forward_velocity: float = 0.0,
-    success_rate: float = 0.0,
     avg_torque: float = 0.0,
     steps_per_sec: float = 0.0,
 ) -> Dict[str, float]:
     """Create only the topline metrics for quick logging.
 
     Use this when you only want to update the key exit criteria metrics.
+    ``success_rate`` was removed — it is truncation-based and meaningless
+    for the v0.20.x walking smoke (always 0).  Use ``Evaluate/*`` from the
+    deterministic eval rollout instead.
 
     Args:
         episode_reward: Mean episode reward (target: >350)
         amp_reward: Mean AMP reward (target: >0.7)
         forward_velocity: Forward velocity in m/s (target: 0.3-0.8)
-        success_rate: Success rate 0-1 (target: >0.85)
         avg_torque: Average torque in Nm (target: <2.8)
         steps_per_sec: Training speed
 
@@ -1541,7 +1556,6 @@ def create_topline_metrics_only(
         "topline/episode_reward": episode_reward,
         "topline/amp_reward": amp_reward,
         "topline/forward_velocity": forward_velocity,
-        "topline/success_rate": success_rate * 100,  # Convert to percentage
         "topline/avg_torque": avg_torque,
         "topline/steps_per_sec": steps_per_sec,
     }

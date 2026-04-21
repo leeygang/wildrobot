@@ -1447,6 +1447,11 @@ METRIC_SPECS: List[MetricSpec] = [
     # (walking_training.md Appendix A.3).
     # =========================================================================
     MetricSpec(
+        name="reward/alive",
+        reducer=Reducer.MEAN,
+        description="Strict ToddlerBot survival: 0 while alive, -alive_w*dt on done",
+    ),
+    MetricSpec(
         name="reward/feet_air_time",
         reducer=Reducer.MEAN,
         description="Σ per-foot air time at touchdown (cmd-gated)",
@@ -1543,6 +1548,57 @@ METRIC_SPECS: List[MetricSpec] = [
         description=(
             "Most-recent touchdown step length in m (carries between events). "
             "Rollout MEAN approximates the G4 'touchdown step length mean ≥ 0.03 m' gate."
+        ),
+    ),
+    # Per-foot stride / swing-time diagnostics (v0.20.1-smoke2).  All values
+    # are nonzero only on the touchdown step of that foot; aggregation gives
+    # rates.  Per-event mean = ``<value>_event / touchdown_rate``.
+    MetricSpec(
+        name="tracking/touchdown_rate_left",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Left-foot touchdown events per ctrl step (rollout mean)",
+    ),
+    MetricSpec(
+        name="tracking/touchdown_rate_right",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Right-foot touchdown events per ctrl step (rollout mean)",
+    ),
+    MetricSpec(
+        name="tracking/swing_air_time_left_event_s",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Left-foot swing-air-time at touchdown (s), zeroed elsewhere. "
+            "Per-event mean = value / touchdown_rate_left."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/swing_air_time_right_event_s",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Right-foot swing-air-time at touchdown (s), zeroed elsewhere. "
+            "Per-event mean = value / touchdown_rate_right."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/step_length_left_event_m",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Left-foot step length at touchdown (m), zeroed elsewhere. "
+            "Per-event mean = value / touchdown_rate_left."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/step_length_right_event_m",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Right-foot step length at touchdown (m), zeroed elsewhere. "
+            "Per-event mean = value / touchdown_rate_right."
         ),
     ),
 ]

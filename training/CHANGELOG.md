@@ -7,6 +7,150 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke2-prep] - 2026-04-20: ToddlerBot eval-alignment + smoke1 instrumentation gaps
+
+### Context
+
+Smoke1 (run `offline-run-20260419_200601-zgs2m3gp`) was a soft pass:
+3 of 4 measurable G4 gates met (forward_velocity, cmd_vs_achieved,
+episode_length); step_length_touchdown_event_m saturated below the
+≥ 0.030 m gate at ~0.022 m; ``eval_walk/success_rate`` was unmeasured
+(no eval rollout); the five new ToddlerBot shaping rewards
+(``alive``, ``feet_air_time``, ``feet_clearance``, ``feet_distance``,
+``torso_pitch_soft``, ``torso_roll_soft``) were not exposed in W&B
+even though they were ON in the YAML; ``ref/feet_pos_err_l2`` grew
+0.22 → 1.02 m because at α=200 the iter-1 baseline reward was
+exp(-200·0.048) ≈ 6e-5 (no gradient).
+
+This changeset closes those four instrumentation / contract gaps
+before launching smoke2.  No re-architecture; the smoke contract,
+prior, and policy network are unchanged.
+
+### Changes
+
+1. **Reward-term logging completed** (`metrics_registry.py`,
+   `experiment_tracking.py`).  Added ``reward/alive`` to
+   ``METRIC_SPECS`` (was in ``REWARD_TERM_KEYS`` filter but absent
+   from the registry → silently dropped).  Added ``reward/total`` to
+   ``REWARD_TERM_KEYS`` (was in registry but absent from filter →
+   not surfaced to wandb).  All five v0.20.1 shaping terms were
+   already in both lists from v0.20.1-tb-align — no additional spec
+   work needed there.
+
+2. **ToddlerBot-style `Evaluate/*` eval block**
+   (`training_loop.py`, `experiment_tracking.py`, smoke YAML).  The
+   deterministic eval rollout (already running for the standing-era
+   ``eval_clean/*`` / ``eval_push/*`` namespaces) now also reports
+   ``Evaluate/mean_reward``, ``Evaluate/mean_episode_length``, and
+   per-term tracking aggregates pulled from the same rollout's
+   metrics_vec: ``Evaluate/forward_velocity``,
+   ``Evaluate/cmd_vs_achieved_forward``,
+   ``Evaluate/forward_velocity_cmd_ratio``,
+   ``Evaluate/step_length_touchdown_event_m``,
+   ``Evaluate/ref_q_track``, ``Evaluate/ref_body_quat_track``,
+   ``Evaluate/ref_feet_pos_track``,
+   ``Evaluate/cmd_forward_velocity_track``, plus the raw error
+   diagnostics (``Evaluate/ref_q_track_err_rmse``,
+   ``Evaluate/ref_body_quat_err_deg``,
+   ``Evaluate/ref_feet_pos_err_l2``,
+   ``Evaluate/ref_contact_phase_match``).  Mirrors
+   ``toddlerbot/locomotion/train_mjx.py`` ``log_metrics`` exactly:
+   no ``success_rate`` concept, checkpoint quality reads off
+   ``mean_reward`` + ``mean_episode_length`` + per-term tracking.
+   Smoke YAML now sets ``ppo.eval.enabled: true``,
+   ``num_steps: 500`` (full episode horizon),
+   ``num_envs: 64``, ``interval: 10``, ``deterministic: true``.
+
+3. **G4 gate switched to ToddlerBot ``Evaluate/*`` floors**
+   (`training/docs/walking_training.md` v0.20.1 §, Appendix A.5).
+   Removed ``eval_walk/success_rate >= 0.60`` from the
+   promotion-horizon gate.  Replaced with
+   ``Evaluate/forward_velocity >= 0.075`` +
+   ``Evaluate/mean_episode_length >= 475`` +
+   ``Evaluate/cmd_vs_achieved_forward <= 0.075``.  Rationale
+   captured inline: ToddlerBot has no ``success_rate`` concept
+   anywhere in its locomotion code (verified via grep over
+   ``toddlerbot/locomotion/{train_mjx,walk_env,mjx_env}.py``);
+   once we adopt the same reward shape (which we now have:
+   ``lin_vel_xy=5.0``, ``motor_pos=5.0``, strict ``-done``
+   survival), eval reward + eval episode length already encode
+   "alive AND tracking cmd_vx AND tracking q_ref" — a separate
+   binary success bool just adds a degenerate signal.
+
+4. **`ref_feet_pos_alpha` 200 → 30 in the smoke YAML**
+   (`ppo_walking_v0201_smoke.yaml` reward_weights, with rationale
+   block).  Smoke1 baseline ``ref/feet_pos_err_l2`` was 0.22 m →
+   ``feet_err_l2`` (sum of squared per-foot residuals, both feet,
+   all axes) ≈ 0.048 m² → at α=200 the reward exp(-200·0.048) ≈
+   6e-5, leaving PPO with no gradient on the term.  α=30 gives
+   r ≈ 0.24 at the iter-1 magnitude (gradient alive, not
+   saturated) and drops to ~0.04 at err=0.30 m (still rejects
+   gross misalignment).  Documented as a smoke-stage divergence
+   from the ToddlerBot α=200 audit row, with a v0.20.2 follow-up
+   to switch the foot-pos reward to a body-frame Euclidean norm
+   matching ToddlerBot's ``_reward_torso_pos_xy`` shape, then
+   restore α=200.
+
+5. **Per-foot stride / swing-time diagnostics**
+   (`wildrobot_env.py`, `metrics_registry.py`).  Smoke1's
+   ``tracking/step_length_touchdown_event_m`` is a single carry
+   across both feet — useful for the G4 floor but can't tell us
+   whether one foot is stepping and the other isn't.  Added six
+   per-foot tracking metrics emitted only on each foot's
+   touchdown step:
+   ``tracking/touchdown_rate_{left,right}``,
+   ``tracking/swing_air_time_{left,right}_event_s``,
+   ``tracking/step_length_{left,right}_event_m``.  All MEAN-reduced;
+   per-event mean = ``<value>_event / touchdown_rate_<side>``
+   post-aggregation.
+
+6. **Topline cleanup** (`experiment_tracking.py`).  Dropped
+   ``topline/success_rate`` (truncation-based, stuck at 0 through
+   smoke1) and ``topline/velocity_error`` (unwired, also 0).
+   Replaced with ``topline/cmd_vs_achieved_forward`` plumbed from
+   ``env_metrics["tracking/cmd_vs_achieved_forward"]``.  The
+   analyzer's checkpoint pick (which sorted on ``env/success_rate``
+   and saw all iterations tie at 0, then fell back to
+   ``env/episode_length`` and picked iter 120 over iter 130 by a
+   0.1-step margin) will now prefer the new ``Evaluate/*`` block
+   once smoke2 is logged.
+
+### Validation
+
+- `tests/test_v0201_env_zero_action.py` — 7/7 PASS (130 s).  G6
+  invariant (zero residual ⇒ ``target_q == q_ref``) survives every
+  edit; v6 proprio-history, offline service step-idx, and ref-obs
+  channel checks all unchanged.
+- `python training/train.py --config ... --verify` — quick smoke
+  (3 iters × 4 envs × 8 rollout = 96 steps) pending; documented as
+  a follow-up validation step in the smoke2 launch checklist.
+
+### What this does NOT change
+
+- Smoke command stays pinned at ``vx=0.15`` (single point).
+- DR remains disabled (v0.20.2 task).
+- ``ref_contact_match`` weight stays 0 until the contact-alignment
+  probe passes (separate decision tree).
+- The policy network shape, PPO hyperparameters, prior generator,
+  and AMP path are unchanged.
+
+### Smoke2 launch checklist
+
+1. ``uv run python training/train.py --config
+   training/configs/ppo_walking_v0201_smoke.yaml --verify`` —
+   confirms eval block JIT-compiles and ``Evaluate/*`` keys flow to
+   ``metrics.jsonl``.
+2. Confirm the v0.20.1-smoke1 missing-keys list now appears in iter-1
+   metrics.jsonl: ``reward/alive``, ``reward/total``,
+   ``reward/feet_air_time``, ``reward/feet_clearance``,
+   ``reward/feet_distance``, ``reward/torso_pitch_soft``,
+   ``reward/torso_roll_soft``, ``Evaluate/mean_episode_length``.
+3. Launch full smoke (150 iters, ~20M env steps, ~8 h on the same
+   hardware as smoke1).
+4. Gate against the updated v0.20.1 G4 (above).
+
+---
+
 ## [v0.20.1-smoke1] - 2026-04-20: single-command walking smoke result
 
 ### Run

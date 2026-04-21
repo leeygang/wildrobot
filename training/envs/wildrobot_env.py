@@ -1736,6 +1736,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/penalty_pitch_rate_raw"] = reward_terms[
             "penalty_pitch_rate"
         ]
+
+        # ----- Per-foot stride / swing-time diagnostics (v0.20.1-smoke2) -----
+        # Smoke1 found ``tracking/step_length_touchdown_event_m`` (a single
+        # last-touchdown carry across both feet) saturated below the
+        # G4 0.030 m gate at ~0.022 m, but the dispatched-carry signal can't
+        # tell us whether one foot is doing all the stepping or the gait
+        # really is short on both sides.  Log per-foot raw values *only on
+        # the touchdown step of that foot*, plus the touchdown event mask.
+        # All MEAN-reduced (see metrics_registry).  Per-event mean step
+        # length is then ``step_length_left_event_m / touchdown_rate_left``
+        # post-aggregation.
+        left_event_f = left_touchdown.astype(jp.float32)
+        right_event_f = right_touchdown.astype(jp.float32)
+        terminal_metrics_dict["tracking/touchdown_rate_left"] = left_event_f
+        terminal_metrics_dict["tracking/touchdown_rate_right"] = right_event_f
+        terminal_metrics_dict["tracking/swing_air_time_left_event_s"] = (
+            wr.feet_air_time[0] * left_event_f
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/swing_air_time_right_event_s"] = (
+            wr.feet_air_time[1] * right_event_f
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/step_length_left_event_m"] = (
+            left_step_len * left_event_f
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/step_length_right_event_m"] = (
+            right_step_len * right_event_f
+        ).astype(jp.float32)
+
         terminal_metrics = {METRICS_VEC_KEY: build_metrics_vec(terminal_metrics_dict)}
 
         # Auto-reset: on done, the next-episode starting data + obs +

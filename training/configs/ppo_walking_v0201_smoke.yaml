@@ -213,6 +213,20 @@ ppo:
 
   log_interval: 10
 
+  # Deterministic eval rollout — ToddlerBot-style ``Evaluate/*`` block
+  # (training/docs/walking_training.md v0.20.1 §, replaces the broken
+  # truncation-based ``env/success_rate`` with eval-rollout walking
+  # signals).  ``num_steps`` matches ``env.max_episode_steps`` so the
+  # eval episode runs the full horizon and the per-term aggregates
+  # describe a complete walk, not a truncated probe.
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
 # =============================================================================
 # AMP — disabled for v0.20.1 smoke (not on the smoke critical path)
 # =============================================================================
@@ -321,6 +335,26 @@ reward_weights:
   # — enough headroom to differentiate "close" from "very close" while
   # still bottoming out at 0 by ~0.15 m/s error.
   cmd_forward_velocity_alpha: 200.0
+  # ref_feet_pos_alpha: 200 → 30 (smoke-stage divergence from
+  # ToddlerBot α=200, walking_training.md Appendix A.4).
+  #
+  # Why we diverge here: our ref_feet_pos_track uses a sum-of-squared
+  # per-foot residual in WORLD frame (wildrobot_env.py:794:
+  # ``feet_err_l2 = ||left_rel||² + ||right_rel||²``), not a single
+  # per-foot Euclidean norm in body frame.  Empirically the v0.20.1-smoke1
+  # iter-1 baseline ``ref/feet_pos_err_l2`` was 0.22 m and grew to 1.02 m
+  # by iter 150 because PPO had no gradient on the term: with α=200,
+  # ``exp(-200·0.048) ≈ 6e-5`` at the iter-1 baseline.  Lowering α to 30
+  # gives r ≈ 0.24 at the iter-1 error magnitude (gradient alive,
+  # not saturated) and drops to ~0.04 at err=0.30 m (still rejects gross
+  # misalignment).
+  #
+  # Follow-up (deferred to v0.20.2): switch the foot-pos reward to a
+  # body-frame Euclidean norm matching ToddlerBot's
+  # ``_reward_torso_pos_xy`` shape, then restore α=200.  Until then the
+  # α=30 override reflects our actual error scale, not the ToddlerBot
+  # one.
+  ref_feet_pos_alpha: 30.0
 
 # =============================================================================
 # Reward Composition
@@ -358,5 +392,12 @@ quick_verify:
     num_envs: 4
     rollout_steps: 8
     iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
   amp:
     enabled: false

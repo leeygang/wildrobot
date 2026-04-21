@@ -1396,7 +1396,12 @@ def train(
             jnp.ndarray,
         ]:
             eval_env_state = eval_reset_fn(eval_rng)
-            reset_h = eval_env_state.metrics["height"]
+            # ``state.metrics`` is now a packed metrics_vec (see
+            # metrics_registry.METRICS_VEC_KEY); the legacy code path read
+            # a per-key dict that no longer exists.  Slice the height
+            # column from the packed vec.
+            height_idx = METRIC_INDEX["height"]
+            reset_h = eval_env_state.metrics[METRICS_VEC_KEY][..., height_idx]
             reset_h_mean = jnp.mean(reset_h)
             reset_h_min = jnp.min(reset_h)
 
@@ -1700,6 +1705,45 @@ def train(
             reward_teacher_com_velocity_reduction = jnp.mean(
                 eval_rollout["metrics_vec"][..., reward_teacher_com_velocity_reduction_idx]
             )
+
+            # ----- Walking eval block (v0.20.1 ToddlerBot-style) -----
+            # Deterministic eval rollout already runs above; we just pull the
+            # walking-relevant slices from the same metrics_vec and report
+            # them under the ``Evaluate/*`` namespace (matches ToddlerBot
+            # train_mjx.py log_metrics convention -- no success_rate concept;
+            # checkpoint quality reads off mean eval reward + ep length +
+            # per-term tracking errors).  Indices resolved at trace time.
+            walking_idx = {
+                "forward_velocity": METRIC_INDEX["forward_velocity"],
+                "cmd_vs_achieved_forward": METRIC_INDEX[
+                    "tracking/cmd_vs_achieved_forward"
+                ],
+                "forward_velocity_cmd_ratio": METRIC_INDEX[
+                    "tracking/forward_velocity_cmd_ratio"
+                ],
+                "step_length_touchdown_event_m": METRIC_INDEX[
+                    "tracking/step_length_touchdown_event_m"
+                ],
+                # Per-reward-term tracking signals (ToddlerBot pattern: each
+                # ``Evaluate/<term>`` directly carries the deterministic eval
+                # rollout's exp(-α·error²) value for that term).  These are
+                # what the v0.20.1 G4 promotion-horizon gate floors on.
+                "ref_q_track": METRIC_INDEX["reward/ref_q_track"],
+                "ref_body_quat_track": METRIC_INDEX["reward/ref_body_quat_track"],
+                "ref_feet_pos_track": METRIC_INDEX["reward/ref_feet_pos_track"],
+                "cmd_forward_velocity_track": METRIC_INDEX[
+                    "reward/cmd_forward_velocity_track"
+                ],
+                # Raw error diagnostics (paired with the reward terms above).
+                "ref_q_track_err_rmse": METRIC_INDEX["ref/q_track_err_rmse"],
+                "ref_body_quat_err_deg": METRIC_INDEX["ref/body_quat_err_deg"],
+                "ref_feet_pos_err_l2": METRIC_INDEX["ref/feet_pos_err_l2"],
+                "ref_contact_phase_match": METRIC_INDEX["ref/contact_phase_match"],
+            }
+            walking_metrics = {
+                key: jnp.mean(eval_rollout["metrics_vec"][..., idx])
+                for key, idx in walking_idx.items()
+            }
             return (
                 episode_reward,
                 success_rate,
@@ -1740,6 +1784,7 @@ def train(
                 teacher_com_velocity_target_hit_frac,
                 reward_teacher_recovery_height,
                 reward_teacher_com_velocity_reduction,
+                walking_metrics,
             )
 
         return _runner
@@ -1881,7 +1926,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction, eval_push_walking = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1889,7 +1934,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs, eval_clean_teacher_whole_body_active_frac, eval_clean_teacher_whole_body_active_during_clean_frac, eval_clean_teacher_whole_body_active_during_push_frac, eval_clean_teacher_recovery_height_target_mean, eval_clean_teacher_recovery_height_error, eval_clean_teacher_recovery_height_in_band_frac, eval_clean_teacher_com_velocity_target_mean, eval_clean_teacher_com_velocity_error, eval_clean_teacher_com_velocity_target_hit_frac, eval_clean_reward_teacher_recovery_height, eval_clean_reward_teacher_com_velocity_reduction = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs, eval_clean_teacher_whole_body_active_frac, eval_clean_teacher_whole_body_active_during_clean_frac, eval_clean_teacher_whole_body_active_during_push_frac, eval_clean_teacher_recovery_height_target_mean, eval_clean_teacher_recovery_height_error, eval_clean_teacher_recovery_height_in_band_frac, eval_clean_teacher_com_velocity_target_mean, eval_clean_teacher_com_velocity_error, eval_clean_teacher_com_velocity_target_hit_frac, eval_clean_reward_teacher_recovery_height, eval_clean_reward_teacher_com_velocity_reduction, eval_clean_walking = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1962,6 +2007,7 @@ def train(
                 eval_clean_reward_teacher_com_velocity_reduction = (
                     eval_push_reward_teacher_com_velocity_reduction
                 )
+                eval_clean_walking = eval_push_walking
             jax.block_until_ready(eval_push_success)
 
             eval_push_success_f = float(eval_push_success)
@@ -2130,6 +2176,24 @@ def train(
                     eval_clean_reward_teacher_com_velocity_reduction
                 ),
             }
+            # ToddlerBot-style walking eval block (v0.20.1).  Pulls per-term
+            # walking aggregates from the same deterministic eval rollout.
+            # Mirrors toddlerbot/locomotion/train_mjx.py log_metrics —
+            # checkpoint quality reads off ``Evaluate/episode_length`` and
+            # the ``Evaluate/<term>`` tracking errors, NOT a success_rate.
+            for src, dst_prefix in (
+                (eval_push_walking, "eval_push"),
+                (eval_clean_walking, "eval_clean"),
+            ):
+                for key, value in src.items():
+                    last_eval_metrics[f"{dst_prefix}/{key}"] = float(value)
+            # Also expose the canonical ``Evaluate/*`` namespace (matches
+            # ToddlerBot exactly) — uses the clean-pass values so eval
+            # numbers always describe a non-disturbed deterministic walk.
+            last_eval_metrics["Evaluate/mean_reward"] = float(eval_clean_reward)
+            last_eval_metrics["Evaluate/mean_episode_length"] = float(eval_clean_ep_len)
+            for key, value in eval_clean_walking.items():
+                last_eval_metrics[f"Evaluate/{key}"] = float(value)
             for key, value in last_eval_metrics.items():
                 env_metrics[key] = jnp.asarray(value, dtype=jnp.float32)
 
