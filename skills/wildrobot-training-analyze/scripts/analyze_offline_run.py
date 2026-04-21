@@ -555,11 +555,79 @@ def _changelog_block(
             f"| {fwd_label} | {_format_f(walking.forward_vel_mean, 3)} |",
             f"| env/velocity_cmd | {_format_f(walking.velocity_cmd_mean, 3)} |",
             f"| {verr_label} | {_format_f(walking.velocity_error_mean, 3)} |",
-            f"| reward/gait_periodicity | {_format_f(walking.gait_periodicity_mean, 4)} |",
-            f"| reward/clearance | {_format_f(walking.clearance_mean, 4)} |",
-            f"| reward/hip_swing | {_format_f(walking.hip_swing_mean, 4)} |",
-            f"| reward/knee_swing | {_format_f(walking.knee_swing_mean, 4)} |",
         ]
+
+        # v0.20.1 G4 / G5 diagnostics — print only when the relevant keys
+        # are present in the best row (silently skipped on standing-era runs).
+        v0201_g4_rows = [
+            ("Evaluate/forward_velocity (G4 ≥ 0.075)", "Evaluate/forward_velocity", 3, _format_f),
+            ("Evaluate/mean_episode_length (G4 ≥ 475)", "Evaluate/mean_episode_length", 1, _format_f),
+            ("Evaluate/cmd_vs_achieved_forward (G4 ≤ 0.075)", "Evaluate/cmd_vs_achieved_forward", 3, _format_f),
+            ("tracking/step_length_touchdown_event_m (G4 ≥ 0.030)", "tracking/step_length_touchdown_event_m", 4, _format_f),
+            ("tracking/forward_velocity_cmd_ratio (G5 0.6..1.5)", "tracking/forward_velocity_cmd_ratio", 3, _format_f),
+            ("tracking/residual_hip_pitch_left_abs (G5 ≤ 0.20)", "tracking/residual_hip_pitch_left_abs", 3, _format_f),
+            ("tracking/residual_hip_pitch_right_abs (G5 ≤ 0.20)", "tracking/residual_hip_pitch_right_abs", 3, _format_f),
+            ("tracking/residual_knee_left_abs (G5 ≤ 0.20)", "tracking/residual_knee_left_abs", 3, _format_f),
+            ("tracking/residual_knee_right_abs (G5 ≤ 0.20)", "tracking/residual_knee_right_abs", 3, _format_f),
+        ]
+        for label, key, nd, fmt in v0201_g4_rows:
+            v = g(key)
+            if v is not None:
+                lines.append(f"| {label} | {fmt(v, nd)} |")
+
+        # v0.20.1 imitation-dominant reward family — only print if the
+        # ToddlerBot-aligned terms appear in this row.  Surfaces dead
+        # gradients (large ref/<X>_err_* paired with near-zero
+        # reward/ref_<X>_track) at a glance.
+        v0201_reward_rows = [
+            ("reward/ref_q_track (w=5.0)", "reward/ref_q_track"),
+            ("ref/q_track_err_rmse", "ref/q_track_err_rmse"),
+            ("reward/ref_body_quat_track (w=5.0)", "reward/ref_body_quat_track"),
+            ("ref/body_quat_err_deg", "ref/body_quat_err_deg"),
+            ("reward/ref_feet_pos_track (w=0.15, α=30)", "reward/ref_feet_pos_track"),
+            ("ref/feet_pos_err_l2 (sum-sqr m²)", "ref/feet_pos_err_l2"),
+            ("reward/ref_contact_match (w=0 gated)", "reward/ref_contact_match"),
+            ("ref/contact_phase_match", "ref/contact_phase_match"),
+            ("reward/cmd_forward_velocity_track (w=5.0, α=200)", "reward/cmd_forward_velocity_track"),
+            ("reward/alive (w=10, -done)", "reward/alive"),
+            ("reward/feet_air_time (w=500)", "reward/feet_air_time"),
+            ("reward/feet_clearance (w=1.0)", "reward/feet_clearance"),
+            ("reward/feet_distance (w=1.0)", "reward/feet_distance"),
+            ("reward/torso_pitch_soft (w=0.5)", "reward/torso_pitch_soft"),
+            ("reward/torso_roll_soft (w=0.5)", "reward/torso_roll_soft"),
+            ("reward/slip (w=0.05)", "reward/slip"),
+            ("reward/action_rate (w=-1.0)", "reward/action_rate"),
+        ]
+        for label, key in v0201_reward_rows:
+            v = g(key)
+            if v is not None:
+                lines.append(f"| {label} | {_format_f(v, 4)} |")
+
+        # Per-foot stride / swing-time diagnostics (v0.20.1-smoke2).
+        per_foot_rows = [
+            ("tracking/touchdown_rate_left", "tracking/touchdown_rate_left"),
+            ("tracking/touchdown_rate_right", "tracking/touchdown_rate_right"),
+            ("tracking/swing_air_time_left_event_s (mean over rollout)", "tracking/swing_air_time_left_event_s"),
+            ("tracking/swing_air_time_right_event_s (mean over rollout)", "tracking/swing_air_time_right_event_s"),
+            ("tracking/step_length_left_event_m (mean over rollout)", "tracking/step_length_left_event_m"),
+            ("tracking/step_length_right_event_m (mean over rollout)", "tracking/step_length_right_event_m"),
+        ]
+        for label, key in per_foot_rows:
+            v = g(key)
+            if v is not None:
+                lines.append(f"| {label} | {_format_f(v, 5)} |")
+
+        # Standing-era walking reward terms — kept for backward
+        # compatibility but only print when actually populated.
+        legacy_walking_rows = [
+            ("reward/gait_periodicity", walking.gait_periodicity_mean),
+            ("reward/clearance", walking.clearance_mean),
+            ("reward/hip_swing", walking.hip_swing_mean),
+            ("reward/knee_swing", walking.knee_swing_mean),
+        ]
+        for label, value in legacy_walking_rows:
+            if value is not None:
+                lines.append(f"| {label} | {_format_f(value, 4)} |")
     if fsm.enabled:
         lines += [
             f"| debug/bc_phase | {_format_f(fsm.phase_mean, 3)} |",

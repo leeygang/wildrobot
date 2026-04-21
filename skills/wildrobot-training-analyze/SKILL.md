@@ -1,34 +1,36 @@
 ---
 name: wildrobot-training-analyze
-description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/success metrics, pick the best checkpoint for deployment, debug standing-push and walking runs, diagnose reward/pathology issues, propose v0.xx+1 config/reward/PPO changes using established locomotion best practices, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions, debug why a walking run is not moving or is unstable, or plan the next training iteration.
+description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/tracking metrics, pick the best checkpoint for deployment, debug v0.20.x prior-guided bounded-residual walking runs against ToddlerBot, diagnose reward/pathology issues, propose v0.xx+1 config/reward/PPO changes grounded in ToddlerBot alignment and the v0.20.1 walking_training.md G4/G5 contract, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions, debug why a walking run is not moving / is exploiting the residual / is drifting from the prior, or plan the next training iteration.
 ---
 
 # WildRobot Training Analyze
 
-Use this workflow to (1) analyze a training run, (2) choose a deployable checkpoint, (3) identify the dominant failure mode, and (4) write the result + next-version plan into `training/CHANGELOG.md`.
+Use this workflow to (1) analyze a training run, (2) choose a deployable checkpoint, (3) identify the dominant failure mode against the v0.20.1 contract, (4) compare to ToddlerBot, and (5) write the result + next-version plan into `training/CHANGELOG.md`.
 
-For M3/FSM standing-push runs, also determine whether the stepping controller is actually doing useful work, not merely coexisting with a surviving residual policy.
+The active locomotion target is the v0.20.1 prior-guided bounded-residual PPO contract documented in `training/docs/walking_training.md`. The reference recipe we explicitly track is ToddlerBot (`projects/toddlerbot/toddlerbot/locomotion/{walk.gin,mjx_config.py,walk_env.py,mjx_env.py,train_mjx.py}`); per CLAUDE.md, divergences from ToddlerBot must have a documented rationale.
 
-For walking runs, determine whether the policy is actually learning locomotion or exploiting stationary/posture rewards, and recommend reward / PPO / curriculum changes grounded in standard legged-locomotion practice rather than ad hoc trial-and-error.
+For older standing / M3 runs, use the legacy sections at the bottom.
 
-## Inputs (what you need)
+## Inputs
 
 - Offline run dir: `training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id>/`
-- For checkpoint selection: matching checkpoint dir in `training/checkpoints/*-<run_id>/` (usually exists).
-- Code is in 'training'
-- training Config is in 'training/configs'
-- Wildrobot mujoco xml:  'assets/v2/wildrobot.xml'
+- For checkpoint selection: matching dir in `training/checkpoints/*-<run_id>/`
+- Code: `training/`
+- Configs: `training/configs/`
+- MuJoCo XML: `assets/v2/wildrobot.xml`
+- Source of truth for the walking contract: `training/docs/walking_training.md` (v0.20.1 §)
+- ToddlerBot reference: `~/projects/toddlerbot/toddlerbot/locomotion/`
 
 ## Quick commands
 
-Run the analysis script (prints best checkpoint + a changelog-ready markdown block):
+Single run (prints best checkpoint + a changelog-ready markdown block):
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scripts/analyze_offline_run.py \
   --run-dir training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id>
 ```
 
-Compare two runs (prints side-by-side summary + which checkpoint to deploy):
+Compare two runs:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scripts/compare_offline_runs.py \
@@ -36,242 +38,241 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scrip
   --run-dir-b training/wandb/offline-run-...-<run_id_b>
 ```
 
-## Checkpoint selection rules
+The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls through to legacy `eval_clean/` / `eval/` / `env/` order for older runs. Both tools share `_first_present` (handles `0.0` correctly) and the same synthetic-success cap.
 
-### standing_push
+---
 
-Prefer eval-based metrics over training-rollout metrics.
+## v0.20.1 walking analysis (active path)
 
-1. If `eval_push/success_rate` exists: maximize `(eval_push/success_rate, eval_push/episode_length)`.
-2. Else if `eval/success_rate` exists: maximize `(eval/success_rate, eval/episode_length)`.
-3. Else (no eval): maximize `(env/success_rate, env/episode_length)` as a fallback only.
+### Architecture recap (what the policy is being asked to do)
 
-Then select the checkpoint file:
+```
+ZMP offline library  →  per-step window (q_ref, foot/pelvis targets, contact mask)
+                              ↓
+                      observation (actor sees q_ref + short preview + proprio + 15-frame history)
+                              ↓
+                      policy outputs Δq_policy (bounded ±0.25 rad on legs)
+                              ↓
+                      q_target = q_ref + Δq_policy
+                              ↓
+                      MuJoCo step + imitation-dominant reward
+```
 
-- Prefer `training/checkpoints/*-<run_id>/checkpoint_<iter>_<step>.pkl` when it exists.
-- Otherwise pick `checkpoint_<iter>_*.pkl` within the run’s checkpoint dir.
+**Division of labor** (load-bearing):
+- **Prior owns** step length, cadence, foothold geometry, contact schedule.
+- **PPO owns** small joint corrections for servo lag, contact noise, sim2real mismatch, balance.
 
-### walking
+A run that violates this division is the primary failure mode (see G5 below).
 
-Prefer eval-based locomotion metrics over training-rollout metrics.
+### Checkpoint selection rules
 
-1. If `eval/success_rate` and velocity metrics exist: maximize
-   `(eval/success_rate, -abs(eval/velocity_error), eval/episode_length)`.
-2. Else if `env/success_rate` and velocity metrics exist: maximize
-   `(env/success_rate, -abs(env/velocity_error), env/episode_length)`.
-3. If there is no reliable velocity metric, do **not** select by reward alone; first call out that checkpoint selection is ambiguous.
+The analyzer encodes these. Walking runs:
 
-For walking, a high-reward checkpoint with near-zero forward velocity is usually **not** deployable, even if survival is excellent.
+1. **If `Evaluate/mean_reward` exists** (v0.20.1-smoke2 onward): maximize `(Evaluate/mean_reward, Evaluate/mean_episode_length)`. This is the ToddlerBot pattern from `train_mjx.py:log_metrics` — no `success_rate` concept, mean reward already encodes "alive AND tracking AND posture" because the imitation block weights are right.
+2. **Else `eval_clean/success_rate`** (older logs): maximize `(eval_clean/success_rate, eval_clean/episode_length)`.
+3. **Else `eval/success_rate`** (older logs): same.
+4. **Else `env/success_rate`** (legacy fallback only). For v0.20.x walking this is permanently 0 (truncation-based); flag the run as "no eval — selection ambiguous".
 
-## What to optimize (standing stability)
+Do **not** select walking checkpoints by `env/episode_length` alone — a stationary "survive but don't walk" run will saturate it.
 
-Use the analysis output to answer:
+### v0.20.1 G4 / G5 acceptance gates (load-bearing)
 
-- **Main failure mode**: which termination dominates? (`term_height_low_frac`, `term_pitch_frac`, `term_roll_frac`, …)
-- **Actuation stress**: prefer torque saturation, not action saturation:
-  - `tracking/max_torque`, `debug/torque_sat_frac`, `debug/torque_abs_max`
-- **PPO stability**: `ppo/clip_fraction`, `ppo/approx_kl`, `ppo/lr_backoff_*`, `ppo/epochs_used`
+These come from `walking_training.md` v0.20.1 §. Always evaluate the smoke against them explicitly.
 
-Typical high-ROI next changes:
+**G4 promotion-horizon gate** (eval rollout, deterministic):
 
-- If `term_height_low_frac` dominates: add/strengthen pre-collapse shaping (height margin + downward v_z gate) or tune its weights.
-- If torque saturation is high: increase `reward/saturation` penalty slightly, add curriculum on pushes, or adjust action smoothing.
-- If KL backoff triggers early: use LR warmup or relax backoff trigger (e.g. increase `ppo.kl_lr_backoff_multiplier`).
-- Always: log separate `eval_clean/*` (no pushes) and `eval_push/*` (pushes) when debugging robustness vs base quality.
+| Metric | Floor | Source |
+|---|---|---|
+| `env/forward_velocity` | ≥ 0.075 m/s | train rollout |
+| `Evaluate/forward_velocity` | ≥ 0.075 m/s | eval rollout |
+| `Evaluate/mean_episode_length` | ≥ 475 (95% of 500) | eval rollout |
+| `Evaluate/cmd_vs_achieved_forward` | ≤ 0.075 m/s | eval rollout |
+| `tracking/cmd_vs_achieved_forward` | ≤ 0.075 m/s | train rollout |
+| `tracking/step_length_touchdown_event_m` | ≥ 0.030 m | train rollout |
 
-## Walking analysis extension
+**G5 anti-exploit gate** (catches "policy invents propulsion the prior should own"):
 
-Use this section whenever the run's intent is gait learning, for example when config/version/changelog mentions:
-- `ppo_walking`
-- `walking`
-- non-zero velocity commands
-- Stage 1 / PPO-only walking
+| Metric | Bound | What it catches |
+|---|---|---|
+| `tracking/residual_hip_pitch_left/right_abs` (mean ≈ p50) | ≤ 0.20 rad | residual stays a correction, not a replacement gait |
+| `tracking/residual_knee_left/right_abs` (mean ≈ p50) | ≤ 0.20 rad | same |
+| `tracking/forward_velocity_cmd_ratio` | 0.6 ≤ ratio ≤ 1.5 | both undershoot and v0.19.5 "lean-and-skate" overshoot |
 
-### What to optimize (walking)
+A run can pass forward_velocity AND fail G5 — that's a false positive (residual-driven exploit gait). Always report G5 separately.
 
-Judge the run on locomotion first, not just reward:
-- **Velocity tracking**: `env/forward_velocity`, `env/velocity_cmd`, `env/velocity_error`
-- **Survival / stability**: `env/episode_length`, `env/success_rate`, `term_height_low_frac`, `term_pitch_frac`, `term_roll_frac`
-- **Actuation stress**: `tracking/max_torque`, `debug/torque_sat_frac`, `debug/action_sat_frac`
-- **Gait structure**: `reward/gait_periodicity`, `reward/clearance`, `reward/hip_swing`, `reward/knee_swing`, `reward/slip`
-- **PPO stability**: `ppo/clip_fraction`, `ppo/approx_kl`, `ppo/lr_backoff_*`, `ppo/epochs_used`
+**G7 baseline-beat sanity** (informational):
+- Open-loop bare-q_ref baseline at vx=0.15: `forward_velocity ≈ -0.09`, `episode_length ≈ 77`, `term_pitch_frac ≈ 1.0`.
+- A trained policy must beat all three.
 
-### Walking success criteria
+### v0.20.1 reward family — what each term measures
 
-Call a walking run promising only when most of these are true:
-- forward velocity is materially above zero and moving toward the commanded range
-- velocity error is trending down
-- episode length stays high enough that motion is sustainable
-- torque stress is not exploding
-- gait metrics suggest alternating support rather than stationary rocking or hopping
+| Block | Term | Weight | What it pulls toward |
+|---|---|---|---|
+| imitation | `reward/ref_q_track` | 5.0 | joint targets match `q_ref` (α=1, exp(-α·sum((q-q_ref)²))) |
+| imitation | `reward/ref_body_quat_track` | 5.0 | torso orientation matches reference (α=20) |
+| imitation | `reward/ref_feet_pos_track` | 0.15 | feet at the prior's foothold positions (α=30 in smoke; see note) |
+| imitation | `reward/ref_contact_match` | 0.0 (gated) | smooth Gaussian per-foot contact match |
+| task | `reward/cmd_forward_velocity_track` | 5.0 | actual `vx` matches `cmd_vx` (α=200) |
+| ToddlerBot shaping | `reward/feet_air_time` | 500.0 | swing-leg air time at touchdown (cmd-gated) |
+| ToddlerBot shaping | `reward/feet_clearance` | 1.0 | per-foot peak swing height at touchdown |
+| ToddlerBot shaping | `reward/feet_distance` | 1.0 | lateral foot spacing band [0.07, 0.13] m in torso frame |
+| ToddlerBot shaping | `reward/torso_pitch_soft` | 0.5 | soft pitch band [-0.2, 0.2] rad |
+| ToddlerBot shaping | `reward/torso_roll_soft` | 0.5 | soft roll band [-0.1, 0.1] rad |
+| survival | `reward/alive` | 10.0 | strict ToddlerBot `-done` (0 while alive, `-10·dt` on terminal step) |
+| regularizer | `reward/action_rate` | -1.0 | smoothness |
+| regularizer | `reward/torque` | -0.001 | energy |
+| regularizer | `reward/joint_vel` | -0.0005 | joint velocity penalty |
+| regularizer | `reward/slip` | 0.05 | stance-foot horizontal slip penalty |
+| diagnostic-only | `reward/pitch_rate` | 0.0 (M1 hook) | promoted only on the M1 "balance issue" branch |
 
-### Walking failure signatures
+**Reward integration rule** (load-bearing): reward = `sum(reward_dict.values()) * dt`. Without the `* dt` rescale the published ToddlerBot weights are NOT directly portable.
 
-Call these out explicitly if seen:
-- **standing local minimum**:
-  - `forward_velocity ~= 0`
-  - high survival
-  - high reward driven by posture / healthy terms
-- **posture exploit**:
-  - forward velocity stays near zero
-  - pitch failures and torque rise
-  - reward rises anyway
-- **hopping exploit**:
-  - some speed appears
-  - `flight_phase_penalty` / contact metrics indicate both feet frequently unloaded
-- **shuffle exploit**:
-  - some speed appears
-  - low clearance / swing rewards
-  - high torque / saturation
-- **reward incoherence**:
-  - reward improves while velocity error does not
-  - checkpoint selection by reward conflicts with locomotion quality
+**Survival semantics**: `_reward_survival = -done` at weight 10 → 0 while alive, `-10·dt = -0.2` on the terminating step. This is NOT a dense per-step bonus — that mistake biases PPO toward any long-lived behavior.
+
+### v0.20.1 raw error diagnostics (paired with reward terms)
+
+Use these to diagnose dead-gradient terms (large persistent error + zero reward contribution):
+
+| Diagnostic | Paired reward term | Healthy range at vx=0.15 |
+|---|---|---|
+| `ref/q_track_err_rmse` | `reward/ref_q_track` | < 0.10 rad RMSE |
+| `ref/body_quat_err_deg` | `reward/ref_body_quat_track` | < 10 deg by mid-horizon |
+| `ref/feet_pos_err_l2` | `reward/ref_feet_pos_track` | < 0.30 m sum-of-squares L2 (smoke1 grew to 1.02 — dead gradient) |
+| `ref/contact_phase_match` | `reward/ref_contact_match` | > 0.80; if < 0.85, gate the term to weight 0 |
+
+### Per-foot stride / swing-time diagnostics
+
+Added in v0.20.1-smoke2. Use to debug short-stride failures (smoke1 hit step_length 0.022 m vs 0.030 m gate; per-foot data tells us if one foot is doing all the stepping):
+
+| Metric | Reducer | Per-event mean computation |
+|---|---|---|
+| `tracking/touchdown_rate_left/right` | MEAN | rate = events / ctrl_step |
+| `tracking/swing_air_time_left/right_event_s` | MEAN | mean swing time per event = value / touchdown_rate |
+| `tracking/step_length_left/right_event_m` | MEAN | mean step length per event = value / touchdown_rate |
+
+Symmetry check: `touchdown_rate_left ≈ touchdown_rate_right`; gross asymmetry indicates the policy is stepping with one leg only.
+
+### Walking failure signatures (v0.19.5 / v0.20.1-aware)
+
+Call these out explicitly:
+
+- **standing local minimum** — `forward_velocity ≈ 0`, `episode_length` near horizon, reward driven by survival + soft posture. Action: prior is too easy to ignore; check `tracking/forward_velocity_cmd_ratio` < 0.5.
+- **lean-and-skate exploit (v0.19.5 pattern)** — `forward_velocity` overshoots cmd by 1.5x+, `tracking/forward_velocity_cmd_ratio > 1.5`, residual saturates G5 bound on hip_pitch. Action: tighten residual bound, do NOT increase cmd_vx reward weight.
+- **shuffle exploit (v0.20.1-smoke1 pattern)** — `forward_velocity` near cmd, `episode_length` saturated, but `tracking/step_length_touchdown_event_m < 0.025` and per-foot step lengths small on both feet. The policy is making cmd_vx via short fast steps instead of tracking the prior's foothold geometry. Action: check `ref/feet_pos_err_l2` is in the alive-gradient range; consider lowering `ref_feet_pos_alpha`.
+- **gait drift** — `ref/contact_phase_match` decreases over training while `forward_velocity` increases. Action: if `ref_contact_match` weight is 0, this is expected (the contact-alignment probe gates the term); if the term is enabled, increase weight on `ref/contact_phase_match` and `ref/q_track`.
+- **dead-gradient term** — large persistent `ref/<X>_err_*` paired with near-zero `reward/ref_<X>_track`. Means α is too tight for the observed error magnitude. Action: lower α to give r ≈ 0.2-0.3 at the iter-1 baseline error.
+- **propulsion mis-assigned to PPO (G5 violation)** — forward_velocity meets gate but `|residual_p50|_{hip,knee}` > 0.20 rad. Action: tighten G1 residual bound by 50% and rerun; if still failing, prior is too weak — return to v0.20.0-x prior surgery (per the M1 fail-mode tree in `walking_training.md`).
+- **truncation-based success_rate is meaningless** — `env/success_rate` is permanently 0 for v0.20.x walking. Never gate on it; never sort checkpoints by it.
+
+### Comparing to ToddlerBot
+
+Always do this comparison when reviewing a v0.20.x walking run. Source: `~/projects/toddlerbot/toddlerbot/locomotion/`.
+
+| Concern | WildRobot v0.20.1 | ToddlerBot | Aligned? |
+|---|---|---|---|
+| Eval namespace | `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/<term>` | `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/<term>` (`train_mjx.py:385-410`) | ✅ |
+| `success_rate` concept | none for walking | none anywhere | ✅ |
+| Termination | height-only (`use_relaxed_termination: true`) | height-only (`mjx_env.py:1029`) | ✅ |
+| Frame stack | `PROPRIO_HISTORY_FRAMES=15` | `c_frame_stack=15` (`mjx_config.py:74`) | ✅ |
+| Action delay | `action_delay_steps: 1` | `n_steps_delay=1` (`mjx_config.py:96`) | ✅ |
+| Action contract | `q = q_ref + clip(action) · 0.25` (legs) | `q = default_q + action · 0.25` (`walk_env.py`) | ✅ |
+| `motor_pos` ↔ `ref_q_track` | 5.0 | 5.0 (`walk.gin:22`) | ✅ |
+| `torso_quat` ↔ `ref_body_quat_track` | 5.0 | 5.0 (`walk.gin:15`) | ✅ |
+| `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0, α=200 | 5.0, α=200 (`walk.gin:18`, `mjx_config.py:106`) | ✅ |
+| `feet_air_time` | 500.0 | 500.0 (`walk.gin:29`) | ✅ |
+| `feet_clearance` | 1.0 | 1.0 (`walk.gin:32`) | ✅ |
+| `feet_distance` | 1.0, range [0.07, 0.13] | 1.0, [0.07, 0.13] (`walk.gin:30`, `mjx_config.py:108`) | ✅ |
+| `torso_pitch/roll_soft` | 0.5/0.5 | 0.5/0.5 (`walk.gin:16-17`) | ✅ |
+| `feet_slip` ↔ `slip` | 0.05 | 0.05 (`walk.gin:31`) | ✅ |
+| `survival` ↔ `alive` | 10.0, `-done` semantics | 10.0, `-done` (`walk.gin:28`, `mjx_env.py:1897-1914`) | ✅ |
+| Reward integration | `sum(...) * dt` | `sum(...) * dt` (`mjx_env.py:1048`) | ✅ |
+| `action_rate` | -1.0 (× neg-MSE-equivalent) | 1.0 × neg-MSE (`walk.gin:25`) | ✅ |
+| `torso_pos_xy` reward | not used | 2.0 (`walk.gin:14`) | ⚠️ deferred (covered by ref/feet+pelvis tracking) |
+| `lin_vel_z`, `ang_vel_xy`, `ang_vel_z` | not used | 1.0 / 2.0 / 5.0 | ⚠️ deferred |
+| `ref_feet_pos_track` α | 30 (smoke override) | n/a (no feet-pos imitation; uses feet_distance + air_time + clearance instead) | ⚠️ WildRobot-specific addition; α=30 documented (sum-sqr in world frame at iter-1 ≈ 0.048 m² → α=30 gives r≈0.24); v0.20.2 plan: switch to body-frame Euclidean and restore α=200 |
+| `ref_contact_match` | 0.5 sigma Gaussian, weight 0 (gated) | feet_contact 1.0 (boolean) | ⚠️ WildRobot-specific Gaussian; gate until contact-alignment probe passes |
+| Multi-command sampling | `cmd_resample_steps: 0` (smoke single-point) | `resample_time=3.0s` (`walk.gin`) | ⏸ deferred to v0.20.4 |
+| Domain randomization | OFF in smoke | ON by default | ⏸ deferred to v0.20.2 |
+| G4 / G5 / G7 gates | WildRobot-specific | n/a | ⚠️ acceptance criteria are WildRobot-specific (we have no equivalent eval ladder); kept |
+
+When a run violates the contract on a row marked ✅, surface it as a bug. When it diverges on a ⚠️ row, confirm the rationale is current; if not, flag as drift.
 
 ### Walking interpretation rules
 
-- If velocity is near zero, do **not** say "still training" by default. First check whether the run is actually trapped in standing.
-- If a standing-resume run stays near zero velocity after roughly `80-120` iterations, strongly consider that the warm start is counterproductive.
-- If reward goes up while velocity error worsens, prioritize diagnosing reward exploitation over tuning PPO.
-- If `eval_push/*` is perfect but pushes are disabled in config, say explicitly that this eval is not informative.
-
-### Walking best-practice interventions
-
-Prefer these interventions before inventing new reward terms:
-
-1. **Task reward must dominate stationary survival**
-   - velocity tracking should create a large reward gap between standing still and matching the command
-   - standing-still penalty must matter when command > 0
-2. **Avoid large flat positive alive bonuses**
-   - especially if they can outweigh failed velocity tracking
-3. **Reduce action lag when gait is sluggish**
-   - lower action filtering if policy is overly damped
-4. **Use command curricula**
-   - start with a conservative forward range like `0.1-0.6 m/s`
-   - only widen once gait exists
-5. **Do not overconstrain early gait emergence**
-   - too much upright / slip / smoothness penalty can trap standing or produce shuffling
-6. **Be careful with standing warm starts**
-   - if they preserve a standing local minimum, switch to fresh-run walking
-7. **Use PPO tuning conservatively**
-   - increase LR / entropy to escape local minima
-   - disable rollback during transition runs if rollback preserves the bad solution
-   - but keep policy-contract and rollout-geometry resume guards hard
+- If `Evaluate/forward_velocity` is near zero AND `Evaluate/mean_episode_length` is near horizon → **standing local minimum** — call it out, don't say "still training".
+- If `Evaluate/forward_velocity` meets gate AND `tracking/forward_velocity_cmd_ratio` is in band AND G5 residual mean ≤ 0.20 → **locomotion emerging**. Recommend the iter that maximizes `Evaluate/mean_reward`.
+- If `Evaluate/forward_velocity` meets gate AND G5 fails → **action-authority leak / propulsion mis-assigned**. Per M1 fail-mode tree: tighten G1 residual bound 50%, do NOT relax G5.
+- If `tracking/cmd_vs_achieved_forward` mean is high (> 0.075) AND `Evaluate/mean_episode_length` is near horizon → **balance achieved, tracking weak**. Check whether `cmd_forward_velocity_alpha` is the published 200 (an earlier α=4 made the gradient flat).
+- If `ref/feet_pos_err_l2` grows over training while `reward/ref_feet_pos_track` stays at 0 → **dead-gradient term**. Lower the alpha (smoke uses 30, not 200).
+- If `term_pitch_frac > 0.5` AND `forward_velocity` meets gate AND G5 passes → **balance issue (M1 branch)**. Increase regularizer weight on `pitch_rate` (M1 hook is pre-wired at weight 0); consider widening residual bound on ankle pitch only.
 
 ### Walking next-step template
 
-When summarizing a walking run, use wording like:
-
 ```text
-Walking verdict:
-- locomotion emerging / trapped in standing / posture exploit / hopping exploit / shuffle exploit
-- velocity tracking: improving / flat / regressing
-- stability: good / acceptable / poor
+v0.20.1 verdict:
+- locomotion emerging / standing local minimum / lean-and-skate exploit / shuffle exploit / dead-gradient on <term> / gait drift / balance issue
+- G4: forward_velocity <pass/fail> | mean_episode_length <pass/fail> | cmd_vs_achieved <pass/fail> | step_length <pass/fail>
+- G5: residual_p50 <pass/fail> | velocity_cmd_ratio <pass/fail>
+- G7 baseline-beat: <pass/fail>
+- ToddlerBot alignment: <ok / drift on <row(s)>>
 ```
 
-Then recommend one of:
-- continue training unchanged
-- continue training with PPO retuning
-- retune reward weights using standard locomotion priorities
-- restart from scratch (no resume)
-- add curriculum
+Then recommend one of (per the M1 fail-mode tree):
+- continue training to the M2 compute cap unchanged
+- prior surgery (return to v0.20.0-x; do NOT relax G5)
+- tighten G1 residual bound 50% and rerun
+- promote the M1 `pitch_rate` regularizer
+- regenerate the offline reference library
 
-### Walking design guidance
+### Walking design guidance (when planning the next config)
 
-When asked to design the next walking config, prefer this order:
-1. make the task objective unambiguous
-2. remove or reduce rewards that pay for standing still
-3. check whether warm start is hurting more than helping
-4. only then tune PPO hyperparameters
+Order of operations:
+1. **Confirm the pre-smoke probes pass.** Zero-action q_ref replay (G6 invariant), contact-alignment probe (gates `ref_contact_match` weight), prior-vs-body sanity (`tools/v0200c_per_frame_probe.py`).
+2. **Match ToddlerBot weights.** Use Appendix A of `walking_training.md` as the alignment audit. Divergences need explicit rationale.
+3. **Don't invent new reward terms** when standard locomotion terms cover the problem. The current reward family is already imitation + cmd + ToddlerBot shaping + survival + small regularizers.
+4. **Don't relax G5** to fix a forward-velocity miss. G5 is the anti-exploit gate; relaxing it brings back v0.19.5.
+5. **PPO hyperparameters last.** Learning rate / entropy / KL backoff are the last knobs to touch.
 
-Do **not** default to inventing new custom reward terms if standard locomotion terms already cover the problem:
-- velocity tracking
-- uprightness / termination limits
-- torque / saturation penalties
-- action smoothness
-- slip
-- clearance
-- gait periodicity
+Forbidden moves (will reintroduce known failure modes):
+- adding a flat positive `alive` bonus (was the v0.19.5b lean-back exploit enabler)
+- raising the leg residual bound past ±0.50 rad
+- removing the `* dt` reward integration
+- ranking checkpoints by `env/success_rate` or `env/episode_length` alone
 
-## M3 / FSM analysis extension
+---
 
-Use this section whenever the run enables the foot-placement state machine, for example when config/version/changelog mentions:
-- `env.fsm_enabled: true`
-- `M3`
-- `FSM`
-- `foot-placement`
+## Legacy: standing / M3 / FSM analysis
 
-### M3 expectations
+Use only for runs that pre-date the v0.20.x prior-guided contract (config mentions `ppo_standing`, `M3`, `FSM`, `env.fsm_enabled: true`, or has zero velocity command).
 
-The first question is not only "did reward go up?" but:
-- did the robot actually enter swing under pushes?
-- did stepping improve support in the disturbance direction?
-- did the robot recover back toward upright after touchdown?
+### standing_push checkpoint selection
 
-For M3, evaluate both:
-- **Mechanism**: is the FSM/controller being used correctly?
-- **Outcome**: does that usage improve push recovery and posture return?
+1. If `eval_push/success_rate` exists: maximize `(eval_push/success_rate, eval_push/episode_length)`.
+2. Else if `eval/success_rate` exists: maximize `(eval/success_rate, eval/episode_length)`.
+3. Else: maximize `(env/success_rate, env/episode_length)` as a fallback only.
 
-### M3 mechanism signals to review
+### Standing stability metrics
 
-Always inspect these when present:
-- `debug/bc_phase`
-- `debug/bc_phase_ticks`
-- `debug/bc_swing_foot`
-- `debug/need_step`
-- `reward/step_event`
-- `reward/foot_place`
-- `debug/touchdown_left`
-- `debug/touchdown_right`
+- **Main failure mode**: which termination dominates? (`term_height_low_frac`, `term_pitch_frac`, `term_roll_frac`)
+- **Actuation stress**: `tracking/max_torque`, `debug/torque_sat_frac`, `debug/torque_abs_max`
+- **PPO stability**: `ppo/clip_fraction`, `ppo/approx_kl`, `ppo/lr_backoff_*`, `ppo/epochs_used`
 
-Interpretation:
-- `debug/bc_phase` should show meaningful occupancy in `SWING`, not only `STANCE`.
-- `reward/step_event` should be measurably above zero in disturbed evaluation.
-- `reward/foot_place` should rise alongside step events; low/flat values suggest random or poor touchdown placement.
-- `debug/bc_phase_ticks` should not be dominated by long swing phases that imply repeated timeout-driven steps.
-- touchdown flags should occur when `debug/need_step` is elevated, not mostly during quiet standing.
+Typical high-ROI changes:
+- `term_height_low_frac` dominates → strengthen pre-collapse shaping (height margin + downward v_z gate).
+- Torque saturation high → increase `reward/saturation`, add push curriculum, adjust action smoothing.
+- KL backoff triggers early → LR warmup or relax `ppo.kl_lr_backoff_multiplier`.
 
-### M3 outcome signals to review
+### M3 / FSM extension
 
-Keep the existing standing-push metrics, but interpret them through the controller behavior:
-- `eval_push/success_rate`
-- `eval_push/episode_length`
-- `eval_push/survival_rate`
-- `eval_push/term_height_low_frac`
-- `eval_push/term_pitch_frac`
-- `eval_push/term_roll_frac`
-- `reward/posture`
-- `tracking/max_torque`
-- `debug/torque_sat_frac`
+For runs with `env.fsm_enabled: true`. Evaluate both **mechanism** (is the FSM being used?) and **outcome** (does it improve recovery?).
 
-Desired pattern for a good M3 run:
-- `eval_push/success_rate` matches or exceeds the M2 baseline
-- `reward/step_event` and `reward/foot_place` rise under pushes
-- terminations are reduced, especially immediate collapse after disturbance
-- `reward/posture` recovers after the push instead of staying flat/low
-- torque saturation does not spike catastrophically compared with M2
+Mechanism signals: `debug/bc_phase`, `debug/bc_phase_ticks`, `debug/bc_swing_foot`, `debug/need_step`, `reward/step_event`, `reward/foot_place`, `debug/touchdown_left/right`.
 
-### M3 success criteria
+Outcome signals: `eval_push/{success_rate, episode_length, survival_rate, term_*}`, `reward/posture`, `tracking/max_torque`, `debug/torque_sat_frac`.
 
-Call an M3 run promising when most of the following are true:
-- `SWING` is clearly used during push recovery
-- step events are touchdown-driven, not mostly timeout-driven
-- `foot_place` is non-trivial and stable
-- hard-push survival improves or at least matches M2 with visibly clearer stepping
-- the robot returns toward neutral/upright after the disturbance
+Promising M3 run: SWING used during push recovery; touchdown-driven (not timeout-driven); `foot_place` non-trivial; hard-push survival ≥ M2 baseline; robot returns toward upright post-disturbance.
 
-### M3 failure signatures
-
-Call these out explicitly if seen:
-- `SWING` rarely occurs even under hard pushes
-- swing phases are mostly timeout-driven
-- the policy survives mainly through residual bracing while FSM metrics stay weak
-- steps occur but the robot does not regain upright posture afterward
-- waist/arm compensation appears active but foot placement remains ineffective
-- success rate is flat while torque stress rises materially
-
-### Recommended M3 analysis wording
-
-When summarizing an M3 run, include a short controller verdict:
+Failure: SWING rarely occurs even under hard pushes; swing mostly timeout-driven; success flat while torque rises; waist/arm compensation active but foot placement ineffective.
 
 ```text
 FSM verdict:
@@ -280,22 +281,18 @@ FSM verdict:
 - upright recovery: good / partial / poor
 ```
 
-And then state the next action clearly:
-- keep training and tune reward/curriculum
-- reduce residual authority further
-- tune swing timing / touchdown thresholds
-- tune posture recovery
-- disable or weaken waist/arm damping if it masks stepping
+---
 
 ## CHANGELOG update checklist
 
-1. Add a new entry for the new training version (v0.xx+1): config + code changes.
+1. Add a new entry for the next training version (v0.xx+1): config + code changes.
 2. Under the current version entry, record:
    - run path, checkpoint dir, best checkpoint path
-   - best eval metrics + final metrics
-   - observed failure mode(s) and what to change next
-   - for M3/FSM runs: FSM verdict, step-event/foot-place behavior, and whether upright recovery is achieved
-   - for walking runs: locomotion verdict, velocity tracking status, and whether reward appears to be exploited
-3. put the latest version's Changelog on top of the doc.
+   - For v0.20.x walking: G4 row-by-row pass/fail, G5 residual + velocity_cmd_ratio, G7 baseline-beat, ToddlerBot alignment status
+   - Best `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/forward_velocity`, `Evaluate/cmd_vs_achieved_forward` at the chosen checkpoint
+   - Concerning trends not gated (e.g. `ref/feet_pos_err_l2` growth, `ref/contact_phase_match` drift)
+   - Observed failure mode(s) per the v0.19.5 / v0.20.1 signature list and the recommended next intervention per the M1 fail-mode tree
+   - For older M3/FSM runs: FSM verdict, step-event/foot-place behavior, upright recovery
+3. Newest version entry on top.
 
 The scripts print a markdown block intended to paste into `training/CHANGELOG.md`.
