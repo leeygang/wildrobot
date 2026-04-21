@@ -18,31 +18,11 @@ class EvalKeySet:
 
 
 @dataclass(frozen=True)
-class FsmSummary:
-    enabled: bool
-    phase_mean: Optional[float]
-    phase_ticks_mean: Optional[float]
-    swing_occupancy: Optional[float]
-    step_event_mean: Optional[float]
-    foot_place_mean: Optional[float]
-    touchdown_mean: Optional[float]
-    need_step_mean: Optional[float]
-    posture_mean: Optional[float]
-    verdict: str
-    touchdown_style: str
-    upright_recovery: str
-
-
-@dataclass(frozen=True)
 class WalkingSummary:
     enabled: bool
     forward_vel_mean: Optional[float]
     velocity_cmd_mean: Optional[float]
     velocity_error_mean: Optional[float]
-    gait_periodicity_mean: Optional[float]
-    clearance_mean: Optional[float]
-    hip_swing_mean: Optional[float]
-    knee_swing_mean: Optional[float]
     verdict: str
     tracking_status: str
     stability: str
@@ -243,13 +223,6 @@ def _format_f(x: Optional[float], nd: int = 3) -> str:
     return f"{x:.{nd}f}"
 
 
-def _is_fsm_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
-    env = cfg.get("config", {}).get("env", {})
-    if bool(env.get("fsm_enabled", False)):
-        return True
-    return any("debug/bc_phase" in r for r in rows)
-
-
 def _is_walking_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
     env = cfg.get("config", {}).get("env", {})
     try:
@@ -260,95 +233,10 @@ def _is_walking_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
     walking_keys = (
         "env/forward_velocity",
         "env/velocity_cmd",
-        "env/velocity_error",
-        "reward/gait_periodicity",
+        "Evaluate/forward_velocity",
+        "tracking/cmd_vs_achieved_forward",
     )
     return any(any(k in r for k in walking_keys) for r in rows)
-
-
-def _classify_fsm(
-    rows: List[Dict[str, Any]],
-    *,
-    min_iter: int,
-    cfg: Dict[str, Any],
-) -> FsmSummary:
-    if not _is_fsm_run(cfg, rows):
-        return FsmSummary(
-            enabled=False,
-            phase_mean=None,
-            phase_ticks_mean=None,
-            swing_occupancy=None,
-            step_event_mean=None,
-            foot_place_mean=None,
-            touchdown_mean=None,
-            need_step_mean=None,
-            posture_mean=None,
-            verdict="not_applicable",
-            touchdown_style="not_applicable",
-            upright_recovery="not_applicable",
-        )
-
-    phase_vals = _collect_series(rows, "debug/bc_phase", min_iter=min_iter)
-    in_swing_vals = _collect_series(rows, "debug/bc_in_swing", min_iter=min_iter)
-    phase_ticks_vals = _collect_series(rows, "debug/bc_phase_ticks", min_iter=min_iter)
-    step_event_vals = _collect_series(rows, "reward/step_event", min_iter=min_iter)
-    foot_place_vals = _collect_series(rows, "reward/foot_place", min_iter=min_iter)
-    touchdown_left = _collect_series(rows, "debug/touchdown_left", min_iter=min_iter)
-    touchdown_right = _collect_series(rows, "debug/touchdown_right", min_iter=min_iter)
-    need_step_vals = _collect_series(rows, "debug/need_step", min_iter=min_iter)
-    posture_vals = _collect_series(rows, "reward/posture", min_iter=min_iter)
-
-    phase_mean = _mean(phase_vals)
-    phase_ticks_mean = _mean(phase_ticks_vals)
-    step_event_mean = _mean(step_event_vals)
-    foot_place_mean = _mean(foot_place_vals)
-    touchdown_mean = _mean((touchdown_left or []) + (touchdown_right or []))
-    need_step_mean = _mean(need_step_vals)
-    posture_mean = _mean(posture_vals)
-    swing_occupancy = _mean(in_swing_vals) if in_swing_vals else None
-    if swing_occupancy is None and phase_vals:
-        swing_occupancy = _mean([max(0.0, min(1.0, v)) for v in phase_vals])
-
-    if swing_occupancy is None or swing_occupancy < 0.02:
-        verdict = "not meaningfully engaged"
-    elif step_event_mean is None or step_event_mean < 0.01:
-        verdict = "weakly engaged"
-    else:
-        verdict = "engaged"
-
-    timeout_ticks = float(cfg.get("config", {}).get("env", {}).get("fsm_swing_timeout_ticks", 12))
-    if step_event_mean is None or touchdown_mean is None:
-        touchdown_style = "unknown"
-    elif step_event_mean >= 0.01 and touchdown_mean >= 0.005:
-        touchdown_style = "touchdown-driven"
-    elif phase_ticks_mean is not None and phase_ticks_mean > 0.8 * timeout_ticks:
-        touchdown_style = "timeout-driven"
-    else:
-        touchdown_style = "mixed"
-
-    if posture_mean is None:
-        upright_recovery = "unknown"
-    elif posture_mean >= 0.10:
-        upright_recovery = "good"
-    elif posture_mean >= 0.03:
-        upright_recovery = "partial"
-    else:
-        upright_recovery = "poor"
-
-    return FsmSummary(
-        enabled=True,
-        phase_mean=phase_mean,
-        phase_ticks_mean=phase_ticks_mean,
-        swing_occupancy=swing_occupancy,
-        step_event_mean=step_event_mean,
-        foot_place_mean=foot_place_mean,
-        touchdown_mean=touchdown_mean,
-        need_step_mean=need_step_mean,
-        posture_mean=posture_mean,
-        verdict=verdict,
-        touchdown_style=touchdown_style,
-        upright_recovery=upright_recovery,
-    )
 
 
 def _classify_walking(
@@ -363,10 +251,6 @@ def _classify_walking(
             forward_vel_mean=None,
             velocity_cmd_mean=None,
             velocity_error_mean=None,
-            gait_periodicity_mean=None,
-            clearance_mean=None,
-            hip_swing_mean=None,
-            knee_swing_mean=None,
             verdict="not_applicable",
             tracking_status="not_applicable",
             stability="not_applicable",
@@ -395,10 +279,6 @@ def _classify_walking(
         _mean(_collect_series(rows, "tracking/cmd_vs_achieved_forward", min_iter=min_iter)),
         _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter)),
     )
-    gait_periodicity_mean = _mean(_collect_series(rows, "reward/gait_periodicity", min_iter=min_iter))
-    clearance_mean = _mean(_collect_series(rows, "reward/clearance", min_iter=min_iter))
-    hip_swing_mean = _mean(_collect_series(rows, "reward/hip_swing", min_iter=min_iter))
-    knee_swing_mean = _mean(_collect_series(rows, "reward/knee_swing", min_iter=min_iter))
     # ``success`` for v0.20.1 walking is "did the deterministic eval rollout
     # last most of the horizon AND track command velocity?".  Synthesize from
     # Evaluate/mean_episode_length + the cmd-tracking error already pulled
@@ -432,10 +312,12 @@ def _classify_walking(
     fwd_low = 0.05
     vel_err_ok = 0.075    # G4 promotion-horizon floor
 
+    # v0.20.1 verdict ladder (matches walking_training.md G4 + the
+    # v0.19.5 / v0.20.1 failure-signature catalogue in SKILL.md).
     if fwd < fwd_low and term_pitch >= 0.10:
         verdict = "posture exploit"
     elif fwd < fwd_low and success >= 0.80:
-        verdict = "trapped in standing"
+        verdict = "standing local minimum"
     elif fwd < fwd_emerging and torque_sat >= 0.03:
         verdict = "shuffle exploit"
     elif fwd >= fwd_emerging and vel_err <= vel_err_ok:
@@ -462,10 +344,6 @@ def _classify_walking(
         forward_vel_mean=forward_vel_mean,
         velocity_cmd_mean=velocity_cmd_mean,
         velocity_error_mean=velocity_error_mean,
-        gait_periodicity_mean=gait_periodicity_mean,
-        clearance_mean=clearance_mean,
-        hip_swing_mean=hip_swing_mean,
-        knee_swing_mean=knee_swing_mean,
         verdict=verdict,
         tracking_status=tracking_status,
         stability=stability,
@@ -481,7 +359,6 @@ def _changelog_block(
     keys: EvalKeySet,
     best_it: int,
     best_row: Dict[str, Any],
-    fsm: FsmSummary,
     walking: WalkingSummary,
 ) -> str:
     def g(key: str) -> Optional[float]:
@@ -523,12 +400,6 @@ def _changelog_block(
             f"- Walking verdict: {walking.verdict}",
             f"- Walking tracking: {walking.tracking_status}",
             f"- Walking stability: {walking.stability}",
-        ]
-    if fsm.enabled:
-        lines += [
-            f"- FSM verdict: {fsm.verdict}",
-            f"- FSM touchdown style: {fsm.touchdown_style}",
-            f"- FSM upright recovery: {fsm.upright_recovery}",
         ]
     lines += [
         "",
@@ -616,28 +487,6 @@ def _changelog_block(
             v = g(key)
             if v is not None:
                 lines.append(f"| {label} | {_format_f(v, 5)} |")
-
-        # Standing-era walking reward terms — kept for backward
-        # compatibility but only print when actually populated.
-        legacy_walking_rows = [
-            ("reward/gait_periodicity", walking.gait_periodicity_mean),
-            ("reward/clearance", walking.clearance_mean),
-            ("reward/hip_swing", walking.hip_swing_mean),
-            ("reward/knee_swing", walking.knee_swing_mean),
-        ]
-        for label, value in legacy_walking_rows:
-            if value is not None:
-                lines.append(f"| {label} | {_format_f(value, 4)} |")
-    if fsm.enabled:
-        lines += [
-            f"| debug/bc_phase | {_format_f(fsm.phase_mean, 3)} |",
-            f"| debug/bc_phase_ticks | {_format_f(fsm.phase_ticks_mean, 3)} |",
-            f"| fsm/swing_occupancy | {_format_pct(fsm.swing_occupancy)} |",
-            f"| reward/step_event | {_format_f(fsm.step_event_mean, 4)} |",
-            f"| reward/foot_place | {_format_f(fsm.foot_place_mean, 4)} |",
-            f"| debug/need_step | {_format_f(fsm.need_step_mean, 4)} |",
-            f"| reward/posture | {_format_f(fsm.posture_mean, 4)} |",
-        ]
     return "\n".join(lines)
 
 
@@ -679,7 +528,6 @@ def main() -> None:
 
     ckpt_dir = _find_checkpoint_dir(run_id, args.checkpoints_root)
     ckpt_file = _find_checkpoint_file(ckpt_dir, best_it, best_step) if ckpt_dir else None
-    fsm = _classify_fsm(rows, min_iter=args.min_iter, cfg=cfg)
     walking = _classify_walking(rows, min_iter=args.min_iter, cfg=cfg)
 
     # Aggregate stability stats (post-warmup iters)
@@ -717,23 +565,6 @@ def main() -> None:
         print(f"- mean forward_velocity (Evaluate or env): {_format_f(walking.forward_vel_mean, 3)}")
         print(f"- mean env/velocity_cmd: {_format_f(walking.velocity_cmd_mean, 3)}")
         print(f"- mean cmd_vs_achieved_forward (Evaluate or tracking): {_format_f(walking.velocity_error_mean, 3)}")
-        print(f"- mean reward/gait_periodicity: {_format_f(walking.gait_periodicity_mean, 4)}")
-        print(f"- mean reward/clearance: {_format_f(walking.clearance_mean, 4)}")
-        print(f"- mean reward/hip_swing: {_format_f(walking.hip_swing_mean, 4)}")
-        print(f"- mean reward/knee_swing: {_format_f(walking.knee_swing_mean, 4)}")
-    if fsm.enabled:
-        print()
-        print("FSM / M3 summary:")
-        print(f"- verdict: {fsm.verdict}")
-        print(f"- touchdown style: {fsm.touchdown_style}")
-        print(f"- upright recovery: {fsm.upright_recovery}")
-        print(f"- mean debug/bc_phase: {_format_f(fsm.phase_mean, 3)}")
-        print(f"- mean debug/bc_phase_ticks: {_format_f(fsm.phase_ticks_mean, 3)}")
-        print(f"- mean swing occupancy: {_format_pct(fsm.swing_occupancy)}")
-        print(f"- mean reward/step_event: {_format_f(fsm.step_event_mean, 4)}")
-        print(f"- mean reward/foot_place: {_format_f(fsm.foot_place_mean, 4)}")
-        print(f"- mean debug/need_step: {_format_f(fsm.need_step_mean, 4)}")
-        print(f"- mean reward/posture: {_format_f(fsm.posture_mean, 4)}")
     print()
     print("CHANGELOG block (paste into training/CHANGELOG.md):")
     print()
@@ -745,7 +576,6 @@ def main() -> None:
         keys=keys,
         best_it=best_it,
         best_row=best_row,
-        fsm=fsm,
         walking=walking,
     ))
 

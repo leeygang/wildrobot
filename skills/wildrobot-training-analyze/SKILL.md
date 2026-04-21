@@ -9,8 +9,6 @@ Use this workflow to (1) analyze a training run, (2) choose a deployable checkpo
 
 The active locomotion target is the v0.20.1 prior-guided bounded-residual PPO contract documented in `training/docs/walking_training.md`. The reference recipe we explicitly track is ToddlerBot (`projects/toddlerbot/toddlerbot/locomotion/{walk.gin,mjx_config.py,walk_env.py,mjx_env.py,train_mjx.py}`); per CLAUDE.md, divergences from ToddlerBot must have a documented rationale.
 
-For older standing / M3 runs, use the legacy sections at the bottom.
-
 ## Inputs
 
 - Offline run dir: `training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id>/`
@@ -241,58 +239,17 @@ Forbidden moves (will reintroduce known failure modes):
 
 ---
 
-## Legacy: standing / M3 / FSM analysis
-
-Use only for runs that pre-date the v0.20.x prior-guided contract (config mentions `ppo_standing`, `M3`, `FSM`, `env.fsm_enabled: true`, or has zero velocity command).
-
-### standing_push checkpoint selection
-
-1. If `eval_push/success_rate` exists: maximize `(eval_push/success_rate, eval_push/episode_length)`.
-2. Else if `eval/success_rate` exists: maximize `(eval/success_rate, eval/episode_length)`.
-3. Else: maximize `(env/success_rate, env/episode_length)` as a fallback only.
-
-### Standing stability metrics
-
-- **Main failure mode**: which termination dominates? (`term_height_low_frac`, `term_pitch_frac`, `term_roll_frac`)
-- **Actuation stress**: `tracking/max_torque`, `debug/torque_sat_frac`, `debug/torque_abs_max`
-- **PPO stability**: `ppo/clip_fraction`, `ppo/approx_kl`, `ppo/lr_backoff_*`, `ppo/epochs_used`
-
-Typical high-ROI changes:
-- `term_height_low_frac` dominates → strengthen pre-collapse shaping (height margin + downward v_z gate).
-- Torque saturation high → increase `reward/saturation`, add push curriculum, adjust action smoothing.
-- KL backoff triggers early → LR warmup or relax `ppo.kl_lr_backoff_multiplier`.
-
-### M3 / FSM extension
-
-For runs with `env.fsm_enabled: true`. Evaluate both **mechanism** (is the FSM being used?) and **outcome** (does it improve recovery?).
-
-Mechanism signals: `debug/bc_phase`, `debug/bc_phase_ticks`, `debug/bc_swing_foot`, `debug/need_step`, `reward/step_event`, `reward/foot_place`, `debug/touchdown_left/right`.
-
-Outcome signals: `eval_push/{success_rate, episode_length, survival_rate, term_*}`, `reward/posture`, `tracking/max_torque`, `debug/torque_sat_frac`.
-
-Promising M3 run: SWING used during push recovery; touchdown-driven (not timeout-driven); `foot_place` non-trivial; hard-push survival ≥ M2 baseline; robot returns toward upright post-disturbance.
-
-Failure: SWING rarely occurs even under hard pushes; swing mostly timeout-driven; success flat while torque rises; waist/arm compensation active but foot placement ineffective.
-
-```text
-FSM verdict:
-- engaged / weakly engaged / not meaningfully engaged
-- touchdown-driven / timeout-driven / mixed
-- upright recovery: good / partial / poor
-```
-
----
-
 ## CHANGELOG update checklist
 
 1. Add a new entry for the next training version (v0.xx+1): config + code changes.
 2. Under the current version entry, record:
    - run path, checkpoint dir, best checkpoint path
-   - For v0.20.x walking: G4 row-by-row pass/fail, G5 residual + velocity_cmd_ratio, G7 baseline-beat, ToddlerBot alignment status
+   - G4 row-by-row pass/fail, G5 residual + velocity_cmd_ratio, G7 baseline-beat, ToddlerBot alignment status
    - Best `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/forward_velocity`, `Evaluate/cmd_vs_achieved_forward` at the chosen checkpoint
    - Concerning trends not gated (e.g. `ref/feet_pos_err_l2` growth, `ref/contact_phase_match` drift)
    - Observed failure mode(s) per the v0.19.5 / v0.20.1 signature list and the recommended next intervention per the M1 fail-mode tree
-   - For older M3/FSM runs: FSM verdict, step-event/foot-place behavior, upright recovery
 3. Newest version entry on top.
 
 The scripts print a markdown block intended to paste into `training/CHANGELOG.md`.
+
+Standing / M3 / FSM analysis material (FSM verdicts, swing occupancy, step-event / foot-place / posture rewards, push-recovery failure signatures) is no longer carried in this skill. The active locomotion target is v0.20.1 walking; runs from older standing / M3 branches should be analyzed against their own historical SKILL revisions.
