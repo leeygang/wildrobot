@@ -1,9 +1,127 @@
-# AMP Training Changelog
-# CHANGELOG
+# Training Changelog
 
-This changelog tracks capability changes, configuration updates, and training results for the WildRobot AMP training pipeline.
+This changelog tracks capability changes, configuration updates, and training results for the WildRobot training pipeline.
 
 **Ordering:** Newest releases first (reverse chronological order).
+
+---
+
+## [v0.20.x-amp-removal] - 2026-04-20: Remove AMP / discriminator stack
+
+### Context
+
+The v0.20.x walking plan (``training/docs/walking_training.md``) is a
+ZMP-shaped offline reference + DeepMimic-style imitation reward +
+ToddlerBot-aligned bounded residual PPO.  AMP / Adversarial Motion
+Priors are not part of that recipe — the smoke YAML had been carrying
+``amp.enabled=false, amp_weight=0`` since v0.20.1, and ToddlerBot
+itself doesn't use AMP.  Removing the dormant AMP wiring rather than
+keeping it inert simplifies the trainer ahead of the smoke / sysid /
+command-breadth work.
+
+### Changes
+
+1. **Active code path** (commit a38d36b):
+   - Deleted ``training/amp/`` (8 modules: discriminator, replay /
+     ref buffers, features, mirror, diagnostics)
+   - Deleted ``training/configs/feature_config.py`` (AMP-only feature
+     layout)
+   - Deleted ``training/data/{gmr,gmr_to_physics_ref_data.py,
+     debug_gmr_physics.py}`` and ``training/scripts/mocap_retarget.py``
+     — AMP-only data tooling and 14 reference motion files
+   - Stripped AMP from ``training/configs/{training_runtime_config,
+     training_config}.py`` (drop AMPConfig, AMPFeatureConfig,
+     AMPTargetsConfig, DiscriminatorTrainingConfig,
+     DiscriminatorNetworkConfig, ``amp_weight`` /
+     ``amp_reward_clip``)
+   - Stripped AMP from ``training/core/{training_loop,rollout,
+     checkpoint,experiment_tracking,__init__}.py`` (lax.cond AMP
+     branch, ``TrainingState`` disc_params / feature_mean /
+     feature_var, ``IterationMetrics`` disc / amp fields,
+     ``train_discriminator_scan``, ``compute_normalization_stats``,
+     ``compute_reward_total``, ``ref_motion_data`` train() param,
+     AMP resume validation, AMP W&B fields, AMP rollout fields and
+     ``collect_amp_features``)
+   - Stripped AMP from ``training/algos/ppo/ppo_core.py`` (docstring
+     mentions only)
+   - Stripped AMP from ``training/{train,envs/env_info}.py``
+     (drop ``--amp-weight`` / ``--amp-data`` / ``--disc-lr`` CLI,
+     AMP ref-data loading, "amp+ppo" mode strings, stale env_info
+     comment)
+
+2. **Configs** (commit 305e497):
+   - ``ppo_walking_v0201_smoke.yaml`` — drop ``amp:``,
+     ``reward.amp_weight``, ``quick_verify.amp``
+   - ``ppo_standing.yaml``, ``ppo_standing_v0170.yaml``,
+     ``ppo_standing_push.yaml``, ``ppo_standing_push_v0139_probe20*.yaml``
+     — drop full ``amp:`` block (AMPConfig + DiscriminatorTrainingConfig
+     + AMPFeatureConfig + AMPTargetsConfig payloads), drop
+     ``networks.discriminator``, drop ``reward.amp_weight`` /
+     ``amp_reward_clip``
+   - ``ppo_standing_v0171.yaml``, ``ppo_standing_v0173a*.yaml``,
+     ``ppo_standing_v0174t*.yaml``, ``ppo_standing_push_v0140*.yaml``,
+     ``mpc_standing_v0173.yaml`` — drop the inert ``amp:
+     {enabled: false}`` block
+
+3. **Tests** (commit 305e497):
+   - ``test_trainer_invariance.py`` — drop reward equivalence,
+     discriminator-not-called, and AMP trajectory shape tests; keep
+     GAE / PPO loss determinism and trajectory PPO-field test
+   - ``test_config_contract.py`` — drop ``hasattr(config, "amp")`` check
+   - ``test_state_mapping.py`` — drop "AMP features" docstring mention
+   - ``test_plan.md`` — drop Layer 7 (AMP integration tests) section
+     and AMP mentions from strategy summary, traceability matrix, etc.
+
+4. **Asset metadata** (commit a55f60e):
+   - ``assets/v2/mujoco_robot_config.json`` — drop
+     ``amp_feature_breakdown`` block
+   - ``assets/robot_config.py`` — drop ``amp_feature_dim`` /
+     ``amp_feature_breakdown`` from RobotConfig
+   - ``assets/post_process.py`` — stop emitting ``amp_feature_breakdown``
+     during JSON regeneration
+   - ``assets/v2/sensors.xml`` — drop "AMP discriminator sees FD"
+     comment
+   - ``scripts/validate_training_setup.py`` — comment cleanup
+
+5. **Docs** (commit a55f60e):
+   - Deleted: ``training/docs/{AMP_DATA_FIRST_PLAN,
+     AMP_FEATURE_PARITY_DESIGN,amp_brax_solution,physics-based-amp,
+     physics_ref_parity_report,smplx_skeleton,
+     reference_data_generation,TRAINING_README,
+     TRAINING_SYSTEM_DESIGN,phase3_rl_training_plan}.md``
+   - Updated: ``README.md`` (drop deleted directories + dead links,
+     redirect Documentation links to walking_training.md +
+     reference_design.md + test_plan.md, rewrite Training section
+     around the v0.20.1 smoke YAML); ``training/cal/{cal.md,cal.py,
+     specs.py,types.py}`` (strip "AMP parity" / "AMP discriminator" /
+     "AMP features" from docstrings; cal functions themselves stay);
+     ``training/docs/ppo_training_stability_improvements.md``
+     (drop "(no AMP)" scope qualifier)
+
+### What stayed
+
+- Historical AMP entries in this CHANGELOG below — they describe past
+  work and shouldn't be edited
+- ``training/docs/{v0201_env_rewrite_audit,v0201_env_wiring}.md`` and
+  ``training/docs/archive/learn_first_plan.md`` — historical audit /
+  archive docs that mention AMP only in describing past refactor
+  decisions
+- ``mujoco-brax/amp/`` — separate prototype directory, not on the
+  v0.20.x active path; left for the user to triage separately
+- ``runtime/bundles/`` historical deployment artifacts — never edited
+
+### Rationale
+
+- ``walking_training.md`` § "Reward Design" + § "Decision Summary":
+  the v0.20.x reward family is "imitation-dominant hybrid reward"
+  with explicit Gaussian-kernel ``ref/*`` tracking; the prior owns
+  gait semantics; PPO is bounded residual.  AMP's adversarial
+  mocap-distribution matching has no role in that contract.
+- ``CLAUDE.md`` § "Design": "current design and implementations
+  follows ToddlerBot ... if we have our own design or implementation,
+  we should have explicit rationale."  ToddlerBot has no AMP code in
+  ``toddlerbot/locomotion/`` — keeping a dormant AMP stack would have
+  been a WildRobot-specific deviation without active rationale.
 
 ---
 
