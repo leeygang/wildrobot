@@ -527,58 +527,6 @@ class PPORollbackConfig(Freezable):
 
 
 # =============================================================================
-# AMP Discriminator Training Config (NOT architecture)
-# =============================================================================
-@dataclass
-class DiscriminatorTrainingConfig(Freezable):
-    """Discriminator training hyperparameters (NOT architecture)."""
-
-    learning_rate: float = 8e-5
-    batch_size: int = 256
-    updates_per_ppo_update: int = 2
-    r1_gamma: float = 10.0
-    input_noise_std: float = 0.03
-
-
-@dataclass
-class AMPFeatureConfig(Freezable):
-    """AMP feature parity controls."""
-
-    use_finite_diff_vel: bool = True
-    use_estimated_contacts: bool = True
-    mask_waist: bool = False
-    enable_mirror_augmentation: bool = False
-
-
-@dataclass
-class AMPTargetsConfig(Freezable):
-    """AMP diagnostic targets for alerts/logging."""
-
-    disc_acc_min: float = 0.55
-    disc_acc_max: float = 0.80
-
-
-@dataclass
-class AMPConfig(Freezable):
-    """AMP (Adversarial Motion Prior) configuration."""
-
-    enabled: bool = False
-    dataset_path: Optional[str] = None
-    weight: float = 0.0
-
-    # Discriminator training config
-    discriminator: DiscriminatorTrainingConfig = field(
-        default_factory=DiscriminatorTrainingConfig
-    )
-
-    # Feature parity
-    feature_config: AMPFeatureConfig = field(default_factory=AMPFeatureConfig)
-
-    # Diagnostic targets
-    targets: AMPTargetsConfig = field(default_factory=AMPTargetsConfig)
-
-
-# =============================================================================
 # Network Configs (Option A: algorithm-agnostic)
 # =============================================================================
 @dataclass
@@ -601,22 +549,11 @@ class CriticNetworkConfig(Freezable):
 
 
 @dataclass
-class DiscriminatorNetworkConfig(Freezable):
-    """Discriminator network configuration (architecture only)."""
-
-    hidden_sizes: Tuple[int, ...] = (512, 256)
-    activation: str = "relu"
-
-
-@dataclass
 class NetworksConfig(Freezable):
     """All network configurations."""
 
     actor: ActorNetworkConfig = field(default_factory=ActorNetworkConfig)
     critic: CriticNetworkConfig = field(default_factory=CriticNetworkConfig)
-    discriminator: DiscriminatorNetworkConfig = field(
-        default_factory=DiscriminatorNetworkConfig
-    )
 
 
 # =============================================================================
@@ -820,9 +757,7 @@ class RewardCompositionConfig(Freezable):
     """Reward composition (trainer-side)."""
 
     task_weight: float = 1.0
-    amp_weight: float = 0.0
     task_reward_clip: Optional[Tuple[float, float]] = None
-    amp_reward_clip: Optional[Tuple[float, float]] = (0.0, 1.0)
 
 
 # =============================================================================
@@ -878,7 +813,6 @@ class TrainingConfig(Freezable):
     Access pattern examples:
         config.networks.actor.hidden_sizes  # [256, 256, 128]
         config.ppo.learning_rate            # 3e-4
-        config.amp.discriminator.r1_gamma   # 10.0
         config.reward_weights.tracking_lin_vel  # 2.0
     """
 
@@ -892,7 +826,6 @@ class TrainingConfig(Freezable):
     # Composed configs
     env: EnvConfig = field(default_factory=EnvConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
-    amp: AMPConfig = field(default_factory=AMPConfig)
     networks: NetworksConfig = field(default_factory=NetworksConfig)
     reward_weights: RewardWeightsConfig = field(default_factory=RewardWeightsConfig)
     reward: RewardCompositionConfig = field(default_factory=RewardCompositionConfig)

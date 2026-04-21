@@ -76,7 +76,7 @@ try:
         truncated: jnp.ndarray             # () — sticky through auto-reset
         velocity_cmd: jnp.ndarray          # () — episode-constant target velocity (m/s)
 
-        # Finite-diff velocity (post-step values used by AMP / privileged critic)
+        # Finite-diff velocity (post-step values used by privileged critic)
         prev_root_pos: jnp.ndarray         # (3,)
         prev_root_quat: jnp.ndarray        # (4,) wxyz
         prev_left_foot_pos: jnp.ndarray    # (3,)

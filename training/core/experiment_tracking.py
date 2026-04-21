@@ -5,7 +5,6 @@ This module provides logging to Weights & Biases for experiment tracking.
 Topline Metrics (Section 3.2.4 Exit Criteria):
 - Forward Velocity: 0.3-0.8 m/s (target)
 - Episode Reward: >350 (target)
-- AMP Reward: >0.7 (target for natural gait)
 - Success Rate: >85% (target)
 - Average Torque: <2.8Nm (target for energy efficiency)
 
@@ -14,7 +13,7 @@ Usage:
 
     tracker = WandbTracker(
         project="wildrobot-locomotion",
-        name="ppo-amp-v1",
+        name="ppo-walking",
         config={"lr": 3e-4, "num_envs": 4096},
     )
 
@@ -45,17 +44,11 @@ import numpy as np
 EXIT_CRITERIA_TARGETS = {
     "forward_velocity": {"min": 0.3, "max": 0.8, "unit": "m/s"},
     "episode_reward": {"target": 350, "baseline": 250, "unit": ""},
-    "amp_reward": {"target": 0.7, "unit": ""},
     "success_rate": {"target": 0.85, "unit": "%"},
     "avg_torque": {"target": 2.8, "max_allowed": 4.0, "unit": "Nm"},
     # Stability metrics
     "episode_length": {"target": 400, "min": 200, "unit": "steps"},
     "survival_rate": {"target": 0.95, "unit": "%"},
-    "disc_accuracy": {
-        "target_min": 0.4,
-        "target_max": 0.7,
-        "unit": "",
-    },  # Should NOT be 100%
 }
 
 REWARD_TERM_KEYS = [
@@ -1203,14 +1196,12 @@ class WandbTracker:
         """Create WandbTracker from training and wandb config objects.
 
         Args:
-            training_cfg: TrainingConfig object with version, ppo, amp, seed, etc.
+            training_cfg: TrainingConfig object with version, ppo, seed, etc.
             wandb_cfg: WandbConfig object with project, entity, name, tags, mode, etc.
 
         Returns:
             Configured WandbTracker instance
         """
-        use_amp = training_cfg.amp.enabled
-
         # Build wandb config dict from training config
         config = {
             # Version tracking
@@ -1223,10 +1214,7 @@ class WandbTracker:
             "gamma": training_cfg.ppo.gamma,
             "clip_epsilon": training_cfg.ppo.clip_epsilon,
             "entropy_coef": training_cfg.ppo.entropy_coef,
-            "amp_weight": training_cfg.amp.weight,
-            "disc_lr": training_cfg.amp.discriminator.learning_rate if use_amp else 0.0,
             "seed": training_cfg.seed,
-            "mode": "amp+ppo" if use_amp else "ppo-only",
         }
 
         return cls(
@@ -1263,7 +1251,7 @@ def generate_job_name(
         version: Version string (e.g., "0.10.5")
         config_name: Name of the config file without extension (e.g., "ppo_walking")
         wandb_tracker: Optional WandbTracker to get run ID from
-        mode_suffix: Fallback suffix if config_name not provided (e.g., "amp" or "ppo")
+        mode_suffix: Fallback suffix if config_name not provided (e.g., "ppo")
 
     Returns:
         Job name string for use as checkpoint subdirectory
@@ -1297,7 +1285,6 @@ def create_training_metrics_from_iteration(
     iteration: int,
     metrics: Any,
     steps_per_sec: float,
-    use_amp: bool = True,
 ) -> Dict[str, float]:
     """Create training metrics dict from IterationMetrics object.
 
@@ -1308,7 +1295,6 @@ def create_training_metrics_from_iteration(
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
         steps_per_sec: Environment steps per second
-        use_amp: Whether AMP is enabled
 
     Returns:
         Flat dictionary of metrics with prefixes for W&B logging
@@ -1326,10 +1312,6 @@ def create_training_metrics_from_iteration(
         policy_loss=float(metrics.policy_loss),
         value_loss=float(metrics.value_loss),
         entropy_loss=float(metrics.entropy_loss),
-        disc_loss=float(metrics.disc_loss) if use_amp else 0.0,
-        disc_accuracy=float(metrics.disc_accuracy) if use_amp else 0.5,
-        amp_reward_mean=float(metrics.amp_reward_mean) if use_amp else 0.0,
-        amp_reward_std=0.0,
         clip_fraction=float(metrics.clip_fraction),
         approx_kl=float(metrics.approx_kl),
         env_steps_per_sec=steps_per_sec,
@@ -1348,7 +1330,6 @@ def build_wandb_metrics(
     iteration: int,
     metrics: Any,
     steps_per_sec: float,
-    use_amp: bool = True,
     reward_terms: Optional[List[str]] = None,
 ) -> tuple[Dict[str, float], List[str]]:
     """Create W&B metrics dict and return missing reward terms.
@@ -1357,7 +1338,6 @@ def build_wandb_metrics(
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
         steps_per_sec: Environment steps per second
-        use_amp: Whether AMP is enabled
         reward_terms: Optional list of reward term keys to include
 
     Returns:
@@ -1367,7 +1347,6 @@ def build_wandb_metrics(
         iteration=iteration,
         metrics=metrics,
         steps_per_sec=steps_per_sec,
-        use_amp=use_amp,
     )
     wandb_metrics["debug/task_reward_per_step"] = float(metrics.task_reward_mean)
     wandb_metrics["debug/robot_height"] = float(metrics.env_metrics["height"])
@@ -1411,10 +1390,6 @@ def create_training_metrics(
     policy_loss: float,
     value_loss: float,
     entropy_loss: float,
-    disc_loss: float = 0.0,
-    disc_accuracy: float = 0.5,
-    amp_reward_mean: float = 0.0,
-    amp_reward_std: float = 0.0,
     clip_fraction: float = 0.0,
     approx_kl: float = 0.0,
     env_steps_per_sec: float = 0.0,
@@ -1432,7 +1407,6 @@ def create_training_metrics(
 
     Includes TOPLINE metrics (Section 3.2.4 Exit Criteria) for easy tracking:
     - topline/episode_reward (target: >350)
-    - topline/amp_reward (target: >0.7)
     - topline/forward_velocity (target: 0.3-0.8 m/s)
     - topline/avg_torque (target: <2.8 Nm)
 
@@ -1448,10 +1422,6 @@ def create_training_metrics(
         policy_loss: Policy loss component
         value_loss: Value loss component
         entropy_loss: Entropy loss component
-        disc_loss: Discriminator loss (AMP)
-        disc_accuracy: Discriminator accuracy (AMP)
-        amp_reward_mean: Mean AMP reward
-        amp_reward_std: Std of AMP reward
         clip_fraction: PPO clip fraction
         approx_kl: Approximate KL divergence
         env_steps_per_sec: Environment steps per second
@@ -1473,13 +1443,11 @@ def create_training_metrics(
         # These are the key metrics to track training progress
         # =====================================================================
         "topline/episode_reward": episode_reward,  # Target: >350
-        "topline/amp_reward": amp_reward_mean,  # Target: >0.7
         "topline/forward_velocity": forward_velocity,  # Target: 0.3-0.8 m/s
         "topline/avg_torque": avg_torque,  # Target: <2.8 Nm
         "topline/steps_per_sec": env_steps_per_sec,  # Performance metric
         # Stability metrics
         "topline/episode_length": episode_length,  # Target: >400 steps
-        "topline/disc_accuracy": disc_accuracy,  # Target: 0.4-0.7 (NOT 100%!)
         # v0.20.1 walking tracking metrics.  ``topline/success_rate`` and
         # ``topline/velocity_error`` were intentionally removed: the former
         # is truncation-based and stays 0 throughout walking smokes (so the
@@ -1509,11 +1477,6 @@ def create_training_metrics(
         "ppo/entropy_loss": entropy_loss,
         "ppo/clip_fraction": clip_fraction,
         "ppo/approx_kl": approx_kl,
-        # AMP metrics
-        "amp/disc_loss": disc_loss,
-        "amp/disc_accuracy": disc_accuracy,
-        "amp/reward_mean": amp_reward_mean,
-        "amp/reward_std": amp_reward_std,
         # Progress
         "progress/iteration": iteration,
     }
@@ -1530,7 +1493,6 @@ def create_training_metrics(
 
 def create_topline_metrics_only(
     episode_reward: float = 0.0,
-    amp_reward: float = 0.0,
     forward_velocity: float = 0.0,
     avg_torque: float = 0.0,
     steps_per_sec: float = 0.0,
@@ -1544,7 +1506,6 @@ def create_topline_metrics_only(
 
     Args:
         episode_reward: Mean episode reward (target: >350)
-        amp_reward: Mean AMP reward (target: >0.7)
         forward_velocity: Forward velocity in m/s (target: 0.3-0.8)
         avg_torque: Average torque in Nm (target: <2.8)
         steps_per_sec: Training speed
@@ -1554,7 +1515,6 @@ def create_topline_metrics_only(
     """
     return {
         "topline/episode_reward": episode_reward,
-        "topline/amp_reward": amp_reward,
         "topline/forward_velocity": forward_velocity,
         "topline/avg_torque": avg_torque,
         "topline/steps_per_sec": steps_per_sec,
@@ -1586,7 +1546,6 @@ def define_wandb_topline_metrics():
                 "exit_criteria": {
                     "episode_reward_target": 350,
                     "episode_reward_baseline": 250,
-                    "amp_reward_target": 0.7,
                     "forward_velocity_min": 0.3,
                     "forward_velocity_max": 0.8,
                     "success_rate_target": 85,  # percentage
@@ -1602,7 +1561,6 @@ def define_wandb_topline_metrics():
         wandb.log(
             {
                 "targets/episode_reward": 350,
-                "targets/amp_reward": 0.7,
                 "targets/forward_velocity_min": 0.3,
                 "targets/forward_velocity_max": 0.8,
                 "targets/success_rate": 85,

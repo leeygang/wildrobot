@@ -19,7 +19,6 @@ Usage:
     # Access config properties (new unified access pattern)
     print(config.networks.actor.hidden_sizes)  # (256, 256, 128)
     print(config.ppo.learning_rate)            # 3e-4
-    print(config.amp.discriminator.r1_gamma)   # 10.0
 
     # Modify config before training
     config.ppo.learning_rate = 1e-4
@@ -47,13 +46,8 @@ from assets.robot_config import (  # noqa: F401
 # Import all config classes from runtime config
 from training.configs.training_runtime_config import (
     ActorNetworkConfig,
-    AMPConfig,
-    AMPFeatureConfig,
-    AMPTargetsConfig,
     CheckpointConfig,
     CriticNetworkConfig,
-    DiscriminatorNetworkConfig,
-    DiscriminatorTrainingConfig,
     EnvConfig,
     Freezable,
     FrozenInstanceError,
@@ -81,11 +75,9 @@ __all__ = [
     "PPOConfig",
     "PPOEvalConfig",
     "PPORollbackConfig",
-    "AMPConfig",
     "NetworksConfig",
     "ActorNetworkConfig",
     "CriticNetworkConfig",
-    "DiscriminatorNetworkConfig",
     "RewardWeightsConfig",
     "RewardCompositionConfig",
     "CheckpointConfig",
@@ -564,43 +556,11 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
     )
 
 
-def _parse_amp_config(config: Dict[str, Any]) -> AMPConfig:
-    """Parse AMP configuration from YAML dict."""
-    amp = config.get("amp", {})
-    disc = amp.get("discriminator", {})
-    feature = amp.get("feature_config", {})
-    targets = amp.get("targets", {})
-
-    return AMPConfig(
-        enabled=amp.get("enabled", False),
-        dataset_path=amp.get("dataset_path"),
-        weight=amp.get("weight", 0.0),
-        discriminator=DiscriminatorTrainingConfig(
-            learning_rate=disc.get("learning_rate", 8e-5),
-            batch_size=disc.get("batch_size", 256),
-            updates_per_ppo_update=disc.get("updates_per_ppo_update", 2),
-            r1_gamma=disc.get("r1_gamma", 10.0),
-            input_noise_std=disc.get("input_noise_std", 0.03),
-        ),
-        feature_config=AMPFeatureConfig(
-            use_finite_diff_vel=feature.get("use_finite_diff_vel", True),
-            use_estimated_contacts=feature.get("use_estimated_contacts", True),
-            mask_waist=feature.get("mask_waist", False),
-            enable_mirror_augmentation=feature.get("enable_mirror_augmentation", False),
-        ),
-        targets=AMPTargetsConfig(
-            disc_acc_min=targets.get("disc_acc_min", 0.55),
-            disc_acc_max=targets.get("disc_acc_max", 0.80),
-        ),
-    )
-
-
 def _parse_networks_config(config: Dict[str, Any]) -> NetworksConfig:
     """Parse networks configuration from YAML dict."""
     networks = config.get("networks", {})
     actor = networks.get("actor", {})
     critic = networks.get("critic", {})
-    disc = networks.get("discriminator", {})
 
     return NetworksConfig(
         actor=ActorNetworkConfig(
@@ -617,10 +577,6 @@ def _parse_networks_config(config: Dict[str, Any]) -> NetworksConfig:
                 critic.get("hidden_sizes"), (256, 256, 128)
             ),
             activation=critic.get("activation", "elu"),
-        ),
-        discriminator=DiscriminatorNetworkConfig(
-            hidden_sizes=_parse_list_to_tuple(disc.get("hidden_sizes"), (512, 256)),
-            activation=disc.get("activation", "relu"),
         ),
     )
 
@@ -761,13 +717,10 @@ def _parse_reward_composition_config(config: Dict[str, Any]) -> RewardCompositio
 
     # Parse clip values (can be null or [min, max])
     task_clip = reward.get("task_reward_clip")
-    amp_clip = reward.get("amp_reward_clip", [0.0, 1.0])
 
     return RewardCompositionConfig(
         task_weight=reward.get("task_weight", 1.0),
-        amp_weight=reward.get("amp_weight", 0.0),
         task_reward_clip=tuple(task_clip) if task_clip else None,
-        amp_reward_clip=tuple(amp_clip) if amp_clip else None,
     )
 
 
@@ -823,13 +776,12 @@ def load_training_config_from_dict(config: Dict[str, Any]) -> TrainingConfig:
     return TrainingConfig(
         # Version
         version=config.get("version", "0.11.1"),
-        version_name=config.get("version_name", "Unified PPO + AMP"),
+        version_name=config.get("version_name", "PPO"),
         # Global seed
         seed=config.get("seed", 42),
         # Composed configs
         env=_parse_env_config(config),
         ppo=_parse_ppo_config(config),
-        amp=_parse_amp_config(config),
         networks=_parse_networks_config(config),
         reward_weights=_parse_reward_weights_config(config),
         reward=_parse_reward_composition_config(config),

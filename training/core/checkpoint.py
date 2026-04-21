@@ -1,8 +1,8 @@
-"""Checkpoint management for AMP+PPO training.
+"""Checkpoint management for PPO training.
 
 This module handles saving, loading, and managing training checkpoints.
 All checkpoint I/O operations are centralized here, keeping the training
-loop (trainer_jit.py) focused on pure computation.
+loop focused on pure computation.
 
 Usage:
     from training.core.checkpoint import (
@@ -37,8 +37,8 @@ def save_checkpoint(
     """Save training checkpoint.
 
     Args:
-        state: Current training state (TrainingState from trainer_jit)
-        config: Training configuration (AMPPPOConfigJit)
+        state: Current training state (TrainingState from training_loop)
+        config: Training configuration (TrainingConfig)
         iteration: Current iteration number
         checkpoint_dir: Directory to save checkpoints
         is_best: If True, also save as best checkpoint
@@ -79,7 +79,7 @@ def save_checkpoint_from_cpu(
 
     Args:
         state_cpu: Training state already on CPU (via jax.device_get)
-        config: Training configuration (AMPPPOConfigJit)
+        config: Training configuration (TrainingConfig)
         iteration: Iteration number when this state was captured
         total_steps: Total steps when this state was captured
         checkpoint_dir: Directory to save checkpoints
@@ -96,15 +96,12 @@ def save_checkpoint_from_cpu(
     if metrics is not None:
         metrics_dict = {
             "episode_reward": float(metrics.episode_reward),
-            "amp_reward_mean": float(metrics.amp_reward_mean),
-            "disc_accuracy": float(metrics.disc_accuracy),
             "task_reward_mean": float(metrics.task_reward_mean),
             "forward_velocity": float(metrics.env_metrics["forward_velocity"]),
             "robot_height": float(metrics.env_metrics["height"]),
             "episode_length": float(metrics.episode_length),
             "policy_loss": float(metrics.policy_loss),
             "value_loss": float(metrics.value_loss),
-            "disc_loss": float(metrics.disc_loss),
         }
 
     # state_cpu is already on CPU, no need for jax.device_get
@@ -123,12 +120,8 @@ def save_checkpoint_from_cpu(
         "policy_params": state_cpu.policy_params,
         "value_params": state_cpu.value_params,
         "processor_params": state_cpu.processor_params,
-        "disc_params": state_cpu.disc_params,
         "policy_opt_state": state_cpu.policy_opt_state,
         "value_opt_state": state_cpu.value_opt_state,
-        "disc_opt_state": state_cpu.disc_opt_state,
-        "feature_mean": state_cpu.feature_mean,
-        "feature_var": state_cpu.feature_var,
         "rng": state_cpu.rng,
         "config": {
             "num_envs": config.ppo.num_envs,
@@ -145,13 +138,6 @@ def save_checkpoint_from_cpu(
             "critic_privileged_enabled": config.ppo.critic_privileged_enabled,
             "actor_hidden_sizes": config.networks.actor.hidden_sizes,
             "critic_hidden_sizes": config.networks.critic.hidden_sizes,
-            "amp_weight": config.amp.weight,
-            "disc_learning_rate": config.amp.discriminator.learning_rate,
-            "disc_updates_per_ppo_update": config.amp.discriminator.updates_per_ppo_update,
-            "disc_batch_size": config.amp.discriminator.batch_size,
-            "disc_r1_gamma": config.amp.discriminator.r1_gamma,
-            "disc_hidden_sizes": config.networks.discriminator.hidden_sizes,
-            "disc_input_noise_std": config.amp.discriminator.input_noise_std,
             "iterations": config.ppo.iterations,
             "seed": config.seed,
             "policy_spec_hash": policy_spec_fingerprint,
@@ -273,13 +259,12 @@ def print_top_checkpoints_summary(checkpoint_dir: str, top_n: int = 3) -> None:
 
     print()
     print(f"🏆 Top {len(top_checkpoints)} Checkpoints (by reward):")
-    print("-" * 120)
+    print("-" * 100)
     print(
         f"{'Rank':<5} {'Iter':>6} {'Steps':>12} "
-        f"{'Reward':>10} {'AMP':>10} {'Disc Acc':>10} "
-        f"{'Vel':>8} {'Height':>8} {'Ep Len':>8}"
+        f"{'Reward':>10} {'Vel':>8} {'Height':>8} {'Ep Len':>8}"
     )
-    print("-" * 120)
+    print("-" * 100)
 
     for rank, (reward, iter_num, steps, filename, metrics) in enumerate(
         top_checkpoints, 1
@@ -287,14 +272,12 @@ def print_top_checkpoints_summary(checkpoint_dir: str, top_n: int = 3) -> None:
         print(
             f"#{rank:<4} {iter_num:>6} {steps:>12,} "
             f"{reward:>10.2f} "
-            f"{metrics.get('amp_reward_mean', 0):>10.4f} "
-            f"{metrics.get('disc_accuracy', 0):>10.2f} "
             f"{metrics.get('forward_velocity', 0):>8.2f} "
             f"{metrics.get('robot_height', 0):>8.3f} "
             f"{metrics.get('episode_length', 0):>8.1f}"
         )
 
-    print("-" * 120)
+    print("-" * 100)
 
     # Show resume command for the best checkpoint
     if top_checkpoints:

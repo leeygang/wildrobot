@@ -1,19 +1,16 @@
 """PPO building blocks using Brax's implementations.
 
-This module provides a thin wrapper around Brax's PPO components with
-explicit interfaces that allow injection of AMP reward shaping and
-discriminator training.
+This module provides a thin wrapper around Brax's PPO components.
 
 Key components (from Brax):
 - make_ppo_networks: Create policy and value networks
 - make_inference_fn: Create inference function for trained policy
 - compute_gae: Generalized Advantage Estimation (custom impl for flexibility)
-- ppo_loss: Clipped surrogate objective (custom impl for AMP integration)
+- ppo_loss: Clipped surrogate objective (custom impl, exposes intermediate metrics)
 
 The custom GAE and PPO loss implementations allow us to:
-1. Shape rewards with AMP discriminator output between rollout and update
-2. Access intermediate values for logging
-3. Customize loss computation if needed
+1. Access intermediate values for logging
+2. Customize loss computation if needed
 
 IMPORTANT: Brax Network API Notes
 ---------------------------------
@@ -291,7 +288,6 @@ def _init_policy_output_bias(
 # ============================================================================
 # Generalized Advantage Estimation (GAE)
 # ============================================================================
-# Custom implementation to allow AMP reward shaping between rollout and GAE
 
 
 def compute_gae(
@@ -304,12 +300,11 @@ def compute_gae(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Compute Generalized Advantage Estimation.
 
-    This is a custom implementation (not using Brax's) to allow:
-    1. AMP reward shaping between rollout collection and GAE computation
-    2. Explicit access to intermediate values for logging
+    Custom implementation (not using Brax's) to expose intermediate values
+    for logging.
 
     Args:
-        rewards: Rewards (num_steps, num_envs) - can include AMP-shaped rewards
+        rewards: Rewards (num_steps, num_envs)
         values: Value estimates (num_steps, num_envs)
         dones: Episode termination flags (num_steps, num_envs)
         bootstrap_value: Value estimate for final state (num_envs,)
@@ -372,7 +367,7 @@ def compute_gae(
 # ============================================================================
 # PPO Loss Function
 # ============================================================================
-# Custom implementation to expose all metrics for AMP integration
+# Custom implementation to expose all loss metrics for logging
 
 
 class PPOLossMetrics(NamedTuple):
@@ -406,7 +401,7 @@ def compute_ppo_loss(
     """Compute PPO loss with clipped objective.
 
     This uses Brax's network interface but computes the loss explicitly
-    to expose all metrics for logging and AMP integration.
+    to expose all metrics for logging.
 
     IMPORTANT: Brax's network API:
     - policy_network.apply(processor_params, policy_params, obs) -> logits

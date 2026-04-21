@@ -2,19 +2,15 @@
 """Entry point for WildRobot training.
 
 This script provides a command-line interface for training walking policies
-using PPO with optional Adversarial Motion Priors (AMP) for natural motion learning.
+using PPO.
 
 Usage Examples:
 
-    # v0.20.1 PPO smoke (vx=0.15 only) -- requires the smoke YAML to
-    # exist (open task #49):
+    # v0.20.1 PPO smoke (vx=0.15 only):
     python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
     # Standing-branch training (separate from the locomotion path):
     python training/train.py --config training/configs/ppo_standing.yaml
-
-    # AMP+PPO training with human motion priors:
-    python training/train.py --config training/configs/ppo_amass_training.yaml
 
     # CLI overrides:
     python training/train.py --config <yaml> --num-envs 512 --iterations 5000
@@ -22,20 +18,10 @@ Usage Examples:
     # Quick verify (overrides via the config's quick_verify section):
     python training/train.py --config <yaml> --verify
 
-Architecture:
-    Two training modes:
-
-    1. PPO-only (amp.enabled=False): Brax PPO trainer with mujoco_playground
-       wrapper.  v0.20.1 onward this is the active locomotion path
-       (offline ZMP reference + bounded residual policy).
-    2. AMP+PPO (amp.enabled=True): Custom JIT'd training loop with AMP
-       discriminator.  Used by the standing branch.
-
 See also:
     - training/docs/walking_training.md: locomotion roadmap (v0.20.x)
     - training/docs/v0201_env_wiring.md: v0.20.1 env design + status
     - training/configs/ppo_standing*.yaml: standing-branch configs
-    - training/configs/ppo_amass_training.yaml: AMP+PPO config
 
 History:
     Pre-v0.20.1 ``ppo_walking*.yaml`` configs were deleted along with the
@@ -116,7 +102,7 @@ def parse_args():
     CLI arguments override config file values when explicitly provided.
     """
     parser = argparse.ArgumentParser(
-        description="Train WildRobot with PPO+AMP",
+        description="Train WildRobot with PPO",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -174,26 +160,6 @@ def parse_args():
         help="Entropy bonus coefficient (default from config)",
     )
 
-    # AMP configuration (only for custom loop)
-    parser.add_argument(
-        "--amp-weight",
-        type=float,
-        default=None,
-        help="Weight for AMP reward (default from config)",
-    )
-    parser.add_argument(
-        "--amp-data",
-        type=str,
-        default=None,
-        help="Path to AMP reference motion dataset (.pkl file)",
-    )
-    parser.add_argument(
-        "--disc-lr",
-        type=float,
-        default=None,
-        help="Discriminator learning rate (default from config)",
-    )
-
     # Logging and checkpoints
     parser.add_argument(
         "--log-interval",
@@ -238,21 +204,15 @@ def start_training(
     training_cfg: "TrainingConfig",
     wandb_tracker: Optional[WandbTracker] = None,
     checkpoint_dir: Optional[str] = None,
-    amp_data_path: Optional[str] = None,
     resume_checkpoint_path: Optional[str] = None,
     config_name: Optional[str] = None,
 ):
-    """Unified training using training_loop.py for both PPO-only and AMP+PPO.
-
-    This is the single training path for all modes:
-    - Stage 1: PPO-only (training_cfg.amp.enabled=False) - robot-native walking
-    - Stage 3: AMP+PPO (training_cfg.amp.enabled=True) - natural motion learning
+    """PPO training entry point.
 
     Args:
         training_cfg: Training configuration (single source of truth)
         wandb_tracker: Optional W&B tracker for logging
         checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
-        amp_data_path: Path to AMP reference data (overrides config if provided)
         resume_checkpoint_path: Path to checkpoint to resume training from
         config_name: Name of the config file (without extension), e.g., "ppo_walking"
     """
@@ -320,12 +280,11 @@ def start_training(
     # Create training job name (for checkpoint subdirectory)
     # Format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
     # Example: ppo_walking_v01005_20251228_205534-uf665cr6
-    mode_suffix = "amp" if training_cfg.amp.enabled else "ppo"
     job_name = generate_job_name(
         version=training_cfg.version,
         config_name=config_name,
         wandb_tracker=wandb_tracker,
-        mode_suffix=mode_suffix,
+        mode_suffix="ppo",
     )
     job_checkpoint_dir = os.path.join(final_checkpoint_dir, job_name)
     os.makedirs(job_checkpoint_dir, exist_ok=True)
@@ -345,21 +304,6 @@ def start_training(
             sort_keys=False,
             allow_unicode=False,
         )
-
-    # Load reference motion data only if AMP enabled
-    ref_features = None
-    if training_cfg.amp.enabled:
-        ref_path = amp_data_path or training_cfg.amp.dataset_path
-        if ref_path is None:
-            raise ValueError(
-                "AMP mode requires reference motion data. "
-                "Set amp.dataset_path in config or pass --amp-data."
-            )
-        print(f"Loading reference motion data from: {ref_path}")
-        from training.amp.ref_features import load_reference_features
-
-        ref_features = load_reference_features(ref_path)
-        print(f"✓ Reference features: {ref_features.shape}")
 
     print(
         f"✓ Environment functions created (vmapped for {training_cfg.ppo.num_envs} envs)"
@@ -436,7 +380,6 @@ def start_training(
                 iteration=iteration,
                 metrics=metrics,
                 steps_per_sec=steps_per_sec,
-                use_amp=training_cfg.amp.enabled,
                 reward_terms=REWARD_TERM_KEYS,
             )
             if iteration == 1 and missing_terms:
@@ -478,17 +421,14 @@ def start_training(
         print(f"\nLoading checkpoint for resume: {resume_checkpoint_path}")
         resume_checkpoint = load_checkpoint(resume_checkpoint_path)
 
-    # Train using unified trainer
-    mode_str = "AMP+PPO" if training_cfg.amp.enabled else "PPO-only (Stage 1)"
     print("\n" + "=" * 60)
-    print(f"Starting unified training ({mode_str})...")
+    print("Starting PPO training...")
     print("=" * 60 + "\n")
 
     final_state = train(
         env_step_fn=batched_step_fn,
         env_reset_fn=batched_reset_fn,
         config=training_cfg,
-        ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
         resume_checkpoint=resume_checkpoint,
         eval_env_step_fn=batched_eval_step_fn,
@@ -535,9 +475,6 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     Args:
         training_cfg: Training configuration to modify in-place
         args: Parsed command-line arguments
-
-    Raises:
-        ValueError: If AMP configuration is invalid (enabled but weight <= 0)
     """
     # PPO parameters
     if args.iterations is not None:
@@ -557,24 +494,11 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     if args.log_interval is not None:
         training_cfg.ppo.log_interval = args.log_interval
 
-    # AMP parameters
-    if args.disc_lr is not None:
-        training_cfg.amp.discriminator.learning_rate = args.disc_lr
-    if args.amp_data is not None:
-        training_cfg.amp.dataset_path = args.amp_data
-
     # Checkpoint parameters
     if args.checkpoint_dir is not None:
         training_cfg.checkpoints.dir = args.checkpoint_dir
     if args.checkpoint_interval is not None:
         training_cfg.checkpoints.interval = args.checkpoint_interval
-
-    # Validate AMP configuration (if enabled)
-    if training_cfg.amp.enabled and training_cfg.amp.weight <= 0:
-        raise ValueError(
-            f"Invalid AMP configuration: amp.enabled=True but amp.weight={training_cfg.amp.weight}. "
-            "Either set amp.weight > 0 or set amp.enabled=False in config."
-        )
 
 
 def main():
@@ -646,19 +570,11 @@ def main():
     print(f"{'=' * 60}")
     print(f"  Version: {training_cfg.version} ({training_cfg.version_name})")
     print(f"  PID: {os.getpid()}  (kill -9 {os.getpid()} to terminate)")
-    if training_cfg.amp.enabled:
-        mode_str = "AMP+PPO (JIT-compiled - FAST)"
-    else:
-        mode_str = "PPO-only (Stage 1: Robot-Native Walking)"
-    print(f"  Mode: {mode_str}")
     print(f"  Config: {config_path}")
     print(f"  Iterations: {training_cfg.ppo.iterations}")
     print(f"  Environments: {training_cfg.ppo.num_envs}")
     print(f"  Learning rate: {training_cfg.ppo.learning_rate}")
     print(f"  Seed: {training_cfg.seed}")
-    if training_cfg.amp.enabled:
-        print(f"  AMP weight: {training_cfg.amp.weight}")
-        print(f"  AMP data: {training_cfg.amp.dataset_path}")
     print(f"  Checkpoint dir: {training_cfg.checkpoints.dir}")
     print(f"{'=' * 60}\n")
 
@@ -681,12 +597,10 @@ def main():
         # Extract config name from config path (e.g., "ppo_walking" from "ppo_walking.yaml")
         config_name = config_path.stem if config_path else None
 
-        # Unified training for both PPO-only and AMP modes
         start_training(
             training_cfg=training_cfg,
             wandb_tracker=wandb_tracker,
             checkpoint_dir=args.checkpoint_dir,
-            amp_data_path=args.amp_data,
             resume_checkpoint_path=args.resume,
             config_name=config_name,
         )
