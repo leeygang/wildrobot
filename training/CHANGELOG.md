@@ -6,6 +6,70 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke2-prep-fix1] - 2026-04-21: analyzer + comparator on Evaluate/* namespace
+
+### Context
+
+``v0.20.1-smoke2-prep`` (commit ``df544a7``) retired the broken
+``env/success_rate`` / ``env/velocity_error`` topline path on the
+training side and added the ToddlerBot-style ``Evaluate/*`` block.
+The post-smoke analysis tooling
+(``skills/wildrobot-training-analyze/``) was not updated, so a
+smoke2 run would still be auto-ranked on the now-permanently-zero
+``env/success_rate`` and mis-classified by the walking verdict
+(which averaged ``env/velocity_error`` ≡ 0).
+
+### Changes
+
+1. **``analyze_offline_run.py:_pick_eval_keys``** — prefers
+   ``Evaluate/mean_reward`` + ``Evaluate/mean_episode_length`` for
+   walking runs when present.  Both fields are higher-is-better so
+   the existing ``_lexi_better`` / ``_find_best_row`` lex-sort works
+   without further changes.  Falls through to legacy
+   ``eval_clean/`` / ``eval/`` / ``env/`` order for older runs.
+
+2. **``analyze_offline_run.py:_summarize_walking``** — switches the
+   walking classifier to:
+   - forward-velocity source: ``Evaluate/forward_velocity`` (eval
+     rollout) when present, else ``env/forward_velocity``.
+   - tracking-error source: ``Evaluate/cmd_vs_achieved_forward``
+     (eval), ``tracking/cmd_vs_achieved_forward`` (train), then
+     legacy ``env/velocity_error``.
+   - synthetic ``success`` for v0.20.1 walking: derived from
+     ``Evaluate/mean_episode_length / max_episode_steps``, capped
+     at 0.5 if tracking is bad.
+   - tightens the verdict gates from the standing-era 0.20 / 0.20
+     thresholds to the G4 promotion-horizon floors (``fwd ≥ 0.075``,
+     ``vel_err ≤ 0.075``).  The looser gates would mis-classify a
+     vx=0.15 smoke as "needs review" even when tracking is good.
+   - changelog table labels updated to reflect the actual key path
+     ("Evaluate/forward_velocity (eval) or env/forward_velocity").
+
+3. **``compare_offline_runs.py``** — same updates to ``_pick_keys``
+   and ``_classify_walking`` for run-to-run comparison.
+
+### Validation
+
+- ``analyze_offline_run.py --run-dir <smoke1>`` runs cleanly.
+  Smoke1 has no ``Evaluate/*`` keys → falls through to legacy
+  path; verdict "needs review" reflects mean ``vel_err`` ≈ 0.124
+  exceeding the new G4 0.075 floor (smoke1 was a soft pass).
+- ``compare_offline_runs.py`` synthetic ``Evaluate/*`` row →
+  ``_pick_keys`` returns ``("Evaluate", "Evaluate/mean_reward",
+  "Evaluate/mean_episode_length")``.  Empty rows still degrade
+  cleanly to the legacy ``train`` fallback.
+
+### What this does NOT change
+
+- The training pipeline (env, reward, PPO, eval rollout) is
+  untouched — this is an offline-tooling-only change.
+- Older smoke runs without ``Evaluate/*`` keys analyze identically
+  to before (the new branch only activates when ``Evaluate/*`` is
+  present).
+- No new dependencies; no new fixture files.
+
+---
+
 ## [v0.20.x-amp-removal] - 2026-04-20: Remove AMP / discriminator stack
 
 ### Context

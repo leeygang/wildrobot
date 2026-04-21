@@ -90,6 +90,23 @@ def _push_enabled(cfg: Dict[str, Any]) -> bool:
 
 
 def _pick_eval_keys(rows: List[Dict[str, Any]], *, cfg: Dict[str, Any]) -> EvalKeySet:
+    # v0.20.1-smoke2 (ToddlerBot-aligned): walking runs now log
+    # ``Evaluate/mean_reward`` + ``Evaluate/mean_episode_length`` from a
+    # deterministic eval rollout (mirrors
+    # toddlerbot/locomotion/train_mjx.py log_metrics).  Prefer those over
+    # the legacy success_rate keys for walking — those are now permanently
+    # zero (truncation-based, removed from the smoke topline).  The
+    # ``success`` field of EvalKeySet becomes "ToddlerBot mean_reward"
+    # in this branch; both fields are higher-is-better so the existing
+    # _lexi_better / _find_best_row sort works unchanged.
+    if _is_walking_run(cfg, rows):
+        if any("Evaluate/mean_reward" in r for r in rows):
+            return EvalKeySet(
+                prefix="Evaluate/",
+                success="Evaluate/mean_reward",
+                ep_len="Evaluate/mean_episode_length",
+            )
+
     # For walking runs without pushes, eval_push is not informative.
     if _is_walking_run(cfg, rows) and not _push_enabled(cfg):
         if any("eval_clean/success_rate" in r for r in rows):
@@ -341,14 +358,41 @@ def _classify_walking(
             stability="not_applicable",
         )
 
-    forward_vel_mean = _mean(_collect_series(rows, "env/forward_velocity", min_iter=min_iter))
+    # v0.20.1-smoke2: prefer Evaluate/* (deterministic eval rollout, ToddlerBot
+    # pattern) over the now-degenerate env/success_rate / env/velocity_error
+    # path.  Walking runs that retired success_rate / velocity_error from the
+    # topline still log forward_velocity at env/* (unchanged), so use the
+    # eval-rollout forward_velocity when present and fall back gracefully.
+    has_evaluate = any("Evaluate/forward_velocity" in r for r in rows)
+    forward_vel_key = (
+        "Evaluate/forward_velocity" if has_evaluate else "env/forward_velocity"
+    )
+    forward_vel_mean = _mean(_collect_series(rows, forward_vel_key, min_iter=min_iter))
     velocity_cmd_mean = _mean(_collect_series(rows, "env/velocity_cmd", min_iter=min_iter))
-    velocity_error_mean = _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter))
+    # Use the v0.20.1 walking-meaningful tracking signal
+    # (|achieved_vx - cmd_vx|) when present; legacy env/velocity_error is
+    # always 0 for the v0.20.1 smoke.
+    velocity_error_mean = _mean(
+        _collect_series(rows, "Evaluate/cmd_vs_achieved_forward", min_iter=min_iter)
+    ) or _mean(
+        _collect_series(rows, "tracking/cmd_vs_achieved_forward", min_iter=min_iter)
+    ) or _mean(_collect_series(rows, "env/velocity_error", min_iter=min_iter))
     gait_periodicity_mean = _mean(_collect_series(rows, "reward/gait_periodicity", min_iter=min_iter))
     clearance_mean = _mean(_collect_series(rows, "reward/clearance", min_iter=min_iter))
     hip_swing_mean = _mean(_collect_series(rows, "reward/hip_swing", min_iter=min_iter))
     knee_swing_mean = _mean(_collect_series(rows, "reward/knee_swing", min_iter=min_iter))
-    success_mean = _mean(_collect_series(rows, "env/success_rate", min_iter=min_iter))
+    # ``success`` for v0.20.1 walking is "did the deterministic eval rollout
+    # last most of the horizon AND track command velocity?".  Synthesize from
+    # Evaluate/mean_episode_length + the cmd-tracking error already pulled
+    # above; legacy success_rate is always 0 for these runs.
+    if has_evaluate:
+        ep_len_mean = _mean(_collect_series(rows, "Evaluate/mean_episode_length", min_iter=min_iter)) or 0.0
+        max_ep = float(cfg.get("config", {}).get("env", {}).get("max_episode_steps", 500) or 500)
+        survival_frac = ep_len_mean / max_ep if max_ep > 0 else 0.0
+        track_ok = (velocity_error_mean or float("inf")) <= 0.075
+        success_mean = survival_frac if track_ok else min(survival_frac, 0.5)
+    else:
+        success_mean = _mean(_collect_series(rows, "env/success_rate", min_iter=min_iter))
     term_low_mean = _mean(_collect_series(rows, "term_height_low_frac", min_iter=min_iter))
     term_pitch_mean = _mean(_collect_series(rows, "term_pitch_frac", min_iter=min_iter))
     torque_sat_mean = _mean(_collect_series(rows, "debug/torque_sat_frac", min_iter=min_iter))
@@ -359,20 +403,28 @@ def _classify_walking(
     term_pitch = term_pitch_mean or 0.0
     torque_sat = torque_sat_mean or 0.0
 
-    if fwd < 0.05 and term_pitch >= 0.10:
+    # Walking-rate gates (m/s).  v0.20.1 smoke targets vx=0.15 — the legacy
+    # 0.20 / 0.10 thresholds were calibrated for vx=0.30+ standing-era
+    # branches and would mis-classify the smoke as "needs review" even when
+    # tracking is good.
+    fwd_emerging = 0.075  # G4 promotion-horizon floor
+    fwd_low = 0.05
+    vel_err_ok = 0.075    # G4 promotion-horizon floor
+
+    if fwd < fwd_low and term_pitch >= 0.10:
         verdict = "posture exploit"
-    elif fwd < 0.05 and success >= 0.80:
+    elif fwd < fwd_low and success >= 0.80:
         verdict = "trapped in standing"
-    elif fwd < 0.10 and torque_sat >= 0.03:
+    elif fwd < fwd_emerging and torque_sat >= 0.03:
         verdict = "shuffle exploit"
-    elif fwd >= 0.20 and vel_err <= 0.20:
+    elif fwd >= fwd_emerging and vel_err <= vel_err_ok:
         verdict = "locomotion emerging"
     else:
         verdict = "needs review"
 
-    if fwd >= 0.20 and vel_err <= 0.20:
+    if fwd >= fwd_emerging and vel_err <= vel_err_ok:
         tracking_status = "improving"
-    elif fwd < 0.10 and vel_err >= 0.20:
+    elif fwd < fwd_low and vel_err >= 0.20:
         tracking_status = "flat"
     else:
         tracking_status = "partial"
@@ -464,10 +516,18 @@ def _changelog_block(
         f"| ppo/clip_fraction | {_format_f(clip_frac, 4)} |",
     ]
     if walking.enabled:
+        # Labels reflect the keys actually consumed by ``_summarize_walking``
+        # (Evaluate/* preferred for v0.20.1-smoke2; falls back to env/* and
+        # tracking/* for older runs).
+        fwd_label = "Evaluate/forward_velocity (eval) or env/forward_velocity"
+        verr_label = (
+            "Evaluate/cmd_vs_achieved_forward (eval) or "
+            "tracking/cmd_vs_achieved_forward (train)"
+        )
         lines += [
-            f"| env/forward_velocity | {_format_f(walking.forward_vel_mean, 3)} |",
+            f"| {fwd_label} | {_format_f(walking.forward_vel_mean, 3)} |",
             f"| env/velocity_cmd | {_format_f(walking.velocity_cmd_mean, 3)} |",
-            f"| env/velocity_error | {_format_f(walking.velocity_error_mean, 3)} |",
+            f"| {verr_label} | {_format_f(walking.velocity_error_mean, 3)} |",
             f"| reward/gait_periodicity | {_format_f(walking.gait_periodicity_mean, 4)} |",
             f"| reward/clearance | {_format_f(walking.clearance_mean, 4)} |",
             f"| reward/hip_swing | {_format_f(walking.hip_swing_mean, 4)} |",

@@ -152,18 +152,39 @@ def _is_walking_run(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
 def _classify_walking(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[bool, str, Optional[float], Optional[float]]:
     if not _is_walking_run(cfg, rows):
         return False, "not_applicable", None, None
-    forward_velocity = _mean(_collect_series(rows, "env/forward_velocity"))
-    velocity_error = _mean(_collect_series(rows, "env/velocity_error"))
+    # v0.20.1-smoke2: prefer Evaluate/* (deterministic eval rollout, ToddlerBot
+    # pattern).  Legacy env/velocity_error / env/success_rate are now stuck
+    # at 0 for v0.20.1 walking and would mis-classify "locomotion emerging"
+    # runs as "needs review".  See analyze_offline_run.py:_summarize_walking
+    # for the same rebind.
+    has_evaluate = any("Evaluate/forward_velocity" in r for r in rows)
+    fwd_key = "Evaluate/forward_velocity" if has_evaluate else "env/forward_velocity"
+    forward_velocity = _mean(_collect_series(rows, fwd_key))
+    velocity_error = (
+        _mean(_collect_series(rows, "Evaluate/cmd_vs_achieved_forward"))
+        or _mean(_collect_series(rows, "tracking/cmd_vs_achieved_forward"))
+        or _mean(_collect_series(rows, "env/velocity_error"))
+    )
     term_pitch = _mean(_collect_series(rows, "term_pitch_frac")) or 0.0
-    success = _mean(_collect_series(rows, "env/success_rate")) or 0.0
+    if has_evaluate:
+        ep_len = _mean(_collect_series(rows, "Evaluate/mean_episode_length")) or 0.0
+        max_ep = float(cfg.get("config", {}).get("env", {}).get("max_episode_steps", 500) or 500)
+        success = (ep_len / max_ep) if max_ep > 0 else 0.0
+    else:
+        success = _mean(_collect_series(rows, "env/success_rate")) or 0.0
 
     fwd = forward_velocity or 0.0
     vel_err = velocity_error if velocity_error is not None else float("inf")
-    if fwd < 0.05 and term_pitch >= 0.10:
+    # G4 promotion-horizon floors (walking_training.md v0.20.1 §) — replace
+    # the standing-era 0.20 / 0.20 thresholds that mis-classified the smoke.
+    fwd_emerging = 0.075
+    fwd_low = 0.05
+    vel_err_ok = 0.075
+    if fwd < fwd_low and term_pitch >= 0.10:
         verdict = "posture exploit"
-    elif fwd < 0.05 and success >= 0.80:
+    elif fwd < fwd_low and success >= 0.80:
         verdict = "trapped in standing"
-    elif fwd >= 0.20 and vel_err <= 0.20:
+    elif fwd >= fwd_emerging and vel_err <= vel_err_ok:
         verdict = "locomotion emerging"
     else:
         verdict = "needs review"
@@ -171,6 +192,13 @@ def _classify_walking(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[
 
 
 def _pick_keys(cfg: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+    # v0.20.1-smoke2: prefer Evaluate/mean_reward + Evaluate/mean_episode_length
+    # for walking (ToddlerBot pattern, no success_rate concept).  Both fields
+    # are higher-is-better so the existing _find_best lex-sort works.
+    if _is_walking_run(cfg, rows):
+        if any("Evaluate/mean_reward" in r for r in rows):
+            return ("Evaluate", "Evaluate/mean_reward", "Evaluate/mean_episode_length")
+
     if _is_walking_run(cfg, rows) and not _push_enabled(cfg):
         if any("eval_clean/success_rate" in r for r in rows):
             return ("eval_clean", "eval_clean/success_rate", "eval_clean/episode_length")
