@@ -6,6 +6,94 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke3] - 2026-04-21: alpha-2 foothold-gradient probe result
+
+### Run
+
+- Run: `training/wandb/offline-run-20260421_220826-uzpl0pqr`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260421_220829-uzpl0pqr`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260421_220829-uzpl0pqr/checkpoint_150_19660800.pkl`
+- Previous comparable run: `training/wandb/offline-run-20260421_063530-ehkn02ye`
+
+### Result
+
+- **Walking verdict:** smoke3 is still not a promotion candidate.  The
+  diagnostic run clears velocity / survival / G5 again, but it does not
+  improve the failed stride-geometry gate.
+- **G4:** 5 of 6 hard gates pass at iter 150.
+  `env/forward_velocity=0.132`,
+  `Evaluate/forward_velocity=0.133`,
+  `Evaluate/mean_episode_length=500.0`,
+  `Evaluate/cmd_vs_achieved_forward=0.044`, and
+  `tracking/cmd_vs_achieved_forward=0.0737` all satisfy the documented
+  floors, but `tracking/step_length_touchdown_event_m=0.0178` remains well
+  below the `>= 0.03 m` stride gate.
+- **G5:** pass.  `tracking/forward_velocity_cmd_ratio=0.879` stays in-band,
+  and residual means remain small
+  (`hip_pitch_L/R = 0.098 / 0.105 rad`,
+  `knee_L/R = 0.098 / 0.096 rad`), so smoke3 is not an
+  action-authority leak.
+- **G7 baseline-beat sanity:** pass comfortably.  The run is far better than
+  bare-`q_ref` replay on forward velocity, episode length, and pitch
+  failure rate.
+
+### Diagnostic outcome
+
+- **The alpha-2 probe succeeded only in making the foothold term less dead.**
+  Relative to smoke2 best-vs-best:
+  - `ref/feet_pos_err_l2`: `1.062 -> 1.007` (better)
+  - `reward/ref_feet_pos_track`: `0.000204 -> 0.000976` (about 4.8x larger)
+- **But the gait geometry did not improve.**  Relative to smoke2:
+  - `tracking/step_length_touchdown_event_m`: `0.0203 -> 0.0178` (worse)
+  - `env/forward_velocity`: `0.148 -> 0.132` (worse)
+  - `tracking/cmd_vs_achieved_forward`: `0.069 -> 0.074` (worse)
+  - `ref/contact_phase_match`: `0.665 -> 0.612` (worse)
+- **Per-foot stride stays short on both sides.**  At iter 150 the
+  touchdown-normalized stride is
+  `0.0174 m` left and `0.0222 m` right, versus smoke2's
+  `0.0207 m` left and `0.0264 m` right.  This is still a bilateral
+  short-step solution, not one-sided stepping.
+- **The run never cleared the stride gate at any point.**  The best late-run
+  stride was around `0.0208 m` at iter 100, then it regressed back down by
+  iter 150.
+
+### Interpretation
+
+- The diagnostic question from `v0.20.1-smoke2-diagnostic1` now has a clear
+  answer: **the problem is not just a dead alpha.**
+- Lowering `ref_feet_pos_alpha` did move the foothold-tracking metric, so the
+  reward is no longer completely saturated.  However, because stride length,
+  speed, and contact-phase alignment all worsened, the current
+  **world-frame summed-squares foot-position metric is not pulling the gait
+  toward the prior's actual foothold geometry.**
+- In other words: smoke3 says the next bottleneck is **metric geometry**, not
+  PPO optimization and not residual authority.
+
+This matches the project design direction:
+- ToddlerBot's locomotion stack keeps the prior / reference geometry in the
+  frame where it encodes the intended motion pattern rather than asking PPO
+  to interpret a drifting world-frame target.  Reference:
+  <https://github.com/hshi74/toddlerbot>
+- DeepMimic-style imitation rewards only help when the imitation term is both
+  alive **and** aligned with the target motion geometry.  Reference:
+  <https://arxiv.org/abs/1804.02717>
+- Residual RL works when the residual corrects a meaningful nominal behavior;
+  if the nominal-tracking metric is wrong, making it "less dead" does not fix
+  the division of labor.  Reference:
+  <https://arxiv.org/abs/1812.03201>
+
+### Next version
+
+- Do **not** continue sweeping `ref_feet_pos_alpha` on the current metric.
+- Promote the already-documented `v0.20.2` cleanup ahead of any further smoke:
+  rewrite the WildRobot-specific foot-position imitation term from the
+  current world-frame summed-squares form to a **body-frame Euclidean**
+  metric, then retune alpha on that new metric.
+- Keep the rest of the smoke contract fixed when making that change so the
+  next run cleanly answers the remaining question:
+  whether the stride gate can finally move once the foothold metric is in
+  the right geometry.
+
 ## [v0.20.1-smoke2-diagnostic1] - 2026-04-21: lower foot-pos alpha for live foothold-gradient probe
 
 ### Context
