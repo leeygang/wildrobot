@@ -1382,7 +1382,7 @@ Both projects use the DeepMimic-style numerator-α form
 
 | Kernel | ToddlerBot α (`mjx_config.py:104`) | WR α (`training_runtime_config.py:747`) | Decision |
 |---|---|---|---|
-| `pos_tracking_sigma` (xy/z) | 200 | 200 (`torso_pos_xy_alpha`) | match |
+| `pos_tracking_sigma` (xy/z) | 200 | default 200; smoke override 90 (`torso_pos_xy_alpha`) | temporary divergence: keep reward alive through step 50 under WR open-loop drift; restore toward 200 after prior cleanup |
 | `rot_tracking_sigma` | 20 | 20 (`ref_body_quat_alpha`) | match |
 | `motor_pos` sigma (effective) | 1.0 | 1.0 (`ref_q_track_alpha`) | match |
 | `lin_vel_tracking_sigma` | 200 | 4.0 (`cmd_forward_velocity_alpha`) | **change** — bump to 200 |

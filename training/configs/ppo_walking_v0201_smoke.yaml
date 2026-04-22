@@ -324,8 +324,13 @@ reward_weights:
   # — enough headroom to differentiate "close" from "very close" while
   # still bottoming out at 0 by ~0.15 m/s error.
   cmd_forward_velocity_alpha: 200.0
-  # ToddlerBot torso XY tracking sigma (mjx_config.py RewardsConfig.pos_tracking_sigma).
-  torso_pos_xy_alpha: 200.0
+  # Smoke-stage calibration override for WR prior drift (TB default is 200):
+  # v0200c probe at vx=0.15 gave raw torso_pos_xy
+  # step10=0.972, step30=0.168, step50=0.001 at alpha=200 (dies too early).
+  # Alpha 90 keeps the first-50-step signal alive:
+  # step10=0.987, step30=0.448, step50=0.051.
+  # Restore toward 200 after prior-drift cleanup in v0.20.2.
+  torso_pos_xy_alpha: 90.0
 
 # =============================================================================
 # Reward Composition

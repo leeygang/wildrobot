@@ -6,6 +6,56 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke4-prep1] - 2026-04-22: torso_pos_xy alpha calibration from per-frame probe
+
+### Context
+
+`v0.20.1-smoke3` confirmed the legacy world-frame feet-position reward was
+not the right optimized signal for stride geometry, so the reward objective
+was switched to ToddlerBot-parity `torso_pos_xy` tracking.  Before launching
+the next smoke, we ran a zero-residual pre-smoke probe to verify whether
+ToddlerBot's default `alpha=200` is alive at WildRobot's open-loop drift
+scale.
+
+### Probe
+
+- Command:
+  `UV_CACHE_DIR=/tmp/uv-cache uv run python tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100`
+- Baseline (`alpha=200`, raw `exp(-alpha * err^2)`):
+  - step 10: `err=0.0118 m`, `raw=0.972`
+  - step 30: `err=0.0945 m`, `raw=0.168`
+  - step 50: `err=0.1819 m`, `raw=0.00134`
+  - step 70: `err=0.3641 m`, `raw≈0`
+  - min raw over steps `0..50`: `0.00134` (fails alive-signal gate)
+- Calibrated check (`alpha=90`):
+  - step 10: `raw=0.987`
+  - step 30: `raw=0.448`
+  - step 50: `raw=0.05097`
+  - min raw over steps `0..50`: `0.05097` (passes alive-signal gate)
+
+### Changes
+
+1. **`training/configs/ppo_walking_v0201_smoke.yaml`**
+   - `reward_weights.torso_pos_xy_alpha: 200.0 -> 90.0`
+2. **`tools/v0200c_per_frame_probe.py`**
+   - added direct `torso_pos_xy` diagnostics:
+     `torso_pos_xy_err_m`, `torso_pos_xy_raw`, `--torso-alpha`,
+     and printed step checkpoints (`10/30/50/70`) plus min over `0..50`.
+3. **`training/docs/walking_training.md`**
+   - Appendix A.4 now documents the temporary smoke override
+     (`pos_tracking_sigma`: TB `200`, WR smoke override `90`) with rationale.
+
+### Rationale
+
+- Keep the reward shape and weight aligned with ToddlerBot, but calibrate
+  the kernel width to the error regime WildRobot actually visits in open-loop.
+- `alpha=90` is the smallest divergence from `200` that keeps
+  `reward/torso_pos_xy` alive through the first ~50 control steps at
+  `vx=0.15`, which is the region we need PPO to learn from before the prior
+  drift dominates.
+- This is a smoke-stage calibration only; restore toward `200` after prior
+  drift cleanup in `v0.20.2`.
+
 ## [v0.20.1-smoke3] - 2026-04-21: alpha-2 foothold-gradient probe result
 
 ### Run

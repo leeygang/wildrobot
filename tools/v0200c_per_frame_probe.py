@@ -63,6 +63,12 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--vx", type=float, default=0.15)
     p.add_argument("--horizon", type=int, default=100)
+    p.add_argument(
+        "--torso-alpha",
+        type=float,
+        default=200.0,
+        help="Alpha for torso_pos_xy raw reward exp(-alpha * err^2)",
+    )
     p.add_argument("--csv", type=str, default="/tmp/v0200c_probe.csv")
     p.add_argument("--scene", type=str,
                    default="assets/v2/scene_flat_terrain.xml")
@@ -158,6 +164,12 @@ def main() -> int:
         # backward acceleration.
         prior_lever = prior_com_x - prior_stance_x
         actual_lever = actual_pelv_x - actual_stance_x
+        torso_dx = actual_pelv_x - prior_pelv_x
+        torso_dy = actual_pelv_y - prior_pelv_y
+        torso_pos_xy_err_m = float(np.hypot(torso_dx, torso_dy))
+        torso_pos_xy_raw = float(
+            np.exp(-float(args.torso_alpha) * torso_pos_xy_err_m * torso_pos_xy_err_m)
+        )
 
         rows.append({
             "step": step_idx,
@@ -166,9 +178,13 @@ def main() -> int:
             "prior_com_x": prior_com_x,
             "actual_pelv_x": actual_pelv_x,
             "delta_x": actual_pelv_x - prior_com_x,
+            "prior_pelv_x": prior_pelv_x,
+            "prior_pelv_y": prior_pelv_y,
             "prior_com_y": prior_com_y,
             "actual_pelv_y": actual_pelv_y,
             "actual_pelv_z": actual_pelv_z,
+            "torso_pos_xy_err_m": torso_pos_xy_err_m,
+            "torso_pos_xy_raw": torso_pos_xy_raw,
             "pitch": pitch,
             "prior_stance_x": prior_stance_x,
             "actual_stance_x": actual_stance_x,
@@ -211,6 +227,28 @@ def main() -> int:
               f"actual_lever={flips[0]['actual_lever']:+.4f}")
     else:
         print("\nNo prior-vs-actual lever sign flips in the logged window.")
+
+    # Torso XY calibration summary for reward/torso_pos_xy.
+    sample_steps = (10, 30, 50, 70)
+    by_step = {int(r["step"]): r for r in rows}
+    print(
+        f"\nTorso XY probe (alpha={args.torso_alpha:.1f}): "
+        "step -> err_m, raw_reward"
+    )
+    for s in sample_steps:
+        r = by_step.get(s)
+        if r is None:
+            print(f"  step {s:>3}: n/a")
+        else:
+            print(
+                f"  step {s:>3}: err={r['torso_pos_xy_err_m']:.4f} m, "
+                f"raw={r['torso_pos_xy_raw']:.6f}"
+            )
+
+    first_50 = [r for r in rows if int(r["step"]) <= 50]
+    if first_50:
+        min_raw_50 = min(float(r["torso_pos_xy_raw"]) for r in first_50)
+        print(f"  min raw reward over steps 0..50: {min_raw_50:.6f}")
     return 0
 
 
