@@ -1391,7 +1391,7 @@ def train(
                 # what the v0.20.1 G4 promotion-horizon gate floors on.
                 "ref_q_track": METRIC_INDEX["reward/ref_q_track"],
                 "ref_body_quat_track": METRIC_INDEX["reward/ref_body_quat_track"],
-                "ref_feet_pos_track": METRIC_INDEX["reward/ref_feet_pos_track"],
+                "torso_pos_xy": METRIC_INDEX["reward/torso_pos_xy"],
                 "cmd_forward_velocity_track": METRIC_INDEX[
                     "reward/cmd_forward_velocity_track"
                 ],
@@ -1399,6 +1399,8 @@ def train(
                 "ref_q_track_err_rmse": METRIC_INDEX["ref/q_track_err_rmse"],
                 "ref_body_quat_err_deg": METRIC_INDEX["ref/body_quat_err_deg"],
                 "ref_feet_pos_err_l2": METRIC_INDEX["ref/feet_pos_err_l2"],
+                "ref_feet_pos_track_raw": METRIC_INDEX["ref/feet_pos_track_raw"],
+                "ref_torso_pos_xy_err_m": METRIC_INDEX["ref/torso_pos_xy_err_m"],
                 "ref_contact_phase_match": METRIC_INDEX["ref/contact_phase_match"],
             }
             walking_metrics = {

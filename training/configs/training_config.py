@@ -694,12 +694,12 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         # v0.20.1 imitation-dominant residual reward family.
         ref_q_track=rewards.get("ref_q_track", 0.0),
         ref_body_quat_track=rewards.get("ref_body_quat_track", 0.0),
-        ref_feet_pos_track=rewards.get("ref_feet_pos_track", 0.0),
+        torso_pos_xy=rewards.get("torso_pos_xy", 0.0),
         ref_contact_match=rewards.get("ref_contact_match", 0.0),
         cmd_forward_velocity_track=rewards.get("cmd_forward_velocity_track", 0.0),
         ref_q_track_alpha=rewards.get("ref_q_track_alpha", 1.0),
         ref_body_quat_alpha=rewards.get("ref_body_quat_alpha", 20.0),
-        ref_feet_pos_alpha=rewards.get("ref_feet_pos_alpha", 200.0),
+        torso_pos_xy_alpha=rewards.get("torso_pos_xy_alpha", 200.0),
         ref_contact_match_sigma=rewards.get("ref_contact_match_sigma", 0.5),
         cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
         # ToddlerBot-aligned shaping additions (walking_training.md Appendix A.3).

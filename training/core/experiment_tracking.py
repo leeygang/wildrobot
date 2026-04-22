@@ -104,7 +104,7 @@ REWARD_TERM_KEYS = [
     # v0.20.1: imitation-dominant residual reward family.
     "reward/ref_q_track",
     "reward/ref_body_quat_track",
-    "reward/ref_feet_pos_track",
+    "reward/torso_pos_xy",
     "reward/ref_contact_match",
     "reward/cmd_forward_velocity_track",
 ]
@@ -188,13 +188,15 @@ ENV_METRICS_KEYS = {
     # see training/envs/wildrobot_env.py:_compute_reward_terms).
     "reward/ref_q_track": "Joint-target tracking exp(-alpha*sum((q-q_ref)^2))",
     "reward/ref_body_quat_track": "Pelvis orientation tracking exp(-alpha*angle^2)",
-    "reward/ref_feet_pos_track": "Root-relative foot position tracking",
+    "reward/torso_pos_xy": "Torso XY tracking exp(-alpha*||torso_xy-ref_xy||^2)",
     "reward/ref_contact_match": "Smooth per-foot contact-phase match",
     "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
     # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
     "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",
     "ref/body_quat_err_deg": "Geodesic orientation error vs reference (deg)",
     "ref/feet_pos_err_l2": "L2 foot-pos error (root-relative, summed L+R) in m",
+    "ref/feet_pos_track_raw": "Legacy feet-pos tracking score exp(-200*||e_feet||^2)",
+    "ref/torso_pos_xy_err_m": "Torso XY position error norm vs reference pelvis (m)",
     "ref/contact_phase_match": "Smooth contact-phase match (per-step value)",
     # Debug metrics
     "debug/pitch": "Root pitch angle",
@@ -443,12 +445,14 @@ def get_initial_env_metrics(
         # v0.20.1 imitation reward family + diagnostics (zeros at reset).
         "reward/ref_q_track": 0.0,
         "reward/ref_body_quat_track": 0.0,
-        "reward/ref_feet_pos_track": 0.0,
+        "reward/torso_pos_xy": 0.0,
         "reward/ref_contact_match": 0.0,
         "reward/cmd_forward_velocity_track": 0.0,
         "ref/q_track_err_rmse": 0.0,
         "ref/body_quat_err_deg": 0.0,
         "ref/feet_pos_err_l2": 0.0,
+        "ref/feet_pos_track_raw": 0.0,
+        "ref/torso_pos_xy_err_m": 0.0,
         "ref/contact_phase_match": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
@@ -622,12 +626,14 @@ def get_initial_env_metrics_jax(
         # by wildrobot_env.WildRobotEnv._aggregate_reward.
         "reward/ref_q_track": jp.zeros(()),
         "reward/ref_body_quat_track": jp.zeros(()),
-        "reward/ref_feet_pos_track": jp.zeros(()),
+        "reward/torso_pos_xy": jp.zeros(()),
         "reward/ref_contact_match": jp.zeros(()),
         "reward/cmd_forward_velocity_track": jp.zeros(()),
         "ref/q_track_err_rmse": jp.zeros(()),
         "ref/body_quat_err_deg": jp.zeros(()),
         "ref/feet_pos_err_l2": jp.zeros(()),
+        "ref/feet_pos_track_raw": jp.zeros(()),
+        "ref/torso_pos_xy_err_m": jp.zeros(()),
         "ref/contact_phase_match": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),

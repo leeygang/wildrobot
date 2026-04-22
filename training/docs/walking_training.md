@@ -1355,7 +1355,7 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 |---|---|---|---|
 | `motor_pos` ↔ `ref_q_track` | 5.0 | 0.65 | 5.0 |
 | `torso_quat` ↔ `ref_body_quat_track` | 5.0 | 0.10 | 5.0 |
-| `torso_pos_xy` | 2.0 | — | (ref/feet+pelvis covers it; defer) |
+| `torso_pos_xy` | 2.0 | — | **add 2.0** (match ToddlerBot `_reward_torso_pos_xy`) |
 | `torso_roll` (soft, gate `[-0.1, 0.1]`) | 0.5 | — | **add 0.5** |
 | `torso_pitch` (soft, gate `[-0.2, 0.2]`) | 0.5 | — | **add 0.5** |
 | `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0 | 0.30 | 5.0 |
@@ -1372,7 +1372,7 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `energy` | 0.01 | — | defer |
 | `action_rate` | 1.0 (× neg-MSE) | -0.01 (× sum-sq) | **bump to -1.0** to match ToddlerBot grad scale |
 | `collision` | 0.1 | — | defer (no self-collision shaping yet) |
-| `feet_pos_track` (DeepMimic site) | (env-specific) | 0.15 | keep |
+| `feet_pos_track` (WR legacy diagnostic) | (env-specific) | 0.15 | remove from reward objective; keep raw debug metric only (`ref/feet_pos_track_raw`) |
 | `joint_velocity` | — | -0.0005 | keep |
 
 ### A.4 Tracking-sigma / kernel widths
@@ -1382,12 +1382,12 @@ Both projects use the DeepMimic-style numerator-α form
 
 | Kernel | ToddlerBot α (`mjx_config.py:104`) | WR α (`training_runtime_config.py:747`) | Decision |
 |---|---|---|---|
-| `pos_tracking_sigma` (xy/z) | 200 | — | n/a (no torso_pos reward in WR) |
+| `pos_tracking_sigma` (xy/z) | 200 | 200 (`torso_pos_xy_alpha`) | match |
 | `rot_tracking_sigma` | 20 | 20 (`ref_body_quat_alpha`) | match |
 | `motor_pos` sigma (effective) | 1.0 | 1.0 (`ref_q_track_alpha`) | match |
 | `lin_vel_tracking_sigma` | 200 | 4.0 (`cmd_forward_velocity_alpha`) | **change** — bump to 200 |
 | `ang_vel_tracking_sigma` | 0.5 | — | n/a (no ang_vel reward yet) |
-| `feet_pos` α | 200 | 200 (`ref_feet_pos_alpha`) | match |
+| `feet_pos` α | 200 | debug-only fixed α=200 (`ref/feet_pos_track_raw`) | diagnostic only (not optimized) |
 | `ref_contact_match_sigma` | n/a (boolean) | 0.5 | WR-specific Gaussian; keep |
 
 ### A.5 Behavior-detection thresholds

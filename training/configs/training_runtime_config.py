@@ -706,7 +706,7 @@ class RewardWeightsConfig(Freezable):
     # list and walking_training.md G3 for the contact-match definition.
     ref_q_track: float = 0.0
     ref_body_quat_track: float = 0.0
-    ref_feet_pos_track: float = 0.0
+    torso_pos_xy: float = 0.0
     ref_contact_match: float = 0.0
     cmd_forward_velocity_track: float = 0.0
 
@@ -717,7 +717,7 @@ class RewardWeightsConfig(Freezable):
     # joystick lin_vel tracking_sigma=0.25 (denominator) ⇒ α=4.0.
     ref_q_track_alpha: float = 1.0
     ref_body_quat_alpha: float = 20.0
-    ref_feet_pos_alpha: float = 200.0
+    torso_pos_xy_alpha: float = 200.0
     ref_contact_match_sigma: float = 0.5  # walking_training.md G3 default
     cmd_forward_velocity_alpha: float = 4.0
 

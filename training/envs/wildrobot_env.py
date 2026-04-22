@@ -777,9 +777,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             -jp.float32(weights.ref_body_quat_alpha) * body_quat_angle * body_quat_angle
         )
 
-        # ---- ref/feet_pos_track (root-relative; loco-mujoco convention) -----
-        # Subtract the respective root/pelvis positions so the reward is
-        # invariant to base drift along the trajectory.
+        # ---- ref/feet_pos_track_raw (diagnostic-only) ------------------------
+        # Keep the legacy root-relative WORLD-frame feet tracking probe as a
+        # debug signal only (not weighted into total reward).
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.WORLD
         )
@@ -792,8 +792,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             win["right_foot_pos"] - ref_pelvis_pos
         )
         feet_err_l2 = jp.sum(left_rel * left_rel) + jp.sum(right_rel * right_rel)
-        r_feet_track = jp.exp(
-            -jp.float32(weights.ref_feet_pos_alpha) * feet_err_l2
+        r_feet_track_raw = jp.exp(-jp.float32(200.0) * feet_err_l2)
+
+        # ---- torso_pos_xy (ToddlerBot parity) --------------------------------
+        # Match ToddlerBot _reward_torso_pos_xy:
+        # exp(-alpha * ||torso_xy - torso_xy_ref||^2).
+        torso_pos_xy_err = root_pos_xyz[:2] - ref_pelvis_pos[:2]
+        r_torso_pos_xy = jp.exp(
+            -jp.float32(weights.torso_pos_xy_alpha)
+            * jp.sum(torso_pos_xy_err * torso_pos_xy_err)
         )
 
         # ---- ref/contact_match (smooth Gaussian per spec G3) -----------------
@@ -929,7 +936,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
-            r_feet_pos_track=r_feet_track,
+            r_torso_pos_xy=r_torso_pos_xy.astype(jp.float32),
             r_contact_match=r_contact,
             r_cmd_forward_velocity_track=r_vx,
             penalty_action_rate=penalty_action_rate,
@@ -946,6 +953,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             q_track_rmse=q_track_rmse.astype(jp.float32),
             body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
             feet_pos_err_l2=jp.sqrt(feet_err_l2).astype(jp.float32),
+            feet_pos_track_raw=r_feet_track_raw.astype(jp.float32),
+            torso_pos_xy_err_m=jp.sqrt(jp.sum(torso_pos_xy_err * torso_pos_xy_err)).astype(
+                jp.float32
+            ),
             feet_distance_torso_m=feet_dist.astype(jp.float32),
         )
 
@@ -988,8 +999,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],
-            ref_feet_pos_track=jp.float32(w.ref_feet_pos_track)
-            * terms["r_feet_pos_track"],
+            torso_pos_xy=jp.float32(w.torso_pos_xy) * terms["r_torso_pos_xy"],
             ref_contact_match=jp.float32(w.ref_contact_match)
             * terms["r_contact_match"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
@@ -1702,9 +1712,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/ref_body_quat_track"] = reward_contrib[
             "ref_body_quat_track"
         ]
-        terminal_metrics_dict["reward/ref_feet_pos_track"] = reward_contrib[
-            "ref_feet_pos_track"
-        ]
+        terminal_metrics_dict["reward/torso_pos_xy"] = reward_contrib["torso_pos_xy"]
         terminal_metrics_dict["reward/ref_contact_match"] = reward_contrib[
             "ref_contact_match"
         ]
@@ -1728,6 +1736,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["ref/q_track_err_rmse"] = reward_terms["q_track_rmse"]
         terminal_metrics_dict["ref/body_quat_err_deg"] = reward_terms["body_quat_err_deg"]
         terminal_metrics_dict["ref/feet_pos_err_l2"] = reward_terms["feet_pos_err_l2"]
+        terminal_metrics_dict["ref/feet_pos_track_raw"] = reward_terms[
+            "feet_pos_track_raw"
+        ]
+        terminal_metrics_dict["ref/torso_pos_xy_err_m"] = reward_terms[
+            "torso_pos_xy_err_m"
+        ]
         terminal_metrics_dict["ref/contact_phase_match"] = reward_terms["r_contact_match"]
         # Raw penalty values (pre-weight) so the M1 fail-mode tree can
         # pick a sensible weight when ``slip`` / ``pitch_rate`` are

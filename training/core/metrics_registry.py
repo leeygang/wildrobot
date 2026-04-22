@@ -1428,9 +1428,9 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Pelvis orientation tracking exp(-alpha*angle^2)",
     ),
     MetricSpec(
-        name="reward/ref_feet_pos_track",
+        name="reward/torso_pos_xy",
         reducer=Reducer.MEAN,
-        description="Root-relative foot position tracking",
+        description="Torso XY tracking exp(-alpha*||torso_xy-ref_xy||^2)",
     ),
     MetricSpec(
         name="reward/ref_contact_match",
@@ -1494,6 +1494,18 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="ref",
         description="L2 foot-pos error (root-relative, summed L+R) in m",
+    ),
+    MetricSpec(
+        name="ref/feet_pos_track_raw",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description="Legacy feet-pos tracking score exp(-200*||e_feet||^2), debug-only",
+    ),
+    MetricSpec(
+        name="ref/torso_pos_xy_err_m",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description="Torso XY position error norm vs reference pelvis (m)",
     ),
     MetricSpec(
         name="ref/contact_phase_match",
