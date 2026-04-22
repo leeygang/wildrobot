@@ -6,6 +6,82 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke2] - 2026-04-21: single-command walking smoke2 result
+
+### Run
+
+- Run: `training/wandb/offline-run-20260421_063530-ehkn02ye`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260421_063533-ehkn02ye`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260421_063533-ehkn02ye/checkpoint_150_19660800.pkl`
+
+### Result
+
+- **Walking verdict:** smoke2 is not a promotion candidate.  It solves
+  command-speed tracking and horizon survival, but the gait remains a
+  bilateral short-step / shuffle solution rather than clean prior-tracking
+  locomotion.
+- **G4:** 5 of 6 hard gates pass at iter 150.  `env/forward_velocity=0.148`,
+  `Evaluate/forward_velocity=0.155`,
+  `Evaluate/mean_episode_length=500.0`,
+  `Evaluate/cmd_vs_achieved_forward=0.046`, and
+  `tracking/cmd_vs_achieved_forward=0.069` all clear the documented floors;
+  `tracking/step_length_touchdown_event_m=0.0203` fails the `>= 0.03 m`
+  stride gate.
+- **G5:** pass.  `tracking/forward_velocity_cmd_ratio=0.984` stays in-band,
+  and the residual means remain small
+  (`hip_pitch_L/R = 0.089 / 0.099 rad`,
+  `knee_L/R = 0.101 / 0.098 rad`), so this is not an
+  action-authority leak / residual-driven exploit.
+- **G7 baseline-beat sanity:** pass by a wide margin.  The run improves the
+  bare-`q_ref` baseline from roughly
+  `forward_velocity ≈ -0.09 m/s, episode_length ≈ 77, term_pitch_frac ≈ 1.0`
+  to `Evaluate/forward_velocity=0.155`,
+  `Evaluate/mean_episode_length=500.0`, and `term_pitch_frac=0.043`.
+- **Stride structure:** both feet are short, not one-sided.  The per-foot
+  diagnostics are MEAN-reduced touchdown carries, so the per-touchdown step
+  lengths at iter 150 are
+  `step_length_left_event_m / touchdown_rate_left = 0.0207 m` and
+  `step_length_right_event_m / touchdown_rate_right = 0.0264 m`; both remain
+  below the `0.03 m` smoke gate.
+- **Dominant failure mode:** the foothold imitation term is effectively dead.
+  `ref/feet_pos_err_l2` (root-relative L2 foot-position error in meters)
+  grows from `0.222` at iter 1 to `1.062` at iter 150 while
+  `reward/ref_feet_pos_track` stays near zero
+  (`0.00118 -> 0.000204`).  The policy is therefore satisfying velocity and
+  horizon mostly through short fast steps instead of tracking the prior's
+  foothold geometry.
+- **Secondary diagnostic:** `ref/contact_phase_match` drifts from `0.773` to
+  `0.665` as forward velocity improves.  Because `reward/ref_contact_match`
+  is still gated at zero for the smoke, this is diagnostic only and not by
+  itself a contract regression.
+- **ToddlerBot alignment:** intact on the load-bearing rows.  The run uses
+  the ToddlerBot-style `Evaluate/*` selector, strict `alive=-done`,
+  `cmd_forward_velocity_track` at weight `5.0` and `alpha=200`,
+  `PROPRIO_HISTORY_FRAMES=15`, `action_delay_steps=1`, and the bounded
+  residual action contract.  The failure is in the WildRobot-specific
+  foothold term staying too weak, not in a ToddlerBot-parity regression.
+
+### Checkpoint choice
+
+Iter 150 is the right checkpoint to inspect.  It is the run maximum on
+`Evaluate/mean_reward=274.669`, reaches the full eval horizon, and already
+shows the final failure mode clearly.  There is no earlier checkpoint that
+passes the stride gate.
+
+### Next version
+
+- Treat smoke2 as a failed promotion smoke despite the good velocity numbers.
+  Do **not** extend compute, relax G5, or increase residual authority.
+- Restore a live foothold-imitation gradient before the next rerun.  The
+  smallest justified change is to retune `ref_feet_pos_alpha` downward on the
+  current root-relative metric using the observed error scale, then rerun the
+  same single-command smoke and gate again on
+  `tracking/step_length_touchdown_event_m >= 0.03 m`.
+- If the root-relative foot metric still dies after retuning, take the
+  already-documented `v0.20.2` cleanup: switch the WildRobot-specific
+  foot-position reward to a body-frame Euclidean norm, then restore the
+  ToddlerBot-aligned alpha scale.
+
 ## [v0.20.1-smoke2-prep-fix1] - 2026-04-21: analyzer + comparator on Evaluate/* namespace
 
 ### Context
