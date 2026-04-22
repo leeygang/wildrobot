@@ -6,6 +6,53 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke2-prep-fix2] - 2026-04-21: analyzer regression checklist + 0.0-safe fallbacks
+
+### Context
+
+Reviewing `offline-run-20260421_063530-ehkn02ye` against the previous
+`v0.20.1` smoke exposed a workflow gap: `analyze_offline_run.py` could
+score a single run, but it did not automatically answer the practical
+"better, worse, or lateral move vs the last comparable training?" question.
+The same pass also found a few remaining `or`-based metric fallbacks that
+could swallow legitimate `0.0` values in summaries.
+
+### Changes
+
+1. **`skills/wildrobot-training-analyze/scripts/analyze_offline_run.py`**
+   now auto-detects the most recent comparable prior offline run
+   (same `version`, same `version_name` when present, same tags when
+   present, same walking/non-walking mode) and emits a regression
+   checklist against that run's best common-metric walking row.
+
+2. **Regression checklist scope** is intentionally limited to common
+   contract metrics that remain comparable across smoke1/smoke2-style
+   changes:
+   - `env/forward_velocity`
+   - `env/episode_length`
+   - `tracking/cmd_vs_achieved_forward`
+   - `tracking/step_length_touchdown_event_m`
+   - `tracking/forward_velocity_cmd_ratio`
+   - G5 hip/knee residual means
+   - `ref/feet_pos_err_l2`
+   - `ref/contact_phase_match`
+
+3. **Explicit override added**:
+   `analyze_offline_run.py --previous-run-dir <offline-run-...>`
+   for cases where the auto-picked prior run is not the comparison the
+   user wants.
+
+4. **Accuracy fixes**:
+   - `train success`, `train ep_len`, `tracking/max_torque`,
+     `ppo/approx_kl`, and `ppo/clip_fraction` now use `_first_present`
+     instead of Python `or`, so real `0.0` values are preserved.
+   - `ref/feet_pos_err_l2` label corrected to match the env metric
+     definition (`root-relative L2 m`, not `sum-sqr m²`).
+
+5. **Skill docs updated** (`skills/wildrobot-training-analyze/SKILL.md`)
+   so the default single-run workflow now documents the automatic
+   previous-run regression check.
+
 ## [v0.20.1-smoke2] - 2026-04-21: single-command walking smoke2 result
 
 ### Run

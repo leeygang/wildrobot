@@ -21,11 +21,20 @@ The active locomotion target is the v0.20.1 prior-guided bounded-residual PPO co
 
 ## Quick commands
 
-Single run (prints best checkpoint + a changelog-ready markdown block):
+Single run (prints best checkpoint + a changelog-ready markdown block, and
+auto-compares to the most recent comparable prior run when one exists):
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scripts/analyze_offline_run.py \
   --run-dir training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id>
+```
+
+Explicit previous-run override:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scripts/analyze_offline_run.py \
+  --run-dir training/wandb/offline-run-YYYYMMDD_HHMMSS-<run_id> \
+  --previous-run-dir training/wandb/offline-run-YYYYMMDD_HHMMSS-<previous_run_id>
 ```
 
 Compare two runs:
@@ -36,7 +45,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scrip
   --run-dir-b training/wandb/offline-run-...-<run_id_b>
 ```
 
-The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls through to legacy `eval_clean/` / `eval/` / `env/` order for older runs. Both tools share `_first_present` (handles `0.0` correctly) and the same synthetic-success cap.
+The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls through to legacy `eval_clean/` / `eval/` / `env/` order for older runs. It also emits a regression checklist against the previous comparable run on common contract metrics (`env/forward_velocity`, `env/episode_length`, `tracking/cmd_vs_achieved_forward`, stride, G5 residuals / ratio, and the main prior-tracking diagnostics). Both tools share `_first_present` (handles `0.0` correctly) and the same synthetic-success cap.
 
 ---
 
