@@ -6,6 +6,55 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke2-diagnostic1] - 2026-04-21: lower foot-pos alpha for live foothold-gradient probe
+
+### Context
+
+`offline-run-20260421_063530-ehkn02ye` cleared the velocity, survival,
+and G5 residual-authority gates but still failed the stride gate:
+`tracking/step_length_touchdown_event_m = 0.0203 < 0.03`.  The dominant
+diagnostic was a dead foothold-imitation term:
+`ref/feet_pos_err_l2` grew to `1.062` while
+`reward/ref_feet_pos_track` stayed near zero.  Since the current reward
+uses `exp(-alpha * feet_err_l2_sq)` on a world-frame summed-squares
+metric, `ref_feet_pos_alpha = 30` is effectively zero-gradient at the
+error scale smoke2 actually visits.
+
+### Change
+
+1. **`training/configs/ppo_walking_v0201_smoke.yaml`**
+   - `reward_weights.ref_feet_pos_alpha: 30.0 -> 2.0`
+
+### Rationale
+
+- At the smoke2 best checkpoint, the logged
+  `ref/feet_pos_err_l2 ≈ 1.06 m` corresponds to
+  `feet_err_l2_sq ≈ 1.12 m²` in the reward exponent.  With `alpha = 30`,
+  the raw term is approximately `exp(-30 * 1.12) ≈ 2e-15`, which is dead.
+- With `alpha = 2`, the same error scale yields
+  `exp(-2 * 1.12) ≈ 0.10`, which is still selective but no longer
+  numerically irrelevant.
+- This keeps the intervention surgical: no PPO change, no residual-bound
+  change, no reward-family expansion, and no metric rewrite ahead of the
+  diagnostic rerun.
+
+### Expected signal from the next smoke
+
+- `tracking/step_length_touchdown_event_m` should rise materially toward
+  the `>= 0.03 m` gate.
+- `ref/feet_pos_err_l2` should stop drifting upward.
+- `env/forward_velocity`, `tracking/cmd_vs_achieved_forward`, and the
+  G5 residual metrics should remain near smoke2 levels.
+
+### What this does NOT change
+
+- The foot-position metric is still the same world-frame summed-squares
+  signal.  The planned `v0.20.2` body-frame Euclidean cleanup remains
+  deferred until this probe tells us whether the failure is primarily
+  dead-gradient or metric-geometry.
+- `version`, tags, PPO hyperparameters, and the bounded residual contract
+  are unchanged so the next run remains directly comparable to smoke1/2.
+
 ## [v0.20.1-smoke2-prep-fix2] - 2026-04-21: analyzer regression checklist + 0.0-safe fallbacks
 
 ### Context
