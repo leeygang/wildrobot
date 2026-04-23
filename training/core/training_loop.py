@@ -1392,6 +1392,8 @@ def train(
                 "ref_q_track": METRIC_INDEX["reward/ref_q_track"],
                 "ref_body_quat_track": METRIC_INDEX["reward/ref_body_quat_track"],
                 "torso_pos_xy": METRIC_INDEX["reward/torso_pos_xy"],
+                # v0.20.2: body-frame Euclidean foothold imitation.
+                "ref_foot_pos_body": METRIC_INDEX["reward/ref_foot_pos_body"],
                 "cmd_forward_velocity_track": METRIC_INDEX[
                     "reward/cmd_forward_velocity_track"
                 ],
@@ -1401,6 +1403,13 @@ def train(
                 "ref_feet_pos_err_l2": METRIC_INDEX["ref/feet_pos_err_l2"],
                 "ref_feet_pos_track_raw": METRIC_INDEX["ref/feet_pos_track_raw"],
                 "ref_torso_pos_xy_err_m": METRIC_INDEX["ref/torso_pos_xy_err_m"],
+                # v0.20.2: per-foot body-frame foot-vs-pelvis offset diagnostics.
+                "ref_foot_pos_body_err_l_m": METRIC_INDEX[
+                    "ref/foot_pos_body_err_l_m"
+                ],
+                "ref_foot_pos_body_err_r_m": METRIC_INDEX[
+                    "ref/foot_pos_body_err_r_m"
+                ],
                 "ref_contact_phase_match": METRIC_INDEX["ref/contact_phase_match"],
             }
             walking_metrics = {
