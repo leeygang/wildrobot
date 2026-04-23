@@ -1394,6 +1394,9 @@ def train(
                 "torso_pos_xy": METRIC_INDEX["reward/torso_pos_xy"],
                 # v0.20.2: body-frame Euclidean foothold imitation.
                 "ref_foot_pos_body": METRIC_INDEX["reward/ref_foot_pos_body"],
+                # v0.20.2 smoke6: TB-aligned continuous phase signals.
+                "lin_vel_z": METRIC_INDEX["reward/lin_vel_z"],
+                "ang_vel_xy": METRIC_INDEX["reward/ang_vel_xy"],
                 "cmd_forward_velocity_track": METRIC_INDEX[
                     "reward/cmd_forward_velocity_track"
                 ],
@@ -1409,6 +1412,11 @@ def train(
                 ],
                 "ref_foot_pos_body_err_r_m": METRIC_INDEX[
                     "ref/foot_pos_body_err_r_m"
+                ],
+                # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
+                "ref_lin_vel_z_err_m_s": METRIC_INDEX["ref/lin_vel_z_err_m_s"],
+                "ref_ang_vel_xy_err_rad_s": METRIC_INDEX[
+                    "ref/ang_vel_xy_err_rad_s"
                 ],
                 "ref_contact_phase_match": METRIC_INDEX["ref/contact_phase_match"],
             }

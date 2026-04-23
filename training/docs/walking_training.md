@@ -858,12 +858,25 @@ Smoke contract:
     - `ref/body_quat_track`
     - `ref/torso_pos_xy` (smoke4 onward — body-position parity with TB
       `_reward_torso_pos_xy`; smoke YAML α=90)
-    - `ref/foot_pos_body` (smoke5 onward — body-frame Euclidean foothold
-      imitation; replaces the deleted world-frame summed-squares
-      `ref/feet_pos_track_raw` reward.  Smoke4 verdict:
-      stride gate failure persists despite torso_pos_xy improvements →
-      explicit per-foot geometric pull is the missing gradient.  Smoke
-      YAML α=100 from the v0200c probe calibration.)
+    - `ref/foot_pos_body` (smoke5 only — body-frame Euclidean foothold
+      imitation; **falsified by smoke5**.  Term was DEAD throughout
+      training (raw exp(-100·sum_sq) ≈ 0) because actual training-time
+      per-foot err was 5-7× the open-loop probe prediction.  Smoke3 also
+      proved that lowering α to bring it alive doesn't help — the metric
+      is phase-sensitive and pulls in the wrong direction at phase
+      mismatch.  Smoke6 sets weight to 0; per-foot diagnostic err
+      continues to log.)
+    - `ref/lin_vel_z` (smoke6 onward — TB-aligned vertical body velocity
+      tracking.  Continuous phase signal.  Reference computed from
+      finite-diff of prior `pelvis_pos[2]` per Appendix A.3 G2 decision.)
+    - `ref/ang_vel_xy` (smoke6 onward — TB-aligned body roll/pitch
+      angular velocity.  Continuous phase signal.  Reference is zero
+      because the yaw-stationary prior has no pitch/roll oscillation —
+      term reduces to penalizing body sway during each gait phase.)
+    - `ref/contact_phase_match` (smoke6 onward — re-enabled at weight
+      0.5; previously gated to 0 since smoke3 contact-alignment probe.
+      Discrete event anchor for gait phase at touchdown/takeoff
+      transitions; closes the TB-vs-WR delta on phase-related rewards.)
     - `ref/site_track`
     - `ref/body_lin_vel_track`
     - `ref/body_ang_vel_track`
@@ -1367,10 +1380,10 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `torso_roll` (soft, gate `[-0.1, 0.1]`) | 0.5 | — | **add 0.5** |
 | `torso_pitch` (soft, gate `[-0.2, 0.2]`) | 0.5 | — | **add 0.5** |
 | `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0 | 0.30 | 5.0 |
-| `lin_vel_z` | 1.0 | — | (covered by tight pelvis_z; defer) |
-| `ang_vel_xy` | 2.0 | — | (covered by body_quat; defer) |
+| `lin_vel_z` | 1.0 | — | **smoke6: 1.0** (vertical body bobbing — TB-aligned continuous phase signal; ref from finite-diff of prior `pelvis_pos[2]` per A.3 G2) |
+| `ang_vel_xy` | 2.0 | — | **smoke6: 2.0** (body roll/pitch rate — TB-aligned continuous phase signal; ref is zero for yaw-stationary prior) |
 | `ang_vel_z` | 5.0 | — | defer (smoke has no yaw cmd) |
-| `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (gated, Gaussian) | leave gated for the smoke; wire boolean fallback for v0.20.2 |
+| `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (gated, Gaussian) | **smoke6: 0.5** (Gaussian σ=0.5; conservative WR-side equivalent of TB's boolean weight 1.0; provides discrete event-anchor for gait phase synchronization) |
 | `feet_air_time` | 500.0 | — | **add 500.0** (cmd-gated) |
 | `feet_clearance` | 1.0 | — | **add 1.0** (cmd-gated) |
 | `feet_distance` (`min=0.07`, `max=0.13`) | 1.0 | — | **add 1.0** |

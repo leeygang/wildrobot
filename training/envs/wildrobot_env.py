@@ -721,6 +721,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         applied_action: jax.Array,
         prev_applied_action: jax.Array,
         forward_velocity: jax.Array,
+        lin_vel_z: jax.Array,
+        prev_ref_pelvis_z: jax.Array,
         velocity_cmd: jax.Array,
         left_force: jax.Array,
         right_force: jax.Array,
@@ -859,6 +861,38 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * (err_left_body_sq + err_right_body_sq)
         )
 
+        # ---- lin_vel_z (v0.20.2 TB-aligned vertical body velocity) -----------
+        # Match ToddlerBot _reward_lin_vel_z (toddlerbot/locomotion/walk_env.py):
+        # exp(-alpha * (lin_vel_z - ref_lin_vel_z)^2).
+        # The prior's ReferenceLibrary stores positions only, so the reference
+        # vertical velocity is computed via finite-diff of pelvis_pos[2] across
+        # consecutive offline frames (Appendix A.3 G2 decision).  At the prior's
+        # ~32 ctrl-step gait cycle, vertical pelvis bobbing is small (~1-2 cm
+        # amplitude) so ref_lin_vel_z is small per-step (~0.10 m/s peak); a
+        # well-balanced policy will track it tightly.
+        ctrl_dt_inv = jp.float32(1.0 / self.dt)
+        ref_lin_vel_z = (win["pelvis_pos"][2] - prev_ref_pelvis_z) * ctrl_dt_inv
+        lin_vel_z_err = lin_vel_z - ref_lin_vel_z
+        r_lin_vel_z = jp.exp(
+            -jp.float32(weights.lin_vel_z_alpha) * lin_vel_z_err * lin_vel_z_err
+        )
+
+        # ---- ang_vel_xy (v0.20.2 TB-aligned body angular velocity, xy axes) --
+        # Match ToddlerBot _reward_ang_vel_xy:
+        # exp(-alpha * sum((ang_vel_xy - ref_ang_vel_xy)^2)).
+        # The prior is yaw-stationary with no pitch/roll oscillation
+        # (pelvis_rpy = 0 throughout), so ref_ang_vel_xy = (0, 0) and the
+        # reward reduces to penalizing body roll/pitch rate magnitude.
+        # gyro_rad_s is body-frame angular velocity: [0]=roll rate (around X),
+        # [1]=pitch rate (around Y).  ang_vel_z (yaw rate) is the [2] slot
+        # and rewarded separately by ang_vel_z (deferred — smoke has no yaw cmd).
+        ang_vel_xy_sq_sum = (
+            gyro_rad_s[0] * gyro_rad_s[0] + gyro_rad_s[1] * gyro_rad_s[1]
+        )
+        r_ang_vel_xy = jp.exp(
+            -jp.float32(weights.ang_vel_xy_alpha) * ang_vel_xy_sq_sum
+        )
+
         # ---- ref/contact_match (smooth Gaussian per spec G3) -----------------
         contact_thresh = self._config.env.contact_threshold_force
         left_actual = (left_force > contact_thresh).astype(jp.float32)
@@ -986,6 +1020,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_body_quat_track=r_body_quat,
             r_torso_pos_xy=r_torso_pos_xy.astype(jp.float32),
             r_ref_foot_pos_body=r_ref_foot_pos_body.astype(jp.float32),
+            # v0.20.2 smoke6: TB-aligned continuous phase signals.
+            r_lin_vel_z=r_lin_vel_z.astype(jp.float32),
+            r_ang_vel_xy=r_ang_vel_xy.astype(jp.float32),
             r_contact_match=r_contact,
             r_cmd_forward_velocity_track=r_vx,
             penalty_action_rate=penalty_action_rate,
@@ -1011,6 +1048,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Pre-rotation into body frame, so a level body matches exactly.
             ref_foot_pos_body_err_l_m=jp.sqrt(err_left_body_sq).astype(jp.float32),
             ref_foot_pos_body_err_r_m=jp.sqrt(err_right_body_sq).astype(jp.float32),
+            # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
+            lin_vel_z_err_m_s=jp.abs(lin_vel_z_err).astype(jp.float32),
+            ang_vel_xy_err_rad_s=jp.sqrt(ang_vel_xy_sq_sum).astype(jp.float32),
             feet_distance_torso_m=feet_dist.astype(jp.float32),
         )
 
@@ -1056,6 +1096,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             torso_pos_xy=jp.float32(w.torso_pos_xy) * terms["r_torso_pos_xy"],
             ref_foot_pos_body=jp.float32(w.ref_foot_pos_body)
             * terms["r_ref_foot_pos_body"],
+            # v0.20.2 smoke6: TB-aligned continuous phase signals.
+            lin_vel_z=jp.float32(w.lin_vel_z) * terms["r_lin_vel_z"],
+            ang_vel_xy=jp.float32(w.ang_vel_xy) * terms["r_ang_vel_xy"],
             ref_contact_match=jp.float32(w.ref_contact_match)
             * terms["r_contact_match"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
@@ -1433,6 +1476,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         next_step_idx = (wr.loc_ref_offline_step_idx + 1).astype(jp.int32)
         win = self._lookup_offline_window(next_step_idx)
         nominal_q_ref = win["q_ref"].astype(jp.float32)
+        # Prev-frame window for finite-diff reference velocity (lin_vel_z).
+        # Clamp at 0 so step 0's "previous" is itself (zero velocity for the
+        # very first step; subsequent steps see real bobbing).
+        prev_step_idx = jp.maximum(next_step_idx - 1, 0).astype(jp.int32)
+        prev_win = self._lookup_offline_window(prev_step_idx)
+        prev_ref_pelvis_z = prev_win["pelvis_pos"][2].astype(jp.float32)
 
         # G6 contract: filter the residual ONLY (in policy [-1, 1] space).
         # ``pending_action`` carries last step's filtered residual command;
@@ -1559,6 +1608,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             applied_action=applied_action,
             prev_applied_action=wr.prev_action,
             forward_velocity=forward_velocity,
+            # v0.20.2 smoke6: TB-aligned vertical body velocity reward
+            # needs current vz + prev-frame prior pelvis z for finite-diff
+            # reference velocity.
+            lin_vel_z=root_vel_h.linear[2].astype(jp.float32),
+            prev_ref_pelvis_z=prev_ref_pelvis_z,
             velocity_cmd=velocity_cmd,
             left_force=left_force,
             right_force=right_force,
@@ -1772,6 +1826,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/ref_foot_pos_body"] = reward_contrib[
             "ref_foot_pos_body"
         ]
+        # v0.20.2 smoke6: TB-aligned continuous phase signals.
+        terminal_metrics_dict["reward/lin_vel_z"] = reward_contrib["lin_vel_z"]
+        terminal_metrics_dict["reward/ang_vel_xy"] = reward_contrib["ang_vel_xy"]
         terminal_metrics_dict["reward/ref_contact_match"] = reward_contrib[
             "ref_contact_match"
         ]
@@ -1807,6 +1864,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["ref/foot_pos_body_err_r_m"] = reward_terms[
             "ref_foot_pos_body_err_r_m"
+        ]
+        # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
+        terminal_metrics_dict["ref/lin_vel_z_err_m_s"] = reward_terms[
+            "lin_vel_z_err_m_s"
+        ]
+        terminal_metrics_dict["ref/ang_vel_xy_err_rad_s"] = reward_terms[
+            "ang_vel_xy_err_rad_s"
         ]
         terminal_metrics_dict["ref/contact_phase_match"] = reward_terms["r_contact_match"]
         # Raw penalty values (pre-weight) so the M1 fail-mode tree can

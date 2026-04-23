@@ -1442,6 +1442,22 @@ METRIC_SPECS: List[MetricSpec] = [
         ),
     ),
     MetricSpec(
+        name="reward/lin_vel_z",
+        reducer=Reducer.MEAN,
+        description=(
+            "v0.20.2 smoke6 TB-aligned vertical body velocity tracking: "
+            "exp(-alpha*(vz - ref_vz)^2); ref from finite-diff of prior pelvis_pos[2]"
+        ),
+    ),
+    MetricSpec(
+        name="reward/ang_vel_xy",
+        reducer=Reducer.MEAN,
+        description=(
+            "v0.20.2 smoke6 TB-aligned body roll/pitch rate tracking: "
+            "exp(-alpha*(gyro_x^2 + gyro_y^2)); ref is zero (yaw-stationary prior)"
+        ),
+    ),
+    MetricSpec(
         name="reward/ref_contact_match",
         reducer=Reducer.MEAN,
         description="Smooth per-foot contact-phase match",
@@ -1532,6 +1548,23 @@ METRIC_SPECS: List[MetricSpec] = [
         description=(
             "v0.20.2 body-frame Euclidean foot-vs-pelvis offset error, "
             "right foot (m)"
+        ),
+    ),
+    MetricSpec(
+        name="ref/lin_vel_z_err_m_s",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description=(
+            "v0.20.2 smoke6 |vz - ref_vz| (m/s); paired with reward/lin_vel_z"
+        ),
+    ),
+    MetricSpec(
+        name="ref/ang_vel_xy_err_rad_s",
+        reducer=Reducer.MEAN,
+        log_prefix="ref",
+        description=(
+            "v0.20.2 smoke6 sqrt(gyro_x^2 + gyro_y^2) (rad/s); paired with "
+            "reward/ang_vel_xy (ref is zero for yaw-stationary prior)"
         ),
     ),
     MetricSpec(

@@ -6,6 +6,126 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke5] - 2026-04-22: body-frame foothold reward dead — null result, design hypothesis falsified
+
+### Run
+
+- Run: `training/wandb/offline-run-20260422_230524-6fh9ufds`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260422_230527-6fh9ufds`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260422_230527-6fh9ufds/checkpoint_150_19660800.pkl`
+- Previous comparable run: `training/wandb/offline-run-20260422_083150-5ooizuts` (smoke4)
+
+### Result
+
+- **Walking verdict:** smoke5 is a null result.  The new body-frame
+  foothold reward contributed exactly zero gradient throughout
+  training (`reward/ref_foot_pos_body = 0.0` from iter 1 to iter 150).
+  PPO trained on the same effective reward family as smoke4.
+- **G4:** 5/6 hard gates pass.  `Evaluate/forward_velocity=0.131`,
+  `Evaluate/mean_episode_length=500`,
+  `Evaluate/cmd_vs_achieved_forward=0.039`,
+  `tracking/cmd_vs_achieved_forward=0.068`,
+  `env/forward_velocity=0.138` all pass.
+  `tracking/step_length_touchdown_event_m=0.0182` still fails the
+  `>= 0.030` stride gate (mild regression vs smoke4's 0.0204 within
+  run-to-run variance — see below).
+- **G5:** pass.  `forward_velocity_cmd_ratio=0.92` centered, residual
+  p50s 0.094-0.109 rad, well under the 0.20 cap.
+- **G7 baseline-beat:** pass.
+
+### Why the new term was dead — calibration error
+
+The pre-flight per-frame probe at vx=0.15 measured per-foot
+body-frame errors of 7-15 cm (open-loop, 50-step ramp, body falls
+at step 77).  Calibrated `alpha=100` to keep raw reward ≥ 0.05
+through that error range.
+
+Actual training-time errors were 5-7x larger:
+
+| Signal | Probe (calibration) | Train iter 1 | Train iter 150 |
+|---|---:|---:|---:|
+| `ref/foot_pos_body_err_l_m` | ~0.07-0.12 m | 0.157 m | 0.755 m |
+| `ref/foot_pos_body_err_r_m` | ~0.08-0.11 m | 0.161 m | 0.728 m |
+| Raw reward at α=100 | 0.05-0.30 (alive) | 0.006 (dead) | ≈0 (dead) |
+
+The probe under-predicted because:
+- Probe ran open-loop with a 50-step pose-blend ramp (lets body
+  settle into first q_ref).  Training has no ramp.
+- Probe ran for 100 ctrl steps and the body fell at step 77.
+  Training averages over 500-step horizons across 1024 envs.
+- Probe error stayed small because there were ~77 alive steps
+  before collapse; training error grows over 500 alive steps where
+  actual body lags or drifts from the prior's pelvis trajectory.
+
+### Why lowering alpha won't fix it
+
+Smoke3 already tested the world-frame variant of this metric at
+alpha=2 (the same effective metric since body-frame ≈ world-frame
+at WR's small body posture ~5°).  Result: foothold reward came
+alive (0.0002 → 0.001) but stride got *worse* (0.0203 → 0.0178),
+forward velocity worsened, contact-phase match worsened.
+
+Diagnosis: the metric is **phase-sensitive**.  Algebraically,
+
+```
+err = (actual_foot - actual_pelvis) - (prior_foot - prior_pelvis)
+    = (actual_foot - prior_foot) - (actual_pelvis - prior_pelvis)
+```
+
+When the actual body's gait phase differs from the prior's gait
+phase, the prior's foot is at a foothold position the actual foot
+should not match (e.g., prior in stance while actual in swing).
+The gradient pulls toward the wrong target regardless of how good
+the foothold geometry is.  Body-frame rotation only differentiates
+from world-frame at large body tilt; at upright posture (~5°), the
+two metrics are equivalent.  We essentially re-introduced the
+deleted world-frame term with a different alpha, and the same
+fundamental issue blocks it.
+
+**Verdict: the v0.20.2 design hypothesis (body-frame Euclidean
+foothold imitation closes the stride gap) is falsified.**  Drop
+the term, do not retune alpha.
+
+### Stride "regression" (0.0204 → 0.0182) is run-to-run variance
+
+With the new term contributing zero gradient, smoke5's effective
+reward family was identical to smoke4's.  The 10% stride
+difference between two single-seed PPO runs at the same effective
+config is normal noise.  Both are well below the 0.030 gate;
+neither is a meaningful improvement over the other.
+
+### Wandb registration gap (fixed in 22a1b49)
+
+Found a logging bug in flight: `experiment_tracking.py` and
+`training_loop.py` had hardcoded allowlists that didn't include
+the new v0.20.2 metric keys.  PPO was correctly training on
+`reward/ref_foot_pos_body` via `_aggregate_reward` (it's in
+`reward/total`), but the per-term diagnostic was silent in wandb.
+The fix landed in 22a1b49 between smoke5 and smoke6; smoke5's
+per-term values are visible in 6fh9ufds (the rerun) but not in
+the original 5i55cp2u (killed early).
+
+### Next version
+
+- Drop `ref_foot_pos_body` (set weight to 0 — keep the diagnostic
+  err logging so we can still see the foothold geometry without
+  paying for misdirected gradient).
+- Re-enable `ref_contact_match` at weight 0.5.  The Gaussian
+  contact-phase reward (σ=0.5) provides a discrete event-anchor
+  for gait timing — this is what TB uses (boolean at weight 1.0;
+  WR's Gaussian at 0.5 is the conservative equivalent).
+- Add the two missing TB continuous phase signals:
+  - `lin_vel_z` at weight 1.0 (TB walk.gin) — vertical body
+    velocity tracking.  Reference computed by finite-diff of
+    `pelvis_pos[2]` (Appendix A.3 G2).
+  - `ang_vel_xy` at weight 2.0 (TB walk.gin) — body roll/pitch
+    rate.  Reference is zero (yaw-stationary prior with no
+    pitch/roll oscillation).
+- The combination addresses phase sync from both ends: discrete
+  contact anchors at phase transitions + continuous body-velocity
+  signals throughout each phase.  Per Appendix A.3 these are
+  already-deferred TB-aligned terms; smoke6 promotes them.
+
 ## [v0.20.1-smoke5-prep1] - 2026-04-22: body-frame Euclidean foothold imitation + alpha calibration
 
 ### Context
