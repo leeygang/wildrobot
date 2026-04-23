@@ -291,6 +291,13 @@ reward_weights:
   ref_q_track: 5.0
   ref_body_quat_track: 5.0
   torso_pos_xy: 2.0
+  # v0.20.2: body-frame Euclidean foothold imitation, replaces the deleted
+  # world-frame summed-squares term that smoke1/2/3 confirmed dead.
+  # Weight 2.0 mirrors torso_pos_xy so the imitation block stays balanced
+  # (q_track 5 + body_quat 5 + torso_xy 2 + foot_pos_body 2 + cmd_vx 5).
+  # Smoke3 verdict: stride gate is the v0.20.x bottleneck; this term is
+  # the only one in the family with an explicit per-foot geometric pull.
+  ref_foot_pos_body: 2.0
   ref_contact_match: 0.0  # gated until contact-alignment probe passes; see comment above
   cmd_forward_velocity_track: 5.0
   action_rate: -1.0
@@ -331,6 +338,17 @@ reward_weights:
   # step10=0.987, step30=0.448, step50=0.051.
   # Restore toward 200 after prior-drift cleanup in v0.20.2.
   torso_pos_xy_alpha: 90.0
+  # v0.20.2: body-frame foothold kernel.  TB pos default is 200; calibrated
+  # downward to alpha=100 by the v0200c probe at vx=0.15.  At alpha=200
+  # the iter-0 raw reward dies in the prior's accel ramp
+  # (step50 raw=0.006, min over 0..50 = 0.002 — fails the 0.05 alive bar).
+  # At alpha=100 the kernel keeps a usable gradient: step10=0.239,
+  # step30=0.185, step50=0.075, with one ~3-step transient dip to ~0.046
+  # around step 44.  Smallest divergence from TB that keeps cm-scale
+  # selection pressure alive through the prior's accel ramp.  Restore
+  # toward 200 if/when the prior is regenerated with reduced open-loop
+  # foot-vs-pelvis drift.
+  ref_foot_pos_body_alpha: 100.0
 
 # =============================================================================
 # Reward Composition

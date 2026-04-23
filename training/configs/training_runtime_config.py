@@ -707,6 +707,12 @@ class RewardWeightsConfig(Freezable):
     ref_q_track: float = 0.0
     ref_body_quat_track: float = 0.0
     torso_pos_xy: float = 0.0
+    # v0.20.2: body-frame Euclidean foothold imitation (replaces the deleted
+    # world-frame ``r_feet_track_raw`` reward).  Per-foot inverse-rotated
+    # actual foot-vs-pelvis offset L2'd against the prior's already-body-
+    # frame foot-vs-pelvis offset; same DeepMimic kernel as torso_pos_xy.
+    # Default 0 keeps non-smoke configs unaffected.
+    ref_foot_pos_body: float = 0.0
     ref_contact_match: float = 0.0
     cmd_forward_velocity_track: float = 0.0
 
@@ -718,6 +724,9 @@ class RewardWeightsConfig(Freezable):
     ref_q_track_alpha: float = 1.0
     ref_body_quat_alpha: float = 20.0
     torso_pos_xy_alpha: float = 200.0
+    # v0.20.2: same TB pos kernel default; the smoke YAML may override
+    # downward after the pre-flight calibration probe.
+    ref_foot_pos_body_alpha: float = 200.0
     ref_contact_match_sigma: float = 0.5  # walking_training.md G3 default
     cmd_forward_velocity_alpha: float = 4.0
 

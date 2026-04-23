@@ -6,6 +6,130 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke5-prep1] - 2026-04-22: body-frame Euclidean foothold imitation + alpha calibration
+
+### Context
+
+`v0.20.1-smoke4` confirmed the documented v0.20.x diagnosis: there is no
+explicit per-foot geometric pull in the optimized reward, so the stride
+gate stays unmoved even when body-position tracking improves.  Smoke3
+already documented the v0.20.2 fix — rewrite the deleted world-frame
+summed-squares foot-position term as a body-frame Euclidean L2 against
+the prior's foot-vs-pelvis target.  Pre-flight per-frame probe confirmed
+the prior delivers steady-state per-touchdown stride 0.045-0.053 m at
+vx=0.15 (well above the 0.030 m gate), so the new term has stride to
+track to.
+
+### Changes
+
+1. **`training/envs/wildrobot_env.py`**
+   - Added `r_ref_foot_pos_body` reward term in `_compute_reward_terms`:
+     - Inverse-rotates the actual foot-vs-pelvis world offset into the
+       torso frame using `inv(root_quat)` and L2's against the prior's
+       (already body-frame) foot-vs-pelvis target.
+     - DeepMimic-style kernel
+       `exp(-α · (||err_l||² + ||err_r||²))` matching ToddlerBot's
+       `_reward_torso_pos_xy` shape applied per foot.
+     - The deleted world-frame `r_feet_track_raw` is kept as a
+       diagnostic-only logged signal so smoke generation comparisons
+       stay valid; no longer in the optimized reward.
+   - Wired `ref_foot_pos_body` through `_aggregate_reward` and the
+     terminal metrics (`reward/ref_foot_pos_body`,
+     `ref/foot_pos_body_err_l_m`, `ref/foot_pos_body_err_r_m`).
+   - Refactored the world->body inverse quaternion build to a single
+     site shared between `ref_foot_pos_body` and the existing
+     `feet_distance` block (XLA would fold the duplicate; one source of
+     truth is easier to audit).
+2. **`training/configs/training_runtime_config.py`**
+   - Added `RewardWeightsConfig.ref_foot_pos_body: float = 0.0`
+     (default inert for non-smoke configs).
+   - Added `RewardWeightsConfig.ref_foot_pos_body_alpha: float = 200.0`
+     (TB pos default; smoke YAML may override).
+3. **`training/configs/ppo_walking_v0201_smoke.yaml`**
+   - `reward_weights.ref_foot_pos_body: 2.0` (mirrors `torso_pos_xy`
+     so the imitation block stays balanced).
+   - `reward_weights.ref_foot_pos_body_alpha: 100.0` (post-calibration
+     setting, see probe trace below).
+4. **`tools/v0200c_per_frame_probe.py`**
+   - Added `--foot-alpha` CLI arg and per-step body-frame foot-vs-pelvis
+     error fields (`foot_pos_body_err_l_m`, `foot_pos_body_err_r_m`,
+     `foot_pos_body_raw`).
+   - Added a calibration print block matching the existing
+     `--torso-alpha` block (steps 10/30/50/70 + min raw over 0..50).
+5. **`training/docs/walking_training.md`**
+   - Appendix A.4 now documents `ref_foot_pos_body` α with the smoke
+     override (TB 200 → WR smoke 100) and the alive-signal trace.
+   - v0.20.1 § "primary terms" list now includes `ref/foot_pos_body`
+     with smoke5 introduction and calibration note.
+
+### Probe (alive-signal calibration)
+
+- Command:
+  `UV_CACHE_DIR=/tmp/uv-cache uv run python tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100 --foot-alpha <α>`
+- Per-foot body-frame errors at vx=0.15 (open-loop, zero residual):
+  `err_l ≈ 0.07-0.18 m`, `err_r ≈ 0.08-0.18 m` across steps 10/30/50/70.
+- Raw reward calibration:
+
+  | α | step10 | step30 | step50 | step70 | min over 0..50 | verdict |
+  |---:|---:|---:|---:|---:|---:|---|
+  | 200 | 0.057 | 0.034 | 0.006 | 0.000001 | 0.002 | dies in accel ramp; below 0.05 alive bar |
+  | 100 | 0.239 | 0.185 | 0.075 | 0.001 | 0.046 | one ~3-step transient dip to ~0.046 around step 44; usable |
+  | 80  | 0.318 | 0.260 | 0.126 | 0.005 | 0.085 | comfortable margin, larger TB divergence |
+
+- **Decision: α=100.**  Smallest divergence from TB's pos kernel that
+  keeps cm-scale selection pressure alive through the prior's accel
+  ramp.  Mirrors the `torso_pos_xy_alpha=90` calibration philosophy
+  ("smallest TB divergence keeping the gradient alive").  The single
+  ~3-step dip below 0.05 around step 44 is at the back end of the
+  ramp where PPO can already begin to apply residual corrections.
+
+### Verification
+
+- `tests/test_v0201_env_zero_action.py`: 7/7 pass (G6 invariant
+  intact — zero residual ⇒ `target_q == q_ref`; per-step metric
+  trajectories unchanged at iter 0).
+
+### Rationale
+
+- Smoke1/2/3/4 confirmed the world-axis projection of foot-vs-pelvis
+  offset is dominated by body translation; the gradient at the
+  operating point is uncorrelated with stride geometry, and lowering
+  alpha (smoke3 alpha=2 probe) only makes the term less dead without
+  moving stride.
+- Body-frame Euclidean removes the world-frame translation bias.
+  Realistic per-foot magnitudes are 7-15 cm, so a Gaussian kernel of
+  the right width gives strong selection pressure on each centimeter
+  of stride correction.
+- The pre-flight per-frame probe at vx=0.15 confirmed the prior
+  delivers steady-state per-touchdown stride 0.045-0.053 m by
+  half-cycle 3, so the new term has a real target to track to.
+- This is the only term in the v0.20.1 reward family with an explicit
+  per-foot geometric pull; smoke4 ruled out the alternative
+  hypothesis that pelvis tracking alone would suffice.
+
+### Expected signal from the smoke5 run
+
+- `tracking/step_length_touchdown_event_m` should rise materially toward
+  the `>= 0.030 m` gate.
+- `ref/foot_pos_body_err_l_m` and `ref/foot_pos_body_err_r_m` should
+  shrink over training; `reward/ref_foot_pos_body` should grow.
+- `Evaluate/forward_velocity`, `tracking/cmd_vs_achieved_forward`, and
+  the G5 residual metrics should remain near smoke4 levels (no
+  expected regression on already-passing gates).
+
+### Falsification — what would tell us this design is wrong
+
+- `ref_foot_pos_body_raw` is alive at iter-0 but stride still parks at
+  ~0.020 m → the bottleneck is balance-bound, not stride-bound; return
+  to prior surgery (M1 fail-mode tree, branch 1).
+- Stride moves but `feet_air_time` reward grows in a way that pins
+  cadence at micro-shuffles → the cadence-invariance of TB's
+  `air_time × first_contact` formula dominates; revisit weight or
+  consider a threshold-subtraction variant.
+- Per-foot body-frame error stays large (~0.3 m) at iter-0 of the
+  actual smoke despite probe agreement → indicates an env-vs-probe
+  frame mismatch; investigate before extending compute.
+
 ## [v0.20.1-smoke4] - 2026-04-22: torso_pos_xy parity verified alive, stride gate still fails
 
 ### Run

@@ -856,6 +856,14 @@ Smoke contract:
   - primary terms:
     - `ref/joint_track`
     - `ref/body_quat_track`
+    - `ref/torso_pos_xy` (smoke4 onward — body-position parity with TB
+      `_reward_torso_pos_xy`; smoke YAML α=90)
+    - `ref/foot_pos_body` (smoke5 onward — body-frame Euclidean foothold
+      imitation; replaces the deleted world-frame summed-squares
+      `ref/feet_pos_track_raw` reward.  Smoke4 verdict:
+      stride gate failure persists despite torso_pos_xy improvements →
+      explicit per-foot geometric pull is the missing gradient.  Smoke
+      YAML α=100 from the v0200c probe calibration.)
     - `ref/site_track`
     - `ref/body_lin_vel_track`
     - `ref/body_ang_vel_track`
@@ -1387,7 +1395,8 @@ Both projects use the DeepMimic-style numerator-α form
 | `motor_pos` sigma (effective) | 1.0 | 1.0 (`ref_q_track_alpha`) | match |
 | `lin_vel_tracking_sigma` | 200 | 4.0 (`cmd_forward_velocity_alpha`) | **change** — bump to 200 |
 | `ang_vel_tracking_sigma` | 0.5 | — | n/a (no ang_vel reward yet) |
-| `feet_pos` α | 200 | debug-only fixed α=200 (`ref/feet_pos_track_raw`) | diagnostic only (not optimized) |
+| `feet_pos` α (legacy world-frame) | 200 | debug-only fixed α=200 (`ref/feet_pos_track_raw`) | diagnostic only (not optimized); deleted from reward in smoke4 — kept as a logged signal so the world-frame metric trace stays comparable across smoke generations |
+| `ref_foot_pos_body` α (v0.20.2 body-frame) | (n/a; TB has no foot-pos imitation) | smoke override 100 (`ref_foot_pos_body_alpha`) | TB pos default 200 dies in the WR open-loop accel ramp (probe step50 raw=0.006). α=100 keeps the iter-0 gradient alive (step10=0.239, step30=0.185, step50=0.075). Smallest divergence from TB pos kernel; restore toward 200 if/when the prior is regenerated with reduced foot-vs-pelvis drift. |
 | `ref_contact_match_sigma` | n/a (boolean) | 0.5 | WR-specific Gaussian; keep |
 
 ### A.5 Behavior-detection thresholds
