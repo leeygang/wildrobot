@@ -6,6 +6,124 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke4] - 2026-04-22: torso_pos_xy parity verified alive, stride gate still fails
+
+### Run
+
+- Run: `training/wandb/offline-run-20260422_083150-5ooizuts`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260422_083153-5ooizuts`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260422_083153-5ooizuts/checkpoint_150_19660800.pkl`
+- Previous comparable run: `training/wandb/offline-run-20260421_220826-uzpl0pqr` (smoke3)
+
+### Result
+
+- **Walking verdict:** smoke4 is not a promotion candidate.  The
+  `torso_pos_xy` α=90 calibration delivered exactly what its narrow probe
+  goal predicted — the term is alive, body-position tracking improves
+  modestly — but the stride gate is unchanged.  The shuffle exploit
+  pattern from smoke1/2/3 persists.
+- **G4:** 5 of 6 hard gates pass at the best checkpoint.
+  `Evaluate/forward_velocity=0.135`, `Evaluate/mean_episode_length=500.0`,
+  `Evaluate/cmd_vs_achieved_forward=0.034`,
+  `tracking/cmd_vs_achieved_forward=0.067`,
+  `env/forward_velocity=0.145` all pass.
+  `tracking/step_length_touchdown_event_m=0.0195` remains well below the
+  `>= 0.030 m` stride gate.
+- **G5:** pass.  `tracking/forward_velocity_cmd_ratio=0.942` is centered
+  in band, residual p50s remain small (`hip_pitch_L/R = 0.099 / 0.098`,
+  `knee_L/R = 0.098 / 0.095 rad`).  Not an action-authority leak.
+- **G7 baseline-beat sanity:** pass comfortably.  Far better than
+  bare-`q_ref` replay on forward velocity, episode length, and pitch
+  failure rate.
+
+### What the α=90 calibration delivered (smoke3 → smoke4)
+
+| Signal | smoke3 | smoke4 | Δ | Reading |
+|---|---:|---:|---:|---|
+| `env/forward_velocity` | 0.132 | 0.145 | +0.014 | better translation |
+| `tracking/cmd_vs_achieved_forward` | 0.074 | 0.067 | -0.007 | tighter cmd tracking |
+| `tracking/forward_velocity_cmd_ratio` | 0.879 | 0.969 | +0.090 | now centered |
+| `ref/contact_phase_match` | 0.612 | 0.652 | +0.040 | mild gait-schedule recovery |
+| **`tracking/step_length_touchdown_event_m`** | **0.0178** | **0.0204** | +0.0025 | **still fails 0.030 gate** |
+| `ref/feet_pos_err_l2` (debug, not optimized) | 1.007 | 1.013 | flat | dead legacy diagnostic |
+| `reward/torso_pos_xy` (new, w=2.0, α=90) | n/a | 0.0164 | — | **alive, as designed** |
+| `ref/torso_pos_xy_err_m` | n/a | 0.124 m | — | within healthy body-tracking band |
+
+Pelvis tracking is now a live gradient and is being matched.  Removing
+the dead world-frame feet term and adding body-frame pelvis tracking did
+not move stride.  This confirms pelvis tracking is independent of the
+stride bottleneck — improving body-pos matching by itself does not produce
+a longer step.
+
+### Per-foot stride symmetry
+
+`step_length_touchdown_event_m` left/right ≈ `0.0196 / 0.0210 m`.
+Bilateral short-step pattern, not one-sided.
+
+### Diagnosis
+
+The smoke3 entry called this exactly: there is no longitudinal
+stride-length lever in the current optimized reward.  Smoke4 confirmed
+it from the other direction by upgrading body-position tracking and
+seeing zero stride change.
+
+- `feet_air_time` (w=500): pays per touchdown for `(T_air − T_threshold)`.
+  Per-event air time ~0.089 s satisfies the current threshold; this term
+  rewards stepping cadence, not stride distance.
+- `feet_clearance`, `feet_distance` (lateral), `cmd_forward_velocity_track`,
+  `torso_pos_xy`: none directly penalize a short forward step relative
+  to the prior's foothold.
+- The deleted world-frame foot term was structurally wrong (translation
+  bias dominates, gradient at operating point uncorrelated with stride
+  geometry).  Body-frame Euclidean is the documented v0.20.2 fix.
+
+### Pre-smoke probe for v0.20.2 (assumption check)
+
+Before committing the v0.20.2 body-frame foothold work, re-ran
+`tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100` to confirm the
+prior actually delivers a stride above the gate.
+
+Per-touchdown pelvis advance (steady-state foothold geometry the prior
+asks PPO to track):
+
+| Half-cycle | Steps | `pCOMx` advance | vs 0.030 m gate |
+|---|---|---:|---|
+| 1 (ramp) | 0 → 20 | +0.0211 m | below (ramp) |
+| 2 (ramp) | 20 → 32 | +0.0283 m | below (ramp) |
+| 3 | 32 → 48 | +0.0476 m | **1.6×** |
+| 4 | 48 → 64 | +0.0528 m | **1.8×** |
+
+The prior reaches steady-state stride `~0.045–0.053 m` by ~1.0 s of
+replay.  Assumption holds: the prior has the stride to track to.
+
+The probe also surfaced two second-order observations:
+
+- The per-rollout mean stride is unfair to the prior's intrinsic
+  acceleration ramp; the first ~50 ctrl steps are below-gate by design.
+  v0.20.2 should add a windowed stride metric (last-N touchdowns).
+- First lever sign flip at step 2 (`pLever=+0.0003`,
+  `aLever=−0.0031`).  The body resists the prior's forward push almost
+  immediately in open-loop replay; PPO has to overcome this every step.
+  Adds weight to "policy is balance-bound, not stride-bound."
+
+### Next version
+
+- Implement the documented v0.20.2 body-frame Euclidean foothold
+  imitation term (replaces the deleted world-frame summed-squares
+  term).  Calibrate α with a zero-residual probe so the iter-0 raw
+  reward sits in the alive-gradient band (target raw 0.05–0.30 at the
+  prior's typical body-frame foot error).
+- Add windowed stride metric `tracking/step_length_touchdown_window_m`
+  (mean over the last N touchdowns, e.g. N=8) so the gate measures
+  steady-state stride instead of including the prior's intrinsic ramp.
+- Hold everything else fixed (PPO hyperparameters, residual bound,
+  `torso_pos_xy_alpha=90`, gated `ref_contact_match`) so the next run
+  cleanly answers whether the foothold metric in the right frame is
+  what unlocks the stride gate.
+- If the foothold term is alive but stride still doesn't move, revisit
+  `feet_air_time_threshold` — at the current value, micro-shuffles pay
+  out and a 500-weight term will fight the new foothold pull.
+
 ## [v0.20.1-smoke4-prep1] - 2026-04-22: torso_pos_xy alpha calibration from per-frame probe
 
 ### Context
