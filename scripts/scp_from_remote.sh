@@ -5,7 +5,7 @@
 # Usage:
 #   ./scp_from_remote.sh [--public [IP]] <filename>           # Copy single file/directory
 #   ./scp_from_remote.sh [--public [IP]] --checkpoints        # List available checkpoints
-#   ./scp_from_remote.sh [--public [IP]] --latest             # Copy latest checkpoint
+#   ./scp_from_remote.sh [--public [IP]] --latest [N]         # Copy latest N runs (wandb + checkpoint), default N=1
 #   ./scp_from_remote.sh [--public [IP]] <checkpoint_name>    # Copy specific checkpoint folder
 #   ./scp_from_remote.sh [--public [IP]] --logs               # List available wandb runs
 #   ./scp_from_remote.sh [--public [IP]] --run <run_name>     # Copy both checkpoint and wandb log for a run
@@ -16,7 +16,8 @@
 #
 # Examples:
 #   ./scp_from_remote.sh --public --checkpoints
-#   ./scp_from_remote.sh --public --latest
+#   ./scp_from_remote.sh --public --latest          # most recent run + checkpoint
+#   ./scp_from_remote.sh --public --latest 3        # 3 most recent runs + checkpoints
 #   ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6
 #   ./scp_from_remote.sh --run offline-run-20260104_213603-ajmyd9zz
 
@@ -135,6 +136,12 @@ list_logs() {
 get_latest_checkpoint() {
     # Get the most recent checkpoint directory
     remote_ssh "ls -t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -1"
+}
+
+get_latest_runs() {
+    # Get the N most recent W&B run directory names (newest first).
+    local N="${1:-1}"
+    remote_ssh "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -$N"
 }
 
 copy_file() {
@@ -342,21 +349,21 @@ copy_run() {
 
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--checkpoints|--latest|--logs|--run <name>|checkpoint_name>"
+    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--logs|--run <name>|checkpoint_name>"
     echo ""
     echo "Options:"
     echo "  <filename>       Copy specific file or directory from remote"
     echo "  --checkpoints    List available checkpoints on remote"
-    echo "  --latest         Copy the most recent checkpoint"
+    echo "  --latest [N]     Copy latest N runs (W&B log + checkpoint), default N=1"
     echo "  --logs           List available W&B runs on remote"
     echo "  --run <name>     Copy both checkpoint and W&B log for a run"
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
     echo ""
     echo "Examples:"
-    echo "  $0 training/checkpoints/wildrobot_amp_20251220_180000/final_amp_policy.pkl"
+    echo "  $0 training/checkpoints/wildrobot_v0201_20260420_120000/checkpoint_100_204800.pkl"
     echo "  $0 --checkpoints"
-    echo "  $0 --latest"
-    echo "  $0 wildrobot_amp_20251220_180000"
+    echo "  $0 --latest          # most recent run + checkpoint"
+    echo "  $0 --latest 3        # 3 most recent runs + checkpoints"
     echo "  $0 --logs"
     echo "  $0 --run run-20251228_011308-xw1fu3n6"
     exit 1
@@ -383,13 +390,36 @@ case "$1" in
         copy_run "$2"
         ;;
     --latest)
-        LATEST=$(get_latest_checkpoint)
-        if [ -z "$LATEST" ]; then
-            echo -e "${RED}No checkpoints found on remote${NC}"
+        # --latest [N]: copy the N most recent W&B runs + their matching
+        # checkpoints (default N=1).  Equivalent to running --run on each
+        # of the top-N entries from `--logs`.
+        N="${2:-1}"
+        if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -lt 1 ]; then
+            echo -e "${RED}Error: --latest expects a positive integer, got '$N'${NC}"
             exit 1
         fi
-        echo -e "${GREEN}Latest checkpoint: $LATEST${NC}"
-        copy_checkpoint "$LATEST"
+
+        # Read run names into an array (handles spaces / newlines safely).
+        LATEST_RUNS=()
+        while IFS= read -r line; do
+            [ -n "$line" ] && LATEST_RUNS+=("$line")
+        done < <(get_latest_runs "$N")
+
+        if [ "${#LATEST_RUNS[@]}" -eq 0 ]; then
+            echo -e "${RED}No W&B runs found on remote${NC}"
+            exit 1
+        fi
+
+        echo -e "${GREEN}Latest $N run(s):${NC}"
+        for r in "${LATEST_RUNS[@]}"; do
+            echo "  - $r"
+        done
+
+        OVERALL_RC=0
+        for r in "${LATEST_RUNS[@]}"; do
+            copy_run "$r" || OVERALL_RC=1
+        done
+        exit $OVERALL_RC
         ;;
     *)
         # Check if it looks like a checkpoint folder name (contains date pattern)
