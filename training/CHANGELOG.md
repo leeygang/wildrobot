@@ -6,7 +6,7 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.20.1-smoke6] - 2026-04-23: TB-aligned phase signals — 2/3 dead, stride gate still fails (4th consecutive null on stride)
+## [v0.20.1-smoke6] - 2026-04-23: NULL RUN — YAML loader silently dropped lin_vel_z + ang_vel_xy weights
 
 ### Run
 
@@ -17,53 +17,91 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ### Result
 
-- **Walking verdict:** smoke6 is not a promotion candidate.  Same shuffle-exploit pattern
-  as smoke3/4/5: G4 5/6 hard gates pass, stride gate still fails.  The smoke6 thesis
-  ("TB-aligned phase signals + boolean contact reward will recover gait phase sync and
-  unlock the stride gate") is falsified.
+- **Walking verdict:** smoke6 is a **null run**.  The smoke6 hypothesis ("TB-aligned
+  phase signals + boolean contact reward will recover gait phase sync and unlock the
+  stride gate") was **never actually tested** — two of the three new reward terms
+  (`lin_vel_z`, `ang_vel_xy`) had weight 0 throughout training due to a YAML loader
+  bug, not because of a kernel-shape or training-time err issue.  Only the third
+  term (`ref_contact_match` boolean at w=1.0) was actually enabled.  The "stride
+  still fails" outcome is therefore essentially smoke5 plus an inert boolean
+  contact bonus, not evidence about the phase-signal hypothesis.
 - **G4:** 5 of 6 hard gates pass at iter 150.
   `Evaluate/forward_velocity=0.146`, `Evaluate/mean_episode_length=500.0`,
   `Evaluate/cmd_vs_achieved_forward=0.035`, `env/forward_velocity=0.147`,
   `tracking/cmd_vs_achieved_forward=0.072` all pass.
-  `tracking/step_length_touchdown_event_m=0.0185` still well below the `>= 0.030 m` gate
-  (per-foot 0.0179/0.0193 m — bilateral, not one-sided).
+  `tracking/step_length_touchdown_event_m=0.0185` still well below the `>= 0.030 m` gate.
 - **G5:** pass.  `tracking/forward_velocity_cmd_ratio=0.915` centered, residual p50s
   0.097-0.114 rad (well under the 0.20 cap).
 - **G7 baseline-beat sanity:** pass comfortably.
-- **ToddlerBot alignment:** OK.  Smoke6 weights match Appendix A.3 post-alignment column;
-  no drift on ✅ rows.
 
-### Smoke6 hypothesis falsified — three new TB-aligned terms
+### Bug: YAML loader silently drops two of three new smoke6 reward weights
 
-| Smoke6-new term | Late-iter mean | Status |
-|---|---:|---|
-| `reward/lin_vel_z` (TB w=1.0, α=200) | 0.000 | **DEAD throughout** (`ref/lin_vel_z_err_m_s=0.140` → exp(-200·0.0196)≈0.02 mean; transients crush mean toward 0) |
-| `reward/ang_vel_xy` (TB w=2.0, α=0.5) | 0.000 | **DEAD throughout** (`ref/ang_vel_xy_err_rad_s=1.06`; spike-dominated mean ≈0) |
-| `reward/ref_contact_match` (TB boolean w=1.0) | 0.0261 | alive (avg count ≈ 1.3/2) but `ref/contact_phase_match=0.65` is **flat** vs smoke5's 0.67 |
+Direct config-load reproduction:
 
-The smoke6-prep2 entry explicitly committed to this falsification path:
-> "If smoke6 shows `reward/lin_vel_z` dead at training-time conditions
-> (persistent err > 0.12 m/s under PPO control), that's a real signal and we recalibrate."
+```
+$ uv run python -c "from training.configs.training_config import load_training_config; \
+    cfg = load_training_config('training/configs/ppo_walking_v0201_smoke.yaml'); \
+    print(cfg.reward_weights.lin_vel_z, cfg.reward_weights.ang_vel_xy, cfg.reward_weights.ref_contact_match)"
+0.0 0.0 1.0
+```
 
-Both criteria met: persistent training-time err is 0.140 m/s on lin_vel_z and 1.06 rad/s on
-ang_vel_xy.  The probe's open-loop dead-band warning was load-bearing after all.
+YAML says `lin_vel_z: 1.0, ang_vel_xy: 2.0, ref_contact_match: 1.0`.  Loader returns
+`0.0, 0.0, 1.0`.  `ref_contact_match` is correctly read at
+`training/configs/training_config.py:698`; `lin_vel_z` and `ang_vel_xy` are NOT in
+`_parse_reward_weights_config` and silently fall through to the dataclass defaults
+(`RewardWeightsConfig.lin_vel_z = 0.0`, `ang_vel_xy = 0.0`).
 
-The boolean `ref_contact_match` came alive but did NOT move `ref/contact_phase_match`
-(0.652 smoke6 vs 0.671 smoke5 — mild regression, within run-to-run variance).  Adding the
-contact reward at TB weight 1.0 was insufficient to produce gait-phase recovery.
+Smoke6-prep1 added the `RewardWeightsConfig` fields and the env compute path; smoke6-
+prep2 fixed the body-local rotation and switched contact match to TB boolean.  Neither
+prep added the corresponding `rewards.get("lin_vel_z", ...)` /
+`rewards.get("ang_vel_xy", ...)` lines to the YAML loader.  The env-side and reward-
+shape changes were verified by `tests/test_v0201_env_zero_action.py` (G6 invariance),
+which doesn't exercise the YAML loader path.
 
-### Pattern across smoke3–6 (four consecutive null results on stride)
+The on-train metrics confirm the bug.  `reward/lin_vel_z = 0.0` and `reward/ang_vel_xy
+= 0.0` exactly across all 16 eval iters from iter 0 onward.  At iter 0 the residual is
+zero (G6 invariant), so the body runs the bare prior — `ref/lin_vel_z_err_m_s ≈ 0.15`,
+which at TB α=200 should give `r ≈ exp(-200·0.0225) ≈ 0.011` and contribution
+`r · 1.0 · 0.02 ≈ 2e-4`.  Observed: exactly 0.0.  That can only happen if the weight
+is 0; no kernel-shape or transient-spike argument can produce *exact* zero across
+every recorded eval iter.
 
-| Smoke | Intervention | Term outcome | Stride |
+### Why `ref_contact_match` stayed flat (0.65 → 0.66)
+
+The third smoke6 term was the only one that actually fired.  The TB boolean equality
+count (per-step value 0/1/2) at TB w=1.0 contributed `reward/ref_contact_match=0.026`
+on average (count ≈ 1.3 of 2 feet match — equivalent to the 0.65 diagnostic), so the
+term was numerically alive but did not move `ref/contact_phase_match`.  Two reasons:
+
+1. **Boolean has no continuous gradient.**  The reward only changes when feet cross
+   the contact-force threshold; PPO has to find action gradients indirectly through
+   downstream effects on contact transitions.  This is a weak signal compared to the
+   continuous phase-signal terms (`lin_vel_z`, `ang_vel_xy`) that were supposed to
+   provide dense per-step gradients alongside it.  Without those continuous companions,
+   the boolean was on its own.
+2. **Existing rewards already fully reward the shuffle solution.**  `feet_air_time`
+   (cadence-invariant per unit time), `cmd_forward_velocity_track` (satisfied by
+   cadence), and `ref_q_track` (joint-space, locally insensitive to small Cartesian
+   stride deltas) all already pay out for the policy's current short-stride micro-
+   cadence.  A single boolean term at w=1.0 isn't enough authority to overcome that.
+
+So smoke6 confirms a narrower fact: **boolean contact match alone is insufficient to
+move PPO out of the shuffle local minimum.**  It does NOT confirm or refute the
+broader phase-signal hypothesis (which was supposed to be carried by the missing
+continuous terms).
+
+### Pattern across smoke3–6 (stride still flat — but smoke6 doesn't add evidence)
+
+| Smoke | Intervention | What was actually enabled | Stride |
 |---|---|---|---:|
-| 3 | world-frame foot α=2 | alive, pulled wrong direction | 0.0178 |
-| 4 | torso_pos_xy α=90 | alive, did its narrow job | 0.0204 |
+| 3 | world-frame foot α=2 | foot reward alive at α=2 | 0.0178 |
+| 4 | torso_pos_xy α=90 | torso_pos_xy alive at α=90 | 0.0204 |
 | 5 | body-frame foot α=100 | DEAD (probe under-predicted training err) | 0.0182 |
-| 6 | TB phase signals (lin_vel_z, ang_vel_xy, contact boolean) | 2/3 DEAD; 1 inert on diagnostic | 0.0185 |
+| 6 | TB phase signals (lin_vel_z, ang_vel_xy, contact boolean) | **only ref_contact_match enabled** (YAML loader bug) | 0.0185 |
 
-Stride is statistically flat across all four smokes (run-to-run noise band 0.018-0.020 m).
-"Add another imitation term" has now been tested four times and has not moved the stride
-gate once.
+The four-smoke "stride is flat" pattern still stands, but smoke6 should be considered
+inconclusive on its own intervention — re-run after fixing the loader to actually test
+the smoke6 hypothesis.
 
 ### Regression vs smoke5
 
@@ -78,83 +116,46 @@ gate once.
 | `ref/feet_pos_err_l2` (debug) | 1.049 | 1.011 | -0.038 | improved |
 | `ref/contact_phase_match` | 0.671 | 0.662 | -0.009 | regressed |
 
-All deltas are within run-to-run variance; smoke6 ≈ smoke5 on every gate-relevant signal.
+All deltas are within run-to-run variance — consistent with the bug interpretation
+(smoke6's effective reward family was smoke5 + boolean contact, ≈ smoke5 with noise).
 
-### Root-cause diagnosis: reward family has no stride-length lever
+### Next version: v0.20.1-smoke6-prep3 (loader fix + re-run as smoke6)
 
-`feet_air_time = Σ_per_foot (air_time × first_contact)` is **cadence-invariant per unit
-time** — total airborne time / total time is approximately constant for any continuous
-gait, so micro-shuffles and full-stride walking pay the same per-second.  No other
-optimized term penalizes short stride:
+Smoke6 is a null result, not new evidence.  The correct next step is to fix the loader
+and re-run with the *actually-intended* smoke6 reward family before drawing any
+conclusion about the phase-signal hypothesis.
 
-- `cmd_forward_velocity_track` (w=5.0): rewards cmd_vx match — satisfied by cadence
-- `torso_pos_xy` (w=2.0, α=90): rewards body-position track — confirmed independent of
-  stride in smoke4
-- `feet_clearance`, `feet_distance` (lateral), `torso_pitch_soft`, `torso_roll_soft`:
-  posture-keeping, no stride coupling
-- `ref_q_track` (w=5.0, α=1): rewards joint-target match in joint-space, not Cartesian
-  foothold geometry — joint-space short stride is locally similar to long stride at the
-  hip/knee level
-- `ref_contact_match` (w=1.0, boolean): rewards stance-mask agreement — flat at 0.65
-  doesn't differentiate cadence from stride
+1. **Fix `_parse_reward_weights_config`** in `training/configs/training_config.py`
+   (around line 695-710): add
+   `lin_vel_z=rewards.get("lin_vel_z", 0.0)`,
+   `ang_vel_xy=rewards.get("ang_vel_xy", 0.0)`,
+   `lin_vel_z_alpha=rewards.get("lin_vel_z_alpha", 200.0)`,
+   `ang_vel_xy_alpha=rewards.get("ang_vel_xy_alpha", 0.5)` alongside the existing
+   v0.20.1 entries.
+2. **Add a config-load assertion test** that catches this class of bug:
+   `tests/test_config_load_smoke6.py` — load the smoke YAML, assert every key under
+   `reward_weights:` round-trips to the dataclass field with the same value.  This
+   would have caught smoke6-prep1.  General principle: any YAML key under
+   `reward_weights:` that doesn't round-trip through the loader should fail loud at
+   config-load time, not silently fall through to a default.
+3. **Re-run smoke6** with no other changes.  This actually tests the smoke6
+   hypothesis.
 
-**PPO actively chooses short stride** because (a) cmd_vx is satisfied by cadence,
-(b) shorter stride means smaller pitch perturbation per touchdown (more stable),
-(c) no reward term penalizes the choice.  The probe shows the prior delivers
-0.045-0.053 m steady-state stride at vx=0.15 — a 2-2.5x reduction by PPO is a
-deliberate trade-off, not a tracking failure.
+After the re-run, smoke6's CHANGELOG entry will be replaced by the real result; this
+entry stays as the bug record.
 
-### Next version
+### What we are NOT doing in smoke6-prep3
 
-Two paths, not mutually exclusive.  Recommend doing both — they target different parts
-of the falsified hypothesis chain.
-
-**v0.20.1-smoke7-prep1: recalibrate the dead α's per the smoke6-prep2 commitment.**
-- Run `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 500` to characterize the
-  training-time err scale under PPO-like rollout (longer horizon than 100 to capture
-  the steady-state, not just the prior's accel ramp).
-- Recalibrate `lin_vel_z_alpha` (TB 200 → ~30-50) so the iter-0 raw reward sits in the
-  alive band (raw 0.05-0.30) over the training-time err range.  Same approach as
-  smoke3 (`feet_pos` α 30→2) and smoke4-prep1 (`torso_pos_xy` α 200→90).
-- Recalibrate `ang_vel_xy_alpha` (TB 0.5 → ~0.05-0.1) similarly.
-- This is a smoke-stage divergence from TB on α (not on weight or shape), justified by
-  the same rationale as the existing TB α overrides.
-- Falsifies cleanly: if alive `lin_vel_z` and `ang_vel_xy` at training-time err scale
-  still don't move stride or `ref/contact_phase_match`, the phase-signal hypothesis is
-  fully ruled out.
-
-**v0.20.1-smoke7 / v0.20.2 prior surgery (parallel track).**
-- The four-smoke pattern says the bottleneck is not "another reward term"; it's that
-  PPO has chosen short stride for stability and no reward term contradicts the choice.
-- Per the M1 fail-mode tree, this is the "balance achieved, tracking weak" branch but
-  with stride (not cmd_vx) being the weak axis.  M1 doesn't have an exact rule for
-  this — the original tree was written before the shuffle pattern emerged consistently.
-- Two complementary interventions:
-  1. **Tighten `feet_air_time_threshold` semantics** — currently the term is full TB
-     `Σ(air_time × first_contact)` with no threshold subtraction, which makes it
-     cadence-invariant.  Investigate whether TB's empirical success on a similar
-     small biped depends on a different effective gait scale (TB has resample,
-     domain randomization, and longer `episode_length=1000`); if so, document the
-     WildRobot-specific intervention with explicit rationale per CLAUDE.md.
-  2. **Return to v0.20.0-x prior surgery branch.**  The probe shows prior delivers
-     stride that PPO refuses to track.  If PPO's safety preference dominates the
-     reward family no matter what we add, the prior may be too aggressive for the
-     bounded-residual contract on WildRobot's morphology.  Either soften the prior's
-     stride at vx=0.15 toward what PPO converges to (~0.022 m), or accept that the
-     ±0.25 leg residual + bounded-correction contract is the binding constraint and
-     consider widening to ±0.40-0.50 (smoke6 G5 has ample headroom: residuals
-     ≤0.114 vs cap 0.20).
-
-**Do NOT** continue adding more reward terms.  Four smokes have ruled out that
-direction.
-
-### What we are NOT doing in v0.20.1-smoke7-prep1
-
-- Not promoting any term that hasn't been calibrated alive at training-time err scale.
-- Not adding new imitation terms.
-- Not increasing PPO learning rate / entropy / KL bounds — the four-smoke pattern is
-  consistent enough that PPO optimization is not the bottleneck.
-- Not relaxing G5 to "fix" stride.
+- Not yet recalibrating `lin_vel_z_alpha` / `ang_vel_xy_alpha`.  The smoke6-prep2
+  decision to use TB α values was conditional on observing training-time err under
+  PPO control — we don't have that evidence yet because the terms were never enabled.
+  Recalibration only makes sense if the re-run shows the terms are genuinely dead
+  with the weights actually applied.
+- Not promoting prior surgery, stride-lever interventions, or wider residual bounds.
+  The four-smoke "stride is flat" pattern is real, but smoke6's contribution to that
+  evidence is weakened by the bug.  Wait for the loader-fixed re-run before deciding
+  whether the next branch is "more imitation terms" or "prior surgery / wider
+  residual / cadence-vs-stride trade-off".
 
 ## [v0.20.1-smoke6-prep2] - 2026-04-22: TB-strict contact + body-local lin_vel_z + doc/probe cleanup
 
