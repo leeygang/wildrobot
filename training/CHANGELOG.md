@@ -6,6 +6,128 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke6-prep2] - 2026-04-22: TB-strict contact + body-local lin_vel_z + doc/probe cleanup
+
+### Context
+
+A code review of smoke6-prep1 caught four issues:
+
+1. `ref_contact_match` weight was set to 0.5 — 25× past the documented
+   re-entry weight (0.02), without re-running the contact-alignment probe
+   that would have justified relaxing the gate.
+2. The Gaussian kernel formula in `walking_training.md` G3
+   (`exp(-x²/σ²)`) didn't match the implementation in
+   `wildrobot_env.py` (`exp(-x²/(2σ²))`).  Doc/code mismatch.
+3. `lin_vel_z` actual was computed from `HEADING_LOCAL` (yaw-only
+   rotation, z stays world-up) rather than TB's true body-local z
+   (rotated by `inv(root_quat)`).  Diverges from TB under body tilt.
+4. The smoke5 changelog overstated "design hypothesis falsified" — smoke5
+   alone only showed α=100 was dead; falsification required combined
+   smoke3 + smoke5 evidence.
+
+A follow-up review of smoke6-prep2 caught two additional documentation
+and verification gaps:
+
+5. Stale "Smooth per-foot contact-phase match" / "w=0 gated" labels in
+   `metrics_registry.py`, `experiment_tracking.py`,
+   `analyze_offline_run.py`, `SKILL.md`, and a YAML pre-`reward_weights`
+   comment block — all written for the smoke3-5 Gaussian + gated design,
+   not the smoke6 TB boolean form.
+6. The `v0200c_per_frame_probe.py` ang_vel_xy reading used
+   `data.qvel[3:6]`, while the env reward reads from
+   `signals_raw.gyro_rad_s` (which goes through the `chest_imu_gyro`
+   sensor with σ=0.0002 noise).  Not apples-to-apples.
+
+### Resolution
+
+**Reward implementation (smoke6-prep2 in commit 5a7e2f1):**
+- `wildrobot_env.py` `_compute_reward_terms`: hoist the world→body
+  inverse quaternion construction near the top; reused for both
+  `lin_vel_z` (true body-local rotation) and `feet_distance`.
+- `lin_vel_z` actual = `inv(root_quat) ⊗ data.qvel[0:3]`, take z.
+  Matches `toddlerbot/locomotion/mjx_env.py:1645`
+  (`get_local_vec(...)`).  Reference unchanged: finite-diff of prior
+  `pelvis_pos[2]` (the prior is yaw-stationary with identity quat,
+  so prior body-z velocity equals world finite-diff).
+- `ref_contact_match`: TB boolean form
+  `sum(stance_mask == ref_stance_mask) ∈ {0, 1, 2}`.  Matches
+  `toddlerbot/locomotion/mjx_env.py:1721` exactly.  Drops the
+  WR-specific Gaussian + sigma; resolves the doc/code mismatch by
+  removing the disputed code.
+- New diagnostic `contact_phase_match_diag = 0.5 × count` so
+  `ref/contact_phase_match` continues to log a `[0, 1]` fraction for
+  back-comparison with smoke3-5.
+- `ppo_walking_v0201_smoke.yaml`: `ref_contact_match: 1.0` (TB weight),
+  `lin_vel_z: 1.0`, `ang_vel_xy: 2.0`.
+
+**Documentation cleanup (this entry):**
+- `metrics_registry.py` and `experiment_tracking.py`: descriptions for
+  `reward/ref_contact_match` and `ref/contact_phase_match` rewritten
+  to describe the TB boolean form.
+- `analyze_offline_run.py`: drop "w=0 gated" label; add rows for the
+  three new smoke6 reward terms (`reward/ref_contact_match`,
+  `reward/lin_vel_z`, `reward/ang_vel_xy`) and their diagnostics.
+- `SKILL.md`: v0.20.1 reward family table now shows smoke6 weights
+  for `torso_pos_xy`, `ref_contact_match` (TB boolean), `lin_vel_z`,
+  and `ang_vel_xy`.
+- `ppo_walking_v0201_smoke.yaml`: drop the obsolete pre-`reward_weights`
+  comment block describing the Gaussian gate + 0.02→0.10 graduation
+  policy.  That policy was specific to the smoke3-5 Gaussian shape and
+  is superseded by the TB boolean switch.
+
+**Probe alignment (this entry):**
+- `tools/v0200c_per_frame_probe.py`: read ang_vel_xy from MuJoCo's
+  `chest_imu_gyro` sensor (matches `signals_raw.gyro_rad_s` path in
+  `training/sim_adapter/mjx_signals.py`).  Falls back to
+  `data.qvel[3:6]` if the sensor is absent.  Verified the probe value
+  agrees with `data.qvel[3:6]` to within the sensor's σ=0.0002 noise.
+
+### Honest caveat: lin_vel_z probe alive band
+
+At TB-aligned α=200, the open-loop probe at vx=0.15 shows transient
+dead bands during body bobbing through phase transitions:
+- `min raw reward over steps 0..50: 0.000005`
+- Failures concentrated in steps 8-21, 25, 36, 40-41 (peak err
+  ±0.25 m/s at heel-strike transients)
+- Most steps remain in the alive regime (raw 0.05-1.0)
+
+This does NOT meet the "alive throughout 0..50" bar that smoke4-prep1
+used for `torso_pos_xy_alpha=90` calibration.  We are accepting
+TB α=200 anyway on the rationale that:
+
+1. The dead bands are open-loop pathologies.  Under PPO control the
+   body is well-balanced and `body_lin_vel_z` should track the prior
+   tightly (small err → high raw reward most of the time).
+2. TB demonstrates α=200 works empirically on a similar small biped
+   with the same body-local formulation.
+3. Lowering α to "fix" the probe would diverge from TB; the smoke6
+   philosophy (per saved memory) is to follow TB before introducing
+   WR-specific calibration.
+
+If smoke6 shows `reward/lin_vel_z` dead at training-time conditions
+(persistent err > 0.12 m/s under PPO control), that's a real signal
+and we recalibrate.  If it's alive at training time, the probe's
+open-loop dead band was not load-bearing.
+
+### Verification
+
+- `tests/test_v0201_env_zero_action.py`: 7/7 pass.  These tests cover
+  the G6 invariant (zero residual ⇒ `target_q == q_ref`) and the
+  metric pipeline shape integrity.  They do NOT directly test the
+  three new reward shapes (`lin_vel_z`, `ang_vel_xy`,
+  `ref_contact_match` boolean) — those are validated only by code
+  review and probe traces.  An honest "metric pipeline correct" claim
+  is limited to G6 invariance.
+
+### What's still not directly verified
+
+- `reward/ref_contact_match` boolean form at training time — values
+  will be visible in smoke6 wandb logs.
+- `reward/lin_vel_z` and `reward/ang_vel_xy` values under PPO control
+  — visible in smoke6 wandb logs.
+- The probe's lin_vel_z alive bar at training-time operating point
+  (open-loop fails the bar; PPO conditions unknown until smoke6 runs).
+
 ## [v0.20.1-smoke5] - 2026-04-22: body-frame foothold reward dead — null result, design hypothesis falsified
 
 ### Run

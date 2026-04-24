@@ -201,7 +201,10 @@ ENV_METRICS_KEYS = {
         "TB ang_vel_xy tracking exp(-alpha*(gyro_x^2 + gyro_y^2)); "
         "ref is zero (yaw-stationary prior)"
     ),
-    "reward/ref_contact_match": "Smooth per-foot contact-phase match",
+    "reward/ref_contact_match": (
+        "TB boolean equality count (smoke6 onward): "
+        "sum(stance_mask == ref_stance_mask) in {0, 1, 2}"
+    ),
     "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
     # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
     "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",
@@ -215,7 +218,11 @@ ENV_METRICS_KEYS = {
         "sqrt(gyro_x^2 + gyro_y^2) (rad/s); paired with reward/ang_vel_xy "
         "(ref is zero for yaw-stationary prior)"
     ),
-    "ref/contact_phase_match": "Smooth contact-phase match (per-step value)",
+    "ref/contact_phase_match": (
+        "Fraction of feet matching ref stance mask in {0, 0.5, 1.0} "
+        "(smoke6 onward — derived from TB boolean count, normalized by 2 "
+        "so smoke3-5 logs remain qualitatively comparable)"
+    ),
     # Debug metrics
     "debug/pitch": "Root pitch angle",
     "debug/roll": "Root roll angle",

@@ -888,8 +888,24 @@ def _changelog_block(
             ("reward/ref_feet_pos_track (legacy)", "reward/ref_feet_pos_track"),
             ("ref/feet_pos_track_raw (debug-only, α=200)", "ref/feet_pos_track_raw"),
             ("ref/feet_pos_err_l2 (root-relative L2 m)", "ref/feet_pos_err_l2"),
-            ("reward/ref_contact_match (w=0 gated)", "reward/ref_contact_match"),
-            ("ref/contact_phase_match", "ref/contact_phase_match"),
+            (
+                "reward/ref_contact_match (smoke6+ TB boolean w=1.0)",
+                "reward/ref_contact_match",
+            ),
+            (
+                "ref/contact_phase_match (smoke6+ normalized 0..1)",
+                "ref/contact_phase_match",
+            ),
+            (
+                "reward/lin_vel_z (smoke6+ TB w=1.0, α=200)",
+                "reward/lin_vel_z",
+            ),
+            ("ref/lin_vel_z_err_m_s", "ref/lin_vel_z_err_m_s"),
+            (
+                "reward/ang_vel_xy (smoke6+ TB w=2.0, α=0.5)",
+                "reward/ang_vel_xy",
+            ),
+            ("ref/ang_vel_xy_err_rad_s", "ref/ang_vel_xy_err_rad_s"),
             ("reward/cmd_forward_velocity_track (w=5.0, α=200)", "reward/cmd_forward_velocity_track"),
             ("reward/alive (w=10, -done)", "reward/alive"),
             ("reward/feet_air_time (w=500)", "reward/feet_air_time"),

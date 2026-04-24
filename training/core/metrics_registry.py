@@ -1451,7 +1451,11 @@ METRIC_SPECS: List[MetricSpec] = [
     MetricSpec(
         name="reward/ref_contact_match",
         reducer=Reducer.MEAN,
-        description="Smooth per-foot contact-phase match",
+        description=(
+            "TB boolean equality count (smoke6 onward): "
+            "sum(stance_mask == ref_stance_mask) in {0, 1, 2}.  "
+            "Smoke3-5 used a WR-specific Gaussian; switched to TB form."
+        ),
     ),
     MetricSpec(
         name="reward/cmd_forward_velocity_track",

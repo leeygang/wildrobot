@@ -155,6 +155,18 @@ def main() -> int:
     # ---- Body / foot ids -------------------------------------------------
     L_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_foot")
     R_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_foot")
+    # Match the env's reward-side gyro path
+    # (training/sim_adapter/mjx_signals.py reads the ``chest_imu_gyro``
+    # sensor; falls back to data.qvel[3:6] only if absent).  Reading the
+    # sensor here makes the probe's ang_vel_xy values apples-to-apples
+    # with the env's actual reward signal under any IMU sensor noise.
+    gyro_sensor_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_SENSOR, "chest_imu_gyro"
+    )
+    if gyro_sensor_id >= 0:
+        gyro_sensor_adr = int(model.sensor_adr[gyro_sensor_id])
+    else:
+        gyro_sensor_adr = -1  # use qvel[3:6] fallback path
     pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
     if pelvis_id < 0:
         # Fall back: free-joint root body is body index 1 in standard MJCF.
@@ -230,10 +242,18 @@ def main() -> int:
             np.exp(-float(args.lin_vel_z_alpha) * lin_vel_z_err * lin_vel_z_err)
         )
 
-        # ang_vel_xy: gyro is body-frame in MuJoCo (qvel[3:6] for free joint).
-        # Reference is zero for the yaw-stationary prior, so penalty is just
-        # ||body_angular_velocity_xy||^2.
-        body_ang_vel = np.array(data.qvel[3:6], dtype=np.float64)
+        # ang_vel_xy: read the same gyro signal the env reward sees
+        # (chest_imu_gyro sensor → matches signals_raw.gyro_rad_s in
+        # training/sim_adapter/mjx_signals.py).  Falls back to qvel[3:6]
+        # if the sensor doesn't exist; under IMU sensor noise the sensor
+        # path will differ from raw qvel by a tiny σ=0.0002 rad/s.
+        if gyro_sensor_adr >= 0:
+            body_ang_vel = np.array(
+                data.sensordata[gyro_sensor_adr : gyro_sensor_adr + 3],
+                dtype=np.float64,
+            )
+        else:
+            body_ang_vel = np.array(data.qvel[3:6], dtype=np.float64)
         ang_vel_xy_sq_sum = float(
             body_ang_vel[0] * body_ang_vel[0]
             + body_ang_vel[1] * body_ang_vel[1]

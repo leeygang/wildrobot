@@ -117,8 +117,10 @@ A run can pass forward_velocity AND fail G5 — that's a false positive (residua
 |---|---|---|---|
 | imitation | `reward/ref_q_track` | 5.0 | joint targets match `q_ref` (α=1, exp(-α·sum((q-q_ref)²))) |
 | imitation | `reward/ref_body_quat_track` | 5.0 | torso orientation matches reference (α=20) |
-| imitation | `reward/ref_feet_pos_track` | 0.15 | feet at the prior's foothold positions (α=30 in smoke; see note) |
-| imitation | `reward/ref_contact_match` | 0.0 (gated) | smooth Gaussian per-foot contact match |
+| imitation | `reward/torso_pos_xy` | 2.0 | torso XY tracks prior pelvis (α=90 smoke override; smoke4+) |
+| imitation | `reward/ref_contact_match` | 1.0 | TB boolean count `sum(stance_mask == ref)` ∈ {0,1,2} (smoke6+; smoke3-5 used WR-specific Gaussian, gated to 0) |
+| imitation | `reward/lin_vel_z` | 1.0 | TB body-local vertical velocity tracks prior bobbing (α=200; smoke6+) |
+| imitation | `reward/ang_vel_xy` | 2.0 | body roll/pitch rate vs zero (α=0.5; smoke6+) |
 | task | `reward/cmd_forward_velocity_track` | 5.0 | actual `vx` matches `cmd_vx` (α=200) |
 | ToddlerBot shaping | `reward/feet_air_time` | 500.0 | swing-leg air time at touchdown (cmd-gated) |
 | ToddlerBot shaping | `reward/feet_clearance` | 1.0 | per-foot peak swing height at touchdown |
