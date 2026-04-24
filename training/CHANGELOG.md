@@ -82,8 +82,17 @@ two metrics are equivalent.  We essentially re-introduced the
 deleted world-frame term with a different alpha, and the same
 fundamental issue blocks it.
 
-**Verdict: the v0.20.2 design hypothesis (body-frame Euclidean
-foothold imitation closes the stride gap) is falsified.**  Drop
+**Verdict (combined smoke3 + smoke5 evidence):** the design
+hypothesis "alive body-frame foothold imitation in any reasonable
+α range fixes the stride gap" is falsified.  Smoke5 alone only
+showed that α=100 was too tight for the actual training-time
+error scale (the term was dead) — it did not, on its own, falsify
+the metric idea.  But smoke3 had already tested the same metric
+shape (world-frame ≈ body-frame at upright posture) at α=2 (alive
+at training-time error scale) and stride got *worse* (0.0203 →
+0.0178).  Together: at high α the term is dead; at low α the term
+is alive but pulls in the wrong direction at phase mismatch.  The
+combined evidence rules out kernel re-calibration as a fix.  Drop
 the term, do not retune alpha.
 
 ### Stride "regression" (0.0204 → 0.0182) is run-to-run variance

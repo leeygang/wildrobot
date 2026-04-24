@@ -732,7 +732,12 @@ class RewardWeightsConfig(Freezable):
     # maps to alpha=0.5.  Both apply directly to err^2 (per axis or summed).
     lin_vel_z_alpha: float = 200.0
     ang_vel_xy_alpha: float = 0.5
-    ref_contact_match_sigma: float = 0.5  # walking_training.md G3 default
+    # Note: smoke3-5 used a Gaussian contact-match kernel with this sigma;
+    # smoke6 onward uses TB's boolean equality count (see env's
+    # _compute_reward_terms ``ref/contact_match`` block) which has no sigma.
+    # Field retained at the legacy default in case older v0.20.x configs
+    # reference it; the v3 env path does not read it.
+    ref_contact_match_sigma: float = 0.5
     cmd_forward_velocity_alpha: float = 4.0
 
     # NOTE: ``slip`` and ``pitch_rate`` already exist above (legacy v0.19.5x

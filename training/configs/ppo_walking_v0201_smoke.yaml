@@ -303,16 +303,24 @@ reward_weights:
   #     frame penalty on body sway through each gait phase.
   lin_vel_z: 1.0
   ang_vel_xy: 2.0
-  # v0.20.2 smoke6: re-enable the discrete phase-anchor reward.  Smoke3
-  # documented the graduation policy: start at small weight (0.5) once the
-  # contact baseline is no longer "structured noise."  Smoke5 final
-  # ref/contact_phase_match=0.67 — well above zero with a real gradient,
-  # so the term is no longer noise even though it's not at the original
-  # 0.90 strict bar.  The Gaussian shape (sigma=0.5) is forgiving enough
-  # that imperfect phase alignment still pulls in the right direction.
-  # TB uses a hard boolean at weight 1.0; weight 0.5 is the conservative
-  # WR-side equivalent.
-  ref_contact_match: 0.5
+  # v0.20.2 smoke6: re-enable the discrete phase-anchor reward, switching
+  # to TB's boolean form (sum(stance_mask == ref_stance_mask), per-step
+  # value 0/1/2).  See env's _compute_reward_terms ref/contact_match block.
+  # Reasoning: a code review caught two issues with the smoke5-prep1 plan
+  # to enable the legacy Gaussian at weight 0.5:
+  #   1. Doc/code mismatch on the Gaussian kernel formula (docs say
+  #      exp(-x^2/sigma^2), code uses exp(-x^2/(2*sigma^2))).
+  #   2. The graduation policy in walking_training.md G3 says re-enable
+  #      first at 0.02, then 0.10 once the contact-alignment probe passes
+  #      the 0.90 bar.  Setting weight 0.5 jumped 25x past the documented
+  #      re-entry without re-running the probe.
+  # Both are resolved by switching to TB's boolean form at TB's weight
+  # 1.0: no Gaussian kernel (no doc/code conflict), no WR-specific sigma,
+  # strictly TB-aligned.  TB demonstrates this works empirically on a
+  # similar small biped, so the original "boolean has no gradient"
+  # concern is over-cautious — gradient flows through the policy's
+  # continuous joint targets to the foot trajectory.
+  ref_contact_match: 1.0
   cmd_forward_velocity_track: 5.0
   action_rate: -1.0
   torque: -0.001

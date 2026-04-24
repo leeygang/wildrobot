@@ -859,16 +859,20 @@ Smoke contract:
     - `ref/torso_pos_xy` (smoke4 onward — body-position parity with TB
       `_reward_torso_pos_xy`; smoke YAML α=90)
     - `ref/lin_vel_z` (smoke6 onward — TB-aligned vertical body velocity
-      tracking.  Continuous phase signal.  Reference computed from
-      finite-diff of prior `pelvis_pos[2]` per Appendix A.3 G2 decision.)
+      tracking.  Continuous phase signal.  Actual rotated to true
+      body-local via `inv(root_quat)`; reference computed from
+      finite-diff of prior `pelvis_pos[2]` per Appendix A.3 G2.)
     - `ref/ang_vel_xy` (smoke6 onward — TB-aligned body roll/pitch
       angular velocity.  Continuous phase signal.  Reference is zero
       because the yaw-stationary prior has no pitch/roll oscillation —
       term reduces to penalizing body sway during each gait phase.)
-    - `ref/contact_phase_match` (smoke6 onward — re-enabled at weight
-      0.5; previously gated to 0 since smoke3 contact-alignment probe.
-      Discrete event anchor for gait phase at touchdown/takeoff
-      transitions; closes the TB-vs-WR delta on phase-related rewards.)
+    - `ref/contact_phase_match` (smoke6 onward — TB boolean equality
+      count, re-enabled at TB weight 1.0; previously gated to 0 since
+      smoke3 with a WR-specific Gaussian shape.  Switched to TB form
+      `sum(stance_mask == ref_stance_mask)` to resolve a doc/code
+      mismatch on the Gaussian kernel formula and to align strictly
+      with TB.  Discrete event anchor for gait phase at
+      touchdown/takeoff transitions.)
     - `ref/site_track`
     - `ref/body_lin_vel_track`
     - `ref/body_ang_vel_track`
@@ -907,37 +911,38 @@ Smoke contract:
       directly with better fidelity than finite-diff, or if the smoke
       shows velocity-tracking reward gradients are noisy at the
       finite-diff numerical-derivative quality
-  - **G3 — `ref/contact_phase_match` definition**:
-    - smooth match per foot per step, summed:
-      - `r = 0.5 * (gauss(L_cmd_contact - L_actual_contact, σ)
-                    + gauss(R_cmd_contact - R_actual_contact, σ))`
-      - where `gauss(x, σ) = exp(-x² / σ²)`
+  - **G3 — `ref/contact_phase_match` definition** (smoke6 onward):
+    - boolean equality count per foot, matching ToddlerBot's
+      `_reward_feet_contact` exactly:
+      - `r = sum(stance_mask == ref_stance_mask)` ∈ `{0, 1, 2}`
       - `cmd_contact ∈ {0, 1}` from `traj.contact_mask`
       - `actual_contact ∈ {0, 1}` from MuJoCo foot-floor contact
-      - default `σ = 0.5` so the gradient stays smooth across the 0↔1
-        transition without dominating the other ref/* terms
-    - rationale: hard Heaviside has no gradient on misalignment; smooth
-      Gaussian gives a well-behaved imitation signal even when the policy's
-      contact timing is slightly off the prior's schedule
-    - **smoke-stage disposition**:
-      - the zero-action contact-alignment probe is the gate for whether this
-        term is allowed into the smoke reward
-      - if the probe baseline is below the acceptance bar
-        (`mean ref/contact_phase_match < 0.90` or mismatch streak `> 5`),
-        set `reward_weights.ref_contact_match = 0.0` for the smoke
-      - still log:
-        - `reward/ref_contact_match`
-        - `ref/contact_phase_match`
-        - the contact-alignment probe output
-      - rationale: a known-misaligned contact schedule is structured reward
-        noise, not helpful shaping; the smoke should validate prior +
-        residual + core imitation tracking first, not spend compute fighting a
-        noisy contact target
-      - re-enable policy:
-        - after the probe passes cleanly, restore `ref_contact_match` at a
-          small weight first (`0.02`), keep `σ = 0.5`
-        - only return to the nominal `0.10` weight once the probe remains
-          clean and training no longer shows gait-drift pressure
+      - per-step value 0/1/2; multiplied by reward weight then `dt`.
+    - The diagnostic `ref/contact_phase_match` continues to log a
+      0..1-normalized fraction (`r / 2`) so smoke3-5 logs remain
+      qualitatively comparable.
+    - rationale: TB demonstrates this boolean form works empirically on
+      a similar small biped — the gradient flows through the policy's
+      continuous joint targets to the foot trajectory, and small action
+      shifts cross the binary contact threshold differently.  Earlier
+      smokes used a WR-specific Gaussian shape (`exp(-x²/(2σ²))` with
+      σ=0.5) out of an over-cautious "boolean has no gradient" concern,
+      which created two issues: (1) the doc spec wrote a different
+      formula (`exp(-x²/σ²)`) than the code implemented, and (2) the
+      WR-specific Gaussian + sigma was a divergence from TB without
+      concrete justification.  Switching to TB's form resolves both.
+    - **smoke6 disposition**:
+      - enabled at TB's weight 1.0 (previously gated to 0).
+      - the original smoke-stage gate (`mean ref/contact_phase_match
+        < 0.90` → weight 0) was written for the Gaussian form and
+        argued that a known-misaligned contact schedule was "structured
+        reward noise."  With TB's boolean form at TB's weight, we are
+        explicitly choosing TB-alignment over the WR-specific
+        graduation policy, on the rationale that TB's empirical track
+        record on a similar robot is stronger evidence than WR's a
+        priori noise concern.  If smoke6 shows the contact term
+        actively hurting (e.g., contact_phase_match drops below smoke5
+        baseline 0.67 with no other gain), revisit.
 
 Tasks:
 
@@ -1372,10 +1377,10 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `torso_roll` (soft, gate `[-0.1, 0.1]`) | 0.5 | — | **add 0.5** |
 | `torso_pitch` (soft, gate `[-0.2, 0.2]`) | 0.5 | — | **add 0.5** |
 | `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0 | 0.30 | 5.0 |
-| `lin_vel_z` | 1.0 | — | **smoke6: 1.0** (vertical body bobbing — TB-aligned continuous phase signal; ref from finite-diff of prior `pelvis_pos[2]` per A.3 G2) |
-| `ang_vel_xy` | 2.0 | — | **smoke6: 2.0** (body roll/pitch rate — TB-aligned continuous phase signal; ref is zero for yaw-stationary prior) |
+| `lin_vel_z` | 1.0 | — | **smoke6: 1.0** (vertical body bobbing — TB-aligned continuous phase signal; actual rotated to true body-local via `inv(root_quat)` matching TB; ref is finite-diff of prior `pelvis_pos[2]` per A.3 G2 — equals body-local for our yaw-stationary prior since pelvis quat is identity throughout) |
+| `ang_vel_xy` | 2.0 | — | **smoke6: 2.0** (body roll/pitch rate — TB-aligned continuous phase signal; ref is zero for yaw-stationary prior; actual is `gyro_rad_s[:2]` which is already body-frame in MuJoCo, no rotation needed) |
 | `ang_vel_z` | 5.0 | — | defer (smoke has no yaw cmd) |
-| `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (gated, Gaussian) | **smoke6: 0.5** (Gaussian σ=0.5; conservative WR-side equivalent of TB's boolean weight 1.0; provides discrete event-anchor for gait phase synchronization) |
+| `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (Gaussian, gated through smoke5) | **smoke6: 1.0 boolean** (TB form `sum(stance_mask == ref_stance_mask)` ∈ {0,1,2}; smoke3-5 used WR-specific Gaussian with σ=0.5 + doc/code mismatch on the kernel formula; switching to TB form resolves both and aligns strictly with TB) |
 | `feet_air_time` | 500.0 | — | **add 500.0** (cmd-gated) |
 | `feet_clearance` | 1.0 | — | **add 1.0** (cmd-gated) |
 | `feet_distance` (`min=0.07`, `max=0.13`) | 1.0 | — | **add 1.0** |

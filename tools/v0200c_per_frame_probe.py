@@ -59,6 +59,22 @@ def _quat_to_pitch(qw: float, qx: float, qy: float, qz: float) -> float:
                             1 - 2 * (qx ** 2 + qy ** 2)))
 
 
+def _quat_to_rotmat(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
+    """Return the 3x3 rotation matrix R such that ``world_v = R @ body_v``.
+    Inverse (world -> body) is R.T."""
+    return np.array(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw),
+             2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz),
+             2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw),
+             1 - 2 * (qx * qx + qy * qy)],
+        ],
+        dtype=np.float64,
+    )
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--vx", type=float, default=0.15)
@@ -68,6 +84,24 @@ def main() -> int:
         type=float,
         default=200.0,
         help="Alpha for torso_pos_xy raw reward exp(-alpha * err^2)",
+    )
+    p.add_argument(
+        "--lin-vel-z-alpha",
+        type=float,
+        default=200.0,
+        help=(
+            "Alpha for lin_vel_z raw reward exp(-alpha * (vz - ref_vz)^2). "
+            "TB lin_vel_tracking_sigma=200 default."
+        ),
+    )
+    p.add_argument(
+        "--ang-vel-xy-alpha",
+        type=float,
+        default=0.5,
+        help=(
+            "Alpha for ang_vel_xy raw reward exp(-alpha * (gyro_x^2 + gyro_y^2)). "
+            "TB ang_vel_tracking_sigma=0.5 default."
+        ),
     )
     p.add_argument("--csv", type=str, default="/tmp/v0200c_probe.csv")
     p.add_argument("--scene", type=str,
@@ -127,11 +161,17 @@ def main() -> int:
         pelvis_id = 1
 
     n_steps = traj.q_ref.shape[0]
+    ctrl_dt = float(traj.dt)
 
     # Anchor the trajectory's frame: the prior is in trajectory-local
     # coordinates (cycle 0 starts at x=0).  After the keyframe init +
     # ramp, the body sits near the world origin.  We log raw values so
     # the user can compare deltas directly.
+    prev_prior_pelv_z = (
+        float(traj.pelvis_pos[0, 2])
+        if traj.pelvis_pos is not None
+        else float("nan")
+    )
     rows: list[dict] = []
     for step_idx in range(args.horizon):
         idx = min(step_idx, n_steps - 1)
@@ -171,6 +211,37 @@ def main() -> int:
             np.exp(-float(args.torso_alpha) * torso_pos_xy_err_m * torso_pos_xy_err_m)
         )
 
+        # ---- v0.20.2 smoke6 lin_vel_z + ang_vel_xy alive bands -----------
+        # lin_vel_z (TB-aligned): rotate world velocity by inv(root_quat)
+        # to true body-local; reference is finite-diff of prior pelvis_z.
+        world_lin_vel = np.array(data.qvel[0:3], dtype=np.float64)
+        R_world_from_body = _quat_to_rotmat(*data.qpos[3:7])
+        body_lin_vel = R_world_from_body.T @ world_lin_vel
+        body_lin_vel_z = float(body_lin_vel[2])
+        prior_pelv_z_now = (
+            float(traj.pelvis_pos[idx, 2])
+            if traj.pelvis_pos is not None
+            else float("nan")
+        )
+        ref_lin_vel_z = (prior_pelv_z_now - prev_prior_pelv_z) / ctrl_dt
+        prev_prior_pelv_z = prior_pelv_z_now
+        lin_vel_z_err = body_lin_vel_z - ref_lin_vel_z
+        lin_vel_z_raw = float(
+            np.exp(-float(args.lin_vel_z_alpha) * lin_vel_z_err * lin_vel_z_err)
+        )
+
+        # ang_vel_xy: gyro is body-frame in MuJoCo (qvel[3:6] for free joint).
+        # Reference is zero for the yaw-stationary prior, so penalty is just
+        # ||body_angular_velocity_xy||^2.
+        body_ang_vel = np.array(data.qvel[3:6], dtype=np.float64)
+        ang_vel_xy_sq_sum = float(
+            body_ang_vel[0] * body_ang_vel[0]
+            + body_ang_vel[1] * body_ang_vel[1]
+        )
+        ang_vel_xy_raw = float(
+            np.exp(-float(args.ang_vel_xy_alpha) * ang_vel_xy_sq_sum)
+        )
+
         rows.append({
             "step": step_idx,
             "phase": float(traj.phase[idx]) if traj.phase is not None else 0.0,
@@ -185,6 +256,10 @@ def main() -> int:
             "actual_pelv_z": actual_pelv_z,
             "torso_pos_xy_err_m": torso_pos_xy_err_m,
             "torso_pos_xy_raw": torso_pos_xy_raw,
+            "lin_vel_z_err_m_s": lin_vel_z_err,
+            "lin_vel_z_raw": lin_vel_z_raw,
+            "ang_vel_xy_rad_s": float(np.sqrt(ang_vel_xy_sq_sum)),
+            "ang_vel_xy_raw": ang_vel_xy_raw,
             "pitch": pitch,
             "prior_stance_x": prior_stance_x,
             "actual_stance_x": actual_stance_x,
@@ -249,6 +324,44 @@ def main() -> int:
     if first_50:
         min_raw_50 = min(float(r["torso_pos_xy_raw"]) for r in first_50)
         print(f"  min raw reward over steps 0..50: {min_raw_50:.6f}")
+
+    # v0.20.2 smoke6: lin_vel_z calibration summary.
+    print(
+        f"\nlin_vel_z probe (alpha={args.lin_vel_z_alpha:.1f}): "
+        "step -> err_m_s, raw_reward"
+    )
+    for s in sample_steps:
+        r = by_step.get(s)
+        if r is None:
+            print(f"  step {s:>3}: n/a")
+        else:
+            print(
+                f"  step {s:>3}: "
+                f"err={r['lin_vel_z_err_m_s']:+.4f} m/s, "
+                f"raw={r['lin_vel_z_raw']:.6f}"
+            )
+    if first_50:
+        min_lvz_raw_50 = min(float(r["lin_vel_z_raw"]) for r in first_50)
+        print(f"  min raw reward over steps 0..50: {min_lvz_raw_50:.6f}")
+
+    # v0.20.2 smoke6: ang_vel_xy calibration summary.
+    print(
+        f"\nang_vel_xy probe (alpha={args.ang_vel_xy_alpha:.2f}): "
+        "step -> ||gyro_xy||_rad_s, raw_reward"
+    )
+    for s in sample_steps:
+        r = by_step.get(s)
+        if r is None:
+            print(f"  step {s:>3}: n/a")
+        else:
+            print(
+                f"  step {s:>3}: "
+                f"|gyro_xy|={r['ang_vel_xy_rad_s']:.4f} rad/s, "
+                f"raw={r['ang_vel_xy_raw']:.6f}"
+            )
+    if first_50:
+        min_avxy_raw_50 = min(float(r["ang_vel_xy_raw"]) for r in first_50)
+        print(f"  min raw reward over steps 0..50: {min_avxy_raw_50:.6f}")
     return 0
 
 
