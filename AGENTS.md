@@ -9,6 +9,10 @@ Design:
 3. keep the design simple
 4. current design and implementations follows ToddlerBot(projects/ToddlerBot), if we have our own design or implementation, we should have explicit rationale.
 
+Result Analysis:
+1. When analyze training result, always check with the code as source of truth instead of only reading the doc.
+2. Need to find the solid evidence instead of guess.
+3. Align with ToddlerBot when analyze and solve the problem unless explicit reason not.
 
 Result:
 1. Update the training result to CHANGELOG.md, if the CHANGELOG.md file is too big, you can create a new CHANGELOG.md file and link it in README.md.
