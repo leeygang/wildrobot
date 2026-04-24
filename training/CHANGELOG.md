@@ -6,6 +6,89 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke6-prep3] - 2026-04-24: YAML loader fix + round-trip test + roadmap update
+
+### Context
+
+Smoke6 (`offline-run-20260423_213122-v1kclz2w`) was a null run.  The YAML loader
+at `training/configs/training_config.py:_parse_reward_weights_config` silently
+dropped the `lin_vel_z` and `ang_vel_xy` weights set by smoke6's YAML — both fell
+through to the dataclass default of 0.0, so the smoke6 thesis (TB-aligned
+phase signals) was never tested.  Direct reproduction:
+
+```
+$ uv run python -c "from training.configs.training_config import load_training_config; \
+    cfg = load_training_config('training/configs/ppo_walking_v0201_smoke.yaml'); \
+    print(cfg.reward_weights.lin_vel_z, cfg.reward_weights.ang_vel_xy, cfg.reward_weights.ref_contact_match)"
+0.0 0.0 1.0
+```
+
+YAML says `1.0, 2.0, 1.0`.  `ref_contact_match` is at line 698 of the loader and
+loaded correctly; `lin_vel_z` and `ang_vel_xy` are missing from the loader.
+
+### Changes
+
+1. **`training/configs/training_config.py:_parse_reward_weights_config`**:
+   add `lin_vel_z`, `ang_vel_xy`, `lin_vel_z_alpha`, `ang_vel_xy_alpha` to the
+   `RewardWeightsConfig(...)` constructor with the same defaults as the
+   dataclass (`0.0`, `0.0`, `200.0`, `0.5`).
+2. **`tests/test_config_load_smoke6.py`** (new): load
+   `ppo_walking_v0201_smoke.yaml`, walk every key under `reward_weights:` and
+   `env:`, assert each round-trips through the loader to the matching dataclass
+   field.  Catches this class of bug (silent drop on YAML keys not enumerated
+   by the loader) at config-load time, before any training compute is spent.
+3. **`training/docs/walking_training.md`**:
+   - **M1 fail-mode tree:** add the **shuffle exploit** branch (forward_velocity
+     + G5 + balance pass, but stride parks short).  Documented action: do NOT
+     add another reward term; promote the next deferred TB curriculum lever.
+   - **M1 shuffle-exploit context section:** add the TB analytical stride
+     derivation (`stride_per_step ≈ vx · cycle_time / 2 = 0.054 m at vx=0.15`,
+     citing `toddlerbot/algorithms/zmp_walk.py:258` and
+     `toddlerbot/locomotion/mjx_config.py:98`).  Confirms the WR G4 gate of
+     0.030 m is reasonable (~56% of TB's expected stride at the same command).
+   - **`v0.20.1-smoke6-prep3` milestone:** loader fix + re-run unchanged;
+     decision rule for the re-run.
+   - **`v0.20.1-smoke7` milestone (planned):** promote multi-cmd resample +
+     `zero_chance` + `deadzone` (vx range `[0.0, 0.20]`, no DR yet, no yaw).
+     This is the TB anti-shuffle lever.  Decision rule for what comes after
+     smoke7 (success → v0.20.2 DR; failure → DR + multi-cmd jointly OR prior
+     surgery, distinguished by per-foot stride / per-vx-bin readouts).
+
+### Why this sequence
+
+- The four smokes (3/4/5/6) tested four different reward-only interventions and
+  none moved stride.  The reward-only space is empty for the shuffle problem.
+- TB has the same reward family and TB doesn't shuffle.  The structural
+  difference is the curriculum (multi-cmd + DR), not the reward.
+- Per CLAUDE.md "follow ToddlerBot before WR-specific design," promote the
+  TB curriculum mechanisms next, not another WR-specific reward addition.
+
+### What we are NOT doing in smoke6-prep3
+
+- Not yet recalibrating `lin_vel_z_alpha` / `ang_vel_xy_alpha`.  The
+  smoke6-prep2 commitment to recalibrate was conditional on observing dead
+  terms with weights actually applied.  We don't have that evidence yet —
+  the terms had weight 0.  Recalibration only makes sense if the loader-fixed
+  re-run shows the terms are still dead with the weights enabled.
+- Not yet enabling multi-cmd / DR / yaw.  Those are smoke7 / v0.20.2 / v0.20.4
+  scope.  Keep smoke6-prep3 surgical: one bug fix, one rerun.
+- Not promoting prior surgery.  The probe shows the prior delivers usable
+  stride and the policy chooses not to track it; curriculum is a strictly
+  less invasive intervention than re-engineering the prior.
+
+### Verification
+
+- `tests/test_config_load_smoke6.py` passes (catches the bug before the fix,
+  passes after).
+- `tests/test_v0201_env_zero_action.py` 7/7 pass (G6 invariant intact).
+- Direct reproduction:
+  ```
+  $ uv run python -c "from training.configs.training_config import load_training_config; \
+      cfg = load_training_config('training/configs/ppo_walking_v0201_smoke.yaml'); \
+      print(cfg.reward_weights.lin_vel_z, cfg.reward_weights.ang_vel_xy, cfg.reward_weights.ref_contact_match)"
+  1.0 2.0 1.0
+  ```
+
 ## [v0.20.1-smoke6] - 2026-04-23: NULL RUN — YAML loader silently dropped lin_vel_z + ang_vel_xy weights
 
 ### Run

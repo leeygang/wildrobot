@@ -1121,6 +1121,161 @@ M2 compute budget), the next action depends on which gate failed:
 - mixed / unclear failure
   → defer to manual diagnosis with the per-frame probe and the eval
     rollout video before deciding next milestone
+- **shuffle exploit** (added 2026-04-24 after smoke3/4/5/6 evidence):
+  `forward_velocity` reaches gate, G5 passes, balance is fine, but
+  `tracking/step_length_touchdown_event_m` parks well below the 0.030 m
+  gate (typical 0.018-0.022 m, ~33-44% of the prior's 0.054 m nominal).
+  Per-foot stride is bilaterally short, not one-sided.  PPO satisfies
+  cmd_vx via micro-cadence rather than tracking the prior's foothold
+  geometry.  Action: **do NOT add another imitation reward term**.  Four
+  smokes (3/4/5/6) ruled out reward-only fixes.  TB has the same reward
+  family and avoids shuffle via the training curriculum (multi-cmd
+  resample + zero_chance + DR), not a stride-amplitude reward.  Promote
+  the next deferred TB curriculum mechanism (smoke7 below).
+
+**M1 — shuffle-exploit context (the missing TB lever)**:
+
+The shuffle exploit is the dominant single-point failure mode through
+smoke6.  It is structural to single-point training without
+domain randomization, not a reward-shape problem.  TB's recipe avoids it
+via:
+
+- **Multi-velocity sampling** (`vx ∈ [-0.2, 0.3]`, `resample_time = 3.0
+  s`).  At vx=0.3 the body's max stepping cadence is exceeded by what
+  cadence-only would require, **forcing** stride extension.  Once
+  learned for high vx, the long-stride basin carries down to lower
+  commands within the same policy.
+- **`zero_chance = 0.2` + `deadzone = [0.05, 0.05, 0.2]`** gates the
+  cadence reward (`feet_air_time *= ||cmd|| > 1e-6`,
+  `walk_env.py:302`).  20% of episodes have cmd≈0 → policy must learn
+  that shuffling without a command pays nothing.  Breaks the "always
+  shuffle" basin from the low-cmd end.
+- **Domain randomization** (backlash, friction, kp, push_torso) makes
+  micro-shuffles fragile (small steps amplify backlash and can't recover
+  from pushes); long stride is more disturbance-robust.
+
+**TB stride evidence at vx=0.15** (analytical, from
+`toddlerbot/algorithms/zmp_walk.py:258`):
+
+```
+stride_per_step ≈ vx × cycle_time / 2
+                = 0.15 × 0.72 / 2
+                = 0.054 m
+```
+
+(`cycle_time = 0.72 s` from `toddlerbot/locomotion/mjx_config.py:98`.)
+
+WildRobot's prior at vx=0.15 delivers 0.045-0.053 m steady-state per
+`tools/v0200c_per_frame_probe.py --vx 0.15` — same design point.  The
+G4 gate `≥ 0.030 m` is ~56% of this nominal — a soft "must track at
+least half the prior" gate, not strict equality.  TB walks visibly on
+hardware (per TB README) so TB's PPO must clear this gate at vx=0.15
+within its multi-cmd training distribution.  The G4 gate is correct;
+the prior delivers the stride; the curriculum is the load-bearing
+missing piece.
+
+### `v0.20.1-smoke6-prep3` Loader fix + actually-test smoke6
+
+Status: **active**
+
+Smoke6 (`offline-run-20260423_213122-v1kclz2w`) was a **null run**.  A
+YAML loader bug in
+`training/configs/training_config.py:_parse_reward_weights_config`
+silently dropped the `lin_vel_z` and `ang_vel_xy` weights set in the
+smoke YAML — both fell through to the dataclass default of 0.0, so the
+TB phase-signal hypothesis was never tested.  Only `ref_contact_match`
+(boolean, w=1.0) was actually enabled; the "stride still fails" outcome
+is essentially smoke5 + an inert boolean contact bonus.
+
+Tasks:
+
+1. Fix `_parse_reward_weights_config`: add
+   `lin_vel_z=rewards.get("lin_vel_z", 0.0)`,
+   `ang_vel_xy=rewards.get("ang_vel_xy", 0.0)`,
+   `lin_vel_z_alpha=rewards.get("lin_vel_z_alpha", 200.0)`,
+   `ang_vel_xy_alpha=rewards.get("ang_vel_xy_alpha", 0.5)`.
+2. Add `tests/test_config_load_smoke6.py`: load the smoke YAML, assert
+   every key under `reward_weights:` round-trips to the dataclass field
+   with the same value.  Catches this class of bug at config-load time
+   instead of at training-time-result interpretation.
+3. Re-run smoke6 unchanged.
+
+Decision rule after the re-run:
+
+- if `reward/lin_vel_z` and `reward/ang_vel_xy` are alive at
+  training-time and stride moves → smoke6 succeeds late; promote.
+- if both terms are alive but stride is still parked → smoke6
+  hypothesis falsified; phase signals are not the missing piece;
+  proceed to smoke7 (multi-cmd curriculum).
+- if either term is dead at training-time err scale → recalibrate α
+  per the smoke6-prep2 commitment, single rerun.
+
+### `v0.20.1-smoke7` Promote multi-cmd curriculum (TB anti-shuffle lever)
+
+Status: planned.  Conditional on smoke6-prep3 falsifying the
+phase-signal hypothesis OR confirming it works without solving the
+shuffle by itself.
+
+Scope:
+
+- enable WR's already-wired-but-inert multi-cmd plumbing in the smoke
+  YAML:
+  - `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB default)
+  - `cmd_zero_chance: 0.2` (TB default)
+  - `cmd_deadzone: [0.05, 0.05, 0.2]` (TB default)
+  - vx range: `[0.0, 0.20]` (start narrower than TB's `[-0.2, 0.3]`;
+    no negative cmd, no yaw cmd, no DR — isolate the multi-cmd lever
+    from the other deferred mechanisms).
+- everything else identical to the smoke6-prep3 result.
+
+Why this and not "another reward term":
+
+- Per CLAUDE.md "follow ToddlerBot before WR-specific design": multi-cmd
+  + `zero_chance` is part of the TB recipe, not a WR-specific addition.
+  We have not yet exhausted the TB recipe.
+- TB has the same reward family and TB doesn't shuffle.  The structural
+  difference is the curriculum.
+- The four-smoke pattern (smoke3/4/5/6) has falsified the
+  "reward-only fix" search space.
+
+Hypothesis:
+
+- at the high end of the vx range (vx=0.20) the body's max sustainable
+  cadence is exceeded; PPO is forced to extend stride.
+- once the long-stride basin is learned, it persists at vx=0.15 within
+  the same policy (cf. TB on a similar small biped).
+- `Evaluate/step_length_touchdown_event_m at vx=0.15 ≥ 0.030 m`
+  becomes the gate.
+
+Pre-smoke checks:
+
+- existing smoke YAML round-trip test still passes (catch loader drift
+  for the new `cmd_*` keys if any).
+- zero-action probe at the high cmd point (vx=0.20) — confirm the prior
+  can be replayed there at all; if the prior collapses immediately,
+  the hypothesis is moot until the prior is extended.
+- check WR's `cmd_resample_steps` plumbing does in fact resample (the
+  field is wired but historically defaulted to 0 in smoke).
+
+Decision rule after smoke7:
+
+- stride at vx=0.15 ≥ 0.030 m → TB curriculum hypothesis confirmed;
+  promote to v0.20.2 (add DR).
+- stride still parked → multi-cmd alone is insufficient.  Two
+  candidates: (a) DR is co-load-bearing — promote to v0.20.2 jointly;
+  (b) prior is the actual blocker — return to v0.20.0-x prior surgery.
+  Read the per-foot stride asymmetry and per-vx-bin stride to
+  distinguish.
+
+What we will NOT do in smoke7:
+
+- not enable DR (defer to v0.20.2 — keep the diagnostic clean).
+- not enable yaw cmd (defer to v0.20.4).
+- not add stride-amplitude reward terms (TB doesn't have one; smoke3-6
+  ruled out the reward space).
+- not widen the residual bound past ±0.25 rad (G5 has ample headroom;
+  not the bottleneck).
+- not relax G5.
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
 
