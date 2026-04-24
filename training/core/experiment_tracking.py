@@ -105,8 +105,6 @@ REWARD_TERM_KEYS = [
     "reward/ref_q_track",
     "reward/ref_body_quat_track",
     "reward/torso_pos_xy",
-    # v0.20.2: body-frame Euclidean foothold imitation.
-    "reward/ref_foot_pos_body",
     # v0.20.2 smoke6: TB-aligned continuous phase signals.
     "reward/lin_vel_z",
     "reward/ang_vel_xy",
@@ -194,11 +192,6 @@ ENV_METRICS_KEYS = {
     "reward/ref_q_track": "Joint-target tracking exp(-alpha*sum((q-q_ref)^2))",
     "reward/ref_body_quat_track": "Pelvis orientation tracking exp(-alpha*angle^2)",
     "reward/torso_pos_xy": "Torso XY tracking exp(-alpha*||torso_xy-ref_xy||^2)",
-    # v0.20.2: body-frame Euclidean foothold imitation.
-    "reward/ref_foot_pos_body": (
-        "Body-frame Euclidean foothold imitation "
-        "exp(-alpha*(||err_l_body||^2 + ||err_r_body||^2))"
-    ),
     # v0.20.2 smoke6: TB-aligned continuous phase signals.
     "reward/lin_vel_z": (
         "TB lin_vel_z tracking exp(-alpha*(vz - ref_vz)^2); "
@@ -216,9 +209,6 @@ ENV_METRICS_KEYS = {
     "ref/feet_pos_err_l2": "L2 foot-pos error (root-relative, summed L+R) in m",
     "ref/feet_pos_track_raw": "Legacy feet-pos tracking score exp(-200*||e_feet||^2)",
     "ref/torso_pos_xy_err_m": "Torso XY position error norm vs reference pelvis (m)",
-    # v0.20.2: per-foot body-frame foot-vs-pelvis offset diagnostics.
-    "ref/foot_pos_body_err_l_m": "Body-frame Euclidean L foot-vs-pelvis offset error (m)",
-    "ref/foot_pos_body_err_r_m": "Body-frame Euclidean R foot-vs-pelvis offset error (m)",
     # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
     "ref/lin_vel_z_err_m_s": "|vz - ref_vz| (m/s); paired with reward/lin_vel_z",
     "ref/ang_vel_xy_err_rad_s": (
@@ -474,10 +464,6 @@ def get_initial_env_metrics(
         "reward/ref_q_track": 0.0,
         "reward/ref_body_quat_track": 0.0,
         "reward/torso_pos_xy": 0.0,
-        # v0.20.2: body-frame Euclidean foothold imitation + per-foot diagnostics.
-        "reward/ref_foot_pos_body": 0.0,
-        "ref/foot_pos_body_err_l_m": 0.0,
-        "ref/foot_pos_body_err_r_m": 0.0,
         # v0.20.2 smoke6: TB-aligned continuous phase signals + diagnostics.
         "reward/lin_vel_z": 0.0,
         "reward/ang_vel_xy": 0.0,
@@ -664,10 +650,6 @@ def get_initial_env_metrics_jax(
         "reward/ref_q_track": jp.zeros(()),
         "reward/ref_body_quat_track": jp.zeros(()),
         "reward/torso_pos_xy": jp.zeros(()),
-        # v0.20.2: body-frame Euclidean foothold imitation + per-foot diagnostics.
-        "reward/ref_foot_pos_body": jp.zeros(()),
-        "ref/foot_pos_body_err_l_m": jp.zeros(()),
-        "ref/foot_pos_body_err_r_m": jp.zeros(()),
         # v0.20.2 smoke6: TB-aligned continuous phase signals + diagnostics.
         "reward/lin_vel_z": jp.zeros(()),
         "reward/ang_vel_xy": jp.zeros(()),

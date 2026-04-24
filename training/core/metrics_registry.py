@@ -1433,15 +1433,6 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Torso XY tracking exp(-alpha*||torso_xy-ref_xy||^2)",
     ),
     MetricSpec(
-        name="reward/ref_foot_pos_body",
-        reducer=Reducer.MEAN,
-        description=(
-            "v0.20.2 body-frame foothold imitation: "
-            "exp(-alpha*(||err_l_body||^2 + ||err_r_body||^2)); "
-            "replaces the deleted world-frame summed-squares term"
-        ),
-    ),
-    MetricSpec(
         name="reward/lin_vel_z",
         reducer=Reducer.MEAN,
         description=(
@@ -1531,24 +1522,6 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="ref",
         description="Torso XY position error norm vs reference pelvis (m)",
-    ),
-    MetricSpec(
-        name="ref/foot_pos_body_err_l_m",
-        reducer=Reducer.MEAN,
-        log_prefix="ref",
-        description=(
-            "v0.20.2 body-frame Euclidean foot-vs-pelvis offset error, "
-            "left foot (m)"
-        ),
-    ),
-    MetricSpec(
-        name="ref/foot_pos_body_err_r_m",
-        reducer=Reducer.MEAN,
-        log_prefix="ref",
-        description=(
-            "v0.20.2 body-frame Euclidean foot-vs-pelvis offset error, "
-            "right foot (m)"
-        ),
     ),
     MetricSpec(
         name="ref/lin_vel_z_err_m_s",

@@ -291,16 +291,6 @@ reward_weights:
   ref_q_track: 5.0
   ref_body_quat_track: 5.0
   torso_pos_xy: 2.0
-  # v0.20.2 smoke6: drop ref_foot_pos_body — smoke5 verdict.  The body-frame
-  # Euclidean foothold metric was DEAD throughout smoke5 training
-  # (reward/ref_foot_pos_body=0.0 from iter 1 to 150) because the actual
-  # training-time per-foot err (~0.7 m) was 5-7x larger than the open-loop
-  # probe predicted (~0.1 m).  Smoke3 already proved that lowering alpha to
-  # bring it alive doesn't help: the metric is phase-sensitive and pulls in
-  # the wrong direction when actual gait phase != prior gait phase.  The
-  # foothold reward is dropped; per-foot diagnostic err continues to log
-  # (env's reward_terms still computes ref_foot_pos_body_err_l/r_m).
-  ref_foot_pos_body: 0.0
   # v0.20.2 smoke6: TB-aligned continuous phase signals (walk.gin).  Together
   # with re-enabled ref_contact_match below, these close the TB-vs-WR delta
   # on phase-related rewards (walking_training.md Appendix A.3).
@@ -362,17 +352,6 @@ reward_weights:
   # step10=0.987, step30=0.448, step50=0.051.
   # Restore toward 200 after prior-drift cleanup in v0.20.2.
   torso_pos_xy_alpha: 90.0
-  # v0.20.2: body-frame foothold kernel.  TB pos default is 200; calibrated
-  # downward to alpha=100 by the v0200c probe at vx=0.15.  At alpha=200
-  # the iter-0 raw reward dies in the prior's accel ramp
-  # (step50 raw=0.006, min over 0..50 = 0.002 — fails the 0.05 alive bar).
-  # At alpha=100 the kernel keeps a usable gradient: step10=0.239,
-  # step30=0.185, step50=0.075, with one ~3-step transient dip to ~0.046
-  # around step 44.  Smallest divergence from TB that keeps cm-scale
-  # selection pressure alive through the prior's accel ramp.  Restore
-  # toward 200 if/when the prior is regenerated with reduced open-loop
-  # foot-vs-pelvis drift.
-  ref_foot_pos_body_alpha: 100.0
 
 # =============================================================================
 # Reward Composition

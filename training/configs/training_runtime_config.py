@@ -707,14 +707,6 @@ class RewardWeightsConfig(Freezable):
     ref_q_track: float = 0.0
     ref_body_quat_track: float = 0.0
     torso_pos_xy: float = 0.0
-    # v0.20.2: body-frame Euclidean foothold imitation (replaces the deleted
-    # world-frame ``r_feet_track_raw`` reward).  Per-foot inverse-rotated
-    # actual foot-vs-pelvis offset L2'd against the prior's already-body-
-    # frame foot-vs-pelvis offset; same DeepMimic kernel as torso_pos_xy.
-    # Default 0 keeps non-smoke configs unaffected.  smoke5 set this to 2.0
-    # but the term was dead at training-time error scale; smoke6 drops back
-    # to 0 (kept as logged diagnostic via env's reward_terms dict).
-    ref_foot_pos_body: float = 0.0
     # v0.20.2 smoke6: TB-aligned continuous phase signals from walk.gin.
     # ``lin_vel_z`` tracks vertical pelvis velocity vs the prior's bobbing
     # (finite-diff of stored pelvis_pos[2]); ``ang_vel_xy`` tracks body
@@ -735,9 +727,6 @@ class RewardWeightsConfig(Freezable):
     ref_q_track_alpha: float = 1.0
     ref_body_quat_alpha: float = 20.0
     torso_pos_xy_alpha: float = 200.0
-    # v0.20.2: same TB pos kernel default; the smoke YAML may override
-    # downward after the pre-flight calibration probe.
-    ref_foot_pos_body_alpha: float = 200.0
     # v0.20.2 smoke6: TB lin_vel_tracking_sigma=200 maps to alpha=200 in
     # our numerator-alpha convention; ToddlerBot ang_vel_tracking_sigma=0.5
     # maps to alpha=0.5.  Both apply directly to err^2 (per axis or summed).

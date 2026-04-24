@@ -59,22 +59,6 @@ def _quat_to_pitch(qw: float, qx: float, qy: float, qz: float) -> float:
                             1 - 2 * (qx ** 2 + qy ** 2)))
 
 
-def _quat_to_rotmat(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
-    """Return the 3x3 rotation matrix R for a unit wxyz quaternion such
-    that ``world_v = R @ body_v``.  The inverse (world -> body) is R.T."""
-    return np.array(
-        [
-            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw),
-             2 * (qx * qz + qy * qw)],
-            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz),
-             2 * (qy * qz - qx * qw)],
-            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw),
-             1 - 2 * (qx * qx + qy * qy)],
-        ],
-        dtype=np.float64,
-    )
-
-
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--vx", type=float, default=0.15)
@@ -84,17 +68,6 @@ def main() -> int:
         type=float,
         default=200.0,
         help="Alpha for torso_pos_xy raw reward exp(-alpha * err^2)",
-    )
-    p.add_argument(
-        "--foot-alpha",
-        type=float,
-        default=200.0,
-        help=(
-            "Alpha for v0.20.2 ref_foot_pos_body raw reward "
-            "exp(-alpha * (||err_left||^2 + ||err_right||^2)).  "
-            "TB pos default 200; calibrate downward if open-loop drift "
-            "kills the iter-0 signal."
-        ),
     )
     p.add_argument("--csv", type=str, default="/tmp/v0200c_probe.csv")
     p.add_argument("--scene", type=str,
@@ -186,49 +159,6 @@ def main() -> int:
         actual_R_x = float(data.xpos[R_id, 0])
         actual_stance_x = actual_L_x if stance == 0 else actual_R_x
 
-        # ---- v0.20.2 ref_foot_pos_body raw reward + per-foot Euclidean
-        # body-frame foot-vs-pelvis offset error.  Mirrors the env block:
-        # err = inv(R_root) @ (foot_world - pelvis_world)
-        #         - (prior_foot_world - prior_pelvis_world).
-        actual_pelv_world = np.array(
-            [actual_pelv_x, actual_pelv_y, actual_pelv_z], dtype=np.float64
-        )
-        actual_L_world = np.array(data.xpos[L_id], dtype=np.float64)
-        actual_R_world = np.array(data.xpos[R_id], dtype=np.float64)
-        R_world_from_body = _quat_to_rotmat(*data.qpos[3:7])
-        # World->body inverse rotation = R.T for orthonormal R.
-        actual_L_body_rel = R_world_from_body.T @ (actual_L_world - actual_pelv_world)
-        actual_R_body_rel = R_world_from_body.T @ (actual_R_world - actual_pelv_world)
-        prior_pelv_world = (
-            np.array(traj.pelvis_pos[idx], dtype=np.float64)
-            if traj.pelvis_pos is not None
-            else np.zeros(3, dtype=np.float64)
-        )
-        prior_L_world = (
-            np.array(traj.left_foot_pos[idx], dtype=np.float64)
-            if traj.left_foot_pos is not None
-            else np.zeros(3, dtype=np.float64)
-        )
-        prior_R_world = (
-            np.array(traj.right_foot_pos[idx], dtype=np.float64)
-            if traj.right_foot_pos is not None
-            else np.zeros(3, dtype=np.float64)
-        )
-        prior_L_body_rel = prior_L_world - prior_pelv_world
-        prior_R_body_rel = prior_R_world - prior_pelv_world
-        foot_pos_body_err_l = float(
-            np.linalg.norm(actual_L_body_rel - prior_L_body_rel)
-        )
-        foot_pos_body_err_r = float(
-            np.linalg.norm(actual_R_body_rel - prior_R_body_rel)
-        )
-        foot_pos_body_raw = float(
-            np.exp(
-                -float(args.foot_alpha)
-                * (foot_pos_body_err_l ** 2 + foot_pos_body_err_r ** 2)
-            )
-        )
-
         # LIPM forward lever: positive ⇒ COM is ahead of stance foot
         # (prior demands forward acceleration); negative ⇒ behind ⇒
         # backward acceleration.
@@ -255,9 +185,6 @@ def main() -> int:
             "actual_pelv_z": actual_pelv_z,
             "torso_pos_xy_err_m": torso_pos_xy_err_m,
             "torso_pos_xy_raw": torso_pos_xy_raw,
-            "foot_pos_body_err_l_m": foot_pos_body_err_l,
-            "foot_pos_body_err_r_m": foot_pos_body_err_r,
-            "foot_pos_body_raw": foot_pos_body_raw,
             "pitch": pitch,
             "prior_stance_x": prior_stance_x,
             "actual_stance_x": actual_stance_x,
@@ -322,28 +249,6 @@ def main() -> int:
     if first_50:
         min_raw_50 = min(float(r["torso_pos_xy_raw"]) for r in first_50)
         print(f"  min raw reward over steps 0..50: {min_raw_50:.6f}")
-
-    # v0.20.2: ref_foot_pos_body calibration summary.  Same alive-signal
-    # bar as torso_pos_xy: min raw over steps 0..50 should be ≥ 0.05 so
-    # PPO sees a usable gradient through the prior's accel ramp.
-    print(
-        f"\nFoot-pos body probe (alpha={args.foot_alpha:.1f}): "
-        "step -> err_l_m, err_r_m, raw_reward"
-    )
-    for s in sample_steps:
-        r = by_step.get(s)
-        if r is None:
-            print(f"  step {s:>3}: n/a")
-        else:
-            print(
-                f"  step {s:>3}: "
-                f"err_l={r['foot_pos_body_err_l_m']:.4f} m, "
-                f"err_r={r['foot_pos_body_err_r_m']:.4f} m, "
-                f"raw={r['foot_pos_body_raw']:.6f}"
-            )
-    if first_50:
-        min_foot_raw_50 = min(float(r["foot_pos_body_raw"]) for r in first_50)
-        print(f"  min raw reward over steps 0..50: {min_foot_raw_50:.6f}")
     return 0
 
 

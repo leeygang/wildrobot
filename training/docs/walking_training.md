@@ -858,14 +858,6 @@ Smoke contract:
     - `ref/body_quat_track`
     - `ref/torso_pos_xy` (smoke4 onward — body-position parity with TB
       `_reward_torso_pos_xy`; smoke YAML α=90)
-    - `ref/foot_pos_body` (smoke5 only — body-frame Euclidean foothold
-      imitation; **falsified by smoke5**.  Term was DEAD throughout
-      training (raw exp(-100·sum_sq) ≈ 0) because actual training-time
-      per-foot err was 5-7× the open-loop probe prediction.  Smoke3 also
-      proved that lowering α to bring it alive doesn't help — the metric
-      is phase-sensitive and pulls in the wrong direction at phase
-      mismatch.  Smoke6 sets weight to 0; per-foot diagnostic err
-      continues to log.)
     - `ref/lin_vel_z` (smoke6 onward — TB-aligned vertical body velocity
       tracking.  Continuous phase signal.  Reference computed from
       finite-diff of prior `pelvis_pos[2]` per Appendix A.3 G2 decision.)
@@ -1409,7 +1401,7 @@ Both projects use the DeepMimic-style numerator-α form
 | `lin_vel_tracking_sigma` | 200 | 4.0 (`cmd_forward_velocity_alpha`) | **change** — bump to 200 |
 | `ang_vel_tracking_sigma` | 0.5 | — | n/a (no ang_vel reward yet) |
 | `feet_pos` α (legacy world-frame) | 200 | debug-only fixed α=200 (`ref/feet_pos_track_raw`) | diagnostic only (not optimized); deleted from reward in smoke4 — kept as a logged signal so the world-frame metric trace stays comparable across smoke generations |
-| `ref_foot_pos_body` α (v0.20.2 body-frame) | (n/a; TB has no foot-pos imitation) | smoke override 100 (`ref_foot_pos_body_alpha`) | TB pos default 200 dies in the WR open-loop accel ramp (probe step50 raw=0.006). α=100 keeps the iter-0 gradient alive (step10=0.239, step30=0.185, step50=0.075). Smallest divergence from TB pos kernel; restore toward 200 if/when the prior is regenerated with reduced foot-vs-pelvis drift. |
+| `ref_foot_pos_body` (v0.20.2 body-frame, smoke5 only) | (n/a; TB has no foot-pos imitation) | dropped after smoke5 | Smoke5 verdict: term was DEAD throughout training (raw exp(-100·sum_sq) ≈ 0) because actual training-time per-foot err was 5-7× the open-loop probe prediction. Smoke3 also proved that lowering α to bring it alive doesn't help — the metric is phase-sensitive and pulls in the wrong direction at phase mismatch. Term and per-foot diagnostic err removed entirely in smoke6 (legacy `ref/feet_pos_err_l2` continues to log the equivalent world-frame measurement). |
 | `ref_contact_match_sigma` | n/a (boolean) | 0.5 | WR-specific Gaussian; keep |
 
 ### A.5 Behavior-detection thresholds

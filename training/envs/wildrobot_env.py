@@ -805,62 +805,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * jp.sum(torso_pos_xy_err * torso_pos_xy_err)
         )
 
-        # ---- ref_foot_pos_body (v0.20.2 body-frame foothold imitation) -------
-        # Replaces the deleted world-frame summed-squares foot-position term.
-        # Smoke1/2/3/4 confirmed the world-axis projection above
-        # (``feet_err_l2`` / ``r_feet_track_raw``) does NOT pull the gait
-        # toward the prior's foothold geometry: error is dominated by body
-        # translation, the gradient at the operating point is uncorrelated
-        # with stride length, and lowering alpha (smoke3 alpha=2 probe) only
-        # makes the term less dead without moving stride.  Smoke4
-        # additionally showed body-position tracking improves marginally
-        # while stride stays at ~0.020 m, i.e. pelvis-tracking and
-        # foothold-tracking are orthogonal and both must be in the optimized
-        # reward to recover the prior's stride.
-        #
-        # Body-frame Euclidean form: rotate the actual foot-vs-pelvis offset
-        # into the torso frame using inv(root_quat), then take L2 distance
-        # against the prior's already-body-frame foot-vs-pelvis offset.
-        # Sum-of-squares of L2 distances per foot (NOT sum-of-squared
-        # components — the squared L2 distance is what the alpha multiplies
-        # in the DeepMimic kernel; this is the same shape as ToddlerBot's
-        # _reward_torso_pos_xy applied per foot).
-        #
-        # Reuses ``root_quat_inv_xyzw`` defined for the feet_distance block
-        # below — kept here as a self-contained build so this block doesn't
-        # depend on later code ordering.
-        _root_quat_xyzw = jp.concatenate(
-            [quat_wxyz[1:], quat_wxyz[:1]]
-        ).astype(jp.float32)
-        _root_quat_xyzw = jax_frames.normalize_quat_xyzw(_root_quat_xyzw)
-        _root_quat_inv_xyzw = jp.array(
-            [-_root_quat_xyzw[0], -_root_quat_xyzw[1], -_root_quat_xyzw[2],
-             _root_quat_xyzw[3]],
-            dtype=jp.float32,
-        )
-        left_foot_world_rel = (left_foot_pos - root_pos_xyz).astype(jp.float32)
-        right_foot_world_rel = (right_foot_pos - root_pos_xyz).astype(jp.float32)
-        left_foot_body_rel = jax_frames.rotate_vec_by_quat(
-            _root_quat_inv_xyzw, left_foot_world_rel
-        )
-        right_foot_body_rel = jax_frames.rotate_vec_by_quat(
-            _root_quat_inv_xyzw, right_foot_world_rel
-        )
-        ref_left_body_rel = (
-            win["left_foot_pos"] - ref_pelvis_pos
-        ).astype(jp.float32)
-        ref_right_body_rel = (
-            win["right_foot_pos"] - ref_pelvis_pos
-        ).astype(jp.float32)
-        err_left_body = left_foot_body_rel - ref_left_body_rel
-        err_right_body = right_foot_body_rel - ref_right_body_rel
-        err_left_body_sq = jp.sum(err_left_body * err_left_body)
-        err_right_body_sq = jp.sum(err_right_body * err_right_body)
-        r_ref_foot_pos_body = jp.exp(
-            -jp.float32(weights.ref_foot_pos_body_alpha)
-            * (err_left_body_sq + err_right_body_sq)
-        )
-
         # ---- lin_vel_z (v0.20.2 TB-aligned vertical body velocity) -----------
         # Match ToddlerBot _reward_lin_vel_z (toddlerbot/locomotion/walk_env.py):
         # exp(-alpha * (lin_vel_z - ref_lin_vel_z)^2).
@@ -968,11 +912,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # so convert from MuJoCo's wxyz convention and conjugate for
         # the world->body inverse rotation.
         feet_vec = left_foot_pos - right_foot_pos
-        # Reuse the world->body inverse quat built for ref_foot_pos_body
-        # above (same construction; XLA will fold the duplicate but keeping
-        # one source of truth here makes the code easier to audit).
+        root_quat_xyzw = jp.concatenate(
+            [quat_wxyz[1:], quat_wxyz[:1]]
+        ).astype(jp.float32)
+        root_quat_xyzw = jax_frames.normalize_quat_xyzw(root_quat_xyzw)
+        # quat conjugate for the inverse: (x, y, z, w) -> (-x, -y, -z, w).
+        root_quat_inv_xyzw = jp.array(
+            [-root_quat_xyzw[0], -root_quat_xyzw[1], -root_quat_xyzw[2],
+             root_quat_xyzw[3]],
+            dtype=jp.float32,
+        )
         feet_vec_torso = jax_frames.rotate_vec_by_quat(
-            _root_quat_inv_xyzw, feet_vec.astype(jp.float32)
+            root_quat_inv_xyzw, feet_vec.astype(jp.float32)
         )
         feet_dist = jp.abs(feet_vec_torso[1])
         d_min_clip = jp.clip(
@@ -1019,7 +970,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
             r_torso_pos_xy=r_torso_pos_xy.astype(jp.float32),
-            r_ref_foot_pos_body=r_ref_foot_pos_body.astype(jp.float32),
             # v0.20.2 smoke6: TB-aligned continuous phase signals.
             r_lin_vel_z=r_lin_vel_z.astype(jp.float32),
             r_ang_vel_xy=r_ang_vel_xy.astype(jp.float32),
@@ -1043,11 +993,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             torso_pos_xy_err_m=jp.sqrt(jp.sum(torso_pos_xy_err * torso_pos_xy_err)).astype(
                 jp.float32
             ),
-            # v0.20.2 body-frame foothold diagnostics — per-foot Euclidean
-            # distance against the prior's body-frame foot-vs-pelvis target.
-            # Pre-rotation into body frame, so a level body matches exactly.
-            ref_foot_pos_body_err_l_m=jp.sqrt(err_left_body_sq).astype(jp.float32),
-            ref_foot_pos_body_err_r_m=jp.sqrt(err_right_body_sq).astype(jp.float32),
             # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
             lin_vel_z_err_m_s=jp.abs(lin_vel_z_err).astype(jp.float32),
             ang_vel_xy_err_rad_s=jp.sqrt(ang_vel_xy_sq_sum).astype(jp.float32),
@@ -1094,8 +1039,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],
             torso_pos_xy=jp.float32(w.torso_pos_xy) * terms["r_torso_pos_xy"],
-            ref_foot_pos_body=jp.float32(w.ref_foot_pos_body)
-            * terms["r_ref_foot_pos_body"],
             # v0.20.2 smoke6: TB-aligned continuous phase signals.
             lin_vel_z=jp.float32(w.lin_vel_z) * terms["r_lin_vel_z"],
             ang_vel_xy=jp.float32(w.ang_vel_xy) * terms["r_ang_vel_xy"],
@@ -1823,9 +1766,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "ref_body_quat_track"
         ]
         terminal_metrics_dict["reward/torso_pos_xy"] = reward_contrib["torso_pos_xy"]
-        terminal_metrics_dict["reward/ref_foot_pos_body"] = reward_contrib[
-            "ref_foot_pos_body"
-        ]
         # v0.20.2 smoke6: TB-aligned continuous phase signals.
         terminal_metrics_dict["reward/lin_vel_z"] = reward_contrib["lin_vel_z"]
         terminal_metrics_dict["reward/ang_vel_xy"] = reward_contrib["ang_vel_xy"]
@@ -1857,13 +1797,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["ref/torso_pos_xy_err_m"] = reward_terms[
             "torso_pos_xy_err_m"
-        ]
-        # v0.20.2 body-frame foothold diagnostics (paired with reward/ref_foot_pos_body).
-        terminal_metrics_dict["ref/foot_pos_body_err_l_m"] = reward_terms[
-            "ref_foot_pos_body_err_l_m"
-        ]
-        terminal_metrics_dict["ref/foot_pos_body_err_r_m"] = reward_terms[
-            "ref_foot_pos_body_err_r_m"
         ]
         # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
         terminal_metrics_dict["ref/lin_vel_z_err_m_s"] = reward_terms[
