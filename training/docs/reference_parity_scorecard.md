@@ -47,6 +47,12 @@ Required metrics:
 - mean episode length
 - first termination mode
 - contact-phase match against the reference contact schedule
+- touchdown step length mean/min at `vx=0.15`
+- touchdown rate (cadence) at `vx=0.15`
+- stride-speed proxy at `vx=0.15`
+  `step_length_mean * touchdown_rate / 2`
+- swing-clearance mean/min at `vx=0.15`
+- double-support fraction at `vx=0.15`
 
 Pass criteria:
 
@@ -58,11 +64,20 @@ Parity target:
 - WildRobot leg-joint RMSE `<= 1.10 x` ToddlerBot
 - WildRobot forward velocity `>=` ToddlerBot `- 0.02 m/s`
 - WildRobot episode length `>= 0.95 x` ToddlerBot
+- WildRobot touchdown step length mean `>= 0.90 x` ToddlerBot
+- WildRobot touchdown rate `<= 1.10 x` ToddlerBot
+- WildRobot stride-speed proxy within `0.01 m/s` of ToddlerBot
+- WildRobot swing-clearance mean `>= 0.85 x` ToddlerBot
+- WildRobot double-support fraction within `0.05` absolute of ToddlerBot
 
 Interpretation:
 
 - failing here means the reference is not physically trackable enough, even if
   the pure FK geometry looks acceptable
+- specifically for the current WR short-stride / shuffle risk:
+  if step length is low while touchdown rate is high but the stride-speed proxy
+  is still near TB, then WR is matching nominal speed by taking shorter, faster
+  steps rather than matching TB-like stride geometry
 
 ### P2. Reference Smoothness
 
