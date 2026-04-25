@@ -6,6 +6,179 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke6-prep3 — RUN RESULT] - 2026-04-24: TB phase-signal hypothesis falsified cleanly; proceed to smoke7
+
+### Run
+
+- Run: `training/wandb/offline-run-20260424_095050-jhwyfwk0`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260424_095053-jhwyfwk0`
+- Recommended checkpoint: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260424_095053-jhwyfwk0/checkpoint_150_19660800.pkl`
+- Previous comparable run: `training/wandb/offline-run-20260423_213122-v1kclz2w` (smoke6, broken)
+
+### Result
+
+- **Walking verdict:** locomotion emerging — best v0.20.1 run on absolute
+  metrics, but the shuffle pattern persists.  TB phase-signal hypothesis is
+  falsified cleanly: the new terms (`lin_vel_z`, `ang_vel_xy`) are alive,
+  do real work on their corresponding errors, and improve `ref/contact_phase_match`
+  meaningfully — but they do NOT close the stride gap.
+- **Best `Evaluate/mean_reward` = 309.13** (vs smoke6 280.69, +10%; best of
+  any v0.20.1 smoke).  `term_pitch_frac` = 0.00% at iter 150 (best stability
+  observed in v0.20.1).
+- **G4:** 5 of 6 hard gates pass at iter 150.
+  `Evaluate/forward_velocity=0.144`, `Evaluate/mean_episode_length=500.0`,
+  `Evaluate/cmd_vs_achieved_forward=0.035`, `env/forward_velocity=0.143`,
+  `tracking/cmd_vs_achieved_forward=0.075` (borderline) all pass.
+  `tracking/step_length_touchdown_event_m=0.0213` still well below the
+  `>= 0.030 m` gate (71% of gate; per-foot 0.0028/0.0029 m × touchdown
+  rate 0.133/0.100, bilateral short-step pattern unchanged).
+- **G5:** pass.  `tracking/forward_velocity_cmd_ratio=0.98` perfectly centered;
+  residual p50s 0.091-0.103 rad (well under 0.20 cap; smallest of any v0.20.1
+  smoke).
+- **G7 baseline-beat:** pass comfortably.
+
+### TB phase-signal hypothesis — explicit falsification
+
+This is what smoke6 was originally supposed to test (and smoke6 didn't, due
+to the YAML loader bug).  smoke6-prep3 is the actual test:
+
+| Signal | smoke6 (broken) | smoke6-prep3 | Verdict |
+|---|---:|---:|---|
+| `reward/lin_vel_z` (w=1.0, α=200) | 0.000 (DEAD) | **0.0076** | ✅ alive — kernel works at training-time err |
+| `reward/ang_vel_xy` (w=2.0, α=0.5) | 0.000 (DEAD) | **0.0273** | ✅ alive — kernel works |
+| `reward/ref_contact_match` (w=1.0 boolean) | 0.0261 | 0.0269 | flat (term unchanged) |
+| `ref/lin_vel_z_err_m_s` | 0.140 | **0.114** | ✅ -19% — phase-signal pull works |
+| `ref/ang_vel_xy_err_rad_s` | 1.063 | **0.853** | ✅ -20% — phase-signal pull works |
+| `ref/contact_phase_match` | 0.662 | **0.694** | ✅ +0.032 — gait alignment improved |
+| `tracking/step_length_touchdown_event_m` | 0.0199 | **0.0213** | ❌ +0.0014 (+7%); still 71% of gate |
+
+Three load-bearing conclusions:
+
+1. **Both TB α values work as-is.**  The smoke6-prep2 worry that `α_lin_vel_z=200`
+   and `α_ang_vel_xy=0.5` would be dead at training-time err was wrong — both
+   terms are alive and reducing the paired errors by ~20%.  **No α recalibration
+   commitment needed.**  The smoke6-prep2 conditional ("if smoke6 shows the term
+   dead at training-time, recalibrate") is now resolved as "no recalibration
+   needed."
+2. **The reward family is now genuinely TB-complete and working.**  Best
+   `Evaluate/mean_reward` of any v0.20.1 smoke (309.13, +10% vs smoke6).
+   `term_pitch_frac` at iter 150 is 0.00% (smoke6: 2.62%); residuals are the
+   smallest we've ever observed (~0.10 rad p50 vs smoke6's 0.10-0.11).  The
+   phase signals are doing real work in their domains.
+3. **Phase signals do NOT close the stride gap.**  Stride moved 0.0199 → 0.0213
+   (+7%) — within run-to-run noise of the smoke3/4/5/6 cluster (0.018-0.020 m).
+   With the full TB-aligned reward family enabled and active, the shuffle
+   pattern persists.  **The phase-signal-fixes-shuffle hypothesis is falsified
+   cleanly** — the terms work where TB intends (phase tracking, body posture)
+   but phase tracking is not the load-bearing axis for stride amplitude.
+
+### Pattern across smoke3-6-prep3 (five reward-only interventions, zero stride movement)
+
+| Smoke | Intervention | What was actually enabled | Stride |
+|---|---|---|---:|
+| 3 | world-frame foot α=2 | foot reward alive at α=2 | 0.0178 |
+| 4 | torso_pos_xy α=90 | torso_pos_xy alive at α=90 | 0.0204 |
+| 5 | body-frame foot α=100 | DEAD (probe under-predicted training err) | 0.0182 |
+| 6 | TB phase signals (lin_vel_z, ang_vel_xy, contact bool) | only ref_contact_match enabled (loader bug) | 0.0199 |
+| 6-prep3 | same as smoke6, with loader fix | **all three terms alive and active** | 0.0213 |
+
+Five reward-only interventions; stride distribution remains 0.018-0.022 m.
+The reward-only intervention space is empty for the shuffle problem.
+
+### Diagnosis (now with five-smoke evidence)
+
+The shuffle pattern is **structural to single-point training without curriculum**,
+not a reward-family deficiency.  With a fully TB-aligned reward family, PPO at
+vx=0.15 still converges to micro-cadence because:
+
+- `cmd_forward_velocity_track` is satisfied by cadence (no lever for stride).
+- `feet_air_time = Σ(air_time × first_contact)` is cadence-invariant per unit
+  time (TB has the same formula — `walk_env.py:300`).
+- Phase signals (now alive and pulling) improve phase alignment but not
+  amplitude.
+- Short stride is more stable per touchdown; no reward penalizes the trade.
+
+TB doesn't avoid this with a stride reward (TB has no stride-amplitude reward
+either).  TB avoids it via the multi-cmd training distribution: at vx=0.3 (the
+high end of TB's `[-0.2, 0.3]` range), the body's max sustainable cadence is
+exceeded — PPO is **forced** to extend stride.  Once the long-stride basin is
+learned, it persists at vx=0.15 within the same policy.
+
+TB analytical stride at vx=0.15 is 0.054 m (`stride = vx · cycle_time / 2`,
+`cycle_time = 0.72 s` per `toddlerbot/locomotion/mjx_config.py:98`).  The WR
+G4 gate of `≥ 0.030 m` is ~56% of this nominal — a soft "must track at least
+half the prior" gate.  TB's deployed PPO must clear this at vx=0.15 within its
+multi-cmd training; the gate is correct.
+
+### Regression vs smoke6 (loader bug aside)
+
+| Signal | smoke6 | smoke6-prep3 | Δ | Status |
+|---|---:|---:|---:|---|
+| `Evaluate/mean_reward` | 280.69 | 309.13 | +28.4 (+10%) | improved |
+| `env/forward_velocity` | 0.148 | 0.153 | +0.005 | flat |
+| `env/episode_length` | 491.6 | 492.6 | +1.0 | flat |
+| `tracking/step_length_touchdown_event_m` | 0.0199 | 0.0213 | +0.0014 | improved (still fails) |
+| `tracking/forward_velocity_cmd_ratio` | 0.985 | 1.017 | +0.031 | flat |
+| `tracking/residual_hip_pitch_left_abs` | 0.114 | 0.097 | -0.017 | improved |
+| `ref/contact_phase_match` | 0.662 | 0.694 | +0.032 | improved |
+| `term_pitch_frac` (best iter) | 2.62% | 0.00% | -2.62% | improved |
+
+Phase signals strictly improve every body-stability and phase-alignment metric,
+without moving the stride gate.  This is the cleanest-possible decoupling
+evidence: the new reward terms work as designed, and they confirm what they
+were not designed to do.
+
+### Next version: v0.20.1-smoke7 — promote multi-cmd curriculum (TB anti-shuffle lever)
+
+The five-smoke evidence exhausts the reward-only space.  Promote the next
+TB-aligned mechanism per CLAUDE.md "follow ToddlerBot before WR-specific design"
+and per the M1 fail-mode tree (shuffle exploit branch added in smoke6-prep3).
+
+Smoke7 scope (already documented in `walking_training.md` v0.20.1-smoke7 §):
+
+- `min_velocity: 0.0`, `max_velocity: 0.20` (start narrower than TB's `[-0.2, 0.3]`
+  — no negative cmd, isolate the multi-cmd lever from the other deferred mechanisms)
+- `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB default)
+- `cmd_zero_chance: 0.2` (TB default)
+- `cmd_deadzone: [0.05, 0.05, 0.2]` (TB default)
+- everything else identical to smoke6-prep3 (TB-complete reward family,
+  no DR, no yaw, no prior changes)
+
+Hypothesis: at the high end (vx=0.20) the body's max cadence is exceeded;
+PPO is forced to extend stride; once learned, the long-stride basin persists
+at vx=0.15.  G4 gate `Evaluate/step_length_touchdown_event_m at vx=0.15 ≥ 0.030 m`.
+
+Falsifies cleanly:
+- if stride moves at vx=0.15 → TB curriculum confirmed; promote to v0.20.2 (DR).
+- if stride still parked → multi-cmd alone insufficient; either DR is co-load-bearing
+  (jump to v0.20.2 jointly) or the prior is the actual blocker (return to
+  v0.20.0-x prior surgery).  Per-foot stride asymmetry and per-vx-bin readout
+  distinguish.
+
+### What we are NOT doing in smoke7
+
+- Not enabling DR (defer to v0.20.2 — keep the diagnostic clean; one new
+  mechanism per smoke).
+- Not enabling yaw cmd (defer to v0.20.4).
+- Not adding stride-amplitude reward terms (TB doesn't have one; five smokes
+  have ruled out reward space).
+- Not widening the residual bound past ±0.25 rad (G5 has ample headroom:
+  smoke6-prep3 residuals 0.097 vs 0.20 cap — the smallest we've ever seen).
+- Not relaxing G5.
+- Not recalibrating `lin_vel_z_alpha` or `ang_vel_xy_alpha` (smoke6-prep3
+  shows TB α values work as-is; the smoke6-prep2 conditional is resolved).
+
+### Pre-smoke7 checks
+
+- `tests/test_config_load_smoke6.py` round-trip test still passes after
+  YAML adds the new `cmd_*` keys (catches loader drift on the new fields).
+- Run `tools/v0200c_per_frame_probe.py --vx 0.20` — confirm the prior can be
+  replayed at the high end of the new range.  If the prior collapses at vx=0.20
+  or quickly diverges, the hypothesis is moot until the prior is extended.
+- Verify WR's `cmd_resample_steps` plumbing actually resamples (the field is
+  wired but historically defaulted to 0 in smoke; confirm with a unit test or
+  short rollout).
+
 ## [v0.20.1-smoke6-prep3] - 2026-04-24: YAML loader fix + round-trip test + roadmap update
 
 ### Context
