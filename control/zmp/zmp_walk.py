@@ -53,7 +53,7 @@ class ZMPWalkConfig:
     # Joint limits (radians) — used to compute safe COM height and step length
     ankle_dorsiflexion_limit_rad: float = 0.698   # 40°
     hip_extension_limit_rad: float = 0.5236        # 30° backward extension
-    knee_pitch_max_rad: float = 1.396             # 80°
+    knee_pitch_max_rad: float = 2.094             # 120° (was 80° pre-2026-04-25)
 
     # Gait timing — longer cycle gives bigger steps at same speed
     # ToddlerBot uses 0.72s; WildRobot uses 0.64s (similar proportion)
@@ -65,12 +65,18 @@ class ZMPWalkConfig:
     # (~19 % of the OLD 0.42 m leg length).  After the geometry
     # refit (real leg length = 0.193 + 0.180 = 0.373 m), the same
     # 0.08 m peak lift required the knee to bend 92° at swing
-    # apex — over the 80° knee limit, triggering knee saturation
-    # in fixed-base / C1 / C2.  Reduced to 0.05 m (~13 % of the
-    # actual leg length) which keeps the swing-peak knee inside
-    # the limit.  ToddlerBot uses 24 % of leg length but also has
-    # a higher knee limit; the saturation gate (< 5 % in fixed-
-    # base) was the binding constraint here.
+    # apex — over the (then) 80° knee limit, triggering knee
+    # saturation in fixed-base / C1 / C2.  Reduced to 0.05 m
+    # (~13 % of the actual leg length) which kept the swing-peak
+    # knee inside the (old) limit.  ToddlerBot uses 24 % of leg
+    # length and has a higher knee limit.
+    #
+    # 2026-04-25: knee_pitch_max_rad raised from 80° → 120°.  The
+    # previous 80°-saturation rationale no longer binds; the
+    # 0.04 m foot_step_height is kept here for behavioral
+    # continuity with smoke3-7 results.  Future smoke can revisit
+    # raising foot_step_height (toward TB's 24% of leg length) now
+    # that the knee budget allows the deeper bend.
     foot_step_height_m: float = 0.04
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.06     # below this, use standing
@@ -286,8 +292,8 @@ class ZMPWalkGenerator:
             [-1.5708, 0.5236],   # right_hip_pitch
             [-1.571, 0.175],   # left_hip_roll
             [-0.175, 1.571],   # right_hip_roll
-            [0.0, 1.396],      # left_knee_pitch
-            [0.0, 1.396],      # right_knee_pitch
+            [0.0, 2.094],      # left_knee_pitch (120°)
+            [0.0, 2.094],      # right_knee_pitch (120°)
             [-0.698, 0.785],   # left_ankle_pitch
             [-0.698, 0.785],   # right_ankle_pitch
         ])
@@ -602,7 +608,7 @@ class ZMPWalkGenerator:
         joint_limits_rad = np.array([
             [-0.5236, 1.5708], [-1.5708, 0.5236],
             [-1.571, 0.175], [-0.175, 1.571],
-            [0.0, 1.396], [0.0, 1.396],
+            [0.0, 2.094], [0.0, 2.094],   # knee 120° (was 80° pre-2026-04-25)
             [-0.698, 0.785], [-0.698, 0.785],
         ], dtype=np.float32)
         for j in range(8):

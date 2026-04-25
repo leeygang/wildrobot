@@ -71,15 +71,16 @@ Properties:
 - `action = +1` or `-1` → reaches the further joint limit exactly. The short
   side of asymmetric joints clips, but the dead zone is minimal because the
   span is fitted to each joint.
-- Per-joint spans preserve action resolution. A universal span (e.g., 120°)
-  would waste most of the [-1, +1] range on small joints like knee [0°, 80°].
+- Per-joint spans preserve action resolution. A universal span (e.g., 180°)
+  would waste most of the [-1, +1] range on smaller joints like knee
+  [0°, 120°] (post-2026-04-25 widening from the original 80°).
 
 Per-joint span examples:
 
 | Joint | range (rad) | span | action for max | action for min |
 |---|---|---|---|---|
 | left_hip_pitch | [-0.524, 1.571] | 1.571 | +1.0 | -0.333 |
-| left_knee_pitch | [0.0, 1.396] | 1.396 | +1.0 | 0.0 (at limit) |
+| left_knee_pitch | [0.0, 2.094] | 2.094 | +1.0 | 0.0 (at limit) |
 | left_ankle_pitch | [-0.698, 0.785] | 0.785 | +1.0 | -0.889 |
 | waist_yaw | [-0.524, 0.524] | 0.524 | +1.0 | -1.0 (symmetric) |
 

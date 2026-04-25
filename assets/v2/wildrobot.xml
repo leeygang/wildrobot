@@ -70,7 +70,7 @@
           </body>
           <site group="3" name="left_knee_imu" pos="2.08167e-16 0.173352 0.0264651" quat="0.5 0.5 0.5 -0.5" />
           <body name="lower_leg" pos="-0.02705 0.192552 0.0267" quat="5.83934e-16 0.707107 -9.99201e-16 0.707107">
-            <joint axis="0 0 1" name="left_knee_pitch" type="hinge" range="0.0 1.3962634015954636" class="htd45hServo" />
+            <joint axis="0 0 1" name="left_knee_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
             <inertial pos="-0.000528557 -0.102714 0.0267452" mass="0.375475" fullinertia="0.00172108 0.00066678 0.0016354 1.9152e-05 9.36419e-08 -2.40247e-05" />
             <geom type="mesh" class="visual" pos="-3.11247e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right" material="low_leg_right_material" />
             <geom type="mesh" class="visual" pos="1.60213e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left" material="low_leg_left_material" />
@@ -112,7 +112,7 @@
           </body>
           <site group="3" name="right_knee_imu" pos="3.21965e-15 0.173352 0.0264651" quat="0.5 0.5 0.5 -0.5" />
           <body name="lower_leg_2" pos="-0.02705 0.192552 0.0267" quat="6.6279e-15 0.707107 -6.88338e-15 0.707107">
-            <joint axis="0 0 1" name="right_knee_pitch" type="hinge" range="0.0 1.3962634015954636" class="htd45hServo" />
+            <joint axis="0 0 1" name="right_knee_pitch" type="hinge" range="0.0 2.0943951023931953" class="htd45hServo" />
             <inertial pos="-0.000528557 -0.102714 0.0267452" mass="0.375475" fullinertia="0.00172108 0.00066678 0.0016354 1.9152e-05 9.36419e-08 -2.40247e-05" />
             <geom type="mesh" class="visual" pos="5.9295e-16 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_right" material="low_leg_right_material" />
             <geom type="mesh" class="visual" pos="2.42102e-15 0.192752 -0.0677579" quat="0.5 -0.5 -0.5 -0.5" mesh="low_leg_left" material="low_leg_left_material" />

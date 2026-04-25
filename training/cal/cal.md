@@ -1050,7 +1050,7 @@ actuated_joints:
   - name: left_knee_pitch
     type: position
     class: htd45hServo
-    range: [0.0, 1.396]
+    range: [0.0, 2.094]
     symmetry_pair: right_knee_pitch
     mirror_sign: 1.0                  # Same direction (not mirrored)
     max_velocity: 10.0
@@ -1082,7 +1082,7 @@ actuated_joints:
   - name: right_knee_pitch
     type: position
     class: htd45hServo
-    range: [0.0, 1.396]
+    range: [0.0, 2.094]
     symmetry_pair: left_knee_pitch
     mirror_sign: 1.0                  # Same direction
     max_velocity: 10.0
@@ -1567,8 +1567,8 @@ left_hip_pitch       | -0.087     | 1.571      | 0.742     | 0.829    | +1
 right_hip_pitch      | -1.571     | 0.087      | -0.742    | 0.829    | -1 (flip!)
 left_hip_roll        | -1.571     | 0.175      | -0.698    | 0.873    | +1
 right_hip_roll       | -0.175     | 1.571      | 0.698     | 0.873    | -1 (flip!)
-left_knee_pitch      | 0.000      | 1.396      | 0.698     | 0.698    | +1
-right_knee_pitch     | 0.000      | 1.396      | 0.698     | 0.698    | +1 (same)
+left_knee_pitch      | 0.000      | 2.094      | 1.047     | 1.047    | +1
+right_knee_pitch     | 0.000      | 2.094      | 1.047     | 1.047    | +1 (same)
 left_ankle_pitch     | -0.785     | 0.785      | 0.000     | 0.785    | +1
 right_ankle_pitch    | -0.785     | 0.785      | 0.000     | 0.785    | +1 (same)
 ```

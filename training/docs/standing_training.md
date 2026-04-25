@@ -402,10 +402,11 @@ Why:
   is a crouched/bent pose for most joints. The policy must learn a non-zero
   constant just to stand.
 - With the new mapping, action=0 = home = standing pose.
-- Per-joint spans preserve action resolution. A universal span (e.g., 120°)
-  would waste most of the [-1, +1] range on joints like knee [0°, 80°] where
-  83% of actions would clip. Per-joint spans ensure action=±1 reaches the
-  further limit, with only the short side clipping (minimally).
+- Per-joint spans preserve action resolution. A universal span (e.g., 180°)
+  would waste most of the [-1, +1] range on joints like knee [0°, 120°]
+  (post-2026-04-25 widening from 80°) where ~33% of actions would clip.
+  Per-joint spans ensure action=±1 reaches the further limit, with only
+  the short side clipping (minimally).
 - The runtime `target_rad → servo units` path is completely unchanged — it uses
   its own `motor_center_mujoco_deg` and `motor_sign`, independent of the
   action mapping.
@@ -415,7 +416,7 @@ Per-joint span examples (home = 0 for all):
 | Joint | range (rad) | per_joint_span | action=+1 | action=-1 |
 |---|---|---|---|---|
 | left_hip_pitch | [-0.087, 1.484] | 1.484 | 1.484 ✓ | -1.484 → clip -0.087 |
-| left_knee_pitch | [0.0, 1.396] | 1.396 | 1.396 ✓ | -1.396 → clip 0.0 |
+| left_knee_pitch | [0.0, 2.094] | 2.094 | 2.094 ✓ | -2.094 → clip 0.0 |
 | left_ankle_pitch | [-0.698, 0.785] | 0.785 | 0.785 ✓ | -0.785 → clip -0.698 |
 | waist_yaw | [-0.524, 0.524] | 0.524 | 0.524 ✓ | -0.524 ✓ |
 | left_shoulder_pitch | [-0.524, 3.142] | 3.142 | 3.142 ✓ | -3.142 → clip -0.524 |

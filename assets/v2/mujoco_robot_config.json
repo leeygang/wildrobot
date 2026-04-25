@@ -55,7 +55,7 @@
       "name": "left_knee_pitch",
       "range": [
         0,
-        80
+        120
       ],
       "policy_action_sign": 1.0,
       "max_velocity": 10.0
@@ -64,7 +64,7 @@
       "name": "right_knee_pitch",
       "range": [
         0,
-        80
+        120
       ],
       "policy_action_sign": 1.0,
       "max_velocity": 10.0
