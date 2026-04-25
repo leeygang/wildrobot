@@ -41,6 +41,13 @@ _VX_BINS_INSCOPE = (0.10, 0.15)
 _P1_VX_BINS = (0.10, 0.15, 0.20)
 _PROBE_FRAMES = (0, 5, 10, 16, 22, 28, 32, 48, 64)
 _TB_VARIANTS = ("toddlerbot_2xc", "toddlerbot_2xm")
+# Shared leg-joint ordering used by every parity layer that compares
+# WR vs TB on the 8 leg DoFs (P1A foot trajectories, P2 q_ref smoothness,
+# P1 closed-loop RMSE).  The order MUST stay aligned with WR's
+# ``traj.q_ref[:, :8]`` slice produced by ``ZMPWalkGenerator`` (indices
+# [0..7] = hip_pitch_L, hip_pitch_R, hip_roll_L, hip_roll_R, knee_L,
+# knee_R, ankle_pitch_L, ankle_pitch_R).  Reordering one tuple without
+# the other will silently swap channels at parity time.
 _WR_SHARED_LEG_NAMES = (
     "left_hip_pitch",
     "right_hip_pitch",
@@ -61,8 +68,16 @@ _TB_SHARED_LEG_NAMES = (
     "left_ankle_pitch",
     "right_ankle_pitch",
 )
-_WR_PITCH_FAIL_RAD = 0.8
-_WR_ROLL_FAIL_RAD = 0.6
+# P1 closed-loop replay uses one shared physical-failure floor so WR and
+# TB are judged against the same termination definition.  These values
+# are the WR env's working thresholds — TB's PPO walk env terminates only
+# on height (per the A.1 audit in walking_training.md), so applying
+# pitch/roll caps to TB is a stricter floor than its training env uses.
+# The intent is "same definition of physical failure", not "TB's training
+# env defaults".  Documented as the same caveat in
+# training/docs/reference_parity_scorecard.md § P1.
+_SHARED_PITCH_FAIL_RAD = 0.8
+_SHARED_ROLL_FAIL_RAD = 0.6
 _WR_ROOT_Z_FAIL_M = 0.15
 _TB_TORSO_Z_FAIL_M = 0.15
 _SAT_MARGIN_RAD = 0.01
@@ -304,6 +319,14 @@ def _compute_smoothness_metrics(
     contact: np.ndarray,
     dt: float,
 ) -> SmoothnessMetrics:
+    # ``pelvis_z_step_max_m`` is a SENTINEL gate, not a variation metric.
+    # Both ZMP-style priors structurally produce a constant commanded
+    # pelvis (COM) z — WR pins ``traj.pelvis_pos[:, 2] = com_height_m``;
+    # TB's mujoco_replay anchors the torso in fixed_base.  So both sides
+    # legitimately report ~0 here.  A nonzero value would indicate a
+    # planner discontinuity bug, which is what the gate is supposed to
+    # catch.  Do NOT read a 0/0 PASS as "WR is smoother" — see the P2
+    # note in training/docs/reference_parity_scorecard.md.
     q_step_max = float(np.max(np.abs(np.diff(shared_leg_q_ref, axis=0))))
     pelvis_z_step_max = float(np.max(np.abs(np.diff(pelvis_z))))
     swing_foot_z_step_max = _compute_swing_foot_z_step_max(
@@ -826,10 +849,10 @@ def _closed_loop_wildrobot(vx: float, horizon: int) -> ClosedLoopMetrics:
         prev_right_in = right_in
         pitch, roll = _quat_to_pitch_roll(np.asarray(data.qpos[3:7], dtype=np.float64))
         survived_steps = step_idx + 1
-        if abs(pitch) > _WR_PITCH_FAIL_RAD:
+        if abs(pitch) > _SHARED_PITCH_FAIL_RAD:
             termination_mode = "pitch"
             break
-        if abs(roll) > _WR_ROLL_FAIL_RAD:
+        if abs(roll) > _SHARED_ROLL_FAIL_RAD:
             termination_mode = "roll"
             break
         if float(data.qpos[2]) < _WR_ROOT_Z_FAIL_M:
@@ -856,8 +879,15 @@ def _closed_loop_wildrobot(vx: float, horizon: int) -> ClosedLoopMetrics:
 
 
 def _closed_loop_toddlerbot(
-    toddlerbot_root: Path, robot_name: str, vx: float, horizon: int
-) -> ClosedLoopMetrics:
+    toddlerbot_root: Path, robot_name: str, vx_bins: list[float], horizon: int
+) -> list[ClosedLoopMetrics]:
+    """Run TB free-base zero-residual replay across ``vx_bins`` in one
+    subprocess.  Returns one ``ClosedLoopMetrics`` per bin in input order.
+
+    Loading TB + the lz4 lookup is the dominant per-call cost; folding
+    the per-vx loop into the helper lets us pay it once per variant
+    instead of once per (variant, vx).
+    """
     tb_python = _pick_python_with_modules(
         [
             toddlerbot_root / ".venv" / "bin" / "python",
@@ -876,12 +906,12 @@ import numpy as np
 
 toddlerbot_root = Path({str(toddlerbot_root)!r})
 robot_name = {robot_name!r}
-vx = {vx!r}
+vx_bins = {list(vx_bins)!r}
 horizon = {horizon!r}
 shared_leg_names = {list(_TB_SHARED_LEG_NAMES)!r}
 sat_margin = {_SAT_MARGIN_RAD!r}
-pitch_fail = {_WR_PITCH_FAIL_RAD!r}
-roll_fail = {_WR_ROLL_FAIL_RAD!r}
+pitch_fail = {_SHARED_PITCH_FAIL_RAD!r}
+roll_fail = {_SHARED_ROLL_FAIL_RAD!r}
 torso_z_fail = {_TB_TORSO_Z_FAIL_M!r}
 
 import sys
@@ -912,22 +942,9 @@ def same_foot_steps(xs):
 suffix = "_2xc" if "2xc" in robot_name else "_2xm"
 lookup_keys, motion_ref_list = joblib.load(toddlerbot_root / "motion" / f"walk_zmp{{suffix}}.lz4")
 lookup_keys = np.asarray(lookup_keys, dtype=np.float32)
-idx = int(np.argmin(np.linalg.norm(lookup_keys - np.array([vx, 0.0, 0.0], np.float32), axis=1)))
-traj = motion_ref_list[idx]
-contact_ref = np.asarray(traj["contact"], dtype=np.float32)
 fixed_model = mujoco.MjModel.from_xml_path(str(toddlerbot_root / "toddlerbot" / "descriptions" / robot_name / "scene_fixed.xml"))
 free_scene = toddlerbot_root / "toddlerbot" / "descriptions" / robot_name / "scene.xml"
 robot = Robot(robot_name)
-sim = MuJoCoSim(
-    robot,
-    fixed_base=False,
-    vis_type="",
-    controller_type="torque",
-    xml_path=str(free_scene),
-)
-if hasattr(sim, "home_qpos"):
-    sim.data.qpos[:] = sim.home_qpos
-    mujoco.mj_forward(sim.model, sim.data)
 
 shared_joint_limits = np.array([
     fixed_model.jnt_range[mujoco.mj_name2id(fixed_model, mujoco.mjtObj.mjOBJ_JOINT, name)]
@@ -941,104 +958,138 @@ joint_qpos_adrs = {{
     name: int(fixed_model.jnt_qposadr[mujoco.mj_name2id(fixed_model, mujoco.mjtObj.mjOBJ_JOINT, name)])
     for name in robot.joint_ordering
 }}
-
-def target_motor_order(frame_idx):
-    joint_angles = {{
-        name: float(np.asarray(traj["qpos"], dtype=np.float32)[frame_idx, adr])
-        for name, adr in joint_qpos_adrs.items()
-    }}
-    motor_angles = robot.joint_to_motor_angles(joint_angles)
-    return np.asarray([motor_angles[name] for name in robot.motor_ordering], dtype=np.float32)
-
-first_target = target_motor_order(0)
 home_motor = np.asarray(list(robot.default_motor_angles.values()), dtype=np.float32)
-for ramp_idx in range(50):
-    alpha = (ramp_idx + 1) / 50.0
-    sim.set_motor_target(home_motor * (1.0 - alpha) + first_target * alpha)
-    sim.step()
 
-start_x = float(sim.data.body("torso").xpos[0])
-floor_geom_id = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
-left_contact_geoms = {{
-    mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "left_ankle_roll_link_collision"),
-    mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "left_ankle_pitch_link_collision"),
-}}
-right_contact_geoms = {{
-    mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "right_ankle_roll_link_collision"),
-    mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "right_ankle_pitch_link_collision"),
-}}
-left_contact_geoms = {{g for g in left_contact_geoms if g >= 0}}
-right_contact_geoms = {{g for g in right_contact_geoms if g >= 0}}
-prev_left_in = foot_floor_in_contact(sim.data, floor_geom_id, left_contact_geoms)
-prev_right_in = foot_floor_in_contact(sim.data, floor_geom_id, right_contact_geoms)
+results = []
+for vx in vx_bins:
+    idx = int(np.argmin(np.linalg.norm(lookup_keys - np.array([vx, 0.0, 0.0], np.float32), axis=1)))
+    traj = motion_ref_list[idx]
+    contact_ref = np.asarray(traj["contact"], dtype=np.float32)
+    time_arr = np.asarray(traj["time"], dtype=np.float32)
+    traj_dt = float(np.median(np.diff(time_arr))) if len(time_arr) > 1 else 0.02
 
-q_err = []
-any_sat = []
-contact_matches = 0
-left_touchdown_x = []
-right_touchdown_x = []
-survived_steps = 0
-termination_mode = "ok"
-horizon = min(int(horizon), len(traj["qpos"]))
-for step_idx in range(horizon):
-    sim.set_motor_target(target_motor_order(step_idx))
-    sim.step()
-    q_ref_shared = np.asarray(traj["qpos"], dtype=np.float32)[step_idx, shared_qpos_adrs]
-    q_actual_shared = np.asarray([sim.data.joint(name).qpos.item() for name in shared_leg_names], dtype=np.float64)
-    q_err.append(q_actual_shared - q_ref_shared.astype(np.float64))
-    any_sat.append(
-        bool(
-            np.any(
-                (q_actual_shared <= shared_joint_limits[:, 0] + sat_margin)
-                | (q_actual_shared >= shared_joint_limits[:, 1] - sat_margin)
+    # Each vx bin needs a fresh free-base sim — accumulated state from
+    # the previous bin's rollout would corrupt this one's start_x and
+    # contact baseline.
+    sim = MuJoCoSim(
+        robot,
+        fixed_base=False,
+        vis_type="",
+        controller_type="torque",
+        xml_path=str(free_scene),
+    )
+    # FIX #3 (review feedback): the trajectory is replayed at one
+    # ``q_ref`` slice per ``sim.step()``.  If the sim's control_dt
+    # diverges from the lookup's dt, the q_ref index advances at one
+    # rate while physics integrates at another — silently mis-pairing
+    # reference and actuals.  Fail loud here instead of producing a
+    # wrong RMSE / forward-velocity / contact-match number.
+    assert abs(float(sim.control_dt) - traj_dt) < 1e-6, (
+        f"TB sim.control_dt={{float(sim.control_dt):.6f}} disagrees with "
+        f"lookup dt={{traj_dt:.6f}} for {{robot_name}} vx={{vx:.2f}}"
+    )
+
+    if hasattr(sim, "home_qpos"):
+        sim.data.qpos[:] = sim.home_qpos
+        mujoco.mj_forward(sim.model, sim.data)
+
+    def target_motor_order(frame_idx, _traj=traj):
+        joint_angles = {{
+            name: float(np.asarray(_traj["qpos"], dtype=np.float32)[frame_idx, adr])
+            for name, adr in joint_qpos_adrs.items()
+        }}
+        motor_angles = robot.joint_to_motor_angles(joint_angles)
+        return np.asarray([motor_angles[name] for name in robot.motor_ordering], dtype=np.float32)
+
+    first_target = target_motor_order(0)
+    for ramp_idx in range(50):
+        alpha = (ramp_idx + 1) / 50.0
+        sim.set_motor_target(home_motor * (1.0 - alpha) + first_target * alpha)
+        sim.step()
+
+    start_x = float(sim.data.body("torso").xpos[0])
+    floor_geom_id = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    left_contact_geoms = {{
+        mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "left_ankle_roll_link_collision"),
+        mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "left_ankle_pitch_link_collision"),
+    }}
+    right_contact_geoms = {{
+        mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "right_ankle_roll_link_collision"),
+        mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, "right_ankle_pitch_link_collision"),
+    }}
+    left_contact_geoms = {{g for g in left_contact_geoms if g >= 0}}
+    right_contact_geoms = {{g for g in right_contact_geoms if g >= 0}}
+    prev_left_in = foot_floor_in_contact(sim.data, floor_geom_id, left_contact_geoms)
+    prev_right_in = foot_floor_in_contact(sim.data, floor_geom_id, right_contact_geoms)
+
+    q_err = []
+    any_sat = []
+    contact_matches = 0
+    left_touchdown_x = []
+    right_touchdown_x = []
+    survived_steps = 0
+    termination_mode = "ok"
+    horizon_eff = min(int(horizon), len(traj["qpos"]))
+    for step_idx in range(horizon_eff):
+        sim.set_motor_target(target_motor_order(step_idx))
+        sim.step()
+        q_ref_shared = np.asarray(traj["qpos"], dtype=np.float32)[step_idx, shared_qpos_adrs]
+        q_actual_shared = np.asarray([sim.data.joint(name).qpos.item() for name in shared_leg_names], dtype=np.float64)
+        q_err.append(q_actual_shared - q_ref_shared.astype(np.float64))
+        any_sat.append(
+            bool(
+                np.any(
+                    (q_actual_shared <= shared_joint_limits[:, 0] + sat_margin)
+                    | (q_actual_shared >= shared_joint_limits[:, 1] - sat_margin)
+                )
             )
         )
-    )
-    left_in = foot_floor_in_contact(sim.data, floor_geom_id, left_contact_geoms)
-    right_in = foot_floor_in_contact(sim.data, floor_geom_id, right_contact_geoms)
-    ref_contact = contact_ref[step_idx] > 0.5
-    contact_matches += int(left_in == bool(ref_contact[0]) and right_in == bool(ref_contact[1]))
-    left_site_x = float(sim.data.site("left_foot_center").xpos[0])
-    right_site_x = float(sim.data.site("right_foot_center").xpos[0])
-    if left_in and not prev_left_in:
-        left_touchdown_x.append(left_site_x)
-    if right_in and not prev_right_in:
-        right_touchdown_x.append(right_site_x)
-    prev_left_in = left_in
-    prev_right_in = right_in
-    pitch, roll = quat_to_pitch_roll(np.asarray(sim.data.body("torso").xquat, dtype=np.float64))
-    torso_z = float(sim.data.body("torso").xpos[2])
-    survived_steps = step_idx + 1
-    if abs(pitch) > pitch_fail:
-        termination_mode = "pitch"
-        break
-    if abs(roll) > roll_fail:
-        termination_mode = "roll"
-        break
-    if torso_z < torso_z_fail:
-        termination_mode = "height"
-        break
+        left_in = foot_floor_in_contact(sim.data, floor_geom_id, left_contact_geoms)
+        right_in = foot_floor_in_contact(sim.data, floor_geom_id, right_contact_geoms)
+        ref_contact = contact_ref[step_idx] > 0.5
+        contact_matches += int(left_in == bool(ref_contact[0]) and right_in == bool(ref_contact[1]))
+        left_site_x = float(sim.data.site("left_foot_center").xpos[0])
+        right_site_x = float(sim.data.site("right_foot_center").xpos[0])
+        if left_in and not prev_left_in:
+            left_touchdown_x.append(left_site_x)
+        if right_in and not prev_right_in:
+            right_touchdown_x.append(right_site_x)
+        prev_left_in = left_in
+        prev_right_in = right_in
+        pitch, roll = quat_to_pitch_roll(np.asarray(sim.data.body("torso").xquat, dtype=np.float64))
+        torso_z = float(sim.data.body("torso").xpos[2])
+        survived_steps = step_idx + 1
+        if abs(pitch) > pitch_fail:
+            termination_mode = "pitch"
+            break
+        if abs(roll) > roll_fail:
+            termination_mode = "roll"
+            break
+        if torso_z < torso_z_fail:
+            termination_mode = "height"
+            break
 
-err_arr = np.asarray(q_err, dtype=np.float64)
-duration_s = max(survived_steps * sim.control_dt, 1e-8)
-combined_steps = np.concatenate([same_foot_steps(left_touchdown_x), same_foot_steps(right_touchdown_x)], axis=0)
-payload = {{
-    "name": robot_name,
-    "vx": vx,
-    "horizon_steps": horizon,
-    "survived_steps": survived_steps,
-    "shared_leg_rmse_rad": float(np.sqrt(np.mean(err_arr ** 2))) if err_arr.size else float("nan"),
-    "achieved_forward_mps": float((float(sim.data.body("torso").xpos[0]) - start_x) / duration_s),
-    "ref_contact_match_frac": float(contact_matches / max(survived_steps, 1)),
-    "touchdown_step_length_mean_m": float(np.mean(combined_steps)) if combined_steps.size else float("nan"),
-    "touchdown_step_length_min_m": float(np.min(combined_steps)) if combined_steps.size else float("nan"),
-    "touchdown_rate_hz": float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
-    "joint_limit_step_frac": float(np.mean(np.asarray(any_sat, dtype=np.float64))) if any_sat else float("nan"),
-    "termination_mode": termination_mode,
-    "terminal_root_x_m": float(sim.data.body("torso").xpos[0]),
-}}
-print(json.dumps(payload))
-sim.close()
+    err_arr = np.asarray(q_err, dtype=np.float64)
+    duration_s = max(survived_steps * sim.control_dt, 1e-8)
+    combined_steps = np.concatenate([same_foot_steps(left_touchdown_x), same_foot_steps(right_touchdown_x)], axis=0)
+    results.append({{
+        "name": robot_name,
+        "vx": vx,
+        "horizon_steps": horizon_eff,
+        "survived_steps": survived_steps,
+        "shared_leg_rmse_rad": float(np.sqrt(np.mean(err_arr ** 2))) if err_arr.size else float("nan"),
+        "achieved_forward_mps": float((float(sim.data.body("torso").xpos[0]) - start_x) / duration_s),
+        "ref_contact_match_frac": float(contact_matches / max(survived_steps, 1)),
+        "touchdown_step_length_mean_m": float(np.mean(combined_steps)) if combined_steps.size else float("nan"),
+        "touchdown_step_length_min_m": float(np.min(combined_steps)) if combined_steps.size else float("nan"),
+        "touchdown_rate_hz": float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
+        "joint_limit_step_frac": float(np.mean(np.asarray(any_sat, dtype=np.float64))) if any_sat else float("nan"),
+        "termination_mode": termination_mode,
+        "terminal_root_x_m": float(sim.data.body("torso").xpos[0]),
+    }})
+    sim.close()
+
+print(json.dumps(results))
 """
     result = subprocess.run(
         [tb_python, "-c", helper],
@@ -1047,7 +1098,7 @@ sim.close()
         text=True,
         cwd=toddlerbot_root,
     )
-    return ClosedLoopMetrics(**json.loads(result.stdout))
+    return [ClosedLoopMetrics(**payload) for payload in json.loads(result.stdout)]
 
 
 def _geometry_parity_row(summary_wr: GateSummary, summary_tb: GateSummary) -> tuple[bool, dict[str, str]]:
@@ -1127,11 +1178,14 @@ def _trackability_gate_detail(
     }
 
 
+_TRACKABILITY_GATE_KEYS = ("rmse", "forward", "episode", "contact", "step", "limit")
+
+
 def _aggregate_trackability_parity(
     wr_rows: list[ClosedLoopMetrics], tb_rows: list[ClosedLoopMetrics]
 ) -> tuple[bool, dict[str, str]]:
     tb_by_vx = {row.vx: row for row in tb_rows}
-    fields = {key: [] for key in ("rmse", "forward", "episode", "contact", "step", "limit")}
+    fields: dict[str, list[str]] = {key: [] for key in _TRACKABILITY_GATE_KEYS}
     overall = True
     for wr_row in wr_rows:
         tb_row = tb_by_vx[wr_row.vx]
@@ -1142,6 +1196,26 @@ def _aggregate_trackability_parity(
     summary = {key: ", ".join(values) for key, values in fields.items()}
     summary["verdict"] = "PASS" if overall else "FAIL"
     return overall, summary
+
+
+def _trackability_per_bin_matrix(
+    wr_rows: list[ClosedLoopMetrics], tb_rows: list[ClosedLoopMetrics]
+) -> dict[str, dict[float, str]]:
+    """Return ``{metric: {vx: PASS/FAIL}}`` for one TB variant.
+
+    Cleanup #5 (review feedback): the per-line ``rmse: PASS@0.10, FAIL@0.15``
+    string is hard to scan when there are 6 metrics × N bins.  This shape
+    is what ``_print_trackability_matrix`` renders as a small table so the
+    load-bearing failing bin is obvious at a glance.
+    """
+    tb_by_vx = {row.vx: row for row in tb_rows}
+    matrix: dict[str, dict[float, str]] = {key: {} for key in _TRACKABILITY_GATE_KEYS}
+    for wr_row in wr_rows:
+        tb_row = tb_by_vx[wr_row.vx]
+        _row_ok, detail = _trackability_gate_detail(wr_row, tb_row)
+        for key in _TRACKABILITY_GATE_KEYS:
+            matrix[key][wr_row.vx] = detail[key]
+    return matrix
 
 
 def _print_geometry_table(
@@ -1331,6 +1405,28 @@ def _print_trackability_table(
             f"contact={row['contact']}, step_len={row['step']}, sat={row['limit']})"
         )
 
+    # Per-bin matrix: which (metric, vx) pair is the load-bearing fail
+    # against each TB variant.  Easier to scan than the comma-separated
+    # detail strings above when there are 6 metrics × N bins.
+    if wr_rows:
+        vx_bins_seen = sorted({row.vx for row in wr_rows})
+        for robot_name in _TB_VARIANTS:
+            matrix = _trackability_per_bin_matrix(
+                wr_rows, tb_rows_by_robot[robot_name]
+            )
+            print()
+            print(f"WR vs {robot_name} per-bin matrix")
+            header = f"{'metric':<10}" + "".join(
+                f" {('vx=' + f'{vx:.2f}'):>10}" for vx in vx_bins_seen
+            )
+            print(header)
+            print("-" * len(header))
+            for key in _TRACKABILITY_GATE_KEYS:
+                cells = "".join(
+                    f" {matrix[key].get(vx, 'n/a'):>10}" for vx in vx_bins_seen
+                )
+                print(f"{key:<10}{cells}")
+
 
 def _build_payload(
     summary_wr: GateSummary | None,
@@ -1451,10 +1547,9 @@ def main() -> int:
     p1_rows: dict[str, dict[str, str]] = {}
     p1_ok = True
     for robot_name in _TB_VARIANTS:
-        rows = [
-            _closed_loop_toddlerbot(toddlerbot_root, robot_name, vx, args.horizon)
-            for vx in p1_vx_bins
-        ]
+        rows = _closed_loop_toddlerbot(
+            toddlerbot_root, robot_name, p1_vx_bins, args.horizon
+        )
         p1_tbs[robot_name] = rows
         ok, parity_row = _aggregate_trackability_parity(p1_wr, rows)
         p1_rows[robot_name] = parity_row

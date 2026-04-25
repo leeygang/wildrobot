@@ -70,6 +70,17 @@ Interpretation:
   the pure FK geometry looks acceptable
 - this is the layer that should predict whether PPO is failing because the
   prior is not trackable enough under real MuJoCo dynamics
+- this layer measures **prior + each robot's own actuator stack**, not pure
+  prior quality. WildRobot drives MuJoCo position actuators directly;
+  ToddlerBot drives torque actuators with PD-on-torque. Comparable RMSE on
+  both sides plus a P1 fail points to actuator / control mismatch rather than
+  the prior; a P1 fail with materially worse WR RMSE points to the prior.
+- termination thresholds (`pitch ≤ 0.8 rad`, `roll ≤ 0.6 rad`,
+  `root_z ≥ 0.15 m`) are a shared physical-failure floor for both robots.
+  ToddlerBot's PPO walk env terminates only on height (per the A.1 audit in
+  `walking_training.md`), so this layer applies a stricter floor to TB than
+  its training env uses; the intent is "same definition of physical failure",
+  not "TB's training env defaults".
 
 ### P1A. FK-Realized Nominal Gait Shape
 
@@ -125,6 +136,11 @@ Interpretation:
 
 - if WildRobot only matches ToddlerBot after heavy filtering, the reference is
   still weaker
+- `pelvis_z_step_max` is a **sentinel** gate: both ZMP-style priors store a
+  constant commanded pelvis height by design, so both sides legitimately
+  report ~0 here and the gate trivially passes. A nonzero value would
+  indicate a planner discontinuity bug (which is what the gate catches). Do
+  not read a 0/0 PASS as "WR is smoother on pelvis height."
 
 ### P3. WildRobot Policy-Contract Gates
 
