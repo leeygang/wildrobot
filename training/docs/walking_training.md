@@ -1210,72 +1210,131 @@ Decision rule after the re-run:
 - if either term is dead at training-time err scale → recalibrate α
   per the smoke6-prep2 commitment, single rerun.
 
-### `v0.20.1-smoke7` Promote multi-cmd curriculum (TB anti-shuffle lever)
+### `v0.20.1-smoke7` Promote full TB training distribution (multi-cmd + DR jointly)
 
-Status: planned.  Conditional on smoke6-prep3 falsifying the
-phase-signal hypothesis OR confirming it works without solving the
-shuffle by itself.
+Status: **active** (smoke6-prep3 result falsified phase-signal hypothesis;
+five reward-only smokes 3/4/5/6/6-prep3 exhausted reward-only space).
+
+**Scope revision (2026-04-24):** the original smoke7 plan was "multi-cmd
+alone, no DR" with the hypothesis "vx=0.20 hits a cadence ceiling →
+forces stride extension."  An open-loop probe at vx ∈ {0.10, 0.15, 0.20,
+0.25} via `tools/v0200c_per_frame_probe.py` falsified that mechanism:
+WR's prior uses **fixed cycle_time = 0.640 s** across all vx bins
+(cadence 1.56 Hz/foot regardless of cmd; only stride per step varies).
+PPO's current shuffle at 6.5 Hz/foot already runs 4× the prior's cadence,
+and at vx=0.20 needs only 9.5 Hz/foot — well within servo capability.
+**No cadence ceiling exists in the WR prior at any vx ∈ [0.10, 0.25].**
+
+TB's prior (`toddlerbot/locomotion/mjx_config.py:98`) is also fixed-cadence
+(cycle_time = 0.72 s).  TB's anti-shuffle mechanism is therefore not a
+cadence ceiling either — it's the combined effect of multi-cmd
+distribution + domain randomization (backlash + friction + kp + IMU
+noise make micro-shuffles fragile; pushes are NOT the load-bearing piece
+since TB's `add_push` defaults to False for walk).
+
+Smoke7 enables the full TB-aligned training distribution to test which
+combination of mechanisms is load-bearing.
 
 Scope:
 
-- enable WR's already-wired-but-inert multi-cmd plumbing in the smoke
-  YAML:
-  - `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB default)
+- **Multi-cmd curriculum** (TB anti-shuffle lever #1):
+  - `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB resample_time)
   - `cmd_zero_chance: 0.2` (TB default)
-  - `cmd_deadzone: [0.05, 0.05, 0.2]` (TB default)
-  - vx range: `[0.0, 0.20]` (start narrower than TB's `[-0.2, 0.3]`;
-    no negative cmd, no yaw cmd, no DR — isolate the multi-cmd lever
-    from the other deferred mechanisms).
-- everything else identical to the smoke6-prep3 result.
+  - `cmd_deadzone: 0.05` (TB vx-channel default)
+  - vx range: `[0.0, 0.20]` — narrower than TB's `[-0.2, 0.3]` because
+    WR's prior library lacks negative-vx generation; defer negative cmd
+    to v0.20.4
+- **Domain randomization** (TB anti-shuffle lever #2):
+  - `domain_rand_friction_range: [0.4, 1.0]` (TB)
+  - `domain_rand_frictionloss_scale_range: [0.8, 1.2]` (TB)
+  - `domain_rand_kp_scale_range: [0.9, 1.1]` (TB)
+  - `domain_rand_mass_scale_range: [0.9, 1.1]` (WR-specific multiplicative;
+    TB uses additive `body_mass_range: [-0.2, 0.2]` kg — different
+    semantics, kept WR's existing form)
+  - `domain_rand_joint_offset_rad: 0.03` (WR-specific reset-time joint
+    offset; TB has no equivalent — TB uses `rand_init_state_indices`
+    instead)
+- **IMU noise** (sim2real hardening, secondary):
+  - `imu_gyro_noise_std: 0.05 rad/s` (conservative vs TB's gyro_std=0.25
+    under bias-walk RW)
+  - `imu_quat_noise_deg: 2.0` (conservative vs TB's quat_std=0.10 rad ≈
+    5.7°)
+- **Eval-cmd override** (G4 readout protection):
+  - `eval_velocity_cmd: 0.15` — pins eval rollouts at vx=0.15 so G4
+    metrics stay directly comparable to single-cmd smokes 3-6-prep3.
+    Without this, eval would sample uniformly across [0.0, 0.20] and
+    E[cmd] (~0.07 m/s after zero_chance + deadzone) would sit near or
+    below the G4 forward_velocity floor of 0.075, making pass/fail
+    uninformative.  Implementation: `WildRobotEnv.reset_for_eval(rng)`
+    overrides velocity_cmd post-reset; `step(disable_cmd_resample=True)`
+    suppresses mid-episode resample during eval.
+- **NOT enabling**: pushes (TB walk default add_push: False), yaw cmd
+  (defer to v0.20.4 — WR prior lacks yaw), negative vx (prior lacks
+  negative-vx generation).
+- Reward family unchanged from smoke6-prep3 (TB-complete and verified
+  alive in smoke6-prep3).
 
-Why this and not "another reward term":
+Why DR + multi-cmd jointly (Option C) and not isolated:
 
-- Per CLAUDE.md "follow ToddlerBot before WR-specific design": multi-cmd
-  + `zero_chance` is part of the TB recipe, not a WR-specific addition.
-  We have not yet exhausted the TB recipe.
-- TB has the same reward family and TB doesn't shuffle.  The structural
-  difference is the curriculum.
-- The four-smoke pattern (smoke3/4/5/6) has falsified the
-  "reward-only fix" search space.
+- Per the probe results, the cadence-ceiling story is wrong; multi-cmd
+  alone has weak a-priori support.
+- DR alone would test "is robustness pressure load-bearing for shuffle?"
+  cleanly, but the M1 fail-mode tree has no precedent for which
+  TB-curriculum knob is load-bearing.
+- Per CLAUDE.md "follow ToddlerBot before WR-specific design", TB enables
+  both by default — Option C is the closest to TB's actual recipe.
+- Trade-off accepted: if smoke7 succeeds, we don't know which mechanism
+  was load-bearing without a follow-up ablation (smoke7-ablate-DR or
+  smoke7-ablate-multicmd).  That's a known follow-up cost, not a
+  blocker.  If smoke7 fails, we have stronger evidence the bottleneck
+  is the prior, not the training distribution.
 
-Hypothesis:
+Pre-smoke checks (all completed in smoke7-prep1):
 
-- at the high end of the vx range (vx=0.20) the body's max sustainable
-  cadence is exceeded; PPO is forced to extend stride.
-- once the long-stride basin is learned, it persists at vx=0.15 within
-  the same policy (cf. TB on a similar small biped).
-- `Evaluate/step_length_touchdown_event_m at vx=0.15 ≥ 0.030 m`
-  becomes the gate.
-
-Pre-smoke checks:
-
-- existing smoke YAML round-trip test still passes (catch loader drift
-  for the new `cmd_*` keys if any).
-- zero-action probe at the high cmd point (vx=0.20) — confirm the prior
-  can be replayed there at all; if the prior collapses immediately,
-  the hypothesis is moot until the prior is extended.
-- check WR's `cmd_resample_steps` plumbing does in fact resample (the
-  field is wired but historically defaulted to 0 in smoke).
+- ✅ DR plumbing audit: `wildrobot_env.py` `_sample_domain_rand_params`
+  → `_get_randomized_mjx_model` applied per ctrl step.
+- ✅ Multi-cmd resample plumbing audit: `wildrobot_env.py:1644-1664`
+  resamples velocity_cmd at `cmd_resample_steps` interval, honors
+  zero_chance + deadzone via shared `_sample_velocity_cmd`.
+- ✅ YAML loader audit: all DR + cmd_* keys read by
+  `_parse_env_config` (training_config.py:480-504).
+- ✅ Round-trip test extended to assert smoke7 critical env settings.
+- ✅ G6 invariant: 7/7 pass with smoke7 YAML.
+- ✅ Eval-cmd override behaviorally verified: `reset_for_eval` pins
+  cmd to 0.15 across all seeds; training reset samples in [0.0, 0.20]
+  with proper zero_chance/deadzone distribution.
+- ✅ Open-loop prior probe at vx ∈ {0.10, 0.15, 0.20, 0.25}: prior
+  generates 1120-step trajectories at all bins; no immediate collapse.
 
 Decision rule after smoke7:
 
-- stride at vx=0.15 ≥ 0.030 m → TB curriculum hypothesis confirmed;
-  promote to v0.20.2 (add DR).
-- stride still parked → multi-cmd alone is insufficient.  Two
-  candidates: (a) DR is co-load-bearing — promote to v0.20.2 jointly;
-  (b) prior is the actual blocker — return to v0.20.0-x prior surgery.
-  Read the per-foot stride asymmetry and per-vx-bin stride to
-  distinguish.
+- **stride at eval (vx=0.15) ≥ 0.030 m** → TB-curriculum hypothesis
+  confirmed; promote to v0.20.2 (SysID hardening) and run ablation
+  follow-ups (DR-only, multi-cmd-only) to isolate the load-bearing
+  mechanism.
+- **stride still parked at ~0.020 m** → TB-curriculum (multi-cmd + DR
+  jointly) is not sufficient on WR.  Two candidates:
+  - (a) prior is the actual blocker — return to v0.20.0-x prior
+    surgery (extend prior to negative vx, re-evaluate prior fidelity
+    under the closed-loop dynamics PPO actually faces).
+  - (b) smoke compute budget exhausted before convergence — TB trains
+    on 2× the episode length (1000 vs 500) and broader command range;
+    extend M2 cap to ~300 iters and rerun before declaring failure.
+- **mixed signal at intermediate stride (0.025-0.030)** → smoke7 is on
+  the right track but needs more compute or a wider vx range.  Extend
+  the prior library to vx=0.30+ and rerun with `[0.0, 0.30]` range.
 
 What we will NOT do in smoke7:
 
-- not enable DR (defer to v0.20.2 — keep the diagnostic clean).
+- not enable pushes (TB walk default; defer to v0.20.5).
 - not enable yaw cmd (defer to v0.20.4).
-- not add stride-amplitude reward terms (TB doesn't have one; smoke3-6
-  ruled out the reward space).
-- not widen the residual bound past ±0.25 rad (G5 has ample headroom;
-  not the bottleneck).
+- not add stride-amplitude reward terms (TB doesn't have one; five
+  smokes ruled out the reward space).
+- not widen the residual bound past ±0.25 rad (G5 has ample headroom:
+  smoke6-prep3 residuals 0.097 vs 0.20 cap).
 - not relax G5.
+- not extend the M2 compute budget yet (judge first at the standard
+  150 iters; if intermediate result, then extend).
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
 

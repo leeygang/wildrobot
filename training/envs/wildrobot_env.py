@@ -1182,6 +1182,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_rng=key_cmd,
         )
 
+    def reset_for_eval(self, rng: jax.Array) -> WildRobotEnvState:
+        """Eval-only reset that honors ``env.eval_velocity_cmd`` override.
+
+        v0.20.1-smoke7: when training enables multi-cmd sampling
+        (cmd_resample_steps > 0, vx range [min, max]), the regular
+        reset() draws cmd uniformly across the same range — which makes
+        the G4 promotion-horizon eval gate (`Evaluate/forward_velocity
+        >= 0.075 m/s`) ambiguous because E[cmd] across the range may
+        sit near or below the floor.  This method calls reset() then
+        overrides velocity_cmd to the configured fixed value, so eval
+        rollouts run at a deterministic cmd point that's directly
+        comparable to single-cmd smokes.
+
+        Pair with ``step(..., disable_cmd_resample=True)`` in the eval
+        loop so mid-episode resample doesn't re-randomize the cmd.
+
+        When ``eval_velocity_cmd < 0`` (the sentinel default), this is
+        identical to ``reset(rng)`` (no override).
+        """
+        state = self.reset(rng)
+        eval_cmd = jp.float32(self._config.env.eval_velocity_cmd)
+        wr = state.info[WR_INFO_KEY]
+        new_cmd = jp.where(eval_cmd >= jp.float32(0.0), eval_cmd, wr.velocity_cmd)
+        new_wr = wr.replace(velocity_cmd=new_cmd.astype(jp.float32))
+        new_info = dict(state.info)
+        new_info[WR_INFO_KEY] = new_wr
+        return state.replace(info=new_info)
+
     # ----------------------------------------------------- cmd resampling
 
     def _sample_velocity_cmd(self, rng: jax.Array) -> jax.Array:
@@ -1431,6 +1459,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         state: WildRobotEnvState,
         action: jax.Array,
         disable_pushes: bool = False,
+        disable_cmd_resample: bool = False,
     ) -> WildRobotEnvState:
         """One control step.  v3 flow:
 
@@ -1651,9 +1680,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # multi-command work without a future env edit.
         cmd_period = jp.int32(self._config.env.cmd_resample_steps)
         new_cmd_rng_carry, sample_rng = jax.random.split(wr.cmd_rng.astype(jp.uint32))
+        # disable_cmd_resample: smoke7 eval pass.  When the eval-cmd
+        # override is set, mid-episode resample would re-randomize the
+        # cmd and break the "fixed cmd at eval" contract that keeps G4
+        # interpretable.  Mirror of disable_pushes for the eval path.
         should_resample = jp.logical_and(
-            cmd_period > 0,
-            jp.equal(jp.mod(new_step_count, jp.maximum(cmd_period, 1)), 0),
+            jp.logical_and(
+                cmd_period > 0,
+                jp.equal(jp.mod(new_step_count, jp.maximum(cmd_period, 1)), 0),
+            ),
+            jp.logical_not(jp.bool_(disable_cmd_resample)),
         )
         resampled_cmd = self._sample_velocity_cmd(sample_rng)
         new_velocity_cmd = jp.where(

@@ -448,6 +448,16 @@ class EnvConfig(Freezable):
     cmd_zero_chance: float = 0.0  # P(resampled cmd == 0)
     cmd_turn_chance: float = 0.0  # P(resampled cmd == turn) — placeholder
     cmd_deadzone: float = 0.0     # |cmd| below this is zeroed (ToddlerBot 0.05)
+    # v0.20.1-smoke7: eval-rollout cmd override.  When training enables
+    # multi-cmd sampling (cmd_resample_steps > 0, vx range [min, max]),
+    # the eval pass would otherwise sample cmds uniformly across the same
+    # range and dilute the G4 promotion-horizon gate (E[cmd] over the
+    # range may sit below the 0.075 m/s floor).  Setting
+    # ``eval_velocity_cmd >= 0`` overrides the eval reset cmd to a fixed
+    # value AND suppresses mid-episode resample during eval, so G4 metrics
+    # stay interpretable as "behavior at this specific cmd".
+    # Sentinel value -1.0 means "no override; eval samples like training".
+    eval_velocity_cmd: float = -1.0
 
     # ToddlerBot soft-pitch / soft-roll behavior gates
     # (toddlerbot/locomotion/mjx_config.py:110-111).  When these

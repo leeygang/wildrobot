@@ -179,3 +179,51 @@ def test_smoke6_critical_weights_nonzero(smoke_cfg) -> None:
             "the loader has drifted from the documented smoke6 contract:\n  "
             + "\n  ".join(failures)
         )
+
+
+def test_smoke7_critical_env_settings(smoke_cfg) -> None:
+    """Pin the smoke7 multi-cmd + DR contract.
+
+    smoke7 enables WR's already-wired multi-cmd + DR plumbing to test
+    whether the TB curriculum (not the reward family) is what breaks
+    the shuffle exploit.  Same protective pattern as the smoke6 weights
+    test: catches silent env-loader drift that would otherwise turn
+    smoke7 into another null run like smoke6 was.
+    """
+    e = smoke_cfg.env
+    expected = {
+        # Multi-cmd curriculum (TB anti-shuffle lever #1)
+        "min_velocity": 0.0,
+        "max_velocity": 0.20,
+        "cmd_resample_steps": 150,
+        "cmd_zero_chance": 0.2,
+        "cmd_deadzone": 0.05,
+        # Eval-cmd override pins eval rollouts at vx=0.15 so G4 stays
+        # comparable to single-cmd smokes.
+        "eval_velocity_cmd": 0.15,
+        # DR (TB anti-shuffle lever #2)
+        "domain_randomization_enabled": True,
+        "domain_rand_friction_range": [0.4, 1.0],
+        "domain_rand_mass_scale_range": [0.9, 1.1],
+        "domain_rand_kp_scale_range": [0.9, 1.1],
+        "domain_rand_frictionloss_scale_range": [0.8, 1.2],
+        "domain_rand_joint_offset_rad": 0.03,
+        # IMU noise (sim2real hardening)
+        "imu_gyro_noise_std": 0.05,
+        "imu_quat_noise_deg": 2.0,
+        # Push events: NOT enabled (TB walk default add_push: False)
+        "push_enabled": False,
+        # action_delay_steps unchanged from smoke6 (TB n_steps_delay=1)
+        "action_delay_steps": 1,
+    }
+    failures: list[str] = []
+    for key, expected_value in expected.items():
+        actual = getattr(e, key)
+        if actual != expected_value:
+            failures.append(f"{key}: expected {expected_value!r}, got {actual!r}")
+    if failures:
+        pytest.fail(
+            "smoke7 critical env settings mismatch — either the YAML or "
+            "the loader has drifted from the documented smoke7 contract:\n  "
+            + "\n  ".join(failures)
+        )

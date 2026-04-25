@@ -75,21 +75,46 @@ env:
   min_feet_y_dist: 0.07
   max_feet_y_dist: 0.13
 
-  # Single-command smoke: both ends pinned at vx=0.15 so reset samples
-  # a degenerate uniform.  Multi-command training is deferred (per
-  # design note Q3 / smoke_contract).
-  min_velocity: 0.15
-  max_velocity: 0.15
-  # ToddlerBot-aligned cmd resampling plumbing
+  # ============================================================
+  # smoke7: TB-aligned multi-cmd curriculum (anti-shuffle lever #1)
+  # ============================================================
+  # Smoke3-6-prep3 evidence falsified the reward-only fix space for
+  # the shuffle exploit (5 reward-family changes, stride parked at
+  # 0.018-0.022 m vs the 0.030 m G4 gate).  TB has the literally-
+  # identical feet_air_time formula (walk_env.py:300, cadence-invariant
+  # per unit time) and avoids shuffle via the training distribution,
+  # not a stride-amplitude reward.  Smoke7 promotes WR's already-wired
+  # multi-cmd plumbing to mirror TB's CommandsConfig
   # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:11).
-  # ``cmd_resample_steps`` = 0 disables resampling so the smoke stays
-  # episode-constant; the field exists so v0.20.4 multi-command work
-  # doesn't have to extend the schema.  ToddlerBot uses
-  # resample_time=3.0 s ⇒ ~150 ctrl steps at ctrl_dt=0.02.
-  cmd_resample_steps: 0
-  cmd_zero_chance: 0.0
+  #
+  # Range pick: WR's prior library currently generates bins
+  # {0.0, 0.05, 0.10, 0.15, 0.20, 0.25}.  Smoke7 uses [0.0, 0.20] —
+  # narrower than TB's [-0.2, 0.3] (defer negative cmd to v0.20.4
+  # since the prior library lacks negative-vx generation).  Probe
+  # confirmed prior is replayable through vx=0.20 (open-loop survives
+  # 60 ctrl steps at vx=0.20 vs 78 at vx=0.15).
+  #
+  # cmd_resample_steps = 150 mirrors TB resample_time=3.0 s at
+  # ctrl_dt=0.02.  zero_chance=0.2 + deadzone=0.05 are TB defaults
+  # (walk.gin:11) — together they zero the cadence reward
+  # (feet_air_time *= ||cmd|| > 1e-6, walk_env.py:302) on ~20% of
+  # episode windows, killing the "always shuffle" basin from the
+  # low end of the range.
+  min_velocity: 0.0
+  max_velocity: 0.20
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
   cmd_turn_chance: 0.0
-  cmd_deadzone: 0.0
+  cmd_deadzone: 0.05
+  # smoke7 eval-cmd override: pin eval rollouts to vx=0.15 so G4
+  # promotion-horizon metrics stay directly comparable to single-cmd
+  # smoke3-6-prep3.  Without this, eval would sample uniformly across
+  # [0.0, 0.20] and dilute the G4 forward_velocity floor (E[cmd]
+  # under uniform sampling + zero_chance=0.2 + deadzone=0.05 sits
+  # near ~0.07 m/s — at or below the 0.075 floor, making pass/fail
+  # uninformative).  The eval path also passes disable_cmd_resample
+  # = True via train.py so mid-episode resample doesn't re-randomize.
+  eval_velocity_cmd: 0.15
 
   # Contacts
   # contact_threshold_force: cutoff (N) the env uses to classify a foot
@@ -163,19 +188,46 @@ env:
     left_ankle_pitch: 0.25
     right_ankle_pitch: 0.25
 
-  # Disturbance pushes — disabled for the smoke per walking_training.md.
-  # The push_schedule plumbing is preserved in env state regardless;
-  # leaving push_enabled false simply gates the apply path off.
+  # ============================================================
+  # smoke7: TB-aligned domain randomization (anti-shuffle lever #2)
+  # ============================================================
+  # Disturbance pushes: NOT enabled (TB walk default is add_push: False
+  # per toddlerbot/locomotion/mjx_config.py:172; walk_env.py instantiates
+  # without overriding).  Enabling pushes adds noise to the smoke
+  # diagnostic without strong evidence it's needed for shuffle-breaking.
+  # Defer to v0.20.5 (recovery / robustness milestone).
   push_enabled: false
 
-  # IMU noise / latency disabled for the first smoke (focus on imitation
-  # tracking; defer realism profile to a later milestone).
-  imu_gyro_noise_std: 0.0
-  imu_quat_noise_deg: 0.0
+  # IMU noise: TB enables gyro_std=0.25 rad/s + quat_std=0.10 rad with
+  # bias-walk RW (toddlerbot/locomotion/mjx_config.py:213-225).  WR's
+  # plumbing is simpler additive Gaussian.  Conservative TB-equivalent:
+  #   gyro: TB's 0.25 rad/s steady-state under OU process; WR's pure
+  #     additive Gaussian at 0.05 rad/s ≈ 2.9°/s — meaningful but not
+  #     overwhelming for sim2real hardening
+  #   quat: TB's 0.10 rad ≈ 5.7°; WR's additive at 2.0° is conservative
+  # Latency: action_delay_steps=1 already covers the TB n_steps_delay=1
+  # equivalent; don't double-count by adding imu_latency on top.
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
   imu_latency_steps: 0
 
-  # Domain randomization disabled for the first smoke.
-  domain_randomization_enabled: false
+  # Domain randomization: TB walk default is add_domain_rand: True
+  # (toddlerbot/locomotion/mjx_config.py:171).  Smoke7 promotes the
+  # already-wired WR plumbing.  Ranges:
+  #   friction: TB [0.4, 1.0] (mjx_config.py:179)
+  #   frictionloss: TB [0.8, 1.2] (mjx_config.py:182)
+  #   kp: TB [0.9, 1.1] (mjx_config.py:186)
+  #   mass: WR-specific multiplicative [0.9, 1.1] vs TB additive
+  #     body_mass_range [-0.2, 0.2] kg (mjx_config.py:183) — different
+  #     semantics; keep WR's existing form, document in changelog
+  #   joint_offset_rad: WR-specific (TB has no equivalent reset-time
+  #     joint offset; TB uses rand_init_state_indices for diversity)
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
 
   # ToddlerBot uses n_steps_delay = 1 (toddlerbot/locomotion/mjx_config.py:96).
   # One-step action delay matches the closed-loop dynamics PPO will face

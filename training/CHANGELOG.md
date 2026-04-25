@@ -6,6 +6,173 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke7-prep1] - 2026-04-24: TB-aligned multi-cmd + DR + eval-cmd override
+
+### Context
+
+smoke6-prep3 falsified the TB phase-signal hypothesis cleanly (terms alive
+but stride still parked at 0.021 m vs the 0.030 m G4 gate).  Five smokes
+of reward-only interventions (3/4/5/6/6-prep3) have exhausted the
+reward-only fix space.  Per CLAUDE.md "follow ToddlerBot before
+WR-specific design" and the M1 fail-mode tree shuffle-exploit branch,
+the next TB-aligned mechanism is the training distribution itself: TB has
+the literally-identical `feet_air_time` reward and avoids shuffle via
+multi-cmd resample + zero_chance + DR (not via a stride-amplitude
+reward term).
+
+The original smoke7 plan was "multi-cmd alone, no DR" with the
+hypothesis "vx=0.20 hits a cadence ceiling → forces stride extension."
+That mechanism was **falsified** by an open-loop probe at vx ∈ {0.10,
+0.15, 0.20, 0.25}: WR's prior uses **fixed cycle_time = 0.640 s** at
+all vx (cadence 1.56 Hz/foot regardless of cmd; only stride per step
+varies linearly with vx).  TB's prior is also fixed-cadence (0.72 s).
+Neither prior pushes PPO toward a cadence ceiling — TB's anti-shuffle
+mechanism must be the combination of multi-cmd distribution + DR
+(backlash + friction + kp + IMU noise make micro-shuffles fragile).
+
+Revised smoke7: enable the **full TB training distribution** (multi-cmd
++ DR jointly, Option C).  Trade-off accepted: if smoke7 succeeds, we
+won't know which mechanism was load-bearing without ablation followups,
+but it's the closest to TB's actual recipe and the highest a-priori
+chance to break shuffle.
+
+### Changes
+
+#### YAML (`training/configs/ppo_walking_v0201_smoke.yaml`)
+
+**Multi-cmd curriculum** (TB anti-shuffle lever #1):
+- `min_velocity: 0.15 → 0.0`, `max_velocity: 0.15 → 0.20`
+  (narrower than TB's `[-0.2, 0.3]` because WR prior library lacks
+  negative-vx generation; defer to v0.20.4)
+- `cmd_resample_steps: 0 → 150` (TB resample_time=3.0 s at ctrl_dt=0.02)
+- `cmd_zero_chance: 0.0 → 0.2` (TB default; gates `feet_air_time` reward
+  to 0 on ~20% of episode windows, killing the "always shuffle" basin)
+- `cmd_deadzone: 0.0 → 0.05` (TB vx-channel default)
+
+**Eval-cmd override** (G4 readout protection):
+- New env field `eval_velocity_cmd: 0.15` — pins eval rollouts to a
+  fixed cmd so G4 metrics stay directly comparable to single-cmd
+  smokes 3-6-prep3.  Without this, eval would sample uniformly across
+  [0.0, 0.20] and E[cmd] (~0.07 m/s) would sit near or below the G4
+  forward_velocity floor of 0.075 m/s, making pass/fail uninformative.
+
+**Domain randomization** (TB anti-shuffle lever #2):
+- `domain_randomization_enabled: false → true`
+- `domain_rand_friction_range: [0.5, 1.0] → [0.4, 1.0]` (match TB)
+- `domain_rand_frictionloss_scale_range: [0.9, 1.1] → [0.8, 1.2]` (match TB)
+- `domain_rand_kp_scale_range`: unchanged at [0.9, 1.1] (matches TB)
+- `domain_rand_mass_scale_range`: unchanged at [0.9, 1.1] (WR-specific
+  multiplicative; TB uses additive [-0.2, 0.2] kg — different semantics,
+  kept WR's existing form)
+- `domain_rand_joint_offset_rad`: unchanged at 0.03 (WR-specific; TB
+  uses `rand_init_state_indices` instead)
+
+**IMU noise** (sim2real hardening, secondary):
+- `imu_gyro_noise_std: 0.0 → 0.05 rad/s` (~2.9°/s; conservative vs
+  TB's gyro_std=0.25 rad/s steady-state under bias-walk RW)
+- `imu_quat_noise_deg: 0.0 → 2.0` (conservative vs TB's quat_std=0.10
+  rad ≈ 5.7°)
+
+**NOT changed**:
+- `push_enabled` stays `false` (TB walk default `add_push: False` per
+  `toddlerbot/locomotion/mjx_config.py:172`; pushes are not the
+  load-bearing TB anti-shuffle mechanism)
+- Reward family (TB-complete and verified alive in smoke6-prep3)
+- PPO hyperparameters
+- Residual bounds (G5 has ample headroom)
+- `action_delay_steps: 1` (already TB-aligned)
+
+#### Env code (`training/envs/wildrobot_env.py`)
+
+- Add `WildRobotEnv.reset_for_eval(rng)`: calls `reset(rng)` then
+  overrides `velocity_cmd` to `env.eval_velocity_cmd` when it's `>= 0`.
+  Sentinel value `-1.0` (default) preserves backward compatibility.
+- Add `disable_cmd_resample: bool = False` arg to `WildRobotEnv.step`.
+  Mirrors the existing `disable_pushes` flag.  When True, the
+  mid-episode resample logic at lines 1644-1664 is gated off so eval
+  cmd stays fixed throughout the episode.
+
+#### Train.py (`training/train.py`)
+
+- `batched_eval_reset_fn` calls `env.reset_for_eval(rng)` (was
+  `env.reset(rng)`).  Falls back to sampled cmd when `eval_velocity_cmd
+  < 0`.
+- `batched_eval_step_fn` and `batched_eval_clean_step_fn` pass
+  `disable_cmd_resample=True` so eval cmd stays fixed across the
+  resample boundary.
+
+#### Config dataclass (`training/configs/training_runtime_config.py`)
+
+- Add `EnvConfig.eval_velocity_cmd: float = -1.0`.
+
+#### YAML loader (`training/configs/training_config.py`)
+
+- Add `eval_velocity_cmd=float(env.get("eval_velocity_cmd", -1.0))` to
+  `_parse_env_config` so the new YAML key round-trips.
+
+#### Round-trip tests (`training/tests/test_config_load_smoke6.py`)
+
+- New test `test_smoke7_critical_env_settings`: pins all 14 smoke7-
+  critical env values (multi-cmd, DR, IMU noise, eval-cmd override).
+  Same protective pattern as `test_smoke6_critical_weights_nonzero` —
+  catches silent loader/YAML drift that would otherwise turn smoke7
+  into another null run like smoke6 was before the loader fix.
+
+#### Walking training plan (`training/docs/walking_training.md`)
+
+- Replace `v0.20.1-smoke7` milestone with the revised plan (Option C:
+  DR + multi-cmd jointly).  Documents the falsification of the
+  cadence-ceiling mechanism per the open-loop probe results.  Adds
+  decision rule for the post-smoke7 outcome (success → v0.20.2 +
+  ablation; failure → prior surgery or extend compute).
+
+### Pre-flight verification (all completed)
+
+- ✅ DR plumbing audit: `_sample_domain_rand_params` →
+  `_get_randomized_mjx_model` applied per ctrl step
+  (`wildrobot_env.py:489-513, 1492-1507`).
+- ✅ Multi-cmd resample plumbing audit: `wildrobot_env.py:1644-1664`
+  resamples velocity_cmd at `cmd_resample_steps` interval, honors
+  zero_chance + deadzone via shared `_sample_velocity_cmd`.
+- ✅ YAML loader audit: all DR + cmd_* + eval-cmd keys read by
+  `_parse_env_config`.
+- ✅ Round-trip test extended: 4/4 pass (was 3/3 pre-smoke7).
+- ✅ G6 invariant: `tests/test_v0201_env_zero_action.py` 7/7 pass with
+  smoke7 YAML.
+- ✅ Behavioral check: `reset_for_eval` pins cmd to 0.15 across all
+  tested seeds; training `reset` samples cmds in [0.0, 0.20] with
+  proper zero_chance/deadzone distribution (5/8 non-zero in 8-seed
+  sample, expected ~60%).
+- ✅ Open-loop prior probe at vx ∈ {0.10, 0.15, 0.20, 0.25}: prior
+  generates 1120-step trajectories at all bins; cadence is fixed
+  cycle_time=0.640 s across all bins (so the original cadence-ceiling
+  mechanism is falsified — smoke7 design adjusted to Option C
+  accordingly).
+
+### Falsification — what would tell us this design is wrong
+
+- Eval cmd doesn't pin to 0.15 in the actual smoke7 run (loader
+  drift not caught by round-trip test) → kill and fix immediately.
+- DR enabled but `Evaluate/term_pitch_frac` jumps to >50% from
+  smoke6-prep3's 0.0% → DR ranges are too aggressive for WR's
+  actuator authority; tighten ranges (start with friction → [0.6, 1.0]
+  and frictionloss → [0.9, 1.1]).
+- Multi-cmd training-rollout `tracking/forward_velocity_cmd_ratio`
+  drifts outside [0.6, 1.5] for sustained windows → policy can't track
+  the broader cmd range; consider narrower vx_max=0.18 or an extended
+  episode length.
+
+### What we are NOT doing in smoke7
+
+- Not enabling pushes (TB walk default; defer to v0.20.5 recovery).
+- Not enabling yaw cmd (defer to v0.20.4 — WR prior lacks yaw).
+- Not adding stride-amplitude reward terms (five-smoke evidence
+  rules this out).
+- Not widening residual bound past ±0.25 rad (G5 has ample headroom).
+- Not relaxing G5.
+- Not extending M2 compute budget yet (judge first at standard 150
+  iters; if intermediate result, then extend).
+
 ## [v0.20.1-smoke6-prep3 — RUN RESULT] - 2026-04-24: TB phase-signal hypothesis falsified cleanly; proceed to smoke7
 
 ### Run

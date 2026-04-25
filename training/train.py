@@ -329,18 +329,31 @@ def start_training(
 
     eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
 
+    # v0.20.1-smoke7: eval-cmd override + resample suppression.  When
+    # ``env.eval_velocity_cmd >= 0``, the eval rollout is forced to a
+    # fixed cmd (via reset_for_eval) and mid-episode resampling is
+    # disabled so that eval metrics stay comparable across smokes when
+    # training is multi-cmd.  When the override is unset (sentinel <0),
+    # reset_for_eval falls back to the sampled cmd and the disable flag
+    # is a no-op (cmd_resample_steps is typically 0 in single-cmd configs).
     def batched_eval_step_fn(state, action):
-        """Batched eval environment step."""
-        return jax.vmap(lambda s, a: env.step(s, a))(state, action)
+        """Batched eval environment step (suppresses cmd resample)."""
+        return jax.vmap(lambda s, a: env.step(s, a, disable_cmd_resample=True))(
+            state, action
+        )
 
     def batched_eval_clean_step_fn(state, action):
-        """Batched eval step with pushes disabled."""
-        return jax.vmap(lambda s, a: env.step(s, a, disable_pushes=True))(state, action)
+        """Batched eval step with pushes + cmd resample disabled."""
+        return jax.vmap(
+            lambda s, a: env.step(
+                s, a, disable_pushes=True, disable_cmd_resample=True
+            )
+        )(state, action)
 
     def batched_eval_reset_fn(rng):
-        """Batched eval environment reset."""
+        """Batched eval environment reset (honors eval_velocity_cmd override)."""
         rngs = jax.random.split(rng, eval_num_envs)
-        return jax.vmap(env.reset)(rngs)
+        return jax.vmap(env.reset_for_eval)(rngs)
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval

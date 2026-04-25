@@ -502,6 +502,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         cmd_zero_chance=float(env.get("cmd_zero_chance", 0.0)),
         cmd_turn_chance=float(env.get("cmd_turn_chance", 0.0)),
         cmd_deadzone=float(env.get("cmd_deadzone", 0.0)),
+        eval_velocity_cmd=float(env.get("eval_velocity_cmd", -1.0)),
         torso_pitch_soft_min_rad=float(env.get("torso_pitch_soft_min_rad", -0.2)),
         torso_pitch_soft_max_rad=float(env.get("torso_pitch_soft_max_rad", 0.2)),
         torso_roll_soft_min_rad=float(env.get("torso_roll_soft_min_rad", -0.1)),
