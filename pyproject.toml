@@ -11,6 +11,7 @@ dependencies = [
     "coacd>=1.0.7",
     "jax>=0.8.1; sys_platform == 'darwin'",
     "jax[cuda13]>=0.8.1; sys_platform != 'darwin'",
+    "joblib>=1.5.3",
     "mediapy>=1.2.4",
     "mujoco[mjpython]>=3.3.7",
     "numpy>=2.3.5",

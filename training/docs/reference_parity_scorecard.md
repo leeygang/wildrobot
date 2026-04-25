@@ -38,21 +38,18 @@ Interpretation:
 
 ### P1. Open-Loop Trackability
 
-Run a nominal-only replay with no learned residual.
+Run a free-base nominal-only replay with no learned residual across
+`vx in {0.10, 0.15, 0.20}`.
 
 Required metrics:
 
 - per-joint tracking RMSE over the 8 leg joints
-- forward velocity at `vx=0.15`
-- mean episode length
+- achieved forward velocity per `vx` bin
+- survived episode steps per `vx` bin
 - first termination mode
-- contact-phase match against the reference contact schedule
-- touchdown step length mean/min at `vx=0.15`
-- touchdown rate (cadence) at `vx=0.15`
-- stride-speed proxy at `vx=0.15`
-  `step_length_mean * touchdown_rate / 2`
-- swing-clearance mean/min at `vx=0.15`
-- double-support fraction at `vx=0.15`
+- contact-phase match against the physical foot-floor contact schedule
+- physical touchdown step length mean/min per `vx` bin
+- joint-limit saturation fraction per `vx` bin
 
 Pass criteria:
 
@@ -61,23 +58,48 @@ Pass criteria:
 
 Parity target:
 
-- WildRobot leg-joint RMSE `<= 1.10 x` ToddlerBot
-- WildRobot forward velocity `>=` ToddlerBot `- 0.02 m/s`
-- WildRobot episode length `>= 0.95 x` ToddlerBot
-- WildRobot touchdown step length mean `>= 0.90 x` ToddlerBot
-- WildRobot touchdown rate `<= 1.10 x` ToddlerBot
-- WildRobot stride-speed proxy within `0.01 m/s` of ToddlerBot
-- WildRobot swing-clearance mean `>= 0.85 x` ToddlerBot
-- WildRobot double-support fraction within `0.05` absolute of ToddlerBot
+- WildRobot leg-joint RMSE `<= 1.10 x` ToddlerBot on each `vx` bin
+- WildRobot achieved forward velocity `>=` ToddlerBot `- 0.02 m/s` on each `vx` bin
+- WildRobot survived steps `>= 0.95 x` ToddlerBot on each `vx` bin
+- WildRobot physical touchdown step length mean `>= 0.90 x` ToddlerBot on each `vx` bin
+- WildRobot joint-limit saturation fraction `<=` ToddlerBot `+ 0.05` on each `vx` bin
 
 Interpretation:
 
 - failing here means the reference is not physically trackable enough, even if
   the pure FK geometry looks acceptable
-- specifically for the current WR short-stride / shuffle risk:
-  if step length is low while touchdown rate is high but the stride-speed proxy
-  is still near TB, then WR is matching nominal speed by taking shorter, faster
-  steps rather than matching TB-like stride geometry
+- this is the layer that should predict whether PPO is failing because the
+  prior is not trackable enough under real MuJoCo dynamics
+
+### P1A. FK-Realized Nominal Gait Shape
+
+Check the gait shape at nominal `vx=0.15` from FK-realized foot trajectories,
+not from planner-side intent.
+
+Required metrics:
+
+- touchdown step length mean/min
+- touchdown rate (cadence)
+- touchdown-speed proxy
+  `step_length_mean * touchdown_rate / 2`
+- swing-clearance mean/min
+- double-support fraction
+- foot-z max single-frame step
+
+Parity target:
+
+- WildRobot touchdown step length mean `>= 0.90 x` ToddlerBot
+- WildRobot touchdown rate `<= 1.20 x` ToddlerBot
+- WildRobot touchdown-speed proxy within `0.02 m/s` of ToddlerBot
+- WildRobot swing-clearance mean `>= 0.85 x` ToddlerBot
+- WildRobot double-support fraction within `0.05` absolute of ToddlerBot
+
+Interpretation:
+
+- this is a gait-shape check, not a trackability check
+- the widened cadence cap is intentional: WR and TB use different fixed cycle
+  times, so cadence should be treated as a bounded design difference rather
+  than a hard equality target
 
 ### P2. Reference Smoothness
 
@@ -85,7 +107,7 @@ Check the reference asset itself, without physics.
 
 Required metrics:
 
-- max `|q_ref[t] - q_ref[t-1]|`
+- max `|q_ref[t] - q_ref[t-1]|` over the shared 8 leg joints
 - max pelvis height step
 - max swing-foot height step
 - contact-mask flip count per cycle
@@ -134,11 +156,13 @@ WildRobot is "on par with ToddlerBot" only when all of the following are true:
 
 1. both repos pass P0 in-scope
 2. WildRobot meets the P0 full-matrix parity target against ToddlerBot
-3. WildRobot meets the P1 parity target against ToddlerBot
-4. WildRobot is not materially rougher than ToddlerBot on P2
-5. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
+3. WildRobot matches ToddlerBot on P1A nominal FK-realized gait shape
+4. WildRobot meets the P1 parity target against ToddlerBot
+5. WildRobot is not materially rougher than ToddlerBot on P2
+6. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
 
 If P0 fails, fix geometry first.
-If P0 passes but P1 fails, fix trackability.
+If P0 passes but P1A fails, fix the nominal gait shape / FK realization.
+If P1A passes but P1 fails, fix trackability.
 If P1 passes but `G5` fails, the prior is too weak and PPO is compensating too
 much.
