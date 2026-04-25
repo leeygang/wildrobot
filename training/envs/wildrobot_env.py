@@ -1920,8 +1920,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # diagnostics on the rollout.  Without this, term/* and
         # forward_velocity at the terminal step would be replaced by
         # the reset's initial-metric zeros.
-        def _do_reset(_):
-            return self.reset(rng_step)
+        #
+        # smoke7 (2026-04-24): when this step was an eval step (caller
+        # passed ``disable_cmd_resample=True``), use ``reset_for_eval``
+        # so the eval cmd pin survives mid-rollout terminations.
+        # Without this, ~5% of eval episodes terminating early under
+        # the smoke6-prep3 termination distribution (~higher under the
+        # smoke7 DR ranges) would silently corrupt the post-reset
+        # window with a sampled cmd, diluting the load-bearing
+        # ``Evaluate/*`` metrics.  ``reset_for_eval`` is a no-op
+        # (delegates to ``reset``) when ``eval_velocity_cmd < 0``, so
+        # this branch is safe in both eval-pinned and sentinel modes.
+        if disable_cmd_resample:
+            def _do_reset(_):
+                return self.reset_for_eval(rng_step)
+        else:
+            def _do_reset(_):
+                return self.reset(rng_step)
 
         def _no_reset(_):
             return WildRobotEnvState(
