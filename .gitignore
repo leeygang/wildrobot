@@ -66,6 +66,9 @@ htmlcov/
 # Weights & Biases
 wandb/
 
+# Parity / diagnostic reports
+tools/parity_report.json
+
 .env
 .watchman*
 uv.lock

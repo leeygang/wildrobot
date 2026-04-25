@@ -1503,6 +1503,16 @@ def main() -> int:
         default=200,
         help="Closed-loop replay horizon in control steps.",
     )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="tools/parity_report.json",
+        help=(
+            "Path to write the JSON payload to (set to empty string to "
+            "disable). Stdout output is unaffected — use --json to also "
+            "stream it to stdout."
+        ),
+    )
     args = parser.parse_args()
 
     wildrobot_root, toddlerbot_root = _repo_roots()
@@ -1557,23 +1567,32 @@ def main() -> int:
 
     overall_ok = geometry_ok and fk_ok and smooth_ok and p1_ok
 
+    payload = _build_payload(
+        summary_wr=summary_wr,
+        summary_tbs=summary_tbs,
+        geometry_rows=geometry_rows,
+        gait_wr=gait_wr,
+        gait_tbs=gait_tbs,
+        fk_rows=fk_rows,
+        smooth_wr=smooth_wr,
+        smooth_tbs=smooth_tbs,
+        smooth_rows=smooth_rows,
+        p1_wr=p1_wr,
+        p1_tbs=p1_tbs,
+        p1_rows=p1_rows,
+        args=args,
+        overall_pass=overall_ok,
+    )
+
+    if args.out:
+        out_path = Path(args.out)
+        if not out_path.is_absolute():
+            out_path = Path(__file__).resolve().parents[1] / out_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+
     if args.json:
-        payload = _build_payload(
-            summary_wr=summary_wr,
-            summary_tbs=summary_tbs,
-            geometry_rows=geometry_rows,
-            gait_wr=gait_wr,
-            gait_tbs=gait_tbs,
-            fk_rows=fk_rows,
-            smooth_wr=smooth_wr,
-            smooth_tbs=smooth_tbs,
-            smooth_rows=smooth_rows,
-            p1_wr=p1_wr,
-            p1_tbs=p1_tbs,
-            p1_rows=p1_rows,
-            args=args,
-            overall_pass=overall_ok,
-        )
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         if not args.nominal_only and summary_wr is not None:
@@ -1583,6 +1602,8 @@ def main() -> int:
         _print_trackability_table(p1_wr, p1_tbs, p1_rows)
         print()
         print(f"Overall reference parity verdict: {'PASS' if overall_ok else 'FAIL'}")
+        if args.out:
+            print(f"JSON payload saved to: {out_path}")
 
     if args.strict and not overall_ok:
         return 1
