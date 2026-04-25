@@ -166,3 +166,107 @@ def test_eval_cmd_sentinel_falls_back_to_sampled(env_sentinel) -> None:
             f"configured range "
             f"[{env._config.env.min_velocity}, {env._config.env.max_velocity}]."
         )
+
+
+# =============================================================================
+# train.py factory wiring tests (issue 3 in the smoke7-prep1 review).
+#
+# These exercise ``train.py:eval_step_kwargs`` — the single source of
+# truth for the pinned-vs-sentinel wiring decision used by
+# ``make_eval_env_fns``.  The env-only tests above prove that
+# ``reset_for_eval`` and ``disable_cmd_resample`` work CORRECTLY at
+# the env level; the tests below prove that ``train.py`` WIRES THEM
+# RIGHT for the documented sentinel contract.
+#
+# Why structural (no env construction) instead of behavioral here:
+# behavioral tests need ~3-5 min per env JIT compile; the wiring
+# decision is a 2-branch Python conditional that needs sub-second
+# unit-test coverage.  ``eval_step_kwargs`` is intentionally extracted
+# as a small pure helper so this test stays cheap.  The behavioral
+# evidence that ``disable_cmd_resample`` actually does what it claims
+# is provided by ``test_eval_cmd_survives_auto_reset`` above, which
+# already pays the env-construction cost.
+# =============================================================================
+
+
+def _make_env_cfg(eval_velocity_cmd: float):
+    """Build a minimal cfg.env namespace for unit-testing the helpers.
+
+    A full ``EnvConfig`` instantiation requires loading the smoke YAML
+    (slow); but ``is_eval_cmd_pinned`` and ``eval_step_kwargs`` only
+    read ``env_cfg.eval_velocity_cmd``, so a tiny stub suffices.
+    """
+    class _MinEnvCfg:
+        pass
+
+    cfg = _MinEnvCfg()
+    cfg.eval_velocity_cmd = eval_velocity_cmd
+    return cfg
+
+
+def test_eval_step_kwargs_pinned_passes_disable_cmd_resample() -> None:
+    """Pinned mode → eval step closure must pass ``disable_cmd_resample=True``.
+
+    Catches: a future regression where the factory's pinned branch
+    silently drops the disable kwarg (e.g., refactoring renames the
+    arg or removes it) — the env-level pin survives initial reset
+    via ``reset_for_eval`` but mid-episode resample at
+    ``cmd_resample_steps`` interval would silently re-randomize the
+    cmd in eval rollouts.
+    """
+    from training.train import eval_step_kwargs
+
+    pinned_cfg = _make_env_cfg(eval_velocity_cmd=0.15)
+    kwargs = eval_step_kwargs(pinned_cfg)
+    assert kwargs == {"disable_cmd_resample": True}, (
+        f"Pinned mode should pass disable_cmd_resample=True; got {kwargs}.  "
+        f"Likely cause: ``eval_step_kwargs`` no longer threads the "
+        f"is_eval_cmd_pinned decision into the disable_cmd_resample kwarg."
+    )
+
+
+def test_eval_step_kwargs_sentinel_omits_disable_cmd_resample() -> None:
+    """Sentinel mode → eval step closure must NOT pass ``disable_cmd_resample=True``.
+
+    Catches: a future regression where the factory's sentinel branch
+    incorrectly passes ``disable_cmd_resample=True`` (e.g., the
+    pinned-vs-sentinel conditional is removed and disable=True is
+    set unconditionally) — the env-level
+    ``test_eval_cmd_sentinel_falls_back_to_sampled`` test would still
+    pass because ``reset_for_eval`` is independent of the disable
+    flag, but the documented sentinel contract ("eval samples like
+    training", including mid-episode resample) would be silently
+    violated.
+    """
+    from training.train import eval_step_kwargs
+
+    sentinel_cfg = _make_env_cfg(eval_velocity_cmd=-1.0)
+    kwargs = eval_step_kwargs(sentinel_cfg)
+    # Either an empty dict OR a dict that explicitly sets
+    # disable_cmd_resample=False is acceptable; the load-bearing
+    # invariant is "must not silently set disable_cmd_resample=True
+    # in sentinel mode".
+    assert kwargs.get("disable_cmd_resample", False) is False, (
+        f"Sentinel mode should not pass disable_cmd_resample=True; got "
+        f"{kwargs}.  Likely cause: ``eval_step_kwargs`` is unconditionally "
+        f"setting disable_cmd_resample=True regardless of "
+        f"is_eval_cmd_pinned, which silently breaks the documented "
+        f'sentinel contract ("eval = training behavior").'
+    )
+
+
+def test_is_eval_cmd_pinned_threshold() -> None:
+    """The pinned-vs-sentinel decision is gated at ``eval_velocity_cmd >= 0``.
+
+    Catches: a future regression where the threshold is changed (e.g.,
+    > 0 instead of >= 0, which would silently treat
+    ``eval_velocity_cmd=0.0`` (a valid pin at zero command) as
+    sentinel).
+    """
+    from training.train import is_eval_cmd_pinned
+
+    assert is_eval_cmd_pinned(_make_env_cfg(eval_velocity_cmd=0.0)) is True
+    assert is_eval_cmd_pinned(_make_env_cfg(eval_velocity_cmd=0.15)) is True
+    assert is_eval_cmd_pinned(_make_env_cfg(eval_velocity_cmd=0.30)) is True
+    assert is_eval_cmd_pinned(_make_env_cfg(eval_velocity_cmd=-0.001)) is False
+    assert is_eval_cmd_pinned(_make_env_cfg(eval_velocity_cmd=-1.0)) is False

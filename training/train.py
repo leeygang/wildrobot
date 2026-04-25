@@ -200,6 +200,104 @@ def parse_args():
     return parser.parse_args()
 
 
+# v0.20.1-smoke7: eval-cmd plumbing helpers, extracted from start_training
+# so that test_smoke7_eval_cmd_behavior.py can exercise the train.py-level
+# wiring decision (not just the env-level reset_for_eval behavior).  The
+# decision rule is "if eval_velocity_cmd >= 0, eval rollouts pin cmd
+# (reset_for_eval pins; step disables mid-episode resample); else, eval
+# behaves like training (sampled cmd at reset, resample fires per the
+# configured period)."  See training/docs/walking_training.md
+# v0.20.1-smoke7 §.
+
+def is_eval_cmd_pinned(env_cfg) -> bool:
+    """Return True iff eval rollouts should pin the command (override active).
+
+    Sentinel: ``eval_velocity_cmd < 0`` means "no override; eval behaves
+    like training".  Any non-negative value means "pin eval cmd to this
+    value" — used by smoke7+ to keep G4 metrics interpretable when
+    training is multi-cmd.
+    """
+    return float(env_cfg.eval_velocity_cmd) >= 0.0
+
+
+def eval_step_kwargs(env_cfg) -> dict:
+    """Return the kwargs the factory's eval step closure passes to env.step.
+
+    Pinned mode (``eval_velocity_cmd >= 0``): returns
+    ``{"disable_cmd_resample": True}`` so the env's mid-episode
+    resample is suppressed and the eval cmd stays fixed across the
+    resample boundary.
+
+    Sentinel mode (``eval_velocity_cmd < 0``): returns ``{}`` so eval
+    behaves exactly like training — including mid-episode resample if
+    ``cmd_resample_steps > 0``.
+
+    Extracted as a separate helper so unit tests can verify the
+    pinned-vs-sentinel wiring decision without constructing a full
+    env (which costs minutes of JIT compilation).  Catches the
+    smoke7-prep1 review's third feedback item: a future regression
+    in ``make_eval_env_fns`` could re-break sentinel semantics while
+    env-level tests still pass.
+    """
+    if is_eval_cmd_pinned(env_cfg):
+        return {"disable_cmd_resample": True}
+    return {}
+
+
+def make_eval_env_fns(env, training_cfg, eval_num_envs: int):
+    """Build (step_fn, clean_step_fn, reset_fn) for eval rollouts.
+
+    Honors the ``eval_velocity_cmd`` sentinel.  In pinned mode
+    (``eval_velocity_cmd >= 0``):
+      - ``reset_fn`` pins cmd via ``env.reset_for_eval``
+      - ``step_fn`` / ``clean_step_fn`` pass ``disable_cmd_resample=True``
+        so the pin survives mid-episode resample boundaries
+
+    In sentinel mode (``eval_velocity_cmd < 0``):
+      - ``reset_fn`` falls back to sampled cmd (``reset_for_eval`` no-op)
+      - ``step_fn`` / ``clean_step_fn`` omit the disable flag so eval
+        rollouts behave like training (mid-episode resample fires per
+        ``cmd_resample_steps``)
+
+    Returns:
+        (step_fn, clean_step_fn, reset_fn) — three batched (vmap'd)
+        callables matching the signatures expected by the PPO loop.
+    """
+    # jax is lazy-imported here to match start_training's deferred-import
+    # pattern (keeps train.py module-import cheap when only the parser
+    # or the factory's pure-Python helpers are needed).
+    import jax  # noqa: WPS433
+
+    # Single source of truth for the pinned-vs-sentinel wiring decision.
+    # ``eval_step_kwargs`` is unit-tested independently of env construction.
+    step_kwargs = eval_step_kwargs(training_cfg.env)
+    clean_step_kwargs = {"disable_pushes": True, **step_kwargs}
+
+    def step_fn(state, action):
+        """Batched eval step (kwargs determined by eval_step_kwargs)."""
+        return jax.vmap(
+            lambda s, a: env.step(s, a, **step_kwargs)
+        )(state, action)
+
+    def clean_step_fn(state, action):
+        """Batched eval step with pushes disabled."""
+        return jax.vmap(
+            lambda s, a: env.step(s, a, **clean_step_kwargs)
+        )(state, action)
+
+    def reset_fn(rng):
+        """Batched eval reset.
+
+        Always uses ``reset_for_eval`` — it's a no-op when
+        ``eval_velocity_cmd < 0`` (delegates to ``reset``) so the
+        sentinel "eval = training" semantics are preserved.
+        """
+        rngs = jax.random.split(rng, eval_num_envs)
+        return jax.vmap(env.reset_for_eval)(rngs)
+
+    return step_fn, clean_step_fn, reset_fn
+
+
 def start_training(
     training_cfg: "TrainingConfig",
     wandb_tracker: Optional[WandbTracker] = None,
@@ -330,55 +428,15 @@ def start_training(
     eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
 
     # v0.20.1-smoke7: eval-cmd override + resample suppression.
-    # When ``env.eval_velocity_cmd >= 0`` ("eval pinned" mode), eval
-    # rollouts use ``reset_for_eval`` (pins cmd at reset and on every
-    # auto-reset that fires inside step's _do_reset path) and pass
-    # ``disable_cmd_resample=True`` to step so mid-episode resample
-    # doesn't re-randomize.
-    # When the override is the sentinel (< 0), eval should behave
-    # exactly like training — including mid-episode resample if
-    # ``cmd_resample_steps > 0``.  ``reset_for_eval`` is a no-op in
-    # that case (delegates to ``reset``), and the eval step fn omits
-    # the disable flag so resample fires per the configured period.
-    eval_cmd_pinned = float(training_cfg.env.eval_velocity_cmd) >= 0.0
-
-    if eval_cmd_pinned:
-
-        def batched_eval_step_fn(state, action):
-            """Eval step (cmd-pinned mode): suppress mid-episode resample."""
-            return jax.vmap(
-                lambda s, a: env.step(s, a, disable_cmd_resample=True)
-            )(state, action)
-
-        def batched_eval_clean_step_fn(state, action):
-            """Eval step (cmd-pinned mode): pushes + resample disabled."""
-            return jax.vmap(
-                lambda s, a: env.step(
-                    s, a, disable_pushes=True, disable_cmd_resample=True
-                )
-            )(state, action)
-
-    else:
-
-        def batched_eval_step_fn(state, action):
-            """Eval step (sentinel mode): behave like training."""
-            return jax.vmap(lambda s, a: env.step(s, a))(state, action)
-
-        def batched_eval_clean_step_fn(state, action):
-            """Eval step (sentinel mode): training behavior + pushes off."""
-            return jax.vmap(
-                lambda s, a: env.step(s, a, disable_pushes=True)
-            )(state, action)
-
-    def batched_eval_reset_fn(rng):
-        """Batched eval environment reset.
-
-        Always calls ``reset_for_eval`` — it's a no-op when
-        ``eval_velocity_cmd < 0`` (delegates to ``reset``) so the
-        sentinel "eval = training" semantics are preserved.
-        """
-        rngs = jax.random.split(rng, eval_num_envs)
-        return jax.vmap(env.reset_for_eval)(rngs)
+    # The decision rule (pinned vs sentinel) and the resulting step /
+    # reset closures are built by ``make_eval_env_fns`` (top of this
+    # module) so test_smoke7_eval_cmd_behavior.py can exercise the
+    # exact same factory used here without duplicating the wiring.
+    (
+        batched_eval_step_fn,
+        batched_eval_clean_step_fn,
+        batched_eval_reset_fn,
+    ) = make_eval_env_fns(env, training_cfg, eval_num_envs)
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
