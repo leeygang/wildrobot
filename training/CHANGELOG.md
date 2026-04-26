@@ -65,18 +65,41 @@ Three load-bearing things to call out:
 3. step_length_mean now matches TB to 0.3 mm at vx=0.15, exactly as
    predicted: `vx · cycle/2 = 0.15 · 0.72/2 = 0.054 m`.
 
-### Outstanding
+### Scope (what this is and isn't)
 
-- Residual size-normalised gate failures (`step_per_leg`,
-  `swing_clearance_per_com_height`) are bounded by hardware
-  proportions (WR has 1.76× longer legs than TB) and the operating-vx
-  Froude argument from the parity scorecard, not by further
-  `cycle_time_s` tuning.  They belong in a curriculum / operating-point
-  decision or in a separate `foot_step_height_m` slice.
-- TB-side parity helper not re-runnable on this machine (`joblib` /
-  `lz4` missing in TB venv); TB code is untouched between Phase 1 and
-  Phase 6, so the cached TB numbers in `tools/parity_report.json` stay
-  valid for the comparison above.
+This is one tuning slice, not a redesign-complete event.  Per the
+"What 'On Par or Better' Means" rule in
+`training/docs/reference_architecture_comparison.md`, WR ≈ TB requires
+P0 + size-normalised P1A + P2 + P1 + own-G4/G7 all to clear.  After
+this commit, P0 and the absolute P1A gates pass; **P2 swing_gate, all
+four normalised P1A gates, and the P1 closed-loop layer remain
+unresolved.**
+
+### Open gates after this slice (vs cached TB-2xc, `tools/parity_report.json`)
+
+| Layer | Gate | Post-Phase-6 | Verdict |
+|---|---|---|---|
+| P2 absolute | `swing_foot_z_step_max_m` ≤ 1.10× TB | 1.83× TB | **FAIL** |
+| P1A normalised | `step_length_per_leg` ≥ 0.85× TB | 0.56× TB | **FAIL** |
+| P1A normalised | `swing_clearance_per_com_height` ≥ 0.85× TB | 0.82× TB | **FAIL** |
+| P1A normalised | `cadence_froude_norm` ≤ 1.20× TB | 1.25× TB | **FAIL** |
+| P1A normalised | `swing_foot_z_step_per_clearance` ≤ 1.10× TB | 1.40× TB | **FAIL** |
+| P1 trackability | full closed-loop replay | **not re-measured** | unknown |
+
+### Follow-up needed before "WR on par or better" can be claimed
+
+1. Re-run the full parity tool on a TB-capable machine to refresh P1
+   under `cycle_time = 0.72`.  Local TB venv is missing `joblib`/`lz4`
+   (same caveat as Phase 1 / Phase 3 closeouts); TB code is untouched,
+   so cached TB numbers in `tools/parity_report.json` stay valid for the
+   absolute / normalised P1A / P2 ratios above.
+2. Address the `swing_foot_z_step` P2 gap — likely a planner-shape
+   change (flatter apex / different swing-z profile), not a single
+   scalar.  Phase 6 nudged it (0.0201 → 0.0183) but it is still 1.83× TB.
+3. Decide on `foot_step_height_m` (closes
+   `swing_clearance_per_com_height`, trades against P2 smoothness) and
+   on operating `vx` / curriculum (closes `step_length_per_leg` /
+   `cadence_froude_norm` at WR's larger size).
 
 ## [v0.20.1-phase4-runtime-target-alignment] - 2026-04-25: Phase 4 landed (TB-style torso target semantics)
 

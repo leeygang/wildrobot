@@ -887,7 +887,11 @@ section:**
   the end of the scorecard's "Architectural alignment moves" section,
   not a knob this phase owns).
 
-**Why this is a real tuning gain (not architecture-masking):**
+**Why this slice is legitimate Phase 6 work (not architecture-masking):**
+
+This says "this is a valid tuning slice", **not** "this completes the
+redesign".  The decision-rule check above shows several gates still
+FAIL.
 
 1. The gate failures Phase 6 was scoped against (`cadence_norm`,
    `step_length_per_leg`, absolute `step_len`) are exactly the gaps the
@@ -903,32 +907,82 @@ section:**
    consequence of the IK no longer needing to stretch the leg as far
    forward at higher vx — a longer cycle drops the per-frame foot
    excursion at every vx.
-4. The remaining `step_per_leg` gap (0.564 vs 0.85× target) is bounded
-   below by the operating Froude point: at TB's nominal `vx = 0.15`,
-   WR's longer legs make `vx² / (g · h)` smaller for WR than TB by
-   construction.  Closing the rest belongs in a curriculum/operating-
-   point decision, not in further tuning of `cycle_time_s`.
+4. The residual `step_per_leg` and `cadence_froude_norm` failures
+   *appear* hardware-bounded at the current operating point: TB's
+   nominal `vx = 0.15` puts WR's larger leg/COM at a smaller Froude
+   number than TB by construction.  This phase does not prove that
+   bound; it proposes that closing the rest needs an operating-vx /
+   curriculum decision rather than more `cycle_time_s` tuning, and
+   leaves the proof to that follow-up.
 
-**Outstanding caveats / follow-ups:**
-- TB-side parity helper not re-run on this machine (TB venv missing
-  `joblib`/`lz4`, same caveat as Phase 1/3 closeouts).  TB code is
-  untouched, so the TB numbers in `tools/parity_report.json` (commit
-  `c1b815d`) are the right baseline for the comparison above.  A full
-  refresh on a TB-capable machine will produce a coherent post-Phase-6
-  parity report.
-- `swing_clearance_per_com_height` is essentially unchanged (0.144 →
-  0.143).  Closing the residual 0.85×-of-TB gate would require bumping
-  `foot_step_height_m` (e.g. 0.04 → 0.045), which trades against the
-  P2 swing-step smoothness.  Left for a follow-up tuning slice if the
-  swing-clearance margin proves load-bearing in PPO; not bundled here
-  to keep this phase to a single knob.
-- `step_per_leg` residual is bounded by the operating-vx Froude
-  argument above; closing it is a curriculum question, not a planner
-  knob.
-- This phase changes a planner timing constant; the env's
+**What Phase 6 does NOT close (verdicts after the change, vs cached TB-2xc):**
+
+This is a single tuning slice, not the end of the redesign.  Per the
+"What 'On Par or Better' Means" decision rule below, WR is on par with
+or better than TB only when P0 + size-normalised P1A + P2 + P1 all clear.
+After Phase 6:
+
+| Layer | Gate | Post-Phase-6 | Verdict |
+|---|---|---|---|
+| P2 absolute | `swing_foot_z_step_max_m` ≤ 1.10× TB | 1.83× TB | **FAIL** |
+| P1A normalised | `step_length_per_leg` ≥ 0.85× TB | 0.56× TB | **FAIL** |
+| P1A normalised | `swing_clearance_per_com_height` ≥ 0.85× TB | 0.82× TB | **FAIL** |
+| P1A normalised | `cadence_froude_norm` ≤ 1.20× TB | 1.25× TB | **FAIL** |
+| P1A normalised | `swing_foot_z_step_per_clearance` ≤ 1.10× TB | 1.40× TB | **FAIL** |
+| P1 trackability | full closed-loop replay | **not re-measured** under cycle=0.72 | unknown |
+
+So the doc's own "on par or better" decision rule is **not satisfied
+yet**.  Phase 6 closes the absolute step_length / cadence / DS-fraction
+gates and the full-matrix P0 gate, but four normalised P1A gates, the P2
+swing-foot smoothness gate, and the P1 closed-loop layer are still open.
+Reading this closeout as "WR ≈ TB now" would overstate the result.
+
+**What still has to happen for the redesign to complete:**
+
+1. Re-run the full parity tool on a TB-capable machine.  The local TB
+   venv is missing `joblib` / `lz4` (same caveat as Phase 1 / Phase 3
+   closeouts), so P1 was not re-measured under `cycle_time = 0.72`.  TB
+   code itself is untouched between Phase 1 and Phase 6, so the cached
+   TB numbers in `tools/parity_report.json` (commit `c1b815d`) are
+   still the right TB baseline for the absolute / normalised P1A / P2
+   ratios above; only the P1 closed-loop layer truly needs a fresh full
+   parity run to update both sides.
+2. Address the P2 `swing_foot_z_step` absolute / per-clearance gap.
+   Phase 6 nudged it (0.0201 → 0.0183) but it is still 1.83× TB
+   absolute and 1.40× TB per-clearance.  Likely candidates: a flatter
+   swing-z apex (TB's triangular-then-flat profile vs WR's half-sine),
+   or revisiting the Phase 1 envelope choice now that the cycle is
+   longer.
+3. Address the residual size-normalised P1A gates.  Two distinct
+   knobs:
+   - `swing_clearance_per_com_height` is one `foot_step_height_m`
+     bump away from PASS (e.g. 0.040 → 0.045 puts it ≈ 0.16, gate
+     0.149).  The trade-off is P2 swing-step smoothness; this is a
+     legitimate next Phase 6 slice if the smoothness regression stays
+     bounded.
+   - `step_length_per_leg` and `cadence_froude_norm` are bounded
+     below / above by hardware proportions (WR has 1.76× longer legs
+     than TB) at the current operating point.  Closing them needs an
+     operating-vx / curriculum decision (running WR at TB's Froude
+     point ≈ vx 0.19 m/s rather than 0.15 m/s), not further
+     `cycle_time_s` tuning.
+4. Decide whether to amend the parity tool's `_SHARED_LEG_NAMES` /
+   gate thresholds for the WR-vs-TB hardware delta, or to live with
+   "normalised gates document the gap" as the policy.  Either is
+   defensible; the current doc already says the normalised view is the
+   primary reading, so leaving the gates failing-as-evidence is
+   coherent.
+
+**Implementation-side caveats unchanged by this slice:**
+
+- This phase changes a planner timing constant.  The env's
   `cycle_time_s` consumers (e.g. body-phase reward terms in
   `wildrobot_env.py`) read the same value through `ZMPWalkConfig`
   defaults, so the change propagates without further plumbing.
+- The Phase 5 cache fingerprint (`_wr_generator_fingerprint` in
+  `tools/reference_geometry_parity.py`) hashes `zmp_walk.py` and
+  `asdict(ZMPWalkConfig())`, so any future `cycle_time_s` change is
+  picked up automatically by the parity tool's library cache.
 
 ### Execution order
 
