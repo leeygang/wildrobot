@@ -250,112 +250,296 @@ def _diag_d1_contact_match_split(trace: PerStepTrace) -> dict:
     }
 
 
-def _diag_d2_mid_swing_tap_down(trace: PerStepTrace) -> dict:
-    """D2: count mid-swing tap-down events per foot.
+def _collapse_tap_down_events(
+    ref_contact: list[bool],
+    phys_contact: list[bool],
+    i_swing: list[int],
+    n_steps: int,
+) -> list[dict]:
+    """Collapse contiguous (commanded-swing AND physical-contact) frames
+    into distinct tap-down events.
 
-    A tap-down event = ``ref_contact[foot] == 0`` (commanded swing)
-    AND ``phys_contact[foot] == 1`` (foot dipped into floor).  Boundary
-    swing frames (``i_swing in {0, swing_window-1}``) are excluded
-    from the "mid-swing" count because the planner intentionally
-    commands z=0 there; only frames with i_swing in [1, swing_window-2]
-    count as a mid-swing tap-down.
+    A "tap-down event" = a maximal contiguous span of consecutive
+    steps where ``not ref_contact[i]`` AND ``phys_contact[i]``.
+    Counting per-step rather than per-event would overcount: a single
+    tap that lasts 3 frames is one physical event, not three.
+
+    Boundary-only events (where every frame in the span has
+    ``i_swing in {0, swing_window-1}``) are filtered out because the
+    planner commands z=0 at boundary frames and physical contact
+    there is expected behaviour, not a tap-down.
+    """
+    boundary = {0, _SWING_WINDOW - 1}
+    events: list[dict] = []
+    in_event = False
+    span_start = -1
+    span_i_swings: list[int] = []
+    for i in range(n_steps):
+        is_tap = (not ref_contact[i]) and phys_contact[i]
+        if is_tap and not in_event:
+            in_event = True
+            span_start = i
+            span_i_swings = [int(i_swing[i])]
+        elif is_tap and in_event:
+            span_i_swings.append(int(i_swing[i]))
+        elif (not is_tap) and in_event:
+            in_event = False
+            non_boundary = [j for j in span_i_swings if j not in boundary and 0 <= j < _SWING_WINDOW]
+            if non_boundary:
+                events.append(
+                    {
+                        "step_start": span_start,
+                        "step_end": i - 1,
+                        "duration_frames": len(span_i_swings),
+                        "i_swing_start": span_i_swings[0],
+                        "i_swing_end": span_i_swings[-1],
+                        "i_swing_min": min(span_i_swings),
+                        "i_swing_max": max(span_i_swings),
+                    }
+                )
+    if in_event:
+        non_boundary = [j for j in span_i_swings if j not in boundary and 0 <= j < _SWING_WINDOW]
+        if non_boundary:
+            events.append(
+                {
+                    "step_start": span_start,
+                    "step_end": n_steps - 1,
+                    "duration_frames": len(span_i_swings),
+                    "i_swing_start": span_i_swings[0],
+                    "i_swing_end": span_i_swings[-1],
+                    "i_swing_min": min(span_i_swings),
+                    "i_swing_max": max(span_i_swings),
+                }
+            )
+    return events
+
+
+def _diag_d2_mid_swing_tap_down(trace: PerStepTrace) -> dict:
+    """D2: count distinct mid-swing tap-down events per foot.
+
+    A tap-down event = a maximal contiguous span where the planner
+    commanded swing (``ref_contact[foot] == 0``) AND the physics
+    reported floor contact (``phys_contact[foot] == 1``).  The
+    contiguous-span collapsing avoids overcounting a single physical
+    tap that spans multiple frames.
+
+    Boundary-only events (entire span at ``i_swing in {0, swing_window-1}``)
+    are filtered because the planner commands z=0 there and contact
+    is expected.
     """
     n = trace.survived_steps
-    events = {"left": [], "right": []}
-    boundary = {0, _SWING_WINDOW - 1}
-    for i in range(n):
-        for foot, ref_arr, phys_arr, i_swing_arr in [
-            ("left", trace.contact_left_ref, trace.contact_left_phys, trace.i_swing_left),
-            ("right", trace.contact_right_ref, trace.contact_right_phys, trace.i_swing_right),
-        ]:
-            if (not ref_arr[i]) and phys_arr[i]:
-                i_swing = i_swing_arr[i]
-                if 0 <= i_swing < _SWING_WINDOW and i_swing not in boundary:
-                    events[foot].append({"step_idx": i, "i_swing": int(i_swing)})
-    total = len(events["left"]) + len(events["right"])
-    # Express as events per swing cycle (rough denominator).
+    left_events = _collapse_tap_down_events(
+        trace.contact_left_ref, trace.contact_left_phys, trace.i_swing_left, n
+    )
+    right_events = _collapse_tap_down_events(
+        trace.contact_right_ref, trace.contact_right_phys, trace.i_swing_right, n
+    )
+    total = len(left_events) + len(right_events)
     n_swing_cycles = max(1, n // _SWING_WINDOW)
+    events_per_cycle = float(total / n_swing_cycles)
+    # Mean / max event duration as secondary signals — a long tap
+    # suggests dragging, a short tap suggests a bounce.
+    all_durations = [e["duration_frames"] for e in left_events + right_events]
+    mean_dur = float(np.mean(all_durations)) if all_durations else 0.0
+    max_dur = int(np.max(all_durations)) if all_durations else 0
     return {
-        "left_event_count": len(events["left"]),
-        "right_event_count": len(events["right"]),
+        "left_event_count": len(left_events),
+        "right_event_count": len(right_events),
         "total_event_count": total,
-        "events_per_swing_cycle": float(total / n_swing_cycles),
-        "left_events": events["left"][:20],   # first 20 for inspection
-        "right_events": events["right"][:20],
+        "events_per_swing_cycle": events_per_cycle,
+        "mean_event_duration_frames": mean_dur,
+        "max_event_duration_frames": max_dur,
+        "left_events": left_events[:20],   # first 20 for inspection
+        "right_events": right_events[:20],
         "interpretation": (
-            "planner-shape-bound" if total >= n_swing_cycles  # ≥1 event/cycle
-            else "no-mid-swing-tap-down"
+            # Threshold tuned to corrected metric (distinct events,
+            # not per-step contacts).  >= 0.5 distinct events/cycle is
+            # a meaningful planner-shape signal; <= 0.3 is the Phase
+            # 12A exit criterion.
+            "planner-shape-bound" if events_per_cycle >= 0.5
+            else "borderline" if events_per_cycle > 0.3
+            else "clear"
         ),
     }
 
 
 def _diag_d3_d4_saturation_by_i_swing(trace: PerStepTrace) -> dict:
-    """D3 + D4: saturation event distribution across the swing window.
+    """D3 + D4: saturation distribution across the swing window, broken
+    down per joint AND per swing side.
 
-    Buckets ``any-joint-saturated`` events by ``i_swing`` index
-    (combined across both feet — the question is whether the
-    plantarflex-crossing frames specifically push the actuator stack).
+    The earlier "any-joint" reduction proved timing-coincidence between
+    the down-cross frame and saturation but did not establish mechanism:
+    "any joint" could be a stance-side hip or knee, not the swing-side
+    ankle the un-plantarflex hypothesis predicts.  This refactored
+    diagnostic reports:
+
+    - per-joint sat rate by ``i_swing`` (8 joints × ``swing_window``)
+    - **swing-side ankle** sat rate by ``i_swing`` — the joint whose
+      saturation directly supports the un-plantarflex hypothesis
+    - swing-side hip-pitch / knee sat rates for comparison
+    - any-joint sat rate (kept for backward comparison with the prior
+      diagnostic output)
+
+    The "Phase-7-boundary-bound" interpretation now requires the
+    **swing-side ankle** to cluster at the down-cross, not just any
+    joint.  If any-joint clusters but swing-side ankle does not, the
+    interpretation is "down-cross-correlated (mechanism-unclear)" and
+    the un-plantarflex hypothesis is *suggestive*, not confirmed.
     """
     n = trace.survived_steps
-    bucket_count = np.zeros(_SWING_WINDOW, dtype=np.int64)
-    bucket_total = np.zeros(_SWING_WINDOW, dtype=np.int64)
-    sat_at_threshold_up = 0
-    sat_at_threshold_down = 0
-    threshold_up_visits = 0
-    threshold_down_visits = 0
+    n_joints = len(_WR_SHARED_LEG_NAMES)
+
+    # joint_idx_for_swing_side: when LEFT is in swing, the swing-side
+    # ankle is left_ankle_pitch (idx 6); same for right.
+    swing_side_ankle = {"left": 6, "right": 7}
+    swing_side_hip_pitch = {"left": 0, "right": 1}
+    swing_side_knee = {"left": 4, "right": 5}
+
+    # Per-joint × i_swing bucketed counts.
+    per_joint_count = np.zeros((n_joints, _SWING_WINDOW), dtype=np.int64)
+    per_joint_total = np.zeros((n_joints, _SWING_WINDOW), dtype=np.int64)
+
+    # Swing-side-specific (the side that's actually swinging this frame).
+    swing_ankle_count = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    swing_ankle_total = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    swing_hip_pitch_count = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    swing_hip_pitch_total = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    swing_knee_count = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    swing_knee_total = np.zeros(_SWING_WINDOW, dtype=np.int64)
+
+    # Backward-compatible "any-joint" bucket so the regression vs the
+    # prior diagnostic is visible.
+    any_count = np.zeros(_SWING_WINDOW, dtype=np.int64)
+    any_total = np.zeros(_SWING_WINDOW, dtype=np.int64)
+
     for i in range(n):
-        any_sat = any(trace.sat_per_joint[i])
-        for i_swing in (trace.i_swing_left[i], trace.i_swing_right[i]):
-            if 0 <= i_swing < _SWING_WINDOW:
-                bucket_total[i_swing] += 1
-                if any_sat:
-                    bucket_count[i_swing] += 1
-                if i_swing == _PLANTARFLEX_UP_CROSS_IDX:
-                    threshold_up_visits += 1
-                    if any_sat:
-                        sat_at_threshold_up += 1
-                if i_swing == _PLANTARFLEX_DOWN_CROSS_IDX:
-                    threshold_down_visits += 1
-                    if any_sat:
-                        sat_at_threshold_down += 1
-    rate_per_idx = (bucket_count / np.maximum(bucket_total, 1)).tolist()
-    overall_rate = float(bucket_count.sum() / max(bucket_total.sum(), 1))
-    threshold_up_rate = float(sat_at_threshold_up / max(threshold_up_visits, 1))
-    threshold_down_rate = float(sat_at_threshold_down / max(threshold_down_visits, 1))
-    # "Cluster" interpretation: threshold-frame sat rates are >= 1.5x
-    # the swing-window mean AND the swing-window mean is >= 0.05.
-    cluster = (
-        overall_rate >= 0.05
-        and (threshold_up_rate >= 1.5 * overall_rate or threshold_down_rate >= 1.5 * overall_rate)
+        sat = trace.sat_per_joint[i]
+        any_sat = any(sat)
+        # Iterate per (foot, i_swing) so a frame where both feet are in
+        # "swing" (shouldn't happen in proper alternating gait, but
+        # defend against it) still gets attributed correctly per side.
+        for foot, i_swing_arr in (("left", trace.i_swing_left), ("right", trace.i_swing_right)):
+            i_swing = i_swing_arr[i]
+            if not (0 <= i_swing < _SWING_WINDOW):
+                continue
+            # Per-joint × i_swing
+            for j in range(n_joints):
+                per_joint_total[j, i_swing] += 1
+                if sat[j]:
+                    per_joint_count[j, i_swing] += 1
+            # Swing-side-specific buckets
+            ankle_idx = swing_side_ankle[foot]
+            hip_idx = swing_side_hip_pitch[foot]
+            knee_idx = swing_side_knee[foot]
+            swing_ankle_total[i_swing] += 1
+            if sat[ankle_idx]:
+                swing_ankle_count[i_swing] += 1
+            swing_hip_pitch_total[i_swing] += 1
+            if sat[hip_idx]:
+                swing_hip_pitch_count[i_swing] += 1
+            swing_knee_total[i_swing] += 1
+            if sat[knee_idx]:
+                swing_knee_count[i_swing] += 1
+            # any-joint backward compatibility
+            any_total[i_swing] += 1
+            if any_sat:
+                any_count[i_swing] += 1
+
+    def _rate(count: np.ndarray, total: np.ndarray) -> list[float]:
+        return (count / np.maximum(total, 1)).tolist()
+
+    swing_ankle_rate = _rate(swing_ankle_count, swing_ankle_total)
+    any_rate = _rate(any_count, any_total)
+    overall_any = float(any_count.sum() / max(any_total.sum(), 1))
+    overall_swing_ankle = float(swing_ankle_count.sum() / max(swing_ankle_total.sum(), 1))
+
+    # Cluster interpretation: the SWING-SIDE ANKLE must cluster at
+    # the down-cross (mechanism-supporting) for the verdict to be
+    # "Phase-7-boundary-bound".  If any-joint clusters but swing-side
+    # ankle doesn't, the verdict is "down-cross-correlated" — timing
+    # coincidence without joint-level mechanism evidence.
+    swing_ankle_at_up = swing_ankle_rate[_PLANTARFLEX_UP_CROSS_IDX]
+    swing_ankle_at_down = swing_ankle_rate[_PLANTARFLEX_DOWN_CROSS_IDX]
+    any_at_down = any_rate[_PLANTARFLEX_DOWN_CROSS_IDX]
+    any_at_up = any_rate[_PLANTARFLEX_UP_CROSS_IDX]
+
+    swing_ankle_cluster = (
+        overall_swing_ankle >= 0.05
+        and (
+            swing_ankle_at_up >= 1.5 * overall_swing_ankle
+            or swing_ankle_at_down >= 1.5 * overall_swing_ankle
+        )
     )
+    any_cluster = (
+        overall_any >= 0.05
+        and (any_at_up >= 1.5 * overall_any or any_at_down >= 1.5 * overall_any)
+    )
+
+    if swing_ankle_cluster:
+        interpretation = "Phase-7-boundary-bound"
+    elif any_cluster:
+        interpretation = "down-cross-correlated-mechanism-unclear"
+    elif overall_any >= 0.05:
+        interpretation = "uniform-sat-distribution"
+    else:
+        interpretation = "no-significant-sat"
+
     return {
         "swing_z_table_m": _SWING_Z_TABLE.tolist(),
         "plantarflex_up_cross_i_swing": _PLANTARFLEX_UP_CROSS_IDX,
         "plantarflex_down_cross_i_swing": _PLANTARFLEX_DOWN_CROSS_IDX,
-        "sat_rate_by_i_swing": rate_per_idx,
-        "sat_count_by_i_swing": bucket_count.tolist(),
-        "visits_by_i_swing": bucket_total.tolist(),
-        "swing_window_mean_sat_rate": overall_rate,
-        "sat_rate_at_up_cross": threshold_up_rate,
-        "sat_rate_at_down_cross": threshold_down_rate,
-        "interpretation": (
-            "Phase-7-boundary-bound" if cluster
-            else "uniform-sat-distribution" if overall_rate >= 0.05
-            else "no-significant-sat"
-        ),
+        "joint_names": list(_WR_SHARED_LEG_NAMES),
+        # Backward-compat: any-joint bucket
+        "any_joint_sat_rate_by_i_swing": any_rate,
+        "any_joint_sat_count_by_i_swing": any_count.tolist(),
+        "any_joint_visits_by_i_swing": any_total.tolist(),
+        "swing_window_mean_any_sat_rate": overall_any,
+        "any_sat_rate_at_up_cross": any_at_up,
+        "any_sat_rate_at_down_cross": any_at_down,
+        # Per-joint × i_swing breakdown (8 joints × swing_window)
+        "per_joint_sat_rate_by_i_swing": {
+            name: _rate(per_joint_count[j], per_joint_total[j])
+            for j, name in enumerate(_WR_SHARED_LEG_NAMES)
+        },
+        # Mechanism-supporting: swing-side ankle (the joint whose
+        # un-plantarflex is the hypothesised root cause)
+        "swing_side_ankle_sat_rate_by_i_swing": swing_ankle_rate,
+        "swing_window_mean_swing_ankle_sat_rate": overall_swing_ankle,
+        "swing_side_ankle_sat_at_up_cross": swing_ankle_at_up,
+        "swing_side_ankle_sat_at_down_cross": swing_ankle_at_down,
+        # Comparison: swing-side hip-pitch / knee
+        "swing_side_hip_pitch_sat_rate_by_i_swing": _rate(swing_hip_pitch_count, swing_hip_pitch_total),
+        "swing_side_knee_sat_rate_by_i_swing": _rate(swing_knee_count, swing_knee_total),
+        "interpretation": interpretation,
     }
 
 
 def _verdict(d1: dict, d2: dict, d3d4: dict) -> dict:
-    """Compose the four sub-verdicts into a single decision."""
+    """Compose the four sub-verdicts into a single decision.
+
+    Verdict labels:
+    - ``cycle_0_bound`` — D1 shows large positive gap (rest >> first)
+    - ``planner_shape_bound`` — D2 distinct events ≥ 0.5 / cycle
+    - ``phase_7_boundary_bound`` — D3+D4 swing-side ANKLE clusters at
+      down-cross (mechanism-supporting evidence)
+    - ``down_cross_correlated_mechanism_unclear`` — D3+D4 any-joint
+      clusters at down-cross but swing-side ankle does not (timing
+      coincidence without joint-level mechanism evidence)
+    - ``actuator_stack_bound`` — D1 / D2 clean and D3+D4 sat
+      distribution is uniform across the swing window
+    """
+    d3d4_interp = d3d4["interpretation"]
     components = {
         "cycle_0_bound": d1["interpretation"] == "cycle-0-bound",
         "planner_shape_bound": d2["interpretation"] == "planner-shape-bound",
-        "phase_7_boundary_bound": d3d4["interpretation"] == "Phase-7-boundary-bound",
+        "phase_7_boundary_bound": d3d4_interp == "Phase-7-boundary-bound",
+        "down_cross_correlated_mechanism_unclear": (
+            d3d4_interp == "down-cross-correlated-mechanism-unclear"
+        ),
         "actuator_stack_bound": (
             d1["interpretation"] != "cycle-0-bound"
             and d2["interpretation"] != "planner-shape-bound"
-            and d3d4["interpretation"] in ("uniform-sat-distribution", "no-significant-sat")
+            and d3d4_interp in ("uniform-sat-distribution", "no-significant-sat")
         ),
     }
     active = [k for k, v in components.items() if v]
@@ -408,37 +592,83 @@ def _print_human(result: dict) -> None:
     print(f"     verdict                         = {d1['interpretation']}")
     d2 = result["d2_mid_swing_tap_down"]
     print()
-    print("  D2: mid-swing tap-down events (planner-shape regression)")
-    print(f"     left foot tap-down events       = {d2['left_event_count']}")
-    print(f"     right foot tap-down events      = {d2['right_event_count']}")
-    print(f"     total                           = {d2['total_event_count']}")
-    print(f"     per swing cycle                 = {d2['events_per_swing_cycle']:.3f}")
+    print("  D2: distinct mid-swing tap-down events (collapsed contiguous spans)")
+    print(f"     left foot distinct events       = {d2['left_event_count']}")
+    print(f"     right foot distinct events      = {d2['right_event_count']}")
+    print(f"     total distinct events           = {d2['total_event_count']}")
+    print(f"     events per swing cycle          = {d2['events_per_swing_cycle']:.3f}")
+    print(f"     mean event duration (frames)    = {d2['mean_event_duration_frames']:.2f}")
+    print(f"     max event duration (frames)     = {d2['max_event_duration_frames']}")
     print(f"     verdict                         = {d2['interpretation']}")
     d3 = result["d3_d4_saturation_by_i_swing"]
     print()
-    print("  D3+D4: actuator saturation by i_swing (Phase-7-boundary check)")
-    print(f"     swing-window mean sat rate      = {d3['swing_window_mean_sat_rate']:.4f}")
+    print("  D3+D4: actuator saturation by i_swing — per joint AND swing-side")
+    print()
+    print("    [swing-side ANKLE — mechanism-supporting joint for un-plantarflex hypothesis]")
     print(
-        f"     sat rate at up-cross (i={d3['plantarflex_up_cross_i_swing']})    "
-        f"     = {d3['sat_rate_at_up_cross']:.4f}"
+        f"     mean sat rate (swing-side ankle) = "
+        f"{d3['swing_window_mean_swing_ankle_sat_rate']:.4f}"
     )
     print(
-        f"     sat rate at down-cross (i={d3['plantarflex_down_cross_i_swing']})  "
-        f"     = {d3['sat_rate_at_down_cross']:.4f}"
+        f"     swing-side ankle at up-cross   (i={d3['plantarflex_up_cross_i_swing']:2d})"
+        f" = {d3['swing_side_ankle_sat_at_up_cross']:.4f}"
     )
-    print(f"     sat rate by i_swing             =")
-    for i, rate in enumerate(d3["sat_rate_by_i_swing"]):
+    print(
+        f"     swing-side ankle at down-cross (i={d3['plantarflex_down_cross_i_swing']:2d})"
+        f" = {d3['swing_side_ankle_sat_at_down_cross']:.4f}"
+    )
+    print()
+    print("    [any-joint — backward-compat, prior diagnostic's metric]")
+    print(
+        f"     mean sat rate (any joint)        = "
+        f"{d3['swing_window_mean_any_sat_rate']:.4f}"
+    )
+    print(
+        f"     any-joint at up-cross   (i={d3['plantarflex_up_cross_i_swing']:2d})"
+        f"     = {d3['any_sat_rate_at_up_cross']:.4f}"
+    )
+    print(
+        f"     any-joint at down-cross (i={d3['plantarflex_down_cross_i_swing']:2d})"
+        f"     = {d3['any_sat_rate_at_down_cross']:.4f}"
+    )
+    print()
+    print("    [per-joint sat rate by i_swing — ankle (swing-side picks): see above]")
+    swing_ankle_rate = d3["swing_side_ankle_sat_rate_by_i_swing"]
+    swing_hip_rate = d3["swing_side_hip_pitch_sat_rate_by_i_swing"]
+    swing_knee_rate = d3["swing_side_knee_sat_rate_by_i_swing"]
+    any_rate = d3["any_joint_sat_rate_by_i_swing"]
+    visits = d3["any_joint_visits_by_i_swing"]
+    print(
+        "        i_swing | z_cmd(m) | swing-ankle | swing-hip | swing-knee | any-joint | visits"
+    )
+    for i in range(_SWING_WINDOW):
         marker = ""
         if i == d3["plantarflex_up_cross_i_swing"]:
-            marker = "  <- plantarflex up-cross"
+            marker = " <- up-cross"
         elif i == d3["plantarflex_down_cross_i_swing"]:
-            marker = "  <- plantarflex down-cross"
+            marker = " <- down-cross"
         print(
-            f"        i_swing={i:2d}  z_cmd={d3['swing_z_table_m'][i]:.4f}m"
-            f"  sat_rate={rate:.4f}  visits={d3['visits_by_i_swing'][i]}"
+            f"        {i:7d} | {d3['swing_z_table_m'][i]:8.4f} |"
+            f" {swing_ankle_rate[i]:11.4f} | {swing_hip_rate[i]:9.4f} |"
+            f" {swing_knee_rate[i]:10.4f} | {any_rate[i]:9.4f} | {visits[i]:6d}"
             f"{marker}"
         )
     print(f"     verdict                         = {d3['interpretation']}")
+    print()
+    print("    [non-zero per-joint sat rates — ALL 8 shared leg joints]")
+    pj = d3["per_joint_sat_rate_by_i_swing"]
+    nonzero_joints = [name for name, rates in pj.items() if max(rates) > 0.0]
+    if not nonzero_joints:
+        print("        (no joint saturated at any i_swing — sat is zero everywhere)")
+    else:
+        for name in nonzero_joints:
+            rates = pj[name]
+            peak_i = int(np.argmax(rates))
+            peak_v = float(max(rates))
+            print(
+                f"        {name:24s} peak={peak_v:.4f} at i_swing={peak_i:2d}"
+                f" | full: [{', '.join(f'{r:.3f}' for r in rates)}]"
+            )
     v = result["verdict"]
     print()
     print(f"  → composite verdict: {v['verdict']}")
