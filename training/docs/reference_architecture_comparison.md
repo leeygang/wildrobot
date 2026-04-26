@@ -413,6 +413,162 @@ Acceptance statement:
 - success does not require code changes or parity movement yet; this is a
   design-decision phase
 
+#### Phase 2 closeout (2026-04-25, doc-only)
+
+**Decision: WR adopts TB-style command-integrated runtime target
+semantics.**
+
+The WR runtime reference target for body / pelvis / torso position
+(and any reward consuming a "where should the body be" signal)
+becomes the path-integrated command:
+
+```
+path_state = integrate(velocity_cmd, yaw_rate_cmd, t_since_reset)
+ref_torso_xy(t)  = path_state.path_pos[:2]
+ref_torso_quat(t) = path_state.path_rot · default_rot
+ref_lin_vel(t)   = velocity_cmd       (already runtime-derived)
+ref_ang_vel(t)   = [0, 0, yaw_rate_cmd]
+```
+
+`q_ref` and the planner's per-frame foot/contact annotations stay
+sourced from the offline trajectory window (the current
+`RuntimeReferenceService` slice). Only the body-pose / body-velocity
+reference channels move to the path-integrated form.
+
+**Why this decision (rationale grounded in repo evidence):**
+
+1. **TB is the default architecture per the Governing Policy.** Only
+   a measured benefit to keeping the planner-phase target would
+   override that. None exists today.
+2. **The planner-phase target couples reward signals to planner
+   choices.** Today
+   `wildrobot_env.py:801-818` reads
+   `ref_pelvis_pos = win["pelvis_pos"]` (the LIPM-LQR COM trajectory
+   from `control/zmp/zmp_walk.py`) and uses it as the
+   `_reward_torso_pos_xy` target. Any planner change (ALIP, mocap,
+   different cost weights) silently shifts the reward target.
+   Path-integrated targets keep the reward signal stable across
+   planner iterations.
+3. **TB consumes the path-integrated form** at
+   `toddlerbot/locomotion/mjx_env.py:2264-2270`
+   (`torso_pos_ref = info["state_ref"]["qpos"][:2]`, where
+   `state_ref["qpos"][:2]` is built from `path_state.path_pos`
+   integrated at runtime per
+   `toddlerbot/reference/walk_zmp_ref.py:228-236`). Aligning here
+   means WR's reward consumes the same semantic class TB does.
+4. **The runtime computation is simpler, not more complex.** WR's
+   env already threads `loc_ref_offline_step_idx` through state
+   (`wildrobot_env.py:1342, 1480`). Computing
+   `t_since_reset = step_idx · dt` and
+   `path_pos = velocity_cmd · t_since_reset` is one multiply and one
+   add per step — strictly less work than the array lookup that
+   produces today's `win["pelvis_pos"]`.
+5. **The planner's `pelvis_pos` field stays useful** (it's still the
+   target the IK solved against, so it stays as the sanity-check
+   diagnostic in `feet_track_raw` and similar). Only the reward
+   target moves; the asset schema does not need to grow or shrink.
+
+**Why the planner-phase target was rejected:**
+
+- *Materially better parity?* No. The planner's COM trajectory and
+  the command-integrated path agree to within sub-mm in steady
+  state at the smoke command (LIPM Q=I, R=0.1 produces a tightly-
+  tracking LQR with mm-scale lateral oscillation), so the reward
+  signal differs by noise in steady state. The planner-phase target
+  carries the from-rest startup transient and the LIPM lateral
+  swing into the reward; the command-integrated target does not.
+  Neither has been shown to produce a measurable reward-quality
+  benefit; the path-integrated form is cleaner.
+- *Materially better trackability or safety?* No. Both targets
+  advance forward at `vx · t` in steady state. There is no scenario
+  where tracking the planner's noisier path produces safer behavior
+  than tracking the clean command-integrated path.
+- *Implementation complexity argument?* The opposite —
+  path-integration is trivially simpler than the existing array
+  lookup (see point 4 above).
+
+None of the three rejection conditions hold, so the default
+(TB-style) is taken.
+
+**Implementation map for Phase 3 (asset content alignment):**
+
+Phase 3 is **independent of this Phase 2 decision**. It can land
+before, after, or in parallel.
+
+What changes in Phase 3:
+- `control/zmp/zmp_walk.py::_generate_at_step_length` adds a
+  fixed-base FK pass after the IK step (mirroring
+  `toddlerbot/algorithms/zmp_walk.py:153-212 mujoco_replay`).
+- `control/references/reference_library.py::ReferenceTrajectory`
+  schema gains: `body_pos`, `body_quat`, `body_lin_vel`,
+  `body_ang_vel`, `site_pos` (per-frame, FK-realised).
+- `control/references/runtime_reference_service.py::_StackedTrajectory`
+  + `RuntimeReferenceWindow` add the same fields and the
+  `lookup_np` / `lookup_jax` paths plumb them through.
+- Existing `pelvis_pos` field stays for diagnostics +
+  IK-input continuity; new fields are additive.
+
+What does NOT change in Phase 3:
+- The reward target (that's Phase 4).
+- The planner intent (still ZMP / IK).
+- The contact mask field (still planner output).
+
+Acceptance: WR asset stores TB-comparable realized body / site
+quantities; the parity tool's `_wr_fk_and_smoothness` re-FK in
+`tools/reference_geometry_parity.py` becomes a sanity check rather
+than a workaround.
+
+**Implementation map for Phase 4 (runtime consumption alignment):**
+
+Phase 4 lands the Phase 2 decision in code. It depends on Phase 2
+being decided (this commit) but **not** on Phase 3 being landed.
+
+Concrete code changes:
+
+1. **`control/references/runtime_reference_service.py`** — add a
+   small `compute_path_state(t, velocity_cmd, yaw_rate_cmd) ->
+   {path_pos, path_rot, lin_vel, ang_vel}` static helper. Mirrors
+   `toddlerbot/reference/motion_ref.py::integrate_path_state` but
+   stateless: takes elapsed time and command, returns the
+   integrated frame. Pure-NumPy + JAX-friendly; no service state
+   change.
+2. **`training/envs/wildrobot_env.py`**:
+   - Compute `t_since_reset = step_idx · self.dt` (already
+     available via `loc_ref_offline_step_idx`).
+   - Compute `path_state = compute_path_state(t_since_reset,
+     velocity_cmd, yaw_rate_cmd_or_zero)`.
+   - In `_reward_torso_pos_xy`, replace
+     `ref_pelvis_pos[:2]` with `path_state.path_pos[:2]`.
+   - In any future torso_quat reward, use
+     `path_state.path_rot · default_rot`.
+   - Leave `ref_pelvis_pos` available for the diagnostic
+     `feet_track_raw` and any other planner-phase consumer that
+     hasn't been migrated yet (move them in follow-ups, not in
+     Phase 4's first slice).
+3. **No schema change, no `RuntimeReferenceWindow` field change,
+   no asset rebuild.** Phase 4 is reward-consumption-side only.
+
+Acceptance: `_reward_torso_pos_xy` reads a path-integrated target;
+WR no longer tracks planner LIPM-COM jitter as the reward signal.
+P1 trackability is read against the same semantic target class TB
+uses.
+
+**No code change in this phase (Phase 2).** This is the
+design-decision phase. The Phase 3 / Phase 4 implementation maps
+above are the concrete next slices.
+
+Open questions for the implementer of Phase 4:
+
+- Should the path-state integration also handle `yaw_rate_cmd`
+  immediately, or defer to v0.20.4 (yaw-cmd milestone)?
+  Recommendation: build the helper to accept `yaw_rate_cmd` but
+  set it to 0 for the smoke; the helper is identical for the
+  yaw-stationary case, just future-proofed.
+- Should `path_state` be cached in `WildRobotInfo` to avoid
+  recomputation across the reward terms? Recommendation: yes —
+  compute once per step, attach to `state_info`, read from
+  reward functions.
+
 ### Phase 3. Align WR asset content with TB
 
 Goal:
