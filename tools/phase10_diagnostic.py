@@ -75,6 +75,7 @@ from tools.reference_geometry_parity import (  # noqa: E402
     _wr_foot_center_pos,
     _wr_traj,
 )
+from control.zmp.zmp_walk import ZMPWalkGenerator  # noqa: E402
 
 
 # Phase 7 swing-z envelope structure.  Mirrors
@@ -711,19 +712,31 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Fingerprint reference library so we use the same WR library the
-    # parity tool would use.  Phase 5 cache picks up the Phase 7
-    # planner change automatically.
-    lib_args = argparse.Namespace(
-        wr_library_path=args.wr_library_path,
-        wr_library_rebuild=args.wr_library_rebuild,
-        wr_library_no_cache=False,
-        wr_library_cache_dir=".cache/wr_reference_libraries",
-        vx=0.15,
-        nominal_only=False,
-    )
-    lib, lifecycle = _resolve_wr_reference_library(lib_args)
-    print(f"WR library: source={lifecycle.source} cache_key={lifecycle.cache_key}")
+    # Build the reference library inline for the exact requested vx
+    # bins.  This bypasses the parity tool's cache-resolver default
+    # bin set ({0.10, 0.15, 0.20, 0.25}) so the diagnostic can be run
+    # at non-shuffling vx like {0.21, 0.265} without rebuilding the
+    # cached parity-tool library.  When the requested bins are a
+    # subset of the parity tool's defaults, the cached library is
+    # used; otherwise an inline build runs.
+    requested_bins = sorted(round(float(v), 4) for v in args.vx)
+    parity_default_bins = sorted([0.10, 0.15, 0.20, 0.25])
+    if set(requested_bins) <= set(parity_default_bins):
+        lib_args = argparse.Namespace(
+            wr_library_path=args.wr_library_path,
+            wr_library_rebuild=args.wr_library_rebuild,
+            wr_library_no_cache=False,
+            wr_library_cache_dir=".cache/wr_reference_libraries",
+            vx=0.15,
+            nominal_only=False,
+        )
+        lib, lifecycle = _resolve_wr_reference_library(lib_args)
+        print(f"WR library: source={lifecycle.source} cache_key={lifecycle.cache_key}")
+    else:
+        # Inline build for non-default bins (e.g., shuffling-regime
+        # comparison at vx ∈ {0.21, 0.265}).
+        print(f"WR library: inline build for non-default bins {requested_bins}")
+        lib = ZMPWalkGenerator().build_library_for_vx_values(requested_bins)
 
     payload = {
         "swing_z_table_m": _SWING_Z_TABLE.tolist(),
