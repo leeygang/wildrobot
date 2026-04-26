@@ -602,18 +602,37 @@ class ZMPWalkGenerator:
         # the foot body and the foot collision box's geometry adds
         # another ~9 mm of swing-side vertical extent on the rotated
         # toe (round-7 FK gate caught this without compensation).
-        # The compensation rides the same sin(pi*frac) envelope as the
-        # half-sine swing arc so it vanishes at lift-off and touchdown
-        # (boundary continuity with the adjacent stance frames);
-        # ``swing_ankle_lift_threshold_m`` then keeps the IK ankle flat
-        # at boundary frames where the commanded z is too small to
-        # absorb the plantarflex drop.
+        # The compensation rides the same envelope as the swing arc so
+        # it vanishes at lift-off and touchdown (boundary continuity
+        # with the adjacent stance frames); ``swing_ankle_lift_threshold_m``
+        # then keeps the IK ankle flat at boundary frames where the
+        # commanded z is too small to absorb the plantarflex drop.
         swing_foot_z_floor_clearance_m = 0.025
         swing_ankle_lift_threshold_m = swing_foot_z_floor_clearance_m
 
         n_half = int(round(T_half / dt))
         n_cycle = 2 * n_half
         n_ds = int(round(ds / dt))
+
+        # Phase 7: TB-style single-peaked triangle swing-z envelope.
+        # Mirrors ``toddlerbot/algorithms/zmp_walk.py:483-491`` over the
+        # WR swing window (n_half - n_ds frames per phase).  Peak is
+        # ``foot_step_height_m + swing_foot_z_floor_clearance_m`` so the
+        # H1 hardware exemption stays explicit; the envelope hits exactly
+        # zero at lift-off (i_swing=0) and touchdown (i_swing=swing_window-1)
+        # so the Phase 1 plantarflex gating keeps boundary frames flat-ankle.
+        swing_window = max(2, n_half - n_ds)
+        swing_half = swing_window // 2
+        up_delta = (
+            (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m)
+            / max(1, swing_half - 1)
+        )
+        swing_z_table = up_delta * np.concatenate(
+            (
+                np.arange(swing_half, dtype=np.float64),
+                np.arange(swing_window - swing_half - 1, -1, -1, dtype=np.float64),
+            )
+        )
 
         n_cycles = max(1, int(np.ceil(cfg.total_plan_time_s / cycle_time)))
         n_total = n_cycles * n_cycle
@@ -714,12 +733,10 @@ class ZMPWalkGenerator:
                     right_world[idx] = [right_a_start, -lat, 0]
                     contact_out[idx] = [1, 1]
                 else:
-                    frac = (i - n_ds) / max(1, n_half - n_ds - 1)
+                    i_swing = i - n_ds
+                    frac = i_swing / max(1, swing_window - 1)
                     frac = min(frac, 1.0)
-                    swing_z = (
-                        (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m)
-                        * np.sin(np.pi * frac)
-                    )
+                    swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
                     right_world[idx] = [
                         right_a_start + right_a_swing * frac, -lat, swing_z,
                     ]
@@ -742,12 +759,10 @@ class ZMPWalkGenerator:
                     left_world[idx] = [cycle_offset, lat, 0]
                     contact_out[idx] = [1, 1]
                 else:
-                    frac = (i - n_ds) / max(1, n_half - n_ds - 1)
+                    i_swing = i - n_ds
+                    frac = i_swing / max(1, swing_window - 1)
                     frac = min(frac, 1.0)
-                    swing_z = (
-                        (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m)
-                        * np.sin(np.pi * frac)
-                    )
+                    swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
                     left_world[idx] = [
                         cycle_offset + 2 * sl * frac, lat, swing_z,
                     ]
