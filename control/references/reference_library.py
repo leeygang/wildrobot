@@ -189,37 +189,52 @@ class ReferenceTrajectory:
         _check("phase", self.phase, (n,))
 
         # Realized FK arrays (Phase 3 additive).  The contract for
-        # consumers (e.g. ``RuntimeReferenceService``) is that
-        # ``body_names`` / ``site_names`` are present iff the
-        # corresponding arrays are populated — without this, a
-        # malformed trajectory could expose ``len(service.body_names)
-        # > 0`` while ``service.n_bodies == 0``, contradicting the
-        # documented "len(names) == 0 means legacy asset" check.
-        body_arrays = (
-            self.body_pos, self.body_quat, self.body_lin_vel, self.body_ang_vel
+        # consumers (e.g. ``RuntimeReferenceService``, which derives
+        # ``n_bodies`` from ``traj.body_pos`` specifically) is that
+        # the full body-array bundle plus ``body_names`` is either
+        # all present (Phase 3 asset) or all absent (legacy asset).
+        # Partial states — for example ``body_quat`` + ``body_names``
+        # without ``body_pos`` — would silently produce a service
+        # where ``len(service.body_names) > 0`` but
+        # ``service.n_bodies == 0``, which contradicts the documented
+        # "len(names) == 0 means legacy asset" detection rule.
+        # ``ZMPWalkGenerator._fixed_base_fk_replay`` populates the
+        # whole bundle in one shot, so the strict rule has no
+        # legitimate consumer needing partial state.
+        body_array_fields = (
+            ("body_pos", self.body_pos),
+            ("body_quat", self.body_quat),
+            ("body_lin_vel", self.body_lin_vel),
+            ("body_ang_vel", self.body_ang_vel),
         )
-        body_arrays_present = any(arr is not None for arr in body_arrays)
+        body_arrays_present = [name for name, arr in body_array_fields if arr is not None]
+        body_arrays_absent = [name for name, arr in body_array_fields if arr is None]
         body_names_present = self.body_names is not None
-        if body_names_present != body_arrays_present:
+        body_bundle_full = len(body_arrays_present) == len(body_array_fields)
+        body_bundle_empty = len(body_arrays_absent) == len(body_array_fields)
+        if not (body_bundle_full or body_bundle_empty):
             issues.append(
-                "Phase 3 contract: body_names must be present iff at least one "
-                "of body_pos/body_quat/body_lin_vel/body_ang_vel is present "
+                "Phase 3 contract: body_pos, body_quat, body_lin_vel, "
+                "body_ang_vel must all be present together or all absent "
+                f"(present: {body_arrays_present!r}, absent: {body_arrays_absent!r})"
+            )
+        if body_bundle_full != body_names_present:
+            issues.append(
+                "Phase 3 contract: body_names must be present iff the full "
+                "body-array bundle (body_pos, body_quat, body_lin_vel, "
+                "body_ang_vel) is present "
                 f"(body_names={'set' if body_names_present else 'None'}, "
-                f"body_arrays={'set' if body_arrays_present else 'all None'})"
+                f"body_bundle={'full' if body_bundle_full else 'incomplete-or-empty'})"
             )
-        if body_arrays_present:
-            n_bodies = (
-                len(self.body_names) if body_names_present
-                else next(
-                    arr.shape[1] for arr in body_arrays
-                    if arr is not None and arr.ndim == 3
-                )
-            )
+        if body_bundle_full and body_names_present:
+            n_bodies = len(self.body_names)
             _check("body_pos", self.body_pos, (n, n_bodies, 3))
             _check("body_quat", self.body_quat, (n, n_bodies, 4))
             _check("body_lin_vel", self.body_lin_vel, (n, n_bodies, 3))
             _check("body_ang_vel", self.body_ang_vel, (n, n_bodies, 3))
 
+        # ``site_pos`` is the only site array today, so the rule is
+        # the simpler "names ↔ array" pair.
         site_pos_present = self.site_pos is not None
         site_names_present = self.site_names is not None
         if site_names_present != site_pos_present:
@@ -228,12 +243,8 @@ class ReferenceTrajectory:
                 f"is present (site_names={'set' if site_names_present else 'None'}, "
                 f"site_pos={'set' if site_pos_present else 'None'})"
             )
-        if site_pos_present:
-            n_sites = (
-                len(self.site_names) if site_names_present
-                else self.site_pos.shape[1]
-                if self.site_pos.ndim == 3 else 0
-            )
+        if site_pos_present and site_names_present:
+            n_sites = len(self.site_names)
             _check("site_pos", self.site_pos, (n, n_sites, 3))
 
         if self.q_ref is None:

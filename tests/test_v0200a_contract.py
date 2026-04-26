@@ -302,13 +302,21 @@ def test_roundtrip_phase3_realized_fk_fields():
 
 
 def test_phase3_names_arrays_must_be_consistent():
-    """Phase 3 contract: ``body_names`` is present iff at least one of the
-    body arrays is present (same rule for ``site_names`` / ``site_pos``).
+    """Phase 3 strict contract: the full body-array bundle (body_pos,
+    body_quat, body_lin_vel, body_ang_vel) must be present together
+    with body_names, or all absent.  Same simpler rule for site_pos
+    + site_names.
 
-    Without this, a malformed trajectory could expose
-    ``len(service.body_names) > 0`` while ``service.n_bodies == 0``,
-    contradicting the documented "len(names) == 0 => legacy asset"
-    check.  ``validate()`` flags the inconsistency."""
+    Without the *full-bundle* requirement, a partial state like
+    ``body_quat`` + ``body_names`` (no body_pos) would pass validate()
+    but RuntimeReferenceService would expose ``len(service.body_names)
+    > 0`` while ``service.n_bodies == 0`` (the service derives
+    n_bodies from traj.body_pos specifically).  That contradicts the
+    documented "len(names) == 0 => legacy asset" detection rule.
+    ``ZMPWalkGenerator._fixed_base_fk_replay`` populates the whole
+    bundle in one shot, so the strict rule has no legitimate consumer
+    needing partial state.
+    """
     from control.references.reference_library import ReferenceTrajectory
 
     n, nj = 8, 8
@@ -328,13 +336,31 @@ def test_phase3_names_arrays_must_be_consistent():
     issues = bad_body.validate()
     assert any("body_names" in s for s in issues), issues
 
-    # body arrays without body_names -> contract violation.
+    # body_pos alone (the rest of the bundle missing, no names)
+    # -> contract violation: incomplete bundle.  Names presence rule
+    # short-circuits cleanly here (both body_bundle_full and
+    # body_names_present are False, so they agree); the bundle-
+    # completeness rule is what fires.
     bad_body_arr = ReferenceTrajectory(
         **base_kwargs,
         body_pos=np.zeros((n, 2, 3), dtype=np.float32),
     )
     issues = bad_body_arr.validate()
-    assert any("body_names" in s for s in issues), issues
+    assert any("present together or all absent" in s for s in issues), issues
+
+    # The exact partial-bundle the second review caught: body_quat
+    # + body_names but no body_pos.  Pre-strict rule, this would have
+    # passed validate() because at-least-one body array was present
+    # AND body_names was present.  Strict rule rejects it because the
+    # bundle is incomplete (RuntimeReferenceService.n_bodies would
+    # remain 0 since it reads traj.body_pos specifically).
+    partial_bundle = ReferenceTrajectory(
+        **base_kwargs,
+        body_quat=np.zeros((n, 2, 4), dtype=np.float32),
+        body_names=("world", "waist"),
+    )
+    issues = partial_bundle.validate()
+    assert any("present together or all absent" in s for s in issues), issues
 
     # site_names without site_pos -> contract violation.
     bad_site = ReferenceTrajectory(
@@ -352,7 +378,7 @@ def test_phase3_names_arrays_must_be_consistent():
     issues = bad_site_arr.validate()
     assert any("site_names" in s for s in issues), issues
 
-    # Both present and consistent -> clean.
+    # Full bundle present and consistent -> clean.
     good = ReferenceTrajectory(
         **base_kwargs,
         body_pos=np.zeros((n, 2, 3), dtype=np.float32),
@@ -364,6 +390,10 @@ def test_phase3_names_arrays_must_be_consistent():
         site_names=("left_foot_center",),
     )
     assert good.validate() == [], good.validate()
+
+    # All Phase 3 fields absent -> also clean (legacy asset shape).
+    legacy = ReferenceTrajectory(**base_kwargs)
+    assert legacy.validate() == [], legacy.validate()
 
 
 # ---- 5. Deprecation marker ------------------------------------------------
