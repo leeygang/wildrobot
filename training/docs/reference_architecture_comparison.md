@@ -251,14 +251,29 @@ The current architecture gaps sort into three buckets.
 These are not alignment failures. They are constraints the parity system must
 normalize around.
 
-### Remove unless explicitly justified
+### Resolved (kept here as historical record)
 
-- swing-z boundary discontinuity
-- planner-intent-only storage instead of TB-style realized FK enrichment
-- on-demand per-`vx` generation as the only lifecycle
-- planner-phase torso target instead of TB-style command-integrated target
+The following were classified "Remove unless explicitly justified" before
+Phases 1-5 landed. They are no longer current backlog; they are listed
+here so the design history stays traceable.
 
-These should be treated as backlog by default.
+- swing-z boundary discontinuity — **resolved by Phase 1**
+  (see Phase 1 closeout)
+- planner-intent-only storage instead of TB-style realized FK
+  enrichment — **resolved by Phase 3** (see Stage 5 above and Phase 3
+  closeout)
+- on-demand per-`vx` generation as the only lifecycle — **resolved by
+  Phase 5** (see Stage 6 above and Phase 5 closeout)
+- planner-phase torso target instead of TB-style command-integrated
+  target — **resolved by Phase 4** (see Stage 7 / Stage 8 above and
+  Phase 4 closeout)
+
+### Remove unless explicitly justified (current open list)
+
+No items currently open in this category. The next time a WR-specific
+deviation from TB lands without a hardware / measured-parity
+rationale, add it here so the architecture-first ordering still
+applies.
 
 ### Parameter differences, not architecture
 
@@ -1526,19 +1541,50 @@ The intended order is:
 7. Phase 6 for local refinement only after the architecture backlog is under
    control
 8. Phase 7 to swap WR's half-sine swing-z for TB's single-peaked triangle
-   (closes 2 gates with one planner-local change)
-9. Phase 8 to adopt TB's `foot_step_height_m = 0.05` (closes
-   `clearance_per_h`); sequence after Phase 7
-10. Phase 9 to make the operating-`vx` curriculum decision (closes the
-    two hardware-Froude-bounded normalised gates); independent of 7 / 8
-11. Phase 10 to diagnose the P1 closed-loop contact-match FAIL;
-    sequence after Phase 7
+   (closes the normalised swing-step gate; absolute swing-step gate
+   becomes bounded-by-design at ≈ 1.30× TB)
+9. Phase 8 to bump `foot_step_height_m` (0.045 halfway or 0.05 TB-adopt,
+   contingent on Phase 7 result); closes `clearance_per_h`; sequence
+   after Phase 7
+10. Phase 9 to make the explicit operating-`vx` policy decision
+    (9A: change WR's operating point to vx≈0.19 — closes the two
+    Froude-bounded gates; 9B: keep vx=0.15 — documents them as
+    bounded-by-design under the Option B exemption); independent of 7 / 8
+11. Phase 10 to diagnose the P1 closed-loop contact-match FAIL
+    (diagnostic-only; produces a verdict, does not itself close the
+    gate); sequence after Phase 7
 12. Phase 11 to clean up the residual `lin_vel_z` planner-side
     consumption; independent, low priority
+13. **Phase 12 (conditional)** — if Phase 10's verdict is "cycle-0
+    retention is load-bearing", mirror TB's first-cycle truncation in
+    WR's `_generate_at_step_length` to close the residual P1
+    contact-match FAIL. Not scoped today; only opens if Phase 10
+    produces that verdict.
 
-Phases 7 + 9 + 11 can run in parallel; 8 needs 7; 10 needs 7.
+Phases 7 + 9 + 11 can run in parallel; 8 needs 7; 10 needs 7;
+12 is conditional on 10.
+
+**Phases 7-11 form an investigate-and-improve plan, not a guaranteed
+terminal plan.** They are sufficient to determine whether "WR on par
+or better" is reachable under the current hardware / operating-point
+assumptions and the chosen acceptance-rule option (A vs B above).
+They are not sufficient by themselves to guarantee a parity claim:
+Phase 10 may spawn Phase 12, and the acceptance rule itself needs the
+Option A vs B decision before any phase can close out as
+"WR on par or better".
 
 ## What "On Par or Better" Means
+
+> **Open policy decision (2026-04-26).** The plan as written produces
+> at least one bounded-FAIL gate by design (P2 absolute swing_step
+> under Phase 7, plus two normalised P1A gates if Phase 9B is chosen).
+> This contradicts the strict literal reading of the acceptance rule
+> below, which requires every layer to clear. The reconciliation
+> options are written out in the "Bounded-by-design exemption" section
+> below; the project must explicitly choose one before any phase
+> closeout claims "WR on par or better."
+
+### Strict acceptance rule (original)
 
 WR is on par with or better than TB only when all of the following are true:
 
@@ -1553,6 +1599,102 @@ WR is on par with or better than TB only when all of the following are true:
 If a future WR change improves PPO but does not improve the parity scorecard at
 the architecture layer, it should not be claimed as "reference parity
 improvement."
+
+### Bounded-by-design exemption (proposed reconciliation)
+
+The strict rule above presumes every gate is closeable in principle. In
+practice, some gates are bounded-by-design by hardware-justified WR
+divergences from TB:
+
+- **P2 absolute `swing_foot_z_step_max`**: bounded at ≈ 1.30× TB by
+  WR's `swing_foot_z_floor_clearance_m = 0.025` offset on top of
+  `foot_step_height_m`. Phase 1 added this offset for floor-margin
+  reasons; removing it to clear the absolute gate would regress the
+  P0 swing margin Phase 1 closed.
+- **P1A normalised `step_length_per_leg` and `cadence_froude_norm` at
+  vx=0.15** (under Phase 9B only): bounded by leg-length / Froude
+  scaling at the chosen operating point. Closing them requires
+  changing WR's operating point (Phase 9A), which is a curriculum /
+  product decision, not a parity-tool fix.
+
+For each of these, the question is whether the strict rule needs an
+explicit exemption mechanism. The two policy options are:
+
+**Option A: Strict scorecard parity, no exemptions.**
+
+WR can claim "on par or better" only when every gate literally
+clears. Under this option:
+- Phase 7 must keep iterating envelope shapes until the absolute
+  swing_step gate is ≤ 1.10× TB (likely requires reducing the WR
+  floor clearance or accepting a flat-top trapezoid envelope outside
+  TB-shape alignment).
+- Phase 9 must take 9A (operating-point change to vx≈0.19); 9B is
+  not a path to "on par."
+- This option treats hardware-driven gates as parity bugs.
+
+**Option B: Parity except for documented hardware-justified gates.**
+
+WR can claim "on par or better" when every gate either clears OR is
+documented as bounded-by-design with a hardware justification and a
+recorded bounded ratio. Under this option:
+- Phase 7 closes the per-clearance normalised gate; the absolute
+  swing_step gate is annotated as bounded-by-design at ≈ 1.30× TB
+  with the floor-clearance rationale.
+- Phase 9B is a valid path to "on par except for two Froude-bounded
+  normalised gates at vx=0.15", with the bounded ratios recorded.
+- The parity scorecard's verdict aggregator must distinguish "FAIL"
+  from "FAIL bounded-by-design" so future readers see the difference.
+
+**Recommended default: Option B**, because the alternative (forcing
+Option A) effectively makes the parity rule unsatisfiable without
+either (i) regressing P0 swing margin Phase 1 just closed, or (ii)
+forcing an operating-point change for parity-tool reasons rather than
+training reasons. Option B keeps the rule semantically meaningful
+while admitting that some divergences are hardware constraints, not
+implementation gaps. The exemption mechanism must be explicit (a list,
+maintained in this doc) so it cannot be expanded silently.
+
+This decision is not made by the plan author — it must be chosen by
+the project leads. Until it is, the doc is internally inconsistent
+between its acceptance rule (strict) and its plan (Phase 7 / 9B
+allow bounded-FAIL). Phase closeouts should not claim "WR on par or
+better" until this is resolved.
+
+### What Phases 7-11 do and do not guarantee
+
+Phases 7-11 are an **investigate-and-improve plan**, not a guaranteed
+terminal plan. Specifically:
+
+- Phases 7, 8, 11 are direct improvements with predicted metric
+  movements; whether they fully close their target gates depends on
+  the actual measurement (Phase 8 is contingent; Phase 7's absolute
+  gate is bounded under Option B above).
+- Phase 9 is a policy fork; the closure path depends on whether 9A or
+  9B is chosen.
+- **Phase 10 is diagnostic-only** — it produces a verdict on whether
+  the remaining P1 closed-loop FAILs are reference-shape (already
+  fixed by Phase 7), cycle-0 retention (would spawn Phase 12),
+  actuator-stack-bound (accepted as P1-test-design limitation), or
+  mixed. It does NOT itself close the P1 gates.
+- **Phase 12 may be required** — if Phase 10 surfaces cycle-0
+  retention as the load-bearing source of the contact-match FAIL,
+  mirroring TB's cycle-0 truncation in WR becomes a follow-up phase.
+  This is not in the current 7-11 list.
+
+So the correct framing is:
+
+- 7-11 are sufficient to **determine whether the goal is reachable**
+  under the current hardware / operating-point assumptions and the
+  chosen acceptance rule (Option A vs B above).
+- 7-11 are **not sufficient by themselves** to guarantee final
+  parity. Phase 12 may be needed pending Phase 10's verdict; the
+  project may also need to revisit the acceptance rule itself.
+
+A phase closeout can claim "the gate this phase targeted is closed"
+or "this phase's verdict is X". A phase closeout cannot claim "WR is
+on par or better" until (i) the policy decision above is made and
+(ii) every gate either clears or is on the explicit exemption list
+under that policy.
 
 ## Practical Use
 
