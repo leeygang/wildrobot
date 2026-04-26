@@ -1217,6 +1217,115 @@ Rollback if expected movement doesn't materialize:
   variant `(1 - cos(2 * pi * frac)) / 2` which has a flatter apex than
   half-sine
 
+#### Phase 7 closeout (2026-04-26, commit `61234d3`)
+
+Implemented in `control/zmp/zmp_walk.py` only (planner-local). The
+swing-z formula `(foot_step_height_m + swing_foot_z_floor_clearance_m)
+* sin(pi*frac)` is replaced by a TB-style piecewise-linear single-
+peaked triangle table, mirroring `toddlerbot/algorithms/zmp_walk.py:483-491`:
+
+```python
+swing_window = max(2, n_half - n_ds)
+swing_half = swing_window // 2
+up_delta = (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m) \
+           / max(1, swing_half - 1)
+swing_z_table = up_delta * np.concatenate(
+    (np.arange(swing_half),
+     np.arange(swing_window - swing_half - 1, -1, -1))
+)
+```
+
+The table is pre-computed once before the cycle loop and used for both
+Phase A (left stance) and Phase B (right stance). Indexing via
+`i_swing = i - n_ds`. Peak preserved at `0.04 + 0.025 = 0.065 m`; H1
+hardware exemption (the WR floor-clearance offset) stays explicit.
+`frac` is kept for the X-direction interpolation (no change to that
+path). Phase 1 plantarflex gating still keeps boundary frames flat-ankle
+because `swing_z_table[0] = swing_z_table[-1] = 0` by construction.
+
+For the WR cycle (n_half=18, n_ds=6, swing_window=12), the table
+materializes as `up_delta * [0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0]` — a
+2-frame apex plateau (indices 5 and 6 both at peak), which is TB's
+exact behaviour for even `swing_window`. The doc's earlier review
+correctly flagged that "triangular-then-flat" was the wrong phrasing
+for TB's overall envelope; the TB envelope is single-peaked with a
+1-2 frame apex plateau depending on parity of `swing_window`, which
+is what WR now mirrors.
+
+WR-only probe (`uv run python tools/phase6_wr_probe.py`) at vx=0.15:
+
+| Metric | Pre-Phase-7 | Post-Phase-7 | Δ |
+|---|---|---|---|
+| **H1 replacement gauge** |
+| `swing_foot_z_step_per_clearance` | 0.2803 (1.401× TB) | **0.2160 (1.080× TB)** | **FAIL → PASS** |
+| **H1 absolute gate (informational under H1)** |
+| `swing_foot_z_step_max_m` | 0.0183 (1.831× TB) | 0.0143 (1.427× TB) | −22 % |
+| **P1A gait shape** |
+| `step_length_mean_m` | 0.0538 | 0.0538 | unchanged |
+| `swing_clearance_mean_m` (per-cycle peak) | 0.0653 | 0.0660 | +1.1 % (apex plateau hits cleanly) |
+| `swing_clearance_per_com_height` | 0.1426 | **0.1442** | +1.1 % (still FAIL at 0.825× TB; closer to gate 0.85×) |
+| `touchdown_rate_hz` | 2.7330 | 2.7330 | unchanged |
+| `double_support_frac` | 0.3333 | 0.3333 | unchanged |
+| **P2 smoothness** |
+| `shared_leg_q_step_max_rad` | 0.3599 | 0.3155 | −12 % (linear ramp gentler on IK than half-sine apex) |
+| `pelvis_z_step_max_m` | 0.0000 | 0.0000 | sentinel pass |
+| `contact_flips_per_cycle` | 3.9677 | 3.9677 | unchanged (no extra mid-swing tap-down events from the apex plateau) |
+| **P0 geometry** |
+| total failures | 0 | 0 | unchanged |
+| in-scope failures | 0 | 0 | unchanged |
+| worst stance z (m) | +0.0019 | +0.0019 | unchanged |
+| worst swing z (m) | +0.0170 | +0.0117 | margin reduced by 5.3 mm but well above the −2 mm gate |
+
+Phase 7 acceptance check (per the Acceptance statement and the H1
+exemption rule):
+- **H1 replacement gauge `swing_foot_z_step_per_clearance` PASS** at
+  1.080× TB (gate ≤ 1.10× TB) — load-bearing gate cleanly closed.
+- **H1 absolute gate** widened from 1.83× → 1.43× TB (improved 22 %;
+  the doc's "≥ 25 %" target was missed by 3 percentage points). H1
+  exemption applies; the absolute gate is informational, not part of
+  the closure check. Honest note: my predicted Phase 7 post-state of
+  ≈ 0.012 m / ≈ 1.20× TB was optimistic — the FK-realized step max
+  is ~10 % above the table's per-frame `up_delta` because of
+  plantarflex-threshold-crossing at the 2nd / 10th swing frames. The
+  H1 gauge does not depend on this slack.
+- No regression on P0, P1A absolute gates, or P2 q-step / pelvis /
+  flips.
+- P0 swing margin reduced by 5.3 mm (to +11.7 mm) — within the
+  Phase 7 exit criterion of "no regression on P0 (in-scope or full
+  matrix)". The reduction is structural: the triangle's apex plateau
+  spends 2 frames at peak so the IK plantarflex during those frames
+  brings the foot bottom slightly closer to the floor than the half-
+  sine's brief apex visit.
+- Bonus: `swing_clearance_per_com_height` ticked up 1.1 % (0.143 →
+  0.144) without any height bump — closer to the 0.149 gate, so
+  Phase 8 has a smaller delta to close. Does **not** clear H2 by
+  itself; Phase 8 is still the path to PASS that gate.
+- `shared_leg_q_step_max` IMPROVED 12 % (0.36 → 0.32 rad) — the
+  linear ramp produces a gentler IK joint trajectory than the half-
+  sine's curvature. Pleasant side effect; not a Phase 7 acceptance
+  requirement.
+
+Outstanding caveats:
+- **TB-side parity refresh deferred.** The local TB venv has a
+  filesystem-permission issue: `uv pip install joblib lz4` fails with
+  `Operation not permitted` on `.venv/lib/python3.11/site-packages`,
+  and the TB `uv sync` path fails with a pybullet build error. TB
+  code is untouched between Phase 6 and Phase 7, so the cached TB
+  numbers in `tools/parity_report.json` stay valid for absolute /
+  normalised P1A / P2 ratios; only the P1 closed-loop layer needs
+  a fresh full parity run on a TB-capable machine to update both
+  sides under the Phase 7 envelope.
+- The Phase 5 cache fingerprint picked up the planner change
+  automatically (the WR probe regenerated the library with the new
+  fingerprint hash, no manual cache invalidation needed).
+- All 165 tests pass (`uv run pytest tests/`).
+
+Phase 7 unblocks Phase 8 (the per-clearance gauge has headroom to
+absorb the height bump's per-frame Δz cost). It also makes Phase 10's
+contact-match diagnostic cleaner because the triangle's well-defined
+per-frame structure removes one source of mid-swing FK noise the
+half-sine apex was contributing.
+
 ### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m, contingent)
 
 Goal:
