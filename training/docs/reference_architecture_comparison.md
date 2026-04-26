@@ -1480,61 +1480,123 @@ Acceptance statement:
 
 Goal:
 - force an explicit project decision on whether to **change WR's
-  operating point** to TB's Froude-equivalent vx, or to **document the
-  proportional-shape gap** as bounded-by-design at the current operating
-  point. Phase 9 closes the two hardware-Froude-bounded normalised P1A
-  gates (`step_length_per_leg = 0.56× TB`, `cadence_froude_norm = 1.25× TB`)
-  in exactly one of these two ways — they are NOT interchangeable.
+  operating point** out of the shuffling regime (Phase 9A) or to
+  **document the shuffling-regime gap** as bounded-by-design at the
+  current operating point (Phase 9B). Phase 9 closes both:
+  (a) the **shuffling pathology** at WR's nominal vx=0.15 (step_per_leg =
+  0.144 — well under the 0.20 healthy walk threshold), and
+  (b) the two hardware-Froude-bounded normalised P1A gates
+  (`step_length_per_leg`, `cadence_froude_norm`) which are direct
+  consequences of the shuffling regime.
 
-The reason the fork has to be explicit: a parity-tool-only Froude
-re-read does **not** close the parity scorecard at the operating point
-training and deployment actually use. Letting the parity report
-silently use a different `vx_nominal` would move the goalposts. The
-two options below produce different end-states and must be chosen, not
-hedged.
+> **Phase 9D (vx-dependent cycle_time / min-stride-floor) was
+> considered and rejected.** TB uses a fixed `cycle_time = 0.72 s` and
+> handles shuffling avoidance by operating at a vx where step_per_leg
+> is healthy. Per the Governing Policy ("WR should align to TB unless
+> there is an explicit reason not to"), introducing a WR-specific
+> variable cycle_time without a hardware-forced rationale is
+> alignment backlog. Phase 9A applies the same principle to WR:
+> **fix the operating vx, keep TB's fixed cycle_time.**
 
-Froude background (used by both options):
-- TB at vx=0.15: `Fr = vx² / (g · h_TB) = 0.15² / (9.81 · 0.286) = 0.0080`
-- WR Froude-matching point: `vx_WR = √(Fr · g · h_WR) = √(0.0080 · 9.81
-  · 0.458) ≈ 0.19 m/s`
-- WR at vx=0.15 sits at `Fr = 0.005`, ~63 % of TB's, so per-leg stride
-  must under-shoot and Froude-norm cadence must over-shoot by
-  construction
+The reason the 9A vs 9B fork has to be explicit: a parity-tool-only
+Froude re-read does **not** close the parity scorecard at the
+operating point training and deployment actually use. Letting the
+parity report silently use a different `vx_nominal` would move the
+goalposts. The two options below produce different end-states and
+must be chosen, not hedged.
 
-#### Phase 9A — change WR's operating point to vx ≈ 0.19 m/s
+Background — shuffling and rate-scaling (used by both options):
 
-Use this option ONLY if the project intends WR to walk at the
-Froude-equivalent operating point in training and deployment.
+The kinematic identity `step = vx × cycle_time / 2` makes step_length
+purely a function of (vx, cycle_time). At fixed cycle_time = 0.72 s,
+WR's step_per_leg by vx:
+
+| vx (m/s) | WR step (m) | WR step_per_leg | Regime |
+|---|---|---|---|
+| 0.10 | 0.036 | 0.097 | severe shuffle |
+| 0.15 (current) | 0.054 | **0.144** | shuffle (well under 0.20 threshold) |
+| 0.19 (Froude-matched) | 0.068 | 0.183 | mild shuffle |
+| **0.21** | 0.075 | **0.200** | shuffle threshold (just out) |
+| **0.265** | 0.095 | **0.256** | matches TB's per_leg at TB's vx — apples-to-apples body-size-scaled |
+| 0.30 | 0.108 | 0.290 | comfortable walk |
+
+The healthy-walk threshold of step_per_leg ≥ 0.20 is the conventional
+biomechanical line below which gait is described as "shuffling" (small
+high-cadence steps with poor weight transfer). TB at vx=0.15 sits at
+step_per_leg = 0.256 (at the healthy edge). WR at vx=0.15 sits at 0.144
+(well into shuffling territory).
+
+Two natural rate-scaling targets for WR at fixed cycle_time = 0.72:
+
+- **vx ≈ 0.21 m/s** — minimum vx that crosses the shuffling threshold
+- **vx ≈ 0.265 m/s** — vx where WR's step_per_leg equals TB's at TB's
+  nominal vx (apples-to-apples body-size-scaled comparison; aligns
+  with the user's "scale the rate with body size when comparing TB
+  vs WR" framing and with the gate-classification's Froude-matched
+  reading)
+
+Both options below are TB-aligned (fixed cycle_time = 0.72 s) and
+differ only in the choice of nominal vx.
+
+#### Phase 9A — change WR's operating point to a non-shuffling vx (TB-aligned, default-recommended)
+
+Use this option if the project intends WR to walk outside the
+shuffling regime in training and deployment.
+
+Recommended target: **vx ≈ 0.265 m/s** (step-per-leg-matched at TB's
+fixed cycle_time). This is the apples-to-apples body-size-scaled
+equivalent of TB at vx=0.15. Acceptable lower bound: **vx ≈ 0.21 m/s**
+(just out of shuffling) if there's a hardware reason to walk slower.
 
 Work:
 1. Update WR's nominal command grid in `walking_training.md` G4/G5
-   contract from `vx ∈ {0.10, 0.15}` to (e.g.) `vx ∈ {0.13, 0.19}`,
-   and propagate to:
+   contract from `vx ∈ {0.10, 0.15}` to either:
+   - **vx ∈ {0.21, 0.265}** (recommended: brackets the non-shuffling
+     range), or
+   - **vx ∈ {0.20, 0.265}** (slight margin), or
+   - other non-shuffling vx pair appropriate for hardware
+   Propagate to:
    - `tests/test_v0200c_geometry.py` smoke probe
    - PPO training-config command sampling distribution
-   - the parity tool's `vx_nominal` (and the in-scope geometry bins
-     if the project agrees to widen scope)
+   - the parity tool's `vx_nominal`
 2. Re-run G4/G5 walking smoke at the new operating point and confirm
    the policy-side contract still holds.
-3. Re-run the parity tool — `step_per_leg` and `cadence_norm` now PASS
-   directly because WR is operating at TB's Froude point.
+3. **Re-run the Phase 10 diagnostic at the new operating point.** The
+   current Phase 10 closeout (commit `381ab3c`) was run entirely in
+   the shuffling regime (vx ∈ {0.10, 0.15, 0.20}, all step_per_leg ≤
+   0.19). The closed-loop FAILs surfaced (`left_hip_roll`
+   saturation, contact_match degradation, td_step asymmetry) may be
+   shuffling-driven pathologies — they may largely disappear at
+   non-shuffling vx, in which case Phase 12A and Phase 12C become
+   unnecessary or much lower priority.
+4. Re-run the parity tool — `step_per_leg` and `cadence_norm`
+   evaluated at the new primary `vx_nominal_wr` should now PASS the
+   H3/H4 replacement gauges.
 
-Expected metric movement at WR vx=0.19:
-- `step_length_per_leg`: 0.56× → ≈ 0.85–0.95× TB → PASS
-- `cadence_froude_norm`: 1.25× → ≈ 1.0× TB → PASS
+Expected metric movement at WR vx=0.265 (cycle_time held at 0.72):
+- `step_length_per_leg`: 0.144 → 0.256 → **PASS** (1.00× TB at body-
+  size-scaled comparison)
+- `cadence_froude_norm`: unchanged structurally (it's about
+  cycle_time and COM, not vx); H4 replacement gauge applies
+- Closed-loop FAIL set: **expected to change qualitatively** (no
+  longer shuffling); re-run Phase 10 to confirm
 
 Exit criteria (9A):
 - WR walks G4/G5 at the new operating point with no regression on the
   policy contract
-- parity tool's primary `vx_nominal` is the new value; both normalised
-  gates PASS at the primary read
+- parity tool's primary `vx_nominal` is the new value; H3 (and H4
+  via the Froude-matched gauge) PASS at the primary read
 - `walking_training.md` documents the operating-point change with
-  hardware / safety rationale
+  shuffling-avoidance rationale
+- Phase 10 re-run at the new vx produces a fresh diagnostic verdict;
+  Phase 12A/12C scope adjusts based on whether the shuffling-driven
+  pathologies disappear
 
 Acceptance statement (9A):
-- success means WR's actual operating point changed; the normalised
-  gates close at the operating point that training and deployment use,
-  not via a parity-tool re-read
+- success means WR's actual operating point changed to a non-
+  shuffling vx; the gait quality / closed-loop FAIL story is re-read
+  against the new baseline; downstream phase scopes (12A/12C) adjust
+  based on what the re-read shows
 
 #### Phase 9B — keep vx=0.15 as the primary operating point, document the gap as bounded
 
@@ -1831,21 +1893,91 @@ all 8 joints at all vx.
 - Phase 11 (lin_vel_z cleanup) unchanged, low-priority hygiene.
 
 Outstanding caveats:
-- The diagnostic still does not include a pre-Phase-7 baseline
-  (half-sine envelope) for direct A/B comparison. Worth doing
-  as a follow-up because the corrected verdict raises a new
-  question: was `left_hip_roll` saturation also present pre-Phase-7
-  but masked by the overall higher contact_match? If so, this
-  bounds the maximum impact of Phase 12A (some left_hip_roll
-  saturation pre-existed and Phase 7 worsened it via different
-  mechanisms).
+- (Resolved by Phase 9A re-read 2026-04-26 in commit `72f25d4` —
+  see "Phase 9A re-read addendum" below.) The original Phase 10
+  data was collected in WR's shuffling regime; the re-read at non-
+  shuffling vx settles whether the closed-loop FAILs are shuffling-
+  driven.
+- The diagnostic does not include a pre-Phase-7 baseline (half-sine
+  envelope) for direct A/B comparison. Worth doing as a follow-up
+  because the corrected verdict raises a new question: was
+  `left_hip_roll` saturation also present pre-Phase-7 but masked by
+  the overall higher contact_match? If so, this bounds the maximum
+  impact of Phase 12A.
 - Episode survival is short (68-76 steps), so the "rest" sample
   is small (32-40 steps). The negative D1 gap direction is
   consistent across all three vx bins so the conclusion is
   robust, but absolute "rest" numbers carry uncertainty.
-- The left/right asymmetry in D2 is now understood as the same
-  robot-level asymmetry as the D3+D4 left_hip_roll finding —
-  not two independent issues.
+- The left/right asymmetry in D2 is the same robot-level asymmetry
+  as the D3+D4 left_hip_roll finding — not two independent issues.
+
+#### Phase 9A re-read addendum (2026-04-26, commit `72f25d4`)
+
+Re-ran `tools/phase10_diagnostic.py --vx 0.21 0.265` to test whether
+the original Phase 10 closeout's findings (`left_hip_roll`
+saturation, D2 mid-swing tap-down, D1 progressive degradation) are
+shuffling-driven pathologies that disappear at non-shuffling vx, or
+robot-level issues that persist at any vx. The diagnostic was
+extended with an inline-build path so it can run at vx outside the
+parity tool's default `{0.10, 0.15, 0.20, 0.25}` bin set.
+
+**Side-by-side full-spectrum result:**
+
+| vx | step_per_leg | regime | survived | D1 gap | D2 ev/cyc | D3+D4 left_hip_roll peak | D3+D4 verdict |
+|---|---|---|---|---|---|---|---|
+| 0.100 | 0.097 | severe shuffle | 76 | −0.40 | 0.67 | 0.250 | uniform-sat |
+| 0.150 | 0.145 | shuffle | 72 | −0.39 | 0.50 | 0.250 | down-cross-mech-unclear |
+| 0.200 | 0.193 | mild shuffle | 68 | −0.34 | 0.60 | 0.333 | down-cross-mech-unclear |
+| **0.210** | **0.203** | **just out** | 67 | −0.32 | 0.80 | 0.333 | down-cross-mech-unclear |
+| **0.265** | **0.256** | **TB-matched** | 61 | −0.30 | **0.40** | **0.333** | down-cross-mech-unclear |
+
+**Three load-bearing findings from the re-read:**
+
+1. **`left_hip_roll` saturation is INVARIANT to vx.** Same joint
+   saturating at the same down-cross frames at the same magnitude
+   (0.25-0.33) across the full vx range from severe shuffle (0.10) to
+   TB-matched (0.265). **This rules out the "shuffling causes
+   lateral support failure" hypothesis.** The asymmetry is a real
+   robot-level issue, not a downstream symptom of shuffling. **Phase
+   12C is fully required and stays load-bearing.**
+
+2. **D2 (mid-swing tap-down) PARTIALLY improves at non-shuffling vx.**
+   Best at vx=0.265: 0.40 events/cycle ("borderline" verdict, close
+   to but not under the 0.30 Phase 12A exit criterion). The
+   improvement is real but non-monotonic (vx=0.21 is worse than
+   vx=0.15 — likely because the higher per-frame Δz amplifies the
+   down-cross snap before the longer cycle can absorb it). **Phase
+   9A captures most of the available D2 win without any planner
+   change; Phase 12A is still useful but lower priority.**
+
+3. **Survival doesn't improve at non-shuffling vx** (slightly worse:
+   76→72→68→67→61). Higher vx means more momentum to fall with under
+   zero-residual replay. Pitch failure remains the consistent
+   termination mode at every vx. The prior + actuator-stack still
+   can't balance unaided regardless of operating point — confirming
+   the absolute survival comparison is structurally a "both fall"
+   verdict, not a parity gauge.
+
+**Updated Phase 12A / 12C status:**
+
+- **Phase 12C confirmed required** as the load-bearing closed-loop
+  slice. The re-read provides strong evidence the asymmetry is a
+  robot-level defect (MJCF / IK / ctrl-mapper / keyframe candidates
+  per the original spec), not a shuffling artifact.
+- **Phase 12A demoted to optional**. Phase 9A alone gets D2 from
+  0.50/cycle to 0.40/cycle (close to the 0.30 exit criterion).
+  Phase 12A could close the remaining gap but is not load-bearing
+  unless the partial D2 reduction is materially insufficient for
+  PPO trackability.
+
+**Phase 9A status update (informed by the re-read):**
+
+- Phase 9A is **still beneficial** for stride efficiency (per_leg
+  matches TB at vx=0.265) and TB-alignment, but it is **NOT** the
+  one-shot fix for the closed-loop FAIL set the original framing
+  hoped for. Phase 12C remains the load-bearing slice.
+- Recommended sequencing: Phase 9A and Phase 12C run in parallel
+  (independent mechanisms). Phase 12A defers as optional polish.
 
 ### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
 
@@ -1872,7 +2004,7 @@ Acceptance statement:
 - success means no behavioral change in any reward or training metric;
   the consumption-narrowing is verifiable by grep
 
-### Phase 12A. Soften the IK plantarflex schedule (revised — D2 only)
+### Phase 12A. Soften the IK plantarflex schedule (revised — D2 only; CONTINGENT on Phase 9A re-read)
 
 > **Scope revised after Phase 10 corrected diagnostic** (commit
 > `381ab3c`). The original Phase 12A scoping claimed this slice would
@@ -1881,6 +2013,16 @@ Acceptance statement:
 > the swing-side ankle, so softening the plantarflex schedule does
 > not address D3+D4. **Phase 12A is now scoped to D2 only.** D3+D4 is
 > owned by Phase 12C below.
+>
+> **CONTINGENCY RESOLVED (Phase 9A re-read 2026-04-26 in commit
+> `72f25d4`):** The re-read at vx=0.265 shows D2 = 0.40 events/cycle
+> ("borderline" verdict, close to but not under the 0.30 exit
+> criterion). Phase 9A captures most of the available D2 win without
+> any planner change. **Phase 12A demoted to OPTIONAL POLISH** —
+> useful to push the residual 0.40 under 0.30 but not load-bearing
+> for the closed-loop FAIL set (which is dominated by the
+> `left_hip_roll` finding that Phase 12C owns and that did NOT
+> improve at non-shuffling vx).
 
 Goal:
 - close the **D2 mid-swing tap-down** component of the post-Phase-7 P1
@@ -1964,13 +2106,23 @@ Open questions for the implementer:
   Recommendation: both — the symmetric ramp is simpler and avoids
   creating a planner asymmetry.
 
-### Phase 12C. Diagnose and fix `left_hip_roll` asymmetric saturation (NEW)
+### Phase 12C. Diagnose and fix `left_hip_roll` asymmetric saturation (NEW; CONTINGENT on Phase 9A re-read)
 
 > **Opened by Phase 10 corrected diagnostic** (commit `381ab3c`). The
 > per-joint D3+D4 attribution surfaced that the only saturating joint
 > across all vx is `left_hip_roll` (lateral support). This is a
 > robot-level asymmetry, not a swing-shape issue, and is now the
-> load-bearing P1 closed-loop FAIL driver.
+> load-bearing P1 closed-loop FAIL driver — **at WR's shuffling
+> operating point**.
+>
+> **CONTINGENCY RESOLVED (Phase 9A re-read 2026-04-26 in commit
+> `72f25d4`):** The re-read at vx=0.265 shows `left_hip_roll` peak
+> sat rate = 0.333 — **identical** to the shuffling-regime data
+> (0.250-0.333 across vx ∈ {0.10-0.265}). The asymmetry is
+> **invariant to vx** and confirmed as a real robot-level issue,
+> not a shuffling artifact. **Phase 12C is the load-bearing
+> closed-loop slice and is fully required.** The four-item audit
+> (MJCF, ctrl-mapper, IK, keyframe) should proceed.
 
 Goal:
 - identify the root cause of the `left_hip_roll` asymmetric
@@ -2142,27 +2294,37 @@ The intended order is:
     gate); sequence after Phase 7
 12. Phase 11 to clean up the residual `lin_vel_z` planner-side
     consumption; independent, low priority
-13. **Phase 12A** (active, scope **revised** by Phase 10 corrected
-    diagnostic) — soften the IK plantarflex schedule from a binary
-    on/off-gate to a smoothstep ramp over 0.020-0.030 m foot-z.
-    Now scoped to **D2 only** (mid-swing tap-down). Required before
-    Phase 8 ships.
-14. **Phase 12C** (NEW, opened by Phase 10 corrected D3+D4) —
-    investigate `left_hip_roll` asymmetric saturation. This is now
-    the load-bearing P1 closed-loop driver; D3+D4 corrected data
-    shows the only saturating joint at every vx is `left_hip_roll`,
-    not the swing-side ankle. Investigation-first; the fix is
-    likely a one-line MJCF / mapper / IK / keyframe change once
-    root cause is identified. Required before Phase 8 ships.
-15. ~~Phase 12 (mirror TB cycle-0 truncation)~~ — **explicitly
+13. **Phase 9A re-read of Phase 10 diagnostic at non-shuffling vx**
+    ✅ **DONE** (commit `72f25d4`). Verdict: `left_hip_roll`
+    saturation is **invariant to vx** (asymmetry is robot-level, not
+    shuffling-driven); D2 partially improves at vx=0.265 (0.50 →
+    0.40, "borderline"). Phase 12C confirmed required; Phase 12A
+    demoted to optional polish.
+14. **Phase 12C** (LOAD-BEARING) — investigate `left_hip_roll`
+    asymmetric saturation. Confirmed required by Phase 9A re-read.
+    Four-item audit per the Phase 12C spec: MJCF, ctrl-mapper, IK,
+    standing keyframe.
+15. **Phase 12A** (OPTIONAL POLISH) — soften the IK plantarflex
+    schedule. Push residual D2 (0.40 at vx=0.265) under the 0.30
+    exit criterion. Not load-bearing for the closed-loop FAIL set.
+16. ~~Phase 12 (mirror TB cycle-0 truncation)~~ — **explicitly
     rejected** by Phase 10's D1 verdict (cycle-0 is the BEST part of
     every episode, not a drag). Listed here so future readers do
     not re-litigate.
+17. ~~Phase 9D (vx-dependent cycle_time / min-stride-floor)~~ —
+    **explicitly rejected** per Governing Policy (TB uses fixed
+    cycle_time; introducing variable cycle_time without hardware-
+    forced rationale is alignment backlog). Phase 9A handles the
+    shuffling concern by changing operating vx instead.
 
-Phases 7 + 9 + 11 can run in parallel. Phase 8 needs 7, 10's
-verdict, AND **both Phase 12A AND Phase 12C** landing. Phase 10
-needed 7; Phase 12A needs 7+10; Phase 12C needs 10. Phase 12A and
-Phase 12C target different mechanisms and can run in parallel.
+Updated dependency graph (post Phase 9A re-read):
+- Phase 9A and Phase 12C can run in parallel (independent mechanisms;
+  9A is operating-point change, 12C is robot-level audit).
+- Phase 12A is optional and can run anytime after Phase 9A is
+  evaluated; not on the critical path.
+- Phase 8 needs 7, the corrected Phase 10 verdict (now in tree),
+  AND Phase 12C landing. Phase 12A is no longer a hard prerequisite
+  for Phase 8.
 
 **Phases 7-11 form an investigate-and-improve plan, not a guaranteed
 terminal plan.** They are sufficient to determine whether "WR on par
