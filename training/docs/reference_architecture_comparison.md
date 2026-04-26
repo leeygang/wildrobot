@@ -1674,7 +1674,7 @@ Acceptance statement:
   PASS strictly or PASS via an active exemption", "Phase 12 follows",
   or both
 
-#### Phase 10 closeout (2026-04-26, commit `cc5e8d3`)
+#### Phase 10 closeout (2026-04-26, commits `cc5e8d3` initial / `381ab3c` corrected)
 
 Implemented `tools/phase10_diagnostic.py` — a WR-only closed-loop
 replay that captures per-step traces and produces D1 / D2 / D3+D4 as
@@ -1682,10 +1682,31 @@ specified above. No planner code changed. The diagnostic imports
 WR-side helpers from `tools/reference_geometry_parity.py`, so the
 replay is byte-for-byte the same trajectory the parity tool sees;
 only the per-step capture is added. Same TB-venv-free constraint as
-`tools/phase6_wr_probe.py`.
+`tools/phase6_wr_probe.py`. Backed by 22 unit tests in
+`tests/test_phase10_diagnostic.py` covering D1/D2/D3+D4 logic.
 
-**Diagnostic results on post-Phase-7 tree** (commit `cc5e8d3`,
-horizon 200, vx ∈ {0.10, 0.15, 0.20}):
+**Important methodology correction (commit `381ab3c`).** The initial
+diagnostic at commit `cc5e8d3` had two flaws surfaced by review and
+fixed in the rerun:
+
+1. D2 was counting per-step contacted-swing **frames**, not distinct
+   tap-down events. A 4-frame contiguous tap-down was reported as 4
+   events. The fix collapses contiguous (commanded-swing AND
+   physical-contact) frames into distinct events. **Corrected D2 is
+   ~3× lower** than the initial closeout claimed.
+2. D3+D4 was bucketing **any-joint** saturation by `i_swing`, which
+   proved timing coincidence between down-cross and saturation but
+   did not establish mechanism (could be any joint, not specifically
+   the swing-side ankle the un-plantarflex hypothesis predicts). The
+   fix attributes saturation per-joint AND per swing-side. **The
+   un-plantarflex hypothesis is contradicted** by the corrected
+   joint-level data: the swing-side ankle never saturates.
+
+The numbers and verdict below are from the **corrected** rerun (commit
+`381ab3c`); the original cc5e8d3 closeout is superseded.
+
+**Corrected diagnostic results** (post-Phase-7 tree, horizon 200,
+vx ∈ {0.10, 0.15, 0.20}):
 
 | Metric | vx=0.10 | vx=0.15 | vx=0.20 |
 |---|---|---|---|
@@ -1695,120 +1716,136 @@ horizon 200, vx ∈ {0.10, 0.15, 0.20}):
 | rest match_frac (steps 36+) | 0.375 | 0.417 | 0.469 |
 | `rest − first_cycle` gap | **−0.40** | **−0.39** | **−0.34** |
 | D1 verdict | no-cycle-0-drag | no-cycle-0-drag | no-cycle-0-drag |
-| **D2: mid-swing tap-down** |
-| events / swing cycle | 1.50 | 1.50 | 1.20 |
-| left vs right asymmetry | 7 vs 2 | 7 vs 2 | 4 vs 2 |
+| **D2: distinct mid-swing tap-down events (collapsed)** |
+| distinct events | 4 | 3 | 3 |
+| events / swing cycle | 0.667 | 0.500 | 0.600 |
+| left vs right asymmetry | 3 vs 1 | 2 vs 1 | 2 vs 1 |
+| mean event duration (frames) | 3.00 | 3.67 | 2.33 |
+| max event duration (frames) | 5 | 6 | 3 |
 | D2 verdict | planner-shape-bound | planner-shape-bound | planner-shape-bound |
-| **D3+D4: sat distribution by i_swing** |
-| swing-window mean sat rate | 0.188 | 0.083 | 0.091 |
-| sat rate at up-cross (i_swing=2) | 0.250 | 0.000 | 0.000 |
-| sat rate at down-cross (i_swing=9) | 0.250 | 0.250 | 0.333 |
-| D3+D4 verdict | uniform-sat | Phase-7-boundary-bound | Phase-7-boundary-bound |
-| **Composite verdict** | planner-shape | mixed: planner-shape + Phase-7-boundary | mixed: planner-shape + Phase-7-boundary |
+| **D3+D4: per-joint sat by i_swing (corrected)** |
+| swing-side ankle sat at any i_swing | **0.000** | **0.000** | **0.000** |
+| any-joint mean sat rate | 0.188 | 0.083 | 0.091 |
+| any-joint sat rate at up-cross (i=2) | 0.250 | 0.000 | 0.000 |
+| any-joint sat rate at down-cross (i=9) | 0.250 | 0.250 | 0.333 |
+| **only saturating joint (across all 8)** | left_hip_roll | left_hip_roll | left_hip_roll |
+| left_hip_roll peak rate | 0.250 (i_swing=1-9) | 0.250 (i_swing=7-10) | 0.333 (i_swing=8-9) |
+| D3+D4 verdict | uniform-sat | down-cross-correlated-mechanism-unclear | down-cross-correlated-mechanism-unclear |
+| **Composite verdict** | planner-shape + uniform-sat | mixed: planner-shape + down-cross-correlated-mechanism-unclear | mixed: planner-shape + down-cross-correlated-mechanism-unclear |
 
-**Three load-bearing findings:**
+**Three load-bearing findings (corrected):**
 
-1. **Cycle-0 retention is NOT the cause.** D1's gap is **negative** at
-   every vx (−0.40, −0.39, −0.34). The first cycle is consistently
-   the BEST part of every episode; WR's contact match degrades
-   *progressively* after step 36. **TB cycle-0 truncation would not
-   help — it would discard the cleanest part of the trajectory.**
-   This rules out one of the four hypothesised Phase 12 fixes
-   (mirror TB cycle-0 truncation in WR). Saves us from doing the
-   wrong work.
+1. **Cycle-0 retention is NOT the cause.** D1's gap is **negative**
+   at every vx (−0.40, −0.39, −0.34). The first cycle is
+   consistently the BEST part of every episode; WR's contact match
+   degrades *progressively* after step 36. **TB cycle-0 truncation
+   would not help — it would discard the cleanest part of the
+   trajectory.** This rules out one of the four hypothesised Phase
+   12 fixes. Conclusion **unchanged** from the initial closeout.
 
-2. **Phase 7's plantarflex DOWN-cross is the actuator-saturation
-   driver at vx ≥ 0.15.** D3+D4 shows saturation rate at the
-   down-cross (i_swing=9) is ≥ 1.5× the swing-window mean while
-   the up-cross (i_swing=2) is at 0.0. The asymmetry is
-   diagnostic: the discrete ankle un-plantarflex (−0.15 rad → 0
-   rad in a single frame between i_swing=9 z=0.026 m plantarflexed
-   and i_swing=10 z=0.013 m neutral) is what the actuator stack
-   cannot track. The up-cross has the same z step but is well-
-   separated from touchdown so the joints have headroom. This
-   confirms the Phase 7 closeout's hypothesis.
+2. **The un-plantarflex hypothesis is NOT supported by joint-level
+   evidence.** The corrected D3+D4 shows the swing-side ankle sat
+   rate is **0.000 at every i_swing including the down-cross** at
+   every vx. The original closeout's claim that "the discrete ankle
+   un-plantarflex is what the actuator stack cannot track" was an
+   over-claim from any-joint data. The actual saturating joint is
+   **`left_hip_roll`** (lateral support / trunk-asymmetry, on the
+   stance side of right-leg-swing frames). At vx=0.10 it fires
+   throughout the swing (i_swing 1-9, uniform); at vx ≥ 0.15 it
+   clusters in late-swing (i_swing 7-10 / 6-9). The down-cross
+   timing correlation is real, but the mechanism is not the ankle.
 
-3. **Mid-swing tap-down events are confirmed across all vx**
-   (1.2–1.5/cycle), with strong **left/right asymmetry** (left foot
-   3-4× right). This is consistent with the down-cross "snap"
-   pulling the foot into the floor before the planner's commanded
-   touchdown frame, but also suggests an asymmetry in the IK or
-   model that warrants a follow-up audit independent of the Phase 12
-   fix.
+3. **Mid-swing tap-downs confirmed at ~3× lower magnitude than
+   originally claimed** (corrected D2: 0.5–0.7 events/cycle, vs
+   1.2–1.5/cycle under the overcounting bug). Asymmetry is also
+   left-dominant (2-3× right), consistent with the left_hip_roll
+   asymmetry seen in D3+D4 — both point to the **same robot-level
+   asymmetry**, not separate issues.
 
-**Composite verdict: mixed (planner-shape-bound + Phase-7-boundary-
-bound at vx ≥ 0.15; planner-shape-bound only at vx=0.10).**
+**Composite verdict: mixed (planner-shape-bound + down-cross-
+correlated-mechanism-unclear at vx ≥ 0.15; planner-shape-bound +
+uniform-sat at vx=0.10).** The Phase-7-boundary-bound verdict from
+the original closeout is **withdrawn** — joint-level data
+contradicts it.
 
-**Phase 12 scope (recommended):**
+**Phase 12 scope (revised):**
 
-The right Phase 12 fix is **not** TB cycle-0 truncation (D1 ruled
-out). The right fix targets the discrete plantarflex transition at
-the down-cross. Two candidate slices, in order of preference:
+The corrected diagnostic narrows the actionable next slice but does
+not give a single decisive fix. Three candidate slices in order of
+expected impact:
 
-- **Phase 12A: Soften the plantarflex schedule.** Currently the
-  ankle plantarflex is binary on/off-gated on
-  `foot_world_i[2] > swing_ankle_lift_threshold_m = 0.025 m`
-  (`control/zmp/zmp_walk.py:780-783`). Replace the binary gate with
-  a continuous ramp: e.g.,
-  `plantarflex_rad = 0.15 * smoothstep((foot_z − 0.020) / 0.010)`
-  so the ankle ramps over a 10 mm window (0.020 to 0.030 m)
-  instead of switching at 0.025 m. This addresses the down-cross
-  snap directly and should symmetrically improve the up-cross too
-  (which is currently fine but stays fine under the ramp).
-  Planner-local single-file change; no schema change; Phase 5 cache
-  fingerprint picks it up. Expected to drop D3+D4 down-cross sat
-  rate to swing-window-mean and reduce D2 mid-swing tap-down events
-  proportionally.
-- **Phase 12B (fallback if 12A is insufficient): Shape the
-  triangle's first / last 1-2 frames.** Replace the linear ramp at
-  the boundaries with a half-cosine blend over 1-2 frames, so the
-  per-frame Δz at the down-cross is smaller (asymptotically zero
-  approaching touchdown). More invasive than 12A.
+- **Phase 12A (revised scope): Soften the plantarflex schedule.**
+  Still planner-local in `control/zmp/zmp_walk.py:780-783`; same
+  smoothstep ramp design as before. **Now scoped to address D2
+  only** — the foot's heel snapping into the floor as the ankle
+  un-plantarflexes is a plausible cause of the mid-swing tap-down
+  events. **Will NOT address D3+D4** because the saturating joint
+  is `left_hip_roll`, not the ankle. Smaller expected impact than
+  originally claimed; still worth doing because D2 is real.
+- **Phase 12C (NEW, opened by corrected D3+D4): Investigate
+  `left_hip_roll` asymmetric saturation.** This is now the
+  load-bearing P1 issue. The pattern (left-only, lateral support
+  joint, asymmetric distribution) suggests one of:
+  - WR MJCF asymmetry between left and right legs (joint range,
+    mass, or geom positioning)
+  - IK asymmetry: the planner symmetric assumes both feet at
+    `±lat`, but if the standing keyframe / home pose has an
+    asymmetric COM offset, the LEFT leg has to roll more to
+    support
+  - `CtrlOrderMapper` mapping bug: hip_roll commands
+    going to the wrong joint or with wrong sign
+  - Joint range setting in MJCF: left hip_roll's range may be
+    narrower than right's, hitting the limit faster
+  Required next action: a focused MJCF/IK audit comparing left
+  vs right leg parameters, joint ranges, and IK output. Tracking
+  as **Phase 12C** in the execution order. Likely a separate
+  one-line fix once root cause is identified.
+- **Phase 12B (deferred to fallback): Shape the triangle's
+  boundary frames.** Now lower priority because the saturating
+  joint isn't where this would help most. Keep on the list as a
+  fallback if 12A doesn't close D2.
 
-**Phase 8 ship/wait decision:** **WAIT.** Phase 8 (foot_step_height
-0.04 → 0.045 or 0.05) raises `up_delta` proportionally
-(0.013 → 0.014 at h=0.045, → 0.015 at h=0.05), which steepens the
-down-stroke and amplifies the down-cross snap. Phase 12A must land
-and verify before Phase 8 ships. Under Phase 9B keep-vx=0.15, this
-also means the H7 / H8 conditional exemptions remain pending until
-Phase 12A clears the down-cross saturation.
+**Phase 8 ship/wait decision:** Still **WAIT.** The corrected
+verdict still rules out shipping Phase 8 — bumping
+`foot_step_height_m` raises `up_delta` proportionally and does
+nothing for the left_hip_roll saturation. Phase 12A AND Phase 12C
+should both produce a verdict before Phase 8 is reconsidered.
 
-**H6 activation status:** **NOT activated.** The closed-loop FAIL is
-*not* purely actuator-stack-bound — the diagnostic surfaced two
-fixable causes (planner-shape mid-swing tap-down + Phase-7-boundary
-plantarflex transition). Treating H6 as the gauge of record now
-would mask fixable architecture-side issues. H6 stays pending until
-Phase 12A lands and the residual is verified to be uniform-sat
-across i_swing (D3+D4 verdict "uniform-sat" or "no-significant-
-sat"), at which point H6 + the parity-tool composite gauge can
-activate together.
+**H6 activation status:** Still **NOT activated.** The corrected
+verdict shows the FAIL is not purely actuator-stack-bound — there
+are at least two fixable causes (D2 planner-shape regression, D3+D4
+left_hip_roll asymmetry). H6 stays pending until 12A and 12C land
+and the residual is verified to be uniform-sat across i_swing on
+all 8 joints at all vx.
 
-**Sequencing impact (updated):**
+**Sequencing impact (updated, corrected):**
 
-- Phase 10 closeout produces a verdict; ✅ done.
-- **Phase 12A (NEW)** added to backlog: soften plantarflex schedule.
-  Required before Phase 8 ships and before H6 can activate.
-- Phase 8 still gated on Phase 12A landing.
+- Phase 10 closeout produces a verdict; ✅ done (corrected version
+  in commit `381ab3c`).
+- **Phase 12A (revised scope)** — soften plantarflex; addresses D2
+  only. Lower expected impact than originally claimed.
+- **Phase 12C (NEW)** — investigate `left_hip_roll` asymmetric
+  saturation. This is now the load-bearing slice for the P1 FAIL
+  set (D3+D4 evidence).
+- Phase 8 still gated on 12A AND 12C.
 - Phase 11 (lin_vel_z cleanup) unchanged, low-priority hygiene.
 
 Outstanding caveats:
-- The diagnostic does not include a pre-Phase-7 baseline
-  (half-sine envelope) for direct A/B comparison. The D3+D4 down-
-  cross-asymmetric pattern is consistent with the reviewer's
-  pre/post P1 numbers (Phase 7 caused the regression), but a
-  rigorous A/B would require temporarily reverting the planner.
-  Skipped here because the post-state evidence is sufficient to
-  scope Phase 12A.
-- Episode survival is short (68-76 steps) at every vx, so the
-  "rest" sample size is small (32-40 steps). The rest-vs-first
-  contrast direction (negative gap) is consistent across all three
-  vx bins, so the conclusion is robust, but the absolute "rest"
-  numbers carry larger uncertainty than the first-cycle ones.
-- The left/right asymmetry in D2 (left foot 3-4× right tap-downs)
-  is not explained by the Phase-7-boundary hypothesis alone. May
-  warrant a separate audit of the WR MJCF / IK chain for left-leg
-  vs right-leg structural asymmetry. Tracking as a follow-up
-  question, not as a blocker for Phase 12A.
+- The diagnostic still does not include a pre-Phase-7 baseline
+  (half-sine envelope) for direct A/B comparison. Worth doing
+  as a follow-up because the corrected verdict raises a new
+  question: was `left_hip_roll` saturation also present pre-Phase-7
+  but masked by the overall higher contact_match? If so, this
+  bounds the maximum impact of Phase 12A (some left_hip_roll
+  saturation pre-existed and Phase 7 worsened it via different
+  mechanisms).
+- Episode survival is short (68-76 steps), so the "rest" sample
+  is small (32-40 steps). The negative D1 gap direction is
+  consistent across all three vx bins so the conclusion is
+  robust, but absolute "rest" numbers carry uncertainty.
+- The left/right asymmetry in D2 is now understood as the same
+  robot-level asymmetry as the D3+D4 left_hip_roll finding —
+  not two independent issues.
 
 ### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
 
@@ -1835,21 +1872,35 @@ Acceptance statement:
 - success means no behavioral change in any reward or training metric;
   the consumption-narrowing is verifiable by grep
 
-### Phase 12A. Soften the IK plantarflex schedule (NEW from Phase 10 verdict)
+### Phase 12A. Soften the IK plantarflex schedule (revised — D2 only)
+
+> **Scope revised after Phase 10 corrected diagnostic** (commit
+> `381ab3c`). The original Phase 12A scoping claimed this slice would
+> close BOTH D2 (mid-swing tap-down) and D3+D4 (down-cross sat). The
+> corrected D3+D4 shows the saturating joint is `left_hip_roll`, NOT
+> the swing-side ankle, so softening the plantarflex schedule does
+> not address D3+D4. **Phase 12A is now scoped to D2 only.** D3+D4 is
+> owned by Phase 12C below.
 
 Goal:
-- close the Phase-7-boundary-bound component of the post-Phase-7 P1
+- close the **D2 mid-swing tap-down** component of the post-Phase-7 P1
   closed-loop FAIL by replacing the binary plantarflex on/off-gate
   with a continuous ramp, eliminating the discrete ankle un-plantarflex
-  at the down-cross frame
+  at the down-cross frame so the foot's heel does not snap into the
+  floor near touchdown
 
-Diagnostic signal that triggered this phase (from Phase 10):
-- D3+D4 sat rate at i_swing=9 (down-cross) is 1.5-3× the swing-window
-  mean at vx ≥ 0.15
-- D2 mid-swing tap-down events (1.2-1.5/cycle) cluster on the down-
-  stroke side
+Diagnostic signal that triggered this phase (from Phase 10 corrected):
+- D2 distinct events / swing cycle: 0.50-0.67 at every vx (corrected
+  metric; was 1.2-1.5/cycle under the overcounting bug)
+- Mean event duration 2.3-3.7 frames (taps, not single bounces)
 - D1 ruled out cycle-0 retention as the cause; this is a planner-side
   fix, not a TB-truncation fix
+
+What this phase does NOT close (per corrected D3+D4):
+- The `left_hip_roll` saturation at down-cross. The swing-side ankle
+  has 0.000 sat rate everywhere; softening its plantarflex schedule
+  cannot affect a joint that is not saturating. **Phase 12C handles
+  this.**
 
 Work (planner-local, single file):
 - `control/zmp/zmp_walk.py:780-783`: replace the binary
@@ -1869,59 +1920,137 @@ Work (planner-local, single file):
 
 Sequence:
 - AFTER Phase 7 ✅ (already landed)
-- AFTER Phase 10 ✅ (verdict in tree at commit `cc5e8d3`)
-- BEFORE Phase 8 — Phase 12A must verify before Phase 8 ships, since
-  Phase 8 amplifies the down-cross transition Phase 12A is closing
+- AFTER Phase 10 ✅ (corrected verdict in tree at commit `381ab3c`)
+- INDEPENDENT of Phase 12C — they target different mechanisms; can
+  run in parallel
+- BEFORE Phase 8 — Phase 12A AND Phase 12C must verify before Phase
+  8 ships, since Phase 8 amplifies the down-stroke
 
-Expected metric movement:
-- D3+D4 sat rate at i_swing=9: 0.250-0.333 → ≤ swing-window mean
-  (≈ 0.10) at vx ≥ 0.15 → planner-shape-bound only verdict
-- D2 mid-swing tap-down events: 1.2-1.5/cycle → near zero (the down-
-  cross snap is the primary mechanism)
-- P1 closed-loop `ref_contact_match_frac` at vx=0.15:
-  0.625 (post-Phase-7) → ≥ 0.700 (recover at least the pre-Phase-7
-  value of 0.6986) and ideally ≥ 0.80
-- P1 `joint_limit_step_frac` at vx=0.15:
-  0.0556 (post-Phase-7) → ≤ 0.030 (recover pre-Phase-7 0.0274)
-- P1 `shared_leg_rmse_rad`: similar recovery toward pre-Phase-7
-- Episode survival: > 100 steps at vx=0.15 (currently 72)
+Expected metric movement (revised, D2 only):
+- D2 distinct events / cycle: 0.50-0.67 → ≤ 0.3 at every vx
+- D2 mean event duration: 2.3-3.7 → ≤ 1.5 frames (shorter taps when
+  the down-snap is gone)
+- P1 `ref_contact_match_frac` at vx=0.15: 0.625 → some recovery,
+  but bounded by the residual `left_hip_roll` saturation that
+  Phase 12C owns. Realistic expectation ≥ 0.700.
+- P1 `joint_limit_step_frac`: **expected unchanged** (the saturating
+  joint is `left_hip_roll`, not the ankle; this phase doesn't move
+  that needle)
+- D3+D4 verdict: **expected unchanged** (down-cross-correlated-
+  mechanism-unclear stays until 12C lands)
 
 Exit criteria:
-- `tools/phase10_diagnostic.py` reports D3+D4 verdict =
-  "uniform-sat" or "no-significant-sat" at vx=0.15 and vx=0.20
-- D2 events/cycle drops to ≤ 0.3 at every vx
-- D1 sign / direction unchanged (this phase doesn't target cycle-0)
-- Full parity refresh on a TB-capable machine shows P1 closed-loop
-  metrics return to or improve on pre-Phase-7 values
+- `tools/phase10_diagnostic.py` D2 events/cycle ≤ 0.3 at every vx
+- D2 mean event duration ≤ 1.5 frames
+- D1 sign / direction unchanged
+- D3+D4 verdict can stay as-is (this phase doesn't claim to close it)
+- Full parity refresh shows P1 contact_match >= 0.700 at vx=0.15
 - No regression on H1 swing_step_per_clearance (Phase 7 PASS must
-  hold; the ankle ramp shouldn't change the foot-z trajectory shape
-  on its own, but the swing FK will change because the un-plantarflex
-  no longer snaps)
+  hold)
 - No regression on P0 (in-scope or full matrix)
 
 Acceptance statement:
-- success means D3+D4 down-cross asymmetry disappears AND D2 mid-swing
-  tap-downs drop to near-zero AND P1 contact_match recovers to or
-  beyond the pre-Phase-7 value
-- if D3+D4 clears but D2 stays elevated, Phase 12B (boundary-shape
-  envelope) is the next slice
-- if D3+D4 also clears the residual P1 RMSE/contact gap to TB
-  parity, H6 can activate (subject to the parity tool also shipping
-  the composite gauge per H6's activation rule)
+- success means D2 distinct events drop to ≤ 0.3/cycle and the P1
+  contact_match partially recovers
+- success does NOT require D3+D4 to flip — that's Phase 12C's job
+- if D2 doesn't drop, Phase 12B (boundary-shape envelope) is the
+  next slice for this mechanism
 
 Open questions for the implementer:
 - Is `smoothstep` the right ramp shape, or should it be linear?
   Recommendation: smoothstep (`3t² - 2t³`) so the ramp's derivative
-  is continuous at both ends; this avoids re-introducing a (smaller)
-  discontinuity in the ankle's velocity profile.
+  is continuous at both ends.
 - Should the ramp also apply on the up-cross side, or only down?
-  Recommendation: both — the diagnostic shows up-cross is currently
-  fine (0.0 sat rate at i_swing=2 for vx ≥ 0.15) but the symmetric
-  ramp is simpler and avoids creating a planner asymmetry.
-- The asymmetric left/right tap-down distribution in D2 (left foot
-  3-4× right) is a separate signal not addressed by Phase 12A.
-  Recommendation: track as an independent IK / MJCF audit follow-up;
-  do not bundle into Phase 12A.
+  Recommendation: both — the symmetric ramp is simpler and avoids
+  creating a planner asymmetry.
+
+### Phase 12C. Diagnose and fix `left_hip_roll` asymmetric saturation (NEW)
+
+> **Opened by Phase 10 corrected diagnostic** (commit `381ab3c`). The
+> per-joint D3+D4 attribution surfaced that the only saturating joint
+> across all vx is `left_hip_roll` (lateral support). This is a
+> robot-level asymmetry, not a swing-shape issue, and is now the
+> load-bearing P1 closed-loop FAIL driver.
+
+Goal:
+- identify the root cause of the `left_hip_roll` asymmetric
+  saturation (always left, never right; only lateral support joint
+  in the 8 shared joints) and land a fix
+
+Diagnostic signal that triggered this phase:
+- Phase 10 corrected D3+D4: `left_hip_roll` is the ONLY joint with
+  non-zero sat rate at every vx; no other joint shows any saturation
+  in the closed-loop replay
+- Pattern: vx=0.10 fires throughout swing (i_swing 1-9, uniform);
+  vx=0.15/0.20 fires late in swing (i_swing 7-10 / 6-9)
+- D2 left/right asymmetry (left foot 2-3× right tap-downs) is the
+  same robot-level asymmetry seen from a different angle
+
+Work (investigation-first, no code change until root cause is
+identified):
+
+1. **MJCF audit.** Compare left vs right leg in `assets/v2/*.xml`:
+   - hip_roll joint range — is left's narrower than right's?
+   - hip_roll mass / inertia — symmetric?
+   - hip_roll position relative to pelvis — symmetric?
+   - Foot collision geometry — symmetric?
+2. **CtrlOrderMapper audit.** Verify left_hip_roll command goes to
+   the left joint with correct sign. Compare against the policy
+   ordering in `training/utils/ctrl_order.py`. The "ctrl ordering"
+   item from the user memory is a known prior incident class.
+3. **IK output audit.** Print the IK-solved hip_roll q for left vs
+   right across a few cycles of `_generate_at_step_length`. If the
+   solver outputs symmetric q values but only left saturates in
+   sim, the asymmetry is downstream (MJCF, mapper). If the solver
+   outputs asymmetric q values, the asymmetry is in the planner /
+   IK setup.
+4. **Standing keyframe audit.** Check `home` / `walk_start`
+   keyframes in MJCF — does the COM offset symmetrically over both
+   feet? An asymmetric COM offset would force left_hip_roll to bear
+   more lateral load.
+
+Once root cause is identified, the fix is likely one line:
+- MJCF asymmetry → fix the asymmetric value
+- CtrlOrderMapper bug → fix the mapping
+- Planner/IK asymmetry → adjust the IK setup
+- Standing keyframe asymmetry → re-center the keyframe
+
+Sequence:
+- AFTER Phase 10 ✅ (verdict in tree)
+- INDEPENDENT of Phase 12A (different mechanism)
+- BEFORE Phase 8 — both 12A and 12C must verify
+
+Expected metric movement (post-fix, depending on root cause):
+- D3+D4: `left_hip_roll` sat rate drops to 0 at every i_swing →
+  uniform-sat / no-significant-sat verdict
+- P1 `joint_limit_step_frac`: 0.0556 → ≤ 0.020
+- P1 `ref_contact_match_frac`: combined with Phase 12A, target
+  ≥ 0.85 (returns to TB-comparable level)
+- Episode survival: > 150 steps at every vx (currently 68-76)
+- D2 left/right asymmetry: symmetric within ~20%
+
+Exit criteria:
+- root cause identified with concrete MJCF / mapper / planner /
+  keyframe evidence (not speculation)
+- the one-line fix lands and is verified by re-running
+  `tools/phase10_diagnostic.py`
+- D3+D4 reports no joint with non-zero sat rate (or uniform across
+  swing window with overall rate < 0.05)
+- D2 asymmetry drops to within 20% left vs right
+- No regression on Phase 7 H1 PASS, P0, P1A absolute gates
+
+Acceptance statement:
+- success means a specific asymmetric WR-side defect is identified,
+  fixed in one place, and verified by the diagnostic
+- if no specific defect is identifiable AND the saturation persists
+  symmetrically post-investigation, the verdict becomes
+  "actuator-stack-bound" and H6 activation is reconsidered
+- if the investigation finds the saturation is fundamentally
+  load-driven (left-leg-only because of the gait phase pattern at
+  vx >= 0.15, and the joint cannot avoid it given WR's mass/leg
+  geometry), the asymmetry becomes a hardware-bounded H9 candidate
+  exemption (subject to the closed-list rules in the "On Par or
+  Better" section)
 
 ### Validation harness (after every Phase 7-11 slice)
 
@@ -2013,20 +2142,27 @@ The intended order is:
     gate); sequence after Phase 7
 12. Phase 11 to clean up the residual `lin_vel_z` planner-side
     consumption; independent, low priority
-13. **Phase 12A** (active, opened by Phase 10 verdict) — soften the
-    IK plantarflex schedule from a binary on/off-gate to a
-    smoothstep ramp over 0.020-0.030 m foot-z. Closes the
-    Phase-7-boundary-bound component of the post-Phase-7 P1 FAIL
-    that Phase 10 surfaced. Required before Phase 8 ships.
-14. ~~Phase 12 (mirror TB cycle-0 truncation)~~ — **explicitly
+13. **Phase 12A** (active, scope **revised** by Phase 10 corrected
+    diagnostic) — soften the IK plantarflex schedule from a binary
+    on/off-gate to a smoothstep ramp over 0.020-0.030 m foot-z.
+    Now scoped to **D2 only** (mid-swing tap-down). Required before
+    Phase 8 ships.
+14. **Phase 12C** (NEW, opened by Phase 10 corrected D3+D4) —
+    investigate `left_hip_roll` asymmetric saturation. This is now
+    the load-bearing P1 closed-loop driver; D3+D4 corrected data
+    shows the only saturating joint at every vx is `left_hip_roll`,
+    not the swing-side ankle. Investigation-first; the fix is
+    likely a one-line MJCF / mapper / IK / keyframe change once
+    root cause is identified. Required before Phase 8 ships.
+15. ~~Phase 12 (mirror TB cycle-0 truncation)~~ — **explicitly
     rejected** by Phase 10's D1 verdict (cycle-0 is the BEST part of
     every episode, not a drag). Listed here so future readers do
     not re-litigate.
 
-Phases 7 + 9 + 11 can run in parallel; 8 needs 7, 10's verdict, AND
-Phase 12A landing (Phase 7 closeout + Phase 10 closeout flagged P1
-closed-loop regressions that Phase 8 would amplify); 10 needs 7;
-12A needs 7 and 10.
+Phases 7 + 9 + 11 can run in parallel. Phase 8 needs 7, 10's
+verdict, AND **both Phase 12A AND Phase 12C** landing. Phase 10
+needed 7; Phase 12A needs 7+10; Phase 12C needs 10. Phase 12A and
+Phase 12C target different mechanisms and can run in parallel.
 
 **Phases 7-11 form an investigate-and-improve plan, not a guaranteed
 terminal plan.** They are sufficient to determine whether "WR on par
