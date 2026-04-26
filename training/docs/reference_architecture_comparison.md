@@ -1819,10 +1819,14 @@ vx ∈ {0.10, 0.15, 0.20}):
 
 3. **Mid-swing tap-downs confirmed at ~3× lower magnitude than
    originally claimed** (corrected D2: 0.5–0.7 events/cycle, vs
-   1.2–1.5/cycle under the overcounting bug). Asymmetry is also
-   left-dominant (2-3× right), consistent with the left_hip_roll
-   asymmetry seen in D3+D4 — both point to the **same robot-level
-   asymmetry**, not separate issues.
+   1.2–1.5/cycle under the overcounting bug). In the shuffling
+   regime D2 asymmetry is left-dominant (2-3× right). ~~Originally
+   framed as the same robot-level asymmetry as the D3+D4
+   `left_hip_roll` finding.~~ — **superseded by the Phase 9A re-
+   read addendum below.** At vx=0.265 D2 L/R flips to right-only
+   (0:2) while `left_hip_roll` stays consistently left-only at every
+   vx, so the two asymmetries are independent issues, not two views
+   of the same defect. Treat as separate in Phase 12C scoping.
 
 **Composite verdict: mixed (planner-shape-bound + down-cross-
 correlated-mechanism-unclear at vx ≥ 0.15; planner-shape-bound +
