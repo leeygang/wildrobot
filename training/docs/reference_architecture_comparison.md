@@ -1,7 +1,7 @@
 # WR Reference Architecture Plan vs ToddlerBot
 
 **Status:** Canonical design note for `v0.20.x` reference alignment
-**Last updated:** 2026-04-25
+**Last updated:** 2026-04-26
 **Purpose:** define the reference-design policy for WildRobot (WR), record
 the design-history context behind the current parity harness, and order the
 architecture backlog needed to bring WR reference quality on par with or
@@ -34,7 +34,7 @@ The goal is not "WR looks reasonable in isolation." The goal is:
 - the comparison is size-aware and robot-limit-aware
 
 Use the parity layers in
-[reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md):
+[reference_parity_scorecard.md](reference_parity_scorecard.md):
 
 - `P0`: shared geometry gate
 - `P1A`: FK-realized nominal gait shape
@@ -66,9 +66,9 @@ The design history matters because the first comparison pass was too weak:
    `vx in {0.10, 0.15}`, but weaker than TB at higher speed.
 3. We then built a shared parity harness:
    - TB-side geometry test:
-     [tests/test_walk_reference_geometry.py](/home/leeygang/projects/toddlerbot/tests/test_walk_reference_geometry.py)
+     `projects/toddlerbot/tests/test_walk_reference_geometry.py`
    - WR-side parity script:
-     [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
+     `projects/wildrobot/tools/reference_geometry_parity.py`
 4. Review of that first harness found three major problems:
    - it mixed WR planner-side quantities with TB FK-realized quantities
    - it called offline gait-shape statistics "trackability"
@@ -270,10 +270,10 @@ Goal:
   reference changes
 
 Work:
-- keep [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
+- keep [tools/reference_geometry_parity.py](../../tools/reference_geometry_parity.py)
   as the single comparison entry point
 - keep
-  [reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md)
+  [reference_parity_scorecard.md](reference_parity_scorecard.md)
   as the acceptance contract
 - record both absolute and size-normalised results before each architecture
   change
@@ -441,25 +441,38 @@ reference channels move to the path-integrated form.
    a measured benefit to keeping the planner-phase target would
    override that. None exists today.
 2. **The planner-phase target couples reward signals to planner
-   choices.** Today
-   `wildrobot_env.py:801-818` reads
+   choices.** Pre-Phase-4, the env's torso-pose reward read
    `ref_pelvis_pos = win["pelvis_pos"]` (the LIPM-LQR COM trajectory
-   from `control/zmp/zmp_walk.py`) and uses it as the
+   from `control/zmp/zmp_walk.py`) and used it as the
    `_reward_torso_pos_xy` target. Any planner change (ALIP, mocap,
-   different cost weights) silently shifts the reward target.
+   different cost weights) would silently shift the reward target.
    Path-integrated targets keep the reward signal stable across
-   planner iterations.
+   planner iterations. (Phase 4 has since landed this switch — see
+   `wildrobot_env.py:813-822` for the post-Phase-4 reward and
+   `wildrobot_env.py:1489-1495` for the runtime call site. The
+   legacy `ref_pelvis_pos = win["pelvis_pos"]` lookup at
+   `wildrobot_env.py:802-807` is retained for the diagnostic
+   `feet_track_raw` probe and is also still read by the `lin_vel_z`
+   reward at `wildrobot_env.py:843` (`win["pelvis_pos"][2]`). The
+   `lin_vel_z` consumption is a numerical no-op because
+   `pelvis_pos[:, 2] = cfg.com_height_m` is constant by construction
+   in `zmp_walk.py:845`, so the reward effectively penalises
+   `|body_lin_vel_z|` only — but the reward target is technically
+   still a planner-side field and would be cleaner to source from
+   `cfg.com_height_m` directly in a follow-up.)
 3. **TB consumes the path-integrated form** at
-   `toddlerbot/locomotion/mjx_env.py:2264-2270`
-   (`torso_pos_ref = info["state_ref"]["qpos"][:2]`, where
-   `state_ref["qpos"][:2]` is built from `path_state.path_pos`
-   integrated at runtime per
-   `toddlerbot/reference/walk_zmp_ref.py:228-236`). Aligning here
-   means WR's reward consumes the same semantic class TB does.
+   `toddlerbot/locomotion/mjx_env.py:2265-2269`
+   (`torso_pos_ref = info["state_ref"]["qpos"][:2]`). The
+   `state_ref["qpos"]` it reads is composed at
+   `toddlerbot/reference/walk_zmp_ref.py:228-239` from
+   `path_state["path_pos"]` (which itself comes from the integrator
+   defined at `toddlerbot/reference/motion_ref.py:200-235` and called
+   from `walk_zmp_ref.py:129`). Aligning here means WR's reward
+   consumes the same semantic class TB does.
 4. **The runtime computation is no more complex than the current
    lookup at the smoke scope.** WR's env already threads
    `loc_ref_offline_step_idx` through state
-   (`wildrobot_env.py:1342, 1480`). For the yaw-stationary smoke
+   (`wildrobot_env.py:1345, 1483`). For the yaw-stationary smoke
    (`yaw_rate_cmd = 0`, `vy = 0`), `t_since_reset = step_idx · dt`
    and `path_pos = velocity_cmd · t_since_reset` is one multiply and
    one add per step — comparable to the array lookup that produces
@@ -528,7 +541,7 @@ before, after, or in parallel.
 What changes in Phase 3:
 - `control/zmp/zmp_walk.py::_generate_at_step_length` adds a
   fixed-base FK pass after the IK step (mirroring
-  `toddlerbot/algorithms/zmp_walk.py:153-212 mujoco_replay`).
+  `toddlerbot/algorithms/zmp_walk.py:153-213 mujoco_replay`).
 - `control/references/reference_library.py::ReferenceTrajectory`
   schema gains: `body_pos`, `body_quat`, `body_lin_vel`,
   `body_ang_vel`, `site_pos` (per-frame, FK-realised).
@@ -553,25 +566,32 @@ than a workaround.
 Phase 4 lands the Phase 2 decision in code. It depends on Phase 2
 being decided (this commit) but **not** on Phase 3 being landed.
 
-Concrete code changes:
+Concrete code changes (as landed — see Phase 4 closeout below):
 
-1. **`control/references/runtime_reference_service.py`** — add a
-   small `compute_path_state(t, velocity_cmd, yaw_rate_cmd) ->
-   {path_pos, path_rot, lin_vel, ang_vel}` static helper. Mirrors
+1. **`control/references/runtime_reference_service.py`** — added a
+   small `compute_command_integrated_path_state(*, t_since_reset_s,
+   velocity_cmd_mps, yaw_rate_cmd_rps=0.0, dt_s=0.02,
+   default_root_pos_xyz=None) -> {path_pos, path_rot, torso_pos,
+   lin_vel, ang_vel}` static helper. Mirrors
    `toddlerbot/reference/motion_ref.py::integrate_path_state` but
    stateless: takes elapsed time and command, returns the
-   integrated frame. Pure-NumPy + JAX-friendly; no service state
-   change.
+   integrated frame. Pure-JAX (`jax.numpy`); no service state
+   change. The optional `default_root_pos_xyz` reproduces TB's
+   absolute-world torso semantics
+   (`path_rot.apply(default_root_pos_xyz) + path_pos`).
 2. **`training/envs/wildrobot_env.py`**:
-   - Compute `t_since_reset = step_idx · self.dt` (already
-     available via `loc_ref_offline_step_idx`).
-   - Compute `path_state = compute_path_state(t_since_reset,
-     velocity_cmd, yaw_rate_cmd_or_zero)`.
-   - In `_reward_torso_pos_xy`, replace
-     `ref_pelvis_pos[:2]` with `path_state.path_pos[:2]`.
-   - In any future torso_quat reward, use
-     `path_state.path_rot · default_rot`.
-   - Leave `ref_pelvis_pos` available for the diagnostic
+   - Compute `t_since_reset = next_step_idx · self.dt` (already
+     available via `loc_ref_offline_step_idx`,
+     `wildrobot_env.py:1483-1487`).
+   - Compute `path_state = self._offline_service.\
+     compute_command_integrated_path_state(...)`
+     (`wildrobot_env.py:1489-1495`) and pass it as a kwarg into
+     `_compute_rewards` (`wildrobot_env.py:720, 1624`).
+   - In `_reward_torso_pos_xy`, replace the planner-side reference
+     with `path_state["torso_pos"][:2]`
+     (`wildrobot_env.py:813-822`).
+   - Leave `ref_pelvis_pos = win["pelvis_pos"]`
+     (`wildrobot_env.py:802-807`) available for the diagnostic
      `feet_track_raw` and any other planner-phase consumer that
      hasn't been migrated yet (move them in follow-ups, not in
      Phase 4's first slice).
@@ -587,17 +607,19 @@ uses.
 design-decision phase. The Phase 3 / Phase 4 implementation maps
 above are the concrete next slices.
 
-Open questions for the implementer of Phase 4:
+Open questions resolved by Phase 4 implementation:
 
 - Should the path-state integration also handle `yaw_rate_cmd`
-  immediately, or defer to v0.20.4 (yaw-cmd milestone)?
-  Recommendation: build the helper to accept `yaw_rate_cmd` but
-  set it to 0 for the smoke; the helper is identical for the
-  yaw-stationary case, just future-proofed.
+  immediately, or defer to v0.20.4 (yaw-cmd milestone)? **Resolved:**
+  the helper accepts `yaw_rate_cmd_rps` (default 0.0); the env
+  passes `jp.float32(0.0)` for the smoke and the closed-form
+  discrete sum in `compute_command_integrated_path_state` already
+  collapses to the linear case in that limit.
 - Should `path_state` be cached in `WildRobotInfo` to avoid
-  recomputation across the reward terms? Recommendation: yes —
-  compute once per step, attach to `state_info`, read from
-  reward functions.
+  recomputation across the reward terms? **Resolved:** yes —
+  computed once per step (`wildrobot_env.py:1489`) and threaded
+  through `_compute_rewards` as a kwarg
+  (`wildrobot_env.py:720, 1624`).
 
 ### Phase 3. Align WR asset content with TB
 
@@ -636,10 +658,11 @@ Code changes:
 
 1. **`control/zmp/zmp_walk.py`** — added
    ``ZMPWalkGenerator._fixed_base_fk_replay``, mirroring
-   ``toddlerbot/algorithms/zmp_walk.py:153-212 mujoco_replay``.
+   ``toddlerbot/algorithms/zmp_walk.py:153-213 mujoco_replay``.
    Lazily loads ``assets/v2/scene_flat_terrain.xml``, anchors at the
    ``home`` keyframe (TB-style fixed-base FK), and per-frame:
-   - reads ``data.xpos`` / ``data.xquat`` for all 26 bodies,
+   - reads ``data.xpos`` / ``data.xquat`` for all model bodies
+     (`range(model.nbody)`),
    - synthesises foot-centre ``site_pos`` from heel + toe geom
      midpoints (WR's MJCF lacks explicit ``left/right_foot_center``
      sites; this matches the parity tool's existing convention).
@@ -728,7 +751,7 @@ Outstanding caveats:
 
 Phase 4 unblocked: ``ReferenceLibrary``-backed ``body_pos`` /
 ``body_quat`` are now available for RSI initialization (mirroring
-``toddlerbot/locomotion/mjx_env.py:1175-1191``) and for any future
+``toddlerbot/locomotion/mjx_env.py:1174-1192``) and for any future
 reward channel that wants a fixed-base FK signal.  The Phase 4 doc
 under "Phase 2 closeout" stands as-is — the runtime reference
 consumption alignment is independent of this asset-content slice.
@@ -758,6 +781,59 @@ Acceptance statement:
 - success does not require all downstream training metrics to pass yet; it
   removes a major source of WR/TB semantic drift
 
+#### Phase 4 closeout (2026-04-26)
+
+Implemented across two files; reward-consumption-side only, no
+schema or asset rebuild.
+
+Code changes:
+
+1. **`control/references/runtime_reference_service.py`** — added
+   `RuntimeReferenceService.compute_command_integrated_path_state`
+   (`runtime_reference_service.py:182-262`). Stateless static
+   helper, kwargs-only, JAX-native. Returns
+   `{path_pos, path_rot, torso_pos, lin_vel, ang_vel}` where
+   `torso_pos = path_rot.apply(default_root_pos_xyz) + path_pos`
+   when `default_root_pos_xyz` is supplied (matches TB's
+   absolute-world torso semantics from
+   `toddlerbot/reference/walk_zmp_ref.py:230-232`). Uses a
+   closed-form discrete sum
+   `p_n = dt · Σ_{k=1..n} Rz(k·θ) · [vx, 0]` with a numerically
+   stable `θ → 0` fallback so the yaw-stationary smoke and the
+   future yaw-cmd milestone share one code path.
+2. **`training/envs/wildrobot_env.py`**:
+   - `wildrobot_env.py:1483-1495` computes
+     `t_since_reset_s = next_step_idx · self.dt` and calls
+     `self._offline_service.compute_command_integrated_path_state(
+       t_since_reset_s=..., velocity_cmd_mps=velocity_cmd,
+       yaw_rate_cmd_rps=jp.float32(0.0), dt_s=jp.float32(self.dt),
+       default_root_pos_xyz=self._init_qpos[:3].astype(jp.float32))`
+     once per step.
+   - `wildrobot_env.py:720` adds `path_state` as a kwarg on
+     `_compute_rewards`; `wildrobot_env.py:1624` threads it through
+     so all reward terms see the same per-step path state.
+   - `wildrobot_env.py:813-822` switches `_reward_torso_pos_xy` to
+     `torso_pos_xy_err = root_pos_xyz[:2] - path_state["torso_pos"][:2]`,
+     matching TB `_reward_torso_pos_xy`
+     (`toddlerbot/locomotion/mjx_env.py:2265-2269`).
+   - `wildrobot_env.py:802-807` retains the legacy
+     `ref_pelvis_pos = win["pelvis_pos"]` lookup for the
+     diagnostic-only `feet_track_raw` probe; no other reward term
+     reads planner-side pelvis_pos.
+
+What did NOT change in Phase 4:
+- `ReferenceTrajectory` / `RuntimeReferenceWindow` schema (Phase 3
+  asset content remains additive on top).
+- `ZMPWalkConfig` planner timing / geometry constants.
+- `q_ref` / `contact` / `pelvis_pos` window fields (still planner
+  output).
+
+Acceptance: `_reward_torso_pos_xy` reads a path-integrated target;
+WR no longer tracks planner LIPM-COM jitter as the reward signal.
+The remaining torso_pos divergence between WR and TB is now purely
+hardware-driven (default `default_root_pos_xyz` differs by COM
+height and stance width), not target-semantics-driven.
+
 ### Phase 5. Align lifecycle and reproducibility
 
 Goal:
@@ -781,6 +857,53 @@ Acceptance statement:
 - success means parity runs and debugging are reproducible enough to trust
   architecture deltas
 - success does not by itself imply reference-quality parity improvement
+
+#### Phase 5 closeout (2026-04-26)
+
+Implemented as a deterministic, fingerprinted on-disk cache for the
+`vx`-grid reference library so the parity tool, the env, and CLI
+debugging all consume the same reproducible asset across runs.
+
+Code changes:
+
+1. **`tools/reference_geometry_parity.py`** — added
+   `_wr_generator_fingerprint`
+   (`reference_geometry_parity.py:258-296`) and `_wr_cache_key`
+   (`reference_geometry_parity.py:298-308`). The fingerprint is a
+   SHA-256 of the contents of the planner-side sources
+   (`control/zmp/zmp_walk.py`, `control/zmp/zmp_planner.py`,
+   `control/references/reference_library.py`,
+   `training/utils/ctrl_order.py`) **and** every `*.xml` / `*.json`
+   under `assets/v2`, so any kinematics / site-definition change
+   invalidates the cache automatically. `_wr_cache_key` further
+   binds the cache to the requested `vx` grid and the current
+   `asdict(ZMPWalkConfig())`, so any config change (including the
+   Phase 6 `cycle_time_s` 0.64 → 0.72 bump) gets a fresh cache key.
+   Cached schemas are versioned
+   (`wr_phase5_generator_fingerprint_v2`,
+   `wr_phase5_library_cache_v1`) so format changes invalidate too.
+2. **`control/zmp/build_library.py`** — CLI entry point
+   (`uv run python control/zmp/build_library.py --output ...`,
+   `--vx-max 0.20`, `--vx-interval ...`) for deterministic offline
+   library construction. Used by parity sweeps and any future
+   batch-generation workflow.
+3. **`tests/test_reference_lifecycle_phase5.py`** — pytest +
+   ad-hoc smoke that exercises fingerprint stability,
+   `vx`-bin-set sensitivity, and serialisation round-trips against
+   a stub `ReferenceLibrary`.
+
+What did NOT change in Phase 5:
+- `ReferenceTrajectory` / `RuntimeReferenceWindow` schema.
+- Env / reward consumption paths (Phase 4 stands).
+- Planner config / timing (Phase 6 owns those).
+
+Acceptance: parity sweeps no longer need ad-hoc per-run
+regeneration; the parity tool's library cache key is a pure
+function of `(planner sources, MJCF/JSON assets, vx grid,
+ZMPWalkConfig())`, so any future planner / asset / config change
+is picked up automatically. This unblocks Phase 6's
+`cycle_time_s` tuning to flow through the cache without manual
+invalidation.
 
 ### Phase 6. Tune only after the architecture is aligned
 
@@ -949,17 +1072,24 @@ Reading this closeout as "WR ≈ TB now" would overstate the result.
    parity run to update both sides.
 2. Address the P2 `swing_foot_z_step` absolute / per-clearance gap.
    Phase 6 nudged it (0.0201 → 0.0183) but it is still 1.83× TB
-   absolute and 1.40× TB per-clearance.  Likely candidates: a flatter
-   swing-z apex (TB's triangular-then-flat profile vs WR's half-sine),
-   or revisiting the Phase 1 envelope choice now that the cycle is
-   longer.
+   absolute and 1.40× TB per-clearance.  TB's swing-z is a
+   **single-peaked triangle** (linear up, peak at one frame, linear
+   down — see TB `algorithms/zmp_walk.py:483-498`), not a trapezoid;
+   adopting the TB envelope means swapping WR's half-sine for the same
+   piecewise-linear ramp, not building a flat top. Alternatively,
+   revisit the Phase 1 envelope choice now that the cycle is longer.
 3. Address the residual size-normalised P1A gates.  Two distinct
    knobs:
    - `swing_clearance_per_com_height` is one `foot_step_height_m`
-     bump away from PASS (e.g. 0.040 → 0.045 puts it ≈ 0.16, gate
-     0.149).  The trade-off is P2 swing-step smoothness; this is a
-     legitimate next Phase 6 slice if the smoothness regression stays
-     bounded.
+     bump away from PASS. WR currently sits at 0.04 m
+     (`control/zmp/zmp_walk.py:95`); TB defaults to **0.05 m**
+     (TB `algorithms/zmp_walk.py:32`, not overridden by
+     `walk_zmp_ref.py:43`). Adopting TB's value (0.04 → 0.05, +25 %)
+     puts the metric at ≈ 0.175 vs gate 0.149 — clears with margin.
+     A halfway step (0.045) would land at ≈ 0.16, also clearing the
+     gate while halving the swing-step smoothness regression. The
+     trade-off is P2 swing-step smoothness; this is a legitimate next
+     Phase 6 slice if the smoothness regression stays bounded.
    - `step_length_per_leg` and `cadence_froude_norm` are bounded
      below / above by hardware proportions (WR has 1.76× longer legs
      than TB) at the current operating point.  Closing them needs an
@@ -1017,11 +1147,11 @@ improvement."
 
 Use this note together with:
 
-- [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
-- [training/docs/reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md)
-- [training/docs/walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md)
-- [tests/test_v0200c_geometry.py](/home/leeygang/projects/wildrobot/tests/test_v0200c_geometry.py)
-- [tests/test_walk_reference_geometry.py](/home/leeygang/projects/toddlerbot/tests/test_walk_reference_geometry.py)
+- [tools/reference_geometry_parity.py](../../tools/reference_geometry_parity.py) (WR)
+- [training/docs/reference_parity_scorecard.md](reference_parity_scorecard.md) (WR)
+- [training/docs/walking_training.md](walking_training.md) (WR)
+- [tests/test_v0200c_geometry.py](../../tests/test_v0200c_geometry.py) (WR)
+- `projects/toddlerbot/tests/test_walk_reference_geometry.py` (TB)
 
 When the parity report and this note disagree, prefer the parity report for
 current metrics and use this note for policy, classification, and backlog

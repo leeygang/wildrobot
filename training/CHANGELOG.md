@@ -75,18 +75,32 @@ quality with actuator stack.
 
 ### Direction to close the remaining gap (priority order)
 
-1. **Swap half-sine swing-z apex for TB-style triangular profile.**
-   This single planner-local change in `control/zmp/zmp_walk.py`
-   (mirroring `projects/toddlerbot/algorithms/zmp_walk.py`) addresses
+> Numbers and code references below were code-verified against the
+> current WR + TB tree after a doc-vs-code drift audit; see "Doc fixes
+> landed alongside this snapshot" at the end.
+
+1. **Swap half-sine swing-z apex for TB-style single-peaked
+   triangle.** WR currently uses
+   `(foot_step_height + clearance) * sin(pi*frac)`
+   (`control/zmp/zmp_walk.py:719-722` and `:745-750`). TB uses a
+   piecewise-linear triangle
+   `up_delta * [0, 1, 2, ..., N/2, ..., 2, 1, 0]`
+   (`toddlerbot/algorithms/zmp_walk.py:483-498`). **Single-peaked,
+   not trapezoidal** — the apex sits on a single frame, then the foot
+   immediately starts coming down. This planner-local change addresses
    **both** the P2 absolute `swing_foot_z_step_max` FAIL (1.83× TB) and
    the normalised `swing_foot_z_step_per_clearance` FAIL (1.40× TB).
    Highest-confidence TB-alignment move with a measured FAIL on a
    non-hardware-bounded gate.
 
-2. **Bump `foot_step_height_m`** (e.g. 0.040 → 0.045) to lift
-   `swing_clearance_per_com_height` from 0.143 to ≈ 0.16 (gate 0.149)
-   → PASS. Sequence after item 1 so the new triangular envelope absorbs
-   the higher apex.
+2. **Bump `foot_step_height_m` to TB's 0.05 m** (or 0.045 as a halfway
+   step). WR currently 0.04 m (`control/zmp/zmp_walk.py:95`); TB
+   defaults to 0.05 m (`toddlerbot/algorithms/zmp_walk.py:32`, not
+   overridden by `walk_zmp_ref.py:43`). Adopting TB's 0.05 m lifts
+   `swing_clearance_per_com_height` from 0.143 to ≈ 0.175 (gate 0.149)
+   → PASS with margin. A 0.045 halfway step lands at ≈ 0.16 (still
+   PASS) while halving the swing-step smoothness regression. Sequence
+   after item 1 so the new triangular envelope absorbs the higher apex.
 
 3. **Curriculum / operating-vx decision for the two hardware-Froude
    gates.** `step_length_per_leg = 0.56× TB` and
@@ -100,19 +114,60 @@ quality with actuator stack.
 4. **Diagnose the P1 contact-match-frac FAIL before attributing it
    purely to actuator stack.** WR's best contact match is 0.70 at
    vx=0.15, vs the 0.90 absolute floor. Three concrete checks:
-   - Is the WR cycle-0 transient (TB truncates it, WR retains) eating
-     the early-episode contact alignment? Compare match_frac on
-     [first 30 steps] vs [steps 30-end].
+   - Is the WR cycle-0 transient eating the early-episode contact
+     alignment? **Code-verified divergence:** TB truncates the first
+     cycle in `toddlerbot/algorithms/zmp_walk.py:138-145` before
+     `mujoco_replay`; WR retains cycle 0 by design (half-step
+     ramp-in at `k == 0` in `control/zmp/zmp_walk.py:691-696`, no
+     truncation before storage). Compare match_frac on [first 30
+     steps] vs [steps 30-end]; if the front loaded is dragging the
+     mean, item 1 also drops swing-apex flips and may be sufficient.
    - Are the contact flips coming from the swing-z apex peakiness?
      Item 1 should drop residual mid-swing tap-down events.
    - If both above are clean and match_frac is still < 0.90, the
      residual is the actuator stack and we accept it as an inherent
      P1-test-design limitation per the scorecard's own note.
 
+5. **Cleanup (low priority): migrate `lin_vel_z` reward off
+   `pelvis_pos[2]`.** The Phase 4 doc claims `pelvis_pos` is "retained
+   only for `feet_track_raw`", but `wildrobot_env.py:843` also reads
+   `win["pelvis_pos"][2]`. The numerical effect is zero
+   (`pelvis_pos[:, 2] = cfg.com_height_m` is constant per
+   `zmp_walk.py:845`), so the reward effectively penalises
+   `|body_lin_vel_z|` only, but the consumption is still planner-side.
+   Source the constant from `cfg.com_height_m` directly in a one-line
+   follow-up. Doc has been updated to reflect actual code.
+
 **Not a direction:** further `cycle_time_s` tuning (Phase 6 already
 adopted TB's value); broader changes to the runtime target semantics
 (Phase 4 already aligned them and the closed-loop drift / forward gates
 now pass).
+
+### Doc fixes landed alongside this snapshot
+
+A doc-vs-code drift audit on `training/docs/reference_architecture_comparison.md`
+surfaced three claims that didn't match current code; the doc has been
+updated and the priority order above reflects the corrected numbers:
+
+- **"TB triangular-then-flat profile"** → **"TB single-peaked
+  triangle"**. TB's swing-z (`algorithms/zmp_walk.py:483-498` in TB)
+  has no flat top. A change built around the wrong description would
+  have produced a trapezoidal envelope rather than the single-peaked
+  TB shape.
+- **"`foot_step_height` bump 0.040 → 0.045"** → now states TB's
+  actual default of **0.05 m** explicitly, with 0.045 as the halfway
+  alternative. Both PASS the normalised gate; the difference is
+  margin and smoothness trade-off.
+- **"`pelvis_pos` retained only for diagnostic `feet_track_raw`"** →
+  acknowledged that `lin_vel_z` reward (`wildrobot_env.py:843`) also
+  reads `win["pelvis_pos"][2]` (numerical no-op because constant, but
+  not "only for diagnostics"). Cleanup item 5 above tracks the
+  follow-up.
+
+Other doc claims (Phase 1 swing-z formula, Phase 3 FK replay
+existence, Phase 4 `path_state` consumption, Phase 6 `cycle_time =
+0.72`, TB cycle-0 truncation, WR all-zero foot_rpy, `mujoco_replay`
+location) were verified accurate against the current tree.
 
 ### Notable changes vs the pre-refresh estimate (now superseded)
 
