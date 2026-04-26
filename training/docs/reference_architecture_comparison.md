@@ -314,6 +314,77 @@ Acceptance statement:
 - success does not require a full `P2` pass yet; the phase is allowed to leave
   WR smoother than before but still rougher than TB
 
+#### Phase 1 closeout (2026-04-25, commit `876a863`)
+
+Implemented in `control/zmp/zmp_walk.py` only (planner-local). Two
+coupled changes: the swing-z formula collapses to a single
+`(foot_step_height + clearance) * sin(pi*frac)` envelope so the
+clearance offset vanishes at lift-off / touchdown; the IK plantarflex
+is now gated on the commanded foot z (not just the contact mask) so
+boundary swing frames where the envelope returns to zero stay
+flat-ankle and don't dip the foot below the floor.
+
+Verification done with a **dense per-frame FK sweep** (every frame in
+the 64-frame plan window, all four probed `vx` bins) — the
+`tests/test_v0200c_geometry.py` probe alone samples only
+`{0, 5, 10, 16, 22, 28, 32, 48, 64}`, which is too sparse to catch
+in-between violations introduced by an envelope change. The dense
+sweep is the verification of record for this phase.
+
+Dense sweep results (after fix):
+
+| `vx` | frames | worst swing z (m) | worst stance z (m) | in-scope violations |
+|---|---|---|---|---|
+| 0.10 | 64 | −0.0011 | +0.0007 | 0 |
+| 0.15 | 64 | −0.0011 | +0.0024 | 0 |
+| 0.20 | 64 | −0.0011 | +0.0047 | 6 (deferred bin) |
+| 0.25 | 64 | −0.0011 | +0.0075 | 12 (deferred bin) |
+
+Parity-relevant deltas (WR side; TB unchanged so cached TB numbers
+in `tools/parity_report.json` remain the right baseline):
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| `P0` worst_swing_z (m) | −0.0017 | −0.0011 | +0.6 mm margin |
+| `P0` worst_stance_z (m) | +0.0075 | +0.0075 | unchanged |
+| `P0` in-scope failures | 0 | 0 | unchanged |
+| `P2` swing_foot_z_step (m) | 0.0243 | 0.0200 | −17.7 % |
+| `P2` shared_leg_q_step (rad) | 0.4094 | 0.3632 | −11.3 % (cleaner ankle transition) |
+| `P1A` swing_clearance_mean_m (per-cycle peak) | 0.0668 | 0.0668 | unchanged |
+
+Important nuance — what `P1A swing_clearance_mean_m` does and does
+not measure: it is the **mean of the per-cycle peak** above the
+stance baseline (see
+`tools/reference_geometry_parity.py::_swing_clearance`), not the
+mean foot height during swing. The peak is genuinely unchanged at
+0.065 m. The mean foot height during swing **does** drop because
+the new envelope sits below the old one everywhere except at the
+peak:
+
+| Quantity | Old (m) | New (m) | Δ (m) |
+|---|---|---|---|
+| swing-z peak (per-cycle max) | 0.0650 | 0.0650 | 0.0000 |
+| swing-z mean (over swing frames) | 0.0480 | 0.0373 | −0.0107 |
+| swing-z min (per-swing-frame minimum) | 0.0250 | 0.0000 | −0.0250 |
+
+For architectural alignment: TB's analytical swing-z mean (linear
+up-then-down, peak 0.05, no DC offset) is **0.0227 m**. WR after
+the fix is 0.0373 m — still **1.64× TB's mean**, so the change
+moves WR toward TB's swing profile, not below it. The peak ceiling
+that determines obstacle clearance is preserved. If a future phase
+wants to recover the old mean swing height for additional margin,
+that belongs in Phase 6 (parameter values: `foot_step_height_m`),
+not Phase 1.
+
+Outstanding caveats:
+- TB-side parity helper not re-run on this machine (TB venv missing
+  `joblib` / `lz4`); the cached TB numbers in
+  `tools/parity_report.json` stay valid because TB code is
+  untouched. A full refresh on a TB-capable machine will produce a
+  coherent post-Phase-1 report.
+- The high-`vx` (≥ 0.20) stance failures are unchanged and remain
+  out of scope per the round-10 milestone reframing.
+
 ### Phase 2. Decide runtime target semantics
 
 Goal:
