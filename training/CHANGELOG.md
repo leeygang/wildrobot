@@ -6,6 +6,93 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-reference-quality-snapshot] - 2026-04-26: Where WR sits vs TB after Phases 1-6
+
+### Context
+
+Status read of WR reference quality vs ToddlerBot after Phases 1-6 of
+`training/docs/reference_architecture_comparison.md` have all landed
+(swing-z continuity fix, TB-style `mujoco_replay` enrichment,
+command-integrated torso target, lifecycle cache, `cycle_time_s`
+tuning). No code change in this entry. Sources: `tools/parity_report.json`
+(commit `c1b815d`, pre-Phase-6 TB+WR), Phase 6 closeout WR-only metrics
+in the architecture-comparison doc, and a code spot-check confirming
+`ZMPWalkConfig.cycle_time_s = 0.72` is in tree at commit `c23ddaf`.
+
+### Result — gate verdicts (WR vs TB-2xc, vx=0.15 unless noted)
+
+| Layer | Gate | Status | Reading |
+|---|---|---|---|
+| P0 in-scope (vx ≤ 0.15) | both gates | **PASS** | clean |
+| P0 full matrix | stance_gate | **PASS** (worst +1.9 mm vs +7.5 mm pre-P6) | high-vx bins now clear |
+| P0 full matrix | swing_gate | **PASS** (margin +17 mm vs −1.7 mm pre-P6) | flipped to PASS in P6 |
+| P1A absolute | step_len / cadence / clearance / speed / DS | **PASS** | TB-comparable |
+| P1A normalised | `step_length_per_leg` ≥ 0.85× TB | **FAIL** (0.56× TB) | proportional stride deficit |
+| P1A normalised | `swing_clearance_per_com_height` ≥ 0.85× TB | **FAIL** (0.82× TB) | one `foot_step_height_m` bump from PASS |
+| P1A normalised | `cadence_froude_norm` ≤ 1.20× TB | **FAIL** (1.25× TB) | residual is hardware-Froude |
+| P1A normalised | `swing_foot_z_step_per_clearance` ≤ 1.10× TB | **FAIL** (1.40× TB) | half-sine apex too peaky |
+| P2 absolute | `swing_foot_z_step_max` ≤ 1.10× TB | **FAIL** (1.83× TB) | same root cause as the line above |
+| P2 absolute | shared_leg_q / pelvis / flips | **PASS** | clean |
+| P1 closed-loop | full free-base replay | **UNKNOWN** | not re-measured under cycle=0.72 |
+
+**Top-line:** WR reference quality is substantially closer to TB than at
+v0.20.0 — Phase 1 fixed swing-z discontinuity, Phase 3 added FK-realised
+storage, Phase 4 aligned torso-target semantics, Phase 6 closed cadence +
+step-length absolute gates and the full-matrix P0 gate. WR is **not yet
+"on par or better"** by the doc's own decision rule: four normalised P1A
+gates plus the absolute P2 swing-foot-z-step gate fail, and P1 has not
+been re-run under `cycle_time = 0.72`.
+
+### Direction to close the remaining gap (priority order)
+
+1. **Refresh full parity report on TB-capable env.** `tools/parity_report.json`
+   is still pre-Phase-6 because the local TB venv is missing `joblib` /
+   `lz4`. The biggest unknown — whether P1 closed-loop trackability now
+   passes after Phases 4 + 6 — cannot be answered without re-running the
+   tool with both venvs present. Highest-leverage next step: this may
+   close the remaining "load-bearing" question and turn item 2 into
+   optional polish.
+2. **Swap half-sine swing-z apex for TB-style triangular profile.** TB's
+   triangular-then-flat envelope keeps `swing_foot_z_step_max ≈ 10 mm/frame`;
+   WR's half-sine concentrates change at apex (18 mm/frame, 1.83× TB,
+   1.40× TB per-clearance). Planner-local change in
+   `control/zmp/zmp_walk.py`, mirroring TB
+   `projects/toddlerbot/algorithms/zmp_walk.py`. Highest-confidence
+   architectural alignment move with a measured FAIL.
+3. **Bump `foot_step_height_m`.** e.g. 0.040 → 0.045 puts
+   `swing_clearance_per_com_height` ≈ 0.16 vs gate 0.149 → PASS.
+   Trade-off is the P2 swing-step gate above; sequence after item 2 so
+   the new envelope absorbs the larger peak.
+4. **Curriculum: nominal `vx` for Froude equivalence.** WR's residual
+   `cadence_froude_norm = 1.25× TB` and `step_length_per_leg = 0.56× TB`
+   at vx=0.15 are bounded by hardware (1.76× longer leg → smaller Froude
+   number at the same absolute vx). Closing them needs running WR at
+   TB's Froude-equivalent vx (≈ 0.19 m/s), not more `cycle_time_s`
+   tuning. This is a `walking_training.md` curriculum decision, not a
+   parity-tool fix.
+
+**Not a direction:** further `cycle_time_s` sweeps. Phase 6 already
+adopted TB's value; the residual normalised cadence gap is hardware-Froude.
+
+### Follow-up command for item 1
+
+```bash
+# 1. install the missing TB-side deps into the TB venv
+(cd /Users/ygli/projects/toddlerbot && uv sync)
+
+# 2. refresh the full parity report (writes tools/parity_report.json)
+cd /Users/ygli/projects/wildrobot
+uv run ./tools/reference_geometry_parity.py --json > tools/parity_report.json
+```
+
+Sanity-check after refresh: `verdict` lines for `geometry_parity`,
+`fk_gait_parity`, `smoothness_parity`, and `trackability_parity` should
+all reflect post-`cycle_time = 0.72` numbers; the `wildrobot` row in
+`fk_gait_metrics` should show `step_length_mean_m ≈ 0.054`,
+`touchdown_rate_hz ≈ 2.73`, `double_support_frac ≈ 0.337`. If P1
+trackability still FAILs after the refresh, item 2 (swing-z apex)
+becomes load-bearing; if it PASSes, item 2 is optional polish.
+
 ## [v0.20.1-phase6-cycle-time-tuning] - 2026-04-26: Phase 6 landed (TB-aligned `cycle_time_s` 0.64 → 0.72)
 
 ### Context
