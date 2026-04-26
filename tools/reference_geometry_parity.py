@@ -262,6 +262,7 @@ def _wr_generator_fingerprint() -> str:
         wildrobot_root / "control" / "zmp" / "zmp_walk.py",
         wildrobot_root / "control" / "zmp" / "zmp_planner.py",
         wildrobot_root / "control" / "references" / "reference_library.py",
+        wildrobot_root / "training" / "utils" / "ctrl_order.py",
     ]
     # Phase 3 realized FK replay depends on WR MJCF/config assets loaded by
     # ``ZMPWalkGenerator._load_fk_assets``.  Include all XML/JSON under v2 so

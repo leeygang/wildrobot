@@ -135,10 +135,11 @@ def test_phase5_wr_cache_invalidates_on_generator_change(tmp_path, monkeypatch):
     assert (Path(lifecycle3.path) / "build_spec.json").exists()
 
 
-def test_wr_generator_fingerprint_changes_on_asset_change(tmp_path, monkeypatch):
+def test_wr_generator_fingerprint_changes_on_codegen_and_asset_change(tmp_path, monkeypatch):
     wildrobot_root = tmp_path / "wildrobot"
     (wildrobot_root / "control" / "zmp").mkdir(parents=True)
     (wildrobot_root / "control" / "references").mkdir(parents=True)
+    (wildrobot_root / "training" / "utils").mkdir(parents=True)
     (wildrobot_root / "assets" / "v2").mkdir(parents=True)
 
     (wildrobot_root / "control" / "zmp" / "zmp_walk.py").write_text(
@@ -149,6 +150,10 @@ def test_wr_generator_fingerprint_changes_on_asset_change(tmp_path, monkeypatch)
     )
     (wildrobot_root / "control" / "references" / "reference_library.py").write_text(
         "def c():\n    return 3\n", encoding="utf-8"
+    )
+    ctrl_order_path = wildrobot_root / "training" / "utils" / "ctrl_order.py"
+    ctrl_order_path.write_text(
+        "class CtrlOrderMapper:\n    pass\n", encoding="utf-8"
     )
     scene_path = wildrobot_root / "assets" / "v2" / "scene_flat_terrain.xml"
     scene_path.write_text("<mujoco><worldbody/></mujoco>\n", encoding="utf-8")
@@ -162,6 +167,13 @@ def test_wr_generator_fingerprint_changes_on_asset_change(tmp_path, monkeypatch)
         lambda: (wildrobot_root, wildrobot_root.parent / "toddlerbot"),
     )
     fp_before = reference_geometry_parity._wr_generator_fingerprint()
+
+    ctrl_order_path.write_text(
+        "class CtrlOrderMapper:\n    changed = True\n", encoding="utf-8"
+    )
+    fp_after_ctrl_order_change = reference_geometry_parity._wr_generator_fingerprint()
+    assert fp_before != fp_after_ctrl_order_change
+
     scene_path.write_text("<mujoco><worldbody><body/></worldbody></mujoco>\n", encoding="utf-8")
-    fp_after = reference_geometry_parity._wr_generator_fingerprint()
-    assert fp_before != fp_after
+    fp_after_asset_change = reference_geometry_parity._wr_generator_fingerprint()
+    assert fp_after_ctrl_order_change != fp_after_asset_change
