@@ -68,7 +68,8 @@ wildrobot/
 │
 ├── training/                           # RL, eval, export, locomotion curricula
 │   ├── train.py                        # Training entry point
-│   ├── CHANGELOG.md                    # Training version history
+│   ├── CHANGELOG.md                    # Training version history (v0.20.1+)
+│   ├── CHANGELOG.archive.md            # Training version history (pre-v0.20.1)
 │   │
 │   ├── cal/                            # v0.11.0: Control Abstraction Layer (CAL)
 │   │   ├── __init__.py                 # Export CAL, specs, types
