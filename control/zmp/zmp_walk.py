@@ -57,9 +57,22 @@ class ZMPWalkConfig:
     hip_extension_limit_rad: float = 0.5236        # 30° backward extension
     knee_pitch_max_rad: float = 2.094             # 120° (was 80° pre-2026-04-25)
 
-    # Gait timing — longer cycle gives bigger steps at same speed
-    # ToddlerBot uses 0.72s; WildRobot uses 0.64s (similar proportion)
-    cycle_time_s: float = 0.64
+    # Gait timing — longer cycle gives bigger steps at same speed.
+    # Phase 6 (2026-04-26): adopted ToddlerBot's 0.72 s cycle (was 0.64 s)
+    # to close the load-bearing size-normalised parity gaps the
+    # architecture phases left in place:
+    #   - cadence_froude_norm: 0.666 → 0.591 (TB 0.472; gate 1.20·TB = 0.566)
+    #   - step_length_per_leg: 0.128 → 0.145 (TB 0.256; gate 0.85·TB = 0.218)
+    # cycle_time directly drives both: a longer cycle produces
+    # proportionally longer steps at the same vx (``half_cycle = cycle/2``
+    # in ``_generate_at_step_length``) and proportionally lower cadence
+    # (``touchdown_rate ≈ 2/cycle``).  This is local scalar tuning, not
+    # an architectural change — the planner pipeline, swing-z envelope,
+    # IK chain, and asset/reward semantics chosen in Phases 1-4 are
+    # unchanged.  Per ``training/docs/reference_architecture_comparison.md``
+    # § "Architectural alignment moves toward ToddlerBot": adopting TB's
+    # value is the explicit Item 1 recommendation.
+    cycle_time_s: float = 0.72
     single_double_ratio: float = 2.0
     dt_s: float = 0.02
 

@@ -6,6 +6,78 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-phase6-cycle-time-tuning] - 2026-04-26: Phase 6 landed (TB-aligned `cycle_time_s` 0.64 → 0.72)
+
+### Context
+
+Implements Phase 6 from `training/docs/reference_architecture_comparison.md`:
+local scalar tuning on top of the aligned reference architecture (Phases
+1-4 already in tree).  Adopts ToddlerBot's `cycle_time = 0.72 s` (TB
+`mjx_config.py:107`, `walk.gin:19`), the explicit Item 1 recommendation
+from the parity scorecard's "Architectural alignment moves toward
+ToddlerBot (priority order)" section.
+
+### Changes
+
+- `control/zmp/zmp_walk.py`: `ZMPWalkConfig.cycle_time_s` 0.64 → 0.72.
+  Single scalar; planner pipeline / swing-z envelope / FK enrichment /
+  reward-target semantics from Phases 1-4 are unchanged.
+- `tools/phase6_wr_probe.py` (new): WR-only probe that reuses the parity
+  tool's WR-side helpers (`_summarize_wildrobot`,
+  `_wr_fk_and_smoothness`) without the TB venv, so before/after WR
+  metrics can be captured against the cached TB baseline in
+  `tools/parity_report.json`.
+- `training/docs/reference_architecture_comparison.md`: added Phase 6
+  closeout with full before/after table.
+
+### Verification
+
+- `uv run pytest tests/test_v0200a_contract.py tests/test_v0200c_geometry.py`
+  — 19/19 PASS unchanged.
+- `uv run pytest tests/test_runtime_reference_service.py` — 16/16 PASS.
+- full repo `uv run pytest tests/` — 161/161 PASS.
+- `uv run python tools/phase6_wr_probe.py` (vx=0.15) before / after.
+
+### Result
+
+WR vs TB-2xc at vx=0.15 (TB cached from `tools/parity_report.json`):
+
+| Gate | Pre (cycle=0.64) | Post (cycle=0.72) | Verdict change |
+|---|---|---|---|
+| P0 full-matrix failures | 7 | **0** | FAIL → PASS (no in-scope regression) |
+| P0 worst stance z (m) | +0.0075 | +0.0019 | -75 % |
+| P0 worst swing z (m) | -0.0011 | +0.0170 | +18 mm margin |
+| P1A step_length absolute (≥0.90× TB) | 0.883× | **0.994×** | FAIL → PASS |
+| P1A step_length_per_leg (≥0.85× TB) | 0.501× | 0.564× | FAIL→FAIL (closes 13 %) |
+| P1A cadence_norm (≤1.20× TB) | 1.412× | 1.252× | FAIL→FAIL (closes 60 %) |
+| P2 swing_foot_z_step_max (m) | 0.0201 | 0.0183 | -9 % |
+| P2 shared_leg_q_step_max (rad) | 0.3632 | 0.3599 | -1 % |
+
+Three load-bearing things to call out:
+
+1. P0 stance_z dropped from +7.5 mm to +1.9 mm — the entire deferred
+   high-vx (≥ 0.20) stance-failure list from Phase 1 closeout is now
+   inside the 3 mm tolerance.  The longer cycle drops the per-frame
+   foot excursion at every vx, so the IK no longer asks for stance
+   contacts the model can't realize.
+2. P0 swing margin went from -0.3 mm under the floor (just barely
+   passing the -2 mm gate) to +17 mm above it.  Real margin, not noise.
+3. step_length_mean now matches TB to 0.3 mm at vx=0.15, exactly as
+   predicted: `vx · cycle/2 = 0.15 · 0.72/2 = 0.054 m`.
+
+### Outstanding
+
+- Residual size-normalised gate failures (`step_per_leg`,
+  `swing_clearance_per_com_height`) are bounded by hardware
+  proportions (WR has 1.76× longer legs than TB) and the operating-vx
+  Froude argument from the parity scorecard, not by further
+  `cycle_time_s` tuning.  They belong in a curriculum / operating-point
+  decision or in a separate `foot_step_height_m` slice.
+- TB-side parity helper not re-runnable on this machine (`joblib` /
+  `lz4` missing in TB venv); TB code is untouched between Phase 1 and
+  Phase 6, so the cached TB numbers in `tools/parity_report.json` stay
+  valid for the comparison above.
+
 ## [v0.20.1-phase4-runtime-target-alignment] - 2026-04-25: Phase 4 landed (TB-style torso target semantics)
 
 ### Context

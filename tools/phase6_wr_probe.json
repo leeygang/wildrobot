@@ -1,0 +1,45 @@
+{
+  "cfg": {
+    "cycle_time_s": 0.72,
+    "foot_step_height_m": 0.04,
+    "com_height_m": 0.45799999999999996,
+    "leg_length_m": 0.373
+  },
+  "geometry": {
+    "name": "wildrobot",
+    "total_failures": 0,
+    "in_scope_failures": 0,
+    "worst_stance_z": 0.001944349744281806,
+    "worst_swing_z": 0.01697354556617061,
+    "failures": []
+  },
+  "fk_gait": {
+    "name": "wildrobot",
+    "vx": 0.15,
+    "duration_s": 22.32,
+    "touchdowns_left": 30,
+    "touchdowns_right": 31,
+    "touchdown_balance_ratio": 0.967741935483871,
+    "touchdown_rate_hz": 2.7329749103942653,
+    "step_length_mean_m": 0.0537528491230861,
+    "step_length_min_m": 0.052926416508853436,
+    "step_length_max_m": 0.054351503029465675,
+    "touchdown_speed_proxy_mps": 0.07345259400780134,
+    "swing_clearance_mean_m": 0.06532062605389806,
+    "swing_clearance_min_m": 0.06428613513708115,
+    "double_support_frac": 0.3333333333333333,
+    "foot_z_step_max_m": 0.018307377584278584
+  },
+  "smoothness": {
+    "name": "wildrobot",
+    "vx": 0.15,
+    "shared_leg_q_step_max_rad": 0.35990801453590393,
+    "pelvis_z_step_max_m": 0.0,
+    "swing_foot_z_step_max_m": 0.018307377584278584,
+    "contact_flips_per_cycle": 3.967741935483871
+  },
+  "dims": {
+    "leg_length_m": 0.373,
+    "com_height_m": 0.45799999999999996
+  }
+}
