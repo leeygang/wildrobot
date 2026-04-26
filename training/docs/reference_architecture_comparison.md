@@ -1,7 +1,7 @@
 # WR Reference Architecture Plan vs ToddlerBot
 
 **Status:** Canonical design note for `v0.20.x` reference alignment
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-26 (Phase 7-11 plan added)
 **Purpose:** define the reference-design policy for WildRobot (WR), record
 the design-history context behind the current parity harness, and order the
 architecture backlog needed to bring WR reference quality on par with or
@@ -1114,6 +1114,254 @@ Reading this closeout as "WR ≈ TB now" would overstate the result.
   `asdict(ZMPWalkConfig())`, so any future `cycle_time_s` change is
   picked up automatically by the parity tool's library cache.
 
+### Phase 7. Swing-z envelope shape (TB-style single-peaked triangle)
+
+Goal:
+- close the P2 absolute `swing_foot_z_step_max` gate (currently 1.83× TB)
+  and the normalised `swing_foot_z_step_per_clearance` gate (currently
+  1.40× TB) by adopting TB's piecewise-linear single-peaked triangular
+  envelope in place of WR's half-sine
+
+Work (planner-local, single file):
+- `control/zmp/zmp_walk.py:719-722` and `:745-750`: replace
+  `(foot_step_height_m + swing_foot_z_floor_clearance_m) * sin(pi * frac)`
+  with the TB envelope from `toddlerbot/algorithms/zmp_walk.py:483-498`
+  (linear up `[0, up_delta, 2*up_delta, ..., peak]`, single-frame apex,
+  linear down — no flat top)
+- keep the WR-specific `swing_foot_z_floor_clearance_m = 0.025`
+  (hardware-justified); only the shape changes
+- keep the Phase 1 plantarflex gating (`zmp_walk.py:779-783`); boundary
+  frames still need flat-ankle
+- keep both Phase A and Phase B branches consistent
+
+Expected metric movement (predicted from TB-shape geometry):
+- `P2 swing_foot_z_step_max_m`: 0.0183 → ≈ 0.012 m
+- `P1A swing_foot_z_step_per_clearance`: 1.40× → ≈ 0.92× TB → PASS
+- `P1A swing_clearance_mean_m`: small ~−1 % drop (triangle has lower
+  swing-frame mean than half-sine at same peak), acceptable
+
+Exit criteria:
+- WR-only probe (`uv run python tools/phase6_wr_probe.py`) shows P2
+  `swing_gate` PASS at vx=0.15
+- full parity refresh shows both `swing_step_per_clr` and `P2 swing_gate`
+  PASS for both TB baselines
+- no regression on `P0` (in-scope or full matrix), `P1A` step_len /
+  cadence / clearance / DS, or `q_step` smoothness
+
+Acceptance statement:
+- success means the two swing-shape gates flip to PASS without
+  regressing any currently-passing gate
+- success does not require P1 closed-loop to move; Phase 10 owns the
+  closed-loop interpretation
+
+Rollback if expected movement doesn't materialize:
+- if the triangular shape produces *worse* P2 step_max than the
+  half-sine (unlikely but possible if `n_half` is small enough that the
+  per-frame delta dominates), revert to half-sine and try a half-cosine
+  variant `(1 - cos(2 * pi * frac)) / 2` which has a flatter apex than
+  half-sine
+
+### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m)
+
+Goal:
+- close the normalised `swing_clearance_per_com_height` gate (currently
+  0.82× TB) by adopting TB's `foot_step_height` value
+
+Work (single config change):
+- `control/zmp/zmp_walk.py:95`: `foot_step_height_m: float = 0.04` → `0.05`
+- the Phase 5 cache fingerprint will pick up the change automatically
+
+Sequence:
+- AFTER Phase 7 — the triangular envelope absorbs the +0.01 m peak with
+  less per-frame Δz than the half-sine would
+
+Expected metric movement:
+- `P1A swing_clearance_per_com_height`: 0.143 → ≈ 0.175 (gate 0.149) → PASS
+- `P1A swing_clearance_mean_m`: 0.065 → ≈ 0.075 m
+- `P2 swing_foot_z_step_max_m`: with triangle envelope, +0.01 m apex
+  spreads across the swing half-window, so per-frame Δz scales by
+  `(0.05 + 0.025) / (0.04 + 0.025) = 1.15×`. Combined with Phase 7
+  effect: ≈ 0.014 m absolute, still under the 1.10× TB ≈ 0.011 m gate
+  by ~30 % — borderline, must be verified after running
+
+Exit criteria:
+- `swing_clearance_per_com_height` ≥ 0.85× TB (= 0.149) → PASS for both
+  TB baselines
+- no regression on Phase 7 swing-step gates (both must still PASS)
+- no regression on P0 swing margin (must remain > +5 mm)
+
+Fallback:
+- if Phase 8's smoothness regression breaks the Phase 7 gates, use
+  0.045 as a halfway step (lifts the metric to ≈ 0.16, still PASS,
+  with smaller smoothness cost)
+
+Acceptance statement:
+- success means `clearance_per_h` flips to PASS while preserving
+  Phase 7's gate wins
+
+### Phase 9. Operating-`vx` curriculum decision (Froude equivalence)
+
+Goal:
+- close the two hardware-Froude-bounded normalised P1A gates
+  (`step_length_per_leg = 0.56× TB`, `cadence_froude_norm = 1.25× TB`)
+  that no planner tuning can address at vx=0.15
+
+Work (curriculum / training-config decision, not a planner change):
+
+1. Decide and document in `training/docs/walking_training.md` whether
+   the v0.20.x walking smoke commands `vx ∈ {0.10, 0.15}` should shift
+   to `vx ∈ {0.13, 0.19}` (Froude-equivalent to TB's `{0.10, 0.15}`)
+   - Froude scaling: TB uses `vx² / (g · h_TB) = 0.15² / (9.81 · 0.286)
+     = 0.0080`. WR's matching point: `vx_WR = sqrt(0.0080 · 9.81 · 0.458)
+     = 0.190 m/s`
+2. Update the parity scorecard's `vx_nominal` in
+   `tools/reference_geometry_parity.py` (currently 0.15). Either:
+   - add a `--vx-nominal-wr` flag so WR is read at 0.19 while TB stays
+     at 0.15
+   - or split the report into "absolute-vx parity" (current) vs
+     "Froude-matched parity" (new section), keeping both visible
+3. Decide the training-side smoke vx. If the smoke command grid moves,
+   `tests/test_v0200c_geometry.py` and the walking_training.md G4/G5
+   contract need to follow. If only the parity tool's `vx_nominal`
+   moves, training stays at 0.15 and the parity report carries the
+   Froude-matched read for "is the prior on par with TB at the matched
+   operating point"
+
+Expected metric movement (at WR vx=0.19, predicted):
+- `step_length_per_leg`: 0.56× → ≈ 0.85–0.95× TB → PASS (gate ≥ 0.85×)
+- `cadence_froude_norm`: 1.25× → ≈ 1.0× TB → PASS (gate ≤ 1.20×)
+
+Exit criteria:
+- an explicit decision is in `walking_training.md` with rationale for
+  the chosen `vx_nominal_wr`
+- parity tool reports both absolute and Froude-matched normalised P1A;
+  Froude-matched view shows both gates PASS
+- training-side curriculum (if moved) is reflected in the smoke test
+  command grid
+
+Acceptance statement:
+- success means Froude-matched normalised P1A clears both gates with
+  explicit doc rationale
+- if absolute-vx parity is kept as the primary read, the rationale must
+  say *why* and accept the residual gap as a documented hardware-bounded
+  limitation
+
+This is a curriculum decision, not a parity bug fix. If the project
+chooses to keep WR at vx=0.15 for safety / hardware reasons, document
+that and accept the two normalised FAILs as bounded. The plan should
+not force a knob-twist that violates a training-side constraint.
+
+### Phase 10. P1 closed-loop contact-match-frac diagnostic
+
+Goal:
+- decide whether the closed-loop contact-match FAIL (WR 0.58–0.70 vs
+  the 0.90 absolute floor) is fixable prior shape, residual cycle-0
+  drag, or accepted actuator-stack artifact
+
+Sequence:
+- AFTER Phase 7 — Phase 7 should drop swing-apex flips; running this
+  diagnostic before would conflate that effect
+
+Work (analysis, no code change unless evidence demands):
+
+1. Front-loaded vs steady-state contact match. Add a small probe (or a
+   one-off script) that splits `ref_contact_match_frac` over
+   [first 30 steps] vs [steps 30–end] of each P1 episode. Compare WR vs
+   TB. If WR's [30-end] match is ≥ 0.85, the front-load is dragging the
+   mean and the cycle-0-retention hypothesis is confirmed.
+2. Cycle-0 retention quantification. Compute the contribution of WR's
+   first cycle (TB truncates `trunc_len = ceil(cycle_time / control_dt)`
+   per `toddlerbot/algorithms/zmp_walk.py:138-145`) to the contact
+   mismatch. If this is the load-bearing source, mirror TB's truncation
+   in WR's `_generate_at_step_length`
+   (`control/zmp/zmp_walk.py:691-696`) — this becomes a Phase 12
+   follow-up if it materializes.
+3. Mid-swing tap-down audit. Inspect the foot z trace during swing in
+   the closed-loop replay: how often does the foot dip back into
+   contact within a single swing? Phase 7's triangular envelope should
+   drop this to near-zero. If it doesn't, that means the actuator stack
+   is producing the dips, not the planner.
+4. Decide. Three possible verdicts:
+   - "Cycle-0 drag is load-bearing" → mirror TB truncation in a
+     follow-up Phase 12
+   - "Mid-swing tap-down was load-bearing, Phase 7 fixed it" → no
+     further work; gate may now PASS
+   - "Both clean, residual is actuator stack" → accept as P1-test-design
+     limitation per the scorecard's own note; document explicitly so
+     future readers don't re-litigate
+
+Exit criteria:
+- a decision is recorded with evidence (numbers from items 1–3)
+- if the verdict is "fixable", a concrete follow-up phase is added to
+  this doc
+- if the verdict is "accepted artifact", the parity scorecard's gate is
+  annotated to reflect the architectural reason
+
+Acceptance statement:
+- success means the contact-match FAIL has a verdict (fixable /
+  fixed-by-Phase-7 / actuator-bound), not a vague "WR is worse than TB"
+- the closed-loop layer's narrative becomes either "all gates either
+  PASS or have documented hardware reasons" or "Phase 12 follows"
+
+### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
+
+Goal:
+- remove the residual planner-side reference consumption flagged in the
+  doc-vs-code drift audit; make the Phase 4 doc claim "pelvis_pos
+  retained only for diagnostics" literally true
+
+Work (one-line change):
+- `training/envs/wildrobot_env.py:843`: replace `prev_ref_pelvis_z =
+  win["pelvis_pos"][2]` (and the symmetric current-step read) with the
+  constant `cfg.com_height_m` directly. The numerical effect is
+  identical (the planner field is constant by construction in
+  `zmp_walk.py:845`); the change is doc-vs-code consistency only.
+
+Expected metric movement: none. This is hygiene.
+
+Exit criteria:
+- `pelvis_pos` is consumed only by the diagnostic `feet_track_raw`
+  probe; verifiable by `grep "pelvis_pos" training/envs/wildrobot_env.py`
+  returning only the diagnostic line
+
+Acceptance statement:
+- success means no behavioral change in any reward or training metric;
+  the consumption-narrowing is verifiable by grep
+
+### Validation harness (after every Phase 7-11 slice)
+
+Run before declaring exit on any phase:
+
+```bash
+# WR-only sanity check (no TB venv needed)
+uv run python tools/phase6_wr_probe.py
+
+# Full parity refresh (requires TB venv with joblib + lz4)
+cd /Users/ygli/projects/wildrobot
+uv run ./tools/reference_geometry_parity.py --json > tools/parity_report.json
+
+# Test suite (must stay green)
+uv run pytest tests/
+```
+
+Phase-specific: capture before/after parity metrics for the gates that
+phase targets, in the same format as the existing Phase 1 / 3 / 6
+closeouts in this doc.
+
+### Expected end state after Phases 7-9
+
+| Layer | Pre-Phase-7 | Post-Phase-9 |
+|---|---|---|
+| P0 (in-scope + full matrix) | PASS | PASS |
+| P1A absolute | PASS | PASS |
+| P1A normalised (4 gates) | 0/4 PASS | **4/4 PASS** (`clearance_per_h` via P8; `step_per_leg` + `cadence_norm` via P9 Froude-matched read; `swing_step_per_clr` via P7) |
+| P2 (4 gates) | 3/4 PASS | **4/4 PASS** (`swing_step` via P7) |
+| P1 closed-loop | 3/6 PASS | 3/6 PASS + Phase 10 verdict on remaining 3 |
+
+After Phases 7-9 land, WR is on par or better than TB on every gate
+that doesn't depend on actuator-stack architecture. Phase 10 closes the
+interpretation of the closed-loop residual.
+
 ### Execution order
 
 The intended order is:
@@ -1126,6 +1374,18 @@ The intended order is:
 6. Phase 5 to improve lifecycle parity where it matters
 7. Phase 6 for local refinement only after the architecture backlog is under
    control
+8. Phase 7 to swap WR's half-sine swing-z for TB's single-peaked triangle
+   (closes 2 gates with one planner-local change)
+9. Phase 8 to adopt TB's `foot_step_height_m = 0.05` (closes
+   `clearance_per_h`); sequence after Phase 7
+10. Phase 9 to make the operating-`vx` curriculum decision (closes the
+    two hardware-Froude-bounded normalised gates); independent of 7 / 8
+11. Phase 10 to diagnose the P1 closed-loop contact-match FAIL;
+    sequence after Phase 7
+12. Phase 11 to clean up the residual `lin_vel_z` planner-side
+    consumption; independent, low priority
+
+Phases 7 + 9 + 11 can run in parallel; 8 needs 7; 10 needs 7.
 
 ## What "On Par or Better" Means
 
