@@ -1908,8 +1908,15 @@ Outstanding caveats:
   is small (32-40 steps). The negative D1 gap direction is
   consistent across all three vx bins so the conclusion is
   robust, but absolute "rest" numbers carry uncertainty.
-- The left/right asymmetry in D2 is the same robot-level asymmetry
-  as the D3+D4 left_hip_roll finding — not two independent issues.
+- The left/right asymmetry in D2 was originally framed as "the same
+  robot-level asymmetry as the D3+D4 left_hip_roll finding". The
+  Phase 9A re-read at non-shuffling vx complicates that picture: D2
+  L/R direction is left-dominant in shuffling regime (3:1, 2:1) but
+  flips to right-only at vx=0.265 (0:2), while `left_hip_roll`
+  saturation stays consistently left-only at every vx. The two
+  asymmetries are likely **independent issues** rather than two
+  views of the same underlying defect; treat as such in Phase 12C
+  scoping.
 
 #### Phase 9A re-read addendum (2026-04-26, commit `72f25d4`)
 
@@ -1923,13 +1930,24 @@ parity tool's default `{0.10, 0.15, 0.20, 0.25}` bin set.
 
 **Side-by-side full-spectrum result:**
 
-| vx | step_per_leg | regime | survived | D1 gap | D2 ev/cyc | D3+D4 left_hip_roll peak | D3+D4 verdict |
-|---|---|---|---|---|---|---|---|
-| 0.100 | 0.097 | severe shuffle | 76 | −0.40 | 0.67 | 0.250 | uniform-sat |
-| 0.150 | 0.145 | shuffle | 72 | −0.39 | 0.50 | 0.250 | down-cross-mech-unclear |
-| 0.200 | 0.193 | mild shuffle | 68 | −0.34 | 0.60 | 0.333 | down-cross-mech-unclear |
-| **0.210** | **0.203** | **just out** | 67 | −0.32 | 0.80 | 0.333 | down-cross-mech-unclear |
-| **0.265** | **0.256** | **TB-matched** | 61 | −0.30 | **0.40** | **0.333** | down-cross-mech-unclear |
+| vx | step_per_leg | regime | survived | D1 gap | D2 ev/cyc | D2 L vs R | D3+D4 left_hip_roll peak | D3+D4 verdict |
+|---|---|---|---|---|---|---|---|---|
+| 0.100 | 0.097 | severe shuffle | 76 | −0.40 | 0.67 | 3 vs 1 | 0.250 | uniform-sat |
+| 0.150 | 0.145 | shuffle | 72 | −0.39 | 0.50 | 2 vs 1 | 0.250 | down-cross-mech-unclear |
+| 0.200 | 0.193 | mild shuffle | 68 | −0.34 | 0.60 | 2 vs 1 | 0.333 | down-cross-mech-unclear |
+| **0.210** | **0.203** | **just out** | 67 | −0.32 | 0.6–0.8 † | varies (2-3 vs 1) † | 0.333 | down-cross-mech-unclear |
+| **0.265** | **0.256** | **TB-matched** | 61 | −0.30 | **0.40** | **0 vs 2** | **0.333** | down-cross-mech-unclear |
+
+† vx=0.21 sits at the shuffling-threshold boundary and is **platform-
+sensitive** in the diagnostic output. Reproducible per-machine but
+varies cross-platform: this machine shows 0.80 events/cycle (left=3,
+right=1); a reviewer's machine shows 0.60 (left=2, right=1). Both
+are deterministic local replays of the same MuJoCo model + planner
+output; the difference is float-precision / contact-detection
+ordering at the threshold-boundary operating point. The qualitative
+finding (D2 above the 0.50 vx=0.15 baseline at vx=0.21, then drops
+to 0.40 at vx=0.265) is consistent across both readings. Treat the
+specific 0.6 vs 0.8 number as bounded uncertainty.
 
 **Three load-bearing findings from the re-read:**
 
@@ -1944,11 +1962,19 @@ parity tool's default `{0.10, 0.15, 0.20, 0.25}` bin set.
 2. **D2 (mid-swing tap-down) PARTIALLY improves at non-shuffling vx.**
    Best at vx=0.265: 0.40 events/cycle ("borderline" verdict, close
    to but not under the 0.30 Phase 12A exit criterion). The
-   improvement is real but non-monotonic (vx=0.21 is worse than
-   vx=0.15 — likely because the higher per-frame Δz amplifies the
-   down-cross snap before the longer cycle can absorb it). **Phase
-   9A captures most of the available D2 win without any planner
-   change; Phase 12A is still useful but lower priority.**
+   improvement is non-monotonic (vx=0.21 is platform-dependent at
+   0.6-0.8/cycle) but the vx=0.265 reading is consistent across
+   platforms. **Phase 9A captures most of the available D2 win
+   without any planner change; Phase 12A is still useful but lower
+   priority.** The original "left-dominant asymmetry" framing
+   does not survive the cross-vx data: D2 left/right is 3:1 / 2:1
+   in the shuffling regime, varies at vx=0.21, and **flips to 0:2
+   at vx=0.265** (right-only). Treat D2 as "asymmetric in some
+   direction at most vx" rather than "consistently left-dominant".
+   The asymmetry direction-flipping at vx=0.265 also weakens the
+   prior link between D2 and the (consistently left-only)
+   `left_hip_roll` finding — they are likely separate issues, not
+   the same robot-level asymmetry.
 
 3. **Survival doesn't improve at non-shuffling vx** (slightly worse:
    76→72→68→67→61). Higher vx means more momentum to fall with under
@@ -2134,9 +2160,16 @@ Diagnostic signal that triggered this phase:
   non-zero sat rate at every vx; no other joint shows any saturation
   in the closed-loop replay
 - Pattern: vx=0.10 fires throughout swing (i_swing 1-9, uniform);
-  vx=0.15/0.20 fires late in swing (i_swing 7-10 / 6-9)
-- D2 left/right asymmetry (left foot 2-3× right tap-downs) is the
-  same robot-level asymmetry seen from a different angle
+  vx=0.15/0.20 fires late in swing (i_swing 7-10 / 6-9); vx=0.265
+  same late-swing pattern (i_swing 6-9). **Pattern is invariant to
+  vx** per the Phase 9A re-read.
+- ~~D2 left/right asymmetry is the same robot-level asymmetry seen
+  from a different angle~~ — **withdrawn** by Phase 9A re-read.
+  D2 L/R is left-dominant in shuffling regime (3:1, 2:1) but
+  flips to right-only at vx=0.265 (0:2). `left_hip_roll`
+  saturation stays consistently left-only at every vx. Treat the
+  two asymmetries as **independent issues** in scoping; the
+  `left_hip_roll` finding is the load-bearing one.
 
 Work (investigation-first, no code change until root cause is
 identified):
@@ -2381,7 +2414,7 @@ These rows are **not currently active**. They become active only when their acti
 
 | # | Absolute metric (gauge OFF when active) | Activation condition | Replacement metric (gauge ON when active) | Why |
 |---|---|---|---|---|
-| H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | Active **only after** (a) `tools/reference_geometry_parity.py` exposes a single named composite verdict combining survival + forward + drift, AND (b) Phase 10 closes with verdict "actuator-stack-bound" with evidence. Until both hold, H6 is pending and the absolute RMSE gate stays on. | `P1 actuator_trackability_composite` — a composite verdict to be added to the parity tool, defined as `survived_steps ≥ 0.95× TB` AND `achieved_forward_per_cmd ≥ TB - 0.10` AND `terminal_drift_rate_per_leg_per_s ≤ TB + 0.5`, all per `vx` bin | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality (see scorecard interpretation note). The composite asks "does the WR prior actually walk under MuJoCo with this actuator stack?" — answered by survival + forward + drift jointly. A broken prior trips survival or forward-velocity first; a real actuator regression trips drift. Currently the parity tool reports the three metrics separately, so the named composite verdict does not exist yet — Rule 2 keeps H6 inactive. |
+| H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | Active **only after** (a) `tools/reference_geometry_parity.py` exposes a single named composite verdict combining the two non-confounded P1 normalised gauges (forward_per_cmd, drift_per_leg) plus an **absolute** survival floor (NOT the inverted-ratio survival gate D5 demotes), AND (b) Phase 10 closes with verdict "actuator-stack-bound" with evidence. Until both hold, H6 is pending and the absolute RMSE gate stays on. | `P1 actuator_trackability_composite` — composite verdict to be added to the parity tool, defined as `survived_steps ≥ 100` (absolute floor; replaces the demoted-D5 inverted ratio) AND `achieved_forward_per_cmd ≥ TB − 0.10` AND `terminal_drift_rate_per_leg_per_s ≤ TB + 0.5`, all per `vx` bin | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality (see scorecard interpretation note). The composite asks "does the WR prior actually walk under MuJoCo with this actuator stack?" — answered jointly by an absolute survival floor (no inverted-ratio bias from TB falling), a non-confounded forward-velocity ratio, and a non-confounded per-leg drift gauge. A broken prior trips the absolute survival floor first; a real actuator regression trips drift. The 100-step absolute floor is set so neither robot trivially passes at the current zero-residual replay (WR survives 61-191, TB survives 17-35; floor at 100 is above TB's range so it gates honestly). Currently the parity tool reports the three metrics separately, so the named composite verdict does not exist yet — Rule 2 keeps H6 inactive. |
 
 (H7 and H8 from prior versions are absorbed into H3 / H4 above. The
 "Froude-matched supplemental view" framing is no longer

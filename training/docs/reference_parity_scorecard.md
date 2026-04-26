@@ -278,10 +278,35 @@ the same physics formula.
 - **P1A absolute** `touchdown_speed_proxy within 0.02 m/s of TB` —
   `speed_proxy = step × cadence / 2 = vx` by construction. Gate
   passes at exactly the commanded vx.
+
+(The closed-loop `physical touchdown step length mean` gate
+previously listed here is **not** a kinematic identity — see the new
+"Category U" below. The reclassification was made after a review
+caught that the metric is meaningful in principle, just unstable in
+the zero-residual replay test design.)
+
+### Category U — Real metric, currently unstable in the test design
+
+These gates measure something the planner / system can choose, but
+under the current zero-residual replay test design the measurement is
+too unstable to gate on. The metric is real; the test design isn't
+producing actionable values yet. Becomes a real Category A gate once
+the test design changes (e.g., a stabilising controller is added on
+top of the prior, which is what PPO does in training).
+
 - **P1 absolute** `physical touchdown step length mean ≥ 0.90× TB` —
-  closed-loop variant; the gate is meaningful in principle but
-  unstable in practice when neither robot achieves significant
-  forward locomotion in the zero-residual replay.
+  closed-loop step length is a real planner-quality metric in
+  principle. In the current zero-residual replay both robots fall
+  before completing meaningful forward strides (TB in 17-35 steps,
+  WR in 61-191), so per-touchdown step length is a small-sample
+  noisy quantity. Should be re-evaluated when:
+  (a) PPO residual is added on top of the prior (deployable
+  configuration), or
+  (b) the test uses a stabilising controller (e.g., a basic balance
+  PD on top of the prior) so episodes survive long enough for
+  touchdown statistics to be stable.
+  Currently NOT a parity verdict — gate the real metric in (a) or
+  (b), not in the zero-residual replay.
 
 ### Category D — Actuator-stack-confounded
 
@@ -321,13 +346,17 @@ When reading a parity report, apply this filter:
   actuator-stack-confounded interpretation note, not via the raw
   ratio.
 - **S gates**: pass-by-design; do not count as a parity claim.
+- **U gates**: ignore in the current zero-residual replay. Re-evaluate
+  when a stabilising controller (PPO residual or basic balance PD)
+  is added so the metric becomes sample-stable.
 
 ### Right Expectations — what gates we actually need to PASS for "on par"
 
 Based on the classification above, "WR on par or better than TB" requires
 PASS on **only the Category A gates**, plus the H1-H6 replacement gauges
-for the legitimately exempted cases. The Category B / C / S gates do not
-add information beyond what the A gates already encode. The full PASS set
+for the legitimately exempted cases. The Category B / C / S / U gates do
+not add information beyond what the A gates already encode in the current
+test design. The full PASS set
 under this corrected reading is:
 
 - P0: stance, swing, full-matrix parity
@@ -363,9 +392,11 @@ read against the gate categorisation above:
    (composite gauge)
 8. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
 
-Category C gates (kinematic identities) and Category S (sentinels) do
-not appear in the decision rule because they trivially pass and do
-not encode a parity claim.
+Category C gates (kinematic identities), Category S (sentinels), and
+Category U (real metrics currently unstable in zero-residual replay)
+do not appear in the decision rule. C and S trivially pass / are
+sentinels by design; U gates the wrong test design (re-evaluate
+after PPO residual or stabilising controller is added).
 
 If P0 fails, fix geometry first.
 If P0 passes but Category-A P1A fails, fix the nominal gait shape /
