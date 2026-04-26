@@ -1,7 +1,7 @@
 # WR Reference Architecture Plan vs ToddlerBot
 
 **Status:** Canonical design note for `v0.20.x` reference alignment
-**Last updated:** 2026-04-26 (Phase 7-11 plan added)
+**Last updated:** 2026-04-26 (Phase 7-11 plan + Phase 12A/12C + gate classification)
 **Purpose:** define the reference-design policy for WildRobot (WR), record
 the design-history context behind the current parity harness, and order the
 architecture backlog needed to bring WR reference quality on par with or
@@ -2170,8 +2170,9 @@ or better" is reachable under the current hardware assumptions, the
 chosen Phase 9 fork (9A vs 9B), and the closed exemption table in the
 "What 'On Par or Better' Means" section below. They are not sufficient
 by themselves to guarantee a parity claim: Phase 10 may spawn Phase 12,
-H6 may need to activate, and Phase 9B requires a parity-tool extension
-before H7/H8 are real.
+H6 may need to activate, and the parity tool needs to ship the
+Froude-matched comparison section before H3/H4's replacement gauges
+are real.
 
 ## What "On Par or Better" Means
 
@@ -2209,8 +2210,8 @@ remains "remove unless explicitly justified."
 |---|---|---|---|---|
 | H1 | `P2 swing_foot_z_step_max_m` (gate ≤ 1.10× TB) | WR adds `swing_foot_z_floor_clearance_m = 0.025 m` on top of `foot_step_height_m` for floor-margin reasons (Phase 1). At equal `n_swing_half`, WR's per-frame Δz is structurally `(h_WR + c) / h_TB ≈ 1.30×` TB. Removing the offset would regress the P0 swing margin Phase 1 closed. | `P1A swing_foot_z_step_per_clearance` (gate ≤ 1.10× TB) | The per-clearance ratio measures the **shape** of the swing-z envelope (how peaky vs how spread-out across the swing window) independent of absolute peak. It catches a half-sine apex or a discontinuity exactly where the absolute gate would, but does not penalise the larger-by-design clearance floor. PASS at this gate proves the envelope shape matches TB; FAIL still catches a peakiness regression. |
 | H2 | `P1A swing_clearance_mean_m` (gate ≥ 0.85× TB) | WR's leg length 0.373 m vs TB's 0.211 m (1.76×) and COM height 0.458 m vs 0.286 m (1.60×). Absolute clearance scales with size; gating it absolutely either rewards over-clearance or penalises proportional clearance. | `P1A swing_clearance_per_com_height` (gate ≥ 0.85× TB) | Normalising by COM height converts clearance to a dimensionless body-proportional value. PASS proves WR is lifting the foot a TB-comparable fraction of body height; an actual under-clearance regression still trips the gate because the normalisation does not depend on the regression source. |
-| H3 | `P1A step_length_mean_m` at the operating-vx grid (gate ≥ 0.90× TB) | Same leg-length / Froude scaling. At equal absolute `vx`, WR is at a smaller Froude number, so per-leg stride structurally under-shoots TB. | `P1A step_length_per_leg` (gate ≥ 0.85× TB) | Per-leg stride captures stride efficiency independent of absolute leg length. WR can fail this gate without hardware excuse (e.g., a planner that under-strides for its own size); the gate stays meaningful. NOTE: this gate is currently FAIL (0.56× TB); H3 only makes it the **gauge** of record, not a free pass. |
-| H4 | `P1A touchdown_rate_hz` (gate ≤ 1.20× TB) | Same Froude scaling. At equal absolute `vx`, WR must over-cadence relative to TB to maintain the commanded velocity. | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) | Froude-normalised cadence (`touchdown_rate_hz · √(com_height_m / g)`) captures the per-bodysize cadence regime. WR over-cadencing for its size still trips the gate; the gate isn't disabled, just normalised. |
+| H3 | `P1A step_length_mean_m` (absolute) AND `step_length_per_leg` at absolute `(vx, cycle_time)` | Same leg-length / Froude scaling. (a) The absolute `step_length` gate is a **kinematic identity** — `step = vx × cycle_time / 2` is identical for both robots at the same `(vx, cycle_time)`, so the absolute gate is informational not parity. (b) The per-leg ratio at the same absolute `(vx, cycle_time)` has a **structural ceiling** at `leg_TB / leg_WR = 0.566`, so it cannot be satisfied by any planner choice; the per-leg gate evaluated at absolute `(vx, cycle_time)` is also informational not parity. **Both must be evaluated at Froude-matched operating points to carry a real parity claim.** | `P1A step_length_per_leg` evaluated at the **Froude-matched operating point** (TB at TB's chosen `vx`; WR at `vx_WR = √(Fr_TB · g · h_WR)` with cycle_time also Froude-scaled by `√(h_WR / h_TB)` if relevant) | Per-leg stride at Froude-matched operating points captures stride efficiency at comparable body-Froude states. PASS proves WR's planner produces TB-comparable proportional stride at the matched dynamic regime; FAIL still catches a planner that under-strides for its own size (the test isn't disabled, just gated at the operating point where the comparison is physically meaningful). Activation requires `tools/reference_geometry_parity.py` to ship the Froude-matched comparison section (currently absent — H3 promotes the prior-conditional H7 from "Phase 9B only" to "always"). |
+| H4 | `P1A touchdown_rate_hz` (absolute) AND `cadence_froude_norm` at absolute `cycle_time` | Same Froude scaling. (a) The absolute cadence gate is a **kinematic identity** — `cadence = 2 / cycle_time` is identical at fixed `cycle_time`, so the absolute gate is informational not parity. (b) The Froude-normalised cadence at the same absolute `cycle_time` has a **structural ceiling** at `√(h_WR / h_TB) = 1.27`, so it cannot be satisfied by any planner choice; the Froude-norm gate at absolute `cycle_time` is also informational not parity. **Both must be evaluated at Froude-matched operating points.** | `cadence_froude_norm` evaluated at the **Froude-matched operating point** (TB at TB's chosen `cycle_time`; WR at `cycle_time_WR = cycle_time_TB × √(h_WR / h_TB)`) | Froude-normalised cadence at matched operating points captures cadence regime independent of size. WR over-cadencing for its body size still trips the gate at the matched point. Activation depends on the Froude-matched comparison section in the parity tool (same prerequisite as H3; absorbs H8). |
 | H5 | `P1 achieved_forward_mps` per bin (gate `≥ TB − 0.02 m/s`) | Same size delta. The parity tool computes `achieved_forward_mps = terminal_root_x_m / (survived_steps · dt)`, so the absolute gate is effectively a drift-rate-in-m/s comparison. WR's larger leg makes the same per-leg-length drift translate to a bigger absolute m/s value — so an absolute m/s gate makes WR look worse simply for being bigger, while a per-leg gate captures stability per body size. | `P1 terminal_drift_rate_per_leg_per_s` (gate `≤ TB + 0.5 leg/s`) | Per-leg-length drift rate normalises the same underlying quantity (`terminal_root_x_m / duration`) by leg length. The current data shows WR drifts at ½ TB's per-leg rate — the absolute m/s gate would mask this. PASS at this gate proves WR is stable per body proportion; a real instability (drift accelerating beyond TB's per-leg rate) trips the gate. |
 **Conditional exemptions (PENDING — not active until activation conditions are met):**
 
@@ -2219,8 +2220,29 @@ These rows are **not currently active**. They become active only when their acti
 | # | Absolute metric (gauge OFF when active) | Activation condition | Replacement metric (gauge ON when active) | Why |
 |---|---|---|---|---|
 | H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | Active **only after** (a) `tools/reference_geometry_parity.py` exposes a single named composite verdict combining survival + forward + drift, AND (b) Phase 10 closes with verdict "actuator-stack-bound" with evidence. Until both hold, H6 is pending and the absolute RMSE gate stays on. | `P1 actuator_trackability_composite` — a composite verdict to be added to the parity tool, defined as `survived_steps ≥ 0.95× TB` AND `achieved_forward_per_cmd ≥ TB - 0.10` AND `terminal_drift_rate_per_leg_per_s ≤ TB + 0.5`, all per `vx` bin | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality (see scorecard interpretation note). The composite asks "does the WR prior actually walk under MuJoCo with this actuator stack?" — answered by survival + forward + drift jointly. A broken prior trips survival or forward-velocity first; a real actuator regression trips drift. Currently the parity tool reports the three metrics separately, so the named composite verdict does not exist yet — Rule 2 keeps H6 inactive. |
-| H7 | `P1A step_length_per_leg` (gate ≥ 0.85× TB) at WR vx=0.15 | Active **only under Phase 9B** (project keeps WR at vx=0.15 as primary operating point) AND `tools/reference_geometry_parity.py` ships a supplemental Froude-matched section that re-reads WR at vx≈0.19. Under Phase 9A (operating-point change to vx≈0.19), this exemption does NOT apply — the gate must clear at the new primary `vx_nominal_wr`. | Same metric at the **Froude-matched supplemental `vx`** (WR vx ≈ 0.19, supplemental parity report section) | Under 9B, the project chose to operate at a different Froude point than TB. The Froude-matched supplemental view re-reads WR at the matched operating point so the parity gauge measures stride efficiency at comparable body-Froude state. Currently the supplemental view does not exist in the parity tool — Rule 2 keeps H7 inactive. |
-| H8 | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) at WR vx=0.15 | Same activation as H7 (Phase 9B + supplemental view in parity tool). | Same metric at the **Froude-matched supplemental `vx`**. | Same rationale as H7. |
+
+(H7 and H8 from prior versions are absorbed into H3 / H4 above. The
+"Froude-matched supplemental view" framing is no longer
+Phase-9B-conditional — it is the **primary** parity reading for any
+size-confounded gate, and the absolute reading drops to informational
+in the H3 / H4 rows above.)
+
+**Demoted-to-informational gates (NOT exemption rows; tracked here for transparency):**
+
+These gates are **trivial kinematic identities or sentinels** and do
+not encode a parity claim regardless of robot quality. They are not
+"exempted" because they cannot meaningfully fail at the same operating
+point — they are just noise in the parity verdict and should be read
+as informational only. Documented here so future readers understand
+why these gates are not in the closure-decision rule.
+
+| # | Demoted metric | Why it carries no parity information |
+|---|---|---|
+| D1 | `P1A step_length_mean_m ≥ 0.90× TB` (absolute) | Kinematic identity: `step = vx × cycle_time / 2`. Identical for both robots at same `(vx, cycle_time)`. Always passes at 1.00×. |
+| D2 | `P1A touchdown_rate_hz ≤ 1.20× TB` (absolute) | Kinematic identity: `cadence = 2 / cycle_time`. Identical at fixed `cycle_time`. Always passes at 1.00×. |
+| D3 | `P1A touchdown_speed_proxy within 0.02 m/s of TB` | Kinematic identity: `speed_proxy = step × cadence / 2 = vx`. Always passes at exactly the commanded `vx`. |
+| D4 | `P2 pelvis_z_step_max ≤ 1.10× TB` | Documented sentinel in `reference_parity_scorecard.md`. Both ZMP-style priors store constant pelvis height; both = 0 by construction. Pass-by-design. |
+| D5 | `P1 survived_steps ≥ 0.95× TB` (absolute) | **Inverted-bounded:** the gate gets *easier* when TB falls faster. WR currently passes at 4.5× TB only because TB collapses in 17-35 steps under zero-residual replay. Should be replaced by an absolute survival floor (e.g., `≥ 0.5 × commanded_episode_steps`) rather than a ratio to TB; pending scorecard fix. |
 
 ### Rules for adding to the exemption list
 
@@ -2261,11 +2283,14 @@ the row.
   (the H2 replacement gauge). Both H1 and H2 absolute gates are
   informational; the absolute swing_step gate is allowed to widen
   proportionally.
-- Phase 9 close: under 9A, H7 and H8 are inactive — both
-  `step_length_per_leg` and `cadence_froude_norm` must PASS at the new
-  primary `vx_nominal_wr`. Under 9B, H7 and H8 activate, requiring the
-  parity tool's supplemental Froude-matched section to be implemented
-  and to PASS at the matched `vx`.
+- Phase 9 close: under both 9A and 9B, the H3/H4 replacement gauges
+  (Froude-matched per-leg stride and cadence-norm) must PASS. Under
+  9A this happens at WR's actual operating point (which has been
+  moved to the Froude-matched value). Under 9B the operating point
+  stays at vx=0.15 but the parity tool reports the gauge at the
+  Froude-matched supplemental `vx`. Either way, the parity tool
+  needs the Froude-matched comparison section before H3/H4's
+  replacement gauges are real (Rule 2 dependency).
 - Phase 10 close: produces a verdict on whether the P1 contact-match
   FAIL is reference-shape (closed by Phase 7), cycle-0-bound (Phase 12
   follow-up), or actuator-stack-bound (activates H6 — but only once
@@ -2283,8 +2308,9 @@ terminal plan. Specifically:
   the actual measurement (Phase 8 is contingent; Phase 7's absolute
   swing_step is exempt under H1 and not part of the closure check).
 - Phase 9 is a policy fork; the closure path depends on whether 9A or
-  9B is chosen. Under 9B the parity tool must grow a supplemental
-  Froude-matched section before H7/H8 are real exemptions.
+  9B is chosen. Either way the parity tool must grow a Froude-matched
+  comparison section before H3/H4's replacement gauges are real (Rule 2
+  dependency).
 - **Phase 10 is diagnostic-only** — it produces a verdict on whether
   the remaining P1 closed-loop FAILs are reference-shape (already
   fixed by Phase 7), cycle-0 retention (would spawn Phase 12),
@@ -2305,8 +2331,9 @@ So the correct framing is:
   parity. Phase 12 may be needed pending Phase 10's verdict; H6 may
   need to activate (requires both the actuator-stack verdict from
   Phase 10 AND the composite gauge shipping in the parity tool); the
-  supplemental Froude-matched parity view may need implementing under
-  Phase 9B for H7/H8 to activate.
+  Froude-matched parity comparison section needs to ship in the
+  parity tool before H3/H4 replacement gauges activate (regardless of
+  Phase 9A vs 9B choice).
 
 A phase closeout can claim "the gate this phase targeted is closed
 under the H-rule that applies" or "this phase's verdict is X". A

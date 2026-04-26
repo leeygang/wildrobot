@@ -218,23 +218,161 @@ Interpretation:
 - `G4/G6/G7` confirm the reference works in the actual WR training stack
 - `G5` confirms PPO is correcting the prior rather than replacing it
 
+## Gate Classification and Honest Reading (2026-04-26)
+
+Not every gate above measures something the planner / system can actually
+change. A systematic review surfaced four gate categories. Only **Category
+A** gates carry a real parity claim. Reading FAIL on a non-A gate as
+"WR is worse than TB" is a misreading of what the gate measures.
+
+### Category A — Real parity gates
+
+These gates measure something the planner or system can choose. PASS /
+FAIL on these gates is a real quality verdict.
+
+- **P0** stance_gate, swing_gate, in-scope, full-matrix parity
+- **P1A absolute** clearance_gate, ds_gate
+- **P1A normalised** clearance_per_h, swing_step_per_clr
+- **P2** swing_gate (absolute), q_gate, flip_gate
+- **P1 absolute** contact (≥ 0.90 absolute floor)
+- **P1 normalised** fwd_per_cmd, drift_per_leg
+
+### Category B — Structurally bounded by size at fixed operating point
+
+These gates have a structural ceiling determined by leg-length or
+COM-height ratio at fixed `(vx, cycle_time)`. They cannot be satisfied
+by any planner choice when WR and TB share the same absolute
+operating point but have different geometry. The only way to gate them
+honestly is at **Froude-matched** operating points (see "Right
+Expectations" below).
+
+- **P1A normalised** `step_length_per_leg ≥ 0.85× TB` — structural
+  ceiling at `leg_TB / leg_WR = 0.566`. Gate as written is
+  unsatisfiable for any robot with `leg ≥ 0.248 m` at TB's vx=0.15
+  with cycle_time=0.72.
+- **P1A normalised** `cadence_froude_norm ≤ 1.20× TB` — structural
+  ceiling at `√(h_WR / h_TB) = 1.27`. Gate as written is unsatisfiable
+  for any robot with `com_height ≥ 0.412 m` at TB's cycle_time=0.72.
+- **P1 normalised** `td_step_length_per_leg ≥ 0.85× TB` — same
+  structural issue as P1A `step_per_leg` (closed-loop variant).
+- **P1 absolute** `survived_steps ≥ 0.95× TB` — inverted-bounded:
+  the gate gets *easier* when TB falls faster. WR currently "passes"
+  at 4.5× TB only because TB collapses in 17-35 steps. Not a
+  meaningful parity reading.
+
+### Category C — Trivially passing kinematic identities
+
+These gates compare quantities determined by the kinematic identity
+`step = vx × cycle_time / 2` and its derivatives. At the same `(vx,
+cycle_time)` they are mathematically identical for both robots; the
+gate trivially passes (or trivially fails by ≤ a small numerical
+margin). Not a parity measurement; just confirming both planners use
+the same physics formula.
+
+- **P1A absolute** `step_length_mean ≥ 0.90× TB` — `step = vx ×
+  cycle_time / 2` is identical at same operating point. Gate
+  passes at 1.00× by construction.
+- **P1A absolute** `touchdown_rate ≤ 1.20× TB` — `cadence = 2 /
+  cycle_time` is identical at fixed cycle_time. Gate passes at
+  1.00× by construction.
+- **P1A absolute** `touchdown_speed_proxy within 0.02 m/s of TB` —
+  `speed_proxy = step × cadence / 2 = vx` by construction. Gate
+  passes at exactly the commanded vx.
+- **P1 absolute** `physical touchdown step length mean ≥ 0.90× TB` —
+  closed-loop variant; the gate is meaningful in principle but
+  unstable in practice when neither robot achieves significant
+  forward locomotion in the zero-residual replay.
+
+### Category D — Actuator-stack-confounded
+
+These gates depend on the actuator model (WR position actuators vs TB
+torque + PD), not the prior quality. The scorecard's existing
+interpretation note already flags this; the H6 exemption (in
+`reference_architecture_comparison.md`) is the formal mechanism for
+gating these honestly via a composite gauge.
+
+- **P1 absolute** `shared_leg_rmse ≤ 1.10× TB` — H6 pending until
+  parity tool ships the composite gauge.
+- **P1 absolute** `joint_limit_step_frac ≤ TB + 0.05` — partly
+  actuator-confounded, partly robot-specific (the WR `left_hip_roll`
+  asymmetry is its own Phase 12C investigation). Gate stays on but
+  reading should account for the robot-specific asymmetry.
+
+### Category S — Sentinel (intentionally trivially passing as a regression check)
+
+Documented sentinels that pass by design. Listed separately from real
+gates so a 0/0 PASS isn't read as a quality claim.
+
+- **P2** `pelvis_z_step_max ≤ 1.10× TB` — both ZMP-style priors store
+  constant pelvis height; both = 0 by construction.
+
+### Right Expectations — what PASS / FAIL actually means
+
+When reading a parity report, apply this filter:
+
+- **A gates**: PASS = real quality match; FAIL = real quality gap.
+- **B gates at absolute (vx, cycle_time)**: ignore. Read at
+  Froude-matched operating point instead. Under Phase 9B (keep
+  vx=0.15), B-gate FAILs are structurally bounded by design and
+  should be reported as informational, not gated.
+- **C gates**: ignore as parity verdict. Treat as sanity checks
+  confirming both planners implement the same kinematic formula.
+- **D gates**: gate via the H6 composite gauge or the documented
+  actuator-stack-confounded interpretation note, not via the raw
+  ratio.
+- **S gates**: pass-by-design; do not count as a parity claim.
+
+### Right Expectations — what gates we actually need to PASS for "on par"
+
+Based on the classification above, "WR on par or better than TB" requires
+PASS on **only the Category A gates**, plus the H1-H6 replacement gauges
+for the legitimately exempted cases. The Category B / C / S gates do not
+add information beyond what the A gates already encode. The full PASS set
+under this corrected reading is:
+
+- P0: stance, swing, full-matrix parity
+- P1A absolute: clearance, ds (the gait-shape gates that aren't
+  kinematic identities)
+- P1A normalised: clearance_per_h, swing_step_per_clr
+- P1A normalised at Froude-matched op-point: step_per_leg, cadence_norm
+  (the B-gates evaluated honestly)
+- P2: swing (with H1 exemption), q, flip (skip pelvis sentinel)
+- P1: contact ≥ 0.90, fwd_per_cmd, drift_per_leg (with H5 active)
+- P1 with H6 active (post-Phase-10): rmse / contact / step composite
+
+Reading the parity report against the full original gate set will
+overstate the parity gap because Category B and C gates contribute
+spurious FAILs (B from size, C from being kinematic identities that
+already hold).
+
 ## Decision Rule
 
-WildRobot is "on par with ToddlerBot" only when all of the following are true:
+WildRobot is "on par with ToddlerBot" when all of the following hold,
+read against the gate categorisation above:
 
-1. both repos pass P0 in-scope
-2. WildRobot meets the P0 full-matrix parity target against ToddlerBot
-3. WildRobot matches ToddlerBot on P1A nominal FK-realized gait shape
-4. WildRobot meets the P1 parity target against ToddlerBot
-5. WildRobot is not materially rougher than ToddlerBot on P2
-6. WildRobot meets the size-normalised parity targets on FK and P1
-7. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
+1. both repos pass P0 in-scope (Category A, real)
+2. WildRobot meets the P0 full-matrix parity target (Category A)
+3. WildRobot meets the **Category A P1A gates** (absolute clearance / ds;
+   normalised clearance_per_h / swing_step_per_clr)
+4. WildRobot meets the **B-category P1A gates evaluated at Froude-matched
+   operating point** (`step_per_leg`, `cadence_norm`)
+5. WildRobot meets the **Category A P2 gates** (swing with H1, q, flip)
+6. WildRobot meets the **Category A P1 gates** (contact ≥ 0.90 absolute;
+   fwd_per_cmd; drift_per_leg with H5 active)
+7. WildRobot's P1 D-gates either clear or are exempted via active H6
+   (composite gauge)
+8. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
+
+Category C gates (kinematic identities) and Category S (sentinels) do
+not appear in the decision rule because they trivially pass and do
+not encode a parity claim.
 
 If P0 fails, fix geometry first.
-If P0 passes but P1A fails, fix the nominal gait shape / FK realization.
-If P1A passes but P1 fails, fix trackability.
-If P1 passes but `G5` fails, the prior is too weak and PPO is compensating too
-much.
+If P0 passes but Category-A P1A fails, fix the nominal gait shape /
+FK realization.
+If Category-A P1A passes but Category-A P1 fails, fix trackability.
+If P1 passes but `G5` fails, the prior is too weak and PPO is
+compensating too much.
 
 ## Latest Analysis Result (2026-04-25)
 
