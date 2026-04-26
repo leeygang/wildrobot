@@ -1566,12 +1566,12 @@ Phases 7 + 9 + 11 can run in parallel; 8 needs 7; 10 needs 7;
 
 **Phases 7-11 form an investigate-and-improve plan, not a guaranteed
 terminal plan.** They are sufficient to determine whether "WR on par
-or better" is reachable under the current hardware / operating-point
-assumptions and the chosen acceptance-rule option (A vs B above).
-They are not sufficient by themselves to guarantee a parity claim:
-Phase 10 may spawn Phase 12, and the acceptance rule itself needs the
-Option A vs B decision before any phase can close out as
-"WR on par or better".
+or better" is reachable under the current hardware assumptions, the
+chosen Phase 9 fork (9A vs 9B), and the closed exemption table in the
+"What 'On Par or Better' Means" section below. They are not sufficient
+by themselves to guarantee a parity claim: Phase 10 may spawn Phase 12,
+H6 may need to activate, and Phase 9B requires a parity-tool extension
+before H7/H8 are real.
 
 ## What "On Par or Better" Means
 
@@ -1611,15 +1611,16 @@ remains "remove unless explicitly justified."
 | H2 | `P1A swing_clearance_mean_m` (gate ≥ 0.85× TB) | WR's leg length 0.373 m vs TB's 0.211 m (1.76×) and COM height 0.458 m vs 0.286 m (1.60×). Absolute clearance scales with size; gating it absolutely either rewards over-clearance or penalises proportional clearance. | `P1A swing_clearance_per_com_height` (gate ≥ 0.85× TB) | Normalising by COM height converts clearance to a dimensionless body-proportional value. PASS proves WR is lifting the foot a TB-comparable fraction of body height; an actual under-clearance regression still trips the gate because the normalisation does not depend on the regression source. |
 | H3 | `P1A step_length_mean_m` at the operating-vx grid (gate ≥ 0.90× TB) | Same leg-length / Froude scaling. At equal absolute `vx`, WR is at a smaller Froude number, so per-leg stride structurally under-shoots TB. | `P1A step_length_per_leg` (gate ≥ 0.85× TB) | Per-leg stride captures stride efficiency independent of absolute leg length. WR can fail this gate without hardware excuse (e.g., a planner that under-strides for its own size); the gate stays meaningful. NOTE: this gate is currently FAIL (0.56× TB); H3 only makes it the **gauge** of record, not a free pass. |
 | H4 | `P1A touchdown_rate_hz` (gate ≤ 1.20× TB) | Same Froude scaling. At equal absolute `vx`, WR must over-cadence relative to TB to maintain the commanded velocity. | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) | Froude-normalised cadence (`touchdown_rate_hz · √(com_height_m / g)`) captures the per-bodysize cadence regime. WR over-cadencing for its size still trips the gate; the gate isn't disabled, just normalised. |
-| H5 | `P1 terminal_root_x_m` per bin (gate `≥ TB - 0.02` m/s achieved-forward) | Same size delta. Backward drift in absolute meters scales with size; comparing absolute drift makes WR look worse simply for being bigger. | `P1 terminal_drift_rate_per_leg_per_s` (gate `≤ TB + 0.5 leg/s`) | Per-leg-length drift rate captures stability per body size. The current data shows WR drifts at ½ TB's per-leg rate — the absolute gate would mask this. PASS at this gate proves WR is stable per body proportion; a real instability trips the gate. |
-| H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality. The scorecard's own interpretation note: "comparable RMSE on both sides plus a P1 fail points to actuator/control mismatch rather than the prior". | **Composite physical-trackability gauge:** `P1 survived_steps ≥ 0.95× TB` AND `P1 achieved_forward_per_cmd ≥ TB - 0.10` AND `P1 terminal_drift_rate_per_leg_per_s ≤ TB + 0.5` (all per `vx` bin) | This composite asks the question "does the WR prior actually walk under MuJoCo with this actuator stack?" The three metrics jointly catch a broken prior (early termination, wrong direction, drift away) without per-joint sensitivity to the actuator-stack tracking gain. WR currently PASSes all three with margin; a prior regression would trip survival or forward-velocity first. |
+| H5 | `P1 achieved_forward_mps` per bin (gate `≥ TB − 0.02 m/s`) | Same size delta. The parity tool computes `achieved_forward_mps = terminal_root_x_m / (survived_steps · dt)`, so the absolute gate is effectively a drift-rate-in-m/s comparison. WR's larger leg makes the same per-leg-length drift translate to a bigger absolute m/s value — so an absolute m/s gate makes WR look worse simply for being bigger, while a per-leg gate captures stability per body size. | `P1 terminal_drift_rate_per_leg_per_s` (gate `≤ TB + 0.5 leg/s`) | Per-leg-length drift rate normalises the same underlying quantity (`terminal_root_x_m / duration`) by leg length. The current data shows WR drifts at ½ TB's per-leg rate — the absolute m/s gate would mask this. PASS at this gate proves WR is stable per body proportion; a real instability (drift accelerating beyond TB's per-leg rate) trips the gate. |
+**Conditional exemptions (PENDING — not active until activation conditions are met):**
 
-**Conditional exemptions (active under specific Phase 9 outcome only):**
+These rows are **not currently active**. They become active only when their activation condition is satisfied (Rule 2: replacement metric must already exist in the parity tool). Until then, the absolute gate stays on as the gauge of record.
 
-| # | Absolute metric (gauge OFF) | Activation condition | Replacement metric (gauge ON) | Why |
+| # | Absolute metric (gauge OFF when active) | Activation condition | Replacement metric (gauge ON when active) | Why |
 |---|---|---|---|---|
-| H7 | `P1A step_length_per_leg` (gate ≥ 0.85× TB) at WR vx=0.15 | Active **only under Phase 9B** (project keeps WR at vx=0.15 as primary operating point). Under Phase 9A (operating-point change to vx≈0.19), this exemption does NOT apply — the gate must clear at the new primary `vx_nominal_wr`. | Same metric at the **Froude-matched supplemental `vx`** (WR vx ≈ 0.19, supplemental parity report section) | Under 9B, the project chose to operate at a different Froude point than TB. The Froude-matched supplemental view re-reads WR at the matched operating point so the parity gauge measures stride efficiency at comparable body-Froude state. Adopting this exemption requires the supplemental view to actually be implemented in `tools/reference_geometry_parity.py` (currently not — Phase 9B work). |
-| H8 | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) at WR vx=0.15 | Same activation as H7 (Phase 9B only). | Same metric at the **Froude-matched supplemental `vx`**. | Same rationale as H7. |
+| H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | Active **only after** (a) `tools/reference_geometry_parity.py` exposes a single named composite verdict combining survival + forward + drift, AND (b) Phase 10 closes with verdict "actuator-stack-bound" with evidence. Until both hold, H6 is pending and the absolute RMSE gate stays on. | `P1 actuator_trackability_composite` — a composite verdict to be added to the parity tool, defined as `survived_steps ≥ 0.95× TB` AND `achieved_forward_per_cmd ≥ TB - 0.10` AND `terminal_drift_rate_per_leg_per_s ≤ TB + 0.5`, all per `vx` bin | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality (see scorecard interpretation note). The composite asks "does the WR prior actually walk under MuJoCo with this actuator stack?" — answered by survival + forward + drift jointly. A broken prior trips survival or forward-velocity first; a real actuator regression trips drift. Currently the parity tool reports the three metrics separately, so the named composite verdict does not exist yet — Rule 2 keeps H6 inactive. |
+| H7 | `P1A step_length_per_leg` (gate ≥ 0.85× TB) at WR vx=0.15 | Active **only under Phase 9B** (project keeps WR at vx=0.15 as primary operating point) AND `tools/reference_geometry_parity.py` ships a supplemental Froude-matched section that re-reads WR at vx≈0.19. Under Phase 9A (operating-point change to vx≈0.19), this exemption does NOT apply — the gate must clear at the new primary `vx_nominal_wr`. | Same metric at the **Froude-matched supplemental `vx`** (WR vx ≈ 0.19, supplemental parity report section) | Under 9B, the project chose to operate at a different Froude point than TB. The Froude-matched supplemental view re-reads WR at the matched operating point so the parity gauge measures stride efficiency at comparable body-Froude state. Currently the supplemental view does not exist in the parity tool — Rule 2 keeps H7 inactive. |
+| H8 | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) at WR vx=0.15 | Same activation as H7 (Phase 9B + supplemental view in parity tool). | Same metric at the **Froude-matched supplemental `vx`**. | Same rationale as H7. |
 
 ### Rules for adding to the exemption list
 
@@ -1667,8 +1668,9 @@ the row.
   and to PASS at the matched `vx`.
 - Phase 10 close: produces a verdict on whether the P1 contact-match
   FAIL is reference-shape (closed by Phase 7), cycle-0-bound (Phase 12
-  follow-up), or actuator-stack-bound (becomes H9 candidate, requires
-  full exemption rationale per the rules above).
+  follow-up), or actuator-stack-bound (activates H6 — but only once
+  the parity tool also ships the composite gauge per H6's activation
+  condition; both must hold).
 - Phase 11 close: hygiene only; no exemption interaction.
 
 ### What Phases 7-11 do and do not guarantee
@@ -1686,8 +1688,9 @@ terminal plan. Specifically:
 - **Phase 10 is diagnostic-only** — it produces a verdict on whether
   the remaining P1 closed-loop FAILs are reference-shape (already
   fixed by Phase 7), cycle-0 retention (would spawn Phase 12),
-  actuator-stack-bound (candidate for H9 exemption with a composite
-  gauge), or mixed. It does NOT itself close the P1 gates.
+  actuator-stack-bound (would activate H6 — pending exemption
+  conditional on the parity tool also shipping the composite gauge),
+  or mixed. It does NOT itself close the P1 gates.
 - **Phase 12 may be required** — if Phase 10 surfaces cycle-0
   retention as the load-bearing source of the contact-match FAIL,
   mirroring TB's cycle-0 truncation in WR becomes a follow-up phase.
@@ -1699,52 +1702,17 @@ So the correct framing is:
   under the current hardware assumptions, the chosen Phase 9 policy
   fork, and the exemption table above.
 - 7-11 are **not sufficient by themselves** to guarantee final
-  parity. Phase 12 may be needed pending Phase 10's verdict; new
-  exemption rows may be needed if Phase 10 surfaces an actuator-stack
-  case (H9 candidate); the supplemental Froude-matched parity view
-  may need implementing under Phase 9B.
+  parity. Phase 12 may be needed pending Phase 10's verdict; H6 may
+  need to activate (requires both the actuator-stack verdict from
+  Phase 10 AND the composite gauge shipping in the parity tool); the
+  supplemental Froude-matched parity view may need implementing under
+  Phase 9B for H7/H8 to activate.
 
 A phase closeout can claim "the gate this phase targeted is closed
 under the H-rule that applies" or "this phase's verdict is X". A
 phase closeout cannot claim "WR on par or better" until every gate
 either clears strictly OR clears its named replacement under the
 exemption table above.
-
-### What Phases 7-11 do and do not guarantee
-
-Phases 7-11 are an **investigate-and-improve plan**, not a guaranteed
-terminal plan. Specifically:
-
-- Phases 7, 8, 11 are direct improvements with predicted metric
-  movements; whether they fully close their target gates depends on
-  the actual measurement (Phase 8 is contingent; Phase 7's absolute
-  gate is bounded under Option B above).
-- Phase 9 is a policy fork; the closure path depends on whether 9A or
-  9B is chosen.
-- **Phase 10 is diagnostic-only** — it produces a verdict on whether
-  the remaining P1 closed-loop FAILs are reference-shape (already
-  fixed by Phase 7), cycle-0 retention (would spawn Phase 12),
-  actuator-stack-bound (accepted as P1-test-design limitation), or
-  mixed. It does NOT itself close the P1 gates.
-- **Phase 12 may be required** — if Phase 10 surfaces cycle-0
-  retention as the load-bearing source of the contact-match FAIL,
-  mirroring TB's cycle-0 truncation in WR becomes a follow-up phase.
-  This is not in the current 7-11 list.
-
-So the correct framing is:
-
-- 7-11 are sufficient to **determine whether the goal is reachable**
-  under the current hardware / operating-point assumptions and the
-  chosen acceptance rule (Option A vs B above).
-- 7-11 are **not sufficient by themselves** to guarantee final
-  parity. Phase 12 may be needed pending Phase 10's verdict; the
-  project may also need to revisit the acceptance rule itself.
-
-A phase closeout can claim "the gate this phase targeted is closed"
-or "this phase's verdict is X". A phase closeout cannot claim "WR is
-on par or better" until (i) the policy decision above is made and
-(ii) every gate either clears or is on the explicit exemption list
-under that policy.
 
 ## Practical Use
 
