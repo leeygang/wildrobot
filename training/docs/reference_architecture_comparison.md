@@ -1674,6 +1674,142 @@ Acceptance statement:
   PASS strictly or PASS via an active exemption", "Phase 12 follows",
   or both
 
+#### Phase 10 closeout (2026-04-26, commit `cc5e8d3`)
+
+Implemented `tools/phase10_diagnostic.py` — a WR-only closed-loop
+replay that captures per-step traces and produces D1 / D2 / D3+D4 as
+specified above. No planner code changed. The diagnostic imports
+WR-side helpers from `tools/reference_geometry_parity.py`, so the
+replay is byte-for-byte the same trajectory the parity tool sees;
+only the per-step capture is added. Same TB-venv-free constraint as
+`tools/phase6_wr_probe.py`.
+
+**Diagnostic results on post-Phase-7 tree** (commit `cc5e8d3`,
+horizon 200, vx ∈ {0.10, 0.15, 0.20}):
+
+| Metric | vx=0.10 | vx=0.15 | vx=0.20 |
+|---|---|---|---|
+| **D1: cycle-0 retention** |
+| overall match_frac | 0.566 | 0.611 | 0.647 |
+| first-cycle match_frac (steps 0–35) | 0.778 | 0.806 | 0.806 |
+| rest match_frac (steps 36+) | 0.375 | 0.417 | 0.469 |
+| `rest − first_cycle` gap | **−0.40** | **−0.39** | **−0.34** |
+| D1 verdict | no-cycle-0-drag | no-cycle-0-drag | no-cycle-0-drag |
+| **D2: mid-swing tap-down** |
+| events / swing cycle | 1.50 | 1.50 | 1.20 |
+| left vs right asymmetry | 7 vs 2 | 7 vs 2 | 4 vs 2 |
+| D2 verdict | planner-shape-bound | planner-shape-bound | planner-shape-bound |
+| **D3+D4: sat distribution by i_swing** |
+| swing-window mean sat rate | 0.188 | 0.083 | 0.091 |
+| sat rate at up-cross (i_swing=2) | 0.250 | 0.000 | 0.000 |
+| sat rate at down-cross (i_swing=9) | 0.250 | 0.250 | 0.333 |
+| D3+D4 verdict | uniform-sat | Phase-7-boundary-bound | Phase-7-boundary-bound |
+| **Composite verdict** | planner-shape | mixed: planner-shape + Phase-7-boundary | mixed: planner-shape + Phase-7-boundary |
+
+**Three load-bearing findings:**
+
+1. **Cycle-0 retention is NOT the cause.** D1's gap is **negative** at
+   every vx (−0.40, −0.39, −0.34). The first cycle is consistently
+   the BEST part of every episode; WR's contact match degrades
+   *progressively* after step 36. **TB cycle-0 truncation would not
+   help — it would discard the cleanest part of the trajectory.**
+   This rules out one of the four hypothesised Phase 12 fixes
+   (mirror TB cycle-0 truncation in WR). Saves us from doing the
+   wrong work.
+
+2. **Phase 7's plantarflex DOWN-cross is the actuator-saturation
+   driver at vx ≥ 0.15.** D3+D4 shows saturation rate at the
+   down-cross (i_swing=9) is ≥ 1.5× the swing-window mean while
+   the up-cross (i_swing=2) is at 0.0. The asymmetry is
+   diagnostic: the discrete ankle un-plantarflex (−0.15 rad → 0
+   rad in a single frame between i_swing=9 z=0.026 m plantarflexed
+   and i_swing=10 z=0.013 m neutral) is what the actuator stack
+   cannot track. The up-cross has the same z step but is well-
+   separated from touchdown so the joints have headroom. This
+   confirms the Phase 7 closeout's hypothesis.
+
+3. **Mid-swing tap-down events are confirmed across all vx**
+   (1.2–1.5/cycle), with strong **left/right asymmetry** (left foot
+   3-4× right). This is consistent with the down-cross "snap"
+   pulling the foot into the floor before the planner's commanded
+   touchdown frame, but also suggests an asymmetry in the IK or
+   model that warrants a follow-up audit independent of the Phase 12
+   fix.
+
+**Composite verdict: mixed (planner-shape-bound + Phase-7-boundary-
+bound at vx ≥ 0.15; planner-shape-bound only at vx=0.10).**
+
+**Phase 12 scope (recommended):**
+
+The right Phase 12 fix is **not** TB cycle-0 truncation (D1 ruled
+out). The right fix targets the discrete plantarflex transition at
+the down-cross. Two candidate slices, in order of preference:
+
+- **Phase 12A: Soften the plantarflex schedule.** Currently the
+  ankle plantarflex is binary on/off-gated on
+  `foot_world_i[2] > swing_ankle_lift_threshold_m = 0.025 m`
+  (`control/zmp/zmp_walk.py:780-783`). Replace the binary gate with
+  a continuous ramp: e.g.,
+  `plantarflex_rad = 0.15 * smoothstep((foot_z − 0.020) / 0.010)`
+  so the ankle ramps over a 10 mm window (0.020 to 0.030 m)
+  instead of switching at 0.025 m. This addresses the down-cross
+  snap directly and should symmetrically improve the up-cross too
+  (which is currently fine but stays fine under the ramp).
+  Planner-local single-file change; no schema change; Phase 5 cache
+  fingerprint picks it up. Expected to drop D3+D4 down-cross sat
+  rate to swing-window-mean and reduce D2 mid-swing tap-down events
+  proportionally.
+- **Phase 12B (fallback if 12A is insufficient): Shape the
+  triangle's first / last 1-2 frames.** Replace the linear ramp at
+  the boundaries with a half-cosine blend over 1-2 frames, so the
+  per-frame Δz at the down-cross is smaller (asymptotically zero
+  approaching touchdown). More invasive than 12A.
+
+**Phase 8 ship/wait decision:** **WAIT.** Phase 8 (foot_step_height
+0.04 → 0.045 or 0.05) raises `up_delta` proportionally
+(0.013 → 0.014 at h=0.045, → 0.015 at h=0.05), which steepens the
+down-stroke and amplifies the down-cross snap. Phase 12A must land
+and verify before Phase 8 ships. Under Phase 9B keep-vx=0.15, this
+also means the H7 / H8 conditional exemptions remain pending until
+Phase 12A clears the down-cross saturation.
+
+**H6 activation status:** **NOT activated.** The closed-loop FAIL is
+*not* purely actuator-stack-bound — the diagnostic surfaced two
+fixable causes (planner-shape mid-swing tap-down + Phase-7-boundary
+plantarflex transition). Treating H6 as the gauge of record now
+would mask fixable architecture-side issues. H6 stays pending until
+Phase 12A lands and the residual is verified to be uniform-sat
+across i_swing (D3+D4 verdict "uniform-sat" or "no-significant-
+sat"), at which point H6 + the parity-tool composite gauge can
+activate together.
+
+**Sequencing impact (updated):**
+
+- Phase 10 closeout produces a verdict; ✅ done.
+- **Phase 12A (NEW)** added to backlog: soften plantarflex schedule.
+  Required before Phase 8 ships and before H6 can activate.
+- Phase 8 still gated on Phase 12A landing.
+- Phase 11 (lin_vel_z cleanup) unchanged, low-priority hygiene.
+
+Outstanding caveats:
+- The diagnostic does not include a pre-Phase-7 baseline
+  (half-sine envelope) for direct A/B comparison. The D3+D4 down-
+  cross-asymmetric pattern is consistent with the reviewer's
+  pre/post P1 numbers (Phase 7 caused the regression), but a
+  rigorous A/B would require temporarily reverting the planner.
+  Skipped here because the post-state evidence is sufficient to
+  scope Phase 12A.
+- Episode survival is short (68-76 steps) at every vx, so the
+  "rest" sample size is small (32-40 steps). The rest-vs-first
+  contrast direction (negative gap) is consistent across all three
+  vx bins, so the conclusion is robust, but the absolute "rest"
+  numbers carry larger uncertainty than the first-cycle ones.
+- The left/right asymmetry in D2 (left foot 3-4× right tap-downs)
+  is not explained by the Phase-7-boundary hypothesis alone. May
+  warrant a separate audit of the WR MJCF / IK chain for left-leg
+  vs right-leg structural asymmetry. Tracking as a follow-up
+  question, not as a blocker for Phase 12A.
+
 ### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
 
 Goal:
@@ -1698,6 +1834,94 @@ Exit criteria:
 Acceptance statement:
 - success means no behavioral change in any reward or training metric;
   the consumption-narrowing is verifiable by grep
+
+### Phase 12A. Soften the IK plantarflex schedule (NEW from Phase 10 verdict)
+
+Goal:
+- close the Phase-7-boundary-bound component of the post-Phase-7 P1
+  closed-loop FAIL by replacing the binary plantarflex on/off-gate
+  with a continuous ramp, eliminating the discrete ankle un-plantarflex
+  at the down-cross frame
+
+Diagnostic signal that triggered this phase (from Phase 10):
+- D3+D4 sat rate at i_swing=9 (down-cross) is 1.5-3× the swing-window
+  mean at vx ≥ 0.15
+- D2 mid-swing tap-down events (1.2-1.5/cycle) cluster on the down-
+  stroke side
+- D1 ruled out cycle-0 retention as the cause; this is a planner-side
+  fix, not a TB-truncation fix
+
+Work (planner-local, single file):
+- `control/zmp/zmp_walk.py:780-783`: replace the binary
+  `is_swing_for_ankle = is_swing AND foot_world_i[2] >
+  swing_ankle_lift_threshold_m` gate with a continuous ramp
+  `plantarflex_factor = smoothstep((foot_z - 0.020) / 0.010)` so the
+  0.15 rad ankle plantarflex ramps over the 0.020-0.030 m foot-z
+  window instead of switching at 0.025 m. Apply
+  `plantarflex_rad = 0.15 * plantarflex_factor` at the IK ankle
+  injection site.
+- The threshold constant `swing_ankle_lift_threshold_m = 0.025` stays
+  as the ramp center; the ramp width (0.010 m) is the new tunable.
+- Phase 1 plantarflex compensation rationale stays intact (the toe-
+  geometry overhang still needs offsetting); only the schedule
+  becomes continuous.
+- Phase 5 cache fingerprint picks up the change automatically.
+
+Sequence:
+- AFTER Phase 7 ✅ (already landed)
+- AFTER Phase 10 ✅ (verdict in tree at commit `cc5e8d3`)
+- BEFORE Phase 8 — Phase 12A must verify before Phase 8 ships, since
+  Phase 8 amplifies the down-cross transition Phase 12A is closing
+
+Expected metric movement:
+- D3+D4 sat rate at i_swing=9: 0.250-0.333 → ≤ swing-window mean
+  (≈ 0.10) at vx ≥ 0.15 → planner-shape-bound only verdict
+- D2 mid-swing tap-down events: 1.2-1.5/cycle → near zero (the down-
+  cross snap is the primary mechanism)
+- P1 closed-loop `ref_contact_match_frac` at vx=0.15:
+  0.625 (post-Phase-7) → ≥ 0.700 (recover at least the pre-Phase-7
+  value of 0.6986) and ideally ≥ 0.80
+- P1 `joint_limit_step_frac` at vx=0.15:
+  0.0556 (post-Phase-7) → ≤ 0.030 (recover pre-Phase-7 0.0274)
+- P1 `shared_leg_rmse_rad`: similar recovery toward pre-Phase-7
+- Episode survival: > 100 steps at vx=0.15 (currently 72)
+
+Exit criteria:
+- `tools/phase10_diagnostic.py` reports D3+D4 verdict =
+  "uniform-sat" or "no-significant-sat" at vx=0.15 and vx=0.20
+- D2 events/cycle drops to ≤ 0.3 at every vx
+- D1 sign / direction unchanged (this phase doesn't target cycle-0)
+- Full parity refresh on a TB-capable machine shows P1 closed-loop
+  metrics return to or improve on pre-Phase-7 values
+- No regression on H1 swing_step_per_clearance (Phase 7 PASS must
+  hold; the ankle ramp shouldn't change the foot-z trajectory shape
+  on its own, but the swing FK will change because the un-plantarflex
+  no longer snaps)
+- No regression on P0 (in-scope or full matrix)
+
+Acceptance statement:
+- success means D3+D4 down-cross asymmetry disappears AND D2 mid-swing
+  tap-downs drop to near-zero AND P1 contact_match recovers to or
+  beyond the pre-Phase-7 value
+- if D3+D4 clears but D2 stays elevated, Phase 12B (boundary-shape
+  envelope) is the next slice
+- if D3+D4 also clears the residual P1 RMSE/contact gap to TB
+  parity, H6 can activate (subject to the parity tool also shipping
+  the composite gauge per H6's activation rule)
+
+Open questions for the implementer:
+- Is `smoothstep` the right ramp shape, or should it be linear?
+  Recommendation: smoothstep (`3t² - 2t³`) so the ramp's derivative
+  is continuous at both ends; this avoids re-introducing a (smaller)
+  discontinuity in the ankle's velocity profile.
+- Should the ramp also apply on the up-cross side, or only down?
+  Recommendation: both — the diagnostic shows up-cross is currently
+  fine (0.0 sat rate at i_swing=2 for vx ≥ 0.15) but the symmetric
+  ramp is simpler and avoids creating a planner asymmetry.
+- The asymmetric left/right tap-down distribution in D2 (left foot
+  3-4× right) is a separate signal not addressed by Phase 12A.
+  Recommendation: track as an independent IK / MJCF audit follow-up;
+  do not bundle into Phase 12A.
 
 ### Validation harness (after every Phase 7-11 slice)
 
@@ -1789,16 +2013,20 @@ The intended order is:
     gate); sequence after Phase 7
 12. Phase 11 to clean up the residual `lin_vel_z` planner-side
     consumption; independent, low priority
-13. **Phase 12 (conditional)** — if Phase 10's verdict is "cycle-0
-    retention is load-bearing", mirror TB's first-cycle truncation in
-    WR's `_generate_at_step_length` to close the residual P1
-    contact-match FAIL. Not scoped today; only opens if Phase 10
-    produces that verdict.
+13. **Phase 12A** (active, opened by Phase 10 verdict) — soften the
+    IK plantarflex schedule from a binary on/off-gate to a
+    smoothstep ramp over 0.020-0.030 m foot-z. Closes the
+    Phase-7-boundary-bound component of the post-Phase-7 P1 FAIL
+    that Phase 10 surfaced. Required before Phase 8 ships.
+14. ~~Phase 12 (mirror TB cycle-0 truncation)~~ — **explicitly
+    rejected** by Phase 10's D1 verdict (cycle-0 is the BEST part of
+    every episode, not a drag). Listed here so future readers do
+    not re-litigate.
 
-Phases 7 + 9 + 11 can run in parallel; 8 needs 7 **AND now also
-needs 10's verdict** (Phase 7 closeout flagged P1 closed-loop
-regressions that Phase 8 would amplify); 10 needs 7; 12 is conditional
-on 10.
+Phases 7 + 9 + 11 can run in parallel; 8 needs 7, 10's verdict, AND
+Phase 12A landing (Phase 7 closeout + Phase 10 closeout flagged P1
+closed-loop regressions that Phase 8 would amplify); 10 needs 7;
+12A needs 7 and 10.
 
 **Phases 7-11 form an investigate-and-improve plan, not a guaranteed
 terminal plan.** They are sufficient to determine whether "WR on par
