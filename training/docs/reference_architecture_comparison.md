@@ -257,70 +257,165 @@ These still matter, but the rule is:
 
 If a gap is caused by architecture, do not try to tune around it first.
 
-## Architecture-Driven Plan
+## Execution Plan
 
-The current plan should close the WR-vs-TB quality gap primarily through
-architecture changes, not local optimization.
+The execution plan should close the WR-vs-TB quality gap primarily through
+architecture changes. Local tuning is allowed only after the architecture
+phases have cleared their exit criteria.
 
-### Priority 1. Remove unjustified swing-z discontinuity
+### Phase 0. Lock the baseline
 
-Change WR's swing-foot clearance shaping so the WR-specific floor-clearance
-compensation goes to zero at lift-off and touchdown.
+Goal:
+- make the current parity report the baseline artifact for all future WR
+  reference changes
 
-Why first:
-- directly targets the current `P0` swing-margin weakness
-- directly targets the current `P2` swing-step weakness
-- no schema or env contract change required
+Work:
+- keep [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
+  as the single comparison entry point
+- keep
+  [reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md)
+  as the acceptance contract
+- record both absolute and size-normalised results before each architecture
+  change
 
-### Priority 2. Decide and document runtime target semantics
+Exit criteria:
+- every reference-design PR includes before/after parity output
+- changes are judged against the same `P0 / P1A / P2 / P1` layers
 
-Make an explicit architectural decision:
+### Phase 1. Fix the swing-z architecture bug
 
-- default to TB-style command-integrated body target
-- keep planner-phase target only if WR has a written, measured reason
+Goal:
+- remove the unjustified WR swing-z boundary discontinuity while preserving the
+  WR-specific floor-clearance rationale
 
-Why second:
-- this controls whether Stage 7 and Stage 8 should align more closely to TB
-- it prevents further local tuning on top of an unresolved target philosophy
+Work:
+- change the swing-foot clearance shaping so the extra WR clearance goes to
+  zero at lift-off and touchdown
+- keep the change planner-local; do not bundle schema or reward changes into
+  this phase
 
-### Priority 3. Add TB-style realized-reference enrichment to WR
+Expected metric movement:
+- improve `P0` swing-floor margin
+- improve `P2` swing-foot-z-step
 
-After IK, run fixed-base FK replay and persist realized body/site quantities as
-part of the WR reference asset.
+Exit criteria:
+- no regression on in-scope `P0`
+- measurable improvement on WR swing margin and `P2` swing smoothness
+- no new WR-only discontinuity introduced elsewhere in the reference
 
-Why third:
-- aligns WR asset content with TB
-- removes the planner-intent vs realized-data mismatch
-- makes parity measurement and downstream consumers use the same content type
+### Phase 2. Decide runtime target semantics
 
-### Priority 4. Align WR runtime service to the chosen target semantics
+Goal:
+- resolve whether WR should keep planner-phase torso targets or align to TB's
+  command-integrated target semantics
 
-If Priority 2 chooses TB-style command tracking, add the runtime path-state
-integration and root-pose composition needed to make WR consume the reference
-like TB.
+Work:
+- write an explicit design decision in this doc or a linked ADR
+- default decision is TB-style command-integrated target semantics
+- keep planner-phase target only if WR has a measured parity benefit or a clear
+  safety / trackability reason
 
-Why fourth:
-- it is the main architectural move needed to make WR's body target semantics
-  TB-like
+Decision output:
+- chosen target semantics
+- why the rejected option was rejected
+- which runtime and reward fields must change next
 
-### Priority 5. Improve lifecycle parity where it matters
+Exit criteria:
+- the target semantics are written down explicitly
+- subsequent architecture work is scoped against that decision rather than
+  left ambiguous
 
-Build a repeatable cached `vx` grid at env init or on disk when multi-command
-coverage, reproducibility, or debugging makes it worth doing.
+### Phase 3. Align WR asset content with TB
 
-Why fifth:
-- useful for broader parity and experiment repeatability
-- not the main driver of the current normalized quality gap
+Goal:
+- move WR from planner-intent-only storage toward TB-style realized reference
+  content
 
-### Priority 6. Use local tuning only after the architecture backlog is under control
+Work:
+- add a fixed-base FK replay after IK during WR reference construction
+- persist realized body/site quantities needed by parity, runtime reference
+  service, and debugging
+- keep the stored quantities clearly separated from planner-intent fields
 
-Examples:
+Expected metric movement:
+- make `P1A` and `P2` comparisons natively apples-to-apples
+- reduce downstream re-FK reconstruction and data ambiguity
+
+Exit criteria:
+- WR reference asset contains realized body/site data comparable to TB
+- parity tooling no longer needs WR-specific reconstruction hacks for the main
+  realized quantities
+
+### Phase 4. Align runtime reference consumption
+
+Goal:
+- make WR runtime reference consumption match the chosen semantics from Phase 2
+
+Work:
+- if Phase 2 chooses TB-style command tracking, add path-state integration and
+  root-pose composition to WR runtime reference service
+- align reward-target consumption so torso/path tracking uses the same semantic
+  target as TB unless explicitly justified otherwise
+
+Expected metric movement:
+- improve `P1` trackability interpretation by removing target-semantics drift
+- make WR reward consumption closer to TB by architecture, not by tuning
+
+Exit criteria:
+- runtime reference service behavior matches the documented target semantics
+- the torso/path tracking target is no longer an unowned WR-vs-TB difference
+
+### Phase 5. Align lifecycle and reproducibility
+
+Goal:
+- close the remaining asset-lifecycle gap where it materially affects parity,
+  debugging, or multi-command behavior
+
+Work:
+- add cached `vx`-grid construction at env init or on disk if needed
+- prefer deterministic, reusable assets over repeated ad hoc regeneration when
+  parity work spans multiple command bins
+
+Expected metric movement:
+- not a primary parity gain by itself
+- improves repeatability and makes multi-command comparisons easier to trust
+
+Exit criteria:
+- WR reference generation is reproducible enough for repeated parity sweeps
+- multi-bin comparisons do not depend on fragile one-off runtime generation
+
+### Phase 6. Tune only after the architecture is aligned
+
+Goal:
+- use local planner/config changes to refine an aligned architecture, not to
+  compensate for misalignment
+
+Allowed work:
 - `cycle_time`
 - `foot_step_height`
-- other scalar planner config
+- other scalar planner parameters
 
-These are still important, but they should refine the aligned architecture, not
-stand in for it.
+Rule:
+- do not start here if the active gap is still architectural
+- only use this phase after Phases 1 through 4 have either landed or been
+  explicitly rejected with rationale
+
+Exit criteria:
+- tuning changes improve parity on top of the aligned architecture
+- tuning is not being used to hide an unresolved architecture gap
+
+### Execution order
+
+The intended order is:
+
+1. Phase 0 to lock the baseline
+2. Phase 1 to remove the known swing-z planner bug
+3. Phase 2 to resolve the runtime target semantics
+4. Phase 3 to align WR asset content with TB
+5. Phase 4 to align WR runtime consumption with the chosen semantics
+6. Phase 5 to improve lifecycle parity where it matters
+7. Phase 6 for local refinement only after the architecture backlog is under
+   control
 
 ## What "On Par or Better" Means
 
