@@ -404,14 +404,20 @@ class ZMPWalkGenerator:
         lat = cfg.default_stance_width_m
         dt = cfg.dt_s
 
-        # Swing-foot z offset: during swing the IK plantarflexes the
-        # ankle by 0.15 rad for toe clearance, which drops the foot's
-        # TOE corner ~9 mm below the foot body and the foot collision
-        # box's geometry adds another ~9 mm of swing-side vertical
-        # extent on the rotated toe.  Without compensation the q_ref
-        # placed swing feet below the floor at lift-off and
-        # touchdown frames (round-7 FK gate caught this).
+        # WR swing-foot floor-clearance compensation.
+        # During swing the IK plantarflexes the ankle by 0.15 rad for
+        # toe clearance, which drops the foot's TOE corner ~9 mm below
+        # the foot body and the foot collision box's geometry adds
+        # another ~9 mm of swing-side vertical extent on the rotated
+        # toe (round-7 FK gate caught this without compensation).
+        # The compensation rides the same sin(pi*frac) envelope as the
+        # half-sine swing arc so it vanishes at lift-off and touchdown
+        # (boundary continuity with the adjacent stance frames);
+        # ``swing_ankle_lift_threshold_m`` then keeps the IK ankle flat
+        # at boundary frames where the commanded z is too small to
+        # absorb the plantarflex drop.
         swing_foot_z_floor_clearance_m = 0.025
+        swing_ankle_lift_threshold_m = swing_foot_z_floor_clearance_m
 
         n_half = int(round(T_half / dt))
         n_cycle = 2 * n_half
@@ -518,10 +524,12 @@ class ZMPWalkGenerator:
                 else:
                     frac = (i - n_ds) / max(1, n_half - n_ds - 1)
                     frac = min(frac, 1.0)
+                    swing_z = (
+                        (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m)
+                        * np.sin(np.pi * frac)
+                    )
                     right_world[idx] = [
-                        right_a_start + right_a_swing * frac, -lat,
-                        (cfg.foot_step_height_m * np.sin(np.pi * frac)
-                         + swing_foot_z_floor_clearance_m),
+                        right_a_start + right_a_swing * frac, -lat, swing_z,
                     ]
                     contact_out[idx] = [1, 0]
                 stance_out[idx] = 0  # left
@@ -544,10 +552,12 @@ class ZMPWalkGenerator:
                 else:
                     frac = (i - n_ds) / max(1, n_half - n_ds - 1)
                     frac = min(frac, 1.0)
+                    swing_z = (
+                        (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m)
+                        * np.sin(np.pi * frac)
+                    )
                     left_world[idx] = [
-                        cycle_offset + 2 * sl * frac, lat,
-                        (cfg.foot_step_height_m * np.sin(np.pi * frac)
-                         + swing_foot_z_floor_clearance_m),
+                        cycle_offset + 2 * sl * frac, lat, swing_z,
                     ]
                     contact_out[idx] = [0, 1]
                 stance_out[idx] = 1  # right
@@ -568,9 +578,17 @@ class ZMPWalkGenerator:
                 lat = cfg.hip_lateral_offset_m
                 hip_y = com_y + (lat if side == "left" else -lat)
 
-                # Determine if this leg is in swing (not in contact)
+                # Determine if this leg is in swing (not in contact).
+                # Plantarflex is gated on the commanded foot z (not just
+                # the contact mask) so the boundary frames where the
+                # swing-z envelope returns to zero stay flat-ankle and
+                # don't dip the foot below the floor.  The contact mask
+                # the env reads is unchanged.
                 contact_idx = 0 if side == "left" else 1
                 is_swing = contact_out[i, contact_idx] < 0.5
+                is_swing_for_ankle = (
+                    is_swing and foot_world_i[2] > swing_ankle_lift_threshold_m
+                )
 
                 # Sagittal IK: foot position relative to HIP joint.
                 # The hip joint sits ``pelvis_to_hip_m`` below the
@@ -586,7 +604,7 @@ class ZMPWalkGenerator:
                     foot_rel_x, hip_to_foot_z,
                     cfg.upper_leg_m, cfg.lower_leg_m,
                     cfg.min_reach_margin_m,
-                    is_swing=is_swing,
+                    is_swing=is_swing_for_ankle,
                 )
 
                 # Hip roll: foot lateral offset from hip
