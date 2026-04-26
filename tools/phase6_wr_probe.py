@@ -17,9 +17,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from control.zmp.zmp_walk import ZMPWalkConfig
+from control.zmp.zmp_walk import ZMPWalkConfig, ZMPWalkGenerator
 from tools.reference_geometry_parity import (  # noqa: E402
     _GRAVITY_MPS2,
+    _P1_VX_BINS,
+    _VX_BINS,
     _summarize_wildrobot,
     _wr_dims,
     _wr_fk_and_smoothness,
@@ -33,7 +35,13 @@ def main() -> int:
     print(f"WR com_height_m        = {cfg.com_height_m:.4f}")
     print(f"WR leg_length_m        = {cfg.upper_leg_m + cfg.lower_leg_m:.4f}")
 
-    geom = _summarize_wildrobot()
+    # Phase 5 requires an explicit pre-built library across the bins
+    # used by both the geometry summary (_VX_BINS) and the FK/smoothness
+    # probe at the nominal vx.
+    required_bins = sorted({round(float(v), 4) for v in (*_VX_BINS, *_P1_VX_BINS, 0.15)})
+    lib = ZMPWalkGenerator().build_library_for_vx_values(required_bins)
+
+    geom = _summarize_wildrobot(lib)
     print()
     print("=== WR P0 geometry summary ===")
     print(f"  total failures      = {geom.total_failures}")
@@ -41,7 +49,7 @@ def main() -> int:
     print(f"  worst stance z (m)  = {geom.worst_stance_z:+.4f}")
     print(f"  worst swing z (m)   = {geom.worst_swing_z:+.4f}")
 
-    gait, smooth = _wr_fk_and_smoothness(0.15)
+    gait, smooth = _wr_fk_and_smoothness(lib, 0.15)
     print()
     print("=== WR P1A FK gait at vx=0.15 ===")
     print(f"  step_length_mean_m       = {gait.step_length_mean_m:.4f}")
