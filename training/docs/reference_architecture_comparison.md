@@ -87,46 +87,66 @@ That history leads to the current design rule:
 
 ## Current Gap Summary
 
-The current parity harness reports four load-bearing gaps.
+Post-Phase-6 state (refreshed parity report at commit `ac51038`,
+both WR and TB sides re-run under `cycle_time_s = 0.72`).
 
-### Geometry
+### Geometry — PASS
 
-- WR passes the current in-scope `P0` gate at `vx <= 0.15`
-- WR still trails TB on high-`vx` diagnostic robustness
-- WR still trails TB on swing-floor margin
-
-Interpretation:
-- WR is acceptable for the current contract
-- WR is not yet TB-level on geometry robustness outside that narrow scope
-
-### FK-realized gait shape
-
-- WR remains shorter-step than TB
-- WR compensates with faster cadence
-- WR's absolute clearance can look generous, but the size-normalised view is
-  less favorable
+- WR passes the in-scope `P0` gate at `vx <= 0.15`
+- WR also passes the **full-matrix** P0 gate post-Phase-6: `total_failures = 0`,
+  worst stance z = +1.9 mm, worst swing margin = +17 mm
+- the previously deferred high-`vx` (≥ 0.20) stance failures are now under
+  the 3 mm tolerance
 
 Interpretation:
-- the current WR prior is not yet operating at a TB-like proportional gait
-  point
+- WR is at parity with TB on geometry, including the diagnostic high-`vx`
+  bins that were out of scope before Phase 6
 
-### Smoothness
+### FK-realized gait shape — mixed
 
-- WR is still rougher than TB on swing-foot lift-off / touchdown behavior
-
-Interpretation:
-- this is an architecture-level planner-shape issue, not a PPO issue
-
-### Free-base zero-residual trackability
-
-- WR still trails TB on some replay metrics
-- some absolute replay differences are actuator-stack artifacts
-- the important point is that WR still does not yet clear the combined
-  reference-quality bar strongly enough to claim parity
+- absolute step_len / cadence / clearance / speed / DS all PASS for both
+  TB baselines (Phase 6 closed the absolute gates)
+- size-normalised view still fails on four gates at vx=0.15:
+  `step_length_per_leg = 0.56× TB`, `cadence_froude_norm = 1.25× TB`,
+  `swing_clearance_per_com_height = 0.82× TB`,
+  `swing_foot_z_step_per_clearance = 1.40× TB`
 
 Interpretation:
-- the reference still needs architecture work before PPO-side gains should be
-  credited as "reference parity"
+- the absolute gait shape matches TB; the proportional shape does not
+- two of the four normalised FAILs (`step_per_leg`, `cadence_norm`) are
+  bounded by leg-length / Froude scaling at the current operating point
+  and are not closeable by planner tuning alone
+- the other two (`clearance_per_h`, `swing_step_per_clr`) are closeable
+  by config (`foot_step_height_m`) and planner-shape (swing-z envelope)
+  changes — owned by Phases 7 / 8
+
+### Smoothness — mixed
+
+- shared-leg q step / pelvis step / contact-flips all PASS (WR `q_step`
+  0.36 rad is actually *smoother* than TB's 0.65 rad)
+- absolute swing-foot z step still FAILs (WR 0.0183 m vs TB 0.010 m,
+  ratio 1.83×)
+
+Interpretation:
+- the swing-z lift-off / touchdown shape is the only remaining smoothness
+  gap; addressed by Phase 7 (TB-style single-peaked triangle envelope)
+
+### Free-base zero-residual trackability — mixed
+
+- absolute-physical gates pass with margin: WR survives 4-9× more steps
+  than TB on every `vx` bin; WR drifts ½ TB's per-leg drift rate;
+  WR achieved-forward-velocity matches or beats TB on every bin
+- per-joint / contact / step gates fail: WR shared-leg RMSE 1.7× TB,
+  WR `ref_contact_match_frac` 0.58-0.70 vs the 0.90 absolute floor,
+  WR touchdown-step-length-per-leg under-shoots
+
+Interpretation:
+- the closed-loop layer mixes prior shape, actuator-stack divergence, and
+  WR's cycle-0 retention; whether the failing gates are reference-quality
+  problems or actuator-stack artifacts is not settled by current data
+- Phase 10 (post-Phase-7 diagnostic) decides the verdict; until then the
+  doc's "on par or better" rule cannot be claimed as cleared, even if all
+  FK-side and smoothness gates close
 
 ## Pipeline Comparison
 
@@ -173,53 +193,49 @@ TB's 6-DoF foot-orientation realization because the hardware is different.
 
 | Stage | ToddlerBot | WildRobot | Classification |
 |---|---|---|---|
-| Fixed-base FK replay / harvested body-site fields | yes, via `mujoco_replay` | no, planner output stored directly | backlog |
+| Fixed-base FK replay / harvested body-site fields | yes, via `mujoco_replay` | yes, via `ZMPWalkGenerator._fixed_base_fk_replay` (Phase 3) | aligned |
 
-This is still an important architecture gap. TB stores realized body/site
-quantities; WR historically stored planner intent and reconstructed realized
-quantities downstream. The parity harness now re-FKs WR for fairness, which is
-useful, but it also shows the underlying architecture is still misaligned.
+WR now stores TB-comparable realized `body_pos` / `body_quat` / `body_lin_vel`
+/ `body_ang_vel` / `site_pos` per frame on `ReferenceTrajectory`
+(`control/references/reference_library.py`). The parity tool reads these
+directly via `RuntimeReferenceWindow` instead of re-FKing on the fly. See
+Phase 3 closeout for details.
 
 ### Stage 6. Asset lifecycle
 
 | Stage | ToddlerBot | WildRobot | Classification |
 |---|---|---|---|
-| Storage model | pre-baked lookup asset | generated on demand per `vx` | backlog if multi-cmd parity and repeatability matter |
+| Storage model | pre-baked lookup asset | deterministic on-disk library cache fingerprinted on `(planner sources, MJCF/JSON assets, vx grid, ZMPWalkConfig)` (Phase 5) | aligned |
 
-This is not the main cause of the current reference-quality gap, but it is
-still a TB-architecture mismatch.
+WR no longer regenerates per call. The parity tool, env, and CLI debugging
+all consume the same fingerprinted library; cache invalidation is
+automatic on planner / asset / config changes. See Phase 5 closeout.
 
 ### Stage 7. Runtime reference service
 
 | Stage | ToddlerBot | WildRobot | Classification |
 |---|---|---|---|
-| Runtime service | path-state integration + lookup + root composition | trajectory slice / preview only | unresolved design decision |
+| Runtime service | path-state integration + lookup + root composition | path-state integration via `RuntimeReferenceService.compute_command_integrated_path_state` + offline trajectory lookup (Phase 4) | aligned |
 
-This is the one remaining architectural question that needs an explicit answer.
-
-TB's runtime target is command-integrated: "where should the body be by now if
-the command had been followed since reset?"
-
-WR's runtime target is planner-phase-based: "what does the planner say the
-body should look like at this gait phase?"
-
-For this project, the default answer should be:
-
-- align to TB's command-integrated target semantics unless WR has an explicit,
-  measured reason to keep the current planner-phase target
-
-Until that justification exists, this is backlog, not a neutral alternative.
+WR's runtime target is now command-integrated: `path_state["torso_pos"] =
+path_rot.apply(default_root_pos_xyz) + path_pos`, mirroring TB's
+`walk_zmp_ref.py:228-239`. See Phase 4 closeout.
 
 ### Stage 8. Env reward consumption
 
-Most reward terms are conceptually aligned. The main semantic difference is
-still the torso/body path target:
+Reward-target semantics now match TB. `_reward_torso_pos_xy` reads
+`path_state["torso_pos"][:2]` (`wildrobot_env.py:813-822`, Phase 4); the
+legacy planner `pelvis_pos` is consumed only by the diagnostic
+`feet_track_raw` probe and the `lin_vel_z` reward
+(`wildrobot_env.py:843`, numerical no-op because `pelvis_pos[:, 2] =
+cfg.com_height_m` is constant by construction; tracked for cleanup as
+Phase 11). The contact mask remains planner output by design (Phase 4
+explicit scope decision).
 
-- TB compares against the command-integrated body target
-- WR compares against planner-side pelvis trajectory
-
-This should be described narrowly as a reward-target semantics difference, not
-as proof that WR and TB consume the reference identically.
+The remaining reward-side architectural divergence is **none**. Any future
+divergence (e.g., WR adding a hardware-driven reward TB doesn't have)
+should be classified explicitly under "Keep WR-specific" with a hardware
+or measured-parity rationale.
 
 ## Divergence Classification
 
@@ -1135,22 +1151,47 @@ Work (planner-local, single file):
 - keep both Phase A and Phase B branches consistent
 
 Expected metric movement (predicted from TB-shape geometry):
-- `P2 swing_foot_z_step_max_m`: 0.0183 → ≈ 0.012 m
-- `P1A swing_foot_z_step_per_clearance`: 1.40× → ≈ 0.92× TB → PASS
-- `P1A swing_clearance_mean_m`: small ~−1 % drop (triangle has lower
-  swing-frame mean than half-sine at same peak), acceptable
+- `P1A swing_foot_z_step_per_clearance`: 1.40× → ≈ 1.00× TB → PASS
+  with margin. Math: WR triangle peak / TB triangle peak =
+  `(0.04 + 0.025) / 0.05 = 1.30`; per-frame Δz scales linearly with
+  peak at fixed `n_swing_half`, so WR step_max ≈ `1.30 × 0.010 =
+  0.013 m`; ratio `0.013 / 0.065 = 0.20` matches TB's `0.010 / 0.050 =
+  0.20`. Gate ≤ `1.10 × 0.20 = 0.22` → PASS.
+- `P2 swing_foot_z_step_max_m` (absolute): 0.0183 → ≈ 0.013 m. Gate
+  `1.10 × TB = 0.011 m`. **Borderline FAIL by ~18 %.** WR carries a
+  `swing_foot_z_floor_clearance_m = 0.025 m` offset on top of
+  `foot_step_height_m` that TB does not (hardware-justified per
+  Stage 3 of the Pipeline Comparison). At equal `n_half`, WR's per-
+  frame Δz is structurally `(h_WR + c) / h_TB = 1.30×` TB's. Closing
+  the absolute gate fully would require either dropping the floor
+  clearance (regressing the P0 swing margin Phase 1 added) or
+  shaping the envelope to spend more frames at the apex (cosine /
+  flat-top trapezoid — outside TB-alignment scope).
+- `P1A swing_clearance_mean_m` (per-cycle peak): unchanged at
+  ≈ 0.065 m (peak is the same for half-sine and triangle at equal
+  `(h + c)`)
 
 Exit criteria:
-- WR-only probe (`uv run python tools/phase6_wr_probe.py`) shows P2
-  `swing_gate` PASS at vx=0.15
-- full parity refresh shows both `swing_step_per_clr` and `P2 swing_gate`
-  PASS for both TB baselines
+- WR-only probe (`uv run python tools/phase6_wr_probe.py`) shows
+  `P1A swing_step_per_clr` PASS at vx=0.15
+- full parity refresh shows `swing_step_per_clr` PASS for both TB
+  baselines
+- absolute `P2 swing_foot_z_step_max_m` improves by ≥ 25 % (target
+  ≤ 0.014 m); a residual FAIL on the 1.10× TB absolute gate is
+  acceptable if the per-clearance gate clears (see Acceptance
+  statement)
 - no regression on `P0` (in-scope or full matrix), `P1A` step_len /
   cadence / clearance / DS, or `q_step` smoothness
 
 Acceptance statement:
-- success means the two swing-shape gates flip to PASS without
-  regressing any currently-passing gate
+- success means the **normalised** `swing_step_per_clr` gate flips
+  to PASS without regressing any currently-passing gate
+- the absolute `P2 swing_foot_z_step_max` gate is allowed to remain
+  FAILing at the architecturally-bounded ratio (≈ 1.30× TB) because
+  the WR-specific floor clearance offset is hardware-justified;
+  this should be documented as a bounded-by-design gap in the
+  scorecard, not pursued by further envelope shaping unless a
+  hardware change drops the clearance need
 - success does not require P1 closed-loop to move; Phase 10 owns the
   closed-loop interpretation
 
@@ -1161,95 +1202,176 @@ Rollback if expected movement doesn't materialize:
   variant `(1 - cos(2 * pi * frac)) / 2` which has a flatter apex than
   half-sine
 
-### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m)
+### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m, contingent)
 
 Goal:
 - close the normalised `swing_clearance_per_com_height` gate (currently
-  0.82× TB) by adopting TB's `foot_step_height` value
+  0.82× TB) by raising `foot_step_height_m`
 
 Work (single config change):
-- `control/zmp/zmp_walk.py:95`: `foot_step_height_m: float = 0.04` → `0.05`
-- the Phase 5 cache fingerprint will pick up the change automatically
+- `control/zmp/zmp_walk.py:95`: `foot_step_height_m: float = 0.04` →
+  one of:
+  - **0.045** (recommended — halfway step) if Phase 7 leaves the
+    absolute `P2 swing_foot_z_step_max` near the 1.10× TB gate
+  - **0.05** (full TB-adoption) only if Phase 7 leaves significant
+    headroom on the absolute gate AND the per-clearance gate
+  - the Phase 5 cache fingerprint picks up either change automatically
 
 Sequence:
-- AFTER Phase 7 — the triangular envelope absorbs the +0.01 m peak with
-  less per-frame Δz than the half-sine would
+- AFTER Phase 7 — must measure post-Phase-7 absolute swing_step before
+  picking 0.045 vs 0.05; Phase 7's Acceptance statement allows the
+  absolute gate to remain bounded-FAIL, in which case Phase 8 is the
+  knob most likely to widen that gap
 
 Expected metric movement:
-- `P1A swing_clearance_per_com_height`: 0.143 → ≈ 0.175 (gate 0.149) → PASS
-- `P1A swing_clearance_mean_m`: 0.065 → ≈ 0.075 m
-- `P2 swing_foot_z_step_max_m`: with triangle envelope, +0.01 m apex
-  spreads across the swing half-window, so per-frame Δz scales by
-  `(0.05 + 0.025) / (0.04 + 0.025) = 1.15×`. Combined with Phase 7
-  effect: ≈ 0.014 m absolute, still under the 1.10× TB ≈ 0.011 m gate
-  by ~30 % — borderline, must be verified after running
+- `P1A swing_clearance_per_com_height`:
+  - at `h = 0.045`: 0.143 → ≈ 0.158 (gate 0.149) → PASS
+  - at `h = 0.05`:  0.143 → ≈ 0.175 (gate 0.149) → PASS with margin
+- `P1A swing_clearance_mean_m` (per-cycle peak):
+  - at `h = 0.045`: 0.065 → ≈ 0.070 m
+  - at `h = 0.05`:  0.065 → ≈ 0.075 m
+- `P2 swing_foot_z_step_max_m` (absolute) — **this gets worse**:
+  - at `h = 0.045`: post-P7 0.013 m → ≈ 0.014 m
+  - at `h = 0.05`:  post-P7 0.013 m → ≈ 0.015 m
+  - both are above the 0.011 m gate; the absolute gate's residual FAIL
+    is the Phase 7 hardware-bounded ratio, widened proportionally
 
 Exit criteria:
 - `swing_clearance_per_com_height` ≥ 0.85× TB (= 0.149) → PASS for both
   TB baselines
-- no regression on Phase 7 swing-step gates (both must still PASS)
+- no regression on Phase 7 normalised `swing_step_per_clr` gate (must
+  still PASS — the per-clearance ratio stays at ≈ 0.20 because both
+  numerator and denominator scale with peak)
 - no regression on P0 swing margin (must remain > +5 mm)
+- absolute `P2 swing_foot_z_step_max_m` is allowed to drift further
+  from the 0.011 m gate; document the new ratio in the closeout
 
 Fallback:
-- if Phase 8's smoothness regression breaks the Phase 7 gates, use
-  0.045 as a halfway step (lifts the metric to ≈ 0.16, still PASS,
-  with smaller smoothness cost)
+- if Phase 7 leaves the absolute swing_step gate borderline (≈ 0.013 m)
+  and the project explicitly wants the absolute gate clear, **defer
+  Phase 8** rather than break it; the normalised P1A clearance gap is
+  small and not load-bearing relative to the actuator-stack questions
+  Phase 10 will surface
 
 Acceptance statement:
-- success means `clearance_per_h` flips to PASS while preserving
-  Phase 7's gate wins
+- success means `clearance_per_h` flips to PASS while the per-clearance
+  swing-step ratio stays at the Phase 7 PASS level
+- the absolute `swing_step_max` gate is **explicitly accepted** as
+  bounded-by-design (WR's hardware-justified floor clearance offset on
+  top of a higher `foot_step_height_m`); the scorecard should annotate
+  this gate accordingly so future readers don't re-litigate
 
-### Phase 9. Operating-`vx` curriculum decision (Froude equivalence)
+### Phase 9. Operating-`vx` policy decision (explicit fork)
 
 Goal:
-- close the two hardware-Froude-bounded normalised P1A gates
-  (`step_length_per_leg = 0.56× TB`, `cadence_froude_norm = 1.25× TB`)
-  that no planner tuning can address at vx=0.15
+- force an explicit project decision on whether to **change WR's
+  operating point** to TB's Froude-equivalent vx, or to **document the
+  proportional-shape gap** as bounded-by-design at the current operating
+  point. Phase 9 closes the two hardware-Froude-bounded normalised P1A
+  gates (`step_length_per_leg = 0.56× TB`, `cadence_froude_norm = 1.25× TB`)
+  in exactly one of these two ways — they are NOT interchangeable.
 
-Work (curriculum / training-config decision, not a planner change):
+The reason the fork has to be explicit: a parity-tool-only Froude
+re-read does **not** close the parity scorecard at the operating point
+training and deployment actually use. Letting the parity report
+silently use a different `vx_nominal` would move the goalposts. The
+two options below produce different end-states and must be chosen, not
+hedged.
 
-1. Decide and document in `training/docs/walking_training.md` whether
-   the v0.20.x walking smoke commands `vx ∈ {0.10, 0.15}` should shift
-   to `vx ∈ {0.13, 0.19}` (Froude-equivalent to TB's `{0.10, 0.15}`)
-   - Froude scaling: TB uses `vx² / (g · h_TB) = 0.15² / (9.81 · 0.286)
-     = 0.0080`. WR's matching point: `vx_WR = sqrt(0.0080 · 9.81 · 0.458)
-     = 0.190 m/s`
-2. Update the parity scorecard's `vx_nominal` in
-   `tools/reference_geometry_parity.py` (currently 0.15). Either:
-   - add a `--vx-nominal-wr` flag so WR is read at 0.19 while TB stays
-     at 0.15
-   - or split the report into "absolute-vx parity" (current) vs
-     "Froude-matched parity" (new section), keeping both visible
-3. Decide the training-side smoke vx. If the smoke command grid moves,
-   `tests/test_v0200c_geometry.py` and the walking_training.md G4/G5
-   contract need to follow. If only the parity tool's `vx_nominal`
-   moves, training stays at 0.15 and the parity report carries the
-   Froude-matched read for "is the prior on par with TB at the matched
-   operating point"
+Froude background (used by both options):
+- TB at vx=0.15: `Fr = vx² / (g · h_TB) = 0.15² / (9.81 · 0.286) = 0.0080`
+- WR Froude-matching point: `vx_WR = √(Fr · g · h_WR) = √(0.0080 · 9.81
+  · 0.458) ≈ 0.19 m/s`
+- WR at vx=0.15 sits at `Fr = 0.005`, ~63 % of TB's, so per-leg stride
+  must under-shoot and Froude-norm cadence must over-shoot by
+  construction
 
-Expected metric movement (at WR vx=0.19, predicted):
-- `step_length_per_leg`: 0.56× → ≈ 0.85–0.95× TB → PASS (gate ≥ 0.85×)
-- `cadence_froude_norm`: 1.25× → ≈ 1.0× TB → PASS (gate ≤ 1.20×)
+#### Phase 9A — change WR's operating point to vx ≈ 0.19 m/s
 
-Exit criteria:
-- an explicit decision is in `walking_training.md` with rationale for
-  the chosen `vx_nominal_wr`
-- parity tool reports both absolute and Froude-matched normalised P1A;
-  Froude-matched view shows both gates PASS
-- training-side curriculum (if moved) is reflected in the smoke test
-  command grid
+Use this option ONLY if the project intends WR to walk at the
+Froude-equivalent operating point in training and deployment.
 
-Acceptance statement:
-- success means Froude-matched normalised P1A clears both gates with
-  explicit doc rationale
-- if absolute-vx parity is kept as the primary read, the rationale must
-  say *why* and accept the residual gap as a documented hardware-bounded
-  limitation
+Work:
+1. Update WR's nominal command grid in `walking_training.md` G4/G5
+   contract from `vx ∈ {0.10, 0.15}` to (e.g.) `vx ∈ {0.13, 0.19}`,
+   and propagate to:
+   - `tests/test_v0200c_geometry.py` smoke probe
+   - PPO training-config command sampling distribution
+   - the parity tool's `vx_nominal` (and the in-scope geometry bins
+     if the project agrees to widen scope)
+2. Re-run G4/G5 walking smoke at the new operating point and confirm
+   the policy-side contract still holds.
+3. Re-run the parity tool — `step_per_leg` and `cadence_norm` now PASS
+   directly because WR is operating at TB's Froude point.
 
-This is a curriculum decision, not a parity bug fix. If the project
-chooses to keep WR at vx=0.15 for safety / hardware reasons, document
-that and accept the two normalised FAILs as bounded. The plan should
-not force a knob-twist that violates a training-side constraint.
+Expected metric movement at WR vx=0.19:
+- `step_length_per_leg`: 0.56× → ≈ 0.85–0.95× TB → PASS
+- `cadence_froude_norm`: 1.25× → ≈ 1.0× TB → PASS
+
+Exit criteria (9A):
+- WR walks G4/G5 at the new operating point with no regression on the
+  policy contract
+- parity tool's primary `vx_nominal` is the new value; both normalised
+  gates PASS at the primary read
+- `walking_training.md` documents the operating-point change with
+  hardware / safety rationale
+
+Acceptance statement (9A):
+- success means WR's actual operating point changed; the normalised
+  gates close at the operating point that training and deployment use,
+  not via a parity-tool re-read
+
+#### Phase 9B — keep vx=0.15 as the primary operating point, document the gap as bounded
+
+Use this option if the project intends WR to keep walking at vx=0.15
+for hardware / safety / curriculum reasons.
+
+Work:
+1. Document in `walking_training.md` and the parity scorecard that the
+   two Froude-bounded normalised gates are **architecturally bounded
+   below TB at the chosen operating point**, not a closable gap.
+   Provide the Froude scaling argument and the per-bin numbers.
+2. Add a **supplemental** Froude-matched section to the parity report
+   (e.g., `--report-secondary-vx-wr 0.19`) that re-reads WR at the
+   matched operating point. This is a diagnostic / reference-quality
+   sanity check, NOT the primary parity reading.
+3. Annotate the parity scorecard's normalised gates with the bounded
+   ratio so future readers see the gap is by-design, not a regression.
+
+Expected metric movement: none at the primary operating point. The
+supplemental Froude-matched read shows the same numbers as Phase 9A's
+predicted PASS values, but the primary parity verdict at vx=0.15 still
+shows these gates FAILing.
+
+Exit criteria (9B):
+- `walking_training.md` explicitly chooses vx=0.15 as the primary
+  operating point with rationale
+- the parity scorecard's two affected gates are annotated as
+  hardware-Froude-bounded with the supplemental Froude-matched values
+  recorded for reference
+- the `What "On Par or Better" Means` section of this doc is updated
+  to acknowledge that under 9B, two normalised gates remain FAILing
+  at the primary operating point and this is accepted by policy
+
+Acceptance statement (9B):
+- success means the gap is documented and accepted, not closed; the
+  parity scorecard's "on par" claim explicitly excludes these two
+  Froude-bounded gates with a documented hardware reason
+- this is NOT a parity closure — it is an explicit acceptance of a
+  bounded gap. Future readers must be able to see the FAILs are
+  bounded-by-design, not unresolved work
+
+#### Choosing between 9A and 9B
+
+This decision is owned by the training / hardware project leads, not
+by the parity-tool maintainer. The parity tool itself is the same
+under both options; only the primary `vx_nominal` and the
+acceptance language differ.
+
+If the project cannot decide cleanly between 9A and 9B, the
+conservative default is **9B** — do not move WR's operating point
+purely to satisfy a parity gate. Move it only if there is an
+independent training / deployment reason to.
 
 ### Phase 10. P1 closed-loop contact-match-frac diagnostic
 
@@ -1348,19 +1470,48 @@ Phase-specific: capture before/after parity metrics for the gates that
 phase targets, in the same format as the existing Phase 1 / 3 / 6
 closeouts in this doc.
 
-### Expected end state after Phases 7-9
+### Expected end state after Phases 7-10
 
-| Layer | Pre-Phase-7 | Post-Phase-9 |
-|---|---|---|
-| P0 (in-scope + full matrix) | PASS | PASS |
-| P1A absolute | PASS | PASS |
-| P1A normalised (4 gates) | 0/4 PASS | **4/4 PASS** (`clearance_per_h` via P8; `step_per_leg` + `cadence_norm` via P9 Froude-matched read; `swing_step_per_clr` via P7) |
-| P2 (4 gates) | 3/4 PASS | **4/4 PASS** (`swing_step` via P7) |
-| P1 closed-loop | 3/6 PASS | 3/6 PASS + Phase 10 verdict on remaining 3 |
+The columns below assume Phase 9A (operating-point change to vx=0.19).
+Under Phase 9B (keep vx=0.15), the two Froude-bounded normalised
+P1A gates remain FAILing as a documented bounded-by-design gap; that
+is success under 9B's acceptance statement, NOT a parity claim.
 
-After Phases 7-9 land, WR is on par or better than TB on every gate
-that doesn't depend on actuator-stack architecture. Phase 10 closes the
-interpretation of the closed-loop residual.
+| Layer | Pre-Phase-7 | Post-Phase-9A | Notes |
+|---|---|---|---|
+| P0 (in-scope + full matrix) | PASS | PASS | unchanged |
+| P1A absolute | PASS | PASS | unchanged |
+| P1A normalised — `swing_step_per_clr` | FAIL (1.40×) | PASS (≈ 1.00×) | Phase 7 |
+| P1A normalised — `clearance_per_h` | FAIL (0.82×) | PASS (≈ 1.05×) | Phase 8 |
+| P1A normalised — `step_per_leg` | FAIL (0.56×) | PASS (≈ 0.85-0.95×) under 9A; FAIL bounded under 9B | Phase 9 fork |
+| P1A normalised — `cadence_norm` | FAIL (1.25×) | PASS (≈ 1.0×) under 9A; FAIL bounded under 9B | Phase 9 fork |
+| P2 — `swing_step` (absolute, 1.10× TB) | FAIL (1.83×) | **FAIL bounded** (≈ 1.30×) | hardware-bounded by WR floor-clearance offset; documented in Phase 7 closeout |
+| P2 — leg-q / pelvis / flips | PASS | PASS | unchanged |
+| P1 closed-loop — survival / drift / forward | PASS | PASS | already passing pre-Phase-7 |
+| P1 closed-loop — RMSE / contact / step | FAIL | **verdict pending Phase 10** | actuator-stack vs cycle-0 vs swing-apex residue — not settled by current data |
+
+**What is and is not claimed:**
+
+After Phases 7-9 (under 9A) WR clears every architecturally-closable
+gate plus the absolute P2 swing_step gate at the architecturally-
+bounded ratio. Two outstanding items prevent a clean "WR is on par or
+better" claim:
+
+1. **P2 absolute swing_step stays FAIL by design** — bounded at ≈ 1.30×
+   TB by the WR floor-clearance offset on top of `foot_step_height`.
+   This is a hardware-justified architectural divergence, NOT
+   unresolved work. The scorecard should annotate the gate.
+2. **P1 closed-loop has 3 outstanding FAILs whose root cause is
+   unsettled** — could be reference-shape (Phase 7 may have fixed
+   mid-swing tap-down events), cycle-0 retention (potential Phase 12
+   follow-up if Phase 10 surfaces it), or actuator-stack-bound (accepted
+   limitation per the scorecard's interpretation note). Until Phase 10
+   produces a verdict with evidence, "the closed-loop residual is just
+   actuator stack" is a hypothesis, not a conclusion.
+
+**The doc's "On Par or Better" decision rule explicitly requires P1 to
+clear.** Phase 10 is mandatory before that rule can be claimed
+satisfied — even if Phases 7-9 close every other gate.
 
 ### Execution order
 
