@@ -282,6 +282,11 @@ Exit criteria:
 - every reference-design PR includes before/after parity output
 - changes are judged against the same `P0 / P1A / P2 / P1` layers
 
+Acceptance statement:
+- success means the baseline and reporting contract are stable enough that later
+  phases can be judged consistently
+- success does not mean WR/TB parity improved yet
+
 ### Phase 1. Fix the swing-z architecture bug
 
 Goal:
@@ -302,6 +307,12 @@ Exit criteria:
 - no regression on in-scope `P0`
 - measurable improvement on WR swing margin and `P2` swing smoothness
 - no new WR-only discontinuity introduced elsewhere in the reference
+
+Acceptance statement:
+- success means `P0` swing-floor margin and `P2` swing-step smoothness improve
+  without regressing the in-scope geometry gate
+- success does not require a full `P2` pass yet; the phase is allowed to leave
+  WR smoother than before but still rougher than TB
 
 ### Phase 2. Decide runtime target semantics
 
@@ -325,6 +336,12 @@ Exit criteria:
 - subsequent architecture work is scoped against that decision rather than
   left ambiguous
 
+Acceptance statement:
+- success means the WR runtime target semantics are explicitly chosen and the
+  next implementation phases are unblocked
+- success does not require code changes or parity movement yet; this is a
+  design-decision phase
+
 ### Phase 3. Align WR asset content with TB
 
 Goal:
@@ -346,6 +363,12 @@ Exit criteria:
 - parity tooling no longer needs WR-specific reconstruction hacks for the main
   realized quantities
 
+Acceptance statement:
+- success means WR stores TB-comparable realized reference quantities and the
+  main parity comparisons are natively apples-to-apples
+- success does not require full `P1A` or `P1` parity yet; it removes a core
+  architectural mismatch so later phases can improve those metrics cleanly
+
 ### Phase 4. Align runtime reference consumption
 
 Goal:
@@ -364,6 +387,12 @@ Expected metric movement:
 Exit criteria:
 - runtime reference service behavior matches the documented target semantics
 - the torso/path tracking target is no longer an unowned WR-vs-TB difference
+
+Acceptance statement:
+- success means WR runtime consumption and reward-target semantics match the
+  documented architectural decision
+- success does not require all downstream training metrics to pass yet; it
+  removes a major source of WR/TB semantic drift
 
 ### Phase 5. Align lifecycle and reproducibility
 
@@ -384,6 +413,11 @@ Exit criteria:
 - WR reference generation is reproducible enough for repeated parity sweeps
 - multi-bin comparisons do not depend on fragile one-off runtime generation
 
+Acceptance statement:
+- success means parity runs and debugging are reproducible enough to trust
+  architecture deltas
+- success does not by itself imply reference-quality parity improvement
+
 ### Phase 6. Tune only after the architecture is aligned
 
 Goal:
@@ -403,6 +437,12 @@ Rule:
 Exit criteria:
 - tuning changes improve parity on top of the aligned architecture
 - tuning is not being used to hide an unresolved architecture gap
+
+Acceptance statement:
+- success means local tuning produces measurable parity gains on top of the
+  aligned architecture
+- success is invalid if the apparent gain comes from tuning around an
+  unresolved architecture mismatch
 
 ### Execution order
 
