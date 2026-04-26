@@ -456,13 +456,22 @@ reference channels move to the path-integrated form.
    integrated at runtime per
    `toddlerbot/reference/walk_zmp_ref.py:228-236`). Aligning here
    means WR's reward consumes the same semantic class TB does.
-4. **The runtime computation is simpler, not more complex.** WR's
-   env already threads `loc_ref_offline_step_idx` through state
-   (`wildrobot_env.py:1342, 1480`). Computing
-   `t_since_reset = step_idx · dt` and
-   `path_pos = velocity_cmd · t_since_reset` is one multiply and one
-   add per step — strictly less work than the array lookup that
-   produces today's `win["pelvis_pos"]`.
+4. **The runtime computation is no more complex than the current
+   lookup at the smoke scope.** WR's env already threads
+   `loc_ref_offline_step_idx` through state
+   (`wildrobot_env.py:1342, 1480`). For the yaw-stationary smoke
+   (`yaw_rate_cmd = 0`, `vy = 0`), `t_since_reset = step_idx · dt`
+   and `path_pos = velocity_cmd · t_since_reset` is one multiply and
+   one add per step — comparable to the array lookup that produces
+   today's `win["pelvis_pos"]`. When yaw is enabled (v0.20.4), the
+   helper must mirror TB's
+   `toddlerbot/reference/motion_ref.py::integrate_path_state` —
+   `delta_rot = R.from_rotvec(ang_vel · dt); path_rot = path_rot ·
+   delta_rot; path_pos += path_rot.apply(lin_vel) · dt` — which is
+   a per-step SO(3) composition, not a multiply-add. That's still
+   trivial relative to the current asset infrastructure, but should
+   not be described as "one multiply and one add" once yaw is in
+   the command set.
 5. **The planner's `pelvis_pos` field stays useful** (it's still the
    target the IK solved against, so it stays as the sanity-check
    diagnostic in `feet_track_raw` and similar). Only the reward
@@ -470,15 +479,36 @@ reference channels move to the path-integrated form.
 
 **Why the planner-phase target was rejected:**
 
-- *Materially better parity?* No. The planner's COM trajectory and
-  the command-integrated path agree to within sub-mm in steady
-  state at the smoke command (LIPM Q=I, R=0.1 produces a tightly-
-  tracking LQR with mm-scale lateral oscillation), so the reward
-  signal differs by noise in steady state. The planner-phase target
-  carries the from-rest startup transient and the LIPM lateral
-  swing into the reward; the command-integrated target does not.
-  Neither has been shown to produce a measurable reward-quality
-  benefit; the path-integrated form is cleaner.
+- *Materially better parity?* No. Measured by
+  `tools/compare_reference_target_semantics.py` (added in this
+  phase): the planner-phase target and the command-integrated path
+  diverge along the X-axis even in steady state by a *cm-scale*
+  permanent offset (not "sub-mm" as an earlier draft of this
+  closeout asserted without measurement). At smoke `vx = 0.15`,
+  steady-state X-mean offset is **−25.2 mm** (planner trails the
+  command-integrated path by ~25 mm because WR retains cycle 0
+  while the command-integrated path advances linearly from
+  reset); steady-state X-RMS is **25.6 mm**; worst-case L2
+  divergence is **47.8 mm** at the cycle 0 transient. The
+  Y-axis is the small one — steady-state Y-max is **19.8 mm**
+  (LIPM lateral swing under Q=I, R=0.1) with **2.2 mm RMS** —
+  small enough to ignore for reward shaping. Per-`vx`
+  numbers (steady state, post-cycle-0):
+
+  | vx (m/s) | X mean (mm) | X RMS (mm) | Y max (mm) | Y RMS (mm) |
+  |---|---|---|---|---|
+  | 0.10 | −16.8 | 17.1 | 19.8 | 2.2 |
+  | 0.15 | −25.2 | 25.6 | 19.8 | 2.2 |
+  | 0.20 | −33.5 | 34.1 | 19.8 | 2.2 |
+
+  The X offset scales linearly with `vx`, consistent with the
+  hypothesis that it equals the cumulative ramp-lag of cycle 0
+  (which TB truncates and WR retains).
+  These are not noise-level differences. They are a real reward-
+  signal divergence in the load-bearing axis. The path-integrated
+  form is the cleaner target precisely because it removes this
+  cycle-0 lag, but the case for switching is **stronger** than
+  the original closeout claimed, not weaker.
 - *Materially better trackability or safety?* No. Both targets
   advance forward at `vx · t` in steady state. There is no scenario
   where tracking the planner's noisier path produces safer behavior
