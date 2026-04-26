@@ -1575,90 +1575,140 @@ Option A vs B decision before any phase can close out as
 
 ## What "On Par or Better" Means
 
-> **Open policy decision (2026-04-26).** The plan as written produces
-> at least one bounded-FAIL gate by design (P2 absolute swing_step
-> under Phase 7, plus two normalised P1A gates if Phase 9B is chosen).
-> This contradicts the strict literal reading of the acceptance rule
-> below, which requires every layer to clear. The reconciliation
-> options are written out in the "Bounded-by-design exemption" section
-> below; the project must explicitly choose one before any phase
-> closeout claims "WR on par or better."
+### Acceptance rule (Option B with explicit hardware-bounded exemption)
 
-### Strict acceptance rule (original)
+WR is on par with or better than TB when **all** of the following are true:
 
-WR is on par with or better than TB only when all of the following are true:
+1. **Every gate not on the hardware-bounded exemption list literally
+   clears.** No bounded-FAIL exemption is allowed unless it is on the
+   table below.
+2. **Every gate on the exemption list either clears OR clears its
+   designated replacement metric.** The replacement metric is the
+   parity gauge for that gate; the absolute gate becomes informational
+   only.
+3. **WR clears the shared `P0` gate and is not materially weaker on the
+   full geometry matrix.** No P0 metric is exemptable.
+4. **WR satisfies its own `G4/G5/G6/G7` policy contract.**
 
-- WR clears the shared `P0` gate and is not materially weaker on the full
-  geometry matrix
-- WR's size-normalised `P1A` gait shape is on par with or better than TB
-- WR's `P2` smoothness is on par with or better than TB
-- WR's `P1` free-base replay is on par with or better than TB, after reading
-  the normalised metrics first and the absolute metrics as a sanity floor
-- WR still satisfies its own `G4/G5/G6/G7` policy contract
+If a future WR change improves PPO but does not improve the parity
+scorecard at the architecture layer, it should not be claimed as
+"reference parity improvement."
 
-If a future WR change improves PPO but does not improve the parity scorecard at
-the architecture layer, it should not be claimed as "reference parity
-improvement."
+### Hardware-bounded exemption list (closed list — additions require explicit doc edit)
 
-### Bounded-by-design exemption (proposed reconciliation)
+This is a **closed list**. A metric is exempt from the strict
+absolute-gate reading only if it appears in the table below, with a
+named hardware divergence, a named replacement gauge, and a
+"Replacement-actually-captures-quality" rationale that can be checked
+against. A divergence that is not from the "Keep WR-specific" hardware
+list at the top of the Divergence Classification section is **not
+eligible** for an exemption — the path for non-hardware divergences
+remains "remove unless explicitly justified."
 
-The strict rule above presumes every gate is closeable in principle. In
-practice, some gates are bounded-by-design by hardware-justified WR
-divergences from TB:
+| # | Absolute metric (gauge OFF) | Hardware divergence | Replacement metric (gauge ON) | Why the replacement captures the underlying quality |
+|---|---|---|---|---|
+| H1 | `P2 swing_foot_z_step_max_m` (gate ≤ 1.10× TB) | WR adds `swing_foot_z_floor_clearance_m = 0.025 m` on top of `foot_step_height_m` for floor-margin reasons (Phase 1). At equal `n_swing_half`, WR's per-frame Δz is structurally `(h_WR + c) / h_TB ≈ 1.30×` TB. Removing the offset would regress the P0 swing margin Phase 1 closed. | `P1A swing_foot_z_step_per_clearance` (gate ≤ 1.10× TB) | The per-clearance ratio measures the **shape** of the swing-z envelope (how peaky vs how spread-out across the swing window) independent of absolute peak. It catches a half-sine apex or a discontinuity exactly where the absolute gate would, but does not penalise the larger-by-design clearance floor. PASS at this gate proves the envelope shape matches TB; FAIL still catches a peakiness regression. |
+| H2 | `P1A swing_clearance_mean_m` (gate ≥ 0.85× TB) | WR's leg length 0.373 m vs TB's 0.211 m (1.76×) and COM height 0.458 m vs 0.286 m (1.60×). Absolute clearance scales with size; gating it absolutely either rewards over-clearance or penalises proportional clearance. | `P1A swing_clearance_per_com_height` (gate ≥ 0.85× TB) | Normalising by COM height converts clearance to a dimensionless body-proportional value. PASS proves WR is lifting the foot a TB-comparable fraction of body height; an actual under-clearance regression still trips the gate because the normalisation does not depend on the regression source. |
+| H3 | `P1A step_length_mean_m` at the operating-vx grid (gate ≥ 0.90× TB) | Same leg-length / Froude scaling. At equal absolute `vx`, WR is at a smaller Froude number, so per-leg stride structurally under-shoots TB. | `P1A step_length_per_leg` (gate ≥ 0.85× TB) | Per-leg stride captures stride efficiency independent of absolute leg length. WR can fail this gate without hardware excuse (e.g., a planner that under-strides for its own size); the gate stays meaningful. NOTE: this gate is currently FAIL (0.56× TB); H3 only makes it the **gauge** of record, not a free pass. |
+| H4 | `P1A touchdown_rate_hz` (gate ≤ 1.20× TB) | Same Froude scaling. At equal absolute `vx`, WR must over-cadence relative to TB to maintain the commanded velocity. | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) | Froude-normalised cadence (`touchdown_rate_hz · √(com_height_m / g)`) captures the per-bodysize cadence regime. WR over-cadencing for its size still trips the gate; the gate isn't disabled, just normalised. |
+| H5 | `P1 terminal_root_x_m` per bin (gate `≥ TB - 0.02` m/s achieved-forward) | Same size delta. Backward drift in absolute meters scales with size; comparing absolute drift makes WR look worse simply for being bigger. | `P1 terminal_drift_rate_per_leg_per_s` (gate `≤ TB + 0.5 leg/s`) | Per-leg-length drift rate captures stability per body size. The current data shows WR drifts at ½ TB's per-leg rate — the absolute gate would mask this. PASS at this gate proves WR is stable per body proportion; a real instability trips the gate. |
+| H6 | `P1 shared_leg_rmse_rad` (gate ≤ 1.10× TB) | WR uses MuJoCo position actuators (target-error integration); TB uses torque actuators with PD-on-torque. These produce structurally different per-step joint-error patterns under closed-loop replay even at identical reference quality. The scorecard's own interpretation note: "comparable RMSE on both sides plus a P1 fail points to actuator/control mismatch rather than the prior". | **Composite physical-trackability gauge:** `P1 survived_steps ≥ 0.95× TB` AND `P1 achieved_forward_per_cmd ≥ TB - 0.10` AND `P1 terminal_drift_rate_per_leg_per_s ≤ TB + 0.5` (all per `vx` bin) | This composite asks the question "does the WR prior actually walk under MuJoCo with this actuator stack?" The three metrics jointly catch a broken prior (early termination, wrong direction, drift away) without per-joint sensitivity to the actuator-stack tracking gain. WR currently PASSes all three with margin; a prior regression would trip survival or forward-velocity first. |
 
-- **P2 absolute `swing_foot_z_step_max`**: bounded at ≈ 1.30× TB by
-  WR's `swing_foot_z_floor_clearance_m = 0.025` offset on top of
-  `foot_step_height_m`. Phase 1 added this offset for floor-margin
-  reasons; removing it to clear the absolute gate would regress the
-  P0 swing margin Phase 1 closed.
-- **P1A normalised `step_length_per_leg` and `cadence_froude_norm` at
-  vx=0.15** (under Phase 9B only): bounded by leg-length / Froude
-  scaling at the chosen operating point. Closing them requires
-  changing WR's operating point (Phase 9A), which is a curriculum /
-  product decision, not a parity-tool fix.
+**Conditional exemptions (active under specific Phase 9 outcome only):**
 
-For each of these, the question is whether the strict rule needs an
-explicit exemption mechanism. The two policy options are:
+| # | Absolute metric (gauge OFF) | Activation condition | Replacement metric (gauge ON) | Why |
+|---|---|---|---|---|
+| H7 | `P1A step_length_per_leg` (gate ≥ 0.85× TB) at WR vx=0.15 | Active **only under Phase 9B** (project keeps WR at vx=0.15 as primary operating point). Under Phase 9A (operating-point change to vx≈0.19), this exemption does NOT apply — the gate must clear at the new primary `vx_nominal_wr`. | Same metric at the **Froude-matched supplemental `vx`** (WR vx ≈ 0.19, supplemental parity report section) | Under 9B, the project chose to operate at a different Froude point than TB. The Froude-matched supplemental view re-reads WR at the matched operating point so the parity gauge measures stride efficiency at comparable body-Froude state. Adopting this exemption requires the supplemental view to actually be implemented in `tools/reference_geometry_parity.py` (currently not — Phase 9B work). |
+| H8 | `P1A cadence_froude_norm` (gate ≤ 1.20× TB) at WR vx=0.15 | Same activation as H7 (Phase 9B only). | Same metric at the **Froude-matched supplemental `vx`**. | Same rationale as H7. |
 
-**Option A: Strict scorecard parity, no exemptions.**
+### Rules for adding to the exemption list
 
-WR can claim "on par or better" only when every gate literally
-clears. Under this option:
-- Phase 7 must keep iterating envelope shapes until the absolute
-  swing_step gate is ≤ 1.10× TB (likely requires reducing the WR
-  floor clearance or accepting a flat-top trapezoid envelope outside
-  TB-shape alignment).
-- Phase 9 must take 9A (operating-point change to vx≈0.19); 9B is
-  not a path to "on par."
-- This option treats hardware-driven gates as parity bugs.
+A new row can only be added when **all four** of the following hold:
 
-**Option B: Parity except for documented hardware-justified gates.**
+1. The hardware divergence column traces to an item in the
+   "Keep WR-specific" list at the top of the Divergence Classification
+   section. If the divergence is not on that list, the right path is
+   either (a) move it to "Keep WR-specific" with rationale, or
+   (b) treat it as backlog under "Remove unless explicitly justified".
+2. The replacement metric column names a metric that is **already
+   computed by the parity tool** and gated. If the gauge does not
+   exist yet, it must be added to the parity tool first; until then
+   the exemption is not active.
+3. The "Why" column passes a "**catches a real regression**" test:
+   describe a hypothetical regression in the underlying quality, and
+   show that the replacement metric trips on that regression. If the
+   replacement metric does not catch a plausible regression, it is
+   not a real gauge — the absolute gate stays on.
+4. Adding the row requires an explicit doc edit on this section, with
+   a commit message that names the new H-number. The list cannot
+   grow silently in code.
 
-WR can claim "on par or better" when every gate either clears OR is
-documented as bounded-by-design with a hardware justification and a
-recorded bounded ratio. Under this option:
-- Phase 7 closes the per-clearance normalised gate; the absolute
-  swing_step gate is annotated as bounded-by-design at ≈ 1.30× TB
-  with the floor-clearance rationale.
-- Phase 9B is a valid path to "on par except for two Froude-bounded
-  normalised gates at vx=0.15", with the bounded ratios recorded.
-- The parity scorecard's verdict aggregator must distinguish "FAIL"
-  from "FAIL bounded-by-design" so future readers see the difference.
+### Removing or revising an exemption
 
-**Recommended default: Option B**, because the alternative (forcing
-Option A) effectively makes the parity rule unsatisfiable without
-either (i) regressing P0 swing margin Phase 1 just closed, or (ii)
-forcing an operating-point change for parity-tool reasons rather than
-training reasons. Option B keeps the rule semantically meaningful
-while admitting that some divergences are hardware constraints, not
-implementation gaps. The exemption mechanism must be explicit (a list,
-maintained in this doc) so it cannot be expanded silently.
+An exemption row should be **removed** when the underlying hardware
+divergence is removed (e.g., if the WR floor-clearance offset becomes
+unnecessary because of a hardware change, H1 goes away). An exemption
+should be **revised** when the replacement metric stops catching a
+class of regressions — write the case, propose a better gauge, edit
+the row.
 
-This decision is not made by the plan author — it must be chosen by
-the project leads. Until it is, the doc is internally inconsistent
-between its acceptance rule (strict) and its plan (Phase 7 / 9B
-allow bounded-FAIL). Phase closeouts should not claim "WR on par or
-better" until this is resolved.
+### What this means for current Phase 7-11 closeouts
+
+- Phase 7 close: requires `P1A swing_foot_z_step_per_clearance` PASS
+  (the H1 replacement gauge). The H1 absolute gate is informational.
+- Phase 8 close: requires `P1A swing_clearance_per_com_height` PASS
+  (the H2 replacement gauge). Both H1 and H2 absolute gates are
+  informational; the absolute swing_step gate is allowed to widen
+  proportionally.
+- Phase 9 close: under 9A, H7 and H8 are inactive — both
+  `step_length_per_leg` and `cadence_froude_norm` must PASS at the new
+  primary `vx_nominal_wr`. Under 9B, H7 and H8 activate, requiring the
+  parity tool's supplemental Froude-matched section to be implemented
+  and to PASS at the matched `vx`.
+- Phase 10 close: produces a verdict on whether the P1 contact-match
+  FAIL is reference-shape (closed by Phase 7), cycle-0-bound (Phase 12
+  follow-up), or actuator-stack-bound (becomes H9 candidate, requires
+  full exemption rationale per the rules above).
+- Phase 11 close: hygiene only; no exemption interaction.
+
+### What Phases 7-11 do and do not guarantee
+
+Phases 7-11 are an **investigate-and-improve plan**, not a guaranteed
+terminal plan. Specifically:
+
+- Phases 7, 8, 11 are direct improvements with predicted metric
+  movements; whether they fully close their target gates depends on
+  the actual measurement (Phase 8 is contingent; Phase 7's absolute
+  swing_step is exempt under H1 and not part of the closure check).
+- Phase 9 is a policy fork; the closure path depends on whether 9A or
+  9B is chosen. Under 9B the parity tool must grow a supplemental
+  Froude-matched section before H7/H8 are real exemptions.
+- **Phase 10 is diagnostic-only** — it produces a verdict on whether
+  the remaining P1 closed-loop FAILs are reference-shape (already
+  fixed by Phase 7), cycle-0 retention (would spawn Phase 12),
+  actuator-stack-bound (candidate for H9 exemption with a composite
+  gauge), or mixed. It does NOT itself close the P1 gates.
+- **Phase 12 may be required** — if Phase 10 surfaces cycle-0
+  retention as the load-bearing source of the contact-match FAIL,
+  mirroring TB's cycle-0 truncation in WR becomes a follow-up phase.
+  This is not in the current 7-11 list.
+
+So the correct framing is:
+
+- 7-11 are sufficient to **determine whether the goal is reachable**
+  under the current hardware assumptions, the chosen Phase 9 policy
+  fork, and the exemption table above.
+- 7-11 are **not sufficient by themselves** to guarantee final
+  parity. Phase 12 may be needed pending Phase 10's verdict; new
+  exemption rows may be needed if Phase 10 surfaces an actuator-stack
+  case (H9 candidate); the supplemental Froude-matched parity view
+  may need implementing under Phase 9B.
+
+A phase closeout can claim "the gate this phase targeted is closed
+under the H-rule that applies" or "this phase's verdict is X". A
+phase closeout cannot claim "WR on par or better" until every gate
+either clears strictly OR clears its named replacement under the
+exemption table above.
 
 ### What Phases 7-11 do and do not guarantee
 
