@@ -183,10 +183,12 @@ def test_torso_pos_xy_error_uses_command_integrated_path_target(
         velocity_cmd_mps=wr.velocity_cmd,
         yaw_rate_cmd_rps=jp.float32(0.0),
         dt_s=jp.float32(env.dt),
+        default_root_pos_xyz=env._init_qpos[:3].astype(jp.float32),
     )
 
     root_xy = np.asarray(state.data.qpos[:2], dtype=np.float32)
-    path_xy = np.asarray(path_state["path_pos"][:2], dtype=np.float32)
+    path_xy = np.asarray(path_state["torso_pos"][:2], dtype=np.float32)
+    pure_path_xy = np.asarray(path_state["path_pos"][:2], dtype=np.float32)
     pelvis_xy = np.asarray(win["pelvis_pos"][:2], dtype=np.float32)
 
     expected_path_err = float(np.linalg.norm(root_xy - path_xy))
@@ -204,6 +206,9 @@ def test_torso_pos_xy_error_uses_command_integrated_path_target(
     assert float(np.linalg.norm(path_xy - pelvis_xy)) > 1e-3, (
         "probe picked a frame where path target and planner pelvis target are "
         "effectively identical; cannot validate phase-4 semantic shift"
+    )
+    assert float(np.linalg.norm(path_xy - pure_path_xy)) > 1e-3, (
+        "torso target should include the non-zero default root XY offset"
     )
     assert abs(logged_err - planner_err) > 1e-4, (
         "torso_pos_xy error still appears tied to planner pelvis_pos target"

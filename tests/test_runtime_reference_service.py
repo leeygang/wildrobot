@@ -199,6 +199,11 @@ def test_compute_command_integrated_path_state_yaw_stationary():
         np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         atol=1e-6,
     )
+    np.testing.assert_allclose(
+        np.asarray(path_state["torso_pos"]),
+        np.array([vx * t, 0.0, 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
     np.testing.assert_array_equal(
         np.asarray(path_state["lin_vel"]),
         np.array([vx, 0.0, 0.0], dtype=np.float32),
@@ -247,6 +252,35 @@ def test_compute_command_integrated_path_state_matches_tb_discrete_yaw():
     np.testing.assert_array_equal(
         np.asarray(path_state["ang_vel"]),
         np.array([0.0, 0.0, yaw_rate], dtype=np.float32),
+    )
+
+
+def test_compute_command_integrated_path_state_includes_default_root_offset():
+    """Absolute torso target should be path_rot.apply(default_root)+path_pos."""
+    dt = 0.02
+    n_steps = 60
+    t = n_steps * dt
+    vx = 0.15
+    yaw_rate = 0.0
+    default_root = np.array([-0.00790504, -0.000385849, 0.468425], dtype=np.float32)
+
+    path_state = RuntimeReferenceService.compute_command_integrated_path_state(
+        t_since_reset_s=t,
+        velocity_cmd_mps=vx,
+        yaw_rate_cmd_rps=yaw_rate,
+        dt_s=dt,
+        default_root_pos_xyz=default_root,
+    )
+    expected_path = np.array([vx * t, 0.0, 0.0], dtype=np.float32)
+    np.testing.assert_allclose(
+        np.asarray(path_state["path_pos"]),
+        expected_path,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(path_state["torso_pos"]),
+        expected_path + default_root,
+        atol=1e-6,
     )
 
 

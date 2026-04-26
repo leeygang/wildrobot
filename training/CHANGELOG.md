@@ -27,7 +27,9 @@ while keeping offline `q_ref`, foot targets, and contact annotations unchanged.
     `loc_ref_offline_step_idx`.
   - computes `path_state` once per step from command + elapsed time.
   - `_compute_reward_terms(...): r_torso_pos_xy` now tracks
-    `path_state["path_pos"][:2]` instead of planner `pelvis_pos[:2]`.
+    `path_state["torso_pos"][:2]`
+    (`path_rot.apply(default_root_pos)+path_pos`) instead of planner
+    `pelvis_pos[:2]`.
   - planner `win["pelvis_pos"]` remains available and is still used by
     diagnostics such as `feet_track_raw`.
 - `tests/test_runtime_reference_service.py`

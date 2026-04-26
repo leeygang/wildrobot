@@ -811,9 +811,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # ---- torso_pos_xy (Phase 4 TB semantics) ------------------------------
         # Match ToddlerBot _reward_torso_pos_xy using a command-integrated
-        # runtime path target (not planner/offline pelvis_pos[:2]).
+        # runtime torso target (path_rot.apply(default_root_pos)+path_pos),
+        # not planner/offline pelvis_pos[:2].
         # exp(-alpha * ||torso_xy - torso_xy_ref||^2).
-        torso_pos_xy_err = root_pos_xyz[:2] - path_state["path_pos"][:2]
+        torso_pos_xy_err = root_pos_xyz[:2] - path_state["torso_pos"][:2]
         r_torso_pos_xy = jp.exp(
             -jp.float32(weights.torso_pos_xy_alpha)
             * jp.sum(torso_pos_xy_err * torso_pos_xy_err)
@@ -1490,6 +1491,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd_mps=velocity_cmd,
             yaw_rate_cmd_rps=jp.float32(0.0),
             dt_s=jp.float32(self.dt),
+            default_root_pos_xyz=self._init_qpos[:3].astype(jp.float32),
         )
         # Prev-frame window for finite-diff reference velocity (lin_vel_z).
         # Clamp at 0 so step 0's "previous" is itself (zero velocity for the

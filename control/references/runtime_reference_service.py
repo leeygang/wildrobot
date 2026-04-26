@@ -185,6 +185,7 @@ class RuntimeReferenceService:
         velocity_cmd_mps,
         yaw_rate_cmd_rps=0.0,
         dt_s=0.02,
+        default_root_pos_xyz=None,
     ) -> dict:
         """TB-style runtime path integration for constant command inputs.
 
@@ -195,6 +196,9 @@ class RuntimeReferenceService:
         The helper is stateless and JAX-friendly: it reconstructs the path
         state from elapsed time plus command, so env code can consume a
         command-integrated torso/path target without mutating service state.
+        If ``default_root_pos_xyz`` is provided, the returned ``torso_pos``
+        matches TB's absolute-world semantics:
+        ``path_rot.apply(default_root_pos_xyz) + path_pos``.
         """
         import jax.numpy as jnp
 
@@ -227,14 +231,31 @@ class RuntimeReferenceService:
         path_pos = jnp.asarray([vx * dt * x_sum, vx * dt * y_sum, 0.0], dtype=jnp.float32)
         yaw = n * theta
         half_yaw = 0.5 * yaw
+        yaw_cos = jnp.cos(yaw)
+        yaw_sin = jnp.sin(yaw)
         path_rot = jnp.asarray(
             [jnp.cos(half_yaw), 0.0, 0.0, jnp.sin(half_yaw)], dtype=jnp.float32
         )  # wxyz
+        default_root = (
+            jnp.asarray(default_root_pos_xyz, dtype=jnp.float32)
+            if default_root_pos_xyz is not None
+            else jnp.zeros((3,), dtype=jnp.float32)
+        )
+        default_root_rotated = jnp.asarray(
+            [
+                yaw_cos * default_root[0] - yaw_sin * default_root[1],
+                yaw_sin * default_root[0] + yaw_cos * default_root[1],
+                default_root[2],
+            ],
+            dtype=jnp.float32,
+        )
+        torso_pos = (default_root_rotated + path_pos).astype(jnp.float32)
         lin_vel = jnp.asarray([vx, 0.0, 0.0], dtype=jnp.float32)
         ang_vel = jnp.asarray([0.0, 0.0, yaw_rate], dtype=jnp.float32)
         return {
             "path_pos": path_pos,
             "path_rot": path_rot,
+            "torso_pos": torso_pos,
             "lin_vel": lin_vel,
             "ang_vel": ang_vel,
         }
