@@ -1,0 +1,419 @@
+{
+  "swing_z_table_m": [
+    0.0,
+    0.013000000000000001,
+    0.026000000000000002,
+    0.03900000000000001,
+    0.052000000000000005,
+    0.065,
+    0.065,
+    0.052000000000000005,
+    0.03900000000000001,
+    0.026000000000000002,
+    0.013000000000000001,
+    0.0
+  ],
+  "plantarflex_threshold_m": 0.025,
+  "first_cycle_steps": 36,
+  "vx_bins": [
+    0.1,
+    0.15,
+    0.2
+  ],
+  "horizon": 200,
+  "results": [
+    {
+      "vx": 0.1,
+      "horizon": 200,
+      "survived_steps": 76,
+      "termination_mode": "pitch",
+      "d1_contact_match_split": {
+        "overall_match_frac": 0.5657894736842105,
+        "first_cycle_match_frac": 0.7777777777777778,
+        "rest_match_frac": 0.375,
+        "rest_minus_first_gap": -0.4027777777777778,
+        "first_cycle_step_count": 36,
+        "rest_step_count": 40,
+        "interpretation": "no-cycle-0-drag"
+      },
+      "d2_mid_swing_tap_down": {
+        "left_event_count": 7,
+        "right_event_count": 2,
+        "total_event_count": 9,
+        "events_per_swing_cycle": 1.5,
+        "left_events": [
+          {
+            "step_idx": 61,
+            "i_swing": 1
+          },
+          {
+            "step_idx": 62,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 64,
+            "i_swing": 4
+          },
+          {
+            "step_idx": 65,
+            "i_swing": 5
+          },
+          {
+            "step_idx": 68,
+            "i_swing": 8
+          },
+          {
+            "step_idx": 69,
+            "i_swing": 9
+          },
+          {
+            "step_idx": 70,
+            "i_swing": 10
+          }
+        ],
+        "right_events": [
+          {
+            "step_idx": 8,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 9,
+            "i_swing": 3
+          }
+        ],
+        "interpretation": "planner-shape-bound"
+      },
+      "d3_d4_saturation_by_i_swing": {
+        "swing_z_table_m": [
+          0.0,
+          0.013000000000000001,
+          0.026000000000000002,
+          0.03900000000000001,
+          0.052000000000000005,
+          0.065,
+          0.065,
+          0.052000000000000005,
+          0.03900000000000001,
+          0.026000000000000002,
+          0.013000000000000001,
+          0.0
+        ],
+        "plantarflex_up_cross_i_swing": 2,
+        "plantarflex_down_cross_i_swing": 9,
+        "sat_rate_by_i_swing": [
+          0.0,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.0,
+          0.0
+        ],
+        "sat_count_by_i_swing": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        "visits_by_i_swing": [
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ],
+        "swing_window_mean_sat_rate": 0.1875,
+        "sat_rate_at_up_cross": 0.25,
+        "sat_rate_at_down_cross": 0.25,
+        "interpretation": "uniform-sat-distribution"
+      },
+      "verdict": {
+        "verdict": "planner_shape_bound",
+        "components": {
+          "cycle_0_bound": false,
+          "planner_shape_bound": true,
+          "phase_7_boundary_bound": false,
+          "actuator_stack_bound": false
+        }
+      }
+    },
+    {
+      "vx": 0.15,
+      "horizon": 200,
+      "survived_steps": 72,
+      "termination_mode": "pitch",
+      "d1_contact_match_split": {
+        "overall_match_frac": 0.6111111111111112,
+        "first_cycle_match_frac": 0.8055555555555556,
+        "rest_match_frac": 0.4166666666666667,
+        "rest_minus_first_gap": -0.3888888888888889,
+        "first_cycle_step_count": 36,
+        "rest_step_count": 36,
+        "interpretation": "no-cycle-0-drag"
+      },
+      "d2_mid_swing_tap_down": {
+        "left_event_count": 7,
+        "right_event_count": 2,
+        "total_event_count": 9,
+        "events_per_swing_cycle": 1.5,
+        "left_events": [
+          {
+            "step_idx": 61,
+            "i_swing": 1
+          },
+          {
+            "step_idx": 62,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 66,
+            "i_swing": 6
+          },
+          {
+            "step_idx": 67,
+            "i_swing": 7
+          },
+          {
+            "step_idx": 68,
+            "i_swing": 8
+          },
+          {
+            "step_idx": 69,
+            "i_swing": 9
+          },
+          {
+            "step_idx": 70,
+            "i_swing": 10
+          }
+        ],
+        "right_events": [
+          {
+            "step_idx": 8,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 9,
+            "i_swing": 3
+          }
+        ],
+        "interpretation": "planner-shape-bound"
+      },
+      "d3_d4_saturation_by_i_swing": {
+        "swing_z_table_m": [
+          0.0,
+          0.013000000000000001,
+          0.026000000000000002,
+          0.03900000000000001,
+          0.052000000000000005,
+          0.065,
+          0.065,
+          0.052000000000000005,
+          0.03900000000000001,
+          0.026000000000000002,
+          0.013000000000000001,
+          0.0
+        ],
+        "plantarflex_up_cross_i_swing": 2,
+        "plantarflex_down_cross_i_swing": 9,
+        "sat_rate_by_i_swing": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.25,
+          0.25,
+          0.25,
+          0.25,
+          0.0
+        ],
+        "sat_count_by_i_swing": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "visits_by_i_swing": [
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ],
+        "swing_window_mean_sat_rate": 0.08333333333333333,
+        "sat_rate_at_up_cross": 0.0,
+        "sat_rate_at_down_cross": 0.25,
+        "interpretation": "Phase-7-boundary-bound"
+      },
+      "verdict": {
+        "verdict": "mixed: planner_shape_bound + phase_7_boundary_bound",
+        "components": {
+          "cycle_0_bound": false,
+          "planner_shape_bound": true,
+          "phase_7_boundary_bound": true,
+          "actuator_stack_bound": false
+        }
+      }
+    },
+    {
+      "vx": 0.2,
+      "horizon": 200,
+      "survived_steps": 68,
+      "termination_mode": "pitch",
+      "d1_contact_match_split": {
+        "overall_match_frac": 0.6470588235294118,
+        "first_cycle_match_frac": 0.8055555555555556,
+        "rest_match_frac": 0.46875,
+        "rest_minus_first_gap": -0.3368055555555556,
+        "first_cycle_step_count": 36,
+        "rest_step_count": 32,
+        "interpretation": "no-cycle-0-drag"
+      },
+      "d2_mid_swing_tap_down": {
+        "left_event_count": 4,
+        "right_event_count": 2,
+        "total_event_count": 6,
+        "events_per_swing_cycle": 1.2,
+        "left_events": [
+          {
+            "step_idx": 61,
+            "i_swing": 1
+          },
+          {
+            "step_idx": 62,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 66,
+            "i_swing": 6
+          },
+          {
+            "step_idx": 67,
+            "i_swing": 7
+          }
+        ],
+        "right_events": [
+          {
+            "step_idx": 8,
+            "i_swing": 2
+          },
+          {
+            "step_idx": 9,
+            "i_swing": 3
+          }
+        ],
+        "interpretation": "planner-shape-bound"
+      },
+      "d3_d4_saturation_by_i_swing": {
+        "swing_z_table_m": [
+          0.0,
+          0.013000000000000001,
+          0.026000000000000002,
+          0.03900000000000001,
+          0.052000000000000005,
+          0.065,
+          0.065,
+          0.052000000000000005,
+          0.03900000000000001,
+          0.026000000000000002,
+          0.013000000000000001,
+          0.0
+        ],
+        "plantarflex_up_cross_i_swing": 2,
+        "plantarflex_down_cross_i_swing": 9,
+        "sat_rate_by_i_swing": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.25,
+          0.25,
+          0.3333333333333333,
+          0.3333333333333333,
+          0.0,
+          0.0
+        ],
+        "sat_count_by_i_swing": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        "visits_by_i_swing": [
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          3,
+          3,
+          3,
+          3
+        ],
+        "swing_window_mean_sat_rate": 0.09090909090909091,
+        "sat_rate_at_up_cross": 0.0,
+        "sat_rate_at_down_cross": 0.3333333333333333,
+        "interpretation": "Phase-7-boundary-bound"
+      },
+      "verdict": {
+        "verdict": "mixed: planner_shape_bound + phase_7_boundary_bound",
+        "components": {
+          "cycle_0_bound": false,
+          "planner_shape_bound": true,
+          "phase_7_boundary_bound": true,
+          "actuator_stack_bound": false
+        }
+      }
+    }
+  ]
+}
