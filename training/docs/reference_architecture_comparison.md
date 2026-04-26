@@ -1320,11 +1320,88 @@ Outstanding caveats:
   fingerprint hash, no manual cache invalidation needed).
 - All 165 tests pass (`uv run pytest tests/`).
 
-Phase 7 unblocks Phase 8 (the per-clearance gauge has headroom to
-absorb the height bump's per-frame Δz cost). It also makes Phase 10's
-contact-match diagnostic cleaner because the triangle's well-defined
-per-frame structure removes one source of mid-swing FK noise the
-half-sine apex was contributing.
+**P1 closed-loop observation (added by review verification, full
+parity refresh on a TB-capable machine):**
+
+Phase 7 closed the H1 planner-shape gauge as intended, but the **same
+patch worsened multiple WR-side P1 closed-loop metrics** at vx=0.15
+under MuJoCo:
+
+| P1 metric (WR @ vx=0.15) | Pre-Phase-7 | Post-Phase-7 | Δ |
+|---|---|---|---|
+| `ref_contact_match_frac` | 0.6986 | 0.6250 | **−0.074** |
+| `touchdown_step_length_mean_m` | +0.0016 | −0.0097 | **flipped sign, worsened** |
+| `joint_limit_step_frac` (sat_step_frac) | 0.0274 | 0.0556 | **+0.028 (doubled)** |
+| `shared_leg_rmse_rad` | 0.1558 | 0.1669 | **+0.011 (+7 %)** |
+
+This was not visible in the WR-only probe (`tools/phase6_wr_probe.py`)
+because it doesn't run the closed-loop replay. The numbers above came
+from a full `tools/reference_geometry_parity.py` refresh post-patch,
+done by a reviewer on a TB-capable machine; the local run could not
+produce them because of the TB venv permission issue documented above.
+
+**Hypothesis** (not yet verified): the half-sine envelope has a
+shallow slope near the boundary frames (`d/dt sin(pi·frac) → 0` as
+`frac → 0`), so the foot z command grows gradually past the
+plantarflex threshold (0.025 m). The triangle envelope has a
+**constant** slope `up_delta = 0.013 m/frame`, so the threshold
+crossing happens between table indices 1 (z=0.013) and 2 (z=0.026)
+**in a single frame**, simultaneously with the discrete 0.15 rad
+ankle plantarflex flip. This combined transition appears to push the
+WR position-actuator stack harder than the half-sine did, manifesting
+as more saturated steps (`sat_step_frac` doubled) and worse contact /
+stride / RMSE tracking. None of these tripped the H1 gauge or any
+P0 / P1A / P2 absolute gate.
+
+**Implications:**
+
+1. **Phase 7's intended acceptance is met** (H1 gauge PASS) and the
+   triangle is the correct planner-shape change per TB alignment.
+   The closed-loop regression is an actuator-side interaction, not
+   a planner-shape regression.
+2. **The earlier closeout claim that "Phase 7 unblocks Phase 10
+   cleaner" was wrong.** Phase 10 now has *more* to settle, not less:
+   it must add a question about why the triangle worsened P1 (see
+   Phase 10 update below). Removed the unfounded "cleaner" claim.
+3. **Phase 8 should be treated as more contingent than originally
+   written.** Bumping `foot_step_height_m` raises `up_delta`
+   proportionally (`up_delta = 0.075/5 = 0.015 m/frame` at h=0.05;
+   `0.07/5 = 0.014 m/frame` at h=0.045), which would make the
+   threshold-crossing transition even more aggressive. If the
+   hypothesis above is right, Phase 8 risks widening the P1
+   regression. Do not ship Phase 8 until the post-Phase-7 P1
+   numbers are understood (see Phase 10 update below).
+
+**Phase 7 acceptance verdict (updated):** PASS on the load-bearing
+H1 gauge; the closed-loop P1 regression is **noted, not gated**, but
+becomes Phase 10's responsibility to explain. The change stays in
+tree because (a) it correctly aligns the planner shape to TB and
+(b) the closed-loop layer was already failing pre-Phase-7 — Phase 7
+shifted the failure mode within the already-failing layer rather
+than breaking a passing one.
+
+**Sequencing impact:**
+
+- Phase 8 is now **gated on Phase 10** rather than only on Phase 7's
+  H1 PASS. Concretely: Phase 10 must surface a verdict on whether
+  Phase 7's P1 movement is fixable (e.g., by softening the
+  threshold-crossing transition, by changing the plantarflex schedule,
+  or by mirroring TB's swing-z slope-shaping at the boundaries) before
+  Phase 8 ships.
+- Phase 10's diagnostic adds a new item C (see Phase 10 update).
+- The acceptance-rule exemption table is unchanged — H1 stays as the
+  shape-side gauge, the P1 closed-loop layer is still gated by H6
+  (pending) for the actuator-stack-bound case.
+
+Outstanding caveats:
+- TB-side parity refresh on this machine is still blocked by the venv
+  permission issue. The post-Phase-7 P1 numbers above are reviewer-
+  reported from their TB-capable run and not yet reflected in the
+  local `tools/parity_report.json` (which still shows pre-Phase-7 WR
+  values). Updating the local report cleanly requires the TB venv to
+  be reachable, or running the refresh on a different machine.
+- All 165 local tests pass; the test suite does not exercise the
+  closed-loop P1 layer.
 
 ### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m, contingent)
 
@@ -1345,7 +1422,21 @@ Sequence:
 - AFTER Phase 7 — must measure post-Phase-7 absolute swing_step before
   picking 0.045 vs 0.05; Phase 7's Acceptance statement allows the
   absolute gate to remain bounded-FAIL, in which case Phase 8 is the
-  knob most likely to widen that gap
+  knob most likely to widen that gap.
+- **AFTER Phase 10 (added by Phase 7 closeout)** — Phase 7 caused
+  observed P1 closed-loop regressions on contact_match (−0.074),
+  td_step_mean (sign-flipped), sat_step_frac (doubled), and RMSE
+  (+7 %) at vx=0.15. Bumping `foot_step_height_m` raises `up_delta`
+  proportionally (0.013 → 0.014 at h=0.045, → 0.015 at h=0.05),
+  making the plantarflex-threshold-crossing transition Phase 7
+  introduced even more aggressive. Phase 8 is now **gated on Phase 10
+  producing a verdict** on whether the Phase 7 P1 movement is fixable
+  (e.g., by softening the boundary transition) or accepted. If Phase
+  10's verdict is "Phase 7 boundary-transition is load-bearing",
+  Phase 8 must wait for the Phase 12 fix to land before shipping; if
+  the verdict is "actuator-stack-bound and accepted (H6 active)",
+  Phase 8 can ship with explicit acknowledgement that the residual
+  P1 worsening is bounded by H6.
 
 Expected metric movement:
 - `P1A swing_clearance_per_com_height`:
@@ -1524,30 +1615,64 @@ Work (analysis, no code change unless evidence demands):
    follow-up if it materializes.
 3. Mid-swing tap-down audit. Inspect the foot z trace during swing in
    the closed-loop replay: how often does the foot dip back into
-   contact within a single swing? Phase 7's triangular envelope should
-   drop this to near-zero. If it doesn't, that means the actuator stack
-   is producing the dips, not the planner.
-4. Decide. Three possible verdicts:
-   - "Cycle-0 drag is load-bearing" → mirror TB truncation in a
-     follow-up Phase 12
-   - "Mid-swing tap-down was load-bearing, Phase 7 fixed it" → no
-     further work; gate may now PASS
-   - "Both clean, residual is actuator stack" → accept as P1-test-design
-     limitation per the scorecard's own note; document explicitly so
-     future readers don't re-litigate
+   contact within a single swing? Phase 7's triangular envelope was
+   originally predicted to drop this to near-zero. **Updated 2026-04-26
+   per Phase 7 closeout**: the post-Phase-7 P1 numbers actually
+   *worsened* on contact_match (−0.074 at vx=0.15), td_step_mean
+   (sign-flipped), sat_step_frac (doubled), and shared_leg_rmse_rad
+   (+7 %). So the original "should drop to near-zero" prediction was
+   wrong; the audit must report the actual post-Phase-7 mid-swing
+   tap-down rate, not assume it's zero.
+4. **Phase-7-effect attribution (NEW item from Phase 7 closeout).** The
+   triangle envelope cleanly closed the H1 planner-shape gauge but
+   appears to have shifted the closed-loop failure mode. Concrete
+   checks:
+   - *Plantarflex-threshold-crossing analysis.* Does the foot z
+     command cross the 0.025 m plantarflex threshold (`zmp_walk.py:611`)
+     in a single frame under the triangle envelope (i_swing 1 → 2:
+     z 0.013 → 0.026, simultaneously with the discrete 0.15 rad ankle
+     flip)? Compare against the half-sine where the same crossing
+     happens with a shallower slope. If the triangle's discrete
+     transition is the cause, the fix is either softening the
+     plantarflex schedule (ramping the 0.15 rad over multiple frames),
+     or shaping the swing-z envelope's slope at the boundary frames
+     to match the half-sine's shallower onset (e.g., a small cosine
+     blend over the first / last 1-2 frames of the triangle).
+   - *Actuator-stack saturation count.* Where do the doubled
+     `joint_limit_step_frac` events fall in the swing window? If they
+     cluster at the threshold-crossing frames (i_swing = 2, 10),
+     plantarflex-coupling is the load-bearing cause and Phase 12's
+     scope expands to "soften the boundary transition" rather than
+     "mirror TB cycle-0 truncation".
+5. Decide. Possible verdicts now include:
+   - "Cycle-0 drag is load-bearing" → mirror TB truncation in
+     Phase 12
+   - "Phase 7 boundary-transition is load-bearing" → soften the
+     plantarflex schedule and/or shape the triangle's first / last
+     frames in Phase 12
+   - "Both clean, residual is actuator stack" → activate H6 (after
+     parity tool also ships the composite gauge per H6's activation
+     rule)
+   - "Mixed" → multiple Phase 12-class follow-ups required
 
 Exit criteria:
-- a decision is recorded with evidence (numbers from items 1–3)
+- a decision is recorded with evidence (numbers from items 1–4)
 - if the verdict is "fixable", a concrete follow-up phase is added to
   this doc
-- if the verdict is "accepted artifact", the parity scorecard's gate is
-  annotated to reflect the architectural reason
+- if the verdict is "actuator-stack-bound", H6's activation conditions
+  are formally evaluated (composite gauge ships in parity tool +
+  evidence on file) before H6 is treated as active
+- a clear statement on whether Phase 8 should ship; under the Phase 7
+  closeout's contingency, Phase 8 is gated until the Phase-7-effect
+  question above has a verdict
 
 Acceptance statement:
-- success means the contact-match FAIL has a verdict (fixable /
-  fixed-by-Phase-7 / actuator-bound), not a vague "WR is worse than TB"
+- success means the P1 closed-loop FAIL set has a verdict (fixable /
+  partially-fixable-by-Phase-12 / actuator-stack-bound / mixed), not a
+  vague "WR is worse than TB"
 - the closed-loop layer's narrative becomes either "all gates either
-  PASS or have documented hardware reasons" or "Phase 12 follows"
+  PASS strictly or PASS via an active exemption", "Phase 12 follows",
+  or both
 
 ### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
 
@@ -1670,8 +1795,10 @@ The intended order is:
     contact-match FAIL. Not scoped today; only opens if Phase 10
     produces that verdict.
 
-Phases 7 + 9 + 11 can run in parallel; 8 needs 7; 10 needs 7;
-12 is conditional on 10.
+Phases 7 + 9 + 11 can run in parallel; 8 needs 7 **AND now also
+needs 10's verdict** (Phase 7 closeout flagged P1 closed-loop
+regressions that Phase 8 would amplify); 10 needs 7; 12 is conditional
+on 10.
 
 **Phases 7-11 form an investigate-and-improve plan, not a guaranteed
 terminal plan.** They are sufficient to determine whether "WR on par
