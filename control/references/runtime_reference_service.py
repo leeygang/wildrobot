@@ -77,6 +77,19 @@ class RuntimeReferenceWindow:
     left_foot_vel: np.ndarray      # [3] finite-diff
     right_foot_vel: np.ndarray     # [3] finite-diff
 
+    # -- Realized FK reference (Phase 3 / TB-style mujoco_replay) -----------
+    # Sourced from ``ReferenceTrajectory.body_pos / .body_quat / .site_pos``
+    # populated by ``ZMPWalkGenerator._fixed_base_fk_replay``.  Shape is
+    # ``[n_bodies, 3]`` etc per-frame; consumers index by body / site
+    # name via the parent service's ``body_names`` / ``site_names``
+    # tuples (stable across the trajectory).  Empty arrays when the
+    # source trajectory predates Phase 3.
+    body_pos: np.ndarray              # [n_bodies, 3]
+    body_quat: np.ndarray             # [n_bodies, 4] wxyz
+    body_lin_vel: np.ndarray          # [n_bodies, 3]
+    body_ang_vel: np.ndarray          # [n_bodies, 3]
+    site_pos: np.ndarray              # [n_sites, 3]
+
     # -- Short future preview (n_anchor frames) ------------------------------
     future_q_ref: np.ndarray              # [n_anchor, n_joints]
     future_phase_sin: np.ndarray          # [n_anchor]
@@ -103,8 +116,19 @@ class _StackedTrajectory:
     right_foot_pos: np.ndarray     # [n_steps, 3]
     left_foot_vel: np.ndarray      # [n_steps, 3]
     right_foot_vel: np.ndarray     # [n_steps, 3]
+    # Realized FK arrays (Phase 3); shape ``[n_steps, n_bodies, 3]``
+    # etc.  When the source trajectory lacks them (legacy assets), the
+    # service synthesises empty per-step slices so the lookup return
+    # shape stays stable at ``[0, 3]`` rather than raising.
+    body_pos: np.ndarray           # [n_steps, n_bodies, 3]
+    body_quat: np.ndarray          # [n_steps, n_bodies, 4]
+    body_lin_vel: np.ndarray       # [n_steps, n_bodies, 3]
+    body_ang_vel: np.ndarray       # [n_steps, n_bodies, 3]
+    site_pos: np.ndarray           # [n_steps, n_sites, 3]
     n_steps: int
     n_joints: int
+    n_bodies: int
+    n_sites: int
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +158,16 @@ class RuntimeReferenceService:
         self.dt = float(trajectory.dt)
         self.cycle_time = float(trajectory.cycle_time)
         self.n_anchor = int(n_anchor)
+        # Phase 3: stable name tuples for body / site indexing.  Empty
+        # tuple when the source trajectory predates Phase 3 and didn't
+        # supply names; downstream consumers can detect "no realized
+        # FK data" by checking ``len(service.body_names) == 0``.
+        self.body_names: tuple = (
+            tuple(trajectory.body_names) if trajectory.body_names is not None else ()
+        )
+        self.site_names: tuple = (
+            tuple(trajectory.site_names) if trajectory.site_names is not None else ()
+        )
         self._stacked = self._build_stack(trajectory)
         # One-shot terminal-clamp warning: caller responsibility is
         # to size ``episode_horizon <= n_steps``; if a query lands
@@ -186,6 +220,29 @@ class RuntimeReferenceService:
         left_foot_vel = _fdiff(left_foot_pos, traj.dt)
         right_foot_vel = _fdiff(right_foot_pos, traj.dt)
 
+        # Phase 3 realized FK arrays (mujoco_replay output).  When the
+        # source trajectory predates Phase 3, fall back to ``[n, 0, 3]``
+        # / ``[n, 0, 4]`` shaped empties so the lookup return shape
+        # stays well-defined and the service does not silently crash.
+        def _take_3d(
+            arr: Optional[np.ndarray], second_dim: int, last_dim: int = 3
+        ) -> np.ndarray:
+            if arr is None:
+                return np.zeros((n, second_dim, last_dim), dtype=np.float32)
+            return arr.astype(np.float32)
+
+        n_bodies = (
+            arr.shape[1] if (arr := traj.body_pos) is not None and arr.ndim == 3 else 0
+        )
+        n_sites = (
+            arr.shape[1] if (arr := traj.site_pos) is not None and arr.ndim == 3 else 0
+        )
+        body_pos = _take_3d(traj.body_pos, n_bodies, 3)
+        body_quat = _take_3d(traj.body_quat, n_bodies, 4)
+        body_lin_vel = _take_3d(traj.body_lin_vel, n_bodies, 3)
+        body_ang_vel = _take_3d(traj.body_ang_vel, n_bodies, 3)
+        site_pos = _take_3d(traj.site_pos, n_sites, 3)
+
         return _StackedTrajectory(
             q_ref=q_ref,
             phase_sin=phase_sin,
@@ -198,8 +255,15 @@ class RuntimeReferenceService:
             right_foot_pos=right_foot_pos,
             left_foot_vel=left_foot_vel,
             right_foot_vel=right_foot_vel,
+            body_pos=body_pos,
+            body_quat=body_quat,
+            body_lin_vel=body_lin_vel,
+            body_ang_vel=body_ang_vel,
+            site_pos=site_pos,
             n_steps=n,
             n_joints=n_joints,
+            n_bodies=n_bodies,
+            n_sites=n_sites,
         )
 
     # -- properties -----------------------------------------------------------
@@ -211,6 +275,14 @@ class RuntimeReferenceService:
     @property
     def n_joints(self) -> int:
         return self._stacked.n_joints
+
+    @property
+    def n_bodies(self) -> int:
+        return self._stacked.n_bodies
+
+    @property
+    def n_sites(self) -> int:
+        return self._stacked.n_sites
 
     @property
     def stacked(self) -> _StackedTrajectory:
@@ -263,6 +335,11 @@ class RuntimeReferenceService:
             right_foot_pos=s.right_foot_pos[idx].copy(),
             left_foot_vel=s.left_foot_vel[idx].copy(),
             right_foot_vel=s.right_foot_vel[idx].copy(),
+            body_pos=s.body_pos[idx].copy(),
+            body_quat=s.body_quat[idx].copy(),
+            body_lin_vel=s.body_lin_vel[idx].copy(),
+            body_ang_vel=s.body_ang_vel[idx].copy(),
+            site_pos=s.site_pos[idx].copy(),
             future_q_ref=s.q_ref[future_idx].copy(),
             future_phase_sin=s.phase_sin[future_idx].copy(),
             future_phase_cos=s.phase_cos[future_idx].copy(),
@@ -305,6 +382,11 @@ class RuntimeReferenceService:
             "right_foot_pos":   jax_arrays["right_foot_pos"][idx],
             "left_foot_vel":    jax_arrays["left_foot_vel"][idx],
             "right_foot_vel":   jax_arrays["right_foot_vel"][idx],
+            "body_pos":         jax_arrays["body_pos"][idx],
+            "body_quat":        jax_arrays["body_quat"][idx],
+            "body_lin_vel":     jax_arrays["body_lin_vel"][idx],
+            "body_ang_vel":     jax_arrays["body_ang_vel"][idx],
+            "site_pos":         jax_arrays["site_pos"][idx],
             "future_q_ref":            jax_arrays["q_ref"][future_idx],
             "future_phase_sin":        jax_arrays["phase_sin"][future_idx],
             "future_phase_cos":        jax_arrays["phase_cos"][future_idx],
@@ -330,5 +412,10 @@ class RuntimeReferenceService:
             "right_foot_pos": jnp.asarray(s.right_foot_pos),
             "left_foot_vel":  jnp.asarray(s.left_foot_vel),
             "right_foot_vel": jnp.asarray(s.right_foot_vel),
+            "body_pos":       jnp.asarray(s.body_pos),
+            "body_quat":      jnp.asarray(s.body_quat),
+            "body_lin_vel":   jnp.asarray(s.body_lin_vel),
+            "body_ang_vel":   jnp.asarray(s.body_ang_vel),
+            "site_pos":       jnp.asarray(s.site_pos),
             "n_steps":        s.n_steps,
         }

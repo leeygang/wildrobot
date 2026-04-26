@@ -767,15 +767,32 @@ print(json.dumps({{
 
 
 def _wr_fk_and_smoothness(vx: float) -> tuple[FKGaitMetrics, SmoothnessMetrics]:
-    model, data, mapper, act_to_qpos, geom_ids, _body_ids, _limits = _load_wr_assets()
     traj = ZMPWalkGenerator().generate(vx)
     n_steps = traj.n_steps
-    left_foot = np.zeros((n_steps, 3), dtype=np.float64)
-    right_foot = np.zeros((n_steps, 3), dtype=np.float64)
-    for idx in range(n_steps):
-        _wr_set_reference_pose(data, traj, idx, mapper, act_to_qpos)
-        mujoco.mj_forward(model, data)
-        left_foot[idx], right_foot[idx] = _wr_foot_center_pos(data, geom_ids)
+
+    # Phase 3: prefer the asset's stored realized site_pos when present.
+    # Falls back to per-frame re-FK only when the trajectory predates
+    # Phase 3 (e.g. a pre-Phase-3 cached asset on disk).  The
+    # ``site_names`` tuple gives stable indexing without baking integer
+    # offsets into this tool.
+    if (
+        traj.site_pos is not None
+        and traj.site_names is not None
+        and "left_foot_center" in traj.site_names
+        and "right_foot_center" in traj.site_names
+    ):
+        left_idx = traj.site_names.index("left_foot_center")
+        right_idx = traj.site_names.index("right_foot_center")
+        left_foot = np.asarray(traj.site_pos[:, left_idx, :], dtype=np.float64)
+        right_foot = np.asarray(traj.site_pos[:, right_idx, :], dtype=np.float64)
+    else:
+        model, data, mapper, act_to_qpos, geom_ids, _body_ids, _limits = _load_wr_assets()
+        left_foot = np.zeros((n_steps, 3), dtype=np.float64)
+        right_foot = np.zeros((n_steps, 3), dtype=np.float64)
+        for idx in range(n_steps):
+            _wr_set_reference_pose(data, traj, idx, mapper, act_to_qpos)
+            mujoco.mj_forward(model, data)
+            left_foot[idx], right_foot[idx] = _wr_foot_center_pos(data, geom_ids)
     gait = _compute_fk_gait_metrics(
         "wildrobot",
         vx,

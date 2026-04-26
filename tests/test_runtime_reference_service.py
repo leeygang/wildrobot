@@ -206,3 +206,86 @@ def test_terminal_clamp_emits_warning_once(smoke_trajectory):
     # Second overrun on the same instance: silent (one-shot).
     second_over = _capture_overrun_warnings(lambda: svc.lookup_np(last + 50))
     assert not second_over, "second overrun should be silent"
+
+
+# -- Phase 3: realized FK reference fields ----------------------------------
+
+def test_realized_fk_fields_round_trip(service, smoke_trajectory):
+    """Phase 3 additive fields (body_pos / body_quat / body_lin_vel /
+    body_ang_vel / site_pos) populate from the trajectory and surface
+    through both lookup paths with matching shapes and values."""
+    assert service.n_bodies > 0, "Phase 3: trajectory should carry body arrays"
+    assert service.n_sites > 0, "Phase 3: trajectory should carry site arrays"
+    assert "left_foot_center" in service.site_names
+    assert "right_foot_center" in service.site_names
+
+    win = service.lookup_np(30)
+    n_bodies = service.n_bodies
+    n_sites = service.n_sites
+    assert win.body_pos.shape == (n_bodies, 3)
+    assert win.body_quat.shape == (n_bodies, 4)
+    assert win.body_lin_vel.shape == (n_bodies, 3)
+    assert win.body_ang_vel.shape == (n_bodies, 3)
+    assert win.site_pos.shape == (n_sites, 3)
+
+    # Source values are the trajectory's per-step slices (no copy / no
+    # transformation in the service's NumPy path).
+    np.testing.assert_array_equal(
+        win.body_pos, np.asarray(smoke_trajectory.body_pos[30], dtype=np.float32)
+    )
+    np.testing.assert_array_equal(
+        win.site_pos, np.asarray(smoke_trajectory.site_pos[30], dtype=np.float32)
+    )
+
+    # JAX path returns the same values.
+    jax_arrays = service.to_jax_arrays()
+    jax_win = service.lookup_jax(30, jax_arrays)
+    for field in ("body_pos", "body_quat", "body_lin_vel", "body_ang_vel", "site_pos"):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(win, field)),
+            np.asarray(jax_win[field]),
+            err_msg=f"NumPy / JAX mismatch on Phase 3 field {field!r}",
+        )
+
+
+def test_realized_fk_root_anchor(service, smoke_trajectory):
+    """Fixed-base FK keeps the root body (waist) z constant across
+    frames, since the trajectory anchors at the home keyframe.  Only
+    child bodies move with joint angles.  This is the TB-comparable
+    semantics; if it ever drifts, ZMPWalkGenerator._fixed_base_fk_replay
+    has stopped re-anchoring at home."""
+    assert "waist" in service.body_names, "WR root body should be 'waist'"
+    waist_idx = service.body_names.index("waist")
+    z_track = np.asarray(
+        [service.lookup_np(k).body_pos[waist_idx, 2] for k in (0, 30, 60, 90, 120)]
+    )
+    assert np.allclose(z_track, z_track[0], atol=1e-5), (
+        f"root body z drifted: {z_track}"
+    )
+
+
+def test_legacy_trajectory_yields_empty_fk_arrays():
+    """A trajectory without Phase 3 arrays must still build a service
+    cleanly; the lookup returns ``[0, 3]`` / ``[0, 4]`` shaped empties
+    rather than raising."""
+    from control.references.reference_library import ReferenceTrajectory
+
+    n, nj = 10, 19
+    legacy = ReferenceTrajectory(
+        command_vx=0.1,
+        dt=0.02,
+        cycle_time=0.20,
+        q_ref=np.zeros((n, nj), dtype=np.float32),
+        phase=np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float32),
+        stance_foot_id=np.zeros(n, dtype=np.float32),
+        contact_mask=np.ones((n, 2), dtype=np.float32),
+        pelvis_pos=np.tile([0.0, 0.0, 0.42], (n, 1)).astype(np.float32),
+        left_foot_pos=np.tile([0.0, 0.05, 0.0], (n, 1)).astype(np.float32),
+        right_foot_pos=np.tile([0.0, -0.05, 0.0], (n, 1)).astype(np.float32),
+    )
+    svc = RuntimeReferenceService(legacy, n_anchor=2)
+    assert svc.n_bodies == 0 and svc.n_sites == 0
+    win = svc.lookup_np(3)
+    assert win.body_pos.shape == (0, 3)
+    assert win.body_quat.shape == (0, 4)
+    assert win.site_pos.shape == (0, 3)

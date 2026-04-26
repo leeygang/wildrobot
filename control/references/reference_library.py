@@ -97,6 +97,29 @@ class ReferenceTrajectory:
     # Phase within the gait cycle: shape [n_steps] in [0, 1)
     phase: Optional[np.ndarray] = field(default=None, repr=False)
 
+    # -- Realized FK reference (Phase 3 / TB-style mujoco_replay) -----------
+    # Mirrors TB's ``Motion`` dataclass shape (toddlerbot/reference/
+    # motion_ref.py:24-34) and ``ZMPWalk.mujoco_replay`` outputs
+    # (toddlerbot/algorithms/zmp_walk.py:153-212).  Populated by
+    # ``ZMPWalkGenerator`` after IK via fixed-base FK so consumers
+    # (parity tooling, RSI init, debugging) read realized values
+    # without re-FKing.  All five arrays are additive; legacy
+    # planner-intent fields (``pelvis_pos``, ``left_foot_pos``,
+    # ``contact_mask`` etc) remain authoritative for IK / contact
+    # semantics.  Velocity arrays are finite-diff of position arrays
+    # (G2 decision in walking_training.md), terminal frame copies the
+    # previous to avoid a discontinuous zero.
+    body_pos: Optional[np.ndarray] = field(default=None, repr=False)        # [n_steps, n_bodies, 3]
+    body_quat: Optional[np.ndarray] = field(default=None, repr=False)       # [n_steps, n_bodies, 4] wxyz
+    body_lin_vel: Optional[np.ndarray] = field(default=None, repr=False)    # [n_steps, n_bodies, 3]
+    body_ang_vel: Optional[np.ndarray] = field(default=None, repr=False)    # [n_steps, n_bodies, 3]
+    site_pos: Optional[np.ndarray] = field(default=None, repr=False)        # [n_steps, n_sites, 3]
+    # Stable indexing for body / site arrays.  Names match the WR MJCF;
+    # consumers that need a specific body / site can ``body_names.index(...)``
+    # without baking integer offsets into call sites.
+    body_names: Optional[Tuple[str, ...]] = field(default=None, repr=False)
+    site_names: Optional[Tuple[str, ...]] = field(default=None, repr=False)
+
     # -- Metadata -------------------------------------------------------------
     generator_version: str = "unset"
     is_valid: bool = True
@@ -164,6 +187,24 @@ class ReferenceTrajectory:
         _check("stance_foot_id", self.stance_foot_id, (n,))
         _check("contact_mask", self.contact_mask, (n, 2))
         _check("phase", self.phase, (n,))
+
+        # Realized FK arrays (Phase 3 additive).  Shapes are validated
+        # only when present and consistent with the optional names tuples.
+        n_bodies = (
+            len(self.body_names) if self.body_names is not None
+            else (self.body_pos.shape[1] if self.body_pos is not None and self.body_pos.ndim == 3 else 0)
+        )
+        n_sites = (
+            len(self.site_names) if self.site_names is not None
+            else (self.site_pos.shape[1] if self.site_pos is not None and self.site_pos.ndim == 3 else 0)
+        )
+        if n_bodies > 0:
+            _check("body_pos", self.body_pos, (n, n_bodies, 3))
+            _check("body_quat", self.body_quat, (n, n_bodies, 4))
+            _check("body_lin_vel", self.body_lin_vel, (n, n_bodies, 3))
+            _check("body_ang_vel", self.body_ang_vel, (n, n_bodies, 3))
+        if n_sites > 0:
+            _check("site_pos", self.site_pos, (n, n_sites, 3))
 
         if self.q_ref is None:
             issues.append("q_ref is required")

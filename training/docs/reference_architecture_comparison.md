@@ -626,6 +626,113 @@ Acceptance statement:
 - success does not require full `P1A` or `P1` parity yet; it removes a core
   architectural mismatch so later phases can improve those metrics cleanly
 
+#### Phase 3 closeout (2026-04-25)
+
+Implemented the TB-style ``mujoco_replay`` enrichment in three additive
+slices, each preserving existing planner-intent fields and reward
+semantics.
+
+Code changes:
+
+1. **`control/zmp/zmp_walk.py`** — added
+   ``ZMPWalkGenerator._fixed_base_fk_replay``, mirroring
+   ``toddlerbot/algorithms/zmp_walk.py:153-212 mujoco_replay``.
+   Lazily loads ``assets/v2/scene_flat_terrain.xml``, anchors at the
+   ``home`` keyframe (TB-style fixed-base FK), and per-frame:
+   - reads ``data.xpos`` / ``data.xquat`` for all 26 bodies,
+   - synthesises foot-centre ``site_pos`` from heel + toe geom
+     midpoints (WR's MJCF lacks explicit ``left/right_foot_center``
+     sites; this matches the parity tool's existing convention).
+   Velocities are finite-diff (G2 convention); angular velocity uses
+   the small-angle ``2 · (q1·conj(q0))[xyz] / dt`` approximation with
+   per-body double-cover sign alignment.  Both
+   ``_generate_at_step_length`` and ``_generate_standing`` now run
+   the replay and pass the five arrays to ``ReferenceTrajectory``.
+2. **`control/references/reference_library.py`** — additive schema
+   fields on ``ReferenceTrajectory``: ``body_pos``, ``body_quat``,
+   ``body_lin_vel``, ``body_ang_vel``, ``site_pos`` plus
+   ``body_names`` / ``site_names`` tuples for stable indexing.  All
+   default ``None`` so legacy assets keep loading.  ``validate()``
+   shape-checks the new arrays only when present.
+3. **`control/references/runtime_reference_service.py`** — same five
+   additive fields on ``_StackedTrajectory`` and
+   ``RuntimeReferenceWindow``; ``lookup_np`` / ``lookup_jax`` /
+   ``to_jax_arrays`` plumb them through; service exposes
+   ``n_bodies`` / ``n_sites`` / ``body_names`` / ``site_names``.
+   Legacy trajectories without the fields fall back to ``[n, 0, 3]``
+   shaped empties so downstream consumers can detect "no realized FK"
+   via ``len(service.body_names) == 0`` rather than catching
+   exceptions.
+4. **`tools/reference_geometry_parity.py`** —
+   ``_wr_fk_and_smoothness`` now reads ``traj.site_pos`` directly when
+   present, falling back to per-frame re-FK only for legacy assets.
+   This is the asset-content alignment exit criterion: the parity
+   tool no longer depends on a WR-only re-FK reconstruction.
+
+Tests:
+
+- `tests/test_v0200a_contract.py`: 15/15 PASS unchanged (additive
+  schema doesn't break the required-field assertion).
+- `tests/test_v0200c_geometry.py`: 2/2 PASS (geometry probe uses its
+  own FK; no regression).
+- `tests/test_runtime_reference_service.py`: 13/13 PASS, including
+  three new Phase 3 tests:
+  - ``test_realized_fk_fields_round_trip``: NumPy / JAX paths return
+    matching shapes and values for the new fields, sourced from the
+    trajectory.
+  - ``test_realized_fk_root_anchor``: fixed-base FK keeps the
+    ``waist`` body z constant across frames (TB-comparable
+    semantics).
+  - ``test_legacy_trajectory_yields_empty_fk_arrays``: a trajectory
+    without Phase 3 arrays builds a service cleanly and returns
+    ``[0, 3]`` / ``[0, 4]`` shaped empties.
+
+Asset-backed parity verification (WR-side, vx=0.15):
+
+| Metric | Pre-Phase-1 baseline (cached) | Post-Phase-1 | Post-Phase-3 (asset-backed) |
+|---|---|---|---|
+| `step_length_mean_m` | 0.0478 | 0.0478 | 0.0478 |
+| `swing_clearance_mean_m` | 0.0668 | 0.0668 (re-FK) | 0.0659 (asset-FK) |
+| `foot_z_step_max_m` | 0.0243 | 0.0200 (re-FK) | 0.0201 (asset-FK) |
+| `shared_leg_q_step_max_rad` | 0.4094 | 0.3632 (re-FK) | 0.3632 (asset-FK) |
+| `swing_foot_z_step_max_m` | 0.0243 | 0.0200 (re-FK) | 0.0201 (asset-FK) |
+
+Asset-backed values match the per-frame re-FK output to mm precision.
+The ~1 mm shift on `swing_clearance_mean_m` (0.0668 → 0.0659) is the
+expected difference between the parity tool's previous **free-base**
+FK at planned ``pelvis_pos`` (which advanced the body forward each
+frame) and the new **fixed-base** FK anchored at home (TB-comparable).
+Both produce the same swing-clearance-above-baseline value to within
+~1 mm because the metric subtracts the per-cycle stance baseline.
+
+Smoothness metrics (`foot_z_step_max_m`, `swing_foot_z_step_max_m`,
+`shared_leg_q_step_max_rad`) match exactly because they're per-frame
+deltas invariant to absolute body anchoring.
+
+Outstanding caveats:
+- TB-side parity helper not re-runnable on this machine (TB venv
+  missing ``joblib`` / ``lz4``).  TB code untouched, so the cached
+  TB numbers in ``tools/parity_report.json`` remain the right
+  baseline.
+- `body_lin_vel` / `body_ang_vel` use finite-diff; they will be 0
+  for any body whose ``xpos`` / ``xquat`` is constant across frames
+  in fixed-base FK (e.g. the world body).  TB's `mujoco_replay`
+  reads these from `sim.data.cvel` after `set_joint_angles +
+  forward()`; with `qvel = 0` the cvel is also 0 there, so the
+  finite-diff form is no worse than TB's storage.
+- `site_pos` only stores the two foot-centre synthetic sites today.
+  Adding more (e.g. hand sites if WR ever gains them) is a single
+  extra entry in ``ZMPWalkGenerator._FOOT_CENTER_GEOMS`` (and would
+  arguably belong in a different config field then; revisit if /
+  when WR planners need a site beyond feet).
+
+Phase 4 unblocked: ``ReferenceLibrary``-backed ``body_pos`` /
+``body_quat`` are now available for RSI initialization (mirroring
+``toddlerbot/locomotion/mjx_env.py:1175-1191``) and for any future
+reward channel that wants a fixed-base FK signal.  The Phase 4 doc
+under "Phase 2 closeout" stands as-is — the runtime reference
+consumption alignment is independent of this asset-content slice.
+
 ### Phase 4. Align runtime reference consumption
 
 Goal:

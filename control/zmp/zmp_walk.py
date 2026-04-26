@@ -12,8 +12,10 @@ Reference: ToddlerBot ``toddlerbot.algorithms.zmp_walk``
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -237,9 +239,186 @@ def _solve_sagittal_ik(
 class ZMPWalkGenerator:
     """Generate walking trajectories for WildRobot v2 using ZMP preview control."""
 
+    # Foot collision-geom pairs used to synthesise foot-center sites
+    # for the FK replay (WR's MJCF doesn't define explicit
+    # ``left_foot_center`` / ``right_foot_center`` sites the way TB's
+    # does, so we compute the centre as the midpoint of the
+    # heel + toe collision boxes — same convention the parity tool
+    # already uses, see ``tools/reference_geometry_parity.py::_wr_foot_center_pos``).
+    _FOOT_CENTER_GEOMS = (
+        ("left_foot_center", "left_heel", "left_toe"),
+        ("right_foot_center", "right_heel", "right_toe"),
+    )
+    _DEFAULT_SCENE_XML = "assets/v2/scene_flat_terrain.xml"
+    _DEFAULT_ROBOT_CONFIG = "assets/v2/mujoco_robot_config.json"
+
     def __init__(self, config: ZMPWalkConfig | None = None) -> None:
         self.cfg = config or ZMPWalkConfig()
         self.planner = ZMPPlanner()
+        # FK-replay assets are loaded lazily and cached.  Avoids paying
+        # the MJCF parse cost when ``generate(0.0)`` is called repeatedly
+        # for standing references.
+        self._fk_assets: Optional[dict] = None
+
+    # ------------------------------------------------------------------
+    # Phase 3: TB-style realized-reference enrichment
+    # ------------------------------------------------------------------
+    # Mirrors ``ZMPWalk.mujoco_replay`` from
+    # ``toddlerbot/algorithms/zmp_walk.py:153-212``: after the IK
+    # produces ``q_ref``, run fixed-base FK frame-by-frame to harvest
+    # realized body / site quantities the parity tool, RSI init, and
+    # debugging consumers can read directly without re-FKing.
+
+    def _load_fk_assets(self) -> dict:
+        """Lazily load and cache the MJCF + ctrl mapping for FK replay."""
+        if self._fk_assets is not None:
+            return self._fk_assets
+        # Local imports to keep the module's top-level deps minimal for
+        # callers that never trigger FK replay (e.g. unit tests that
+        # construct a stub trajectory).
+        import mujoco  # noqa: WPS433  -- pulled in only when FK is needed
+        from training.utils.ctrl_order import CtrlOrderMapper  # noqa: WPS433
+
+        scene = Path(self._DEFAULT_SCENE_XML)
+        config_path = Path(self._DEFAULT_ROBOT_CONFIG)
+        model = mujoco.MjModel.from_xml_path(str(scene))
+        data = mujoco.MjData(model)
+        with open(config_path) as f:
+            spec = json.load(f)
+        actuator_names = [j["name"] for j in spec["actuated_joint_specs"]]
+        mapper = CtrlOrderMapper(model, actuator_names)
+        act_to_qpos = np.array(
+            [model.jnt_qposadr[model.actuator_trnid[k, 0]] for k in range(model.nu)]
+        )
+        # Anchor at the home keyframe so the body stays at its nominal
+        # pose (TB-style fixed-base FK semantics — matches
+        # ``MuJoCoSim(robot, fixed_base=True)`` in TB's mujoco_replay).
+        home_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        if home_id < 0:
+            raise RuntimeError("WR scene_flat_terrain.xml is missing the 'home' keyframe")
+        mujoco.mj_resetDataKeyframe(model, data, home_id)
+        home_qpos = data.qpos.copy()
+        body_names = tuple(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or f"body_{b}"
+            for b in range(model.nbody)
+        )
+        # Foot-center "sites" synthesised from heel/toe geom midpoints.
+        site_names = tuple(name for name, _, _ in self._FOOT_CENTER_GEOMS)
+        site_geom_pairs = []
+        for _name, geom_a, geom_b in self._FOOT_CENTER_GEOMS:
+            ga = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_a)
+            gb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_b)
+            if ga < 0 or gb < 0:
+                raise RuntimeError(
+                    f"Missing foot-center geom pair: {geom_a} / {geom_b}"
+                )
+            site_geom_pairs.append((ga, gb))
+        self._fk_assets = {
+            "model": model,
+            "data": data,
+            "mapper": mapper,
+            "act_to_qpos": act_to_qpos,
+            "home_qpos": home_qpos,
+            "body_names": body_names,
+            "site_names": site_names,
+            "site_geom_pairs": site_geom_pairs,
+        }
+        return self._fk_assets
+
+    def _fixed_base_fk_replay(
+        self, q_ref: np.ndarray, dt: float
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Tuple[str, ...], Tuple[str, ...]]:
+        """Replay ``q_ref`` frame-by-frame in fixed-base FK.
+
+        Returns ``(body_pos, body_quat, body_lin_vel, body_ang_vel,
+        site_pos, body_names, site_names)``.
+
+        Body position / orientation come straight from MuJoCo
+        (``data.xpos`` / ``data.xquat``).  Velocities are finite-diff
+        of the position arrays (G2 finite-diff convention).  Angular
+        velocity is computed from a quaternion delta; the small-angle
+        approximation ``ang_vel = 2 · (q1·conj(q0))[xyz] / dt`` is
+        used because per-step rotations are <<1 rad at ``dt=0.02``.
+        """
+        import mujoco  # noqa: WPS433
+
+        assets = self._load_fk_assets()
+        model = assets["model"]
+        data = assets["data"]
+        mapper = assets["mapper"]
+        act_to_qpos = assets["act_to_qpos"]
+        home_qpos = assets["home_qpos"]
+        body_names = assets["body_names"]
+        site_names = assets["site_names"]
+        site_geom_pairs = assets["site_geom_pairs"]
+
+        n_steps = int(q_ref.shape[0])
+        n_bodies = int(model.nbody)
+        n_sites = len(site_names)
+        body_pos = np.zeros((n_steps, n_bodies, 3), dtype=np.float32)
+        body_quat = np.zeros((n_steps, n_bodies, 4), dtype=np.float32)
+        site_pos = np.zeros((n_steps, n_sites, 3), dtype=np.float32)
+
+        policy_to_mj = mapper.policy_to_mj_order
+        for i in range(n_steps):
+            data.qpos[:] = home_qpos
+            mj_q = np.zeros(len(policy_to_mj), dtype=np.float64)
+            mj_q[policy_to_mj] = q_ref[i]
+            for ai in range(model.nu):
+                data.qpos[act_to_qpos[ai]] = mj_q[ai]
+            mujoco.mj_forward(model, data)
+            body_pos[i] = data.xpos.astype(np.float32)
+            body_quat[i] = data.xquat.astype(np.float32)
+            for s_idx, (ga, gb) in enumerate(site_geom_pairs):
+                site_pos[i, s_idx] = (
+                    0.5 * (data.geom_xpos[ga] + data.geom_xpos[gb])
+                ).astype(np.float32)
+
+        body_lin_vel = self._fdiff(body_pos, dt)
+        body_ang_vel = self._quat_finite_diff_ang_vel(body_quat, dt)
+        return (
+            body_pos, body_quat, body_lin_vel, body_ang_vel, site_pos,
+            body_names, site_names,
+        )
+
+    @staticmethod
+    def _fdiff(arr: np.ndarray, dt: float) -> np.ndarray:
+        out = np.zeros_like(arr)
+        if arr.shape[0] >= 2 and dt > 0.0:
+            out[:-1] = (arr[1:] - arr[:-1]) / dt
+            out[-1] = out[-2]
+        return out
+
+    @staticmethod
+    def _quat_finite_diff_ang_vel(q_wxyz: np.ndarray, dt: float) -> np.ndarray:
+        """Per-body angular velocity from quaternion finite-diff.
+
+        Uses ``ang_vel = 2 · (q1 · conj(q0))[xyz] / dt`` (small-angle
+        approximation valid for the per-step rotations at ``dt=0.02``
+        in this planner).  Sign-aligns ``q1`` against ``q0`` to handle
+        the double-cover ambiguity before the delta multiplication.
+        """
+        n_steps = q_wxyz.shape[0]
+        ang_vel = np.zeros((n_steps,) + q_wxyz.shape[1:-1] + (3,), dtype=np.float32)
+        if n_steps < 2 or dt <= 0.0:
+            return ang_vel
+        q0 = q_wxyz[:-1]
+        q1 = q_wxyz[1:]
+        # Double-cover sign alignment per body.
+        dot = np.sum(q0 * q1, axis=-1, keepdims=True)
+        q1 = np.where(dot < 0.0, -q1, q1)
+        # delta = q1 · conj(q0); wxyz convention.
+        w0, x0, y0, z0 = q0[..., 0], q0[..., 1], q0[..., 2], q0[..., 3]
+        w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
+        # conj(q0) = [w0, -x0, -y0, -z0]
+        dx = w1 * (-x0) + x1 * w0 + y1 * (-z0) - z1 * (-y0)
+        dy = w1 * (-y0) - x1 * (-z0) + y1 * w0 + z1 * (-x0)
+        dz = w1 * (-z0) + x1 * (-y0) - y1 * (-x0) + z1 * w0
+        # Small-angle: rotation vector ≈ 2 · [dx, dy, dz] / dt.
+        ang = 2.0 * np.stack([dx, dy, dz], axis=-1) / dt
+        ang_vel[:-1] = ang.astype(np.float32)
+        ang_vel[-1] = ang_vel[-2]
+        return ang_vel
 
     def generate(self, command_vx: float) -> ReferenceTrajectory:
         """Generate one gait-cycle trajectory for the given forward speed.
@@ -656,6 +835,11 @@ class ZMPWalkGenerator:
         com_pos = pelvis_pos.copy()
         foot_rpy = np.zeros((n, 3), dtype=np.float32)
 
+        # Phase 3: TB-style realized FK enrichment (mujoco_replay).
+        body_pos, body_quat, body_lin_vel, body_ang_vel, site_pos, body_names, site_names = (
+            self._fixed_base_fk_replay(q_ref, cfg.dt_s)
+        )
+
         return ReferenceTrajectory(
             command_vx=command_vx,
             dt=cfg.dt_s,
@@ -671,6 +855,13 @@ class ZMPWalkGenerator:
             right_foot_rpy=foot_rpy.copy(),
             stance_foot_id=stance_out.astype(np.float32),
             contact_mask=contact_out.astype(np.float32),
+            body_pos=body_pos,
+            body_quat=body_quat,
+            body_lin_vel=body_lin_vel,
+            body_ang_vel=body_ang_vel,
+            site_pos=site_pos,
+            body_names=body_names,
+            site_names=site_names,
             generator_version="zmp_v0.20.0_multicycle",
         )
 
@@ -694,6 +885,13 @@ class ZMPWalkGenerator:
         right_foot = np.array([[0.0, -lat, 0.0]], dtype=np.float32)
         foot_rpy = np.zeros((n, 3), dtype=np.float32)
 
+        # Phase 3: TB-style realized FK enrichment for the standing
+        # frame as well, so consumers always get a populated body / site
+        # path regardless of whether the trajectory is walk or standing.
+        body_pos, body_quat, body_lin_vel, body_ang_vel, site_pos, body_names, site_names = (
+            self._fixed_base_fk_replay(q_ref, cfg.dt_s)
+        )
+
         return ReferenceTrajectory(
             command_vx=0.0,
             dt=cfg.dt_s,
@@ -709,6 +907,13 @@ class ZMPWalkGenerator:
             right_foot_rpy=foot_rpy.copy(),
             stance_foot_id=stance,
             contact_mask=contact,
+            body_pos=body_pos,
+            body_quat=body_quat,
+            body_lin_vel=body_lin_vel,
+            body_ang_vel=body_ang_vel,
+            site_pos=site_pos,
+            body_names=body_names,
+            site_names=site_names,
             generator_version="zmp_v0.20.0",
         )
 
