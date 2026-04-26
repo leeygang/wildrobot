@@ -188,22 +188,52 @@ class ReferenceTrajectory:
         _check("contact_mask", self.contact_mask, (n, 2))
         _check("phase", self.phase, (n,))
 
-        # Realized FK arrays (Phase 3 additive).  Shapes are validated
-        # only when present and consistent with the optional names tuples.
-        n_bodies = (
-            len(self.body_names) if self.body_names is not None
-            else (self.body_pos.shape[1] if self.body_pos is not None and self.body_pos.ndim == 3 else 0)
+        # Realized FK arrays (Phase 3 additive).  The contract for
+        # consumers (e.g. ``RuntimeReferenceService``) is that
+        # ``body_names`` / ``site_names`` are present iff the
+        # corresponding arrays are populated — without this, a
+        # malformed trajectory could expose ``len(service.body_names)
+        # > 0`` while ``service.n_bodies == 0``, contradicting the
+        # documented "len(names) == 0 means legacy asset" check.
+        body_arrays = (
+            self.body_pos, self.body_quat, self.body_lin_vel, self.body_ang_vel
         )
-        n_sites = (
-            len(self.site_names) if self.site_names is not None
-            else (self.site_pos.shape[1] if self.site_pos is not None and self.site_pos.ndim == 3 else 0)
-        )
-        if n_bodies > 0:
+        body_arrays_present = any(arr is not None for arr in body_arrays)
+        body_names_present = self.body_names is not None
+        if body_names_present != body_arrays_present:
+            issues.append(
+                "Phase 3 contract: body_names must be present iff at least one "
+                "of body_pos/body_quat/body_lin_vel/body_ang_vel is present "
+                f"(body_names={'set' if body_names_present else 'None'}, "
+                f"body_arrays={'set' if body_arrays_present else 'all None'})"
+            )
+        if body_arrays_present:
+            n_bodies = (
+                len(self.body_names) if body_names_present
+                else next(
+                    arr.shape[1] for arr in body_arrays
+                    if arr is not None and arr.ndim == 3
+                )
+            )
             _check("body_pos", self.body_pos, (n, n_bodies, 3))
             _check("body_quat", self.body_quat, (n, n_bodies, 4))
             _check("body_lin_vel", self.body_lin_vel, (n, n_bodies, 3))
             _check("body_ang_vel", self.body_ang_vel, (n, n_bodies, 3))
-        if n_sites > 0:
+
+        site_pos_present = self.site_pos is not None
+        site_names_present = self.site_names is not None
+        if site_names_present != site_pos_present:
+            issues.append(
+                "Phase 3 contract: site_names must be present iff site_pos "
+                f"is present (site_names={'set' if site_names_present else 'None'}, "
+                f"site_pos={'set' if site_pos_present else 'None'})"
+            )
+        if site_pos_present:
+            n_sites = (
+                len(self.site_names) if site_names_present
+                else self.site_pos.shape[1]
+                if self.site_pos.ndim == 3 else 0
+            )
             _check("site_pos", self.site_pos, (n, n_sites, 3))
 
         if self.q_ref is None:
@@ -550,10 +580,27 @@ class ReferenceLibrary:
                 "q_ref", "dq_ref", "pelvis_pos", "pelvis_rpy", "com_pos",
                 "left_foot_pos", "left_foot_rpy", "right_foot_pos",
                 "right_foot_rpy", "stance_foot_id", "contact_mask", "phase",
+                # Phase 3 realized FK arrays (mujoco_replay output).
+                # Persisted alongside the planner-intent arrays so
+                # round-tripped libraries carry the TB-style realized
+                # body / site content.  When a generator hasn't
+                # populated them they're simply absent from the npz,
+                # and load() leaves the field at its dataclass default
+                # of None (legacy-asset compatibility).
+                "body_pos", "body_quat", "body_lin_vel", "body_ang_vel",
+                "site_pos",
             ):
                 arr = getattr(traj, arr_name)
                 if arr is not None:
                     arrays[arr_name] = arr
+
+            # Phase 3 name tuples are JSON-friendly; pack them into the
+            # scalars blob so they round-trip with the same lifecycle as
+            # ``generator_version`` etc.
+            if traj.body_names is not None:
+                scalars["body_names"] = list(traj.body_names)
+            if traj.site_names is not None:
+                scalars["site_names"] = list(traj.site_names)
 
             np.savez(
                 out / f"entry_{i:04d}.npz",
@@ -591,9 +638,22 @@ class ReferenceLibrary:
                 "q_ref", "dq_ref", "pelvis_pos", "pelvis_rpy", "com_pos",
                 "left_foot_pos", "left_foot_rpy", "right_foot_pos",
                 "right_foot_rpy", "stance_foot_id", "contact_mask", "phase",
+                # Phase 3 realized FK arrays.  Absent entries (legacy
+                # libraries written before Phase 3) leave the field at
+                # its dataclass default of None.
+                "body_pos", "body_quat", "body_lin_vel", "body_ang_vel",
+                "site_pos",
             ):
                 if arr_name in data:
                     kwargs[arr_name] = data[arr_name]
+
+            # Phase 3 name tuples — packed into ``_scalars_json`` by save().
+            # Convert lists back to tuples to match the in-memory shape
+            # produced by ``ZMPWalkGenerator``.
+            if "body_names" in scalars:
+                kwargs["body_names"] = tuple(scalars["body_names"])
+            if "site_names" in scalars:
+                kwargs["site_names"] = tuple(scalars["site_names"])
 
             lib.add(ReferenceTrajectory(**kwargs))
 

@@ -237,6 +237,135 @@ def test_roundtrip():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+# ---- 4b. Phase 3 round-trip + names↔arrays consistency --------------------
+
+def test_roundtrip_phase3_realized_fk_fields():
+    """Phase 3 fields (body_pos, body_quat, body_lin_vel, body_ang_vel,
+    site_pos, body_names, site_names) must persist across save/load.
+
+    The pre-Phase-3 round-trip test only covered planner-intent fields,
+    which let the disk format silently drop the new fields and forced
+    every consumer of a saved library to fall back to legacy behaviour
+    (per the Phase 3 review).  This test pins the disk-format contract
+    so a future schema change can't silently regress it."""
+    from control.references.reference_library import (
+        ReferenceLibrary,
+        ReferenceLibraryMeta,
+        ReferenceTrajectory,
+    )
+
+    tmpdir = tempfile.mkdtemp(prefix="v0200a_phase3_rt_")
+    try:
+        n, nj, n_bodies, n_sites = 12, 8, 5, 2
+        body_pos_orig = np.random.randn(n, n_bodies, 3).astype(np.float32)
+        body_quat_orig = np.random.randn(n, n_bodies, 4).astype(np.float32)
+        body_lin_orig = np.random.randn(n, n_bodies, 3).astype(np.float32)
+        body_ang_orig = np.random.randn(n, n_bodies, 3).astype(np.float32)
+        site_pos_orig = np.random.randn(n, n_sites, 3).astype(np.float32)
+        body_names_orig = ("world", "waist", "left_foot", "right_foot", "torso")
+        site_names_orig = ("left_foot_center", "right_foot_center")
+
+        traj = ReferenceTrajectory(
+            command_vx=0.10, dt=0.02, cycle_time=0.40,
+            q_ref=np.zeros((n, nj), dtype=np.float32),
+            phase=np.linspace(0, 1, n, endpoint=False, dtype=np.float32),
+            stance_foot_id=np.zeros(n, dtype=np.float32),
+            contact_mask=np.ones((n, 2), dtype=np.float32),
+            pelvis_pos=np.tile([0.0, 0.0, 0.46], (n, 1)).astype(np.float32),
+            body_pos=body_pos_orig,
+            body_quat=body_quat_orig,
+            body_lin_vel=body_lin_orig,
+            body_ang_vel=body_ang_orig,
+            site_pos=site_pos_orig,
+            body_names=body_names_orig,
+            site_names=site_names_orig,
+            generator_version="phase3_rt",
+        )
+        # Sanity: traj must validate before we save it.
+        assert traj.validate() == [], traj.validate()
+
+        ReferenceLibrary([traj]).save(tmpdir)
+        t2 = ReferenceLibrary.load(tmpdir).lookup(0.10)
+
+        np.testing.assert_array_equal(t2.body_pos, body_pos_orig)
+        np.testing.assert_array_equal(t2.body_quat, body_quat_orig)
+        np.testing.assert_array_equal(t2.body_lin_vel, body_lin_orig)
+        np.testing.assert_array_equal(t2.body_ang_vel, body_ang_orig)
+        np.testing.assert_array_equal(t2.site_pos, site_pos_orig)
+        # Names round-trip as tuples (not lists).
+        assert t2.body_names == body_names_orig, (
+            f"body_names round-trip drifted: {t2.body_names!r} vs {body_names_orig!r}"
+        )
+        assert t2.site_names == site_names_orig
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_phase3_names_arrays_must_be_consistent():
+    """Phase 3 contract: ``body_names`` is present iff at least one of the
+    body arrays is present (same rule for ``site_names`` / ``site_pos``).
+
+    Without this, a malformed trajectory could expose
+    ``len(service.body_names) > 0`` while ``service.n_bodies == 0``,
+    contradicting the documented "len(names) == 0 => legacy asset"
+    check.  ``validate()`` flags the inconsistency."""
+    from control.references.reference_library import ReferenceTrajectory
+
+    n, nj = 8, 8
+    base_kwargs = dict(
+        command_vx=0.10, dt=0.02, cycle_time=0.40,
+        q_ref=np.zeros((n, nj), dtype=np.float32),
+        phase=np.linspace(0, 1, n, endpoint=False, dtype=np.float32),
+        stance_foot_id=np.zeros(n, dtype=np.float32),
+        contact_mask=np.ones((n, 2), dtype=np.float32),
+    )
+
+    # body_names without any body arrays -> contract violation.
+    bad_body = ReferenceTrajectory(
+        **base_kwargs,
+        body_names=("world", "waist"),
+    )
+    issues = bad_body.validate()
+    assert any("body_names" in s for s in issues), issues
+
+    # body arrays without body_names -> contract violation.
+    bad_body_arr = ReferenceTrajectory(
+        **base_kwargs,
+        body_pos=np.zeros((n, 2, 3), dtype=np.float32),
+    )
+    issues = bad_body_arr.validate()
+    assert any("body_names" in s for s in issues), issues
+
+    # site_names without site_pos -> contract violation.
+    bad_site = ReferenceTrajectory(
+        **base_kwargs,
+        site_names=("left_foot_center",),
+    )
+    issues = bad_site.validate()
+    assert any("site_names" in s for s in issues), issues
+
+    # site_pos without site_names -> contract violation.
+    bad_site_arr = ReferenceTrajectory(
+        **base_kwargs,
+        site_pos=np.zeros((n, 1, 3), dtype=np.float32),
+    )
+    issues = bad_site_arr.validate()
+    assert any("site_names" in s for s in issues), issues
+
+    # Both present and consistent -> clean.
+    good = ReferenceTrajectory(
+        **base_kwargs,
+        body_pos=np.zeros((n, 2, 3), dtype=np.float32),
+        body_quat=np.zeros((n, 2, 4), dtype=np.float32),
+        body_lin_vel=np.zeros((n, 2, 3), dtype=np.float32),
+        body_ang_vel=np.zeros((n, 2, 3), dtype=np.float32),
+        site_pos=np.zeros((n, 1, 3), dtype=np.float32),
+        body_names=("world", "waist"),
+        site_names=("left_foot_center",),
+    )
+    assert good.validate() == [], good.validate()
+
+
 # ---- 5. Deprecation marker ------------------------------------------------
 # (v0.20.1 cleanup: ``walking_ref_v2`` was DELETED, not just marked
 # deprecated.  The previous text-check on its module docstring is no
