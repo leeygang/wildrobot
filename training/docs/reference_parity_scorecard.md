@@ -249,6 +249,8 @@ through a deterministic reusable library path (cache key from
 `ZMPWalkConfig` + required `vx` bins + generator-source fingerprint)
 instead of ad-hoc per-call generation. Default cache root is
 `.cache/wr_reference_libraries`.
+The fingerprint includes WR generator code plus `assets/v2/*.xml` and
+`assets/v2/*.json` inputs used by Phase 3 fixed-base FK replay.
 Use `--wr-library-path <dir>` to pin parity/debug runs to a specific
 saved WR asset.
 

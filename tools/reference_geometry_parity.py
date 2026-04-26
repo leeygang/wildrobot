@@ -256,13 +256,25 @@ def _assert_wr_library_has_bins(lib: ReferenceLibrary, required_vx_bins: list[fl
 
 
 def _wr_generator_fingerprint() -> str:
-    """Fingerprint generator implementation that produces WR reference assets."""
+    """Fingerprint inputs that affect WR reference asset generation."""
     wildrobot_root, _ = _repo_roots()
-    tracked_files = [
+    tracked_files: list[Path] = [
         wildrobot_root / "control" / "zmp" / "zmp_walk.py",
         wildrobot_root / "control" / "zmp" / "zmp_planner.py",
         wildrobot_root / "control" / "references" / "reference_library.py",
     ]
+    # Phase 3 realized FK replay depends on WR MJCF/config assets loaded by
+    # ``ZMPWalkGenerator._load_fk_assets``.  Include all XML/JSON under v2 so
+    # cache keys invalidate on any kinematics/site-definition changes.
+    asset_root = wildrobot_root / "assets" / "v2"
+    tracked_files.extend(
+        sorted(
+            path
+            for path in asset_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".xml", ".json"}
+        )
+    )
+
     file_hashes: dict[str, str] = {}
     for file_path in tracked_files:
         if not file_path.exists():
@@ -273,7 +285,7 @@ def _wr_generator_fingerprint() -> str:
         file_hashes[rel_path] = hashlib.sha256(file_path.read_bytes()).hexdigest()
     payload = json.dumps(
         {
-            "schema": "wr_phase5_generator_fingerprint_v1",
+            "schema": "wr_phase5_generator_fingerprint_v2",
             "file_hashes": file_hashes,
         },
         sort_keys=True,

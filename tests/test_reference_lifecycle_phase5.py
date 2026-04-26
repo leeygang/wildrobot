@@ -133,3 +133,35 @@ def test_phase5_wr_cache_invalidates_on_generator_change(tmp_path, monkeypatch):
     assert lifecycle3.generator_fingerprint == "generator_sig_v2"
     assert build_calls["count"] == 2
     assert (Path(lifecycle3.path) / "build_spec.json").exists()
+
+
+def test_wr_generator_fingerprint_changes_on_asset_change(tmp_path, monkeypatch):
+    wildrobot_root = tmp_path / "wildrobot"
+    (wildrobot_root / "control" / "zmp").mkdir(parents=True)
+    (wildrobot_root / "control" / "references").mkdir(parents=True)
+    (wildrobot_root / "assets" / "v2").mkdir(parents=True)
+
+    (wildrobot_root / "control" / "zmp" / "zmp_walk.py").write_text(
+        "def a():\n    return 1\n", encoding="utf-8"
+    )
+    (wildrobot_root / "control" / "zmp" / "zmp_planner.py").write_text(
+        "def b():\n    return 2\n", encoding="utf-8"
+    )
+    (wildrobot_root / "control" / "references" / "reference_library.py").write_text(
+        "def c():\n    return 3\n", encoding="utf-8"
+    )
+    scene_path = wildrobot_root / "assets" / "v2" / "scene_flat_terrain.xml"
+    scene_path.write_text("<mujoco><worldbody/></mujoco>\n", encoding="utf-8")
+    (wildrobot_root / "assets" / "v2" / "mujoco_robot_config.json").write_text(
+        '{"actuated_joint_specs":[]}\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(
+        reference_geometry_parity,
+        "_repo_roots",
+        lambda: (wildrobot_root, wildrobot_root.parent / "toddlerbot"),
+    )
+    fp_before = reference_geometry_parity._wr_generator_fingerprint()
+    scene_path.write_text("<mujoco><worldbody><body/></worldbody></mujoco>\n", encoding="utf-8")
+    fp_after = reference_geometry_parity._wr_generator_fingerprint()
+    assert fp_before != fp_after
