@@ -244,6 +244,13 @@ read below leads with the **size-normalised** view because absolute
 units are confounded by the WR/TB size delta (WR leg ≈ 0.37 m vs TB
 0.21 m, COM ≈ 0.46 m vs 0.29 m).
 
+Phase 5 lifecycle note: the parity tool now resolves WR references
+through a deterministic reusable library path (cache key from
+`ZMPWalkConfig` + required `vx` bins) instead of ad-hoc per-call
+generation. Default cache root is `.cache/wr_reference_libraries`.
+Use `--wr-library-path <dir>` to pin parity/debug runs to a specific
+saved WR asset.
+
 ### Top-line verdicts
 
 | | Status |

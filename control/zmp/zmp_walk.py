@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -1081,7 +1081,47 @@ class ZMPWalkGenerator:
             command_range_vx[1] + interval * 0.5,
             interval,
         )
+        return self._build_library_from_vx_values(
+            vx_values=vx_values,
+            command_range_vx=command_range_vx,
+            interval=float(interval),
+        )
 
+    def build_library_for_vx_values(
+        self,
+        vx_values: Sequence[float],
+        *,
+        interval: float | None = None,
+    ) -> ReferenceLibrary:
+        """Build a deterministic library for an explicit set of ``vx`` bins.
+
+        This lifecycle path mirrors ToddlerBot's pre-baked lookup-table usage:
+        parity/debug tools can predefine the exact command bins once, persist the
+        resulting asset, and reuse it across repeated runs.
+        """
+        if not vx_values:
+            raise ValueError("build_library_for_vx_values requires at least one vx value.")
+        vx_sorted = sorted({round(float(v), 4) for v in vx_values})
+        range_vx = (float(vx_sorted[0]), float(vx_sorted[-1]))
+        if interval is None:
+            if len(vx_sorted) >= 2:
+                diffs = np.diff(np.asarray(vx_sorted, dtype=np.float64))
+                interval = float(np.min(diffs))
+            else:
+                interval = 0.0
+        return self._build_library_from_vx_values(
+            vx_values=vx_sorted,
+            command_range_vx=range_vx,
+            interval=float(interval),
+        )
+
+    def _build_library_from_vx_values(
+        self,
+        *,
+        vx_values: Sequence[float],
+        command_range_vx: Tuple[float, float],
+        interval: float,
+    ) -> ReferenceLibrary:
         trajectories = []
         for vx in vx_values:
             vx_rounded = round(float(vx), 4)
@@ -1106,5 +1146,4 @@ class ZMPWalkGenerator:
             command_range_vx=command_range_vx,
             command_interval=interval,
         )
-
         return ReferenceLibrary(trajectories, meta)

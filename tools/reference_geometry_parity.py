@@ -13,11 +13,14 @@ Usage::
     uv run ./tools/reference_geometry_parity.py --nominal-only
     uv run ./tools/reference_geometry_parity.py --json
     uv run ./tools/reference_geometry_parity.py --strict
+    uv run ./tools/reference_geometry_parity.py --wr-library-path /tmp/wr_ref_lib
+    uv run ./tools/reference_geometry_parity.py --wr-library-rebuild
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import subprocess
@@ -30,6 +33,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from control.references.reference_library import ReferenceLibrary
 from control.zmp.zmp_walk import ZMPWalkConfig, ZMPWalkGenerator
 from training.utils.ctrl_order import CtrlOrderMapper
 
@@ -215,10 +219,127 @@ class ClosedLoopMetrics:
     terminal_root_x_m: float
 
 
+@dataclass
+class WRLibraryLifecycle:
+    path: str
+    source: str
+    cache_key: str | None = None
+    required_vx_bins: list[float] = field(default_factory=list)
+
+
 def _repo_roots() -> tuple[Path, Path]:
     wildrobot_root = Path(__file__).resolve().parents[1]
     toddlerbot_root = wildrobot_root.parent / "toddlerbot"
     return wildrobot_root, toddlerbot_root
+
+
+def _required_wr_vx_bins(nominal_vx: float, nominal_only: bool) -> list[float]:
+    bins = {round(float(nominal_vx), 4)}
+    bins.update(round(float(v), 4) for v in _P1_VX_BINS)
+    if not nominal_only:
+        bins.update(round(float(v), 4) for v in _VX_BINS)
+    return sorted(bins)
+
+
+def _assert_wr_library_has_bins(lib: ReferenceLibrary, required_vx_bins: list[float]) -> None:
+    missing: list[str] = []
+    for vx in required_vx_bins:
+        matched = float(lib.lookup(vx).command_vx)
+        if abs(matched - vx) > 1e-6:
+            missing.append(f"vx={vx:.2f} (nearest={matched:.2f})")
+    if missing:
+        raise ValueError(
+            "Reference library is missing required exact vx bins for parity: "
+            + ", ".join(missing)
+        )
+
+
+def _wr_cache_key(required_vx_bins: list[float]) -> str:
+    spec = {
+        "schema": "wr_phase5_library_cache_v1",
+        "generator": "zmp_walk",
+        "generator_version": "0.20.0",
+        "zmp_config": asdict(ZMPWalkConfig()),
+        "required_vx_bins": required_vx_bins,
+    }
+    payload = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLibrary, WRLibraryLifecycle]:
+    wildrobot_root, _ = _repo_roots()
+    required_vx_bins = _required_wr_vx_bins(args.vx, args.nominal_only)
+
+    if args.wr_library_path:
+        library_path = Path(args.wr_library_path)
+        if not library_path.is_absolute():
+            library_path = wildrobot_root / library_path
+        lib = ReferenceLibrary.load(library_path)
+        _assert_wr_library_has_bins(lib, required_vx_bins)
+        return lib, WRLibraryLifecycle(
+            path=str(library_path),
+            source="explicit-path",
+            required_vx_bins=required_vx_bins,
+        )
+
+    cache_key = _wr_cache_key(required_vx_bins)
+    if args.wr_library_no_cache:
+        lib = ZMPWalkGenerator().build_library_for_vx_values(required_vx_bins)
+        _assert_wr_library_has_bins(lib, required_vx_bins)
+        return lib, WRLibraryLifecycle(
+            path="<in-memory>",
+            source="ephemeral-build",
+            cache_key=cache_key,
+            required_vx_bins=required_vx_bins,
+        )
+
+    cache_dir = Path(args.wr_library_cache_dir)
+    if not cache_dir.is_absolute():
+        cache_dir = wildrobot_root / cache_dir
+    library_dir = cache_dir / f"wr_reference_library_{cache_key}"
+    metadata_path = library_dir / "metadata.json"
+
+    if metadata_path.exists() and not args.wr_library_rebuild:
+        lib = ReferenceLibrary.load(library_dir)
+        _assert_wr_library_has_bins(lib, required_vx_bins)
+        return lib, WRLibraryLifecycle(
+            path=str(library_dir),
+            source="cache-hit",
+            cache_key=cache_key,
+            required_vx_bins=required_vx_bins,
+        )
+
+    library_dir.mkdir(parents=True, exist_ok=True)
+    lib = ZMPWalkGenerator().build_library_for_vx_values(required_vx_bins)
+    _assert_wr_library_has_bins(lib, required_vx_bins)
+    lib.save(library_dir)
+    with open(library_dir / "build_spec.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "cache_key": cache_key,
+                "required_vx_bins": required_vx_bins,
+                "zmp_config": asdict(ZMPWalkConfig()),
+            },
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+    return lib, WRLibraryLifecycle(
+        path=str(library_dir),
+        source="cache-build",
+        cache_key=cache_key,
+        required_vx_bins=required_vx_bins,
+    )
+
+
+def _wr_traj(lib: ReferenceLibrary, vx: float):
+    traj = lib.lookup(vx)
+    if abs(float(traj.command_vx) - float(vx)) > 1e-6:
+        raise ValueError(
+            f"WR reference library missing exact bin vx={vx:.2f}; "
+            f"nearest available is vx={traj.command_vx:.2f}."
+        )
+    return traj
 
 
 def _fmt_float(value: float, width: int = 10, precision: int = 4) -> str:
@@ -618,16 +739,15 @@ def _foot_floor_in_contact(
     return False
 
 
-def _summarize_wildrobot() -> GateSummary:
+def _summarize_wildrobot(lib: ReferenceLibrary) -> GateSummary:
     model, data, mapper, act_to_qpos, geom_ids, _body_ids, _limits = _load_wr_assets()
     left_geoms = [geom_ids["left_heel"], geom_ids["left_toe"]]
     right_geoms = [geom_ids["right_heel"], geom_ids["right_toe"]]
     failures: list[str] = []
     worst_stance_z = -1e9
     worst_swing_z = 1e9
-    gen = ZMPWalkGenerator()
     for vx in _VX_BINS:
-        traj = gen.generate(vx)
+        traj = _wr_traj(lib, vx)
         for frame_idx in _PROBE_FRAMES:
             if frame_idx >= traj.n_steps:
                 continue
@@ -766,8 +886,10 @@ print(json.dumps({{
     return GateSummary(**json.loads(result.stdout))
 
 
-def _wr_fk_and_smoothness(vx: float) -> tuple[FKGaitMetrics, SmoothnessMetrics]:
-    traj = ZMPWalkGenerator().generate(vx)
+def _wr_fk_and_smoothness(
+    lib: ReferenceLibrary, vx: float
+) -> tuple[FKGaitMetrics, SmoothnessMetrics]:
+    traj = _wr_traj(lib, vx)
     n_steps = traj.n_steps
 
     # Phase 3: prefer the asset's stored realized site_pos when present.
@@ -959,9 +1081,11 @@ print(json.dumps(payload))
     return FKGaitMetrics(**payload["gait"]), SmoothnessMetrics(**payload["smooth"])
 
 
-def _closed_loop_wildrobot(vx: float, horizon: int) -> ClosedLoopMetrics:
+def _closed_loop_wildrobot(
+    lib: ReferenceLibrary, vx: float, horizon: int
+) -> ClosedLoopMetrics:
     model, data, mapper, act_to_qpos, geom_ids, body_ids, shared_joint_limits = _load_wr_assets()
-    traj = ZMPWalkGenerator().generate(vx)
+    traj = _wr_traj(lib, vx)
     horizon = min(int(horizon), int(traj.n_steps))
     _init_wr_standing(model, data)
     physics_steps_per_ref = max(1, int(round(float(traj.dt) / float(model.opt.timestep))))
@@ -1826,6 +1950,7 @@ def _build_payload(
     norm_p1_wr: list[NormalizedGaitMetrics],
     norm_p1_tbs: dict[str, list[NormalizedGaitMetrics]],
     norm_p1_rows: dict[str, dict[str, str]],
+    wr_lifecycle: WRLibraryLifecycle,
     args: argparse.Namespace,
     overall_pass: bool,
     norm_overall_pass: bool,
@@ -1845,6 +1970,7 @@ def _build_payload(
                 "wildrobot": _wr_dims(),
                 **{name: _TB_DIMS[name] for name in _TB_VARIANTS},
             },
+            "wr_reference_library": asdict(wr_lifecycle),
         },
         "geometry_summary": [] if summary_wr is None else [asdict(summary_wr), *[asdict(v) for v in summary_tbs]],
         "geometry_parity": geometry_rows,
@@ -1910,6 +2036,34 @@ def main() -> int:
             "stream it to stdout."
         ),
     )
+    parser.add_argument(
+        "--wr-library-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to a prebuilt WR ReferenceLibrary directory. When provided, "
+            "the parity run reuses this asset directly."
+        ),
+    )
+    parser.add_argument(
+        "--wr-library-cache-dir",
+        type=str,
+        default=".cache/wr_reference_libraries",
+        help=(
+            "Cache root for deterministic WR parity libraries. Relative paths "
+            "resolve from the WildRobot repo root."
+        ),
+    )
+    parser.add_argument(
+        "--wr-library-no-cache",
+        action="store_true",
+        help="Disable on-disk WR library caching and build in-memory for this run only.",
+    )
+    parser.add_argument(
+        "--wr-library-rebuild",
+        action="store_true",
+        help="Force rebuilding the WR cache entry for the current parity spec.",
+    )
     args = parser.parse_args()
 
     wildrobot_root, toddlerbot_root = _repo_roots()
@@ -1917,13 +2071,14 @@ def main() -> int:
         raise FileNotFoundError(
             f"ToddlerBot repo not found at expected sibling path: {toddlerbot_root}"
         )
+    wr_lib, wr_lifecycle = _resolve_wr_reference_library(args)
 
     summary_wr: GateSummary | None = None
     summary_tbs: list[GateSummary] = []
     geometry_rows: list[dict[str, str]] = []
     geometry_ok = True
     if not args.nominal_only:
-        summary_wr = _summarize_wildrobot()
+        summary_wr = _summarize_wildrobot(wr_lib)
         summary_tbs = [
             _summarize_toddlerbot(toddlerbot_root, robot_name)
             for robot_name in _TB_VARIANTS
@@ -1932,7 +2087,7 @@ def main() -> int:
         geometry_rows = [row for _ok, row in geometry_pairs]
         geometry_ok = all(ok for ok, _row in geometry_pairs)
 
-    gait_wr, smooth_wr = _wr_fk_and_smoothness(args.vx)
+    gait_wr, smooth_wr = _wr_fk_and_smoothness(wr_lib, args.vx)
     gait_tbs: list[FKGaitMetrics] = []
     smooth_tbs: list[SmoothnessMetrics] = []
     for robot_name in _TB_VARIANTS:
@@ -1949,7 +2104,7 @@ def main() -> int:
     smooth_ok = all(ok for ok, _row in smooth_pairs)
 
     p1_vx_bins = [args.vx] if args.nominal_only else list(_P1_VX_BINS)
-    p1_wr = [_closed_loop_wildrobot(vx, args.horizon) for vx in p1_vx_bins]
+    p1_wr = [_closed_loop_wildrobot(wr_lib, vx, args.horizon) for vx in p1_vx_bins]
     p1_tbs: dict[str, list[ClosedLoopMetrics]] = {}
     p1_rows: dict[str, dict[str, str]] = {}
     p1_ok = True
@@ -2013,6 +2168,7 @@ def main() -> int:
         norm_p1_wr=norm_p1_wr,
         norm_p1_tbs=norm_p1_tbs,
         norm_p1_rows=norm_p1_rows,
+        wr_lifecycle=wr_lifecycle,
         args=args,
         overall_pass=overall_ok,
         norm_overall_pass=norm_overall_ok,
@@ -2029,6 +2185,10 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
+        print(
+            f"WR reference library: {wr_lifecycle.path} "
+            f"(source={wr_lifecycle.source}, bins={wr_lifecycle.required_vx_bins})"
+        )
         if not args.nominal_only and summary_wr is not None:
             _print_geometry_table(summary_wr, summary_tbs, geometry_rows)
         _print_fk_table(gait_wr, gait_tbs, fk_rows, args.vx)

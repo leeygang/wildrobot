@@ -28,6 +28,15 @@ def main() -> None:
     parser.add_argument("--vx-min", type=float, default=0.0)
     parser.add_argument("--vx-max", type=float, default=0.25)
     parser.add_argument("--vx-interval", type=float, default=0.05)
+    parser.add_argument(
+        "--vx-bins",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated explicit vx bins (e.g. "
+            "'0.10,0.15,0.20,0.25'). Overrides --vx-min/--vx-max/--vx-interval."
+        ),
+    )
     parser.add_argument("--cycle-time", type=float, default=0.50)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--com-height", type=float, default=0.42)
@@ -43,15 +52,23 @@ def main() -> None:
 
     gen = ZMPWalkGenerator(cfg)
 
-    print(f"Building ZMP reference library:")
-    print(f"  vx range: [{args.vx_min}, {args.vx_max}] at {args.vx_interval} m/s")
+    print("Building ZMP reference library:")
+    if args.vx_bins.strip():
+        vx_bins = [float(v.strip()) for v in args.vx_bins.split(",") if v.strip()]
+        print(f"  explicit vx bins: {vx_bins}")
+    else:
+        vx_bins = []
+        print(f"  vx range: [{args.vx_min}, {args.vx_max}] at {args.vx_interval} m/s")
     print(f"  cycle_time={cfg.cycle_time_s}s  dt={cfg.dt_s}s  com_height={cfg.com_height_m}m")
     print()
 
-    lib = gen.build_library(
-        command_range_vx=(args.vx_min, args.vx_max),
-        interval=args.vx_interval,
-    )
+    if vx_bins:
+        lib = gen.build_library_for_vx_values(vx_bins, interval=args.vx_interval)
+    else:
+        lib = gen.build_library(
+            command_range_vx=(args.vx_min, args.vx_max),
+            interval=args.vx_interval,
+        )
 
     # Validate
     issues = lib.validate()
