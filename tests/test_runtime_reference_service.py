@@ -159,6 +159,97 @@ def test_service_metadata(service, smoke_trajectory):
     assert service.n_joints == int(smoke_trajectory.q_ref.shape[1])
 
 
+# -- command-integrated path-state helper -------------------------------------
+
+def _tb_discrete_path_integrate(vx: float, yaw_rate: float, dt: float, n_steps: int):
+    """Discrete reference for TB-style path integration.
+
+    Mirrors toddlerbot/reference/motion_ref.py::integrate_path_state:
+    update yaw first, then advance path_pos by rotated lin_vel * dt.
+    """
+    yaw = 0.0
+    x = 0.0
+    y = 0.0
+    for _ in range(n_steps):
+        yaw += yaw_rate * dt
+        x += vx * np.cos(yaw) * dt
+        y += vx * np.sin(yaw) * dt
+    quat_wxyz = np.array([np.cos(0.5 * yaw), 0.0, 0.0, np.sin(0.5 * yaw)], dtype=np.float32)
+    return np.array([x, y, 0.0], dtype=np.float32), quat_wxyz
+
+
+def test_compute_command_integrated_path_state_yaw_stationary():
+    """Yaw-stationary smoke contract: path_pos = vx * t on x, y=0."""
+    dt = 0.02
+    t = 1.0
+    vx = 0.15
+    path_state = RuntimeReferenceService.compute_command_integrated_path_state(
+        t_since_reset_s=t,
+        velocity_cmd_mps=vx,
+        yaw_rate_cmd_rps=0.0,
+        dt_s=dt,
+    )
+    np.testing.assert_allclose(
+        np.asarray(path_state["path_pos"]),
+        np.array([vx * t, 0.0, 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(path_state["path_rot"]),
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(path_state["lin_vel"]),
+        np.array([vx, 0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(path_state["ang_vel"]),
+        np.array([0.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+
+def test_compute_command_integrated_path_state_matches_tb_discrete_yaw():
+    """Nonzero yaw-rate path integration should match TB's discrete update."""
+    dt = 0.02
+    n_steps = 80
+    t = n_steps * dt
+    vx = 0.18
+    yaw_rate = 0.30
+    expected_pos, expected_quat = _tb_discrete_path_integrate(
+        vx=vx,
+        yaw_rate=yaw_rate,
+        dt=dt,
+        n_steps=n_steps,
+    )
+    path_state = RuntimeReferenceService.compute_command_integrated_path_state(
+        t_since_reset_s=t,
+        velocity_cmd_mps=vx,
+        yaw_rate_cmd_rps=yaw_rate,
+        dt_s=dt,
+    )
+    np.testing.assert_allclose(
+        np.asarray(path_state["path_pos"]),
+        expected_pos,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(path_state["path_rot"]),
+        expected_quat,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(path_state["lin_vel"]),
+        np.array([vx, 0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(path_state["ang_vel"]),
+        np.array([0.0, 0.0, yaw_rate], dtype=np.float32),
+    )
+
+
 # -- n_anchor=0 edge case ---------------------------------------------------
 
 def test_zero_anchor(smoke_trajectory):

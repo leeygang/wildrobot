@@ -179,6 +179,67 @@ class RuntimeReferenceService:
     # -- construction ---------------------------------------------------------
 
     @staticmethod
+    def compute_command_integrated_path_state(
+        *,
+        t_since_reset_s,
+        velocity_cmd_mps,
+        yaw_rate_cmd_rps=0.0,
+        dt_s=0.02,
+    ) -> dict:
+        """TB-style runtime path integration for constant command inputs.
+
+        Mirrors ``toddlerbot.reference.motion_ref.MotionReference``
+        ``integrate_path_state`` semantics for the v0.20 smoke command space:
+        local linear velocity ``[vx, 0, 0]`` and yaw rate ``[0, 0, wz]``.
+
+        The helper is stateless and JAX-friendly: it reconstructs the path
+        state from elapsed time plus command, so env code can consume a
+        command-integrated torso/path target without mutating service state.
+        """
+        import jax.numpy as jnp
+
+        t = jnp.asarray(t_since_reset_s, dtype=jnp.float32)
+        vx = jnp.asarray(velocity_cmd_mps, dtype=jnp.float32)
+        yaw_rate = jnp.asarray(yaw_rate_cmd_rps, dtype=jnp.float32)
+        dt = jnp.maximum(jnp.asarray(dt_s, dtype=jnp.float32), jnp.float32(1e-8))
+
+        # Step-count view of elapsed time keeps parity with the env's discrete
+        # ctrl updates (t_since_reset = step_idx * dt).
+        n_steps = jnp.maximum(jnp.rint(t / dt).astype(jnp.int32), 0)
+        n = n_steps.astype(jnp.float32)
+        theta = yaw_rate * dt
+
+        # Closed-form discrete sum for:
+        #   p_n = dt * sum_{k=1..n} Rz(k*theta) * [vx, 0]
+        # with a numerically stable theta->0 fallback.
+        half_theta = 0.5 * theta
+        sin_half = jnp.sin(half_theta)
+        sin_half_safe = jnp.where(
+            jnp.abs(sin_half) > jnp.float32(1e-6),
+            sin_half,
+            jnp.float32(1.0),
+        )
+        ratio_closed = jnp.sin(0.5 * n * theta) / sin_half_safe
+        ratio = jnp.where(jnp.abs(sin_half) > jnp.float32(1e-6), ratio_closed, n)
+        x_sum = ratio * jnp.cos(0.5 * (n + 1.0) * theta)
+        y_sum = ratio * jnp.sin(0.5 * (n + 1.0) * theta)
+
+        path_pos = jnp.asarray([vx * dt * x_sum, vx * dt * y_sum, 0.0], dtype=jnp.float32)
+        yaw = n * theta
+        half_yaw = 0.5 * yaw
+        path_rot = jnp.asarray(
+            [jnp.cos(half_yaw), 0.0, 0.0, jnp.sin(half_yaw)], dtype=jnp.float32
+        )  # wxyz
+        lin_vel = jnp.asarray([vx, 0.0, 0.0], dtype=jnp.float32)
+        ang_vel = jnp.asarray([0.0, 0.0, yaw_rate], dtype=jnp.float32)
+        return {
+            "path_pos": path_pos,
+            "path_rot": path_rot,
+            "lin_vel": lin_vel,
+            "ang_vel": ang_vel,
+        }
+
+    @staticmethod
     def _build_stack(traj: ReferenceTrajectory) -> _StackedTrajectory:
         n = int(traj.q_ref.shape[0])
         n_joints = int(traj.q_ref.shape[1])

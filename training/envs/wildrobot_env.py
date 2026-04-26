@@ -717,6 +717,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         *,
         data: mjx.Data,
         win: Dict[str, jax.Array],
+        path_state: Dict[str, jax.Array],
         nominal_q_ref: jax.Array,
         applied_action: jax.Array,
         prev_applied_action: jax.Array,
@@ -808,10 +809,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         feet_err_l2 = jp.sum(left_rel * left_rel) + jp.sum(right_rel * right_rel)
         r_feet_track_raw = jp.exp(-jp.float32(200.0) * feet_err_l2)
 
-        # ---- torso_pos_xy (ToddlerBot parity) --------------------------------
-        # Match ToddlerBot _reward_torso_pos_xy:
+        # ---- torso_pos_xy (Phase 4 TB semantics) ------------------------------
+        # Match ToddlerBot _reward_torso_pos_xy using a command-integrated
+        # runtime path target (not planner/offline pelvis_pos[:2]).
         # exp(-alpha * ||torso_xy - torso_xy_ref||^2).
-        torso_pos_xy_err = root_pos_xyz[:2] - ref_pelvis_pos[:2]
+        torso_pos_xy_err = root_pos_xyz[:2] - path_state["path_pos"][:2]
         r_torso_pos_xy = jp.exp(
             -jp.float32(weights.torso_pos_xy_alpha)
             * jp.sum(torso_pos_xy_err * torso_pos_xy_err)
@@ -1480,6 +1482,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         next_step_idx = (wr.loc_ref_offline_step_idx + 1).astype(jp.int32)
         win = self._lookup_offline_window(next_step_idx)
         nominal_q_ref = win["q_ref"].astype(jp.float32)
+        t_since_reset_s = next_step_idx.astype(jp.float32) * jp.float32(self.dt)
+        # Phase 4: keep planner pelvis_pos for diagnostics, but shift torso
+        # reward targets to TB-style command-integrated runtime path state.
+        path_state = self._offline_service.compute_command_integrated_path_state(
+            t_since_reset_s=t_since_reset_s,
+            velocity_cmd_mps=velocity_cmd,
+            yaw_rate_cmd_rps=jp.float32(0.0),
+            dt_s=jp.float32(self.dt),
+        )
         # Prev-frame window for finite-diff reference velocity (lin_vel_z).
         # Clamp at 0 so step 0's "previous" is itself (zero velocity for the
         # very first step; subsequent steps see real bobbing).
@@ -1608,6 +1619,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reward_terms = self._compute_reward_terms(
             data=data,
             win=win,
+            path_state=path_state,
             nominal_q_ref=nominal_q_ref,
             applied_action=applied_action,
             prev_applied_action=wr.prev_action,
