@@ -246,8 +246,9 @@ units are confounded by the WR/TB size delta (WR leg ≈ 0.37 m vs TB
 
 Phase 5 lifecycle note: the parity tool now resolves WR references
 through a deterministic reusable library path (cache key from
-`ZMPWalkConfig` + required `vx` bins) instead of ad-hoc per-call
-generation. Default cache root is `.cache/wr_reference_libraries`.
+`ZMPWalkConfig` + required `vx` bins + generator-source fingerprint)
+instead of ad-hoc per-call generation. Default cache root is
+`.cache/wr_reference_libraries`.
 Use `--wr-library-path <dir>` to pin parity/debug runs to a specific
 saved WR asset.
 

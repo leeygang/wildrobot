@@ -65,6 +65,11 @@ def test_phase5_wr_cache_reuses_saved_library(tmp_path, monkeypatch):
         "build_library_for_vx_values",
         _fake_build,
     )
+    monkeypatch.setattr(
+        reference_geometry_parity,
+        "_wr_generator_fingerprint",
+        lambda: "generator_sig_v1",
+    )
 
     args = argparse.Namespace(
         vx=0.15,
@@ -82,3 +87,49 @@ def test_phase5_wr_cache_reuses_saved_library(tmp_path, monkeypatch):
     assert lifecycle2.source == "cache-hit"
     assert lifecycle1.path == lifecycle2.path
     assert (Path(lifecycle1.path) / "metadata.json").exists()
+
+
+def test_phase5_wr_cache_invalidates_on_generator_change(tmp_path, monkeypatch):
+    build_calls = {"count": 0}
+
+    def _fake_build(self, vx_values, interval=None):  # noqa: ANN001
+        build_calls["count"] += 1
+        return _dummy_library(list(vx_values))
+
+    monkeypatch.setattr(
+        reference_geometry_parity.ZMPWalkGenerator,
+        "build_library_for_vx_values",
+        _fake_build,
+    )
+
+    args = argparse.Namespace(
+        vx=0.15,
+        nominal_only=False,
+        wr_library_path=None,
+        wr_library_cache_dir=str(tmp_path / "wr_cache"),
+        wr_library_no_cache=False,
+        wr_library_rebuild=False,
+    )
+
+    monkeypatch.setattr(
+        reference_geometry_parity,
+        "_wr_generator_fingerprint",
+        lambda: "generator_sig_v1",
+    )
+    _lib1, lifecycle1 = reference_geometry_parity._resolve_wr_reference_library(args)
+    _lib2, lifecycle2 = reference_geometry_parity._resolve_wr_reference_library(args)
+    assert lifecycle1.source == "cache-build"
+    assert lifecycle2.source == "cache-hit"
+    assert build_calls["count"] == 1
+
+    monkeypatch.setattr(
+        reference_geometry_parity,
+        "_wr_generator_fingerprint",
+        lambda: "generator_sig_v2",
+    )
+    _lib3, lifecycle3 = reference_geometry_parity._resolve_wr_reference_library(args)
+    assert lifecycle3.source == "cache-build"
+    assert lifecycle3.path != lifecycle1.path
+    assert lifecycle3.generator_fingerprint == "generator_sig_v2"
+    assert build_calls["count"] == 2
+    assert (Path(lifecycle3.path) / "build_spec.json").exists()

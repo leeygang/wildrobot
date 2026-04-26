@@ -224,6 +224,7 @@ class WRLibraryLifecycle:
     path: str
     source: str
     cache_key: str | None = None
+    generator_fingerprint: str | None = None
     required_vx_bins: list[float] = field(default_factory=list)
 
 
@@ -254,11 +255,39 @@ def _assert_wr_library_has_bins(lib: ReferenceLibrary, required_vx_bins: list[fl
         )
 
 
-def _wr_cache_key(required_vx_bins: list[float]) -> str:
+def _wr_generator_fingerprint() -> str:
+    """Fingerprint generator implementation that produces WR reference assets."""
+    wildrobot_root, _ = _repo_roots()
+    tracked_files = [
+        wildrobot_root / "control" / "zmp" / "zmp_walk.py",
+        wildrobot_root / "control" / "zmp" / "zmp_planner.py",
+        wildrobot_root / "control" / "references" / "reference_library.py",
+    ]
+    file_hashes: dict[str, str] = {}
+    for file_path in tracked_files:
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"Generator fingerprint file not found: {file_path}"
+            )
+        rel_path = str(file_path.relative_to(wildrobot_root))
+        file_hashes[rel_path] = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    payload = json.dumps(
+        {
+            "schema": "wr_phase5_generator_fingerprint_v1",
+            "file_hashes": file_hashes,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _wr_cache_key(required_vx_bins: list[float], generator_fingerprint: str) -> str:
     spec = {
         "schema": "wr_phase5_library_cache_v1",
         "generator": "zmp_walk",
         "generator_version": "0.20.0",
+        "generator_fingerprint": generator_fingerprint,
         "zmp_config": asdict(ZMPWalkConfig()),
         "required_vx_bins": required_vx_bins,
     }
@@ -269,6 +298,7 @@ def _wr_cache_key(required_vx_bins: list[float]) -> str:
 def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLibrary, WRLibraryLifecycle]:
     wildrobot_root, _ = _repo_roots()
     required_vx_bins = _required_wr_vx_bins(args.vx, args.nominal_only)
+    generator_fingerprint = _wr_generator_fingerprint()
 
     if args.wr_library_path:
         library_path = Path(args.wr_library_path)
@@ -279,10 +309,11 @@ def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLi
         return lib, WRLibraryLifecycle(
             path=str(library_path),
             source="explicit-path",
+            generator_fingerprint=generator_fingerprint,
             required_vx_bins=required_vx_bins,
         )
 
-    cache_key = _wr_cache_key(required_vx_bins)
+    cache_key = _wr_cache_key(required_vx_bins, generator_fingerprint)
     if args.wr_library_no_cache:
         lib = ZMPWalkGenerator().build_library_for_vx_values(required_vx_bins)
         _assert_wr_library_has_bins(lib, required_vx_bins)
@@ -290,6 +321,7 @@ def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLi
             path="<in-memory>",
             source="ephemeral-build",
             cache_key=cache_key,
+            generator_fingerprint=generator_fingerprint,
             required_vx_bins=required_vx_bins,
         )
 
@@ -299,15 +331,27 @@ def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLi
     library_dir = cache_dir / f"wr_reference_library_{cache_key}"
     metadata_path = library_dir / "metadata.json"
 
-    if metadata_path.exists() and not args.wr_library_rebuild:
-        lib = ReferenceLibrary.load(library_dir)
-        _assert_wr_library_has_bins(lib, required_vx_bins)
-        return lib, WRLibraryLifecycle(
-            path=str(library_dir),
-            source="cache-hit",
-            cache_key=cache_key,
-            required_vx_bins=required_vx_bins,
-        )
+    build_spec_path = library_dir / "build_spec.json"
+    if (
+        metadata_path.exists()
+        and build_spec_path.exists()
+        and not args.wr_library_rebuild
+    ):
+        with open(build_spec_path, encoding="utf-8") as f:
+            build_spec = json.load(f)
+        if (
+            build_spec.get("generator_fingerprint") == generator_fingerprint
+            and build_spec.get("required_vx_bins") == required_vx_bins
+        ):
+            lib = ReferenceLibrary.load(library_dir)
+            _assert_wr_library_has_bins(lib, required_vx_bins)
+            return lib, WRLibraryLifecycle(
+                path=str(library_dir),
+                source="cache-hit",
+                cache_key=cache_key,
+                generator_fingerprint=generator_fingerprint,
+                required_vx_bins=required_vx_bins,
+            )
 
     library_dir.mkdir(parents=True, exist_ok=True)
     lib = ZMPWalkGenerator().build_library_for_vx_values(required_vx_bins)
@@ -318,6 +362,7 @@ def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLi
             {
                 "cache_key": cache_key,
                 "required_vx_bins": required_vx_bins,
+                "generator_fingerprint": generator_fingerprint,
                 "zmp_config": asdict(ZMPWalkConfig()),
             },
             f,
@@ -328,6 +373,7 @@ def _resolve_wr_reference_library(args: argparse.Namespace) -> tuple[ReferenceLi
         path=str(library_dir),
         source="cache-build",
         cache_key=cache_key,
+        generator_fingerprint=generator_fingerprint,
         required_vx_bins=required_vx_bins,
     )
 
@@ -2187,7 +2233,8 @@ def main() -> int:
     else:
         print(
             f"WR reference library: {wr_lifecycle.path} "
-            f"(source={wr_lifecycle.source}, bins={wr_lifecycle.required_vx_bins})"
+            f"(source={wr_lifecycle.source}, bins={wr_lifecycle.required_vx_bins}, "
+            f"fingerprint={wr_lifecycle.generator_fingerprint})"
         )
         if not args.nominal_only and summary_wr is not None:
             _print_geometry_table(summary_wr, summary_tbs, geometry_rows)
