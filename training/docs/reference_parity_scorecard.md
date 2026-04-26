@@ -142,6 +142,58 @@ Interpretation:
   indicate a planner discontinuity bug (which is what the gate catches). Do
   not read a 0/0 PASS as "WR is smoother on pelvis height."
 
+### Size-normalised parity (Option A — companion to P0–P2)
+
+WildRobot is a meaningfully bigger robot than ToddlerBot (leg ≈ 0.37 m
+vs 0.21 m, COM height ≈ 0.46 m vs 0.29 m). Several absolute metrics in
+P1A / P1 / P2 are size-sensitive — most importantly step length, swing
+clearance, cadence, and drift rate scale with leg length or √(L/g).
+
+The script reports a parallel set of size-normalised gates so the parity
+reading is fair across the size delta, while keeping the absolute gates
+in place as sanity checks.
+
+Characteristic dimensions used:
+
+- WildRobot: `leg_length_m = ZMPWalkConfig.upper_leg_m + lower_leg_m`,
+  `com_height_m = ZMPWalkConfig.com_height_m`
+- ToddlerBot 2xc / 2xm: `leg_length_m = robot.yml hip_to_ankle_pitch_z`,
+  `com_height_m = robot.yml com_z`
+
+Normalised metrics (all dimensionless):
+
+- `step_length_per_leg = step_length_mean_m / leg_length_m`
+- `swing_clearance_per_com_height = swing_clearance_mean_m / com_height_m`
+- `cadence_froude_norm = touchdown_rate_hz · √(com_height_m / g)`
+- `swing_foot_z_step_per_clearance = swing_foot_z_step_max_m / swing_clearance_mean_m`
+- `forward_speed_froude = vx² / (g · com_height_m)` (operating-point characterisation)
+- `achieved_forward_per_cmd = achieved_forward_mps / vx` (P1)
+- `terminal_drift_rate_per_leg_per_s = (terminal_root_x_m / duration_s) / leg_length_m` (P1)
+- `td_step_length_per_leg = touchdown_step_length_mean_m / leg_length_m` (P1)
+
+Normalised parity targets:
+
+- WildRobot `step_length_per_leg ≥ 0.85 ×` ToddlerBot
+- WildRobot `swing_clearance_per_com_height ≥ 0.85 ×` ToddlerBot
+- WildRobot `cadence_froude_norm ≤ 1.20 ×` ToddlerBot
+- WildRobot `swing_foot_z_step_per_clearance ≤ 1.10 ×` ToddlerBot
+- WildRobot `achieved_forward_per_cmd ≥` ToddlerBot `− 0.10` per `vx` bin
+- WildRobot `|terminal_drift_rate_per_leg_per_s| ≤` ToddlerBot `+ 0.5 leg/s` per bin
+- WildRobot `td_step_length_per_leg ≥ 0.85 ×` ToddlerBot per bin
+
+Interpretation:
+
+- **Both verdicts (absolute and normalised) are reported**. Absolute is
+  the literal "WR matches TB's numbers" sanity floor; normalised is the
+  fair "after-size-correction parity" reading.
+- A passing absolute gate with a failing normalised gate means WR happens
+  to land near TB's number but is operating at a proportionally
+  different gait point (e.g. step length matches but as a much smaller
+  fraction of leg length).
+- A failing absolute gate with a passing normalised gate means WR is
+  proportionally on par; the absolute gap is purely a size artifact.
+- `--strict` requires BOTH verdicts to pass.
+
 ### P3. WildRobot Policy-Contract Gates
 
 After P0-P2 are acceptable, WildRobot must still satisfy its own policy-side
@@ -175,7 +227,8 @@ WildRobot is "on par with ToddlerBot" only when all of the following are true:
 3. WildRobot matches ToddlerBot on P1A nominal FK-realized gait shape
 4. WildRobot meets the P1 parity target against ToddlerBot
 5. WildRobot is not materially rougher than ToddlerBot on P2
-6. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
+6. WildRobot meets the size-normalised parity targets on FK and P1
+7. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
 
 If P0 fails, fix geometry first.
 If P0 passes but P1A fails, fix the nominal gait shape / FK realization.

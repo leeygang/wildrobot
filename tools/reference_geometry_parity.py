@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import mujoco
@@ -29,7 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from control.zmp.zmp_walk import ZMPWalkGenerator
+from control.zmp.zmp_walk import ZMPWalkConfig, ZMPWalkGenerator
 from training.utils.ctrl_order import CtrlOrderMapper
 
 
@@ -82,6 +83,52 @@ _WR_ROOT_Z_FAIL_M = 0.15
 _TB_TORSO_Z_FAIL_M = 0.15
 _SAT_MARGIN_RAD = 0.01
 
+# Characteristic robot dimensions for size-normalised parity (Option A).
+# The absolute parity gates above stay in metric units for sanity; the
+# normalised companion gates below use these dims to put WR and TB on
+# the same Froude-equivalent footing despite WR being ~1.6-1.8x larger.
+#
+# Sources:
+#   WR  leg_length_m = ZMPWalkConfig.upper_leg_m + lower_leg_m  (0.193 + 0.180)
+#   WR  com_height_m = ZMPWalkConfig.com_height_m at default cfg (~0.462 m)
+#   TB-2xc / TB-2xm leg_length_m = robot.yml hip_to_ankle_pitch_z
+#   TB-2xc / TB-2xm com_height_m = robot.yml com_z
+# Both TB variants share the same kinematics today; if a future TB build
+# diverges, split the entry below.
+_GRAVITY_MPS2 = 9.81
+
+
+def _wr_dims() -> dict[str, float]:
+    """WildRobot characteristic dimensions, computed from the live config
+    so any change to ``ZMPWalkConfig`` (e.g. leg refit) propagates here
+    without manual sync.
+    """
+    cfg = ZMPWalkConfig()
+    return {
+        "leg_length_m": float(cfg.upper_leg_m + cfg.lower_leg_m),
+        "com_height_m": float(cfg.com_height_m),
+    }
+
+
+_TB_DIMS: dict[str, dict[str, float]] = {
+    "toddlerbot_2xc": {"leg_length_m": 0.2115, "com_height_m": 0.2859},
+    "toddlerbot_2xm": {"leg_length_m": 0.2115, "com_height_m": 0.2859},
+}
+
+
+def _robot_dims(name: str) -> dict[str, float]:
+    if name == "wildrobot":
+        return _wr_dims()
+    if name in _TB_DIMS:
+        return _TB_DIMS[name]
+    return {"leg_length_m": float("nan"), "com_height_m": float("nan")}
+
+
+def _safe_div(numer: float, denom: float) -> float:
+    if not np.isfinite(numer) or not np.isfinite(denom) or abs(denom) < 1e-12:
+        return float("nan")
+    return float(numer) / float(denom)
+
 
 @dataclass
 class GateSummary:
@@ -120,6 +167,35 @@ class SmoothnessMetrics:
     pelvis_z_step_max_m: float
     swing_foot_z_step_max_m: float
     contact_flips_per_cycle: float
+
+
+@dataclass
+class NormalizedGaitMetrics:
+    """Size-normalised companion to ``FKGaitMetrics`` / ``ClosedLoopMetrics``.
+
+    Lets WR (leg ~0.37 m, COM ~0.46 m) be compared fairly with TB
+    (leg ~0.21 m, COM ~0.29 m).  Computed post-hoc from the absolute
+    metrics + the robot's characteristic dimensions; absolute fields are
+    untouched so existing tooling keeps working.
+
+    All fields are dimensionless except ``leg_length_m`` / ``com_height_m``
+    which are recorded for reproducibility.
+    """
+
+    name: str
+    vx: float
+    leg_length_m: float
+    com_height_m: float
+    forward_speed_froude: float = float("nan")  # vx^2 / (g * h), characterises operating point
+    # FK / nominal-asset normalisations (NaN if computed from a closed-loop row only)
+    step_length_per_leg: float = float("nan")
+    swing_clearance_per_com_height: float = float("nan")
+    cadence_froude_norm: float = float("nan")  # td_rate * sqrt(h / g), dimensionless cadence
+    swing_foot_z_step_per_clearance: float = float("nan")
+    # Closed-loop normalisations (NaN for FK-derived rows)
+    achieved_forward_per_cmd: float = float("nan")
+    terminal_drift_rate_per_leg_per_s: float = float("nan")
+    td_step_length_per_leg: float = float("nan")
 
 
 @dataclass
@@ -343,6 +419,78 @@ def _compute_smoothness_metrics(
         pelvis_z_step_max_m=pelvis_z_step_max,
         swing_foot_z_step_max_m=swing_foot_z_step_max,
         contact_flips_per_cycle=float(bit_flips / n_cycles),
+    )
+
+
+def _compute_normalized_from_fk(
+    name: str,
+    vx: float,
+    gait: FKGaitMetrics,
+    smooth: SmoothnessMetrics,
+) -> NormalizedGaitMetrics:
+    """Build the size-normalised companion to the FK / nominal-asset row."""
+    dims = _robot_dims(name)
+    L = dims["leg_length_m"]
+    h = dims["com_height_m"]
+    cadence_norm = (
+        float(gait.touchdown_rate_hz) * math.sqrt(h / _GRAVITY_MPS2)
+        if np.isfinite(gait.touchdown_rate_hz) and h > 0
+        else float("nan")
+    )
+    forward_froude = (
+        (vx * vx) / (_GRAVITY_MPS2 * h)
+        if np.isfinite(vx) and h > 0
+        else float("nan")
+    )
+    return NormalizedGaitMetrics(
+        name=name,
+        vx=vx,
+        leg_length_m=L,
+        com_height_m=h,
+        forward_speed_froude=forward_froude,
+        step_length_per_leg=_safe_div(gait.step_length_mean_m, L),
+        swing_clearance_per_com_height=_safe_div(gait.swing_clearance_mean_m, h),
+        cadence_froude_norm=cadence_norm,
+        swing_foot_z_step_per_clearance=_safe_div(
+            smooth.swing_foot_z_step_max_m, gait.swing_clearance_mean_m
+        ),
+    )
+
+
+def _compute_normalized_from_closed_loop(
+    metrics: ClosedLoopMetrics, ctrl_dt: float = 0.02
+) -> NormalizedGaitMetrics:
+    """Build the size-normalised companion to a P1 closed-loop row.
+
+    Drift rate is the per-second pelvis x divided by leg length, so
+    "WR drifted backward by 1.8 leg-lengths per second" reads cleanly
+    against the same number on TB.
+    """
+    dims = _robot_dims(metrics.name)
+    L = dims["leg_length_m"]
+    h = dims["com_height_m"]
+    duration_s = max(int(metrics.survived_steps) * ctrl_dt, 1e-8)
+    drift_rate_mps = metrics.terminal_root_x_m / duration_s
+    forward_froude = (
+        (metrics.vx * metrics.vx) / (_GRAVITY_MPS2 * h)
+        if np.isfinite(metrics.vx) and h > 0
+        else float("nan")
+    )
+    cadence_norm = (
+        float(metrics.touchdown_rate_hz) * math.sqrt(h / _GRAVITY_MPS2)
+        if np.isfinite(metrics.touchdown_rate_hz) and h > 0
+        else float("nan")
+    )
+    return NormalizedGaitMetrics(
+        name=metrics.name,
+        vx=metrics.vx,
+        leg_length_m=L,
+        com_height_m=h,
+        forward_speed_froude=forward_froude,
+        cadence_froude_norm=cadence_norm,
+        achieved_forward_per_cmd=_safe_div(metrics.achieved_forward_mps, metrics.vx),
+        terminal_drift_rate_per_leg_per_s=_safe_div(drift_rate_mps, L),
+        td_step_length_per_leg=_safe_div(metrics.touchdown_step_length_mean_m, L),
     )
 
 
@@ -1218,6 +1366,119 @@ def _trackability_per_bin_matrix(
     return matrix
 
 
+# ---------------------------------------------------------------------------
+# Size-normalised parity (Option A)
+# ---------------------------------------------------------------------------
+# Companion gates that compare WR vs TB after dividing out leg length /
+# COM height.  See training/docs/reference_parity_scorecard.md
+# § "Size-normalised parity (Option A)" for the rationale.
+
+_NORM_FK_GATE_KEYS = (
+    "step_per_leg",
+    "clearance_per_h",
+    "cadence_norm",
+    "swing_step_per_clr",
+)
+
+_NORM_TRACK_GATE_KEYS = (
+    "fwd_per_cmd",
+    "drift_per_leg",
+    "td_step_per_leg",
+)
+
+
+def _normalized_fk_parity_row(
+    norm_wr: NormalizedGaitMetrics, norm_tb: NormalizedGaitMetrics
+) -> tuple[bool, dict[str, str]]:
+    """Apply the same gate shapes as ``_fk_parity_row`` / smoothness, but
+    on the size-normalised numbers.  Thresholds mirror the absolute ones."""
+    step_ok = norm_wr.step_length_per_leg >= 0.85 * norm_tb.step_length_per_leg
+    clearance_ok = (
+        norm_wr.swing_clearance_per_com_height
+        >= 0.85 * norm_tb.swing_clearance_per_com_height
+    )
+    cadence_ok = norm_wr.cadence_froude_norm <= 1.20 * norm_tb.cadence_froude_norm
+    swing_step_ok = (
+        norm_wr.swing_foot_z_step_per_clearance
+        <= 1.10 * norm_tb.swing_foot_z_step_per_clearance
+    )
+    parity_ok = step_ok and clearance_ok and cadence_ok and swing_step_ok
+    return parity_ok, {
+        "baseline": norm_tb.name,
+        "step_per_leg": "PASS" if step_ok else "FAIL",
+        "clearance_per_h": "PASS" if clearance_ok else "FAIL",
+        "cadence_norm": "PASS" if cadence_ok else "FAIL",
+        "swing_step_per_clr": "PASS" if swing_step_ok else "FAIL",
+        "verdict": "PASS" if parity_ok else "FAIL",
+    }
+
+
+def _normalized_trackability_gate_detail(
+    norm_wr: NormalizedGaitMetrics, norm_tb: NormalizedGaitMetrics
+) -> tuple[bool, dict[str, str]]:
+    """Per-bin normalised P1 verdict.
+
+    - ``fwd_per_cmd``: WR within 0.10 of TB on (achieved / cmd) ratio.
+    - ``drift_per_leg``: WR's |drift_rate / leg_length| <= TB's + 0.5 leg/s.
+    - ``td_step_per_leg``: WR step length per leg >= 0.85 x TB.
+    """
+    fwd_ok = (
+        np.isfinite(norm_wr.achieved_forward_per_cmd)
+        and np.isfinite(norm_tb.achieved_forward_per_cmd)
+        and norm_wr.achieved_forward_per_cmd >= norm_tb.achieved_forward_per_cmd - 0.10
+    )
+    drift_ok = (
+        np.isfinite(norm_wr.terminal_drift_rate_per_leg_per_s)
+        and np.isfinite(norm_tb.terminal_drift_rate_per_leg_per_s)
+        and abs(norm_wr.terminal_drift_rate_per_leg_per_s)
+        <= abs(norm_tb.terminal_drift_rate_per_leg_per_s) + 0.5
+    )
+    step_ok = (
+        np.isfinite(norm_wr.td_step_length_per_leg)
+        and np.isfinite(norm_tb.td_step_length_per_leg)
+        and norm_wr.td_step_length_per_leg >= 0.85 * norm_tb.td_step_length_per_leg
+    )
+    overall_ok = fwd_ok and drift_ok and step_ok
+    return overall_ok, {
+        "fwd_per_cmd": "PASS" if fwd_ok else "FAIL",
+        "drift_per_leg": "PASS" if drift_ok else "FAIL",
+        "td_step_per_leg": "PASS" if step_ok else "FAIL",
+        "verdict": "PASS" if overall_ok else "FAIL",
+    }
+
+
+def _aggregate_normalized_trackability(
+    norm_wr_rows: list[NormalizedGaitMetrics],
+    norm_tb_rows: list[NormalizedGaitMetrics],
+) -> tuple[bool, dict[str, str]]:
+    tb_by_vx = {row.vx: row for row in norm_tb_rows}
+    fields: dict[str, list[str]] = {key: [] for key in _NORM_TRACK_GATE_KEYS}
+    overall = True
+    for wr_row in norm_wr_rows:
+        tb_row = tb_by_vx[wr_row.vx]
+        row_ok, detail = _normalized_trackability_gate_detail(wr_row, tb_row)
+        overall = overall and row_ok
+        for key in fields:
+            fields[key].append(f"{detail[key]}@{wr_row.vx:.2f}")
+    summary = {key: ", ".join(values) for key, values in fields.items()}
+    summary["verdict"] = "PASS" if overall else "FAIL"
+    return overall, summary
+
+
+def _normalized_trackability_per_bin_matrix(
+    norm_wr_rows: list[NormalizedGaitMetrics],
+    norm_tb_rows: list[NormalizedGaitMetrics],
+) -> dict[str, dict[float, str]]:
+    tb_by_vx = {row.vx: row for row in norm_tb_rows}
+    matrix: dict[str, dict[float, str]] = {key: {} for key in _NORM_TRACK_GATE_KEYS}
+    for wr_row in norm_wr_rows:
+        tb_row = tb_by_vx[wr_row.vx]
+        _row_ok, detail = _normalized_trackability_gate_detail(wr_row, tb_row)
+        for key in _NORM_TRACK_GATE_KEYS:
+            matrix[key][wr_row.vx] = detail[key]
+    return matrix
+
+
 def _print_geometry_table(
     summary_wr: GateSummary,
     summary_tbs: list[GateSummary],
@@ -1428,6 +1689,107 @@ def _print_trackability_table(
                 print(f"{key:<10}{cells}")
 
 
+def _print_normalized_fk_table(
+    norm_wr: NormalizedGaitMetrics,
+    norm_tbs: list[NormalizedGaitMetrics],
+    parity_rows: list[dict[str, str]],
+    vx: float,
+) -> None:
+    parity_by_name = {row["baseline"]: row for row in parity_rows}
+    print()
+    print(f"Size-normalised gait comparison @ vx={vx:.2f}")
+    print(
+        f"{'robot':<16} "
+        f"{'leg(m)':>8} "
+        f"{'h(m)':>8} "
+        f"{'step/leg':>10} "
+        f"{'clr/h':>10} "
+        f"{'cad·√(h/g)':>12} "
+        f"{'swing_step/clr':>14} "
+        f"{'Froude(vx²/gh)':>16}"
+    )
+    print("-" * 99)
+    for metrics in [norm_wr, *norm_tbs]:
+        print(
+            f"{metrics.name:<16} "
+            f"{_fmt_float(metrics.leg_length_m, 8, 3)} "
+            f"{_fmt_float(metrics.com_height_m, 8, 3)} "
+            f"{_fmt_float(metrics.step_length_per_leg, 10)} "
+            f"{_fmt_float(metrics.swing_clearance_per_com_height, 10)} "
+            f"{_fmt_float(metrics.cadence_froude_norm, 12)} "
+            f"{_fmt_float(metrics.swing_foot_z_step_per_clearance, 14)} "
+            f"{_fmt_float(metrics.forward_speed_froude, 16)}"
+        )
+    print()
+    for robot_name in _TB_VARIANTS:
+        row = parity_by_name[robot_name]
+        print(
+            f"WR norm parity vs {robot_name}: {row['verdict']} "
+            f"(step/leg={row['step_per_leg']}, clr/h={row['clearance_per_h']}, "
+            f"cadence_norm={row['cadence_norm']}, swing_step/clr={row['swing_step_per_clr']})"
+        )
+
+
+def _print_normalized_trackability_table(
+    norm_wr_rows: list[NormalizedGaitMetrics],
+    norm_tb_rows_by_robot: dict[str, list[NormalizedGaitMetrics]],
+    parity_by_robot: dict[str, dict[str, str]],
+) -> None:
+    print()
+    print("Size-normalised closed-loop comparison")
+    print(
+        f"{'robot':<16} "
+        f"{'vx':>6} "
+        f"{'fwd/cmd':>10} "
+        f"{'drift(leg/s)':>14} "
+        f"{'td_step/leg':>12} "
+        f"{'cad·√(h/g)':>12} "
+        f"{'Froude':>10}"
+    )
+    print("-" * 84)
+    rows = list(norm_wr_rows)
+    for robot_name in _TB_VARIANTS:
+        rows.extend(norm_tb_rows_by_robot[robot_name])
+    rows.sort(key=lambda row: (row.name, row.vx))
+    for row in rows:
+        print(
+            f"{row.name:<16} "
+            f"{row.vx:>6.2f} "
+            f"{_fmt_float(row.achieved_forward_per_cmd, 10)} "
+            f"{_fmt_float(row.terminal_drift_rate_per_leg_per_s, 14)} "
+            f"{_fmt_float(row.td_step_length_per_leg, 12)} "
+            f"{_fmt_float(row.cadence_froude_norm, 12)} "
+            f"{_fmt_float(row.forward_speed_froude, 10)}"
+        )
+    print()
+    for robot_name in _TB_VARIANTS:
+        row = parity_by_robot[robot_name]
+        print(
+            f"WR norm-P1 parity vs {robot_name}: {row['verdict']} "
+            f"(fwd/cmd={row['fwd_per_cmd']}, drift/leg={row['drift_per_leg']}, "
+            f"td_step/leg={row['td_step_per_leg']})"
+        )
+
+    if norm_wr_rows:
+        vx_bins_seen = sorted({row.vx for row in norm_wr_rows})
+        for robot_name in _TB_VARIANTS:
+            matrix = _normalized_trackability_per_bin_matrix(
+                norm_wr_rows, norm_tb_rows_by_robot[robot_name]
+            )
+            print()
+            print(f"WR vs {robot_name} normalised P1 per-bin matrix")
+            header = f"{'metric':<18}" + "".join(
+                f" {('vx=' + f'{vx:.2f}'):>10}" for vx in vx_bins_seen
+            )
+            print(header)
+            print("-" * len(header))
+            for key in _NORM_TRACK_GATE_KEYS:
+                cells = "".join(
+                    f" {matrix[key].get(vx, 'n/a'):>10}" for vx in vx_bins_seen
+                )
+                print(f"{key:<18}{cells}")
+
+
 def _build_payload(
     summary_wr: GateSummary | None,
     summary_tbs: list[GateSummary],
@@ -1441,8 +1803,15 @@ def _build_payload(
     p1_wr: list[ClosedLoopMetrics],
     p1_tbs: dict[str, list[ClosedLoopMetrics]],
     p1_rows: dict[str, dict[str, str]],
+    norm_gait_wr: NormalizedGaitMetrics,
+    norm_gait_tbs: list[NormalizedGaitMetrics],
+    norm_fk_rows: list[dict[str, str]],
+    norm_p1_wr: list[NormalizedGaitMetrics],
+    norm_p1_tbs: dict[str, list[NormalizedGaitMetrics]],
+    norm_p1_rows: dict[str, dict[str, str]],
     args: argparse.Namespace,
     overall_pass: bool,
+    norm_overall_pass: bool,
 ) -> dict:
     return {
         "config": {
@@ -1454,6 +1823,11 @@ def _build_payload(
             "stance_fail_if_gt_m": _STANCE_TOL_M,
             "swing_fail_if_lt_m": _SWING_MIN_M,
             "parity_margin_m": _PARITY_MARGIN_M,
+            "gravity_mps2": _GRAVITY_MPS2,
+            "robot_dims": {
+                "wildrobot": _wr_dims(),
+                **{name: _TB_DIMS[name] for name in _TB_VARIANTS},
+            },
         },
         "geometry_summary": [] if summary_wr is None else [asdict(summary_wr), *[asdict(v) for v in summary_tbs]],
         "geometry_parity": geometry_rows,
@@ -1464,11 +1838,17 @@ def _build_payload(
         "trackability_metrics": [asdict(v) for v in p1_wr]
         + [asdict(row) for robot_rows in p1_tbs.values() for row in robot_rows],
         "trackability_parity": p1_rows,
+        "normalized_fk_metrics": [asdict(norm_gait_wr), *[asdict(v) for v in norm_gait_tbs]],
+        "normalized_fk_parity": norm_fk_rows,
+        "normalized_trackability_metrics": [asdict(v) for v in norm_p1_wr]
+        + [asdict(row) for robot_rows in norm_p1_tbs.values() for row in robot_rows],
+        "normalized_trackability_parity": norm_p1_rows,
         "mode": {
             "nominal_only": args.nominal_only,
             "strict": args.strict,
         },
         "overall_pass": overall_pass,
+        "normalized_overall_pass": norm_overall_pass,
     }
 
 
@@ -1565,7 +1945,37 @@ def main() -> int:
         p1_rows[robot_name] = parity_row
         p1_ok = p1_ok and ok
 
+    # Size-normalised companion gates (Option A).  Computed post-hoc from
+    # the absolute metrics and each robot's characteristic dimensions so
+    # WR (~1.6-1.8x larger) and TB are read on the same Froude-equivalent
+    # footing.  See training/docs/reference_parity_scorecard.md.
+    norm_gait_wr = _compute_normalized_from_fk("wildrobot", args.vx, gait_wr, smooth_wr)
+    norm_gait_tbs = [
+        _compute_normalized_from_fk(metrics.name, args.vx, metrics, smooth)
+        for metrics, smooth in zip(gait_tbs, smooth_tbs)
+    ]
+    norm_fk_pairs = [
+        _normalized_fk_parity_row(norm_gait_wr, norm_gait_tb)
+        for norm_gait_tb in norm_gait_tbs
+    ]
+    norm_fk_rows = [row for _ok, row in norm_fk_pairs]
+    norm_fk_ok = all(ok for ok, _row in norm_fk_pairs)
+
+    norm_p1_wr = [_compute_normalized_from_closed_loop(row) for row in p1_wr]
+    norm_p1_tbs: dict[str, list[NormalizedGaitMetrics]] = {}
+    norm_p1_rows: dict[str, dict[str, str]] = {}
+    norm_p1_ok = True
+    for robot_name in _TB_VARIANTS:
+        norm_rows = [
+            _compute_normalized_from_closed_loop(row) for row in p1_tbs[robot_name]
+        ]
+        norm_p1_tbs[robot_name] = norm_rows
+        ok, parity_row = _aggregate_normalized_trackability(norm_p1_wr, norm_rows)
+        norm_p1_rows[robot_name] = parity_row
+        norm_p1_ok = norm_p1_ok and ok
+
     overall_ok = geometry_ok and fk_ok and smooth_ok and p1_ok
+    norm_overall_ok = norm_fk_ok and norm_p1_ok
 
     payload = _build_payload(
         summary_wr=summary_wr,
@@ -1580,8 +1990,15 @@ def main() -> int:
         p1_wr=p1_wr,
         p1_tbs=p1_tbs,
         p1_rows=p1_rows,
+        norm_gait_wr=norm_gait_wr,
+        norm_gait_tbs=norm_gait_tbs,
+        norm_fk_rows=norm_fk_rows,
+        norm_p1_wr=norm_p1_wr,
+        norm_p1_tbs=norm_p1_tbs,
+        norm_p1_rows=norm_p1_rows,
         args=args,
         overall_pass=overall_ok,
+        norm_overall_pass=norm_overall_ok,
     )
 
     if args.out:
@@ -1600,12 +2017,21 @@ def main() -> int:
         _print_fk_table(gait_wr, gait_tbs, fk_rows, args.vx)
         _print_smoothness_table(smooth_wr, smooth_tbs, smooth_rows, args.vx)
         _print_trackability_table(p1_wr, p1_tbs, p1_rows)
+        _print_normalized_fk_table(norm_gait_wr, norm_gait_tbs, norm_fk_rows, args.vx)
+        _print_normalized_trackability_table(norm_p1_wr, norm_p1_tbs, norm_p1_rows)
         print()
-        print(f"Overall reference parity verdict: {'PASS' if overall_ok else 'FAIL'}")
+        print(
+            f"Absolute parity verdict:        {'PASS' if overall_ok else 'FAIL'}"
+        )
+        print(
+            f"Size-normalised parity verdict: {'PASS' if norm_overall_ok else 'FAIL'}"
+        )
         if args.out:
             print(f"JSON payload saved to: {out_path}")
 
-    if args.strict and not overall_ok:
+    # Strict mode requires both verdicts: a pass on absolute alone could
+    # mask a real proportional gap (and vice versa).
+    if args.strict and not (overall_ok and norm_overall_ok):
         return 1
     return 0
 
