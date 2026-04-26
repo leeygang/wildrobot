@@ -1,367 +1,353 @@
-# Reference Architecture Comparison — WildRobot vs ToddlerBot
+# WR Reference Architecture Plan vs ToddlerBot
 
-**Status:** Active comparison note for `v0.20.x` reference-pivot work
+**Status:** Canonical design note for `v0.20.x` reference alignment
 **Last updated:** 2026-04-25
-**Purpose:** Code-grounded side-by-side of the two projects' walking
-reference stacks, end-to-end. Use this to identify which WR design
-choices are TB-aligned, which deviate with a load-bearing rationale,
-and which deviate without one (the alignment backlog).
+**Purpose:** define the reference-design policy for WildRobot (WR), record
+the design-history context behind the current parity harness, and order the
+architecture backlog needed to bring WR reference quality on par with or
+better than ToddlerBot (TB).
 
 All file paths in this doc are repo-relative:
 - TB: `projects/toddlerbot/...`
 - WR: `projects/wildrobot/...`
 
----
+## Governing Policy
 
-## Pipeline at a glance
+TB is the default reference architecture.
 
-Both projects implement Kajita-style ZMP preview LQR over an LIPM
-cart-table model. The algorithm family is the same; the architecture
-around it diverges.
+WR should align to TB on reference design and setup unless there is an
+explicit reason not to. A WR-specific divergence is acceptable only when at
+least one of these is true:
 
-```
-                  ┌──────────────────────────────────────────────────────┐
-                  │                 ToddlerBot pipeline                  │
-                  │                                                      │
-   command        │  ZMPWalk.build_lookup_table  →  walk_zmp_*.lz4       │  ← built once, persisted
-   range          │       (offline, all cmd bins)                        │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  WalkZMPReference (loads lz4 at env init)            │  ← runtime asset
-                  │     get_state_ref(t, command, last_state)            │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  state_ref dict =                                    │
-                  │     • lookup-derived (motor_pos, qpos[7:], body_*,   │  ← fixed-base FK quantities
-                  │       site_*, stance_mask)                           │
-                  │     • path-integrated runtime (path_pos, path_rot,   │  ← command integration
-                  │       lin_vel, ang_vel)                              │
-                  │     • computed root pose (qpos[0:7] from the two)    │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  walk_env / mjx_env reward terms consume state_ref   │
-                  └──────────────────────────────────────────────────────┘
+- it is forced by WR hardware or kinematic limits
+- matching TB would materially hurt WR trackability or safety
+- matching TB would add significant complexity with no measured parity benefit
 
-                  ┌──────────────────────────────────────────────────────┐
-                  │                 WildRobot pipeline                   │
-                  │                                                      │
-   command        │  ZMPWalkGenerator.generate(vx)                       │  ← per-call, on-demand
-   (single vx)    │       runs LQR + IK in-process per command bin       │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  ReferenceLibrary (in-memory dict of trajectories)   │  ← runtime asset
-                  │     get_preview(traj_id, step_index, n_preview)      │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  preview window =                                    │
-                  │     • planner-output (q_ref, pelvis_pos, com_pos,    │  ← LIPM-COM integrated,
-                  │       left/right_foot_pos COM-relative,              │    NO mujoco_replay step
-                  │       stance_foot_id, contact_mask, phase)           │
-                  │                          │                           │
-                  │                          ▼                           │
-                  │  WildRobotEnv reward terms consume win + finite-diff │
-                  │  velocity references derived at runtime              │
-                  └──────────────────────────────────────────────────────┘
-```
+If none of those are true, the divergence is alignment backlog.
 
----
+## Acceptance Rule
 
-## Stage 1 — Footstep planner
+The goal is not "WR looks reasonable in isolation." The goal is:
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| File | `toddlerbot/algorithms/zmp_walk.py:214 ZMPWalk.plan` | `control/zmp/zmp_walk.py:244 ZMPWalkGenerator.generate` → `_plan_footsteps` |
-| Footstep schedule | Alternating L/R every cycle, stride from `command · total_time / (2·num_cycles - 1)` (`zmp_walk.py:260`) | Alternating L/R every cycle, stride = `vx · cycle_time / 2` |
-| Stance ratio | `single_double_ratio = 2.0` (`zmp_walk.py:31`) — single support : double support = 2:1 | `single_double_ratio = 2.0` — same |
-| Lateral foot offset | `foot_to_com_y` from `robot.yml` | `default_stance_width_m = hip_lateral_offset_m` from `ZMPWalkConfig` |
-| Yaw / lateral support | Full 3-DoF command `(vx, vy, yaw_rate)`; in-place yaw uses circular footstep arrangement (`zmp_walk.py:269-305`) | `vx` only; `vy`/`yaw_rate` reserved schema fields, no generator |
-| Cycle 0 handling | Plans 22 s of forward walking, then **truncates the first cycle** (`zmp_walk.py:138-140`) so the stored trajectory is the periodic steady-state portion | Plans 22 s, **keeps cycle 0**; cycle-0 is from-rest (right-foot half-step), explicitly non-periodic with later cycles |
+- WR reference quality is on par with or better than TB
+- the judgment is driven primarily by architecture, not local tuning
+- the comparison is size-aware and robot-limit-aware
 
-**Architectural divergence:** TB's command space is omnidirectional from
-day one; WR is sagittal-only. TB enforces periodicity by truncation; WR
-enforces non-periodicity by linear-replay-only contract (consumers
-explicitly forbidden to wrap, see `reference_library.py:18-19`).
+Use the parity layers in
+[reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md):
 
----
+- `P0`: shared geometry gate
+- `P1A`: FK-realized nominal gait shape
+- `P2`: reference smoothness
+- `P1`: free-base zero-residual trackability
 
-## Stage 2 — ZMP preview LQR (COM trajectory)
+Acceptance uses two lenses:
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| Algorithm | Kajita preview control over LIPM cart-table | Same |
-| Cost weights | `Q = 1.0 · I`, `R = 0.1 · I` (`zmp_walk.py:34-35`) | `Q = 1.0 · I`, `R = 0.1 · I` (`ZMPWalkConfig.zmp_cost_Q/R`) |
-| Solver | `ZMPPlanner.plan(time_steps, desired_zmps, x0, com_z, Qy, R)` | Same — WR's `control/zmp/zmp_planner.py` is a deliberate port |
-| Initial state | `x0 = [path_pos[0], path_pos[1], 0, 0]` (rest at origin) | `x0 = [0, 0, 0, 0]` (rest at origin) |
-| Forward integration | Forward-Euler closed-loop simulation: `x_traj[idx] = x_traj[idx-1] + xd·dt` with `xd = [x_traj[idx-1, 2:], u_traj[idx-1]]`, `u = get_optim_com_acc(t, x)` (`zmp_walk.py:357-381`) | Same forward-Euler closed-loop integration (`zmp_walk.py:467-477`) — round-9 deliberately mirrored TB's `update_step` |
+- absolute parity is the sanity floor
+- size-normalised parity is the primary reading for "on par or better"
 
-**Architectural divergence:** None. WR explicitly ported TB's COM
-integration scheme in round 9.
+This means a WR change should be credited only when it improves the
+load-bearing parity gaps under the normalised view, while not regressing the
+absolute floor or violating WR's own `G4/G5/G6/G7` policy contract.
 
----
+## Design History
 
-## Stage 3 — Cartesian foot trajectory
+This note supersedes the earlier history-only note
+`reference_design_history_tb_vs_wr.md`.
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| Foot DoF planned | Position **and** orientation `(x, y, z, roll, pitch, yaw)` per swing/stance frame (`zmp_walk.py:406 compute_foot_trajectories`) | Position only `(x, y, z)`; orientation slot stored as zeros (`reference_library.py:86-90 left_foot_rpy`) |
-| Swing-z shape | **Triangular** linear-up then linear-down (`zmp_walk.py:483-491`); starts and ends at z=0 by construction | **Half-sine** + **constant DC offset** (`zmp_walk.py:519-525`); first/last frame snap to z = `swing_foot_z_floor_clearance_m` |
-| Floor clearance offset | None — TB's swing trajectory naturally lifts to `footstep_height` | `swing_foot_z_floor_clearance_m = 0.025 m` added uniformly during swing to compensate for plantarflexed swing ankle |
-| Boundary continuity | Smooth at lift-off / touchdown (z=0) | Discontinuity (snaps from 0 → 0.025 at lift-off, 0.025 → 0 at touchdown) — caught as the P2 swing-step gate failure (1.81× TB normalised) |
+The design history matters because the first comparison pass was too weak:
 
-**Architectural divergence:**
-1. TB plans foot orientation; WR plans only position. Downstream
-   consequence: TB's IK can realise the planned foot orientation; WR's
-   IK substitutes a heuristic ankle.
-2. TB's swing trajectory is C0 at boundaries; WR's has the DC-offset
-   discontinuity. The DC offset has a load-bearing rationale (see
-   Stage 4); the discontinuity does not.
+1. We started with a shared geometry gate:
+   - stance foot bottom `z <= 0.003 m`
+   - swing foot bottom `z > -0.002 m`
+   - `vx in {0.10, 0.15, 0.20, 0.25}`
+   - frames `{0, 5, 10, 16, 22, 28, 32, 48, 64}`
+2. That first pass showed WR was acceptable at the current in-scope bins
+   `vx in {0.10, 0.15}`, but weaker than TB at higher speed.
+3. We then built a shared parity harness:
+   - TB-side geometry test:
+     [tests/test_walk_reference_geometry.py](/home/leeygang/projects/toddlerbot/tests/test_walk_reference_geometry.py)
+   - WR-side parity script:
+     [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
+4. Review of that first harness found three major problems:
+   - it mixed WR planner-side quantities with TB FK-realized quantities
+   - it called offline gait-shape statistics "trackability"
+   - it was missing most smoothness metrics
+5. The current structure fixed that split:
+   - `P0` shared geometry
+   - `P1A` FK-realized nominal gait shape
+   - `P2` smoothness
+   - `P1` free-base zero-residual replay
 
----
+That history leads to the current design rule:
 
-## Stage 4 — Inverse kinematics
+- use TB as the baseline
+- measure WR using the same realized quantities wherever possible
+- prioritize architecture changes before reward or PPO-side tuning
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| File | `toddlerbot/algorithms/zmp_walk.py:601 foot_ik` | `control/zmp/zmp_walk.py:181 _solve_sagittal_ik` |
-| Leg DoF | 6: hip pitch / hip roll / **hip yaw** / knee / **ankle roll** / ankle pitch | 4: hip pitch / hip roll / knee / ankle pitch — no hip yaw, no ankle roll |
-| Method | Closed-form analytic 6-DoF solver from `(target_foot_pos, target_foot_ori)` per side (`zmp_walk.py:617-665`) | Closed-form analytic 4-DoF sagittal solver (`_solve_sagittal_ik`) + small-angle hip roll IK in WR style |
-| Ankle pitch handling | Derived: `ank_pitch = target_pitch + knee_pitch - hip_pitch`. If `target_pitch = 0` (planner default), ankle stays flat throughout swing **and** stance | Heuristic split: stance → flat-foot constraint `ankle = -(hip+knee)` clamped; swing → fixed plantarflex `ankle = -0.15 rad` clamped (`_solve_sagittal_ik:225-232`) |
-| Foot orientation tracking | Yes — IK realises planner-set `target_pitch` / `target_roll` | No — orientation is heuristic, not planner-driven |
-| COM-relative foot input | `target_foot_adjusted = foot_pos_traj - com_pos_traj + foot_to_com_offset` (`zmp_walk.py:568-579`) | `foot_rel_x = foot_world.x - pelvis_x`, `hip_to_foot_z = -(com_height - pelvis_to_hip - ankle_to_ground - foot_z_above_ground)` (`zmp_walk.py:578-583`) |
+## Current Gap Summary
 
-**Architectural divergence:** Hardware-driven. WR has 4-DoF legs (no
-hip yaw, no ankle roll); TB has 6-DoF. The plantarflex-during-swing
-heuristic is the WR-specific consequence: with no ankle roll and a
-shorter ankle range, the IK can't both keep the foot flat and bend the
-knee enough to lift; choosing ankle = -0.15 rad in swing frees up the
-knee budget. This rationale is load-bearing for WR.
+The current parity harness reports four load-bearing gaps.
 
-The downstream cost is the foot collision box dipping below the foot
-body during swing, which the `swing_foot_z_floor_clearance_m = 0.025 m`
-offset was added to compensate (see Stage 3). Removing the WR plantar-
-flex would eliminate the need for the offset, but requires a more
-sophisticated IK strategy (e.g. allow target-pitch input like TB).
+### Geometry
 
----
+- WR passes the current in-scope `P0` gate at `vx <= 0.15`
+- WR still trails TB on high-`vx` diagnostic robustness
+- WR still trails TB on swing-floor margin
 
-## Stage 5 — Reference enrichment via `mujoco_replay` (the critical divergence)
+Interpretation:
+- WR is acceptable for the current contract
+- WR is not yet TB-level on geometry robustness outside that narrow scope
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| Step F exists? | **Yes** — `ZMPWalk.mujoco_replay` (`zmp_walk.py:153-212`) | **No** — planner output stored as-is |
-| Sim setup | `MuJoCoSim(robot, fixed_base=True)` — body anchored at `home` keyframe | n/a |
-| Per-frame action | `sim.set_joint_angles(joint_pos)`, `sim.forward()`, harvest FK quantities | n/a |
-| Harvested fields | `qpos`, `body_pos`, `body_quat`, `body_lin_vel`, `body_ang_vel`, `site_pos`, `site_quat`, plus the planner's `stance_mask_ref` as `contact` | n/a |
-| Storage | All harvested arrays go into `Motion` dataclass (`motion_ref.py:24-34`), persisted in lz4 | n/a — `ReferenceTrajectory` stores only planner-output cartesian fields |
+### FK-realized gait shape
 
-**Architectural divergence:** This is the single biggest pipeline-shape
-difference. TB's reference asset contains FK-realised body and site
-quantities that the env / RSI / debugging tools can read directly.
-WR's reference asset contains only planner intent; any FK-realised
-quantity must be reconstructed downstream.
+- WR remains shorter-step than TB
+- WR compensates with faster cadence
+- WR's absolute clearance can look generous, but the size-normalised view is
+  less favorable
 
-**Downstream consequences:**
-- TB's RSI (`mjx_env.py:1175-1191`) initialises freejoint qvel from
-  stored `body_lin_vel` / `body_ang_vel`. WR can't do this — falls
-  back to qvel = 0 at reset.
-- TB's reward functions never have to re-run FK. WR's parity tooling
-  has to re-FK every frame to compare apples-to-apples (which is what
-  `tools/reference_geometry_parity.py:_wr_fk_and_smoothness` now does).
-- Reference velocity quality: TB has `body_lin_vel` / `body_ang_vel`
-  from MuJoCo's analytical FK derivative (clean). WR computes velocity
-  references on-the-fly via finite-diff of stored positions (the G2
-  decision in `walking_training.md`) — which is also clean for our
-  planner's smooth signals, but doesn't generalise to noisier prior
-  generators (ALIP, mocap retarget).
+Interpretation:
+- the current WR prior is not yet operating at a TB-like proportional gait
+  point
 
----
+### Smoothness
 
-## Stage 6 — Reference asset format
+- WR is still rougher than TB on swing-foot lift-off / touchdown behavior
 
-| Aspect | ToddlerBot | WildRobot |
-|---|---|---|
-| Schema | `Motion` dataclass — flat dict of arrays per command bin (`motion_ref.py:24-34`) | `ReferenceTrajectory` dataclass — flat dict of arrays per `vx` bin (`reference_library.py:46-103`) |
-| Lifecycle | Pre-baked at build time, loaded once at env init via `joblib.load(walk_zmp_*.lz4)` (`walk_zmp_ref.py:38-47`) | Generated on-demand at env startup via `ZMPWalkGenerator.generate(vx)`; in-memory only; no on-disk persistence |
-| Command grid | `vx ∈ [-0.2, 0.4]`, `vy ∈ [-0.2, 0.2]`, `yaw_rate ∈ [-0.8, 0.8]` at `interval = 0.05` (`zmp_walk.py:84-89`) | Single `vx` per call; broader coverage requires multiple `generate()` calls |
-| Lookup mechanism | `nearest_command_idx = argmin(||lookup_keys - command||)` (`walk_zmp_ref.py:138-140`); O(n_bins) per query | `library.get_trajectory(vx_bin)`; O(1) per query but generator runs once per new bin |
-| Wrap behaviour | `step_idx = (round(t/dt) % episode_len)` — modulo wrap is safe because cycle 0 was truncated (`walk_zmp_ref.py:141`) | Linear replay only; wrap forbidden (`reference_library.py:53-56`); `get_preview` issues a warning past trajectory end (`reference_library.py:362-368`) |
+Interpretation:
+- this is an architecture-level planner-shape issue, not a PPO issue
 
-**Architectural divergence:** TB ships a compact, cached, omnidirectional
-key-value asset. WR ships a code-that-generates-data interface, single
-sagittal command at a time. Functionally equivalent for a single-cmd
-smoke; meaningful when smoke7+ introduces multi-cmd resampling.
+### Free-base zero-residual trackability
 
----
+- WR still trails TB on some replay metrics
+- some absolute replay differences are actuator-stack artifacts
+- the important point is that WR still does not yet clear the combined
+  reference-quality bar strongly enough to claim parity
 
-## Stage 7 — Runtime reference service / `get_state_ref`
+Interpretation:
+- the reference still needs architecture work before PPO-side gains should be
+  credited as "reference parity"
 
-This is where TB does the bulk of its runtime work. WR's
-`runtime_reference_service.py` is intentionally thin.
+## Pipeline Comparison
 
-### TB: `WalkZMPReference.get_state_ref` (`walk_zmp_ref.py:109-250`)
+Both projects use the same ZMP-preview / LIPM family. The main question is
+not "same algorithm family?" It is "does WR package and consume the reference
+the same way TB does?"
 
-Builds a per-step `state_ref` dict by combining three sources:
+### Stage 1. Footstep planner
 
-1. **Path-state integration** (`integrate_path_state` in `motion_ref.py:200-235`):
-   `path_pos = path_pos_prev + path_rot · lin_vel · dt`,
-   `path_rot = path_rot_prev · delta_rot(ang_vel · dt)`. `lin_vel` and
-   `ang_vel` come straight from the command. **This is where the
-   commanded path target lives.**
-2. **Lookup query** by `nearest_command_idx` and `step_idx`:
-   pulls `qpos`, `body_pos`, `body_quat`, `body_lin_vel`,
-   `body_ang_vel`, `site_pos`, `site_quat`, `stance_mask` for the
-   current frame.
-3. **Runtime root-pose composition**:
-   `root_pos = path_rot.apply(default_pos) + path_pos`,
-   `root_quat = path_rot · default_rot`,
-   `qpos = [root_pos, root_quat, lookup_qpos[7:]]`.
-
-The output `state_ref` is consumed by all reward functions in
-`mjx_env.py` (see Stage 8).
-
-### WR: `RuntimeReferenceService.get_preview` (`runtime_reference_service.py`)
-
-Does **only** lookup + slice — pulls the current frame and an optional
-1–2 frame future preview from the in-memory trajectory. **No path
-integration**, **no command-driven runtime computation**, **no root-
-pose composition**. The env wrapper assembles whatever it needs from
-the raw window.
-
-**Architectural divergence:** TB's runtime service is a *stateful
-integrator + lookup combiner*; WR's is a *stateless slice*. This means
-TB's reference target is "where the command says you should be by now",
-and WR's reference target is "what the planner said for this phase
-of the gait". These are different reference philosophies.
-
----
-
-## Stage 8 — Env consumption / reward terms
-
-The most important architectural axis. **What does the imitation
-reward actually compare against?**
-
-| Reward term | TB source (state_ref field) | WR source (win field) | Same conceptually? |
+| Stage | ToddlerBot | WildRobot | Classification |
 |---|---|---|---|
-| `motor_pos` ↔ `ref_q_track` | `state_ref["motor_pos"]` — IK-output joint angles converted via `robot.joint_to_motor_angles` at build time | `win["q_ref"]` — IK-output q_ref directly | **Yes** (both: planner IK joint targets) |
-| `torso_pos_xy` ↔ `ref_torso_pos_xy` | `state_ref["qpos"][:2]` = path-integrated `path_pos`, command-driven (`mjx_env.py:2264-2270`) | `win["pelvis_pos"][:2]` = LQR-integrated COM trajectory from the planner (`wildrobot_env.py:801, 814-818`) | **No** — TB tracks "command-integrated path"; WR tracks "LIPM planner output" |
-| `torso_quat` ↔ `ref_body_quat_track` | `state_ref["qpos"][3:7]` = `path_rot · default_rot`, command-driven (`mjx_env.py:2316-2326`) | reference is identity quat (since `pelvis_rpy = 0` in WR planner output); reward = `exp(-α · angle²)` against current root quat (`wildrobot_env.py:769-779`) | Same in spirit (yaw-stationary in both); WR doesn't even read a stored ref quat |
-| `lin_vel_xy` ↔ `cmd_forward_velocity_track` | `state_ref["lin_vel"][:2]` = `command[5:7]` directly (`walk_zmp_ref.py:104`) | tracked via `cmd_forward_velocity_track` against `velocity_cmd` | **Yes** — both compare body lin_vel against the command, not against the planner |
-| `lin_vel_z` | `state_ref["lin_vel"][2]` = command's z = **0** (constant) (`mjx_env.py:2369-2374`) | finite-diff of `win["pelvis_pos"][2]` — but `pelvis_pos[:, 2] = com_height_m` (constant) → also **0** in practice (`wildrobot_env.py:840`) | **Yes** — both reduce to "body z-velocity should be 0" |
-| `ang_vel_xy` | `state_ref["ang_vel"][:2]` = `[0, 0, yaw_rate_command][:2]` = **0** | reference = 0 since `pelvis_rpy = 0` throughout, reward penalises `gyro_rad_s[:2]` (`wildrobot_env.py:855-860`) | **Yes** — both target zero pitch/roll rate |
-| `feet_contact` ↔ `ref_contact_match` | `info["state_ref"]["stance_mask"]` from lookup planner stance (`mjx_env.py:2484`) | `win["contact_mask"]` from WR planner stance | **Yes** — both compare physical contact to planner stance |
-| `feet_air_time` | `info["feet_air_time"]` derived from physical contacts at runtime, gated on `||cmd|| > 1e-6` (TB) | recently added in WR smoke6/7 with same TB-aligned formula | TB-aligned by recent WR work |
+| Command space | `vx, vy, yaw_rate` lookup grid | `vx` only | backlog for broader TB parity, but not the main current gap |
+| Cycle-0 handling | first transient cycle truncated before storage | from-rest cycle retained, linear replay only | justified temporary difference for current single-cmd setup |
 
-**Architectural divergence in the reward:** Only **`torso_pos_xy`**
-materially differs. TB tracks the command-integrated body path; WR
-tracks the planner-LIPM body path. The other reward terms turn out to
-be equivalent or aligned (often because the planner output is "pelvis
-flat, COM at constant z, no yaw rotation", which collapses several TB
-fields to constants WR also uses).
+### Stage 2. ZMP preview COM integration
 
----
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Preview LQR / Euler integration | Kajita-style preview over LIPM cart-table | same | aligned |
 
-## What's actually different at the architecture level
+### Stage 3. Cartesian foot trajectory
 
-After tracing every stage, the architectural differences sort into
-three groups:
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Foot planning | position + orientation | position only | partly hardware-driven, partly backlog |
+| Swing-z shape | triangular, continuous at boundaries | half-sine with clearance offset and boundary discontinuity | discontinuity is backlog |
 
-### Group 1: Hardware-driven (load-bearing, keep WR-specific)
+The load-bearing distinction here is:
 
-- **Stage 4 IK**: 4-DoF leg vs 6-DoF leg. Drives the analytic-IK form,
-  the swing-ankle plantarflex heuristic, and (via Stage 3) the floor-
-  clearance DC offset.
-- **Robot dimensions**: WR ~1.6–1.8× larger; affects every absolute-
-  units metric (already addressed by the size-normalised parity).
+- WR's clearance offset has a hardware rationale
+- WR's lift-off / touchdown discontinuity does not
 
-### Group 2: Different choices, no clear rationale
+### Stage 4. Inverse kinematics
 
-- **Stage 3 swing-z shape**: TB triangular C0; WR half-sine + DC
-  offset with C0 discontinuity. The DC offset is load-bearing (Group
-  1 consequence); the discontinuity is not. **Alignment candidate:
-  ride the offset on `sin(π·frac)` to remove the discontinuity.**
-- **Stage 5 mujoco_replay**: TB has it; WR doesn't. The G2 finite-diff
-  decision avoids the schema growth, but loses RSI-quality velocity
-  references and forces every downstream consumer to re-FK if it
-  needs body/site quantities. **Alignment candidate: add a fixed-base
-  FK pass after IK during library construction; persist body/site
-  arrays alongside `q_ref`.**
-- **Stage 6 lifecycle**: TB pre-bakes a multi-cmd lz4; WR generates
-  on-demand per `vx`. Functionally equivalent today; multi-cmd smoke
-  re-runs the planner per cmd switch instead of doing O(1) lookup.
-  **Alignment candidate: build a vx-grid library at env init and
-  cache it (in-memory or on-disk).**
-- **Stage 7 runtime service**: TB does path integration + root-pose
-  composition + command-driven velocity. WR does only slice. The
-  consequence is the Stage 8 reward divergence around `torso_pos_xy`
-  reference. **Alignment candidate: add path-state integration to
-  WR's runtime service so the env can compare against a command-
-  integrated body target — same concept TB uses.**
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Leg DoF | 6-DoF leg | 4-DoF leg | hardware-driven |
+| Foot orientation tracking | planner-driven | heuristic ankle behavior | hardware-driven with room for better WR implementation |
 
-### Group 3: Same value, different default — covered in earlier proposal
+This is the most clearly justified WR-specific area. WR cannot literally match
+TB's 6-DoF foot-orientation realization because the hardware is different.
 
-- `cycle_time` (0.64 vs 0.72)
-- `foot_step_height` (0.04 vs 0.05)
+### Stage 5. Reference enrichment after IK
 
-These are configuration values, not architecture choices. They can
-flip independently.
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Fixed-base FK replay / harvested body-site fields | yes, via `mujoco_replay` | no, planner output stored directly | backlog |
 
----
+This is still an important architecture gap. TB stores realized body/site
+quantities; WR historically stored planner intent and reconstructed realized
+quantities downstream. The parity harness now re-FKs WR for fairness, which is
+useful, but it also shows the underlying architecture is still misaligned.
 
-## Reference target philosophy — the meta-architectural choice
+### Stage 6. Asset lifecycle
 
-The cleanest way to read the divergence is the **reward target**:
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Storage model | pre-baked lookup asset | generated on demand per `vx` | backlog if multi-cmd parity and repeatability matter |
 
-- **TB's policy is asked to track** *where the body should be if it had
-  perfectly executed the command since reset*, with the planner's IK
-  output supplying joint-level shape.
-- **WR's policy is asked to track** *what the planner says the body
-  will look like at this phase of the gait*, also with planner IK
-  output supplying joint-level shape.
+This is not the main cause of the current reference-quality gap, but it is
+still a TB-architecture mismatch.
 
-The two are equivalent when the planner perfectly tracks the command.
-They diverge when LIPM dynamics produce overshoot or oscillation that
-the policy is supposed to absorb (TB: yes, the policy absorbs LIPM
-deviation; WR: no, the policy is told to copy LIPM deviation).
+### Stage 7. Runtime reference service
 
-This is a deliberate-or-accidental design choice, and it's the one
-question I'd want a load-bearing answer for before any of the Group 2
-alignment moves: **does the WR policy benefit from tracking the
-LIPM-deviation reference, or should it track a clean command-
-integrated reference like TB?**
+| Stage | ToddlerBot | WildRobot | Classification |
+|---|---|---|---|
+| Runtime service | path-state integration + lookup + root composition | trajectory slice / preview only | unresolved design decision |
 
-If the answer is "track command-integrated", then:
-- Stage 7 needs `integrate_path_state`-style runtime composition.
-- Stage 8 `ref_torso_pos_xy` should compare against the integrated
-  target, not `pelvis_pos`.
-- The G2 finite-diff finite-velocity reference becomes simpler: just
-  the command's `lin_vel`, plus a constant zero for `lin_vel_z` /
-  `ang_vel_xy`.
+This is the one remaining architectural question that needs an explicit answer.
 
-If the answer is "track LIPM-deviation" (current WR), then no Stage 7
-change is needed — but the reasoning should be written down so the
-divergence is explicit.
+TB's runtime target is command-integrated: "where should the body be by now if
+the command had been followed since reset?"
 
----
+WR's runtime target is planner-phase-based: "what does the planner say the
+body should look like at this gait phase?"
 
-## Recommended alignment ordering
+For this project, the default answer should be:
 
-In dependency order, smallest first:
+- align to TB's command-integrated target semantics unless WR has an explicit,
+  measured reason to keep the current planner-phase target
 
-1. **Stage 3 swing-z continuity fix.** Pure planner-side smoothness
-   change; no schema impact. Closes the P0 / P2 swing-step gates.
-2. **Decide the Stage 7 reference-target philosophy** (LIPM-track vs
-   command-track). This is a design call, not a code change yet —
-   needed before either Stage 5 or Stage 7 alignment can be scoped.
-3. **Stage 5 mujoco_replay step.** Schema-growing; persist body /
-   site / velocity arrays. Unblocks RSI parity, removes finite-diff
-   from runtime, makes WR's library content type match TB's.
-4. **Stage 7 runtime composition** (only if step 2 chose "command-
-   track"). Adds `integrate_path_state` to the runtime service.
-5. **Stage 6 pre-bake.** Caching optimisation; valuable when smoke7+
-   resamples cmd often. Cosmetic until then.
-6. **Stage 1 yaw / lateral generators.** Already scoped to `v0.20.4`
-   in `walking_training.md`; proper TB alignment requires extending
-   the planner to handle `vy` and `yaw_rate`.
+Until that justification exists, this is backlog, not a neutral alternative.
 
-Group 1 (hardware-driven) and Group 3 (parameter values) are
-independent of this ordering and can land any time.
+### Stage 8. Env reward consumption
+
+Most reward terms are conceptually aligned. The main semantic difference is
+still the torso/body path target:
+
+- TB compares against the command-integrated body target
+- WR compares against planner-side pelvis trajectory
+
+This should be described narrowly as a reward-target semantics difference, not
+as proof that WR and TB consume the reference identically.
+
+## Divergence Classification
+
+The current architecture gaps sort into three buckets.
+
+### Keep WR-specific
+
+- 4-DoF leg instead of TB's 6-DoF leg
+- resulting ankle / foot-orientation constraints that are truly imposed by WR
+  hardware
+- size and COM-height differences
+
+These are not alignment failures. They are constraints the parity system must
+normalize around.
+
+### Remove unless explicitly justified
+
+- swing-z boundary discontinuity
+- planner-intent-only storage instead of TB-style realized FK enrichment
+- on-demand per-`vx` generation as the only lifecycle
+- planner-phase torso target instead of TB-style command-integrated target
+
+These should be treated as backlog by default.
+
+### Parameter differences, not architecture
+
+- `cycle_time`
+- `foot_step_height`
+- other pure config values
+
+These still matter, but the rule is:
+
+- architecture first
+- local config tuning second
+
+If a gap is caused by architecture, do not try to tune around it first.
+
+## Architecture-Driven Plan
+
+The current plan should close the WR-vs-TB quality gap primarily through
+architecture changes, not local optimization.
+
+### Priority 1. Remove unjustified swing-z discontinuity
+
+Change WR's swing-foot clearance shaping so the WR-specific floor-clearance
+compensation goes to zero at lift-off and touchdown.
+
+Why first:
+- directly targets the current `P0` swing-margin weakness
+- directly targets the current `P2` swing-step weakness
+- no schema or env contract change required
+
+### Priority 2. Decide and document runtime target semantics
+
+Make an explicit architectural decision:
+
+- default to TB-style command-integrated body target
+- keep planner-phase target only if WR has a written, measured reason
+
+Why second:
+- this controls whether Stage 7 and Stage 8 should align more closely to TB
+- it prevents further local tuning on top of an unresolved target philosophy
+
+### Priority 3. Add TB-style realized-reference enrichment to WR
+
+After IK, run fixed-base FK replay and persist realized body/site quantities as
+part of the WR reference asset.
+
+Why third:
+- aligns WR asset content with TB
+- removes the planner-intent vs realized-data mismatch
+- makes parity measurement and downstream consumers use the same content type
+
+### Priority 4. Align WR runtime service to the chosen target semantics
+
+If Priority 2 chooses TB-style command tracking, add the runtime path-state
+integration and root-pose composition needed to make WR consume the reference
+like TB.
+
+Why fourth:
+- it is the main architectural move needed to make WR's body target semantics
+  TB-like
+
+### Priority 5. Improve lifecycle parity where it matters
+
+Build a repeatable cached `vx` grid at env init or on disk when multi-command
+coverage, reproducibility, or debugging makes it worth doing.
+
+Why fifth:
+- useful for broader parity and experiment repeatability
+- not the main driver of the current normalized quality gap
+
+### Priority 6. Use local tuning only after the architecture backlog is under control
+
+Examples:
+- `cycle_time`
+- `foot_step_height`
+- other scalar planner config
+
+These are still important, but they should refine the aligned architecture, not
+stand in for it.
+
+## What "On Par or Better" Means
+
+WR is on par with or better than TB only when all of the following are true:
+
+- WR clears the shared `P0` gate and is not materially weaker on the full
+  geometry matrix
+- WR's size-normalised `P1A` gait shape is on par with or better than TB
+- WR's `P2` smoothness is on par with or better than TB
+- WR's `P1` free-base replay is on par with or better than TB, after reading
+  the normalised metrics first and the absolute metrics as a sanity floor
+- WR still satisfies its own `G4/G5/G6/G7` policy contract
+
+If a future WR change improves PPO but does not improve the parity scorecard at
+the architecture layer, it should not be claimed as "reference parity
+improvement."
+
+## Practical Use
+
+Use this note together with:
+
+- [tools/reference_geometry_parity.py](/home/leeygang/projects/wildrobot/tools/reference_geometry_parity.py)
+- [training/docs/reference_parity_scorecard.md](/home/leeygang/projects/wildrobot/training/docs/reference_parity_scorecard.md)
+- [training/docs/walking_training.md](/home/leeygang/projects/wildrobot/training/docs/walking_training.md)
+- [tests/test_v0200c_geometry.py](/home/leeygang/projects/wildrobot/tests/test_v0200c_geometry.py)
+- [tests/test_walk_reference_geometry.py](/home/leeygang/projects/toddlerbot/tests/test_walk_reference_geometry.py)
+
+When the parity report and this note disagree, prefer the parity report for
+current metrics and use this note for policy, classification, and backlog
+ordering.
