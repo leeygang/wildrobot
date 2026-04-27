@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "74f8dcb082582f7a34362538",
+    "elementId": "eed32dd76ad6e0d510784b1c",
+    "fullConfiguration": "default",
+    "id": "MGtnd9rqmowYrgVTb",
+    "isStandardContent": false,
+    "name": "wrist_servo_conn <1>",
+    "partId": "ReHD",
+    "suppressed": false,
+    "type": "Part"
+}
