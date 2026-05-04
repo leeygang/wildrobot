@@ -119,6 +119,21 @@ def _validate_toe_heel(
 
     left_toe, left_heel, right_toe, right_heel = robot_config.get_foot_geom_names()
 
+    # Forward-kinematics evaluation at the home keyframe (or default qpos if no
+    # keyframe). World-frame comparison is the only frame-agnostic way to check
+    # L/R foot symmetry: when the foot bodies are mirror-related (as in the
+    # ankle_roll-bearing structure), their `geom_pos` / `geom_quat` values in
+    # local frame are also mirror-related — not directly equal — so a naive
+    # local-frame comparison would falsely flag a physically symmetric model
+    # as asymmetric.
+    data = mujoco.MjData(model)
+    home_kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+    if home_kid >= 0:
+        mujoco.mj_resetDataKeyframe(model, data, home_kid)
+    else:
+        mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
+
     def geom_info(name: str):
         gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
         if gid < 0:
@@ -126,8 +141,8 @@ def _validate_toe_heel(
         return {
             "gid": gid,
             "body": int(model.geom_bodyid[gid]),
-            "pos": model.geom_pos[gid].copy(),
-            "quat": model.geom_quat[gid].copy(),
+            "world_pos": data.geom_xpos[gid].copy(),
+            "world_mat": data.geom_xmat[gid].reshape(3, 3).copy(),
             "friction": model.geom_friction[gid].copy(),
             "size": model.geom_size[gid].copy(),
             "type": int(model.geom_type[gid]),
@@ -148,24 +163,7 @@ def _validate_toe_heel(
             f"Right toe/heel geoms not under right foot body: {right_toe}->{rt['body']} {right_heel}->{rh['body']}"
         )
 
-    if not np.allclose(lt["pos"], rt["pos"], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(
-            f"Toe geom_pos mismatch: {left_toe} {lt['pos']} vs {right_toe} {rt['pos']}"
-        )
-    if not np.allclose(lh["pos"], rh["pos"], atol=thresholds.pos_tol, rtol=0.0):
-        raise ValueError(
-            f"Heel geom_pos mismatch: {left_heel} {lh['pos']} vs {right_heel} {rh['pos']}"
-        )
-
-    if not np.allclose(lt["quat"], rt["quat"], atol=thresholds.quat_tol, rtol=0.0):
-        raise ValueError(
-            f"Toe geom_quat mismatch: {left_toe} {lt['quat']} vs {right_toe} {rt['quat']}"
-        )
-    if not np.allclose(lh["quat"], rh["quat"], atol=thresholds.quat_tol, rtol=0.0):
-        raise ValueError(
-            f"Heel geom_quat mismatch: {left_heel} {lh['quat']} vs {right_heel} {rh['quat']}"
-        )
-
+    # Frame-agnostic checks (size and friction are mirror-invariant).
     if not np.allclose(lt["size"], rt["size"], atol=thresholds.size_tol, rtol=0.0):
         raise ValueError(
             f"Toe geom_size mismatch: {left_toe} {lt['size']} vs {right_toe} {rt['size']}"
@@ -187,6 +185,36 @@ def _validate_toe_heel(
         raise ValueError(
             f"Heel geom_friction mismatch: {left_heel} {lh['friction']} vs {right_heel} {rh['friction']}"
         )
+
+    # World-frame mirror check across the XZ-plane (y -> -y). Compares the
+    # mirrored left center to the right center, and compares world AABB
+    # extents (convention-agnostic — different CAD conventions can encode the
+    # same physical box with locally relabeled axes, producing different
+    # rotation matrices but identical AABBs).
+    world_pos_tol = max(thresholds.pos_tol, 5e-4)  # at least 0.5 mm for sub-mm CAD noise
+
+    def _world_aabb_half_extents(info):
+        # World AABB half-extent along axis i = sum_j |R[i,j]| * s[j].
+        return np.abs(info["world_mat"]) @ info["size"]
+
+    for key, left, right in (("toe", lt, rt), ("heel", lh, rh)):
+        mirrored_left_pos = left["world_pos"] * np.array([1.0, -1.0, 1.0])
+        pos_err = mirrored_left_pos - right["world_pos"]
+        if np.max(np.abs(pos_err)) > world_pos_tol:
+            raise ValueError(
+                f"{key} world-pos mirror check failed "
+                f"(max |Δ| = {np.max(np.abs(pos_err))*1000:.2f} mm > {world_pos_tol*1000:.1f} mm): "
+                f"mirror(left)={mirrored_left_pos} vs right={right['world_pos']}"
+            )
+        left_extents = _world_aabb_half_extents(left)
+        right_extents = _world_aabb_half_extents(right)
+        ext_err = left_extents - right_extents
+        if np.max(np.abs(ext_err)) > world_pos_tol:
+            raise ValueError(
+                f"{key} world AABB extents mismatch "
+                f"(max |Δ| = {np.max(np.abs(ext_err))*1000:.2f} mm > {world_pos_tol*1000:.1f} mm): "
+                f"left={left_extents} vs right={right_extents}"
+            )
 
     # Mesh-local origin sanity check (historically the main failure mode).
     mesh_pos = getattr(model, "mesh_pos", None)

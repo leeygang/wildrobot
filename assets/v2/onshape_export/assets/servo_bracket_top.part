@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "74f8dcb082582f7a34362538",
+    "documentMicroversion": "9236e38fa5e4341a21503004",
     "elementId": "89ceb3190ceb802f85d40185",
     "fullConfiguration": "default",
-    "id": "MUUQQdzT4h1v9y2Ct",
+    "id": "M9SWyX4Y6thTugT+t",
     "isStandardContent": false,
     "name": "servo_bracket_top <1>",
-    "partId": "JxD",
+    "partId": "JsD",
     "suppressed": false,
     "type": "Part"
 }
