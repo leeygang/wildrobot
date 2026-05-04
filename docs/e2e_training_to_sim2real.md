@@ -8,7 +8,7 @@ Prerequisites
 -------------
 - Python 3.12+
 - `uv` installed
-- `assets/v1/robot_config.yaml` generated (run `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` if needed)
+- `assets/v1/mujoco_robot_config.json` generated (run `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` if needed)
 
 0) Environment Setup
 --------------------
@@ -95,7 +95,7 @@ This produces (variant-specific, self-contained):
 - `policy.onnx`
 - `policy_spec.json`
 - `checksums.json`
-- `robot_config.yaml` snapshot from the variant config
+- `mujoco_robot_config.json` snapshot from the variant config
 - `wildrobot_config.json` (generated with `policy_onnx_path=./policy.onnx`, `mjcf_path=./wildrobot.xml`)
 - `wildrobot.xml` snapshot from the variant assets
 

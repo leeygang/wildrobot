@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
-# Update WildRobot MJCF from Onshape for a specific asset variant.
+# Refresh assets/v2/wildrobot.xml from a pre-staged Onshape export.
 #
 # Usage:
-#   ./assets/update_xml.sh --version v1
-#   ./assets/update_xml.sh --version v2
-#   ./assets/update_xml.sh --version all
+#   ./assets/update_xml.sh
 #
-# Notes:
-# - Runs `onshape-to-robot` inside `assets/<version>/` using that folder's config.json.
-# - Runs `assets/post_process.py` to regenerate `robot_config.yaml` next to the MJCF.
+# Prerequisites:
+#   The raw Onshape export must already exist at:
+#     assets/v2/onshape_export/wildrobot.xml
+#     assets/v2/onshape_export/assets/   (mesh files: .stl, .part)
+#   Stage it manually (e.g. via Onshape's onshape-to-robot CLI invoked
+#   outside this pipeline, then commit to git).
+#
+# Pipeline:
+#   1. Sync onshape_export/wildrobot.xml -> v2/wildrobot.xml.
+#   2. Mirror onshape_export/assets/    -> v2/assets/   (rsync --delete).
+#   3. Reorder actuators to canonical order (assets/reorder_actuators.py).
+#   4. Run post_process.py on v2/wildrobot.xml. The first post_process step
+#      (inject_additional_xml) splices sensors.xml + joints_properties.xml
+#      into the synced MJCF; remaining steps normalize bodies/geoms/defaults
+#      and emit mujoco_robot_config.json.
+#   5. Print the actuated-joint summary.
+#
+# This script no longer invokes onshape-to-robot directly. The
+# `--export-onshape` flag and the v1 variant have been removed.
 
 set -euo pipefail
 
 echo "=============================="
-echo "onshape-to-robot Pipeline"
+echo "WildRobot MJCF update pipeline"
 echo "Platform: $(uname -s)"
 echo "=============================="
 
-# Check if commands exist
-command -v onshape-to-robot >/dev/null 2>&1 || { 
-    echo "Error: onshape-to-robot not found. Install with: pip install onshape-to-robot"
-    exit 1
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VARIANT="v2"
+VARIANT_DIR="${SCRIPT_DIR}/${VARIANT}"
+EXPORT_DIR="${VARIANT_DIR}/onshape_export"
 
 # Detect Python command
 if command -v python3 >/dev/null 2>&1; then
@@ -37,82 +48,130 @@ fi
 
 echo "Using Python: $PYTHON_CMD"
 
-VERSION=""
-if [[ "${1:-}" == "--version" ]]; then
-    VERSION="${2:-}"
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        -h|--help)
+            cat <<EOF
+Usage: $0 [--help]
+
+Refreshes assets/${VARIANT}/wildrobot.xml from the pre-staged Onshape export
+at assets/${VARIANT}/onshape_export/, then runs reorder_actuators followed
+by post_process.
+
+This script does not invoke onshape-to-robot. Stage the export manually at
+assets/${VARIANT}/onshape_export/ before running.
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown option '$1'"
+            echo "Usage: $0 [--help]"
+            exit 1
+            ;;
+    esac
 fi
-if [[ -z "$VERSION" ]]; then
-    echo "Error: missing --version {v1|v2|all}"
+
+# --- Preflight ---------------------------------------------------------------
+
+if [[ ! -d "$VARIANT_DIR" ]]; then
+    echo "Error: variant directory not found: $VARIANT_DIR"
+    exit 1
+fi
+if [[ ! -d "$EXPORT_DIR" ]]; then
+    echo "Error: onshape export directory not found: $EXPORT_DIR"
+    echo "       Stage the raw Onshape export at this path first."
+    exit 1
+fi
+if [[ ! -f "$EXPORT_DIR/wildrobot.xml" ]]; then
+    echo "Error: missing $EXPORT_DIR/wildrobot.xml"
+    exit 1
+fi
+if [[ ! -d "$EXPORT_DIR/assets" ]]; then
+    echo "Error: missing $EXPORT_DIR/assets/ (mesh directory)"
+    exit 1
+fi
+command -v rsync >/dev/null 2>&1 || {
+    echo "Error: rsync not found (required for mesh sync with --delete)"
+    exit 1
+}
+
+echo ""
+echo "=============================="
+echo "Updating assets/${VARIANT}"
+echo "=============================="
+
+# --- 1. Sync wildrobot.xml ---------------------------------------------------
+
+echo ""
+echo "Syncing wildrobot.xml from onshape_export/..."
+cp -f "$EXPORT_DIR/wildrobot.xml" "$VARIANT_DIR/wildrobot.xml"
+
+# --- 2. Mirror meshes (with delete) ------------------------------------------
+
+echo "Mirroring meshes onshape_export/assets/ -> ${VARIANT}/assets/ (with delete)..."
+mkdir -p "$VARIANT_DIR/assets"
+rsync -a --delete "$EXPORT_DIR/assets/" "$VARIANT_DIR/assets/"
+
+# --- 3. Reorder actuators ----------------------------------------------------
+
+echo ""
+echo "Reordering actuators to canonical order..."
+$PYTHON_CMD "$SCRIPT_DIR/reorder_actuators.py" \
+    --xml "$VARIANT_DIR/wildrobot.xml" \
+    --order "$VARIANT_DIR/actuator_order.txt"
+
+# --- 4. Post-process ---------------------------------------------------------
+
+echo ""
+echo "Running post_process.py..."
+$PYTHON_CMD "$SCRIPT_DIR/post_process.py" "$VARIANT_DIR/wildrobot.xml"
+
+if [[ ! -f "$VARIANT_DIR/mujoco_robot_config.json" ]]; then
+    echo "Error: post_process did not produce mujoco_robot_config.json in ${VARIANT_DIR}"
     exit 1
 fi
 
-update_variant() {
-    local variant="$1"
-    local variant_dir="${SCRIPT_DIR}/${variant}"
+# --- 5. Joint summary --------------------------------------------------------
 
-    if [[ ! -d "$variant_dir" ]]; then
-        echo "Error: variant directory not found: $variant_dir"
-        exit 1
-    fi
-    if [[ ! -f "$variant_dir/config.json" ]]; then
-        echo "Error: missing config.json for variant '${variant}': $variant_dir/config.json"
-        exit 1
-    fi
+print_joint_summary() {
+    "$PYTHON_CMD" - "$VARIANT" "$VARIANT_DIR/mujoco_robot_config.json" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-    echo ""
-    echo "=============================="
-    echo "Updating assets/${variant}"
-    echo "=============================="
+variant = sys.argv[1]
+cfg_path = Path(sys.argv[2])
+data = json.loads(cfg_path.read_text())
+specs = data.get("actuated_joint_specs", [])
 
-    pushd "$variant_dir" >/dev/null
+def sort_key(entry):
+    name = str(entry.get("name", ""))
+    if name.startswith("left_"):
+        base = name[len("left_"):]
+        side_order = 0
+    elif name.startswith("right_"):
+        base = name[len("right_"):]
+        side_order = 1
+    else:
+        base = name
+        side_order = 2
+    return (base, side_order, name)
 
-    # Clean meshes folder to avoid stale assets after export.
-    # onshape-to-robot will re-create/populate this folder as needed.
-    rm -rf assets
-    mkdir -p assets
+ordered = sorted(specs, key=sort_key)
 
-    # Ensure generated top-level outputs are refreshed (avoid silently reusing stale files).
-    rm -f wildrobot.xml wildrobot.urdf robot_config.yaml
-
-    # Step 1: Run onshape-to-robot (reads ./config.json)
-    echo ""
-    echo "Running onshape-to-robot in ${variant_dir}..."
-    onshape-to-robot .
-
-    if [[ ! -f wildrobot.xml ]]; then
-        echo "Error: onshape-to-robot did not produce wildrobot.xml in ${variant_dir}"
-        exit 1
-    fi
-
-    # Step 2: Run post-process to regenerate robot_config.yaml next to the MJCF
-    echo ""
-    echo "Running post_process.py..."
-    rm -f robot_config.yaml
-    $PYTHON_CMD "${SCRIPT_DIR}/post_process.py" "wildrobot.xml"
-    if [[ ! -f robot_config.yaml ]]; then
-        echo "Error: post_process did not produce robot_config.yaml in ${variant_dir}"
-        exit 1
-    fi
-
-    echo ""
-    echo "✓ Updated assets/${variant}"
-
-    popd >/dev/null
+print(f"\nJoint summary (assets/{variant}):")
+for joint in ordered:
+    name = str(joint.get("name", "unknown"))
+    rng = joint.get("range", ["?", "?"])
+    sign = float(joint.get("policy_action_sign", 1.0))
+    print(f"  {name}: range[{rng[0]}, {rng[1]}], policy_action_sign: {sign:+.1f}")
+PY
 }
 
-case "$VERSION" in
-    v1|v2)
-        update_variant "$VERSION"
-        ;;
-    all)
-        update_variant "v1"
-        update_variant "v2"
-        ;;
-    *)
-        echo "Error: invalid --version '$VERSION' (expected v1, v2, or all)"
-        exit 1
-        ;;
-esac
+print_joint_summary
 
 echo ""
-echo "✓ Pipeline completed successfully!"
+echo "✓ Updated assets/${VARIANT}"
+echo ""
+echo "Render command (copy/paste):"
+echo "  ${PYTHON_CMD} assets/render_models.py --scene-file assets/${VARIANT}/scene_flat_terrain.xml"

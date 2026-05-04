@@ -1,19 +1,16 @@
 """PPO building blocks using Brax's implementations.
 
-This module provides a thin wrapper around Brax's PPO components with
-explicit interfaces that allow injection of AMP reward shaping and
-discriminator training.
+This module provides a thin wrapper around Brax's PPO components.
 
 Key components (from Brax):
 - make_ppo_networks: Create policy and value networks
 - make_inference_fn: Create inference function for trained policy
 - compute_gae: Generalized Advantage Estimation (custom impl for flexibility)
-- ppo_loss: Clipped surrogate objective (custom impl for AMP integration)
+- ppo_loss: Clipped surrogate objective (custom impl, exposes intermediate metrics)
 
 The custom GAE and PPO loss implementations allow us to:
-1. Shape rewards with AMP discriminator output between rollout and update
-2. Access intermediate values for logging
-3. Customize loss computation if needed
+1. Access intermediate values for logging
+2. Customize loss computation if needed
 
 IMPORTANT: Brax Network API Notes
 ---------------------------------
@@ -33,7 +30,7 @@ Use ppo_network.parametric_action_distribution to convert logits to actions/log_
 from __future__ import annotations
 
 import importlib.util
-from typing import Any, Callable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -58,12 +55,34 @@ else:
     _flax_unfreeze = None
 
 
+_ACTIVATION_REGISTRY: Dict[str, Callable] = {
+    "elu": jax.nn.elu,
+    "relu": jax.nn.relu,
+    "gelu": jax.nn.gelu,
+    "swish": jax.nn.swish,
+    "silu": jax.nn.silu,
+    "tanh": jax.nn.tanh,
+}
+
+
+def _resolve_activation(name: str) -> Callable:
+    key = str(name).lower()
+    if key not in _ACTIVATION_REGISTRY:
+        raise ValueError(
+            f"Unsupported activation '{name}'. "
+            f"Known: {sorted(_ACTIVATION_REGISTRY.keys())}"
+        )
+    return _ACTIVATION_REGISTRY[key]
+
+
 def create_networks(
     obs_dim: int,
     action_dim: int,
     policy_hidden_dims: Tuple[int, ...],
     value_hidden_dims: Tuple[int, ...],
+    critic_obs_dim: Optional[int] = None,
     preprocess_observations_fn: Optional[Callable] = None,
+    activation: str = "silu",
 ):
     """Create PPO networks using Brax's factory.
 
@@ -75,25 +94,49 @@ def create_networks(
         action_dim: Action dimension
         policy_hidden_dims: Hidden layer sizes for policy network
         value_hidden_dims: Hidden layer sizes for value network
+        critic_obs_dim: Optional privileged critic observation dimension.
         preprocess_observations_fn: Optional observation preprocessing.
             If None, uses Brax's identity preprocessor.
+        activation: Hidden-layer activation name ("elu", "silu", ...).
+            v0.20.1 spec (walking_training.md G6) calls for "elu".
+            Brax's default is "silu".
 
     Returns:
         PPONetworks: Brax's PPO network container with policy and value networks
     """
     # Build kwargs - only include preprocess_observations_fn if explicitly provided
     # If None, Brax will use its default identity_observation_preprocessor
+    critic_dim = int(obs_dim if critic_obs_dim is None else critic_obs_dim)
+    activation_fn = _resolve_activation(activation)
     kwargs = {
-        "observation_size": obs_dim,
+        "observation_size": int(obs_dim),
         "action_size": action_dim,
         "policy_hidden_layer_sizes": policy_hidden_dims,
         "value_hidden_layer_sizes": value_hidden_dims,
+        "activation": activation_fn,
     }
 
     if preprocess_observations_fn is not None:
         kwargs["preprocess_observations_fn"] = preprocess_observations_fn
 
-    return ppo_networks.make_ppo_networks(**kwargs)
+    ppo_network = ppo_networks.make_ppo_networks(**kwargs)
+    if critic_dim == int(obs_dim):
+        return ppo_network
+
+    value_kwargs = {
+        "obs_size": critic_dim,
+        "hidden_layer_sizes": value_hidden_dims,
+        "activation": activation_fn,
+    }
+    if preprocess_observations_fn is not None:
+        value_kwargs["preprocess_observations_fn"] = preprocess_observations_fn
+
+    privileged_value_network = ppo_networks.networks.make_value_network(**value_kwargs)
+    return ppo_networks.PPONetworks(
+        policy_network=ppo_network.policy_network,
+        value_network=privileged_value_network,
+        parametric_action_distribution=ppo_network.parametric_action_distribution,
+    )
 
 
 def init_network_params(
@@ -245,7 +288,6 @@ def _init_policy_output_bias(
 # ============================================================================
 # Generalized Advantage Estimation (GAE)
 # ============================================================================
-# Custom implementation to allow AMP reward shaping between rollout and GAE
 
 
 def compute_gae(
@@ -258,12 +300,11 @@ def compute_gae(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Compute Generalized Advantage Estimation.
 
-    This is a custom implementation (not using Brax's) to allow:
-    1. AMP reward shaping between rollout collection and GAE computation
-    2. Explicit access to intermediate values for logging
+    Custom implementation (not using Brax's) to expose intermediate values
+    for logging.
 
     Args:
-        rewards: Rewards (num_steps, num_envs) - can include AMP-shaped rewards
+        rewards: Rewards (num_steps, num_envs)
         values: Value estimates (num_steps, num_envs)
         dones: Episode termination flags (num_steps, num_envs)
         bootstrap_value: Value estimate for final state (num_envs,)
@@ -326,7 +367,7 @@ def compute_gae(
 # ============================================================================
 # PPO Loss Function
 # ============================================================================
-# Custom implementation to expose all metrics for AMP integration
+# Custom implementation to expose all loss metrics for logging
 
 
 class PPOLossMetrics(NamedTuple):
@@ -346,6 +387,7 @@ def compute_ppo_loss(
     value_params: Any,
     ppo_network,
     obs: jnp.ndarray,
+    value_obs: Any,
     actions: jnp.ndarray,
     old_log_probs: jnp.ndarray,
     advantages: jnp.ndarray,
@@ -359,7 +401,7 @@ def compute_ppo_loss(
     """Compute PPO loss with clipped objective.
 
     This uses Brax's network interface but computes the loss explicitly
-    to expose all metrics for logging and AMP integration.
+    to expose all metrics for logging.
 
     IMPORTANT: Brax's network API:
     - policy_network.apply(processor_params, policy_params, obs) -> logits
@@ -372,6 +414,7 @@ def compute_ppo_loss(
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
         obs: Observations (batch_size, obs_dim)
+        value_obs: Critic observations. May differ from obs for asymmetric critic.
         actions: Raw/pre-tanh actions (batch_size, action_dim) - NOT postprocessed
         old_log_probs: Log probs from rollout (batch_size,)
         advantages: GAE advantages (batch_size,)
@@ -399,7 +442,10 @@ def compute_ppo_loss(
 
     # Compute value estimates
     # Brax API: apply(processor_params, network_params, obs) -> values
-    values = ppo_network.value_network.apply(processor_params, value_params, obs)
+    critic_input = obs if value_obs is None else value_obs
+    values = ppo_network.value_network.apply(
+        processor_params, value_params, critic_input
+    )
 
     # Policy loss (clipped surrogate objective)
     ratio = jnp.exp(new_log_probs - old_log_probs)
@@ -526,6 +572,7 @@ def compute_values(
     value_params: Any,
     ppo_network,
     obs: jnp.ndarray,
+    critic_obs: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """Compute value estimates using Brax's network API.
 
@@ -533,13 +580,15 @@ def compute_values(
         processor_params: Observation normalization parameters (empty tuple if not used)
         value_params: Value network parameters
         ppo_network: PPO networks from create_networks()
-        obs: Observations (batch, obs_dim)
+        obs: Actor observations (batch, obs_dim)
+        critic_obs: Optional privileged critic observations.
 
     Returns:
         values: Value estimates (batch,)
     """
     # Brax API: apply(processor_params, network_params, obs) -> values
-    return ppo_network.value_network.apply(processor_params, value_params, obs)
+    critic_input = obs if critic_obs is None else critic_obs
+    return ppo_network.value_network.apply(processor_params, value_params, critic_input)
 
 
 # ============================================================================

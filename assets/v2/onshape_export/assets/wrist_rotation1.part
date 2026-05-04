@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "9236e38fa5e4341a21503004",
+    "elementId": "eed32dd76ad6e0d510784b1c",
+    "fullConfiguration": "default",
+    "id": "MbirI9kYVA0roE9+h",
+    "isStandardContent": false,
+    "name": "wrist_rotation1 <1>",
+    "partId": "RPHD",
+    "suppressed": false,
+    "type": "Part"
+}

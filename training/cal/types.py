@@ -40,7 +40,7 @@ class CoordinateFrame(Enum):
         - Origin at root body
         - XY plane aligned with heading direction
         - Z remains world-up
-        - Used for: RL observations, AMP features, velocity commands
+        - Used for: RL observations, velocity commands
         - Most common for locomotion policies
 
     Example:

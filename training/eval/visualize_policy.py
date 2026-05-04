@@ -14,8 +14,8 @@ Usage:
     # Visualize specific checkpoint
     mjpython training/eval/visualize_policy.py --checkpoint path/to/checkpoint.pkl
 
-    # Visualize with different config
-    mjpython training/eval/visualize_policy.py --config training/configs/ppo_walking.yaml
+    # Visualize with different config (v0.20.1: smoke YAML default)
+    mjpython training/eval/visualize_policy.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
     # With velocity command (for walking)
     mjpython training/eval/visualize_policy.py --velocity-cmd 0.5
@@ -50,32 +50,26 @@ from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.state import PolicyState
-from policy_contract.spec import (
-    ActionSpec,
-    JointSpec,
-    ModelSpec,
-    ObservationSpec,
-    ObsFieldSpec,
-    PolicySpec,
-    RobotSpec,
-)
-from policy_contract.spec_builder import build_policy_spec as build_policy_spec_contract
+from policy_contract.spec import PolicySpec
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.specs import CoordinateFrame, Pose3D
 from training.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
+from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 
 
-# Default paths (relative to project_root)
-DEFAULT_CONFIG_PATH = project_root / "training" / "configs" / "ppo_walking.yaml"
+# Default paths (relative to project_root).
+# v0.20.1: ppo_walking.yaml was deleted; the v0.20.1 smoke YAML
+# (open task #49) is the new default.  --config explicit override
+# is recommended until the smoke YAML lands.
+DEFAULT_CONFIG_PATH = project_root / "training" / "configs" / "ppo_walking_v0201_smoke.yaml"
 DEFAULT_CHECKPOINT_PATH = (
     project_root / "training" / "checkpoints" / "final_ppo_policy.pkl"
 )
-DEFAULT_ROBOT_CONFIG_PATH = project_root / "assets" / "robot_config.yaml"
 
 
 @dataclass(frozen=True)
@@ -86,12 +80,16 @@ class PushSchedule:
 
 
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
-    return build_policy_spec_contract(
-        robot_name=robot_cfg.robot_name,
-        actuated_joint_specs=robot_cfg.actuated_joints,
+    return build_policy_spec_from_training_config(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
         action_filter_alpha=float(action_filter_alpha),
         provenance={
-            "training_config": str(training_cfg.config_path) if hasattr(training_cfg, "config_path") else "<runtime>",
+            "training_config": (
+                str(training_cfg.config_path)
+                if hasattr(training_cfg, "config_path")
+                else "<runtime>"
+            ),
         },
     )
 
@@ -274,19 +272,29 @@ def main():
     if args.demo:
         deterministic = True
 
-    # Load robot config
-    if DEFAULT_ROBOT_CONFIG_PATH.exists():
-        robot_cfg = load_robot_config(DEFAULT_ROBOT_CONFIG_PATH)
-        print(f"Loaded robot config: {robot_cfg.robot_name}")
-    else:
-        print(f"Error: Robot config not found at {DEFAULT_ROBOT_CONFIG_PATH}")
-        print("Run 'cd assets && python post_process.py' to generate it.")
-        return 1
-
     # Load training config
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    from training.configs.cli_helpers import fail_if_config_missing
+    fail_if_config_missing(
+        config_path, user_passed_explicit=bool(args.config)
+    )
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
+
+    # Load robot config (variant-aware via training config)
+    robot_cfg_path = Path(training_cfg.env.robot_config_path)
+    if not robot_cfg_path.is_absolute():
+        robot_cfg_path = project_root / robot_cfg_path
+    if robot_cfg_path.exists():
+        robot_cfg = load_robot_config(robot_cfg_path)
+        print(f"Loaded robot config: {robot_cfg.robot_name}")
+    else:
+        print(f"Error: Robot config not found at {robot_cfg_path}")
+        print(
+            "Check env.assets_root or env.robot_config_path in the config, "
+            "then regenerate mujoco_robot_config.json if needed."
+        )
+        return 1
 
     # Resolve checkpoint path (tries multiple locations)
     checkpoint_path = resolve_checkpoint_path(args.checkpoint)
@@ -442,15 +450,34 @@ def main():
     )
     prev_action = default_policy_action.copy()
 
-    def get_observation(mj_data, velocity_cmd, prev_action_in):
+    clock_stride_period_steps = int(training_cfg.env.clock_stride_period_steps)
+
+    def get_gait_clock(step_count: int) -> np.ndarray:
+        phase = 2.0 * np.pi * (float(step_count) / max(clock_stride_period_steps, 1))
+        phase_right = phase + np.pi
+        return np.asarray(
+            [
+                np.sin(phase),
+                np.cos(phase),
+                np.sin(phase_right),
+                np.cos(phase_right),
+            ],
+            dtype=np.float32,
+        )
+
+    def get_observation(mj_data, velocity_cmd, prev_action_in, step_count):
         """Compute observation via policy_contract (hardware-aligned)."""
         signals = signals_adapter.read(mj_data)
+        gait_clock = None
+        if policy_spec.observation.layout_id == "wr_obs_v3":
+            gait_clock = get_gait_clock(step_count)
 
         obs = build_observation(
             spec=policy_spec,
             state=PolicyState(prev_action=np.asarray(prev_action_in, dtype=np.float32)),
             signals=signals,
             velocity_cmd=np.array(velocity_cmd, dtype=np.float32),
+            gait_clock=gait_clock,
         )
 
         return obs
@@ -735,7 +762,7 @@ def main():
         )  # Limit steps if not recording
         while step_count < max_steps:
             # Get observation from native MuJoCo state
-            obs = get_observation(mj_data, velocity_cmd, prev_action)
+            obs = get_observation(mj_data, velocity_cmd, prev_action, step_count)
             obs_jax = jnp.asarray(obs)
 
             # Get action from policy
@@ -841,10 +868,23 @@ def main():
 
         # Save video
         if args.record and frames:
-            import imageio
-
+            fps = int(1 / ctrl_dt)
             print(f"Saving video to {args.record}...")
-            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
+            try:
+                import mediapy as media
+
+                media.write_video(args.record, frames, fps=fps)
+            except ModuleNotFoundError:
+                try:
+                    import imageio
+
+                    imageio.mimsave(args.record, frames, fps=fps)
+                except ModuleNotFoundError as e:
+                    raise ModuleNotFoundError(
+                        "Video recording requires either `mediapy` (preferred) or `imageio`.\n"
+                        "Try: `uv sync` (mediapy is a repo dependency) or install imageio:\n"
+                        "  `uv add imageio imageio-ffmpeg && uv sync`"
+                    ) from e
             print(f"Done! Saved {len(frames)} frames.")
 
     else:
@@ -868,7 +908,7 @@ def main():
                     step_start = time.time()
 
                     # Get observation from native MuJoCo state
-                    obs = get_observation(mj_data, velocity_cmd, prev_action)
+                    obs = get_observation(mj_data, velocity_cmd, prev_action, step_count)
                     obs_jax = jnp.asarray(obs)
 
                     # Get action from policy
@@ -959,10 +999,23 @@ def main():
                         renderer.close()
 
                         if step_count == record_steps:
-                            import imageio
-
+                            fps = int(1 / ctrl_dt)
                             print(f"Saving video to {args.record}...")
-                            imageio.mimsave(args.record, frames, fps=int(1 / ctrl_dt))
+                            try:
+                                import mediapy as media
+
+                                media.write_video(args.record, frames, fps=fps)
+                            except ModuleNotFoundError:
+                                try:
+                                    import imageio
+
+                                    imageio.mimsave(args.record, frames, fps=fps)
+                                except ModuleNotFoundError as e:
+                                    raise ModuleNotFoundError(
+                                        "Video recording requires either `mediapy` (preferred) or `imageio`.\n"
+                                        "Try: `uv sync` (mediapy is a repo dependency) or install imageio:\n"
+                                        "  `uv add imageio imageio-ffmpeg && uv sync`"
+                                    ) from e
                             print("Done!")
 
                     # Check for episode end (robot fell or max steps)

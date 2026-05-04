@@ -5,7 +5,6 @@ This module provides logging to Weights & Biases for experiment tracking.
 Topline Metrics (Section 3.2.4 Exit Criteria):
 - Forward Velocity: 0.3-0.8 m/s (target)
 - Episode Reward: >350 (target)
-- AMP Reward: >0.7 (target for natural gait)
 - Success Rate: >85% (target)
 - Average Torque: <2.8Nm (target for energy efficiency)
 
@@ -14,7 +13,7 @@ Usage:
 
     tracker = WandbTracker(
         project="wildrobot-locomotion",
-        name="ppo-amp-v1",
+        name="ppo-walking",
         config={"lr": 3e-4, "num_envs": 4096},
     )
 
@@ -45,38 +44,72 @@ import numpy as np
 EXIT_CRITERIA_TARGETS = {
     "forward_velocity": {"min": 0.3, "max": 0.8, "unit": "m/s"},
     "episode_reward": {"target": 350, "baseline": 250, "unit": ""},
-    "amp_reward": {"target": 0.7, "unit": ""},
     "success_rate": {"target": 0.85, "unit": "%"},
     "avg_torque": {"target": 2.8, "max_allowed": 4.0, "unit": "Nm"},
     # Stability metrics
     "episode_length": {"target": 400, "min": 200, "unit": "steps"},
     "survival_rate": {"target": 0.95, "unit": "%"},
-    "disc_accuracy": {
-        "target_min": 0.4,
-        "target_max": 0.7,
-        "unit": "",
-    },  # Should NOT be 100%
 }
 
 REWARD_TERM_KEYS = [
+    "reward/total",
+    "reward/alive",
     "reward/forward",
     "reward/lateral",
     "reward/healthy",
     "reward/orientation",
     "reward/angvel",
+    "reward/pitch_rate",
+    "reward/backward_lean",
+    "reward/negative_velocity",
     "reward/height_target",
+    "reward/height_floor",
+    "reward/collapse_height_pen",
+    "reward/collapse_vz_pen",
     "reward/standing",
     "reward/torque",
     "reward/saturation",
     "reward/action_rate",
     "reward/joint_vel",
     "reward/slip",
-    "reward/clearance",
-    "reward/gait_periodicity",
-    "reward/hip_swing",
-    "reward/knee_swing",
-    "reward/flight_phase",
-    "reward/stance_width_penalty",
+    "reward/feet_air_time",
+    "reward/feet_clearance",
+    "reward/feet_distance",
+    "reward/torso_pitch_soft",
+    "reward/torso_roll_soft",
+    "reward/penalty_slip_raw",
+    "reward/penalty_pitch_rate_raw",
+    "reward/posture",
+    "reward/com_velocity_damping",
+    "reward/step_event",
+    "reward/foot_place",
+    "reward/step_length",
+    "reward/step_progress",
+    "reward/m3_pelvis_orientation_tracking",
+    "reward/m3_pelvis_height_tracking",
+    "reward/m3_swing_foot_tracking",
+    "reward/m3_foothold_consistency",
+    "reward/m3_residual_magnitude",
+    "reward/m3_excessive_impact",
+    "reward/teacher_target_step_xy",
+    "reward/teacher_step_required",
+    "reward/teacher_swing_foot",
+    "reward/teacher_recovery_height",
+    "reward/teacher_com_velocity_reduction",
+    "reward/arrest_pitch_rate",
+    "reward/arrest_capture_error",
+    "reward/post_touchdown_survival",
+    "reward/dense_progress",
+    "reward/cycle_progress",
+    # v0.20.1: imitation-dominant residual reward family.
+    "reward/ref_q_track",
+    "reward/ref_body_quat_track",
+    "reward/torso_pos_xy",
+    # v0.20.2 smoke6: TB-aligned continuous phase signals.
+    "reward/lin_vel_z",
+    "reward/ang_vel_xy",
+    "reward/ref_contact_match",
+    "reward/cmd_forward_velocity_track",
 ]
 
 
@@ -94,24 +127,102 @@ ENV_METRICS_KEYS = {
     "episode_step_count": "Steps in current episode",
     # Reward components
     "reward/total": "Total weighted reward",
+    "reward/alive": "Strict ToddlerBot survival term: 0 while alive, -alive_w*dt on termination",
     "reward/forward": "Forward velocity tracking reward",
     "reward/lateral": "Lateral velocity penalty",
     "reward/healthy": "Healthy/alive reward",
     "reward/orientation": "Upright orientation reward",
     "reward/angvel": "Angular velocity penalty",
+    "reward/pitch_rate": "Pitch-rate penalty",
+    "reward/backward_lean": "Backward-lean penalty when pitch tilts behind neutral",
+    "reward/negative_velocity": "Penalty for moving backward under forward command",
     "reward/height_target": "Height target reward",
+    "reward/height_floor": "Disturbed-window height-floor penalty below threshold",
+    "reward/collapse_height_pen": "Pre-collapse low-height margin penalty",
+    "reward/collapse_vz_pen": "Pre-collapse downward vertical velocity penalty",
     "reward/torque": "Torque penalty",
     "reward/saturation": "Actuator saturation penalty",
     "reward/action_rate": "Action smoothness penalty",
     "reward/joint_vel": "Joint velocity penalty",
     "reward/slip": "Foot slip penalty",
-    "reward/clearance": "Foot clearance reward",
-    "reward/gait_periodicity": "Alternating gait reward",
-    "reward/hip_swing": "Hip swing during leg swing",
-    "reward/knee_swing": "Knee swing during leg swing",
-    "reward/flight_phase": "Flight phase penalty",
-    "reward/stance_width_penalty": "Stance width penalty",
+    "reward/feet_air_time": "Touchdown air-time reward accumulated per foot before first contact",
+    "reward/feet_clearance": "Touchdown clearance reward from per-foot air-distance before contact",
+    "reward/feet_distance": "Lateral foot-spacing reward in the torso frame",
+    "reward/torso_pitch_soft": "Soft torso-pitch band reward inside configured limits",
+    "reward/torso_roll_soft": "Soft torso-roll band reward inside configured limits",
+    "reward/penalty_slip_raw": (
+        "Raw stance-foot slip penalty (Σ stance horizontal vel²); "
+        "logged independently of reward_weights.slip to size the M1 weight"
+    ),
+    "reward/penalty_pitch_rate_raw": (
+        "Raw pitch-rate penalty (gyro_y²); logged independently of "
+        "reward_weights.pitch_rate to size the M1 weight"
+    ),
+    "reward/clearance": "Phase-gated swing foot clearance reward",
+    "reward/gait_periodicity": "Alternating gait reward (deprecated for M3 total reward)",
+    "reward/hip_swing": "Hip swing during leg swing (deprecated for M3 total reward)",
+    "reward/knee_swing": "Knee swing during leg swing (deprecated for M3 total reward)",
+    "reward/flight_phase": "Flight phase penalty (deprecated for M3 total reward)",
+    "reward/stance_width_penalty": "Stance width penalty (deprecated for M3 total reward)",
     "reward/standing": "Standing still penalty",
+    "reward/posture": "Posture return reward",
+    "reward/com_velocity_damping": "Disturbed-window horizontal CoM speed damping reward",
+    "reward/step_event": "Touchdown event reward gated by recovery window or walking command",
+    "reward/foot_place": "Foot placement reward gated by recovery window or walking command",
+    "reward/step_length": "Touchdown step-length reward tied to commanded speed",
+    "reward/step_progress": "Touchdown-to-touchdown structured forward progress reward",
+    "reward/m3_pelvis_orientation_tracking": "Pelvis roll/pitch tracking reward to locomotion reference",
+    "reward/m3_pelvis_height_tracking": "Pelvis height tracking reward to locomotion reference",
+    "reward/m3_swing_foot_tracking": "Swing foot position/velocity tracking reward to locomotion reference",
+    "reward/m3_foothold_consistency": "Touchdown-to-reference foothold consistency reward",
+    "reward/m3_residual_magnitude": "Residual joint-delta magnitude penalty",
+    "reward/m3_excessive_impact": "Penalty for excessive touchdown/contact impact force",
+    "reward/teacher_target_step_xy": "Teacher target agreement reward on first recovery touchdown",
+    "reward/teacher_step_required": "Teacher step-required reward on first recovery step-init event",
+    "reward/teacher_swing_foot": "Teacher swing-foot agreement reward on first recovery touchdown",
+    "reward/teacher_recovery_height": "Whole-body recovery-height teacher reward",
+    "reward/teacher_com_velocity_reduction": "Whole-body CoM-velocity reduction teacher reward",
+    "reward/arrest_pitch_rate": "Post-touchdown reduction in |pitch_rate| during recovery",
+    "reward/arrest_capture_error": "Post-touchdown reduction in capture error during recovery",
+    "reward/post_touchdown_survival": "Per-step survival reward after first recovery touchdown",
+    "reward/dense_progress": "Dense heading-local forward progress shaping reward",
+    "reward/cycle_progress": "Per-clock-cycle forward displacement reward",
+    # v0.20.1: imitation-dominant residual reward family (DeepMimic-style;
+    # see training/envs/wildrobot_env.py:_compute_reward_terms).
+    "reward/ref_q_track": "Joint-target tracking exp(-alpha*sum((q-q_ref)^2))",
+    "reward/ref_body_quat_track": "Pelvis orientation tracking exp(-alpha*angle^2)",
+    "reward/torso_pos_xy": "Torso XY tracking exp(-alpha*||torso_xy-ref_xy||^2)",
+    # v0.20.2 smoke6: TB-aligned continuous phase signals.
+    "reward/lin_vel_z": (
+        "TB lin_vel_z tracking exp(-alpha*(vz - ref_vz)^2); "
+        "ref from finite-diff of prior pelvis_pos[2]"
+    ),
+    "reward/ang_vel_xy": (
+        "TB ang_vel_xy tracking exp(-alpha*(gyro_x^2 + gyro_y^2)); "
+        "ref is zero (yaw-stationary prior)"
+    ),
+    "reward/ref_contact_match": (
+        "TB boolean equality count (smoke6 onward): "
+        "sum(stance_mask == ref_stance_mask) in {0, 1, 2}"
+    ),
+    "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
+    # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
+    "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",
+    "ref/body_quat_err_deg": "Geodesic orientation error vs reference (deg)",
+    "ref/feet_pos_err_l2": "L2 foot-pos error (root-relative, summed L+R) in m",
+    "ref/feet_pos_track_raw": "Legacy feet-pos tracking score exp(-200*||e_feet||^2)",
+    "ref/torso_pos_xy_err_m": "Torso XY position error norm vs reference pelvis (m)",
+    # v0.20.2 smoke6: TB-aligned phase-signal diagnostics.
+    "ref/lin_vel_z_err_m_s": "|vz - ref_vz| (m/s); paired with reward/lin_vel_z",
+    "ref/ang_vel_xy_err_rad_s": (
+        "sqrt(gyro_x^2 + gyro_y^2) (rad/s); paired with reward/ang_vel_xy "
+        "(ref is zero for yaw-stationary prior)"
+    ),
+    "ref/contact_phase_match": (
+        "Fraction of feet matching ref stance mask in {0, 0.5, 1.0} "
+        "(smoke6 onward — derived from TB boolean count, normalized by 2 "
+        "so smoke3-5 logs remain qualitatively comparable)"
+    ),
     # Debug metrics
     "debug/pitch": "Root pitch angle",
     "debug/roll": "Root roll angle",
@@ -124,10 +235,55 @@ ENV_METRICS_KEYS = {
     "debug/right_toe_switch": "Right toe switch state",
     "debug/right_heel_switch": "Right heel switch state",
     "debug/pitch_rate": "Root pitch rate (heading-local angvel y)",
+    "debug/velocity_step_gate": "Forward reward gate value (v0.15.10 propulsion-quality gate)",
+    "debug/propulsion_gate": "Propulsion-quality gate applied to forward reward",
+    "debug/cycle_complete": "Clock cycle completion event",
+    "debug/cycle_forward_delta": "Cycle forward displacement used for cycle progress reward",
+    "debug/step_progress_delta": "Forward progress delta between alternating touchdowns",
+    "debug/step_progress_event": "Alternating touchdown event used by step_progress reward",
+    "debug/recovery_step_gate": "Gate enabling recovery-window step rewards",
+    "debug/post_touchdown_arrest_gate": "Gate enabling post-touchdown arrest rewards",
     "debug/action_abs_max": "Max |action| across actuators (post-filter)",
-    "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter)",
+    "debug/action_sat_frac": "Fraction of |action|>0.95 (post-filter, legacy)",
     "debug/raw_action_abs_max": "Max |action| across actuators (pre-filter)",
-    "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter)",
+    "debug/raw_action_sat_frac": "Fraction of |action|>0.95 (pre-filter, legacy)",
+    "debug/torque_abs_max": "Max |torque| as fraction of limit (0-1, preferred)",
+    "debug/torque_sat_frac": "Fraction of |torque|>0.95 of limit (preferred)",
+    "debug/loc_ref_speed_scale": "Legacy v1 loc-ref speed scale after overspeed/pitch braking (v2 path keeps this at 0)",
+    "debug/loc_ref_phase_scale": "Legacy v1 loc-ref phase-time scale after overspeed/pitch braking (v2 path keeps this at 0)",
+    "debug/loc_ref_overspeed": "Loc-ref overspeed signal max(fwd-cmd-deadband, 0)",
+    "debug/loc_ref_support_health": "Support-conditioned progression health (1=healthy, 0=freeze)",
+    "debug/loc_ref_support_instability": "Support instability signal used by progression gate",
+    "debug/loc_ref_nominal_vs_applied_q_l1": "Mean |applied_target_q - nominal_q_ref| per step",
+    "debug/loc_ref_applied_q_abs_mean": "Mean absolute applied target-q magnitude",
+    "debug/loc_ref_nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude (debug copy)",
+    "debug/loc_ref_swing_x_target": "Nominal support-gated swing-foot x target in stance frame",
+    "debug/loc_ref_swing_x_actual": "Actual swing-foot x in stance frame",
+    "debug/loc_ref_swing_x_error": "Swing-foot x tracking error (actual - target) in stance frame",
+    "debug/loc_ref_swing_y_target": "Nominal support-gated swing-foot y target in stance frame",
+    "debug/loc_ref_swing_y_actual": "Actual swing-foot y in stance frame",
+    "debug/loc_ref_swing_y_error": "Swing-foot y tracking error (actual - target) in stance frame",
+    "debug/loc_ref_left_foot_y_actual": "Actual left-foot y in heading-local frame",
+    "debug/loc_ref_right_foot_y_actual": "Actual right-foot y in heading-local frame",
+    "debug/loc_ref_support_width_y_actual": "Actual lateral foot separation |right_y-left_y| in heading-local frame",
+    "debug/loc_ref_support_width_y_nominal": "Reference foothold lateral magnitude |next_foothold_y| in stance frame",
+    "debug/loc_ref_support_width_y_commanded": "Commanded lateral support width |swing_y_target| in stance frame",
+    "debug/loc_ref_base_support_y": "Base lateral support component (next foothold y in stance frame)",
+    "debug/loc_ref_lateral_release_y": "Lateral release component (swing_y_target - base_support_y)",
+    "debug/loc_ref_pelvis_roll_target": "Nominal pelvis roll target from locomotion reference",
+    "debug/loc_ref_hip_roll_left_target": "Nominal left hip-roll target after locomotion-reference mapping",
+    "debug/loc_ref_hip_roll_right_target": "Nominal right hip-roll target after locomotion-reference mapping",
+    "debug/loc_ref_pelvis_pitch_target": "Support-gated nominal pelvis pitch target",
+    "debug/loc_ref_root_pitch": "Actual root pitch (heading-local Euler y)",
+    "debug/loc_ref_root_pitch_rate": "Actual root pitch rate (heading-local angvel y)",
+    "debug/loc_ref_stance_sagittal_target": "Nominal stance-leg sagittal z target",
+    "debug/loc_ref_swing_x_scale": "Support-first scale applied to forward swing-x progression",
+    "debug/loc_ref_pelvis_pitch_scale": "Support-first scale applied to nominal pelvis pitch",
+    "debug/loc_ref_support_gate_active": "Support-first clamp activation flag",
+    "debug/loc_ref_hybrid_mode_id": "Hybrid nominal reference mode id",
+    "debug/loc_ref_progression_permission": "Support-conditioned progression permission",
+    "debug/loc_ref_swing_x_scale_active": "Active forward swing-x scale from currently selected loc-ref implementation",
+    "debug/loc_ref_phase_scale_active": "Active phase-scale/progression permission from currently selected loc-ref implementation",
     # Termination diagnostics
     "term/height_low": "Terminated: height too low",
     "term/height_high": "Terminated: height too high",
@@ -140,6 +296,61 @@ ENV_METRICS_KEYS = {
     # Tracking metrics (v0.10.3+)
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
+    "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
+    "tracking/loc_ref_phase_progress": "Locomotion reference intra-step phase progress in [0, 1]",
+    "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
+    "tracking/loc_ref_mode_id": "Locomotion reference hybrid mode id",
+    "tracking/loc_ref_progression_permission": "Support-conditioned progression permission in [0,1]",
+    "tracking/nominal_q_abs_mean": "Mean absolute nominal q_ref magnitude",
+    "tracking/residual_q_abs_mean": "Mean absolute residual delta_q magnitude",
+    "tracking/residual_q_abs_max": "Max absolute residual delta_q magnitude",
+    "tracking/loc_ref_left_reachable": "Left-leg IK target reachable flag",
+    "tracking/loc_ref_right_reachable": "Right-leg IK target reachable flag",
+    # v0.14.x: M3 base-controller FSM debug metrics
+    "debug/bc_phase": "M3 FSM phase (0=STANCE, 1=SWING, 2=TOUCHDOWN_RECOVER)",
+    "debug/bc_in_swing": "M3 FSM occupancy in SWING phase",
+    "debug/bc_in_recover": "M3 FSM occupancy in TOUCHDOWN_RECOVER phase",
+    "debug/bc_swing_foot": "M3 FSM active swing foot (0=left, 1=right)",
+    "debug/bc_phase_ticks": "M3 FSM ticks in current phase",
+    # v0.17.4t: teacher diagnostics
+    "teacher/active_frac": "Fraction of steps where teacher is active",
+    "teacher/active_count": "Count of steps where teacher is active",
+    "teacher/step_required_mean": "Teacher soft step-required signal mean",
+    "teacher/step_required_hard_frac": "Teacher hard step-required fraction",
+    "teacher/target_step_x_mean": "Teacher target step x mean",
+    "teacher/target_step_y_mean": "Teacher target step y mean",
+    "teacher/target_step_x_std": "Teacher target step x std",
+    "teacher/target_step_y_std": "Teacher target step y std",
+    "teacher/swing_left_frac": "Teacher swing-left fraction when active",
+    "teacher/target_xy_error": "Touchdown XY error to teacher target",
+    "teacher/teacher_active_during_clean_frac": "Teacher activity in clean windows",
+    "teacher/raw_step_required_during_clean_mean": "Raw (pre-disturbance-gated) teacher demand during clean windows",
+    "teacher/clean_step_count": "Count of clean-window samples",
+    "teacher/push_step_count": "Count of push-window samples",
+    "teacher/teacher_active_during_push_frac": "Teacher activity in push windows",
+    "teacher/reachable_frac": "Teacher target reachable fraction",
+    "teacher/target_step_x_min": "Teacher target step x min",
+    "teacher/target_step_x_max": "Teacher target step x max",
+    "teacher/target_step_y_min": "Teacher target step y min",
+    "teacher/target_step_y_max": "Teacher target step y max",
+    "teacher/step_required_event_rate": "Teacher step-required reward event rate",
+    "teacher/swing_foot_match_frac": "Teacher swing-foot match fraction",
+    "teacher/swing_foot_match_events": "Teacher swing-foot match event count",
+    "teacher/whole_body_active_frac": "Whole-body teacher active fraction",
+    "teacher/whole_body_active_count": "Whole-body teacher active sample count",
+    "teacher/whole_body_active_during_clean_frac": "Whole-body teacher activity in clean windows",
+    "teacher/whole_body_active_during_push_frac": "Whole-body teacher activity in push windows",
+    "teacher/recovery_height_target_mean": "Whole-body recovery-height target mean",
+    "teacher/recovery_height_error": "Whole-body recovery-height error mean",
+    "teacher/recovery_height_in_band_frac": "Whole-body recovery-height in-band fraction",
+    "teacher/com_velocity_target_mean": "Whole-body CoM-velocity target mean",
+    "teacher/com_velocity_error": "Whole-body CoM-velocity error mean",
+    "teacher/com_velocity_target_hit_frac": "Whole-body CoM-velocity target-hit fraction",
+    "recovery/visible_step_rate": "Recovery visible-step fraction (liftoff->touchdown)",
+    "visible_step_rate_hard": "Hard-push visible-step fraction (eval proxy)",
+    "recovery/min_height": "Minimum root height during recovery window",
+    "recovery/max_knee_flex": "Maximum knee flexion magnitude during recovery window",
+    "recovery/first_step_dist_abs": "Absolute first-step distance sqrt(dx^2 + dy^2)",
 }
 
 
@@ -158,6 +369,7 @@ def get_initial_env_metrics(
     healthy_reward: float = 0.0,
     action_rate: float = 0.0,
     total_reward: float = 0.0,
+    alive_reward: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Create initial environment metrics dictionary for reset().
 
@@ -188,6 +400,11 @@ def get_initial_env_metrics(
         This function returns Python floats by default. The caller should
         convert to JAX arrays as needed.
     """
+    # Strict ToddlerBot -done semantics imply zero alive reward at reset.
+    # Keep alive == total unless the caller overrides so the reset breakdown
+    # remains internally consistent for any non-JAX caller.
+    alive_value = total_reward if alive_reward is None else alive_reward
+
     return {
         # Core state
         "velocity_command": velocity_cmd,
@@ -196,17 +413,31 @@ def get_initial_env_metrics(
         "episode_step_count": 0.0,  # Starts at 0 for new episode
         # Reward components
         "reward/total": total_reward,
+        "reward/alive": alive_value,
         "reward/forward": forward_reward,
         "reward/lateral": 0.0,
         "reward/healthy": healthy_reward,
         "reward/orientation": 0.0,
         "reward/angvel": 0.0,
+        "reward/pitch_rate": 0.0,
+        "reward/backward_lean": 0.0,
+        "reward/negative_velocity": 0.0,
         "reward/height_target": 0.0,
+        "reward/height_floor": 0.0,
+        "reward/collapse_height_pen": 0.0,
+        "reward/collapse_vz_pen": 0.0,
         "reward/torque": 0.0,
         "reward/saturation": 0.0,
         "reward/action_rate": action_rate,
         "reward/joint_vel": 0.0,
         "reward/slip": 0.0,
+        "reward/feet_air_time": 0.0,
+        "reward/feet_clearance": 0.0,
+        "reward/feet_distance": 0.0,
+        "reward/torso_pitch_soft": 0.0,
+        "reward/torso_roll_soft": 0.0,
+        "reward/penalty_slip_raw": 0.0,
+        "reward/penalty_pitch_rate_raw": 0.0,
         "reward/clearance": 0.0,
         "reward/gait_periodicity": 0.0,
         "reward/hip_swing": 0.0,
@@ -214,6 +445,45 @@ def get_initial_env_metrics(
         "reward/flight_phase": 0.0,
         "reward/stance_width_penalty": 0.0,
         "reward/standing": 0.0,
+        "reward/posture": 0.0,
+        "reward/com_velocity_damping": 0.0,
+        "reward/step_event": 0.0,
+        "reward/foot_place": 0.0,
+        "reward/step_length": 0.0,
+        "reward/step_progress": 0.0,
+        "reward/m3_pelvis_orientation_tracking": 0.0,
+        "reward/m3_pelvis_height_tracking": 0.0,
+        "reward/m3_swing_foot_tracking": 0.0,
+        "reward/m3_foothold_consistency": 0.0,
+        "reward/m3_residual_magnitude": 0.0,
+        "reward/m3_excessive_impact": 0.0,
+        "reward/teacher_target_step_xy": 0.0,
+        "reward/teacher_step_required": 0.0,
+        "reward/teacher_swing_foot": 0.0,
+        "reward/teacher_recovery_height": 0.0,
+        "reward/teacher_com_velocity_reduction": 0.0,
+        "reward/arrest_pitch_rate": 0.0,
+        "reward/arrest_capture_error": 0.0,
+        "reward/post_touchdown_survival": 0.0,
+        "reward/dense_progress": 0.0,
+        "reward/cycle_progress": 0.0,
+        # v0.20.1 imitation reward family + diagnostics (zeros at reset).
+        "reward/ref_q_track": 0.0,
+        "reward/ref_body_quat_track": 0.0,
+        "reward/torso_pos_xy": 0.0,
+        # v0.20.2 smoke6: TB-aligned continuous phase signals + diagnostics.
+        "reward/lin_vel_z": 0.0,
+        "reward/ang_vel_xy": 0.0,
+        "ref/lin_vel_z_err_m_s": 0.0,
+        "ref/ang_vel_xy_err_rad_s": 0.0,
+        "reward/ref_contact_match": 0.0,
+        "reward/cmd_forward_velocity_track": 0.0,
+        "ref/q_track_err_rmse": 0.0,
+        "ref/body_quat_err_deg": 0.0,
+        "ref/feet_pos_err_l2": 0.0,
+        "ref/feet_pos_track_raw": 0.0,
+        "ref/torso_pos_xy_err_m": 0.0,
+        "ref/contact_phase_match": 0.0,
         # Debug metrics
         "debug/pitch": pitch,
         "debug/roll": roll,
@@ -226,10 +496,34 @@ def get_initial_env_metrics(
         "debug/right_toe_switch": right_toe_switch,
         "debug/right_heel_switch": right_heel_switch,
         "debug/pitch_rate": 0.0,
+        "debug/velocity_step_gate": 0.0,
         "debug/action_abs_max": 0.0,
         "debug/action_sat_frac": 0.0,
         "debug/raw_action_abs_max": 0.0,
         "debug/raw_action_sat_frac": 0.0,
+        "debug/torque_abs_max": 0.0,
+        "debug/torque_sat_frac": 0.0,
+        "debug/posture_mse": 0.0,
+        "debug/need_step": 0.0,
+        "debug/touchdown_left": 0.0,
+        "debug/touchdown_right": 0.0,
+        "debug/propulsion_gate": 0.0,
+        "debug/cycle_complete": 0.0,
+        "debug/cycle_forward_delta": 0.0,
+        "debug/step_progress_delta": 0.0,
+        "debug/step_progress_event": 0.0,
+        "debug/recovery_step_gate": 0.0,
+        "debug/post_touchdown_arrest_gate": 0.0,
+        "debug/disturbed_reward_gate": 0.0,
+        "debug/effective_orientation_weight": 0.0,
+        "debug/effective_height_target_weight": 0.0,
+        "debug/effective_posture_weight": 0.0,
+        # v0.14.x: M3 base-controller FSM debug metrics
+        "debug/bc_phase": 0.0,
+        "debug/bc_in_swing": 0.0,
+        "debug/bc_in_recover": 0.0,
+        "debug/bc_swing_foot": 0.0,
+        "debug/bc_phase_ticks": 0.0,
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": 0.0,
         "term/height_high": 0.0,
@@ -243,6 +537,16 @@ def get_initial_env_metrics(
         "tracking/vel_error": 0.0,  # Starts at zero (stationary)
         "tracking/max_torque": 0.0,  # No torque at reset
         "tracking/avg_torque": 0.0,  # No torque at reset
+        "tracking/cmd_vs_achieved_forward": 0.0,
+        "tracking/loc_ref_phase_progress": 0.0,
+        "tracking/loc_ref_stance_foot": 0.0,
+        "tracking/loc_ref_mode_id": 0.0,
+        "tracking/loc_ref_progression_permission": 0.0,
+        "tracking/nominal_q_abs_mean": 0.0,
+        "tracking/residual_q_abs_mean": 0.0,
+        "tracking/residual_q_abs_max": 0.0,
+        "tracking/loc_ref_left_reachable": 0.0,
+        "tracking/loc_ref_right_reachable": 0.0,
     }
 
 
@@ -261,6 +565,7 @@ def get_initial_env_metrics_jax(
     healthy_reward,
     action_rate,
     total_reward,
+    alive_reward=None,
 ):
     """Create initial environment metrics dictionary with JAX arrays.
 
@@ -279,6 +584,11 @@ def get_initial_env_metrics_jax(
     def _scalar(x):
         return x if hasattr(x, "shape") else jp.array(x)
 
+    # Strict ToddlerBot -done semantics imply zero alive reward at reset.  Keep
+    # alive == total unless the caller overrides so the reset breakdown stays
+    # internally consistent.  Caller can override via ``alive_reward``.
+    alive_value = _scalar(total_reward) if alive_reward is None else _scalar(alive_reward)
+
     return {
         # Core state
         "velocity_command": _scalar(velocity_cmd),
@@ -287,17 +597,31 @@ def get_initial_env_metrics_jax(
         "episode_step_count": jp.zeros(()),  # Starts at 0 for new episode
         # Reward components
         "reward/total": _scalar(total_reward),
+        "reward/alive": alive_value,
         "reward/forward": _scalar(forward_reward),
         "reward/lateral": jp.zeros(()),
         "reward/healthy": _scalar(healthy_reward),
         "reward/orientation": jp.zeros(()),
         "reward/angvel": jp.zeros(()),
+        "reward/pitch_rate": jp.zeros(()),
+        "reward/backward_lean": jp.zeros(()),
+        "reward/negative_velocity": jp.zeros(()),
         "reward/height_target": jp.zeros(()),
+        "reward/height_floor": jp.zeros(()),
+        "reward/collapse_height_pen": jp.zeros(()),
+        "reward/collapse_vz_pen": jp.zeros(()),
         "reward/torque": jp.zeros(()),
         "reward/saturation": jp.zeros(()),
         "reward/action_rate": _scalar(action_rate),
         "reward/joint_vel": jp.zeros(()),
         "reward/slip": jp.zeros(()),
+        "reward/feet_air_time": jp.zeros(()),
+        "reward/feet_clearance": jp.zeros(()),
+        "reward/feet_distance": jp.zeros(()),
+        "reward/torso_pitch_soft": jp.zeros(()),
+        "reward/torso_roll_soft": jp.zeros(()),
+        "reward/penalty_slip_raw": jp.zeros(()),
+        "reward/penalty_pitch_rate_raw": jp.zeros(()),
         "reward/clearance": jp.zeros(()),
         "reward/gait_periodicity": jp.zeros(()),
         "reward/hip_swing": jp.zeros(()),
@@ -305,6 +629,47 @@ def get_initial_env_metrics_jax(
         "reward/flight_phase": jp.zeros(()),
         "reward/stance_width_penalty": jp.zeros(()),
         "reward/standing": jp.zeros(()),
+        "reward/posture": jp.zeros(()),
+        "reward/com_velocity_damping": jp.zeros(()),
+        "reward/step_event": jp.zeros(()),
+        "reward/foot_place": jp.zeros(()),
+        "reward/step_length": jp.zeros(()),
+        "reward/step_progress": jp.zeros(()),
+        "reward/m3_pelvis_orientation_tracking": jp.zeros(()),
+        "reward/m3_pelvis_height_tracking": jp.zeros(()),
+        "reward/m3_swing_foot_tracking": jp.zeros(()),
+        "reward/m3_foothold_consistency": jp.zeros(()),
+        "reward/m3_residual_magnitude": jp.zeros(()),
+        "reward/m3_excessive_impact": jp.zeros(()),
+        "reward/teacher_target_step_xy": jp.zeros(()),
+        "reward/teacher_step_required": jp.zeros(()),
+        "reward/teacher_swing_foot": jp.zeros(()),
+        "reward/teacher_recovery_height": jp.zeros(()),
+        "reward/teacher_com_velocity_reduction": jp.zeros(()),
+        "reward/arrest_pitch_rate": jp.zeros(()),
+        "reward/arrest_capture_error": jp.zeros(()),
+        "reward/post_touchdown_survival": jp.zeros(()),
+        "reward/dense_progress": jp.zeros(()),
+        "reward/cycle_progress": jp.zeros(()),
+        # v0.20.1: imitation-dominant residual reward family.  Zeros at
+        # reset because no env step has fired yet; populated each step
+        # by wildrobot_env.WildRobotEnv._aggregate_reward.
+        "reward/ref_q_track": jp.zeros(()),
+        "reward/ref_body_quat_track": jp.zeros(()),
+        "reward/torso_pos_xy": jp.zeros(()),
+        # v0.20.2 smoke6: TB-aligned continuous phase signals + diagnostics.
+        "reward/lin_vel_z": jp.zeros(()),
+        "reward/ang_vel_xy": jp.zeros(()),
+        "ref/lin_vel_z_err_m_s": jp.zeros(()),
+        "ref/ang_vel_xy_err_rad_s": jp.zeros(()),
+        "reward/ref_contact_match": jp.zeros(()),
+        "reward/cmd_forward_velocity_track": jp.zeros(()),
+        "ref/q_track_err_rmse": jp.zeros(()),
+        "ref/body_quat_err_deg": jp.zeros(()),
+        "ref/feet_pos_err_l2": jp.zeros(()),
+        "ref/feet_pos_track_raw": jp.zeros(()),
+        "ref/torso_pos_xy_err_m": jp.zeros(()),
+        "ref/contact_phase_match": jp.zeros(()),
         # Debug metrics
         "debug/pitch": _scalar(pitch),
         "debug/roll": _scalar(roll),
@@ -317,10 +682,28 @@ def get_initial_env_metrics_jax(
         "debug/right_toe_switch": _scalar(right_toe_switch),
         "debug/right_heel_switch": _scalar(right_heel_switch),
         "debug/pitch_rate": jp.zeros(()),
+        "debug/velocity_step_gate": jp.zeros(()),
         "debug/action_abs_max": jp.zeros(()),
         "debug/action_sat_frac": jp.zeros(()),
         "debug/raw_action_abs_max": jp.zeros(()),
         "debug/raw_action_sat_frac": jp.zeros(()),
+        "debug/torque_abs_max": jp.zeros(()),
+        "debug/torque_sat_frac": jp.zeros(()),
+        "debug/posture_mse": jp.zeros(()),
+        "debug/need_step": jp.zeros(()),
+        "debug/touchdown_left": jp.zeros(()),
+        "debug/touchdown_right": jp.zeros(()),
+        "debug/propulsion_gate": jp.zeros(()),
+        "debug/cycle_complete": jp.zeros(()),
+        "debug/cycle_forward_delta": jp.zeros(()),
+        "debug/step_progress_delta": jp.zeros(()),
+        "debug/step_progress_event": jp.zeros(()),
+        "debug/recovery_step_gate": jp.zeros(()),
+        "debug/post_touchdown_arrest_gate": jp.zeros(()),
+        "debug/disturbed_reward_gate": jp.zeros(()),
+        "debug/effective_orientation_weight": jp.zeros(()),
+        "debug/effective_height_target_weight": jp.zeros(()),
+        "debug/effective_posture_weight": jp.zeros(()),
         # Termination diagnostics (initialized to zero at reset)
         "term/height_low": jp.zeros(()),
         "term/height_high": jp.zeros(()),
@@ -334,6 +717,137 @@ def get_initial_env_metrics_jax(
         "tracking/vel_error": jp.zeros(()),  # Starts at zero (stationary)
         "tracking/max_torque": jp.zeros(()),  # No torque at reset
         "tracking/avg_torque": jp.zeros(()),  # No torque at reset
+        "tracking/cmd_vs_achieved_forward": jp.zeros(()),
+        "tracking/loc_ref_phase_progress": jp.zeros(()),
+        "tracking/loc_ref_stance_foot": jp.zeros(()),
+        "tracking/loc_ref_mode_id": jp.zeros(()),
+        "tracking/loc_ref_progression_permission": jp.zeros(()),
+        "tracking/nominal_q_abs_mean": jp.zeros(()),
+        "tracking/residual_q_abs_mean": jp.zeros(()),
+        "tracking/residual_q_abs_max": jp.zeros(()),
+        "tracking/loc_ref_left_reachable": jp.zeros(()),
+        "tracking/loc_ref_right_reachable": jp.zeros(()),
+        # v0.14.x: M3 base-controller FSM debug metrics
+        "debug/bc_phase": jp.zeros(()),       # STANCE=0 at reset
+        "debug/bc_in_swing": jp.zeros(()),    # 0 occupancy at reset
+        "debug/bc_in_recover": jp.zeros(()),  # 0 occupancy at reset
+        "debug/bc_swing_foot": jp.zeros(()),  # left(0) at reset
+        "debug/bc_phase_ticks": jp.zeros(()),  # 0 ticks at reset
+        # v0.17.1: Recovery metrics for standing-reset branch
+        "recovery/first_step_latency": jp.zeros(()),    # Time from push end to first step
+        "recovery/first_liftoff_latency": jp.zeros(()),  # Time from push end to first liftoff
+        "recovery/first_touchdown_latency": jp.zeros(()),  # Time from push end to first touchdown
+        "recovery/touchdown_count": jp.zeros(()),       # Number of touchdowns after push
+        "recovery/support_foot_changes": jp.zeros(()),  # Support foot transitions
+        "recovery/post_push_velocity": jp.zeros(()),    # Residual velocity after recovery
+        "recovery/completed": jp.zeros(()),             # Number of finalized recovery summaries
+        "recovery/no_touchdown_frac": jp.zeros(()),  # Finalized no-touchdown indicator
+        "recovery/touchdown_then_fail_frac": jp.zeros(()),  # Finalized touchdown-then-fail indicator
+        "recovery/first_step_dx": jp.zeros(()),  # First touchdown x in heading-local frame
+        "recovery/first_step_dy": jp.zeros(()),  # First touchdown y in heading-local frame
+        "recovery/first_step_target_err_x": jp.zeros(()),  # First touchdown x target error
+        "recovery/first_step_target_err_y": jp.zeros(()),  # First touchdown y target error
+        "recovery/pitch_rate_at_push_end": jp.zeros(()),
+        "recovery/pitch_rate_at_touchdown": jp.zeros(()),
+        "recovery/pitch_rate_reduction_10t": jp.zeros(()),
+        "recovery/capture_error_at_push_end": jp.zeros(()),
+        "recovery/capture_error_at_touchdown": jp.zeros(()),
+        "recovery/capture_error_reduction_10t": jp.zeros(()),
+        "recovery/touchdown_to_term_steps": jp.zeros(()),
+        "recovery/visible_step_rate": jp.zeros(()),
+        "recovery/min_height": jp.zeros(()),
+        "recovery/max_knee_flex": jp.zeros(()),
+        "recovery/first_step_dist_abs": jp.zeros(()),
+        "unnecessary_step_rate": jp.zeros(()),
+        "teacher/active_frac": jp.zeros(()),
+        "teacher/active_count": jp.zeros(()),
+        "teacher/step_required_mean": jp.zeros(()),
+        "teacher/step_required_hard_frac": jp.zeros(()),
+        "teacher/target_step_x_mean": jp.zeros(()),
+        "teacher/target_step_y_mean": jp.zeros(()),
+        "teacher/swing_left_frac": jp.zeros(()),
+        "teacher/target_xy_error": jp.zeros(()),
+        "teacher/target_xy_error_events": jp.zeros(()),
+        "teacher/teacher_active_during_clean_frac": jp.zeros(()),
+        "teacher/raw_step_required_during_clean_mean": jp.zeros(()),
+        "teacher/clean_step_count": jp.zeros(()),
+        "teacher/push_step_count": jp.zeros(()),
+        "teacher/teacher_active_during_push_frac": jp.zeros(()),
+        "teacher/reachable_frac": jp.zeros(()),
+        "teacher/target_step_x_min": jp.asarray(jp.inf, dtype=jp.float32),
+        "teacher/target_step_x_max": jp.asarray(-jp.inf, dtype=jp.float32),
+        "teacher/target_step_y_min": jp.asarray(jp.inf, dtype=jp.float32),
+        "teacher/target_step_y_max": jp.asarray(-jp.inf, dtype=jp.float32),
+        "teacher/target_step_x_sq_mean": jp.zeros(()),
+        "teacher/target_step_y_sq_mean": jp.zeros(()),
+        "teacher/swing_foot": jp.asarray(-1.0, dtype=jp.float32),
+        "teacher/target_step_x_std": jp.zeros(()),
+        "teacher/target_step_y_std": jp.zeros(()),
+        "teacher/step_required_event_rate": jp.zeros(()),
+        "teacher/swing_foot_match_frac": jp.zeros(()),
+        "teacher/swing_foot_match_events": jp.zeros(()),
+        "teacher/whole_body_active_frac": jp.zeros(()),
+        "teacher/whole_body_active_count": jp.zeros(()),
+        "teacher/whole_body_active_during_clean_frac": jp.zeros(()),
+        "teacher/whole_body_active_during_push_frac": jp.zeros(()),
+        "teacher/recovery_height_target_mean": jp.zeros(()),
+        "teacher/recovery_height_error": jp.zeros(()),
+        "teacher/recovery_height_in_band_frac": jp.zeros(()),
+        "teacher/com_velocity_target_mean": jp.zeros(()),
+        "teacher/com_velocity_error": jp.zeros(()),
+        "teacher/com_velocity_target_hit_frac": jp.zeros(()),
+        "visible_step_rate_hard": jp.zeros(()),
+        # v0.17.3: architecture-pivot standing controller debug metrics
+        "debug/mpc_planner_active": jp.zeros(()),
+        "debug/mpc_controller_active": jp.zeros(()),
+        "debug/mpc_target_com_x": jp.zeros(()),
+        "debug/mpc_target_com_y": jp.zeros(()),
+        "debug/mpc_target_step_x": jp.zeros(()),
+        "debug/mpc_target_step_y": jp.zeros(()),
+        "debug/mpc_support_state": jp.zeros(()),
+        "debug/mpc_step_requested": jp.zeros(()),
+        # v0.19.3+: M3 locomotion-reference debug diagnostics
+        "debug/m3_swing_pos_error": jp.zeros(()),
+        "debug/m3_swing_vel_error": jp.zeros(()),
+        "debug/m3_foothold_error": jp.zeros(()),
+        "debug/m3_pelvis_orientation_error": jp.zeros(()),
+        "debug/m3_pelvis_height_error": jp.zeros(()),
+        "debug/m3_impact_force": jp.zeros(()),
+        "debug/loc_ref_speed_scale": jp.zeros(()),
+        "debug/loc_ref_phase_scale": jp.zeros(()),
+        "debug/loc_ref_overspeed": jp.zeros(()),
+        "debug/loc_ref_support_health": jp.zeros(()),
+        "debug/loc_ref_support_instability": jp.zeros(()),
+        "debug/loc_ref_nominal_vs_applied_q_l1": jp.zeros(()),
+        "debug/loc_ref_applied_q_abs_mean": jp.zeros(()),
+        "debug/loc_ref_nominal_q_abs_mean": jp.zeros(()),
+        "debug/loc_ref_swing_x_target": jp.zeros(()),
+        "debug/loc_ref_swing_x_actual": jp.zeros(()),
+        "debug/loc_ref_swing_x_error": jp.zeros(()),
+        "debug/loc_ref_swing_y_target": jp.zeros(()),
+        "debug/loc_ref_swing_y_actual": jp.zeros(()),
+        "debug/loc_ref_swing_y_error": jp.zeros(()),
+        "debug/loc_ref_left_foot_y_actual": jp.zeros(()),
+        "debug/loc_ref_right_foot_y_actual": jp.zeros(()),
+        "debug/loc_ref_support_width_y_actual": jp.zeros(()),
+        "debug/loc_ref_support_width_y_nominal": jp.zeros(()),
+        "debug/loc_ref_support_width_y_commanded": jp.zeros(()),
+        "debug/loc_ref_base_support_y": jp.zeros(()),
+        "debug/loc_ref_lateral_release_y": jp.zeros(()),
+        "debug/loc_ref_pelvis_roll_target": jp.zeros(()),
+        "debug/loc_ref_hip_roll_left_target": jp.zeros(()),
+        "debug/loc_ref_hip_roll_right_target": jp.zeros(()),
+        "debug/loc_ref_pelvis_pitch_target": jp.zeros(()),
+        "debug/loc_ref_root_pitch": jp.zeros(()),
+        "debug/loc_ref_root_pitch_rate": jp.zeros(()),
+        "debug/loc_ref_stance_sagittal_target": jp.zeros(()),
+        "debug/loc_ref_swing_x_scale": jp.zeros(()),
+        "debug/loc_ref_pelvis_pitch_scale": jp.zeros(()),
+        "debug/loc_ref_support_gate_active": jp.zeros(()),
+        "debug/loc_ref_hybrid_mode_id": jp.zeros(()),
+        "debug/loc_ref_progression_permission": jp.zeros(()),
+        "debug/loc_ref_swing_x_scale_active": jp.zeros(()),
+        "debug/loc_ref_phase_scale_active": jp.zeros(()),
     }
 
 
@@ -723,14 +1237,12 @@ class WandbTracker:
         """Create WandbTracker from training and wandb config objects.
 
         Args:
-            training_cfg: TrainingConfig object with version, ppo, amp, seed, etc.
+            training_cfg: TrainingConfig object with version, ppo, seed, etc.
             wandb_cfg: WandbConfig object with project, entity, name, tags, mode, etc.
 
         Returns:
             Configured WandbTracker instance
         """
-        use_amp = training_cfg.amp.enabled
-
         # Build wandb config dict from training config
         config = {
             # Version tracking
@@ -743,10 +1255,7 @@ class WandbTracker:
             "gamma": training_cfg.ppo.gamma,
             "clip_epsilon": training_cfg.ppo.clip_epsilon,
             "entropy_coef": training_cfg.ppo.entropy_coef,
-            "amp_weight": training_cfg.amp.weight,
-            "disc_lr": training_cfg.amp.discriminator.learning_rate if use_amp else 0.0,
             "seed": training_cfg.seed,
-            "mode": "amp+ppo" if use_amp else "ppo-only",
         }
 
         return cls(
@@ -783,7 +1292,7 @@ def generate_job_name(
         version: Version string (e.g., "0.10.5")
         config_name: Name of the config file without extension (e.g., "ppo_walking")
         wandb_tracker: Optional WandbTracker to get run ID from
-        mode_suffix: Fallback suffix if config_name not provided (e.g., "amp" or "ppo")
+        mode_suffix: Fallback suffix if config_name not provided (e.g., "ppo")
 
     Returns:
         Job name string for use as checkpoint subdirectory
@@ -817,7 +1326,6 @@ def create_training_metrics_from_iteration(
     iteration: int,
     metrics: Any,
     steps_per_sec: float,
-    use_amp: bool = True,
 ) -> Dict[str, float]:
     """Create training metrics dict from IterationMetrics object.
 
@@ -828,11 +1336,16 @@ def create_training_metrics_from_iteration(
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
         steps_per_sec: Environment steps per second
-        use_amp: Whether AMP is enabled
 
     Returns:
         Flat dictionary of metrics with prefixes for W&B logging
     """
+    cmd_vs_achieved = metrics.env_metrics.get("tracking/cmd_vs_achieved_forward")
+    extra: Dict[str, float] = {}
+    if cmd_vs_achieved is not None:
+        # Walking-meaningful tracking signal that replaces the broken
+        # ``topline/velocity_error``: |achieved_vx - cmd_vx| over the rollout.
+        extra["topline/cmd_vs_achieved_forward"] = float(cmd_vs_achieved)
     return create_training_metrics(
         iteration=iteration,
         episode_reward=float(metrics.episode_reward),
@@ -840,10 +1353,6 @@ def create_training_metrics_from_iteration(
         policy_loss=float(metrics.policy_loss),
         value_loss=float(metrics.value_loss),
         entropy_loss=float(metrics.entropy_loss),
-        disc_loss=float(metrics.disc_loss) if use_amp else 0.0,
-        disc_accuracy=float(metrics.disc_accuracy) if use_amp else 0.5,
-        amp_reward_mean=float(metrics.amp_reward_mean) if use_amp else 0.0,
-        amp_reward_std=0.0,
         clip_fraction=float(metrics.clip_fraction),
         approx_kl=float(metrics.approx_kl),
         env_steps_per_sec=steps_per_sec,
@@ -854,6 +1363,7 @@ def create_training_metrics_from_iteration(
         velocity_cmd=float(metrics.env_metrics["velocity_command"]),
         velocity_error=float(metrics.env_metrics["tracking/vel_error"]),
         max_torque=float(metrics.env_metrics["tracking/max_torque"]),
+        **extra,
     )
 
 
@@ -861,7 +1371,6 @@ def build_wandb_metrics(
     iteration: int,
     metrics: Any,
     steps_per_sec: float,
-    use_amp: bool = True,
     reward_terms: Optional[List[str]] = None,
 ) -> tuple[Dict[str, float], List[str]]:
     """Create W&B metrics dict and return missing reward terms.
@@ -870,7 +1379,6 @@ def build_wandb_metrics(
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
         steps_per_sec: Environment steps per second
-        use_amp: Whether AMP is enabled
         reward_terms: Optional list of reward term keys to include
 
     Returns:
@@ -880,7 +1388,6 @@ def build_wandb_metrics(
         iteration=iteration,
         metrics=metrics,
         steps_per_sec=steps_per_sec,
-        use_amp=use_amp,
     )
     wandb_metrics["debug/task_reward_per_step"] = float(metrics.task_reward_mean)
     wandb_metrics["debug/robot_height"] = float(metrics.env_metrics["height"])
@@ -896,7 +1403,19 @@ def build_wandb_metrics(
     # Log selected env debug + termination diagnostics for failure-mode analysis.
     # Keep this lightweight (scalars only).
     for key, value in metrics.env_metrics.items():
-        if key.startswith("debug/") or key.startswith("term_"):
+        if (
+            key.startswith("debug/")
+            or key.startswith("tracking/")
+            or key.startswith("term_")
+            or key.startswith("recovery/")
+            or key.startswith("teacher/")
+            or key.startswith("ppo/")
+            or key.startswith("eval/")
+            or key.startswith("eval_push/")
+            or key.startswith("eval_clean/")
+            or key.startswith("Evaluate/")  # ToddlerBot-style eval namespace
+            or key.startswith("ref/")  # v0.20.1: imitation diagnostics
+        ):
             try:
                 wandb_metrics[key] = float(value)
             except (TypeError, ValueError):
@@ -912,10 +1431,6 @@ def create_training_metrics(
     policy_loss: float,
     value_loss: float,
     entropy_loss: float,
-    disc_loss: float = 0.0,
-    disc_accuracy: float = 0.5,
-    amp_reward_mean: float = 0.0,
-    amp_reward_std: float = 0.0,
     clip_fraction: float = 0.0,
     approx_kl: float = 0.0,
     env_steps_per_sec: float = 0.0,
@@ -933,13 +1448,12 @@ def create_training_metrics(
 
     Includes TOPLINE metrics (Section 3.2.4 Exit Criteria) for easy tracking:
     - topline/episode_reward (target: >350)
-    - topline/amp_reward (target: >0.7)
     - topline/forward_velocity (target: 0.3-0.8 m/s)
-    - topline/success_rate (target: >85%)
     - topline/avg_torque (target: <2.8 Nm)
 
-    v0.10.3 Walking Exit Criteria:
-    - topline/velocity_error: |forward_vel - velocity_cmd| (target: <0.2 m/s)
+    v0.20.1 Walking topline (replaces removed ``topline/success_rate`` /
+    ``topline/velocity_error`` — both degenerate for walking):
+    - topline/cmd_vs_achieved_forward (passed via extra_metrics; gate <= 0.075 m/s)
     - topline/max_torque: Peak torque as fraction of limit (target: <0.8)
 
     Args:
@@ -949,10 +1463,6 @@ def create_training_metrics(
         policy_loss: Policy loss component
         value_loss: Value loss component
         entropy_loss: Entropy loss component
-        disc_loss: Discriminator loss (AMP)
-        disc_accuracy: Discriminator accuracy (AMP)
-        amp_reward_mean: Mean AMP reward
-        amp_reward_std: Std of AMP reward
         clip_fraction: PPO clip fraction
         approx_kl: Approximate KL divergence
         env_steps_per_sec: Environment steps per second
@@ -974,17 +1484,20 @@ def create_training_metrics(
         # These are the key metrics to track training progress
         # =====================================================================
         "topline/episode_reward": episode_reward,  # Target: >350
-        "topline/amp_reward": amp_reward_mean,  # Target: >0.7
         "topline/forward_velocity": forward_velocity,  # Target: 0.3-0.8 m/s
-        "topline/success_rate": success_rate * 100,  # Target: >85%
         "topline/avg_torque": avg_torque,  # Target: <2.8 Nm
         "topline/steps_per_sec": env_steps_per_sec,  # Performance metric
         # Stability metrics
         "topline/episode_length": episode_length,  # Target: >400 steps
-        "topline/disc_accuracy": disc_accuracy,  # Target: 0.4-0.7 (NOT 100%!)
-        # v0.10.3: Walking tracking metrics
+        # v0.20.1 walking tracking metrics.  ``topline/success_rate`` and
+        # ``topline/velocity_error`` were intentionally removed: the former
+        # is truncation-based and stays 0 throughout walking smokes (so the
+        # analyzer was sorting checkpoints on a degenerate signal), and the
+        # latter is unwired for walking (always 0).  Walking checkpoint
+        # quality should be read from ``Evaluate/*`` (deterministic eval
+        # rollout, ToddlerBot pattern) and the per-iteration
+        # ``tracking/cmd_vs_achieved_forward`` exported below.
         "topline/velocity_cmd": velocity_cmd,  # Mean commanded velocity (m/s)
-        "topline/velocity_error": velocity_error,  # Target: <0.2 m/s
         "topline/max_torque": max_torque,  # Target: <0.8 (80% of limit)
         # =====================================================================
         # Environment metrics
@@ -1005,11 +1518,6 @@ def create_training_metrics(
         "ppo/entropy_loss": entropy_loss,
         "ppo/clip_fraction": clip_fraction,
         "ppo/approx_kl": approx_kl,
-        # AMP metrics
-        "amp/disc_loss": disc_loss,
-        "amp/disc_accuracy": disc_accuracy,
-        "amp/reward_mean": amp_reward_mean,
-        "amp/reward_std": amp_reward_std,
         # Progress
         "progress/iteration": iteration,
     }
@@ -1026,21 +1534,20 @@ def create_training_metrics(
 
 def create_topline_metrics_only(
     episode_reward: float = 0.0,
-    amp_reward: float = 0.0,
     forward_velocity: float = 0.0,
-    success_rate: float = 0.0,
     avg_torque: float = 0.0,
     steps_per_sec: float = 0.0,
 ) -> Dict[str, float]:
     """Create only the topline metrics for quick logging.
 
     Use this when you only want to update the key exit criteria metrics.
+    ``success_rate`` was removed — it is truncation-based and meaningless
+    for the v0.20.x walking smoke (always 0).  Use ``Evaluate/*`` from the
+    deterministic eval rollout instead.
 
     Args:
         episode_reward: Mean episode reward (target: >350)
-        amp_reward: Mean AMP reward (target: >0.7)
         forward_velocity: Forward velocity in m/s (target: 0.3-0.8)
-        success_rate: Success rate 0-1 (target: >0.85)
         avg_torque: Average torque in Nm (target: <2.8)
         steps_per_sec: Training speed
 
@@ -1049,9 +1556,7 @@ def create_topline_metrics_only(
     """
     return {
         "topline/episode_reward": episode_reward,
-        "topline/amp_reward": amp_reward,
         "topline/forward_velocity": forward_velocity,
-        "topline/success_rate": success_rate * 100,  # Convert to percentage
         "topline/avg_torque": avg_torque,
         "topline/steps_per_sec": steps_per_sec,
     }
@@ -1082,7 +1587,6 @@ def define_wandb_topline_metrics():
                 "exit_criteria": {
                     "episode_reward_target": 350,
                     "episode_reward_baseline": 250,
-                    "amp_reward_target": 0.7,
                     "forward_velocity_min": 0.3,
                     "forward_velocity_max": 0.8,
                     "success_rate_target": 85,  # percentage
@@ -1098,7 +1602,6 @@ def define_wandb_topline_metrics():
         wandb.log(
             {
                 "targets/episode_reward": 350,
-                "targets/amp_reward": 0.7,
                 "targets/forward_velocity_min": 0.3,
                 "targets/forward_velocity_max": 0.8,
                 "targets/success_rate": 85,

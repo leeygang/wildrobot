@@ -1,8 +1,50 @@
 import json
+import math
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import trimesh
+
+
+def inject_additional_xml(
+    xml_file: str,
+    *,
+    additional_files: Optional[List[str]] = None,
+) -> None:
+    """Splice top-level elements from auxiliary XML files into the main MJCF.
+
+    Replaces the onshape-to-robot ``additional_xml`` config option that the
+    upstream pipeline used to consume. Each auxiliary file is parsed and its
+    root element is appended as a top-level child of ``<mujoco>``. Downstream
+    steps (notably :func:`merge_default_blocks`) collapse any duplicate
+    top-level blocks like ``<default>``.
+
+    Files are looked up next to ``xml_file``. Missing files are skipped with
+    a warning so the function stays safe to re-run.
+    """
+    if additional_files is None:
+        additional_files = ["sensors.xml", "joints_properties.xml"]
+
+    xml_path = Path(xml_file)
+    base_dir = xml_path.parent
+
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    for aux in additional_files:
+        aux_path = base_dir / aux
+        if not aux_path.exists():
+            print(f"[inject] missing additional XML, skipping: {aux_path}")
+            continue
+        aux_root = ET.parse(aux_path).getroot()
+        root.append(aux_root)
+        print(f"[inject] injected <{aux_root.tag}> from {aux}")
+
+    ET.indent(tree, space="  ", level=0)
+    tree.write(xml_file)
 
 
 def add_option(xml_file):
@@ -27,13 +69,13 @@ def add_collision_names(xml_file):
     """Add clear semantic names to foot collision geoms.
 
     v0.5.0: Changed from left_foot_btm_back/front to left_heel/toe
-    for clarity and to match AMP feature naming convention.
+    for clarity.
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
 
     # v0.11.x: Some newer exports use generic foot body names ("foot", "foot_2").
-    # Normalize to stable names used by training + robot_config.yaml.
+    # Normalize to stable names used by training + mujoco_robot_config.json.
     body_names = {b.get("name") for b in root.findall(".//body") if b.get("name")}
     if "left_foot" not in body_names and "foot" in body_names:
         for body in root.findall(".//body[@name='foot']"):
@@ -42,20 +84,38 @@ def add_collision_names(xml_file):
         for body in root.findall(".//body[@name='foot_2']"):
             body.set("name", "right_foot")
 
-    # Map mesh names to semantic collision geom names per foot side.
-    # Use the simplified shared meshes from newer exports: toe_btm / heel_btm
-    mesh_to_name = {
+    # Map mesh prefixes to semantic collision geom names per foot side.
+    # Supports both:
+    # - direct meshes: toe_btm / heel_btm
+    # - convex decomposition meshes: toe_btm_00000, heel_btm_00001, ...
+    mesh_prefix_to_name = {
         "toe_btm": {"left": "left_toe", "right": "right_toe"},
         "heel_btm": {"left": "left_heel", "right": "right_heel"},
     }
 
     for side in ("left", "right"):
         body_name = f"{side}_foot"
-        for mesh, names in mesh_to_name.items():
+        foot_body = root.find(f".//body[@name='{body_name}']")
+        if foot_body is None:
+            continue
+
+        collision_geoms = [
+            g for g in foot_body.findall("geom") if g.get("class") == "collision"
+        ]
+
+        for mesh_prefix, names in mesh_prefix_to_name.items():
             desired = names[side]
-            xpath = f".//body[@name='{body_name}']/geom[@mesh='{mesh}'][@class='collision']"
-            for geom in root.findall(xpath):
-                geom.set("name", desired)
+            # Pick one deterministic collision geom for each semantic toe/heel marker.
+            # Keep a single named geom so downstream lookups remain stable.
+            matches = [
+                g
+                for g in collision_geoms
+                if (g.get("mesh") or "").startswith(mesh_prefix)
+            ]
+            if not matches:
+                continue
+            matches.sort(key=lambda g: g.get("mesh") or "")
+            matches[0].set("name", desired)
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
@@ -109,6 +169,19 @@ def validate_foot_geoms(xml_file: str) -> None:
     if left_body < 0 or right_body < 0:
         raise ValueError("Compiled model missing left_foot/right_foot bodies.")
 
+    # Forward-kinematics evaluation at the home keyframe (or default qpos if
+    # no keyframe). World-frame comparison is the only frame-agnostic way to
+    # check L/R foot symmetry, since the foot bodies' local frames are
+    # mirror-related and their `geom_pos` / `geom_quat` values are also
+    # mirror-related (not directly equal).
+    data = mujoco.MjData(model)
+    home_kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+    if home_kid >= 0:
+        mujoco.mj_resetDataKeyframe(model, data, home_kid)
+    else:
+        mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
+
     def _geom_info(name: str):
         gid = _id(mujoco.mjtObj.mjOBJ_GEOM, name)
         if gid < 0:
@@ -116,8 +189,8 @@ def validate_foot_geoms(xml_file: str) -> None:
         return {
             "gid": gid,
             "body": int(model.geom_bodyid[gid]),
-            "pos": model.geom_pos[gid].copy(),
-            "quat": model.geom_quat[gid].copy(),
+            "world_pos": data.geom_xpos[gid].copy(),
+            "world_mat": data.geom_xmat[gid].reshape(3, 3).copy(),
             "friction": model.geom_friction[gid].copy(),
             "size": model.geom_size[gid].copy(),
             "type": int(model.geom_type[gid]),
@@ -138,19 +211,56 @@ def validate_foot_geoms(xml_file: str) -> None:
             f"Right toe/heel geoms not under right_foot body (got bodies {rt['body']}, {rh['body']})."
         )
 
-    tol = 1e-4
+    # Frame-agnostic checks (size and friction are mirror-invariant).
+    size_tol = 1e-4
+    friction_tol = 1e-4
     for key, a, b in (
-        ("toe geom_pos", lt["pos"], rt["pos"]),
-        ("heel geom_pos", lh["pos"], rh["pos"]),
-        ("toe geom_quat", lt["quat"], rt["quat"]),
-        ("heel geom_quat", lh["quat"], rh["quat"]),
         ("toe geom_size", lt["size"], rt["size"]),
         ("heel geom_size", lh["size"], rh["size"]),
         ("toe geom_friction", lt["friction"], rt["friction"]),
         ("heel geom_friction", lh["friction"], rh["friction"]),
     ):
-        if not np.allclose(a, b, atol=tol, rtol=0.0):
+        if not np.allclose(a, b, atol=size_tol if "size" in key else friction_tol, rtol=0.0):
             raise ValueError(f"Foot symmetry check failed for {key}: {a} vs {b}")
+
+    # World-frame mirror check: for sagittal-plane symmetry (mirror across the
+    # body's XZ plane, i.e. y → -y), the right-side world AABB should be the
+    # y-negated mirror of the left side. Comparing world AABB (rather than the
+    # raw rotation matrix) is convention-agnostic — different CAD assemblies
+    # can give equivalent boxes with locally-relabeled axes (e.g. local +y vs
+    # -y), which produces a different rotation matrix but an identical
+    # physical footprint. Tolerance accommodates sub-mm CAD mirror imperfections
+    # (the 2026-04 upper_leg fix closed an 0.8 mm gap; residual sub-mm
+    # asymmetries remain at the foot ~0.1 mm scale).
+    world_pos_tol = 5e-4   # 0.5 mm — catches mm-scale CAD bugs, allows µm noise
+
+    def _world_aabb_half_extents(info):
+        # For a box with half-sizes s and world rotation R, world AABB
+        # half-extent along world axis i = sum_j |R[i,j]| * s[j].
+        return np.abs(info["world_mat"]) @ info["size"]
+
+    for key, left, right in (
+        ("toe", lt, rt),
+        ("heel", lh, rh),
+    ):
+        # Mirror the left's world center across the XZ-plane (y -> -y), compare to right.
+        mirrored_left_pos = left["world_pos"] * np.array([1.0, -1.0, 1.0])
+        pos_err = mirrored_left_pos - right["world_pos"]
+        if np.max(np.abs(pos_err)) > world_pos_tol:
+            raise ValueError(
+                f"Foot {key} world-pos mirror check failed "
+                f"(max |Δ| = {np.max(np.abs(pos_err))*1000:.2f} mm > {world_pos_tol*1000:.1f} mm): "
+                f"mirror(left)={mirrored_left_pos} vs right={right['world_pos']}"
+            )
+        left_extents = _world_aabb_half_extents(left)
+        right_extents = _world_aabb_half_extents(right)
+        ext_err = left_extents - right_extents
+        if np.max(np.abs(ext_err)) > world_pos_tol:
+            raise ValueError(
+                f"Foot {key} world AABB extents mismatch "
+                f"(max |Δ| = {np.max(np.abs(ext_err))*1000:.2f} mm > {world_pos_tol*1000:.1f} mm): "
+                f"left={left_extents} vs right={right_extents}"
+            )
 
     # Mesh reference offsets: large values indicate bad part-local origins.
     mesh_pos = getattr(model, "mesh_pos", None)
@@ -163,7 +273,14 @@ def validate_foot_geoms(xml_file: str) -> None:
                 return None
             return mesh_pos[mesh_id].copy()
 
-        mesh_origin_max = 0.10  # meters; toe/heel offsets are ~0.06
+        # With OBB-derived collision primitives (replace_*_with_box/capsule),
+        # the box pose is computed from the source mesh's geometric centroid,
+        # not from the mesh anchor. This check therefore becomes a soft CAD-
+        # hygiene heuristic: it only catches truly pathological origins (e.g.,
+        # parts anchored a meter away from their geometry). Onshape exports for
+        # the new ankle_roll foot place the toe_btm anchor ~16 cm from its
+        # centroid, which is well within sane CAD design and not a bug.
+        mesh_origin_max = 0.30  # meters; sane upper bound for any single part
         for label, mp in (
             ("left_toe mesh_pos", _mesh_pos_for_geom(lt)),
             ("left_heel mesh_pos", _mesh_pos_for_geom(lh)),
@@ -195,8 +312,12 @@ def ensure_root_body_pose(xml_file):
         print("No waist body found")
         return
 
-    # Ensure the root body sits at the expected pose now that the floating base wrapper is gone.
-    waist.set("pos", "0 0 0.5")
+    # Spawn pose for keyframe-less loads. Sits ~9 mm above the home keyframe's
+    # settled equilibrium (pelvis_z = 0.4714 m as of the 2026-05 ankle_roll
+    # model) so the robot starts above the floor without a visible drop.
+    # Re-tune if a future kinematic change shifts the home equilibrium by more
+    # than ~5 mm.
+    waist.set("pos", "0 0 0.48")
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
@@ -255,77 +376,270 @@ def fix_collision_default_geom(xml_file):
     tree.write(xml_file)
 
 
-def add_mimic_bodies(xml_file):
-    """Add dummy bodies at site positions for sites ending with '_mimic'.
+# =============================================================================
+# Collision-primitive replacement helpers
+#
+# The replace_*_with_{box,capsule} functions below convert mesh-based collision
+# geoms into primitive (box/capsule) collision geoms. Pose, orientation, and
+# size are all derived on-the-fly from the source STL using trimesh's oriented
+# bounding box (OBB). No values are hardcoded — any future Onshape edit that
+# changes a mesh's local origin, orientation, or shape automatically flows
+# through.
+#
+# Convention notes:
+# - MJCF quaternions are (w, x, y, z).
+# - MJCF box `size` is half-extents (x, y, z) in the geom's local frame.
+# - MJCF capsule `size` is (radius, half_length); the cylindrical axis is the
+#   geom's local +z. Total enclosed length = 2 * (radius + half_length).
+# =============================================================================
 
-    GMR (General Motion Retargeting) requires body elements to target for IK.
-    WildRobot uses sites (e.g., left_knee_mimic, right_foot_mimic) for sensing,
-    but GMR can't target sites directly.
 
-    This function creates lightweight dummy bodies at the same position/orientation
-    as each _mimic site, using the same name as the site.
+def _quat_to_matrix(quat: np.ndarray) -> np.ndarray:
+    """MJCF (w, x, y, z) quaternion -> 3x3 rotation matrix."""
+    w, x, y, z = quat
+    return np.array([
+        [1 - 2 * (y * y + z * z),     2 * (x * y - z * w),     2 * (x * z + y * w)],
+        [    2 * (x * y + z * w), 1 - 2 * (x * x + z * z),     2 * (y * z - x * w)],
+        [    2 * (x * z - y * w),     2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
 
-    For example:
-        - Site 'left_knee_mimic' -> Body 'left_knee_mimic'
-        - Site 'pelvis_mimic' -> Body 'pelvis_mimic'
+
+def _matrix_to_quat(R: np.ndarray) -> np.ndarray:
+    """3x3 rotation matrix -> MJCF (w, x, y, z) quaternion via Shepperd's method."""
+    trace = R[0, 0] + R[1, 1] + R[2, 2]
+    if trace > 0:
+        s = 0.5 / math.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (R[2, 1] - R[1, 2]) * s
+        y = (R[0, 2] - R[2, 0]) * s
+        z = (R[1, 0] - R[0, 1]) * s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+    return np.array([w, x, y, z])
+
+
+def _resolve_mesh_stl_path(root: ET.Element, mesh_name: str, base_dir: Path) -> Path:
+    """Look up `<mesh name=... file=...>` in `<asset>` and return absolute STL path."""
+    asset = root.find("asset")
+    if asset is None:
+        raise ValueError("MJCF has no <asset> block; cannot resolve mesh paths")
+    compiler = root.find("compiler")
+    meshdir = compiler.get("meshdir", "assets") if compiler is not None else "assets"
+    for mesh_elem in asset.findall("mesh"):
+        # Mesh `name` defaults to the file stem if omitted.
+        file_attr = mesh_elem.get("file")
+        if file_attr is None:
+            continue
+        elem_name = mesh_elem.get("name", Path(file_attr).stem)
+        if elem_name == mesh_name:
+            return (base_dir / meshdir / file_attr).resolve()
+    raise ValueError(f"<mesh name='{mesh_name}'> not found in <asset>")
+
+
+def _compute_obb(stl_path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load STL and compute oriented bounding box in mesh-local frame.
+
+    Returns:
+        center: (3,) OBB center in mesh-local coords.
+        rotation: (3, 3) rotation that maps OBB-local axes to mesh-local axes.
+        half_extents: (3,) box half-dimensions along OBB-local axes (x, y, z).
+    """
+    mesh = trimesh.load_mesh(str(stl_path))
+    obb = mesh.bounding_box_oriented
+    transform = np.asarray(obb.primitive.transform, dtype=float)  # 4x4
+    center = transform[:3, 3]
+    rotation = transform[:3, :3]
+    if np.linalg.det(rotation) < 0:
+        # Flip one axis to enforce a right-handed basis (preserves OBB shape).
+        rotation = rotation.copy()
+        rotation[:, 0] *= -1.0
+    half_extents = np.asarray(obb.primitive.extents, dtype=float) / 2.0
+    return center, rotation, half_extents
+
+
+def _compose_in_body_frame(
+    source_pos: np.ndarray,
+    source_quat: np.ndarray,
+    local_pos: np.ndarray,
+    local_rot: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compose mesh-anchor pose with mesh-local primitive pose -> body-local pose."""
+    R_source = _quat_to_matrix(source_quat)
+    body_pos = source_pos + R_source @ local_pos
+    body_rot = R_source @ local_rot
+    body_quat = _matrix_to_quat(body_rot)
+    return body_pos, body_quat
+
+
+def _read_geom_pose(geom: ET.Element) -> Tuple[np.ndarray, np.ndarray]:
+    """Parse geom's pos/quat attributes (defaults: origin, identity)."""
+    pos = np.array([float(x) for x in geom.get("pos", "0 0 0").split()])
+    quat = np.array([float(x) for x in geom.get("quat", "1 0 0 0").split()])
+    return pos, quat
+
+
+def _format_vec(values: np.ndarray, precision: int = 9) -> str:
+    return " ".join(f"{float(v):.{precision}f}" for v in values)
+
+
+def _replace_collision_with_box(xml_file: str, mesh_name_filter) -> int:
+    """Replace `<geom mesh=X class='collision'>` with OBB-derived box primitives.
+
+    Args:
+        mesh_name_filter: callable(mesh_name: str) -> bool selecting which meshes to replace.
+
+    Returns: count of geoms replaced.
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
+    base_dir = Path(xml_file).parent
+    obb_cache: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
-    # Collect existing body names to avoid duplicates
-    existing_bodies = {body.get("name") for body in root.findall(".//body")}
-
-    # Find all sites ending with '_mimic'
-    mimic_sites = root.findall(".//site[@name]")
-    added_count = 0
-
-    for site in mimic_sites:
-        site_name = site.get("name")
-        if not site_name or not site_name.endswith("_mimic"):
+    replaced = 0
+    last_size_per_mesh: Dict[str, np.ndarray] = {}
+    for geom in root.findall(".//geom[@class='collision']"):
+        mesh_name = geom.get("mesh") or ""
+        if not mesh_name_filter(mesh_name):
             continue
+        if mesh_name not in obb_cache:
+            stl_path = _resolve_mesh_stl_path(root, mesh_name, base_dir)
+            obb_cache[mesh_name] = _compute_obb(stl_path)
+        center, rotation, half_extents = obb_cache[mesh_name]
 
-        # Use same name as site for the body
-        body_name = site_name
+        source_pos, source_quat = _read_geom_pose(geom)
+        body_pos, body_quat = _compose_in_body_frame(source_pos, source_quat, center, rotation)
 
-        # Skip if body already exists
-        if body_name in existing_bodies:
-            continue
+        geom.set("type", "box")
+        geom.set("size", _format_vec(half_extents, precision=6))
+        geom.set("pos", _format_vec(body_pos))
+        geom.set("quat", _format_vec(body_quat))
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+        last_size_per_mesh[mesh_name] = half_extents
 
-        # Get site position and orientation
-        pos = site.get("pos", "0 0 0")
-        quat = site.get("quat", "1 0 0 0")
-
-        # Create dummy body element
-        dummy_body = ET.Element("body")
-        dummy_body.set("name", body_name)
-        dummy_body.set("pos", pos)
-        dummy_body.set("quat", quat)
-
-        # Add minimal inertial to make it a valid body (massless marker)
-        inertial = ET.SubElement(dummy_body, "inertial")
-        inertial.set("pos", "0 0 0")
-        inertial.set("mass", "0.001")
-        inertial.set("diaginertia", "0.000001 0.000001 0.000001")
-
-        # Insert dummy body as sibling after the site (in parent body)
-        parent = None
-        for potential_parent in root.iter():
-            if site in potential_parent:
-                parent = potential_parent
-                break
-
-        if parent is not None:
-            # Find site index and insert body after it
-            site_index = list(parent).index(site)
-            parent.insert(site_index + 1, dummy_body)
-            existing_bodies.add(body_name)
-            added_count += 1
-            print(f"Added dummy body '{body_name}' at site '{site_name}'")
-
-    if added_count > 0:
+    if replaced > 0:
         ET.indent(tree, space="  ", level=0)
         tree.write(xml_file)
-        print(f"Total: Added {added_count} dummy bodies for GMR compatibility")
+        for mesh_name, size in last_size_per_mesh.items():
+            print(
+                f"  - {mesh_name}: box half-extents = {_format_vec(size, precision=6)}"
+            )
+    return replaced
+
+
+def replace_upper_leg_collision_with_capsule(xml_file: str) -> None:
+    """Replace upper_leg mesh collision geoms with OBB-derived capsule geoms.
+
+    The capsule's central axis is aligned with the mesh's longest OBB extent.
+    Radius is the larger of the two perpendicular OBB half-extents; half_length
+    is the long-axis half-extent minus the radius (capsule end caps add 2*radius
+    to the total enclosed length).
+    """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    base_dir = Path(xml_file).parent
+    obb_cache: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    replaced = 0
+    for geom in root.findall(".//geom[@class='collision']"):
+        if geom.get("mesh") != "upper_leg":
+            continue
+        mesh_name = geom.get("mesh") or ""
+        if mesh_name not in obb_cache:
+            stl_path = _resolve_mesh_stl_path(root, mesh_name, base_dir)
+            obb_cache[mesh_name] = _compute_obb(stl_path)
+        center, rotation, half_extents = obb_cache[mesh_name]
+
+        long_idx = int(np.argmax(half_extents))
+        perp_indices = [i for i in range(3) if i != long_idx]
+        radius = float(max(half_extents[perp_indices[0]], half_extents[perp_indices[1]]))
+        half_length = float(max(half_extents[long_idx] - radius, 1e-6))
+
+        # Build a permutation that maps capsule-local axes [perp1, perp2, long]
+        # to OBB-local axes [perp_indices[0], perp_indices[1], long_idx], so the
+        # capsule's local +z aligns with the OBB's longest extent.
+        permute = np.zeros((3, 3))
+        for new_axis, old_axis in enumerate(perp_indices + [long_idx]):
+            permute[old_axis, new_axis] = 1.0
+        if np.linalg.det(permute) < 0:
+            permute[:, 0] *= -1.0
+
+        capsule_rot_in_mesh = rotation @ permute
+        source_pos, source_quat = _read_geom_pose(geom)
+        body_pos, body_quat = _compose_in_body_frame(
+            source_pos, source_quat, center, capsule_rot_in_mesh
+        )
+
+        geom.set("type", "capsule")
+        geom.set("size", f"{radius:.6f} {half_length:.6f}")
+        geom.set("pos", _format_vec(body_pos))
+        geom.set("quat", _format_vec(body_quat))
+        geom.attrib.pop("mesh", None)
+        geom.attrib.pop("material", None)
+        replaced += 1
+
+    if replaced > 0:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        print(
+            f"Replaced upper_leg collision meshes with capsules: {replaced} geoms"
+        )
+
+
+def replace_forearm_collision_with_box(xml_file: str) -> None:
+    """Replace forearm mesh collision geoms with OBB-derived box primitives."""
+    replaced = _replace_collision_with_box(
+        xml_file, mesh_name_filter=lambda name: name == "forearm"
+    )
+    if replaced > 0:
+        print(f"Replaced forearm collision meshes with boxes: {replaced} geoms")
+
+
+def replace_htd_45h_collision_with_box(xml_file: str) -> None:
+    """Replace HTD-45H collision mesh geoms with OBB-derived box primitives."""
+    replaced = _replace_collision_with_box(
+        xml_file, mesh_name_filter=lambda name: name == "htd_45h_collision"
+    )
+    if replaced > 0:
+        print(f"Replaced HTD-45H collision meshes with boxes: {replaced} geoms")
+
+
+def replace_upper_leg_servo_connect_collision_with_box(xml_file: str) -> None:
+    """Replace upper_leg_servo_connect collision mesh geoms with OBB-derived boxes."""
+    replaced = _replace_collision_with_box(
+        xml_file, mesh_name_filter=lambda name: name == "upper_leg_servo_connect"
+    )
+    if replaced > 0:
+        print(
+            f"Replaced upper_leg_servo_connect collision meshes with boxes: {replaced} geoms"
+        )
+
+
+def replace_foot_bottom_collision_with_box(xml_file: str) -> None:
+    """Replace toe_btm*/heel_btm* collision mesh geoms with OBB-derived boxes."""
+    replaced = _replace_collision_with_box(
+        xml_file,
+        mesh_name_filter=lambda name: name.startswith("toe_btm") or name.startswith("heel_btm"),
+    )
+    if replaced > 0:
+        print(f"Replaced foot bottom collision meshes with boxes: {replaced} geoms")
 
 
 def add_common_includes(xml_file):
@@ -368,128 +682,137 @@ def add_common_includes(xml_file):
     tree.write(xml_file)
 
 
+def _read_actuator_order(actuator_order_path: Path) -> List[str]:
+    """Parse actuator_order.txt; one joint name per line, blanks/comments skipped."""
+    lines = actuator_order_path.read_text(encoding="utf-8").splitlines()
+    order: List[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        order.append(stripped)
+    if not order:
+        raise ValueError(f"actuator_order.txt is empty: {actuator_order_path}")
+    return order
+
+
 def generate_actuated_joints_config(
     root: ET.Element,
     joints_details: List[Dict[str, Any]],
+    *,
+    actuator_order_path: Path,
+    existing_joint_overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """Generate actuated_joints configuration for CAL (Control Abstraction Layer).
 
     This function produces the configuration needed by CAL to:
     1. Map between policy actions and physical joint commands
-    2. Handle joint symmetry (left/right mirroring)
-    3. Normalize joint ranges for policy training
+    2. Normalize joint ranges for policy training
 
-    v0.11.0: Added for Control Abstraction Layer
-
-    Mirror Sign Convention:
-    - mirror_sign = +1.0: Joint range maps directly to action range
-        Example: left_hip_pitch [-0.087, 1.571] → action 0 = center
-    - mirror_sign = -1.0: Joint range is inverted relative to its pair
-        Example: right_hip_pitch [-1.571, 0.087] is flipped vs left
-        When policy outputs same action for L/R, we want symmetric motion
+    Policy Action Sign Convention:
+    - policy_action_sign = +1.0: Joint range maps directly to action range
+    - policy_action_sign = -1.0: Joint range is inverted relative to paired limb motion
 
     Args:
         root: XML root element
         joints_details: List of joint details from generate_robot_config
+        actuator_order_path: Path to actuator_order.txt (single source of truth
+            for joint order; same file consumed by reorder_actuators.py).
+        existing_joint_overrides: Optional per-joint overrides loaded from existing
+            mujoco_robot_config.json, keyed by joint name.
 
     Returns:
-        List of actuated joint configs with mirror_sign and symmetry_pair
+        List of actuated joint configs with policy_action_sign, ordered to match
+        actuator_order_path.
     """
-    actuated_joints: List[Dict[str, Any]] = []
+    canonical_order = _read_actuator_order(actuator_order_path)
 
     # Build name-to-joint map for joints with ranges (actuated joints)
     actuated_joint_map = {
         j["name"]: j for j in joints_details if j.get("name") and j.get("range")
     }
 
-    # Define symmetry pairs (left ↔ right)
-    symmetry_pairs = {
-        "left_hip_pitch": "right_hip_pitch",
-        "left_hip_roll": "right_hip_roll",
-        "left_knee_pitch": "right_knee_pitch",
-        "left_ankle_pitch": "right_ankle_pitch",
-        "right_hip_pitch": "left_hip_pitch",
-        "right_hip_roll": "left_hip_roll",
-        "right_knee_pitch": "left_knee_pitch",
-        "right_ankle_pitch": "left_ankle_pitch",
+    # Cross-check: every name in actuator_order.txt must be a discovered joint
+    # and vice versa. Mirrors reorder_actuators.py's strictness so the JSON
+    # output stays in lockstep with the MJCF actuator order.
+    missing = [n for n in canonical_order if n not in actuated_joint_map]
+    extra = [n for n in actuated_joint_map.keys() if n not in canonical_order]
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append("missing in MJCF: " + ", ".join(missing))
+        if extra:
+            parts.append("missing in actuator_order.txt: " + ", ".join(extra))
+        raise ValueError(
+            "Actuator list mismatch between MJCF and "
+            f"{actuator_order_path}: {'; '.join(parts)}"
+        )
+
+    # Default policy-action sign configuration.
+    # Joints listed here have local +z axes that map to the SAME world axis as
+    # their left counterpart (verified by composing parent body quats), so a
+    # mirror-symmetric motion needs opposite q on the right side.
+    # right_ankle_roll added 2026-05-03 by analogy with right_hip_roll: both
+    # share world axis ≈ (-1, 0, 0) at home pose.
+    explicit_policy_action_signs: Dict[str, float] = {
+        "right_hip_pitch": -1.0,
+        "right_hip_roll": -1.0,
+        "right_ankle_roll": -1.0,
+        "right_shoulder_pitch": -1.0,
+        "right_shoulder_roll": -1.0,
     }
 
-    # Process each actuated joint
-    for joint_name, joint_info in actuated_joint_map.items():
-        joint_range = joint_info.get("range", [-1.57, 1.57])
-        range_min, range_max = joint_range
+    actuated_joints: List[Dict[str, Any]] = []
+    for joint_name in canonical_order:
+        joint_info = actuated_joint_map[joint_name]
+        range_min, range_max = joint_info.get("range", [-1.57, 1.57])
 
-        # Determine mirror_sign by comparing with symmetry pair
-        symmetry_pair = symmetry_pairs.get(joint_name)
-        mirror_sign = 1.0
-
-        if symmetry_pair and symmetry_pair in actuated_joint_map:
-            pair_info = actuated_joint_map[symmetry_pair]
-            pair_range = pair_info.get("range", [-1.57, 1.57])
-            pair_min, pair_max = pair_range
-
-            # Explicit range checks for symmetry
-            tol = 1e-3
-            same_range = abs(range_min - pair_min) < tol and abs(range_max - pair_max) < tol
-            mirrored = (
-                abs(range_min + pair_max) < tol and abs(range_max + pair_min) < tol
+        existing_joint = (existing_joint_overrides or {}).get(joint_name, {})
+        policy_action_sign = float(
+            existing_joint.get(
+                "policy_action_sign",
+                explicit_policy_action_signs.get(joint_name, 1.0),
+            )
+        )
+        if abs(abs(policy_action_sign) - 1.0) > 1e-6:
+            raise ValueError(
+                f"Invalid policy_action_sign for '{joint_name}': {policy_action_sign} (must be +/-1.0)"
             )
 
-            if not (mirrored or same_range):
-                raise ValueError(
-                    "Unexpected joint range mismatch for symmetry pair "
-                    f"'{joint_name}' ↔ '{symmetry_pair}': "
-                    f"{range_min:.6f},{range_max:.6f} vs {pair_min:.6f},{pair_max:.6f}. "
-                    "Update mirror detection or config."
-                )
-
-            if mirrored and not same_range:
-                # Convention: joints starting with "right_" get -1.0 if inverted
-                if joint_name.startswith("right_"):
-                    mirror_sign = -1.0
-                elif joint_name.startswith("left_"):
-                    mirror_sign = 1.0
-                else:
-                    raise ValueError(
-                        "Mirrored joint range requires explicit left/right naming for "
-                        f"'{joint_name}' ↔ '{symmetry_pair}'."
-                    )
-
-        config = {
+        actuated_joints.append({
             "name": joint_name,
-            "type": "position",  # All actuators are position-controlled
-            "range": [round(range_min, 6), round(range_max, 6)],
-            "symmetry_pair": symmetry_pair,
-            "mirror_sign": mirror_sign,
-            "max_velocity": 10.0,  # Conservative default for servos (rad/s)
-        }
-        actuated_joints.append(config)
-
-    # Sort by actuator order (left leg first, then right leg, by joint order)
-    joint_order = [
-        "left_hip_pitch",
-        "left_hip_roll",
-        "left_knee_pitch",
-        "left_ankle_pitch",
-        "right_hip_pitch",
-        "right_hip_roll",
-        "right_knee_pitch",
-        "right_ankle_pitch",
-    ]
-    actuated_joints.sort(
-        key=lambda x: joint_order.index(x["name"]) if x["name"] in joint_order else 999
-    )
+            "range": [
+                int(round(math.degrees(range_min))),
+                int(round(math.degrees(range_max))),
+            ],
+            "policy_action_sign": policy_action_sign,
+            "max_velocity": float(existing_joint.get("max_velocity", 10.0)),
+        })
 
     return actuated_joints
 
 
+def _write_robot_config_file(config: Dict[str, Any], output_file: str) -> None:
+    out_path = Path(output_file)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = out_path.suffix.lower()
+    if suffix == ".json":
+        out_path.write_text(json.dumps(config, indent=2))
+        return
+
+    import yaml
+
+    with open(out_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
 def generate_robot_config(
-    xml_file: str, output_file: str = "robot_config.yaml"
+    xml_file: str, output_file: str = "mujoco_robot_config.json"
 ) -> Dict[str, Any]:
     """Generate robot configuration from MuJoCo XML.
 
     This function extracts all robot-specific information from the XML and
-    saves it to a YAML config file. This config is then used by all Python
+    saves it to a config file. This config is then used by all Python
     training code to avoid hardcoding robot specifications.
 
     Extracts:
@@ -502,7 +825,7 @@ def generate_robot_config(
 
     Args:
         xml_file: Path to the MuJoCo XML file
-        output_file: Output YAML file path
+        output_file: Output config file path
 
     Returns:
         Dictionary containing the robot configuration
@@ -513,6 +836,7 @@ def generate_robot_config(
     config: Dict[str, Any] = {
         "robot_name": root.get("model", "unknown"),
         "generated_from": xml_file,
+        "joint_range_unit": "deg",
     }
 
     # =========================================================================
@@ -595,7 +919,35 @@ def generate_robot_config(
     # Generate Actuated Joints Config for CAL (v0.11.0)
     # Single source of truth for actuator names, joints, ranges, etc.
     # =========================================================================
-    actuated_joints = generate_actuated_joints_config(root, joints)
+    existing_joint_overrides: Dict[str, Dict[str, float]] = {}
+    out_path = Path(output_file)
+    if out_path.exists() and out_path.suffix.lower() == ".json":
+        try:
+            existing_config = json.loads(out_path.read_text())
+            for entry in existing_config.get("actuated_joint_specs", []):
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name:
+                    continue
+                existing_joint_overrides[str(name)] = {
+                    "policy_action_sign": float(entry.get("policy_action_sign", 1.0)),
+                    "max_velocity": float(entry.get("max_velocity", 10.0)),
+                }
+        except Exception as exc:
+            print(f"Warning: failed to read existing {output_file} overrides: {exc}")
+
+    actuator_order_path = Path(xml_file).parent / "actuator_order.txt"
+    if not actuator_order_path.exists():
+        raise FileNotFoundError(
+            f"actuator_order.txt missing next to MJCF: {actuator_order_path}"
+        )
+    actuated_joints = generate_actuated_joints_config(
+        root,
+        joints,
+        actuator_order_path=actuator_order_path,
+        existing_joint_overrides=existing_joint_overrides,
+    )
     config["actuated_joint_specs"] = actuated_joints
 
     num_actuators = len(actuated_joints)
@@ -676,58 +1028,45 @@ def generate_robot_config(
         "padding": 1,
     }
 
-    # AMP feature breakdown (what discriminator sees - motion signature)
-    # Order: pose → root motion → contacts (for gait pattern matching)
-    # Note: foot_contacts not in obs because policy infers contact from physics;
-    # AMP needs explicit contacts to distinguish gait patterns
-    amp_breakdown = {
-        "joint_positions": num_actuators,
-        "joint_velocities": num_actuators,
-        "root_linear_velocity": 3,
-        "root_angular_velocity": 3,
-        "root_height": 1,
-        "foot_contacts": 4,  # [left_toe, left_heel, right_toe, right_heel]
-    }
-
     config["observation_breakdown"] = obs_breakdown
-    config["amp_feature_breakdown"] = amp_breakdown
 
     # =========================================================================
-    # Save to YAML
+    # Save to JSON/YAML by extension
     # =========================================================================
-    import yaml
-
-    with open(output_file, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    _write_robot_config_file(config, output_file)
 
     print(f"Generated robot config: {output_file}")
     print(f"  Actuated joints: {num_actuators}")
     print(f"  Total joints (incl. passive): {num_joints}")
     print(f"  Observation dim: {sum(obs_breakdown.values())}")
-    print(f"  AMP feature dim: {sum(amp_breakdown.values())}")
 
     return config
 
 
 def main() -> None:
-    # Allow optional XML path via CLI, otherwise default to v1 model.
-    default_xml = Path(__file__).parent / "v1" / "wildrobot.xml"
+    # Allow optional XML path via CLI, otherwise default to v2 model.
+    default_xml = Path(__file__).parent / "v2" / "wildrobot.xml"
     xml_file = sys.argv[1] if len(sys.argv) > 1 else str(default_xml)
     print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
+    inject_additional_xml(xml_file)
     add_collision_names(xml_file)
     validate_foot_geoms(xml_file)
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
     merge_default_blocks(xml_file)
     fix_collision_default_geom(xml_file)
-    add_mimic_bodies(xml_file)  # Add dummy bodies for GMR compatibility
+    replace_upper_leg_collision_with_capsule(xml_file)
+    replace_forearm_collision_with_box(xml_file)
+    replace_htd_45h_collision_with_box(xml_file)
+    replace_upper_leg_servo_connect_collision_with_box(xml_file)
+    replace_foot_bottom_collision_with_box(xml_file)
 
     # Generate robot configuration next to the MJCF.
-    # This avoids overwriting other variants (assets/v1 vs assets/v2).
+    # Primary artifact: mujoco_robot_config.json (human-readable + strict format).
     xml_path = Path(xml_file)
-    out_yaml = str(xml_path.with_name("robot_config.yaml"))
-    generate_robot_config(xml_file, out_yaml)
+    out_json = str(xml_path.with_name("mujoco_robot_config.json"))
+    generate_robot_config(xml_file, out_json)
 
     # Optional deeper validation (requires MuJoCo + repo imports). This runs best under:
     #   uv run python assets/post_process.py assets/v1/wildrobot.xml
@@ -739,7 +1078,7 @@ def main() -> None:
         from validate_model import Thresholds, validate_model
 
         validate_model(
-            robot_config_yaml=Path(out_yaml),
+            robot_config_yaml=Path(out_json),
             scene_xml=xml_path.with_name("scene_flat_terrain.xml"),
             robot_xml=Path(xml_file),
             thresholds=Thresholds(

@@ -12,7 +12,7 @@ def _valid_spec_dict() -> dict:
     return {
         "contract_name": "wildrobot_policy",
         "contract_version": "1.0.0",
-        "spec_version": 1,
+        "spec_version": 2,
         "model": {
             "format": "onnx",
             "input_name": "observation",
@@ -37,49 +37,49 @@ def _valid_spec_dict() -> dict:
                 "left_hip_pitch": {
                     "range_min_rad": -0.1,
                     "range_max_rad": 1.5,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 10.0,
                 },
                 "left_hip_roll": {
                     "range_min_rad": -1.5,
                     "range_max_rad": 0.2,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 9.0,
                 },
                 "left_knee_pitch": {
                     "range_min_rad": 0.0,
                     "range_max_rad": 1.3,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 8.0,
                 },
                 "left_ankle_pitch": {
                     "range_min_rad": -0.7,
                     "range_max_rad": 0.8,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 7.0,
                 },
                 "right_hip_pitch": {
                     "range_min_rad": -1.5,
                     "range_max_rad": 0.1,
-                    "mirror_sign": -1.0,
+                    "policy_action_sign": -1.0,
                     "max_velocity_rad_s": 10.0,
                 },
                 "right_hip_roll": {
                     "range_min_rad": -0.2,
                     "range_max_rad": 1.5,
-                    "mirror_sign": -1.0,
+                    "policy_action_sign": -1.0,
                     "max_velocity_rad_s": 9.0,
                 },
                 "right_knee_pitch": {
                     "range_min_rad": 0.0,
                     "range_max_rad": 1.3,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 8.0,
                 },
                 "right_ankle_pitch": {
                     "range_min_rad": -0.7,
                     "range_max_rad": 0.8,
-                    "mirror_sign": 1.0,
+                    "policy_action_sign": 1.0,
                     "max_velocity_rad_s": 7.0,
                 },
             },
@@ -243,3 +243,140 @@ def test_build_observation_signals_parity(spec: PolicySpec) -> None:
     )
 
     np.testing.assert_allclose(obs_np, np.asarray(obs_jax), rtol=1e-6, atol=1e-6)
+
+
+# v0.20.1 wr_obs_v6_offline_ref_history parity ---------------------------------
+
+def _v6_spec_dict() -> dict:
+    spec = _valid_spec_dict()
+    spec["observation"]["layout_id"] = "wr_obs_v6_offline_ref_history"
+    return spec
+
+
+@pytest.fixture()
+def spec_v6() -> PolicySpec:
+    spec = PolicySpec.from_json(json.dumps(_v6_spec_dict()))
+    # The layout list is the v1 default but layout_id is v6;
+    # validate_spec is layout-aware and would reject the mismatch.
+    # The parity test only exercises builder dispatch on layout_id,
+    # not full schema validation.
+    return spec
+
+
+def test_build_observation_parity_v6(spec_v6: PolicySpec) -> None:
+    """JAX/NumPy parity for the v6 layout including proprio_history."""
+    from policy_contract.spec import PROPRIO_HISTORY_FRAMES
+
+    jax = pytest.importorskip("jax.numpy")
+    from policy_contract.jax.obs import build_observation_from_components as build_obs_jax
+    from policy_contract.numpy.obs import build_observation_from_components as build_obs_np
+
+    rng = np.random.RandomState(6)
+    n_act = spec_v6.model.action_dim
+    bundle = 3 + 4 + 3 * n_act
+    proprio_history = rng.uniform(
+        -1.0, 1.0, size=(PROPRIO_HISTORY_FRAMES, bundle)
+    ).astype(np.float32)
+
+    common_kwargs = dict(
+        spec=spec_v6,
+        gravity_local=rng.uniform(-1.0, 1.0, size=(3,)).astype(np.float32),
+        angvel_heading_local=rng.uniform(-2.0, 2.0, size=(3,)).astype(np.float32),
+        joint_pos_normalized=rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32),
+        joint_vel_normalized=rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32),
+        foot_switches=rng.uniform(0.0, 1.0, size=(4,)).astype(np.float32),
+        prev_action=rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32),
+        velocity_cmd=np.array([0.15], dtype=np.float32),
+        loc_ref_phase_sin_cos=rng.uniform(-1.0, 1.0, size=(2,)).astype(np.float32),
+        loc_ref_stance_foot=np.array([1.0], dtype=np.float32),
+        loc_ref_next_foothold=rng.uniform(-0.2, 0.2, size=(2,)).astype(np.float32),
+        loc_ref_swing_pos=rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32),
+        loc_ref_swing_vel=rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32),
+        loc_ref_pelvis_targets=rng.uniform(0.3, 0.5, size=(3,)).astype(np.float32),
+        loc_ref_history=rng.uniform(-1.0, 1.0, size=(4,)).astype(np.float32),
+        loc_ref_q_ref=rng.uniform(-1.0, 1.0, size=(n_act,)).astype(np.float32),
+        loc_ref_pelvis_pos=rng.uniform(-0.1, 0.1, size=(3,)).astype(np.float32),
+        loc_ref_pelvis_vel=rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32),
+        loc_ref_left_foot_pos=rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32),
+        loc_ref_right_foot_pos=rng.uniform(-0.2, 0.2, size=(3,)).astype(np.float32),
+        loc_ref_left_foot_vel=rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32),
+        loc_ref_right_foot_vel=rng.uniform(-0.5, 0.5, size=(3,)).astype(np.float32),
+        loc_ref_contact_mask=np.array([1.0, 0.0], dtype=np.float32),
+        proprio_history=proprio_history,
+    )
+
+    obs_np = build_obs_np(**common_kwargs)
+    jax_kwargs = {
+        k: (jax.asarray(v) if isinstance(v, np.ndarray) else v)
+        for k, v in common_kwargs.items()
+    }
+    obs_jax = build_obs_jax(**jax_kwargs)
+
+    np.testing.assert_allclose(obs_np, np.asarray(obs_jax), rtol=1e-6, atol=1e-6)
+
+
+def test_v6_obs_dim_matches_design(spec_v6: PolicySpec) -> None:
+    """v6 obs_dim = v4 obs_dim + (n_act + 20) ref-window + history.
+
+    v6 is the active locomotion contract (v5 was deprecated along
+    with the high-confidence prep).  Anchoring against v4 keeps the
+    test independent of the deprecated layout while still covering
+    the full v6 channel inventory.
+    """
+    from policy_contract.numpy.obs import build_observation_from_components as build_obs_np
+    from policy_contract.spec import PROPRIO_HISTORY_FRAMES
+
+    n_act = spec_v6.model.action_dim
+    bundle = 3 + 4 + 3 * n_act
+    history_size = PROPRIO_HISTORY_FRAMES * bundle
+    # Reference-window block (q_ref + pelvis pos/vel + per-foot
+    # pos/vel + contact_mask): n_act + 20 floats.  Same set v5 added
+    # over v4; v6 inherits and appends history on top.
+    ref_window_size = n_act + 20
+
+    base_kwargs = dict(
+        gravity_local=np.zeros(3, np.float32),
+        angvel_heading_local=np.zeros(3, np.float32),
+        joint_pos_normalized=np.zeros(n_act, np.float32),
+        joint_vel_normalized=np.zeros(n_act, np.float32),
+        foot_switches=np.zeros(4, np.float32),
+        prev_action=np.zeros(n_act, np.float32),
+        velocity_cmd=np.zeros(1, np.float32),
+    )
+
+    spec_v4_dict = _valid_spec_dict()
+    spec_v4_dict["observation"]["layout_id"] = "wr_obs_v4"
+    spec_v4 = PolicySpec.from_json(json.dumps(spec_v4_dict))
+    obs_v4 = build_obs_np(spec=spec_v4, **base_kwargs)
+    obs_v6 = build_obs_np(
+        spec=spec_v6,
+        proprio_history=np.zeros((PROPRIO_HISTORY_FRAMES, bundle), np.float32),
+        **base_kwargs,
+    )
+
+    expected_delta = ref_window_size + history_size
+    assert obs_v6.shape[0] - obs_v4.shape[0] == expected_delta, (
+        f"v6 should add (ref_window={ref_window_size}) + (history="
+        f"{history_size}) = {expected_delta} channels over v4; "
+        f"got delta = {obs_v6.shape[0] - obs_v4.shape[0]}"
+    )
+
+
+def test_v6_requires_proprio_history(spec_v6: PolicySpec) -> None:
+    """``proprio_history=None`` must raise for the v6 layout — the env
+    is required to wire a per-step rolling buffer."""
+    from policy_contract.numpy.obs import build_observation_from_components as build_obs_np
+
+    n_act = spec_v6.model.action_dim
+    with pytest.raises(ValueError, match="requires proprio_history"):
+        build_obs_np(
+            spec=spec_v6,
+            gravity_local=np.zeros(3, np.float32),
+            angvel_heading_local=np.zeros(3, np.float32),
+            joint_pos_normalized=np.zeros(n_act, np.float32),
+            joint_vel_normalized=np.zeros(n_act, np.float32),
+            foot_switches=np.zeros(4, np.float32),
+            prev_action=np.zeros(n_act, np.float32),
+            velocity_cmd=np.zeros(1, np.float32),
+            proprio_history=None,
+        )

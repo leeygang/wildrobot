@@ -11,10 +11,10 @@ This folder is the **v2** robot asset variant (full body with arms).
 - `config.json` (Onshape export config for v2; JSONC)
 - `scene_flat_terrain.xml` (training scene; includes `wildrobot.xml`)
 - `keyframes.xml` (poses; included by scene)
-- `robot_config.yaml` (generated; do not hand-edit)
+- `mujoco_robot_config.json` (generated; do not hand-edit)
 - `assets/` (meshes; referenced by `wildrobot.xml` compiler `meshdir="assets"`)
 
-## How to (re)generate robot_config.yaml
+## How to (re)generate mujoco_robot_config.json
 
 From repo root:
 
@@ -23,4 +23,24 @@ cd assets/v2
 uv run python ../post_process.py wildrobot.xml
 ```
 
-This writes `assets/v2/robot_config.yaml` next to the MJCF and (if available) runs a basic validation.
+This writes `assets/v2/mujoco_robot_config.json` next to the MJCF and (if available) runs a basic validation.
+
+## Digital-twin realism profiles (`v0.19.1`)
+
+Versioned realism parameters for actuator and sensor modeling live here:
+
+- `realism_profile_v0.19.1.json`: typed baseline profile with actuator delay/backlash/frictionloss/armature/effective output limits and sensor noise/latency/dropout parameters
+- `realism_profiles.json`: profile registry and default selector
+
+These files are intentionally JSON and diff-friendly so SysID updates can be reviewed in git.
+
+## Actuator order (ABI)
+
+The actuator order in `wildrobot.xml` must be deterministic for policy/action index stability.
+
+- Canonical order lives in `assets/v2/actuator_order.txt` (one name per line).
+- After Onshape export, run:
+  - `python3 ../reorder_actuators.py --xml wildrobot.xml --order actuator_order.txt`
+  - then `python3 ../post_process.py wildrobot.xml`
+
+The repo `assets/update_xml.sh --version v2` does this automatically.

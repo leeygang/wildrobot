@@ -1,0 +1,184 @@
+# =============================================================================
+# WildRobot PPO Standing Config (v0.13.1)
+# =============================================================================
+# Standing robustness with strong push disturbances
+#
+# Goal: Robot maintains balance under stronger lateral pushes.
+# Exit Criteria: Fall rate < 10%, episode length > 350 steps
+#
+# Usage:
+#   uv run python training/train.py --config training/configs/ppo_standing_push.yaml
+#
+# Total steps = iterations × num_envs × rollout_steps
+# =============================================================================
+
+version: "0.13.9"
+version_name: "Standing robustness (v0.13.9 probe +20 iters, fast eval)"
+
+seed: 42
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.44
+  # Encourage exploring a lower stance by rewarding height near target_height
+  # (two-sided shaping instead of the default one-sided "only penalize too low").
+  height_target_two_sided: true
+  min_height: 0.40
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  # Commands - standing only
+  min_velocity: 0.0
+  max_velocity: 0.0
+
+  # Contacts
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Action filtering (alpha=0 disables filtering)
+  # NOTE: This is part of the policy_contract hash, so changing it requires a fresh
+  # run (or a matching checkpoint trained with the same value).
+  action_filter_alpha: 0.6
+
+  # Disturbance pushes (strong, single-stage)
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 3.0
+  push_force_max: 6.0
+  push_bodies: [waist, upperbody]
+
+# =============================================================================
+# PPO Algorithm (task learning)
+# =============================================================================
+ppo:
+
+  num_envs: 512
+  rollout_steps: 256 
+  iterations: 20
+
+  # Stabilize PPO updates (reduce late-training regressions)
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  # More conservative PPO trust region for stability under pushes.
+  # Note: smaller epsilon may increase the *reported* clip_fraction, but usually reduces destructive updates.
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  # P0/P1 stability guardrails
+  target_kl: 0.02
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 3.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  entropy_schedule_end_factor: 0.4
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 200
+    deterministic: true
+
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# Networks (Option A: algorithm-agnostic)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Task Reward Weights (Environment-side reward only)
+# =============================================================================
+reward_weights:
+  # Standing + pushes with stepping allowed:
+  # - Reduce "don't move" incentive when cmd=0 by downweighting vel tracking.
+  # - Encourage upright recovery and planted steps (more slip penalty).
+  # - Keep small clearance reward to allow stepping without fidgeting.
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  base_height: 2.0
+  orientation: -4.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  collapse_height: -0.5
+  collapse_vz: -0.3
+  angular_velocity: -0.1
+
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+
+  slip: -1.0
+  clearance: 0.05
+  flight_phase_penalty: -0.1
+  stance_width_penalty: -0.1
+  stance_width_target: 0.23
+  stance_width_sigma: 0.05
+
+  forward_velocity_scale: 4.0
+
+# =============================================================================
+# Reward Composition (Trainer-side)
+# =============================================================================
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+# =============================================================================
+# Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  ppo:
+    num_envs: 8

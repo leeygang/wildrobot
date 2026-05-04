@@ -20,15 +20,15 @@ class CalibOps(Protocol):
 class NumpyCalibOps(CalibOps):
     @staticmethod
     def action_to_ctrl(*, spec, action):
-        from policy_contract.numpy.calib import action_to_ctrl
+        from policy_contract.numpy.calib import action_to_joint_target_rad
 
-        return action_to_ctrl(spec=spec, action=action)
+        return action_to_joint_target_rad(spec=spec, action=action)
 
     @staticmethod
     def ctrl_to_policy_action(*, spec, ctrl_rad):
-        from policy_contract.numpy.calib import ctrl_to_policy_action
+        from policy_contract.numpy.calib import joint_target_rad_to_action
 
-        return ctrl_to_policy_action(spec=spec, ctrl_rad=ctrl_rad)
+        return joint_target_rad_to_action(spec=spec, joint_target_rad=ctrl_rad)
 
     @staticmethod
     def normalize_joint_pos(*, spec, joint_pos_rad):

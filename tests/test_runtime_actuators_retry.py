@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from runtime.wr_runtime.hardware.actuators import HiwonderBoardActuators, ServoModel, servo_units_to_rad
+from runtime.wr_runtime.hardware.actuators import (
+    HiwonderBoardActuators,
+    ServoModel,
+    servo_pos_elect_units_to_joint_target_rad,
+)
 
 
 class FakeController:
@@ -43,10 +47,10 @@ def _make_actuators(controller: FakeController, max_retries: int = 3):
     return HiwonderBoardActuators(
         actuator_names=["j1", "j2"],
         servo_ids={"j1": 1, "j2": 2},
-        joint_offsets_rad={"j1": 0.0, "j2": 0.0},
         port="/dev/null",
         baudrate=9600,
         default_move_time_ms=20,
+        joint_offset_units={"j1": 0, "j2": 0},
         servo_model=ServoModel(units_min=0, units_max=1000, units_center=500, units_per_rad=100.0),
         max_retries=max_retries,
         retry_backoff_s=0.0,
@@ -81,10 +85,11 @@ def test_get_positions_retries_then_succeeds():
     positions = actuators.get_positions_rad()
     assert controller.read_calls == 3
     assert positions is not None
-    expected = servo_units_to_rad(
+    expected = servo_pos_elect_units_to_joint_target_rad(
         np.array([600, 400], dtype=np.float32),
-        offsets_rad=np.zeros(2, dtype=np.float32),
-        directions=np.ones(2, dtype=np.float32),
+        offsets_unit=np.zeros(2, dtype=np.float32),
+        motor_signs=np.ones(2, dtype=np.float32),
+        centers_rad=np.zeros(2, dtype=np.float32),
         servo_model=actuators.servo_model,
     )
     np.testing.assert_allclose(positions, expected)

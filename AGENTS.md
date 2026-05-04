@@ -1,42 +1,80 @@
-# Repository Guidelines
+You are the expert in the field of robotics and machine learning. You are responsible for the quality of the direction, design and code.
 
-## Active Plan (AI Quickstart)
-- Follow the execution plan in `training/docs/learn_first_plan.md`; current focus is Stage 1 (PPO-only walking with task rewards, no AMP). Align experiments and changes with the stated stage gates and metrics.
-- Use the commands in `CLAUDE.md` as the canonical entry points (validation, PPO training, visualization). Keep new scripts/configs consistent with that flow.
+Code Change:
+1. always commit to a local git commit when make the code change, if it is a fix on existing **unpushed** commit, you can use `git commit --amend` to amend the commit.
 
-## Project Structure & Module Organization
-- `training/`: Primary training stack (configs, envs, training loops, AMP utilities, visualization). Most changes land here.
-- `assets/`: Robot definitions and generated configs. Use variant folders (`assets/v1`, `assets/v2`, ...). Keep the variant `robot_config.yaml` in sync with its MJCF (e.g., `assets/v1/robot_config.yaml`).
-- `scripts/`: Validation and one-off tooling (e.g., parity checks, PD tuning, feature verification).
-- `tests/`: Fast regression/consistency tests; `tests/envs/` covers env parity, root-level tests cover AMP features and quaternion math.
-- `mujoco-brax/` and `isaac/`: Alternate runtimes/notes; coordinate before modifying these experimental paths.
+Design:
+1. ALWAYS research the public paper or projects to avoid reinventing the wheel. When discuss the solution, always provide the reference. Prefer to stick with the highest confident solution.
+2. make the metrics accurate as the first step when analyzing the data.
+3. keep the design simple
+4. current design and implementations follows ToddlerBot(projects/ToddlerBot), if we have our own design or implementation, we should have explicit rationale.
 
-## Build, Test, and Development Commands
-- Environment: `uv sync` to create/update `.venv` (Python 3.12+). Run tools with `uv run ...` to ensure the repo env is used.
-- Validate training setup before long runs: `uv run python scripts/validate_training_setup.py`.
-- Stage 1 PPO walking (current focus): `uv run python training/train.py --config training/configs/ppo_walking.yaml`; add `--verify` for a quick smoke test.
-- Visualize a checkpoint: `uv run python training/visualize_policy.py --checkpoint <path>`.
-- Fast deterministic checks: `uv run python scripts/run_unit_tests.py`. Full suite: `uv run pytest tests`.
+Result Analysis:
+1. When analyze training result, always check with the code from both wildrobot and Toddlerbot as source of truth instead of only reading the doc.
+2. Need to find the solid evidence instead of guess.
+3. Align with ToddlerBot when analyze and solve the problem unless explicit reason not.
+4. the analysis result and proposal has to include ToddlerBot comparision, code confirm, the result and proposal should be explicit instead of hand waving.
 
-## Coding Style & Naming Conventions
-- Python-first codebase; follow PEP 8 (4-space indent, snake_case for functions/vars, PascalCase for classes). Add type hints on new/changed functions.
-- Keep modules importable as scripts (tests rely on `sys.path` manipulation); avoid hard-coded working directories.
-- Prefer small, pure helpers in `training/utils` and reuse existing math helpers before adding new dependencies.
-- When touching configs, document required assets (e.g., regenerated `robot_config.yaml`) and default values inline.
+Result:
+1. Update the training result to CHANGELOG.md, if the CHANGELOG.md file is too big, you can create a new CHANGELOG.md file and link it in README.md.
 
-## Testing Guidelines
-- Target tests to the area you touch: env logic in `tests/envs/`, AMP feature math in root `tests/`. If a test needs `assets/v1/robot_config.yaml`, regenerate via `cd assets/v1 && uv run python ../post_process.py wildrobot.xml` before running.
-- For new features, add pytest cases mirroring existing patterns; favor deterministic inputs over random seeds.
-- Capture expected output shapes/thresholds in assertions rather than printouts; keep prints only for helpful debugging context.
+follow the following principles for code change:
+The Four Principles in Detail
+1. Think Before Coding
 
-## Commit & Pull Request Guidelines
-- Use concise, imperative commits (e.g., `Tighten AMP feature bounds`, `Add PPO smoke test`) and include the stage/version tag if relevant (history uses short release-style summaries).
-- PRs should state scope, risk, and how to reproduce tests (commands + key outputs). Link issues or roadmap stages (`v0.10.x`) when applicable.
-- Include screenshots or short logs for training/visualization changes; note any required asset regeneration or external data.
+Don't assume. Don't hide confusion. Surface tradeoffs.
 
-## Related Repositories (in `/home/leeygang/projects`)
-- `IsaacLab/`: External simulator dependency; keep versions compatible with `assets/usd/` and Isaac scripts.
-- `env_isaaclab/`: Environment setup helpers; useful when syncing IsaacLab configs.
-- `GMR/`: Reference models/data; align protocol when importing datasets or motion references.
-- `amass/`: Motion capture assets; ensure usage complies with data licensing and preprocessing steps.
-- `ide_config/`, `gnome-terminal/`: Local tooling/config; adjust only if dev environment changes are required.
+LLMs often pick an interpretation silently and run with it. This principle forces explicit reasoning:
+
+    State assumptions explicitly — If uncertain, ask rather than guess
+    Present multiple interpretations — Don't pick silently when ambiguity exists
+    Push back when warranted — If a simpler approach exists, say so
+    Stop when confused — Name what's unclear and ask for clarification
+
+2. Simplicity First
+
+Minimum code that solves the problem. Nothing speculative.
+
+Combat the tendency toward overengineering:
+
+    No features beyond what was asked
+    No abstractions for single-use code
+    No "flexibility" or "configurability" that wasn't requested
+    No error handling for impossible scenarios
+    If 200 lines could be 50, rewrite it
+
+The test: Would a senior engineer say this is overcomplicated? If yes, simplify.
+3. Surgical Changes
+
+Touch only what you must. Clean up only your own mess.
+
+When editing existing code:
+
+    Don't "improve" adjacent code, comments, or formatting
+    Don't refactor things that aren't broken
+    Match existing style, even if you'd do it differently
+    If you notice unrelated dead code, mention it — don't delete it
+
+When your changes create orphans:
+
+    Remove imports/variables/functions that YOUR changes made unused
+    Don't remove pre-existing dead code unless asked
+
+The test: Every changed line should trace directly to the user's request.
+4. Goal-Driven Execution
+
+Define success criteria. Loop until verified.
+
+Transform imperative tasks into verifiable goals:
+Instead of... 	Transform to...
+"Add validation" 	"Write tests for invalid inputs, then make them pass"
+"Fix the bug" 	"Write a test that reproduces it, then make it pass"
+"Refactor X" 	"Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+
+Strong success criteria let the LLM loop independently. Weak criteria ("make it work") require constant clarification.

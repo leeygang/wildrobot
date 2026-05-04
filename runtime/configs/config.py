@@ -9,7 +9,7 @@ policy on real hardware. Configuration is loaded from a JSON file that specifies
 - Foot switch GPIO pins
 
 Usage:
-    from runtime.configs import WrRuntimeConfig
+    from configs import WrRuntimeConfig
 
     # Load from default path (~/.wildrobot/config.json)
     config = WrRuntimeConfig.load()
@@ -43,7 +43,10 @@ import yaml
 HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
-DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v1/robot_config.yaml")
+
+# Default robot_config path (joint ranges, mirror signs, etc.)
+# Current assets layout is v2.
+DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v2/mujoco_robot_config.json")
 
 
 # =============================================================================
@@ -58,12 +61,14 @@ class ControlConfig:
     Attributes:
         hz: Control loop frequency in Hz (default: 50)
         action_scale_rad: Scale factor for policy actions in radians (default: 0.35)
-        velocity_cmd: Initial velocity command for the policy (default: 0.0)
+        velocity_cmd: Initial forward-speed command for the policy in m/s (default: 0.0)
+        yaw_rate_cmd: Initial yaw-rate command for the policy in rad/s (default: 0.0)
     """
 
     hz: float = 50.0
     action_scale_rad: float = 0.35
     velocity_cmd: float = 0.0
+    yaw_rate_cmd: float = 0.0
 
     @property
     def dt(self) -> float:
@@ -78,18 +83,21 @@ class ServoConfig:
     Attributes:
         id: Servo ID (1-254)
         offset: Calibration offset in servo units (default: 0)
-        direction: Hardware direction correction (+1 or -1, default: +1)
-        rad_range: Joint range in radians (min, max) from robot_config.yaml
-        max_velocity: Maximum joint velocity in rad/s from robot_config.yaml
-        mirror_sign: +1.0 or -1.0 for action direction correction from robot_config.yaml
+        motor_sign: Hardware motor sign correction (+1 or -1, default: +1)
+        motor_center_mujoco_deg: MuJoCo angle (deg) that maps to the servo-unit center
+            (servo_unit == 500) when offset==0.
+        rad_range: Joint range in radians (min, max) from mujoco_robot_config.json
+        max_velocity: Maximum joint velocity in rad/s from mujoco_robot_config.json
+        policy_action_sign: +1.0 or -1.0 for action direction correction from mujoco_robot_config.json
     """
 
     id: int
     offset: int = 0
-    direction: float = 1.0
+    motor_sign: float = 1.0
+    motor_center_mujoco_deg: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
-    mirror_sign: float = 1.0
+    policy_action_sign: float = 1.0
 
     # Servo conversion constants
     # Hiwonder HTD-45H: 240° range = 4.1887902 rad, units [0, 1000], center at 500
@@ -103,28 +111,33 @@ class ServoConfig:
     def offset_unit(self) -> int:
         return int(self.offset)
 
-    def rad_to_units(self, target_rad: float) -> int:
+    @property
+    def center_rad(self) -> float:
+        return math.radians(float(self.motor_center_mujoco_deg))
+
+    def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
 
         Applies hardware calibration:
-        - direction: corrects for servo installation orientation (+1 or -1)
+        - motor_sign: corrects for servo installation orientation (+1 or -1)
         - offset: corrects for neutral position alignment (in servo units)
 
         Args:
-            target_rad: Joint target in MuJoCo radians (mirror_sign already applied
+            target_rad: Joint target in MuJoCo radians (policy_action_sign already applied
                         by policy_contract if coming from policy output)
 
         Returns:
             Servo position in units [0, 1000]
         """
-        units = self.UNITS_CENTER + self.direction * target_rad * self.UNITS_PER_RAD + self.offset
+        delta = float(target_rad) - self.center_rad
+        units = self.UNITS_CENTER + self.offset + self.motor_sign * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
-    def rad_to_units_for_calibrate(
+    def joint_target_rad_to_elect_unit_for_calibrate(
         self,
         target_rad: float,
         *,
-        direction: int,
+        motor_sign: int,
         offset: int,
     ) -> int:
         """Convert MuJoCo radians to servo units with overridden calibration values.
@@ -133,20 +146,21 @@ class ServoConfig:
 
         Args:
             target_rad: Joint target in MuJoCo radians
-            direction: Direction to use (+1 or -1)
+            motor_sign: Motor sign to use (+1 or -1)
             offset: Offset to use (in servo units)
 
         Returns:
             Servo position in units [0, 1000]
         """
-        units = self.UNITS_CENTER + direction * target_rad * self.UNITS_PER_RAD + offset
+        delta = float(target_rad) - self.center_rad
+        units = self.UNITS_CENTER + offset + motor_sign * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
-    def units_to_rad(self, units: int) -> float:
+    def servo_elect_units_to_joint_target_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians.
 
-        Inverse of rad_to_units. Applies hardware calibration:
-        - direction: corrects for servo installation orientation
+        Inverse of joint_target_rad_to_elect_unit. Applies hardware calibration:
+        - motor_sign: corrects for servo installation orientation
         - offset: corrects for neutral position alignment
 
         Args:
@@ -155,13 +169,14 @@ class ServoConfig:
         Returns:
             Joint position in MuJoCo radians
         """
-        return self.direction * (units - self.UNITS_CENTER - self.offset) / self.UNITS_PER_RAD
+        delta_units = float(units) - self.UNITS_CENTER - self.offset
+        return self.center_rad + self.motor_sign * (delta_units / self.UNITS_PER_RAD)
 
-    def units_to_rad_for_calibrate(
+    def servo_elect_units_to_joint_target_rad_for_calibrate(
         self,
         units: int,
         *,
-        direction: int,
+        motor_sign: int,
         offset: int,
     ) -> float:
         """Convert servo units to MuJoCo radians with overridden calibration values.
@@ -170,18 +185,19 @@ class ServoConfig:
 
         Args:
             units: Servo position in units [0, 1000]
-            direction: Direction to use (+1 or -1)
+            motor_sign: Motor sign to use (+1 or -1)
             offset: Offset to use (in servo units)
 
         Returns:
             Joint position in MuJoCo radians
         """
-        return direction * (units - self.UNITS_CENTER - offset) / self.UNITS_PER_RAD
+        delta_units = float(units) - self.UNITS_CENTER - offset
+        return self.center_rad + motor_sign * (delta_units / self.UNITS_PER_RAD)
 
     @property
     def effective_sign(self) -> float:
-        """Sign applied to ctrl_rad<->servo conversion (hardware direction only)."""
-        return float(self.direction)
+        """Sign applied to ctrl_rad<->servo conversion (hardware motor_sign only)."""
+        return float(self.motor_sign)
 
     @property
     def ctrl_center(self) -> float:
@@ -200,17 +216,19 @@ class ServoSpec:
 
     id: int
     offset_unit: int = 0
-    direction: float = 1.0
+    motor_sign: float = 1.0
+    motor_center_mujoco_deg: float = 0.0
 
     def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
         joint_spec = joint_spec or {}
         return ServoConfig(
             id=int(self.id),
             offset=int(self.offset_unit),
-            direction=float(self.direction),
+            motor_sign=float(self.motor_sign),
+            motor_center_mujoco_deg=float(self.motor_center_mujoco_deg),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
-            mirror_sign=joint_spec.get("mirror_sign", 1.0),
+            policy_action_sign=joint_spec.get("policy_action_sign", 1.0),
         )
 
 
@@ -266,8 +284,12 @@ class ServoControllerConfig:
         return {k: int(v.offset_unit) for k, v in self.servos.items()}
 
     @property
-    def joint_directions(self) -> Dict[str, float]:
-        return {k: float(v.direction) for k, v in self.servos.items()}
+    def joint_motor_signs(self) -> Dict[str, float]:
+        return {k: float(v.motor_sign) for k, v in self.servos.items()}
+
+    @property
+    def joint_motor_center_mujoco_deg(self) -> Dict[str, float]:
+        return {k: float(v.motor_center_mujoco_deg) for k, v in self.servos.items()}
 
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
@@ -298,27 +320,31 @@ class ServoControllerConfig:
 
         Conversion chain:
             policy_action [-1, 1]
-            → corrected = action * mirror_sign
+            → corrected = action * policy_action_sign
             → ctrl_rad = corrected * ctrl_span + ctrl_center
-            → degrees = ctrl_rad * (180/π)
-            → servo_pos = 500 + direction * degrees * DEG_TO_SERVO + offset
+            → servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)  (applies motor_center_mujoco_deg, motor_sign, offset)
         """
         action_clipped = max(-1.0, min(1.0, action))
-        corrected = action_clipped * servo.mirror_sign
+        corrected = action_clipped * servo.policy_action_sign
         ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
-        degrees = math.degrees(ctrl_rad)
-        servo_pos = self.SERVO_CENTER + servo.direction * degrees * self.DEG_TO_SERVO + servo.offset
+        servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)
         return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
 
-    def _servo_pos_to_policy_action(self, servo_pos: int, servo: ServoConfig) -> float:
+    def _servo_pos_to_policy_action(
+        self, servo_pos: int, servo: ServoConfig, *, joint_name: str
+    ) -> float:
         """Convert servo position [0, 1000] to policy action [-1, 1].
 
         Inverse of _policy_action_to_servo_pos.
         """
-        degrees = (servo_pos - servo.offset - self.SERVO_CENTER) / self.DEG_TO_SERVO
-        ctrl_rad = math.radians(degrees) / servo.direction
+        ctrl_rad = servo.servo_elect_units_to_joint_target_rad(servo_pos)
+        if abs(float(servo.ctrl_span)) < 1e-9:
+            raise ValueError(
+                "Cannot invert servo_pos->policy_action with degenerate joint range "
+                f"(ctrl_span={float(servo.ctrl_span)}). Joint '{joint_name}' likely missing range in mujoco_robot_config.json."
+            )
         corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
-        action = corrected / servo.mirror_sign
+        action = corrected / servo.policy_action_sign
         return max(-1.0, min(1.0, action))
 
     def policy_action_to_servo_cmd(
@@ -327,7 +353,7 @@ class ServoControllerConfig:
         """Convert policy actions to servo commands.
 
         Args:
-            actions: List of policy actions in joint order (from robot_config.yaml)
+            actions: List of policy actions in joint order (from mujoco_robot_config.json)
 
         Returns:
             List of (servo_id, servo_position) tuples
@@ -366,7 +392,7 @@ class ServoControllerConfig:
             if servo.id not in pos_by_id:
                 raise ValueError(f"No position for servo ID {servo.id} ({joint_name})")
             servo_pos = pos_by_id[servo.id]
-            action = self._servo_pos_to_policy_action(servo_pos, servo)
+            action = self._servo_pos_to_policy_action(servo_pos, servo, joint_name=joint_name)
             actions.append(action)
         return actions
 
@@ -458,6 +484,7 @@ class WrRuntimeConfig:
     servo_controller: ServoControllerConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
+    realism_profile_path: Optional[str] = None
 
     # Store config directory for resolving relative paths
     _config_dir: Path = field(default=Path("."), repr=False, compare=False)
@@ -498,8 +525,8 @@ class WrRuntimeConfig:
             config_path: Path to JSON config file. If None, searches for:
                 1. ~/.wildrobot/config.json
                 2. ~/wildrobot_config.json (legacy)
-            robot_config_path: Path to robot_config.yaml for joint specs.
-                If None, uses assets/v1/robot_config.yaml relative to repo root.
+            robot_config_path: Path to robot_config.(json|yaml) for joint specs.
+                If None, uses a best-effort search (prefers assets/v2/mujoco_robot_config.json).
 
         Returns:
             WrRuntimeConfig instance
@@ -533,25 +560,64 @@ class WrRuntimeConfig:
         data = json.loads(path.read_text())
 
         # Resolve robot_config_path
+        # Priority:
+        #   1) explicit argument `robot_config_path`
+        #   2) JSON key `robot_config_path` (resolved relative to config file dir)
+        #   3) repo-relative assets/v2/mujoco_robot_config.json
+        #   4) cwd-relative assets/v2/mujoco_robot_config.json
         if robot_config_path is None:
-            # Try relative to config dir, then default path
-            robot_config_path = config_dir / ".." / "assets" / "robot_config.yaml"
-            if not robot_config_path.exists():
-                robot_config_path = DEFAULT_ROBOT_CONFIG_PATH
-        robot_config_path = Path(robot_config_path)
+            json_robot_cfg = data.get("robot_config_path")
+            if isinstance(json_robot_cfg, str) and json_robot_cfg.strip():
+                robot_config_path = (config_dir / json_robot_cfg).resolve()
+
+        candidate_paths: List[Path] = []
+        if robot_config_path is not None:
+            candidate_paths.append(Path(robot_config_path))
+
+        repo_root = Path(__file__).resolve().parents[2]
+        candidate_paths.extend(
+            [
+                (repo_root / "assets" / "v2" / "mujoco_robot_config.json"),
+                Path(DEFAULT_ROBOT_CONFIG_PATH),
+            ]
+        )
+
+        resolved_robot_cfg: Optional[Path] = None
+        for p in candidate_paths:
+            try:
+                pp = p.expanduser()
+            except Exception:
+                pp = p
+            if pp.exists():
+                resolved_robot_cfg = pp
+                break
+        robot_config_path = resolved_robot_cfg if resolved_robot_cfg is not None else Path(candidate_paths[0])
 
         # Load robot config for joint specs
         joint_specs = {}
         if robot_config_path.exists():
             with open(robot_config_path, "r") as f:
                 robot_config = yaml.safe_load(f)
+            range_unit = str(robot_config.get("joint_range_unit", "rad")).lower()
+            if range_unit not in {"rad", "deg"}:
+                raise ValueError(
+                    "mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'"
+                )
             for joint in robot_config.get("actuated_joint_specs", []):
                 name = joint.get("name")
                 if name:
+                    range_vals = joint.get("range", [0.0, 0.0])
+                    if not isinstance(range_vals, list) or len(range_vals) != 2:
+                        raise ValueError(f"Invalid range for joint '{name}': {range_vals}")
+                    range_min = float(range_vals[0])
+                    range_max = float(range_vals[1])
+                    if range_unit == "deg":
+                        range_min = math.radians(range_min)
+                        range_max = math.radians(range_max)
                     joint_specs[name] = {
-                        "rad_range": tuple(joint.get("range", [0.0, 0.0])),
+                        "rad_range": (range_min, range_max),
                         "max_velocity": float(joint.get("max_velocity", 10.0)),
-                        "mirror_sign": float(joint.get("mirror_sign", 1.0)),
+                        "policy_action_sign": float(joint.get("policy_action_sign", 1.0)),
                     }
 
         # Parse nested configs
@@ -567,6 +633,11 @@ class WrRuntimeConfig:
             servo_controller=servo_controller,
             bno085=bno085,
             foot_switches=foot_switches,
+            realism_profile_path=(
+                str(data["realism_profile_path"])
+                if "realism_profile_path" in data and data["realism_profile_path"] is not None
+                else None
+            ),
             _config_dir=config_dir,
         )
 
@@ -577,20 +648,30 @@ class WrRuntimeConfig:
             hz=float(data.get("control_hz", 50.0)),
             action_scale_rad=float(data.get("action_scale_rad", 0.35)),
             velocity_cmd=float(data.get("velocity_cmd", 0.0)),
+            yaw_rate_cmd=float(data.get("yaw_rate_cmd", 0.0)),
         )
 
     @staticmethod
     def _parse_servo_controller_config(
         data: dict, joint_specs: Dict[str, dict]
     ) -> ServoControllerConfig:
-        """Parse servo controller configuration with canonical and legacy blocks."""
+        """Parse servo controller configuration from the canonical 'servo_controller' block."""
 
         def _parse_block(block: dict, key_path: str) -> ServoControllerConfig:
             servos: Dict[str, ServoConfig] = {}
             for joint_name, servo_data in block.get("servos", {}).items():
                 joint_spec = joint_specs.get(joint_name, {})
-                direction_val = float(servo_data.get("direction", 1.0))
-                WrRuntimeConfig._validate_directions({joint_name: direction_val})
+                motor_sign_val = float(servo_data.get("motor_sign", 1.0))
+                WrRuntimeConfig._validate_motor_signs({joint_name: motor_sign_val})
+
+                motor_center_mujoco_deg = float(servo_data.get("motor_center_mujoco_deg", 0.0))
+                rad_range = joint_spec.get("rad_range", (0.0, 0.0))
+                WrRuntimeConfig._validate_motor_center_mujoco_deg(
+                    motor_center_mujoco_deg=motor_center_mujoco_deg,
+                    rad_range=rad_range,
+                    joint_name=joint_name,
+                    key_path=key_path,
+                )
 
                 offset_unit = servo_data.get("offset_unit")
                 legacy_offset = servo_data.get("offset")
@@ -618,10 +699,11 @@ class WrRuntimeConfig:
                 servos[str(joint_name)] = ServoConfig(
                     id=int(servo_data["id"]),
                     offset=int(chosen_offset),
-                    direction=direction_val,
-                    rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
+                    motor_sign=motor_sign_val,
+                    motor_center_mujoco_deg=motor_center_mujoco_deg,
+                    rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
-                    mirror_sign=joint_spec.get("mirror_sign", 1.0),
+                    policy_action_sign=joint_spec.get("policy_action_sign", 1.0),
                 )
 
             return ServoControllerConfig(
@@ -632,78 +714,58 @@ class WrRuntimeConfig:
                 default_move_time_ms=int(block["default_move_time_ms"]) if "default_move_time_ms" in block else None,
             )
 
-        def _parse_legacy_hiwonder_block(block: dict) -> ServoControllerConfig:
-            servos: Dict[str, ServoConfig] = {}
-            servo_ids = block.get("servo_ids", {})
-            joint_offsets = block.get("joint_offsets_rad", {})
-            joint_directions = block.get("joint_directions", {})
-            for joint, sid in servo_ids.items():
-                direction_val = float(joint_directions.get(joint, 1.0))
-                WrRuntimeConfig._validate_directions({joint: direction_val})
-                servos[str(joint)] = ServoConfig(
-                    id=int(sid),
-                    offset=int(joint_offsets.get(joint, 0)),
-                    direction=direction_val,
-                    rad_range=joint_specs.get(joint, {}).get("rad_range", (0.0, 0.0)),
-                    max_velocity=joint_specs.get(joint, {}).get("max_velocity", 10.0),
-                    mirror_sign=joint_specs.get(joint, {}).get("mirror_sign", 1.0),
-                )
-            return ServoControllerConfig(
-                type="hiwonder",
-                port=str(block.get("port", "/dev/ttyUSB0")),
-                baudrate=int(block.get("baudrate", 9600)),
-                servos=servos,
+        canonical_block = data.get("servo_controller")
+        legacy_keys = [k for k in data.keys() if str(k).lower() in {"hiwonder", "hiwonder_controller"}]
+
+        if legacy_keys and canonical_block is not None:
+            raise ValueError(
+                "Conflicting servo controller definitions: found 'servo_controller' and legacy blocks "
+                + ", ".join(repr(k) for k in legacy_keys)
+                + ". Remove legacy blocks and use only 'servo_controller'."
             )
 
-        canonical_block = data.get("servo_controller")
-        legacy_controller_block = data.get("Hiwonder_controller")
-        legacy_hiwonder_block = data.get("hiwonder")
+        if canonical_block is None:
+            if legacy_keys:
+                raise KeyError(
+                    "Servo controller config missing 'servo_controller'. Legacy blocks "
+                    + ", ".join(repr(k) for k in legacy_keys)
+                    + " are no longer supported; use 'servo_controller' with fields {type, port, baudrate, servos}."
+                )
+            raise KeyError(
+                "Servo controller config missing. Provide 'servo_controller' with fields {type, port, baudrate, servos}."
+            )
 
-        parsed_canonical = (
-            _parse_block(canonical_block, "servo_controller.servos")
-            if canonical_block is not None
-            else None
-        )
-        parsed_legacy_controller = (
-            _parse_block(legacy_controller_block, "Hiwonder_controller.servos")
-            if legacy_controller_block is not None
-            else None
-        )
-        parsed_legacy_hiwonder = (
-            _parse_legacy_hiwonder_block(legacy_hiwonder_block)
-            if legacy_hiwonder_block is not None
-            else None
-        )
-
-        definitions = [cfg for cfg in (parsed_canonical, parsed_legacy_controller, parsed_legacy_hiwonder) if cfg]
-        if len(definitions) > 1:
-            first = definitions[0]
-            for other in definitions[1:]:
-                if other != first:
-                    raise ValueError(
-                        "Conflicting servo controller definitions: found both canonical and legacy blocks with different values."
-                    )
-            return first
-
-        if parsed_canonical:
-            return parsed_canonical
-        if parsed_legacy_controller:
-            return parsed_legacy_controller
-        if parsed_legacy_hiwonder:
-            return parsed_legacy_hiwonder
-
-        raise KeyError(
-            "Servo controller config missing. Provide 'servo_controller' with fields {type, port, baudrate, servos}. "
-            "Legacy keys 'hiwonder' or 'Hiwonder_controller' are also accepted for now."
-        )
+        return _parse_block(canonical_block, "servo_controller.servos")
 
     @staticmethod
-    def _validate_directions(directions: Dict[str, float]) -> None:
-        invalid = {k: v for k, v in directions.items() if abs(abs(v) - 1.0) > 1e-3}
+    def _validate_motor_signs(motor_signs: Dict[str, float]) -> None:
+        invalid = {k: v for k, v in motor_signs.items() if abs(abs(v) - 1.0) > 1e-3}
         if invalid:
             raise ValueError(
-                "servo_controller.servos.direction must be +/-1.0 (tolerance 1e-3); invalid entries: "
+                "servo_controller.servos.motor_sign must be +/-1.0 (tolerance 1e-3); invalid entries: "
                 + ", ".join(f"{k}={v}" for k, v in invalid.items())
+            )
+
+    @staticmethod
+    def _validate_motor_center_mujoco_deg(
+        *,
+        motor_center_mujoco_deg: float,
+        rad_range: Tuple[float, float],
+        joint_name: str,
+        key_path: str,
+    ) -> None:
+        range_min, range_max = float(rad_range[0]), float(rad_range[1])
+        if abs(range_min) < 1e-12 and abs(range_max) < 1e-12:
+            return
+        if range_min > range_max:
+            range_min, range_max = range_max, range_min
+        center_rad = math.radians(float(motor_center_mujoco_deg))
+        if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
+            print(
+                "WARNING: "
+                f"{key_path}.{joint_name}.motor_center_mujoco_deg={motor_center_mujoco_deg} maps to {center_rad:.6f} rad, "
+                f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad",
+                flush=True,
             )
 
     @staticmethod
@@ -764,7 +826,8 @@ class WrRuntimeConfig:
             joint_name: {
                 "id": servo.id,
                 "offset_unit": servo.offset_unit,
-                "direction": servo.direction,
+                "motor_sign": servo.motor_sign,
+                "motor_center_mujoco_deg": servo.motor_center_mujoco_deg,
             }
             for joint_name, servo in self.servo_controller.servos.items()
         }
@@ -775,6 +838,7 @@ class WrRuntimeConfig:
             "control_hz": self.control.hz,
             "action_scale_rad": self.control.action_scale_rad,
             "velocity_cmd": self.control.velocity_cmd,
+            "yaw_rate_cmd": self.control.yaw_rate_cmd,
             "servo_controller": {
                 "type": self.servo_controller.type,
                 "port": self.servo_controller.port,
@@ -795,6 +859,11 @@ class WrRuntimeConfig:
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
+            **(
+                {"realism_profile_path": self.realism_profile_path}
+                if self.realism_profile_path is not None
+                else {}
+            ),
         }
         return out
 

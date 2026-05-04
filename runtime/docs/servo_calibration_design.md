@@ -2,37 +2,29 @@
 
 ## Context
 
-This repo currently has two runtime “stacks”:
-
-- **Legacy runtime modules** under `runtime/configs/` + `runtime/hardware/`
-  - config file: `runtime/configs/wr_runtime_config.json`
-  - servo driver: `runtime/hardware/hiwonder_board_controller.py` (board protocol)
-  - servo calibration fields today: per-servo `offset` (in servo units)
-- **Newer sim2real runtime** under `runtime/wr_runtime/` (used by the Stage 1 `policy_contract` flow docs)
-
-This design doc targets the legacy stack because you explicitly want:
-- joint names read from `runtime/configs/wr_runtime_config.json`
-- calibration results written back to that same file
-- servo communication via the **Hiwonder board controller** (not the actuator convenience wrapper)
-
-WildRobot hardware runtime (`runtime/wr_runtime/`) currently assumes:
+WildRobot hardware runtime lives under `runtime/wr_runtime/` and assumes:
 - Hiwonder servo position units are in `[0..1000]`
-- `500` is the nominal center position
+- servo electrical center is `units_center = 500`
 - mapping is linear over `[-120°, +120°]` (240° total range)
-- runtime commands and reads joints in radians, using per-joint `joint_offsets_rad` from the runtime JSON config
+- runtime commands and reads joints in radians, using a per-joint calibration defined in the runtime JSON config
 
-Today, runtime applies only a **per-joint offset** (in radians). It does **not** support per-joint direction/sign correction, which is needed when a physical servo is installed such that increasing servo units corresponds to negative MuJoCo joint motion (or vice versa).
+Calibration is performed with the interactive script:
+- `runtime/scripts/calibrate.py`
 
-This doc proposes a servo calibration flow and config format to support:
-1) per-joint center offset calibration
-2) per-joint direction calibration
+Calibration data is stored in the runtime JSON config (copy the sample `runtime/configs/runtime_config_template.json` (or `runtime/configs/runtime_config_v2.json`) to your robot, typically `~/.wildrobot/config.json`).
 
-The implementation target is a new interactive script `calibrate.py` (exact location/entrypoint specified below).
+This doc describes the servo calibration model and the operator workflow for per-joint:
+1) motor_sign correction
+2) center offset in servo units
+3) optional joint center angle (`motor_center_mujoco_deg`) used in the rad↔units mapping
+
+For a consolidated reference on coordinate definitions and the end-to-end conversion chain
+(`policy_action ∈ [-1, 1]` ↔ `target_rad` ↔ servo units), see `docs/joints_angle.md`.
 
 ## Goals
 
 - Calibrate each servo’s **zero/center offset** so that a chosen physical “neutral pose” corresponds to `joint_pos_rad == 0.0` in runtime.
-- Calibrate each servo’s **direction sign** so that “positive radians” in runtime matches “positive joint angle” in the MuJoCo model used for training/inference.
+- Calibrate each servo’s **motor sign** so that “positive radians” in runtime matches “positive joint angle” in the MuJoCo model used for training/inference.
 - Persist calibration results into the runtime JSON config in a way that is robust, debuggable, and easy to edit by hand.
 - Keep the runtime API boundary in radians (do not leak servo units into policy/contract code).
 
@@ -45,81 +37,91 @@ The implementation target is a new interactive script `calibrate.py` (exact loca
 
 ## Terminology
 
-- `units`: servo position command/readback in `[0..1000]`
-- `units_center`: nominal center (`500`)
-- `range_rad`: full servo travel in radians (`240° = 4.1887902047863905 rad`)
-- `s`: direction sign per joint (`+1` or `-1`)
-- `offset_units`: offset per joint (servo units), applied at the runtime↔servo conversion boundary
+This section is intentionally minimal; the detailed coordinate definitions, sign composition, and
+worked examples live in `docs/joints_angle.md`.
 
-## Current Runtime Behavior (baseline)
+- `target_rad`: MuJoCo joint target in radians (runtime commands/readbacks use radians).
+- `servo_electrical_unit` (`u_elec`): raw servo position units in `[0..1000]` read/written over the bus.
+- `offset_unit`: per-joint integer offset between conceptual units and electrical units:
+  - `u = u_elec - offset_unit`
+  - conceptual center is `u = 500`
+- `motor_center_mujoco_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
+- `motor_sign ∈ {+1, -1}`: hardware sign correction for the rad↔units mapping.
 
-### Legacy stack (`runtime/configs` + `runtime/hardware`)
+## Runtime Mapping Model
 
-In `runtime/configs/config.py` (`ServoControllerConfig`), mapping is effectively:
+The runtime uses the mapping implemented in `runtime/wr_runtime/hardware/actuators.py`.
 
-- servo units are `[0..1000]` with `500` as center
-- runtime composes:
-  - a policy/action convention sign (`mirror_sign` from `assets/v1/robot_config.yaml` or the selected variant)
-  - a per-robot hardware direction (`direction`, stored in the JSON)
-  - a servo center offset (`offset`, stored in the JSON as an integer)
+Per joint, calibration values are:
+- `motor_sign ∈ {+1, -1}`
+- `offset_unit ∈ ℤ`
+- `motor_center_mujoco_deg` (optional; default `0`)
 
-Today it supports `offset`, but does not have an explicit “per-robot direction correction” field in the JSON.
+## Config Shape
 
-### Why we need an additional direction field
-
-`mirror_sign` is a *model/training convention used when mapping policy actions → joint targets*.
-In practice, a physical build can still be flipped due to servo installation/wiring, so we need a per-robot correction (`direction`) that applies when converting **joint targets (radians)** to **servo units**.
-
-## Proposed Config Additions
-
-Use `runtime/configs/wr_runtime_config.json` as the canonical “in-repo” calibration target:
+Use `runtime/configs/runtime_config_template.json` as the canonical “in-repo” calibration target:
 - calibration reads joint names (and servo IDs) from this file
 - calibration writes results back to this file (in-place with backups, unless `--output` is provided)
 
 ### Config shape (recommended, minimal change)
 
-Extend the existing legacy shape under `Hiwonder_controller.servos.<joint>`:
+Under `servo_controller.servos.<joint>`:
 
 ```json
 {
-  "Hiwonder_controller": {
+  "servo_controller": {
     "servos": {
-      "left_hip_pitch": { "id": 1, "offset": 0, "direction": 1 }
+      "left_hip_pitch": { "id": 1, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 }
     }
   }
 }
 ```
 
 Where:
-- `offset` is an integer in servo units (default: `0`)
-- `direction` is `+1` or `-1` (default: `+1`)
+- `offset_unit` is an integer in servo units (default: `0`)
+- `motor_sign` is `+1` or `-1` (default: `+1`)
+- `motor_center_mujoco_deg` is the MuJoCo angle (deg) that maps to `servo_unit == 500` (default: `0`)
 
-Backwards compatibility:
-- If `direction` is missing, assume `+1`.
-- Existing configs that only contain `id` and `offset` remain valid.
+Defaults:
+- If `motor_sign` is missing, runtime assumes `+1`.
+- If `offset_unit` is missing, runtime assumes `0`.
+- If `motor_center_mujoco_deg` is missing, runtime assumes `0`.
 
-## Proposed Mapping With Offset + Direction
+## Mapping With Offset + Motor Sign + Center
 
 For each joint:
-- `direction` from JSON in `{+1, -1}`
-- `offset_units` from JSON (int)
+- `motor_sign` from JSON in `{+1, -1}`
+- `offset_unit` from JSON (int)
 
 Note:
-- `mirror_sign` should **not** be applied when converting an absolute joint target `target_rad` (MuJoCo qpos) into servo units. It only applies when mapping *policy actions* into joint targets.
+- `policy_action_sign` is **not** part of the servo calibration mapping. It is only used when mapping policy actions → control targets (see `docs/joints_angle.md` for the full action↔rad mapping and worked examples).
 
-Command (radians → units, centered at 500):
+Command (radians → *electrical* units):
 ```
-units_cmd = clamp_0_1000(
-  units_center + direction * target_rad * (1000 / range_rad) + offset_units
+servo_electrical_unit_cmd = clamp_0_1000(
+  units_center
+  + offset_unit
+  + motor_sign * (target_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
 )
 ```
 
-Readback (units → radians):
+Readback (electrical units → radians):
 ```
-pos_rad = direction * (units_read - units_center - offset_units) * (range_rad / 1000)
+pos_rad = deg2rad(motor_center_mujoco_deg)
+          + motor_sign * ((servo_electrical_unit_read - units_center - offset_unit) * (range_rad / 1000))
 ```
 
-This preserves the meaning of `offset_units` as “what runtime adds to units after the centered conversion”, while allowing sign flips.
+### Computing `offset_unit` in the presence of `motor_center_mujoco_deg`
+
+If you want a particular reference joint angle `target_ref_rad` to match a measured readback `servo_electrical_unit_read`, rearrange the command equation:
+
+$$
+offset\_unit = servo\_electrical\_unit\_read - units\_center - motor\_sign\cdot (target\_ref\_rad - deg2rad(motor\_center\_mujoco\_deg))\cdot (1000 / range\_rad)
+$$
+
+Two common special cases:
+- If `motor_center_mujoco_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
+- If you choose `motor_center_mujoco_deg` such that `target_ref_rad == deg2rad(motor_center_mujoco_deg)` for your neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
 
 ## Calibration UX Overview
 
@@ -134,7 +136,15 @@ The script should guide the user joint-by-joint:
 3) determine offset at neutral pose
 4) write config (with backups)
 
-Important: calibrate `direction` *before* `offset_units`, because the “direction test” is easier to reason about when the joint is near center.
+Important: calibrate `motor_sign` *before* `offset_unit`, because the “motor_sign test” is easier to reason about when the joint is near center.
+
+## How `policy_action_sign` Impacts Calibration (and What It Does *Not* Change)
+
+`policy_action_sign` is a **policy/model convention** used only in the `action ∈ [-1, 1]` ↔ `target_rad` mapping (see `docs/joints_angle.md`).
+
+Calibration guidance:
+- `policy_action_sign` does **not** change the runtime servo calibration mapping (`motor_sign`, `offset_unit`, `motor_center_mujoco_deg`).
+- When calibrating `motor_sign`, reason in terms of **positive `target_rad`** (MuJoCo/control radians increasing), not “positive policy action”.
 
 ## Calibration Procedure (per joint)
 
@@ -154,7 +164,7 @@ Add a calibrator option to set the robot to that home pose before per-joint cali
 
 - CLI: `--go-home` (move all joints once, then proceed)
 - CLI: `--bundle <path>` (folder containing `policy_spec.json`)
-- CLI: `--scene-xml <path>` (MuJoCo scene XML; e.g. `assets/v1/scene_flat_terrain.xml`)
+- CLI: `--scene-xml <path>` (MuJoCo scene XML; e.g. `assets/v2/scene_flat_terrain.xml`)
 - CLI: `--keyframes-xml <path>` (direct `keyframes.xml`; e.g. `assets/keyframes.xml`)
 
 Home pose source precedence:
@@ -178,7 +188,7 @@ For Stage 1 (8 actuators), the calibrator can:
 If `N != 8`, do not guess; either require MuJoCo (`--scene-xml`) for name-based extraction or require an explicit mapping.
 
 Execution detail:
-- Convert `home_ctrl_rad` (absolute joint targets in radians) to servo commands using the mapping above (using `direction` and `offset_units`).
+- Convert `home_ctrl_rad` (absolute joint targets in radians) to servo commands using the mapping above (using `motor_sign` and `offset_unit`).
 - Use a conservative move time (e.g., 500–1000 ms) and allow user confirmation before moving.
 
 ### Step A: Select joint
@@ -192,11 +202,11 @@ For each joint, print:
 - servo ID
 - current `sign` and `offset_unit` (legacy `offset_rad` is accepted but interpreted as the same servo-unit value)
 
-### Step B: Determine direction sign
+### Step B: Determine motor sign
 
 The script should:
-1) move the joint near center (safe) using `units_center + offset_units` (or defaults)
-2) prompt the user to run a direction test:
+1) move the joint near center (safe) using `servo_electrical_unit ≈ 500 + offset_unit` (or defaults)
+2) prompt the user to run a motor_sign test:
    - apply a small positive delta (e.g., `+0.1 rad` or `+20 units`)
    - apply a small negative delta
 3) ask the user an *explicit physical-direction question*, not “MuJoCo-positive”.
@@ -211,8 +221,8 @@ For each joint, define a short `positive_motion_hint` string (see the table belo
 
 > I will command `+delta`. Did the joint move **toward**: `<positive_motion_hint>`?
 >
-> - `y` = yes (set `direction = +1`)
-> - `n` = no  (set `direction = -1`)
+> - `y` = yes (set `motor_sign = +1`)
+> - `n` = no  (set `motor_sign = -1`)
 > - `r` = repeat with a different delta
 
 #### Default positive-motion hints (must be verified against the MJCF)
@@ -251,26 +261,28 @@ The script should:
 1) jog the joint to the user’s chosen “neutral pose” (physical alignment), using keyboard controls:
    - step left/right by configurable `step_units` (e.g., `a`/`d`)
    - optionally bigger steps (`A`/`D`)
-2) once the user confirms alignment, read `units_read` from the servo
+2) once the user confirms alignment, read `servo_electrical_unit_read` from the servo
 3) compute offset:
 
 ```
-offset_units = units_read - units_center
+offset_unit = servo_electrical_unit_read - units_center - motor_sign * (target_ref_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
 ```
 
-Rationale: we want the chosen neutral pose to satisfy `pos_rad == 0` when `units_read == units_center + offset_units`.
+Rationale: we want the chosen reference pose (at `target_ref_rad`) to be consistent with the mapping, so that commanding `target_ref_rad` returns to the same physical alignment.
+
+If you specifically want the neutral pose to correspond to `target_ref_rad == 0`, use `target_ref_rad = 0` in the formula.
 
 ### Step D: Persist and verify
 
 Persist:
-- update `hiwonder.joint_signs[joint]` and `hiwonder.joint_offsets_rad[joint]` in the JSON config
+- update `servo_controller.servos.<joint>.motor_sign` and `servo_controller.servos.<joint>.offset_unit` in the JSON config
 - write to disk with:
   - an explicit output path option (recommended), OR
   - in-place update with an automatic timestamped backup
 
 Verify (quick checks):
 - command `target_rad = 0.0`, read back `pos_rad` and confirm it is “near 0” (within a small tolerance, e.g., `0.02–0.05 rad`)
-- optionally command `±0.2 rad` and confirm direction + magnitude look correct
+- optionally command `±0.2 rad` and confirm motor_sign + magnitude look correct
 
 ## File Location and Entrypoints
 
@@ -280,13 +292,13 @@ Preferred (packaged) location:
 Alternative (repo-local tooling, not packaged):
 - same as above; run via `uv run python runtime/scripts/calibrate.py ...`
 
-Design preference for now: keep it repo-local and directly depend on `runtime.configs` + `runtime.hardware.hiwonder_board_controller`.
+Design preference for now: keep it repo-local and directly depend on `configs` + `wr_runtime.hardware.hiwonder_board_controller`.
 We can add a console entrypoint later if desired.
 
 ## CLI Sketch
 
 Minimal flags:
-- `--config <path>`: input runtime config (default: `runtime/configs/wr_runtime_config.json`)
+- `--config <path>`: input runtime config (default: `runtime/configs/runtime_config_v2.json`)
 - `--bundle <path>`: optional policy bundle folder (for `policy_spec.json` / `home_ctrl_rad`)
 - `--scene-xml <path>`: optional MuJoCo scene XML (read `"home"` keyframe via MuJoCo)
 - `--keyframes-xml <path>`: optional keyframes XML (read `"home"` keyframe by parsing `qpos`)
@@ -294,7 +306,7 @@ Minimal flags:
 - `--output <path>`: write updated config here (default: in-place with backup)
 - `--joints left_hip_pitch,right_knee_pitch` or `--all`
 - `--step-units 5`
-- `--delta-rad 0.1` (direction test)
+- `--delta-rad 0.1` (motor_sign test)
 - `--move-ms 300` (jog speed)
 
 Non-interactive mode (optional later):
@@ -303,7 +315,7 @@ Non-interactive mode (optional later):
 ## Data Ownership and Integration Points
 
 - Calibration is runtime-specific: it lives in the runtime config and is applied in the hardware adapter layer (`HiwonderBoardActuators`).
-- Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring direction.
+- Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring motor_sign.
 
 ## Validation Checklist (post-calibration)
 

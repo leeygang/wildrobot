@@ -7,7 +7,7 @@ These tests verify:
 2. Policy action to ctrl transformation (with symmetry correction)
 3. Physical angles to ctrl (passthrough)
 4. Normalized joint position/velocity getters
-5. Symmetry handling (mirror_sign)
+5. Symmetry handling (policy_action_sign)
 6. Command generation for Sim2Real
 7. Extended state (foot, root) - v0.11.0
 """
@@ -130,20 +130,20 @@ class TestActionTransformation:
             ), f"Joint {spec.name}: expected center {expected_center}, got {ctrl[i]}"
 
     def test_policy_action_plus_one_maps_to_max(self, cal_instance):
-        """Action=+1 should map to max of ctrl range (for mirror_sign=+1 joints)."""
+        """Action=+1 should map to max of ctrl range (for policy_action_sign=+1 joints)."""
         action = jnp.ones(cal_instance.num_actuators)
         ctrl = cal_instance.policy_action_to_ctrl(action)
 
         for i, spec in enumerate(cal_instance.actuator_specs):
             joint_spec = cal_instance.joint_specs[i]
-            if joint_spec.mirror_sign > 0:
-                # For positive mirror_sign, action=+1 → ctrl_max
+            if joint_spec.policy_action_sign > 0:
+                # For positive policy_action_sign, action=+1 → ctrl_max
                 expected = spec.ctrl_range[1]
                 assert (
                     jnp.abs(ctrl[i] - expected) < 1e-5
                 ), f"Joint {spec.name}: expected max {expected}, got {ctrl[i]}"
             else:
-                # For negative mirror_sign, action=+1 → ctrl_min
+                # For negative policy_action_sign, action=+1 → ctrl_min
                 expected = spec.ctrl_range[0]
                 assert (
                     jnp.abs(ctrl[i] - expected) < 1e-5
@@ -176,17 +176,17 @@ class TestActionTransformation:
 
 
 class TestSymmetry:
-    """Tests for symmetry handling (mirror_sign)."""
+    """Tests for symmetry handling (policy_action_sign)."""
 
     def test_left_right_symmetry_with_same_action(self, cal_instance, robot_config):
         """Same action for left/right should produce symmetric physical motion.
 
-        This is the key test for mirror_sign correctness:
+        This is the key test for policy_action_sign correctness:
         - When policy outputs action[left_hip]=0.5 and action[right_hip]=0.5
         - The physical ctrl values should be symmetric (same physical motion)
 
         For joints with inverted ranges (e.g., left_hip_pitch vs right_hip_pitch),
-        the mirror_sign correction should handle this automatically.
+        the policy_action_sign correction should handle this automatically.
         """
         # Create action with same value for left and right hip pitch
         action = jnp.zeros(cal_instance.num_actuators)
@@ -214,8 +214,8 @@ class TestSymmetry:
         ) / right_spec.range_span
 
         # Symmetric action should produce mirrored normalized positions when
-        # mirror_sign differs across the pair.
-        sign_ratio = left_spec.mirror_sign / right_spec.mirror_sign
+        # policy_action_sign differs across the pair.
+        sign_ratio = left_spec.policy_action_sign / right_spec.policy_action_sign
         np.testing.assert_almost_equal(
             left_normalized,
             right_normalized * sign_ratio,
@@ -227,24 +227,14 @@ class TestSymmetry:
             ),
         )
 
-    def test_mirror_sign_values(self, cal_instance, robot_config):
-        """Verify mirror_sign values are set correctly from config."""
-        for i, joint_spec in enumerate(cal_instance.joint_specs):
-            config_entry = robot_config.actuated_joints[i]
-            expected_mirror_sign = config_entry.get("mirror_sign", 1.0)
-            assert joint_spec.mirror_sign == expected_mirror_sign, (
-                f"Joint {joint_spec.name}: expected mirror_sign={expected_mirror_sign}, "
-                f"got {joint_spec.mirror_sign}"
-            )
-
     def test_ankle_pitch_symmetry_not_flipped(self, cal_instance, robot_config):
         """Ankles with identical ranges should not be mirrored."""
         left_idx = robot_config.get_actuator_index("left_ankle_pitch")
         right_idx = robot_config.get_actuator_index("right_ankle_pitch")
         left_spec = cal_instance.joint_specs[left_idx]
         right_spec = cal_instance.joint_specs[right_idx]
-        assert left_spec.mirror_sign == 1.0
-        assert right_spec.mirror_sign == 1.0
+        assert left_spec.policy_action_sign == 1.0
+        assert right_spec.policy_action_sign == 1.0
 
         action = jnp.zeros(cal_instance.num_actuators)
         action = action.at[left_idx].set(0.5)
@@ -265,25 +255,8 @@ class TestSymmetry:
         right_idx = robot_config.get_actuator_index("right_hip_pitch")
         left_spec = cal_instance.joint_specs[left_idx]
         right_spec = cal_instance.joint_specs[right_idx]
-        assert left_spec.mirror_sign == 1.0
-        assert right_spec.mirror_sign == -1.0
-
-    def test_get_symmetric_action_swaps_left_right(self, cal_instance, robot_config):
-        """get_symmetric_action should swap left/right joint values."""
-        # Create asymmetric action
-        action = jnp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
-        mirrored = cal_instance.get_symmetric_action(action, swap_left_right=True)
-
-        # Check that left and right are swapped
-        left_hip_idx = robot_config.get_actuator_index("left_hip_pitch")
-        right_hip_idx = robot_config.get_actuator_index("right_hip_pitch")
-
-        assert (
-            mirrored[left_hip_idx] == action[right_hip_idx]
-        ), "Left should have right's value"
-        assert (
-            mirrored[right_hip_idx] == action[left_hip_idx]
-        ), "Right should have left's value"
+        assert left_spec.policy_action_sign == 1.0
+        assert right_spec.policy_action_sign == -1.0
 
 
 # =============================================================================
@@ -483,18 +456,6 @@ class TestExtendedStateInit:
         names = [s.name for s in foot_specs]
         assert "left_foot" in names
         assert "right_foot" in names
-
-    def test_foot_specs_have_symmetry_pairs(self, cal_with_extended_state):
-        """FootSpecs should have symmetry pair references."""
-        foot_specs = cal_with_extended_state.foot_specs
-        for spec in foot_specs:
-            assert spec.symmetry_pair is not None
-
-        # Left foot should pair with right foot
-        left_foot = next(s for s in foot_specs if s.name == "left_foot")
-        right_foot = next(s for s in foot_specs if s.name == "right_foot")
-        assert left_foot.symmetry_pair == "right_foot"
-        assert right_foot.symmetry_pair == "left_foot"
 
     def test_init_extended_state_creates_root_spec(self, cal_with_extended_state):
         """init_extended_state should create RootSpec."""

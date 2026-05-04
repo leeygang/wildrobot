@@ -4,7 +4,7 @@
 Usage:
   uv run python training/exports/export_policy_bundle.py \
     --checkpoint training/checkpoints/policy_latest.pkl \
-    --config training/configs/ppo_walking.yaml \
+    --config training/configs/ppo_walking_v0201_smoke.yaml \
     --output-dir training/checkpoints/wildrobot_policy_bundle
 """
 
@@ -13,13 +13,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
+import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import mujoco
 import yaml
+
+# Add project root to import path (exports/ -> training/ -> project_root/)
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from policy_contract.spec import JointSpec, PolicySpec, validate_spec
 from policy_contract.spec_builder import build_policy_spec
@@ -39,6 +47,9 @@ def export_policy_bundle(
 
     onnx_path = output_dir / "policy.onnx"
     export_checkpoint_to_onnx(checkpoint_path=checkpoint_path, output_path=onnx_path)
+    checkpoint_snapshot_path = _export_checkpoint_snapshot(
+        checkpoint_path=checkpoint_path, output_dir=output_dir
+    )
 
     spec = _build_policy_spec(
         checkpoint_path=checkpoint_path,
@@ -61,12 +72,26 @@ def export_policy_bundle(
     spec_path = output_dir / "policy_spec.json"
     spec_path.write_text(json.dumps(spec.to_json_dict(), indent=2))
 
-    robot_snapshot_path = output_dir / "robot_config.yaml"
+    robot_snapshot_path = output_dir / "mujoco_robot_config.json"
     if robot_config_path.exists():
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
     mjcf_snapshot_path = _export_mjcf_snapshot(
-        output_dir=output_dir, config_path=config_path
+        output_dir=output_dir,
+        config_path=config_path,
+        actuator_names=spec.robot.actuator_names,
+    )
+
+    # Fail-fast: ensure the bundle is self-consistent for the hardware runtime.
+    # (This is the same interface check `wildrobot-validate-bundle` performs.)
+    mjcf_actuator_names = _load_mjcf_actuator_names(mjcf_snapshot_path)
+    from policy_contract.spec import validate_runtime_compat
+
+    validate_runtime_compat(
+        spec=spec,
+        mjcf_actuator_names=mjcf_actuator_names,
+        onnx_obs_dim=obs_dim,
+        onnx_action_dim=action_dim,
     )
 
     _export_runtime_config(output_dir=output_dir)
@@ -74,6 +99,7 @@ def export_policy_bundle(
     checksums = _build_checksums(
         [
             onnx_path,
+            checkpoint_snapshot_path,
             spec_path,
             robot_snapshot_path,
             mjcf_snapshot_path,
@@ -89,13 +115,13 @@ def _export_runtime_config(
 ) -> None:
     """Generate a runtime config JSON colocated with the exported bundle.
 
-    Source of truth for hardware settings is `runtime/configs/wr_runtime_config.json`.
+    Source of truth for hardware settings is `runtime/configs/runtime_config_template.json`.
     The generated config patches:
       - `policy_onnx_path` -> `./policy.onnx`
       - `mjcf_path` -> `./wildrobot.xml` (bundle-local snapshot)
     """
     project_root = Path(__file__).parent.parent.parent
-    base_path = project_root / "runtime" / "configs" / "wr_runtime_config.json"
+    base_path = project_root / "runtime" / "configs" / "runtime_config_template.json"
 
     if not base_path.exists():
         raise FileNotFoundError(f"Runtime config base not found: {base_path}")
@@ -111,7 +137,12 @@ def _export_runtime_config(
     out_path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
+def _export_mjcf_snapshot(
+    *,
+    output_dir: Path,
+    config_path: Path,
+    actuator_names: list[str] | None = None,
+) -> Path:
     """Snapshot the runtime MJCF into the bundle for self-contained validation.
 
     Runtime uses MJCF primarily for actuator order validation; this snapshot allows
@@ -119,7 +150,107 @@ def _export_mjcf_snapshot(*, output_dir: Path, config_path: Path) -> Path:
     """
     src = _resolve_mjcf_path(config_path)
     dst = output_dir / "wildrobot.xml"
-    dst.write_text(src.read_text())
+    text = src.read_text()
+    if actuator_names is not None:
+        text = _rewrite_mjcf_actuator_order(text, actuator_names)
+    dst.write_text(text)
+    return dst
+
+
+def _load_mjcf_actuator_names(xml_path: Path) -> list[str]:
+    """Return MJCF actuator names in runtime order.
+
+    Runtime treats `<actuator><position name=...>` element ordering as the action order.
+    This avoids needing MuJoCo to parse the XML (and avoids mesh/asset resolution).
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(xml_path).getroot()
+    actuator = root.find("actuator")
+    if actuator is None:
+        raise ValueError(f"MJCF missing <actuator>: {xml_path}")
+
+    names: list[str] = []
+    for pos_act in actuator.findall("position"):
+        name = pos_act.get("name")
+        if name:
+            names.append(str(name))
+
+    if not names:
+        raise ValueError(f"No <actuator><position name=...> found in: {xml_path}")
+    return names
+
+
+_ACTUATOR_NAME_RE = re.compile(r"\bname=\"([^\"]+)\"")
+
+
+def _rewrite_mjcf_actuator_order(xml_text: str, actuator_names: list[str]) -> str:
+    """Rewrite the <actuator> block to match `actuator_names` ordering.
+
+    Why: runtime requires `policy_spec.robot.actuator_names` to match the MJCF actuator order.
+    MuJoCo actuator order is defined by the order of children inside the <actuator> element.
+
+    This rewrite preserves the file text outside the <actuator> block and keeps each actuator
+    line intact (no XML reformatting) under the assumption actuators are one-per-line (as in
+    our generated MJCFs).
+    """
+    if not actuator_names:
+        raise ValueError("actuator_names must be a non-empty list")
+
+    lines = xml_text.splitlines(True)  # keep line endings
+    start_idx = None
+    end_idx = None
+    for i, line in enumerate(lines):
+        if start_idx is None and "<actuator" in line and line.strip().startswith("<actuator"):
+            start_idx = i
+            continue
+        if start_idx is not None and line.strip().startswith("</actuator"):
+            end_idx = i
+            break
+
+    if start_idx is None or end_idx is None or end_idx <= start_idx:
+        raise ValueError("MJCF missing <actuator> block")
+
+    inner = lines[start_idx + 1 : end_idx]
+    by_name: dict[str, str] = {}
+    passthrough: list[str] = []
+
+    for line in inner:
+        m = _ACTUATOR_NAME_RE.search(line)
+        if m and line.strip().startswith("<") and line.strip().endswith("/>"):
+            name = m.group(1)
+            if name in by_name:
+                raise ValueError(f"Duplicate actuator name in MJCF: {name}")
+            by_name[name] = line
+        else:
+            passthrough.append(line)
+
+    missing = [name for name in actuator_names if name not in by_name]
+    if missing:
+        raise ValueError(f"MJCF actuator block missing names required by spec: {missing}")
+
+    # Rebuild inner actuator lines: desired order first, then any remaining named actuators.
+    ordered: list[str] = [by_name[name] for name in actuator_names]
+    remaining = [
+        line
+        for name, line in by_name.items()
+        if name not in set(actuator_names)
+    ]
+
+    new_inner = ordered + remaining
+    # Keep any non-actuator lines (whitespace/comments) at the end.
+    new_inner.extend(passthrough)
+
+    return "".join(lines[: start_idx + 1] + new_inner + lines[end_idx:])
+
+
+def _export_checkpoint_snapshot(*, checkpoint_path: Path, output_dir: Path) -> Path:
+    """Copy source checkpoint into the bundle for traceability/re-export."""
+    src = checkpoint_path
+    if not src.exists():
+        raise FileNotFoundError(f"Checkpoint source not found: {src}")
+    dst = output_dir / "checkpoint.pkl"
+    shutil.copy2(src, dst)
     return dst
 
 
@@ -152,14 +283,16 @@ def _build_policy_spec(
     home_ctrl_rad = _get_home_ctrl_from_mjcf(config_path, actuator_names=actuator_names)
     home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
 
-    actuated_joint_specs = robot_cfg.get("actuated_joint_specs")
+    actuated_joint_specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
 
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
         actuated_joint_specs=actuated_joint_specs,
         action_filter_alpha=action_filter_alpha,
+        layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         home_ctrl_rad=home_ctrl_rad,
         provenance={
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -216,22 +349,44 @@ def _clamp_home_ctrl(
     actuator_names: list[str],
 ) -> list[float]:
     clipped = []
-    clipped_any = False
+    clipped_details: list[tuple[str, float, float, float, float]] = []
     for name, value in zip(actuator_names, home_ctrl):
         joint = joints[name]
-        clamped = min(max(float(value), joint.range_min_rad), joint.range_max_rad)
-        if clamped != float(value):
-            clipped_any = True
+        original = float(value)
+        clamped = min(max(original, joint.range_min_rad), joint.range_max_rad)
+        if not math.isclose(clamped, original, rel_tol=0.0, abs_tol=1e-12):
+            clipped_details.append(
+                (
+                    name,
+                    original,
+                    clamped,
+                    float(joint.range_min_rad),
+                    float(joint.range_max_rad),
+                )
+            )
         clipped.append(clamped)
-    if clipped_any:
+    if clipped_details:
         print("Warning: home_ctrl_rad clamped to joint limits for export bundle")
+        print(
+            f"  clamped_actuators: {len(clipped_details)}/{len(actuator_names)} "
+            "(source: MJCF home keyframe or keyframe[0] fallback)"
+        )
+        for name, original, clamped, range_min, range_max in clipped_details:
+            print(
+                f"  - {name}: {original:.6f} -> {clamped:.6f} rad "
+                f"(limits [{range_min:.6f}, {range_max:.6f}])"
+            )
+        print(
+            "  hint: align MJCF home pose with mujoco_robot_config joint ranges "
+            "to avoid export-time clamping"
+        )
     return clipped
 
 
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
-    specs = robot_cfg.get("actuated_joint_specs")
+    specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(specs, list) or not specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
 
     joints: Dict[str, JointSpec] = {}
     for item in specs:
@@ -244,10 +399,38 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
         joints[name] = JointSpec(
             range_min_rad=float(rng[0]),
             range_max_rad=float(rng[1]),
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
     return joints
+
+
+def _normalize_actuated_joint_specs_to_rad(robot_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    specs = robot_cfg.get("actuated_joint_specs")
+    if not isinstance(specs, list):
+        return []
+
+    range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
+    if range_unit not in {"rad", "deg"}:
+        raise ValueError("mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'")
+
+    normalized_specs: List[Dict[str, Any]] = []
+    for item in specs:
+        if not isinstance(item, dict):
+            raise ValueError(f"Invalid joint spec entry: {item!r}")
+        normalized_item = dict(item)
+        rng = normalized_item.get("range") or [0.0, 0.0]
+        if not isinstance(rng, list) or len(rng) != 2:
+            raise ValueError(f"Invalid range for joint '{item.get('name')}': {rng}")
+        range_min = float(rng[0])
+        range_max = float(rng[1])
+        if range_unit == "deg":
+            range_min = math.radians(range_min)
+            range_max = math.radians(range_max)
+        normalized_item["range"] = [range_min, range_max]
+        normalized_specs.append(normalized_item)
+
+    return normalized_specs
 
 
 def _build_checksums(paths: List[Path]) -> Dict[str, str]:
@@ -289,7 +472,7 @@ def main() -> None:
         "--robot-config",
         type=str,
         default=None,
-        help="Path to robot_config.yaml (defaults to env.robot_config_path from config)",
+        help="Path to mujoco_robot_config.json (defaults to env.robot_config_path from config)",
     )
     args = parser.parse_args()
 

@@ -10,7 +10,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class ValidationPaths:
     scene_xml: Path
-    robot_config_yaml: Path
+    robot_config_json: Path
 
 
 def _validate_mujoco_load(scene_xml: Path) -> None:
@@ -19,15 +19,15 @@ def _validate_mujoco_load(scene_xml: Path) -> None:
     mujoco.MjModel.from_xml_path(str(scene_xml))
 
 
-def _validate_robot_config(scene_xml: Path, robot_config_yaml: Path) -> None:
+def _validate_robot_config(scene_xml: Path, robot_config_json: Path) -> None:
     import mujoco
     from assets.robot_config import clear_robot_config_cache, load_robot_config
 
     clear_robot_config_cache()
-    robot_config = load_robot_config(robot_config_yaml)
+    robot_config = load_robot_config(robot_config_json)
     model = mujoco.MjModel.from_xml_path(str(scene_xml))
 
-    # Foot bodies + geoms must resolve (used for contacts + AMP features).
+    # Foot bodies + geoms must resolve (used for contacts).
     for body_name in (robot_config.left_foot_body, robot_config.right_foot_body):
         body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         if body_id < 0:
@@ -51,32 +51,32 @@ def main() -> int:
     parser.add_argument(
         "--scene-xml",
         type=Path,
-        default=Path("assets/v1/scene_flat_terrain.xml"),
+        default=Path("assets/v2/scene_flat_terrain.xml"),
         help="Path to MuJoCo scene XML.",
     )
     parser.add_argument(
         "--robot-config",
         type=Path,
-        default=Path("assets/v1/robot_config.yaml"),
-        help="Path to assets robot_config.yaml.",
+        default=Path("assets/v2/mujoco_robot_config.json"),
+        help="Path to assets mujoco_robot_config.json.",
     )
     args = parser.parse_args()
 
     paths = ValidationPaths(
-        scene_xml=args.scene_xml, robot_config_yaml=args.robot_config
+        scene_xml=args.scene_xml, robot_config_json=args.robot_config
     )
 
     if not paths.scene_xml.exists():
         raise FileNotFoundError(paths.scene_xml)
-    if not paths.robot_config_yaml.exists():
-        raise FileNotFoundError(paths.robot_config_yaml)
+    if not paths.robot_config_json.exists():
+        raise FileNotFoundError(paths.robot_config_json)
 
     _validate_mujoco_load(paths.scene_xml)
-    _validate_robot_config(paths.scene_xml, paths.robot_config_yaml)
+    _validate_robot_config(paths.scene_xml, paths.robot_config_json)
 
     print("Validation OK")
     print(f"  scene_xml={paths.scene_xml}")
-    print(f"  robot_config={paths.robot_config_yaml}")
+    print(f"  robot_config={paths.robot_config_json}")
     return 0
 
 

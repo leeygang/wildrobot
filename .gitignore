@@ -32,7 +32,8 @@ logs/
 training_logs/
 **/checkpoints/wildrobot_*/
 **/checkpoints/ppo_*/
-
+training/configs/auto/
+training/checkpoints/
 # OS
 .DS_Store
 Thumbs.db
@@ -65,4 +66,8 @@ htmlcov/
 # Weights & Biases
 wandb/
 
+
+.env
+.watchman*
 uv.lock
+.cache

@@ -64,7 +64,9 @@ class HardwareRobotIO(RobotIO[Signals]):
             port = getattr(self.actuators, "port", "unknown")
             baudrate = getattr(self.actuators, "baudrate", "unknown")
             last_error = getattr(self.actuators, "_last_error", None)
-            err_msg = f"; last_error={repr(last_error)}" if last_error is not None else ""
+            err_msg = ""
+            if last_error is not None:
+                err_msg = f"; actuator_error={repr(last_error)}"
             raise RuntimeError(
                 f"Failed to read joint positions for {self.actuator_names} on port {port} baud {baudrate}{err_msg}"
             )

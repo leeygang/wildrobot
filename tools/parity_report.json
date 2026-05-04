@@ -1,0 +1,595 @@
+{
+  "config": {
+    "geometry_vx_bins": [
+      0.1,
+      0.15,
+      0.2,
+      0.25
+    ],
+    "geometry_vx_bins_in_scope": [
+      0.1,
+      0.15
+    ],
+    "gravity_mps2": 9.81,
+    "parity_margin_m": 0.002,
+    "probe_frames": [
+      0,
+      5,
+      10,
+      16,
+      22,
+      28,
+      32,
+      48,
+      64
+    ],
+    "robot_dims": {
+      "toddlerbot_2xc": {
+        "com_height_m": 0.2859,
+        "leg_length_m": 0.2115
+      },
+      "toddlerbot_2xm": {
+        "com_height_m": 0.2859,
+        "leg_length_m": 0.2115
+      },
+      "wildrobot": {
+        "com_height_m": 0.45799999999999996,
+        "leg_length_m": 0.373
+      }
+    },
+    "stance_fail_if_gt_m": 0.003,
+    "swing_fail_if_lt_m": -0.002,
+    "trackability_vx_bins": [
+      0.1,
+      0.15,
+      0.2
+    ],
+    "vx_nominal": 0.15,
+    "wr_reference_library": {
+      "cache_key": "8eb0fb02a41a86f1",
+      "generator_fingerprint": "fa287ed26bec3f9e",
+      "path": "/home/leeygang/projects/wildrobot/.cache/wr_reference_libraries/wr_reference_library_8eb0fb02a41a86f1",
+      "required_vx_bins": [
+        0.1,
+        0.15,
+        0.2,
+        0.25
+      ],
+      "source": "cache-build"
+    }
+  },
+  "fk_gait_metrics": [
+    {
+      "double_support_frac": 0.3333333333333333,
+      "duration_s": 22.32,
+      "foot_z_step_max_m": 0.014266513288021088,
+      "name": "wildrobot",
+      "step_length_max_m": 0.054351503029465675,
+      "step_length_mean_m": 0.0537528491230861,
+      "step_length_min_m": 0.052926416508853436,
+      "swing_clearance_mean_m": 0.06604399730558277,
+      "swing_clearance_min_m": 0.06498809158802032,
+      "touchdown_balance_ratio": 0.967741935483871,
+      "touchdown_rate_hz": 2.7329749103942653,
+      "touchdown_speed_proxy_mps": 0.07345259400780134,
+      "touchdowns_left": 30,
+      "touchdowns_right": 31,
+      "vx": 0.15
+    },
+    {
+      "double_support_frac": 0.33707865168539325,
+      "duration_s": 21.3599796295166,
+      "foot_z_step_max_m": 0.010000020265579224,
+      "name": "toddlerbot_2xc",
+      "step_length_max_m": 0.05409837141633034,
+      "step_length_mean_m": 0.054093915779711836,
+      "step_length_min_m": 0.053976722061634064,
+      "swing_clearance_mean_m": 0.04999750701047606,
+      "swing_clearance_min_m": 0.049883633852005005,
+      "touchdown_balance_ratio": 0.9666666666666667,
+      "touchdown_rate_hz": 2.7621749188594724,
+      "touchdown_speed_proxy_mps": 0.07470842871480833,
+      "touchdowns_left": 29,
+      "touchdowns_right": 30,
+      "vx": 0.15
+    },
+    {
+      "double_support_frac": 0.33707865168539325,
+      "duration_s": 21.3599796295166,
+      "foot_z_step_max_m": 0.01005542278289795,
+      "name": "toddlerbot_2xm",
+      "step_length_max_m": 0.05425300821661949,
+      "step_length_mean_m": 0.054092951813491726,
+      "step_length_min_m": 0.05391266196966171,
+      "swing_clearance_mean_m": 0.05003596109859014,
+      "swing_clearance_min_m": 0.04996249079704285,
+      "touchdown_balance_ratio": 0.9666666666666667,
+      "touchdown_rate_hz": 2.7621749188594724,
+      "touchdown_speed_proxy_mps": 0.07470709739315043,
+      "touchdowns_left": 29,
+      "touchdowns_right": 30,
+      "vx": 0.15
+    }
+  ],
+  "fk_gait_parity": [
+    {
+      "baseline": "toddlerbot_2xc",
+      "cadence_gate": "PASS",
+      "clearance_gate": "PASS",
+      "ds_gate": "PASS",
+      "speed_gate": "PASS",
+      "step_len_gate": "PASS",
+      "verdict": "PASS"
+    },
+    {
+      "baseline": "toddlerbot_2xm",
+      "cadence_gate": "PASS",
+      "clearance_gate": "PASS",
+      "ds_gate": "PASS",
+      "speed_gate": "PASS",
+      "step_len_gate": "PASS",
+      "verdict": "PASS"
+    }
+  ],
+  "geometry_parity": [
+    {
+      "baseline": "toddlerbot_2xc",
+      "full_gate": "PASS",
+      "in_scope": "PASS",
+      "stance_gate": "PASS",
+      "swing_gate": "PASS",
+      "verdict": "PASS"
+    },
+    {
+      "baseline": "toddlerbot_2xm",
+      "full_gate": "PASS",
+      "in_scope": "PASS",
+      "stance_gate": "PASS",
+      "swing_gate": "PASS",
+      "verdict": "PASS"
+    }
+  ],
+  "geometry_summary": [
+    {
+      "failures": [],
+      "in_scope_failures": 0,
+      "name": "wildrobot",
+      "total_failures": 0,
+      "worst_stance_z": 0.0019443497442817345,
+      "worst_swing_z": 0.011687910888061127
+    },
+    {
+      "failures": [
+        "toddlerbot_2xc vx=0.20 frame=0 L stance z=+0.0049 > 0.003",
+        "toddlerbot_2xc vx=0.25 frame=0 L stance z=+0.0100 > 0.003"
+      ],
+      "in_scope_failures": 0,
+      "name": "toddlerbot_2xc",
+      "total_failures": 2,
+      "worst_stance_z": 0.009964524239602826,
+      "worst_swing_z": 0.009958806993036681
+    },
+    {
+      "failures": [
+        "toddlerbot_2xm vx=0.20 frame=0 L stance z=+0.0040 > 0.003",
+        "toddlerbot_2xm vx=0.25 frame=0 L stance z=+0.0091 > 0.003"
+      ],
+      "in_scope_failures": 0,
+      "name": "toddlerbot_2xm",
+      "total_failures": 2,
+      "worst_stance_z": 0.009072524239602822,
+      "worst_swing_z": 0.009145746291242778
+    }
+  ],
+  "mode": {
+    "nominal_only": false,
+    "strict": false
+  },
+  "normalized_fk_metrics": [
+    {
+      "achieved_forward_per_cmd": NaN,
+      "cadence_froude_norm": 0.5905190060103136,
+      "com_height_m": 0.45799999999999996,
+      "forward_speed_froude": 0.005007812187011738,
+      "leg_length_m": 0.373,
+      "name": "wildrobot",
+      "step_length_per_leg": 0.14410951507529787,
+      "swing_clearance_per_com_height": 0.1442008674794384,
+      "swing_foot_z_step_per_clearance": 0.21601529086754903,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": NaN,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_per_cmd": NaN,
+      "cadence_froude_norm": 0.4715456593386484,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.008022308435296872,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xc",
+      "step_length_per_leg": 0.2557631951759425,
+      "swing_clearance_per_com_height": 0.17487760409400513,
+      "swing_foot_z_step_per_clearance": 0.20001037778711453,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": NaN,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_per_cmd": NaN,
+      "cadence_froude_norm": 0.4715456593386484,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.008022308435296872,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xm",
+      "step_length_per_leg": 0.25575863741603655,
+      "swing_clearance_per_com_height": 0.17501210597618097,
+      "swing_foot_z_step_per_clearance": 0.20096391799259913,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": NaN,
+      "vx": 0.15
+    }
+  ],
+  "normalized_fk_parity": [
+    {
+      "baseline": "toddlerbot_2xc",
+      "cadence_norm": "FAIL",
+      "clearance_per_h": "FAIL",
+      "step_per_leg": "FAIL",
+      "swing_step_per_clr": "PASS",
+      "verdict": "FAIL"
+    },
+    {
+      "baseline": "toddlerbot_2xm",
+      "cadence_norm": "FAIL",
+      "clearance_per_h": "FAIL",
+      "step_per_leg": "FAIL",
+      "swing_step_per_clr": "PASS",
+      "verdict": "FAIL"
+    }
+  ],
+  "normalized_overall_pass": false,
+  "normalized_trackability_metrics": [
+    {
+      "achieved_forward_per_cmd": -1.4828399353955473,
+      "cadence_froude_norm": 1.2793729284658302,
+      "com_height_m": 0.45799999999999996,
+      "forward_speed_froude": 0.0022256943053385507,
+      "leg_length_m": 0.373,
+      "name": "wildrobot",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": -0.025027858673847225,
+      "terminal_drift_rate_per_leg_per_s": -0.39689442451854806,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_per_cmd": -1.2549515476375206,
+      "cadence_froude_norm": 1.0503493795429348,
+      "com_height_m": 0.45799999999999996,
+      "forward_speed_froude": 0.005007812187011738,
+      "leg_length_m": 0.373,
+      "name": "wildrobot",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": -0.026094184565481873,
+      "terminal_drift_rate_per_leg_per_s": -0.5039863103861656,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_per_cmd": -1.2206941901582304,
+      "cadence_froude_norm": 0.9532582604255205,
+      "com_height_m": 0.45799999999999996,
+      "forward_speed_froude": 0.008902777221354203,
+      "leg_length_m": 0.373,
+      "name": "wildrobot",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": -0.023258623601922327,
+      "terminal_drift_rate_per_leg_per_s": -0.6538014754533029,
+      "vx": 0.2
+    },
+    {
+      "achieved_forward_per_cmd": -1.4738457052826097,
+      "cadence_froude_norm": 0.24387907210315987,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.0035654704156875,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xc",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": -0.9162392930747654,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_per_cmd": -2.018864005631308,
+      "cadence_froude_norm": 0.0,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.008022308435296872,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xc",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": -2.0132200305325774,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_per_cmd": -2.262574265339243,
+      "cadence_froude_norm": 0.0,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.01426188166275,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xc",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": -3.2332839422368855,
+      "vx": 0.2
+    },
+    {
+      "achieved_forward_per_cmd": -1.8611632849264081,
+      "cadence_froude_norm": 0.5334854702256623,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.0035654704156875,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xm",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": -0.014357177685574596,
+      "terminal_drift_rate_per_leg_per_s": -1.1206548764444872,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_per_cmd": -2.1424917367668646,
+      "cadence_froude_norm": 0.0,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.008022308435296872,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xm",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": -2.142843128818063,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_per_cmd": -2.295925798542518,
+      "cadence_froude_norm": 0.0,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.01426188166275,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xm",
+      "step_length_per_leg": NaN,
+      "swing_clearance_per_com_height": NaN,
+      "swing_foot_z_step_per_clearance": NaN,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": -3.11769957328511,
+      "vx": 0.2
+    }
+  ],
+  "normalized_trackability_parity": {
+    "toddlerbot_2xc": {
+      "drift_per_leg": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "fwd_per_cmd": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "td_step_per_leg": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "verdict": "FAIL"
+    },
+    "toddlerbot_2xm": {
+      "drift_per_leg": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "fwd_per_cmd": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "td_step_per_leg": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "verdict": "FAIL"
+    }
+  },
+  "overall_pass": false,
+  "smoothness_metrics": [
+    {
+      "contact_flips_per_cycle": 3.967741935483871,
+      "name": "wildrobot",
+      "pelvis_z_step_max_m": 0.0,
+      "shared_leg_q_step_max_rad": 0.3155183494091034,
+      "swing_foot_z_step_max_m": 0.014266513288021088,
+      "vx": 0.15
+    },
+    {
+      "contact_flips_per_cycle": 3.9775280898876404,
+      "name": "toddlerbot_2xc",
+      "pelvis_z_step_max_m": 0.0,
+      "shared_leg_q_step_max_rad": 0.6470704078674316,
+      "swing_foot_z_step_max_m": 0.010000020265579224,
+      "vx": 0.15
+    },
+    {
+      "contact_flips_per_cycle": 3.9775280898876404,
+      "name": "toddlerbot_2xm",
+      "pelvis_z_step_max_m": 0.0,
+      "shared_leg_q_step_max_rad": 0.6470704078674316,
+      "swing_foot_z_step_max_m": 0.01005542278289795,
+      "vx": 0.15
+    }
+  ],
+  "smoothness_parity": [
+    {
+      "baseline": "toddlerbot_2xc",
+      "flip_gate": "PASS",
+      "pelvis_gate": "PASS",
+      "q_gate": "PASS",
+      "swing_gate": "FAIL",
+      "verdict": "FAIL"
+    },
+    {
+      "baseline": "toddlerbot_2xm",
+      "flip_gate": "PASS",
+      "pelvis_gate": "PASS",
+      "q_gate": "PASS",
+      "swing_gate": "FAIL",
+      "verdict": "FAIL"
+    }
+  ],
+  "trackability_metrics": [
+    {
+      "achieved_forward_mps": -0.14828399353955474,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.11842105263157894,
+      "name": "wildrobot",
+      "ref_contact_match_frac": 0.5657894736842105,
+      "shared_leg_rmse_rad": 0.179246559779991,
+      "survived_steps": 76,
+      "terminal_root_x_m": -0.225023262925036,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 5.921052631578947,
+      "touchdown_step_length_mean_m": -0.009335391285345015,
+      "touchdown_step_length_min_m": -0.04540467135414891,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_mps": -0.1882427321456281,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.05555555555555555,
+      "name": "wildrobot",
+      "ref_contact_match_frac": 0.625,
+      "shared_leg_rmse_rad": 0.1668831798107484,
+      "survived_steps": 72,
+      "terminal_root_x_m": -0.27070112703461724,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 4.861111111111112,
+      "touchdown_step_length_mean_m": -0.009733130842924738,
+      "touchdown_step_length_min_m": -0.03746265499605194,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_mps": -0.2441388380316461,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.058823529411764705,
+      "name": "wildrobot",
+      "ref_contact_match_frac": 0.6470588235294118,
+      "shared_leg_rmse_rad": 0.1588502780460399,
+      "survived_steps": 68,
+      "terminal_root_x_m": -0.3316604124679515,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 4.411764705882352,
+      "touchdown_step_length_mean_m": -0.008675466603517028,
+      "touchdown_step_length_min_m": -0.027682226204013522,
+      "vx": 0.2
+    },
+    {
+      "achieved_forward_mps": -0.14738457052826098,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xc",
+      "ref_contact_match_frac": 0.8571428571428571,
+      "shared_leg_rmse_rad": 0.09494442754565903,
+      "survived_steps": 35,
+      "terminal_root_x_m": -0.13564922733971901,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 1.4285714285714284,
+      "touchdown_step_length_mean_m": NaN,
+      "touchdown_step_length_min_m": NaN,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_mps": -0.3028296008446962,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xc",
+      "ref_contact_match_frac": 0.6956521739130435,
+      "shared_leg_rmse_rad": 0.11291528145368396,
+      "survived_steps": 23,
+      "terminal_root_x_m": -0.19586617677051446,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 0.0,
+      "touchdown_step_length_mean_m": NaN,
+      "touchdown_step_length_min_m": NaN,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_mps": -0.4525148530678486,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xc",
+      "ref_contact_match_frac": 0.8823529411764706,
+      "shared_leg_rmse_rad": 0.12237990414742812,
+      "survived_steps": 17,
+      "terminal_root_x_m": -0.23250544828625444,
+      "termination_mode": "roll",
+      "touchdown_rate_hz": 0.0,
+      "touchdown_step_length_mean_m": NaN,
+      "touchdown_step_length_min_m": NaN,
+      "vx": 0.2
+    },
+    {
+      "achieved_forward_mps": -0.18611632849264081,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xm",
+      "ref_contact_match_frac": 0.84375,
+      "shared_leg_rmse_rad": 0.09168996027822804,
+      "survived_steps": 32,
+      "terminal_root_x_m": -0.1516918440755258,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 3.125,
+      "touchdown_step_length_mean_m": -0.0030365430804990268,
+      "touchdown_step_length_min_m": -0.0030365430804990268,
+      "vx": 0.1
+    },
+    {
+      "achieved_forward_mps": -0.32137376051502964,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xm",
+      "ref_contact_match_frac": 0.7619047619047619,
+      "shared_leg_rmse_rad": 0.11336068540345703,
+      "survived_steps": 21,
+      "terminal_root_x_m": -0.1903487551329085,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 0.0,
+      "touchdown_step_length_mean_m": NaN,
+      "touchdown_step_length_min_m": NaN,
+      "vx": 0.15
+    },
+    {
+      "achieved_forward_mps": -0.4591851597085036,
+      "horizon_steps": 200,
+      "joint_limit_step_frac": 0.0,
+      "name": "toddlerbot_2xm",
+      "ref_contact_match_frac": 0.9444444444444444,
+      "shared_leg_rmse_rad": 0.13335122363979499,
+      "survived_steps": 18,
+      "terminal_root_x_m": -0.23738164550992827,
+      "termination_mode": "pitch",
+      "touchdown_rate_hz": 0.0,
+      "touchdown_step_length_mean_m": NaN,
+      "touchdown_step_length_min_m": NaN,
+      "vx": 0.2
+    }
+  ],
+  "trackability_parity": {
+    "toddlerbot_2xc": {
+      "contact": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "episode": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "forward": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "limit": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "rmse": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "step": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "verdict": "FAIL"
+    },
+    "toddlerbot_2xm": {
+      "contact": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "episode": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "forward": "PASS@0.10, PASS@0.15, PASS@0.20",
+      "limit": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "rmse": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "step": "FAIL@0.10, FAIL@0.15, FAIL@0.20",
+      "verdict": "FAIL"
+    }
+  }
+}

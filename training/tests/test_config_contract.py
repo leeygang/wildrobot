@@ -27,16 +27,13 @@ class TestTrainingConfigSchema:
         Purpose: Verify all required config sections exist.
 
         Assertions:
-        - Required keys: env, ppo, amp, networks, reward_weights, checkpoints, wandb
+        - Required keys: env, ppo, networks, reward_weights, checkpoints, wandb
         """
         # Check env section
         assert hasattr(training_config, "env"), "Missing required section: env"
 
         # Check ppo section
         assert hasattr(training_config, "ppo"), "Missing required section: ppo"
-
-        # Check amp section
-        assert hasattr(training_config, "amp"), "Missing required section: amp"
 
         # Check networks section
         assert hasattr(training_config, "networks"), "Missing required section: networks"
@@ -83,7 +80,9 @@ class TestTrainingConfigSchema:
         required_weights = [
             "tracking_lin_vel",
             "orientation",
+            "pitch_rate",
             "torque",
+            "velocity_step_gate",
         ]
 
         for name in required_weights:
@@ -141,17 +140,21 @@ class TestConfigConsistency:
     """Tests for consistency between config and schema."""
 
     @pytest.mark.unit
-    def test_action_dim_matches_actuators(self, training_config, robot_schema):
+    def test_action_dim_matches_actuators(self, training_config, robot_schema, robot_config):
         """
-        Purpose: Verify number of actuators is as expected.
+        Purpose: Verify number of actuators is internally consistent.
 
         Assertions:
-        - Schema has 8 actuators (WildRobot spec)
+        - Schema actuator count is positive
+        - Schema actuator count matches robot_config actuator count
         """
         schema_actuators = len(robot_schema.actuators)
+        config_actuators = len(robot_config.actuator_names)
 
-        assert schema_actuators == 8, (
-            f"Actuator count mismatch: expected 8, got {schema_actuators}"
+        assert schema_actuators > 0, "Schema reports zero actuators"
+        assert schema_actuators == config_actuators, (
+            f"Actuator count mismatch: schema={schema_actuators}, "
+            f"robot_config={config_actuators}"
         )
 
     @pytest.mark.unit
@@ -207,7 +210,7 @@ class TestConfigConsistency:
 
 
 class TestRobotConfigConsistency:
-    """Tests for robot_config.yaml consistency."""
+    """Tests for mujoco_robot_config.json consistency."""
 
     @pytest.mark.unit
     def test_robot_config_sensors_exist(self, robot_config):
@@ -232,11 +235,13 @@ class TestRobotConfigConsistency:
 
         Assertions:
         - actuator_names list is not empty
-        - Has 8 actuators
+        - actuator_names count matches action_dim
         """
         assert hasattr(robot_config, "actuator_names"), "Missing actuator_names in robot_config"
-        assert len(robot_config.actuator_names) == 8, (
-            f"Expected 8 actuators, got {len(robot_config.actuator_names)}"
+        assert len(robot_config.actuator_names) > 0, "Expected at least one actuator"
+        assert len(robot_config.actuator_names) == robot_config.action_dim, (
+            "Actuator count must match action_dim: "
+            f"{len(robot_config.actuator_names)} vs {robot_config.action_dim}"
         )
 
     @pytest.mark.unit

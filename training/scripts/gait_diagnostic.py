@@ -31,7 +31,9 @@ from training.configs.training_config import load_training_config, load_robot_co
 
 
 DEFAULT_CHECKPOINT = "training/checkpoints/wildrobot_ppo_20251228_205536/checkpoint_520_68157440.pkl"
-DEFAULT_CONFIG = "training/configs/ppo_walking.yaml"
+# v0.20.1: ppo_walking.yaml was deleted; pass --config to point at
+# the v0.20.1 smoke YAML (task #49) once it lands.
+DEFAULT_CONFIG = "training/configs/ppo_walking_v0201_smoke.yaml"
 MODEL_PATH = "assets/v1/scene_flat_terrain.xml"
 NUM_STEPS = 500  # 10 seconds at 50Hz
 VELOCITY_CMD = 0.65
@@ -46,8 +48,12 @@ def main():
     args = parser.parse_args()
 
     # Load configs
+    from training.configs.cli_helpers import fail_if_config_missing
+    fail_if_config_missing(
+        args.config, user_passed_explicit=(args.config != DEFAULT_CONFIG)
+    )
     training_cfg = load_training_config(args.config)
-    robot_cfg = load_robot_config(project_root / "assets" / "robot_config.yaml")
+    robot_cfg = load_robot_config(project_root / "assets" / "v2" / "mujoco_robot_config.json")
 
     # Load model
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)

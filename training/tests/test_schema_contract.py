@@ -2,7 +2,7 @@
 """
 Layer 0: Schema Contract Tests
 
-This module tests the schema contract between wildrobot.xml and robot_config.yaml.
+This module tests the schema contract between wildrobot.xml and mujoco_robot_config.json.
 These are the foundation tests - if they fail, no other tests should run.
 
 Tier: T0 (Pre-commit, < 2 min)

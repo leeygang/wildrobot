@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "9236e38fa5e4341a21503004",
+    "elementId": "c0ece913c3564a9f34cbc816",
+    "fullConfiguration": "default",
+    "id": "M+WHdNBLNspPl3CxH",
+    "isStandardContent": false,
+    "name": "upper_leg_servo_connect <1>",
+    "partId": "JJD",
+    "suppressed": false,
+    "type": "Part"
+}

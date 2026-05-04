@@ -15,6 +15,25 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
 
 from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
 
+# v0.20.1: ``required_replay_log_fields`` was deleted with the
+# ``locomotion_log_schema`` module.  Inline the v0.19.x replay log
+# field set here so this forensic tool can still inspect any
+# previously-captured logs.  v0.20.2 hardware runtime will define a
+# new log schema; update this list when that lands.
+_REQUIRED_REPLAY_LOG_FIELDS = (
+    "quat_xyzw",
+    "gyro_rad_s",
+    "joint_pos_rad",
+    "joint_vel_rad_s",
+    "foot_switches",
+    "velocity_cmd",
+    "yaw_rate_cmd",
+)
+
+
+def required_replay_log_fields():
+    return _REQUIRED_REPLAY_LOG_FIELDS
+
 
 def _load_npz(path: Path) -> Dict[str, np.ndarray]:
     data = np.load(path)
@@ -50,7 +69,7 @@ def inspect_log(path: Path) -> None:
         raise ValueError(f"No arrays found in {path}")
 
     # Required-by-convention keys (created by run_policy.py)
-    required = ["quat_xyzw", "gyro_rad_s", "joint_pos_rad", "joint_vel_rad_s", "foot_switches", "velocity_cmd"]
+    required = list(required_replay_log_fields())
     missing = [k for k in required if k not in data]
     if missing:
         raise ValueError(f"Missing required keys: {missing}. Found keys: {keys}")
@@ -61,13 +80,18 @@ def inspect_log(path: Path) -> None:
     joint_vel = np.asarray(data["joint_vel_rad_s"], dtype=np.float32)
     foot = np.asarray(data["foot_switches"], dtype=np.float32)
     vel_cmd = np.asarray(data["velocity_cmd"], dtype=np.float32)
+    yaw_rate_cmd = np.asarray(data["yaw_rate_cmd"], dtype=np.float32)
 
     t = int(quat.shape[0])
 
     print(f"Log: {path}")
     print(f"Keys: {', '.join(keys)}")
     print(f"Steps: {t}")
-    print(f"Shapes: quat{tuple(quat.shape)} gyro{tuple(gyro.shape)} qpos{tuple(joint_pos.shape)} qvel{tuple(joint_vel.shape)} foot{tuple(foot.shape)} vel_cmd{tuple(vel_cmd.shape)}")
+    print(
+        f"Shapes: quat{tuple(quat.shape)} gyro{tuple(gyro.shape)} qpos{tuple(joint_pos.shape)} "
+        f"qvel{tuple(joint_vel.shape)} foot{tuple(foot.shape)} vel_cmd{tuple(vel_cmd.shape)} "
+        f"yaw_rate_cmd{tuple(yaw_rate_cmd.shape)}"
+    )
 
     if "timestamp_s" in data:
         ts = np.asarray(data["timestamp_s"], dtype=np.float64).reshape(-1)
@@ -144,4 +168,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

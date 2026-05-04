@@ -1,0 +1,440 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke Config
+# =============================================================================
+# Single-command (vx=0.15) imitation-residual smoke per
+# training/docs/walking_training.md (v0.20.1 section).
+#
+# Reward family: DeepMimic-style imitation-dominant residual reward
+# (Task #49).  Term weights follow the DeepMimic 2018 baseline ratio
+# (pose 0.65 / pose-orient 0.10 / end-effector 0.15 / contact 0.10)
+# adapted for the WildRobot v3 prior, plus a separate task block on
+# forward-velocity tracking and standard regularizers.  See:
+#   - Peng et al. 2018 "DeepMimic" eq. 9
+#   - toddlerbot/locomotion/walk.gin (canonical ToddlerBot weights)
+#   - mujoco_playground g1 joystick (tracking_sigma=0.25 form)
+#   - loco-mujoco MimicReward (numerator-α form)
+#
+# Compute budget: M2 cap ≈ 20M env steps (1024 envs × 128 rollout_steps
+# × 150 iterations = 1.97e7 policy decisions).  An earlier revision
+# of walking_training.md mis-stated this as 5M; the 150-iter cap is the
+# authoritative budget.
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke.yaml --verify
+#
+# See also:
+#   - training/docs/v0201_env_wiring.md        env design (§3-§5)
+#   - training/docs/v0201_env_rewrite_audit.md rewrite audit (§A.E)
+#   - training/docs/walking_training.md        v0.20.1 smoke contract
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke (vx=0.15, imitation residual)"
+
+seed: 42
+
+# =============================================================================
+# Environment — v3 offline reference + bounded residual policy
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  # Episode horizon must satisfy `horizon <= service.n_steps` per the
+  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.15
+  # ZMP trajectory is ~1100 steps at dt=0.02; 500 steps = 10 s is well
+  # under the trajectory's ~22 s.
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  # ToddlerBot-aligned (walking_training.md Appendix A.1): pitch/roll
+  # become a SOFT band penalty via reward_weights.torso_pitch_soft /
+  # torso_roll_soft (gates from env.torso_*_soft_min/max_rad below);
+  # only torso height terminates the episode.  ToddlerBot has trained
+  # successfully with this contract — terminating on pitch/roll
+  # bites PPO before it can learn to recover.
+  use_relaxed_termination: true
+  # Soft pitch/roll gates (toddlerbot/locomotion/mjx_config.py:110-111).
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  # Lateral foot-spacing band for feet_distance reward
+  # (toddlerbot/locomotion/mjx_config.py:108-109, scaled to WR v2 hip
+  # width).  Defaults match ToddlerBot directly; if WR v2 nominal hip
+  # spacing differs materially this can be tightened later.
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
+
+  # ============================================================
+  # smoke7: TB-aligned multi-cmd curriculum (anti-shuffle lever #1)
+  # ============================================================
+  # Smoke3-6-prep3 evidence falsified the reward-only fix space for
+  # the shuffle exploit (5 reward-family changes, stride parked at
+  # 0.018-0.022 m vs the 0.030 m G4 gate).  TB has the literally-
+  # identical feet_air_time formula (walk_env.py:300, cadence-invariant
+  # per unit time) and avoids shuffle via the training distribution,
+  # not a stride-amplitude reward.  Smoke7 promotes WR's already-wired
+  # multi-cmd plumbing to mirror TB's CommandsConfig
+  # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:11).
+  #
+  # Range pick: WR's prior library currently generates bins
+  # {0.0, 0.05, 0.10, 0.15, 0.20, 0.25}.  Smoke7 uses [0.0, 0.20] —
+  # narrower than TB's [-0.2, 0.3] (defer negative cmd to v0.20.4
+  # since the prior library lacks negative-vx generation).  Probe
+  # confirmed prior is replayable through vx=0.20 (open-loop survives
+  # 60 ctrl steps at vx=0.20 vs 78 at vx=0.15).
+  #
+  # cmd_resample_steps = 150 mirrors TB resample_time=3.0 s at
+  # ctrl_dt=0.02.  zero_chance=0.2 + deadzone=0.05 are TB defaults
+  # (walk.gin:11) — together they zero the cadence reward
+  # (feet_air_time *= ||cmd|| > 1e-6, walk_env.py:302) on ~20% of
+  # episode windows, killing the "always shuffle" basin from the
+  # low end of the range.
+  min_velocity: 0.0
+  max_velocity: 0.20
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  # smoke7 eval-cmd override: pin eval rollouts to vx=0.15 so G4
+  # promotion-horizon metrics stay directly comparable to single-cmd
+  # smoke3-6-prep3.  Without this, eval would sample uniformly across
+  # [0.0, 0.20] and dilute the G4 forward_velocity floor (E[cmd]
+  # under uniform sampling + zero_chance=0.2 + deadzone=0.05 sits
+  # near ~0.07 m/s — at or below the 0.075 floor, making pass/fail
+  # uninformative).  The eval path also passes disable_cmd_resample
+  # = True via train.py so mid-episode resample doesn't re-randomize.
+  eval_velocity_cmd: 0.15
+
+  # Contacts
+  # contact_threshold_force: cutoff (N) the env uses to classify a foot
+  # as "in contact with the floor" — drives the ref_contact_match
+  # reward, prev_*_loaded state, and the G4 touchdown-event detector.
+  # Lowered from the v0.17.x standing-era default of 5.0 N (≈ 12.5%
+  # of body weight, 4.1 kg robot) to 1.0 N for the walking smoke:
+  #   - matches ToddlerBot's contact_force_threshold (1.0 N) per
+  #     toddlerbot/locomotion/mjx_config.py:95
+  #   - 5.0 N produced a 2-3 ctrl-step false-negative at reset (the
+  #     contact force ramps from 0 over the first physics ticks; with
+  #     n_substeps=10 it crosses 5 N around step 3 even though the
+  #     feet are geometrically touching the floor at step 0).  This
+  #     was the dominant source of the contact-alignment probe's
+  #     early-step mismatches at the 5.0 N baseline.
+  #   - 1.0 N is well above MJX's contact-solver noise floor (mN
+  #     range) so it doesn't introduce false positives on swing-side
+  #     micro-contacts.
+  # Re-run tools/v0201_contact_alignment_probe.py after changing this
+  # value — the baseline number is what gates ref_contact_match's
+  # weight (currently 0.0; see the reward_weights comment below).
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  # Action filtering — alpha=0.0 keeps the smoke baseline clean (no
+  # filter dynamics), but with the v0.20.1 residual-only filter
+  # contract (env applies lowpass_v1 to the policy residual command,
+  # not to the composed q_target) ANY alpha value satisfies G6: when
+  # the policy outputs zero, the filtered residual stays zero, so
+  # target_q == q_ref exactly.  See tests/test_v0201_env_zero_action.py
+  # test_zero_action_residual_metric_stays_zero_for_50_steps for the
+  # invariant.  alpha can be lifted to v0.20.2's hardware-realism
+  # value without re-checking G6.
+  action_filter_alpha: 0.0
+
+  # ---- v0.20.1 v3 offline reference + v6 obs (proprio history) ----
+  # v6 = v5 channels + a flat past-proprio stack
+  # (joint_pos + joint_vel + gyro + foot_switches + prev_action) so the
+  # actor can estimate base velocity from short-horizon kinematics.
+  # PROPRIO_HISTORY_FRAMES = 15 (training/envs/env_info.py + policy_contract/spec.py)
+  # to match ToddlerBot c_frame_stack (toddlerbot/locomotion/mjx_config.py:74).
+  # The 3 → 15 bump is documented in walking_training.md Appendix A.1.
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+
+  # Build the library on the fly via ZMPWalkGenerator (omit
+  # loc_ref_offline_library_path).  The smoke uses a single command bin.
+  loc_ref_offline_command_vx: 0.15
+
+  # ---- Residual bounds (G1) ----
+  # Absolute mode: residual_delta_q = clip(action) * scale (rad).
+  # ToddlerBot-aligned (walking_training.md Appendix A.6): leg residual
+  # tightened from ±0.50 → ±0.25 rad to match ToddlerBot's uniform
+  # action_scale = 0.25.  The looser ±0.50 was added to compensate
+  # for the prior failing to deliver forward push at vx=0.15 (per the
+  # earlier G1 commentary), but the v0.20.0-D unblock requires the
+  # prior to already be rescuable — relying on residual authority to
+  # paper over a weak prior is exactly the G5 anti-exploit failure
+  # mode.  If the smoke shows the bound is the binding constraint
+  # (G5 passes but forward velocity stalls) we re-loosen one step
+  # at a time, not in a single ±0.50 jump.
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+
+  # ============================================================
+  # smoke7: TB-aligned domain randomization (anti-shuffle lever #2)
+  # ============================================================
+  # Disturbance pushes: NOT enabled (TB walk default is add_push: False
+  # per toddlerbot/locomotion/mjx_config.py:172; walk_env.py instantiates
+  # without overriding).  Enabling pushes adds noise to the smoke
+  # diagnostic without strong evidence it's needed for shuffle-breaking.
+  # Defer to v0.20.5 (recovery / robustness milestone).
+  push_enabled: false
+
+  # IMU noise: TB enables gyro_std=0.25 rad/s + quat_std=0.10 rad with
+  # bias-walk RW (toddlerbot/locomotion/mjx_config.py:213-225).  WR's
+  # plumbing is simpler additive Gaussian.  Conservative TB-equivalent:
+  #   gyro: TB's 0.25 rad/s steady-state under OU process; WR's pure
+  #     additive Gaussian at 0.05 rad/s ≈ 2.9°/s — meaningful but not
+  #     overwhelming for sim2real hardening
+  #   quat: TB's 0.10 rad ≈ 5.7°; WR's additive at 2.0° is conservative
+  # Latency: action_delay_steps=1 already covers the TB n_steps_delay=1
+  # equivalent; don't double-count by adding imu_latency on top.
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+
+  # Domain randomization: TB walk default is add_domain_rand: True
+  # (toddlerbot/locomotion/mjx_config.py:171).  Smoke7 promotes the
+  # already-wired WR plumbing.  Ranges:
+  #   friction: TB [0.4, 1.0] (mjx_config.py:179)
+  #   frictionloss: TB [0.8, 1.2] (mjx_config.py:182)
+  #   kp: TB [0.9, 1.1] (mjx_config.py:186)
+  #   mass: WR-specific multiplicative [0.9, 1.1] vs TB additive
+  #     body_mass_range [-0.2, 0.2] kg (mjx_config.py:183) — different
+  #     semantics; keep WR's existing form, document in changelog
+  #   joint_offset_rad: WR-specific (TB has no equivalent reset-time
+  #     joint offset; TB uses rand_init_state_indices for diversity)
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+
+  # ToddlerBot uses n_steps_delay = 1 (toddlerbot/locomotion/mjx_config.py:96).
+  # One-step action delay matches the closed-loop dynamics PPO will face
+  # on hardware and forces smoother policies in sim.  The action-delay
+  # path is already implemented (`_action_delay_enabled` in
+  # wildrobot_env.py:213-215).  walking_training.md Appendix A.1.
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — sized to the M2 ~20M env-step compute budget
+# =============================================================================
+# 1024 envs * 128 rollout * 150 iter = 1.97e7 policy decisions
+# (each policy decision = one ctrl_dt = n_substeps physics steps;
+# the env-step count for M2 is the policy-decision count, not the
+# inner physics-step count).
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 150
+
+  # Learning rate / entropy match the ToddlerBot walk.gin defaults
+  # (3e-4 / 0.01) which are the standard PPO-locomotion starting point
+  # in the recent humanoid literature.
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+  # Deterministic eval rollout — ToddlerBot-style ``Evaluate/*`` block
+  # (training/docs/walking_training.md v0.20.1 §, replaces the broken
+  # truncation-based ``env/success_rate`` with eval-rollout walking
+  # signals).  ``num_steps`` matches ``env.max_episode_steps`` so the
+  # eval episode runs the full horizon and the per-term aggregates
+  # describe a complete walk, not a truncated probe.
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — v0.20.1 imitation-dominant residual family
+# =============================================================================
+# Imitation block aligned to ToddlerBot's active tracking terms:
+#   motor_pos / torso_quat / torso_pos_xy = 5.0 / 5.0 / 2.0
+# Task block (separate; mujoco_playground convention): cmd_forward_velocity_track.
+# Regularizers: ToddlerBot walk.gin scales (action_rate -0.01, torque -0.001,
+# joint_vel -0.0005).  Alive follows strict ToddlerBot survival semantics:
+# 0 while alive, -alive_w*dt on the terminal step.
+#
+# Sigmas/alphas use the dataclass defaults (training_runtime_config.py:
+# RewardWeightsConfig v0.20.1 block) — pinned here only when overriding.
+#
+# ref_contact_match (smoke6 onward): TB boolean equality count at TB
+# weight 1.0.  Smoke3-5 used a WR-specific Gaussian shape gated to 0
+# (the per-block comment below the reward_weights dict has the full
+# pivot rationale).  The previously-documented re-enable graduation
+# path (probe must pass 0.90 → 0.02 → 0.10) was specific to the
+# Gaussian shape and is superseded by the smoke6 switch to TB boolean
+# form: the boolean form has no kernel sigma to recalibrate, and the
+# graduation policy was a WR-specific cautious wrapper around the
+# Gaussian's "structured noise" risk.  TB-aligned form does not need
+# the wrapper.
+reward_weights:
+  # ToddlerBot-aligned scales (walking_training.md Appendix A.3).
+  # Imitation block scaled to ToddlerBot's motor_pos / torso_quat /
+  # torso_pos_xy / lin_vel_xy weights.  Survival uses strict ToddlerBot
+  # semantics (_reward_survival = -done): 0 while alive, -alive_w*dt on
+  # the terminal step.
+  alive: 10.0
+  ref_q_track: 5.0
+  ref_body_quat_track: 5.0
+  torso_pos_xy: 2.0
+  # v0.20.2 smoke6: TB-aligned continuous phase signals (walk.gin).  Together
+  # with re-enabled ref_contact_match below, these close the TB-vs-WR delta
+  # on phase-related rewards (walking_training.md Appendix A.3).
+  #   lin_vel_z (TB 1.0): vertical body velocity tracking.  Reference is
+  #     finite-diff of prior pelvis_pos[2] across consecutive frames
+  #     (Appendix A.3 G2 — keeps the ReferenceLibrary schema narrow).  Per-
+  #     frame phase-correlated gradient from body bobbing during each step.
+  #   ang_vel_xy (TB 2.0): body roll/pitch angular velocity.  Reference is
+  #     zero (yaw-stationary prior with no pitch/roll oscillation).  Per-
+  #     frame penalty on body sway through each gait phase.
+  lin_vel_z: 1.0
+  ang_vel_xy: 2.0
+  # v0.20.2 smoke6: re-enable the discrete phase-anchor reward, switching
+  # to TB's boolean form (sum(stance_mask == ref_stance_mask), per-step
+  # value 0/1/2).  See env's _compute_reward_terms ref/contact_match block.
+  # Reasoning: a code review caught two issues with the smoke5-prep1 plan
+  # to enable the legacy Gaussian at weight 0.5:
+  #   1. Doc/code mismatch on the Gaussian kernel formula (docs say
+  #      exp(-x^2/sigma^2), code uses exp(-x^2/(2*sigma^2))).
+  #   2. The graduation policy in walking_training.md G3 says re-enable
+  #      first at 0.02, then 0.10 once the contact-alignment probe passes
+  #      the 0.90 bar.  Setting weight 0.5 jumped 25x past the documented
+  #      re-entry without re-running the probe.
+  # Both are resolved by switching to TB's boolean form at TB's weight
+  # 1.0: no Gaussian kernel (no doc/code conflict), no WR-specific sigma,
+  # strictly TB-aligned.  TB demonstrates this works empirically on a
+  # similar small biped, so the original "boolean has no gradient"
+  # concern is over-cautious — gradient flows through the policy's
+  # continuous joint targets to the foot trajectory.
+  ref_contact_match: 1.0
+  cmd_forward_velocity_track: 5.0
+  action_rate: -1.0
+  torque: -0.001
+  joint_velocity: -0.0005
+  # ToddlerBot-aligned shaping (walking_training.md Appendix A.3).  These
+  # were missing from the v0.20.1 reward family and are the four terms
+  # ToddlerBot relies on most for visible alternating step release on
+  # small bipeds: the air-time bonus (500.0 because air time is in
+  # seconds), the swing-clearance bonus, the lateral foot-spacing band,
+  # and the soft pitch / roll posture penalty.  See the env's reward
+  # functions in wildrobot_env.py for the exact ToddlerBot reference
+  # equations.
+  feet_air_time: 500.0
+  feet_clearance: 1.0
+  feet_distance: 1.0
+  torso_pitch_soft: 0.5
+  torso_roll_soft: 0.5
+  # ToddlerBot-aligned slip penalty (walk.gin: feet_slip = 0.05).
+  # Replaces the v0.20.1 default-0 stance-side slip penalty.  Pitch_rate
+  # remains a 0-default M1 hook (only promoted on the M1 "balance issue"
+  # branch) — the soft pitch reward above already shapes posture.
+  slip: 0.05
+  pitch_rate: 0.0
+  # Tracking-sigma override: bump cmd_forward_velocity_alpha 4 → 200
+  # to match ToddlerBot lin_vel_tracking_sigma (mjx_config.py:106).
+  # The previous α=4 made the velocity tracking gradient ~50x flatter
+  # than ToddlerBot's, leaving PPO with little incentive to track the
+  # cmd at small (sub-0.2 m/s) speed errors.  α=200 with cmd error of
+  # 0.075 (the G4 promotion gate) gives r ≈ exp(-200 * 0.075²) ≈ 0.32
+  # — enough headroom to differentiate "close" from "very close" while
+  # still bottoming out at 0 by ~0.15 m/s error.
+  cmd_forward_velocity_alpha: 200.0
+  # Smoke-stage calibration override for WR prior drift (TB default is 200):
+  # v0200c probe at vx=0.15 gave raw torso_pos_xy
+  # step10=0.972, step30=0.168, step50=0.001 at alpha=200 (dies too early).
+  # Alpha 90 keeps the first-50-step signal alive:
+  # step10=0.987, step30=0.448, step50=0.051.
+  # Restore toward 200 after prior-drift cleanup in v0.20.2.
+  torso_pos_xy_alpha: 90.0
+
+# =============================================================================
+# Reward Composition
+# =============================================================================
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+# =============================================================================
+# Logging — offline mode by default for the stub; flip to online for real runs
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke, imitation_residual]
+
+video:
+  enabled: false
+
+# =============================================================================
+# Quick verify
+# =============================================================================
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

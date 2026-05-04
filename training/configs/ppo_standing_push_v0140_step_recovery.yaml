@@ -1,0 +1,150 @@
+# =============================================================================
+# WildRobot PPO Standing Push (v0.14.0) - Step Recovery + Posture Return
+# =============================================================================
+# Purpose: improve sim→hardware robustness under harder pushes by:
+# - Forcing stepping recovery (stronger pushes, less hop/clearance discouragement)
+# - Encouraging return to neutral upright pose after recovery (posture shaping)
+#
+# Resume-safety: does NOT change env.action_filter_alpha (policy_contract hash).
+#
+# Usage:
+#   uv run python training/train.py --config training/configs/ppo_standing_push_v0140_step_recovery.yaml --resume <ckpt.pkl>
+# =============================================================================
+
+version: "0.14.0"
+version_name: "Standing push: step recovery + posture return (harder pushes)"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  target_height: 0.44
+  height_target_two_sided: true
+  min_height: 0.40
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Keep constant for resume compatibility.
+  action_filter_alpha: 0.6
+
+  # Harder pushes to force stepping.
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 15
+  push_force_min: 3.0
+  push_force_max: 9.0
+  push_bodies: [waist, upperbody]
+
+ppo:
+  num_envs: 512
+  rollout_steps: 256
+  iterations: 200
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  target_kl: 0.02
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 3.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  entropy_schedule_end_factor: 0.4
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 128
+    num_steps: 500
+    deterministic: true
+
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+
+  log_interval: 10
+
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+reward_weights:
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  base_height: 2.0
+  orientation: -4.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  collapse_height: -0.5
+  collapse_vz: -0.3
+  angular_velocity: -0.1
+
+  # Allow more aggressive recovery actions.
+  torque: -0.0005
+  saturation: -0.1
+  action_rate: -0.005
+  joint_velocity: -0.001
+
+  # Encourage planted recovery steps; keep reward outcome-driven.
+  slip: -1.0
+  # Retained as foot-place geometry, not as a standalone stance penalty target.
+  stance_width_target: 0.23
+
+  forward_velocity_scale: 4.0
+
+  # Encourage returning to default upright pose once upright.
+  posture: 0.5
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
+
+  # M3: event-based stepping trait shaping, gated by "need to step".
+  step_event: 0.20
+  foot_place: 0.50
+  foot_place_sigma: 0.12
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
+
+reward:
+  task_weight: 1.0
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline

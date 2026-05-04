@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+# Ensure the repo root is on sys.path so ``policy_contract`` resolves
+# when this script is invoked directly (``uv run python
+# scripts/generate_policy_spec.py``).  Without this the import below
+# raises ModuleNotFoundError before argparse runs.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import yaml
 
@@ -35,7 +45,7 @@ def _get_env_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _get_robot_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
-        raise ValueError("robot_config.yaml must be a dict")
+        raise ValueError("mujoco_robot_config.json must be a dict")
     return cfg
 
 
@@ -55,7 +65,10 @@ def _build_obs_layout(action_dim: int) -> List[ObsFieldSpec]:
 def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
     specs = robot_cfg.get("actuated_joint_specs")
     if not isinstance(specs, list) or not specs:
-        raise ValueError("robot_config.yaml missing or invalid 'actuated_joint_specs'")
+        raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
+    range_unit = str(robot_cfg.get("joint_range_unit", "rad")).lower()
+    if range_unit not in {"rad", "deg"}:
+        raise ValueError("mujoco_robot_config.json 'joint_range_unit' must be 'rad' or 'deg'")
 
     joints: Dict[str, JointSpec] = {}
     for item in specs:
@@ -65,10 +78,15 @@ def _build_joints(robot_cfg: Dict[str, Any]) -> Dict[str, JointSpec]:
         rng = item.get("range") or [0.0, 0.0]
         if not isinstance(rng, list) or len(rng) != 2:
             raise ValueError(f"Invalid range for joint '{name}': {rng}")
+        range_min = float(rng[0])
+        range_max = float(rng[1])
+        if range_unit == "deg":
+            range_min = math.radians(range_min)
+            range_max = math.radians(range_max)
         joints[name] = JointSpec(
-            range_min_rad=float(rng[0]),
-            range_max_rad=float(rng[1]),
-            mirror_sign=float(item.get("mirror_sign", 1.0)),
+            range_min_rad=range_min,
+            range_max_rad=range_max,
+            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
     return joints
@@ -95,7 +113,7 @@ def generate_policy_spec(*, config_path: Path, robot_config_path: Path) -> Polic
     spec = PolicySpec(
         contract_name="wildrobot_policy",
         contract_version="1.0.0",
-        spec_version=1,
+        spec_version=2,
         model=ModelSpec(
             format="onnx",
             input_name="observation",
@@ -136,14 +154,15 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="training/configs/ppo_walking.yaml",
+        # v0.20.1: ppo_walking.yaml deleted; smoke YAML lands with task #49.
+        default="training/configs/ppo_walking_v0201_smoke.yaml",
         help="Path to training config YAML",
     )
     parser.add_argument(
         "--robot-config",
         type=str,
-        default="assets/v1/robot_config.yaml",
-        help="Path to robot_config.yaml",
+        default="assets/v2/mujoco_robot_config.json",
+        help="Path to mujoco_robot_config.json",
     )
     parser.add_argument(
         "--output",
@@ -152,6 +171,14 @@ def main() -> None:
         help="Output path for policy_spec.json",
     )
     args = parser.parse_args()
+
+    # Repo root was added to sys.path at import time, so this is safe.
+    from training.configs.cli_helpers import fail_if_config_missing
+    default_config = "training/configs/ppo_walking_v0201_smoke.yaml"
+    fail_if_config_missing(
+        args.config, user_passed_explicit=(args.config != default_config)
+    )
+    fail_if_config_missing(args.robot_config, user_passed_explicit=True)
 
     spec = generate_policy_spec(
         config_path=Path(args.config),

@@ -3,19 +3,21 @@
 # Sync wildrobot files from Ubuntu GPU machine to Mac
 #
 # Usage:
-#   ./scp_from_remote.sh [--public] <filename>           # Copy single file/directory
-#   ./scp_from_remote.sh [--public] --checkpoints        # List available checkpoints
-#   ./scp_from_remote.sh [--public] --latest             # Copy latest checkpoint
-#   ./scp_from_remote.sh [--public] <checkpoint_name>    # Copy specific checkpoint folder
-#   ./scp_from_remote.sh [--public] --logs               # List available wandb runs
-#   ./scp_from_remote.sh [--public] --run <run_name>     # Copy both checkpoint and wandb log for a run
+#   ./scp_from_remote.sh [--public [IP]] <filename>           # Copy single file/directory
+#   ./scp_from_remote.sh [--public [IP]] --checkpoints        # List available checkpoints
+#   ./scp_from_remote.sh [--public [IP]] --latest [N]         # Copy latest N runs (wandb + checkpoint), default N=1
+#   ./scp_from_remote.sh [--public [IP]] <checkpoint_name>    # Copy specific checkpoint folder
+#   ./scp_from_remote.sh [--public [IP]] --logs               # List available wandb runs
+#   ./scp_from_remote.sh [--public [IP]] --run <run_name>     # Copy both checkpoint and wandb log for a run
 #
 # Options:
-#   --public    Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --public         Use $LINUX_PUBLIC_IP instead of linux-pc.local
+#   --public <IP>    Use the specified IP address
 #
 # Examples:
 #   ./scp_from_remote.sh --public --checkpoints
-#   ./scp_from_remote.sh --public --latest
+#   ./scp_from_remote.sh --public --latest          # most recent run + checkpoint
+#   ./scp_from_remote.sh --public --latest 3        # 3 most recent runs + checkpoints
 #   ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6
 #   ./scp_from_remote.sh --run offline-run-20260104_213603-ajmyd9zz
 
@@ -33,27 +35,85 @@ REMOTE_USER="leeygang"
 REMOTE_HOST="linux-pc.local"  # Default
 REMOTE_BASE="/home/leeygang/projects/wildrobot"
 
-# Parse --public option
-if [[ "$1" == "--public" ]]; then
-    if [ -z "$LINUX_PUBLIC_IP" ]; then
-        echo -e "${RED}Error: LINUX_PUBLIC_IP environment variable is not set${NC}"
-        echo "Set it with: export LINUX_PUBLIC_IP=<your-ip>"
+# SSH/SCP/rsync port flags (empty by default)
+SSH_PORT_FLAG=""
+SCP_PORT_FLAG=""
+RSYNC_SSH=""
+
+# Parse --public from anywhere in args, collect remaining args
+ARGS=()
+USE_PUBLIC=false
+PUBLIC_IP_ARG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --public)
+            USE_PUBLIC=true
+            shift
+            # Check if next arg is an IP address (not a flag)
+            if [[ $# -gt 0 && "$1" != --* ]]; then
+                PUBLIC_IP_ARG="$1"
+                shift
+            fi
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Restore positional args without --public
+set -- "${ARGS[@]}"
+
+if [ "$USE_PUBLIC" = true ]; then
+    if [ -n "$PUBLIC_IP_ARG" ]; then
+        REMOTE_HOST="$PUBLIC_IP_ARG"
+    elif [ -n "$LINUX_PUBLIC_IP" ]; then
+        REMOTE_HOST="$LINUX_PUBLIC_IP"
+    else
+        echo -e "${RED}Error: --public requires an IP argument or LINUX_PUBLIC_IP env var${NC}"
+        echo "Usage: --public <IP> or export LINUX_PUBLIC_IP=<your-ip>"
         exit 1
     fi
-    REMOTE_HOST="$LINUX_PUBLIC_IP"
-    shift
-fi
 
-echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
+    # Optional: Use custom SSH port if set
+    if [ -n "$LINUX_PUBLIC_PORT" ]; then
+        SSH_PORT_FLAG="-p $LINUX_PUBLIC_PORT"
+        SCP_PORT_FLAG="-P $LINUX_PUBLIC_PORT"
+        echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST (port $LINUX_PUBLIC_PORT)"
+    else
+        echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
+    fi
+else
+    echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
+fi
 
 # Get script directory and move to wildrobot root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
+# Helper wrappers that inject port flags
+remote_ssh() {
+    ssh $SSH_PORT_FLAG "$REMOTE_USER@$REMOTE_HOST" "$@"
+}
+
+remote_scp() {
+    scp $SCP_PORT_FLAG "$@"
+}
+
+remote_rsync() {
+    if [ -n "$SSH_PORT_FLAG" ]; then
+        rsync -avz --progress -e "ssh $SSH_PORT_FLAG" "$@"
+    else
+        rsync -avz --progress "$@"
+    fi
+}
+
 list_checkpoints() {
     echo -e "\n${YELLOW}=== Available Checkpoints on Remote ===${NC}\n"
 
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/training/checkpoints/ 2>/dev/null || echo 'No checkpoints directory found'"
+    remote_ssh "ls -lht $REMOTE_BASE/training/checkpoints/ 2>/dev/null || echo 'No checkpoints directory found'"
 
     echo -e "\n${CYAN}To copy a checkpoint:${NC}"
     echo "  ./scp_from_remote.sh <checkpoint_folder_name>"
@@ -63,7 +123,7 @@ list_checkpoints() {
 list_logs() {
     echo -e "\n${YELLOW}=== Available W&B Runs on Remote ===${NC}\n"
 
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -lht $REMOTE_BASE/training/wandb/ 2>/dev/null | grep '^d' | grep -E '(run-|offline-run-)' | head -20 || echo 'No wandb runs found'"
+    remote_ssh "ls -lht $REMOTE_BASE/training/wandb/ 2>/dev/null | grep '^d' | grep -E '(run-|offline-run-)' | head -20 || echo 'No wandb runs found'"
 
     echo -e "\n${CYAN}To copy a run (checkpoint + wandb log):${NC}"
     echo "  ./scp_from_remote.sh --run <run_name>"
@@ -75,7 +135,13 @@ list_logs() {
 
 get_latest_checkpoint() {
     # Get the most recent checkpoint directory
-    ssh "$REMOTE_USER@$REMOTE_HOST" "ls -t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -1"
+    remote_ssh "ls -t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -1"
+}
+
+get_latest_runs() {
+    # Get the N most recent W&B run directory names (newest first).
+    local N="${1:-1}"
+    remote_ssh "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -$N"
 }
 
 copy_file() {
@@ -93,11 +159,11 @@ copy_file() {
     echo ""
 
     # Check if it's a directory on remote
-    if ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_PATH' ]" 2>/dev/null; then
+    if remote_ssh "[ -d '$REMOTE_PATH' ]" 2>/dev/null; then
         echo -e "${CYAN}Detected directory, using rsync...${NC}"
-        rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        remote_rsync "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
     else
-        scp "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
+        remote_scp "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
     fi
 
     if [ $? -eq 0 ]; then
@@ -124,11 +190,11 @@ copy_checkpoint() {
     # Use rsync for efficient checkpoint copying
     if command -v rsync &> /dev/null; then
         echo -e "${CYAN}Using rsync for efficient transfer...${NC}"
-        rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        remote_rsync "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
         RESULT=$?
     else
         echo -e "${CYAN}Using scp (rsync not found)...${NC}"
-        scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
+        remote_scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
         RESULT=$?
     fi
 
@@ -163,7 +229,7 @@ copy_wandb_log() {
     echo ""
 
     # Check if the run exists on remote
-    if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_PATH' ]" 2>/dev/null; then
+    if ! remote_ssh "[ -d '$REMOTE_PATH' ]" 2>/dev/null; then
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
         return 1
     fi
@@ -171,11 +237,11 @@ copy_wandb_log() {
     # Use rsync for efficient copying
     if command -v rsync &> /dev/null; then
         echo -e "${CYAN}Using rsync for efficient transfer...${NC}"
-        rsync -avz --progress "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
+        remote_rsync "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/" "$LOCAL_PATH/"
         RESULT=$?
     else
         echo -e "${CYAN}Using scp (rsync not found)...${NC}"
-        scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" training/wandb/
+        remote_scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" training/wandb/
         RESULT=$?
     fi
 
@@ -212,11 +278,18 @@ copy_run() {
 
     # Check if wandb run exists on remote
     local WANDB_REMOTE="$REMOTE_BASE/training/wandb/$RUN_NAME"
-    if ! ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$WANDB_REMOTE' ]" 2>/dev/null; then
+    if ! remote_ssh "[ -d '$WANDB_REMOTE' ]" 2>/dev/null; then
         echo -e "${RED}✗ W&B run not found on remote: $RUN_NAME${NC}"
         echo ""
-        echo -e "${CYAN}Available W&B runs:${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1 $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
+        # Try fuzzy match — maybe a typo (missing/extra chars)
+        local FUZZY=$(remote_ssh "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | grep '$RUN_NAME\|${RUN_NAME%?}' | head -5")
+        if [ -n "$FUZZY" ]; then
+            echo -e "${CYAN}Did you mean:${NC}"
+            echo "$FUZZY"
+        else
+            echo -e "${CYAN}Recent W&B runs:${NC}"
+            remote_ssh "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -10"
+        fi
         return 1
     fi
 
@@ -226,7 +299,7 @@ copy_run() {
     # The timestamp may differ slightly between wandb run and checkpoint, so we match
     # only the wandb run ID suffix (e.g., -uf665cr6)
     local WANDB_RUN_ID=$(echo "$RUN_ID" | sed 's/.*-//')  # Extract just the wandb ID (e.g., 8p2bv838)
-    local CHECKPOINT_NAME=$(ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
+    local CHECKPOINT_NAME=$(remote_ssh "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
 
     # Step 1: Copy wandb log
     echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
@@ -251,7 +324,7 @@ copy_run() {
         echo "  3. Checkpoint was saved with a different naming scheme"
         echo ""
         echo -e "${CYAN}Available checkpoints (most recent first):${NC}"
-        ssh "$REMOTE_USER@$REMOTE_HOST" "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -10"
+        remote_ssh "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -10"
         echo ""
         echo -e "${CYAN}To copy a specific checkpoint manually:${NC}"
         echo "  ./scp_from_remote.sh <checkpoint_folder_name>"
@@ -276,21 +349,21 @@ copy_run() {
 
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--checkpoints|--latest|--logs|--run <name>|checkpoint_name>"
+    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--logs|--run <name>|checkpoint_name>"
     echo ""
     echo "Options:"
     echo "  <filename>       Copy specific file or directory from remote"
     echo "  --checkpoints    List available checkpoints on remote"
-    echo "  --latest         Copy the most recent checkpoint"
+    echo "  --latest [N]     Copy latest N runs (W&B log + checkpoint), default N=1"
     echo "  --logs           List available W&B runs on remote"
     echo "  --run <name>     Copy both checkpoint and W&B log for a run"
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
     echo ""
     echo "Examples:"
-    echo "  $0 training/checkpoints/wildrobot_amp_20251220_180000/final_amp_policy.pkl"
+    echo "  $0 training/checkpoints/wildrobot_v0201_20260420_120000/checkpoint_100_204800.pkl"
     echo "  $0 --checkpoints"
-    echo "  $0 --latest"
-    echo "  $0 wildrobot_amp_20251220_180000"
+    echo "  $0 --latest          # most recent run + checkpoint"
+    echo "  $0 --latest 3        # 3 most recent runs + checkpoints"
     echo "  $0 --logs"
     echo "  $0 --run run-20251228_011308-xw1fu3n6"
     exit 1
@@ -317,13 +390,36 @@ case "$1" in
         copy_run "$2"
         ;;
     --latest)
-        LATEST=$(get_latest_checkpoint)
-        if [ -z "$LATEST" ]; then
-            echo -e "${RED}No checkpoints found on remote${NC}"
+        # --latest [N]: copy the N most recent W&B runs + their matching
+        # checkpoints (default N=1).  Equivalent to running --run on each
+        # of the top-N entries from `--logs`.
+        N="${2:-1}"
+        if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -lt 1 ]; then
+            echo -e "${RED}Error: --latest expects a positive integer, got '$N'${NC}"
             exit 1
         fi
-        echo -e "${GREEN}Latest checkpoint: $LATEST${NC}"
-        copy_checkpoint "$LATEST"
+
+        # Read run names into an array (handles spaces / newlines safely).
+        LATEST_RUNS=()
+        while IFS= read -r line; do
+            [ -n "$line" ] && LATEST_RUNS+=("$line")
+        done < <(get_latest_runs "$N")
+
+        if [ "${#LATEST_RUNS[@]}" -eq 0 ]; then
+            echo -e "${RED}No W&B runs found on remote${NC}"
+            exit 1
+        fi
+
+        echo -e "${GREEN}Latest $N run(s):${NC}"
+        for r in "${LATEST_RUNS[@]}"; do
+            echo "  - $r"
+        done
+
+        OVERALL_RC=0
+        for r in "${LATEST_RUNS[@]}"; do
+            copy_run "$r" || OVERALL_RC=1
+        done
+        exit $OVERALL_RC
         ;;
     *)
         # Check if it looks like a checkpoint folder name (contains date pattern)
@@ -333,7 +429,7 @@ case "$1" in
            [[ "$1" =~ ^[a-zA-Z_]+[0-9]{8}_[0-9]{6}$ ]] || \
            [[ "$1" =~ ^wildrobot ]]; then
             # Check if it exists in checkpoints on remote
-            if ssh "$REMOTE_USER@$REMOTE_HOST" "[ -d '$REMOTE_BASE/training/checkpoints/$1' ]" 2>/dev/null; then
+            if remote_ssh "[ -d '$REMOTE_BASE/training/checkpoints/$1' ]" 2>/dev/null; then
                 copy_checkpoint "$1"
             else
                 # Try as regular file path

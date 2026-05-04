@@ -1,0 +1,140 @@
+# =============================================================================
+# WildRobot MPC Standing Bring-Up Config (v0.17.3)
+# =============================================================================
+# Purpose:
+#   First honest standing bring-up path for the architecture pivot.
+#   This config does NOT claim hard-push recovery or walking capability.
+#
+# Usage:
+#   uv run python training/train.py --config training/configs/mpc_standing_v0173.yaml --verify
+# =============================================================================
+
+version: "0.17.3"
+version_name: "Architecture-Pivot Standing Bring-Up"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  target_height: 0.44
+  height_target_two_sided: true
+  min_height: 0.40
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+  action_filter_alpha: 0.6
+  actor_obs_layout_id: wr_obs_v2
+
+  # v0.17.3: choose architecture-pivot standing controller path
+  controller_stack: mpc_standing
+
+  # Keep legacy controllers off in this path.
+  base_ctrl_enabled: false
+  fsm_enabled: false
+
+  # Standing push task setup (moderate by default; can be escalated later)
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 3.0
+  push_force_max: 8.0
+  push_bodies: [waist, upperbody]
+
+  # v0.17.3 bring-up controller gains
+  mpc_residual_scale: 0.25
+  mpc_pitch_kp: 0.30
+  mpc_pitch_kd: 0.06
+  mpc_roll_kp: 0.30
+  mpc_roll_kd: 0.06
+  mpc_height_kp: 0.15
+  mpc_action_clip: 0.35
+  mpc_step_trigger_threshold: 0.45
+
+ppo:
+  num_envs: 256
+  rollout_steps: 128
+  iterations: 120
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 16
+  max_grad_norm: 0.5
+  target_kl: 0.02
+  log_interval: 10
+
+  eval:
+    enabled: true
+    interval: 20
+    num_envs: 32
+    num_steps: 300
+    deterministic: true
+
+reward_weights:
+  base_height: 1.0
+  orientation: -2.0
+  angular_velocity: -0.1
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -1.0
+  posture: 0.3
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
+  collapse_height: -1.0
+  collapse_vz: -0.5
+  collapse_height_sigma: 0.03
+  step_event: 0.10
+  foot_place: 0.25
+  foot_place_sigma: 0.14
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
+  step_length: 0.0
+  step_progress: 0.0
+  dense_progress: 0.0
+  cycle_progress: 0.0
+  velocity_step_gate: 0.0
+  step_length_target_base: 0.03
+  step_length_target_scale: 0.25
+  step_length_sigma: 0.04
+  step_progress_target_scale: 1.0
+  step_progress_sigma: 0.05
+  dense_progress_upright_pitch: 0.25
+  dense_progress_upright_pitch_rate: 0.90
+  dense_progress_upright_sharpness: 10.0
+  forward_upright_gate_strength: 1.0
+  cycle_progress_target_scale: 1.0
+  cycle_progress_sigma: 0.08
+  propulsion_gate_step_length_weight: 0.5
+  propulsion_gate_step_progress_weight: 0.5
+  stance_width_target: 0.23
+  forward_velocity_scale: 4.0
+

@@ -1,8 +1,32 @@
 # WildRobot
 
-A humanoid robot locomotion project using MuJoCo/MJX with JAX-based PPO and Adversarial Motion Priors (AMP) training.
+A humanoid robot locomotion project centered on MuJoCo/JAX training, with an
+industry-style RL deployment path as the current mainline for WildRobot.
+
+Current repo reality:
+- the repo is pivoting from standing-first PPO exploration toward a
+  locomotion-first `v0.19.x` platform
+- the deployed runtime artifact remains a **learned policy**
+- reduced-order references and IK are moving into top-level `control/` as
+  nominal-motion and training-support infrastructure
+- `training/` remains the home for RL, eval, export, and locomotion curricula
+- `runtime/` remains the hardware-facing layer and will absorb locomotion
+  policy running plus shared logging
+- `tools/` becomes the explicit home for SysID, replay, and sim2real analysis
+- OCS2 / `wb_humanoid_mpc` and URDF migration remain long-term reference
+  directions, not the active implementation target for current hardware
+
+Architecture references:
+- [docs/system_architecture.md](docs/system_architecture.md)
+- [training/docs/walking_training.md](training/docs/walking_training.md) - active locomotion roadmap
+- [training/docs/ToddlerBot_direction.md](training/docs/ToddlerBot_direction.md) - ToddlerBot-style pivot rationale
+- [training/docs/standing_training.md](training/docs/standing_training.md) - standing branch history and regression gates
+- [training/docs/footstep_planner_rl_adoption.md](training/docs/footstep_planner_rl_adoption.md)
+- [training/docs/ocs2_humanoid_mpc_adoption.md](training/docs/ocs2_humanoid_mpc_adoption.md)
 
 ## Project Structure
+
+Mainline platform split after the locomotion pivot:
 
 ```
 wildrobot/
@@ -10,25 +34,42 @@ wildrobot/
 ├── AGENTS.md                           # Agent guidelines
 ├── CLAUDE.md                           # Claude AI guidelines
 ├── pyproject.toml                      # Python package configuration (uv)
-├── assets/                             # Robot model files
-│   ├── wildrobot.xml                   # Main MuJoCo robot model
-│   ├── wildrobot.urdf                  # URDF version
-│   ├── scene_flat_terrain.xml          # Flat terrain scene
-│   ├── scene_rough_terrain.xml         # Rough terrain scene
-│   ├── joints_properties.xml           # Joint configuration
-│   ├── sensors.xml                     # Sensor definitions
-│   ├── robot_config.yaml               # Robot parameters
-│   ├── v1/config.json                  # Onshape configuration (v1)
-│   ├── v2/config.json                  # Onshape configuration (v2)
-│   ├── post_process.py                 # post-process during model generation
-│   ├── update_xml.sh                   # generate and update the wildrobot.xml/urdf from Onshape
-│   └── assets/                         # Generated Mesh files (STL)
-│       ├── *.stl                       # Robot part meshes
-│       └── *.part                      # Part definitions
+├── docs/                               # Repo-level architecture and process docs
+│   ├── system_architecture.md          # Mainline system architecture
+│   ├── URDF_migration_plan.md          # Deferred URDF migration notes
+│   ├── e2e_training_to_sim2real.md     # Sim2real flow notes
+│   └── sim2real_policy_contract.md     # Policy contract docs
 │
-├── training/                          # Main training codebase
+├── assets/                             # Digital twin and robot model files
+│   ├── v2/                             # Active WildRobot asset variant
+│   │   ├── wildrobot.xml               # Main MuJoCo robot model
+│   │   ├── mujoco_robot_config.json    # Generated robot metadata
+│   │   ├── scene_flat_terrain.xml      # Training scene
+│   │   ├── sensors.xml                 # Sensor definitions
+│   │   └── assets/                     # Generated Mesh files (STL)
+│   ├── post_process.py                 # Post-process during model generation
+│   ├── update_xml.sh                   # Regenerate XML/config from Onshape
+│   └── robot_config.py                 # Robot config helpers
+│
+├── control/                            # Reduced-order references, IK, adapters, reusable non-PPO helpers
+│   ├── interfaces.py                   # Shared controller / reference-side interfaces
+│   ├── robot_model/                    # Robot-model interfaces and conventions
+│   ├── reduced_model/                  # LIPM / DCM / ALIP-style helpers
+│   ├── references/                     # Walking reference generators (Milestone 2+)
+│   ├── kinematics/                     # Leg IK and nominal-motion utilities (Milestone 2+)
+│   ├── locomotion/                     # Unified walking controller (v0.19.5)
+│   │   ├── __init__.py
+│   │   ├── walking_controller.py       # Orchestrator: ref → IK → [optional residual] → ctrl
+│   │   │                               #   mode: nominal_only (v0.19.4) | residual_ppo (v0.19.5)
+│   │   └── nominal_ik_adapter.py       # IK adapter: task-space targets → joint angles (NumPy)
+│   ├── adapters/                       # Reference -> joint-target adapters
+│   ├── execution/                      # Servo-friendly execution / tracking layer
+│   └── mpc/                            # Reserved for future advanced planner work
+│
+├── training/                           # RL, eval, export, locomotion curricula
 │   ├── train.py                        # Training entry point
-│   ├── CHANGELOG.md                    # Training version history
+│   ├── CHANGELOG.md                    # Training version history (v0.20.1+)
+│   ├── CHANGELOG.archive.md            # Training version history (pre-v0.20.1)
 │   │
 │   ├── cal/                            # v0.11.0: Control Abstraction Layer (CAL)
 │   │   ├── __init__.py                 # Export CAL, specs, types
@@ -37,31 +78,21 @@ wildrobot/
 │   │   ├── types.py                    # ActuatorType, VelocityProfile, CoordinateFrame
 │   │   └── cal.md                      # CAL documentation
 │   │
-│   ├── amp/                            # Adversarial Motion Priors
-│   │   ├── discriminator.py            # AMP discriminator network
-│   │   ├── discriminator_diagnostics.py # Discriminator debugging
-│   │   ├── policy_features.py          # Policy feature extraction
-│   │   ├── ref_features.py             # Reference motion features
-│   │   ├── ref_buffer.py               # Reference motion buffer
-│   │   ├── replay_buffer.py            # Experience replay buffer
-│   │   └── amp_mirror.py               # Motion mirroring utilities
-│   │
 │   ├── configs/                        # Configuration system
 │   │   ├── __init__.py
 │   │   ├── training_config.py          # Training config schema
 │   │   ├── training_runtime_config.py  # Runtime config
-│   │   ├── feature_config.py           # Feature configuration
-│   │   ├── ppo_walking.yaml            # Walking task config
+│   │   ├── ppo_walking_v0201_smoke.yaml # v0.20.1 walking smoke
 │   │   └── ppo_standing.yaml           # Standing task config
 │   │
-│   ├── data/                           # Reference motion data
-│   │   ├── gmr/                        # GMR motion data
-│   │   ├── gmr_to_physics_ref_data.py  # Motion data conversion
-│   │   └── debug_gmr_physics.py        # Debug utilities
-│   │
 │   ├── docs/                           # Training documentation
-│   │   ├── learn_first_plan.md         # Training guide
-│   │   ├── TRAINING_SYSTEM_DESIGN.md   # System architecture
+│   │   ├── walking_training.md         # Active locomotion roadmap
+│   │   ├── ToddlerBot_direction.md     # ToddlerBot-style pivot note
+│   │   ├── standing_training.md        # Standing branch history / regression gates
+│   │   ├── footstep_planner_rl_adoption.md # RL-first + optional teacher plan
+│   │   ├── ocs2_humanoid_mpc_adoption.md # Deferred OCS2 / humanoid MPC notes
+│   │   └── archive/                    # Archived / superseded training docs
+│   │       └── learn_first_plan.md     # Historical walking-first roadmap
 │   │
 │   ├── envs/                           # Environment implementation
 │   │   ├── wildrobot_env.py            # Main JAX environment
@@ -75,6 +106,7 @@ wildrobot/
 │   │
 │   ├── eval/                           # Evaluation tools
 │   │   ├── eval_policy.py              # Headless evaluation
+│   │   ├── eval_ladder_v0170.py        # Standing fixed ladder
 │   │   └── visualize_policy.py         # MuJoCo viewer playback
 │   │
 │   ├── scripts/                        # Analysis scripts
@@ -112,7 +144,6 @@ wildrobot/
 │   │   ├── test_training_components.py # Training infrastructure
 │   │   ├── test_trainer_invariance.py  # Training invariance
 │   │   ├── test_ppo_core.py            # PPO algorithm tests
-│   │   ├── test_amp_features.py        # AMP feature tests
 │   │   │
 │   │   │ # Math Utility Tests
 │   │   ├── test_quat_edges.py          # Quaternion edge cases
@@ -130,10 +161,8 @@ wildrobot/
 │   │   └── debug_contact_forces.ipynb  # Contact force debugging
 │   │
 │   ├── scripts/                        # Debug & diagnostic scripts
-│   │   ├── debug_amp_features.py
-│   │   ├── diagnose_amp_features.py
 │   │   ├── diagnose_torque.py
-│   │   ├── mocap_retarget.py           # Motion capture retargeting
+│   │   ├── gait_diagnostic.py
 │   │   └── test_actuator_range.py
 │   │
 │   ├── checkpoints/                    # Saved model checkpoints
@@ -147,15 +176,27 @@ wildrobot/
 │   ├── jax/                            # JAX backend (training)
 │   └── numpy/                          # NumPy backend (runtime + tooling)
 │
-├── runtime/                            # Hardware runtime (Raspberry Pi / Ubuntu)
+├── runtime/                            # Hardware runtime and shared execution logs
 │   ├── README.md                       # Runtime install + run instructions
 │   ├── configs/                        # Runtime JSON config templates (hardware calibration source of truth)
+│   │   ├── runtime_config_v2.json      # Standing/general runtime config
+│   │   ├── walking_v0194.json          # Nominal-only walking deploy config (v0.19.4)
+│   │   └── walking_v0195.json          # Residual PPO walking deploy config (v0.19.5)
 │   ├── scripts/                        # Calibration tools (IMU/servo/footswitch)
-│   └── wr_runtime/                     # Importable runtime package + CLIs (wildrobot-run-policy, etc.)
+│   └── wr_runtime/                     # Importable runtime package + CLIs
+│       ├── control/
+│       │   ├── run_policy.py           # Standing/general policy runner
+│       │   ├── run_walking.py          # Walking controller entry point (v0.19.5)
+│       │   ├── loc_ref_runtime.py      # Walking ref v1 runtime wrapper
+│       │   └── loc_ref_runtime_v2.py   # Walking ref v2 runtime wrapper (v0.19.5)
+│       └── locomotion/                 # Planned locomotion runner / command / log schema layer
+│
+├── tools/                              # Sim2real and platform tooling (Milestone 0+)
+│   ├── sysid/                          # Actuator characterization and fitting tools
+│   └── sim2real_eval/                  # Replay, comparison, and regression plotting tools
 │
 ├── mujoco-brax/                        # Legacy mujoco brax training version.(reference only not used)
 │   ├── README.md
-│   ├── amp/                            # Reference AMP code
 │   ├── common/                         # Shared utilities
 │   ├── playground/                     # Experimental code
 │   └── runtime/                        # Runtime utilities
@@ -169,6 +210,45 @@ wildrobot/
     ├── scp_to_remote.sh                # Upload to remote server
     └── scp_from_remote.sh              # Download from remote server
 ```
+
+## Architecture Split
+
+Use this rule of thumb:
+
+- `assets/` owns the digital twin
+  - MJCF / scene files
+  - generated robot metadata
+  - sensor and asset definitions
+
+- `control/` owns locomotion priors and reusable nominal-motion logic
+  - reduced-order models
+  - reference generation
+  - IK and adapters
+  - execution / tracking helpers
+  - optional future planning experiments
+
+- `training/` owns RL and evaluation
+  - locomotion and standing experiments
+  - training loops
+  - fixed eval ladders
+  - reward / curriculum work
+  - logging and checkpointing
+  - exportable learned policies
+  - wrappers that call into `control/`
+
+- `runtime/` owns hardware execution
+  - runtime configs
+  - policy runners
+  - hardware-facing calibration scripts
+  - shared runtime log schema
+
+- `tools/` owns sim2real engineering support
+  - SysID capture / fitting
+  - replay and trace comparison
+  - calibration and regression utilities
+
+`training/` may depend on `control/`.  
+`control/` should not depend on PPO-specific training code.
 
 ## Getting Started
 
@@ -213,24 +293,25 @@ uv run pytest training/tests --cov=training --cov-report=html
 
 ## Training
 
-### Walking Task (PPO + AMP)
+The commands below are for the PPO training stack in `training/`.
+
+### Walking Task
 
 ```bash
-# Start training with default config
-uv run python training/train.py
+# v0.20.1 walking smoke
+uv run python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
-# Train with specific config
-uv run python training/train.py --config training/configs/ppo_walking.yaml
-
-# Resume from checkpoint
-uv run python training/train.py --resume training/checkpoints/<checkpoint_dir>
+# Resume from checkpoint (file path, not directory)
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0201_smoke.yaml \
+  --resume training/checkpoints/<job_dir>/checkpoint_<iter>_<steps>.pkl
 ```
 
 ### Configuration
 
 Training is configured via YAML files in `training/configs/`:
 
-- `ppo_walking.yaml` - Walking locomotion task
+- `ppo_walking_v0201_smoke.yaml` - v0.20.1 walking smoke (offline ZMP prior + bounded residual)
 - `ppo_standing.yaml` - Standing balance task
 
 Key configuration options:
@@ -248,11 +329,6 @@ reward:
   velocity_tracking: 1.0
   orientation: 0.5
   action_smoothness: 0.1
-
-# AMP settings
-amp:
-  enabled: true
-  reward_weight: 0.5
 ```
 
 ### Monitoring Training
@@ -276,14 +352,13 @@ uv run python training/eval/visualize_policy.py \
 ## Project Goals
 
 - Develop a bipedal humanoid robot capable of robust locomotion
-- Implement physics-based Adversarial Motion Priors (AMP)
 - Achieve stable walking across flat and rough terrains
 - Validate simulation accuracy with comprehensive test suite
 
 ## Key Features
 
 - **JAX/MJX Acceleration**: Fast parallel simulation with JAX
-- **PPO + AMP Training**: Combines PPO with adversarial motion priors
+- **Prior-Guided PPO**: Offline ZMP reference + bounded residual policy
 - **Comprehensive Testing**: 10-layer test strategy from schema contracts to integration
 - **Schema Contracts**: Prevents silent breakage from XML changes
 - **W&B Integration**: Full experiment tracking and visualization
@@ -300,10 +375,9 @@ uv run python training/eval/visualize_policy.py \
 
 Detailed documentation is available in `training/docs/`:
 
-- [Training Guide](training/docs/TRAINING_README.md) - How to train policies
-- [System Design](training/docs/TRAINING_SYSTEM_DESIGN.md) - Architecture overview
-- [Test Strategy](training/tests/TEST_STRATEGY.md) - Comprehensive test plan
-- [AMP Design](training/docs/AMP_FEATURE_PARITY_DESIGN.md) - AMP implementation details
+- [Walking Training Plan](training/docs/walking_training.md) - v0.20.x locomotion roadmap
+- [Reference Design](training/docs/reference_design.md) - Offline ZMP prior + bounded residual contract
+- [Test Strategy](training/tests/test_plan.md) - Comprehensive test plan
 - [E2E Runbook](docs/e2e_training_to_sim2real.md) - Train → eval → export → sim2real
 
 ## Contributing

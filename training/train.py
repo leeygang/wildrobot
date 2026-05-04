@@ -2,41 +2,32 @@
 """Entry point for WildRobot training.
 
 This script provides a command-line interface for training walking policies
-using PPO with optional Adversarial Motion Priors (AMP) for natural motion learning.
-
-Training Modes:
-    1. PPO-only (Stage 1): Learn robot-native walking without reference motion
-       python train.py --config configs/ppo_walking.yaml
-
-    2. AMP+PPO (default): Use human motion priors for natural-looking gait
-       python train.py --config configs/ppo_amass_training.yaml
+using PPO.
 
 Usage Examples:
-    # Stage 1: PPO-only training (robot-native walking)
-    python train.py --config training/configs/ppo_walking.yaml
 
-    # Stage 1: Quick smoke test
-    python train.py --config training/configs/ppo_walking.yaml --verify
+    # v0.20.1 PPO smoke (vx=0.15 only):
+    python training/train.py --config training/configs/ppo_walking_v0201_smoke.yaml
 
-    # AMP+PPO training with human motion priors
-    python train.py --config training/configs/ppo_amass_training.yaml
+    # Standing-branch training (separate from the locomotion path):
+    python training/train.py --config training/configs/ppo_standing.yaml
 
-    # With custom parameters
-    python train.py --num-envs 512 --iterations 5000
+    # CLI overrides:
+    python training/train.py --config <yaml> --num-envs 512 --iterations 5000
 
-Architecture:
-    This script supports two training modes:
-
-    1. PPO-only (amp.enabled=False): Stage 1 training for discovering robot's natural gait.
-       Uses Brax's PPO trainer with mujoco_playground wrapper. No reference motion.
-
-    2. AMP+PPO (default): Uses custom JIT-compiled training loop that integrates
-       AMP discriminator for natural motion learning from reference data.
+    # Quick verify (overrides via the config's quick_verify section):
+    python training/train.py --config <yaml> --verify
 
 See also:
-    - training/docs/learn_first_plan.md: Roadmap for the "Learn First, Retarget Later" approach
-    - training/configs/ppo_walking.yaml: Stage 1 config
-    - training/configs/ppo_amass_training.yaml: AMP+PPO config
+    - training/docs/walking_training.md: locomotion roadmap (v0.20.x)
+    - training/docs/v0201_env_wiring.md: v0.20.1 env design + status
+    - training/configs/ppo_standing*.yaml: standing-branch configs
+
+History:
+    Pre-v0.20.1 ``ppo_walking*.yaml`` configs were deleted along with the
+    v1/v2 walking_ref runtime stack.  Old training-config snapshots remain
+    in ``training/checkpoints/*/training_config.yaml`` for reference but
+    are not runnable against the current env.
 """
 
 from __future__ import annotations
@@ -48,19 +39,27 @@ import os
 import pickle
 import sys
 import time
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-
-from ml_collections import config_dict
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Default config paths
-DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking.yaml"
-DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v1" / "robot_config.yaml"
+from training.runtime_env import configure_training_runtime_env
+
+configure_training_runtime_env()
+
+from ml_collections import config_dict
+
+# Default config paths.
+# v0.20.1: ppo_walking.yaml was deleted along with the v1/v2 reference
+# stack.  Set to the v0.20.1 PPO smoke YAML when Task 3 lands; until
+# then ``--config`` is required (no default).
+DEFAULT_TRAINING_CONFIG_PATH = Path(__file__).parent / "configs" / "ppo_walking_v0201_smoke.yaml"
+DEFAULT_ROBOT_CONFIG_PATH = Path(__file__).parent.parent / "assets" / "v2" / "mujoco_robot_config.json"
 
 # Import config loaders from configs module
 from training.configs.training_config import (
@@ -70,6 +69,7 @@ from training.configs.training_config import (
     TrainingConfig,
     WandbConfig,
 )
+from training.configs.realism import load_training_realism_profile
 
 # Import checkpoint management
 from training.core.checkpoint import (
@@ -93,6 +93,7 @@ from training.core.experiment_tracking import (
     save_and_upload_video,
     WandbTracker,
 )
+from training.policy_spec_utils import build_policy_spec_from_training_config
 
 
 def parse_args():
@@ -101,7 +102,7 @@ def parse_args():
     CLI arguments override config file values when explicitly provided.
     """
     parser = argparse.ArgumentParser(
-        description="Train WildRobot with PPO+AMP",
+        description="Train WildRobot with PPO",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -159,26 +160,6 @@ def parse_args():
         help="Entropy bonus coefficient (default from config)",
     )
 
-    # AMP configuration (only for custom loop)
-    parser.add_argument(
-        "--amp-weight",
-        type=float,
-        default=None,
-        help="Weight for AMP reward (default from config)",
-    )
-    parser.add_argument(
-        "--amp-data",
-        type=str,
-        default=None,
-        help="Path to AMP reference motion dataset (.pkl file)",
-    )
-    parser.add_argument(
-        "--disc-lr",
-        type=float,
-        default=None,
-        help="Discriminator learning rate (default from config)",
-    )
-
     # Logging and checkpoints
     parser.add_argument(
         "--log-interval",
@@ -212,32 +193,124 @@ def parse_args():
     parser.add_argument(
         "--checkpoint-interval",
         type=int,
-        default=None,
-        help="Save checkpoint every N iterations (default from config)",
+        default=10,
+        help="Save checkpoint every N iterations (default: 10)",
     )
 
     return parser.parse_args()
+
+
+# v0.20.1-smoke7: eval-cmd plumbing helpers, extracted from start_training
+# so that test_smoke7_eval_cmd_behavior.py can exercise the train.py-level
+# wiring decision (not just the env-level reset_for_eval behavior).  The
+# decision rule is "if eval_velocity_cmd >= 0, eval rollouts pin cmd
+# (reset_for_eval pins; step disables mid-episode resample); else, eval
+# behaves like training (sampled cmd at reset, resample fires per the
+# configured period)."  See training/docs/walking_training.md
+# v0.20.1-smoke7 §.
+
+def is_eval_cmd_pinned(env_cfg) -> bool:
+    """Return True iff eval rollouts should pin the command (override active).
+
+    Sentinel: ``eval_velocity_cmd < 0`` means "no override; eval behaves
+    like training".  Any non-negative value means "pin eval cmd to this
+    value" — used by smoke7+ to keep G4 metrics interpretable when
+    training is multi-cmd.
+    """
+    return float(env_cfg.eval_velocity_cmd) >= 0.0
+
+
+def eval_step_kwargs(env_cfg) -> dict:
+    """Return the kwargs the factory's eval step closure passes to env.step.
+
+    Pinned mode (``eval_velocity_cmd >= 0``): returns
+    ``{"disable_cmd_resample": True}`` so the env's mid-episode
+    resample is suppressed and the eval cmd stays fixed across the
+    resample boundary.
+
+    Sentinel mode (``eval_velocity_cmd < 0``): returns ``{}`` so eval
+    behaves exactly like training — including mid-episode resample if
+    ``cmd_resample_steps > 0``.
+
+    Extracted as a separate helper so unit tests can verify the
+    pinned-vs-sentinel wiring decision without constructing a full
+    env (which costs minutes of JIT compilation).  Catches the
+    smoke7-prep1 review's third feedback item: a future regression
+    in ``make_eval_env_fns`` could re-break sentinel semantics while
+    env-level tests still pass.
+    """
+    if is_eval_cmd_pinned(env_cfg):
+        return {"disable_cmd_resample": True}
+    return {}
+
+
+def make_eval_env_fns(env, training_cfg, eval_num_envs: int):
+    """Build (step_fn, clean_step_fn, reset_fn) for eval rollouts.
+
+    Honors the ``eval_velocity_cmd`` sentinel.  In pinned mode
+    (``eval_velocity_cmd >= 0``):
+      - ``reset_fn`` pins cmd via ``env.reset_for_eval``
+      - ``step_fn`` / ``clean_step_fn`` pass ``disable_cmd_resample=True``
+        so the pin survives mid-episode resample boundaries
+
+    In sentinel mode (``eval_velocity_cmd < 0``):
+      - ``reset_fn`` falls back to sampled cmd (``reset_for_eval`` no-op)
+      - ``step_fn`` / ``clean_step_fn`` omit the disable flag so eval
+        rollouts behave like training (mid-episode resample fires per
+        ``cmd_resample_steps``)
+
+    Returns:
+        (step_fn, clean_step_fn, reset_fn) — three batched (vmap'd)
+        callables matching the signatures expected by the PPO loop.
+    """
+    # jax is lazy-imported here to match start_training's deferred-import
+    # pattern (keeps train.py module-import cheap when only the parser
+    # or the factory's pure-Python helpers are needed).
+    import jax  # noqa: WPS433
+
+    # Single source of truth for the pinned-vs-sentinel wiring decision.
+    # ``eval_step_kwargs`` is unit-tested independently of env construction.
+    step_kwargs = eval_step_kwargs(training_cfg.env)
+    clean_step_kwargs = {"disable_pushes": True, **step_kwargs}
+
+    def step_fn(state, action):
+        """Batched eval step (kwargs determined by eval_step_kwargs)."""
+        return jax.vmap(
+            lambda s, a: env.step(s, a, **step_kwargs)
+        )(state, action)
+
+    def clean_step_fn(state, action):
+        """Batched eval step with pushes disabled."""
+        return jax.vmap(
+            lambda s, a: env.step(s, a, **clean_step_kwargs)
+        )(state, action)
+
+    def reset_fn(rng):
+        """Batched eval reset.
+
+        Always uses ``reset_for_eval`` — it's a no-op when
+        ``eval_velocity_cmd < 0`` (delegates to ``reset``) so the
+        sentinel "eval = training" semantics are preserved.
+        """
+        rngs = jax.random.split(rng, eval_num_envs)
+        return jax.vmap(env.reset_for_eval)(rngs)
+
+    return step_fn, clean_step_fn, reset_fn
 
 
 def start_training(
     training_cfg: "TrainingConfig",
     wandb_tracker: Optional[WandbTracker] = None,
     checkpoint_dir: Optional[str] = None,
-    amp_data_path: Optional[str] = None,
     resume_checkpoint_path: Optional[str] = None,
     config_name: Optional[str] = None,
 ):
-    """Unified training using training_loop.py for both PPO-only and AMP+PPO.
-
-    This is the single training path for all modes:
-    - Stage 1: PPO-only (training_cfg.amp.enabled=False) - robot-native walking
-    - Stage 3: AMP+PPO (training_cfg.amp.enabled=True) - natural motion learning
+    """PPO training entry point.
 
     Args:
         training_cfg: Training configuration (single source of truth)
         wandb_tracker: Optional W&B tracker for logging
         checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
-        amp_data_path: Path to AMP reference data (overrides config if provided)
         resume_checkpoint_path: Path to checkpoint to resume training from
         config_name: Name of the config file (without extension), e.g., "ppo_walking"
     """
@@ -248,8 +321,23 @@ def start_training(
     import numpy as np
 
     from training.configs.training_config import get_robot_config
-    from policy_contract.spec_builder import build_policy_spec
     from policy_contract.calib import JaxCalibOps
+
+    def _to_yamlable(value: Any) -> Any:
+        """Recursively convert config dataclasses into YAML-safe primitives."""
+        if is_dataclass(value):
+            return {
+                f.name: _to_yamlable(getattr(value, f.name))
+                for f in fields(value)
+                if f.name != "_frozen"
+            }
+        if isinstance(value, tuple):
+            return [_to_yamlable(v) for v in value]
+        if isinstance(value, list):
+            return [_to_yamlable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _to_yamlable(v) for k, v in value.items()}
+        return value
 
     # Check JAX backend
     print(f"\n{'=' * 60}")
@@ -277,6 +365,12 @@ def start_training(
     print(
         f"✓ Environment created (obs_size={env.observation_size}, action_size={env.action_size})"
     )
+    realism_profile = load_training_realism_profile(training_cfg)
+    if realism_profile is not None:
+        print(
+            "✓ Realism profile loaded "
+            f"({realism_profile.profile_name}, schema={realism_profile.schema_version})"
+        )
 
     # Determine checkpoint directory
     final_checkpoint_dir = checkpoint_dir or training_cfg.checkpoints.dir
@@ -284,32 +378,30 @@ def start_training(
     # Create training job name (for checkpoint subdirectory)
     # Format: {config_name}_v{version}_{timestamp}-{wandb_run_id}
     # Example: ppo_walking_v01005_20251228_205534-uf665cr6
-    mode_suffix = "amp" if training_cfg.amp.enabled else "ppo"
     job_name = generate_job_name(
         version=training_cfg.version,
         config_name=config_name,
         wandb_tracker=wandb_tracker,
-        mode_suffix=mode_suffix,
+        mode_suffix="ppo",
     )
     job_checkpoint_dir = os.path.join(final_checkpoint_dir, job_name)
+    os.makedirs(job_checkpoint_dir, exist_ok=True)
 
     print(f"Training job: {job_name}")
     print(f"Checkpoints will be saved to: {job_checkpoint_dir}")
 
-    # Load reference motion data only if AMP enabled
-    ref_features = None
-    if training_cfg.amp.enabled:
-        ref_path = amp_data_path or training_cfg.amp.dataset_path
-        if ref_path is None:
-            raise ValueError(
-                "AMP mode requires reference motion data. "
-                "Set amp.dataset_path in config or pass --amp-data."
-            )
-        print(f"Loading reference motion data from: {ref_path}")
-        from training.amp.ref_features import load_reference_features
+    # Persist the effective training config next to checkpoints so later tools
+    # (for example bundle export) can auto-detect the exact run configuration.
+    training_config_snapshot_path = os.path.join(job_checkpoint_dir, "training_config.yaml")
+    with open(training_config_snapshot_path, "w", encoding="utf-8") as f:
+        import yaml
 
-        ref_features = load_reference_features(ref_path)
-        print(f"✓ Reference features: {ref_features.shape}")
+        yaml.safe_dump(
+            _to_yamlable(training_cfg),
+            f,
+            sort_keys=False,
+            allow_unicode=False,
+        )
 
     print(
         f"✓ Environment functions created (vmapped for {training_cfg.ppo.num_envs} envs)"
@@ -317,10 +409,9 @@ def start_training(
 
     # Policy contract fingerprint (stored in checkpoints to prevent silent resume drift).
     robot_cfg = get_robot_config()
-    policy_spec = build_policy_spec(
-        robot_name=robot_cfg.robot_name,
-        actuated_joint_specs=robot_cfg.actuated_joints,
-        action_filter_alpha=float(training_cfg.env.action_filter_alpha),
+    policy_spec = build_policy_spec_from_training_config(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
     )
     policy_spec_dict = policy_spec.to_json_dict()
 
@@ -333,6 +424,19 @@ def start_training(
         """Batched environment reset."""
         rngs = jax.random.split(rng, training_cfg.ppo.num_envs)
         return jax.vmap(env.reset)(rngs)
+
+    eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
+
+    # v0.20.1-smoke7: eval-cmd override + resample suppression.
+    # The decision rule (pinned vs sentinel) and the resulting step /
+    # reset closures are built by ``make_eval_env_fns`` (top of this
+    # module) so test_smoke7_eval_cmd_behavior.py can exercise the
+    # exact same factory used here without duplicating the wiring.
+    (
+        batched_eval_step_fn,
+        batched_eval_clean_step_fn,
+        batched_eval_reset_fn,
+    ) = make_eval_env_fns(env, training_cfg, eval_num_envs)
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
@@ -372,7 +476,6 @@ def start_training(
                 iteration=iteration,
                 metrics=metrics,
                 steps_per_sec=steps_per_sec,
-                use_amp=training_cfg.amp.enabled,
                 reward_terms=REWARD_TERM_KEYS,
             )
             if iteration == 1 and missing_terms:
@@ -414,23 +517,29 @@ def start_training(
         print(f"\nLoading checkpoint for resume: {resume_checkpoint_path}")
         resume_checkpoint = load_checkpoint(resume_checkpoint_path)
 
-    # Train using unified trainer
-    mode_str = "AMP+PPO" if training_cfg.amp.enabled else "PPO-only (Stage 1)"
     print("\n" + "=" * 60)
-    print(f"Starting unified training ({mode_str})...")
+    print("Starting PPO training...")
     print("=" * 60 + "\n")
 
     final_state = train(
         env_step_fn=batched_step_fn,
         env_reset_fn=batched_reset_fn,
         config=training_cfg,
-        ref_motion_data=ref_features,  # None for PPO-only
         callback=callback,
         resume_checkpoint=resume_checkpoint,
-        policy_init_action=JaxCalibOps.ctrl_to_policy_action(
-            spec=policy_spec,
-            ctrl_rad=jnp.asarray(env._default_joint_qpos, dtype=jnp.float32),
-        )
+        eval_env_step_fn=batched_eval_step_fn,
+        eval_env_step_fn_no_push=batched_eval_clean_step_fn,
+        eval_env_reset_fn=batched_eval_reset_fn,
+        # v0.20.1 v3-only env treats `action` as a bounded residual on top
+        # of the offline reference (target_q = q_ref + clip(action) * scale).
+        # iter-0 must therefore output zero so the rollout starts from
+        # bare-q_ref replay — this is the G6 contract in
+        # walking_training.md (v0.20.1 §) and what the pre-smoke wiring
+        # test (tests/test_v0201_env_zero_action.py) verifies.
+        # The legacy bias toward default_joint_qpos was only correct for
+        # the v0.19.5c standing path where action = absolute pose; under
+        # the residual contract it injects a non-zero residual at iter 0.
+        policy_init_action=jnp.zeros(env.action_size, dtype=jnp.float32)
         if resume_checkpoint is None
         else None,
     )
@@ -462,9 +571,6 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     Args:
         training_cfg: Training configuration to modify in-place
         args: Parsed command-line arguments
-
-    Raises:
-        ValueError: If AMP configuration is invalid (enabled but weight <= 0)
     """
     # PPO parameters
     if args.iterations is not None:
@@ -484,32 +590,40 @@ def override_config_with_cli(training_cfg: "TrainingConfig", args: argparse.Name
     if args.log_interval is not None:
         training_cfg.ppo.log_interval = args.log_interval
 
-    # AMP parameters
-    if args.disc_lr is not None:
-        training_cfg.amp.discriminator.learning_rate = args.disc_lr
-    if args.amp_data is not None:
-        training_cfg.amp.dataset_path = args.amp_data
-
     # Checkpoint parameters
     if args.checkpoint_dir is not None:
         training_cfg.checkpoints.dir = args.checkpoint_dir
     if args.checkpoint_interval is not None:
         training_cfg.checkpoints.interval = args.checkpoint_interval
 
-    # Validate AMP configuration (if enabled)
-    if training_cfg.amp.enabled and training_cfg.amp.weight <= 0:
-        raise ValueError(
-            f"Invalid AMP configuration: amp.enabled=True but amp.weight={training_cfg.amp.weight}. "
-            "Either set amp.weight > 0 or set amp.enabled=False in config."
-        )
-
 
 def main():
     """Main entry point."""
     args = parse_args()
 
-    # Load config file
+    # Load config file.
+    # v0.20.1: the previous default ``ppo_walking.yaml`` was deleted
+    # along with the v1/v2 reference stack.  ``DEFAULT_TRAINING_CONFIG_PATH``
+    # now points at ``ppo_walking_v0201_smoke.yaml`` which Task 3
+    # (open task #49) hasn't created yet.  If --config is omitted AND
+    # the default doesn't exist on disk, fail early with a clear
+    # message rather than fall through to a missing file.
     config_path = Path(args.config) if args.config else DEFAULT_TRAINING_CONFIG_PATH
+    if not config_path.exists():
+        print(
+            f"ERROR: Config file not found: {config_path}",
+            file=sys.stderr,
+        )
+        if not args.config:
+            print(
+                "  --config was omitted and the default "
+                f"({DEFAULT_TRAINING_CONFIG_PATH.name}) does not exist on disk.\n"
+                "  v0.20.1 cleanup deleted ppo_walking*.yaml; the v0.20.1 PPO\n"
+                "  smoke YAML is open task #49.  Pass --config explicitly,\n"
+                "  or land the smoke YAML first.",
+                file=sys.stderr,
+            )
+        sys.exit(2)
     print(f"Loading config from: {config_path}")
     training_cfg = load_training_config(config_path)
     training_cfg.config_path = str(config_path)
@@ -552,19 +666,11 @@ def main():
     print(f"{'=' * 60}")
     print(f"  Version: {training_cfg.version} ({training_cfg.version_name})")
     print(f"  PID: {os.getpid()}  (kill -9 {os.getpid()} to terminate)")
-    if training_cfg.amp.enabled:
-        mode_str = "AMP+PPO (JIT-compiled - FAST)"
-    else:
-        mode_str = "PPO-only (Stage 1: Robot-Native Walking)"
-    print(f"  Mode: {mode_str}")
     print(f"  Config: {config_path}")
     print(f"  Iterations: {training_cfg.ppo.iterations}")
     print(f"  Environments: {training_cfg.ppo.num_envs}")
     print(f"  Learning rate: {training_cfg.ppo.learning_rate}")
     print(f"  Seed: {training_cfg.seed}")
-    if training_cfg.amp.enabled:
-        print(f"  AMP weight: {training_cfg.amp.weight}")
-        print(f"  AMP data: {training_cfg.amp.dataset_path}")
     print(f"  Checkpoint dir: {training_cfg.checkpoints.dir}")
     print(f"{'=' * 60}\n")
 
@@ -587,12 +693,10 @@ def main():
         # Extract config name from config path (e.g., "ppo_walking" from "ppo_walking.yaml")
         config_name = config_path.stem if config_path else None
 
-        # Unified training for both PPO-only and AMP modes
         start_training(
             training_cfg=training_cfg,
             wandb_tracker=wandb_tracker,
             checkpoint_dir=args.checkpoint_dir,
-            amp_data_path=args.amp_data,
             resume_checkpoint_path=args.resume,
             config_name=config_name,
         )

@@ -2,25 +2,25 @@
 
 ## Executive Summary
 
-This document defines a comprehensive, stage-gated test strategy for the WildRobot project, enabling confident progression from MuJoCo model design through PPO + AMP training and ultimately sim-to-real deployment.
+This document defines a comprehensive, stage-gated test strategy for the WildRobot project, enabling confident progression from MuJoCo model design through PPO training and ultimately sim-to-real deployment.
 
-This version explicitly introduces **robot_config.yaml as the single runtime source of truth**, generated deterministically from `wildrobot.xml`, and defines mandatory **XML ↔ robot_config consistency contracts**.
+This version explicitly introduces **mujoco_robot_config.json as the single runtime source of truth**, generated deterministically from `wildrobot.xml`, and defines mandatory **XML ↔ robot_config consistency contracts**.
 
 ---
 
 ## Core Principles
 
 1. **Single Source of Truth at Runtime**
-   - All product code and test code MUST consume `robot_config.yaml`
+   - All product code and test code MUST consume `mujoco_robot_config.json`
    - Direct parsing of `wildrobot.xml` is only allowed inside the generator and its tests
 
 2. **Authoritative Authoring Artifact**
    - `wildrobot.xml` is the authoritative model definition
-   - Any semantic change to the robot must flow through regeneration of `robot_config.yaml`
+   - Any semantic change to the robot must flow through regeneration of `mujoco_robot_config.json`
 
 3. **Fail Fast on Structural Drift**
    - XML/config inconsistencies are treated as hard errors
-   - No training, reward, or AMP tests run if the contract fails
+   - No training or reward tests run if the contract fails
 
 
 ## Non-negotiables
@@ -32,7 +32,7 @@ Instead:
 - derive indices from the MuJoCo model once,
 - store them in a **schema contract artifact**,
 - assert contract stability in CI,
-- use the contract everywhere (env, reward, AMP features, MJX parity).
+- use the contract everywhere (env, reward, MJX parity).
 
 ### 2) Determinism and reproducibility
 Every training and validation run must record:
@@ -47,9 +47,7 @@ Every training and validation run must record:
 ### 3) Tests are stage-gated
 A test is not "nice to have." It is a gate for moving to the next stage:
 - Stage 1: PPO task learning
-- Stage 2: dataset generation
-- Stage 3: AMP
-- Stage 4+: style blending and sim-to-real
+- Stage 2: sim-to-real
 
 ---
 
@@ -58,7 +56,7 @@ A test is not "nice to have." It is a gate for moving to the next stage:
 **Inputs**
 - `assets/v1/wildrobot.xml` (MuJoCo model), referenced meshes and materials
 - environment scene XML (e.g. `assets/v1/scene_flat_terrain.xml`)
-- training config (`training/configs/ppo_walking.yaml`)
+- training config (`training/configs/ppo_walking_v0201_smoke.yaml`)
 - training and rollout code (`training/*`)
 
 **Outputs**
@@ -92,7 +90,7 @@ Recommended pytest markers:
 ## Layer 0: Schema Contract (Foundation)
 
 ### Objective
-Guarantee consistency between `wildrobot.xml` and `robot_config.yaml` and enforce config-only runtime access.
+Guarantee consistency between `wildrobot.xml` and `mujoco_robot_config.json` and enforce config-only runtime access.
 
 ### 0.1 Generation and Snapshot Tests
 
@@ -103,7 +101,7 @@ def test_deterministic_generation(self):
     Purpose: Verify schema generation is deterministic.
 
     Procedure:
-    1. Generate robot_config.yaml twice from the same XML
+    1. Generate mujoco_robot_config.json twice from the same XML
     2. Compare outputs
 
     Assertions:
@@ -122,13 +120,13 @@ def test_snapshot_consistency(self):
 
     Procedure:
     1. Regenerate config from current XML
-    2. Diff against committed robot_config.yaml
+    2. Diff against committed mujoco_robot_config.json
 
     Assertions:
     - Any difference fails with actionable diff message
     """
     regenerated = generate_robot_config("assets/v1/wildrobot.xml")
-    committed = load_yaml("assets/v1/robot_config.yaml")
+    committed = load_yaml("assets/v1/mujoco_robot_config.json")
     assert regenerated == committed, (
         "Schema mismatch! XML has changed. "
         "Run `python scripts/generate_config.py` if intentional."
@@ -257,9 +255,9 @@ def test_training_config_required_keys(self, training_config):
     Purpose: Verify all required config sections exist.
 
     Assertions:
-    - Required keys: env, ppo, amp, networks, reward_weights, checkpoints, logging
+    - Required keys: env, ppo, networks, reward_weights, checkpoints, logging
     """
-    required = ["env", "ppo", "amp", "networks", "reward_weights", "checkpoints", "logging"]
+    required = ["env", "ppo", "networks", "reward_weights", "checkpoints", "logging"]
     for key in required:
         assert key in training_config, f"Missing required key: {key}"
 ```
@@ -454,7 +452,7 @@ def test_actuator_isolation(self, mj_model, mj_data, robot_schema):
 
 ## Layer 3: State and Observation Correctness
 
-This layer ensures reward and AMP features read the right state.
+This layer ensures reward terms read the right state.
 
 ### 3.1 Finite Difference Velocity Cross-Check
 
@@ -1105,96 +1103,6 @@ def test_training_reaches_baseline(self, training_config):
 
 ---
 
-## Layer 7: AMP Integration Tests
-
-Only relevant once `amp.enabled: true`.
-
-### 7.1 Feature Parity
-
-**Test 7.1.1: Policy and Reference Features Match**
-```python
-def test_feature_dimension_parity(self, policy_feature_builder, ref_feature_builder):
-    """
-    Purpose: Verify policy and reference feature builders produce same dimensions.
-
-    Assertions:
-    - Output dimensions match
-    - Feature ordering is identical
-    """
-    policy_dim = policy_feature_builder.output_dim
-    ref_dim = ref_feature_builder.output_dim
-
-    assert policy_dim == ref_dim, f"Dimension mismatch: policy={policy_dim}, ref={ref_dim}"
-```
-
-### 7.2 AMP Mirror Symmetry
-
-**Test 7.2.1: Mirror Transform Correctness**
-```python
-def test_amp_mirror_symmetry(self):
-    """
-    Purpose: Verify mirror transform correctly swaps left/right.
-
-    Procedure:
-    1. Create reference features with known left/right asymmetry
-    2. Apply mirror transform
-    3. Verify left/right indices are swapped
-
-    Assertions:
-    - Left joint values become right joint values
-    - Right joint values become left joint values
-    - Symmetric values (e.g., base height) unchanged
-    - Mirrored + original gives 2x dataset size
-    """
-    from training.amp.amp_mirror import augment_with_mirror
-
-    # Create asymmetric test data
-    original = np.zeros((10, 29))  # 10 samples, 29 features
-    original[:, 0] = 1.0  # Left hip
-    original[:, 3] = 2.0  # Right hip
-
-    augmented = augment_with_mirror(original)
-
-    # Should have 2x samples
-    assert augmented.shape[0] == 20, f"Expected 20 samples, got {augmented.shape[0]}"
-
-    # Original samples preserved
-    assert np.allclose(augmented[:10], original)
-
-    # Mirrored samples have swapped left/right
-    # (specific indices depend on your feature layout)
-```
-
-### 7.3 Discriminator Health
-
-**Test 7.3.1: Discriminator Overfit Test**
-```python
-def test_discriminator_overfit(self, discriminator, tiny_dataset):
-    """
-    Purpose: Verify discriminator can learn on tiny dataset.
-
-    Procedure:
-    1. Train discriminator on 100 samples for 1000 steps
-    2. Check accuracy
-
-    Assertions:
-    - Accuracy > 0.95 on training set
-    - Loss converges
-
-    Thresholds:
-    - MIN_ACCURACY = 0.95
-    """
-    MIN_ACCURACY = 0.95
-
-    for _ in range(1000):
-        discriminator.train_step(tiny_dataset)
-
-    accuracy = discriminator.evaluate(tiny_dataset)
-    assert accuracy > MIN_ACCURACY, f"Discriminator failed to overfit: {accuracy}"
-```
-
----
-
 ## Layer 8: MJX Parity
 
 Purpose: ensure your JAX/MJX environment matches MuJoCo Python numerically.
@@ -1344,10 +1252,8 @@ Before real deployment, verify:
 
 | Stage | Required Layers | Notes |
 |-------|-----------------|-------|
-| Stage 1 (PPO walking) | 0, 1, 2, 3, 4, 5, 6 | No AMP |
-| Stage 2 (dataset) | 0-6 + 9 | Robustness for dataset diversity |
-| Stage 3 (AMP) | 0-8 + 9 | Feature parity and discriminator |
-| Stage 4+ (sim-to-real) | 0-10 | Full readiness pack |
+| Stage 1 (PPO walking) | 0, 1, 2, 3, 4, 5, 6 | |
+| Stage 2 (sim-to-real) | 0-10 | Full readiness pack |
 
 ---
 
@@ -1382,7 +1288,7 @@ def mj_data(mj_model):
 def training_config():
     """Load training config once per session."""
     from training.configs.training_config import load_training_config
-    return load_training_config("training/configs/ppo_walking.yaml")
+    return load_training_config("training/configs/ppo_walking_v0201_smoke.yaml")
 
 @pytest.fixture(scope="module")
 def env(training_config):

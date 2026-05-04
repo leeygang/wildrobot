@@ -1,0 +1,6 @@
+{
+  "default_profile": "v0.19.1_baseline",
+  "profiles": {
+    "v0.19.1_baseline": "assets/v2/realism_profile_v0.19.1.json"
+  }
+}

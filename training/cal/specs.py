@@ -52,8 +52,7 @@ class JointSpec:
         range_min: Minimum joint angle in radians
         range_max: Maximum joint angle in radians
         default_pos: Default position (from keyframe or qpos0)
-        mirror_sign: +1.0 for same-sign joints, -1.0 for inverted (mirrored) ranges
-        symmetry_pair: Name of paired joint (e.g., "right_hip_pitch" for "left_hip_pitch")
+        policy_action_sign: +1.0 for same-sign joints, -1.0 for inverted (mirrored) ranges
     """
 
     name: str
@@ -69,8 +68,7 @@ class JointSpec:
     default_pos: float
 
     # Symmetry handling
-    mirror_sign: float = 1.0  # +1.0 for same-sign, -1.0 for inverted
-    symmetry_pair: Optional[str] = None  # e.g., "left_hip_pitch" ↔ "right_hip_pitch"
+    policy_action_sign: float = 1.0  # +1.0 for same-sign, -1.0 for inverted
 
     @property
     def range_center(self) -> float:
@@ -568,13 +566,12 @@ class Pose3D:
         """Compute finite-difference velocity between two poses.
 
         Combines linvel_fd and angvel_fd into a single Velocity3D.
-        This is the primary method for computing velocity from pose history,
-        matching reference data computation for AMP parity.
+        This is the primary method for computing velocity from pose history.
 
         Args:
             prev: Previous pose (at time t - dt)
             dt: Time step in seconds
-            frame: Coordinate frame for output velocity (default HEADING_LOCAL for AMP)
+            frame: Coordinate frame for output velocity (default HEADING_LOCAL)
 
         Returns:
             Velocity3D with linear and angular velocity in specified frame
@@ -723,7 +720,6 @@ class FootSpec:
         body_id: Resolved MuJoCo body ID
         toe_geom_id: Resolved MuJoCo geom ID for toe contact
         heel_geom_id: Resolved MuJoCo geom ID for heel contact
-        symmetry_pair: Name of paired foot (e.g., "right_foot" for "left_foot")
     """
 
     name: str  # e.g., "left_foot"
@@ -731,7 +727,6 @@ class FootSpec:
     body_id: int  # Resolved via mj_name2id
     toe_geom_id: int  # Resolved from robot_config.feet.left_toe
     heel_geom_id: int  # Resolved from robot_config.feet.left_heel
-    symmetry_pair: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,104 @@
+{
+  "cfg": {
+    "cycle_time_s": 0.72,
+    "foot_step_height_m": 0.04,
+    "com_height_m": 0.45799999999999996,
+    "leg_length_m": 0.373
+  },
+  "geometry": {
+    "name": "wildrobot",
+    "total_failures": 0,
+    "in_scope_failures": 0,
+    "worst_stance_z": 0.0019443497442817345,
+    "worst_swing_z": 0.011687910888061127,
+    "failures": []
+  },
+  "fk_gait": {
+    "name": "wildrobot",
+    "vx": 0.15,
+    "duration_s": 22.32,
+    "touchdowns_left": 30,
+    "touchdowns_right": 31,
+    "touchdown_balance_ratio": 0.967741935483871,
+    "touchdown_rate_hz": 2.7329749103942653,
+    "step_length_mean_m": 0.0537528491230861,
+    "step_length_min_m": 0.052926416508853436,
+    "step_length_max_m": 0.054351503029465675,
+    "touchdown_speed_proxy_mps": 0.07345259400780134,
+    "swing_clearance_mean_m": 0.06604399730558277,
+    "swing_clearance_min_m": 0.06498809158802032,
+    "double_support_frac": 0.3333333333333333,
+    "foot_z_step_max_m": 0.014266513288021088
+  },
+  "smoothness": {
+    "name": "wildrobot",
+    "vx": 0.15,
+    "shared_leg_q_step_max_rad": 0.3155183494091034,
+    "pelvis_z_step_max_m": 0.0,
+    "swing_foot_z_step_max_m": 0.014266513288021088,
+    "contact_flips_per_cycle": 3.967741935483871
+  },
+  "normalized": {
+    "step_length_per_leg": 0.14410951507529787,
+    "swing_clearance_per_com_height": 0.1442008674794384,
+    "cadence_froude_norm": 0.5905190060103136,
+    "swing_foot_z_step_per_clearance": 0.21601529086754903
+  },
+  "dims": {
+    "leg_length_m": 0.373,
+    "com_height_m": 0.45799999999999996
+  },
+  "tb_cached_2xc": {
+    "source": "/home/leeygang/projects/wildrobot/tools/parity_report.json",
+    "fk_gait_metrics": {
+      "double_support_frac": 0.33707865168539325,
+      "duration_s": 21.3599796295166,
+      "foot_z_step_max_m": 0.010000020265579224,
+      "name": "toddlerbot_2xc",
+      "step_length_max_m": 0.05409837141633034,
+      "step_length_mean_m": 0.054093915779711836,
+      "step_length_min_m": 0.053976722061634064,
+      "swing_clearance_mean_m": 0.04999750701047606,
+      "swing_clearance_min_m": 0.049883633852005005,
+      "touchdown_balance_ratio": 0.9666666666666667,
+      "touchdown_rate_hz": 2.7621749188594724,
+      "touchdown_speed_proxy_mps": 0.07470842871480833,
+      "touchdowns_left": 29,
+      "touchdowns_right": 30,
+      "vx": 0.15
+    },
+    "smoothness_metrics": {
+      "contact_flips_per_cycle": 3.9775280898876404,
+      "name": "toddlerbot_2xc",
+      "pelvis_z_step_max_m": 0.0,
+      "shared_leg_q_step_max_rad": 0.6470704078674316,
+      "swing_foot_z_step_max_m": 0.010000020265579224,
+      "vx": 0.15
+    },
+    "normalized_fk_metrics": {
+      "achieved_forward_per_cmd": NaN,
+      "cadence_froude_norm": 0.4715456593386484,
+      "com_height_m": 0.2859,
+      "forward_speed_froude": 0.008022308435296872,
+      "leg_length_m": 0.2115,
+      "name": "toddlerbot_2xc",
+      "step_length_per_leg": 0.2557631951759425,
+      "swing_clearance_per_com_height": 0.17487760409400513,
+      "swing_foot_z_step_per_clearance": 0.20001037778711453,
+      "td_step_length_per_leg": NaN,
+      "terminal_drift_rate_per_leg_per_s": NaN,
+      "vx": 0.15
+    }
+  },
+  "scope": {
+    "measured": [
+      "P0",
+      "P1A",
+      "P2",
+      "size-normalised P1A/P2"
+    ],
+    "not_measured": [
+      "P1 closed-loop trackability"
+    ]
+  }
+}

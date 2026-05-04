@@ -8,8 +8,26 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 
-SUPPORTED_LAYOUT_IDS = {"wr_obs_v1"}
-SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1"}
+SUPPORTED_LAYOUT_IDS = {
+    "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
+    # v0.20.1 (high-confidence prep): the active locomotion contract.
+    # Strict superset of the deprecated wr_obs_v5_offline_ref (which
+    # was the same channel set without the proprio-history stack).
+    # The actor needs short-horizon kinematic history to estimate
+    # base velocity (lin_vel is privileged-only); v5 was removed
+    # along with the deprecation.  See spec_builder.py and
+    # training/docs/v0201_env_wiring.md §5.
+    "wr_obs_v6_offline_ref_history",
+}
+# Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
+# channels that benefit from history (joint_pos + joint_vel + gyro +
+# foot_switches + prev_action).  Computed at build time from action_dim.
+# Bumped 3 → 15 in the v0.20.1 ToddlerBot-alignment pass
+# (training/docs/walking_training.md Appendix A.1) to match
+# ToddlerBot c_frame_stack.  Must stay in sync with
+# training/envs/env_info.py PROPRIO_HISTORY_FRAMES.
+PROPRIO_HISTORY_FRAMES: int = 15
+SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1", "pos_target_home_v1"}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
 # Joint range validation:
@@ -32,7 +50,7 @@ class ModelSpec:
 class JointSpec:
     range_min_rad: float
     range_max_rad: float
-    mirror_sign: float
+    policy_action_sign: float
     max_velocity_rad_s: float
 
 
@@ -104,7 +122,7 @@ class PolicySpec:
                     name: {
                         "range_min_rad": joint.range_min_rad,
                         "range_max_rad": joint.range_max_rad,
-                        "mirror_sign": joint.mirror_sign,
+                        "policy_action_sign": joint.policy_action_sign,
                         "max_velocity_rad_s": joint.max_velocity_rad_s,
                     }
                     for name, joint in self.robot.joints.items()
@@ -317,6 +335,113 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
                 f"  expected={expected}\n"
                 f"  got={got}"
             )
+    elif obs.layout_id == "wr_obs_v2":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("capture_point_error", 2),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v2':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v3":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("gait_clock", 4),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v3':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v4":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("loc_ref_stance_foot", 1),
+            ("loc_ref_next_foothold", 2),
+            ("loc_ref_swing_pos", 3),
+            ("loc_ref_swing_vel", 3),
+            ("loc_ref_pelvis_targets", 3),
+            ("loc_ref_history", 4),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v4':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v6_offline_ref_history":
+        proprio_bundle = (
+            3  # angvel
+            + 4  # foot_switches
+            + 3 * int(model.action_dim)  # joint_pos + joint_vel + prev_action
+        )
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("loc_ref_stance_foot", 1),
+            ("loc_ref_next_foothold", 2),
+            ("loc_ref_swing_pos", 3),
+            ("loc_ref_swing_vel", 3),
+            ("loc_ref_pelvis_targets", 3),
+            ("loc_ref_history", 4),
+            ("loc_ref_q_ref", int(model.action_dim)),
+            ("loc_ref_pelvis_pos", 3),
+            ("loc_ref_pelvis_vel", 3),
+            ("loc_ref_left_foot_pos", 3),
+            ("loc_ref_right_foot_pos", 3),
+            ("loc_ref_left_foot_vel", 3),
+            ("loc_ref_right_foot_vel", 3),
+            ("loc_ref_contact_mask", 2),
+            # 3 past proprio bundles, oldest -> newest, flattened.  Does
+            # NOT duplicate the current frame (already present in the
+            # joint_pos/joint_vel/foot_switches/prev_action/angvel slots
+            # above) — only the past N frames are appended.
+            ("proprio_history", PROPRIO_HISTORY_FRAMES * proprio_bundle),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v6_offline_ref_history':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
 
     total = 0
     for idx, field in enumerate(obs.layout):
@@ -401,7 +526,9 @@ def _parse_robot(data: Dict[str, Any]) -> RobotSpec:
         joints[name] = JointSpec(
             range_min_rad=_require_float(spec, "range_min_rad", context=f"robot.joints['{name}']"),
             range_max_rad=_require_float(spec, "range_max_rad", context=f"robot.joints['{name}']"),
-            mirror_sign=_require_float(spec, "mirror_sign", context=f"robot.joints['{name}']"),
+            policy_action_sign=_require_float(
+                spec, "policy_action_sign", context=f"robot.joints['{name}']"
+            ),
             max_velocity_rad_s=_require_float(spec, "max_velocity_rad_s", context=f"robot.joints['{name}']"),
         )
 

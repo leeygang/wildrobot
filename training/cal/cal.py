@@ -137,8 +137,7 @@ class ControlAbstractionLayer:
                 range_min=joint_range[0],
                 range_max=joint_range[1],
                 default_pos=0.0,  # Will be updated from keyframe
-                mirror_sign=entry.get("mirror_sign", 1.0),
-                symmetry_pair=entry.get("symmetry_pair"),
+                policy_action_sign=entry.get("policy_action_sign", 1.0),
             )
 
             # Get ctrl and force ranges from MuJoCo model
@@ -162,7 +161,7 @@ class ControlAbstractionLayer:
                 name=name,
                 actuator_id=actuator_id,
                 joint_spec=joint_spec,
-                actuator_type=ActuatorType(entry.get("type", "position")),
+                actuator_type=ActuatorType.POSITION,
                 force_range=force_range,
                 max_velocity=entry.get("max_velocity", 10.0),
                 kp=kp,
@@ -182,7 +181,7 @@ class ControlAbstractionLayer:
         2. qpos0 (model default)
 
         This is the SINGLE SOURCE OF TRUTH for default pose.
-        No duplication in robot_config.yaml.
+        No duplication in mujoco_robot_config.json.
         """
         mj_model = self._mj_model
 
@@ -228,8 +227,7 @@ class ControlAbstractionLayer:
                 range_min=joint_spec.range_min,
                 range_max=joint_spec.range_max,
                 default_pos=float(self._default_qpos[i]),
-                mirror_sign=joint_spec.mirror_sign,
-                symmetry_pair=joint_spec.symmetry_pair,
+                policy_action_sign=joint_spec.policy_action_sign,
             )
 
             # Create new ActuatorSpec with updated JointSpec
@@ -262,8 +260,10 @@ class ControlAbstractionLayer:
         )
         self._ctrl_spans = jnp.array([spec.ctrl_span for spec in self._actuator_specs])
 
-        # Mirror signs for symmetry correction
-        self._mirror_signs = jnp.array([spec.mirror_sign for spec in self._joint_specs])
+        # Policy action signs for symmetry correction
+        self._policy_action_signs = jnp.array(
+            [spec.policy_action_sign for spec in self._joint_specs]
+        )
 
         # qpos and qvel addresses
         self._actuator_qpos_addrs = jnp.array(
@@ -287,13 +287,6 @@ class ControlAbstractionLayer:
         self._actuator_ids = jnp.array(
             [spec.actuator_id for spec in self._actuator_specs]
         )
-
-        # Build symmetry swap indices for get_symmetric_action
-        self._symmetry_swap_indices = self._build_symmetry_swap_indices()
-
-        # Symmetry flip signs (for joints that flip sign on mirror, e.g., roll joints)
-        # For now, use 1.0 for all (no sign flip on swap)
-        self._symmetry_flip_signs = jnp.ones(self.num_actuators)
 
         # Validate configuration
         self._validate_specs()
@@ -337,18 +330,6 @@ class ControlAbstractionLayer:
                 "CAL configuration errors:\n" + "\n".join(f"  - {e}" for e in errors)
             )
 
-    def _build_symmetry_swap_indices(self) -> jnp.ndarray:
-        """Build indices for swapping left/right joints."""
-        indices = list(range(self.num_actuators))
-
-        for i, spec in enumerate(self._joint_specs):
-            if spec.symmetry_pair and spec.symmetry_pair in self._joint_specs_by_name:
-                pair_spec = self._joint_specs_by_name[spec.symmetry_pair]
-                pair_idx = self._joint_specs.index(pair_spec)
-                indices[i] = pair_idx
-
-        return jnp.array(indices)
-
     # =========================================================================
     # Properties
     # =========================================================================
@@ -389,7 +370,7 @@ class ControlAbstractionLayer:
 
         This method:
         1. Clips action to [-1, 1] range (defensive - NN can exceed bounds)
-        2. Applies symmetry correction (mirror_sign) for mirrored joint ranges
+        2. Applies symmetry correction (policy_action_sign) for mirrored joint ranges
         3. Denormalizes from [-1, 1] to physical ctrl range
 
         Args:
@@ -412,7 +393,7 @@ class ControlAbstractionLayer:
         action = jnp.clip(action, -1.0, 1.0)
 
         # Apply symmetry correction for mirrored joint ranges
-        corrected = action * self._mirror_signs
+        corrected = action * self._policy_action_signs
 
         # Denormalize: [-1, 1] → actual control range
         ctrl = corrected * self._ctrl_spans + self._ctrl_centers
@@ -456,8 +437,8 @@ class ControlAbstractionLayer:
         """
         # Normalize to [-1, 1]
         normalized = (ctrl - self._ctrl_centers) / (self._ctrl_spans + 1e-6)
-        # Reverse mirror correction
-        return normalized * self._mirror_signs
+        # Reverse symmetry correction (signs are +/-1, so multiply again)
+        return normalized * self._policy_action_signs
 
     def ctrl_to_physical_angles(self, ctrl: jax.Array) -> jax.Array:
         """Extract physical joint angles from MuJoCo ctrl.
@@ -559,38 +540,6 @@ class ControlAbstractionLayer:
             torques = torques / (self._force_limits + 1e-6)
 
         return torques
-
-    # =========================================================================
-    # Symmetry Utilities
-    # =========================================================================
-
-    def get_symmetric_action(
-        self,
-        action: jax.Array,
-        swap_left_right: bool = True,
-    ) -> jax.Array:
-        """Get action for symmetric (mirrored) pose.
-
-        Used for:
-        - Data augmentation (mirror reference motions)
-        - Symmetry tests (verify left/right equivalence)
-
-        Args:
-            action: Original action
-            swap_left_right: Swap left/right joint values
-
-        Returns:
-            Mirrored action
-        """
-        if swap_left_right:
-            # Swap left ↔ right indices
-            mirrored = action[self._symmetry_swap_indices]
-        else:
-            mirrored = action
-
-        # Apply sign correction for roll joints (which flip sign on mirror)
-        mirrored = mirrored * self._symmetry_flip_signs
-        return mirrored
 
     # =========================================================================
     # Trajectory Control (Sim2Real Bridge)
@@ -819,14 +768,14 @@ class ControlAbstractionLayer:
         print("-" * 80)
         print(
             f"{'Name':<20} {'Range':<20} {'Center':>8} {'Span':>8} "
-            f"{'Mirror':>7} {'Default':>8}"
+            f"{'ActSign':>7} {'Default':>8}"
         )
         print("-" * 80)
         for spec in self._joint_specs:
             print(
                 f"{spec.name:<20} [{spec.range_min:>6.3f}, {spec.range_max:>6.3f}] "
                 f"{spec.range_center:>8.3f} {spec.range_span:>8.3f} "
-                f"{spec.mirror_sign:>7.1f} {spec.default_pos:>8.4f}"
+                f"{spec.policy_action_sign:>7.1f} {spec.default_pos:>8.4f}"
             )
 
         print("\nActuator Specifications:")
@@ -874,7 +823,6 @@ class ControlAbstractionLayer:
                 heel_geom_id=mujoco.mj_name2id(
                     self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, left_heel
                 ),
-                symmetry_pair="right_foot",
             ),
             FootSpec(
                 name="right_foot",
@@ -888,7 +836,6 @@ class ControlAbstractionLayer:
                 heel_geom_id=mujoco.mj_name2id(
                     self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, right_heel
                 ),
-                symmetry_pair="left_foot",
             ),
         ]
 
@@ -947,7 +894,7 @@ class ControlAbstractionLayer:
     ) -> jax.Array:
         """Get foot contact values with per-geom granularity.
 
-        Use this for AMP features where per-contact-point detail matters.
+        Use this when per-contact-point detail matters.
         For reward computation (per-foot totals), use get_aggregated_foot_contacts() instead.
 
         Args:
@@ -979,7 +926,7 @@ class ControlAbstractionLayer:
 
         Use this for reward computation where you need per-foot totals
         for threshold comparison (slip gating, clearance, gait periodicity).
-        For AMP features (per-geom detail), use get_geom_based_foot_contacts() instead.
+        For per-geom detail, use get_geom_based_foot_contacts() instead.
 
         Args:
             data: MJX simulation data

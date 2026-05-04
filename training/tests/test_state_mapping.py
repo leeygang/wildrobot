@@ -2,7 +2,7 @@
 """
 Layer 3: State and Observation Correctness Tests
 
-This module ensures reward and AMP features read the right state.
+This module ensures reward terms read the right state.
 Tests velocity cross-checks, contact force validation, and joint causality.
 
 Tier: T1 (PR gate)

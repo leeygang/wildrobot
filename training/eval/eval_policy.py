@@ -88,6 +88,7 @@ def _collect_eval_rollout(
 
     traj = TrajectoryBatch(
         obs=rollout["obs"],
+        critic_obs=rollout["obs"],
         actions=rollout["action"],
         log_probs=rollout["log_prob"],
         values=rollout["value"],
@@ -98,9 +99,6 @@ def _collect_eval_rollout(
         bootstrap_value=jnp.zeros((rollout["obs"].shape[1],), dtype=jnp.float32),
         metrics_vec=rollout["metrics_vec"],
         step_counts=rollout["step_count"],
-        foot_contacts=None,
-        root_heights=None,
-        prev_joint_positions=None,
     )
 
     return traj, final_state
@@ -214,8 +212,15 @@ def main() -> int:
     training_cfg = load_training_config(config_path)
     compare_rollout_steps = int(training_cfg.ppo.rollout_steps)
 
-    # Load robot config (required for env init)
-    robot_cfg_path = Path("assets/v1/robot_config.yaml")
+    # Load robot config (required for env init, variant-aware)
+    robot_cfg_path = Path(training_cfg.env.robot_config_path)
+    if not robot_cfg_path.is_absolute():
+        robot_cfg_path = project_root / robot_cfg_path
+    if not robot_cfg_path.exists():
+        raise FileNotFoundError(
+            f"Robot config not found: {robot_cfg_path} "
+            "(check env.assets_root or env.robot_config_path in the eval config)"
+        )
     load_robot_config(robot_cfg_path)
 
     training_cfg.ppo.num_envs = int(args.num_envs)

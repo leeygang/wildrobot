@@ -1,0 +1,288 @@
+# =============================================================================
+# WildRobot PPO Standing Config (v0.14.6)
+# =============================================================================
+# Stage 1: Standing robustness with strong push disturbances (No AMP)
+#
+# Goal: Robot maintains balance under stronger lateral pushes.
+# Exit Criteria: Fall rate < 10%, episode length > 350 steps
+#
+# Usage:
+#   uv run python training/train.py --config training/configs/ppo_standing_push.yaml
+#
+# Total steps = iterations × num_envs × rollout_steps
+# =============================================================================
+
+version: "0.14.6"
+version_name: "Standing pushes (pure PPO at calibrated stepping regime)"
+
+seed: 42
+
+# =============================================================================
+# Environment
+# =============================================================================
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination
+  target_height: 0.44
+  # Encourage exploring a lower stance by rewarding height near target_height
+  # (two-sided shaping instead of the default one-sided "only penalize too low").
+  height_target_two_sided: true
+  min_height: 0.40
+  collapse_height_buffer: 0.03
+  collapse_height_sigma: 0.03
+  collapse_vz_gate_band: 0.07
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  # Commands - standing only
+  min_velocity: 0.0
+  max_velocity: 0.0
+
+  # Contacts
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Action filtering (alpha=0 disables filtering)
+  # NOTE: This is part of the policy_contract hash, so changing it requires a fresh
+  # run (or a matching checkpoint trained with the same value).
+  action_filter_alpha: 0.6
+
+  # M2: Joint-heuristic base controller + gated residual authority
+  # Kept for rollback/reference, but disabled for the next pure-PPO stepping run.
+  base_ctrl_enabled: false
+  base_ctrl_pitch_kp: 0.20
+  base_ctrl_pitch_kd: 0.04
+  base_ctrl_roll_kp: 0.20
+  base_ctrl_roll_kd: 0.04
+  base_ctrl_hip_pitch_gain: 1.0
+  base_ctrl_ankle_pitch_gain: 0.7
+  base_ctrl_hip_roll_gain: 1.0
+  # Lower clip/authority to avoid action saturation (keeps recovery bursts, but less clipping).
+  base_ctrl_action_clip: 0.25
+  residual_scale_min: 0.20
+  residual_scale_max: 0.85
+  residual_gate_power: 1.00
+
+  # M3 foot-placement FSM: kept for rollback/reference, but disabled for the
+  # next run. The next training step is pure PPO at the calibrated stepping
+  # regime with full policy authority.
+  fsm_enabled: false
+  fsm_trigger_threshold: 0.30
+  fsm_recover_threshold: 0.15
+  fsm_trigger_hold_ticks: 1
+  fsm_touch_hold_ticks: 1
+  fsm_swing_timeout_ticks: 10
+  fsm_x_nominal_m: 0.0
+  fsm_y_nominal_m: 0.125
+  fsm_k_lat_vel: 0.20
+  fsm_k_roll: 0.12
+  fsm_k_pitch: 0.05
+  fsm_k_fwd_vel: 0.05
+  fsm_x_step_min_m: -0.08
+  fsm_x_step_max_m: 0.12
+  fsm_y_step_inner_m: 0.08
+  fsm_y_step_outer_m: 0.22
+  fsm_step_max_delta_m: 0.16
+  fsm_swing_height_m: 0.05
+  fsm_swing_height_need_step_mult: 0.5
+  fsm_swing_duration_ticks: 10
+  fsm_swing_x_to_hip_pitch: 0.35
+  fsm_swing_y_to_hip_roll: 0.40
+  fsm_swing_z_to_knee: 0.55
+  fsm_swing_z_to_ankle: 0.25
+  # Keep full residual authority if FSM is later re-enabled as a guide.
+  fsm_resid_scale_swing: 1.00
+  fsm_resid_scale_stance: 1.00
+  fsm_resid_scale_recover: 1.00
+  fsm_arm_enabled: true
+  fsm_arm_need_step_threshold: 0.45
+  fsm_arm_k_roll: 0.06
+  fsm_arm_k_roll_rate: 0.03
+  fsm_arm_k_pitch_rate: 0.02
+  fsm_arm_max_delta_rad: 0.18
+
+  # Disturbance pushes: calibrated stepping-pressure regime from the v0.13.9
+  # force sweep. The bracing ceiling is ~9N at 10 control steps, so this run
+  # trains slightly above that threshold without constraining the policy.
+  push_enabled: true
+  push_start_step_min: 30
+  push_start_step_max: 300
+  push_duration_steps: 10
+  push_force_min: 10.0
+  push_force_max: 10.0
+  push_bodies: [waist, upperbody]
+
+# =============================================================================
+# PPO Algorithm (task learning)
+# =============================================================================
+ppo:
+
+  num_envs: 512
+  rollout_steps: 256 
+  iterations: 200
+
+  # Stabilize PPO updates (reduce late-training regressions)
+  learning_rate: 1e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  # More conservative PPO trust region for stability under pushes.
+  # Note: smaller epsilon may increase the *reported* clip_fraction, but usually reduces destructive updates.
+  clip_epsilon: 0.15
+  entropy_coef: 0.005
+  value_loss_coef: 0.5
+
+  epochs: 2
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  # P0/P1 stability guardrails
+  target_kl: 0.02
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 3.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  entropy_schedule_end_factor: 0.4
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 128
+    num_steps: 500
+    deterministic: true
+
+  rollback:
+    enabled: true
+    patience: 2
+    success_rate_drop_threshold: 0.05
+    lr_factor: 0.5
+
+  log_interval: 10
+
+# =============================================================================
+# AMP (disabled for Stage 1, enabled for Stage 3)
+# =============================================================================
+amp:
+  enabled: false
+
+  dataset_path: null
+  weight: 0.0
+
+  discriminator:
+    learning_rate: 8e-5
+    batch_size: 256
+    updates_per_ppo_update: 2
+    r1_gamma: 10.0
+    input_noise_std: 0.03
+
+  feature_config:
+    use_finite_diff_vel: true
+    use_estimated_contacts: true
+    mask_waist: false
+    enable_mirror_augmentation: false
+
+  targets:
+    disc_acc_min: 0.55
+    disc_acc_max: 0.80
+
+# =============================================================================
+# Networks (Option A: algorithm-agnostic)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+  discriminator:
+    hidden_sizes: [512, 256]
+    activation: relu
+
+# =============================================================================
+# Task Reward Weights (Environment-side reward only)
+# =============================================================================
+reward_weights:
+  # Standing + pushes with stepping allowed:
+  # - Reduce "don't move" incentive when cmd=0 by downweighting vel tracking.
+  # - Encourage upright recovery and planted steps (more slip penalty).
+  # - Keep reward focused on recovery outcome, not gait-style proxies.
+  tracking_lin_vel: 0.1
+  lateral_velocity: -0.5
+  base_height: 2.0
+  orientation: -4.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  collapse_height: -0.5
+  collapse_vz: -0.3
+  angular_velocity: -0.1
+
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+
+  slip: -1.0
+  # Retained as foot-place geometry, not as a standalone stance penalty target.
+  stance_width_target: 0.23
+
+  forward_velocity_scale: 4.0
+
+  # Encourage returning to default pose once upright after a push.
+  posture: 0.3
+  posture_sigma: 0.40
+  posture_gate_pitch: 0.35
+  posture_gate_roll: 0.35
+
+  # M3: event-based stepping trait shaping, gated by "need to step".
+  step_event: 0.25
+  foot_place: 0.65
+  foot_place_sigma: 0.14
+  foot_place_k_lat_vel: 0.15
+  foot_place_k_roll: 0.10
+  foot_place_k_pitch: 0.05
+  foot_place_k_fwd_vel: 0.05
+  step_need_pitch: 0.35
+  step_need_roll: 0.35
+  step_need_lat_vel: 0.30
+  step_need_pitch_rate: 1.00
+
+# =============================================================================
+# Reward Composition (Trainer-side)
+# =============================================================================
+reward:
+  task_weight: 1.0
+  amp_weight: 0.0
+  task_reward_clip: null
+  amp_reward_clip: [0.0, 1.0]
+
+# =============================================================================
+# Checkpoints
+# =============================================================================
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+# =============================================================================
+# Logging
+# =============================================================================
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+
+# =============================================================================
+# Quick Verify (Smoke Test)
+# =============================================================================
+quick_verify:
+  ppo:
+    num_envs: 8
