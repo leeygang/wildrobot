@@ -312,8 +312,12 @@ def ensure_root_body_pose(xml_file):
         print("No waist body found")
         return
 
-    # Ensure the root body sits at the expected pose now that the floating base wrapper is gone.
-    waist.set("pos", "0 0 0.5")
+    # Spawn pose for keyframe-less loads. Sits ~9 mm above the home keyframe's
+    # settled equilibrium (pelvis_z = 0.4714 m as of the 2026-05 ankle_roll
+    # model) so the robot starts above the floor without a visible drop.
+    # Re-tune if a future kinematic change shifts the home equilibrium by more
+    # than ~5 mm.
+    waist.set("pos", "0 0 0.48")
 
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
