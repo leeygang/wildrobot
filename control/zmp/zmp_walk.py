@@ -265,6 +265,17 @@ class ZMPWalkGenerator:
     _DEFAULT_SCENE_XML = "assets/v2/scene_flat_terrain.xml"
     _DEFAULT_ROBOT_CONFIG = "assets/v2/mujoco_robot_config.json"
 
+    # Sagittal IK + hip-roll IK fill these 8 leg joints in PolicySpec
+    # actuator order; all other actuators (waist, arms, ankle_roll) keep
+    # the default-zero q_ref slot.  ankle_roll was added by the v20
+    # ankle_roll merge; the ZMP family does not plan a non-zero roll
+    # target, so it remains at 0 and the policy's residual is the only
+    # control signal on that joint.
+    _LEG_JOINT_NAMES = (
+        "left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch",
+        "right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch",
+    )
+
     def __init__(self, config: ZMPWalkConfig | None = None) -> None:
         self.cfg = config or ZMPWalkConfig()
         self.planner = ZMPPlanner()
@@ -272,6 +283,7 @@ class ZMPWalkGenerator:
         # the MJCF parse cost when ``generate(0.0)`` is called repeatedly
         # for standing references.
         self._fk_assets: Optional[dict] = None
+        self._actuator_layout: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Phase 3: TB-style realized-reference enrichment
@@ -281,6 +293,55 @@ class ZMPWalkGenerator:
     # produces ``q_ref``, run fixed-base FK frame-by-frame to harvest
     # realized body / site quantities the parity tool, RSI init, and
     # debugging consumers can read directly without re-FKing.
+
+    def _load_actuator_layout(self) -> dict:
+        """Resolve PolicySpec actuator order + leg-joint slots from the robot config.
+
+        Returns a dict with:
+          * ``n_joints`` — total actuator count (= ``q_ref.shape[1]``)
+          * ``actuator_names`` — full list in PolicySpec order
+          * ``leg_idx`` — name -> slot index for the 8 leg joints
+          * ``leg_clip_min`` / ``leg_clip_max`` — length-``n_joints``
+            arrays with leg slots set to the joint's MJCF range and all
+            other slots at ``±inf`` (so a single ``np.clip`` over the
+            full ``q_ref`` only constrains the IK-driven leg slots).
+
+        Joint ranges are read from ``mujoco_robot_config.json`` (degrees)
+        and converted to radians.  Cached after first call.
+        """
+        if self._actuator_layout is not None:
+            return self._actuator_layout
+
+        config_path = Path(self._DEFAULT_ROBOT_CONFIG)
+        with open(config_path) as f:
+            spec = json.load(f)
+        actuator_specs = spec["actuated_joint_specs"]
+        actuator_names: List[str] = [j["name"] for j in actuator_specs]
+
+        missing = [n for n in self._LEG_JOINT_NAMES if n not in actuator_names]
+        if missing:
+            raise RuntimeError(
+                f"mujoco_robot_config.json missing leg joints required by ZMP IK: {missing}"
+            )
+        leg_idx = {n: actuator_names.index(n) for n in self._LEG_JOINT_NAMES}
+
+        n_joints = len(actuator_names)
+        leg_clip_min = np.full(n_joints, -np.inf, dtype=np.float32)
+        leg_clip_max = np.full(n_joints, np.inf, dtype=np.float32)
+        for joint_name in self._LEG_JOINT_NAMES:
+            slot = leg_idx[joint_name]
+            rng_deg = actuator_specs[slot]["range"]
+            leg_clip_min[slot] = float(np.deg2rad(rng_deg[0]))
+            leg_clip_max[slot] = float(np.deg2rad(rng_deg[1]))
+
+        self._actuator_layout = {
+            "actuator_names": actuator_names,
+            "n_joints": n_joints,
+            "leg_idx": leg_idx,
+            "leg_clip_min": leg_clip_min,
+            "leg_clip_max": leg_clip_max,
+        }
+        return self._actuator_layout
 
     def _load_fk_assets(self) -> dict:
         """Lazily load and cache the MJCF + ctrl mapping for FK replay."""
@@ -770,17 +831,24 @@ class ZMPWalkGenerator:
                 stance_out[idx] = 1  # right
 
         # --- Solve IK ---
+        # Resolve leg-joint slot indices from the PolicySpec actuator
+        # order; non-leg slots (waist, arms, ankle_roll) stay at the
+        # default-zero q_ref initialization.  The v20 ankle_roll merge
+        # added two actuators that the ZMP family does not plan for —
+        # they are intentionally left at 0 here.
+        layout = self._load_actuator_layout()
+        n_joints = layout["n_joints"]
+        leg_idx = layout["leg_idx"]
         n = n_total
-        n_joints = 19
         q_ref = np.zeros((n, n_joints), dtype=np.float32)
 
         for i in range(n):
             pelvis_x = com_world[i, 0]
             com_y = com_world[i, 1]
 
-            for side, foot_world_i, indices in [
-                ("left", left_world[i], [0, 2, 4, 6]),
-                ("right", right_world[i], [1, 3, 5, 7]),
+            for side, foot_world_i in [
+                ("left", left_world[i]),
+                ("right", right_world[i]),
             ]:
                 lat = cfg.hip_lateral_offset_m
                 hip_y = com_y + (lat if side == "left" else -lat)
@@ -819,25 +887,27 @@ class ZMPWalkGenerator:
                 hip_r = np.arctan2(foot_rel_y, -hip_to_foot_z)
                 hip_r = np.clip(hip_r, -0.15, 0.15)
 
-                # Apply WildRobot sign conventions (from nominal_ik_adapter.py):
+                # Apply WildRobot sign conventions (from
+                # nominal_ik_adapter.py): the hip-pitch and hip-roll
+                # axes are mirrored across L/R in the MJCF, so the
+                # left side negates both; knee + ankle_pitch share
+                # sign across L/R.
                 if side == "left":
-                    q_ref[i, indices[0]] = -hip_p
-                    q_ref[i, indices[1]] = -hip_r
+                    q_ref[i, leg_idx["left_hip_pitch"]] = -hip_p
+                    q_ref[i, leg_idx["left_hip_roll"]] = -hip_r
+                    q_ref[i, leg_idx["left_knee_pitch"]] = knee_p
+                    q_ref[i, leg_idx["left_ankle_pitch"]] = ank_p
                 else:
-                    q_ref[i, indices[0]] = hip_p
-                    q_ref[i, indices[1]] = hip_r
-                q_ref[i, indices[2]] = knee_p
-                q_ref[i, indices[3]] = ank_p
+                    q_ref[i, leg_idx["right_hip_pitch"]] = hip_p
+                    q_ref[i, leg_idx["right_hip_roll"]] = hip_r
+                    q_ref[i, leg_idx["right_knee_pitch"]] = knee_p
+                    q_ref[i, leg_idx["right_ankle_pitch"]] = ank_p
 
-        # Safety clip — catches any residual IK rounding.
-        joint_limits_rad = np.array([
-            [-0.5236, 1.5708], [-1.5708, 0.5236],
-            [-1.571, 0.175], [-0.175, 1.571],
-            [0.0, 2.094], [0.0, 2.094],   # knee 120° (was 80° pre-2026-04-25)
-            [-0.698, 0.785], [-0.698, 0.785],
-        ], dtype=np.float32)
-        for j in range(8):
-            q_ref[:, j] = np.clip(q_ref[:, j], joint_limits_rad[j, 0], joint_limits_rad[j, 1])
+        # Safety clip — catches any residual IK rounding.  Joint ranges
+        # are read from ``mujoco_robot_config.json`` (radians) by
+        # ``_load_actuator_layout``; non-leg slots use ``±inf`` so this
+        # single clip is a no-op outside the leg slots.
+        np.clip(q_ref, layout["leg_clip_min"], layout["leg_clip_max"], out=q_ref)
 
         # Foot positions stored COM-relative (bounded across cycles).
         left_out = left_world.copy()
@@ -897,9 +967,13 @@ class ZMPWalkGenerator:
         """Generate a single-frame standing posture."""
         cfg = self.cfg
         n = 1
-        n_joints = 19
+        n_joints = self._load_actuator_layout()["n_joints"]
 
-        # Standing: straight legs, both feet on ground
+        # Standing: straight legs, both feet on ground.  All actuator
+        # slots stay at zero — this is the legacy convention from
+        # before the v20 ankle_roll merge and is preserved here so
+        # the standing keyframe behavior is unchanged for a 21-wide
+        # q_ref (waist, arms, ankle_roll all at zero).
         q_ref = np.zeros((n, n_joints), dtype=np.float32)
         phase = np.array([0.0], dtype=np.float32)
         stance = np.array([0.0], dtype=np.float32)  # left stance
@@ -1157,7 +1231,7 @@ class ZMPWalkGenerator:
             robot="wildrobot_v2",
             dt=self.cfg.dt_s,
             cycle_time=self.cfg.cycle_time_s,
-            n_joints=19,
+            n_joints=self._load_actuator_layout()["n_joints"],
             command_range_vx=command_range_vx,
             command_interval=interval,
         )

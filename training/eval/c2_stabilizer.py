@@ -10,8 +10,13 @@ Three bounded feedback channels, each with a hard clip:
 
   - Torso pitch PD: K_p * pitch + K_d * pitch_rate -> ankle pitch
     offset on the stance side(s).  Hard clip: ±0.10 rad.
-  - Torso roll  PD: same form -> hip roll offset on stance side(s).
-    Hard clip: ±0.05 rad.
+  - Torso roll  PD: same form -> **ankle_roll** offset on stance
+    side(s).  Hard clip: ±0.05 rad.  This was hip_roll pre-merge;
+    the v20 ankle_roll merge added a dedicated ankle_roll DOF and
+    the design call (Q1) is to use the local foot-flat actuator
+    (TB-style) now that one exists, with identical servo power
+    (htd45hServo, kp=21.1, ±4 Nm) to the ankle_pitch joint that
+    already carries the pitch PD.
   - Capture-point swing nudge: (x_cp - x_swing) * gain -> swing-leg
     hip pitch offset, snapshotted at the foot-lift transition and
     held until the next touchdown.  Hard clip: ±0.03 m on the
@@ -33,27 +38,22 @@ the measured foot/floor contacts only.  The capture-point nudge
 identifies "foot lift" from a measured 1->0 contact transition on
 that foot.
 
-Per-step output: a modified copy of ``q_ref`` (length 19) with the
-allowed offsets applied to the leg actuator slots (indices 0..7 in
-policy order: L/R hip pitch, hip roll, knee, ankle).  The harness
-returns its clip-saturation flags so the closeout artifact can
-report harness-clip % per channel.
+Per-step output: a modified copy of ``q_ref`` (length =
+``model.nu``, e.g. 21 for the post-merge WildRobot) with the
+allowed offsets applied to the leg actuator slots resolved by name
+from ``mujoco_robot_config.json``.  The harness returns its
+clip-saturation flags so the closeout artifact can report
+harness-clip % per channel.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
-
-
-# Policy joint indices for legs (matches mujoco_robot_config.json
-# actuated_joint_specs ordering and the IK output in zmp_walk.py).
-_L_HIP_PITCH, _R_HIP_PITCH = 0, 1
-_L_HIP_ROLL, _R_HIP_ROLL = 2, 3
-_L_KNEE, _R_KNEE = 4, 5
-_L_ANK_PITCH, _R_ANK_PITCH = 6, 7
 
 
 @dataclass
@@ -75,7 +75,12 @@ class C2StabilizerConfig:
     pitch_clip: float = 0.10     # HARD clip per contract
     apply_pitch_sign: float = -1.0   # empirically determined
 
-    # Torso roll PD
+    # Torso roll PD (post-merge: targets ankle_roll, not hip_roll).
+    # The L/R sign mirror is automatically picked up from each
+    # ankle_roll's ``policy_action_sign`` in the robot config — no
+    # hard-coded mirror needed at this level.  ``apply_roll_sign``
+    # is the unified scalar to flip the entire channel if the
+    # closeout shows saturation in the wrong direction.
     roll_kp: float = 0.20
     roll_kd: float = 0.025
     roll_clip: float = 0.05      # HARD clip per contract
@@ -94,12 +99,24 @@ class C2StabilizerConfig:
 
     # Geometry constants (used only for capture-point and swing-x → hip-pitch
     # conversion; not for reading any reference annotation).
-    com_height_m: float = 0.473  # for w = sqrt(g / h_com)
+    #
+    # com_height_m: was 0.473 pre-merge.  Reconciled to the live home
+    # keyframe pelvis_z (0.4714) after the v20 ankle_roll merge tightened
+    # waist spawn z 0.50 → 0.48 m.  ``parity_report.json`` reports 0.458
+    # under the legacy 19-DOF prior fingerprint and is stale; this value
+    # is the measured one off ``assets/v2/keyframes.xml`` `home`.
+    com_height_m: float = 0.4714
     leg_length_m: float = 0.413  # upper + lower leg, for Δhip ≈ Δfoot_x / leg
     g: float = 9.81
 
     # Initialized from trajectory metadata at construction time.
     cycle_time_s: float = 0.64
+
+    # Robot config providing actuator order + per-joint policy_action_sign.
+    # Defaults to the same path used by ZMPWalkGenerator so the C2 harness
+    # always resolves slots against the same source of truth as the
+    # planner that produced the q_ref it consumes.
+    robot_config_path: str = "assets/v2/mujoco_robot_config.json"
 
 
 class C2Stabilizer:
@@ -116,11 +133,48 @@ class C2Stabilizer:
             mj_step(...)
     """
 
+    # Joint names the harness writes to.  Resolved by name against
+    # ``mujoco_robot_config.json`` so the harness adapts automatically
+    # if the actuator list grows / shrinks.
+    _CHANNEL_JOINT_NAMES = (
+        "left_ankle_pitch", "right_ankle_pitch",   # pitch PD target
+        "left_ankle_roll",  "right_ankle_roll",    # roll PD target (post-merge)
+        "left_hip_pitch",   "right_hip_pitch",     # CP nudge target
+    )
+
     def __init__(self, model, cfg: C2StabilizerConfig | None = None) -> None:
         import mujoco  # local import to avoid a hard dep at module load
 
         self.cfg = cfg or C2StabilizerConfig()
         self.model = model
+
+        # Resolve actuator slots + per-joint policy_action_sign from
+        # the robot config.  Failing here means the harness was paired
+        # with a model that doesn't expose the required leg joints —
+        # that's a contract break, not a tuning error.
+        config_path = Path(self.cfg.robot_config_path)
+        with open(config_path) as f:
+            spec = json.load(f)
+        actuator_specs = spec["actuated_joint_specs"]
+        actuator_names = [j["name"] for j in actuator_specs]
+        missing = [n for n in self._CHANNEL_JOINT_NAMES if n not in actuator_names]
+        if missing:
+            raise RuntimeError(
+                f"C2 stabilizer requires {self._CHANNEL_JOINT_NAMES}; "
+                f"missing from {config_path}: {missing}"
+            )
+        self._n_actuators = len(actuator_names)
+        self._slot: Dict[str, int] = {
+            n: actuator_names.index(n) for n in self._CHANNEL_JOINT_NAMES
+        }
+        # policy_action_sign is +1 / -1 per joint and encodes the L/R
+        # axis mirror in the MJCF.  Multiplying the unified per-channel
+        # offset by this sign produces a physically consistent
+        # correction across L/R without per-side hard-coded sign flips.
+        self._sign: Dict[str, float] = {
+            n: float(actuator_specs[self._slot[n]]["policy_action_sign"])
+            for n in self._CHANNEL_JOINT_NAMES
+        }
 
         # Identify foot bodies and their collision geoms.
         self._left_foot_id = mujoco.mj_name2id(
@@ -179,9 +233,10 @@ class C2Stabilizer:
         """Compute and apply the bounded stabilizer offsets.
 
         Returns ``(q_modified, info)``.  ``q_modified`` is a fresh
-        ndarray (length 19); the original ``q_ref`` is not mutated.
-        ``info`` carries per-step quantities used by the closeout
-        artifact (clip flags, raw + clipped offsets, contact state).
+        ndarray (length = ``model.nu``); the original ``q_ref`` is
+        not mutated.  ``info`` carries per-step quantities used by
+        the closeout artifact (clip flags, raw + clipped offsets,
+        contact state).
         """
         cfg = self.cfg
         q_mod = np.asarray(q_ref, dtype=np.float32).copy()
@@ -209,7 +264,7 @@ class C2Stabilizer:
         # union of step indices, not the max per-channel count.
         any_clipped_this_step = False
 
-        # --- 4. Torso pitch PD → ankle pitch offset on stance side ---
+        # --- 4. Torso pitch PD → ankle_pitch offset on stance side ---
         pitch_raw = cfg.apply_pitch_sign * \
             -(cfg.pitch_kp * pitch + cfg.pitch_kd * pitch_rate)
         pitch_off = float(np.clip(pitch_raw, -cfg.pitch_clip, +cfg.pitch_clip))
@@ -217,30 +272,37 @@ class C2Stabilizer:
             self._clipped_pitch += 1
             any_clipped_this_step = True
         if l_in:
-            q_mod[_L_ANK_PITCH] = q_mod[_L_ANK_PITCH] + pitch_off
+            slot = self._slot["left_ankle_pitch"]
+            q_mod[slot] = q_mod[slot] + pitch_off * self._sign["left_ankle_pitch"]
         if r_in:
-            q_mod[_R_ANK_PITCH] = q_mod[_R_ANK_PITCH] + pitch_off
+            slot = self._slot["right_ankle_pitch"]
+            q_mod[slot] = q_mod[slot] + pitch_off * self._sign["right_ankle_pitch"]
 
-        # --- 5. Torso roll PD → hip roll offset on stance side ---
+        # --- 5. Torso roll PD → ankle_roll offset on stance side ---
+        # Post-merge target (was hip_roll pre-merge): the v20 merge added
+        # a dedicated ankle_roll DOF.  Per the Q1 design call, route the
+        # roll PD through the local foot-flat actuator now that one
+        # exists.  L/R sign mirror is read from policy_action_sign in
+        # the robot config (left_ankle_roll = +1, right_ankle_roll = -1
+        # for the v2 model — opposite of hip_roll's convention).
         roll_raw = cfg.apply_roll_sign * \
             -(cfg.roll_kp * roll + cfg.roll_kd * roll_rate)
         roll_off = float(np.clip(roll_raw, -cfg.roll_clip, +cfg.roll_clip))
         if roll_off != roll_raw:
             self._clipped_roll += 1
             any_clipped_this_step = True
-        # WildRobot sign convention (zmp_walk.py): q[L_hip_roll] = -hip_r,
-        # q[R_hip_roll] = +hip_r.  Apply offset with matching signs so
-        # positive roll_off rotates the pelvis correction consistently.
         if l_in:
-            q_mod[_L_HIP_ROLL] = q_mod[_L_HIP_ROLL] + (-roll_off)
+            slot = self._slot["left_ankle_roll"]
+            q_mod[slot] = q_mod[slot] + roll_off * self._sign["left_ankle_roll"]
         if r_in:
-            q_mod[_R_HIP_ROLL] = q_mod[_R_HIP_ROLL] + (+roll_off)
+            slot = self._slot["right_ankle_roll"]
+            q_mod[slot] = q_mod[slot] + roll_off * self._sign["right_ankle_roll"]
 
         # --- 6. Capture-point swing nudge (snapshot at foot lift) ---
         cp_clipped_this_step = False
-        for side, is_in, foot_id, hip_idx, sign in (
-            (0, l_in, self._left_foot_id,  _L_HIP_PITCH, +1.0),
-            (1, r_in, self._right_foot_id, _R_HIP_PITCH, -1.0),
+        for side, is_in, foot_id, hip_name in (
+            (0, l_in, self._left_foot_id,  "left_hip_pitch"),
+            (1, r_in, self._right_foot_id, "right_hip_pitch"),
         ):
             # Foot just lifted: snapshot a new held offset.
             if (not is_in) and self._prev_in_contact[side]:
@@ -262,12 +324,13 @@ class C2Stabilizer:
 
             # Apply the held offset while in swing, converted from
             # swing-x meters to hip-pitch radians via leg length.
-            # Sign per WildRobot convention: positive q[L_hip_pitch]
-            # = L foot forward; positive q[R_hip_pitch] = R foot
-            # backward (so we negate for the right side).
+            # L/R sign mirror is read from policy_action_sign so the
+            # forward/backward foot-x convention is consistent without
+            # a hard-coded per-side flip.
             if self._swing_active[side]:
                 d_hip = self._held_swing_offset[side] / cfg.leg_length_m
-                q_mod[hip_idx] = q_mod[hip_idx] + sign * d_hip
+                slot = self._slot[hip_name]
+                q_mod[slot] = q_mod[slot] + d_hip * self._sign[hip_name]
 
         if cp_clipped_this_step:
             self._clipped_cp += 1

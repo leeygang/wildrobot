@@ -118,7 +118,10 @@ The next phase must choose a solid prior family instead of continuing to patch
 Interpretation:
 
 - `ZMP` is the best first step because it is the easiest to verify visually and
-  metrically on a servo-driven, no-ankle-roll platform.
+  metrically on a servo-driven biped.  The v20 ankle_roll merge added a
+  dedicated ankle_roll DOF, but the ZMP family still plans ankle_roll = 0;
+  the new joint is exercised by the C2 stabilizer and the PPO residual,
+  not by the offline prior.
 - `ALIP` is the best medium-term direction because it has better upside for
   dynamic stepping, push adaptation, and broader command coverage.
 - `Placo` is helpful for quickly generating or visualizing coherent whole-body
@@ -968,11 +971,20 @@ Pre-smoke checks:
   - run `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100` and
     record the deterministic baselines that will be used to judge whether
     PPO is recovering vs degrading:
-    - first lever-sign-flip step (currently ~step 2 on `cee580f`)
-    - pelvis-x lag at step 30 (currently -9 cm)
-    - pelvis-x lag at step 70 (currently -36 cm)
-    - free-float survival ctrl steps (currently ~77)
-    - free-float terminal pelvis-x (currently -0.30 m)
+    - first lever-sign-flip step (currently ~step 2; unchanged across the
+      v20 ankle_roll merge)
+    - pelvis-x lag at step 30 (currently -10 cm; was -9 cm pre-merge —
+      essentially unchanged)
+    - pelvis-x lag at step 70 (currently -18 cm; was -36 cm pre-merge —
+      ankle_roll's lateral support cuts the early-horizon lag in half)
+    - free-float survival ctrl steps (currently ≥300; was ~77 pre-merge —
+      body no longer falls within the 200-step probe horizon, so the
+      "survival" gate is effectively saturated and the diagnostic
+      shifts to "does the body translate forward at all", not "does
+      it stay upright")
+    - free-float terminal pelvis-x at step 299 (currently +0.025 m;
+      was -0.30 m pre-merge — body stays near origin instead of
+      drifting backward)
   - the smoke succeeds if PPO measurably reduces these gaps (positive
     pelvis-x progress, longer survival); it fails if PPO collapses below
     these baselines or matches them after meaningful training compute
@@ -1634,14 +1646,14 @@ Both projects use the DeepMimic-style numerator-α form
 | Cmd-magnitude gating on stepping rewards | inert (`step_need_*` defined but not consumed) | air_time/clearance/standstill all gate on `||cmd_obs|| > 1e-6` | apply on the new feet_* terms |
 | Touchdown event | physical foot/floor contact transition (`view_zmp_in_mujoco.py:519`; env G4 in `wildrobot_env.py:1251`) | `stance_mask xor last_stance_mask` | equivalent |
 | G4 success metrics | `forward_velocity ≥ 0.075`, `Evaluate/mean_episode_length ≥ 475`, `Evaluate/cmd_vs_achieved ≤ 0.075`, `step_length ≥ 0.03` (this doc, v0.20.1 §; smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept) | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
-| G5 anti-exploit | `|residual_p50|_{hip,knee} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep |
+| G5 anti-exploit | `|residual_p50|_{hip_pitch,knee,ankle_roll} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep.  ankle_roll added post-merge alongside the residual-scale promotion below. |
 
 ### A.6 Action contract
 
 | Item | WR pre-alignment | ToddlerBot | Decision |
 |---|---|---|---|
 | Form | `q = q_ref + clip(action) · scale_per_joint` | `q = default_q + action · 0.25` | semantically similar |
-| Leg `action_scale` | ±0.50 rad | ±0.25 rad | **change** — clip legs to ±0.25 rad to match ToddlerBot and reduce G5 trip risk |
+| Leg `action_scale` | ±0.50 rad | ±0.25 rad | **change** — clip legs to ±0.25 rad to match ToddlerBot and reduce G5 trip risk.  Post v20 ankle_roll merge: the leg list is `{hip_pitch, hip_roll, knee, ankle_pitch, ankle_roll}` × L/R (10 joints).  ankle_roll uses ±0.25 to match the rest of the leg chain; range margin is the same as ankle_pitch (±0.25 / ±π/4 ≈ 32%) so headroom is identical. |
 | Other-joint scale | ±0.20 rad | ±0.25 rad | keep ±0.20 (close enough; conservative) |
 
 ### A.7 Domain randomization — defer to `v0.20.2`

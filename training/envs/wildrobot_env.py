@@ -410,14 +410,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._residual_q_scale_per_joint = jp.asarray(per_joint_arr, dtype=jp.float32)
 
         # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
-        # Pre-resolve hip-pitch + knee actuator indices in PolicySpec order so
-        # the env can emit per-joint residual magnitudes each step.  Fail
-        # loudly if the WildRobot v2 leg joints are missing from the policy
-        # spec — that would mean the smoke can't be evaluated against G5.
+        # Pre-resolve leg actuator indices in PolicySpec order so the env can
+        # emit per-joint residual magnitudes each step.  Fail loudly if any
+        # WildRobot v2 leg joint is missing from the policy spec — that would
+        # mean the smoke can't be evaluated against G5.
+        #
+        # ankle_roll was added by the v20 ankle_roll merge and is included in
+        # the G5 sum so a residual-driven lateral exploit (chronic roll
+        # offset to delay falls) cannot slip past the gate.  This matches the
+        # design call to put ankle_roll in the leg ±0.25 rad residual family.
         actuator_names_list = list(self._policy_spec.robot.actuator_names)
         g5_joint_names = (
             "left_hip_pitch", "right_hip_pitch",
             "left_knee_pitch", "right_knee_pitch",
+            "left_ankle_roll", "right_ankle_roll",
         )
         missing = [n for n in g5_joint_names if n not in actuator_names_list]
         if missing:
@@ -1820,16 +1826,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             forward_velocity - velocity_cmd
         ).astype(jp.float32)
         # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
-        # Per-joint |residual_delta_q| for hip_pitch L+R and knee L+R; the
-        # spec calls for p50 ≤ 0.20 rad post-rollout, the registry's MEAN
-        # reducer is the closest aggregator we have without adding a
-        # MEDIAN reducer (the mean is a slightly weaker but still useful
-        # signal for "policy uses too much leg authority").
+        # Per-joint |residual_delta_q| for hip_pitch L+R, knee L+R, and
+        # ankle_roll L+R (added by the v20 ankle_roll merge — see the
+        # name list above for rationale); the spec calls for p50 ≤ 0.20
+        # rad post-rollout, the registry's MEAN reducer is the closest
+        # aggregator we have without adding a MEDIAN reducer (the mean
+        # is a slightly weaker but still useful signal for "policy uses
+        # too much leg authority").
         g5_residuals = residual_q_abs[self._g5_residual_idx]
         terminal_metrics_dict["tracking/residual_hip_pitch_left_abs"] = g5_residuals[0]
         terminal_metrics_dict["tracking/residual_hip_pitch_right_abs"] = g5_residuals[1]
         terminal_metrics_dict["tracking/residual_knee_left_abs"] = g5_residuals[2]
         terminal_metrics_dict["tracking/residual_knee_right_abs"] = g5_residuals[3]
+        terminal_metrics_dict["tracking/residual_ankle_roll_left_abs"] = g5_residuals[4]
+        terminal_metrics_dict["tracking/residual_ankle_roll_right_abs"] = g5_residuals[5]
         # Realized-vs-commanded forward speed ratio.  Spec gate: 0.6 ≤ ratio
         # ≤ 1.5 to catch both undershoot and v0.19.5 "lean and skate"
         # overshoot.  Guard against cmd≈0 to avoid log explosions.

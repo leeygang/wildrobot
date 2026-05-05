@@ -187,6 +187,15 @@ env:
     right_knee_pitch: 0.25
     left_ankle_pitch: 0.25
     right_ankle_pitch: 0.25
+    # ankle_roll added by the v20 ankle_roll merge.  Held to the same
+    # leg ±0.25 rad family so PPO has TB-equivalent authority on the
+    # joint; the ZMP prior plans ankle_roll = 0, so the residual is
+    # the only control signal here.  Within-range margin is large
+    # (±0.25 / ±0.785 ≈ 32%, same ratio as ankle_pitch).  Anti-exploit
+    # coverage: the env's G5 residual sum was extended to include
+    # ankle_roll so a chronic-roll exploit cannot slip past the gate.
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
 
   # ============================================================
   # smoke7: TB-aligned domain randomization (anti-shuffle lever #2)

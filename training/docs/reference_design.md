@@ -138,10 +138,14 @@ Weaknesses:
 
 WildRobot fit:
 
-- good first fit because WildRobot v2 is small, servo-driven, and lacks active
-  ankle roll
+- good first fit because WildRobot v2 is small, servo-driven, and uses
+  identical-class servos (htd45hServo, kp=21.1, ±4 Nm) on every leg
+  joint including the ankle_roll DOF added by the v20 ankle_roll merge
 - a `ZMP`-shaped prior is easier to keep inside reachable geometry and visible
   stepping than a more aggressive model on day one
+- the ZMP prior continues to plan ankle_roll = 0 (TB-aligned convention);
+  lateral correction lives in the C2 stabilizer (offline) and the PPO
+  residual (closed-loop), not in the offline trajectory itself
 
 ### `ALIP`
 
@@ -828,8 +832,8 @@ Harness scope (HARD bounds — must be enforced by code review):
 
 | Channel | Form | Hard clip | Forbidden inputs |
 |---|---|---|---|
-| Torso pitch PD | `K_p · pitch_err + K_d · pitch_rate` → ankle pitch offset on stance side | `±0.10 rad` | gait phase from FSM, foothold preview, contact-mask annotations |
-| Torso roll PD | same form → hip roll offset on stance side | `±0.05 rad` | foothold preview, contact-mask annotations |
+| Torso pitch PD | `K_p · pitch_err + K_d · pitch_rate` → ankle_pitch offset on stance side | `±0.10 rad` | gait phase from FSM, foothold preview, contact-mask annotations |
+| Torso roll PD | same form → ankle_roll offset on stance side (was hip_roll pre-merge; relocated to the local foot-flat actuator after the v20 ankle_roll merge added a dedicated ankle_roll DOF with identical servo power to ankle_pitch) | `±0.05 rad` | foothold preview, contact-mask annotations |
 | Capture-point swing nudge | `(x_cp − x_target_swing) · gain` → swing-x offset, applied only at foot lift | `±0.03 m` | timing changes, foothold re-planning, runtime FSM state |
 
 **Allowed signals for "stance side" and "foot lift" identification

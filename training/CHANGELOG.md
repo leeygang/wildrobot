@@ -8,6 +8,121 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-ankle-roll-realignment] - 2026-05-04: Realign v0.20.x design + implementation to the post-merge robot architecture
+
+### Context
+
+The v20 ankle_roll merge (commits `66d5c00`, `731a07d`, `f5906cc`)
+added two ankle_roll actuators and re-ordered the actuator list to
+`{waist_yaw, L-arm×5, L-leg×5, R-arm×5, R-leg×5}` (21 total, was
+19).  The merge only touched `assets/`; the v0.20.x training stack
+remained wired to the pre-merge 19-DOF robot.  This entry records
+the alignment patches and the new G7 baseline.
+
+Audit summary: the planner (`control/zmp/zmp_walk.py`), env compose
+(`training/envs/wildrobot_env.py`), C2 stabilizer
+(`training/eval/c2_stabilizer.py`), and several tests carried
+hard-coded `n_joints = 19` / legacy slot indices `[0..7]` for the
+leg joints.  After the merge those indices land on `{waist_yaw,
+L-arm, L-hip}` instead of the legs, so every JIT'd reward path
+errored on first call and the C2 harness silently injected PD
+offsets into wrist / elbow / shoulder channels.
+
+### Design calls (recorded for future readers)
+
+1. **C2 roll PD target: hip_roll → ankle_roll.**  htd45hServo
+   (kp=21.1, ±4 Nm) on every leg joint including ankle_roll, so
+   power is identical to the ankle_pitch joint that already carries
+   the pitch PD.  TB-style local foot-flat control is preferred
+   over hip_roll's pelvis-displacement form now that the local
+   actuator exists.
+2. **Add ankle_roll to the ±0.25 rad leg residual family** (smoke
+   YAML).  Range margin is identical to ankle_pitch (±0.25 / ±π/4
+   ≈ 32 %).  G5 anti-exploit residual sum extended to include
+   `left/right_ankle_roll` so a chronic-roll exploit cannot slip
+   past the gate.
+3. **ZMP prior plans ankle_roll = 0** (TB convention).  The
+   ankle_roll DOF is exercised by the C2 stabilizer (offline) and
+   the PPO residual (closed-loop), not by the offline trajectory.
+
+### Patch summary
+
+- `control/zmp/zmp_walk.py`: planner now resolves the 8 leg-joint
+  slots by name from `assets/v2/mujoco_robot_config.json` and
+  emits a 21-wide `q_ref` in PolicySpec actuator order; ankle_roll
+  slots stay at 0; `ReferenceLibraryMeta.n_joints` reads from the
+  loaded layout.
+- `training/envs/wildrobot_env.py`: G5 residual joint set extended
+  to include `left/right_ankle_roll`; per-step metrics
+  `tracking/residual_ankle_roll_{left,right}_abs` added.
+- `training/configs/ppo_walking_v0201_smoke.yaml`:
+  `loc_ref_residual_scale_per_joint` adds
+  `left_ankle_roll: 0.25`, `right_ankle_roll: 0.25`.
+- `training/eval/c2_stabilizer.py`: hard-coded leg indices replaced
+  with name-based lookup against the robot config; per-channel L/R
+  sign mirror read from each joint's `policy_action_sign` instead
+  of hard-coded; roll PD relocated to ankle_roll; default
+  `com_height_m` reconciled `0.473 → 0.4714` (live home keyframe
+  pelvis_z).
+- Docs (`walking_training.md`, `reference_design.md`): no-ankle-
+  roll wording removed; A.6 leg list expanded to include
+  ankle_roll; G7 baseline numbers refreshed; C2 harness table now
+  reads "ankle_roll offset on stance side".
+
+### Test results
+
+`uv run pytest tests/test_v0200a_contract.py
+tests/test_v0200c_geometry.py tests/test_v0201_env_zero_action.py
+tests/test_runtime_reference_service.py
+tests/test_reference_lifecycle_phase5.py
+tests/test_reorder_actuators.py
+training/tests/test_config_load_smoke6.py
+training/tests/test_smoke7_eval_cmd_behavior.py` — **60/60 PASS**.
+
+### G7 baseline refresh (vx=0.15, horizon=200)
+
+| Metric | Pre-merge | Post-merge |
+|---|---|---|
+| First lever-sign-flip step | ~step 2 | step 2 (unchanged) |
+| Pelvis-x lag at step 30 | -0.09 m | -0.10 m (essentially unchanged) |
+| Pelvis-x lag at step 70 | -0.36 m | -0.18 m (~50 % better) |
+| Free-float survival | ~77 ctrl steps | ≥300 ctrl steps (no fall in horizon) |
+| Terminal pelvis-x | -0.30 m | +0.025 m at step 299 |
+
+Reading: ankle_roll's lateral support keeps the body upright across
+the full 300-step probe horizon — survival is no longer the binding
+diagnostic.  The body stalls in forward translation (still sits near
+origin while the prior advances ~0.87 m), so the open-loop "does
+the body translate forward?" gap is similar to pre-merge in
+absolute terms but with a much more stable balance baseline.  PPO's
+job at vx=0.15 is therefore "add forward propulsion", not "prevent
+the fall AND add forward propulsion".
+
+### Supersedes
+
+The `v0.20.1-reference-quality-snapshot` entry below was produced
+under the pre-merge 19-DOF planner output and the
+`tools/parity_report.json` cache fingerprint
+`2051a03ebdc1a796`.  Both the snapshot and the parity-report cache
+hash are stale; a fresh parity report against the 21-DOF planner
++ ankle_roll robot will produce a new fingerprint on the next
+regeneration.
+
+### Open follow-ups (not in this entry)
+
+- The C2 closeout matrix (`tools/v0200c_closeout.py`) needs to
+  re-run end-to-end against the post-merge robot and harness.
+  Empirical sign-tuning of `apply_roll_sign` may be needed since
+  the roll PD now drives ankle_roll instead of hip_roll.
+- `tools/reference_geometry_parity.py` regeneration needs both WR
+  and TB envs available; the WR side is already correct (foot
+  geom names `left_heel/toe`, `right_heel/toe` were never wrong).
+- The full v0.20.0-C closeout decision (C1 + C2 PASS on all bins)
+  must be re-run before any v0.20.x PPO is launched against the
+  new 21-wide `q_ref` library.
+
+---
+
 ## [v0.20.1-reference-quality-snapshot] - 2026-04-26: Where WR sits vs TB after Phases 1-6 (refreshed parity report)
 
 ### Context
