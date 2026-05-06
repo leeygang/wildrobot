@@ -539,24 +539,23 @@ class ZMPWalkGenerator:
         return traj
 
     def _count_joint_violations(self, traj: ReferenceTrajectory) -> int:
-        """Count timesteps where any leg joint exceeds its limit."""
-        limits = np.array([
-            [-0.5236, 1.5708],   # left_hip_pitch
-            [-1.5708, 0.5236],   # right_hip_pitch
-            [-1.571, 0.175],   # left_hip_roll
-            [-0.175, 1.571],   # right_hip_roll
-            [0.0, 2.094],      # left_knee_pitch (120°)
-            [0.0, 2.094],      # right_knee_pitch (120°)
-            [-0.698, 0.785],   # left_ankle_pitch
-            [-0.698, 0.785],   # right_ankle_pitch
-        ])
-        count = 0
-        for j in range(8):
-            count += int(np.sum(
-                (traj.q_ref[:, j] < limits[j, 0] - 0.005) |
-                (traj.q_ref[:, j] > limits[j, 1] + 0.005)
-            ))
-        return count
+        """Count (joint, timestep) pairs where any leg joint exceeds its limit.
+
+        Uses the name-resolved leg-slot bounds from
+        ``_load_actuator_layout`` (length-``n_joints`` arrays where
+        non-leg columns are ``±inf`` and so never trigger), which means
+        this check now covers the full {hip_pitch, hip_roll, knee,
+        ankle_pitch} × L/R set in PolicySpec actuator order even though
+        legs sit at non-contiguous indices post the v20 ankle_roll
+        merge.  Pre-merge the loop hard-coded columns 0..7 and silently
+        stopped checking the right leg once the actuator layout
+        re-ordered.
+        """
+        layout = self._load_actuator_layout()
+        lo = layout["leg_clip_min"] - 0.005   # length-n_joints
+        hi = layout["leg_clip_max"] + 0.005
+        violations = (traj.q_ref < lo) | (traj.q_ref > hi)
+        return int(np.sum(violations))
 
     @staticmethod
     def _quintic_coeffs(T: float, p0: float, v0: float, a0: float,

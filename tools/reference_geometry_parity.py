@@ -48,11 +48,12 @@ _PROBE_FRAMES = (0, 5, 10, 16, 22, 28, 32, 48, 64)
 _TB_VARIANTS = ("toddlerbot_2xc", "toddlerbot_2xm")
 # Shared leg-joint ordering used by every parity layer that compares
 # WR vs TB on the 8 leg DoFs (P1A foot trajectories, P2 q_ref smoothness,
-# P1 closed-loop RMSE).  The order MUST stay aligned with WR's
-# ``traj.q_ref[:, :8]`` slice produced by ``ZMPWalkGenerator`` (indices
-# [0..7] = hip_pitch_L, hip_pitch_R, hip_roll_L, hip_roll_R, knee_L,
-# knee_R, ankle_pitch_L, ankle_pitch_R).  Reordering one tuple without
-# the other will silently swap channels at parity time.
+# P1 closed-loop RMSE).  Resolved to PolicySpec column indices via
+# ``_wr_shared_leg_idx()``; do NOT slice ``q_ref[:, :8]`` positionally
+# — post the v20 ankle_roll merge the 21-wide PolicySpec order puts
+# the legs at non-contiguous indices ([6,7,8,9] left + [16,17,18,19]
+# right).  Reordering this tuple without _TB_SHARED_LEG_NAMES will
+# silently swap channels at parity time.
 _WR_SHARED_LEG_NAMES = (
     "left_hip_pitch",
     "right_hip_pitch",
@@ -705,6 +706,26 @@ def _box_min_z(model: mujoco.MjModel, data: mujoco.MjData, geom_id: int) -> floa
     )
 
 
+def _wr_shared_leg_idx() -> np.ndarray:
+    """Column indices in the 21-wide PolicySpec order that select the
+    8 shared leg joints used for parity vs ToddlerBot.
+
+    Pre v20 ankle_roll merge these were [0..7] and consumers sliced
+    ``q_ref[:, :8]`` directly; post-merge legs sit at [6,7,8,9] (left)
+    and [16,17,18,19] (right) and a positional slice would silently
+    mix waist / arm / left-leg prefix data into the parity comparison.
+    """
+    wildrobot_root, _ = _repo_roots()
+    config_path = wildrobot_root / "assets" / "v2" / "mujoco_robot_config.json"
+    with open(config_path) as f:
+        spec = json.load(f)
+    actuator_names = [j["name"] for j in spec["actuated_joint_specs"]]
+    return np.array(
+        [actuator_names.index(name) for name in _WR_SHARED_LEG_NAMES],
+        dtype=np.int64,
+    )
+
+
 def _load_wr_assets():
     wildrobot_root, _ = _repo_roots()
     model = mujoco.MjModel.from_xml_path(
@@ -738,7 +759,14 @@ def _load_wr_assets():
         ],
         dtype=np.float64,
     )
-    return model, data, mapper, act_to_qpos, geom_ids, body_ids, shared_joint_limits
+    shared_leg_idx = np.array(
+        [actuator_names.index(name) for name in _WR_SHARED_LEG_NAMES],
+        dtype=np.int64,
+    )
+    return (
+        model, data, mapper, act_to_qpos, geom_ids, body_ids,
+        shared_joint_limits, shared_leg_idx,
+    )
 
 
 def _init_wr_standing(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -799,7 +827,10 @@ def _foot_floor_in_contact(
 
 
 def _summarize_wildrobot(lib: ReferenceLibrary) -> GateSummary:
-    model, data, mapper, act_to_qpos, geom_ids, _body_ids, _limits = _load_wr_assets()
+    (
+        model, data, mapper, act_to_qpos, geom_ids,
+        _body_ids, _limits, _shared_leg_idx,
+    ) = _load_wr_assets()
     left_geoms = [geom_ids["left_heel"], geom_ids["left_toe"]]
     right_geoms = [geom_ids["right_heel"], geom_ids["right_toe"]]
     failures: list[str] = []
@@ -982,10 +1013,11 @@ def _wr_fk_and_smoothness(
         right_foot,
         float(traj.dt),
     )
+    shared_leg_idx = _wr_shared_leg_idx()
     smooth = _compute_smoothness_metrics(
         "wildrobot",
         vx,
-        np.asarray(traj.q_ref[:, :8], dtype=np.float32),
+        np.asarray(traj.q_ref[:, shared_leg_idx], dtype=np.float32),
         np.asarray(traj.pelvis_pos[:, 2], dtype=np.float32),
         left_foot,
         right_foot,
@@ -1143,7 +1175,10 @@ print(json.dumps(payload))
 def _closed_loop_wildrobot(
     lib: ReferenceLibrary, vx: float, horizon: int
 ) -> ClosedLoopMetrics:
-    model, data, mapper, act_to_qpos, geom_ids, body_ids, shared_joint_limits = _load_wr_assets()
+    (
+        model, data, mapper, act_to_qpos, geom_ids, body_ids,
+        shared_joint_limits, shared_leg_idx,
+    ) = _load_wr_assets()
     traj = _wr_traj(lib, vx)
     horizon = min(int(horizon), int(traj.n_steps))
     _init_wr_standing(model, data)
@@ -1174,8 +1209,14 @@ def _closed_loop_wildrobot(
         mapper.set_all_ctrl(data, q_ref)
         for _ in range(physics_steps_per_ref):
             mujoco.mj_step(model, data)
-        actual_policy_q = data.qpos[act_to_qpos][mapper.policy_to_mj_order][:8].astype(np.float64)
-        q_err.append(actual_policy_q - q_ref[:8])
+        # Slice the 8 shared leg joints by name-resolved column index
+        # (post-merge legs sit at non-contiguous indices in the 21-wide
+        # PolicySpec order, see _wr_shared_leg_idx).
+        actual_policy_q = (
+            data.qpos[act_to_qpos][mapper.policy_to_mj_order][shared_leg_idx]
+            .astype(np.float64)
+        )
+        q_err.append(actual_policy_q - q_ref[shared_leg_idx])
         any_sat.append(
             bool(
                 np.any(
