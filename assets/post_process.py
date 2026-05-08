@@ -1,9 +1,10 @@
 import json
 import math
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import trimesh
@@ -1043,6 +1044,194 @@ def generate_robot_config(
     return config
 
 
+def validate_and_update_keyframes(
+    scene_xml: Path,
+    keyframes_xml: Path,
+    keyframe_names: Sequence[str] = ("home", "walk_start"),
+    settle_steps: int = 1000,
+    drift_check_steps: int = 500,
+    pos_drift_tol_m: float = 0.005,
+    pitch_change_tol_deg: float = 2.0,
+    settled_vlin_tol: float = 1e-4,
+    settled_vang_tol: float = 1e-3,
+    safety_min_pelvis_z_m: float = 0.40,
+    safety_max_pitch_deg: float = 15.0,
+) -> bool:
+    """Settle each named keyframe under PD ctrl and rewrite drifted ones.
+
+    Procedure per keyframe:
+      1. Reset model to the keyframe's qpos.
+      2. Set ``data.ctrl[k] = data.qpos[act_to_qpos[k]]`` so each
+         position actuator holds its keyframe-specified target.
+      3. Step ``settle_steps`` sim_dt steps (default 1000 = 2 s at
+         sim_dt=0.002, matching the original round-6/7 settle horizon
+         documented in keyframes.xml).
+      4. Run a ``drift_check_steps``-step (default 1 s) drift check;
+         record residual motion in pelvis xyz and base angular
+         velocity.
+      5. Compare settled state to the original keyframe.  Update only
+         if BOTH:
+           - drift exceeds the tolerance band (>`pos_drift_tol_m` OR
+             pitch change > `pitch_change_tol_deg`), AND
+           - the settled state is genuinely settled (residual drift
+             AND max|vlin| AND max|vang| all under their thresholds).
+      6. SAFETY GUARDS — refuse to write a new keyframe if either:
+           - settled pelvis_z < `safety_min_pelvis_z_m` (body fell)
+           - settled |pitch| > `safety_max_pitch_deg` (body tipped)
+         This catches the failure mode where the WildRobot model is
+         statically unstable under position-PD alone and the "settle"
+         actually captures a slow-developing fall (e.g. >5 s settle
+         drifts past the standing-pose attractor and into a
+         fallen-over equilibrium).
+      7. After processing all keyframes, rewrite ``keyframes_xml`` in
+         place with new qpos for every flagged keyframe.
+
+    Why this matters: small CAD geometric changes (re-export, mate
+    adjustments, mass tweaks) shift the standing equilibrium by
+    mm-to-cm, but the keyframes encoded in ``keyframes.xml`` still
+    reference the old equilibrium.  Closed-loop replays starting from
+    those stale keyframes immediately try to compensate for the
+    offset, which manifests downstream (e.g. as extra hip_roll firing
+    in Phase 10 diagnostics).
+
+    Why the safety guards: the WildRobot v2 model is statically
+    UNSTABLE under position-PD ctrl alone — without an active balance
+    controller the body slowly tips forward and falls within ~1 s of
+    physics time once the small-pitch attractor is left behind.  A
+    naive settle (5+ s) captures the fallen state as the new
+    "equilibrium", and a second post-process round would chase the
+    drift further into the failed regime.  The safety guards (settle
+    horizon matched to round-6/7 + sanity-check the captured pose)
+    prevent the auto-update from ever writing a fallen-over keyframe.
+
+    Returns True if any keyframe was updated.
+    """
+    import mujoco  # noqa: WPS433  -- imported lazily, mirrors validate_model.py
+
+    if not scene_xml.exists():
+        print(f"  [keyframe-update] scene XML missing: {scene_xml}; skipping")
+        return False
+    if not keyframes_xml.exists():
+        print(f"  [keyframe-update] keyframes XML missing: {keyframes_xml}; skipping")
+        return False
+
+    model = mujoco.MjModel.from_xml_path(str(scene_xml))
+    data = mujoco.MjData(model)
+    act_to_qpos = np.array(
+        [model.jnt_qposadr[model.actuator_trnid[k, 0]] for k in range(model.nu)]
+    )
+
+    updates: Dict[str, np.ndarray] = {}
+    for kn in keyframe_names:
+        key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, kn)
+        if key_id < 0:
+            print(f"  [keyframe-update] {kn!r} not found in scene; skipping")
+            continue
+        mujoco.mj_resetDataKeyframe(model, data, key_id)
+        q0 = data.qpos.copy()
+        for k in range(model.nu):
+            data.ctrl[k] = data.qpos[act_to_qpos[k]]
+        for _ in range(settle_steps):
+            mujoco.mj_step(model, data)
+        pos_after_settle = data.qpos[:3].copy()
+        for _ in range(drift_check_steps):
+            mujoco.mj_step(model, data)
+        residual_drift = float(np.linalg.norm(data.qpos[:3] - pos_after_settle))
+        max_vlin = float(np.max(np.abs(data.qvel[:3])))
+        max_vang = float(np.max(np.abs(data.qvel[3:6])))
+
+        pelvis_drift = float(np.linalg.norm(data.qpos[:3] - q0[:3]))
+        quat = data.qpos[3:7]
+        quat0 = q0[3:7]
+        angle = 2 * float(np.arccos(min(1.0, abs(float(quat[0])))))
+        angle0 = 2 * float(np.arccos(min(1.0, abs(float(quat0[0])))))
+        pitch_change_deg = abs(np.degrees(angle - angle0))
+        new_pitch_deg = abs(np.degrees(angle))
+        new_pelvis_z = float(data.qpos[2])
+
+        # Safety guards: the WR model is statically unstable under
+        # position-PD ctrl alone; refuse to write a new keyframe if
+        # the captured state has fallen below a sane standing band.
+        safety_failed = (
+            new_pelvis_z < safety_min_pelvis_z_m
+            or new_pitch_deg > safety_max_pitch_deg
+        )
+
+        # Settled check: residual drift, lin vel, and ang vel all small.
+        is_settled = (
+            residual_drift <= pos_drift_tol_m
+            and max_vlin <= settled_vlin_tol
+            and max_vang <= settled_vang_tol
+        )
+
+        # Drift check: meaningful change from the keyframe-on-disk?
+        drifted = (
+            pelvis_drift > pos_drift_tol_m
+            or pitch_change_deg > pitch_change_tol_deg
+        )
+
+        if safety_failed:
+            status = (
+                f"REFUSE (safety guard: pelvis_z={new_pelvis_z:.3f}m, "
+                f"pitch={new_pitch_deg:.1f}°; the model fell during settle "
+                f"— keyframe NOT updated)"
+            )
+        elif not drifted:
+            status = "OK (within tolerance)"
+        elif not is_settled:
+            status = (
+                "SKIP (drifted but not settled: residual motion still "
+                f"{residual_drift * 1000:.2f}mm / vlin {max_vlin:.5f} / "
+                f"vang {max_vang:.5f} — not a stable equilibrium)"
+            )
+        else:
+            status = "UPDATE"
+            updates[kn] = data.qpos.copy()
+
+        print(
+            f"  [keyframe-update] {kn!r}: pelvis_drift_from_keyframe="
+            f"{pelvis_drift * 1000:.2f}mm  pitch_change="
+            f"{pitch_change_deg:+.2f}°  new_pelvis_z={new_pelvis_z:.3f}m  "
+            f"new_pitch={new_pitch_deg:.1f}°  residual_drift_"
+            f"{drift_check_steps}_steps={residual_drift * 1000:.3f}mm  "
+            f"max|vlin|={max_vlin:.5f}m/s  max|vang|={max_vang:.5f}rad/s  "
+            f"-> {status}"
+        )
+
+    if not updates:
+        print("  [keyframe-update] no keyframes updated")
+        return False
+
+    text = keyframes_xml.read_text()
+    n_written = 0
+    for kn, new_qpos in updates.items():
+        new_qpos_str = " ".join(f"{v:.6g}" for v in new_qpos)
+        # Match `<key name="{kn}" qpos="..."` allowing whitespace / newlines
+        # between the name attribute and qpos attribute.
+        pattern = re.compile(
+            rf'(<key\s+name="{re.escape(kn)}"\s+qpos=")[^"]*(")',
+            re.DOTALL,
+        )
+        new_text, n_subs = pattern.subn(
+            lambda m, s=new_qpos_str: m.group(1) + s + m.group(2),
+            text,
+        )
+        if n_subs == 0:
+            print(
+                f"  [keyframe-update] WARNING: failed to find qpos= block for "
+                f"{kn!r} in {keyframes_xml.name}; manual update required"
+            )
+        else:
+            text = new_text
+            n_written += 1
+            print(
+                f"  [keyframe-update] updated {kn!r} qpos in {keyframes_xml.name}"
+            )
+    if n_written:
+        keyframes_xml.write_text(text)
+    return n_written > 0
+
+
 def main() -> None:
     # Allow optional XML path via CLI, otherwise default to v2 model.
     default_xml = Path(__file__).parent / "v2" / "wildrobot.xml"
@@ -1091,6 +1280,17 @@ def main() -> None:
                 mesh_pos_abs_max=0.10,
                 contact_penetration_tol=0.005,
             ),
+        )
+
+        # Settle each named keyframe under PD ctrl; if the equilibrium
+        # has drifted, rewrite the qpos in keyframes.xml.  CAD changes
+        # (re-export, mate adjustments, mass tweaks) routinely shift
+        # the standing equilibrium by mm-to-cm, and stale keyframes
+        # bleed into closed-loop diagnostics as spurious correction
+        # behavior at iter 0.
+        validate_and_update_keyframes(
+            scene_xml=xml_path.with_name("scene_flat_terrain.xml"),
+            keyframes_xml=xml_path.with_name("keyframes.xml"),
         )
     except Exception as exc:
         print(f"Warning: skipping validate_model.py ({exc})")

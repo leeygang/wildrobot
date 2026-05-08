@@ -2,34 +2,41 @@
   <!-- Two named keyframes:
 
        "home"        — neutral standing pose (legs near-straight,
-                       knees ≈ 0.023 rad).  Consumed by the runtime
+                       knees ≈ 0.036 rad).  Consumed by the runtime
                        (calibration, policy spec, export bundle) and
                        by anything that wants the robot in a clean
-                       upright pose.  Round-6 settled equilibrium:
-                       1000 physics steps with ctrl=qpos → pelvis
-                       drift -0.002 m, |vx| ≤ 0.0001 m/s, z stable
-                       at 0.4684 m.  Replaces the original CAD-noise
-                       export which had a sustained -0.5 m/s²
-                       backward bias.
+                       upright pose.  Round-8 settled equilibrium
+                       (2026-05-06, post-CAD upper_leg mate fix):
+                       2500 sim_dt steps (5 s) with ctrl=qpos, then
+                       500 steps drift check → pelvis drift ≤ 0.01 mm,
+                       max|vlin| ≤ 1e-5 m/s, z stable at 0.4709 m.
+                       Pelvis tilts 3.48° forward (was 2.27° round-6)
+                       — the CAD update shifted equilibrium.
 
-       "walk_start"  — round-7 walking-pose equilibrium (legs bent,
-                       knees ≈ 0.49 rad, pelvis_z = 0.4575 m, pitched
-                       -0.020 rad).  Used by the v0.20.0-C viewer so
+       "walk_start"  — round-8 walking-pose equilibrium (legs bent,
+                       knees ≈ 0.55 rad, pelvis_z = 0.4567 m, pitched
+                       -0.046 rad).  Used by the v0.20.0-C viewer so
                        the standing-to-walking ramp is essentially a
-                       no-op (max Δ ≈ 0.026 rad).  Paired with the
-                       round-7 IK geometry refit (upper_leg = 0.193,
+                       no-op.  Paired with the IK geometry constants
+                       in control/zmp/zmp_walk.py (upper_leg = 0.193,
                        lower_leg = 0.180, ankle_to_ground = 0.061,
-                       pelvis_to_hip = 0.034 in
-                       control/zmp/zmp_walk.py).  If you change the
-                       IK geometry, this keyframe must be re-derived.
-                       Verified: 1000 physics steps with ctrl=qpos →
-                       pelvis drift ~0.0004 m, |vx| ≤ 0.0002 m/s. -->
+                       pelvis_to_hip = 0.034).  If you change the IK
+                       geometry OR re-export from Onshape, this
+                       keyframe must be re-derived.  Verified: same
+                       2500+500 step settle → pelvis drift ≤ 0.04 mm,
+                       max|vlin| ≤ 3e-5 m/s.
+
+       Re-derive procedure (when CAD or IK geometry changes): see
+       the snippet in this file's git history for the exact one-liner
+       (load model, reset to keyframe, set ctrl=qpos for each
+       actuator, step 2500 sim_dt then drift-check 500 more, dump
+       data.qpos).  Round-8 was produced by that procedure. -->
     <keyframe>
         <key name="home"
-            qpos="-0.0118877 -0.000858463 0.471443 0.999804 -0.000279218 -0.0197972 0.000267368 -0.00146975 -0.00196322 0.0280665 0.00980851 0.0011811 0.00132146 -0.00325002 0.0287385 0.0108945 0.000291387 -0.00280438 0.00206859 0.0172927 -1.37388e-05 5.59927e-06 0.000461922 -0.00163577 0.00470982 -1.55824e-05 -2.27866e-05 0.000465202"
+            qpos="-0.0182591 -0.00101464 0.470941 0.999539 -0.000242699 -0.0303666 0.000198908 -0.00353823 -0.00233714 0.0361851 0.0206246 0.00163984 0.0032372 -0.00352585 0.0369592 0.0217894 0.000593509 -0.00292642 0.00411677 0.01759 -2.5285e-05 4.37092e-06 0.000730754 -0.00373764 0.00487821 -2.76155e-05 -3.98205e-05 0.000735891"
         />
         <key name="walk_start"
-            qpos="-0.00561724 -0.000973721 0.459045 0.999706 3.46909e-05 -0.0242564 0.000181496 0.221041 -0.00174796 0.517299 -0.247744 0.00155328 -0.222331 -0.00316345 0.520681 -0.248216 0.000735572 0.00286098 0.0012912 0.0190276 -1.90347e-05 4.9112e-06 0.00046446 -0.00207121 0.00378654 -2.14878e-05 -2.33149e-05 0.00046651"
+            qpos="-0.0151672 -0.00125335 0.456714 0.998956 0.000344328 -0.0456862 0.000112302 0.217529 -0.00191263 0.551864 -0.243135 0.00229749 -0.219276 -0.00322515 0.556063 -0.243938 0.00131928 0.00313535 0.00455297 0.019426 -4.35622e-05 -1.74422e-06 0.000750951 -0.00546177 0.00388827 -4.54086e-05 -4.57053e-05 0.000754029"
         />
     </keyframe>
 </mujoco>

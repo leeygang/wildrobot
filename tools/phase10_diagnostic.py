@@ -140,7 +140,10 @@ def _capture_replay(lib, vx: float, horizon: int) -> PerStepTrace:
     so the trace is byte-for-byte the same trajectory the parity tool
     sees, with extra per-step capture.
     """
-    model, data, mapper, act_to_qpos, geom_ids, body_ids, shared_joint_limits = _load_wr_assets()
+    (
+        model, data, mapper, act_to_qpos, geom_ids, body_ids,
+        shared_joint_limits, shared_leg_idx,
+    ) = _load_wr_assets()
     traj = _wr_traj(lib, vx)
     horizon = min(int(horizon), int(traj.n_steps))
     _init_wr_standing(model, data)
@@ -166,8 +169,18 @@ def _capture_replay(lib, vx: float, horizon: int) -> PerStepTrace:
         for _ in range(physics_steps_per_ref):
             mujoco.mj_step(model, data)
 
-        actual_policy_q = data.qpos[act_to_qpos][mapper.policy_to_mj_order][:8].astype(np.float64)
-        q_err = (actual_policy_q - q_ref[:8]).tolist()
+        # Slice the 8 shared leg joints by name-resolved column index
+        # (post the v20 ankle_roll merge legs sit at non-contiguous
+        # indices in the 21-wide PolicySpec order).  shared_joint_limits
+        # is already in _WR_SHARED_LEG_NAMES order, so the fancy-index
+        # selection produces an 8-vector aligned with the limits and
+        # with downstream sat_per_joint / q_err_per_joint consumers
+        # that index by joint-name position.
+        actual_policy_q = (
+            data.qpos[act_to_qpos][mapper.policy_to_mj_order][shared_leg_idx]
+            .astype(np.float64)
+        )
+        q_err = (actual_policy_q - q_ref[shared_leg_idx]).tolist()
         sat_lo = actual_policy_q <= shared_joint_limits[:, 0] + _SAT_MARGIN_RAD
         sat_hi = actual_policy_q >= shared_joint_limits[:, 1] - _SAT_MARGIN_RAD
         sat_flags = (sat_lo | sat_hi).tolist()

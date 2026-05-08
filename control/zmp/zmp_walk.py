@@ -87,11 +87,23 @@ class ZMPWalkConfig:
     # length and has a higher knee limit.
     #
     # 2026-04-25: knee_pitch_max_rad raised from 80° → 120°.  The
-    # previous 80°-saturation rationale no longer binds; the
-    # 0.04 m foot_step_height is kept here for behavioral
-    # continuity with smoke3-7 results.  Future smoke can revisit
-    # raising foot_step_height (toward TB's 24% of leg length) now
-    # that the knee budget allows the deeper bend.
+    # previous 80°-saturation rationale no longer binds.
+    #
+    # Phase 8 attempt (2026-05-05): tried bumping 0.04 → 0.05 and
+    # 0.04 → 0.045 to close the `swing_clearance_per_com_height`
+    # normalised P1A gate (0.143 → 0.158/0.175 vs gate 0.149).
+    # Both regressed survival at vx=0.15 even though the saturation
+    # gate stayed clean: 200→74 steps at h=0.05 and 200→104 at
+    # h=0.045 (pitch termination from the deeper-bend swing
+    # destabilising stance, not the saturation mechanism the
+    # original Phase 8 warning anticipated).
+    #
+    # Reverted to 0.04.  Phase 8 is now blocked on Phase 12A
+    # (plantarflex softening) producing a verdict on whether the
+    # Phase 7 boundary-transition is the destabiliser; the
+    # `swing_clearance_per_com_height` FAIL is the smaller-
+    # magnitude residual and is not worth a 200→104 step survival
+    # regression at vx=0.15.
     foot_step_height_m: float = 0.04
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.06     # below this, use standing

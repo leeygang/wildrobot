@@ -1,7 +1,8 @@
 # WildRobot v2 — Model Issues to Fix in Onshape
 
-**Last updated:** 2026-04-26
-**Source audit:** Phase 12C closed-loop diagnostic (commits `cc5e8d3` / `381ab3c` / `d3a6989`)
+**Last updated:** 2026-05-05 (post v20 ankle_roll merge re-audit)
+**Original audit:** Phase 12C closed-loop diagnostic (commits `cc5e8d3` / `381ab3c` / `d3a6989`), 2026-04-26
+**Re-audit trigger:** v20 ankle_roll merge (commits `66d5c00`, `731a07d`, `f5906cc`) appears to have re-exported with corrected sub-assembly naming and tighter mirror constraints in the leg chain.
 **Onshape document:** [WildRobot](https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/5c6acb3ff696b03bdf018f3b)
 
 This document records issues discovered in the WildRobot v2 MJCF model that
@@ -9,334 +10,333 @@ This document records issues discovered in the WildRobot v2 MJCF model that
 export pipeline or our `assets/post_process.py`). All issues survive the
 export-pipeline unchanged and end up in `assets/v2/wildrobot.xml`.
 
-The bugs were surfaced by running closed-loop replay of the ZMP walking
-prior under MuJoCo (Phase 10 of `training/docs/reference_architecture_comparison.md`).
-The symptom is `left_hip_roll` joint hitting its inner limit (+0.175 rad)
-during walking while the symmetric `right_hip_roll` stays well within
-range — caused by a small but real left/right mass-moment imbalance from
-the model asymmetries.
+The bugs were originally surfaced by Phase 10 of
+`training/docs/reference_architecture_comparison.md`. The original symptom
+(`left_hip_roll` saturating to its inner limit during walking) is no
+longer reproducible at the in-scope operating point post the v20 merge —
+see the "Re-audit results" section below.
 
-## TL;DR — what to fix in Onshape
+## TL;DR — current status (post v20 ankle_roll merge)
 
-| # | Issue | Severity | Onshape change required |
-|---|---|---|---|
-| 1 | Right-leg upper-leg LINK is named `knee` instead of mirroring left's `upper_leg` | **HIGH** (load-bearing for closed-loop) | Rename the right-side sub-assembly to `upper_leg_2` (or `right_upper_leg`) so the export produces a proper mirror name |
-| 2 | LINK frame positions for left and right upper legs differ by ~0.8 mm | **HIGH** (root cause of `left_hip_roll` saturation) | Add a CAD mirror constraint between left and right upper-leg sub-assembly coordinate frames |
-| 3 | Arm chain has the inverse `_2` suffix pattern from legs (right arm un-suffixed, left arm `_2`) | MEDIUM (cosmetic + maintenance hazard) | Standardize: rename arm sub-assemblies so left = `left_X` and right = `right_X` (or both consistent with the leg convention) |
-| 4 | Sub-mm asymmetries in body-inertia COM positions throughout the model | LOW (small effect) | Apply CAD mirror constraints to all body-pair sub-assemblies, not just leg/arm |
-
-## Issue 1 — Right-leg LINK named `knee` instead of `upper_leg_2`
-
-### What we see in the export
-
-In `assets/v2/onshape_export/wildrobot.xml` (the raw `onshape-to-robot`
-output, before any post-processing):
-
-```xml
-<!-- LEFT side -->
-<!-- Link upper_leg -->
-<body name="upper_leg" pos="-0.0269 -0.000166429 -0.0365475" ...>
-  <joint name="left_hip_roll" .../>
-  <!-- Part upper_leg -->
-  <!-- Part upper_leg_servo_connect -->
-  <!-- Part knee_ball_left -->
-  <!-- Part knee_ball_mid -->
-  <!-- Part knee_ball_right -->
-  ...
-</body>
-
-<!-- RIGHT side -->
-<!-- Link knee -->                                    ← LINK named `knee` (BUG)
-<body name="knee"      pos="0.0261  0.000169775 -0.0364583" ...>
-  <joint name="right_hip_roll" .../>
-  <!-- Part upper_leg_2 -->                           ← contains upper_leg_2 part
-  <!-- Part upper_leg_servo_connect_2 -->
-  <!-- Part knee_ball_left_2 -->
-  <!-- Part knee_ball_mid_2 -->
-  <!-- Part knee_ball_right_2 -->
-  ...
-</body>
-```
-
-### Why this is wrong
-
-- The body has the same kinematic role on both sides: it sits between
-  `*_hip_roll` and `*_knee_pitch` joints; physically it IS the upper leg
-- The PARTs inside both LINKs are equivalent (mirrored as `X` / `X_2`):
-  `upper_leg`, `upper_leg_servo_connect`, `knee_ball_left/mid/right`,
-  `knee_ball_servo_connect_*`
-- LEFT side correctly names the LINK `upper_leg` (matching its primary
-  PART)
-- RIGHT side names the LINK `knee` — which is **not the name of any PART
-  inside it**. The closest is `knee_ball_*` (the bearings at the knee
-  end), but there is no standalone `knee` PART
-- The CAD assembly tree on the right side groups the upper-leg parts
-  under a sub-assembly named `knee`, while the left side groups them
-  under a sub-assembly named `upper_leg`
-
-### What to fix in Onshape
-
-In the Onshape feature tree under `right_hip`:
-- Find the sub-assembly currently named `knee`
-- Verify its contents: should include `upper_leg_2`,
-  `upper_leg_servo_connect_2`, `knee_ball_left_2`, `knee_ball_mid_2`,
-  `knee_ball_right_2`, `icm45686_2`, `htd_45h_1circle_6`,
-  `knee_ball_servo_connect_*_2`, plus a kinematic mate to `right_hip`
-- Rename the sub-assembly to **`upper_leg_2`** (matching CAD `_2` mirror
-  convention used elsewhere in the right side)
-  - Or to `right_upper_leg` if you also want to clean up the broader
-    `_2`-suffix convention (see Issue 3)
-
-### How to verify after fix
-
-After re-exporting (`./assets/update_xml.sh --version v2 --export-onshape`):
-- `assets/v2/onshape_export/wildrobot.xml` should contain
-  `<!-- Link upper_leg_2 -->` (or `<!-- Link right_upper_leg -->`)
-  followed by `<body name="upper_leg_2" .../>`
-- The `<!-- Link knee -->` comment should not appear
-
-## Issue 2 — Upper-leg LINK frame positions are not exact mirrors
-
-### What we see in the export
-
-```xml
-<!-- LEFT body position -->
-<body name="upper_leg" pos="-0.0269   -0.000166429 -0.0365475" .../>
-
-<!-- RIGHT body position (current; in mirror should be +0.0269 -0.000166429 -0.0365475) -->
-<body name="knee"      pos=" 0.0261    0.000169775 -0.0364583" .../>
-```
-
-Component-by-component asymmetry:
-
-| Component | Left value | Expected right (mirror of left) | Actual right value | Asymmetry |
+| # | Issue | Pre-merge severity | Current status | Onshape change still required? |
 |---|---|---|---|---|
-| pos x | −0.0269 | +0.0269 | **+0.0261** | **0.8 mm** |
-| pos y | −0.000166429 | −0.000166429 | **+0.000169775** (sign flipped + magnitude differs) | sign + ~3 µm |
-| pos z | −0.0365475 | −0.0365475 | **−0.0364583** | 89 µm |
+| 1 | Right-leg upper-leg LINK named `knee` instead of `upper_leg_2` | HIGH | ✅ **CLOSED** — body now named `upper_leg_2` in raw export | No |
+| 2 | Upper-leg LINK frame positions not exact mirrors | HIGH (load-bearing) | ⚠️ **PARTIALLY CLOSED** — y perfectly mirrored, x asymmetry 4× smaller (0.8 mm → 0.2 mm), z roughly unchanged (~95 µm) | Optional — residual is sub-mm and not load-bearing at vx ≤ 0.15 |
+| 3 | Arm chain has inverse `_2` suffix convention from legs | MEDIUM (cosmetic) | ❌ **NOT FIXED** — still `shoulder_2` (LEFT) / `shoulder` (RIGHT), inverted from leg convention | Yes (cosmetic + maintenance) |
+| 4 | Sub-mm L/R asymmetries in body-inertia COM positions | LOW | ⚠️ **MIXED** — leg chain is now sub-100 µm in x and z; arm chain has 0.5–1 mm in x and up to 11 mm in y-mirror at palm/finger | Yes (especially for arm pairs) |
 
-### Why this is wrong
+## Re-audit results — post v20 merge
 
-A symmetric robot model should have the right-leg LINK frame at the
-exact mirror of the left-leg LINK frame relative to the body centerline.
-The 0.8 mm x-axis asymmetry shifts the right hip-roll joint axis 0.8 mm
-forward (in body frame) compared to the mirror position. This produces:
+### Empirical evidence the load-bearing issue is closed
 
-- A small but consistent rightward bias in the standing equilibrium
-  pose (whole-body COM ends up 0.7 mm right of support polygon center)
-- Asymmetric hip_roll joint loading during walking (LEFT hip bears
-  more lateral support load → saturates at +0.175 rad inner limit)
-- The standing keyframes (`home`, `walk_start`) encode this asymmetry
-  in their hip_roll q values: both legs slightly negative instead of
-  mirror-symmetric
+The Phase 10 closed-loop diagnostic re-run on 2026-05-05 (commit pending,
+post-`31b764d` ankle-roll-realignment patches):
 
-The asymmetry is small in absolute terms (sub-mm) but is the
-**load-bearing root cause** of the `left_hip_roll` saturation observed
-in closed-loop replay (Phase 10 corrected diagnostic, commit
-`381ab3c`). At the operating dynamics scale, a 0.8 mm geometric bias
-produces a 0.18 rad joint deviation that exceeds the position
-actuator's tracking authority.
+| Metric | Pre-merge (cited) | Post-merge (re-run) |
+|---|---|---|
+| `left_hip_roll` peak sat at vx=0.10 | 0.250 (uniform across i_swing 1-9) | **0.091 at i_swing=8 only** |
+| `left_hip_roll` peak sat at vx=0.15 | 0.250 (i_swing 7-10) | **0.000** (no joint saturates anywhere) ✓ |
+| `left_hip_roll` peak sat at vx=0.20 | 0.333 (i_swing 8-9) | 0.333 (unchanged — out-of-scope vx) |
+| `ref_contact_match_frac` at vx=0.15 | 0.611 | 0.745 (+0.134) |
+| Phase 10 D3+D4 verdict at vx=0.15 | down-cross-correlated-mechanism-unclear | **no-significant-sat** |
 
-### What to fix in Onshape
+The original "0.8 mm geometric bias produces 0.18 rad joint deviation that
+exceeds actuator authority" calculation no longer applies because the
+geometric bias is now 0.2 mm (linearly: ≈0.045 rad, well within actuator
+authority). Combined with the v20 ankle_roll merge giving the prior a
+local foot-flat actuator, lateral support is now distributed across two
+joints rather than forced through hip_roll alone.
 
-The two upper-leg sub-assemblies need to have their CAD coordinate
-frames constrained as exact mirrors. Possible Onshape approaches:
+### Body position re-audit (parent-frame, from `assets/v2/wildrobot.xml`)
 
-**Option A — mirror constraint (recommended):**
-1. In the WildRobot top-level assembly, find the right upper-leg
-   sub-assembly (currently named `knee`, see Issue 1)
-2. Replace the right sub-assembly's mate references with a **CAD mirror
-   operation** that takes the left `upper_leg` sub-assembly as the
-   source and mirrors it across the body's YZ plane (sagittal plane)
-3. This guarantees future edits to the left side automatically
-   propagate as a mirrored update to the right side
+#### Issue 2 — upper-leg LINK frame: largely fixed
 
-**Option B — manual frame realignment:**
-1. Find the right upper-leg sub-assembly's coordinate-frame definition
-2. Set its origin position to be the exact mirror of the left's frame:
-   - Left frame at `(−0.0269, −0.000166429, −0.0365475)` relative to
-     `left_hip`
-   - Right frame should be at `(+0.0269, −0.000166429, −0.0365475)`
-     relative to `right_hip` (x-mirrored, y/z preserved)
-3. Verify by exporting and checking the position values
+| Component | Left (`upper_leg`) | Right (`upper_leg_2`) | Pre-merge asymmetry | Post-merge asymmetry |
+|---|---|---|---|---|
+| pos x | −0.0269 | +0.0267 | 0.8 mm | **0.2 mm** (4× smaller) |
+| pos y | −0.000166429 | −0.000166429 | sign-flipped + ~3 µm magnitude | **0** (perfectly mirrored) ✓ |
+| pos z | −0.0365475 | −0.0364525 | 89 µm | 95 µm (unchanged) |
 
-Option A is more robust because it uses CAD's mirror-symmetry as a
-constraint; future edits stay symmetric without manual re-checking.
+The body name is now `upper_leg_2` (was `knee`), so Issue 1 is structurally
+closed in the export.
 
-### How to verify after fix
+### World-frame body-pair COM symmetry (Issue 4 / 3)
 
-After re-exporting:
-- Right body's `pos` attribute should be **`0.0269 -0.000166429 -0.0365475`**
-  (exact mirror of left's `-0.0269 -0.000166429 -0.0365475`)
-- Re-derive the `home` and `walk_start` keyframes (they encode the
-  current biased equilibrium and need to be re-settled against the
-  symmetric model)
-- Re-run `tools/phase10_diagnostic.py --vx 0.15` and verify
-  `left_hip_roll` peak saturation drops from 0.250-0.333 to ≤ 0.05
-
-## Issue 3 — Arm chain has inverse `_2` suffix convention from legs
-
-### What we see in the export
+Computed at the `home` keyframe with `mj_forward`. `|Δx|`, `|Δz|` should be
+zero for a perfect mirror; `|Δy_mirror|` is `|left_y + right_y|` (zero if
+the L/R COMs are symmetric about the sagittal plane).
 
 ```
-LINK names in raw export:
-  Legs:  upper_leg (LEFT) /  knee (RIGHT)
-         lower_leg (LEFT) /  lower_leg_2 (RIGHT)
-         foot (LEFT)      /  foot_2 (RIGHT)
-  Arms:  shoulder_2 (LEFT) / shoulder (RIGHT)
-         upper_arm_2 (LEFT)/ upper_arm (RIGHT)
-         fore_arm_2 (LEFT) / fore_arm (RIGHT)
-         palm_2 (LEFT)     / palm (RIGHT)
-         finger_2 (LEFT)   / finger (RIGHT)
+L body name           R body name              |Δx|   |Δy_mirror|     |Δz|
+----------------------------------------------------------------------------
+LEG CHAIN:
+left_hip              right_hip               0.05mm     1.77mm    0.10mm
+upper_leg             upper_leg_2             0.07mm     3.47mm    0.10mm
+lower_leg             lower_leg_2             0.02mm     1.41mm    0.10mm
+left_foot             right_foot              0.08mm     0.34mm    0.01mm
+
+ARM CHAIN (Issue 3 + 4):
+shoulder_2 (LEFT)     shoulder    (RIGHT)     1.01mm     1.69mm    0.05mm
+upper_arm_2 (LEFT)    upper_arm   (RIGHT)     0.96mm     3.46mm    0.17mm
+fore_arm_2  (LEFT)    fore_arm    (RIGHT)     0.78mm     3.68mm    0.19mm
+palm_2      (LEFT)    palm        (RIGHT)     0.59mm    10.11mm    0.80mm
+finger_2    (LEFT)    finger      (RIGHT)     0.53mm    11.35mm    0.87mm
+
+WHOLE-BODY (4.128 kg total):
+Whole-body COM (world):  (-0.00453, -0.00136, +0.33524)
+COM y-bias from y=0:     1.36 mm
 ```
 
-### Why this is wrong
+#### Reading
 
-The `_2` suffix indicates the auto-mirrored side from CAD. In the leg
-chain, the LEFT side has the canonical (un-suffixed) name and the RIGHT
-side has `_2`. In the arm chain, **the convention is INVERTED**: the
-RIGHT side has the canonical name and the LEFT side has `_2`.
+- **Leg chain is now near-symmetric in x and z** (sub-100 µm). The y-mirror
+  residual (0.34–3.47 mm) is the largest remaining asymmetry; it does not
+  trip Phase 10's saturation gates at vx ≤ 0.15.
+- **Arm chain is materially asymmetric** — palm and finger COMs are off
+  the y-mirror by ~1 cm. This does not affect locomotion (arms are static
+  during walking and contribute to whole-body COM only as a near-constant
+  offset), but it is the largest remaining symmetry violation.
+- **Whole-body COM y-bias is 1.4 mm** (was 0.7 mm pre-merge per the
+  original doc). The leg chain is more symmetric now, so the bias has
+  shifted toward arm-driven sources. Static COM bias does not affect
+  Phase 10 gates because the closed-loop replay starts from the home
+  keyframe which has already settled to this biased equilibrium.
 
-This means the CAD assembly was built with:
-- LEGS authored on the LEFT side first, then mirrored to RIGHT
-- ARMS authored on the RIGHT side first, then mirrored to LEFT
+### `assets/validate_model.py` results
 
-Two opposite mirroring directions in the same model. This is:
-- Confusing for future maintainers (which side is "canonical" depends
-  on which chain you're looking at)
-- A maintenance hazard (edits to one side might not propagate
-  symmetrically to the other in the way expected)
-- Cosmetically inconsistent with the foot LINKs (which post-process
-  renames to proper `left_foot` / `right_foot`)
+The default invocation (post the v0.20.x realignment patch) reports:
+
+```
+Checks passed:
+  - scene include ↔ robot_config.generated_from
+  - toe/heel collision symmetry + mesh_pos sanity
+  - left/right body mass + inertia symmetry
+  - left/right named collision geom parity
+  - default reset contact sanity
+  - actuated joint range parity
+Model validation OK
+```
+
+`left/right body mass + inertia symmetry` PASS confirms that Issue 4 is
+within the validate_model tolerance for ALL body pairs (legs and arms).
+The arm asymmetries above are real but small enough to clear the parity
+band the validator uses.
+
+## Issue 1 — Right-leg LINK named `knee` (CLOSED)
+
+**Status:** CLOSED. The raw export at
+`assets/v2/onshape_export/wildrobot.xml:143-144` now has:
+
+```xml
+<!-- Link upper_leg_2 -->
+<body name="upper_leg_2" pos="0.0267 -0.000166429 -0.0364525" ...>
+```
+
+The pre-merge `<!-- Link knee -->` comment is gone. The CAD-side
+sub-assembly under `right_hip` was renamed (or auto-mirrored from a
+renamed source); the export now produces a proper mirror name.
+
+No further action.
+
+## Issue 2 — Upper-leg LINK frame positions not exact mirrors (PARTIALLY CLOSED)
+
+**Status:** PARTIALLY CLOSED.
+
+Position values in the raw export (and in `assets/v2/wildrobot.xml`):
+
+```xml
+<!-- LEFT body position (unchanged) -->
+<body name="upper_leg"   pos="-0.0269 -0.000166429 -0.0365475" .../>
+
+<!-- RIGHT body position (post-merge) -->
+<body name="upper_leg_2" pos="+0.0267 -0.000166429 -0.0364525" .../>
+```
+
+| Component | Pre-merge asymmetry | Post-merge asymmetry | Doc-projected joint deviation |
+|---|---|---|---|
+| x | 0.8 mm | **0.2 mm** | ~0.045 rad (was 0.18 rad) |
+| y | sign-flipped + ~3 µm magnitude | **0** ✓ | n/a |
+| z | 89 µm | 95 µm | n/a |
+
+The y-component is now perfectly mirrored — this was the sign-flip the
+original audit flagged as the largest violation.
+
+The residual x-asymmetry (0.2 mm) and z-asymmetry (95 µm) are sub-mm.
+Linearly scaling the original "0.8 mm → 0.18 rad joint deviation"
+calculation gives ~0.045 rad at the current 0.2 mm bias — well within the
+position actuator's tracking authority.
+
+### Empirical confirmation
+
+Phase 10 diagnostic at vx=0.15 (post-merge) shows zero joint saturation
+across all 8 leg joints. The "load-bearing" qualifier in the original
+audit no longer applies at the in-scope operating point.
+
+### Should this be fixed in CAD anyway?
+
+**Optional.** The CAD-side ideal is exact mirror. Practical considerations:
+
+- **For sim-only work at vx ≤ 0.15:** no measurable benefit. Phase 10
+  already shows no saturation.
+- **For sim2real deployment (v0.20.2+):** worth doing. The hardware
+  position actuator stack has less tracking margin than MuJoCo's; a
+  residual 0.2 mm bias may resurface as a small but consistent lean
+  during real-robot trials.
+- **For higher-vx training:** at vx=0.20 the Phase 10 diagnostic still
+  shows `left_hip_roll` peak sat 0.333. Whether this is the residual CAD
+  asymmetry or a different mechanism (post-merge spawn-z change, new
+  collision primitives) is unknown without further diagnostic. The
+  remaining x-asymmetry is a candidate.
+
+If fixing in CAD: apply Option A from the original audit (CAD mirror
+constraint between left and right upper-leg sub-assemblies, mirrored
+across the sagittal plane). After re-export, the right body's `pos`
+should be `(+0.0269, -0.000166429, -0.0365475)` exactly.
+
+## Issue 3 — Arm chain inverse `_2` suffix convention (NOT FIXED)
+
+**Status:** NOT FIXED. Current arm naming in `assets/v2/wildrobot.xml`:
+
+```
+LEGS:  upper_leg (LEFT) /  upper_leg_2 (RIGHT)   ← left = canonical
+       lower_leg (LEFT) /  lower_leg_2 (RIGHT)
+       left_foot (LEFT) /  right_foot (RIGHT)    ← post_process renames
+
+ARMS:  shoulder_2  (LEFT) / shoulder  (RIGHT)    ← right = canonical (INVERTED)
+       upper_arm_2 (LEFT) / upper_arm (RIGHT)
+       fore_arm_2  (LEFT) / fore_arm  (RIGHT)
+       palm_2      (LEFT) / palm      (RIGHT)
+       finger_2    (LEFT) / finger    (RIGHT)
+```
+
+The leg / arm convention inversion documented in the original audit
+persists: legs are authored on the LEFT side and mirrored to RIGHT (so
+RIGHT has `_2`); arms are authored on the RIGHT side and mirrored to LEFT
+(so LEFT has `_2`).
+
+This is cosmetic + maintenance hazard, not a correctness issue. PPO and
+the planner reference joints by name (`left_*` / `right_*`), not by body
+name, so the inversion does not affect any downstream consumer.
+
+### What to fix in Onshape (unchanged from original audit)
+
+Pick one canonical convention per body region and apply consistently. See
+the original `model_issues.md` Issue 3 section for the two options
+(Option A: rename to `left_X` / `right_X`; Option B: fix the `_2`
+inversion).
+
+**Recommended sequencing:** defer until the next intentional Onshape
+authoring pass; not worth a stand-alone CAD change.
+
+## Issue 4 — Sub-mm L/R asymmetries in body-inertia COM positions (MIXED)
+
+**Status:** MIXED.
+
+### Leg chain — near-symmetric (was sub-mm, now sub-100 µm in x and z)
+
+| Body pair | Pre-merge example (orig doc) | Post-merge re-audit |
+|---|---|---|
+| left_hip / right_hip | (0.5 mm, 0.3 mm, ~µm) | (0.05 mm, 1.77 mm, 0.10 mm) |
+| upper_leg / upper_leg_2 | n/a | (0.07 mm, 3.47 mm, 0.10 mm) |
+| lower_leg / lower_leg_2 | n/a | (0.02 mm, 1.41 mm, 0.10 mm) |
+| left_foot / right_foot | (0.6 mm, 0.5 mm, ~µm) | (0.08 mm, 0.34 mm, 0.01 mm) |
+
+x and z components are at sub-100 µm (CAD floating-point noise level).
+The y-mirror residual (0.3–3.5 mm) is larger but is dominated by the
+chain's lever arm — small angular asymmetries at the hip get amplified
+through the upper_leg's length. The leg chain is no longer the dominant
+contributor to whole-body COM bias.
+
+### Arm chain — substantial asymmetries (NOT FIXED)
+
+| Body pair | |Δx| | |Δy_mirror| | |Δz| |
+|---|---|---|---|
+| shoulder_2 / shoulder | 1.01 mm | 1.69 mm | 0.05 mm |
+| upper_arm_2 / upper_arm | 0.96 mm | 3.46 mm | 0.17 mm |
+| fore_arm_2 / fore_arm | 0.78 mm | 3.68 mm | 0.19 mm |
+| palm_2 / palm | **0.59 mm** | **10.11 mm** | **0.80 mm** |
+| finger_2 / finger | **0.53 mm** | **11.35 mm** | **0.87 mm** |
+
+The palm and finger pairs are off the y-mirror by ~1 cm. This does not
+affect walking (arms are static during locomotion and contribute as a
+near-constant offset to the whole-body COM), but it is the largest
+remaining symmetry violation in the model.
+
+### Whole-body COM bias
+
+```
+Whole-body COM (world):  (-0.00453, -0.00136, +0.33524)
+COM y-bias from y=0:     1.36 mm  (was 0.7 mm pre-merge per orig doc)
+```
+
+The whole-body y-bias actually grew slightly (0.7 → 1.4 mm) despite the
+leg chain becoming more symmetric. The shift is consistent with
+arm-side asymmetries dominating, since the legs are now sub-100 µm in
+the x-mirror direction.
+
+This static bias settles into the home keyframe equilibrium and the
+closed-loop replay starts from there, so Phase 10 metrics are
+insensitive to it. It may matter on real hardware where the standing
+controller has less tolerance.
 
 ### What to fix in Onshape
 
-Pick one canonical convention per body region and apply consistently.
-Two options, both acceptable:
+Apply CAD mirror constraints to all arm sub-assemblies (Issue 3's
+recommended Option A would fix the naming and the constraints in one
+change). The leg chain is good enough as-is.
 
-**Option A — match the foot convention (rename to `left_X` / `right_X`):**
-- Legs: `upper_leg` → `left_upper_leg`, `knee` → `right_upper_leg`,
-  `lower_leg` → `left_lower_leg`, `lower_leg_2` → `right_lower_leg`
-- Arms: `shoulder_2` → `left_shoulder`, `shoulder` → `right_shoulder`,
-  same pattern for `upper_arm`, `fore_arm`, `palm`, `finger`
-- Most explicit; mirrors the L/R prefix used for hips and feet
+## Workaround status
 
-**Option B — keep `_2` suffix but fix the inversion:**
-- Either: legs and arms both use no-suffix=LEFT, `_2`=RIGHT (current
-  leg convention), so arm sub-assemblies need to be renamed
-- Or: legs and arms both use no-suffix=RIGHT, `_2`=LEFT (current
-  arm convention), so leg sub-assemblies need to be renamed
+The post-process workaround section from the original doc (rename `knee`
+to `right_upper_leg`, override the right-leg body position) is **no
+longer needed**: Issue 1 is closed in the export, and Issue 2's residual
+is sub-mm and not load-bearing.
 
-Option A is recommended because it's the convention already used for
-hips and feet, and is unambiguous in code that consumes body names.
+If the residual x-asymmetry on the upper-leg becomes a measurable problem
+on hardware (v0.20.2+), the cheapest interim fix is the same workaround
+in `assets/post_process.py` — but defer until there's evidence it's
+needed.
 
-## Issue 4 — Sub-mm asymmetries in body-inertia COM positions
+## Open follow-ups
 
-### What we see (from `tools/reference_geometry_parity.py` whole-body audit)
+1. **Phase 10 at vx=0.20 still shows `left_hip_roll` saturation
+   (peak 0.333).** Out-of-scope for the current operating point but
+   worth investigating before any operating-vx widening (Phase 9). The
+   residual 0.2 mm x-asymmetry on the upper-leg, the spawn-z change
+   (0.50 → 0.48 m), and the post-process collision primitive changes are
+   all candidates.
+2. **Whole-body COM y-bias grew (0.7 → 1.4 mm).** Track on hardware
+   trials; the arm-pair asymmetries are the likely source.
+3. **Arm-chain mirror constraints (Issue 3 + Issue 4-arm).** Defer to
+   the next intentional Onshape authoring pass.
 
-Inertia COM positions for body pairs differ by sub-mm to micrometer
-amounts. Examples:
-
-| Body pair | Left COM (x, y, z) | Right COM (x, y, z) | Δx | Δy | Δz |
-|---|---|---|---|---|---|
-| left_hip / right_hip | (−0.00291, −0.00898, −0.0331) | (+0.00226, −0.00872, −0.0331) | 0.5 mm | 0.3 mm | ~µm |
-| left_knee_mimic / right_knee_mimic | (+0.0475, +0.09019, +0.2369) | (+0.0471, −0.09016, +0.2368) | 0.4 mm | 30 µm | ~µm |
-| left_foot / right_foot | (+0.02221, +0.09052, +0.01132) | (+0.02160, −0.09003, +0.01131) | 0.6 mm | 0.5 mm | ~µm |
-
-These are CAD floating-point precision artifacts from imperfect mirror
-operations. Each individual asymmetry is small but they add up: the
-total whole-body COM ends up 0.7 mm to the right of the support
-polygon center at standing.
-
-### Why this matters
-
-In isolation, each sub-mm asymmetry is negligible. Aggregated:
-- Whole-body COM y bias of 0.7 mm
-- Standing equilibrium settles to a slightly tilted posture
-- Walking dynamics amplify the bias into asymmetric joint loading
-
-Issue 2 is the largest contributor; Issue 4 contributes the rest.
-
-### What to fix in Onshape
-
-The fundamental fix is to **apply CAD mirror constraints to every L/R
-body pair**, not just the upper-leg sub-assembly (Issue 2). This
-includes:
-- Hip sub-assemblies
-- Knee mimic / ankle mimic frames
-- Foot sub-assemblies
-- All arm sub-assemblies
-
-If the CAD authoring style is to design one side and mirror to the
-other, ensure every mirror operation is a true CAD mirror constraint
-(maintained by the assembly), not a one-time copy-and-paste.
-
-## Verification checklist after CAD fixes
-
-Once the Onshape model is fixed, re-run the export pipeline and verify:
+## Verification checklist
 
 ```bash
-# Re-export and post-process
-./assets/update_xml.sh --version v2 --export-onshape
+# Repeat the symmetry checks anytime the model changes
+uv run python assets/validate_model.py
 
-# Verify the symmetry programmatically
-uv run python tools/phase10_diagnostic.py --vx 0.15
+# Re-run the Phase 10 closed-loop diagnostic
+uv run python tools/phase10_diagnostic.py --vx 0.10 0.15 0.20
 
-# Expected results after fix:
-# - D3+D4 left_hip_roll peak sat rate: 0.333 -> < 0.05
-# - D3+D4 verdict: down-cross-correlated-mechanism-unclear
-#                  -> uniform-sat or no-significant-sat
-# - All P0 / P1A absolute / P2 q-step / P1 survival gates remain PASSING
-# - Episode survival in Phase 10 replay: 67-72 -> > 100 steps
+# Expected post-merge baseline (recorded 2026-05-05):
+# - vx=0.10: left_hip_roll peak sat = 0.091 at i_swing=8 only
+# - vx=0.15: no-significant-sat (all 8 leg joints zero saturation)
+# - vx=0.20: left_hip_roll peak sat = 0.333 (still down-cross-correlated)
+# - All P0 / P1A absolute / P2 q-step / P1 survival gates at vx ≤ 0.15
+#   remain PASSING
 ```
 
-Also re-derive the standing keyframes against the symmetric model:
+## Appendix: original audit context
 
-```bash
-# Re-settle home + walk_start equilibrium poses
-# (see assets/v2/keyframes.xml comments for the round-6 / round-7
-#  settling procedure documentation)
-```
+The pre-merge investigation (Phase 10 of
+`training/docs/reference_architecture_comparison.md`) is preserved in
+git history at commits `cc5e8d3`, `381ab3c`, `d3a6989`, `72f25d4`,
+`2cf32d6`, `5b634be`, `e0cf165`. The original `model_issues.md` content
+(which described the pre-merge state of Issues 1-4) is recoverable via
+`git show 9c8d9ee:assets/v2/model_issues.md`.
 
-## Workaround until CAD is fixed
-
-While the CAD-side fix is being prepared, a post-process workaround can
-be applied in `assets/post_process.py` to:
-1. Rename the `knee` body to `right_upper_leg`
-2. Override the right-leg body position to be the exact mirror of left
-
-This is documented as a stopgap; the proper fix remains the CAD-side
-correction. See Phase 12C closeout in
-`training/docs/reference_architecture_comparison.md` for context.
-
-## Appendix: how the bugs were discovered
-
-The asymmetries were surfaced by running closed-loop replay of the ZMP
-walking prior under MuJoCo as part of Phase 10 diagnostic in
-`training/docs/reference_architecture_comparison.md`. Key findings:
-
-- Per-step joint trace at `vx=0.15` shows `left_hip_roll` saturating
-  at +0.175 rad limit while `right_hip_roll` stays at −0.04 rad (well
-  within range)
-- IK output is symmetric (`left_hip_roll` + `right_hip_roll` q_ref
-  sums to ~0 on average), so the planner is not the source
-- Standing equilibrium pose has both hip_rolls at slightly negative q
-  values (−0.0023 and −0.0041), not mirror-symmetric
-- Whole-body COM is offset 0.7 mm to the right of support polygon
-  center
-- Asymmetry is invariant to `vx` (verified in Phase 9A re-read at
-  vx ∈ {0.21, 0.265}, ruling out shuffling-driven causes)
-- Tracing the body geometries showed the right-side LINK is named
-  `knee` (not the expected `upper_leg_2`) and its position is
-  asymmetric to left's `upper_leg` by 0.8 mm in x
-- Audit of `assets/v2/onshape_export/wildrobot.xml` (the raw export,
-  before any post-processing) confirms both bugs originate in the CAD
-  source, not in our pipeline
-
-For full investigation traces and supporting data, see:
-- `tools/phase10_diagnostic.py` (the closed-loop diagnostic tool)
-- `tools/phase10_diagnostic.json` (per-step traces from the audit)
-- `tools/phase10_diagnostic_nonshuffle.json` (Phase 9A re-read)
-- Commits `cc5e8d3`, `381ab3c`, `d3a6989`, `72f25d4`, `2cf32d6`,
-  `5b634be`, `e0cf165` for the diagnostic implementation, methodology
-  fixes, and verdict
+This re-audit (2026-05-05) was triggered by a question on whether the v20
+ankle_roll merge had implicitly fixed the CAD-side asymmetries that
+Phase 12C had opened to investigate. The answer is: largely yes for the
+leg chain (Issues 1 + 2), no for the arm chain (Issues 3 + 4-arm).

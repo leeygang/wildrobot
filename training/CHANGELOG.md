@@ -8,6 +8,145 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-phase8-attempt] - 2026-05-05: Phase 8 (foot_step_height_m bump) attempted, reverted
+
+### Context
+
+After the v20 ankle_roll merge cleared Phase 12C at vx ≤ 0.15 (per
+the post-merge Phase 10 re-run logged below), Phase 8 became the
+next planner-quality direction item from the v0.20.1 reference
+quality snapshot — single-line bump of `foot_step_height_m` from
+0.04 → 0.05 m to close the `swing_clearance_per_com_height`
+normalised P1A FAIL gate (0.143 → 0.175 vs 0.85× TB gate of 0.149).
+
+### Result
+
+**Reverted.** Both h=0.05 and h=0.045 (halfway step) regressed
+survival at vx=0.15 even though the saturation gate stayed clean.
+The mechanism is body-pitch termination from the deeper-bend swing
+destabilising stance, not the saturation-widening the original
+Phase 8 doc warning anticipated.
+
+| Metric | h=0.04 (current) | h=0.045 | h=0.05 |
+|---|---|---|---|
+| Survival vx=0.10 | 200/200 | 200/200 | 109/200 (roll term) |
+| Survival vx=0.15 | **200/200 ✓** | 104/200 (pitch term) | 74/200 (pitch term) |
+| Survival vx=0.20 | 68/200 | 63/200 | 57/200 |
+| `ref_contact_match_frac` vx=0.15 | 0.745 | 0.702 | 0.716 |
+| `left_hip_roll` peak sat vx=0.15 | 0.000 | 0.000 | **0.250** |
+| `right_hip_roll` peak sat vx=0.15 | 0.000 | 0.000 | **0.250** |
+| `swing_clearance_per_com_height` | 0.143 (FAIL) | ≈ 0.158 (PASS) | ≈ 0.175 (PASS) |
+
+### Reading
+
+- The clearance gate gain is real but the survival regression is
+  larger-magnitude and not worth shipping the bump alone.
+- h=0.045 is interesting — saturation stays clean but survival
+  still drops. Mechanism is a stance-destabilisation effect, not
+  the original "up_delta increase aggravates plantarflex
+  transition" hypothesis. Suggests the deeper-bend swing
+  trajectory perturbs the COM trajectory the planner generates
+  in a way the open-loop replay can't recover from.
+- h=0.05 reintroduces the `left_hip_roll` saturation that the v20
+  merge had cleared, plus the survival regression. Worst of both.
+
+### Direction (revised)
+
+Phase 8 is now blocked on **Phase 12A (plantarflex schedule
+softening)** producing a verdict on whether the Phase 7 boundary
+transition is the destabiliser. The original doc's Phase 8 gating
+("WAIT, gated on 12A AND 12C") was relaxed after the post-merge
+12C clearing; this experiment reinstates the Phase-12A gate
+empirically.
+
+If 12A's softer plantarflex schedule recovers the deeper-bend
+survival regression, retry Phase 8 at h=0.045 first (gate PASS
+with smaller delta).
+
+### Files touched
+
+- `control/zmp/zmp_walk.py:79-103`: comment block records the
+  attempt + revert; default stays `foot_step_height_m: float =
+  0.04`.
+- No other code changes.
+
+### Tests
+
+`uv run python tools/phase10_diagnostic.py --vx 0.15` confirms
+the revert restores the post-merge baseline (200/200 survived,
+match_frac=0.745, no-significant-sat).
+
+---
+
+## [v0.20.1-model-issues-reaudit] - 2026-05-05: Re-audit CAD-side asymmetries against post-merge MJCF
+
+### Context
+
+The Phase 12C investigation (commits `cc5e8d3` / `381ab3c` /
+`d3a6989`, 2026-04-26) opened `assets/v2/model_issues.md` to track
+four CAD-side asymmetries discovered by closed-loop replay of the
+ZMP walking prior. The v20 ankle_roll merge (`66d5c00`, `731a07d`,
+`f5906cc`) re-exported the model with corrected sub-assembly
+naming and tighter mirror constraints in the leg chain. This entry
+records the re-audit results.
+
+### Re-audit findings (numbers from current `assets/v2/wildrobot.xml`)
+
+| # | Original issue | Status | Evidence |
+|---|---|---|---|
+| 1 | Right-leg upper-leg LINK named `knee` | ✅ CLOSED | Body now named `upper_leg_2` in raw export and post-process output |
+| 2 | Upper-leg LINK frame positions not exact mirrors | ⚠️ PARTIALLY CLOSED | x asymmetry 0.8 mm → **0.2 mm** (4× smaller); y **perfectly mirrored** (was sign-flipped); z 89 µm → 95 µm (~unchanged) |
+| 3 | Arm chain inverse `_2` suffix convention | ❌ NOT FIXED | Still `shoulder_2` (LEFT) / `shoulder` (RIGHT) inverted from leg convention |
+| 4 | Sub-mm L/R asymmetries in body-inertia COM | ⚠️ MIXED | Leg chain now sub-100 µm in x and z; arm chain has up to 11 mm y-mirror at palm/finger |
+
+### Empirical evidence the load-bearing issue is closed
+
+Phase 10 closed-loop diagnostic re-run on 2026-05-05:
+
+| Metric | Pre-merge (cited in orig audit) | Post-merge (re-run) |
+|---|---|---|
+| `left_hip_roll` peak sat vx=0.10 | 0.250 (uniform i_swing 1-9) | **0.091** at i_swing=8 only |
+| `left_hip_roll` peak sat vx=0.15 | 0.250 (i_swing 7-10) | **0.000** ✓ |
+| `left_hip_roll` peak sat vx=0.20 | 0.333 (i_swing 8-9) | 0.333 (unchanged — out-of-scope) |
+| `ref_contact_match_frac` vx=0.15 | 0.611 | **0.745** (+0.134) |
+| Phase 10 D3+D4 verdict vx=0.15 | down-cross-correlated-mechanism-unclear | **no-significant-sat** |
+
+The original "0.8 mm geometric bias produces 0.18 rad joint
+deviation that exceeds actuator authority" calculation no longer
+applies — at the post-merge 0.2 mm bias the linear projection is
+~0.045 rad, well within actuator authority. Combined with the v20
+ankle_roll merge providing a local foot-flat actuator, lateral
+support is now distributed across two joints rather than forced
+through hip_roll alone. Both the CAD geometry improvement and the
+ankle_roll DOF contributed.
+
+### What still needs CAD-side attention
+
+1. **Issue 2 residual** — sub-mm. Optional for sim work; worth
+   doing before sim2real deployment (v0.20.2+) where the hardware
+   actuator stack has less margin than MuJoCo.
+2. **Issue 3 + Issue 4-arm** — arm chain naming inversion + 1 cm
+   palm/finger COM asymmetry. Cosmetic + maintenance hazard, not
+   correctness. Defer to next intentional Onshape authoring pass.
+3. **Whole-body COM y-bias grew** (0.7 mm → 1.4 mm). Leg chain
+   improved but arm-chain asymmetries dominate now. Track on
+   hardware trials.
+
+### Files touched
+
+- `assets/v2/model_issues.md`: rewritten to reflect post-merge
+  state with closed/partial/not-fixed status per issue, quantified
+  asymmetries from the re-audit script, empirical Phase 10
+  evidence, and revised follow-up priorities.
+
+### Doc-vs-code reconciliation
+
+The original `model_issues.md` (last updated 2026-04-26) described
+the pre-merge state and was not updated when the v20 ankle_roll
+merge re-exported the model. This re-audit closes that drift.
+
+---
+
 ## [v0.20.1-ankle-roll-realignment] - 2026-05-04: Realign v0.20.x design + implementation to the post-merge robot architecture
 
 ### Context

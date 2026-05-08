@@ -998,7 +998,10 @@ def _wr_fk_and_smoothness(
         left_foot = np.asarray(traj.site_pos[:, left_idx, :], dtype=np.float64)
         right_foot = np.asarray(traj.site_pos[:, right_idx, :], dtype=np.float64)
     else:
-        model, data, mapper, act_to_qpos, geom_ids, _body_ids, _limits = _load_wr_assets()
+        (
+            model, data, mapper, act_to_qpos, geom_ids,
+            _body_ids, _limits, _shared_leg_idx,
+        ) = _load_wr_assets()
         left_foot = np.zeros((n_steps, 3), dtype=np.float64)
         right_foot = np.zeros((n_steps, 3), dtype=np.float64)
         for idx in range(n_steps):
