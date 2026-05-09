@@ -15,28 +15,9 @@ export; closeout history lives in CHANGELOG entries
 symmetric (sub-100 µm in x and z; 0 mm in y at parent-local; Phase 10
 shows zero saturation at vx=0.15).
 
-This file tracks the remaining arm-chain issues.
+This file tracks the remaining arm-chain issue.
 
 ---
-
-## Issue 3 — Arm chain inverse `_2` suffix convention
-
-Current naming in `assets/v2/wildrobot.xml`:
-
-| Chain | LEFT | RIGHT | `_2` on |
-|---|---|---|---|
-| Legs (post Issue 1 fix) | `upper_leg` / `lower_leg` / `left_foot` | `upper_leg_2` / `lower_leg_2` / `right_foot` | RIGHT |
-| Arms (unchanged) | `shoulder_2` / `upper_arm_2` / `fore_arm_2` / `palm_2` / `finger_2` | `shoulder` / `upper_arm` / `fore_arm` / `palm` | **LEFT** (inverted) |
-
-**Why this isn't blocking:** PPO and the planner reference joints by
-name (`left_*` / `right_*`), not by body name.  The inversion is a
-maintenance hazard, not a correctness issue.
-
-**What to fix in Onshape:** pick one canonical convention per body
-region and apply consistently.  Recommended: rename to
-`left_X` / `right_X` everywhere (matches the leg-chain foot naming
-already done by `assets/post_process.py`).  Defer to next intentional
-Onshape authoring pass.
 
 ## Issue 4 (arm subtree) — Sub-mm to ~1 cm L/R asymmetries
 
@@ -56,8 +37,8 @@ dominate).  Static bias only; does not affect closed-loop walking
 gates because the bias settles into the home keyframe equilibrium.
 
 **What to fix in Onshape:** apply CAD mirror constraints to all arm
-sub-assemblies.  Same Onshape change as Issue 3 (rename + add mirror
-mate constraints in one pass).
+sub-assemblies so the raw export's `palm` / `palm_2` and `finger` /
+`finger_2` pairs become bit-identical mirrors.
 
 ## Re-checking after a CAD fix
 

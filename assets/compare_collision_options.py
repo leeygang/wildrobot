@@ -53,18 +53,19 @@ LEGACY_SIZES: Dict[str, Dict[str, str]] = {
 # by inspecting the parent body. Each entry: {parent_body_name: source_mesh_name}.
 # This is needed because post_process pops the `mesh` attribute when it converts
 # meshes to primitives, so we lose direct identification afterwards.
+# Body names here are the post-rename canonical `left_*`/`right_*` names
+# produced by post_process.rename_legs_and_arms_to_semantic_names().
 PARENT_BODY_TO_MESH: Dict[str, List[str]] = {
-    "upper_leg":   ["upper_leg", "upper_leg_servo_connect"],
-    "upper_leg_2": ["upper_leg", "upper_leg_servo_connect"],
-    "left_hip":    ["htd_45h_collision"],
-    "right_hip":   ["htd_45h_collision"],
-    # Forearm bodies are named "fore_arm" / "fore_arm_2" in the raw export.
-    "fore_arm":    ["forearm"],
-    "fore_arm_2":  ["forearm"],
+    "left_upper_leg":  ["upper_leg", "upper_leg_servo_connect"],
+    "right_upper_leg": ["upper_leg", "upper_leg_servo_connect"],
+    "left_hip":        ["htd_45h_collision"],
+    "right_hip":       ["htd_45h_collision"],
+    "left_fore_arm":   ["forearm"],
+    "right_fore_arm":  ["forearm"],
     # Foot toe/heel collision primitives end up under left_foot / right_foot
     # after add_collision_names renames the foot bodies.
-    "left_foot":   ["toe_btm", "heel_btm"],
-    "right_foot":  ["toe_btm", "heel_btm"],
+    "left_foot":       ["toe_btm", "heel_btm"],
+    "right_foot":      ["toe_btm", "heel_btm"],
 }
 
 
@@ -139,7 +140,7 @@ def _override_sizes_to_legacy(xml_path: Path) -> int:
             # - foot parent has two boxes (toe_btm and heel_btm). Distinguish
             #   by primitive size: heel_btm is shorter on its y axis than toe_btm.
             mesh_for_geom: Optional[str] = None
-            if body_name in ("upper_leg", "upper_leg_2"):
+            if body_name in ("left_upper_leg", "right_upper_leg"):
                 if geom_type == "capsule":
                     mesh_for_geom = "upper_leg"
                 else:  # box
@@ -151,7 +152,7 @@ def _override_sizes_to_legacy(xml_path: Path) -> int:
                 mesh_for_geom = "toe_btm" if pos_vals[0] > 0 else "heel_btm"
             elif body_name in ("left_hip", "right_hip"):
                 mesh_for_geom = "htd_45h_collision"
-            elif body_name in ("fore_arm", "fore_arm_2"):
+            elif body_name in ("left_fore_arm", "right_fore_arm"):
                 mesh_for_geom = "forearm"
             if mesh_for_geom is None:
                 continue

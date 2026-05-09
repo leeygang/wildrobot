@@ -121,6 +121,78 @@ def add_collision_names(xml_file):
     ET.indent(tree, space="  ", level=0)
     tree.write(xml_file)
 
+
+def rename_legs_and_arms_to_semantic_names(xml_file: str) -> None:
+    """Rename inner-leg and arm bodies from raw Onshape names to semantic
+    `left_*` / `right_*` names, matching the convention already used by hip
+    and foot bodies.
+
+    Raw Onshape exports ship with two inconsistent conventions in the same
+    model: inner-leg bodies (`upper_leg`, `lower_leg`, `servo_bracket_top`)
+    are plain on the LEFT side and `_2`-suffixed on the RIGHT, while arm
+    bodies (`shoulder`, `upper_arm`, `fore_arm`, `palm`, `finger`) are plain
+    on the RIGHT side and `_2`-suffixed on the LEFT (the inversion is a
+    CAD-assembly mating quirk). Joint names in the raw export are already
+    canonical `left_*` / `right_*`, so we use them as the side oracle.
+
+    See assets/v2/cad_arm_chain_followups.md (Issue 3) for context. This
+    function is the workaround until the Onshape source is renamed.
+    """
+    target_stems = (
+        "upper_leg",
+        "lower_leg",
+        "servo_bracket_top",
+        "shoulder",
+        "upper_arm",
+        "fore_arm",
+        "palm",
+        "finger",
+    )
+
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    body_names = {b.get("name") for b in root.findall(".//body") if b.get("name")}
+
+    renames: List[Tuple[str, str]] = []
+    for stem in target_stems:
+        for raw in (stem, f"{stem}_2"):
+            if raw not in body_names:
+                continue
+            body = root.find(f".//body[@name='{raw}']")
+            if body is None:
+                continue
+            joint = body.find("joint")
+            jname = joint.get("name") if joint is not None else None
+            if jname is None:
+                continue
+            if jname.startswith("left_"):
+                target = f"left_{stem}"
+            elif jname.startswith("right_"):
+                target = f"right_{stem}"
+            else:
+                continue
+            if raw == target:
+                continue  # already canonical (idempotent re-run)
+            if target in body_names:
+                # Defensive: refuse silent collisions. This would only fire
+                # if the raw export ever contained both `stem` and `left_stem`
+                # (or `right_stem`) for the same side at the same time.
+                raise ValueError(
+                    f"Body rename collision: cannot rename '{raw}' -> "
+                    f"'{target}' because '{target}' already exists."
+                )
+            body.set("name", target)
+            body_names.add(target)
+            body_names.discard(raw)
+            renames.append((raw, target))
+
+    if renames:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+        joined = ", ".join(f"{a}->{b}" for a, b in renames)
+        print(f"Renamed inner-leg/arm bodies to semantic names: {joined}")
+
+
 def validate_foot_geoms(xml_file: str) -> None:
     """Validate left/right toe/heel collision geoms exist and are symmetric.
 
@@ -1239,6 +1311,7 @@ def main() -> None:
     print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
     inject_additional_xml(xml_file)
+    rename_legs_and_arms_to_semantic_names(xml_file)
     add_collision_names(xml_file)
     validate_foot_geoms(xml_file)
     ensure_root_body_pose(xml_file)
