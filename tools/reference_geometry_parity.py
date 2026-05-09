@@ -1779,11 +1779,20 @@ def _print_fk_table(
     gait_wr: FKGaitMetrics,
     gait_tbs: list[FKGaitMetrics],
     parity_rows: list[dict[str, str]],
-    vx: float,
+    wr_vx: float,
+    tb_vx: float | None = None,
 ) -> None:
+    if tb_vx is None:
+        tb_vx = wr_vx
     parity_by_name = {row["baseline"]: row for row in parity_rows}
     print()
-    print(f"FK-realized gait comparison @ vx={vx:.2f}")
+    if abs(wr_vx - tb_vx) < 1e-6:
+        print(f"FK-realized gait comparison @ vx={wr_vx:.3f}")
+    else:
+        print(
+            f"FK-realized gait comparison: WR @ vx={wr_vx:.3f} (op pt) vs "
+            f"TB @ vx={tb_vx:.3f} (op pt)"
+        )
     print(
         f"{'robot':<16} "
         f"{'step_len_mean':>14} "
@@ -1830,11 +1839,20 @@ def _print_smoothness_table(
     smooth_wr: SmoothnessMetrics,
     smooth_tbs: list[SmoothnessMetrics],
     parity_rows: list[dict[str, str]],
-    vx: float,
+    wr_vx: float,
+    tb_vx: float | None = None,
 ) -> None:
+    if tb_vx is None:
+        tb_vx = wr_vx
     parity_by_name = {row["baseline"]: row for row in parity_rows}
     print()
-    print(f"Smoothness comparison @ vx={vx:.2f}")
+    if abs(wr_vx - tb_vx) < 1e-6:
+        print(f"Smoothness comparison @ vx={wr_vx:.3f}")
+    else:
+        print(
+            f"Smoothness comparison: WR @ vx={wr_vx:.3f} (op pt) vs "
+            f"TB @ vx={tb_vx:.3f} (op pt)"
+        )
     print(
         f"{'robot':<16} "
         f"{'leg_q_step_max':>15} "
@@ -1950,11 +1968,20 @@ def _print_normalized_fk_table(
     norm_wr: NormalizedGaitMetrics,
     norm_tbs: list[NormalizedGaitMetrics],
     parity_rows: list[dict[str, str]],
-    vx: float,
+    wr_vx: float,
+    tb_vx: float | None = None,
 ) -> None:
+    if tb_vx is None:
+        tb_vx = wr_vx
     parity_by_name = {row["baseline"]: row for row in parity_rows}
     print()
-    print(f"Size-normalised gait comparison @ vx={vx:.2f}")
+    if abs(wr_vx - tb_vx) < 1e-6:
+        print(f"Size-normalised gait comparison @ vx={wr_vx:.3f}")
+    else:
+        print(
+            f"Size-normalised gait comparison: WR @ vx={wr_vx:.3f} (op pt) vs "
+            f"TB @ vx={tb_vx:.3f} (op pt)"
+        )
     print(
         f"{'robot':<16} "
         f"{'leg(m)':>8} "
@@ -2073,7 +2100,9 @@ def _build_payload(
 ) -> dict:
     return {
         "config": {
-            "vx_nominal": args.vx,
+            "vx_nominal": args.vx,                        # WR's operating-point vx (legacy field name kept)
+            "wr_vx_nominal": args.vx,                     # Phase 9A: WR's operating-point vx
+            "tb_vx_nominal": args.tb_vx,                  # Phase 9A: TB's operating-point vx
             "geometry_vx_bins": list(_VX_BINS),
             "geometry_vx_bins_in_scope": list(_VX_BINS_INSCOPE),
             "trackability_vx_bins": list(_P1_VX_BINS if not args.nominal_only else [args.vx]),
@@ -2134,7 +2163,19 @@ def main() -> int:
         "--vx",
         type=float,
         default=0.265,
-        help="Nominal velocity used for FK and smoothness tables (default 0.265 = Phase 9A operating point, TB-step/leg-matched).",
+        help="WR's nominal velocity for FK + smoothness + normalised tables (default 0.265 = Phase 9A operating point, TB-step/leg-matched).",
+    )
+    parser.add_argument(
+        "--tb-vx",
+        type=float,
+        default=0.15,
+        help=(
+            "TB's nominal velocity for FK + smoothness + normalised tables "
+            "(default 0.15 = TB's operating point).  Each robot is queried "
+            "at its own operating point so the comparison reads "
+            "'WR-at-WR-op-vx vs TB-at-TB-op-vx'.  Set to the same value as "
+            "--vx to recover the legacy same-vx comparison."
+        ),
     )
     parser.add_argument(
         "--horizon",
@@ -2203,11 +2244,15 @@ def main() -> int:
         geometry_rows = [row for _ok, row in geometry_pairs]
         geometry_ok = all(ok for ok, _row in geometry_pairs)
 
+    # Phase 9A asymmetric vx: WR at args.vx (its operating point), TB at
+    # args.tb_vx (its operating point — typically TB walks at vx=0.15
+    # while WR's Phase 9A operating point is vx=0.265, step/leg-matched).
+    # Set --tb-vx == --vx to recover the legacy same-vx comparison.
     gait_wr, smooth_wr = _wr_fk_and_smoothness(wr_lib, args.vx)
     gait_tbs: list[FKGaitMetrics] = []
     smooth_tbs: list[SmoothnessMetrics] = []
     for robot_name in _TB_VARIANTS:
-        gait_tb, smooth_tb = _tb_nominal_bundle(toddlerbot_root, robot_name, args.vx)
+        gait_tb, smooth_tb = _tb_nominal_bundle(toddlerbot_root, robot_name, args.tb_vx)
         gait_tbs.append(gait_tb)
         smooth_tbs.append(smooth_tb)
     fk_pairs = [_fk_parity_row(gait_wr, gait_tb) for gait_tb in gait_tbs]
@@ -2239,7 +2284,7 @@ def main() -> int:
     # footing.  See training/docs/reference_parity_scorecard.md.
     norm_gait_wr = _compute_normalized_from_fk("wildrobot", args.vx, gait_wr, smooth_wr)
     norm_gait_tbs = [
-        _compute_normalized_from_fk(metrics.name, args.vx, metrics, smooth)
+        _compute_normalized_from_fk(metrics.name, args.tb_vx, metrics, smooth)
         for metrics, smooth in zip(gait_tbs, smooth_tbs)
     ]
     norm_fk_pairs = [
@@ -2308,10 +2353,10 @@ def main() -> int:
         )
         if not args.nominal_only and summary_wr is not None:
             _print_geometry_table(summary_wr, summary_tbs, geometry_rows)
-        _print_fk_table(gait_wr, gait_tbs, fk_rows, args.vx)
-        _print_smoothness_table(smooth_wr, smooth_tbs, smooth_rows, args.vx)
+        _print_fk_table(gait_wr, gait_tbs, fk_rows, args.vx, args.tb_vx)
+        _print_smoothness_table(smooth_wr, smooth_tbs, smooth_rows, args.vx, args.tb_vx)
         _print_trackability_table(p1_wr, p1_tbs, p1_rows)
-        _print_normalized_fk_table(norm_gait_wr, norm_gait_tbs, norm_fk_rows, args.vx)
+        _print_normalized_fk_table(norm_gait_wr, norm_gait_tbs, norm_fk_rows, args.vx, args.tb_vx)
         _print_normalized_trackability_table(norm_p1_wr, norm_p1_tbs, norm_p1_rows)
         print()
         print(

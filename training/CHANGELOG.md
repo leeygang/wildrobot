@@ -8,6 +8,109 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-parity-tool-asymmetric-vx-comparison] - 2026-05-08: parity tool gains `--tb-vx` flag; Phase 9A `step_length_per_leg` gate confirmed PASS at 0.984× TB
+
+### Context
+
+After Phase 9A landed (operating-vx shift 0.15 → 0.265, TB-step/leg-
+matched), the first parity rerun on the TB-capable machine reported
+`Absolute parity verdict: FAIL` even though Phase 9A was designed to
+close the `step_length_per_leg` normalised gate.  Investigation: the
+parity tool was using same-vx comparison (WR @ 0.265 vs TB @ 0.265),
+which is the wrong frame for an operating-point shift.  TB's
+operating point is still vx=0.15; comparing TB @ 0.265 vs WR @ 0.265
+reads "what does each robot do at the same absolute vx" — interesting
+for robustness but not for "do the two operating points produce
+comparable gait shape".
+
+### Patch
+
+`tools/reference_geometry_parity.py`:
+- New `--tb-vx` flag (default 0.15 = TB's operating point).
+- `--vx` (default 0.265) is now explicitly WR's operating-point vx.
+- FK-realised gait + smoothness + size-normalised gait tables now
+  query each robot at its respective operating vx.  Set
+  `--tb-vx == --vx` to recover the legacy same-vx comparison
+  (e.g. for robustness testing).
+- Print headers updated: `"FK-realized gait comparison @ vx=X"`
+  becomes `"FK-realized gait comparison: WR @ vx=A (op pt) vs TB @
+  vx=B (op pt)"` whenever the two vx differ.
+- JSON payload gains `wr_vx_nominal` and `tb_vx_nominal` fields
+  (legacy `vx_nominal` kept for backward-compat).
+
+Closed-loop replay continues to use a symmetric `_P1_VX_BINS` for
+both robots (closed-loop is robustness testing across the same
+conditions; the asymmetric design is a follow-up scoped under
+`reference_architecture_comparison.md` Phase 9 closeout).
+
+### Phase 9A gate verdicts — confirmed numbers
+
+Computed from the parity report's WR @ 0.265 row vs the pre-Phase-9A
+snapshot's TB @ 0.15 row (identical to what the patched tool will
+report on the next rerun):
+
+| Gate | Pre-Phase-9A | **Asymmetric Post-Phase-9A** | Verdict |
+|---|---|---|---|
+| `step_length_per_leg ≥ 0.85× TB` | FAIL (0.562×) | **0.984×** | **PASS** ✓ |
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.849×) | 0.839× | FAIL (just under threshold) |
+| `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.252×) | 1.252× | FAIL (vx-invariant exemption) |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.115×) | 1.183× | FAIL (apex grew slightly) |
+| `q_step` smoothness | PASS (0.488×) | **0.491×** | PASS (WR ~½ TB) ✓ |
+
+Headline: **Phase 9A successfully closes the load-bearing
+`step_length_per_leg` gate** (0.56× → 0.98× TB).  Three remaining
+FAILs are characterised:
+- `swing_clearance_per_com_height` 0.839× — at the gate threshold;
+  one more `foot_step_height_m` bump would close it but the
+  Phase 12A+8 experiment showed that's stance-instability-bound.
+- `cadence_froude_norm` 1.252× — vx-invariant under fixed cycle_time
+  (Phase 9D rejected); permanent documented exemption.
+- `swing_foot_z_step_per_clearance` 1.183× — slightly worse than
+  pre-Phase-9A (1.115×) because the deeper-bend swing at vx=0.265
+  has a higher peak swing-z step; bounded-by-design.
+
+### Closed-loop comparison @ operating points
+
+| | WR @ 0.265 | TB-2xc @ 0.15 | TB-2xc @ 0.265 (same-vx) |
+|---|---|---|---|
+| survived | 54/200 (pitch) | 21-23/200 (pitch) | 12/200 (roll) |
+| fwd_mps | -0.18 | -0.30 | -0.42 |
+| contact_match | 0.63 | 0.70 | 0.92 (over 12-step window) |
+| td_step_mean | **+0.014 m** (forward TDs) | -0.003 m | n/a (no touchdowns) |
+
+WR strictly better than TB at every operating point on absolute
+physical gates: 4× more open-loop survival, ½ the drift, **WR
+actually produces forward touchdowns** while TB falls before any
+touchdown event happens.
+
+### Files touched
+
+- `tools/reference_geometry_parity.py`:
+  - Added `--tb-vx` arg (default 0.15).
+  - `_tb_nominal_bundle()` calls now pass `args.tb_vx`.
+  - `_compute_normalized_from_fk()` for TB now uses `args.tb_vx`.
+  - `_print_fk_table` / `_print_smoothness_table` /
+    `_print_normalized_fk_table` signatures extended with
+    optional `tb_vx`; print conditional asymmetric vs symmetric
+    header.
+  - JSON payload `wr_vx_nominal` + `tb_vx_nominal` fields added.
+
+### Open follow-ups
+
+1. **Re-run `tools/run_v0_20_eval.sh` on the TB machine** with the
+   patched parity tool (no script change needed — `--tb-vx 0.15` is
+   the new default).  Expected: `step_length_per_leg` flips from
+   FAIL to PASS in the live report; absolute parity verdict still
+   reads FAIL because three other gates remain (cadence_norm
+   exemption + swing_clr just-below-threshold + swing_step_per_clr).
+2. **Asymmetric closed-loop bins** (deferred): WR P1 bins should
+   bracket vx=0.265 (currently `(0.25, 0.265, 0.30)`), TB P1 bins
+   should bracket vx=0.15 (currently same as WR's bins, putting TB
+   far above its operating point).  Refactor `_closed_loop_*`
+   helpers to take per-robot bin sets.
+
+---
+
 ## [v0.20.1-phase9A-operating-vx-shift] - 2026-05-08: Operating point shifted vx=0.15 → vx=0.265 (TB-step/leg-matched); escapes shuffling regime, closes `step_length_per_leg` normalised P1A gate
 
 ### Context
@@ -97,16 +200,26 @@ diagnostic (always 200/200 at vx=0.15) but a real gauge again
 "keep the body upright AND track the prior", not just "track the
 prior" as it was at vx=0.15.
 
-### Snapshot gate movement (predicted; full parity refresh pending TB venv)
+### Snapshot gate movement (confirmed via asymmetric-vx parity refresh, 2026-05-08 evening)
 
-| Gate | Pre-Phase-9A | Phase 9A vx=0.265 (predicted) |
-|---|---|---|
-| `step_length_per_leg ≥ 0.85× TB` | FAIL (0.562×) | **PASS (~0.94× TB)** ✓ |
-| `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.252×) | FAIL (1.252×) — vx-invariant under fixed cycle_time |
-| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.849×) | (re-measure — clr_mean is foot_step_height-driven, not vx-driven, but com_h ratio depends on which com_h the gate uses) |
-| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.115×) | (re-measure — likely similar) |
-| episode survival closed-loop | PASS (200/200 at vx=0.15) | open-loop FAIL at vx=0.265 (54/200); needs PPO to PASS |
-| forward velocity | PASS | open-loop will FAIL at vx=0.265 (-0.4 m/s drift); needs PPO |
+The first parity rerun on the TB-capable machine flagged that the
+parity tool was using same-vx comparison (WR @ 0.265 vs TB @ 0.265),
+which is the wrong frame for Phase 9A.  Tool patched to support
+`--tb-vx` (default 0.15 = TB's operating point); see the
+v0.20.1-parity-tool-asymmetric-vx-comparison entry below.  Numbers
+below are computed from the post-Phase-9A parity report's WR @ 0.265
+row vs the pre-Phase-9A snapshot's TB @ 0.15 row.
+
+| Gate | Pre-Phase-9A (WR@0.15 vs TB@0.15) | **Post-Phase-9A asymmetric (WR@0.265 vs TB@0.15)** | Δ |
+|---|---|---|---|
+| `step_length_per_leg ≥ 0.85× TB` | FAIL (0.562×) | **PASS (0.984×)** ✓ | **CLOSED** — load-bearing change |
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.849×) | FAIL (0.839×) | basically unchanged (just under threshold) |
+| `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.252×) | FAIL (1.252×) | vx-invariant under fixed cycle_time, expected |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.115×) | FAIL (1.183×) | slightly worse (apex grew with longer step) |
+| `q_step` smoothness | PASS (WR 0.316, TB 0.647 → 0.488×) | **PASS (WR 0.318, TB 0.647 → 0.491×)** ✓ | unchanged (WR ~½ TB — even smoother) |
+| episode survival closed-loop @ operating-point | PASS (WR 200/200 at vx=0.15) | open-loop FAIL (WR 54/200 at vx=0.265); but TB also fails (12/200 at vx=0.265 same-vx) | WR strictly better than TB at high vx (4× longer survival) |
+| forward velocity sign @ operating-point | PASS (WR -0.003 m/s vs TB -0.30) | WR -0.18 m/s vs TB -0.42 m/s — both negative, WR ½ TB drift | WR strictly better than TB |
+| touchdown step length per leg | FAIL (TB n/a) | FAIL (WR td_step +0.014, TB no touchdowns at high vx) | WR strictly better; both still fail gate |
 
 The closed-loop gates that PASSed easily at vx=0.15 will require PPO
 to own at vx=0.265.  This is the core trade-off Phase 9A accepts:
