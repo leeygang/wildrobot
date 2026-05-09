@@ -61,6 +61,7 @@ def _detect_runner() -> List[str]:
 
 
 _RUNNER: Optional[List[str]] = None  # set in main()
+_LIBRARY_PATH: Optional[Path] = None  # set in main() after _build_pinned_library
 
 # Gate thresholds (frozen by v0.20.0-C external review).
 _RMSE_PER_JOINT_BUDGET = 0.40
@@ -136,9 +137,14 @@ def _build_cmd(mode: str, vx: float, seed: Optional[int]) -> List[str]:
     assert _RUNNER is not None, "_RUNNER must be set before _build_cmd"
     cmd = [
         *_RUNNER, _VIEWER,
-        "--vx", f"{vx:.2f}", "--headless",
+        "--vx", f"{vx:.3f}", "--headless",
         "--horizon", str(_HORIZON), "--print-every", str(_PRINT_EVERY),
     ]
+    if _LIBRARY_PATH is not None:
+        # Phase 9A pinned library — use exact closeout bins (incl. 0.265,
+        # 0.30) instead of the viewer's default {0.0..0.25 step 0.05}
+        # which would silently snap 0.265 -> 0.25 via nearest-neighbour.
+        cmd.extend(["--library-path", str(_LIBRARY_PATH)])
     if mode == "kinematic":
         cmd.append("--kinematic")
     elif mode == "fixed-base":
@@ -337,7 +343,7 @@ def _emit_markdown(results: List[RunResult], harness_sha: str,
                  if r.worst_joint else "—")
         passed = "✓" if not r.fail_reasons else "✗"
         lines.append(
-            f"| {r.mode} | {r.vx:.2f} | {seed_str} "
+            f"| {r.mode} | {r.vx:.3f} | {seed_str} "
             f"| {_fmt(r.survival_steps)} | {_fmt(r.L_touchdowns)} "
             f"| {_fmt(r.R_touchdowns)} | {_fmt(r.L_step_m, '.4f')} "
             f"| {_fmt(r.R_step_m, '.4f')} | {_fmt(r.L_ratio, '.2f')} "
@@ -370,7 +376,7 @@ def _emit_markdown(results: List[RunResult], harness_sha: str,
         lines.append("")
         for r in failed_rows:
             seed_str = "n/a" if r.seed is None else str(r.seed)
-            lines.append(f"- **{r.mode}** vx={r.vx:.2f} seed={seed_str}: "
+            lines.append(f"- **{r.mode}** vx={r.vx:.3f} seed={seed_str}: "
                          + "; ".join(r.fail_reasons))
 
     # Command-line transcript.
@@ -380,7 +386,7 @@ def _emit_markdown(results: List[RunResult], harness_sha: str,
     lines.append("```")
     for r in results:
         seed_str = "n/a" if r.seed is None else str(r.seed)
-        lines.append(f"# {r.mode} vx={r.vx:.2f} seed={seed_str}")
+        lines.append(f"# {r.mode} vx={r.vx:.3f} seed={seed_str}")
         lines.append(r.cmd_line)
     lines.append("```")
     return "\n".join(lines)
@@ -394,6 +400,34 @@ def _fmt(v, spec: str = "") -> str:
     return str(v)
 
 
+def _build_pinned_library(repo_root: Path) -> Path:
+    """Pre-generate a ZMP library covering exactly _VX_BINS and save it.
+
+    The viewer's default ``gen.build_library()`` uses ``interval=0.05``
+    which produces bins {0.0, 0.05, 0.10, 0.15, 0.20, 0.25} — Phase 9A
+    bins like 0.265 and 0.30 are missing, so a viewer subprocess
+    queried for vx=0.265 would silently snap to 0.25 via
+    nearest-neighbour lookup.  Building a pinned library with exactly
+    ``_VX_BINS`` and passing ``--library-path`` to each viewer
+    invocation guarantees the closeout actually tests the bins it
+    claims to test.
+    """
+    sys.path.insert(0, str(repo_root))
+    from control.zmp.zmp_walk import ZMPWalkGenerator  # noqa: WPS433
+
+    out_dir = Path("/tmp/v0200c_closeout_lib")
+    print(
+        f"Pre-generating pinned ZMP library for closeout bins "
+        f"{list(_VX_BINS)} -> {out_dir} ...",
+        file=sys.stderr,
+    )
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_vx_values(list(_VX_BINS))
+    lib.save(str(out_dir))
+    print(f"  saved library at {out_dir}", file=sys.stderr)
+    return out_dir
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=str, default="/tmp/v0200c_artifact.md")
@@ -401,7 +435,7 @@ def main() -> None:
                     help="print the matrix without running anything")
     args = ap.parse_args()
 
-    global _RUNNER
+    global _RUNNER, _LIBRARY_PATH
     _RUNNER = _detect_runner()
     print(f"Viewer runner: {' '.join(_RUNNER)}", file=sys.stderr)
 
@@ -431,15 +465,21 @@ def main() -> None:
 
     if args.dry_run:
         for mode, vx, seed in plan:
-            print(f"{mode:11s} vx={vx:.2f} seed={seed}")
+            print(f"{mode:11s} vx={vx:.3f} seed={seed}")
         print(f"total: {len(plan)} rows")
         return
+
+    # Build the pinned library once before launching subprocesses so all
+    # 32 rows use the same on-disk asset (and so the asset is generated
+    # against the current git checkout, not whatever happens to be in
+    # the viewer's default cache).
+    _LIBRARY_PATH = _build_pinned_library(repo_root)
 
     results: List[RunResult] = []
     print(f"Running {len(plan)} rows ...", file=sys.stderr)
     for i, (mode, vx, seed) in enumerate(plan, 1):
         cmd = _build_cmd(mode, vx, seed)
-        print(f"  [{i:2d}/{len(plan)}] {mode:11s} vx={vx:.2f} "
+        print(f"  [{i:2d}/{len(plan)}] {mode:11s} vx={vx:.3f} "
               f"seed={seed} ...", file=sys.stderr, end=" ", flush=True)
         try:
             out = _shell(cmd, check=True)
@@ -451,7 +491,7 @@ def main() -> None:
             print("SUBPROCESS FAILED", file=sys.stderr)
             raise SystemExit(
                 f"\nv0.20.0-C closeout aborted at row {i}/{len(plan)} "
-                f"({mode} vx={vx:.2f} seed={seed}).\n{exc}"
+                f"({mode} vx={vx:.3f} seed={seed}).\n{exc}"
             )
         r = _score(_parse(out, mode, vx, seed, cmd))
         results.append(r)

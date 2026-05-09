@@ -403,13 +403,19 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         _apply_ic_vx(data, ic_dvx, ic_vx_center, logger, seed)
 
     # ---- Strict-pass instrumentation (RMSE / saturation / touchdowns) ----
+    # Phase 9A (post v20 ankle_roll merge): policy_qpos is 21-wide and the
+    # leg joints sit at non-contiguous indices.  Build a leg_slot_idx that
+    # selects the 8 shared leg joints by name; previous code used
+    # `policy_qpos[:n_leg]` (positional) which silently sliced
+    # {waist_yaw, L-arm×5, L-hip} on the 21-wide array — the closeout
+    # was reporting RMSE / saturation against the wrong joints.
     n_leg = 8
     leg_qpos_log = np.zeros((horizon, n_leg), dtype=np.float64)
     leg_qref_log = np.zeros((horizon, n_leg), dtype=np.float64)
     leg_sat_log = np.zeros((horizon, n_leg), dtype=bool)
     log_count = [0]
 
-    # Pull leg-joint limits from the MJCF in the same policy order as q_ref.
+    # Resolve leg-joint slot indices in PolicySpec actuator order.
     leg_joint_names = list(_LEG_JOINT_NAMES)
     name_map = {
         "L_hip_pitch": "left_hip_pitch", "R_hip_pitch": "right_hip_pitch",
@@ -417,6 +423,11 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         "L_knee_pitch": "left_knee_pitch", "R_knee_pitch": "right_knee_pitch",
         "L_ankle_pitch": "left_ankle_pitch", "R_ankle_pitch": "right_ankle_pitch",
     }
+    actuator_names_list = list(mapper.actuator_names)
+    leg_slot_idx = np.array(
+        [actuator_names_list.index(name_map[short]) for short in leg_joint_names],
+        dtype=np.int64,
+    )
     leg_jnt_limits = np.zeros((n_leg, 2), dtype=np.float64)
     for j, short in enumerate(leg_joint_names):
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name_map[short])
@@ -464,7 +475,22 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         from training.eval.c2_stabilizer import (
             C2Stabilizer, C2StabilizerConfig,
         )
-        stab_cfg = C2StabilizerConfig(cycle_time_s=float(traj.cycle_time))
+        # Per-run sign-tuning overrides via env vars (used when
+        # diagnosing C2 stabilizer sign regressions, e.g. after the
+        # v20 ankle_roll merge relocated roll PD hip_roll ->
+        # ankle_roll).  Defaults pull from C2StabilizerConfig so the
+        # config's empirically-tuned values (e.g. cp_gain = -0.7
+        # post-Phase-9A) flow through unless explicitly overridden.
+        import os as _os
+        _defaults = C2StabilizerConfig()
+        def _f(name: str, default: float) -> float:
+            return float(_os.environ.get(name, default))
+        stab_cfg = C2StabilizerConfig(
+            cycle_time_s=float(traj.cycle_time),
+            apply_pitch_sign=_f("C2_PITCH_SIGN", _defaults.apply_pitch_sign),
+            apply_roll_sign=_f("C2_ROLL_SIGN", _defaults.apply_roll_sign),
+            cp_gain=_f("C2_CP_GAIN", _defaults.cp_gain),
+        )
         stabilizer = C2Stabilizer(model, stab_cfg)
         stabilizer.reset(data)
         logger.log(f"C2 stabilizer enabled: pitch_kp={stab_cfg.pitch_kp} "
@@ -498,15 +524,18 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
             data.qvel[:6] = 0
             mujoco.mj_forward(model, data)
 
-        # Capture leg qpos in policy order for RMSE + saturation
+        # Capture leg qpos in policy order for RMSE + saturation.
+        # Phase 9A: fancy-index by leg_slot_idx (post v20 ankle_roll merge
+        # the 8 shared leg joints sit at non-contiguous columns in the
+        # 21-wide policy_qpos / q_ref).
         if act_to_qpos is not None and policy_to_mj is not None and log_count[0] < horizon:
             mj_qpos = data.qpos[act_to_qpos]
             policy_qpos = mj_qpos[policy_to_mj]
-            leg_qpos_log[log_count[0]] = policy_qpos[:n_leg]
-            leg_qref_log[log_count[0]] = q_ref[:n_leg]
+            leg_qpos_log[log_count[0]] = policy_qpos[leg_slot_idx]
+            leg_qref_log[log_count[0]] = q_ref[leg_slot_idx]
             leg_sat_log[log_count[0]] = (
-                (policy_qpos[:n_leg] <= leg_jnt_limits[:, 0] + sat_margin) |
-                (policy_qpos[:n_leg] >= leg_jnt_limits[:, 1] - sat_margin)
+                (policy_qpos[leg_slot_idx] <= leg_jnt_limits[:, 0] + sat_margin) |
+                (policy_qpos[leg_slot_idx] >= leg_jnt_limits[:, 1] - sat_margin)
             )
             log_count[0] += 1
 

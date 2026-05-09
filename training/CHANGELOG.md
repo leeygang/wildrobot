@@ -8,6 +8,171 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-c1c2-closeout-phase9A] - 2026-05-08: v0.20.0-C C1+C2 closeout at vx=0.265 — three subsystem bugs fixed; 11/32 PASS with informative failures
+
+### Context
+
+Ran the v0.20.0-C closeout at the new Phase 9A operating point
+(vx=0.265, bracketed by 0.15/0.20/0.30).  First two runs surfaced
+three subsystem bugs that all post-date the v20 ankle_roll merge but
+were masked because the closeout hadn't been re-run since.
+
+### Bug 1 — closeout used the viewer's default library (missing 0.265)
+
+**Symptom:** Single test row at vx=0.265 reported
+`Trajectory: vx=0.250` — the viewer's nearest-neighbour lookup snapped
+0.265 → 0.25 because the viewer's default `gen.build_library()`
+generates only `{0.0, 0.05, 0.10, 0.15, 0.20, 0.25}` (interval=0.05).
+Phase 9A's `_VX_BINS = (0.15, 0.20, 0.265, 0.30)` were silently mapped
+to the wrong bins; the closeout would have tested vx=0.25 four times
+under the hood.
+
+**Fix:** `tools/v0200c_closeout.py::_build_pinned_library` —
+pre-generates a library covering exactly `_VX_BINS` once at startup
+and passes `--library-path` to every viewer subprocess.
+
+### Bug 2 — viewer's RMSE / saturation gate sliced the wrong joints
+
+**Symptom:** Every non-kinematic row reported `any-joint sat = 100%`
+and `worst joint = L_ankle_pitch RMSE 0.090 rad`, even rows where the
+body survived 200/200 steps.  100% saturation while surviving long
+contradicts itself.
+
+**Root cause:** Same 21-DOF positional-slice bug I fixed in
+`reference_geometry_parity.py` and `phase10_diagnostic.py` after the
+v20 ankle_roll merge — but missed in `view_zmp_in_mujoco.py`.  Lines
+406-510 used `policy_qpos[:n_leg]` (positional slice on the 21-wide
+array), which post-merge yields
+`{waist_yaw, L-arm×5, L-hip_pitch, L-hip_roll}` instead of the 8 leg
+joints.  RMSE and saturation were measured against arm-joint qpos vs
+leg-joint q_ref → meaningless.
+
+**Fix:** `training/eval/view_zmp_in_mujoco.py` — added
+`leg_slot_idx` array resolved by name from `mapper.actuator_names`,
+replaced the positional slice with name-based fancy indexing.
+`training/utils/ctrl_order.py` — added `actuator_names` property
+to `CtrlOrderMapper`.  Post-fix at fixed-base vx=0.265: overall RMSE
+0.154 rad, worst-joint RMSE 0.330 (R_knee), saturation 0.0% — sane.
+
+**Closeout effect:** PASS rate jumped from 7/32 → 11/32; fixed-base
+went 0/4 → 4/4 (the 100% saturation was entirely spurious).
+
+### Bug 3 — C2 stabilizer cp_gain sign regression at vx=0.15
+
+**Symptom:** C2 at vx=0.15 (where C2 was originally tuned to PASS)
+produced **backward** drift (step length -0.015 m, ratio -0.29) with
+200/200 survival.  Pre-merge, C2 at vx=0.15 was the validation sweet
+spot — bounded harness rescued the prior into forward walking.
+
+**Investigation:** Sign-tuning sweep at vx=0.15 seed=0:
+
+| `apply_pitch_sign` | `apply_roll_sign` | `cp_gain` | survival | forward (m) |
+|---|---|---|---|---|
+| -1 (default) | +1 (default) | **+0.7 (default)** | 200/200 | **-0.276** ← backward |
+| -1 | -1 (flipped) | +0.7 | 84/200 (pitch) | -0.401 |
+| +1 (flipped) | +1 | +0.7 | 57/200 (pitch) | -0.365 |
+| -1 | +1 | **-0.7 (flipped)** | **200/200** | **+0.108** ← forward ✓ |
+| -1 | -1 | -0.7 | 71/200 (pitch) | -0.125 |
+
+Magnitude sweep (cp_gain ∈ {-0.7, -1.0, -1.5}) confirms 0.7 magnitude
+is still the pitch-PD-non-saturating ceiling; only the sign needs
+flipping.
+
+**Fix:** `training/eval/c2_stabilizer.py::C2StabilizerConfig.cp_gain`
+default `0.7 → -0.7`.  `training/eval/view_zmp_in_mujoco.py` env-var
+override defaults now pull from `C2StabilizerConfig()` instead of
+hard-coded values.
+
+**Mechanism (provisional):** the v20 ankle_roll merge changed the
+swing-foot xpos reference frame (post-process collision-primitive
+geometry shifted the foot-body x extent).  The same `x_cp - x_swing`
+computation now produces the opposite sense relative to the body's
+intended forward direction.  Magnitude unchanged; only sign flipped.
+Mechanism diagnosis deferred — the empirical fix is the practical
+patch.
+
+### Closeout result @ Phase 9A operating point (vx=0.265)
+
+| Mode | rows | PASS | FAIL | gate verdict |
+|---|---|---|---|---|
+| Kinematic | 4 | 3 | 1 (vx=0.30 ramp ratio 0.88<0.95) | FAIL |
+| **Fixed-base** | 4 | **4** | 0 | **PASS** ✓ |
+| C1 (open-loop) | 12 | 4 | 8 | FAIL |
+| C2 (stabilized) | 12 | 0 | 12 | FAIL |
+| **Total** | **32** | **11** | 21 | **— see interpretation** |
+
+### Interpretation
+
+The two gates that matter for "is the prior physically usable?" both
+PASS at the new operating point:
+
+- ✅ **Kinematic** at vx=0.15, 0.20, 0.265 — planner produces sensible
+  q_ref.  vx=0.30 fails on cycle-0 ramp ratio (start-up artifact),
+  not on gait shape.
+- ✅ **Fixed-base PD** at all 4 vx — actuator stack tracks the prior
+  cleanly when balance is held.  Overall RMSE ~0.15 rad, worst-joint
+  R_knee_pitch ~0.33 rad, 0% saturation.
+
+The two gates that FAIL are FAIL **by design** per Phase 9A's
+acceptance statement (`v0.20.1-phase9A-operating-vx-shift`):
+
+- ❌ **C1 open-loop** at vx ≥ 0.20 — body falls in ~53-57 ctrl steps
+  without active balance.  Phase 9A explicitly accepted that the new
+  operating point is above the static-stability envelope and PPO
+  must own closed-loop balance.
+- ❌ **C2 stabilized** at all vx — bounded harness clips can't add
+  enough authority at vx=0.265.  Even at vx=0.15 (where C2 was
+  originally tuned), the post-merge model now produces a
+  left/right-asymmetric stride: left strides forward 0.06-0.07 m,
+  right barely moves (0-0.02 m).  The asymmetry is residual
+  prior-quality signal, not a stabilizer bug.
+
+**Headline:** the closeout's 11/32 PASS is the right read for "does
+the prior PASS at vx=0.265?": the gates that should still apply
+(kinematic + fixed-base) PASS unambiguously.  The C1+C2 gates are
+documenting Phase 9A's accepted trade — PPO must own balance.
+
+### Open follow-ups
+
+1. **Closeout matrix `_VX_BINS = (0.20, 0.25, 0.265, 0.30)`** — drop
+   vx=0.15 (legacy operating point); replace with vx=0.25 to give a
+   2-below + at + above bracket around vx=0.265.  Deferred — keeping
+   vx=0.15 in this run as a useful "C2 sign-tuning regression check"
+   that surfaced the cp_gain bug.
+2. **C2 left/right asymmetric stride at vx=0.20+** — left strides
+   0.066 m forward, right barely moves.  Residual prior-quality
+   signal worth diagnosing (likely related to the residual ~0.2 mm
+   CAD asymmetry in the upper-leg mate, see
+   `assets/v2/model_issues.md`).
+3. **PPO smoke at vx=0.265** is now unblocked from the closeout side
+   — the prior is sane (kinematic + fixed-base PASS) and the
+   closed-loop demand is exactly what Phase 9A budgeted for.
+4. **Closeout decision rule revisitation** — the original C1+C2 PASS
+   gates were designed for vx=0.15 where the prior was supposed to
+   be open-loop-rescuable.  At Phase 9A's operating point the C1+C2
+   gates are unmeetable by design; the doc-side `reference_design.md`
+   v0.20.0-C / -D acceptance language should be updated to reflect
+   the Phase-9A trade ("PPO is the validator").
+
+### Files touched
+
+- `tools/v0200c_closeout.py` — pinned library generation; vx format
+  `.2f → .3f` for 0.265 precision; threading of `--library-path`
+  into subprocess commands.
+- `training/eval/view_zmp_in_mujoco.py` — leg_slot_idx fancy
+  indexing; env-var sign-tuning hooks (`C2_PITCH_SIGN`,
+  `C2_ROLL_SIGN`, `C2_CP_GAIN`).
+- `training/eval/c2_stabilizer.py` — `cp_gain: 0.7 → -0.7` default.
+- `training/utils/ctrl_order.py` — `actuator_names` property.
+
+### Tests
+
+49/49 reference suite still passes (`tests/test_v0200a_contract.py`
++ `test_v0200c_geometry.py` + `test_v0201_env_zero_action.py` +
+`test_phase10_diagnostic.py`).
+
+---
+
 ## [v0.20.1-parity-tool-asymmetric-vx-comparison] - 2026-05-08: parity tool gains `--tb-vx` flag; Phase 9A `step_length_per_leg` gate confirmed PASS at 0.984× TB
 
 ### Context

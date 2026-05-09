@@ -69,6 +69,11 @@ class CtrlOrderMapper:
         self._perm_jax = None
 
     @property
+    def actuator_names(self) -> list[str]:
+        """Actuator names in PolicySpec order (read-only view)."""
+        return list(self._actuator_names)
+
+    @property
     def policy_to_mj_order(self) -> np.ndarray:
         """Permutation array (numpy): policy_idx → mj_ctrl_idx."""
         return self._perm_np

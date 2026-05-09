@@ -86,15 +86,27 @@ class C2StabilizerConfig:
     roll_clip: float = 0.05      # HARD clip per contract
     apply_roll_sign: float = +1.0    # empirically determined
 
-    # Capture-point swing nudge.  Gain bumped from 0.30 → 0.7 after
-    # the closeout 6000177 retro showed the CP channel was rarely
-    # using its ±0.03 m clip budget (clip-sat 0-3 %).  Bumped further
-    # to 1.5 in a probe but pitch_PD started saturating because the
-    # CP nudge moves swing further from foot-flat IK and increases
-    # ankle demand — settled on 0.7 as the largest gain that does
-    # not push pitch_PD past hard-fail in the seed=0 vx=0.15 probe.
-    # Clip is unchanged (the contract bound, not the gain).
-    cp_gain: float = 0.7         # dimensionless; nudge = gain * (x_cp - x_swing)
+    # Capture-point swing nudge.  Magnitude bumped from 0.30 → 0.7
+    # after the closeout 6000177 retro (CP channel was rarely using
+    # its ±0.03 m clip budget).  Bumped further to 1.5 in a probe
+    # but pitch_PD started saturating because the CP nudge moves
+    # swing further from foot-flat IK and increases ankle demand —
+    # settled on 0.7 as the largest magnitude that does not push
+    # pitch_PD past hard-fail in the seed=0 vx=0.15 probe.
+    #
+    # Phase 9A C2 closeout (2026-05-08): sign FLIPPED 0.7 → -0.7.
+    # Empirical sign-tuning sweep at vx=0.15 seed=0 after the v20
+    # ankle_roll merge + CAD upper_leg mate fix shows the CP nudge
+    # at +0.7 produces backward motion (-0.015 m / step at vx=0.15);
+    # at -0.7 it produces forward motion (+0.010 m / step) with
+    # 200/200 survival.  Magnitude unchanged (still |0.7|, the
+    # pitch_PD-non-saturating ceiling).  Mechanism: the v20 merge
+    # changed the swing-foot xpos reference frame (post-process
+    # collision-primitive geometry shifted the foot-body x extent),
+    # so the same x_cp - x_swing computation now produces the
+    # opposite sense relative to the body's intended forward dir.
+    # Sign flip is the empirical fix; mechanism diagnosis deferred.
+    cp_gain: float = -0.7        # dimensionless; nudge = gain * (x_cp - x_swing)
     cp_clip: float = 0.03        # HARD clip per contract (m of swing-x)
 
     # Geometry constants (used only for capture-point and swing-x → hip-pitch
