@@ -468,15 +468,20 @@ What to verify metrically:
 
 - commanded foothold mean at the operating-point cmd matches
   the kinematic identity `step = vx · cycle_time / 2` within
-  numerical precision (Phase 9A: vx=0.265 → step≈0.095 m).
-- previewed step period stays within `0.45-0.75 s` (Phase 6
-  selected `cycle_time=0.72 s` to match TB).
+  numerical precision (Phase 9D: vx=0.20, cycle=0.96 → step≈0.096 m;
+  pre-Phase-9D Phase 9A: vx=0.265, cycle=0.72 → step≈0.095 m — same
+  step length, different operating point).
+- previewed step period reflects the live cycle_time.  Phase 9D
+  (2026-05-09) scaled `cycle_time = 0.72 → 0.96 s` to match WR's
+  leg pendulum frequency `√(L/g)`; the Phase 6 choice of 0.72 s
+  (TB-inherited) was a half-measure that left the
+  `cadence_froude_norm` parity gate failing.
 - pelvis and COM preview are continuous
 - target-rate limits are not violated
 - library coverage includes:
   - quiet stand
   - stop / resume
-  - operating-point walk (Phase 9A: vx=0.265)
+  - operating-point walk (Phase 9D: vx=0.20)
   - bracket bins around the operating point for robustness probes
     (`tools/v0200c_closeout.py::_VX_BINS` controls the matrix)
 
@@ -619,7 +624,12 @@ What to verify metrically:
   touchdown-step-length floors documented in
   `walking_training.md` G4 / G5.  In particular, the old absolute
   `0.030 m` stride floor is retained only as a lower bound; the
-  Phase 9A operating point uses `max(0.030, 0.50 * vx * cycle_time/2)`.
+  current operating point uses `max(0.030, 0.50 * vx * cycle_time/2)`.
+  At the Phase 9D operating point (vx=0.20, cycle=0.96) this is
+  `≥ 0.048 m` (rounded to `≥ 0.050 m` in the launch checklist) —
+  same launch value as the historical Phase 9A operating point
+  (vx=0.265, cycle=0.72), since Phase 9D preserved step length while
+  scaling cycle and vx.
 
 ### Layer 5: `policy multi-command sweep`
 

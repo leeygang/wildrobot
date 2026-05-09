@@ -1564,10 +1564,11 @@ entries:
 Headline gate movement (asymmetric WR @ 0.265 vs TB @ 0.15):
 - `step_length_per_leg ≥ 0.85× TB`: FAIL (0.562×) → **PASS (0.984×)**
   ✓ — load-bearing change.
-- `cadence_froude_norm ≤ 1.20× TB`: stays at 1.252× — **vx-invariant
-  exemption** under fixed cycle_time (Phase 9D rejected as alignment
-  backlog).  This is the documented "WR diverges with hardware
-  reason" entry per the Governing Policy.
+- `cadence_froude_norm ≤ 1.20× TB`: stays at 1.252× under Phase 9A's
+  fixed cycle_time = 0.72 s.  This was the load-bearing motivation
+  for the Phase 9D revisit (CHANGELOG `v0.20.1-phase9D-cycle-time-
+  scaling`, 2026-05-09): scaling `cycle_time → 0.96 s` to match
+  WR's leg pendulum closes the gate to **0.934× TB (PASS)**.
 - `swing_clearance_per_com_height` and `swing_foot_z_step_per_clearance`
   unchanged or slightly worse — see CHANGELOG for analysis.
 
@@ -1948,14 +1949,22 @@ closeouts in this doc.
 
 ### Expected end state after Phases 7-10
 
-This table is a historical expectation table from before the final Phase
-9A decision.  The actual Phase 9A operating point is `vx=0.265`
-(step/leg-matched to TB at `vx=0.15`), not `0.19` Froude-matched.  The
-May-09 criteria challenge above and the May-08 CHANGELOG entries are the
-current source of truth for status: `step_per_leg` PASSes at `0.984×`
-TB, `clearance_per_h` remains near-threshold, `cadence_norm` is a
-documented fixed-cadence/size-confounded gap, and closed-loop C1/C2 gates
-are comparative diagnostics rather than absolute pass gates.
+This table is a historical expectation table from before the final
+Phase 9 decisions.  Trajectory:
+- Phase 9A (shipped 2026-05-08, then superseded): operating point
+  vx=0.265 with cycle_time=0.72 s — step/leg-matched to TB but
+  cadence_norm permanently FAIL.
+- Phase 9D (shipped 2026-05-09, current): cycle_time scaled to WR's
+  leg pendulum (0.72 → 0.96 s) + vx=0.20 (preserves step/leg);
+  closes cadence_norm and swing_step_per_clr.
+The current source of truth for status is the **Current Criteria
+Challenge (post Phase 9D)** section near the top of this doc and
+the May-09 CHANGELOG entries (`v0.20.1-phase9D-cycle-time-scaling`,
+`v0.20.1-prior-quality-criteria-refresh`).  Headline post-9D state:
+`step_per_leg` PASSes at 0.993× TB, `cadence_norm` and
+`swing_step_per_clr` close, `clearance_per_h` remains pinned by the
+Phase 12A foot_step_height ceiling, and closed-loop C1/C2 gates are
+comparative diagnostics rather than absolute pass gates.
 
 | Layer | Pre-Phase-7 | Post-Phase-9A | Notes |
 |---|---|---|---|
@@ -2037,11 +2046,17 @@ The intended order is:
     rejected** by Phase 10's D1 verdict (cycle-0 is the BEST part of
     every episode, not a drag). Listed here so future readers do
     not re-litigate.
-17. ~~Phase 9D (vx-dependent cycle_time / min-stride-floor)~~ —
-    **explicitly rejected** per Governing Policy (TB uses fixed
-    cycle_time; introducing variable cycle_time without hardware-
-    forced rationale is alignment backlog). Phase 9A handles the
-    shuffling concern by changing operating vx instead.
+17. **Phase 9D (cycle_time scaled to WR's leg pendulum frequency)** —
+    initially rejected (TB-alignment argument), then revisited and
+    **shipped 2026-05-09** (CHANGELOG `v0.20.1-phase9D-cycle-time-
+    scaling`).  First-principles re-review found the hardware-forced
+    rationale: WR's leg pendulum `√(L/g) = 0.195 s` is 1.33× TB's
+    0.147 s, so under TB's cycle_time WR was being driven at ~3.69
+    pendulum-times-per-cycle vs TB's 4.90 — direct cause of the
+    `cadence_froude_norm` FAIL.  Phase 9D ships Froude-similar
+    scaling: `cycle_time = 0.96 s` + `vx = 0.20 m/s` (preserves
+    step/leg ≈ TB's 0.256).  Closes 2 of 3 normalised P1A FAILs;
+    supersedes Phase 9A's operating point.
 
 Updated dependency graph (post Phase 9A re-read):
 - Phase 9A and Phase 12C can run in parallel (independent mechanisms;
@@ -2079,9 +2094,14 @@ analysis in CHANGELOG entries:
 - **v0.20.1-model-issues-reaudit** — CAD geometry re-audit
   confirming the upper_leg mate offset went 0.8 mm → 0.2 mm.
 
-vx=0.20+ retains residual saturation (peak 0.333) but is OUT of the
-in-scope band post Phase 9A (operating point shifted to vx=0.265,
-bracketed by 0.25-0.30 — see CHANGELOG `v0.20.1-phase9A-...`).
+vx=0.20+ retains residual saturation (peak 0.333) — under Phase 9D
+(operating point vx=0.20, bracketed by 0.15-0.25; CHANGELOG
+`v0.20.1-phase9D-cycle-time-scaling`) this falls within the in-scope
+band, so the residual now reads as a closed-loop signal that PPO
+must address (the corrected i_swing bucketing under cycle_time=0.96
+puts the saturation in the apex region — stance-side hip_roll loaded
+at lateral-COM peak, not at the down-cross).  Pre-Phase-9D this was
+out-of-scope at WR's then-operating-point vx=0.265.
 
 ## What "On Par or Better" Means
 

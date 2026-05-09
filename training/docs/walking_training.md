@@ -1264,10 +1264,12 @@ Decision rule after the re-run:
 
 ### `v0.20.1-smoke7` Promote TB-inspired command/DR pressure
 
-Status: **active, Phase 9A-rescoped** (smoke6-prep3 result falsified
+Status: **active, Phase 9D-rescoped** (smoke6-prep3 result falsified
 phase-signal hypothesis; five reward-only smokes 3/4/5/6/6-prep3
 exhausted reward-only space; April 25 smoke7 is obsolete for the current
-21-DOF model).
+21-DOF model; Phase 9A operating point shipped then superseded by
+Phase 9D's Froude-similar `cycle_time=0.96 s` + `vx=0.20 m/s` —
+CHANGELOG `v0.20.1-phase9D-cycle-time-scaling`).
 
 **Scope revision (2026-04-24):** the original smoke7 plan was "multi-cmd
 alone, no DR" with the hypothesis "vx=0.20 hits a cadence ceiling →
@@ -1613,7 +1615,7 @@ ToddlerBot file/line so future drift is reviewable.
 
 | Item | WildRobot v0.20.1 | ToddlerBot | Decision |
 |---|---|---|---|
-| `min_velocity` / `max_velocity` | 0.0 / 0.30 (smoke7 command pressure); fixed q_ref/eval op point 0.265 | `command_range[5] = [-0.2, 0.3]` for vx | TB-inspired range on positive vx only; true command-conditioned q_ref lookup remains backlog |
+| `min_velocity` / `max_velocity` | 0.0 / 0.30 (smoke7 command pressure); fixed q_ref/eval op point 0.20 (Phase 9D) | `command_range[5] = [-0.2, 0.3]` for vx | TB-inspired range on positive vx only; true command-conditioned q_ref lookup remains backlog |
 | `resample_steps` | none | `resample_time = 3.0 s` ⇒ `resample_steps = 150` (`mjx_config.py:159`) | **add** — wire `resample_steps`, default 150; degenerate range still resamples to the same vx |
 | `zero_chance` / `turn_chance` | none | 0.2 / 0.2 (`walk.gin:11`) | **add** as configurable, default to ToddlerBot values; smoke keeps single-cmd range |
 | `deadzone` | none | `[0.05, 0.05, 0.2]` | **add** as configurable, default to ToddlerBot values |
