@@ -1998,16 +1998,22 @@ def train(
             # shuffle floor" — any operating point where the scaled
             # value is below 0.030 m is below the shuffling regime.
             max_ep = float(getattr(config.env, "max_episode_steps", 500) or 500)
-            eval_vx = float(getattr(config.env, "eval_velocity_cmd", -1.0))
-            if eval_vx < 0:
-                # Sentinel: eval_velocity_cmd not pinned (sampling mode).
-                # Fall back to historical vx=0.15 calibration.
-                eval_vx = 0.15
+            # Two separate variables to keep sentinel semantics intact:
+            #   raw_eval_vx : the literal config value (negative ⇒ sentinel
+            #                 / sampling mode, ratio gates undefined)
+            #   g4_floor_vx : the vx used for floor/ceiling calculations.
+            #                 Falls back to historical vx=0.15 calibration
+            #                 in sentinel mode so the train console still
+            #                 has well-defined floors.
+            # Collapsing them (the previous shape) made the G5-eval
+            # ratio's ``n/a`` branch unreachable in sentinel mode.
+            raw_eval_vx = float(getattr(config.env, "eval_velocity_cmd", -1.0))
+            g4_floor_vx = raw_eval_vx if raw_eval_vx > 0 else 0.15
             from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPCfg
             cycle_time_s = float(_ZMPCfg.cycle_time_s)
-            g4_vel_floor = 0.50 * eval_vx
-            g4_cmd_err_ceiling = 0.50 * eval_vx
-            g4_step_len_floor = max(0.030, 0.50 * eval_vx * cycle_time_s / 2.0)
+            g4_vel_floor = 0.50 * g4_floor_vx
+            g4_cmd_err_ceiling = 0.50 * g4_floor_vx
+            g4_step_len_floor = max(0.030, 0.50 * g4_floor_vx * cycle_time_s / 2.0)
             g4_vel_ok = fwd >= g4_vel_floor
             g4_cmd_err_ok = cmd_err <= g4_cmd_err_ceiling
             g4_step_len_ok = step_len >= g4_step_len_floor
@@ -2041,7 +2047,7 @@ def train(
 
             # G4 promotion-horizon gate (pass/fail per iter).
             print(
-                f"  └─ G4-train (eval_vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
+                f"  └─ G4-train (eval_vx={g4_floor_vx:.3f}, cycle={cycle_time_s:.2f}s): "
                 f"vel\u2265{g4_vel_floor:.3f} {_mark(g4_vel_ok)} | "
                 f"cmd_err\u2264{g4_cmd_err_ceiling:.3f} {_mark(g4_cmd_err_ok)} | "
                 f"step_len\u2265{g4_step_len_floor:.3f} {_mark(g4_step_len_ok)} | "
@@ -2137,8 +2143,13 @@ def train(
                 # it as such.  When ``eval_velocity_cmd <= 0`` (sentinel
                 # / sampling mode) the eval ratio is undefined; report
                 # n/a rather than dividing by zero.
-                if eval_vx > 0:
-                    eval_vx_cmd_ratio = float(eval_v) / float(eval_vx)
+                # Sentinel-aware: only gate the ratio when the eval cmd
+                # is actually pinned (raw_eval_vx > 0).  In sampling
+                # mode the per-iter ratio is meaningless because the
+                # eval rollout's sampled cmd disagrees with the floor's
+                # fallback vx=0.15.
+                if raw_eval_vx > 0:
+                    eval_vx_cmd_ratio = float(eval_v) / float(raw_eval_vx)
                     eval_g5_ratio_ok = 0.6 <= eval_vx_cmd_ratio <= 1.5
                     eval_ratio_str = (
                         f"vx/cmd={eval_vx_cmd_ratio:5.2f}∈[0.6,1.5] "
@@ -2153,7 +2164,7 @@ def train(
                     f"cmd_err={eval_e:.3f}"
                 )
                 print(
-                    f"  └─ G4-eval (vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
+                    f"  └─ G4-eval (vx={g4_floor_vx:.3f}, cycle={cycle_time_s:.2f}s): "
                     f"vel≥{g4_vel_floor:.3f} {_mark(eval_g4_vel_ok)} | "
                     f"cmd_err≤{g4_cmd_err_ceiling:.3f} {_mark(eval_g4_cmd_err_ok)} | "
                     f"ep_len≥{int(0.95 * max_ep)} {_mark(eval_g4_ep_len_ok)}"

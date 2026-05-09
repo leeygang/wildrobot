@@ -8,6 +8,49 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-g5-eval-sentinel-fix] - 2026-05-09: split raw_eval_vx from g4_floor_vx so sentinel-mode G5-eval `n/a` branch is reachable
+
+### Context
+
+Review finding on the previous commit (`1f19958`):
+
+**Medium** — `training/core/training_loop.py:2001` overwrote the
+sentinel `eval_velocity_cmd < 0` with `0.15` *before* the eval block,
+making the new G5-eval `n/a` branch unreachable for sentinel mode.
+The comment + CHANGELOG promised "report n/a when eval cmd not
+pinned", but in practice sentinel mode would compute a ratio against
+the fallback 0.15 — meaningless because the eval rollout's sampled cmd
+disagrees with the floor's fallback vx.
+
+Smoke7 itself is pinned at `eval_velocity_cmd: 0.20` so the smoke7
+path computed the intended ratio either way; the bug was in the
+sentinel branch.
+
+### Patch
+
+`training/core/training_loop.py:2000-2017`: split into two variables:
+- `raw_eval_vx` — literal config value, can be negative (sentinel)
+- `g4_floor_vx` — value used for floor calculations; falls back to
+  0.15 in sentinel mode so the train console still has well-defined
+  floors
+
+The G5-eval ratio block now gates on `raw_eval_vx > 0`, restoring the
+intended sentinel behaviour:
+
+| Mode | `raw_eval_vx` | `g4_floor_vx` | `g4_vel_floor` | G5-eval ratio |
+|---|---|---|---|---|
+| Pinned (smoke7) | 0.200 | 0.200 | 0.100 | computed (e.g. 1.05) |
+| Sentinel (sampling) | -1.000 | 0.150 | 0.075 | **n/a (eval cmd not pinned)** |
+
+### Tests
+
+52/52 PASS on the regression set
+(`test_v0200a_contract`, `test_v0200c_geometry`,
+`test_phase10_diagnostic`, `test_config_load_smoke6`,
+`test_smoke7_eval_cmd_behavior`).
+
+---
+
 ## [v0.20.1-g5-eval-and-prior-shape-semantics] - 2026-05-09: eval-side G5 ratio gate + correct prior-shape verdict semantics
 
 ### Context
