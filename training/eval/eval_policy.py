@@ -27,6 +27,7 @@ from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.envs.wildrobot_env import WildRobotEnv
 from training.core.checkpoint import load_checkpoint
+from training.exports.export_onnx import get_checkpoint_dims
 from training.core.metrics_registry import (
     METRIC_INDEX,
     METRICS_VEC_KEY,
@@ -35,6 +36,11 @@ from training.core.metrics_registry import (
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 from training.core.rollout import TrajectoryBatch
 from training.envs.env_info import WR_INFO_KEY
+
+
+def _disable_cmd_resample_for_eval(env_cfg) -> bool:
+    """Match the training eval sentinel: non-negative eval cmd pins rollout cmd."""
+    return float(env_cfg.eval_velocity_cmd) >= 0.0
 
 
 def _format_metric(value: float, fmt: str = ".3f") -> str:
@@ -50,8 +56,15 @@ def _collect_eval_rollout(
     rng: jax.Array,
     num_steps: int,
     deterministic: bool,
+    disable_cmd_resample: bool,
 ) -> tuple[TrajectoryBatch, object]:
-    batch_step = jax.vmap(env.step)
+    batch_step = jax.vmap(
+        lambda state, action: env.step(
+            state,
+            action,
+            disable_cmd_resample=disable_cmd_resample,
+        )
+    )
 
     def step_fn(carry, _):
         state, rng = carry
@@ -233,7 +246,7 @@ def main() -> int:
     # Build policy network and load checkpoint params
     rng = jax.random.PRNGKey(args.seed)
     reset_rngs = jax.random.split(rng, training_cfg.ppo.num_envs)
-    batched_reset = jax.vmap(env.reset)
+    batched_reset = jax.vmap(env.reset_for_eval)
     env_state = batched_reset(reset_rngs)
 
     obs_dim = int(env_state.obs.shape[-1])
@@ -249,8 +262,18 @@ def main() -> int:
     checkpoint = load_checkpoint(str(checkpoint_path))
     policy_params = checkpoint["policy_params"]
     processor_params = checkpoint.get("processor_params", ())
+    checkpoint_obs_dim, checkpoint_action_dim = get_checkpoint_dims(checkpoint_path)
+    if checkpoint_obs_dim != obs_dim or checkpoint_action_dim != action_dim:
+        raise ValueError(
+            "Checkpoint policy dimensions do not match the current eval env: "
+            f"checkpoint obs/action=({checkpoint_obs_dim}, {checkpoint_action_dim}), "
+            f"env obs/action=({obs_dim}, {action_dim}). Use a checkpoint trained "
+            "against this robot/config contract, or evaluate with the matching "
+            "historical code/assets."
+        )
 
     deterministic = not args.stochastic
+    disable_cmd_resample = _disable_cmd_resample_for_eval(training_cfg.env)
     traj, _ = _collect_eval_rollout(
         env=env,
         env_state=env_state,
@@ -260,6 +283,7 @@ def main() -> int:
         rng=rng,
         num_steps=training_cfg.ppo.rollout_steps,
         deterministic=deterministic,
+        disable_cmd_resample=disable_cmd_resample,
     )
 
     metrics = _compute_eval_metrics(traj, training_cfg.ppo.rollout_steps)
@@ -271,6 +295,8 @@ def main() -> int:
     print(f"  num_envs:   {training_cfg.ppo.num_envs}")
     print(f"  num_steps:  {training_cfg.ppo.rollout_steps}")
     print(f"  mode:       {'deterministic' if deterministic else 'stochastic'}")
+    if disable_cmd_resample:
+        print(f"  eval_cmd:   pinned vx={training_cfg.env.eval_velocity_cmd:.3f}")
     print("=" * 60)
     print(
         "  reward_per_step="

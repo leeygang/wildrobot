@@ -26,20 +26,20 @@
       "survived_steps": 200,
       "termination_mode": "ok",
       "d1_contact_match_split": {
-        "overall_match_frac": 0.72,
+        "overall_match_frac": 0.73,
         "first_cycle_match_frac": 0.8333333333333334,
-        "rest_match_frac": 0.6951219512195121,
-        "rest_minus_first_gap": -0.13821138211382122,
+        "rest_match_frac": 0.7073170731707317,
+        "rest_minus_first_gap": -0.1260162601626017,
         "first_cycle_step_count": 36,
         "rest_step_count": 164,
         "interpretation": "no-cycle-0-drag"
       },
       "d2_mid_swing_tap_down": {
         "left_event_count": 5,
-        "right_event_count": 6,
-        "total_event_count": 11,
-        "events_per_swing_cycle": 0.6875,
-        "mean_event_duration_frames": 2.090909090909091,
+        "right_event_count": 7,
+        "total_event_count": 12,
+        "events_per_swing_cycle": 0.75,
+        "mean_event_duration_frames": 2.0,
         "max_event_duration_frames": 3,
         "left_events": [
           {
@@ -79,13 +79,13 @@
             "i_swing_max": 1
           },
           {
-            "step_start": 172,
-            "step_end": 173,
+            "step_start": 171,
+            "step_end": 172,
             "duration_frames": 2,
-            "i_swing_start": 4,
-            "i_swing_end": 5,
-            "i_swing_min": 4,
-            "i_swing_max": 5
+            "i_swing_start": 3,
+            "i_swing_end": 4,
+            "i_swing_min": 3,
+            "i_swing_max": 4
           }
         ],
         "right_events": [
@@ -117,6 +117,15 @@
             "i_swing_max": 1
           },
           {
+            "step_start": 114,
+            "step_end": 115,
+            "duration_frames": 2,
+            "i_swing_start": 0,
+            "i_swing_end": 1,
+            "i_swing_min": 0,
+            "i_swing_max": 1
+          },
+          {
             "step_start": 118,
             "step_end": 118,
             "duration_frames": 1,
@@ -136,12 +145,12 @@
           },
           {
             "step_start": 188,
-            "step_end": 190,
-            "duration_frames": 3,
+            "step_end": 189,
+            "duration_frames": 2,
             "i_swing_start": 2,
-            "i_swing_end": 4,
+            "i_swing_end": 3,
             "i_swing_min": 2,
-            "i_swing_max": 4
+            "i_swing_max": 3
           }
         ],
         "interpretation": "planner-shape-bound"

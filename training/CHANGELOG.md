@@ -8,6 +8,113 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-latest-model-eval] - 2026-05-08: current 21-DOF model evaluated; old PPO checkpoint incompatible
+
+### Context
+
+Catch-up pass after reading `training/docs/reference_design.md`,
+`training/docs/walking_training.md`, and this changelog.  The newest
+available v0.20.1 W&B/checkpoint pair is still the April 25 smoke7 run:
+
+- Run: `training/wandb/offline-run-20260425_063646-ok4jl57e`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke_v00201_20260425_063649-ok4jl57e`
+- Analyzer-selected best checkpoint:
+  `checkpoint_140_18350080.pkl`
+
+That checkpoint was trained before the current v20 ankle_roll / latest-model
+asset contract.  The current env initializes as 21 actuators with
+`obs_dim=1184`; the April 25 policy checkpoints are `obs_dim=1086`,
+`action_dim=19`.
+
+### Code confirmation
+
+- WildRobot current eval env reports `action_size = mjx_model.nu` and
+  `observation_size = policy_spec.model.obs_dim`
+  (`training/envs/wildrobot_env.py`), yielding 21 / 1184 on current
+  `assets/v2/wildrobot.xml`.
+- Smoke7 eval must use `reset_for_eval` plus
+  `disable_cmd_resample=True` when `eval_velocity_cmd >= 0`, matching
+  the training path in `training/train.py`.
+- ToddlerBot comparison remains the same source-of-truth shape:
+  `Evaluate/mean_reward` / `Evaluate/mean_episode_length` logging,
+  `c_frame_stack=15`, `action_scale=0.25`, `n_steps_delay=1`, and
+  3.0 s command resampling with `zero_chance=0.2`.
+
+### Results
+
+`skills/wildrobot-training-analyze/scripts/analyze_offline_run.py` on
+the April 25 run selects iter 140 by `Evaluate/mean_reward`, but the
+run is not a current-model promotion candidate:
+
+| Signal | Iter 140 |
+|---|---:|
+| `Evaluate/mean_reward` | 265.076 |
+| `Evaluate/mean_episode_length` | 500.0 |
+| `Evaluate/forward_velocity` | 0.148 |
+| `Evaluate/cmd_vs_achieved_forward` | 0.051 |
+| `tracking/step_length_touchdown_event_m` | 0.0055 |
+| `tracking/forward_velocity_cmd_ratio` | 17.918 |
+
+Reading: eval velocity/survival pass, but stride is far below the
+0.030 m G4 gate and the train-side G5 velocity/cmd ratio is invalid
+under the multi-cmd distribution.  More importantly, this is a
+19-action checkpoint and cannot be executed against the current
+21-action model.
+
+Direct CLI policy eval now fails early with the correct contract error:
+
+```text
+checkpoint obs/action=(1086, 19), env obs/action=(1184, 21)
+```
+
+Current-model reference diagnostic:
+
+`uv run python tools/phase10_diagnostic.py --vx 0.15`
+
+| Metric | Current latest model |
+|---|---:|
+| Survival | 200/200 |
+| `ref_contact_match_frac` | 0.730 |
+| First-cycle contact match | 0.833 |
+| Rest contact match | 0.707 |
+| Distinct mid-swing tap-down events | 12 |
+| Events per swing cycle | 0.750 |
+| Swing-side ankle saturation mean | 0.0000 |
+| Any-joint saturation mean | 0.0152 |
+| Peak non-zero saturation | `right_hip_roll=0.0909` at `i_swing=7` |
+| Composite verdict | `planner_shape_bound` |
+
+Reading: the latest model preserves the post-merge survival and
+no-significant-saturation behavior at vx=0.15.  The active blocker is
+planner/reference quality (`planner_shape_bound`), not actuator stack
+saturation.  There is no valid PPO checkpoint yet for this latest
+21-DOF model; next policy evaluation requires retraining under the
+current contract rather than replaying the April 25 checkpoint.
+
+### Patch summary
+
+- `training/eval/eval_policy.py`: eval CLI now mirrors training eval
+  command pinning (`reset_for_eval`, `disable_cmd_resample=True`) and
+  fails clearly on checkpoint/env observation-action dimension mismatch.
+- `training/tests/test_eval_policy_eval_cmd_behavior.py`: adds a pure
+  sentinel test for eval CLI command-resample behavior.
+- `tools/phase10_diagnostic.json`: refreshed from the current latest
+  model Phase 10 run at `vx=0.15`.
+
+### Tests
+
+- `UV_CACHE_DIR=/tmp/uv-cache uv run pytest training/tests/test_eval_policy_eval_cmd_behavior.py training/tests/test_smoke7_eval_cmd_behavior.py`
+  - 8 passed, 5 warnings.
+- `UV_CACHE_DIR=/tmp/uv-cache uv run pytest training/tests/test_eval_policy_eval_cmd_behavior.py`
+  - 2 passed, 1 warning after the dimension-guard patch.
+- `UV_CACHE_DIR=/tmp/uv-cache uv run python training/eval/eval_policy.py --checkpoint training/checkpoints/ppo_walking_v0201_smoke_v00201_20260425_063649-ok4jl57e/checkpoint_140_18350080.pkl --config training/checkpoints/ppo_walking_v0201_smoke_v00201_20260425_063649-ok4jl57e/training_config.yaml --num-envs 1 --num-steps 1`
+  - expected failure: checkpoint/env dims mismatch, 1086/19 vs 1184/21.
+- `UV_CACHE_DIR=/tmp/uv-cache uv run python tools/phase10_diagnostic.py --vx 0.15`
+  - pass: survived 200/200, no significant saturation,
+    composite verdict `planner_shape_bound`.
+
+---
+
 ## [v0.20.1-phase8-attempt] - 2026-05-05: Phase 8 (foot_step_height_m bump) attempted, reverted
 
 ### Context
