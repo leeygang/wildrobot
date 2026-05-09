@@ -697,8 +697,8 @@ def main() -> int:
         "--vx",
         nargs="+",
         type=float,
-        default=[0.25, 0.265, 0.30],
-        help="Closed-loop replay vx bins (default: 0.25 0.265 0.30 — Phase 9A bracket around the vx=0.265 operating point, TB-step/leg-matched).",
+        default=[0.15, 0.20, 0.25],
+        help="Closed-loop replay vx bins (default: 0.15 0.20 0.25 — Phase 9D bracket around the vx=0.20 operating point, TB-step/leg-matched at the WR-pendulum-scaled cycle_time=0.96 s).",
     )
     parser.add_argument(
         "--horizon",
@@ -727,27 +727,27 @@ def main() -> int:
 
     # Build the reference library inline for the exact requested vx
     # bins.  This bypasses the parity tool's cache-resolver default
-    # bin set ({0.15, 0.20, 0.265, 0.30} as of Phase 9A) so the
+    # bin set ({0.10, 0.15, 0.20, 0.25} as of Phase 9D) so the
     # diagnostic can be run at the operating point + neighbours
     # without rebuilding the cached parity-tool library.  When the
     # requested bins are a subset of the parity tool's defaults, the
     # cached library is used; otherwise an inline build runs.
     requested_bins = sorted(round(float(v), 4) for v in args.vx)
-    parity_default_bins = sorted([0.15, 0.20, 0.265, 0.30])
+    parity_default_bins = sorted([0.10, 0.15, 0.20, 0.25])
     if set(requested_bins) <= set(parity_default_bins):
         lib_args = argparse.Namespace(
             wr_library_path=args.wr_library_path,
             wr_library_rebuild=args.wr_library_rebuild,
             wr_library_no_cache=False,
             wr_library_cache_dir=".cache/wr_reference_libraries",
-            vx=0.265,
+            vx=0.20,
             nominal_only=False,
         )
         lib, lifecycle = _resolve_wr_reference_library(lib_args)
         print(f"WR library: source={lifecycle.source} cache_key={lifecycle.cache_key}")
     else:
         # Inline build for non-default bins (e.g., shuffling-regime
-        # comparison at vx ∈ {0.21, 0.265}).
+        # comparison at vx ∈ {0.18, 0.20}).
         print(f"WR library: inline build for non-default bins {requested_bins}")
         lib = ZMPWalkGenerator().build_library_for_vx_values(requested_bins)
 

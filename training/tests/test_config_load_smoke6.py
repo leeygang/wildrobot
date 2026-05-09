@@ -193,24 +193,23 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
     """
     e = smoke_cfg.env
     expected = {
-        # Multi-cmd curriculum (TB anti-shuffle lever #1).  Phase 9A
-        # (2026-05-08): max_velocity bumped 0.20 → 0.30 and
-        # eval_velocity_cmd shifted 0.15 → 0.265 to match the new
-        # operating point (TB-step/leg-matched: WR step/leg=0.256 =
-        # 1.00× TB at vx=0.265 with WR's 1.77× longer leg).  vx=0.15
-        # was in the shuffling regime (step/leg=0.144 < 0.20 healthy).
+        # Multi-cmd curriculum (TB anti-shuffle lever #1).  Phase 9D
+        # (2026-05-09): cycle_time scaled 0.72 → 0.96 s; operating point
+        # shifted vx 0.265 → 0.20 to preserve step/leg ≈ TB's 0.256
+        # under the longer cycle.  max_velocity stays at 0.30 (now 1.5×
+        # operating point — generous robustness pressure).
         "min_velocity": 0.0,
         "max_velocity": 0.30,
         "cmd_resample_steps": 150,
         "cmd_zero_chance": 0.2,
         "cmd_deadzone": 0.05,
-        # Eval-cmd override pins eval rollouts at the Phase 9A
+        # Eval-cmd override pins eval rollouts at the Phase 9D
         # operating point so G4 stays comparable across smokes.
-        "eval_velocity_cmd": 0.265,
-        # The fixed offline q_ref trajectory must match the Phase 9A eval
-        # operating point.  Otherwise PPO is asked to track a vx=0.15 prior
-        # while being evaluated against a vx=0.265 command.
-        "loc_ref_offline_command_vx": 0.265,
+        "eval_velocity_cmd": 0.20,
+        # The fixed offline q_ref trajectory must match the Phase 9D eval
+        # operating point.  Otherwise PPO is asked to track an off-operating
+        # prior while being evaluated against a different command.
+        "loc_ref_offline_command_vx": 0.20,
         # DR (TB anti-shuffle lever #2)
         "domain_randomization_enabled": True,
         "domain_rand_friction_range": [0.4, 1.0],
@@ -240,12 +239,14 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
 
 
 def test_smoke7_offline_reference_vx_does_not_snap_to_default_bin(smoke_cfg) -> None:
-    """The Phase 9A fixed q_ref operating point must be generated exactly.
+    """The fixed q_ref operating point must be generated exactly.
 
-    The default ZMP library grid has historical 0.05 m/s bins, so a plain
-    default library lookup would snap 0.265 to 0.25.  The env builds an
-    explicit one-bin library for the configured operating point; keep that
-    contract covered at the generator/library boundary.
+    The default ZMP library grid has 0.05 m/s bins, so a plain default
+    library lookup would snap any non-grid value (e.g. Phase 9A's 0.265
+    or Phase 9D's 0.20 if the grid drifts) to its nearest grid bin.
+    The env builds an explicit one-bin library for the configured
+    operating point; keep that contract covered at the
+    generator/library boundary.
     """
     offline_vx = smoke_cfg.env.loc_ref_offline_command_vx
     lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])

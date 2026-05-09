@@ -72,9 +72,9 @@ run_step () {
 # 1. Phase 10 closed-loop diagnostic (WR-only)
 # ----------------------------------------------------------------------
 # vx bins are inherited from `phase10_diagnostic.py`'s default
-# (post Phase 9A: [0.25, 0.265, 0.30] — bracket around the new
-# operating point).  Override with V0_20_PHASE10_VX="..." if you
-# need a different bracket (e.g. for cross-vx regression checks).
+# (post Phase 9D: [0.15, 0.20, 0.25] — bracket around the new
+# operating point at vx=0.20 with cycle_time=0.96 s).  Override with
+# V0_20_PHASE10_VX="..." for cross-vx regression checks.
 run_step \
     "[1/3] Phase 10 closed-loop diagnostic (vx defaults from phase10_diagnostic.py)" \
     "${OUT_DIR}/phase10.log" \
@@ -88,7 +88,7 @@ run_step \
 # 2. Per-frame G7 deterministic probe
 # ----------------------------------------------------------------------
 # vx is inherited from `v0200c_per_frame_probe.py`'s default (post
-# Phase 9A: 0.265, the operating point).  Override with
+# Phase 9D: 0.20, the operating point).  Override with
 # V0_20_PROBE_VX=0.15 if you need a different bin.
 run_step \
     "[2/3] Per-frame G7 deterministic probe (vx default from v0200c_per_frame_probe.py)" \

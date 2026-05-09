@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Visualize the WR operating-point bracket in the MuJoCo viewer.
 #
-# Generates a single ZMP reference library covering the post-Phase-9A
-# bracket {0.20, 0.265, 0.30} once, then opens the MuJoCo viewer at
+# Generates a single ZMP reference library covering the post-Phase-9D
+# bracket {0.15, 0.20, 0.25} once, then opens the MuJoCo viewer at
 # each one in turn so you can compare gait shape side-by-side.
 #
-#   - 0.20  — lower edge (slow-walk regression check)
-#   - 0.265 — Phase 9A operating point (TB step/leg-matched)
-#   - 0.30  — upper robustness bracket
+#   - 0.15 — lower edge (regression check, just below operating point)
+#   - 0.20 — Phase 9D operating point (TB step/leg-matched at the
+#            WR-pendulum-scaled cycle_time=0.96 s)
+#   - 0.25 — upper robustness bracket
 #
 # History: this helper originally swept the pre-Phase-9A candidates
-# {0.15, 0.19, 0.21, 0.25} when picking the operating point.  After
-# the Phase 9A decision (vx=0.265, TB step/leg-matched), it now
-# brackets the chosen point.  Override with VX_OPTIONS="0.15,0.19,..."
-# to re-run the historical sweep.
+# {0.15, 0.19, 0.21, 0.25} when picking the operating point, then
+# bracketed Phase 9A's vx=0.265 with {0.20, 0.265, 0.30}.  Phase 9D
+# scaled cycle_time to WR's pendulum frequency, dropping the operating
+# point to vx=0.20.  Override with VX_OPTIONS="0.15,0.19,..." to
+# re-run any historical sweep.
 #
 # Usage (run from the wildrobot repo root):
 #   bash tools/visualize_vx_options.sh
@@ -34,9 +36,9 @@
 
 set -euo pipefail
 
-# Default: post-Phase-9A bracket around the chosen operating point (0.265).
-# Override via env var, e.g. VX_OPTIONS="0.15,0.19,0.21,0.25".
-VX_OPTIONS_CSV="${VX_OPTIONS:-0.20,0.265,0.30}"
+# Default: post-Phase-9D bracket around the chosen operating point (0.20).
+# Override via env var, e.g. VX_OPTIONS="0.20,0.265,0.30" (Phase 9A bracket).
+VX_OPTIONS_CSV="${VX_OPTIONS:-0.15,0.20,0.25}"
 IFS=',' read -r -a VX_OPTIONS <<< "${VX_OPTIONS_CSV}"
 
 # Encode the requested bracket into the default cache directory.  Library
@@ -110,14 +112,16 @@ echo "    Close the viewer window or press Escape to advance."
 echo "    Override mode: VIZ_MODE=fixed_base bash tools/visualize_vx_options.sh"
 echo
 for vx in "${VX_OPTIONS[@]}"; do
+    # NOTE: step/leg labels assume cycle_time=0.96 s (Phase 9D).
+    # Under cycle_time=0.72 s (pre-9D), step/leg = vx*0.72/2/0.373 ≈ vx*0.965.
     case "${vx}" in
-        0.15) regime="pre-Phase-9A op pt — known shuffle (step/leg=0.144)" ;;
-        0.19) regime="Froude-matched — mild shuffle (step/leg=0.183)" ;;
-        0.20) regime="lower bracket — slow-walk regression check (step/leg≈0.190)" ;;
-        0.21) regime="threshold — just out of shuffle (step/leg=0.200)" ;;
-        0.25) regime="healthy walk (step/leg=0.241)" ;;
-        0.265) regime="Phase 9A operating point — TB step/leg-matched (step/leg=0.252)" ;;
-        0.30) regime="upper robustness bracket — fast walk (step/leg≈0.286)" ;;
+        0.15) regime="lower bracket — regression check (step/leg≈0.193 @ cycle=0.96)" ;;
+        0.19) regime="historical Froude-matched candidate (step/leg≈0.245 @ cycle=0.96)" ;;
+        0.20) regime="Phase 9D operating point — TB step/leg-matched at cycle=0.96 s (step/leg≈0.257)" ;;
+        0.21) regime="threshold — just above operating point (step/leg≈0.270)" ;;
+        0.25) regime="upper robustness bracket — fast walk (step/leg≈0.322)" ;;
+        0.265) regime="historical Phase 9A operating point @ cycle=0.72 (step/leg=0.252)" ;;
+        0.30) regime="historical upper robustness bracket @ cycle=0.72 (step/leg≈0.286)" ;;
         *)    regime="custom" ;;
     esac
     echo

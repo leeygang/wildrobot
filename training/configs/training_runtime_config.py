@@ -158,7 +158,7 @@ class EnvConfig(Freezable):
     # true multi-command reference conditioning moves to a stacked-arrays
     # representation per the design note's Q3.
     loc_ref_offline_library_path: Optional[str] = None
-    loc_ref_offline_command_vx: float = 0.15
+    loc_ref_offline_command_vx: float = 0.20  # Phase 9D operating point
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
     loc_ref_walking_pelvis_height_m: float = 0.40

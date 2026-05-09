@@ -1,7 +1,7 @@
 # =============================================================================
 # WildRobot v0.20.1 PPO Smoke Config
 # =============================================================================
-# Phase-9A operating-point imitation-residual smoke per
+# Phase-9D operating-point imitation-residual smoke per
 # training/docs/walking_training.md (v0.20.1 section).
 #
 # Reward family: DeepMimic-style imitation-dominant residual reward
@@ -29,7 +29,7 @@
 #   - training/docs/walking_training.md        v0.20.1 smoke contract
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke (vx=0.265, imitation residual)"
+version_name: "v0.20.1 PPO smoke (vx=0.20, imitation residual)"
 
 seed: 42
 
@@ -45,7 +45,7 @@ env:
   ctrl_dt: 0.02
 
   # Episode horizon must satisfy `horizon <= service.n_steps` per the
-  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.265
+  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.20
   # ZMP trajectory is ~1100 steps at dt=0.02; 500 steps = 10 s is well
   # under the trajectory's ~22 s.
   max_episode_steps: 500
@@ -87,10 +87,11 @@ env:
   # multi-cmd plumbing to mirror TB's CommandsConfig
   # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:11).
   #
-  # Range pick: Phase 9A uses [0.0, 0.30] so the sampled command range
-  # covers the new vx=0.265 operating point plus the upper robustness
-  # bracket.  Negative commands are still deferred to v0.20.4 because
-  # the prior library lacks negative-vx generation.
+  # Range pick: Phase 9D uses [0.0, 0.30] so the sampled command range
+  # covers the new vx=0.20 operating point and provides ample upper-
+  # bracket robustness pressure (1.5× operating point).  Negative
+  # commands are still deferred to v0.20.4 because the prior library
+  # lacks negative-vx generation.
   #
   # cmd_resample_steps = 150 mirrors TB resample_time=3.0 s at
   # ctrl_dt=0.02.  zero_chance=0.2 + deadzone=0.05 are TB defaults
@@ -99,27 +100,26 @@ env:
   # episode windows, killing the "always shuffle" basin from the
   # low end of the range.
   min_velocity: 0.0
-  # Phase 9A (2026-05-08): max_velocity bumped 0.20 → 0.30 so the
-  # cmd-resample distribution covers the new vx=0.265 operating
-  # point plus the upper-bracket robustness vx=0.30.  vx=0.15 (the
-  # pre-Phase-9A operating point, in the shuffling regime) is now
-  # well below the operating point rather than the eval pin.
+  # Phase 9D (2026-05-09): max_velocity stays at 0.30 across the
+  # 9A → 9D transition.  Under 9A this was 1.13× the vx=0.265 operating
+  # point; under 9D it's 1.50× the new vx=0.20 operating point — more
+  # generous robustness pressure, which keeps any post-9D smoke result
+  # directly comparable to the (now-obsolete) 9A baseline.
   max_velocity: 0.30
   cmd_resample_steps: 150
   cmd_zero_chance: 0.2
   cmd_turn_chance: 0.0
   cmd_deadzone: 0.05
-  # smoke7 eval-cmd override: pin eval rollouts to vx=0.265 (Phase 9A
-  # operating point — TB-step/leg-matched: WR step/leg=0.256 = 1.00× TB
-  # at this vx with WR's 1.77× longer leg) so G4 promotion-horizon
-  # metrics stay directly comparable to single-cmd smokes.  Without
-  # this, eval would sample uniformly across [0.0, 0.30] and dilute
-  # the G4 forward_velocity floor (E[cmd] under uniform sampling +
-  # zero_chance=0.2 + deadzone=0.05 sits well below the 0.075 floor,
-  # making pass/fail uninformative).  The eval path also passes
+  # smoke7 eval-cmd override: pin eval rollouts to vx=0.20 (Phase 9D
+  # operating point — TB-step/leg-matched at the WR-pendulum-scaled
+  # cycle_time=0.96 s: WR step/leg=0.256 = 1.00× TB at this vx with
+  # WR's 1.77× longer leg) so G4 promotion-horizon metrics stay
+  # directly comparable to single-cmd smokes.  Without this, eval
+  # would sample uniformly across [0.0, 0.30] and dilute the G4
+  # forward_velocity floor.  The eval path also passes
   # disable_cmd_resample = True via train.py so mid-episode resample
   # doesn't re-randomize.
-  eval_velocity_cmd: 0.265
+  eval_velocity_cmd: 0.20
 
   # Contacts
   # contact_threshold_force: cutoff (N) the env uses to classify a foot
@@ -166,12 +166,13 @@ env:
   actor_obs_layout_id: wr_obs_v6_offline_ref_history
 
   # Build the library on the fly via ZMPWalkGenerator (omit
-  # loc_ref_offline_library_path).  Phase 9A moved the reference
-  # operating point to vx=0.265; keep the fixed q_ref trajectory aligned
-  # with eval_velocity_cmd.  The env builds an explicit one-bin library for
-  # this value so ReferenceLibrary.lookup cannot nearest-neighbor snap
-  # 0.265 to a stale 0.25 default bin.
-  loc_ref_offline_command_vx: 0.265
+  # loc_ref_offline_library_path).  Phase 9D moved the reference
+  # operating point to vx=0.20 (paired with cycle_time=0.96 s);
+  # keep the fixed q_ref trajectory aligned with eval_velocity_cmd.
+  # The env builds an explicit one-bin library for this value so
+  # ReferenceLibrary.lookup cannot nearest-neighbor snap to a stale
+  # default bin from the generator's 0.05-step grid.
+  loc_ref_offline_command_vx: 0.20
 
   # ---- Residual bounds (G1) ----
   # Absolute mode: residual_delta_q = clip(action) * scale (rad).

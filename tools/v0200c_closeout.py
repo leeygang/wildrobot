@@ -36,11 +36,12 @@ from typing import Dict, List, Optional
 
 
 # Closeout sweep parameters (frozen by reference_design.md v0.20.0-C).
-# Phase 9A (2026-05-08): operating point shifted from vx=0.15 to vx=0.265
-# (TB-step/leg-matched).  Closeout matrix updated to bracket the new
-# operating point with vx=0.20 (just out of shuffle, below operating)
-# and vx=0.30 (above operating) for robustness checks.
-_VX_BINS = (0.15, 0.20, 0.265, 0.30)
+# Phase 9D-revisited (2026-05-09): cycle_time scaled to WR's leg
+# pendulum (0.72 → 0.96 s); operating point shifted vx 0.265 → 0.20
+# to preserve step_length_per_leg ≈ TB's 0.256 under the longer cycle.
+# Closeout matrix brackets the new operating point with vx=0.15
+# (below) and vx=0.25 (above) for regression / robustness checks.
+_VX_BINS = (0.15, 0.20, 0.25)
 _SEEDS = (0, 1, 2)
 _HORIZON = 200
 _PRINT_EVERY = 200    # only print start + end inside each replay
@@ -141,9 +142,9 @@ def _build_cmd(mode: str, vx: float, seed: Optional[int]) -> List[str]:
         "--horizon", str(_HORIZON), "--print-every", str(_PRINT_EVERY),
     ]
     if _LIBRARY_PATH is not None:
-        # Phase 9A pinned library — use exact closeout bins (incl. 0.265,
-        # 0.30) instead of the viewer's default {0.0..0.25 step 0.05}
-        # which would silently snap 0.265 -> 0.25 via nearest-neighbour.
+        # Phase 9D pinned library — use exact closeout bins so non-grid
+        # values cannot snap to a default 0.05-step bin via nearest-
+        # neighbour lookup.  See `_build_pinned_library` below.
         cmd.extend(["--library-path", str(_LIBRARY_PATH)])
     if mode == "kinematic":
         cmd.append("--kinematic")
@@ -404,13 +405,13 @@ def _build_pinned_library(repo_root: Path) -> Path:
     """Pre-generate a ZMP library covering exactly _VX_BINS and save it.
 
     The viewer's default ``gen.build_library()`` uses ``interval=0.05``
-    which produces bins {0.0, 0.05, 0.10, 0.15, 0.20, 0.25} — Phase 9A
-    bins like 0.265 and 0.30 are missing, so a viewer subprocess
-    queried for vx=0.265 would silently snap to 0.25 via
-    nearest-neighbour lookup.  Building a pinned library with exactly
-    ``_VX_BINS`` and passing ``--library-path`` to each viewer
-    invocation guarantees the closeout actually tests the bins it
-    claims to test.
+    which produces bins {0.0, 0.05, 0.10, 0.15, 0.20, 0.25}.  Building
+    a pinned library with exactly ``_VX_BINS`` and passing
+    ``--library-path`` to each viewer invocation guarantees the
+    closeout actually tests the bins it claims to test, even if a
+    future operating-point shift introduces non-grid values (the
+    historical Phase 9A bins 0.265 and 0.30 were the original failure
+    case this guard was added for).
     """
     sys.path.insert(0, str(repo_root))
     from control.zmp.zmp_walk import ZMPWalkGenerator  # noqa: WPS433

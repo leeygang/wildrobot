@@ -1,48 +1,52 @@
 {
   "cfg": {
-    "cycle_time_s": 0.72,
+    "cycle_time_s": 0.96,
     "foot_step_height_m": 0.045,
     "com_height_m": 0.45799999999999996,
     "leg_length_m": 0.373
   },
   "geometry": {
     "name": "wildrobot",
-    "total_failures": 0,
-    "in_scope_failures": 0,
-    "worst_stance_z": 0.00011418766654822576,
-    "worst_swing_z": 0.010117247899708609,
-    "failures": []
+    "total_failures": 3,
+    "in_scope_failures": 1,
+    "worst_stance_z": 0.00399571544689799,
+    "worst_swing_z": -0.002600587828996019,
+    "failures": [
+      "WR vx=0.10 frame=32 L swing z=-0.0026 < -0.002",
+      "WR vx=0.20 frame=48 L stance z=+0.0034 > 0.003",
+      "WR vx=0.25 frame=48 L stance z=+0.0040 > 0.003"
+    ]
   },
   "fk_gait": {
     "name": "wildrobot",
-    "vx": 0.265,
-    "duration_s": 22.32,
-    "touchdowns_left": 30,
-    "touchdowns_right": 31,
-    "touchdown_balance_ratio": 0.967741935483871,
-    "touchdown_rate_hz": 2.7329749103942653,
-    "step_length_mean_m": 0.09409300255833468,
-    "step_length_min_m": 0.09178873151540756,
-    "step_length_max_m": 0.09453752636909485,
-    "touchdown_speed_proxy_mps": 0.12857690761779605,
-    "swing_clearance_mean_m": 0.06715949095755083,
-    "swing_clearance_min_m": 0.06696570524945855,
+    "vx": 0.2,
+    "duration_s": 22.080000000000002,
+    "touchdowns_left": 22,
+    "touchdowns_right": 23,
+    "touchdown_balance_ratio": 0.9565217391304348,
+    "touchdown_rate_hz": 2.038043478260869,
+    "step_length_mean_m": 0.09473682460892531,
+    "step_length_min_m": 0.09347776183858514,
+    "step_length_max_m": 0.09512139670550823,
+    "touchdown_speed_proxy_mps": 0.09653888377268204,
+    "swing_clearance_mean_m": 0.0671862962241802,
+    "swing_clearance_min_m": 0.06704873545095325,
     "double_support_frac": 0.3333333333333333,
-    "foot_z_step_max_m": 0.015912745147943497
+    "foot_z_step_max_m": 0.011085957288742065
   },
   "smoothness": {
     "name": "wildrobot",
-    "vx": 0.265,
-    "shared_leg_q_step_max_rad": 0.31784486770629883,
+    "vx": 0.2,
+    "shared_leg_q_step_max_rad": 0.4153665602207184,
     "pelvis_z_step_max_m": 0.0,
-    "swing_foot_z_step_max_m": 0.015912745147943497,
-    "contact_flips_per_cycle": 3.967741935483871
+    "swing_foot_z_step_max_m": 0.011085957288742065,
+    "contact_flips_per_cycle": 3.956521739130434
   },
   "normalized": {
-    "step_length_per_leg": 0.25226006047810906,
-    "swing_clearance_per_com_height": 0.1466364431387573,
-    "cadence_froude_norm": 0.5905190060103136,
-    "swing_foot_z_step_per_clearance": 0.2369396331190388
+    "step_length_per_leg": 0.2539861249569043,
+    "swing_clearance_per_com_height": 0.14669496992179082,
+    "cadence_froude_norm": 0.4403638703052676,
+    "swing_foot_z_step_per_clearance": 0.16500325083781378
   },
   "dims": {
     "leg_length_m": 0.373,

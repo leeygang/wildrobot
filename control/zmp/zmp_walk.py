@@ -72,7 +72,20 @@ class ZMPWalkConfig:
     # unchanged.  Per ``training/docs/reference_architecture_comparison.md``
     # § "Architectural alignment moves toward ToddlerBot": adopting TB's
     # value is the explicit Item 1 recommendation.
-    cycle_time_s: float = 0.72
+    # Phase 9D-revisited (2026-05-09): scale cycle_time to WR's leg
+    # pendulum frequency instead of inheriting TB's 0.72 s.  The Phase 9A
+    # cadence_norm FAIL at 1.252× TB was a direct consequence of forcing
+    # WR's longer leg to step at TB's clock rate.  Froude-similar scaling:
+    #   cycle_time_WR = cycle_time_TB × √(L_WR / L_TB)
+    #                 = 0.72 × √(0.373 / 0.2115)
+    #                 ≈ 0.96 s.
+    # Companion operating-point shift: vx 0.265 → 0.20 m/s preserves
+    # step_length_per_leg ≈ 0.256 (TB's value) under the longer cycle.
+    # Empirically closes 2 of 3 normalised P1A FAILs (cadence_norm
+    # 1.252× → 0.934×; swing_step_per_clr 1.185× → 0.825×) and brings
+    # absolute swing_z_step_max from 1.59× → 1.109× TB.  See CHANGELOG
+    # entry `v0.20.1-phase9D-cycle-time-scaling`.
+    cycle_time_s: float = 0.96
     single_double_ratio: float = 2.0
     dt_s: float = 0.02
 

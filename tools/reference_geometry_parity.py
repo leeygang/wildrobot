@@ -41,22 +41,17 @@ from training.utils.ctrl_order import CtrlOrderMapper
 _STANCE_TOL_M = 0.003
 _SWING_MIN_M = -0.002
 _PARITY_MARGIN_M = 0.002
-# Phase 9A (2026-05-08): operating point shifted from vx=0.15 to vx=0.265
-# (step/leg-matched to TB).  vx=0.15 was in the shuffling regime
-# (step/leg=0.144 << 0.20 healthy threshold); vx=0.265 matches TB's
-# step/leg=0.256 exactly (1.00× TB) at WR's longer leg, so the gait
-# *shape* is identical to TB even though the absolute speed is higher.
-# Trade-off vs vx=0.19 (Froude-matched, considered first): step/leg
-# matching closes the snapshot's `step_length_per_leg ≥ 0.85× TB`
-# normalised P1A gate (was the only one Phase 9A could close at any
-# vx; cadence_norm is vx-invariant under fixed cycle_time).
-# In-scope band is (vx_below_operating, vx_operating); P1 closed-loop
-# band brackets the operating point with vx=0.30 above for robustness
-# checks.  See `training/docs/reference_architecture_comparison.md`
-# Phase 9A.
-_VX_BINS = (0.15, 0.20, 0.265, 0.30)
-_VX_BINS_INSCOPE = (0.25, 0.265)
-_P1_VX_BINS = (0.25, 0.265, 0.30)
+# Phase 9D-revisited (2026-05-09): cycle_time scaled to WR's leg
+# pendulum frequency (0.72 → 0.96 s).  Operating point shifted vx
+# 0.265 → 0.20 to preserve step_length_per_leg ≈ TB's 0.256 under
+# the longer cycle.  This closes cadence_norm (1.252× → 0.934× TB)
+# and swing_step_per_clr (1.185× → 0.825× TB) — the two gates that
+# came from the cycle/leg-pendulum mismatch in Phase 9A's half-
+# measure scaling.  See `training/docs/reference_architecture_comparison.md`
+# Phase 9D and CHANGELOG `v0.20.1-phase9D-cycle-time-scaling`.
+_VX_BINS = (0.10, 0.15, 0.20, 0.25)
+_VX_BINS_INSCOPE = (0.15, 0.20)
+_P1_VX_BINS = (0.15, 0.20, 0.25)
 _PROBE_FRAMES = (0, 5, 10, 16, 22, 28, 32, 48, 64)
 _TB_VARIANTS = ("toddlerbot_2xc", "toddlerbot_2xm")
 # Shared leg-joint ordering used by every parity layer that compares
@@ -1745,7 +1740,7 @@ def _print_geometry_table(
     print("Geometry comparison table")
     print(
         f"{'robot':<16} "
-        f"{'failures@vx<=0.265':>18} "
+        f"{'failures@vx<=0.20':>18} "
         f"{'failures@all_vx':>17} "
         f"{'stance_max_z':>14} "
         f"{'swing_min_z':>14}"
@@ -2101,8 +2096,8 @@ def _build_payload(
     return {
         "config": {
             "vx_nominal": args.vx,                        # WR's operating-point vx (legacy field name kept)
-            "wr_vx_nominal": args.vx,                     # Phase 9A: WR's operating-point vx
-            "tb_vx_nominal": args.tb_vx,                  # Phase 9A: TB's operating-point vx
+            "wr_vx_nominal": args.vx,                     # Phase 9D: WR's operating-point vx
+            "tb_vx_nominal": args.tb_vx,                  # TB's operating-point vx (still 0.15)
             "geometry_vx_bins": list(_VX_BINS),
             "geometry_vx_bins_in_scope": list(_VX_BINS_INSCOPE),
             "trackability_vx_bins": list(_P1_VX_BINS if not args.nominal_only else [args.vx]),
@@ -2162,8 +2157,8 @@ def main() -> int:
     parser.add_argument(
         "--vx",
         type=float,
-        default=0.265,
-        help="WR's nominal velocity for FK + smoothness + normalised tables (default 0.265 = Phase 9A operating point, TB-step/leg-matched).",
+        default=0.20,
+        help="WR's nominal velocity for FK + smoothness + normalised tables (default 0.20 = Phase 9D operating point, TB-step/leg-matched at the WR-pendulum-scaled cycle_time=0.96 s).",
     )
     parser.add_argument(
         "--tb-vx",
@@ -2244,10 +2239,12 @@ def main() -> int:
         geometry_rows = [row for _ok, row in geometry_pairs]
         geometry_ok = all(ok for ok, _row in geometry_pairs)
 
-    # Phase 9A asymmetric vx: WR at args.vx (its operating point), TB at
-    # args.tb_vx (its operating point — typically TB walks at vx=0.15
-    # while WR's Phase 9A operating point is vx=0.265, step/leg-matched).
-    # Set --tb-vx == --vx to recover the legacy same-vx comparison.
+    # Asymmetric vx (Phase 9A → 9D-revisited): WR at args.vx (its
+    # operating point), TB at args.tb_vx (its operating point —
+    # typically TB walks at vx=0.15 while WR's Phase 9D operating
+    # point is vx=0.20, step/leg-matched at the WR-pendulum-scaled
+    # cycle_time=0.96 s).  Set --tb-vx == --vx to recover the legacy
+    # same-vx comparison.
     gait_wr, smooth_wr = _wr_fk_and_smoothness(wr_lib, args.vx)
     gait_tbs: list[FKGaitMetrics] = []
     smooth_tbs: list[SmoothnessMetrics] = []
