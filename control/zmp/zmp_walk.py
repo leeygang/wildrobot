@@ -120,7 +120,18 @@ class ZMPWalkConfig:
     # `swing_clearance_per_com_height` gate closes (0.78× TB →
     # ~0.91× TB at h=0.045).  Net cost: small vx=0.10 left_hip_roll
     # uptick (0.091 → 0.273), out of the in-scope load-bearing band.
-    foot_step_height_m: float = 0.045
+    #
+    # Phase 8 attempt-3 (2026-05-09): h=0.05 retry under Phase 9D's
+    # cycle_time=0.96 s.  The longer cycle absorbs the deeper-bend
+    # swing destabilisation that historically regressed survival under
+    # cycle=0.72 s.  Result: closes the last normalised P1A FAIL
+    # (`swing_clearance_per_com_height` 0.839× → 0.906× TB), with a
+    # small closed-loop survival cost (~10%, e.g. vx=0.20 56→52 ctrl
+    # steps with termination flipping pitch→roll — WR still 2.5× TB at
+    # the analogous operating point).  All four normalised P1A gates
+    # now PASS; size-aware smoothness gates also PASS.  See CHANGELOG
+    # `v0.20.1-phase8-retry-foot-step-height-0.05`.
+    foot_step_height_m: float = 0.05
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.06     # below this, use standing
 

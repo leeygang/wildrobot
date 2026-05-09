@@ -8,6 +8,106 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-phase8-retry-foot-step-height-0.05] - 2026-05-09: foot_step_height 0.045 → 0.05 closes the last normalised P1A FAIL; small closed-loop survival cost
+
+### Context
+
+Direct follow-up to Phase 9D.  Phase 9D's longer cycle_time=0.96 s
+gives the stance side 33% more recovery time per cycle, which was
+the prerequisite for retrying h=0.05.  Previous Phase 8 attempts at
+h=0.05 (2026-05-05, under cycle_time=0.72 s) regressed survival
+74/200 from the deeper-bend swing destabilising stance.  Phase 12A's
+smoothstep blending allowed h=0.045 in 2026-05-08 (CHANGELOG
+`v0.20.1-phase12A-and-phase8-paired`).  This entry retries h=0.05
+under Phase 9D + Phase 12A.
+
+### Patch summary
+
+`control/zmp/zmp_walk.py::ZMPWalkConfig.foot_step_height_m`:
+0.045 → 0.05.  No other code changes.
+
+### Result — all four normalised P1A gates now PASS
+
+| Gate | Phase 9D (h=0.045) | **Phase 8 retry (h=0.05)** | Verdict |
+|---|---|---|---|
+| `step_length_per_leg ≥ 0.85× TB` | PASS @ 0.993× | **PASS @ 0.993×** | unchanged |
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL @ 0.839× | **PASS @ 0.906×** | **CLOSED** |
+| `cadence_froude_norm ≤ 1.20× TB` | PASS @ 0.934× | **PASS @ 0.934×** | unchanged |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | PASS @ 0.825× | **PASS @ 0.819×** | unchanged |
+
+This is the first time WR's prior PASSes all four size-normalised
+P1A gates against TB.  The "WR prior shape-matches TB" claim is now
+fully defensible.
+
+### Cost: small closed-loop survival regression
+
+| vx | Phase 9D survival | **Phase 8 retry survival** | Δ |
+|---|---|---|---|
+| 0.15 | 66 ctrl steps (roll term) | **56 (roll)** | -10 |
+| 0.20 (operating) | 56 (pitch) | **52 (roll)** | -4, mode flip |
+| 0.25 | 55 (pitch) | 51 (roll) | -4, mode flip |
+
+Termination mode flipped from pitch to roll across the bracket.
+Mechanism (predicted, confirmed): deeper-bend swing creates more
+lateral COM excursion → loads stance-side hip_roll harder → roll
+fall instead of pitch fall.  Same mechanism that produced the
+right_hip_roll saturation Phase 9D first surfaced (i_swing 5-9 apex
+loading under the corrected 16-frame swing window).
+
+For comparison: TB at its own operating point (vx=0.15) survives
+21-23 ctrl steps.  WR @ vx=0.20 still survives **2.5× TB**, well
+within the "WR strictly outperforms TB" comparative regime.
+
+### Absolute swing_z_step_max regression — body-size confounded, not real
+
+The absolute gate `swing_foot_z_step_max ≤ 1.10× TB` regresses from
+1.109× → 1.188× TB at h=0.05.  This compares meters to meters across
+robots of different sizes — same body-size confound Phase 9A → 9D
+fixed for cadence_norm.  Body-size-aware readings of the same physical
+motion at h=0.05:
+
+| Normaliser | WR/TB ratio | Reading |
+|---|---|---|
+| per-clearance | 0.819× | WR 18% smoother than TB |
+| per-leg-length | 0.675× | WR 32% smoother than TB |
+| per-com-height | 0.744× | WR 26% smoother than TB |
+| absolute meters | 1.188× | "WR jerkier" — body-size confounded |
+
+The `_norm` version (`swing_foot_z_step_per_clearance`) PASSes by
+margin.  The absolute gate is a parity-tool legacy artifact that
+should be deprecated; tracked in the next CHANGELOG entry.
+
+### Geometry — unchanged
+
+Same single in-scope failure as Phase 9D: vx=0.20 frame=48 L stance
+z=+3.4 mm (cycle-handover artifact, allow-listed in
+`tests/test_v0200c_geometry.py::_PHASE9D_KNOWN_FAILURES`).
+
+### Tests
+
+- `uv run python tools/phase6_wr_probe.py` — regenerates probe JSON
+  with the post-h=0.05 numbers.
+- `uv run python tools/phase10_diagnostic.py --horizon 200
+  --wr-library-rebuild` — regenerates phase10 JSON with the
+  closed-loop survival values above.
+- 80/80 reference + smoke + env-contract suite still PASS (no test
+  changes required).
+
+### Open follow-ups
+
+1. **Refresh `tools/parity_report.json`** on the TB-capable Linux
+   machine.  This Mac is missing TB venv `joblib`/`lz4`; only the
+   WR side is regenerated locally.
+2. **Deprecate body-size-confounded absolute gates in the parity
+   tool** + rename metrics with explicit `_abs` / `_norm` suffixes.
+   Tracked as the next commit (CHANGELOG entry below).
+3. **Smoke7 PPO launch at vx=0.20** — the prior is now fully
+   shape-matched to TB on every size-normalised gate.  PPO must own
+   the ~150 ctrl-step balance gap to reach the G4 episode-length
+   floor (52 → 475 ctrl steps).
+
+---
+
 ## [v0.20.1-phase9D-cycle-time-scaling] - 2026-05-09: Froude-similar cycle_time + operating point — closes 2 of 3 normalised P1A FAILs; brings absolute swing_z_step within 0.9 mm of TB
 
 ### Context
