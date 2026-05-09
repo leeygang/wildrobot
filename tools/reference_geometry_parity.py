@@ -2379,11 +2379,26 @@ def main() -> int:
 
     overall_ok = geometry_ok and fk_ok and smooth_ok and p1_ok
     norm_overall_ok = norm_fk_ok and norm_p1_ok
-    # "Prior-shape" verdict = the 5 size-aware gates that bound prior
-    # quality (4 normalised P1A gates + q_step smoothness).  These are
-    # the gates the planner can move directly; closed-loop trackability
-    # is downstream and depends on actuator stack + balance feedback.
-    norm_prior_shape_ok = norm_fk_ok and smooth_ok
+    # "Prior-shape" verdict = exactly the 5 size-aware gates that bound
+    # prior quality:
+    #   - step_length_per_leg_norm        (normalised P1A)
+    #   - swing_clearance_per_com_height_norm  (normalised P1A)
+    #   - cadence_froude_norm             (normalised P1A)
+    #   - swing_foot_z_step_per_clearance_norm (normalised P1A)
+    #   - q_step (shared_leg_q_step_max_rad)   (joint-space smoothness,
+    #     body-size-independent in radians)
+    # These are the gates the planner can move directly.  Excludes the
+    # smoothness ``flip_gate`` (contact-flips-per-cycle) since that's a
+    # gait-timing sanity check rather than a prior-shape match, and
+    # excludes closed-loop trackability since that depends on actuator
+    # stack + balance feedback.  Implementation reads the per-row
+    # ``q_gate`` verdict directly from ``smoothness_parity`` rather
+    # than the smoothness aggregate ``smooth_ok`` (which folds in
+    # ``flip_gate``) so the field semantics match the doc.
+    norm_q_gate_ok = all(
+        row.get("q_gate") == "PASS" for row in smooth_rows
+    ) if smooth_rows else True
+    norm_prior_shape_ok = norm_fk_ok and norm_q_gate_ok
 
     payload = _build_payload(
         summary_wr=summary_wr,

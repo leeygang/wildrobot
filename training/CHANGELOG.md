@@ -8,6 +8,80 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-g5-eval-and-prior-shape-semantics] - 2026-05-09: eval-side G5 ratio gate + correct prior-shape verdict semantics
+
+### Context
+
+Two review findings on the previous commit (`54cbcf7`):
+
+1. **High** — Console G5 ratio gate used `tracking/forward_velocity_cmd_ratio`
+   (train-rollout mean), but the smoke contract says **not** to gate on
+   that train-rollout mean because sampled near-zero commands
+   (`zero_chance` + `deadzone`) make it numerically unstable.  The doc
+   requires `0.6 ≤ Evaluate/forward_velocity / eval_velocity_cmd ≤ 1.5`
+   on the pinned eval rollout.  Console could show
+   `G5 ... vx/cmd∈[0.6,1.5] ✓` while the actual promotion ratio failed.
+
+2. **Medium** — `tools/reference_geometry_parity.py:2386` documented
+   `normalized_prior_shape_pass` as "4 normalised P1A gates + q_step
+   smoothness" but the implementation used `norm_fk_ok and smooth_ok`.
+   `smooth_ok` includes both `q_gate` and `flip_gate`, so the
+   field's actual semantics didn't match the doc/CHANGELOG claim.
+   The current JSON happens to pass both, but the field's contract
+   was undefined.
+
+### Patch — eval-side G5 ratio
+
+`training/core/training_loop.py`:
+- Added a separate `G5-eval` console line that computes
+  `Evaluate/forward_velocity / eval_velocity_cmd` from the pinned
+  eval rollout and gates against `[0.6, 1.5]`.  Reports `n/a` when
+  the eval cmd is not pinned (sentinel mode).
+- Existing G5 line relabelled `G5-train`; the train-side
+  `vx/cmd∈[0.6,1.5]` mark is now explicitly tagged as **diagnostic
+  only** with a pointer to G5-eval.
+- Residual-magnitude G5 gate stays a single train+eval-fused metric
+  (env emits `g5_residual_ok` over both terminal-metrics paths).
+
+Sample console:
+```
+└─ G5-train: |Δq|hipL/R=0.05/0.07 kneeL/R=0.04/0.06 ankle_rollL/R=0.03/0.04
+    ≤0.20 ✓ | vx/cmd∈[0.6,1.5] ✓ (diagnostic — promotion ratio is on
+    eval, see G5-eval below)
+└─ Evaluate: reward=12.34 | ep_len=476 | vel=+0.105 | cmd_err=0.082
+└─ G4-eval (vx=0.200, cycle=0.96s):
+    vel≥0.100 ✓ | cmd_err≤0.100 ✓ | ep_len≥475 ✓
+└─ G5-eval (promotion gate): vx/cmd= 1.05∈[0.6,1.5] ✓
+```
+
+### Patch — prior-shape verdict semantics
+
+`tools/reference_geometry_parity.py`:
+- `norm_prior_shape_ok` now reads `q_gate` directly from the per-row
+  `smoothness_parity` verdicts rather than aggregating `smooth_ok`.
+  This makes the field's semantics exactly match the doc:
+  **5 named gates** = 4 normalised P1A (`step_per_leg`,
+  `clearance_per_h`, `cadence_norm`, `swing_step_per_clr`) + `q_step`
+  (joint-space smoothness).  Excludes `flip_gate`
+  (contact-flips-per-cycle) which is a gait-timing sanity check, not
+  a prior-shape match.
+- Comment block updated to enumerate the 5 named gates explicitly so
+  future readers don't re-litigate.
+
+`tools/parity_report.json` refreshed:
+- `normalized_prior_shape_pass = True` (unchanged value; `flip_gate`
+  also PASSes so the broader field stayed True coincidentally)
+- The field now means what the doc says it means
+
+### Tests
+
+52/52 PASS on the regression set
+(`test_v0200a_contract`, `test_v0200c_geometry`,
+`test_phase10_diagnostic`, `test_config_load_smoke6`,
+`test_smoke7_eval_cmd_behavior`).
+
+---
+
 ## [v0.20.1-parity-and-g4-eval-side-fixes] - 2026-05-09: split prior-shape vs full normalised verdict; add eval-side G4 marks; doc threshold refresh
 
 ### Context

@@ -2049,13 +2049,22 @@ def train(
             )
 
             # G5 anti-exploit gate (pass/fail per iter).
+            # Train-side: residual magnitudes are the authoritative
+            # promotion gate (env emits g5_residual_ok over both train +
+            # eval terminal metrics).  The train-rollout vx/cmd ratio is
+            # **diagnostic only** under the smoke7 multi-cmd curriculum:
+            # sampled near-zero commands (zero_chance + deadzone) make
+            # the train mean numerically unstable.  The promotion ratio
+            # gate uses the pinned eval rollout — see the G5-eval line
+            # in the Evaluate/* block below.
             print(
-                f"  └─ G5: "
+                f"  └─ G5-train: "
                 f"|\u0394q|hipL/R={res_hpL:.2f}/{res_hpR:.2f} "
                 f"kneeL/R={res_knL:.2f}/{res_knR:.2f} "
                 f"ankle_rollL/R={res_arL:.2f}/{res_arR:.2f} "
                 f"\u22640.20 {_mark(g5_residual_ok)} | "
-                f"vx/cmd\u2208[0.6,1.5] {_mark(g5_ratio_ok)}"
+                f"vx/cmd\u2208[0.6,1.5] {_mark(g5_ratio_ok)} (diagnostic \u2014 "
+                f"promotion ratio is on eval, see G5-eval below)"
             )
 
             # Imitation diagnostics — surfaces dead-gradient (large
@@ -2117,6 +2126,26 @@ def train(
                 eval_g4_vel_ok = eval_v >= g4_vel_floor
                 eval_g4_cmd_err_ok = eval_e <= g4_cmd_err_ceiling
                 eval_g4_ep_len_ok = eval_L >= 0.95 * max_ep
+                # G5 ratio gate (walking_training.md Phase 9D):
+                # ``0.6 ≤ Evaluate/forward_velocity / eval_velocity_cmd
+                # ≤ 1.5`` on the pinned eval rollout.  This is the
+                # promotion gate; the train-rollout
+                # ``tracking/forward_velocity_cmd_ratio`` mean is
+                # numerically unstable when sampled commands are near
+                # zero (zero_chance + deadzone) and is therefore
+                # diagnostic-only — the train console line below labels
+                # it as such.  When ``eval_velocity_cmd <= 0`` (sentinel
+                # / sampling mode) the eval ratio is undefined; report
+                # n/a rather than dividing by zero.
+                if eval_vx > 0:
+                    eval_vx_cmd_ratio = float(eval_v) / float(eval_vx)
+                    eval_g5_ratio_ok = 0.6 <= eval_vx_cmd_ratio <= 1.5
+                    eval_ratio_str = (
+                        f"vx/cmd={eval_vx_cmd_ratio:5.2f}∈[0.6,1.5] "
+                        f"{_mark(eval_g5_ratio_ok)}"
+                    )
+                else:
+                    eval_ratio_str = "vx/cmd=n/a (eval cmd not pinned)"
                 print(
                     f"  └─ Evaluate: reward={eval_r:>7.2f} | "
                     f"ep_len={eval_L:>5.0f} | "
@@ -2128,6 +2157,15 @@ def train(
                     f"vel≥{g4_vel_floor:.3f} {_mark(eval_g4_vel_ok)} | "
                     f"cmd_err≤{g4_cmd_err_ceiling:.3f} {_mark(eval_g4_cmd_err_ok)} | "
                     f"ep_len≥{int(0.95 * max_ep)} {_mark(eval_g4_ep_len_ok)}"
+                )
+                # G5-eval anti-exploit ratio (the smoke promotion gate
+                # per walking_training.md Phase 9D).  Residual-magnitude
+                # G5 (``g5_residual_ok``) is computed once over both
+                # train + eval terminal metrics in the env (see
+                # wildrobot_env.py:1827-1841); the ratio is the only
+                # piece that splits train/eval.
+                print(
+                    f"  └─ G5-eval (promotion gate): {eval_ratio_str}"
                 )
 
             if callback is not None:
