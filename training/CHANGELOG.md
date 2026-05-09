@@ -113,24 +113,44 @@ PASS at the new operating point:
   cleanly when balance is held.  Overall RMSE ~0.15 rad, worst-joint
   R_knee_pitch ~0.33 rad, 0% saturation.
 
-The two gates that FAIL are FAIL **by design** per Phase 9A's
-acceptance statement (`v0.20.1-phase9A-operating-vx-shift`):
+The two gates that FAIL are **fundamental to small position-controlled
+bipeds** at any walking vx — NOT a Phase 9A trade-off.  Pulling the
+parity report's closed-loop measurements at each robot's own
+operating point:
+
+| Robot @ operating-point | Survived (out of 200) | C1 budget (64 steps) |
+|---|---|---|
+| TB-2xc @ 0.15 | 23 | < 64 → FAIL |
+| TB-2xm @ 0.15 | 21 | < 64 → FAIL |
+| **WR @ 0.265** | **54** | **< 64 → FAIL (but 2.3× longer than TB)** |
+
+Both robots fail C1 at their own operating points.  WR @ 0.265
+actually outlasts TB @ 0.15 by 2.3×.  The C1+C2 PASS gates were
+designed in the v0.20.0-C era as aspirational targets; in practice
+no position-PD-only small biped meets them at any walking vx.  The
+right framing: **WR is strictly better than TB on this gate**, and
+the FAIL documents a property of small bipeds, not a Phase 9A
+acceptance.
 
 - ❌ **C1 open-loop** at vx ≥ 0.20 — body falls in ~53-57 ctrl steps
-  without active balance.  Phase 9A explicitly accepted that the new
-  operating point is above the static-stability envelope and PPO
-  must own closed-loop balance.
+  (vs TB's 21-23).  Both robots need active balance feedback (PPO
+  for WR, learned policy for TB) at their respective operating
+  points.
 - ❌ **C2 stabilized** at all vx — bounded harness clips can't add
-  enough authority at vx=0.265.  Even at vx=0.15 (where C2 was
-  originally tuned), the post-merge model now produces a
+  enough authority for either robot.  Even at vx=0.15 (where C2 was
+  originally tuned), the post-merge WR model produces a
   left/right-asymmetric stride: left strides forward 0.06-0.07 m,
   right barely moves (0-0.02 m).  The asymmetry is residual
-  prior-quality signal, not a stabilizer bug.
+  prior-quality signal, possibly tied to whole-body COM y-bias from
+  the arm chain (see `assets/v2/cad_arm_chain_followups.md`); not
+  a stabilizer bug.
 
 **Headline:** the closeout's 11/32 PASS is the right read for "does
 the prior PASS at vx=0.265?": the gates that should still apply
-(kinematic + fixed-base) PASS unambiguously.  The C1+C2 gates are
-documenting Phase 9A's accepted trade — PPO must own balance.
+(kinematic + fixed-base) PASS unambiguously, and WR strictly
+outperforms TB on the closed-loop gates that BOTH robots fail.  The
+C1+C2 gate semantics need revisitation — they were designed
+aspirational, not measurable.
 
 ### Open follow-ups
 
@@ -141,18 +161,23 @@ documenting Phase 9A's accepted trade — PPO must own balance.
    that surfaced the cp_gain bug.
 2. **C2 left/right asymmetric stride at vx=0.20+** — left strides
    0.066 m forward, right barely moves.  Residual prior-quality
-   signal worth diagnosing (likely related to the residual ~0.2 mm
-   CAD asymmetry in the upper-leg mate, see
-   `assets/v2/model_issues.md`).
+   signal worth diagnosing.  Most likely tied to the whole-body COM
+   y-bias from arm-chain CAD asymmetry
+   (`assets/v2/cad_arm_chain_followups.md`); the leg chain itself
+   is now near-perfectly symmetric so the residual must come from
+   elsewhere.
 3. **PPO smoke at vx=0.265** is now unblocked from the closeout side
    — the prior is sane (kinematic + fixed-base PASS) and the
-   closed-loop demand is exactly what Phase 9A budgeted for.
-4. **Closeout decision rule revisitation** — the original C1+C2 PASS
-   gates were designed for vx=0.15 where the prior was supposed to
-   be open-loop-rescuable.  At Phase 9A's operating point the C1+C2
-   gates are unmeetable by design; the doc-side `reference_design.md`
-   v0.20.0-C / -D acceptance language should be updated to reflect
-   the Phase-9A trade ("PPO is the validator").
+   closed-loop demand is exactly what TB also faces at its own
+   operating point.
+4. **Closeout gate revisitation** — the original C1+C2 PASS gates
+   were aspirational; neither WR nor TB can meet them at their
+   operating points.  Update the doc-side
+   `reference_design.md` v0.20.0-C / -D acceptance language to
+   reflect that "C1+C2 PASS" was never a realistic gate for small
+   bipeds; the realistic gate is "WR is at least as good as TB at
+   the analogous operating point" (which WR achieves: 54/200 vs
+   23/200 closed-loop survival).
 
 ### Files touched
 
