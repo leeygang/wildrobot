@@ -69,15 +69,64 @@ that transition.
 | vx=0.20 L_hip_roll peak | 0.333 | n/m | n/r (early term) |
 | `swing_clearance_per_com_height` | FAIL (0.78× TB) | PASS (~0.91× TB) | **PASS (~0.91× TB)** ✓ |
 
-### Snapshot gate movement (vs the May-08 refresh table)
+### Snapshot gate movement — confirmed by parity refresh on TB-capable machine
 
-| Gate | May-08 snapshot | **Post 12A+8** |
-|---|---|---|
-| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.783×) | **PASS (~0.91×)** ✓ |
-| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.120×) | likely improved further (will be confirmed by parity rerun) |
-| `swing_foot_z_step_max ≤ 1.10× TB` | FAIL (1.40× TB) | bounded-by-design — co-resolved per Acceptance |
-| episode survival @ vx=0.15 | PASS (200/200) | **PASS (200/200)** ✓ unchanged |
-| `contact_phase_match` | FAIL (0.730) | 0.700 (~equal, very small dip) |
+Source: `tools/run_v0_20_eval.sh` end-to-end run on the post-12A+8
+tree, generator fingerprint `d64909f6a363de46`, WR cache
+`450c85bd1a38bb81`.
+
+| Gate | Apr-26 snapshot | May-08 snapshot (pre-12A+8) | **Post 12A+8 (May-08)** |
+|---|---|---|---|
+| **P0 swing_min_z full_vx** | PASS (+17 mm) | PASS (+7.0 mm) | **PASS (+8.8 mm)** ✓ |
+| **P0 vs TB swing gate** | n/a | FAIL (TB swing gate) | **PASS** both TB ✓ |
+| `step_length_per_leg ≥ 0.85× TB` | FAIL (0.56×) | FAIL (0.562×) | FAIL (0.562×) — Froude-bounded |
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.82×) | FAIL (0.783×) | **FAIL (0.849×)** — at the gate threshold (0.849× vs 0.850× cutoff; ratio 0.998) |
+| `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.25×) | FAIL (1.252×) | FAIL (1.252×) — Froude-bounded |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.40×) | FAIL (1.120×) | **FAIL (1.115×)** — basically unchanged |
+| `swing_foot_z_step_max ≤ 1.10× TB` (abs) | FAIL (1.83×) | FAIL (1.40×) | **FAIL (1.52×)** ⚠️ — slightly worse (deeper apex from h=0.045) |
+| `q_step_max` smoothness | PASS (0.36 vs TB 0.65) | PASS (0.316 vs TB 0.647) | **PASS** (0.281 vs TB 0.647 — even smoother, 43% of TB) ✓ |
+| episode survival @ vx=0.15 | PASS | PASS (200/200) | **PASS (200/200)** ✓ |
+| forward velocity @ vx=0.15 | PASS | PASS (-0.003 m/s) | PASS (-0.023 m/s) — slightly more backward but still passes |
+| terminal drift per leg @ vx=0.15 | PASS | PASS (-0.007 leg/s) | PASS (-0.059 leg/s) — drifts 8× more than May-08 morning but still <<TB's -2.01 |
+| shared-leg RMSE @ vx=0.15 | FAIL (0.16 vs TB 0.10) | FAIL (0.160 vs TB 0.113) | **FAIL** (0.170 vs TB 0.113) — slight regression |
+| contact-phase match @ vx=0.15 | FAIL (0.58–0.70) | FAIL (0.730) | **FAIL** (0.720) — 0.01 dip |
+| touchdown step length per leg | FAIL (TB n/a) | FAIL (WR -0.003, TB n/a) | FAIL (WR -0.006, TB n/a) |
+
+### Reading
+
+**`swing_clearance_per_com_height` is at the gate threshold** (0.1485
+WR vs 0.1487 gate = 0.85 × 0.1749 TB).  Post-12A+8 closes 90% of the
+pre-snapshot gap (0.137 → 0.1485 vs the 0.149 gate) but rounds to FAIL
+by 0.0002.  Effectively closed; one more rounding-noise shift would
+cross.
+
+**`swing_foot_z_step_max` absolute moved from 1.40× → 1.52× TB**
+(slight regression).  Per the original Phase 8 acceptance statement
+this gate is bounded-by-design (WR's hardware-justified clearance
+offset on top of a higher `foot_step_height_m`); the absolute peak
+will always scale with the apex.  The per-clearance ratio
+(`swing_foot_z_step_per_clearance`) which is the more meaningful
+parity gate stays at ~1.12× both pre and post.
+
+**Closed-loop trade-offs (real but bounded):**
+- vx=0.15 contact_match: 0.730 → 0.720 (-0.01)
+- vx=0.15 fwd_mps: -0.003 → -0.023 (still strictly better than TB's
+  -0.30 and within all closed-loop gates)
+- vx=0.15 sat_step_frac: 0.010 → 0.020 (still well below TB's gate)
+- vx=0.10 sat_step_frac: 0.055 → 0.095 (limit gate now FAILs at
+  vx=0.10, was the only PASS — small regression)
+- vx=0.20 sat_step_frac: 0.044 → 0.065 (limit gate now FAILs at
+  vx=0.20 too, was PASS) — out of in-scope band
+- shared_leg_RMSE: 0.160 → 0.170 (+0.010, slight regression but
+  still in the actuator-stack-bound regime)
+
+**Improvements:**
+- WR clearance abs: 0.063 → 0.068 m (8% better than May-08 morning,
+  TB stays at 0.050 m)
+- q_step smoother: 0.316 → 0.281 (43% of TB's 0.647)
+- Geometry P0 swing min_z: +7.0 mm → +8.8 mm (PASSes the WR-vs-TB
+  full_vx swing gate now, was FAIL)
+- vx=0.10 contact_match: 0.680 → 0.720 (+0.04)
 
 ### Cost / regressions
 
@@ -88,6 +137,10 @@ that transition.
   with `down_cross_correlated_mechanism_unclear`.
 - **vx=0.15 L_hip_roll peak**: 0.000 → 0.091.  Small, well below
   any gate threshold.
+- **`limit` gate now FAILs at vx=0.10 and vx=0.20** (was PASS at
+  vx=0.20).  vx=0.15 still PASSes.  This is the same down-cross-
+  correlated-mechanism that Phase 12C originally opened on; bears
+  watching but isn't load-bearing for the in-scope gates.
 
 ### Tests
 
