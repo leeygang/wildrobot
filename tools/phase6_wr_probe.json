@@ -9,8 +9,8 @@
     "name": "wildrobot",
     "total_failures": 3,
     "in_scope_failures": 1,
-    "worst_stance_z": 0.00399571544689799,
-    "worst_swing_z": -0.002600587828996019,
+    "worst_stance_z": 0.0039957154468979956,
+    "worst_swing_z": -0.002600587828996001,
     "failures": [
       "WR vx=0.10 frame=32 L swing z=-0.0026 < -0.002",
       "WR vx=0.20 frame=48 L stance z=+0.0034 > 0.003",
@@ -53,7 +53,7 @@
     "com_height_m": 0.45799999999999996
   },
   "tb_cached_2xc": {
-    "source": "/Users/ygli/projects/wildrobot/tools/parity_report.json",
+    "source": "/home/leeygang/projects/wildrobot/tools/parity_report.json",
     "fk_gait_metrics": {
       "double_support_frac": 0.33707865168539325,
       "duration_s": 21.3599796295166,
