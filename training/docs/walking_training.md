@@ -968,23 +968,23 @@ Pre-smoke checks:
   `reward_weights.ref_contact_match = 0.0` before launch; do not carry a
   known-noisy contact term into the first PPO run
 - **G7 — prior-vs-body sanity at the smoke command**:
-  - run `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 100` and
-    record the deterministic baselines that will be used to judge whether
-    PPO is recovering vs degrading:
-    - first lever-sign-flip step (currently ~step 2; unchanged across the
-      v20 ankle_roll merge)
-    - pelvis-x lag at step 30 (currently -10 cm; was -9 cm pre-merge —
-      essentially unchanged)
-    - pelvis-x lag at step 70 (currently -18 cm; was -36 cm pre-merge —
-      ankle_roll's lateral support cuts the early-horizon lag in half)
-    - free-float survival ctrl steps (currently ≥300; was ~77 pre-merge —
-      body no longer falls within the 200-step probe horizon, so the
-      "survival" gate is effectively saturated and the diagnostic
-      shifts to "does the body translate forward at all", not "does
-      it stay upright")
-    - free-float terminal pelvis-x at step 299 (currently +0.025 m;
-      was -0.30 m pre-merge — body stays near origin instead of
-      drifting backward)
+  - run `tools/v0200c_per_frame_probe.py --horizon 200` (default
+    `--vx 0.265` post Phase 9A — TB-step/leg-matched operating point)
+    and record the deterministic baselines that will be used to judge
+    whether PPO is recovering vs degrading.  Phase 9A history shows
+    these baselines depend strongly on the operating-point vx; re-run
+    after every operating-point change.
+    - first lever-sign-flip step (vx=0.265: step 2; vx=0.15 baseline: step 2)
+    - pelvis-x lag at step 30 (vx=0.265: -13.0 cm; vx=0.15 baseline: -10.2 cm)
+    - pelvis-x lag at step 70 (vx=0.265: n/a — body falls before step 70;
+      vx=0.15 baseline: -22.0 cm)
+    - free-float survival ctrl steps (vx=0.265: ~54 ctrl steps with
+      pitch term; vx=0.15 baseline: ≥200/200 — the operating-point
+      shift to vx=0.265 puts WR above its open-loop static-stability
+      envelope, so PPO must own the closed-loop balance entirely)
+    - free-float terminal aPLVx (vx=0.265: ~-0.15 m at step 54; vx=0.15
+      baseline: -0.0104 m at step 199 — body falls forward fast at the
+      higher operating-point vx)
   - the smoke succeeds if PPO measurably reduces these gaps (positive
     pelvis-x progress, longer survival); it fails if PPO collapses below
     these baselines or matches them after meaningful training compute

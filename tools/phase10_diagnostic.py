@@ -697,8 +697,8 @@ def main() -> int:
         "--vx",
         nargs="+",
         type=float,
-        default=[0.10, 0.15, 0.20],
-        help="Closed-loop replay vx bins (default: 0.10 0.15 0.20).",
+        default=[0.25, 0.265, 0.30],
+        help="Closed-loop replay vx bins (default: 0.25 0.265 0.30 — Phase 9A bracket around the vx=0.265 operating point, TB-step/leg-matched).",
     )
     parser.add_argument(
         "--horizon",
@@ -727,20 +727,20 @@ def main() -> int:
 
     # Build the reference library inline for the exact requested vx
     # bins.  This bypasses the parity tool's cache-resolver default
-    # bin set ({0.10, 0.15, 0.20, 0.25}) so the diagnostic can be run
-    # at non-shuffling vx like {0.21, 0.265} without rebuilding the
-    # cached parity-tool library.  When the requested bins are a
-    # subset of the parity tool's defaults, the cached library is
-    # used; otherwise an inline build runs.
+    # bin set ({0.15, 0.20, 0.265, 0.30} as of Phase 9A) so the
+    # diagnostic can be run at the operating point + neighbours
+    # without rebuilding the cached parity-tool library.  When the
+    # requested bins are a subset of the parity tool's defaults, the
+    # cached library is used; otherwise an inline build runs.
     requested_bins = sorted(round(float(v), 4) for v in args.vx)
-    parity_default_bins = sorted([0.10, 0.15, 0.20, 0.25])
+    parity_default_bins = sorted([0.15, 0.20, 0.265, 0.30])
     if set(requested_bins) <= set(parity_default_bins):
         lib_args = argparse.Namespace(
             wr_library_path=args.wr_library_path,
             wr_library_rebuild=args.wr_library_rebuild,
             wr_library_no_cache=False,
             wr_library_cache_dir=".cache/wr_reference_libraries",
-            vx=0.15,
+            vx=0.265,
             nominal_only=False,
         )
         lib, lifecycle = _resolve_wr_reference_library(lib_args)

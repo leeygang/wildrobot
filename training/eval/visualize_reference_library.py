@@ -217,8 +217,8 @@ def main() -> None:
         description="Reference library viewer and trace logger (v0.20.0-A)")
     parser.add_argument("--library-path", type=str,
                         help="Path to reference library directory")
-    parser.add_argument("--vx", type=float, default=0.15,
-                        help="Forward speed command for single-entry view")
+    parser.add_argument("--vx", type=float, default=0.265,
+                        help="Forward speed command for single-entry view (default 0.265 = Phase 9A operating point, TB-step/leg-matched)")
     parser.add_argument("--sweep", action="store_true",
                         help="Print command sweep summary")
     parser.add_argument("--validate", action="store_true",

@@ -192,15 +192,20 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
     """
     e = smoke_cfg.env
     expected = {
-        # Multi-cmd curriculum (TB anti-shuffle lever #1)
+        # Multi-cmd curriculum (TB anti-shuffle lever #1).  Phase 9A
+        # (2026-05-08): max_velocity bumped 0.20 → 0.30 and
+        # eval_velocity_cmd shifted 0.15 → 0.265 to match the new
+        # operating point (TB-step/leg-matched: WR step/leg=0.256 =
+        # 1.00× TB at vx=0.265 with WR's 1.77× longer leg).  vx=0.15
+        # was in the shuffling regime (step/leg=0.144 < 0.20 healthy).
         "min_velocity": 0.0,
-        "max_velocity": 0.20,
+        "max_velocity": 0.30,
         "cmd_resample_steps": 150,
         "cmd_zero_chance": 0.2,
         "cmd_deadzone": 0.05,
-        # Eval-cmd override pins eval rollouts at vx=0.15 so G4 stays
-        # comparable to single-cmd smokes.
-        "eval_velocity_cmd": 0.15,
+        # Eval-cmd override pins eval rollouts at the Phase 9A
+        # operating point so G4 stays comparable across smokes.
+        "eval_velocity_cmd": 0.265,
         # DR (TB anti-shuffle lever #2)
         "domain_randomization_enabled": True,
         "domain_rand_friction_range": [0.4, 1.0],

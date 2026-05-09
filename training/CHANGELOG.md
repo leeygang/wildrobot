@@ -8,6 +8,143 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-phase9A-operating-vx-shift] - 2026-05-08: Operating point shifted vx=0.15 → vx=0.265 (TB-step/leg-matched); escapes shuffling regime, closes `step_length_per_leg` normalised P1A gate
+
+### Context
+
+Phase 9A from `training/docs/reference_architecture_comparison.md`:
+the project decision on whether to change WR's operating point out of
+the shuffling regime, or document the gap as bounded-by-design at
+vx=0.15.  Result: pick the operating-vx-shift path (Phase 9A, not 9B).
+
+### Decision: vx target
+
+Three "size-matching" criteria considered, each producing a different
+WR vx that "matches TB at vx=0.15":
+
+| Match this | WR vx | What it preserves |
+|---|---|---|
+| Froude number (vx²/gh) | 0.190 | inverted-pendulum dynamics per unit gravity |
+| Walking-Froude (vx/√(gL)) | 0.200 | dimensionless speed normalised by leg pendulum time scale |
+| **step/leg (Hof normalisation)** | **0.265** | **gait shape — legs swing the same fraction of leg length per stride** |
+
+Picked **step/leg = 0.265 m/s**.  Reasoning:
+- The user's stated concern was "vx=0.15 is shuffling, we should not
+  aim for".  Only step/leg-matching escapes the shuffling regime
+  (step/leg=0.256 ≥ 0.20 healthy threshold; vx=0.19 still mild
+  shuffle at 0.183, vx=0.21 at threshold 0.200).
+- Only step/leg-matching closes the snapshot's
+  `step_length_per_leg ≥ 0.85× TB` normalised P1A gate
+  (vx=0.265 → 0.94× TB PASS; vx=0.19 stays at 0.71× FAIL; vx=0.21
+  at 0.78× FAIL).
+- The other normalised gate (`cadence_froude_norm`) is vx-invariant
+  under fixed cycle_time, so no vx choice closes it; both Phase 9A
+  and Phase 9B leave it as a documented exemption.
+- Trade-off accepted: vx=0.265 has high closed-loop demand on PPO
+  (open-loop survival drops from ≥200 ctrl steps at vx=0.15 to
+  ~54 at vx=0.265 — body is above its static-stability envelope).
+  PPO must own the closed-loop balance entirely.
+
+### Patch summary
+
+Operating-point vx shifted across:
+
+| File | Old | New |
+|---|---|---|
+| `tools/reference_geometry_parity.py` `_VX_BINS` | `(0.10, 0.15, 0.20, 0.25)` | `(0.15, 0.20, 0.265, 0.30)` |
+| `tools/reference_geometry_parity.py` `_VX_BINS_INSCOPE` | `(0.10, 0.15)` | `(0.25, 0.265)` |
+| `tools/reference_geometry_parity.py` `_P1_VX_BINS` | `(0.10, 0.15, 0.20)` | `(0.25, 0.265, 0.30)` |
+| `tools/reference_geometry_parity.py` default `--vx` | 0.15 | 0.265 |
+| `tools/phase10_diagnostic.py` default `--vx` | `[0.10, 0.15, 0.20]` | `[0.25, 0.265, 0.30]` |
+| `tools/v0200c_per_frame_probe.py` default `--vx` | 0.15 | 0.265 |
+| `tools/v0200c_closeout.py` `_VX_BINS` | `(0.10, 0.15, 0.20, 0.25)` | `(0.15, 0.20, 0.265, 0.30)` |
+| `tools/phase6_wr_probe.py` `vx` references | 0.15 | 0.265 |
+| `tools/compare_reference_target_semantics.py` `_VX_BINS` | `(0.10, 0.15, 0.20)` | `(0.25, 0.265, 0.30)` |
+| `training/eval/visualize_reference_library.py` default `--vx` | 0.15 | 0.265 |
+| `training/configs/ppo_walking_v0201_smoke.yaml` `eval_velocity_cmd` | 0.15 | 0.265 |
+| `training/configs/ppo_walking_v0201_smoke.yaml` `max_velocity` | 0.20 | 0.30 |
+| `training/tests/test_config_load_smoke6.py` smoke7 contract pin | 0.15 / 0.20 | 0.265 / 0.30 |
+| `training/docs/walking_training.md` G7 baselines | refreshed at vx=0.265 |
+
+### Phase 10 (WR-only) at the new operating-point bracket
+
+| vx | survival | match_frac | composite verdict |
+|---|---|---|---|
+| 0.25 | 55/200 pitch term | 0.691 | planner_shape_bound |
+| **0.265 (operating)** | **54/200 pitch term** | **0.685** | planner_shape_bound |
+| 0.30 | 54/200 pitch term | 0.630 | planner_shape_bound |
+
+All three FAIL open-loop survival but the saturation verdict stays
+clean at no-significant-sat — the body falls cleanly via pitch
+termination, not via joint saturation.  This is structural to a
+position-PD ctrl with no balance feedback; PPO is responsible for
+recovering the closed-loop balance.
+
+### G7 baselines refresh (vx=0.265, horizon 200)
+
+| Metric | Pre-Phase-9A (vx=0.15) | **Post-Phase-9A (vx=0.265)** |
+|---|---|---|
+| First lever-sign-flip step | step 2 | step 2 (unchanged) |
+| Pelvis-x lag at step 30 | -10.2 cm | **-13.0 cm** |
+| Pelvis-x lag at step 70 | -22.0 cm | n/a (body fell before step 70) |
+| Free-float survival | ≥200 ctrl steps | **~54 ctrl steps (pitch term)** |
+| Terminal aPLVx | -0.01 m at step 199 | **~-0.15 m at step 54** |
+
+The Phase 10 + per-frame probe baselines change qualitatively at the
+new operating point: free-float survival is no longer the binding
+diagnostic (always 200/200 at vx=0.15) but a real gauge again
+(~54 steps at vx=0.265).  PPO's job at vx=0.265 is fundamentally
+"keep the body upright AND track the prior", not just "track the
+prior" as it was at vx=0.15.
+
+### Snapshot gate movement (predicted; full parity refresh pending TB venv)
+
+| Gate | Pre-Phase-9A | Phase 9A vx=0.265 (predicted) |
+|---|---|---|
+| `step_length_per_leg ≥ 0.85× TB` | FAIL (0.562×) | **PASS (~0.94× TB)** ✓ |
+| `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.252×) | FAIL (1.252×) — vx-invariant under fixed cycle_time |
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.849×) | (re-measure — clr_mean is foot_step_height-driven, not vx-driven, but com_h ratio depends on which com_h the gate uses) |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.115×) | (re-measure — likely similar) |
+| episode survival closed-loop | PASS (200/200 at vx=0.15) | open-loop FAIL at vx=0.265 (54/200); needs PPO to PASS |
+| forward velocity | PASS | open-loop will FAIL at vx=0.265 (-0.4 m/s drift); needs PPO |
+
+The closed-loop gates that PASSed easily at vx=0.15 will require PPO
+to own at vx=0.265.  This is the core trade-off Phase 9A accepts:
+escape the shuffling regime + close the step/leg gate, in exchange
+for higher closed-loop demand on PPO.  The doc-side acceptance
+statement for this trade is in
+`reference_architecture_comparison.md` Phase 9.
+
+### Tests
+
+`uv run pytest training/tests/test_config_load_smoke6.py training/tests/test_smoke7_eval_cmd_behavior.py` — **10/10 PASS** (smoke7 contract test updated to pin Phase 9A values).
+
+### Open follow-ups
+
+1. **Refresh the WR vs TB parity report** at vx=0.265 on a
+   TB-capable machine (`bash tools/run_v0_20_eval.sh`) to confirm
+   the predicted gate movements above.
+2. **v0.20.0-C C1+C2 closeout** at the new operating point — the
+   closeout matrix's `_VX_BINS` is updated, but the closeout itself
+   needs a fresh end-to-end run before any v0.20.x PPO smoke.
+3. **v0.20.1 PPO smoke at vx=0.265** — the operating-point shift
+   means the smoke7 PPO run from April 25 (already incompatible
+   with the 21-DOF model per `v0.20.1-latest-model-eval`) is doubly
+   superseded.  Fresh smoke needed against the Phase 9A config.
+4. **`reference_architecture_comparison.md` Phase 9 closeout entry**
+   documenting the Phase 9A vs 9B fork outcome (Phase 9A picked,
+   vx target = 0.265 chosen via step/leg matching not Froude
+   matching, cadence_norm gate accepted as documented exemption).
+
+### Supersedes
+
+The v0.20.1-snapshot-refresh entry's "vx=0.15 operating point" framing
+is no longer current.  The metrics in that entry are still valid as
+a snapshot of the pre-Phase-9A state (vx=0.15) but the project has
+moved on; future evaluations and PPO runs target vx=0.265.
+
+---
+
 ## [v0.20.1-phase12A-and-phase8-paired] - 2026-05-08: Plantarflex smoothstep + foot_step_height bump — `swing_clearance_per_com_height` gate closes; vx=0.15 survival preserved
 
 ### Context

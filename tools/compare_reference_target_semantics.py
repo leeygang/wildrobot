@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from control.zmp.zmp_walk import ZMPWalkGenerator
 
 
-_VX_BINS = (0.10, 0.15, 0.20)
+_VX_BINS = (0.25, 0.265, 0.30)  # Phase 9A: bracket around vx=0.265 operating point (TB-step/leg-matched)
 
 
 def _summary_for_vx(vx: float) -> dict:

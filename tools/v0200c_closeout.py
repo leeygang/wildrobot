@@ -36,7 +36,11 @@ from typing import Dict, List, Optional
 
 
 # Closeout sweep parameters (frozen by reference_design.md v0.20.0-C).
-_VX_BINS = (0.10, 0.15, 0.20, 0.25)
+# Phase 9A (2026-05-08): operating point shifted from vx=0.15 to vx=0.265
+# (TB-step/leg-matched).  Closeout matrix updated to bracket the new
+# operating point with vx=0.20 (just out of shuffle, below operating)
+# and vx=0.30 (above operating) for robustness checks.
+_VX_BINS = (0.15, 0.20, 0.265, 0.30)
 _SEEDS = (0, 1, 2)
 _HORIZON = 200
 _PRINT_EVERY = 200    # only print start + end inside each replay

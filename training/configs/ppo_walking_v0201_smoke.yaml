@@ -101,20 +101,27 @@ env:
   # episode windows, killing the "always shuffle" basin from the
   # low end of the range.
   min_velocity: 0.0
-  max_velocity: 0.20
+  # Phase 9A (2026-05-08): max_velocity bumped 0.20 → 0.30 so the
+  # cmd-resample distribution covers the new vx=0.265 operating
+  # point plus the upper-bracket robustness vx=0.30.  vx=0.15 (the
+  # pre-Phase-9A operating point, in the shuffling regime) is now
+  # well below the operating point rather than the eval pin.
+  max_velocity: 0.30
   cmd_resample_steps: 150
   cmd_zero_chance: 0.2
   cmd_turn_chance: 0.0
   cmd_deadzone: 0.05
-  # smoke7 eval-cmd override: pin eval rollouts to vx=0.15 so G4
-  # promotion-horizon metrics stay directly comparable to single-cmd
-  # smoke3-6-prep3.  Without this, eval would sample uniformly across
-  # [0.0, 0.20] and dilute the G4 forward_velocity floor (E[cmd]
-  # under uniform sampling + zero_chance=0.2 + deadzone=0.05 sits
-  # near ~0.07 m/s — at or below the 0.075 floor, making pass/fail
-  # uninformative).  The eval path also passes disable_cmd_resample
-  # = True via train.py so mid-episode resample doesn't re-randomize.
-  eval_velocity_cmd: 0.15
+  # smoke7 eval-cmd override: pin eval rollouts to vx=0.265 (Phase 9A
+  # operating point — TB-step/leg-matched: WR step/leg=0.256 = 1.00× TB
+  # at this vx with WR's 1.77× longer leg) so G4 promotion-horizon
+  # metrics stay directly comparable to single-cmd smokes.  Without
+  # this, eval would sample uniformly across [0.0, 0.30] and dilute
+  # the G4 forward_velocity floor (E[cmd] under uniform sampling +
+  # zero_chance=0.2 + deadzone=0.05 sits well below the 0.075 floor,
+  # making pass/fail uninformative).  The eval path also passes
+  # disable_cmd_resample = True via train.py so mid-episode resample
+  # doesn't re-randomize.
+  eval_velocity_cmd: 0.265
 
   # Contacts
   # contact_threshold_force: cutoff (N) the env uses to classify a foot

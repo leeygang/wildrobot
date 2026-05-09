@@ -86,7 +86,7 @@ def main() -> int:
     # Phase 5 requires an explicit pre-built library across the bins
     # used by both the geometry summary (_VX_BINS) and the FK/smoothness
     # probe at the nominal vx.
-    required_bins = sorted({round(float(v), 4) for v in (*_VX_BINS, *_P1_VX_BINS, 0.15)})
+    required_bins = sorted({round(float(v), 4) for v in (*_VX_BINS, *_P1_VX_BINS, 0.265)})
     lib = ZMPWalkGenerator().build_library_for_vx_values(required_bins)
 
     geom = _summarize_wildrobot(lib)
@@ -97,9 +97,9 @@ def main() -> int:
     print(f"  worst stance z (m)  = {geom.worst_stance_z:+.4f}")
     print(f"  worst swing z (m)   = {geom.worst_swing_z:+.4f}")
 
-    gait, smooth = _wr_fk_and_smoothness(lib, 0.15)
+    gait, smooth = _wr_fk_and_smoothness(lib, 0.265)
     print()
-    print("=== WR P1A FK gait at vx=0.15 ===")
+    print("=== WR P1A FK gait at vx=0.265 ===")
     print(f"  step_length_mean_m       = {gait.step_length_mean_m:.4f}")
     print(f"  swing_clearance_mean_m   = {gait.swing_clearance_mean_m:.4f}")
     print(f"  swing_clearance_min_m    = {gait.swing_clearance_min_m:.4f}")
@@ -109,7 +109,7 @@ def main() -> int:
     print(f"  foot_z_step_max_m        = {gait.foot_z_step_max_m:.4f}")
 
     print()
-    print("=== WR P2 smoothness at vx=0.15 ===")
+    print("=== WR P2 smoothness at vx=0.265 ===")
     print(f"  swing_foot_z_step_max_m  = {smooth.swing_foot_z_step_max_m:.4f}")
     print(f"  shared_leg_q_step_max_rad= {smooth.shared_leg_q_step_max_rad:.4f}")
     print(f"  pelvis_z_step_max_m      = {smooth.pelvis_z_step_max_m:.4f}")
@@ -127,7 +127,7 @@ def main() -> int:
         else float("nan")
     )
     print()
-    print("=== WR size-normalised view at vx=0.15 ===")
+    print("=== WR size-normalised view at vx=0.265 ===")
     print(f"  step_length_per_leg               = {wr_step_per_leg:.4f}")
     print(f"  swing_clearance_per_com_height    = {wr_swing_per_h:.4f}")
     print(f"  cadence_froude_norm               = {wr_cadence_norm:.4f}")
@@ -138,13 +138,13 @@ def main() -> int:
     # comparison covers P1A (FK gait) and P2 (smoothness) only — P1
     # closed-loop trackability is OUT OF SCOPE for this probe.
     parity_path = Path(__file__).resolve().parent / "parity_report.json"
-    tb = _load_cached_tb(parity_path, "toddlerbot_2xc", 0.15)
+    tb = _load_cached_tb(parity_path, "toddlerbot_2xc", 0.15)  # TB still operates at vx=0.15; this is the baseline we match against via step/leg scaling
     print()
     if tb:
         fk_tb = tb.get("fk_gait_metrics", {})
         sm_tb = tb.get("smoothness_metrics", {})
         nf_tb = tb.get("normalized_fk_metrics", {})
-        print(f"=== TB-2xc cached @ vx=0.15 (source: {tb['source']}) ===")
+        print(f"=== TB-2xc cached @ vx=0.265 (source: {tb['source']}) ===")
         print(f"  step_length_mean_m       = {fk_tb.get('step_length_mean_m', float('nan')):.4f}")
         print(f"  swing_clearance_mean_m   = {fk_tb.get('swing_clearance_mean_m', float('nan')):.4f}")
         print(f"  touchdown_rate_hz        = {fk_tb.get('touchdown_rate_hz', float('nan')):.4f}")

@@ -77,7 +77,7 @@ def _quat_to_rotmat(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--vx", type=float, default=0.15)
+    p.add_argument("--vx", type=float, default=0.265)  # Phase 9A operating point (TB-step/leg-matched)
     p.add_argument("--horizon", type=int, default=100)
     p.add_argument(
         "--torso-alpha",

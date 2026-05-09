@@ -41,9 +41,22 @@ from training.utils.ctrl_order import CtrlOrderMapper
 _STANCE_TOL_M = 0.003
 _SWING_MIN_M = -0.002
 _PARITY_MARGIN_M = 0.002
-_VX_BINS = (0.10, 0.15, 0.20, 0.25)
-_VX_BINS_INSCOPE = (0.10, 0.15)
-_P1_VX_BINS = (0.10, 0.15, 0.20)
+# Phase 9A (2026-05-08): operating point shifted from vx=0.15 to vx=0.265
+# (step/leg-matched to TB).  vx=0.15 was in the shuffling regime
+# (step/leg=0.144 << 0.20 healthy threshold); vx=0.265 matches TB's
+# step/leg=0.256 exactly (1.00× TB) at WR's longer leg, so the gait
+# *shape* is identical to TB even though the absolute speed is higher.
+# Trade-off vs vx=0.19 (Froude-matched, considered first): step/leg
+# matching closes the snapshot's `step_length_per_leg ≥ 0.85× TB`
+# normalised P1A gate (was the only one Phase 9A could close at any
+# vx; cadence_norm is vx-invariant under fixed cycle_time).
+# In-scope band is (vx_below_operating, vx_operating); P1 closed-loop
+# band brackets the operating point with vx=0.30 above for robustness
+# checks.  See `training/docs/reference_architecture_comparison.md`
+# Phase 9A.
+_VX_BINS = (0.15, 0.20, 0.265, 0.30)
+_VX_BINS_INSCOPE = (0.25, 0.265)
+_P1_VX_BINS = (0.25, 0.265, 0.30)
 _PROBE_FRAMES = (0, 5, 10, 16, 22, 28, 32, 48, 64)
 _TB_VARIANTS = ("toddlerbot_2xc", "toddlerbot_2xm")
 # Shared leg-joint ordering used by every parity layer that compares
@@ -1732,7 +1745,7 @@ def _print_geometry_table(
     print("Geometry comparison table")
     print(
         f"{'robot':<16} "
-        f"{'failures@vx<=0.15':>18} "
+        f"{'failures@vx<=0.265':>18} "
         f"{'failures@all_vx':>17} "
         f"{'stance_max_z':>14} "
         f"{'swing_min_z':>14}"
@@ -2120,8 +2133,8 @@ def main() -> int:
     parser.add_argument(
         "--vx",
         type=float,
-        default=0.15,
-        help="Nominal velocity used for FK and smoothness tables.",
+        default=0.265,
+        help="Nominal velocity used for FK and smoothness tables (default 0.265 = Phase 9A operating point, TB-step/leg-matched).",
     )
     parser.add_argument(
         "--horizon",
