@@ -1,7 +1,7 @@
 {
   "cfg": {
     "cycle_time_s": 0.72,
-    "foot_step_height_m": 0.04,
+    "foot_step_height_m": 0.045,
     "com_height_m": 0.45799999999999996,
     "leg_length_m": 0.373
   },
@@ -9,47 +9,47 @@
     "name": "wildrobot",
     "total_failures": 0,
     "in_scope_failures": 0,
-    "worst_stance_z": 0.0019443497442817345,
-    "worst_swing_z": 0.011687910888061127,
+    "worst_stance_z": 0.00011418766654822576,
+    "worst_swing_z": 0.010117247899708609,
     "failures": []
   },
   "fk_gait": {
     "name": "wildrobot",
-    "vx": 0.15,
+    "vx": 0.265,
     "duration_s": 22.32,
     "touchdowns_left": 30,
     "touchdowns_right": 31,
     "touchdown_balance_ratio": 0.967741935483871,
     "touchdown_rate_hz": 2.7329749103942653,
-    "step_length_mean_m": 0.0537528491230861,
-    "step_length_min_m": 0.052926416508853436,
-    "step_length_max_m": 0.054351503029465675,
-    "touchdown_speed_proxy_mps": 0.07345259400780134,
-    "swing_clearance_mean_m": 0.06604399730558277,
-    "swing_clearance_min_m": 0.06498809158802032,
+    "step_length_mean_m": 0.09409300255833468,
+    "step_length_min_m": 0.09178873151540756,
+    "step_length_max_m": 0.09453752636909485,
+    "touchdown_speed_proxy_mps": 0.12857690761779605,
+    "swing_clearance_mean_m": 0.06715949095755083,
+    "swing_clearance_min_m": 0.06696570524945855,
     "double_support_frac": 0.3333333333333333,
-    "foot_z_step_max_m": 0.014266513288021088
+    "foot_z_step_max_m": 0.015912745147943497
   },
   "smoothness": {
     "name": "wildrobot",
-    "vx": 0.15,
-    "shared_leg_q_step_max_rad": 0.3155183494091034,
+    "vx": 0.265,
+    "shared_leg_q_step_max_rad": 0.31784486770629883,
     "pelvis_z_step_max_m": 0.0,
-    "swing_foot_z_step_max_m": 0.014266513288021088,
+    "swing_foot_z_step_max_m": 0.015912745147943497,
     "contact_flips_per_cycle": 3.967741935483871
   },
   "normalized": {
-    "step_length_per_leg": 0.14410951507529787,
-    "swing_clearance_per_com_height": 0.1442008674794384,
+    "step_length_per_leg": 0.25226006047810906,
+    "swing_clearance_per_com_height": 0.1466364431387573,
     "cadence_froude_norm": 0.5905190060103136,
-    "swing_foot_z_step_per_clearance": 0.21601529086754903
+    "swing_foot_z_step_per_clearance": 0.2369396331190388
   },
   "dims": {
     "leg_length_m": 0.373,
     "com_height_m": 0.45799999999999996
   },
   "tb_cached_2xc": {
-    "source": "/home/leeygang/projects/wildrobot/tools/parity_report.json",
+    "source": "/Users/ygli/projects/wildrobot/tools/parity_report.json",
     "fk_gait_metrics": {
       "double_support_frac": 0.33707865168539325,
       "duration_s": 21.3599796295166,

@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
-# Visualize the Phase 9A vx-options to pick a target operating point.
+# Visualize the WR operating-point bracket in the MuJoCo viewer.
 #
-# Generates a single ZMP reference library covering the candidate vx
-# bins {0.15, 0.19, 0.21, 0.25} once, then opens the MuJoCo viewer
-# at each one in turn so you can compare gait shape side-by-side.
+# Generates a single ZMP reference library covering the post-Phase-9A
+# bracket {0.20, 0.265, 0.30} once, then opens the MuJoCo viewer at
+# each one in turn so you can compare gait shape side-by-side.
+#
+#   - 0.20  — lower edge (slow-walk regression check)
+#   - 0.265 — Phase 9A operating point (TB step/leg-matched)
+#   - 0.30  — upper robustness bracket
+#
+# History: this helper originally swept the pre-Phase-9A candidates
+# {0.15, 0.19, 0.21, 0.25} when picking the operating point.  After
+# the Phase 9A decision (vx=0.265, TB step/leg-matched), it now
+# brackets the chosen point.  Override with VX_OPTIONS="0.15,0.19,..."
+# to re-run the historical sweep.
 #
 # Usage (run from the wildrobot repo root):
 #   bash tools/visualize_vx_options.sh
+#   VX_OPTIONS="0.15,0.19,0.21,0.25" bash tools/visualize_vx_options.sh
+#   VIZ_MODE=fixed_base bash tools/visualize_vx_options.sh
 #
-# What you'll see in each viewer:
-#   - free-floating MuJoCo replay of the prior at that vx
-#   - PD servos hold the q_ref; the body either walks or falls open-loop
-#   - watch step length, cadence, balance margin, foot scuffing
+# What you'll see in each viewer (default kinematic mode):
+#   - kinematic replay of the prior at that vx (no falling — gait shape only)
+# Other modes (VIZ_MODE) drop into PD / closed-loop replays; see below.
 #
 # Close the viewer window (or press Escape) to advance to the next vx.
-# After all four, re-run individual ones with:
+# After all bins, re-run individual ones with:
 #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
-#       --library-path /tmp/wr_vx_options_lib --vx <0.15|0.19|0.21|0.25>
+#       --library-path /tmp/wr_vx_options_lib --vx <bin>
 #
 # macOS: the viewer requires `mjpython` (not `python`).  Linux: either
 # works.  This script picks the right one automatically.
 
 set -euo pipefail
 
-LIB_DIR="/tmp/wr_vx_options_lib"
-VX_OPTIONS=(0.15 0.19 0.21 0.25)
+LIB_DIR="${LIB_DIR:-/tmp/wr_vx_options_lib}"
+# Default: post-Phase-9A bracket around the chosen operating point (0.265).
+# Override via env var, e.g. VX_OPTIONS="0.15,0.19,0.21,0.25".
+VX_OPTIONS_CSV="${VX_OPTIONS:-0.20,0.265,0.30}"
+IFS=',' read -r -a VX_OPTIONS <<< "${VX_OPTIONS_CSV}"
 
 # Pick mjpython on macOS, plain python elsewhere.
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -34,7 +48,7 @@ else
 fi
 
 echo "================================================================"
-echo "Phase 9A — vx target visual evaluation"
+echo "WR vx-bracket visual evaluation"
 echo "Library directory: ${LIB_DIR}"
 echo "Candidate vx bins: ${VX_OPTIONS[*]}"
 echo "Viewer launcher: uv run ${PY_LAUNCHER}"
@@ -89,10 +103,13 @@ echo "    Override mode: VIZ_MODE=fixed_base bash tools/visualize_vx_options.sh"
 echo
 for vx in "${VX_OPTIONS[@]}"; do
     case "${vx}" in
-        0.15) regime="current — known shuffle (step/leg=0.144)" ;;
+        0.15) regime="pre-Phase-9A op pt — known shuffle (step/leg=0.144)" ;;
         0.19) regime="Froude-matched — mild shuffle (step/leg=0.183)" ;;
+        0.20) regime="lower bracket — slow-walk regression check (step/leg≈0.190)" ;;
         0.21) regime="threshold — just out of shuffle (step/leg=0.200)" ;;
         0.25) regime="healthy walk (step/leg=0.241)" ;;
+        0.265) regime="Phase 9A operating point — TB step/leg-matched (step/leg=0.252)" ;;
+        0.30) regime="upper robustness bracket — fast walk (step/leg≈0.286)" ;;
         *)    regime="custom" ;;
     esac
     echo

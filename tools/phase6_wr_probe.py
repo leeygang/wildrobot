@@ -144,7 +144,11 @@ def main() -> int:
         fk_tb = tb.get("fk_gait_metrics", {})
         sm_tb = tb.get("smoothness_metrics", {})
         nf_tb = tb.get("normalized_fk_metrics", {})
-        print(f"=== TB-2xc cached @ vx=0.265 (source: {tb['source']}) ===")
+        # Phase 9A asymmetric comparison: TB still operates at vx=0.15 (its
+        # own operating point), WR @ vx=0.265 (Phase 9A operating point).
+        # The label below is TB's vx, not WR's, to keep the comparison frame
+        # explicit.
+        print(f"=== TB-2xc cached @ vx=0.15 (TB op pt; WR shown above @ vx=0.265, source: {tb['source']}) ===")
         print(f"  step_length_mean_m       = {fk_tb.get('step_length_mean_m', float('nan')):.4f}")
         print(f"  swing_clearance_mean_m   = {fk_tb.get('swing_clearance_mean_m', float('nan')):.4f}")
         print(f"  touchdown_rate_hz        = {fk_tb.get('touchdown_rate_hz', float('nan')):.4f}")

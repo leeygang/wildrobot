@@ -71,11 +71,15 @@ run_step () {
 # ----------------------------------------------------------------------
 # 1. Phase 10 closed-loop diagnostic (WR-only)
 # ----------------------------------------------------------------------
+# vx bins are inherited from `phase10_diagnostic.py`'s default
+# (post Phase 9A: [0.25, 0.265, 0.30] — bracket around the new
+# operating point).  Override with V0_20_PHASE10_VX="..." if you
+# need a different bracket (e.g. for cross-vx regression checks).
 run_step \
-    "[1/3] Phase 10 closed-loop diagnostic (vx ∈ {0.10, 0.15, 0.20})" \
+    "[1/3] Phase 10 closed-loop diagnostic (vx defaults from phase10_diagnostic.py)" \
     "${OUT_DIR}/phase10.log" \
     uv run python tools/phase10_diagnostic.py \
-        --vx 0.10 0.15 0.20 \
+        ${V0_20_PHASE10_VX:+--vx ${V0_20_PHASE10_VX}} \
         --horizon 200 \
         --wr-library-rebuild \
         --json-out "${OUT_DIR}/phase10.json"
@@ -83,11 +87,14 @@ run_step \
 # ----------------------------------------------------------------------
 # 2. Per-frame G7 deterministic probe
 # ----------------------------------------------------------------------
+# vx is inherited from `v0200c_per_frame_probe.py`'s default (post
+# Phase 9A: 0.265, the operating point).  Override with
+# V0_20_PROBE_VX=0.15 if you need a different bin.
 run_step \
-    "[2/3] Per-frame G7 deterministic probe (vx=0.15, horizon=200)" \
+    "[2/3] Per-frame G7 deterministic probe (vx default from v0200c_per_frame_probe.py)" \
     "${OUT_DIR}/per_frame_probe.log" \
     uv run python tools/v0200c_per_frame_probe.py \
-        --vx 0.15 --horizon 200
+        ${V0_20_PROBE_VX:+--vx ${V0_20_PROBE_VX}} --horizon 200
 
 # ----------------------------------------------------------------------
 # 3. Full WR vs TB parity report (needs TB venv)
