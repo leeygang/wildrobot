@@ -8,6 +8,91 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-parity-cadence-gate-and-wr-side-refresh] - 2026-05-09: deprecate cadence_gate too (Hz is length-dependent); refresh parity_report.json WR-side to live cfg
+
+### Context
+
+Two review findings on the parity-rename commit (`e8fc377`):
+
+1. **High** — `tools/parity_report.json` was schema-migrated but
+   semantically stale: WR rows still reported `vx=0.265` (Phase 9A
+   state), `wr_vx_nominal=0.265`, `normalized_overall_pass: false`.
+   Misleading for any reader treating it as the canonical artifact.
+2. **Medium** — `cadence_gate` in `_fk_parity_row` still used
+   `touchdown_rate_hz_abs` as PASS/FAIL.  Cadence in Hz is
+   length-scale dependent for dynamically similar walkers (a shorter
+   pendulum naturally cycles faster), so the absolute Hz comparison
+   is body-size-confounded just like step_length / clearance / speed.
+   Keeping it as PASS/FAIL meant `overall_pass` could still be driven
+   by a confounded metric.
+
+### Patch — gate deprecation
+
+`_fk_parity_row` in `tools/reference_geometry_parity.py`:
+- Removed `cadence_gate` from PASS/FAIL.  Surviving PASS/FAIL gate is
+  only `ds_gate` (double-support fraction — dimensionless, body-size-
+  independent).
+- Added `cadence_ratio_abs_INFO` to the row's INFO ratios alongside
+  `step_len_ratio_abs_INFO`, `clearance_ratio_abs_INFO`, and
+  `speed_diff_abs_INFO_m_s`.
+- Updated print line: `(ds_frac=PASS; INFO step_len_ratio_abs=…,
+  cadence_ratio_abs=… — all body-size-confounded; see
+  cadence_froude_norm + other _norm gates)`.
+
+The principled cadence gate `cadence_froude_norm =
+touchdown_rate_hz_abs × √(h/g)` already lives in
+`_normalized_fk_parity_row` and stays the live PASS/FAIL.  No probe
+change needed (the probe already correctly relegated
+`touchdown_rate_hz_abs` to INFO in the previous commit).
+
+### Patch — refresh `tools/parity_report.json` WR-side
+
+Wrote a one-shot script (`/tmp/refresh_wr_parity.py`, not committed)
+that:
+- Re-built the WR ZMP library at the current `ZMPWalkConfig`
+  (`cycle_time=0.96, foot_step_height=0.05`)
+- Recomputed WR-side rows: `geometry_summary`, `fk_gait_metrics`,
+  `smoothness_metrics`, `normalized_fk_metrics`
+- Refreshed `config.wr_vx_nominal: 0.2`,
+  `geometry_vx_bins: [0.1, 0.15, 0.2, 0.25]`,
+  `geometry_vx_bins_in_scope: [0.15, 0.2]`,
+  `trackability_vx_bins: [0.15, 0.2, 0.25]`
+- Recomputed parity verdicts (`fk_gait_parity`, `smoothness_parity`,
+  `normalized_fk_parity`, `geometry_parity`)
+- Preserved TB-side rows (TB code unchanged; cached numbers
+  authoritative)
+- Added `p1_trackability_note_INFO` documenting that the P1
+  closed-loop TB-side rows remain stale (asymmetric-bins follow-up
+  open; needs a TB-capable Linux machine for full refresh)
+
+### Result
+
+```
+WR-side parity verdicts (post-refresh):
+  geometry_parity:       FAIL  (TB rows have stale vx=0.27,0.30 failures
+                                outside TB's operating envelope; not a
+                                WR-side regression)
+  fk_gait_parity:        PASS
+  smoothness_parity:     PASS
+  normalized_fk_parity:  PASS
+  normalized_overall_pass = True   ← FIRST TIME ✓
+```
+
+`normalized_overall_pass = True` for the first time in v0.20.x.  All
+four size-normalised P1A gates plus q_step + flip + ds gates PASS
+against both TB-2xc and TB-2xm at the analogous operating points.
+
+### Open follow-up unchanged
+
+Full TB-side parity rerun on the Linux machine for the P1 closed-loop
+trackability rows — same follow-up as the prior commit.
+
+### Tests
+
+80/80 reference + smoke + env-contract suite still PASS.
+
+---
+
 ## [v0.20.1-parity-metric-rename-and-deprecate-abs-gates] - 2026-05-09: explicit `_abs` / `_norm` suffixes; deprecate body-size-confounded gates from PASS/FAIL
 
 ### Context

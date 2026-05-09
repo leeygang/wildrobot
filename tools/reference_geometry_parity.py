@@ -1520,24 +1520,27 @@ def _geometry_parity_row(summary_wr: GateSummary, summary_tb: GateSummary) -> tu
 def _fk_parity_row(metrics_wr: FKGaitMetrics, metrics_tb: FKGaitMetrics) -> tuple[bool, dict[str, str]]:
     """FK gait parity row.
 
-    **Body-size-confounded gates deprecated (2026-05-09).**  ``step_len_gate``,
-    ``clearance_gate``, ``speed_gate`` previously compared absolute meters
-    across robots of different sizes — incoherent comparison between
-    robots whose legs differ by 1.77×.  These are now **informational
-    only**: their ratios are still printed in the absolute table for
-    debugging, but they no longer contribute to the PASS/FAIL verdict.
-    The size-aware companion gates in ``_normalized_fk_parity_row``
-    (``step_per_leg``, ``clearance_per_h``, ``forward_speed_froude``)
-    are the principled replacements.
+    **Body-size-confounded gates deprecated (2026-05-09).**  All of
+    ``step_len_gate``, ``clearance_gate``, ``speed_gate``, and
+    ``cadence_gate`` previously compared absolute quantities (meters,
+    m/s, Hz) across robots of different sizes.  Cadence in Hz is
+    length-scale-dependent for dynamically similar walkers (a shorter
+    leg pendulum naturally cycles faster, so a fixed Hz threshold
+    favours one body size over another), so the absolute cadence
+    comparison is just as confounded as the absolute step-length
+    comparison.  The principled cadence gate lives in
+    ``_normalized_fk_parity_row`` as ``cadence_froude_norm``
+    (= touchdown_rate_hz × √(h/g), dimensionless, body-size-aware).
 
-    Surviving PASS/FAIL gates are body-size-independent: ``cadence_gate``
-    (frequency, ratio is unit-coherent across sizes) and ``ds_gate``
-    (dimensionless fraction).  See the size-aware
-    ``_normalized_fk_parity_row`` for full normalised parity.
+    All four absolute ratios are now **informational only**: emitted as
+    ``*_INFO`` keys for debugging context, not contributing to the
+    PASS/FAIL verdict.  The only surviving PASS/FAIL gate here is
+    ``ds_gate`` (double-support fraction — dimensionless, body-size-
+    independent).  Full normalised parity lives in
+    ``_normalized_fk_parity_row``.
     """
-    cadence_ok = metrics_wr.touchdown_rate_hz_abs <= 1.20 * metrics_tb.touchdown_rate_hz_abs
     ds_ok = abs(metrics_wr.double_support_frac - metrics_tb.double_support_frac) <= 0.05
-    parity_ok = cadence_ok and ds_ok
+    parity_ok = ds_ok
     # Compute INFO ratios for the deprecated gates so the print/JSON
     # tables can still surface them as diagnostic context.
     step_len_ratio = (
@@ -1551,14 +1554,18 @@ def _fk_parity_row(metrics_wr: FKGaitMetrics, metrics_tb: FKGaitMetrics) -> tupl
     speed_diff = abs(
         metrics_wr.touchdown_speed_proxy_mps_abs - metrics_tb.touchdown_speed_proxy_mps_abs
     )
+    cadence_ratio = (
+        metrics_wr.touchdown_rate_hz_abs / metrics_tb.touchdown_rate_hz_abs
+        if metrics_tb.touchdown_rate_hz_abs else float("nan")
+    )
     return parity_ok, {
         "baseline": metrics_tb.name,
-        "cadence_gate": "PASS" if cadence_ok else "FAIL",
         "ds_gate": "PASS" if ds_ok else "FAIL",
         # Deprecated body-size-confounded gates kept as INFO ratios.
         "step_len_ratio_abs_INFO": f"{step_len_ratio:.3f}x",
         "clearance_ratio_abs_INFO": f"{clearance_ratio:.3f}x",
         "speed_diff_abs_INFO_m_s": f"{speed_diff:.4f}",
+        "cadence_ratio_abs_INFO": f"{cadence_ratio:.3f}x",
         "verdict": "PASS" if parity_ok else "FAIL",
     }
 
@@ -1874,11 +1881,13 @@ def _print_fk_table(
         row = parity_by_name[robot_name]
         print(
             f"WR FK parity vs {robot_name}: {row['verdict']} "
-            f"(cadence={row['cadence_gate']}, ds_frac={row['ds_gate']}; "
+            f"(ds_frac={row['ds_gate']}; "
             f"INFO step_len_ratio_abs={row['step_len_ratio_abs_INFO']}, "
             f"clearance_ratio_abs={row['clearance_ratio_abs_INFO']}, "
-            f"speed_diff_abs={row['speed_diff_abs_INFO_m_s']} m/s — "
-            f"body-size-confounded; see _norm gates for principled comparison)"
+            f"speed_diff_abs={row['speed_diff_abs_INFO_m_s']} m/s, "
+            f"cadence_ratio_abs={row['cadence_ratio_abs_INFO']} — all "
+            f"body-size-confounded; see cadence_froude_norm + other "
+            f"_norm gates for principled comparison)"
         )
 
 
