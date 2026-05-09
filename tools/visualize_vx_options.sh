@@ -34,11 +34,19 @@
 
 set -euo pipefail
 
-LIB_DIR="${LIB_DIR:-/tmp/wr_vx_options_lib}"
 # Default: post-Phase-9A bracket around the chosen operating point (0.265).
 # Override via env var, e.g. VX_OPTIONS="0.15,0.19,0.21,0.25".
 VX_OPTIONS_CSV="${VX_OPTIONS:-0.20,0.265,0.30}"
 IFS=',' read -r -a VX_OPTIONS <<< "${VX_OPTIONS_CSV}"
+
+# Encode the requested bracket into the default cache directory.  Library
+# lookup is nearest-neighbor (see control/references/reference_library.py
+# `ReferenceLibrary.lookup`), so a cache built for one bracket would silently
+# snap requests for a different bracket onto the nearest stale bin.  Different
+# brackets get different cache dirs.  An explicit LIB_DIR is left untouched —
+# the caller owns cache management in that case.
+VX_OPTIONS_TAG="$(printf '%s\n' "${VX_OPTIONS[@]}" | sort -n | paste -sd '_' -)"
+LIB_DIR="${LIB_DIR:-/tmp/wr_vx_options_lib_${VX_OPTIONS_TAG}}"
 
 # Pick mjpython on macOS, plain python elsewhere.
 if [[ "$(uname -s)" == "Darwin" ]]; then
