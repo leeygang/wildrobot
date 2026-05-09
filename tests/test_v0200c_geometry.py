@@ -159,17 +159,48 @@ def _filter_known_phase9d_failures(failures: list[str]) -> list[str]:
 
 
 def test_geometry_gate_passes():
-    """Phase 9D in-scope FK gate: stance feet on floor, swing feet above
-    floor across all probed frames at the in-scope vx bins
-    (``vx in {0.15, 0.20}``).  The Phase 9D cycle-handover artifact at
-    vx=0.20 frame=48 is allow-listed; see _PHASE9D_KNOWN_FAILURES.
+    """Phase 9D in-scope FK gate.
+
+    **Exit criterion:** stance feet on floor, swing feet above floor
+    across all probed frames at the in-scope vx bins
+    (``vx in {0.15, 0.20}``), **except** the documented Phase 9D
+    cycle-handover artifact at vx=0.20 frame=48
+    (L stance z = +0.0034 m, 0.4 mm above the +3 mm threshold).
+
+    The cycle handover at frame 48 (= cycle_time / dt = 0.96 / 0.02)
+    introduces a single-frame stance overshoot.  TB has analogous
+    (worse, ~10 mm) cycle-0 stance overshoots at high vx.  The fix is
+    a small plantarflex blend at the cycle handover (analogous to
+    Phase 12A's swing-z smoothstep), tracked in CHANGELOG
+    `v0.20.1-phase9D-cycle-time-scaling` open follow-ups.
+
+    This test will also fail if a *new* in-scope failure appears that
+    is not on the allow-list — the allow-list does not silently absorb
+    additional regressions.
     """
-    failures = _filter_known_phase9d_failures(_collect_failures(_VX_BINS_INSCOPE))
-    assert not failures, (
-        f"Phase 9D in-scope geometry gate failed in {len(failures)} "
-        f"in-scope cases (vx in {_VX_BINS_INSCOPE}). "
-        f"First few: " + "; ".join(failures[:5])
+    raw_failures = _collect_failures(_VX_BINS_INSCOPE)
+    filtered = _filter_known_phase9d_failures(raw_failures)
+    # Hard-fail on any in-scope failure not on the Phase 9D allow-list.
+    assert not filtered, (
+        f"Phase 9D in-scope geometry gate failed in {len(filtered)} "
+        f"unexpected in-scope cases (vx in {_VX_BINS_INSCOPE}, "
+        f"after dropping known Phase 9D cycle-handover artifact). "
+        f"First few: " + "; ".join(filtered[:5])
     )
+    # Sanity: confirm the Phase 9D known artifact is still observable
+    # (dropping out of the failure set means cycle-handover got fixed,
+    # which would be a positive signal — re-tighten the test then).
+    if not any(
+        f.startswith("vx=0.20 frame=48 L stance") for f in raw_failures
+    ):
+        # Not strictly an error; just a heads-up to retire the allow-list.
+        import warnings
+        warnings.warn(
+            "Phase 9D cycle-handover artifact (vx=0.20 frame=48 L stance) "
+            "no longer fires.  Consider removing _PHASE9D_KNOWN_FAILURES "
+            "and tightening this test.",
+            stacklevel=2,
+        )
 
 
 def test_keyframes_load():

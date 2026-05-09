@@ -35,15 +35,19 @@ from tools.phase10_diagnostic import (  # noqa: E402
 
 
 # Sanity-check the WR-cycle constants the diagnostic depends on.
+# Phase 9D-revisited (2026-05-09): cycle_time scaled 0.72 → 0.96; the
+# constants are now derived from the live ZMPWalkConfig, so this test
+# pins the post-9D values.  Pre-9D values (swing_window=12, up=2,
+# down=9) are recoverable by setting ZMPWalkConfig.cycle_time_s = 0.72.
 def test_swing_window_constants_match_wr_cycle():
-    # WR cycle: cycle_time=0.72, dt=0.02, T_half=0.36 -> n_half=18,
-    # ds=0.12 -> n_ds=6, swing_window = 12.
-    assert _SWING_WINDOW == 12
-    # Triangle apex plateau at indices 5,6 for swing_window=12.
-    # Plantarflex threshold = 0.025 m; up-delta = 0.065/5 = 0.013.
-    # First index with z > 0.025 = 2 (z=0.026); last = 9 (z=0.026).
-    assert _PLANTARFLEX_UP_CROSS_IDX == 2
-    assert _PLANTARFLEX_DOWN_CROSS_IDX == 9
+    # WR cycle (Phase 9D): cycle_time=0.96, dt=0.02, single_double_ratio=2.0
+    # -> T_single = cycle/2 * 2/3 = 0.32 s -> swing_window = 16.
+    # Triangle: foot_step_height_m = 0.045; total apex = 0.045 + 0.025
+    # clearance = 0.07; up-delta = 0.07 / (8 - 1) = 0.01; threshold-cross
+    # at z > 0.025 -> first index = 3 (z=0.030), last = 12 (z=0.030).
+    assert _SWING_WINDOW == 16
+    assert _PLANTARFLEX_UP_CROSS_IDX == 3
+    assert _PLANTARFLEX_DOWN_CROSS_IDX == 12
 
 
 # ---------------------------------------------------------------------
@@ -283,12 +287,15 @@ def test_d3d4_swing_side_ankle_attribution_when_correct_side_saturates():
     """When LEFT is in swing AND left_ankle (idx 6) saturates, the
     swing-side ankle bucket should fire.
     """
-    trace = _make_trace(n_steps=12)
-    for i in range(12):
+    # Trace length is _SWING_WINDOW so the down-cross frame fits.  This
+    # makes the test cycle-independent: pre-9D (swing_window=12) needs
+    # 12 frames; post-9D (swing_window=16) needs 16.
+    trace = _make_trace(n_steps=_SWING_WINDOW)
+    for i in range(_SWING_WINDOW):
         trace.contact_left_ref[i] = False
         trace.i_swing_left[i] = i
-    # Saturate left_ankle (idx 6) only at i_swing=9 (down-cross)
-    for i in range(12):
+    # Saturate left_ankle (idx 6) only at i_swing = down-cross
+    for i in range(_SWING_WINDOW):
         sat = [False] * 8
         if i == _PLANTARFLEX_DOWN_CROSS_IDX:
             sat[6] = True
@@ -302,16 +309,18 @@ def test_d3d4_phase_7_boundary_bound_requires_swing_side_ankle():
     """Verdict ``Phase-7-boundary-bound`` should require the SWING-SIDE
     ankle to cluster at the down-cross, not just any joint.
     """
-    trace = _make_trace(n_steps=24)
-    for i in range(24):
+    # Two full swing windows so the i_swing wrap-around test is meaningful.
+    n_steps = 2 * _SWING_WINDOW
+    trace = _make_trace(n_steps=n_steps)
+    for i in range(n_steps):
         trace.contact_left_ref[i] = False
-        trace.i_swing_left[i] = i % 12
+        trace.i_swing_left[i] = i % _SWING_WINDOW
     # Saturate hip_pitch (idx 0 / 1, NOT ankle) at every down-cross
     # frame.  Should produce any-joint clustering at down-cross but
     # NOT swing-side-ankle clustering.
-    for i in range(24):
+    for i in range(n_steps):
         sat = [False] * 8
-        if (i % 12) == _PLANTARFLEX_DOWN_CROSS_IDX:
+        if (i % _SWING_WINDOW) == _PLANTARFLEX_DOWN_CROSS_IDX:
             sat[0] = True  # left_hip_pitch
         trace.sat_per_joint[i] = sat
     d = _diag_d3_d4_saturation_by_i_swing(trace)

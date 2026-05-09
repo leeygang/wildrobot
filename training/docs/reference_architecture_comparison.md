@@ -72,28 +72,35 @@ This means a WR change should be credited only when it improves the
 load-bearing parity gaps under the normalised view, while not regressing the
 absolute floor or violating WR's own `G4/G5/G6/G7` policy contract.
 
-### Current Criteria Challenge (2026-05-09)
+### Current Criteria Challenge (2026-05-09, post Phase 9D)
 
 The current evidence supports **PPO unblock**, not a blanket "WR is on
 par with TB" claim.
 
-- Phase 9A closes the load-bearing size-normalised
-  `step_length_per_leg` gate at the chosen operating point
-  (`WR@0.265` vs `TB@0.15`: `0.984×` TB), but the absolute parity
-  verdict still has characterised failures (`swing_clearance_per_com_height`
-  near-threshold, `cadence_froude_norm` size/cadence-confounded,
-  `swing_foot_z_step_per_clearance` bounded by apex shape).
-- Layer-3 closed-loop gates are now comparative-vs-TB diagnostics, not
-  absolute pass/fail gates.  WR outlasts TB at analogous operating points,
-  but both robots fail position-PD-only walking; the conclusion is "this
-  is a learned-policy problem," not "the prior alone walks."
-- Any Phase 9A PPO smoke must use q_ref and eval command at the same
+- Phase 9D ships a Froude-similar operating point: `cycle_time = 0.96 s`
+  (WR-pendulum-scaled from TB's 0.72 s) + `vx = 0.20 m/s` (preserves
+  step_length_per_leg ≈ TB's 0.256).  This closes 2 of 3 normalised
+  P1A FAILs (`cadence_froude_norm` 1.252× → 0.934× TB,
+  `swing_foot_z_step_per_clearance` 1.185× → 0.825× TB) and brings
+  absolute `swing_foot_z_step_max` to within 0.9 mm of the TB
+  threshold.  Remaining FAIL: `swing_clearance_per_com_height` 0.839×
+  TB, pinned by Phase 12A's foot_step_height survival ceiling — Phase
+  8 retry at h=0.05 under the longer cycle is the immediate
+  follow-up.  See CHANGELOG `v0.20.1-phase9D-cycle-time-scaling`.
+- Layer-3 closed-loop gates are comparative-vs-TB diagnostics, not
+  absolute pass/fail gates.  WR outlasts TB at analogous operating
+  points (Phase 9D vx=0.20: ~55 ctrl steps vs TB 21-23 at vx=0.15);
+  both robots fail position-PD-only walking, so the conclusion is
+  "this is a learned-policy problem," not "the prior alone walks."
+- Any Phase 9D PPO smoke must use q_ref and eval command at the same
   operating point (`loc_ref_offline_command_vx = eval_velocity_cmd =
-  0.265`).  A `vx=0.15` q_ref with `vx=0.265` eval is a null test.
+  0.20`).  Mismatched q_ref/eval-cmd is a null test; the env builds
+  an explicit one-bin library for the configured operating point so
+  non-grid values cannot snap to a stale default-grid bin.
 - The current smoke7 command randomization is not full ToddlerBot
-  multi-command reference conditioning because WR's runtime service still
-  serves one fixed q_ref trajectory.  Treat it as TB-inspired robustness
-  pressure until command-conditioned q_ref lookup lands.
+  multi-command reference conditioning because WR's runtime service
+  still serves one fixed q_ref trajectory.  Treat it as TB-inspired
+  robustness pressure until command-conditioned q_ref lookup lands.
 
 ## Design History
 
@@ -1374,14 +1381,20 @@ Goal:
   (`step_length_per_leg`, `cadence_froude_norm`) which are direct
   consequences of the shuffling regime.
 
-> **Phase 9D (vx-dependent cycle_time / min-stride-floor) was
-> considered and rejected.** TB uses a fixed `cycle_time = 0.72 s` and
-> handles shuffling avoidance by operating at a vx where step_per_leg
-> is healthy. Per the Governing Policy ("WR should align to TB unless
-> there is an explicit reason not to"), introducing a WR-specific
-> variable cycle_time without a hardware-forced rationale is
-> alignment backlog. Phase 9A applies the same principle to WR:
-> **fix the operating vx, keep TB's fixed cycle_time.**
+> **Phase 9D (cycle_time scaled to WR's leg pendulum frequency) was
+> initially rejected, then revisited and shipped (2026-05-09).**
+> The original Phase 9 closeout argued: "TB uses a fixed `cycle_time
+> = 0.72 s`; introducing a WR-specific variable cycle_time without a
+> hardware-forced rationale is alignment backlog."  A first-principles
+> re-review found the hardware-forced rationale: WR's leg pendulum
+> time `√(L/g) = 0.195 s` is 1.33× TB's 0.147 s, so under TB's
+> cycle_time WR was being driven at ~3.69 pendulum-times-per-cycle
+> instead of TB's 4.90 — and that was exactly the source of the
+> persistent `cadence_froude_norm` FAIL.  Phase 9D now ships
+> Froude-similar scaling: `cycle_time = 0.96 s` + `vx = 0.20 m/s`
+> (preserves step/leg ≈ TB's 0.256).  Closes 2 of 3 normalised P1A
+> FAILs.  See CHANGELOG `v0.20.1-phase9D-cycle-time-scaling` and the
+> Phase 9D closeout below.
 
 The reason the 9A vs 9B fork has to be explicit: a parity-tool-only
 Froude re-read does **not** close the parity scorecard at the

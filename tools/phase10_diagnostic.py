@@ -83,13 +83,38 @@ from control.zmp.zmp_walk import ZMPWalkGenerator  # noqa: E402
 # triangle).  These constants are used to identify the
 # plantarflex-threshold-crossing frames within the swing window so
 # D3 / D4 can bucket sat events by ``i_swing``.
-_PLANTARFLEX_THRESHOLD_M = 0.025  # control/zmp/zmp_walk.py:611
-_FOOT_STEP_HEIGHT_M = 0.04        # control/zmp/zmp_walk.py:95
-_SWING_FLOOR_CLEARANCE_M = 0.025  # control/zmp/zmp_walk.py:611
-# Triangle parameters at WR cycle (cycle_time=0.72, dt=0.02):
-#   T_half = 0.36, n_half = 18, ds = 0.12, n_ds = 6, swing_window = 12
-_SWING_WINDOW = 12
-_SWING_HALF = _SWING_WINDOW // 2  # = 6
+#
+# All cycle-derived quantities (``_SWING_WINDOW``, ``_FIRST_CYCLE_STEPS``,
+# ``_FOOT_STEP_HEIGHT_M``) are computed from the live ``ZMPWalkConfig``
+# at module load.  Hardcoding them previously caused stale-constant bugs
+# when ``cycle_time_s`` or ``foot_step_height_m`` changed (e.g. Phase 9D
+# scaled cycle 0.72 → 0.96, which changed n_cycle 36 → 48 and
+# swing_window 12 → 16; pre-fix the diagnostic was bucketing D1
+# first-cycle/rest splits and D3/D4 saturation against a 36-frame window
+# that no longer matched the 48-frame cycle).
+from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPWalkConfig  # noqa: E402
+
+_PLANTARFLEX_THRESHOLD_M = 0.025  # control/zmp/zmp_walk.py:611 (constant; not cycle-derived)
+_SWING_FLOOR_CLEARANCE_M = 0.025  # control/zmp/zmp_walk.py:611 (constant; not cycle-derived)
+_FOOT_STEP_HEIGHT_M = float(_ZMPWalkConfig.foot_step_height_m)  # tracks cfg
+
+# Single-support window in ctrl frames.  Derivation:
+#   step = T_single + T_double = cycle / 2
+#   T_single / T_double = single_double_ratio (default 2.0)
+#   ⇒ T_single = (cycle / 2) * ratio / (1 + ratio)
+#              = cycle / 3   with the default ratio = 2.0
+#   n_single = round(T_single / dt)
+# Phase 9D (cycle=0.96, dt=0.02) → n_single = 16.
+# Pre-9D (cycle=0.72, dt=0.02)   → n_single = 12.
+_CYCLE_TIME_S = float(_ZMPWalkConfig.cycle_time_s)
+_DT_S = float(_ZMPWalkConfig.dt_s)
+_SINGLE_DOUBLE_RATIO = float(_ZMPWalkConfig.single_double_ratio)
+_SWING_WINDOW = int(round(
+    (_CYCLE_TIME_S / 2.0)
+    * _SINGLE_DOUBLE_RATIO / (1.0 + _SINGLE_DOUBLE_RATIO)
+    / _DT_S
+))
+_SWING_HALF = _SWING_WINDOW // 2
 _UP_DELTA = (_FOOT_STEP_HEIGHT_M + _SWING_FLOOR_CLEARANCE_M) / max(1, _SWING_HALF - 1)
 _SWING_Z_TABLE = _UP_DELTA * np.concatenate(
     (
@@ -98,16 +123,20 @@ _SWING_Z_TABLE = _UP_DELTA * np.concatenate(
     )
 )
 # Plantarflex-threshold-crossing frames (where commanded swing-z
-# crosses 0.025 m): up-cross at i=2, down-cross at i=9.
-_PLANTARFLEX_UP_CROSS_IDX = int(np.argmax(_SWING_Z_TABLE > _PLANTARFLEX_THRESHOLD_M))  # 2
-# down-cross is the last index where swing-z > threshold
+# crosses _PLANTARFLEX_THRESHOLD_M).  Indices scale with _SWING_WINDOW
+# (e.g. up=2/down=9 at swing_window=12; up=3/down=12 at swing_window=16).
+_PLANTARFLEX_UP_CROSS_IDX = int(np.argmax(_SWING_Z_TABLE > _PLANTARFLEX_THRESHOLD_M))
 _PLANTARFLEX_DOWN_CROSS_IDX = int(
     len(_SWING_Z_TABLE) - 1 - np.argmax(_SWING_Z_TABLE[::-1] > _PLANTARFLEX_THRESHOLD_M)
-)  # 9
+)
 
 # TB cycle-0 truncation length (toddlerbot/algorithms/zmp_walk.py:138).
-# WR retains this; D1 splits on this boundary.
-_FIRST_CYCLE_STEPS = 36  # ceil(cycle_time=0.72 / control_dt=0.02)
+# WR retains this; D1 splits on this boundary.  Derived from the same
+# live ZMPWalkConfig as _SWING_WINDOW so cycle_time changes propagate
+# through D1 first-cycle/rest splits automatically.
+# Phase 9D (cycle=0.96, dt=0.02) → 48 frames.
+# Pre-9D (cycle=0.72, dt=0.02)   → 36 frames.
+_FIRST_CYCLE_STEPS = int(round(_CYCLE_TIME_S / _DT_S))
 
 
 @dataclass

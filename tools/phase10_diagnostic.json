@@ -1,20 +1,24 @@
 {
   "swing_z_table_m": [
     0.0,
-    0.013000000000000001,
-    0.026000000000000002,
-    0.03900000000000001,
-    0.052000000000000005,
-    0.065,
-    0.065,
-    0.052000000000000005,
-    0.03900000000000001,
-    0.026000000000000002,
-    0.013000000000000001,
+    0.01,
+    0.02,
+    0.03,
+    0.04,
+    0.05,
+    0.06,
+    0.07,
+    0.07,
+    0.06,
+    0.05,
+    0.04,
+    0.03,
+    0.02,
+    0.01,
     0.0
   ],
   "plantarflex_threshold_m": 0.025,
-  "first_cycle_steps": 36,
+  "first_cycle_steps": 48,
   "vx_bins": [
     0.15,
     0.2,
@@ -29,20 +33,20 @@
       "termination_mode": "roll",
       "d1_contact_match_split": {
         "overall_match_frac": 0.5151515151515151,
-        "first_cycle_match_frac": 0.5555555555555556,
-        "rest_match_frac": 0.4666666666666667,
-        "rest_minus_first_gap": -0.0888888888888889,
-        "first_cycle_step_count": 36,
-        "rest_step_count": 30,
+        "first_cycle_match_frac": 0.6666666666666666,
+        "rest_match_frac": 0.1111111111111111,
+        "rest_minus_first_gap": -0.5555555555555556,
+        "first_cycle_step_count": 48,
+        "rest_step_count": 18,
         "interpretation": "no-cycle-0-drag"
       },
       "d2_mid_swing_tap_down": {
         "left_event_count": 0,
-        "right_event_count": 5,
-        "total_event_count": 5,
-        "events_per_swing_cycle": 1.0,
-        "mean_event_duration_frames": 1.8,
-        "max_event_duration_frames": 3,
+        "right_event_count": 6,
+        "total_event_count": 6,
+        "events_per_swing_cycle": 1.5,
+        "mean_event_duration_frames": 2.3333333333333335,
+        "max_event_duration_frames": 5,
         "left_events": [],
         "right_events": [
           {
@@ -62,6 +66,15 @@
             "i_swing_end": 4,
             "i_swing_min": 3,
             "i_swing_max": 4
+          },
+          {
+            "step_start": 19,
+            "step_end": 23,
+            "duration_frames": 5,
+            "i_swing_start": 11,
+            "i_swing_end": 15,
+            "i_swing_min": 11,
+            "i_swing_max": 15
           },
           {
             "step_start": 56,
@@ -96,20 +109,24 @@
       "d3_d4_saturation_by_i_swing": {
         "swing_z_table_m": [
           0.0,
-          0.013000000000000001,
-          0.026000000000000002,
-          0.03900000000000001,
-          0.052000000000000005,
-          0.065,
-          0.065,
-          0.052000000000000005,
-          0.03900000000000001,
-          0.026000000000000002,
-          0.013000000000000001,
+          0.01,
+          0.02,
+          0.03,
+          0.04,
+          0.05,
+          0.06,
+          0.07,
+          0.07,
+          0.06,
+          0.05,
+          0.04,
+          0.03,
+          0.02,
+          0.01,
           0.0
         ],
-        "plantarflex_up_cross_i_swing": 2,
-        "plantarflex_down_cross_i_swing": 9,
+        "plantarflex_up_cross_i_swing": 3,
+        "plantarflex_down_cross_i_swing": 12,
         "joint_names": [
           "left_hip_pitch",
           "right_hip_pitch",
@@ -132,6 +149,10 @@
           0.3333333333333333,
           0.3333333333333333,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "any_joint_sat_count_by_i_swing": [
@@ -145,6 +166,10 @@
           1,
           1,
           1,
+          0,
+          0,
+          0,
+          0,
           0,
           0
         ],
@@ -160,13 +185,21 @@
           3,
           3,
           2,
+          2,
+          2,
+          2,
+          2,
           2
         ],
-        "swing_window_mean_any_sat_rate": 0.14705882352941177,
+        "swing_window_mean_any_sat_rate": 0.11904761904761904,
         "any_sat_rate_at_up_cross": 0.0,
-        "any_sat_rate_at_down_cross": 0.3333333333333333,
+        "any_sat_rate_at_down_cross": 0.0,
         "per_joint_sat_rate_by_i_swing": {
           "left_hip_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -192,9 +225,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_hip_roll": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -220,9 +261,17 @@
             0.3333333333333333,
             0.3333333333333333,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_knee_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -248,9 +297,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_ankle_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -276,10 +333,18 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ]
         },
         "swing_side_ankle_sat_rate_by_i_swing": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0,
           0.0,
           0.0,
@@ -308,6 +373,10 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "swing_side_knee_sat_rate_by_i_swing": [
@@ -322,17 +391,21 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
-        "interpretation": "down-cross-correlated-mechanism-unclear"
+        "interpretation": "uniform-sat-distribution"
       },
       "verdict": {
-        "verdict": "mixed: planner_shape_bound + down_cross_correlated_mechanism_unclear",
+        "verdict": "planner_shape_bound",
         "components": {
           "cycle_0_bound": false,
           "planner_shape_bound": true,
           "phase_7_boundary_bound": false,
-          "down_cross_correlated_mechanism_unclear": true,
+          "down_cross_correlated_mechanism_unclear": false,
           "actuator_stack_bound": false
         }
       }
@@ -344,20 +417,20 @@
       "termination_mode": "pitch",
       "d1_contact_match_split": {
         "overall_match_frac": 0.5892857142857143,
-        "first_cycle_match_frac": 0.5833333333333334,
-        "rest_match_frac": 0.6,
-        "rest_minus_first_gap": 0.016666666666666607,
-        "first_cycle_step_count": 36,
-        "rest_step_count": 20,
+        "first_cycle_match_frac": 0.6875,
+        "rest_match_frac": 0.0,
+        "rest_minus_first_gap": -0.6875,
+        "first_cycle_step_count": 48,
+        "rest_step_count": 8,
         "interpretation": "no-cycle-0-drag"
       },
       "d2_mid_swing_tap_down": {
         "left_event_count": 0,
-        "right_event_count": 2,
-        "total_event_count": 2,
-        "events_per_swing_cycle": 0.5,
-        "mean_event_duration_frames": 2.0,
-        "max_event_duration_frames": 2,
+        "right_event_count": 3,
+        "total_event_count": 3,
+        "events_per_swing_cycle": 1.0,
+        "mean_event_duration_frames": 2.6666666666666665,
+        "max_event_duration_frames": 4,
         "left_events": [],
         "right_events": [
           {
@@ -377,6 +450,15 @@
             "i_swing_end": 4,
             "i_swing_min": 3,
             "i_swing_max": 4
+          },
+          {
+            "step_start": 20,
+            "step_end": 23,
+            "duration_frames": 4,
+            "i_swing_start": 12,
+            "i_swing_end": 15,
+            "i_swing_min": 12,
+            "i_swing_max": 15
           }
         ],
         "interpretation": "planner-shape-bound"
@@ -384,20 +466,24 @@
       "d3_d4_saturation_by_i_swing": {
         "swing_z_table_m": [
           0.0,
-          0.013000000000000001,
-          0.026000000000000002,
-          0.03900000000000001,
-          0.052000000000000005,
-          0.065,
-          0.065,
-          0.052000000000000005,
-          0.03900000000000001,
-          0.026000000000000002,
-          0.013000000000000001,
+          0.01,
+          0.02,
+          0.03,
+          0.04,
+          0.05,
+          0.06,
+          0.07,
+          0.07,
+          0.06,
+          0.05,
+          0.04,
+          0.03,
+          0.02,
+          0.01,
           0.0
         ],
-        "plantarflex_up_cross_i_swing": 2,
-        "plantarflex_down_cross_i_swing": 9,
+        "plantarflex_up_cross_i_swing": 3,
+        "plantarflex_down_cross_i_swing": 12,
         "joint_names": [
           "left_hip_pitch",
           "right_hip_pitch",
@@ -420,6 +506,10 @@
           0.5,
           0.5,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "any_joint_sat_count_by_i_swing": [
@@ -433,6 +523,10 @@
           1,
           1,
           1,
+          0,
+          0,
+          0,
+          0,
           0,
           0
         ],
@@ -448,13 +542,21 @@
           2,
           2,
           2,
+          2,
+          2,
+          2,
+          2,
           2
         ],
-        "swing_window_mean_any_sat_rate": 0.20833333333333334,
+        "swing_window_mean_any_sat_rate": 0.15625,
         "any_sat_rate_at_up_cross": 0.0,
-        "any_sat_rate_at_down_cross": 0.5,
+        "any_sat_rate_at_down_cross": 0.0,
         "per_joint_sat_rate_by_i_swing": {
           "left_hip_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -480,9 +582,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_hip_roll": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -508,9 +618,17 @@
             0.5,
             0.5,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_knee_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -536,9 +654,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_ankle_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -564,10 +690,18 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ]
         },
         "swing_side_ankle_sat_rate_by_i_swing": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0,
           0.0,
           0.0,
@@ -596,6 +730,10 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "swing_side_knee_sat_rate_by_i_swing": [
@@ -610,17 +748,21 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
-        "interpretation": "down-cross-correlated-mechanism-unclear"
+        "interpretation": "uniform-sat-distribution"
       },
       "verdict": {
-        "verdict": "mixed: planner_shape_bound + down_cross_correlated_mechanism_unclear",
+        "verdict": "planner_shape_bound",
         "components": {
           "cycle_0_bound": false,
           "planner_shape_bound": true,
           "phase_7_boundary_bound": false,
-          "down_cross_correlated_mechanism_unclear": true,
+          "down_cross_correlated_mechanism_unclear": false,
           "actuator_stack_bound": false
         }
       }
@@ -632,20 +774,20 @@
       "termination_mode": "pitch",
       "d1_contact_match_split": {
         "overall_match_frac": 0.6,
-        "first_cycle_match_frac": 0.5833333333333334,
-        "rest_match_frac": 0.631578947368421,
-        "rest_minus_first_gap": 0.04824561403508765,
-        "first_cycle_step_count": 36,
-        "rest_step_count": 19,
+        "first_cycle_match_frac": 0.6875,
+        "rest_match_frac": 0.0,
+        "rest_minus_first_gap": -0.6875,
+        "first_cycle_step_count": 48,
+        "rest_step_count": 7,
         "interpretation": "no-cycle-0-drag"
       },
       "d2_mid_swing_tap_down": {
         "left_event_count": 0,
-        "right_event_count": 2,
-        "total_event_count": 2,
-        "events_per_swing_cycle": 0.5,
-        "mean_event_duration_frames": 2.0,
-        "max_event_duration_frames": 2,
+        "right_event_count": 3,
+        "total_event_count": 3,
+        "events_per_swing_cycle": 1.0,
+        "mean_event_duration_frames": 2.6666666666666665,
+        "max_event_duration_frames": 4,
         "left_events": [],
         "right_events": [
           {
@@ -665,6 +807,15 @@
             "i_swing_end": 4,
             "i_swing_min": 3,
             "i_swing_max": 4
+          },
+          {
+            "step_start": 20,
+            "step_end": 23,
+            "duration_frames": 4,
+            "i_swing_start": 12,
+            "i_swing_end": 15,
+            "i_swing_min": 12,
+            "i_swing_max": 15
           }
         ],
         "interpretation": "planner-shape-bound"
@@ -672,20 +823,24 @@
       "d3_d4_saturation_by_i_swing": {
         "swing_z_table_m": [
           0.0,
-          0.013000000000000001,
-          0.026000000000000002,
-          0.03900000000000001,
-          0.052000000000000005,
-          0.065,
-          0.065,
-          0.052000000000000005,
-          0.03900000000000001,
-          0.026000000000000002,
-          0.013000000000000001,
+          0.01,
+          0.02,
+          0.03,
+          0.04,
+          0.05,
+          0.06,
+          0.07,
+          0.07,
+          0.06,
+          0.05,
+          0.04,
+          0.03,
+          0.02,
+          0.01,
           0.0
         ],
-        "plantarflex_up_cross_i_swing": 2,
-        "plantarflex_down_cross_i_swing": 9,
+        "plantarflex_up_cross_i_swing": 3,
+        "plantarflex_down_cross_i_swing": 12,
         "joint_names": [
           "left_hip_pitch",
           "right_hip_pitch",
@@ -708,6 +863,10 @@
           0.5,
           0.5,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "any_joint_sat_count_by_i_swing": [
@@ -721,6 +880,10 @@
           1,
           1,
           1,
+          0,
+          0,
+          0,
+          0,
           0,
           0
         ],
@@ -736,13 +899,21 @@
           2,
           2,
           2,
+          2,
+          2,
+          2,
+          2,
           2
         ],
-        "swing_window_mean_any_sat_rate": 0.20833333333333334,
+        "swing_window_mean_any_sat_rate": 0.15625,
         "any_sat_rate_at_up_cross": 0.0,
-        "any_sat_rate_at_down_cross": 0.5,
+        "any_sat_rate_at_down_cross": 0.0,
         "per_joint_sat_rate_by_i_swing": {
           "left_hip_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -768,9 +939,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_hip_roll": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -796,9 +975,17 @@
             0.5,
             0.5,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_knee_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -824,9 +1011,17 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ],
           "left_ankle_pitch": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -852,10 +1047,18 @@
             0.0,
             0.0,
             0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0
           ]
         },
         "swing_side_ankle_sat_rate_by_i_swing": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0,
           0.0,
           0.0,
@@ -884,6 +1087,10 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
         "swing_side_knee_sat_rate_by_i_swing": [
@@ -898,17 +1105,21 @@
           0.0,
           0.0,
           0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
           0.0
         ],
-        "interpretation": "down-cross-correlated-mechanism-unclear"
+        "interpretation": "uniform-sat-distribution"
       },
       "verdict": {
-        "verdict": "mixed: planner_shape_bound + down_cross_correlated_mechanism_unclear",
+        "verdict": "planner_shape_bound",
         "components": {
           "cycle_0_bound": false,
           "planner_shape_bound": true,
           "phase_7_boundary_bound": false,
-          "down_cross_correlated_mechanism_unclear": true,
+          "down_cross_correlated_mechanism_unclear": false,
           "actuator_stack_bound": false
         }
       }

@@ -580,15 +580,20 @@ This is the main unblock gate for the active `v0.20` path.
 > `walking_training.md` Appendix A for the live G-gate contract used
 > by the smoke runs.
 
-> **Current status (2026-05-09).**  There is no promotion candidate
-> PPO checkpoint for the current 21-DOF model.  The April 25 smoke7
-> checkpoint is a 19-action pre-ankle-roll artifact and is obsolete.
-> A fresh Phase 9A smoke must use a `vx=0.265` q_ref trajectory and
-> `eval_velocity_cmd=0.265`; using a `vx=0.15` q_ref with a `0.265`
-> eval command is a contract mismatch, not a valid test of prior
-> quality.  The live G4 stride floor is now command-scaled: at
-> `vx=0.265`, require touchdown step length `>= 0.050 m` before
-> claiming the learned policy is tracking a non-shuffle prior.
+> **Current status (2026-05-09, post Phase 9D).**  There is no
+> promotion candidate PPO checkpoint for the current 21-DOF model.
+> The April 25 smoke7 checkpoint is a 19-action pre-ankle-roll
+> artifact and is obsolete.  A fresh smoke must use the Phase 9D
+> operating point: `vx=0.20` q_ref + `eval_velocity_cmd=0.20`, paired
+> with `cycle_time=0.96 s` (the WR-pendulum-scaled value, not TB's
+> 0.72 s).  The historical Phase 9A operating point at `vx=0.265,
+> cycle=0.72` is superseded — see CHANGELOG entry
+> `v0.20.1-phase9D-cycle-time-scaling`.  The live G4 stride floor is
+> command-scaled: at `vx=0.20, cycle=0.96`, require touchdown step
+> length `>= 0.050 m` before claiming the learned policy is tracking a
+> non-shuffle prior (same launch-checklist value as Phase 9A by
+> coincidence of the kinematic identity that Phase 9D preserved step
+> length while scaling cycle and vx).
 
 What to verify visually:
 

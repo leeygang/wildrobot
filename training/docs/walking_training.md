@@ -800,12 +800,15 @@ Expectation:
 - PPO improves robustness and tracking while preserving the prior’s gait
   structure
 - the smoke validates that the offline prior is learnable by PPO at the
-  current Phase 9A operating point, `vx = 0.265`
+  current Phase 9D operating point, `vx = 0.20` (paired with the
+  WR-pendulum-scaled `cycle_time = 0.96 s`; see CHANGELOG
+  `v0.20.1-phase9D-cycle-time-scaling`)
 - the smoke policy contract is a temporary validation bridge, not the final
   locomotion policy endpoint
 - **current status (2026-05-09):** no valid current-model PPO checkpoint
   exists.  The April 25 smoke7 checkpoint is a 19-action pre-ankle-roll
-  artifact; the current 21-DOF model needs a fresh smoke.
+  artifact; the current 21-DOF model needs a fresh smoke at the Phase 9D
+  operating point.
 
 Quick visual check:
 
@@ -824,7 +827,7 @@ How this advances the end goal:
 
 Smoke scope:
 
-- fixed q_ref operating point: `vx = 0.265`
+- fixed q_ref operating point: `vx = 0.20` (Phase 9D)
 - single seed
 - smoke objective is prior validation, not command-breadth validation
 - command randomization is enabled as TB-inspired robustness pressure, but
@@ -970,7 +973,7 @@ Tasks:
 - expose the ToddlerBot-like observation fields listed above
 - wire the higher-authority residual action around `q_ref_from_library`
 - add a dedicated `v0.20.1` reward branch with explicit `ref/*` metrics
-- lock the smoke q_ref/eval operating point to `vx = 0.265`
+- lock the smoke q_ref/eval operating point to `vx = 0.20` (Phase 9D)
 - reject runs where PPO improvement comes mainly from inventing propulsion that
   the prior should own
 
@@ -986,22 +989,25 @@ Pre-smoke checks:
   known-noisy contact term into the first PPO run
 - **G7 — prior-vs-body sanity at the smoke command**:
   - run `tools/v0200c_per_frame_probe.py --horizon 200` (default
-    `--vx 0.265` post Phase 9A — TB-step/leg-matched operating point)
-    and record the deterministic baselines that will be used to judge
-    whether PPO is recovering vs degrading.  Phase 9A history shows
-    these baselines depend strongly on the operating-point vx; re-run
-    after every operating-point change.
-    - first lever-sign-flip step (vx=0.265: step 2; vx=0.15 baseline: step 2)
-    - pelvis-x lag at step 30 (vx=0.265: -13.0 cm; vx=0.15 baseline: -10.2 cm)
-    - pelvis-x lag at step 70 (vx=0.265: n/a — body falls before step 70;
-      vx=0.15 baseline: -22.0 cm)
-    - free-float survival ctrl steps (vx=0.265: ~54 ctrl steps with
-      pitch term; vx=0.15 baseline: ≥200/200 — the operating-point
-      shift to vx=0.265 puts WR above its open-loop static-stability
-      envelope, so PPO must own the closed-loop balance entirely)
-    - free-float terminal aPLVx (vx=0.265: ~-0.15 m at step 54; vx=0.15
-      baseline: -0.0104 m at step 199 — body falls forward fast at the
-      higher operating-point vx)
+    `--vx 0.20` post Phase 9D — TB-step/leg-matched operating point at
+    the WR-pendulum-scaled cycle_time=0.96 s) and record the
+    deterministic baselines that will be used to judge whether PPO is
+    recovering vs degrading.  Operating-point shifts change these
+    baselines materially; re-run after every cycle/vx change.
+    - first lever-sign-flip step (vx=0.20: step 2;
+      historical vx=0.265: step 2; historical vx=0.15: step 2)
+    - pelvis-x lag at step 30 (vx=0.20: -13.5 cm;
+      historical vx=0.265: -13.0 cm; historical vx=0.15: -10.2 cm)
+    - pelvis-x lag at step 70 (vx=0.20: n/a — body falls before step 70;
+      historical vx=0.265: n/a; historical vx=0.15: -22.0 cm)
+    - free-float survival ctrl steps (vx=0.20: ~55 ctrl steps with pitch
+      term; historical vx=0.265: ~54; historical vx=0.15: ≥200/200 —
+      both Phase 9A and Phase 9D operating points are above WR's
+      open-loop static-stability envelope, so PPO must own the
+      closed-loop balance entirely)
+    - free-float terminal aPLVx (vx=0.20: ~-0.22 m at step 55;
+      historical vx=0.265: ~-0.15 m at step 54; historical vx=0.15:
+      -0.0104 m at step 199)
   - the smoke succeeds if PPO measurably reduces these gaps (positive
     pelvis-x progress, longer survival); it fails if PPO collapses below
     these baselines or matches them after meaningful training compute
@@ -1029,11 +1035,14 @@ Metric validation:
     passes; do not require it to improve when the term is intentionally at
     zero weight)
 - **G4 — early-horizon gate (informational only)**:
-  - the current Phase 9A bare-q_ref baseline at `vx=0.265` falls by pitch
-    at step 54 over a 200-step deterministic run.  PPO is being asked to
-    keep the body upright and track the prior; the old `vx=0.15` baseline
-    where free-float survived to the horizon is no longer the operating
-    point.
+  - the current Phase 9D bare-q_ref baseline at `vx=0.20` falls by pitch
+    at step ~55 over a 200-step deterministic run.  PPO is being asked
+    to keep the body upright and track the prior; the historical
+    `vx=0.15` baseline where free-float survived to the horizon is no
+    longer the operating point.  Survival is essentially unchanged from
+    the prior `vx=0.265` operating point under cycle_time=0.72 s
+    (~54 vs ~55 ctrl steps), so PPO's balance-recovery budget is the
+    same under either operating-point choice.
   - softened early-horizon targets (informational, do not abort runs that
     miss these — only abort if collapsing below the open-loop baseline):
     - `Evaluate/forward_velocity >= 0.0 m/s`
@@ -1063,17 +1072,21 @@ Metric validation:
   - `env/forward_velocity >= 0.075 m/s` (train rollout, weak floor only;
     `tracking/cmd_vs_achieved_forward` carries the command-scale signal)
   - `Evaluate/forward_velocity >= 0.075 m/s` (deterministic eval
-    rollout — weak forward-progress floor; at Phase 9A this is
+    rollout — weak forward-progress floor; at Phase 9D this is
     deliberately paired with the stricter command-error and ratio gates)
   - `Evaluate/mean_episode_length >= 475` (95% of 500-step horizon;
     second half of the dropped success_rate row)
   - `Evaluate/cmd_vs_achieved_forward <= 0.075 m/s`
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s` (train rollout)
   - touchdown step length mean `>= max(0.030 m, 0.50 * vx_eval *
-    cycle_time / 2)`.  At the Phase 9A operating point (`vx_eval=0.265`,
-    `cycle_time=0.72`), this is `>= 0.0477 m`; use `>= 0.050 m` in the
-    launch checklist.  The old absolute `0.030 m` floor is too weak at
-    `vx=0.265` because it is only about 32% of the nominal prior step.
+    cycle_time / 2)`.  At the Phase 9D operating point (`vx_eval=0.20`,
+    `cycle_time=0.96`), this is `>= 0.0480 m`; use `>= 0.050 m` in the
+    launch checklist.  (Same launch-checklist value as the historical
+    Phase 9A operating point at `vx=0.265, cycle=0.72`, by coincidence
+    of the kinematic identity `step = vx × cycle / 2` — Phase 9D
+    preserves step length while scaling cycle and vx.)  The old
+    absolute `0.030 m` floor is too weak at any post-shuffle operating
+    point because it is only ~32% of the nominal prior step.
 - **G5 — anti-exploit metric (hard gate)**:
   - to reject the "policy invents propulsion the prior should own" failure
     mode, log and gate on:
@@ -1204,12 +1217,14 @@ stride_per_step ≈ vx × cycle_time / 2
 
 (`cycle_time = 0.72 s` from `toddlerbot/locomotion/mjx_config.py:98`.)
 
-WildRobot's prior at vx=0.15 delivers 0.045-0.053 m steady-state per
-`tools/v0200c_per_frame_probe.py --vx 0.15` — same design point.  That
-is why the old `0.030 m` G4 floor was reasonable before Phase 9A.
-At the new `vx=0.265` operating point, the equivalent "at least half
-the prior" floor is about `0.048 m`, so the launch checklist uses
-`>= 0.050 m`.
+WildRobot's prior at vx=0.15 (cycle=0.72) delivered 0.045-0.053 m
+steady-state per `tools/v0200c_per_frame_probe.py --vx 0.15` — same
+design point.  That is why the old `0.030 m` G4 floor was reasonable
+before Phase 9A.  Under the Phase 9D operating point (vx=0.20,
+cycle=0.96), nominal step is `0.20 × 0.96 / 2 = 0.096 m`, so the
+"at least half the prior" floor is about `0.048 m` — same launch
+checklist value `>= 0.050 m`, by coincidence of the kinematic identity
+that Phase 9D preserved step length while scaling cycle and vx.
 
 ### `v0.20.1-smoke6-prep3` Loader fix + actually-test smoke6
 
@@ -1284,9 +1299,13 @@ Scope:
   - `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB resample_time)
   - `cmd_zero_chance: 0.2` (TB default)
   - `cmd_deadzone: 0.05` (TB vx-channel default)
-  - vx range: `[0.0, 0.30]` — covers the Phase 9A operating point
-    (`0.265`) and the upper robustness bracket while still deferring
-    negative cmd to v0.20.4
+  - vx range: `[0.0, 0.30]` — covers the Phase 9D operating point
+    (`0.20`) with generous upper-bracket robustness pressure (1.5×
+    operating point) while still deferring negative cmd to v0.20.4.
+    Range was historically `[0.0, 0.20]` pre-Phase-9A, then `[0.0,
+    0.30]` post-Phase-9A; kept at `[0.0, 0.30]` through Phase 9D so
+    smoke results stay directly comparable across the operating-point
+    transitions.
 - **Domain randomization** (TB anti-shuffle lever #2):
   - `domain_rand_friction_range: [0.4, 1.0]` (TB)
   - `domain_rand_frictionloss_scale_range: [0.8, 1.2]` (TB)
@@ -1303,10 +1322,10 @@ Scope:
   - `imu_quat_noise_deg: 2.0` (conservative vs TB's quat_std=0.10 rad ≈
     5.7°)
 - **Eval-cmd override** (G4 readout protection):
-  - `eval_velocity_cmd: 0.265` — pins eval rollouts at the Phase 9A
+  - `eval_velocity_cmd: 0.20` — pins eval rollouts at the Phase 9D
     operating point.  Without this, eval would sample uniformly across
     `[0.0, 0.30]` and dilute G4.  The fixed q_ref trajectory is also
-    pinned to `loc_ref_offline_command_vx: 0.265`; q_ref/eval-cmd
+    pinned to `loc_ref_offline_command_vx: 0.20`; q_ref/eval-cmd
     mismatch is a null smoke.
 - **NOT enabling**: pushes (TB walk default add_push: False), yaw cmd
   (defer to v0.20.4 — WR prior lacks yaw), negative vx (prior lacks
@@ -1346,14 +1365,14 @@ Pre-smoke checks (all completed in smoke7-prep1):
   with proper zero_chance/deadzone distribution.
 - ✅ Open-loop prior probe at vx ∈ {0.10, 0.15, 0.20, 0.25}: prior
   generates 1120-step trajectories at all bins; no immediate collapse.
-- ✅ Phase 9A q_ref/eval alignment: `eval_velocity_cmd` and
-  `loc_ref_offline_command_vx` both pin `0.265`, and the env builds an
-  explicit one-bin library for that value so `0.265` cannot snap to a
-  stale `0.25` bin.
+- ✅ Phase 9D q_ref/eval alignment: `eval_velocity_cmd` and
+  `loc_ref_offline_command_vx` both pin `0.20`, and the env builds an
+  explicit one-bin library for that value so it cannot snap to a stale
+  default-grid bin.
 
 Decision rule after smoke7:
 
-- **stride at eval (vx=0.265) ≥ 0.050 m** → TB-inspired command/DR hypothesis
+- **stride at eval (vx=0.20) ≥ 0.050 m** → TB-inspired command/DR hypothesis
   confirmed; promote to v0.20.2 (SysID hardening) and run ablation
   follow-ups (DR-only, multi-cmd-only) to isolate the load-bearing
   mechanism.
