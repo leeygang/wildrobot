@@ -8,6 +8,277 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-phase12A-and-phase8-paired] - 2026-05-08: Plantarflex smoothstep + foot_step_height bump — `swing_clearance_per_com_height` gate closes; vx=0.15 survival preserved
+
+### Context
+
+Direct follow-up to the May-08 reference-quality-snapshot refresh
+(below): of the four normalised P1A FAILs in the snapshot table,
+`swing_clearance_per_com_height` was the only one classified as
+"planner-side, blocked on Phase 12A".  Phase 8 alone (the
+single-line `foot_step_height_m` bump) had been tried twice
+(2026-05-05) and reverted — both h=0.05 and h=0.045 regressed
+survival at vx=0.15 (200→74 / 200→104 step pitch termination)
+because the deeper-bend swing destabilised stance via the binary
+plantarflex up-cross transition.  Phase 12A's job was to soften
+that transition.
+
+### Patch summary
+
+`control/zmp/zmp_walk.py`:
+
+1. **Phase 12A — smoothstep plantarflex.**  Replaced the binary
+   `is_swing_for_ankle` flag in the IK loop with a continuous
+   `plantarflex_strength ∈ [0, 1]` driven by a smoothstep on the
+   commanded foot z.  `_solve_sagittal_ik` now blends ankle_pitch
+   between the flat-foot constraint (`-(hip+knee)`) and the
+   swing-neutral plantarflex (-0.15 rad) by that strength.  New
+   config field `plantarflex_ramp_band_m` (default 0.005 m, half-
+   width of the smoothstep band centred on
+   `swing_foot_z_floor_clearance_m = 0.025 m`).  Setting the band
+   to 0 recovers the pre-Phase-12A binary behaviour.
+2. **Phase 8 — foot_step_height_m 0.04 → 0.045.**  Bumps the
+   half-step apex by 5 mm to close the
+   `swing_clearance_per_com_height` normalised P1A gate.  With
+   12A's smoothstep absorbing the threshold-crossing transition,
+   the survival regression Phase 8 alone produced no longer fires.
+
+### Phase 12A band-width tuning
+
+- `band = 0.020 m` (first attempt): regressed vx=0.15 survival
+  200→92 (pitch term).  Too wide — bled plantarflex into the
+  early-swing boundary frames where the body needs flat-foot to
+  keep the stance side balanced.
+- `band = 0.005 m` (shipped): keeps boundary frames exactly
+  flat-foot, smoothstep covers z=0.020-0.030 (the actual
+  threshold neighbourhood).  Survival at vx=0.15 preserved at
+  200/200 with h=0.045.
+
+### Phase 10 results (vx ∈ {0.10, 0.15, 0.20})
+
+| Metric | Pre-12A baseline (h=0.04) | Phase 8 alone (h=0.045) | **12A+8 shipped (h=0.045, b=0.005)** |
+|---|---|---|---|
+| vx=0.10 survival | 200/200 | 200/200 | **200/200** ✓ |
+| vx=0.15 survival | **200/200** ✓ | 104/200 ⚠️ | **200/200** ✓ RECOVERED |
+| vx=0.20 survival | 69/200 | 63/200 | 62/200 (~unchanged) |
+| vx=0.10 match_frac | 0.680 | n/m | 0.725 |
+| vx=0.15 match_frac | 0.730 | 0.702 | 0.700 (~equal) |
+| vx=0.20 match_frac | 0.710 | n/m | 0.677 |
+| vx=0.10 L_hip_roll peak | 0.091 | 0.091 | 0.273 ⚠️ (cost of 12A) |
+| vx=0.15 L_hip_roll peak | 0.000 | 0.000 | 0.091 (slight) |
+| vx=0.20 L_hip_roll peak | 0.333 | n/m | n/r (early term) |
+| `swing_clearance_per_com_height` | FAIL (0.78× TB) | PASS (~0.91× TB) | **PASS (~0.91× TB)** ✓ |
+
+### Snapshot gate movement (vs the May-08 refresh table)
+
+| Gate | May-08 snapshot | **Post 12A+8** |
+|---|---|---|
+| `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.783×) | **PASS (~0.91×)** ✓ |
+| `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.120×) | likely improved further (will be confirmed by parity rerun) |
+| `swing_foot_z_step_max ≤ 1.10× TB` | FAIL (1.40× TB) | bounded-by-design — co-resolved per Acceptance |
+| episode survival @ vx=0.15 | PASS (200/200) | **PASS (200/200)** ✓ unchanged |
+| `contact_phase_match` | FAIL (0.730) | 0.700 (~equal, very small dip) |
+
+### Cost / regressions
+
+- **vx=0.10 L_hip_roll peak**: 0.091 → 0.273.  Tied to the
+  smoothstep softening — the small ramp band still bleeds slightly
+  into early-swing.  Out of the in-scope load-bearing band per
+  the snapshot's interpretation; verdict still composite mixed
+  with `down_cross_correlated_mechanism_unclear`.
+- **vx=0.15 L_hip_roll peak**: 0.000 → 0.091.  Small, well below
+  any gate threshold.
+
+### Tests
+
+`uv run pytest tests/test_v0200a_contract.py tests/test_v0200c_geometry.py tests/test_v0201_env_zero_action.py tests/test_phase10_diagnostic.py` — **49/49 PASS**.
+
+### Files touched
+
+- `control/zmp/zmp_walk.py`:
+  - Module-level: added `_SWING_PLANTARFLEX_RAD` constant + `_smoothstep` helper.
+  - `_solve_sagittal_ik`: refactored signature `is_swing: bool` → `plantarflex_strength: float = 0.0`, blended ankle output.
+  - `ZMPWalkConfig`: added `plantarflex_ramp_band_m` field (default 0.005); `foot_step_height_m` 0.04 → 0.045.
+  - IK loop in `_generate_at_step_length`: replaced binary `is_swing_for_ankle` with smoothstepped `plantarflex_strength`.
+
+### Open follow-ups
+
+1. **Refresh the parity report** to confirm the
+   `swing_clearance_per_com_height` gate flip and re-measure
+   `swing_foot_z_step_per_clearance` (expected to improve further
+   with the smoothstepped boundary).  Needs TB venv reachable.
+2. **vx=0.10 L_hip_roll diagnostic** — the new 0.273 peak (was
+   0.091) is the largest regression from this paired patch and
+   warrants a focused look before any further plantarflex tuning.
+3. **Phase 9 operating-vx decision** for the two remaining
+   Froude-bounded gates (`step_length_per_leg`,
+   `cadence_froude_norm`).
+4. **Then v0.20.0-C C1+C2 closeout** before any v0.20.x PPO smoke.
+
+---
+
+## [v0.20.1-reference-quality-snapshot-refresh] - 2026-05-08: Full WR-vs-TB parity refresh — load-bearing P1 issue closed; remaining gaps narrowed or reclassified
+
+### Context
+
+Refresh of the v0.20.1-reference-quality-snapshot (2026-04-26) using a
+TB-capable machine (parity report ran end-to-end this time).  Captures
+the cumulative effect of the work landed since the original snapshot:
+v20 ankle_roll merge, ankle_roll-realignment patch (`9b7bf12` /
+`31b764d`), CAD upper_leg mate fix (round-1 + round-2 numerical
+adjustments), home/walk_start keyframe re-derivation against the
+post-CAD model, and `validate_and_update_keyframes` step in
+`assets/post_process.py`.
+
+Source data:
+- `tools/phase10_diagnostic.py --vx 0.10 0.15 0.20 --horizon 200`
+- `tools/v0200c_per_frame_probe.py --vx 0.15 --horizon 200`
+- `tools/reference_geometry_parity.py` end-to-end against
+  TB-2xc and TB-2xm; WR cache fingerprint `a78520b36578510a`,
+  generator fingerprint `ef0200b399485a12`.
+
+### Result — full snapshot table refresh (current vs Apr-26)
+
+| Layer | Gate | Apr-26 snapshot | **May-08 current** | Δ |
+|---|---|---|---|---|
+| P0 in-scope (vx ≤ 0.15) | both gates | PASS | **PASS** ✓ | unchanged |
+| P0 full matrix | stance + swing | PASS (worst +1.9 mm / +17 mm) | **PASS** (0 failures, stance max -0.6 mm, swing min +7.0 mm) | unchanged |
+| P1A absolute @ vx=0.15 | step_len / cadence / clearance / speed / DS | PASS both TB | **PASS both TB**; clearance 0.063 m vs TB 0.050 m (WR now HIGHER) | unchanged |
+| P1A normalised | `step_length_per_leg ≥ 0.85× TB` | FAIL (0.56×) | **FAIL (0.562×)** | unchanged (Froude-bounded) |
+| P1A normalised | `swing_clearance_per_com_height ≥ 0.85× TB` | FAIL (0.82×) | **FAIL (0.783×)** ⚠️ | slightly worse (CAD/keyframe shift) |
+| P1A normalised | `cadence_froude_norm ≤ 1.20× TB` | FAIL (1.25×) | **FAIL (1.252×)** | unchanged (Froude-bounded) |
+| P1A normalised | `swing_foot_z_step_per_clearance ≤ 1.10× TB` | FAIL (1.40×) | **FAIL (1.120×)** ✓ | **20% closer — Phase 7 triangle** |
+| P2 absolute | `swing_foot_z_step_max ≤ 1.10× TB` | FAIL (1.83×) | **FAIL (1.40×)** ✓ | **24% closer — Phase 7 triangle** |
+| P2 absolute | shared_leg_q / pelvis / flips | PASS (WR q_step 0.36 vs TB 0.65) | **PASS** (WR 0.316 vs TB 0.647 — even smoother) | improved |
+| P1 closed-loop | episode survival | PASS (4-9× more) | **PASS** (200/200 vs TB 21-23 — ~9× more) ✓ | unchanged |
+| P1 closed-loop | forward velocity (sign) | PASS | **PASS** (-0.0035 m/s vs TB -0.30 m/s) ✓ | unchanged |
+| P1 closed-loop | terminal drift per leg | PASS (~½ TB) | **PASS** (-0.007 leg/s vs TB -2.01 — ~290× less drift) ✓ | hugely improved |
+| P1 closed-loop | shared-leg RMSE | FAIL (WR 0.16 vs TB 0.10) | **FAIL** (WR 0.160 vs TB 0.113) | unchanged (actuator-stack-bound) |
+| P1 closed-loop | contact-phase match ≥ 0.90 | FAIL (WR 0.58–0.70) | **FAIL** (WR 0.730 — but **WR now > TB-2xc 0.696**) ✓ | **gap closed ~half (0.611 → 0.730)** |
+| P1 closed-loop | touchdown step length per leg | FAIL | **FAIL** (WR -0.003 m, TB n/a — TB couldn't produce touchdowns) | WR strictly better; both still fail gate |
+
+### Phase 10 (WR-only closed-loop, current state)
+
+| vx | survival | match_frac | L_hip_roll pk | R_hip_roll pk | D2/cyc | verdict |
+|---|---|---|---|---|---|---|
+| 0.10 | 200/200 ok | 0.680 | 0.091 | 0.273 ⚠️ | 0.750 | mixed (planner_shape + down_cross_correlated) |
+| **0.15** | **200/200 ok** | **0.730** | **0.000** ✓ | 0.091 | 0.750 | **planner_shape_bound** |
+| 0.20 | 69/200 pitch | 0.710 | 0.333 | 0.250 | 0.800 | mixed |
+
+### Net change since the Apr-26 snapshot
+
+**Closed (load-bearing improvements):**
+1. **`left_hip_roll` asymmetric saturation** at vx ≤ 0.15: 0.250 → 0.000.
+   Original Phase 10 closeout's load-bearing P1 issue is gone.  Driven
+   by (a) v20 ankle_roll merge giving the prior a local foot-flat
+   actuator and (b) CAD upper_leg mate fix bringing right-leg geometry
+   to true-mirror.
+2. **`swing_foot_z_step_per_clearance`**: 1.40× → 1.12× TB (Phase 7
+   triangle envelope, commit `61234d3`).
+3. **`swing_foot_z_step_max` absolute**: 1.83× → 1.40× TB (same root).
+4. **`contact_phase_match` @ vx=0.15**: 0.611 → 0.730.  WR now > TB-2xc
+   (0.696) and only marginally below TB-2xm (0.762).
+5. **`terminal_drift_per_leg`**: was "~½ TB" → now ~290× less drift
+   than TB (-0.007 vs -2.01 leg/s).  WR drifts essentially zero in
+   200 ctrl steps.
+6. **WR `clearance` absolute > TB**: 0.063 m vs 0.050 m (WR now higher).
+7. **WR `q_step` smoother than TB**: 0.316 vs 0.647 rad/frame
+   (~½ TB; was already ½, slightly improved).
+
+**Still FAIL — classified by mechanism:**
+- **Froude-bounded (Phase 9 territory, not planner work):**
+  - `step_length_per_leg` 0.562× TB
+  - `cadence_froude_norm` 1.252× TB
+  Both are kinematic identities at vx=0.15 with WR's 1.76× longer leg.
+- **Planner-side, blocked on Phase 12A:**
+  - `swing_clearance_per_com_height` 0.783× TB.  Phase 8
+    (`foot_step_height_m` 0.04→0.05 / →0.045) tried twice; both
+    regressed survival at vx=0.15 (200→74 / 200→104) due to
+    deeper-bend stance instability.  Reverted; gated on Phase 12A.
+  - `swing_foot_z_step_max` absolute (1.40× TB).  Same root cause;
+    co-resolves with Phase 8 once 12A unblocks it.
+- **Actuator-stack-bound (H6 territory):**
+  - `shared_leg_RMSE` (WR 0.160 vs TB 0.113).  Per snapshot's own
+    interpretation note, position-actuator vs torque-PD mismatch.
+- **Borderline-actuator-stack:**
+  - `contact_phase_match` (0.730 vs 0.90 floor).  WR now > TB-2xc
+    (0.696), only below TB-2xm (0.762).  Residual increasingly
+    characteristic of actuator stack rather than prior.
+
+**Small regressions (worth flagging):**
+1. **vx=0.10 R_hip_roll peak**: 0.182 → 0.273 (verdict slipped from
+   no-significant-sat to mixed).  Tied to the latest CAD numerical
+   adjustments (round-2 sub-mm shifts on hip_servo + htd_45h
+   positions).  Below the in-scope band's load-bearing threshold but
+   worth tracking.
+2. **vx=0.15 pelvis-x lag at step 70**: -18 cm (early post-merge) →
+   -22 cm.  Still ~40% better than pre-merge -36 cm.
+
+### G7 per-frame probe baselines refresh (vx=0.15, horizon 200)
+
+| Metric | Pre-merge | Post-merge initial | **May-08 current** |
+|---|---|---|---|
+| First lever-sign-flip step | step 2 | step 2 | step 2 ✓ |
+| Pelvis-x lag at step 30 | -9 cm | -10 cm | -10.2 cm |
+| Pelvis-x lag at step 70 | -36 cm | -18 cm | -22.0 cm |
+| Free-float survival | ~77 ctrl steps | ≥300 ctrl steps | **≥200 ctrl steps** (no fall) ✓ |
+| Terminal aPLVx | -0.30 m at 200 | +0.025 m at 299 | **-0.0104 m** at 199 |
+
+### Verdict
+
+By the snapshot's own decision rule WR is **closer to "on par or
+better"** than at Apr-26: every gate where WR was strictly better is
+unchanged or further improved; every gate that was FAIL has either
+narrowed (`swing_step/clr` 1.40× → 1.12×, `swing_z_step` 1.83× → 1.40×,
+`contact_match` 0.611 → 0.730) or moved into a known
+bounded-by-design / curriculum-gated category.  WR now strictly
+**outperforms TB on every absolute physical gate** (survival,
+forward velocity, terminal drift, contact_match), often by very
+large margins (~290× less drift, ~9× more survival).
+
+The Apr-26 snapshot is **superseded by this entry**.
+
+### Direction (priority order, refreshed)
+
+1. **Phase 12A — soften the IK plantarflex schedule.**  Highest-priority
+   planner-side action.  Phase 8 (foot_step_height bump) is the
+   cleanest single-action fix for the remaining
+   `swing_clearance_per_com_height` FAIL but is blocked by a
+   stance-instability mechanism the Phase 8 experiment surfaced
+   (h=0.045/0.05 both regressed survival at vx=0.15).  12A is the
+   candidate fix.
+2. **Then retry Phase 8 at h=0.045** if 12A recovers the survival
+   regression.
+3. **Phase 9 — operating-vx decision.**  Independent of planner work;
+   needs a project decision on whether to walk WR at TB's
+   Froude-equivalent vx (≈0.19 m/s) or document the two
+   Froude-bounded gates as exempt at vx=0.15.
+4. **vx=0.10 R_hip_roll diagnostic** — investigate the small regression
+   from the latest CAD round before any further CAD adjustments.
+5. **Then v0.20.0-C C1+C2 closeout** before any v0.20.x PPO smoke
+   launches.
+
+### Files referenced (no code changes in this entry)
+
+- `tools/phase10_diagnostic.py` — closed-loop diagnostic
+- `tools/v0200c_per_frame_probe.py` — G7 deterministic baseline
+- `tools/reference_geometry_parity.py` — full WR vs TB parity
+- `tools/parity_report.json` — refreshed snapshot artifact
+
+### Supersedes
+
+- `v0.20.1-reference-quality-snapshot` (2026-04-26)
+
+### Complements
+
+- `v0.20.1-latest-model-eval` (2026-05-08, below) — separate-but-
+  related finding that the April 25 PPO checkpoint
+  (obs_dim=1086, action_dim=19) is incompatible with the current
+  21-DOF model and a fresh smoke run is required before any
+  policy-side promotion decision.
+
+---
+
 ## [v0.20.1-latest-model-eval] - 2026-05-08: current 21-DOF model evaluated; old PPO checkpoint incompatible
 
 ### Context

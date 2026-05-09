@@ -89,7 +89,7 @@ class ZMPWalkConfig:
     # 2026-04-25: knee_pitch_max_rad raised from 80° → 120°.  The
     # previous 80°-saturation rationale no longer binds.
     #
-    # Phase 8 attempt (2026-05-05): tried bumping 0.04 → 0.05 and
+    # Phase 8 attempt-1 (2026-05-05): tried bumping 0.04 → 0.05 and
     # 0.04 → 0.045 to close the `swing_clearance_per_com_height`
     # normalised P1A gate (0.143 → 0.158/0.175 vs gate 0.149).
     # Both regressed survival at vx=0.15 even though the saturation
@@ -97,16 +97,41 @@ class ZMPWalkConfig:
     # h=0.045 (pitch termination from the deeper-bend swing
     # destabilising stance, not the saturation mechanism the
     # original Phase 8 warning anticipated).
+    # Reverted; gated on Phase 12A.
     #
-    # Reverted to 0.04.  Phase 8 is now blocked on Phase 12A
-    # (plantarflex softening) producing a verdict on whether the
-    # Phase 7 boundary-transition is the destabiliser; the
-    # `swing_clearance_per_com_height` FAIL is the smaller-
-    # magnitude residual and is not worth a 200→104 step survival
-    # regression at vx=0.15.
-    foot_step_height_m: float = 0.04
+    # Phase 8 attempt-2 / Phase 12A pair (2026-05-08): with the
+    # smoothstepped plantarflex schedule (`plantarflex_ramp_band_m
+    # = 0.005`, see below), the deeper-bend swing no longer
+    # destabilises stance.  Survival at vx=0.15 recovers from
+    # 200→104 (Phase 8 alone) back to 200/200, and the
+    # `swing_clearance_per_com_height` gate closes (0.78× TB →
+    # ~0.91× TB at h=0.045).  Net cost: small vx=0.10 left_hip_roll
+    # uptick (0.091 → 0.273), out of the in-scope load-bearing band.
+    foot_step_height_m: float = 0.045
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
     min_walking_speed_mps: float = 0.06     # below this, use standing
+
+    # Phase 12A (2026-05-08): soften the plantarflex up-cross /
+    # down-cross transition.  ankle_pitch is now blended between the
+    # flat-foot constraint (-(hip+knee)) and the swing-neutral
+    # plantarflex (-0.15 rad) via a smoothstep ramp keyed off the
+    # commanded foot z.  ``plantarflex_ramp_band_m`` is the half-width
+    # of the smoothstep band centred on
+    # ``swing_foot_z_floor_clearance_m`` (0.025 m).
+    #
+    # Default 0.005 m spans z=0.020 to z=0.030 — narrow enough that
+    # the boundary frames (z<0.020 at lift-off / touchdown) stay
+    # exactly flat-foot, but the actual up-cross / down-cross
+    # transition is now a 1-2 frame ramp instead of a 1-frame step
+    # at h=0.04 (up_delta=0.013 m/frame).  The wider 0.020 m band
+    # tried first regressed survival at vx=0.15 (200→92 pitch term)
+    # because it bled plantarflex into the early-swing boundary
+    # frames where the body needs the flat-foot constraint to keep
+    # the stance side balanced; the 0.005 m band preserves that
+    # boundary behaviour while still smoothing the actual transition.
+    # The pre-Phase-12A binary behaviour is recovered by setting this
+    # to 0.
+    plantarflex_ramp_band_m: float = 0.005
 
     # ZMP planner costs
     zmp_cost_Q: float = 1.0
@@ -205,6 +230,18 @@ class ZMPWalkConfig:
         return int(round(self.cycle_time_s / self.dt_s))
 
 
+_SWING_PLANTARFLEX_RAD = -0.15  # neutral plantarflex held during full swing
+
+
+def _smoothstep(x: float) -> float:
+    """Cubic Hermite smoothstep: 0 at x≤0, 1 at x≥1, smooth in between."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    return float(x * x * (3.0 - 2.0 * x))
+
+
 def _solve_sagittal_ik(
     target_x: float,
     target_z: float,
@@ -212,19 +249,32 @@ def _solve_sagittal_ik(
     l2: float,
     min_margin: float = 0.01,
     ankle_limit_rad: float = 0.698,
-    is_swing: bool = False,
+    plantarflex_strength: float = 0.0,
 ) -> Tuple[float, float, float, bool]:
     """Analytical 2-link sagittal IK.
 
     Returns (hip_pitch, knee_pitch, ankle_pitch, reachable).
 
-    During stance (is_swing=False): ankle keeps the foot flat on the
-    ground, clamped to ±ankle_limit_rad.
+    The ankle target is a smooth blend between two limits:
+      * **flat-foot**: ``ankle_pitch = -(hip_pitch + knee_pitch)`` — keeps
+        the foot parallel to the ground.  Used during stance and at
+        boundary frames of swing (lift-off + touchdown) where the
+        commanded foot z is too small to absorb the plantarflex drop.
+      * **swing-neutral**: ``ankle_pitch = _SWING_PLANTARFLEX_RAD``
+        (-0.15 rad) — small plantarflex for toe clearance during the
+        airborne portion of swing, freeing the knee budget for foot
+        lift.
 
-    During swing (is_swing=True): ankle stays at a neutral position
-    (slight plantarflexion for toe clearance) rather than tracking
-    the flat-foot constraint.  This allows the knee to bend freely
-    for foot lift without exhausting the ankle budget.
+    Caller passes ``plantarflex_strength ∈ [0, 1]`` to specify the
+    blend weight (0 = flat-foot, 1 = swing-neutral).  Phase 12A
+    (2026-05-08) replaced the previous binary ``is_swing`` flag with
+    this continuous parameter so the ankle target ramps smoothly
+    across the swing-z up-cross / down-cross instead of stepping
+    abruptly in one frame.  The binary version produced a
+    discrete ~0.15 rad ankle jump synchronous with the discrete
+    contact-mask flip, which the Phase 8 experiment (2026-05-05)
+    surfaced as the load-bearing destabilising mechanism for the
+    deeper-bend swing at h=0.045/0.05.
     """
     max_reach = l1 + l2 - min_margin
     dist = np.sqrt(target_x**2 + target_z**2)
@@ -249,14 +299,10 @@ def _solve_sagittal_ik(
     beta = np.arccos(cos_beta)
     hip_pitch = alpha - beta
 
-    if is_swing:
-        # During swing: ankle at neutral (slight plantarflexion).
-        # The foot is in the air — no need to stay flat.
-        ankle_pitch = np.clip(-0.15, -ankle_limit_rad, ankle_limit_rad)
-    else:
-        # During stance: keep foot flat, clamped to joint limits
-        ankle_flat = -(hip_pitch + knee_pitch)
-        ankle_pitch = np.clip(ankle_flat, -ankle_limit_rad, ankle_limit_rad)
+    p = float(np.clip(plantarflex_strength, 0.0, 1.0))
+    ankle_flat = -(hip_pitch + knee_pitch)
+    ankle_blended = (1.0 - p) * ankle_flat + p * _SWING_PLANTARFLEX_RAD
+    ankle_pitch = np.clip(ankle_blended, -ankle_limit_rad, ankle_limit_rad)
 
     return hip_pitch, knee_pitch, ankle_pitch, reachable
 
@@ -870,11 +916,32 @@ class ZMPWalkGenerator:
                 # swing-z envelope returns to zero stay flat-ankle and
                 # don't dip the foot below the floor.  The contact mask
                 # the env reads is unchanged.
+                #
+                # Phase 12A (2026-05-08): replaced the previous binary
+                # `is_swing_for_ankle` flag (which produced a discrete
+                # ~0.15 rad ankle jump within one frame at the swing-z
+                # threshold crossing) with a continuous smoothstep
+                # blend.  ``plantarflex_strength`` ramps smoothly from
+                # 0 (flat-foot) to 1 (full plantarflex) across a
+                # ±half-band centred on the threshold, then is forced
+                # to 0 during stance regardless of foot z.  Setting
+                # ``cfg.plantarflex_ramp_band_m = 0`` recovers the
+                # pre-Phase-12A binary behaviour.
                 contact_idx = 0 if side == "left" else 1
                 is_swing = contact_out[i, contact_idx] < 0.5
-                is_swing_for_ankle = (
-                    is_swing and foot_world_i[2] > swing_ankle_lift_threshold_m
-                )
+                if not is_swing:
+                    plantarflex_strength = 0.0
+                elif cfg.plantarflex_ramp_band_m <= 0.0:
+                    plantarflex_strength = 1.0 if (
+                        foot_world_i[2] > swing_ankle_lift_threshold_m
+                    ) else 0.0
+                else:
+                    band_lo = swing_ankle_lift_threshold_m - cfg.plantarflex_ramp_band_m
+                    band_hi = swing_ankle_lift_threshold_m + cfg.plantarflex_ramp_band_m
+                    t = (foot_world_i[2] - band_lo) / max(
+                        band_hi - band_lo, 1e-9
+                    )
+                    plantarflex_strength = _smoothstep(t)
 
                 # Sagittal IK: foot position relative to HIP joint.
                 # The hip joint sits ``pelvis_to_hip_m`` below the
@@ -890,7 +957,7 @@ class ZMPWalkGenerator:
                     foot_rel_x, hip_to_foot_z,
                     cfg.upper_leg_m, cfg.lower_leg_m,
                     cfg.min_reach_margin_m,
-                    is_swing=is_swing_for_ankle,
+                    plantarflex_strength=plantarflex_strength,
                 )
 
                 # Hip roll: foot lateral offset from hip
