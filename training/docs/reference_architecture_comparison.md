@@ -1,11 +1,33 @@
 # WR Reference Architecture Plan vs ToddlerBot
 
-**Status:** Canonical design note for `v0.20.x` reference alignment
-**Last updated:** 2026-04-26 (Phase 7-11 plan + Phase 12A/12C + gate classification)
-**Purpose:** define the reference-design policy for WildRobot (WR), record
-the design-history context behind the current parity harness, and order the
-architecture backlog needed to bring WR reference quality on par with or
-better than ToddlerBot (TB).
+**Status:** Active phase tracker for `v0.20.x` TB-alignment work.
+**Last updated:** 2026-05-08 (closeout pointers refactor; Phase 9A landed).
+**Purpose:** order the TB-alignment backlog and document forward-looking
+phase specs.  Architecture-level decisions (prior selection, layer
+contracts, validation ladder) live in
+[`reference_design.md`](reference_design.md).  Project-wide milestones
+and training-side G-gates live in
+[`walking_training.md`](walking_training.md).
+
+### Closeout pattern (as of 2026-05-08)
+
+Completed-phase closeouts are migrated to CHANGELOG entries; this doc
+keeps the **forward-looking spec** plus a **brief closeout pointer**
+when the phase has shipped.  Phase 1-6 closeouts (pre-2026-04-26) are
+preserved in full here as historical record (no CHANGELOG entries
+exist for them).  Phase 7+ closeouts point to CHANGELOG:
+- Phase 7 (triangle swing-z, `61234d3`) → CHANGELOG
+  `v0.20.1-reference-quality-snapshot` + `v0.20.1-phase12A-and-phase8-paired`
+- Phase 8 + 12A (paired, h=0.045 + plantarflex smoothstep) →
+  CHANGELOG `v0.20.1-phase12A-and-phase8-paired`
+- Phase 9A (operating-vx 0.15 → 0.265 + asymmetric parity-vx) →
+  CHANGELOG `v0.20.1-phase9A-operating-vx-shift` +
+  `v0.20.1-parity-tool-asymmetric-vx-comparison`
+- Phase 10 (closed-loop diagnostic, `cc5e8d3` / `381ab3c`) → CHANGELOG
+  (see Phase 10 closeout pointer below)
+- Phase 12C (left_hip_roll asymmetric saturation) → effectively
+  closed by v20 ankle_roll merge + CAD upper_leg mate fix (CHANGELOG
+  `v0.20.1-ankle-roll-realignment`)
 
 All file paths in this doc are repo-relative:
 - TB: `projects/toddlerbot/...`
@@ -1217,191 +1239,21 @@ Rollback if expected movement doesn't materialize:
   variant `(1 - cos(2 * pi * frac)) / 2` which has a flatter apex than
   half-sine
 
-#### Phase 7 closeout (2026-04-26, commit `61234d3`)
+#### Phase 7 closeout
 
-Implemented in `control/zmp/zmp_walk.py` only (planner-local). The
-swing-z formula `(foot_step_height_m + swing_foot_z_floor_clearance_m)
-* sin(pi*frac)` is replaced by a TB-style piecewise-linear single-
-peaked triangle table, mirroring `toddlerbot/algorithms/zmp_walk.py:483-491`:
+Landed 2026-04-26, commit `61234d3`.  Full closeout (planner-local
+swing-z formula change, H1 gauge PASS, observed P1 closed-loop
+regression at vx=0.15 with mechanism analysis) migrated to CHANGELOG
+entry **v0.20.1-reference-quality-snapshot** (Apr-26) and the later
+**v0.20.1-phase12A-and-phase8-paired** entry (May-08) which captures
+the boundary-transition mechanism Phase 7 surfaced.
 
-```python
-swing_window = max(2, n_half - n_ds)
-swing_half = swing_window // 2
-up_delta = (cfg.foot_step_height_m + swing_foot_z_floor_clearance_m) \
-           / max(1, swing_half - 1)
-swing_z_table = up_delta * np.concatenate(
-    (np.arange(swing_half),
-     np.arange(swing_window - swing_half - 1, -1, -1))
-)
-```
-
-The table is pre-computed once before the cycle loop and used for both
-Phase A (left stance) and Phase B (right stance). Indexing via
-`i_swing = i - n_ds`. Peak preserved at `0.04 + 0.025 = 0.065 m`; H1
-hardware exemption (the WR floor-clearance offset) stays explicit.
-`frac` is kept for the X-direction interpolation (no change to that
-path). Phase 1 plantarflex gating still keeps boundary frames flat-ankle
-because `swing_z_table[0] = swing_z_table[-1] = 0` by construction.
-
-For the WR cycle (n_half=18, n_ds=6, swing_window=12), the table
-materializes as `up_delta * [0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0]` — a
-2-frame apex plateau (indices 5 and 6 both at peak), which is TB's
-exact behaviour for even `swing_window`. The doc's earlier review
-correctly flagged that "triangular-then-flat" was the wrong phrasing
-for TB's overall envelope; the TB envelope is single-peaked with a
-1-2 frame apex plateau depending on parity of `swing_window`, which
-is what WR now mirrors.
-
-WR-only probe (`uv run python tools/phase6_wr_probe.py`) at vx=0.15:
-
-| Metric | Pre-Phase-7 | Post-Phase-7 | Δ |
-|---|---|---|---|
-| **H1 replacement gauge** |
-| `swing_foot_z_step_per_clearance` | 0.2803 (1.401× TB) | **0.2160 (1.080× TB)** | **FAIL → PASS** |
-| **H1 absolute gate (informational under H1)** |
-| `swing_foot_z_step_max_m` | 0.0183 (1.831× TB) | 0.0143 (1.427× TB) | −22 % |
-| **P1A gait shape** |
-| `step_length_mean_m` | 0.0538 | 0.0538 | unchanged |
-| `swing_clearance_mean_m` (per-cycle peak) | 0.0653 | 0.0660 | +1.1 % (apex plateau hits cleanly) |
-| `swing_clearance_per_com_height` | 0.1426 | **0.1442** | +1.1 % (still FAIL at 0.825× TB; closer to gate 0.85×) |
-| `touchdown_rate_hz` | 2.7330 | 2.7330 | unchanged |
-| `double_support_frac` | 0.3333 | 0.3333 | unchanged |
-| **P2 smoothness** |
-| `shared_leg_q_step_max_rad` | 0.3599 | 0.3155 | −12 % (linear ramp gentler on IK than half-sine apex) |
-| `pelvis_z_step_max_m` | 0.0000 | 0.0000 | sentinel pass |
-| `contact_flips_per_cycle` | 3.9677 | 3.9677 | unchanged (no extra mid-swing tap-down events from the apex plateau) |
-| **P0 geometry** |
-| total failures | 0 | 0 | unchanged |
-| in-scope failures | 0 | 0 | unchanged |
-| worst stance z (m) | +0.0019 | +0.0019 | unchanged |
-| worst swing z (m) | +0.0170 | +0.0117 | margin reduced by 5.3 mm but well above the −2 mm gate |
-
-Phase 7 acceptance check (per the Acceptance statement and the H1
-exemption rule):
-- **H1 replacement gauge `swing_foot_z_step_per_clearance` PASS** at
-  1.080× TB (gate ≤ 1.10× TB) — load-bearing gate cleanly closed.
-- **H1 absolute gate** widened from 1.83× → 1.43× TB (improved 22 %;
-  the doc's "≥ 25 %" target was missed by 3 percentage points). H1
-  exemption applies; the absolute gate is informational, not part of
-  the closure check. Honest note: my predicted Phase 7 post-state of
-  ≈ 0.012 m / ≈ 1.20× TB was optimistic — the FK-realized step max
-  is ~10 % above the table's per-frame `up_delta` because of
-  plantarflex-threshold-crossing at the 2nd / 10th swing frames. The
-  H1 gauge does not depend on this slack.
-- No regression on P0, P1A absolute gates, or P2 q-step / pelvis /
-  flips.
-- P0 swing margin reduced by 5.3 mm (to +11.7 mm) — within the
-  Phase 7 exit criterion of "no regression on P0 (in-scope or full
-  matrix)". The reduction is structural: the triangle's apex plateau
-  spends 2 frames at peak so the IK plantarflex during those frames
-  brings the foot bottom slightly closer to the floor than the half-
-  sine's brief apex visit.
-- Bonus: `swing_clearance_per_com_height` ticked up 1.1 % (0.143 →
-  0.144) without any height bump — closer to the 0.149 gate, so
-  Phase 8 has a smaller delta to close. Does **not** clear H2 by
-  itself; Phase 8 is still the path to PASS that gate.
-- `shared_leg_q_step_max` IMPROVED 12 % (0.36 → 0.32 rad) — the
-  linear ramp produces a gentler IK joint trajectory than the half-
-  sine's curvature. Pleasant side effect; not a Phase 7 acceptance
-  requirement.
-
-Outstanding caveats:
-- **TB-side parity refresh deferred.** The local TB venv has a
-  filesystem-permission issue: `uv pip install joblib lz4` fails with
-  `Operation not permitted` on `.venv/lib/python3.11/site-packages`,
-  and the TB `uv sync` path fails with a pybullet build error. TB
-  code is untouched between Phase 6 and Phase 7, so the cached TB
-  numbers in `tools/parity_report.json` stay valid for absolute /
-  normalised P1A / P2 ratios; only the P1 closed-loop layer needs
-  a fresh full parity run on a TB-capable machine to update both
-  sides under the Phase 7 envelope.
-- The Phase 5 cache fingerprint picked up the planner change
-  automatically (the WR probe regenerated the library with the new
-  fingerprint hash, no manual cache invalidation needed).
-- All 165 tests pass (`uv run pytest tests/`).
-
-**P1 closed-loop observation (added by review verification, full
-parity refresh on a TB-capable machine):**
-
-Phase 7 closed the H1 planner-shape gauge as intended, but the **same
-patch worsened multiple WR-side P1 closed-loop metrics** at vx=0.15
-under MuJoCo:
-
-| P1 metric (WR @ vx=0.15) | Pre-Phase-7 | Post-Phase-7 | Δ |
-|---|---|---|---|
-| `ref_contact_match_frac` | 0.6986 | 0.6250 | **−0.074** |
-| `touchdown_step_length_mean_m` | +0.0016 | −0.0097 | **flipped sign, worsened** |
-| `joint_limit_step_frac` (sat_step_frac) | 0.0274 | 0.0556 | **+0.028 (doubled)** |
-| `shared_leg_rmse_rad` | 0.1558 | 0.1669 | **+0.011 (+7 %)** |
-
-This was not visible in the WR-only probe (`tools/phase6_wr_probe.py`)
-because it doesn't run the closed-loop replay. The numbers above came
-from a full `tools/reference_geometry_parity.py` refresh post-patch,
-done by a reviewer on a TB-capable machine; the local run could not
-produce them because of the TB venv permission issue documented above.
-
-**Hypothesis** (not yet verified): the half-sine envelope has a
-shallow slope near the boundary frames (`d/dt sin(pi·frac) → 0` as
-`frac → 0`), so the foot z command grows gradually past the
-plantarflex threshold (0.025 m). The triangle envelope has a
-**constant** slope `up_delta = 0.013 m/frame`, so the threshold
-crossing happens between table indices 1 (z=0.013) and 2 (z=0.026)
-**in a single frame**, simultaneously with the discrete 0.15 rad
-ankle plantarflex flip. This combined transition appears to push the
-WR position-actuator stack harder than the half-sine did, manifesting
-as more saturated steps (`sat_step_frac` doubled) and worse contact /
-stride / RMSE tracking. None of these tripped the H1 gauge or any
-P0 / P1A / P2 absolute gate.
-
-**Implications:**
-
-1. **Phase 7's intended acceptance is met** (H1 gauge PASS) and the
-   triangle is the correct planner-shape change per TB alignment.
-   The closed-loop regression is an actuator-side interaction, not
-   a planner-shape regression.
-2. **The earlier closeout claim that "Phase 7 unblocks Phase 10
-   cleaner" was wrong.** Phase 10 now has *more* to settle, not less:
-   it must add a question about why the triangle worsened P1 (see
-   Phase 10 update below). Removed the unfounded "cleaner" claim.
-3. **Phase 8 should be treated as more contingent than originally
-   written.** Bumping `foot_step_height_m` raises `up_delta`
-   proportionally (`up_delta = 0.075/5 = 0.015 m/frame` at h=0.05;
-   `0.07/5 = 0.014 m/frame` at h=0.045), which would make the
-   threshold-crossing transition even more aggressive. If the
-   hypothesis above is right, Phase 8 risks widening the P1
-   regression. Do not ship Phase 8 until the post-Phase-7 P1
-   numbers are understood (see Phase 10 update below).
-
-**Phase 7 acceptance verdict (updated):** PASS on the load-bearing
-H1 gauge; the closed-loop P1 regression is **noted, not gated**, but
-becomes Phase 10's responsibility to explain. The change stays in
-tree because (a) it correctly aligns the planner shape to TB and
-(b) the closed-loop layer was already failing pre-Phase-7 — Phase 7
-shifted the failure mode within the already-failing layer rather
-than breaking a passing one.
-
-**Sequencing impact:**
-
-- Phase 8 is now **gated on Phase 10** rather than only on Phase 7's
-  H1 PASS. Concretely: Phase 10 must surface a verdict on whether
-  Phase 7's P1 movement is fixable (e.g., by softening the
-  threshold-crossing transition, by changing the plantarflex schedule,
-  or by mirroring TB's swing-z slope-shaping at the boundaries) before
-  Phase 8 ships.
-- Phase 10's diagnostic adds a new item C (see Phase 10 update).
-- The acceptance-rule exemption table is unchanged — H1 stays as the
-  shape-side gauge, the P1 closed-loop layer is still gated by H6
-  (pending) for the actuator-stack-bound case.
-
-Outstanding caveats:
-- TB-side parity refresh on this machine is still blocked by the venv
-  permission issue. The post-Phase-7 P1 numbers above are reviewer-
-  reported from their TB-capable run and not yet reflected in the
-  local `tools/parity_report.json` (which still shows pre-Phase-7 WR
-  values). Updating the local report cleanly requires the TB venv to
-  be reachable, or running the refresh on a different machine.
-- All 165 local tests pass; the test suite does not exercise the
-  closed-loop P1 layer.
+Sequencing impact (still load-bearing for forward planning):
+- Phase 8 is gated on Phase 12A producing a verdict on whether the
+  Phase 7 boundary-transition is the destabiliser (now landed —
+  Phase 8 shipped paired with 12A at h=0.045, see CHANGELOG).
+- Phase 10 inherits a question about why the triangle worsened P1;
+  see Phase 10 closeout pointer below.
 
 ### Phase 8. `foot_step_height_m` adoption (TB's 0.05 m, contingent)
 
@@ -1475,6 +1327,16 @@ Acceptance statement:
   bounded-by-design (WR's hardware-justified floor clearance offset on
   top of a higher `foot_step_height_m`); the scorecard should annotate
   this gate accordingly so future readers don't re-litigate
+
+#### Phase 8 closeout
+
+Landed 2026-05-08 paired with Phase 12A.  First attempts at the bare
+`foot_step_height_m` bump (h=0.05 then h=0.045, no Phase 12A) both
+regressed vx=0.15 survival via stance-instability mechanism.  After
+12A's smoothstepped plantarflex schedule absorbed the boundary-
+transition, Phase 8 shipped at h=0.045 with vx=0.15 survival
+preserved at 200/200.  Full closeout in CHANGELOG entry
+**v0.20.1-phase12A-and-phase8-paired**.
 
 ### Phase 9. Operating-`vx` policy decision (explicit fork)
 
@@ -1650,6 +1512,33 @@ conservative default is **9B** — do not move WR's operating point
 purely to satisfy a parity gate. Move it only if there is an
 independent training / deployment reason to.
 
+#### Phase 9 closeout
+
+Landed 2026-05-08: **9A picked**, with vx target = 0.265 (TB
+step/leg-matched, not Froude-matched).  Reasoning, three considered
+size-matching criteria (Froude=0.190, walking-Froude=0.200,
+step/leg=0.265), and confirmed gate verdicts captured in CHANGELOG
+entries:
+- **v0.20.1-phase9A-operating-vx-shift** — operating-vx code/config
+  shift (8 tools + smoke YAML + test pin updated).
+- **v0.20.1-parity-tool-asymmetric-vx-comparison** — parity tool
+  gains `--tb-vx` flag (default 0.15) so FK/smoothness/normalised
+  tables compare WR @ WR_op_vx vs TB @ TB_op_vx.
+
+Headline gate movement (asymmetric WR @ 0.265 vs TB @ 0.15):
+- `step_length_per_leg ≥ 0.85× TB`: FAIL (0.562×) → **PASS (0.984×)**
+  ✓ — load-bearing change.
+- `cadence_froude_norm ≤ 1.20× TB`: stays at 1.252× — **vx-invariant
+  exemption** under fixed cycle_time (Phase 9D rejected as alignment
+  backlog).  This is the documented "WR diverges with hardware
+  reason" entry per the Governing Policy.
+- `swing_clearance_per_com_height` and `swing_foot_z_step_per_clearance`
+  unchanged or slightly worse — see CHANGELOG for analysis.
+
+Closed-loop @ operating points: WR @ 0.265 strictly better than TB @
+0.15 on every absolute physical gate (4× longer survival, ½ drift,
+WR produces forward touchdowns vs TB n/a).
+
 ### Phase 10. P1 closed-loop contact-match-frac diagnostic
 
 Goal:
@@ -1736,278 +1625,27 @@ Acceptance statement:
   PASS strictly or PASS via an active exemption", "Phase 12 follows",
   or both
 
-#### Phase 10 closeout (2026-04-26, commits `cc5e8d3` initial / `381ab3c` corrected)
+#### Phase 10 closeout
 
-Implemented `tools/phase10_diagnostic.py` — a WR-only closed-loop
-replay that captures per-step traces and produces D1 / D2 / D3+D4 as
-specified above. No planner code changed. The diagnostic imports
-WR-side helpers from `tools/reference_geometry_parity.py`, so the
-replay is byte-for-byte the same trajectory the parity tool sees;
-only the per-step capture is added. Same TB-venv-free constraint as
-`tools/phase6_wr_probe.py`. Backed by 22 unit tests in
-`tests/test_phase10_diagnostic.py` covering D1/D2/D3+D4 logic.
+Landed 2026-04-26 (initial `cc5e8d3`, corrected `381ab3c`).  Full
+closeout (D1 cycle-0 retention, D2 mid-swing tap-down events, D3+D4
+per-joint saturation) migrated to CHANGELOG entries
+**v0.20.1-reference-quality-snapshot** (initial diagnostic), and
+the later **v0.20.1-ankle-roll-realignment** + Phase 10 re-runs which
+showed the original load-bearing `left_hip_roll` saturation finding
+was largely cleared by the v20 ankle_roll merge + CAD upper_leg mate
+fix.
 
-**Important methodology correction (commit `381ab3c`).** The initial
-diagnostic at commit `cc5e8d3` had two flaws surfaced by review and
-fixed in the rerun:
-
-1. D2 was counting per-step contacted-swing **frames**, not distinct
-   tap-down events. A 4-frame contiguous tap-down was reported as 4
-   events. The fix collapses contiguous (commanded-swing AND
-   physical-contact) frames into distinct events. **Corrected D2 is
-   ~3× lower** than the initial closeout claimed.
-2. D3+D4 was bucketing **any-joint** saturation by `i_swing`, which
-   proved timing coincidence between down-cross and saturation but
-   did not establish mechanism (could be any joint, not specifically
-   the swing-side ankle the un-plantarflex hypothesis predicts). The
-   fix attributes saturation per-joint AND per swing-side. **The
-   un-plantarflex hypothesis is contradicted** by the corrected
-   joint-level data: the swing-side ankle never saturates.
-
-The numbers and verdict below are from the **corrected** rerun (commit
-`381ab3c`); the original cc5e8d3 closeout is superseded.
-
-**Corrected diagnostic results** (post-Phase-7 tree, horizon 200,
-vx ∈ {0.10, 0.15, 0.20}):
-
-| Metric | vx=0.10 | vx=0.15 | vx=0.20 |
-|---|---|---|---|
-| **D1: cycle-0 retention** |
-| overall match_frac | 0.566 | 0.611 | 0.647 |
-| first-cycle match_frac (steps 0–35) | 0.778 | 0.806 | 0.806 |
-| rest match_frac (steps 36+) | 0.375 | 0.417 | 0.469 |
-| `rest − first_cycle` gap | **−0.40** | **−0.39** | **−0.34** |
-| D1 verdict | no-cycle-0-drag | no-cycle-0-drag | no-cycle-0-drag |
-| **D2: distinct mid-swing tap-down events (collapsed)** |
-| distinct events | 4 | 3 | 3 |
-| events / swing cycle | 0.667 | 0.500 | 0.600 |
-| left vs right asymmetry | 3 vs 1 | 2 vs 1 | 2 vs 1 |
-| mean event duration (frames) | 3.00 | 3.67 | 2.33 |
-| max event duration (frames) | 5 | 6 | 3 |
-| D2 verdict | planner-shape-bound | planner-shape-bound | planner-shape-bound |
-| **D3+D4: per-joint sat by i_swing (corrected)** |
-| swing-side ankle sat at any i_swing | **0.000** | **0.000** | **0.000** |
-| any-joint mean sat rate | 0.188 | 0.083 | 0.091 |
-| any-joint sat rate at up-cross (i=2) | 0.250 | 0.000 | 0.000 |
-| any-joint sat rate at down-cross (i=9) | 0.250 | 0.250 | 0.333 |
-| **only saturating joint (across all 8)** | left_hip_roll | left_hip_roll | left_hip_roll |
-| left_hip_roll peak rate | 0.250 (i_swing=1-9) | 0.250 (i_swing=7-10) | 0.333 (i_swing=8-9) |
-| D3+D4 verdict | uniform-sat | down-cross-correlated-mechanism-unclear | down-cross-correlated-mechanism-unclear |
-| **Composite verdict** | planner-shape + uniform-sat | mixed: planner-shape + down-cross-correlated-mechanism-unclear | mixed: planner-shape + down-cross-correlated-mechanism-unclear |
-
-**Three load-bearing findings (corrected):**
-
-1. **Cycle-0 retention is NOT the cause.** D1's gap is **negative**
-   at every vx (−0.40, −0.39, −0.34). The first cycle is
-   consistently the BEST part of every episode; WR's contact match
-   degrades *progressively* after step 36. **TB cycle-0 truncation
-   would not help — it would discard the cleanest part of the
-   trajectory.** This rules out one of the four hypothesised Phase
-   12 fixes. Conclusion **unchanged** from the initial closeout.
-
-2. **The un-plantarflex hypothesis is NOT supported by joint-level
-   evidence.** The corrected D3+D4 shows the swing-side ankle sat
-   rate is **0.000 at every i_swing including the down-cross** at
-   every vx. The original closeout's claim that "the discrete ankle
-   un-plantarflex is what the actuator stack cannot track" was an
-   over-claim from any-joint data. The actual saturating joint is
-   **`left_hip_roll`** (lateral support / trunk-asymmetry, on the
-   stance side of right-leg-swing frames). At vx=0.10 it fires
-   throughout the swing (i_swing 1-9, uniform); at vx ≥ 0.15 it
-   clusters in late-swing (i_swing 7-10 / 6-9). The down-cross
-   timing correlation is real, but the mechanism is not the ankle.
-
-3. **Mid-swing tap-downs confirmed at ~3× lower magnitude than
-   originally claimed** (corrected D2: 0.5–0.7 events/cycle, vs
-   1.2–1.5/cycle under the overcounting bug). In the shuffling
-   regime D2 asymmetry is left-dominant (2-3× right). ~~Originally
-   framed as the same robot-level asymmetry as the D3+D4
-   `left_hip_roll` finding.~~ — **superseded by the Phase 9A re-
-   read addendum below.** At vx=0.265 D2 L/R flips to right-only
-   (0:2) while `left_hip_roll` stays consistently left-only at every
-   vx, so the two asymmetries are independent issues, not two views
-   of the same defect. Treat as separate in Phase 12C scoping.
-
-**Composite verdict: mixed (planner-shape-bound + down-cross-
-correlated-mechanism-unclear at vx ≥ 0.15; planner-shape-bound +
-uniform-sat at vx=0.10).** The Phase-7-boundary-bound verdict from
-the original closeout is **withdrawn** — joint-level data
-contradicts it.
-
-**Phase 12 scope (revised):**
-
-The corrected diagnostic narrows the actionable next slice but does
-not give a single decisive fix. Three candidate slices in order of
-expected impact:
-
-- **Phase 12A (revised scope): Soften the plantarflex schedule.**
-  Still planner-local in `control/zmp/zmp_walk.py:780-783`; same
-  smoothstep ramp design as before. **Now scoped to address D2
-  only** — the foot's heel snapping into the floor as the ankle
-  un-plantarflexes is a plausible cause of the mid-swing tap-down
-  events. **Will NOT address D3+D4** because the saturating joint
-  is `left_hip_roll`, not the ankle. Smaller expected impact than
-  originally claimed; still worth doing because D2 is real.
-- **Phase 12C (NEW, opened by corrected D3+D4): Investigate
-  `left_hip_roll` asymmetric saturation.** This is now the
-  load-bearing P1 issue. The pattern (left-only, lateral support
-  joint, asymmetric distribution) suggests one of:
-  - WR MJCF asymmetry between left and right legs (joint range,
-    mass, or geom positioning)
-  - IK asymmetry: the planner symmetric assumes both feet at
-    `±lat`, but if the standing keyframe / home pose has an
-    asymmetric COM offset, the LEFT leg has to roll more to
-    support
-  - `CtrlOrderMapper` mapping bug: hip_roll commands
-    going to the wrong joint or with wrong sign
-  - Joint range setting in MJCF: left hip_roll's range may be
-    narrower than right's, hitting the limit faster
-  Required next action: a focused MJCF/IK audit comparing left
-  vs right leg parameters, joint ranges, and IK output. Tracking
-  as **Phase 12C** in the execution order. Likely a separate
-  one-line fix once root cause is identified.
-- **Phase 12B (deferred to fallback): Shape the triangle's
-  boundary frames.** Now lower priority because the saturating
-  joint isn't where this would help most. Keep on the list as a
-  fallback if 12A doesn't close D2.
-
-**Phase 8 ship/wait decision:** Still **WAIT.** The corrected
-verdict still rules out shipping Phase 8 — bumping
-`foot_step_height_m` raises `up_delta` proportionally and does
-nothing for the left_hip_roll saturation. Phase 12A AND Phase 12C
-should both produce a verdict before Phase 8 is reconsidered.
-
-**H6 activation status:** Still **NOT activated.** The corrected
-verdict shows the FAIL is not purely actuator-stack-bound — there
-are at least two fixable causes (D2 planner-shape regression, D3+D4
-left_hip_roll asymmetry). H6 stays pending until 12A and 12C land
-and the residual is verified to be uniform-sat across i_swing on
-all 8 joints at all vx.
-
-**Sequencing impact (updated, corrected):**
-
-- Phase 10 closeout produces a verdict; ✅ done (corrected version
-  in commit `381ab3c`).
-- **Phase 12A (revised scope)** — soften plantarflex; addresses D2
-  only. Lower expected impact than originally claimed.
-- **Phase 12C (NEW)** — investigate `left_hip_roll` asymmetric
-  saturation. This is now the load-bearing slice for the P1 FAIL
-  set (D3+D4 evidence).
-- Phase 8 still gated on 12A AND 12C.
-- Phase 11 (lin_vel_z cleanup) unchanged, low-priority hygiene.
-
-Outstanding caveats:
-- (Resolved by Phase 9A re-read 2026-04-26 in commit `72f25d4` —
-  see "Phase 9A re-read addendum" below.) The original Phase 10
-  data was collected in WR's shuffling regime; the re-read at non-
-  shuffling vx settles whether the closed-loop FAILs are shuffling-
-  driven.
-- The diagnostic does not include a pre-Phase-7 baseline (half-sine
-  envelope) for direct A/B comparison. Worth doing as a follow-up
-  because the corrected verdict raises a new question: was
-  `left_hip_roll` saturation also present pre-Phase-7 but masked by
-  the overall higher contact_match? If so, this bounds the maximum
-  impact of Phase 12A.
-- Episode survival is short (68-76 steps), so the "rest" sample
-  is small (32-40 steps). The negative D1 gap direction is
-  consistent across all three vx bins so the conclusion is
-  robust, but absolute "rest" numbers carry uncertainty.
-- The left/right asymmetry in D2 was originally framed as "the same
-  robot-level asymmetry as the D3+D4 left_hip_roll finding". The
-  Phase 9A re-read at non-shuffling vx complicates that picture: D2
-  L/R direction is left-dominant in shuffling regime (3:1, 2:1) but
-  flips to right-only at vx=0.265 (0:2), while `left_hip_roll`
-  saturation stays consistently left-only at every vx. The two
-  asymmetries are likely **independent issues** rather than two
-  views of the same underlying defect; treat as such in Phase 12C
-  scoping.
-
-#### Phase 9A re-read addendum (2026-04-26, commit `72f25d4`)
-
-Re-ran `tools/phase10_diagnostic.py --vx 0.21 0.265` to test whether
-the original Phase 10 closeout's findings (`left_hip_roll`
-saturation, D2 mid-swing tap-down, D1 progressive degradation) are
-shuffling-driven pathologies that disappear at non-shuffling vx, or
-robot-level issues that persist at any vx. The diagnostic was
-extended with an inline-build path so it can run at vx outside the
-parity tool's default `{0.10, 0.15, 0.20, 0.25}` bin set.
-
-**Side-by-side full-spectrum result:**
-
-| vx | step_per_leg | regime | survived | D1 gap | D2 ev/cyc | D2 L vs R | D3+D4 left_hip_roll peak | D3+D4 verdict |
-|---|---|---|---|---|---|---|---|---|
-| 0.100 | 0.097 | severe shuffle | 76 | −0.40 | 0.67 | 3 vs 1 | 0.250 | uniform-sat |
-| 0.150 | 0.145 | shuffle | 72 | −0.39 | 0.50 | 2 vs 1 | 0.250 | down-cross-mech-unclear |
-| 0.200 | 0.193 | mild shuffle | 68 | −0.34 | 0.60 | 2 vs 1 | 0.333 | down-cross-mech-unclear |
-| **0.210** | **0.203** | **just out** | 67 | −0.32 | 0.6–0.8 † | varies (2-3 vs 1) † | 0.333 | down-cross-mech-unclear |
-| **0.265** | **0.256** | **TB-matched** | 61 | −0.30 | **0.40** | **0 vs 2** | **0.333** | down-cross-mech-unclear |
-
-† vx=0.21 sits at the shuffling-threshold boundary and is **platform-
-sensitive** in the diagnostic output. Reproducible per-machine but
-varies cross-platform: this machine shows 0.80 events/cycle (left=3,
-right=1); a reviewer's machine shows 0.60 (left=2, right=1). Both
-are deterministic local replays of the same MuJoCo model + planner
-output; the difference is float-precision / contact-detection
-ordering at the threshold-boundary operating point. The qualitative
-finding (D2 above the 0.50 vx=0.15 baseline at vx=0.21, then drops
-to 0.40 at vx=0.265) is consistent across both readings. Treat the
-specific 0.6 vs 0.8 number as bounded uncertainty.
-
-**Three load-bearing findings from the re-read:**
-
-1. **`left_hip_roll` saturation is INVARIANT to vx.** Same joint
-   saturating at the same down-cross frames at the same magnitude
-   (0.25-0.33) across the full vx range from severe shuffle (0.10) to
-   TB-matched (0.265). **This rules out the "shuffling causes
-   lateral support failure" hypothesis.** The asymmetry is a real
-   robot-level issue, not a downstream symptom of shuffling. **Phase
-   12C is fully required and stays load-bearing.**
-
-2. **D2 (mid-swing tap-down) PARTIALLY improves at non-shuffling vx.**
-   Best at vx=0.265: 0.40 events/cycle ("borderline" verdict, close
-   to but not under the 0.30 Phase 12A exit criterion). The
-   improvement is non-monotonic (vx=0.21 is platform-dependent at
-   0.6-0.8/cycle) but the vx=0.265 reading is consistent across
-   platforms. **Phase 9A captures most of the available D2 win
-   without any planner change; Phase 12A is still useful but lower
-   priority.** The original "left-dominant asymmetry" framing
-   does not survive the cross-vx data: D2 left/right is 3:1 / 2:1
-   in the shuffling regime, varies at vx=0.21, and **flips to 0:2
-   at vx=0.265** (right-only). Treat D2 as "asymmetric in some
-   direction at most vx" rather than "consistently left-dominant".
-   The asymmetry direction-flipping at vx=0.265 also weakens the
-   prior link between D2 and the (consistently left-only)
-   `left_hip_roll` finding — they are likely separate issues, not
-   the same robot-level asymmetry.
-
-3. **Survival doesn't improve at non-shuffling vx** (slightly worse:
-   76→72→68→67→61). Higher vx means more momentum to fall with under
-   zero-residual replay. Pitch failure remains the consistent
-   termination mode at every vx. The prior + actuator-stack still
-   can't balance unaided regardless of operating point — confirming
-   the absolute survival comparison is structurally a "both fall"
-   verdict, not a parity gauge.
-
-**Updated Phase 12A / 12C status:**
-
-- **Phase 12C confirmed required** as the load-bearing closed-loop
-  slice. The re-read provides strong evidence the asymmetry is a
-  robot-level defect (MJCF / IK / ctrl-mapper / keyframe candidates
-  per the original spec), not a shuffling artifact.
-- **Phase 12A demoted to optional**. Phase 9A alone gets D2 from
-  0.50/cycle to 0.40/cycle (close to the 0.30 exit criterion).
-  Phase 12A could close the remaining gap but is not load-bearing
-  unless the partial D2 reduction is materially insufficient for
-  PPO trackability.
-
-**Phase 9A status update (informed by the re-read):**
-
-- Phase 9A is **still beneficial** for stride efficiency (per_leg
-  matches TB at vx=0.265) and TB-alignment, but it is **NOT** the
-  one-shot fix for the closed-loop FAIL set the original framing
-  hoped for. Phase 12C remains the load-bearing slice.
-- Recommended sequencing: Phase 9A and Phase 12C run in parallel
-  (independent mechanisms). Phase 12A defers as optional polish.
+Sequencing impact (still load-bearing for forward planning):
+- Phase 12C (left_hip_roll asymmetric saturation investigation) is
+  effectively closed at vx ≤ 0.15 (post-merge Phase 10 re-run shows
+  `no-significant-sat` verdict at the in-scope operating point).
+- Phase 8 is no longer blocked on Phase 12C; shipped paired with
+  Phase 12A (CHANGELOG **v0.20.1-phase12A-and-phase8-paired**).
+- At vx=0.20+ the saturation pattern persists (peak 0.333 at
+  vx=0.20).  This is OUT of the in-scope operating band post
+  Phase 9A (operating point shifted to vx=0.265 — see CHANGELOG
+  **v0.20.1-phase9A-operating-vx-shift**).
 
 ### Phase 11. `lin_vel_z` reward cleanup (low priority, hygiene)
 
@@ -2135,6 +1773,17 @@ Open questions for the implementer:
 - Should the ramp also apply on the up-cross side, or only down?
   Recommendation: both — the symmetric ramp is simpler and avoids
   creating a planner asymmetry.
+
+#### Phase 12A closeout
+
+Landed 2026-05-08 paired with Phase 8 (h=0.045 retry).  Implementation
+matches the recommendations above: smoothstep `3t²−2t³` ramp,
+symmetric across up-cross / down-cross, configurable `band_m`
+parameter (shipped at 0.005 m).  First attempt at band=0.020 m
+regressed vx=0.15 survival; narrowed to 0.005 m to preserve
+boundary-frame flat-foot behaviour while smoothing the actual
+threshold transition.  Full closeout in CHANGELOG entry
+**v0.20.1-phase12A-and-phase8-paired**.
 
 ### Phase 12C. Diagnose and fix `left_hip_roll` asymmetric saturation (NEW; CONTINGENT on Phase 9A re-read)
 
@@ -2372,6 +2021,27 @@ by themselves to guarantee a parity claim: Phase 10 may spawn Phase 12,
 H6 may need to activate, and the parity tool needs to ship the
 Froude-matched comparison section before H3/H4's replacement gauges
 are real.
+
+#### Phase 12C closeout
+
+**Effectively closed** by the v20 ankle_roll merge + CAD upper_leg
+mate fix, not by direct Phase 12C work.  Post-merge Phase 10 re-run
+shows `left_hip_roll` peak saturation at vx=0.15 dropped from 0.250
+to 0.000 ✓ (in-scope verdict shifted from
+`down-cross-correlated-mechanism-unclear` to `no-significant-sat`).
+Mechanism: ankle_roll DOF added by the merge absorbs lateral support
+load that previously forced hip_roll into saturation; the residual
+0.2 mm CAD upper_leg geometric asymmetry was further reduced to
+sub-100 µm by the user's CAD mate fix (round-1 + round-2).  Full
+analysis in CHANGELOG entries:
+- **v0.20.1-ankle-roll-realignment** — initial Phase 10 post-merge
+  re-run showing the mechanism shift.
+- **v0.20.1-model-issues-reaudit** — CAD geometry re-audit
+  confirming the upper_leg mate offset went 0.8 mm → 0.2 mm.
+
+vx=0.20+ retains residual saturation (peak 0.333) but is OUT of the
+in-scope band post Phase 9A (operating point shifted to vx=0.265,
+bracketed by 0.25-0.30 — see CHANGELOG `v0.20.1-phase9A-...`).
 
 ## What "On Par or Better" Means
 

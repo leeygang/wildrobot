@@ -102,7 +102,7 @@ Active decision:
 For the current reference architecture, single-source-of-truth rule,
 offline-prior design direction, and detailed reference validation gates, see:
 
-- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
+- [`reference_design.md`](reference_design.md)
 
 ### Prior options comparison
 
@@ -401,6 +401,22 @@ Expected additions:
 
 ## Milestones
 
+> **Three-level scope:** the milestone framework here describes the
+> training-side plan (G-gates, smoke contracts, reward shape) at
+> milestone granularity (v0.19.x → v0.20.x).  For:
+> - **Architecture decisions** (prior selection, layer contracts,
+>   validation ladder framework) see
+>   [`reference_design.md`](reference_design.md).
+> - **Active phase-by-phase TB-alignment work** (Phases 0-12, the
+>   tactical decomposition of milestones v0.20.0-A through D) see
+>   [`reference_architecture_comparison.md`](reference_architecture_comparison.md).
+> - **Completed-phase closeouts** with measured gate movements see
+>   [`../CHANGELOG.md`](../CHANGELOG.md).
+>
+> Per-milestone task lists below stay here because they carry
+> training-specific G-gates, smoke contracts, and reward design
+> commitments that are not architecture-level.
+
 ### Current status
 
 - `v0.19.0` complete: locomotion-first contract, schema, and runtime/logging
@@ -559,7 +575,7 @@ Execution milestones:
 4. `v0.20.0-D`: PPO unblocks only after the prior gate clears
 
 These milestone labels are canonical and should match
-[reference_design.md](/home/leeygang/projects/wildrobot/training/docs/reference_design.md).
+[reference_design.md](reference_design.md).
 
 SysID note:
 
@@ -576,7 +592,7 @@ Exit rule:
 
 Primary design note:
 
-- [`reference_design.md`](/home/leeygang/projects/wildrobot/training/docs/reference_design.md)
+- [`reference_design.md`](reference_design.md)
 
 ### `v0.20.0-A` Prior contract freeze
 
