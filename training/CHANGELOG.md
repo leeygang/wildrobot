@@ -8,6 +8,95 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-prior-quality-criteria-refresh] - 2026-05-09: latest-model status and prior-quality gates challenged; Phase 9A q_ref/eval mismatch fixed
+
+### Context
+
+Reviewed `training/docs/reference_design.md`,
+`training/docs/walking_training.md`, and this changelog against the
+latest local model and ToddlerBot source.  The key rule from the review:
+do not read the April 25 smoke7 checkpoint as a current-model result,
+and do not carry the old `vx=0.15` promotion gates into the Phase 9A
+`vx=0.265` operating point without scaling the quantities that are
+kinematic identities.
+
+### Current status
+
+- There is still **no valid PPO checkpoint for the current 21-DOF
+  model**.  The newest local checkpoint remains the April 25 smoke7
+  run (`offline-run-20260425_063646-ok4jl57e`), but it was trained
+  against the pre-ankle-roll 19-action contract and remains obsolete
+  for the current model.
+- The latest current-model prior probe at `vx=0.265` still reads as
+  **planner-shape-bound, not actuator-saturation-bound**:
+  `tools/phase10_diagnostic.py --vx 0.265 --horizon 200` survives
+  `54/200` ctrl steps, terminates by pitch, has
+  `ref_contact_match_frac=0.630`, first-cycle match `0.806`, rest
+  match `0.278`, `2` mid-swing tap-down events, and zero joint
+  saturation.
+- The deterministic per-frame probe at `vx=0.265` confirms the same
+  G7 baseline: first lever sign flip at step `2`, pelvis-x lag at
+  step `30` ≈ `-13.0 cm`, fall at step `54`, and terminal actual
+  pelvis-local x velocity ≈ `-0.196 m`.
+
+### Bug fixed during the review
+
+The checked-in Phase 9A smoke config had `eval_velocity_cmd: 0.265`
+and `max_velocity: 0.30`, but still left
+`loc_ref_offline_command_vx: 0.15`.  That meant a fresh smoke would
+evaluate against a `0.265` command while tracking a `0.15` fixed
+`q_ref` trajectory.  Worse, simply setting `loc_ref_offline_command_vx`
+to `0.265` would have hit the same nearest-neighbour failure mode as
+the May-08 viewer bug: `ZMPWalkGenerator().build_library()` only
+contains 0.05-spaced bins up to `0.25`, so `ReferenceLibrary.lookup`
+would snap `0.265 → 0.25`.
+
+Fix:
+- `training/configs/ppo_walking_v0201_smoke.yaml` now sets
+  `loc_ref_offline_command_vx: 0.265`.
+- `training/envs/wildrobot_env.py::_init_offline_service` now builds an
+  explicit one-bin library for `loc_ref_offline_command_vx` when no
+  saved library path is supplied, avoiding nearest-neighbour snap.
+- `training/tests/test_config_load_smoke6.py` pins the q_ref operating
+  point alongside `eval_velocity_cmd`.
+
+### Criteria challenge
+
+The old G4 stride floor `tracking/step_length_touchdown_event_m >=
+0.030 m` was acceptable at `vx=0.15` because it was about 56% of the
+nominal TB/WR stride there (`0.15 * 0.72 / 2 = 0.054 m`).  At the new
+Phase 9A operating point the nominal WR step is
+`0.265 * 0.72 / 2 = 0.095 m`, so the same 0.030 m floor is only 32%
+of the prior stride and is too weak to reject a Phase 9A shuffle.
+The hard promotion floor should be expressed as a command-scaled
+quantity: use `max(0.030 m, 0.50 * vx_eval * cycle_time / 2)`, which
+is `~0.0477 m` at `vx=0.265`; round the launch checklist to
+`>= 0.050 m`.
+
+The old G5 `tracking/forward_velocity_cmd_ratio` mean is also not a
+clean multi-command training-rollout gate because sampled commands can
+be near zero after `zero_chance` and `deadzone`, making ratio averages
+explode.  For Phase 9A, use the pinned deterministic eval command for
+the ratio gate (`Evaluate/forward_velocity_cmd_ratio` when logged, or
+`Evaluate/forward_velocity / eval_velocity_cmd`) and keep
+`tracking/cmd_vs_achieved_forward` as the train-rollout aggregate.
+
+Finally, the current smoke7 plan is **TB-inspired but not full
+ToddlerBot multi-command reference conditioning**.  WR still uses one
+fixed q_ref trajectory in `RuntimeReferenceService`; command resampling
+changes the command/reward target, not the q_ref lookup.  That is a
+valid smoke simplification only if documented.  It should not be used
+to claim full TB curriculum parity until runtime reference lookup is
+command-conditioned.
+
+### Next action
+
+Launch a fresh Phase 9A smoke only after reading the updated gates:
+fixed q_ref at `vx=0.265`, eval pinned at `vx=0.265`, max sampled cmd
+`0.30`, G4 stride floor `>= 0.050 m`, G5 ratio read from pinned eval,
+and no promotion claim unless the learned gait remains visibly
+reference-like under the current 21-DOF model.
+
 ## [v0.20.1-c1c2-closeout-phase9A] - 2026-05-08: v0.20.0-C C1+C2 closeout at vx=0.265 — three subsystem bugs fixed; 11/32 PASS with informative failures
 
 ### Context

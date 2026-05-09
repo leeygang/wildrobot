@@ -799,10 +799,13 @@ Expectation:
 
 - PPO improves robustness and tracking while preserving the prior’s gait
   structure
-- the smoke validates that the offline prior is learnable by PPO at nominal
-  `vx = 0.15`
+- the smoke validates that the offline prior is learnable by PPO at the
+  current Phase 9A operating point, `vx = 0.265`
 - the smoke policy contract is a temporary validation bridge, not the final
   locomotion policy endpoint
+- **current status (2026-05-09):** no valid current-model PPO checkpoint
+  exists.  The April 25 smoke7 checkpoint is a 19-action pre-ankle-roll
+  artifact; the current 21-DOF model needs a fresh smoke.
 
 Quick visual check:
 
@@ -821,10 +824,13 @@ How this advances the end goal:
 
 Smoke scope:
 
-- one command only: `vx = 0.15`
+- fixed q_ref operating point: `vx = 0.265`
 - single seed
 - smoke objective is prior validation, not command-breadth validation
-- `vx >= 0.20` remains explicitly out of scope for this milestone
+- command randomization is enabled as TB-inspired robustness pressure, but
+  the runtime reference service is still a fixed one-trajectory q_ref.  Do
+  not claim full ToddlerBot multi-command reference conditioning until q_ref
+  lookup is command-conditioned.
 
 Smoke contract:
 
@@ -858,18 +864,13 @@ Smoke contract:
   - **G1 — concrete starting bounds for the smoke** (per-joint clip on
     `delta_q_policy`, applied symmetrically; tighten if anti-exploit metric
     G5 trips):
-    - leg joints (hip pitch / hip roll / knee / ankle pitch): `±0.50 rad`
+    - leg joints (hip pitch / hip roll / knee / ankle pitch / ankle roll):
+      `±0.25 rad`
     - all other joints: `±0.20 rad`
-    - rationale: the open-loop prior at vx=0.15 currently lags the body's
-      pelvis-x by ~36 cm by step 70 (per
-      `tools/v0200c_per_frame_probe.py`), so the residual must have enough
-      authority to add forward thrust the prior cannot deliver alone; ±0.50
-      rad on the leg joints is roughly the difference between a flat-leg
-      stance posture and a deeply-bent recovery posture
-    - alternative if the smoke shows the policy quickly saturating the
-      bound: rerun pre-smoke calibration "find the residual bound at which
-      a zero-prior policy can produce forward translation" and use that as
-      the starting ceiling instead
+    - rationale: post-ToddlerBot alignment, residual authority must stay a
+      correction layer.  ToddlerBot uses action scale 0.25; matching that
+      scale keeps G5 meaningful and prevents PPO from owning propulsion that
+      the prior should own.  The old ±0.50 smoke debug bound is retired.
 - Reward:
   - use an imitation-dominant ToddlerBot-like reward family
   - primary terms:
@@ -969,7 +970,7 @@ Tasks:
 - expose the ToddlerBot-like observation fields listed above
 - wire the higher-authority residual action around `q_ref_from_library`
 - add a dedicated `v0.20.1` reward branch with explicit `ref/*` metrics
-- lock the smoke config to `vx = 0.15`
+- lock the smoke q_ref/eval operating point to `vx = 0.265`
 - reject runs where PPO improvement comes mainly from inventing propulsion that
   the prior should own
 
@@ -1028,11 +1029,11 @@ Metric validation:
     passes; do not require it to improve when the term is intentionally at
     zero weight)
 - **G4 — early-horizon gate (informational only)**:
-  - the open-loop bare-q_ref baseline at `cee580f` is roughly
-    `forward_velocity ≈ -0.09 m/s, episode_length ≈ 77, term_pitch_frac ≈ 1.0`
-    over a 200-step deterministic run; PPO is being asked to invert the
-    sign on forward velocity AND extend survival by ~75 ctrl steps in the
-    early horizon
+  - the current Phase 9A bare-q_ref baseline at `vx=0.265` falls by pitch
+    at step 54 over a 200-step deterministic run.  PPO is being asked to
+    keep the body upright and track the prior; the old `vx=0.15` baseline
+    where free-float survived to the horizon is no longer the operating
+    point.
   - softened early-horizon targets (informational, do not abort runs that
     miss these — only abort if collapsing below the open-loop baseline):
     - `Evaluate/forward_velocity >= 0.0 m/s`
@@ -1059,25 +1060,35 @@ Metric validation:
   through smoke1).  CLAUDE.md § "follows ToddlerBot" applies — we
   no longer have a rationale to keep a WildRobot-specific gate when
   the reward block matches.
-  - `env/forward_velocity >= 0.075 m/s` (train rollout)
+  - `env/forward_velocity >= 0.075 m/s` (train rollout, weak floor only;
+    `tracking/cmd_vs_achieved_forward` carries the command-scale signal)
   - `Evaluate/forward_velocity >= 0.075 m/s` (deterministic eval
-    rollout — replaces ``eval_walk/success_rate >= 0.60`` with the
-    same forward-progress floor on the eval pass)
+    rollout — weak forward-progress floor; at Phase 9A this is
+    deliberately paired with the stricter command-error and ratio gates)
   - `Evaluate/mean_episode_length >= 475` (95% of 500-step horizon;
     second half of the dropped success_rate row)
   - `Evaluate/cmd_vs_achieved_forward <= 0.075 m/s`
   - `tracking/cmd_vs_achieved_forward <= 0.075 m/s` (train rollout)
-  - touchdown step length mean `>= 0.03 m`
+  - touchdown step length mean `>= max(0.030 m, 0.50 * vx_eval *
+    cycle_time / 2)`.  At the Phase 9A operating point (`vx_eval=0.265`,
+    `cycle_time=0.72`), this is `>= 0.0477 m`; use `>= 0.050 m` in the
+    launch checklist.  The old absolute `0.030 m` floor is too weak at
+    `vx=0.265` because it is only about 32% of the nominal prior step.
 - **G5 — anti-exploit metric (hard gate)**:
   - to reject the "policy invents propulsion the prior should own" failure
     mode, log and gate on:
-    - median absolute residual on hip-pitch + knee channels:
-      `|delta_q_policy[hip_pitch_L,R, knee_L,R]| p50` ≤ `0.20 rad`
+    - median absolute residual on hip-pitch + knee + ankle-roll channels:
+      `|delta_q_policy[hip_pitch_L,R, knee_L,R, ankle_roll_L,R]| p50`
+      ≤ `0.20 rad`
       across the eval horizon (residual stays a correction, not a
       replacement gait)
     - realized-vs-commanded forward speed ratio:
-      `0.6 ≤ env/forward_velocity / cmd_vx ≤ 1.5`
-      (catches both undershoot and the v0.19.5 "lean and skate" overshoot)
+      `0.6 ≤ Evaluate/forward_velocity / eval_velocity_cmd ≤ 1.5`
+      on the pinned deterministic eval rollout.  For multi-command
+      training rollouts, do not gate on the mean of
+      `tracking/forward_velocity_cmd_ratio`; sampled near-zero commands make
+      that average numerically unstable.  Use
+      `tracking/cmd_vs_achieved_forward` for train-rollout command tracking.
   - if either bound is violated at the promotion horizon, the smoke fails
     even if the forward-velocity gate passes — explicitly to prevent a
     false-positive caused by a residual-driven exploit gait
@@ -1194,13 +1205,11 @@ stride_per_step ≈ vx × cycle_time / 2
 (`cycle_time = 0.72 s` from `toddlerbot/locomotion/mjx_config.py:98`.)
 
 WildRobot's prior at vx=0.15 delivers 0.045-0.053 m steady-state per
-`tools/v0200c_per_frame_probe.py --vx 0.15` — same design point.  The
-G4 gate `≥ 0.030 m` is ~56% of this nominal — a soft "must track at
-least half the prior" gate, not strict equality.  TB walks visibly on
-hardware (per TB README) so TB's PPO must clear this gate at vx=0.15
-within its multi-cmd training distribution.  The G4 gate is correct;
-the prior delivers the stride; the curriculum is the load-bearing
-missing piece.
+`tools/v0200c_per_frame_probe.py --vx 0.15` — same design point.  That
+is why the old `0.030 m` G4 floor was reasonable before Phase 9A.
+At the new `vx=0.265` operating point, the equivalent "at least half
+the prior" floor is about `0.048 m`, so the launch checklist uses
+`>= 0.050 m`.
 
 ### `v0.20.1-smoke6-prep3` Loader fix + actually-test smoke6
 
@@ -1238,10 +1247,12 @@ Decision rule after the re-run:
 - if either term is dead at training-time err scale → recalibrate α
   per the smoke6-prep2 commitment, single rerun.
 
-### `v0.20.1-smoke7` Promote full TB training distribution (multi-cmd + DR jointly)
+### `v0.20.1-smoke7` Promote TB-inspired command/DR pressure
 
-Status: **active** (smoke6-prep3 result falsified phase-signal hypothesis;
-five reward-only smokes 3/4/5/6/6-prep3 exhausted reward-only space).
+Status: **active, Phase 9A-rescoped** (smoke6-prep3 result falsified
+phase-signal hypothesis; five reward-only smokes 3/4/5/6/6-prep3
+exhausted reward-only space; April 25 smoke7 is obsolete for the current
+21-DOF model).
 
 **Scope revision (2026-04-24):** the original smoke7 plan was "multi-cmd
 alone, no DR" with the hypothesis "vx=0.20 hits a cadence ceiling →
@@ -1260,8 +1271,12 @@ distribution + domain randomization (backlash + friction + kp + IMU
 noise make micro-shuffles fragile; pushes are NOT the load-bearing piece
 since TB's `add_push` defaults to False for walk).
 
-Smoke7 enables the full TB-aligned training distribution to test which
-combination of mechanisms is load-bearing.
+Smoke7 enables TB-aligned command/DR pressure to test which combination
+of mechanisms is load-bearing.  Challenge: this is not yet full
+ToddlerBot multi-command reference conditioning, because WR's
+`RuntimeReferenceService` still serves one fixed q_ref trajectory.  Treat
+this as a fixed-operating-point prior smoke with randomized command
+pressure, not proof that the multi-command reference stack is complete.
 
 Scope:
 
@@ -1269,9 +1284,9 @@ Scope:
   - `cmd_resample_steps: 150` (3.0 s at ctrl_dt=0.02 — TB resample_time)
   - `cmd_zero_chance: 0.2` (TB default)
   - `cmd_deadzone: 0.05` (TB vx-channel default)
-  - vx range: `[0.0, 0.20]` — narrower than TB's `[-0.2, 0.3]` because
-    WR's prior library lacks negative-vx generation; defer negative cmd
-    to v0.20.4
+  - vx range: `[0.0, 0.30]` — covers the Phase 9A operating point
+    (`0.265`) and the upper robustness bracket while still deferring
+    negative cmd to v0.20.4
 - **Domain randomization** (TB anti-shuffle lever #2):
   - `domain_rand_friction_range: [0.4, 1.0]` (TB)
   - `domain_rand_frictionloss_scale_range: [0.8, 1.2]` (TB)
@@ -1288,27 +1303,24 @@ Scope:
   - `imu_quat_noise_deg: 2.0` (conservative vs TB's quat_std=0.10 rad ≈
     5.7°)
 - **Eval-cmd override** (G4 readout protection):
-  - `eval_velocity_cmd: 0.15` — pins eval rollouts at vx=0.15 so G4
-    metrics stay directly comparable to single-cmd smokes 3-6-prep3.
-    Without this, eval would sample uniformly across [0.0, 0.20] and
-    E[cmd] (~0.07 m/s after zero_chance + deadzone) would sit near or
-    below the G4 forward_velocity floor of 0.075, making pass/fail
-    uninformative.  Implementation: `WildRobotEnv.reset_for_eval(rng)`
-    overrides velocity_cmd post-reset; `step(disable_cmd_resample=True)`
-    suppresses mid-episode resample during eval.
+  - `eval_velocity_cmd: 0.265` — pins eval rollouts at the Phase 9A
+    operating point.  Without this, eval would sample uniformly across
+    `[0.0, 0.30]` and dilute G4.  The fixed q_ref trajectory is also
+    pinned to `loc_ref_offline_command_vx: 0.265`; q_ref/eval-cmd
+    mismatch is a null smoke.
 - **NOT enabling**: pushes (TB walk default add_push: False), yaw cmd
   (defer to v0.20.4 — WR prior lacks yaw), negative vx (prior lacks
   negative-vx generation).
 - Reward family unchanged from smoke6-prep3 (TB-complete and verified
   alive in smoke6-prep3).
 
-Why DR + multi-cmd jointly (Option C) and not isolated:
+Why DR + command pressure jointly (Option C) and not isolated:
 
 - Per the probe results, the cadence-ceiling story is wrong; multi-cmd
   alone has weak a-priori support.
 - DR alone would test "is robustness pressure load-bearing for shuffle?"
   cleanly, but the M1 fail-mode tree has no precedent for which
-  TB-curriculum knob is load-bearing.
+  TB-inspired knob is load-bearing.
 - Per CLAUDE.md "follow ToddlerBot before WR-specific design", TB enables
   both by default — Option C is the closest to TB's actual recipe.
 - Trade-off accepted: if smoke7 succeeds, we don't know which mechanism
@@ -1329,28 +1341,33 @@ Pre-smoke checks (all completed in smoke7-prep1):
 - ✅ Round-trip test extended to assert smoke7 critical env settings.
 - ✅ G6 invariant: 7/7 pass with smoke7 YAML.
 - ✅ Eval-cmd override behaviorally verified: `reset_for_eval` pins
-  cmd to 0.15 across all seeds; training reset samples in [0.0, 0.20]
+  cmd to the configured eval command across all seeds; training reset
+  samples within the configured `[min_velocity, max_velocity]` range
   with proper zero_chance/deadzone distribution.
 - ✅ Open-loop prior probe at vx ∈ {0.10, 0.15, 0.20, 0.25}: prior
   generates 1120-step trajectories at all bins; no immediate collapse.
+- ✅ Phase 9A q_ref/eval alignment: `eval_velocity_cmd` and
+  `loc_ref_offline_command_vx` both pin `0.265`, and the env builds an
+  explicit one-bin library for that value so `0.265` cannot snap to a
+  stale `0.25` bin.
 
 Decision rule after smoke7:
 
-- **stride at eval (vx=0.15) ≥ 0.030 m** → TB-curriculum hypothesis
+- **stride at eval (vx=0.265) ≥ 0.050 m** → TB-inspired command/DR hypothesis
   confirmed; promote to v0.20.2 (SysID hardening) and run ablation
   follow-ups (DR-only, multi-cmd-only) to isolate the load-bearing
   mechanism.
-- **stride still parked at ~0.020 m** → TB-curriculum (multi-cmd + DR
-  jointly) is not sufficient on WR.  Two candidates:
+- **stride still parked below ~0.030 m** → TB-inspired command/DR pressure
+  is not sufficient on WR.  Two candidates:
   - (a) prior is the actual blocker — return to v0.20.0-x prior
     surgery (extend prior to negative vx, re-evaluate prior fidelity
     under the closed-loop dynamics PPO actually faces).
   - (b) smoke compute budget exhausted before convergence — TB trains
     on 2× the episode length (1000 vs 500) and broader command range;
     extend M2 cap to ~300 iters and rerun before declaring failure.
-- **mixed signal at intermediate stride (0.025-0.030)** → smoke7 is on
-  the right track but needs more compute or a wider vx range.  Extend
-  the prior library to vx=0.30+ and rerun with `[0.0, 0.30]` range.
+- **mixed signal at intermediate stride (0.030-0.050)** → smoke7 is on
+  the right track but needs more compute or true command-conditioned
+  q_ref lookup before declaring the prior blocked.
 
 What we will NOT do in smoke7:
 
@@ -1577,7 +1594,7 @@ ToddlerBot file/line so future drift is reviewable.
 
 | Item | WildRobot v0.20.1 | ToddlerBot | Decision |
 |---|---|---|---|
-| `min_velocity` / `max_velocity` | 0.15 / 0.15 (degenerate, smoke contract) | `command_range[5] = [-0.2, 0.3]` for vx | keep degenerate for the smoke; add multi-command plumbing inert at vx=0.15 |
+| `min_velocity` / `max_velocity` | 0.0 / 0.30 (smoke7 command pressure); fixed q_ref/eval op point 0.265 | `command_range[5] = [-0.2, 0.3]` for vx | TB-inspired range on positive vx only; true command-conditioned q_ref lookup remains backlog |
 | `resample_steps` | none | `resample_time = 3.0 s` ⇒ `resample_steps = 150` (`mjx_config.py:159`) | **add** — wire `resample_steps`, default 150; degenerate range still resamples to the same vx |
 | `zero_chance` / `turn_chance` | none | 0.2 / 0.2 (`walk.gin:11`) | **add** as configurable, default to ToddlerBot values; smoke keeps single-cmd range |
 | `deadzone` | none | `[0.05, 0.05, 0.2]` | **add** as configurable, default to ToddlerBot values |
@@ -1661,7 +1678,7 @@ Both projects use the DeepMimic-style numerator-α form
 | `torso_pitch_range` (reward gate) | — | `[-0.2, 0.2]` | **add** (with torso_pitch soft reward) |
 | Cmd-magnitude gating on stepping rewards | inert (`step_need_*` defined but not consumed) | air_time/clearance/standstill all gate on `||cmd_obs|| > 1e-6` | apply on the new feet_* terms |
 | Touchdown event | physical foot/floor contact transition (`view_zmp_in_mujoco.py:519`; env G4 in `wildrobot_env.py:1251`) | `stance_mask xor last_stance_mask` | equivalent |
-| G4 success metrics | `forward_velocity ≥ 0.075`, `Evaluate/mean_episode_length ≥ 475`, `Evaluate/cmd_vs_achieved ≤ 0.075`, `step_length ≥ 0.03` (this doc, v0.20.1 §; smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept) | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
+| G4 success metrics | `forward_velocity ≥ 0.075`, `Evaluate/mean_episode_length ≥ 475`, `Evaluate/cmd_vs_achieved ≤ 0.075`, command-scaled step floor `max(0.030, 0.50 * vx_eval * cycle_time/2)` (Phase 9A: `>= 0.050 m`); smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
 | G5 anti-exploit | `|residual_p50|_{hip_pitch,knee,ankle_roll} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep.  ankle_roll added post-merge alongside the residual-scale promotion below. |
 
 ### A.6 Action contract
@@ -1672,13 +1689,16 @@ Both projects use the DeepMimic-style numerator-α form
 | Leg `action_scale` | ±0.50 rad | ±0.25 rad | **change** — clip legs to ±0.25 rad to match ToddlerBot and reduce G5 trip risk.  Post v20 ankle_roll merge: the leg list is `{hip_pitch, hip_roll, knee, ankle_pitch, ankle_roll}` × L/R (10 joints).  ankle_roll uses ±0.25 to match the rest of the leg chain; range margin is the same as ankle_pitch (±0.25 / ±π/4 ≈ 32%) so headroom is identical. |
 | Other-joint scale | ±0.20 rad | ±0.25 rad | keep ±0.20 (close enough; conservative) |
 
-### A.7 Domain randomization — defer to `v0.20.2`
+### A.7 Domain randomization — active in smoke7
 
-WR smoke has all DR off (`yaml:138-146`); ToddlerBot defaults
-(`mjx_config.py:168-200`) include friction `[0.4, 1.0]`, kp/kd
-`[0.9, 1.1]`, mass `[-0.2, 0.2]`, backlash `[0.02, 0.1]`,
-`push_torso=[1.0, 3.0]`, IMU level=0.05.  WR has all the plumbing —
-re-enable as a v0.20.2 task, not at the smoke gate.
+WR smoke7 enables the TB-aligned DR subset after five reward-only smokes
+failed to clear the shuffle gate.  ToddlerBot defaults include friction
+`[0.4, 1.0]`, frictionloss `[0.8, 1.2]`, kp `[0.9, 1.1]`, mass
+randomization, `add_domain_rand=True`, and `add_push=False` for walk.
+WR matches the friction / frictionloss / kp ranges, keeps WR-specific
+multiplicative mass scaling `[0.9, 1.1]`, and adds conservative IMU noise.
+Pushes remain disabled because ToddlerBot walk also defaults
+`add_push=False`.
 
 ### A.8 Required code changes (this audit)
 

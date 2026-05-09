@@ -2,7 +2,7 @@
 
 Single-file ``mjx_env.MjxEnv`` for the v0.20.1 PPO smoke
 (``training/configs/ppo_walking_v0201_smoke.yaml``).  The actor sees
-the offline ``ReferenceLibrary`` window plus a 3-frame past-proprio
+the offline ``ReferenceLibrary`` window plus a 15-frame past-proprio
 stack (``wr_obs_v6_offline_ref_history`` layout) and emits a bounded
 residual on top of the library's ``q_ref``; the env composes
 ``q_target = q_ref + clip(action) * scale_per_joint`` (absolute
@@ -21,9 +21,8 @@ Notable v0.19.5c subsystems intentionally absent (audit §C):
   - support-posture B precomputation (v3 starts from the MJCF keyframe)
   - the M2 base+residual mix path
 
-The placeholder reward is ``reward_weights.alive`` per step until
-termination.  Task #49 lands the imitation-dominant reward family on
-top of this skeleton.
+The active reward family is the ToddlerBot-aligned imitation-dominant
+v0.20.1 smoke contract documented in ``walking_training.md``.
 """
 
 from __future__ import annotations
@@ -186,7 +185,7 @@ class WildRobotEnvState(mjx_env.State):
 
 
 class WildRobotEnv(mjx_env.MjxEnv):
-    """Single-command, v3-only PPO env for the v0.20.1 smoke."""
+    """v3-only PPO env for the v0.20.1 prior-guided smoke."""
 
     # ------------------------------------------------------------------ init
 
@@ -456,7 +455,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             lib = ReferenceLibrary.load(offline_path)
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
-            lib = ZMPWalkGenerator().build_library()
+            lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
 
         traj = lib.lookup(offline_vx)
         self._offline_service = RuntimeReferenceService(traj, n_anchor=2)
@@ -1691,13 +1690,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         new_proprio_history = self._roll_proprio_history(wr.proprio_history, new_bundle)
 
         # ToddlerBot-style cmd resampling.  ``cmd_resample_steps == 0``
-        # disables resampling (episode-constant cmd, the v0.19.x and
-        # v0.20.1 smoke contract).  When > 0 the cmd is redrawn every N
+        # disables resampling (episode-constant cmd, the v0.19.x contract).
+        # When > 0 the cmd is redrawn every N
         # ticks via ``_sample_velocity_cmd`` (which honors zero_chance
         # and deadzone).  See toddlerbot/locomotion/mjx_env.py:1068-1077.
-        # The smoke YAML pins min_velocity == max_velocity so the redraw
-        # collapses to the same vx; the plumbing exists for v0.20.4
-        # multi-command work without a future env edit.
+        # The smoke7 YAML samples command pressure over a vx range while
+        # eval uses disable_cmd_resample=True to preserve the pinned G4
+        # readout.
         cmd_period = jp.int32(self._config.env.cmd_resample_steps)
         new_cmd_rng_carry, sample_rng = jax.random.split(wr.cmd_rng.astype(jp.uint32))
         # disable_cmd_resample: smoke7 eval pass.  When the eval-cmd

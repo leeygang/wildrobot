@@ -135,7 +135,7 @@ class EnvConfig(Freezable):
     #                 action * loc_ref_residual_scale (the scale value
     #                 is the rad bound directly).  When set, the
     #                 per-joint override map below replaces the scalar
-    #                 per the smoke G1 spec (legs ±0.50 rad, others
+    #                 per the smoke G1 spec (legs ±0.25 rad, others
     #                 ±0.20 rad).
     #   "half_span" - legacy interpretation (action * scale *
     #                 half_span); kept available so a future
@@ -150,11 +150,13 @@ class EnvConfig(Freezable):
 
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
-    # disk; otherwise the env builds one on-the-fly via
-    # ZMPWalkGenerator() at init.  loc_ref_offline_command_vx selects
-    # which trajectory to use as the env's reference (single command
-    # for the v0.20.1 smoke; future multi-command work moves to a
-    # stacked-arrays representation per the design note's Q3).
+    # disk; otherwise the env builds an explicit one-bin library for
+    # loc_ref_offline_command_vx at init.  This avoids nearest-neighbor
+    # snapping when the operating point is not on the generator's
+    # historical default 0.05 m/s grid.  loc_ref_offline_command_vx
+    # selects the fixed q_ref trajectory for the v0.20.1 smoke; future
+    # true multi-command reference conditioning moves to a stacked-arrays
+    # representation per the design note's Q3.
     loc_ref_offline_library_path: Optional[str] = None
     loc_ref_offline_command_vx: float = 0.15
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).

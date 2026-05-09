@@ -1,7 +1,7 @@
 # =============================================================================
 # WildRobot v0.20.1 PPO Smoke Config
 # =============================================================================
-# Single-command (vx=0.15) imitation-residual smoke per
+# Phase-9A operating-point imitation-residual smoke per
 # training/docs/walking_training.md (v0.20.1 section).
 #
 # Reward family: DeepMimic-style imitation-dominant residual reward
@@ -29,7 +29,7 @@
 #   - training/docs/walking_training.md        v0.20.1 smoke contract
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke (vx=0.15, imitation residual)"
+version_name: "v0.20.1 PPO smoke (vx=0.265, imitation residual)"
 
 seed: 42
 
@@ -45,7 +45,7 @@ env:
   ctrl_dt: 0.02
 
   # Episode horizon must satisfy `horizon <= service.n_steps` per the
-  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.15
+  # RuntimeReferenceService end-of-trajectory clamp contract.  The vx=0.265
   # ZMP trajectory is ~1100 steps at dt=0.02; 500 steps = 10 s is well
   # under the trajectory's ~22 s.
   max_episode_steps: 500
@@ -87,12 +87,10 @@ env:
   # multi-cmd plumbing to mirror TB's CommandsConfig
   # (toddlerbot/locomotion/mjx_config.py:158-164 + walk.gin:11).
   #
-  # Range pick: WR's prior library currently generates bins
-  # {0.0, 0.05, 0.10, 0.15, 0.20, 0.25}.  Smoke7 uses [0.0, 0.20] —
-  # narrower than TB's [-0.2, 0.3] (defer negative cmd to v0.20.4
-  # since the prior library lacks negative-vx generation).  Probe
-  # confirmed prior is replayable through vx=0.20 (open-loop survives
-  # 60 ctrl steps at vx=0.20 vs 78 at vx=0.15).
+  # Range pick: Phase 9A uses [0.0, 0.30] so the sampled command range
+  # covers the new vx=0.265 operating point plus the upper robustness
+  # bracket.  Negative commands are still deferred to v0.20.4 because
+  # the prior library lacks negative-vx generation.
   #
   # cmd_resample_steps = 150 mirrors TB resample_time=3.0 s at
   # ctrl_dt=0.02.  zero_chance=0.2 + deadzone=0.05 are TB defaults
@@ -168,8 +166,12 @@ env:
   actor_obs_layout_id: wr_obs_v6_offline_ref_history
 
   # Build the library on the fly via ZMPWalkGenerator (omit
-  # loc_ref_offline_library_path).  The smoke uses a single command bin.
-  loc_ref_offline_command_vx: 0.15
+  # loc_ref_offline_library_path).  Phase 9A moved the reference
+  # operating point to vx=0.265; keep the fixed q_ref trajectory aligned
+  # with eval_velocity_cmd.  The env builds an explicit one-bin library for
+  # this value so ReferenceLibrary.lookup cannot nearest-neighbor snap
+  # 0.265 to a stale 0.25 default bin.
+  loc_ref_offline_command_vx: 0.265
 
   # ---- Residual bounds (G1) ----
   # Absolute mode: residual_delta_q = clip(action) * scale (rad).

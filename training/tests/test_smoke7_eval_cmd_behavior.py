@@ -49,7 +49,7 @@ EPS = 1e-5
 
 @pytest.fixture(scope="module")
 def env_pinned():
-    """Env constructed from the smoke7 YAML (eval_velocity_cmd = 0.15)."""
+    """Env constructed from the smoke7 YAML with eval_velocity_cmd pinned."""
     cfg = load_training_config(str(_SMOKE_CFG))
     assert cfg.env.eval_velocity_cmd >= 0.0, (
         f"This test fixture assumes the smoke7 YAML pins eval_velocity_cmd; "
@@ -81,7 +81,7 @@ def test_eval_cmd_pinned_at_initial_reset(env_pinned) -> None:
 def test_eval_cmd_survives_auto_reset(env_pinned) -> None:
     """Forced termination must not let the auto-reset path swap the cmd.
 
-    Setup: build an eval state (cmd=0.15), clobber the root z to a value
+    Setup: build an eval state (cmd pinned by the smoke YAML), clobber root z to a value
     well below ``min_height`` (forces height-based termination on the
     next step), then step in eval mode and verify the post-reset cmd
     is still pinned.
@@ -145,7 +145,7 @@ def test_eval_cmd_sentinel_falls_back_to_sampled(env_sentinel) -> None:
         cmds.append(float(state.info[WR_INFO_KEY].velocity_cmd))
 
     # Expect non-trivial variation across seeds.  With smoke7 YAML's
-    # min_velocity=0.0, max_velocity=0.20, zero_chance=0.2, deadzone=0.05,
+    # min_velocity=0.0, max_velocity=0.30, zero_chance=0.2, deadzone=0.05,
     # typical 8-seed sample shows 4-7 distinct values.  A pinned value
     # (the bug we're guarding against) would yield exactly one distinct
     # value — fail with a clear message.

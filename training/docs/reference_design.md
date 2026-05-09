@@ -580,6 +580,16 @@ This is the main unblock gate for the active `v0.20` path.
 > `walking_training.md` Appendix A for the live G-gate contract used
 > by the smoke runs.
 
+> **Current status (2026-05-09).**  There is no promotion candidate
+> PPO checkpoint for the current 21-DOF model.  The April 25 smoke7
+> checkpoint is a 19-action pre-ankle-roll artifact and is obsolete.
+> A fresh Phase 9A smoke must use a `vx=0.265` q_ref trajectory and
+> `eval_velocity_cmd=0.265`; using a `vx=0.15` q_ref with a `0.265`
+> eval command is a contract mismatch, not a valid test of prior
+> quality.  The live G4 stride floor is now command-scaled: at
+> `vx=0.265`, require touchdown step length `>= 0.050 m` before
+> claiming the learned policy is tracking a non-shuffle prior.
+
 What to verify visually:
 
 - within a short training horizon, the learned policy starts to track the
@@ -602,7 +612,9 @@ What to verify metrically:
 - by the promotion horizon, the run achieves the
   per-vx-scaled `forward_velocity`, episode-length, and
   touchdown-step-length floors documented in
-  `walking_training.md` G4 / G5.
+  `walking_training.md` G4 / G5.  In particular, the old absolute
+  `0.030 m` stride floor is retained only as a lower bound; the
+  Phase 9A operating point uses `max(0.030, 0.50 * vx * cycle_time/2)`.
 
 ### Layer 5: `policy multi-command sweep`
 

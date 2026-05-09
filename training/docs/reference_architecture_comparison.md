@@ -1,7 +1,7 @@
 # WR Reference Architecture Plan vs ToddlerBot
 
 **Status:** Active phase tracker for `v0.20.x` TB-alignment work.
-**Last updated:** 2026-05-08 (closeout pointers refactor; Phase 9A landed).
+**Last updated:** 2026-05-09 (Phase 9A criteria/status challenge).
 **Purpose:** order the TB-alignment backlog and document forward-looking
 phase specs.  Architecture-level decisions (prior selection, layer
 contracts, validation ladder) live in
@@ -71,6 +71,29 @@ Acceptance uses two lenses:
 This means a WR change should be credited only when it improves the
 load-bearing parity gaps under the normalised view, while not regressing the
 absolute floor or violating WR's own `G4/G5/G6/G7` policy contract.
+
+### Current Criteria Challenge (2026-05-09)
+
+The current evidence supports **PPO unblock**, not a blanket "WR is on
+par with TB" claim.
+
+- Phase 9A closes the load-bearing size-normalised
+  `step_length_per_leg` gate at the chosen operating point
+  (`WR@0.265` vs `TB@0.15`: `0.984×` TB), but the absolute parity
+  verdict still has characterised failures (`swing_clearance_per_com_height`
+  near-threshold, `cadence_froude_norm` size/cadence-confounded,
+  `swing_foot_z_step_per_clearance` bounded by apex shape).
+- Layer-3 closed-loop gates are now comparative-vs-TB diagnostics, not
+  absolute pass/fail gates.  WR outlasts TB at analogous operating points,
+  but both robots fail position-PD-only walking; the conclusion is "this
+  is a learned-policy problem," not "the prior alone walks."
+- Any Phase 9A PPO smoke must use q_ref and eval command at the same
+  operating point (`loc_ref_offline_command_vx = eval_velocity_cmd =
+  0.265`).  A `vx=0.15` q_ref with `vx=0.265` eval is a null test.
+- The current smoke7 command randomization is not full ToddlerBot
+  multi-command reference conditioning because WR's runtime service still
+  serves one fixed q_ref trajectory.  Treat it as TB-inspired robustness
+  pressure until command-conditioned q_ref lookup lands.
 
 ## Design History
 
@@ -1912,10 +1935,14 @@ closeouts in this doc.
 
 ### Expected end state after Phases 7-10
 
-The columns below assume Phase 9A (operating-point change to vx=0.19).
-Under Phase 9B (keep vx=0.15), the two Froude-bounded normalised
-P1A gates remain FAILing as a documented bounded-by-design gap; that
-is success under 9B's acceptance statement, NOT a parity claim.
+This table is a historical expectation table from before the final Phase
+9A decision.  The actual Phase 9A operating point is `vx=0.265`
+(step/leg-matched to TB at `vx=0.15`), not `0.19` Froude-matched.  The
+May-09 criteria challenge above and the May-08 CHANGELOG entries are the
+current source of truth for status: `step_per_leg` PASSes at `0.984×`
+TB, `clearance_per_h` remains near-threshold, `cadence_norm` is a
+documented fixed-cadence/size-confounded gap, and closed-loop C1/C2 gates
+are comparative diagnostics rather than absolute pass gates.
 
 | Layer | Pre-Phase-7 | Post-Phase-9A | Notes |
 |---|---|---|---|

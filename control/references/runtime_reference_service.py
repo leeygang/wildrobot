@@ -8,11 +8,11 @@ indexing + clamp.
 Scope and design notes
 ----------------------
 
-- **Single command per service instance.**  The v0.20.1 smoke only
-  trains at ``vx=0.15``, so we deliberately skip multi-command
+- **Single command per service instance.**  The v0.20.1 smoke pins one
+  q_ref operating point, so we deliberately skip multi-command
   interpolation here.  Use one ``RuntimeReferenceService`` per
-  command bin and select externally if/when multi-command training
-  resumes (deferred to a later milestone).
+  command bin and select externally when true command-conditioned
+  reference lookup lands.
 
 - **Window contents** (per
   ``training/docs/walking_training.md`` v0.20.1 Smoke Contract):
@@ -139,8 +139,8 @@ class RuntimeReferenceService:
     """JAX-jittable per-step lookup over a single reference trajectory.
 
     Construction is heavy (pre-stack + finite-diff); per-step lookup
-    is integer indexing only.  Designed for single-command env use
-    (one service per command bin; the smoke only needs vx=0.15)."""
+    is integer indexing only.  Designed for fixed-q_ref env use
+    (one service per command bin; the smoke pins one operating point)."""
 
     def __init__(
         self,

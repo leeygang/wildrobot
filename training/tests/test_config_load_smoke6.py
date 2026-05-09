@@ -33,6 +33,7 @@ if not _SMOKE_CFG.exists():
     )
 
 from training.configs.training_config import load_training_config
+from control.zmp.zmp_walk import ZMPWalkGenerator
 
 
 def _flatten_yaml_section(d: dict, prefix: str = "") -> dict:
@@ -206,6 +207,10 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
         # Eval-cmd override pins eval rollouts at the Phase 9A
         # operating point so G4 stays comparable across smokes.
         "eval_velocity_cmd": 0.265,
+        # The fixed offline q_ref trajectory must match the Phase 9A eval
+        # operating point.  Otherwise PPO is asked to track a vx=0.15 prior
+        # while being evaluated against a vx=0.265 command.
+        "loc_ref_offline_command_vx": 0.265,
         # DR (TB anti-shuffle lever #2)
         "domain_randomization_enabled": True,
         "domain_rand_friction_range": [0.4, 1.0],
@@ -232,3 +237,18 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
             "the loader has drifted from the documented smoke7 contract:\n  "
             + "\n  ".join(failures)
         )
+
+
+def test_smoke7_offline_reference_vx_does_not_snap_to_default_bin(smoke_cfg) -> None:
+    """The Phase 9A fixed q_ref operating point must be generated exactly.
+
+    The default ZMP library grid has historical 0.05 m/s bins, so a plain
+    default library lookup would snap 0.265 to 0.25.  The env builds an
+    explicit one-bin library for the configured operating point; keep that
+    contract covered at the generator/library boundary.
+    """
+    offline_vx = smoke_cfg.env.loc_ref_offline_command_vx
+    lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
+    traj = lib.lookup(offline_vx)
+
+    assert traj.command_vx == pytest.approx(offline_vx)
