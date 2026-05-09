@@ -49,7 +49,7 @@ harness-clip % per channel.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -112,17 +112,40 @@ class C2StabilizerConfig:
     # Geometry constants (used only for capture-point and swing-x → hip-pitch
     # conversion; not for reading any reference annotation).
     #
-    # com_height_m: was 0.473 pre-merge.  Reconciled to the live home
-    # keyframe pelvis_z (0.4714) after the v20 ankle_roll merge tightened
-    # waist spawn z 0.50 → 0.48 m.  ``parity_report.json`` reports 0.458
-    # under the legacy 19-DOF prior fingerprint and is stale; this value
-    # is the measured one off ``assets/v2/keyframes.xml`` `home`.
-    com_height_m: float = 0.4714
-    leg_length_m: float = 0.413  # upper + lower leg, for Δhip ≈ Δfoot_x / leg
+    # Defaults pulled from ``ZMPWalkConfig`` so the C2 harness uses the
+    # same canonical dims the planner is built around.  Previously
+    # hardcoded to ``0.4714``/``0.413`` (measured off the ``home``
+    # keyframe), which silently disagreed with the planner's ``0.458``
+    # com_height and ``0.373`` leg length — biasing the LIPM ω and the
+    # ``Δhip ≈ Δfoot_x / leg`` mapping.  Pulling from ``ZMPWalkConfig``
+    # also means future cycle_time / com_height changes propagate
+    # automatically.  Viewers / non-default callers can still override
+    # via the dataclass fields.
+    @staticmethod
+    def _default_com_height_m() -> float:
+        from control.zmp.zmp_walk import ZMPWalkConfig
+        return float(ZMPWalkConfig().com_height_m)
+
+    @staticmethod
+    def _default_leg_length_m() -> float:
+        from control.zmp.zmp_walk import ZMPWalkConfig
+        cfg = ZMPWalkConfig()
+        return float(cfg.upper_leg_m + cfg.lower_leg_m)
+
+    @staticmethod
+    def _default_cycle_time_s() -> float:
+        from control.zmp.zmp_walk import ZMPWalkConfig
+        return float(ZMPWalkConfig.cycle_time_s)
+
+    com_height_m: float = field(default_factory=lambda: C2StabilizerConfig._default_com_height_m())
+    leg_length_m: float = field(default_factory=lambda: C2StabilizerConfig._default_leg_length_m())
     g: float = 9.81
 
-    # Initialized from trajectory metadata at construction time.
-    cycle_time_s: float = 0.64
+    # Initialized from trajectory metadata at viewer construction time
+    # (view_zmp_in_mujoco.py:489 passes ``cycle_time_s=traj.cycle_time``).
+    # Default tracks ZMPWalkConfig so non-viewer callers get the live
+    # value rather than a stale literal.
+    cycle_time_s: float = field(default_factory=lambda: C2StabilizerConfig._default_cycle_time_s())
 
     # Robot config providing actuator order + per-joint policy_action_sign.
     # Defaults to the same path used by ZMPWalkGenerator so the C2 harness

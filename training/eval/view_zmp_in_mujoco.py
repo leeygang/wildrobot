@@ -9,22 +9,22 @@ reference is physically trackable.
 All output is logged to a timestamped file in /tmp/zmp_viewer_logs/.
 
 Usage:
-  # Interactive viewer at cmd=0.15
-  uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.15
+  # Interactive viewer at the Phase 9D operating point (cmd=0.20)
+  uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.20
 
   # Fixed-base: pelvis pinned at the standing pose, legs track via PD.
   # Use this for tracking-RMSE / saturation diagnostics ONLY — the
   # pelvis is held in place, so foot world positions do not advance,
   # and stride length must be measured in free-floating (or kinematic).
-  uv run mjpython training/eval/view_zmp_in_mujoco.py --fixed-base --vx 0.10
+  uv run mjpython training/eval/view_zmp_in_mujoco.py --fixed-base --vx 0.20
 
   # Headless recording
-  uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.15 \
+  uv run mjpython training/eval/view_zmp_in_mujoco.py --vx 0.20 \
       --headless --horizon 100 --print-every 5
 
   # Custom library path
   uv run mjpython training/eval/view_zmp_in_mujoco.py \
-      --library-path /tmp/zmp_ref_library --vx 0.10
+      --library-path /tmp/zmp_ref_library --vx 0.15
 """
 
 from __future__ import annotations
@@ -378,7 +378,11 @@ def _run_physics(model, data, traj, mapper, horizon, print_every,
         mj_qpos_home = data.qpos[act_to_qpos]
         standing_q = mj_qpos_home[policy_to_mj].astype(np.float32)
     else:
-        standing_q = np.zeros(19, dtype=np.float32)
+        # Fallback when no name-resolved mapper is available.  The shape
+        # must match the live model's actuator count (21 post v20
+        # ankle_roll merge; 19 pre-merge).  ``traj.q_ref.shape[1]`` is
+        # the authoritative count for the trajectory being replayed.
+        standing_q = np.zeros(traj.q_ref.shape[1], dtype=np.float32)
     first_q = traj.q_ref[0]
 
     logger.log(f"Startup ramp: {startup_steps} steps blending from "
@@ -719,8 +723,8 @@ def main():
         description="MuJoCo viewer for ZMP reference library")
     parser.add_argument("--library-path", type=str, default=None,
                         help="Path to reference library (default: generate fresh)")
-    parser.add_argument("--vx", type=float, default=0.15,
-                        help="Forward speed command")
+    parser.add_argument("--vx", type=float, default=0.20,
+                        help="Forward speed command (default 0.20 = Phase 9D operating point, cycle_time=0.96 s)")
     parser.add_argument("--headless", action="store_true",
                         help="Run headless with text output")
     parser.add_argument("--kinematic", action="store_true",

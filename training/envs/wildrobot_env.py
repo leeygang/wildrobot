@@ -448,7 +448,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         offline_path = getattr(self._config.env, "loc_ref_offline_library_path", None)
-        offline_vx = float(getattr(self._config.env, "loc_ref_offline_command_vx", 0.15))
+        # Fallback default 0.20 = Phase 9D operating point.  Should never
+        # fire under a normal config (the dataclass default at
+        # training_runtime_config.py is also 0.20), but kept defensive.
+        offline_vx = float(getattr(self._config.env, "loc_ref_offline_command_vx", 0.20))
 
         if offline_path:
             from control.references.reference_library import ReferenceLibrary

@@ -1962,7 +1962,13 @@ def train(
             res_hpR = _g("tracking/residual_hip_pitch_right_abs")
             res_knL = _g("tracking/residual_knee_left_abs")
             res_knR = _g("tracking/residual_knee_right_abs")
-            res_max = max(res_hpL, res_hpR, res_knL, res_knR)
+            # ankle_roll added by the v20 ankle_roll merge — must be in
+            # res_max so the console G5 line matches the env's
+            # authoritative g5_residuals tally (which already includes
+            # ankle_roll in wildrobot_env.py:1838-1841).
+            res_arL = _g("tracking/residual_ankle_roll_left_abs")
+            res_arR = _g("tracking/residual_ankle_roll_right_abs")
+            res_max = max(res_hpL, res_hpR, res_knL, res_knR, res_arL, res_arR)
             term_h_low = _g("term_height_low_frac")
             ref_q_rmse = _g("ref/q_track_err_rmse")
             ref_quat_deg = _g("ref/body_quat_err_deg")
@@ -1973,10 +1979,38 @@ def train(
             # walking_training.md v0.20.1 §.  ``ep_len`` G4 floor is 95% of
             # ``max_episode_steps`` so single-cmd horizon changes don't
             # break the gate.
+            #
+            # Phase 9D-aware (2026-05-09): forward_velocity and stride
+            # floors are command-scaled from the eval cmd, not hardcoded
+            # to vx=0.15 values.  Without this, a Phase 9D run at
+            # vx=0.20 would PASS the velocity gate at 38% tracking
+            # (0.075/0.20) instead of the doc-intended 50%, and the
+            # stride gate would only require 32% of nominal stride
+            # instead of the intended ~50%.  Thresholds:
+            #   forward_velocity ≥ 0.50 × eval_vx
+            #     — equivalent to ≥0.075 m/s at vx=0.15, ≥0.10 at vx=0.20
+            #   cmd_vs_achieved_forward ≤ 0.50 × eval_vx
+            #     — same scaling as the velocity floor
+            #   step_length ≥ max(0.030, 0.50 × vx × cycle/2)
+            #     — equivalent to ≥0.030 m at vx=0.15 cycle=0.72 (the old
+            #     calibration), ≥0.048 m at Phase 9D vx=0.20 cycle=0.96
+            # The 0.030 lower bound is retained as the "absolute
+            # shuffle floor" — any operating point where the scaled
+            # value is below 0.030 m is below the shuffling regime.
             max_ep = float(getattr(config.env, "max_episode_steps", 500) or 500)
-            g4_vel_ok = fwd >= 0.075
-            g4_cmd_err_ok = cmd_err <= 0.075
-            g4_step_len_ok = step_len >= 0.030
+            eval_vx = float(getattr(config.env, "eval_velocity_cmd", -1.0))
+            if eval_vx < 0:
+                # Sentinel: eval_velocity_cmd not pinned (sampling mode).
+                # Fall back to historical vx=0.15 calibration.
+                eval_vx = 0.15
+            from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPCfg
+            cycle_time_s = float(_ZMPCfg.cycle_time_s)
+            g4_vel_floor = 0.50 * eval_vx
+            g4_cmd_err_ceiling = 0.50 * eval_vx
+            g4_step_len_floor = max(0.030, 0.50 * eval_vx * cycle_time_s / 2.0)
+            g4_vel_ok = fwd >= g4_vel_floor
+            g4_cmd_err_ok = cmd_err <= g4_cmd_err_ceiling
+            g4_step_len_ok = step_len >= g4_step_len_floor
             g4_ep_len_ok = ep_len >= 0.95 * max_ep
             g5_residual_ok = res_max <= 0.20
             g5_ratio_ok = 0.6 <= vx_cmd_ratio <= 1.5
@@ -2007,10 +2041,10 @@ def train(
 
             # G4 promotion-horizon gate (pass/fail per iter).
             print(
-                f"  └─ G4: "
-                f"vel\u22650.075 {_mark(g4_vel_ok)} | "
-                f"cmd_err\u22640.075 {_mark(g4_cmd_err_ok)} | "
-                f"step_len\u22650.030 {_mark(g4_step_len_ok)} | "
+                f"  └─ G4 (eval_vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
+                f"vel\u2265{g4_vel_floor:.3f} {_mark(g4_vel_ok)} | "
+                f"cmd_err\u2264{g4_cmd_err_ceiling:.3f} {_mark(g4_cmd_err_ok)} | "
+                f"step_len\u2265{g4_step_len_floor:.3f} {_mark(g4_step_len_ok)} | "
                 f"ep_len\u2265{int(0.95 * max_ep)} {_mark(g4_ep_len_ok)}"
             )
 
@@ -2018,7 +2052,9 @@ def train(
             print(
                 f"  └─ G5: "
                 f"|\u0394q|hipL/R={res_hpL:.2f}/{res_hpR:.2f} "
-                f"kneeL/R={res_knL:.2f}/{res_knR:.2f} \u22640.20 {_mark(g5_residual_ok)} | "
+                f"kneeL/R={res_knL:.2f}/{res_knR:.2f} "
+                f"ankle_rollL/R={res_arL:.2f}/{res_arR:.2f} "
+                f"\u22640.20 {_mark(g5_residual_ok)} | "
                 f"vx/cmd\u2208[0.6,1.5] {_mark(g5_ratio_ok)}"
             )
 

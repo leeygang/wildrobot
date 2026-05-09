@@ -8,6 +8,116 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-training-code-phase9D-compliance] - 2026-05-09: training-code review fixes — command-scaled G4 floors + stale-default cleanup before smoke7 launch
+
+### Context
+
+Targeted training-code review (post Phase 9D + Phase 8 + parity rename)
+to ensure the training stack is fully compliant with the latest
+operating point and metric conventions before launching the next PPO
+smoke.  Review found 10 items (1 High, 4 Medium, 5 Low); all 10 fixed
+in this commit.
+
+### High-impact fix — G4 console floors are now command-scaled
+
+`training/core/training_loop.py:1972-2020` previously hardcoded G4
+PASS/FAIL thresholds calibrated for vx=0.15:
+- `forward_velocity ≥ 0.075` (= 0.5× vx at vx=0.15)
+- `cmd_vs_achieved_forward ≤ 0.075`
+- `step_length ≥ 0.030`
+
+Under the Phase 9D operating point (vx=0.20), the velocity floor
+implies only **38% tracking** instead of the doc-intended 50%, and
+the stride floor only **32% of nominal stride** instead of 50%.
+The training loop would print PASS for runs that don't meet the
+documented gate.
+
+Fix: pull `eval_velocity_cmd` from the env config and `cycle_time_s`
+from `ZMPWalkConfig`; compute floors live:
+- `g4_vel_floor = 0.50 × eval_vx` → 0.075 at vx=0.15, 0.10 at vx=0.20
+- `g4_cmd_err_ceiling = 0.50 × eval_vx` (same scaling)
+- `g4_step_len_floor = max(0.030, 0.50 × eval_vx × cycle/2)`
+  → 0.030 at vx=0.15 cycle=0.72, **0.048 at vx=0.20 cycle=0.96**
+  (matches the documented Phase 9D launch checklist value of
+  ≥0.050 m, after rounding)
+
+The 0.030 m absolute lower bound is retained as the "shuffle floor"
+— any operating point where the scaled value falls below 0.030 m is
+in the shuffling regime and shouldn't pass G4 regardless.
+
+Console line now prints the live thresholds:
+```
+  └─ G4 (eval_vx=0.200, cycle=0.96s):
+     vel≥0.100 ✓ | cmd_err≤0.100 ✓ | step_len≥0.048 ✓ | ep_len≥475 ✓
+```
+
+Sentinel mode (`eval_velocity_cmd < 0`, sampling): falls back to
+historical vx=0.15 calibration so multi-cmd training rollouts that
+don't pin the eval cmd still get a sensible floor.
+
+### Medium fixes
+
+- **`training/envs/wildrobot_env.py:451`** — stale fallback
+  `getattr(..., "loc_ref_offline_command_vx", 0.15)` → 0.20 (matches
+  Phase 9D dataclass default).
+- **`training/configs/training_config.py:159`** — stale YAML loader
+  fallback `env.get(..., 0.15)` → 0.20.
+- **`training/eval/c2_stabilizer.py:120-125`** — `com_height_m`,
+  `leg_length_m`, and `cycle_time_s` defaults now pulled from
+  `ZMPWalkConfig` via `field(default_factory=...)`.  Previously
+  hardcoded to `0.4714 / 0.413 / 0.64`, which silently disagreed
+  with the planner's `0.458 / 0.373 / 0.96` — biasing the LIPM ω
+  and the `Δhip ≈ Δfoot_x / leg` mapping if used standalone.  The
+  viewer's `cycle_time_s` override at `view_zmp_in_mujoco.py:489`
+  still works.
+
+### Low fixes
+
+- **`training/eval/view_zmp_in_mujoco.py:381`** — fallback shape
+  `np.zeros(19, ...)` (wrong under 21-DOF) → `np.zeros(traj.q_ref.shape[1], ...)`.
+- **`training/eval/view_zmp_in_mujoco.py:11-27, 726`** — Usage
+  docstring examples + `--vx` CLI default refreshed from 0.15 → 0.20
+  (Phase 9D operating point).
+- **`training/eval/visualize_reference_library.py:121`** — dummy
+  fixture `cycle_time = 0.50` → live `ZMPWalkConfig.cycle_time_s`.
+- **`training/core/training_loop.py:1965, 2052-2057`** — G5 console
+  line now includes ankle_roll residuals.  Previously `res_max`
+  aggregated only hip_pitch + knee, under-reporting the worst
+  residual relative to the env's authoritative `g5_residuals` sum
+  (which already includes ankle_roll per
+  `wildrobot_env.py:1838-1841`).
+
+### Deferred (cleanup, not blocking)
+
+**v0.19.x deprecated paths** still surfaced in the config DAG
+(`loc_ref_v2_*`, `walking_ref_v2`, `loc_ref_support_health`, `M2.5`
+references in `training/configs/training_config.py:209-365` and
+`training/configs/training_runtime_config.py:205-376`).  Per the
+review: not bugs (the v0.20.1 walking_ref path doesn't read these),
+but candidates for dead-code pruning in a follow-up.
+
+### Tests
+
+80/80 reference + smoke + env-contract suite still PASS:
+- `tests/test_v0200a_contract.py`
+- `tests/test_v0200c_geometry.py`
+- `tests/test_phase10_diagnostic.py`
+- `tests/test_v0201_env_zero_action.py`
+- `tests/test_reference_lifecycle_phase5.py`
+- `tests/test_runtime_reference_service.py`
+- `training/tests/test_config_load_smoke6.py`
+- `training/tests/test_smoke7_eval_cmd_behavior.py`
+
+### Smoke7 readiness
+
+Training-code stack is now Phase 9D + Phase 8 + 21-DOF compliant.
+Open prerequisites for smoke7 launch:
+1. Full TB-side parity refresh on Linux machine
+   (`bash tools/run_v0_20_eval.sh` — needs joblib/lz4 in TB venv).
+2. v0.19.x dead-code pruning (cosmetic; not blocking).
+
+---
+
 ## [v0.20.1-parity-cadence-gate-and-wr-side-refresh] - 2026-05-09: deprecate cadence_gate too (Hz is length-dependent); refresh parity_report.json WR-side to live cfg
 
 ### Context

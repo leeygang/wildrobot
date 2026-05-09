@@ -156,7 +156,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             else str(env.get("loc_ref_offline_library_path"))
         ),
         loc_ref_offline_command_vx=float(
-            env.get("loc_ref_offline_command_vx", 0.15)
+            # Phase 9D operating point.  Matches the dataclass default
+            # in training_runtime_config.py and the smoke YAML.
+            env.get("loc_ref_offline_command_vx", 0.20)
         ),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",

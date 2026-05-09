@@ -116,9 +116,15 @@ def _create_dummy_library(out_path: str) -> None:
         ReferenceTrajectory,
     )
 
+    # Test fixture only.  Use the live ZMPWalkConfig cycle_time so the
+    # dummy library matches the operating-point cadence of the planner
+    # this tool inspects.  n_joints stays at 8 (the 8 shared leg joints
+    # exercised by ReferenceLibrary; arm joints are not part of the
+    # walking q_ref schema).
+    from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPCfg
     n_joints = 8  # 4 per leg for WildRobot v2
     dt = 0.02
-    cycle_time = 0.50
+    cycle_time = float(_ZMPCfg.cycle_time_s)
     n_steps = int(round(cycle_time / dt))
 
     meta = ReferenceLibraryMeta(
