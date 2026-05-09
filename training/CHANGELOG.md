@@ -8,6 +8,119 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-parity-metric-rename-and-deprecate-abs-gates] - 2026-05-09: explicit `_abs` / `_norm` suffixes; deprecate body-size-confounded gates from PASS/FAIL
+
+### Context
+
+The Phase 8 retry above surfaced (yet again) the body-size confound
+that Phase 9A → 9D first hit on `cadence_norm`: the parity tool's
+absolute swing_foot_z_step_max gate compared meters across robots of
+different sizes, reporting WR as "jerkier than TB" while every
+size-aware reading of the same physical motion (per-leg, per-com-height,
+per-clearance) showed WR was actually smoother than TB.
+
+This is a recurring class of bug.  The fix is twofold:
+1. Make the body-size awareness explicit in the metric name (so callers
+   can't confuse the two by accident).
+2. Stop scoring body-size-confounded absolute gates as PASS/FAIL.
+
+### Patch summary
+
+**Metric rename** — explicit suffix convention:
+- `_abs` suffix on body-size-confounded absolute metrics (meters, m/s,
+  Hz that scale with body size)
+- `_norm` suffix on body-size-aware normalised metrics
+- No suffix on body-size-independent quantities (joint angles in
+  radians, dimensionless fractions/counts)
+
+Renamed across `tools/reference_geometry_parity.py` and
+`tools/phase6_wr_probe.py` via word-boundary-aware regex (195
+substitutions total):
+
+| Old | New |
+|---|---|
+| `step_length_mean_m` (and `min`/`max`) | `step_length_mean_m_abs` (etc.) |
+| `swing_clearance_mean_m` (and `min`) | `swing_clearance_mean_m_abs` (etc.) |
+| `touchdown_speed_proxy_mps` | `touchdown_speed_proxy_mps_abs` |
+| `foot_z_step_max_m` | `foot_z_step_max_m_abs` |
+| `pelvis_z_step_max_m` | `pelvis_z_step_max_m_abs` |
+| `swing_foot_z_step_max_m` | `swing_foot_z_step_max_m_abs` |
+| `touchdown_rate_hz` | `touchdown_rate_hz_abs` |
+| `achieved_forward_mps` | `achieved_forward_mps_abs` |
+| `terminal_root_x_m` | `terminal_root_x_m_abs` |
+| `touchdown_step_length_mean_m` (and `min`) | `touchdown_step_length_mean_m_abs` (etc.) |
+| `step_length_per_leg` | `step_length_per_leg_norm` |
+| `swing_clearance_per_com_height` | `swing_clearance_per_com_height_norm` |
+| `swing_foot_z_step_per_clearance` | `swing_foot_z_step_per_clearance_norm` |
+| `forward_speed_froude` | `forward_speed_froude_norm` |
+| `achieved_forward_per_cmd` | `achieved_forward_per_cmd_norm` |
+| `terminal_drift_rate_per_leg_per_s` | `terminal_drift_rate_per_leg_per_s_norm` |
+| `td_step_length_per_leg` | `td_step_length_per_leg_norm` |
+
+Already-correctly-named (kept as-is): `cadence_froude_norm`,
+`shared_leg_q_step_max_rad`, `contact_flips_per_cycle`,
+`double_support_frac`, `touchdown_balance_ratio`, `survived_steps`,
+`shared_leg_rmse_rad`, `ref_contact_match_frac`,
+`joint_limit_step_frac`.
+
+**Gate deprecation** — body-size-confounded gates in
+`_fk_parity_row` and `_smoothness_parity_row` no longer contribute
+to PASS/FAIL verdicts:
+- Removed from PASS/FAIL: `step_len_gate`, `clearance_gate`,
+  `speed_gate` (FK), `pelvis_gate`, `swing_gate` (smoothness)
+- Kept as PASS/FAIL: `cadence_gate`, `ds_gate` (FK — body-size-
+  independent), `q_gate` (joint angles), `flip_gate` (count)
+- Old body-size-confounded ratios now emitted as
+  `*_INFO` keys in the parity row JSON (e.g. `step_len_ratio_abs_INFO`)
+  for diagnostic context only
+
+The principled replacements live in `_normalized_fk_parity_row`
+(already body-size-aware): `step_per_leg`, `clearance_per_h`,
+`cadence_norm`, `swing_step_per_clr`.
+
+**JSON migration** — `tools/parity_report.json`,
+`tools/phase6_wr_probe.json`, `tools/phase10_diagnostic.json` all
+migrated to the renamed schema in-place via
+`/tmp/migrate_parity_json.py`.
+
+**Probe table reorganisation** — `tools/phase6_wr_probe.py`'s
+verdict table now splits cleanly:
+- "WR vs TB-2xc body-size-NORMALISED gates (PASS/FAIL)" — 5 size-aware
+  gates with explicit verdicts
+- "WR vs TB-2xc absolute INFO ratios (NOT GATES)" — 4
+  body-size-confounded ratios for context, no PASS/FAIL
+
+### Why this matters
+
+Three distinct decisions in v0.20.x have hit this class of bug:
+- Phase 9A vs 9B operating-vx fork (`cadence_norm` — half-fixed at 9A,
+  closed at 9D)
+- Parity tool `--tb-vx` asymmetric refresh (asymmetric absolute
+  comparisons across operating-points were incoherent)
+- Phase 8 retry `swing_foot_z_step_max` (this entry)
+
+Each time, an absolute meters-vs-meters comparison across
+different-sized robots produced a misleading "WR worse than TB"
+verdict that the size-aware companion contradicted.  Making the
+suffix convention explicit + removing absolute gates from PASS/FAIL
+removes the recurring footgun.
+
+### Tests
+
+80/80 reference + smoke + env-contract suite still PASS.
+
+### Open follow-ups
+
+1. **Refresh `tools/parity_report.json` on the Linux machine** with
+   the renamed schema generated end-to-end (rather than the in-place
+   key migration).  No semantic change vs the migrated JSON; the
+   regenerated file just has fresh TB-side numbers.
+2. **Update `tools/phase10_diagnostic.json` + the probe JSON** if
+   they get regenerated; the migration script handles the schema
+   renames idempotently.
+
+---
+
 ## [v0.20.1-phase8-retry-foot-step-height-0.05] - 2026-05-09: foot_step_height 0.045 → 0.05 closes the last normalised P1A FAIL; small closed-loop survival cost
 
 ### Context

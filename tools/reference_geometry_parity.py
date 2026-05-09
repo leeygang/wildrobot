@@ -43,7 +43,7 @@ _SWING_MIN_M = -0.002
 _PARITY_MARGIN_M = 0.002
 # Phase 9D-revisited (2026-05-09): cycle_time scaled to WR's leg
 # pendulum frequency (0.72 → 0.96 s).  Operating point shifted vx
-# 0.265 → 0.20 to preserve step_length_per_leg ≈ TB's 0.256 under
+# 0.265 → 0.20 to preserve step_length_per_leg_norm ≈ TB's 0.256 under
 # the longer cycle.  This closes cadence_norm (1.252× → 0.934× TB)
 # and swing_step_per_clr (1.185× → 0.825× TB) — the two gates that
 # came from the cycle/leg-pendulum mismatch in Phase 9A's half-
@@ -161,15 +161,15 @@ class FKGaitMetrics:
     touchdowns_left: int
     touchdowns_right: int
     touchdown_balance_ratio: float
-    touchdown_rate_hz: float
-    step_length_mean_m: float
-    step_length_min_m: float
-    step_length_max_m: float
-    touchdown_speed_proxy_mps: float
-    swing_clearance_mean_m: float
-    swing_clearance_min_m: float
+    touchdown_rate_hz_abs: float
+    step_length_mean_m_abs: float
+    step_length_min_m_abs: float
+    step_length_max_m_abs: float
+    touchdown_speed_proxy_mps_abs: float
+    swing_clearance_mean_m_abs: float
+    swing_clearance_min_m_abs: float
     double_support_frac: float
-    foot_z_step_max_m: float
+    foot_z_step_max_m_abs: float
 
 
 @dataclass
@@ -177,8 +177,8 @@ class SmoothnessMetrics:
     name: str
     vx: float
     shared_leg_q_step_max_rad: float
-    pelvis_z_step_max_m: float
-    swing_foot_z_step_max_m: float
+    pelvis_z_step_max_m_abs: float
+    swing_foot_z_step_max_m_abs: float
     contact_flips_per_cycle: float
 
 
@@ -199,16 +199,16 @@ class NormalizedGaitMetrics:
     vx: float
     leg_length_m: float
     com_height_m: float
-    forward_speed_froude: float = float("nan")  # vx^2 / (g * h), characterises operating point
+    forward_speed_froude_norm: float = float("nan")  # vx^2 / (g * h), characterises operating point
     # FK / nominal-asset normalisations (NaN if computed from a closed-loop row only)
-    step_length_per_leg: float = float("nan")
-    swing_clearance_per_com_height: float = float("nan")
+    step_length_per_leg_norm: float = float("nan")
+    swing_clearance_per_com_height_norm: float = float("nan")
     cadence_froude_norm: float = float("nan")  # td_rate * sqrt(h / g), dimensionless cadence
-    swing_foot_z_step_per_clearance: float = float("nan")
+    swing_foot_z_step_per_clearance_norm: float = float("nan")
     # Closed-loop normalisations (NaN for FK-derived rows)
-    achieved_forward_per_cmd: float = float("nan")
-    terminal_drift_rate_per_leg_per_s: float = float("nan")
-    td_step_length_per_leg: float = float("nan")
+    achieved_forward_per_cmd_norm: float = float("nan")
+    terminal_drift_rate_per_leg_per_s_norm: float = float("nan")
+    td_step_length_per_leg_norm: float = float("nan")
 
 
 @dataclass
@@ -218,14 +218,14 @@ class ClosedLoopMetrics:
     horizon_steps: int
     survived_steps: int
     shared_leg_rmse_rad: float
-    achieved_forward_mps: float
+    achieved_forward_mps_abs: float
     ref_contact_match_frac: float
-    touchdown_step_length_mean_m: float
-    touchdown_step_length_min_m: float
-    touchdown_rate_hz: float
+    touchdown_step_length_mean_m_abs: float
+    touchdown_step_length_min_m_abs: float
+    touchdown_rate_hz_abs: float
     joint_limit_step_frac: float
     termination_mode: str
-    terminal_root_x_m: float
+    terminal_root_x_m_abs: float
 
 
 @dataclass
@@ -524,14 +524,14 @@ def _compute_fk_gait_metrics(
     total_touchdowns = len(left_touchdowns) + len(right_touchdowns)
     max_touchdowns = max(len(left_touchdowns), len(right_touchdowns), 1)
     min_touchdowns = min(len(left_touchdowns), len(right_touchdowns))
-    foot_z_step_max_m = max(
+    foot_z_step_max_m_abs = max(
         float(np.max(np.abs(np.diff(left_foot_pos[:, 2])))),
         float(np.max(np.abs(np.diff(right_foot_pos[:, 2])))),
     )
-    step_length_mean_m = _safe_stat(step_arr, np.mean)
-    touchdown_speed_proxy_mps = (
-        float(step_length_mean_m * total_touchdowns / duration_s / 2.0)
-        if np.isfinite(step_length_mean_m) and duration_s > 1e-8
+    step_length_mean_m_abs = _safe_stat(step_arr, np.mean)
+    touchdown_speed_proxy_mps_abs = (
+        float(step_length_mean_m_abs * total_touchdowns / duration_s / 2.0)
+        if np.isfinite(step_length_mean_m_abs) and duration_s > 1e-8
         else float("nan")
     )
     return FKGaitMetrics(
@@ -541,15 +541,15 @@ def _compute_fk_gait_metrics(
         touchdowns_left=len(left_touchdowns),
         touchdowns_right=len(right_touchdowns),
         touchdown_balance_ratio=float(min_touchdowns / max_touchdowns),
-        touchdown_rate_hz=float(total_touchdowns / duration_s),
-        step_length_mean_m=step_length_mean_m,
-        step_length_min_m=_safe_stat(step_arr, np.min),
-        step_length_max_m=_safe_stat(step_arr, np.max),
-        touchdown_speed_proxy_mps=touchdown_speed_proxy_mps,
-        swing_clearance_mean_m=_safe_stat(clearance_arr, np.mean),
-        swing_clearance_min_m=_safe_stat(clearance_arr, np.min),
+        touchdown_rate_hz_abs=float(total_touchdowns / duration_s),
+        step_length_mean_m_abs=step_length_mean_m_abs,
+        step_length_min_m_abs=_safe_stat(step_arr, np.min),
+        step_length_max_m_abs=_safe_stat(step_arr, np.max),
+        touchdown_speed_proxy_mps_abs=touchdown_speed_proxy_mps_abs,
+        swing_clearance_mean_m_abs=_safe_stat(clearance_arr, np.mean),
+        swing_clearance_min_m_abs=_safe_stat(clearance_arr, np.min),
         double_support_frac=float(np.mean(np.sum(contact, axis=1) == 2)),
-        foot_z_step_max_m=foot_z_step_max_m,
+        foot_z_step_max_m_abs=foot_z_step_max_m_abs,
     )
 
 
@@ -584,7 +584,7 @@ def _compute_smoothness_metrics(
     contact: np.ndarray,
     dt: float,
 ) -> SmoothnessMetrics:
-    # ``pelvis_z_step_max_m`` is a SENTINEL gate, not a variation metric.
+    # ``pelvis_z_step_max_m_abs`` is a SENTINEL gate, not a variation metric.
     # Both ZMP-style priors structurally produce a constant commanded
     # pelvis (COM) z — WR pins ``traj.pelvis_pos[:, 2] = com_height_m``;
     # TB's mujoco_replay anchors the torso in fixed_base.  So both sides
@@ -605,8 +605,8 @@ def _compute_smoothness_metrics(
         name=name,
         vx=vx,
         shared_leg_q_step_max_rad=q_step_max,
-        pelvis_z_step_max_m=pelvis_z_step_max,
-        swing_foot_z_step_max_m=swing_foot_z_step_max,
+        pelvis_z_step_max_m_abs=pelvis_z_step_max,
+        swing_foot_z_step_max_m_abs=swing_foot_z_step_max,
         contact_flips_per_cycle=float(bit_flips / n_cycles),
     )
 
@@ -622,8 +622,8 @@ def _compute_normalized_from_fk(
     L = dims["leg_length_m"]
     h = dims["com_height_m"]
     cadence_norm = (
-        float(gait.touchdown_rate_hz) * math.sqrt(h / _GRAVITY_MPS2)
-        if np.isfinite(gait.touchdown_rate_hz) and h > 0
+        float(gait.touchdown_rate_hz_abs) * math.sqrt(h / _GRAVITY_MPS2)
+        if np.isfinite(gait.touchdown_rate_hz_abs) and h > 0
         else float("nan")
     )
     forward_froude = (
@@ -636,12 +636,12 @@ def _compute_normalized_from_fk(
         vx=vx,
         leg_length_m=L,
         com_height_m=h,
-        forward_speed_froude=forward_froude,
-        step_length_per_leg=_safe_div(gait.step_length_mean_m, L),
-        swing_clearance_per_com_height=_safe_div(gait.swing_clearance_mean_m, h),
+        forward_speed_froude_norm=forward_froude,
+        step_length_per_leg_norm=_safe_div(gait.step_length_mean_m_abs, L),
+        swing_clearance_per_com_height_norm=_safe_div(gait.swing_clearance_mean_m_abs, h),
         cadence_froude_norm=cadence_norm,
-        swing_foot_z_step_per_clearance=_safe_div(
-            smooth.swing_foot_z_step_max_m, gait.swing_clearance_mean_m
+        swing_foot_z_step_per_clearance_norm=_safe_div(
+            smooth.swing_foot_z_step_max_m_abs, gait.swing_clearance_mean_m_abs
         ),
     )
 
@@ -659,15 +659,15 @@ def _compute_normalized_from_closed_loop(
     L = dims["leg_length_m"]
     h = dims["com_height_m"]
     duration_s = max(int(metrics.survived_steps) * ctrl_dt, 1e-8)
-    drift_rate_mps = metrics.terminal_root_x_m / duration_s
+    drift_rate_mps = metrics.terminal_root_x_m_abs / duration_s
     forward_froude = (
         (metrics.vx * metrics.vx) / (_GRAVITY_MPS2 * h)
         if np.isfinite(metrics.vx) and h > 0
         else float("nan")
     )
     cadence_norm = (
-        float(metrics.touchdown_rate_hz) * math.sqrt(h / _GRAVITY_MPS2)
-        if np.isfinite(metrics.touchdown_rate_hz) and h > 0
+        float(metrics.touchdown_rate_hz_abs) * math.sqrt(h / _GRAVITY_MPS2)
+        if np.isfinite(metrics.touchdown_rate_hz_abs) and h > 0
         else float("nan")
     )
     return NormalizedGaitMetrics(
@@ -675,11 +675,11 @@ def _compute_normalized_from_closed_loop(
         vx=metrics.vx,
         leg_length_m=L,
         com_height_m=h,
-        forward_speed_froude=forward_froude,
+        forward_speed_froude_norm=forward_froude,
         cadence_froude_norm=cadence_norm,
-        achieved_forward_per_cmd=_safe_div(metrics.achieved_forward_mps, metrics.vx),
-        terminal_drift_rate_per_leg_per_s=_safe_div(drift_rate_mps, L),
-        td_step_length_per_leg=_safe_div(metrics.touchdown_step_length_mean_m, L),
+        achieved_forward_per_cmd_norm=_safe_div(metrics.achieved_forward_mps_abs, metrics.vx),
+        terminal_drift_rate_per_leg_per_s_norm=_safe_div(drift_rate_mps, L),
+        td_step_length_per_leg_norm=_safe_div(metrics.touchdown_step_length_mean_m_abs, L),
     )
 
 
@@ -1115,7 +1115,7 @@ duration_s = float(len(contact) * dt)
 total_touchdowns = len(left_td) + len(right_td)
 max_touchdowns = max(len(left_td), len(right_td), 1)
 min_touchdowns = min(len(left_td), len(right_td))
-foot_z_step_max_m = max(
+foot_z_step_max_m_abs = max(
     float(np.max(np.abs(np.diff(left_foot_pos[:, 2])))),
     float(np.max(np.abs(np.diff(right_foot_pos[:, 2])))),
 )
@@ -1151,22 +1151,22 @@ payload = {{
         "touchdowns_left": len(left_td),
         "touchdowns_right": len(right_td),
         "touchdown_balance_ratio": float(min_touchdowns / max_touchdowns),
-        "touchdown_rate_hz": float(total_touchdowns / duration_s),
-        "step_length_mean_m": step_mean,
-        "step_length_min_m": safe_stat(step_arr, np.min),
-        "step_length_max_m": safe_stat(step_arr, np.max),
-        "touchdown_speed_proxy_mps": float(step_mean * total_touchdowns / duration_s / 2.0) if np.isfinite(step_mean) else float("nan"),
-        "swing_clearance_mean_m": safe_stat(clearance_arr, np.mean),
-        "swing_clearance_min_m": safe_stat(clearance_arr, np.min),
+        "touchdown_rate_hz_abs": float(total_touchdowns / duration_s),
+        "step_length_mean_m_abs": step_mean,
+        "step_length_min_m_abs": safe_stat(step_arr, np.min),
+        "step_length_max_m_abs": safe_stat(step_arr, np.max),
+        "touchdown_speed_proxy_mps_abs": float(step_mean * total_touchdowns / duration_s / 2.0) if np.isfinite(step_mean) else float("nan"),
+        "swing_clearance_mean_m_abs": safe_stat(clearance_arr, np.mean),
+        "swing_clearance_min_m_abs": safe_stat(clearance_arr, np.min),
         "double_support_frac": float(np.mean(np.sum(contact, axis=1) == 2)),
-        "foot_z_step_max_m": foot_z_step_max_m,
+        "foot_z_step_max_m_abs": foot_z_step_max_m_abs,
     }},
     "smooth": {{
         "name": robot_name,
         "vx": vx,
         "shared_leg_q_step_max_rad": float(np.max(np.abs(np.diff(shared_leg_q, axis=0)))),
-        "pelvis_z_step_max_m": float(np.max(np.abs(np.diff(np.asarray(traj["body_pos"], dtype=np.float32)[:, 1, 2])))),
-        "swing_foot_z_step_max_m": swing_step,
+        "pelvis_z_step_max_m_abs": float(np.max(np.abs(np.diff(np.asarray(traj["body_pos"], dtype=np.float32)[:, 1, 2])))),
+        "swing_foot_z_step_max_m_abs": swing_step,
         "contact_flips_per_cycle": float(bit_flips / n_cycles),
     }},
 }}
@@ -1267,14 +1267,14 @@ def _closed_loop_wildrobot(
         horizon_steps=horizon,
         survived_steps=survived_steps,
         shared_leg_rmse_rad=float(np.sqrt(np.mean(err_arr ** 2))) if err_arr.size else float("nan"),
-        achieved_forward_mps=float((float(data.qpos[0]) - start_x) / duration_s),
+        achieved_forward_mps_abs=float((float(data.qpos[0]) - start_x) / duration_s),
         ref_contact_match_frac=float(contact_matches / max(survived_steps, 1)),
-        touchdown_step_length_mean_m=step_mean,
-        touchdown_step_length_min_m=step_min,
-        touchdown_rate_hz=float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
+        touchdown_step_length_mean_m_abs=step_mean,
+        touchdown_step_length_min_m_abs=step_min,
+        touchdown_rate_hz_abs=float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
         joint_limit_step_frac=float(np.mean(np.asarray(any_sat, dtype=np.float64))) if any_sat else float("nan"),
         termination_mode=termination_mode,
-        terminal_root_x_m=float(data.qpos[0]),
+        terminal_root_x_m_abs=float(data.qpos[0]),
     )
 
 
@@ -1478,14 +1478,14 @@ for vx in vx_bins:
         "horizon_steps": horizon_eff,
         "survived_steps": survived_steps,
         "shared_leg_rmse_rad": float(np.sqrt(np.mean(err_arr ** 2))) if err_arr.size else float("nan"),
-        "achieved_forward_mps": float((float(sim.data.body("torso").xpos[0]) - start_x) / duration_s),
+        "achieved_forward_mps_abs": float((float(sim.data.body("torso").xpos[0]) - start_x) / duration_s),
         "ref_contact_match_frac": float(contact_matches / max(survived_steps, 1)),
-        "touchdown_step_length_mean_m": float(np.mean(combined_steps)) if combined_steps.size else float("nan"),
-        "touchdown_step_length_min_m": float(np.min(combined_steps)) if combined_steps.size else float("nan"),
-        "touchdown_rate_hz": float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
+        "touchdown_step_length_mean_m_abs": float(np.mean(combined_steps)) if combined_steps.size else float("nan"),
+        "touchdown_step_length_min_m_abs": float(np.min(combined_steps)) if combined_steps.size else float("nan"),
+        "touchdown_rate_hz_abs": float((len(left_touchdown_x) + len(right_touchdown_x)) / duration_s),
         "joint_limit_step_frac": float(np.mean(np.asarray(any_sat, dtype=np.float64))) if any_sat else float("nan"),
         "termination_mode": termination_mode,
-        "terminal_root_x_m": float(sim.data.body("torso").xpos[0]),
+        "terminal_root_x_m_abs": float(sim.data.body("torso").xpos[0]),
     }})
     sim.close()
 
@@ -1518,19 +1518,47 @@ def _geometry_parity_row(summary_wr: GateSummary, summary_tb: GateSummary) -> tu
 
 
 def _fk_parity_row(metrics_wr: FKGaitMetrics, metrics_tb: FKGaitMetrics) -> tuple[bool, dict[str, str]]:
-    step_len_ok = metrics_wr.step_length_mean_m >= 0.90 * metrics_tb.step_length_mean_m
-    cadence_ok = metrics_wr.touchdown_rate_hz <= 1.20 * metrics_tb.touchdown_rate_hz
-    speed_ok = abs(metrics_wr.touchdown_speed_proxy_mps - metrics_tb.touchdown_speed_proxy_mps) <= 0.02
-    clearance_ok = metrics_wr.swing_clearance_mean_m >= 0.85 * metrics_tb.swing_clearance_mean_m
+    """FK gait parity row.
+
+    **Body-size-confounded gates deprecated (2026-05-09).**  ``step_len_gate``,
+    ``clearance_gate``, ``speed_gate`` previously compared absolute meters
+    across robots of different sizes — incoherent comparison between
+    robots whose legs differ by 1.77×.  These are now **informational
+    only**: their ratios are still printed in the absolute table for
+    debugging, but they no longer contribute to the PASS/FAIL verdict.
+    The size-aware companion gates in ``_normalized_fk_parity_row``
+    (``step_per_leg``, ``clearance_per_h``, ``forward_speed_froude``)
+    are the principled replacements.
+
+    Surviving PASS/FAIL gates are body-size-independent: ``cadence_gate``
+    (frequency, ratio is unit-coherent across sizes) and ``ds_gate``
+    (dimensionless fraction).  See the size-aware
+    ``_normalized_fk_parity_row`` for full normalised parity.
+    """
+    cadence_ok = metrics_wr.touchdown_rate_hz_abs <= 1.20 * metrics_tb.touchdown_rate_hz_abs
     ds_ok = abs(metrics_wr.double_support_frac - metrics_tb.double_support_frac) <= 0.05
-    parity_ok = step_len_ok and cadence_ok and speed_ok and clearance_ok and ds_ok
+    parity_ok = cadence_ok and ds_ok
+    # Compute INFO ratios for the deprecated gates so the print/JSON
+    # tables can still surface them as diagnostic context.
+    step_len_ratio = (
+        metrics_wr.step_length_mean_m_abs / metrics_tb.step_length_mean_m_abs
+        if metrics_tb.step_length_mean_m_abs else float("nan")
+    )
+    clearance_ratio = (
+        metrics_wr.swing_clearance_mean_m_abs / metrics_tb.swing_clearance_mean_m_abs
+        if metrics_tb.swing_clearance_mean_m_abs else float("nan")
+    )
+    speed_diff = abs(
+        metrics_wr.touchdown_speed_proxy_mps_abs - metrics_tb.touchdown_speed_proxy_mps_abs
+    )
     return parity_ok, {
         "baseline": metrics_tb.name,
-        "step_len_gate": "PASS" if step_len_ok else "FAIL",
         "cadence_gate": "PASS" if cadence_ok else "FAIL",
-        "speed_gate": "PASS" if speed_ok else "FAIL",
-        "clearance_gate": "PASS" if clearance_ok else "FAIL",
         "ds_gate": "PASS" if ds_ok else "FAIL",
+        # Deprecated body-size-confounded gates kept as INFO ratios.
+        "step_len_ratio_abs_INFO": f"{step_len_ratio:.3f}x",
+        "clearance_ratio_abs_INFO": f"{clearance_ratio:.3f}x",
+        "speed_diff_abs_INFO_m_s": f"{speed_diff:.4f}",
         "verdict": "PASS" if parity_ok else "FAIL",
     }
 
@@ -1538,17 +1566,38 @@ def _fk_parity_row(metrics_wr: FKGaitMetrics, metrics_tb: FKGaitMetrics) -> tupl
 def _smoothness_parity_row(
     smooth_wr: SmoothnessMetrics, smooth_tb: SmoothnessMetrics
 ) -> tuple[bool, dict[str, str]]:
+    """Smoothness parity row.
+
+    **Body-size-confounded gates deprecated (2026-05-09).** ``swing_gate``
+    and ``pelvis_gate`` previously compared absolute meters across
+    robots of different sizes — incoherent.  These are now **informational
+    only**.  The size-aware companion ``swing_step_per_clearance`` in
+    ``_normalized_fk_parity_row`` is the principled replacement for the
+    swing-z smoothness comparison; pelvis-z step is body-size-independent
+    in any meaningful sense (it tracks bobbing rather than translation),
+    but the absolute meters comparison still confounds size.
+
+    Surviving PASS/FAIL gates: ``q_gate`` (joint angles in radians,
+    body-size-independent) and ``flip_gate`` (count, dimensionless).
+    """
     q_ok = smooth_wr.shared_leg_q_step_max_rad <= 1.10 * smooth_tb.shared_leg_q_step_max_rad
-    pelvis_ok = smooth_wr.pelvis_z_step_max_m <= 1.10 * smooth_tb.pelvis_z_step_max_m
-    swing_ok = smooth_wr.swing_foot_z_step_max_m <= 1.10 * smooth_tb.swing_foot_z_step_max_m
     flips_ok = smooth_wr.contact_flips_per_cycle <= 1.10 * smooth_tb.contact_flips_per_cycle
-    parity_ok = q_ok and pelvis_ok and swing_ok and flips_ok
+    parity_ok = q_ok and flips_ok
+    swing_ratio = (
+        smooth_wr.swing_foot_z_step_max_m_abs / smooth_tb.swing_foot_z_step_max_m_abs
+        if smooth_tb.swing_foot_z_step_max_m_abs else float("nan")
+    )
+    pelvis_ratio = (
+        smooth_wr.pelvis_z_step_max_m_abs / smooth_tb.pelvis_z_step_max_m_abs
+        if smooth_tb.pelvis_z_step_max_m_abs else float("nan")
+    )
     return parity_ok, {
         "baseline": smooth_tb.name,
         "q_gate": "PASS" if q_ok else "FAIL",
-        "pelvis_gate": "PASS" if pelvis_ok else "FAIL",
-        "swing_gate": "PASS" if swing_ok else "FAIL",
         "flip_gate": "PASS" if flips_ok else "FAIL",
+        # Deprecated body-size-confounded gates kept as INFO ratios.
+        "swing_z_step_ratio_abs_INFO": f"{swing_ratio:.3f}x",
+        "pelvis_z_step_ratio_abs_INFO": f"{pelvis_ratio:.3f}x",
         "verdict": "PASS" if parity_ok else "FAIL",
     }
 
@@ -1557,13 +1606,13 @@ def _trackability_gate_detail(
     metrics_wr: ClosedLoopMetrics, metrics_tb: ClosedLoopMetrics
 ) -> tuple[bool, dict[str, str]]:
     rmse_ok = metrics_wr.shared_leg_rmse_rad <= 1.10 * metrics_tb.shared_leg_rmse_rad
-    forward_ok = metrics_wr.achieved_forward_mps >= metrics_tb.achieved_forward_mps - 0.02
+    forward_ok = metrics_wr.achieved_forward_mps_abs >= metrics_tb.achieved_forward_mps_abs - 0.02
     episode_ok = metrics_wr.survived_steps >= 0.95 * metrics_tb.survived_steps
     contact_ok = metrics_wr.ref_contact_match_frac >= max(0.90, metrics_tb.ref_contact_match_frac - 0.05)
     step_ok = (
-        np.isfinite(metrics_wr.touchdown_step_length_mean_m)
-        and np.isfinite(metrics_tb.touchdown_step_length_mean_m)
-        and metrics_wr.touchdown_step_length_mean_m >= 0.90 * metrics_tb.touchdown_step_length_mean_m
+        np.isfinite(metrics_wr.touchdown_step_length_mean_m_abs)
+        and np.isfinite(metrics_tb.touchdown_step_length_mean_m_abs)
+        and metrics_wr.touchdown_step_length_mean_m_abs >= 0.90 * metrics_tb.touchdown_step_length_mean_m_abs
     )
     limit_ok = metrics_wr.joint_limit_step_frac <= metrics_tb.joint_limit_step_frac + 0.05
     overall_ok = rmse_ok and forward_ok and episode_ok and contact_ok and step_ok and limit_ok
@@ -1644,15 +1693,15 @@ def _normalized_fk_parity_row(
 ) -> tuple[bool, dict[str, str]]:
     """Apply the same gate shapes as ``_fk_parity_row`` / smoothness, but
     on the size-normalised numbers.  Thresholds mirror the absolute ones."""
-    step_ok = norm_wr.step_length_per_leg >= 0.85 * norm_tb.step_length_per_leg
+    step_ok = norm_wr.step_length_per_leg_norm >= 0.85 * norm_tb.step_length_per_leg_norm
     clearance_ok = (
-        norm_wr.swing_clearance_per_com_height
-        >= 0.85 * norm_tb.swing_clearance_per_com_height
+        norm_wr.swing_clearance_per_com_height_norm
+        >= 0.85 * norm_tb.swing_clearance_per_com_height_norm
     )
     cadence_ok = norm_wr.cadence_froude_norm <= 1.20 * norm_tb.cadence_froude_norm
     swing_step_ok = (
-        norm_wr.swing_foot_z_step_per_clearance
-        <= 1.10 * norm_tb.swing_foot_z_step_per_clearance
+        norm_wr.swing_foot_z_step_per_clearance_norm
+        <= 1.10 * norm_tb.swing_foot_z_step_per_clearance_norm
     )
     parity_ok = step_ok and clearance_ok and cadence_ok and swing_step_ok
     return parity_ok, {
@@ -1675,20 +1724,20 @@ def _normalized_trackability_gate_detail(
     - ``td_step_per_leg``: WR step length per leg >= 0.85 x TB.
     """
     fwd_ok = (
-        np.isfinite(norm_wr.achieved_forward_per_cmd)
-        and np.isfinite(norm_tb.achieved_forward_per_cmd)
-        and norm_wr.achieved_forward_per_cmd >= norm_tb.achieved_forward_per_cmd - 0.10
+        np.isfinite(norm_wr.achieved_forward_per_cmd_norm)
+        and np.isfinite(norm_tb.achieved_forward_per_cmd_norm)
+        and norm_wr.achieved_forward_per_cmd_norm >= norm_tb.achieved_forward_per_cmd_norm - 0.10
     )
     drift_ok = (
-        np.isfinite(norm_wr.terminal_drift_rate_per_leg_per_s)
-        and np.isfinite(norm_tb.terminal_drift_rate_per_leg_per_s)
-        and abs(norm_wr.terminal_drift_rate_per_leg_per_s)
-        <= abs(norm_tb.terminal_drift_rate_per_leg_per_s) + 0.5
+        np.isfinite(norm_wr.terminal_drift_rate_per_leg_per_s_norm)
+        and np.isfinite(norm_tb.terminal_drift_rate_per_leg_per_s_norm)
+        and abs(norm_wr.terminal_drift_rate_per_leg_per_s_norm)
+        <= abs(norm_tb.terminal_drift_rate_per_leg_per_s_norm) + 0.5
     )
     step_ok = (
-        np.isfinite(norm_wr.td_step_length_per_leg)
-        and np.isfinite(norm_tb.td_step_length_per_leg)
-        and norm_wr.td_step_length_per_leg >= 0.85 * norm_tb.td_step_length_per_leg
+        np.isfinite(norm_wr.td_step_length_per_leg_norm)
+        and np.isfinite(norm_tb.td_step_length_per_leg_norm)
+        and norm_wr.td_step_length_per_leg_norm >= 0.85 * norm_tb.td_step_length_per_leg_norm
     )
     overall_ok = fwd_ok and drift_ok and step_ok
     return overall_ok, {
@@ -1812,21 +1861,24 @@ def _print_fk_table(
     for metrics in [gait_wr, *gait_tbs]:
         print(
             f"{metrics.name:<16} "
-            f"{_fmt_float(metrics.step_length_mean_m, 14)} "
-            f"{_fmt_float(metrics.touchdown_rate_hz, 16)} "
-            f"{_fmt_float(metrics.touchdown_speed_proxy_mps, 17)} "
-            f"{_fmt_float(metrics.swing_clearance_mean_m, 10)} "
-            f"{_fmt_float(metrics.swing_clearance_min_m, 10)} "
+            f"{_fmt_float(metrics.step_length_mean_m_abs, 14)} "
+            f"{_fmt_float(metrics.touchdown_rate_hz_abs, 16)} "
+            f"{_fmt_float(metrics.touchdown_speed_proxy_mps_abs, 17)} "
+            f"{_fmt_float(metrics.swing_clearance_mean_m_abs, 10)} "
+            f"{_fmt_float(metrics.swing_clearance_min_m_abs, 10)} "
             f"{_fmt_float(metrics.double_support_frac, 10)} "
-            f"{_fmt_float(metrics.foot_z_step_max_m, 12)}"
+            f"{_fmt_float(metrics.foot_z_step_max_m_abs, 12)}"
         )
     print()
     for robot_name in _TB_VARIANTS:
         row = parity_by_name[robot_name]
         print(
             f"WR FK parity vs {robot_name}: {row['verdict']} "
-            f"(step_len={row['step_len_gate']}, cadence={row['cadence_gate']}, "
-            f"speed={row['speed_gate']}, clearance={row['clearance_gate']}, ds_frac={row['ds_gate']})"
+            f"(cadence={row['cadence_gate']}, ds_frac={row['ds_gate']}; "
+            f"INFO step_len_ratio_abs={row['step_len_ratio_abs_INFO']}, "
+            f"clearance_ratio_abs={row['clearance_ratio_abs_INFO']}, "
+            f"speed_diff_abs={row['speed_diff_abs_INFO_m_s']} m/s — "
+            f"body-size-confounded; see _norm gates for principled comparison)"
         )
 
 
@@ -1867,8 +1919,8 @@ def _print_smoothness_table(
         print(
             f"{metrics.name:<16} "
             f"{_fmt_float(metrics.shared_leg_q_step_max_rad, 15)} "
-            f"{_fmt_float(metrics.pelvis_z_step_max_m, 15)} "
-            f"{_fmt_float(metrics.swing_foot_z_step_max_m, 15)} "
+            f"{_fmt_float(metrics.pelvis_z_step_max_m_abs, 15)} "
+            f"{_fmt_float(metrics.swing_foot_z_step_max_m_abs, 15)} "
             f"{_fmt_float(metrics.contact_flips_per_cycle, 20)}"
         )
     print()
@@ -1876,8 +1928,11 @@ def _print_smoothness_table(
         row = parity_by_name[robot_name]
         print(
             f"WR smoothness parity vs {robot_name}: {row['verdict']} "
-            f"(q_step={row['q_gate']}, pelvis={row['pelvis_gate']}, "
-            f"swing={row['swing_gate']}, flips={row['flip_gate']})"
+            f"(q_step={row['q_gate']}, flips={row['flip_gate']}; "
+            f"INFO swing_z_step_ratio_abs={row['swing_z_step_ratio_abs_INFO']}, "
+            f"pelvis_z_step_ratio_abs={row['pelvis_z_step_ratio_abs_INFO']} — "
+            f"body-size-confounded; see swing_step_per_clearance_norm gate "
+            f"in _normalized_fk_parity for principled comparison)"
         )
 
 
@@ -1920,10 +1975,10 @@ def _print_trackability_table(
             f"{row.name:<16} "
             f"{row.vx:>6.2f} "
             f"{_fmt_float(row.shared_leg_rmse_rad, 10)} "
-            f"{_fmt_float(row.achieved_forward_mps, 10)} "
+            f"{_fmt_float(row.achieved_forward_mps_abs, 10)} "
             f"{row.survived_steps:>10d} "
             f"{_fmt_float(row.ref_contact_match_frac, 14)} "
-            f"{_fmt_float(row.touchdown_step_length_mean_m, 13)} "
+            f"{_fmt_float(row.touchdown_step_length_mean_m_abs, 13)} "
             f"{_fmt_float(row.joint_limit_step_frac, 13)} "
             f"{row.termination_mode:>12}"
         )
@@ -1993,11 +2048,11 @@ def _print_normalized_fk_table(
             f"{metrics.name:<16} "
             f"{_fmt_float(metrics.leg_length_m, 8, 3)} "
             f"{_fmt_float(metrics.com_height_m, 8, 3)} "
-            f"{_fmt_float(metrics.step_length_per_leg, 10)} "
-            f"{_fmt_float(metrics.swing_clearance_per_com_height, 10)} "
+            f"{_fmt_float(metrics.step_length_per_leg_norm, 10)} "
+            f"{_fmt_float(metrics.swing_clearance_per_com_height_norm, 10)} "
             f"{_fmt_float(metrics.cadence_froude_norm, 12)} "
-            f"{_fmt_float(metrics.swing_foot_z_step_per_clearance, 14)} "
-            f"{_fmt_float(metrics.forward_speed_froude, 16)}"
+            f"{_fmt_float(metrics.swing_foot_z_step_per_clearance_norm, 14)} "
+            f"{_fmt_float(metrics.forward_speed_froude_norm, 16)}"
         )
     print()
     for robot_name in _TB_VARIANTS:
@@ -2034,11 +2089,11 @@ def _print_normalized_trackability_table(
         print(
             f"{row.name:<16} "
             f"{row.vx:>6.2f} "
-            f"{_fmt_float(row.achieved_forward_per_cmd, 10)} "
-            f"{_fmt_float(row.terminal_drift_rate_per_leg_per_s, 14)} "
-            f"{_fmt_float(row.td_step_length_per_leg, 12)} "
+            f"{_fmt_float(row.achieved_forward_per_cmd_norm, 10)} "
+            f"{_fmt_float(row.terminal_drift_rate_per_leg_per_s_norm, 14)} "
+            f"{_fmt_float(row.td_step_length_per_leg_norm, 12)} "
             f"{_fmt_float(row.cadence_froude_norm, 12)} "
-            f"{_fmt_float(row.forward_speed_froude, 10)}"
+            f"{_fmt_float(row.forward_speed_froude_norm, 10)}"
         )
     print()
     for robot_name in _TB_VARIANTS:

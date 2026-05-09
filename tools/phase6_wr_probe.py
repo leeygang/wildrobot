@@ -100,38 +100,38 @@ def main() -> int:
     gait, smooth = _wr_fk_and_smoothness(lib, 0.20)
     print()
     print("=== WR P1A FK gait at vx=0.20 ===")
-    print(f"  step_length_mean_m       = {gait.step_length_mean_m:.4f}")
-    print(f"  swing_clearance_mean_m   = {gait.swing_clearance_mean_m:.4f}")
-    print(f"  swing_clearance_min_m    = {gait.swing_clearance_min_m:.4f}")
-    print(f"  touchdown_rate_hz        = {gait.touchdown_rate_hz:.4f}")
-    print(f"  touchdown_speed_proxy_mps= {gait.touchdown_speed_proxy_mps:.4f}")
+    print(f"  step_length_mean_m_abs       = {gait.step_length_mean_m_abs:.4f}")
+    print(f"  swing_clearance_mean_m_abs   = {gait.swing_clearance_mean_m_abs:.4f}")
+    print(f"  swing_clearance_min_m_abs    = {gait.swing_clearance_min_m_abs:.4f}")
+    print(f"  touchdown_rate_hz_abs        = {gait.touchdown_rate_hz_abs:.4f}")
+    print(f"  touchdown_speed_proxy_mps_abs= {gait.touchdown_speed_proxy_mps_abs:.4f}")
     print(f"  double_support_frac      = {gait.double_support_frac:.4f}")
-    print(f"  foot_z_step_max_m        = {gait.foot_z_step_max_m:.4f}")
+    print(f"  foot_z_step_max_m_abs        = {gait.foot_z_step_max_m_abs:.4f}")
 
     print()
     print("=== WR P2 smoothness at vx=0.20 ===")
-    print(f"  swing_foot_z_step_max_m  = {smooth.swing_foot_z_step_max_m:.4f}")
+    print(f"  swing_foot_z_step_max_m_abs  = {smooth.swing_foot_z_step_max_m_abs:.4f}")
     print(f"  shared_leg_q_step_max_rad= {smooth.shared_leg_q_step_max_rad:.4f}")
-    print(f"  pelvis_z_step_max_m      = {smooth.pelvis_z_step_max_m:.4f}")
+    print(f"  pelvis_z_step_max_m_abs      = {smooth.pelvis_z_step_max_m_abs:.4f}")
     print(f"  contact_flips_per_cycle  = {smooth.contact_flips_per_cycle:.4f}")
 
     dims = _wr_dims()
     leg = dims["leg_length_m"]
     com_h = dims["com_height_m"]
-    wr_step_per_leg = gait.step_length_mean_m / leg
-    wr_swing_per_h = gait.swing_clearance_mean_m / com_h
-    wr_cadence_norm = gait.touchdown_rate_hz * (com_h / _GRAVITY_MPS2) ** 0.5
+    wr_step_per_leg = gait.step_length_mean_m_abs / leg
+    wr_swing_per_h = gait.swing_clearance_mean_m_abs / com_h
+    wr_cadence_norm = gait.touchdown_rate_hz_abs * (com_h / _GRAVITY_MPS2) ** 0.5
     wr_step_per_clr = (
-        smooth.swing_foot_z_step_max_m / gait.swing_clearance_mean_m
-        if gait.swing_clearance_mean_m > 0
+        smooth.swing_foot_z_step_max_m_abs / gait.swing_clearance_mean_m_abs
+        if gait.swing_clearance_mean_m_abs > 0
         else float("nan")
     )
     print()
     print("=== WR size-normalised view at vx=0.20 ===")
-    print(f"  step_length_per_leg               = {wr_step_per_leg:.4f}")
-    print(f"  swing_clearance_per_com_height    = {wr_swing_per_h:.4f}")
+    print(f"  step_length_per_leg_norm               = {wr_step_per_leg:.4f}")
+    print(f"  swing_clearance_per_com_height_norm    = {wr_swing_per_h:.4f}")
     print(f"  cadence_froude_norm               = {wr_cadence_norm:.4f}")
-    print(f"  swing_foot_z_step_per_clearance   = {wr_step_per_clr:.4f}")
+    print(f"  swing_foot_z_step_per_clearance_norm   = {wr_step_per_clr:.4f}")
 
     # Cached TB-2xc comparison (TB code untouched between Phase 1 and
     # Phase 6, so cached numbers are still the right baseline).  This
@@ -149,26 +149,29 @@ def main() -> int:
         # The label below is TB's vx, not WR's, to keep the comparison frame
         # explicit.
         print(f"=== TB-2xc cached @ vx=0.15 (TB op pt; WR shown above @ vx=0.20, source: {tb['source']}) ===")
-        print(f"  step_length_mean_m       = {fk_tb.get('step_length_mean_m', float('nan')):.4f}")
-        print(f"  swing_clearance_mean_m   = {fk_tb.get('swing_clearance_mean_m', float('nan')):.4f}")
-        print(f"  touchdown_rate_hz        = {fk_tb.get('touchdown_rate_hz', float('nan')):.4f}")
-        print(f"  swing_foot_z_step_max_m  = {sm_tb.get('swing_foot_z_step_max_m', float('nan')):.4f}")
+        print(f"  step_length_mean_m_abs       = {fk_tb.get('step_length_mean_m_abs', float('nan')):.4f}")
+        print(f"  swing_clearance_mean_m_abs   = {fk_tb.get('swing_clearance_mean_m_abs', float('nan')):.4f}")
+        print(f"  touchdown_rate_hz_abs        = {fk_tb.get('touchdown_rate_hz_abs', float('nan')):.4f}")
+        print(f"  swing_foot_z_step_max_m_abs  = {sm_tb.get('swing_foot_z_step_max_m_abs', float('nan')):.4f}")
         print(f"  shared_leg_q_step_max_rad= {sm_tb.get('shared_leg_q_step_max_rad', float('nan')):.4f}")
-        print(f"  step_length_per_leg      = {nf_tb.get('step_length_per_leg', float('nan')):.4f}")
-        print(f"  swing_clearance_per_com_height  = {nf_tb.get('swing_clearance_per_com_height', float('nan')):.4f}")
+        print(f"  step_length_per_leg_norm      = {nf_tb.get('step_length_per_leg_norm', float('nan')):.4f}")
+        print(f"  swing_clearance_per_com_height_norm  = {nf_tb.get('swing_clearance_per_com_height_norm', float('nan')):.4f}")
         print(f"  cadence_froude_norm      = {nf_tb.get('cadence_froude_norm', float('nan')):.4f}")
-        print(f"  swing_foot_z_step_per_clearance = {nf_tb.get('swing_foot_z_step_per_clearance', float('nan')):.4f}")
+        print(f"  swing_foot_z_step_per_clearance_norm = {nf_tb.get('swing_foot_z_step_per_clearance_norm', float('nan')):.4f}")
         print()
-        print("=== WR vs TB-2xc gate verdicts (P1A + P2) ===")
-        print(f"  P1A step_length_mean_m (≥0.90× TB): {_fmt_ratio(gait.step_length_mean_m, fk_tb.get('step_length_mean_m', 0.0), 'ge', 0.90)}")
-        print(f"  P1A swing_clearance_mean_m (≥0.85× TB): {_fmt_ratio(gait.swing_clearance_mean_m, fk_tb.get('swing_clearance_mean_m', 0.0), 'ge', 0.85)}")
-        print(f"  P1A touchdown_rate_hz (≤1.20× TB):  {_fmt_ratio(gait.touchdown_rate_hz, fk_tb.get('touchdown_rate_hz', 0.0), 'le', 1.20)}")
-        print(f"  P2  swing_foot_z_step_max_m (≤1.10× TB): {_fmt_ratio(smooth.swing_foot_z_step_max_m, sm_tb.get('swing_foot_z_step_max_m', 0.0), 'le', 1.10)}")
-        print(f"  P2  shared_leg_q_step_max (≤1.10× TB):   {_fmt_ratio(smooth.shared_leg_q_step_max_rad, sm_tb.get('shared_leg_q_step_max_rad', 0.0), 'le', 1.10)}")
-        print(f"  norm step_length_per_leg (≥0.85× TB):    {_fmt_ratio(wr_step_per_leg, nf_tb.get('step_length_per_leg', 0.0), 'ge', 0.85)}")
-        print(f"  norm swing_clearance_per_h (≥0.85× TB):  {_fmt_ratio(wr_swing_per_h, nf_tb.get('swing_clearance_per_com_height', 0.0), 'ge', 0.85)}")
+        print("=== WR vs TB-2xc body-size-NORMALISED gates (PASS/FAIL) ===")
+        print(f"  norm step_length_per_leg_norm (≥0.85× TB):    {_fmt_ratio(wr_step_per_leg, nf_tb.get('step_length_per_leg_norm', 0.0), 'ge', 0.85)}")
+        print(f"  norm swing_clearance_per_com_height_norm (≥0.85× TB):  {_fmt_ratio(wr_swing_per_h, nf_tb.get('swing_clearance_per_com_height_norm', 0.0), 'ge', 0.85)}")
         print(f"  norm cadence_froude_norm (≤1.20× TB):    {_fmt_ratio(wr_cadence_norm, nf_tb.get('cadence_froude_norm', 0.0), 'le', 1.20)}")
-        print(f"  norm swing_step_per_clearance (≤1.10× TB): {_fmt_ratio(wr_step_per_clr, nf_tb.get('swing_foot_z_step_per_clearance', 0.0), 'le', 1.10)}")
+        print(f"  norm swing_foot_z_step_per_clearance_norm (≤1.10× TB): {_fmt_ratio(wr_step_per_clr, nf_tb.get('swing_foot_z_step_per_clearance_norm', 0.0), 'le', 1.10)}")
+        print(f"  P2  shared_leg_q_step_max_rad (≤1.10× TB):   {_fmt_ratio(smooth.shared_leg_q_step_max_rad, sm_tb.get('shared_leg_q_step_max_rad', 0.0), 'le', 1.10)}")
+        print()
+        print("=== WR vs TB-2xc absolute INFO ratios (NOT GATES — body-size confounded) ===")
+        print(f"  step_length_mean_m_abs:        WR/TB = {(gait.step_length_mean_m_abs / fk_tb.get('step_length_mean_m_abs', float('nan'))):.3f}× (WR-bigger-leg → bigger absolute step expected)")
+        print(f"  swing_clearance_mean_m_abs:    WR/TB = {(gait.swing_clearance_mean_m_abs / fk_tb.get('swing_clearance_mean_m_abs', float('nan'))):.3f}×")
+        print(f"  touchdown_rate_hz_abs:         WR/TB = {(gait.touchdown_rate_hz_abs / fk_tb.get('touchdown_rate_hz_abs', float('nan'))):.3f}×")
+        print(f"  swing_foot_z_step_max_m_abs:   WR/TB = {(smooth.swing_foot_z_step_max_m_abs / sm_tb.get('swing_foot_z_step_max_m_abs', float('nan'))):.3f}×")
+        print(f"  Use the size-aware *_norm gates above for principled WR-vs-TB verdicts.")
         print()
         print("NOTE: P1 closed-loop trackability is NOT measured by this probe.")
         print("      Run `uv run ./tools/reference_geometry_parity.py` for P1.")
@@ -186,10 +189,10 @@ def main() -> int:
         "fk_gait": asdict(gait),
         "smoothness": asdict(smooth),
         "normalized": {
-            "step_length_per_leg": wr_step_per_leg,
-            "swing_clearance_per_com_height": wr_swing_per_h,
+            "step_length_per_leg_norm": wr_step_per_leg,
+            "swing_clearance_per_com_height_norm": wr_swing_per_h,
             "cadence_froude_norm": wr_cadence_norm,
-            "swing_foot_z_step_per_clearance": wr_step_per_clr,
+            "swing_foot_z_step_per_clearance_norm": wr_step_per_clr,
         },
         "dims": dims,
         "tb_cached_2xc": tb,
