@@ -2041,7 +2041,7 @@ def train(
 
             # G4 promotion-horizon gate (pass/fail per iter).
             print(
-                f"  └─ G4 (eval_vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
+                f"  └─ G4-train (eval_vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
                 f"vel\u2265{g4_vel_floor:.3f} {_mark(g4_vel_ok)} | "
                 f"cmd_err\u2264{g4_cmd_err_ceiling:.3f} {_mark(g4_cmd_err_ok)} | "
                 f"step_len\u2265{g4_step_len_floor:.3f} {_mark(g4_step_len_ok)} | "
@@ -2095,16 +2095,39 @@ def train(
             # concept; checkpoint quality reads off mean_reward +
             # mean_episode_length + per-term tracking).  Only printed when
             # the eval rollout actually ran this iter.
+            #
+            # Eval-side G4 marks (separate from train G4 above) are the
+            # promotion-horizon gate per walking_training.md G4: the
+            # smoke ships only if BOTH train-side and eval-side G4 pass
+            # at the same horizon.  Train and eval can disagree (eval
+            # is deterministic and pinned to ``eval_velocity_cmd``;
+            # train rollouts sample the cmd range under the curriculum)
+            # so a "G4 ✓" on train alone is not the smoke promotion
+            # signal.
             if "Evaluate/mean_reward" in env:
                 eval_r = _g("Evaluate/mean_reward")
                 eval_L = _g("Evaluate/mean_episode_length")
                 eval_v = _g("Evaluate/forward_velocity")
                 eval_e = _g("Evaluate/cmd_vs_achieved_forward")
+                # Same command-scaled floors as train G4 (single source
+                # of truth: ``eval_velocity_cmd`` + cycle_time_s).
+                # Eval is always pinned to eval_velocity_cmd, so the
+                # floor is well-defined here regardless of sentinel
+                # mode (which only affects train rollouts).
+                eval_g4_vel_ok = eval_v >= g4_vel_floor
+                eval_g4_cmd_err_ok = eval_e <= g4_cmd_err_ceiling
+                eval_g4_ep_len_ok = eval_L >= 0.95 * max_ep
                 print(
                     f"  └─ Evaluate: reward={eval_r:>7.2f} | "
                     f"ep_len={eval_L:>5.0f} | "
                     f"vel={eval_v:+5.3f} | "
                     f"cmd_err={eval_e:.3f}"
+                )
+                print(
+                    f"  └─ G4-eval (vx={eval_vx:.3f}, cycle={cycle_time_s:.2f}s): "
+                    f"vel≥{g4_vel_floor:.3f} {_mark(eval_g4_vel_ok)} | "
+                    f"cmd_err≤{g4_cmd_err_ceiling:.3f} {_mark(eval_g4_cmd_err_ok)} | "
+                    f"ep_len≥{int(0.95 * max_ep)} {_mark(eval_g4_ep_len_ok)}"
                 )
 
             if callback is not None:

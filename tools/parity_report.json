@@ -260,7 +260,7 @@
       "verdict": "PASS"
     }
   ],
-  "normalized_overall_pass": true,
+  "normalized_overall_pass": false,
   "normalized_trackability_metrics": [
     {
       "achieved_forward_per_cmd_norm": -0.7275515945799791,
@@ -605,5 +605,6 @@
       "verdict": "FAIL"
     }
   },
-  "p1_trackability_note_INFO": "P1 trackability rows are STALE relative to current cfg \u2014 TB-side rows preserved from prior end-to-end run. Re-run on TB-capable machine for a full refresh.  WR-side rows in this artifact are current as of cycle_time=0.96, foot_step_height=0.05, wr_vx_nominal=0.2."
+  "p1_trackability_note_INFO": "P1 trackability rows are STALE relative to current cfg \u2014 TB-side rows preserved from prior end-to-end run. Re-run on TB-capable machine for a full refresh.  WR-side rows in this artifact are current as of cycle_time=0.96, foot_step_height=0.05, wr_vx_nominal=0.2.",
+  "normalized_prior_shape_pass": true
 }

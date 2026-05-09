@@ -1069,15 +1069,30 @@ Metric validation:
   through smoke1).  CLAUDE.md § "follows ToddlerBot" applies — we
   no longer have a rationale to keep a WildRobot-specific gate when
   the reward block matches.
-  - `env/forward_velocity >= 0.075 m/s` (train rollout, weak floor only;
-    `tracking/cmd_vs_achieved_forward` carries the command-scale signal)
-  - `Evaluate/forward_velocity >= 0.075 m/s` (deterministic eval
-    rollout — weak forward-progress floor; at Phase 9D this is
-    deliberately paired with the stricter command-error and ratio gates)
-  - `Evaluate/mean_episode_length >= 475` (95% of 500-step horizon;
-    second half of the dropped success_rate row)
-  - `Evaluate/cmd_vs_achieved_forward <= 0.075 m/s`
-  - `tracking/cmd_vs_achieved_forward <= 0.075 m/s` (train rollout)
+  - **All forward-velocity / cmd-error floors are command-scaled** from
+    `eval_velocity_cmd` so they don't drift with the operating point
+    (Phase 9A → 9D shifts otherwise leave stale absolute thresholds —
+    see CHANGELOG `v0.20.1-training-code-phase9D-compliance`).  Live
+    thresholds:
+    - `env/forward_velocity >= 0.50 * eval_velocity_cmd` (train rollout,
+      weak floor only; `tracking/cmd_vs_achieved_forward` carries the
+      command-scale signal).  At the Phase 9D operating point
+      (`eval_velocity_cmd = 0.20`), this is `>= 0.10 m/s`.
+    - `Evaluate/forward_velocity >= 0.50 * eval_velocity_cmd`
+      (deterministic eval rollout — promotion-horizon gate).
+    - `Evaluate/mean_episode_length >= 475` (95% of 500-step horizon;
+      second half of the dropped success_rate row — operating-point-
+      independent).
+    - `Evaluate/cmd_vs_achieved_forward <= 0.50 * eval_velocity_cmd`
+      (eval — promotion-horizon gate).  At Phase 9D this is
+      `<= 0.10 m/s`.
+    - `tracking/cmd_vs_achieved_forward <= 0.50 * eval_velocity_cmd`
+      (train rollout).
+  - The earlier-doc absolute `0.075 m/s` floor was the same value
+    evaluated at the historical `eval_velocity_cmd = 0.15`.  The
+    training loop's console prints the live floor inline (e.g.
+    `vel≥0.100` at vx=0.20) so the operator never has to mentally
+    re-scale.
   - touchdown step length mean `>= max(0.030 m, 0.50 * vx_eval *
     cycle_time / 2)`.  At the Phase 9D operating point (`vx_eval=0.20`,
     `cycle_time=0.96`), this is `>= 0.0480 m`; use `>= 0.050 m` in the
@@ -1699,7 +1714,7 @@ Both projects use the DeepMimic-style numerator-α form
 | `torso_pitch_range` (reward gate) | — | `[-0.2, 0.2]` | **add** (with torso_pitch soft reward) |
 | Cmd-magnitude gating on stepping rewards | inert (`step_need_*` defined but not consumed) | air_time/clearance/standstill all gate on `||cmd_obs|| > 1e-6` | apply on the new feet_* terms |
 | Touchdown event | physical foot/floor contact transition (`view_zmp_in_mujoco.py:519`; env G4 in `wildrobot_env.py:1251`) | `stance_mask xor last_stance_mask` | equivalent |
-| G4 success metrics | `forward_velocity ≥ 0.075`, `Evaluate/mean_episode_length ≥ 475`, `Evaluate/cmd_vs_achieved ≤ 0.075`, command-scaled step floor `max(0.030, 0.50 * vx_eval * cycle_time/2)` (Phase 9A: `>= 0.050 m`); smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
+| G4 success metrics | All command-scaled from `eval_velocity_cmd`: `forward_velocity ≥ 0.50 * eval_vx`, `Evaluate/cmd_vs_achieved ≤ 0.50 * eval_vx`, step floor `max(0.030, 0.50 * eval_vx * cycle_time/2)`; plus `Evaluate/mean_episode_length ≥ 475` (operating-point-independent).  At Phase 9D (`eval_vx=0.20, cycle=0.96`): vel/cmd_err thresholds = `0.10 m/s`, step floor = `0.048 m`.  Console prints live thresholds inline.  smoke2 dropped `eval_walk/success_rate` because ToddlerBot has no success_rate concept | mean_reward / mean_episode_length / per-term `Evaluate/<term>` (`train_mjx.py:385-410`) | aligned via `Evaluate/*` namespace |
 | G5 anti-exploit | `|residual_p50|_{hip_pitch,knee,ankle_roll} ≤ 0.20 rad`, `0.6 ≤ vx/cmd ≤ 1.5` | n/a | WR-specific; keep.  ankle_roll added post-merge alongside the residual-scale promotion below. |
 
 ### A.6 Action contract

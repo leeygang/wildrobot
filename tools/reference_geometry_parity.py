@@ -2156,6 +2156,7 @@ def _build_payload(
     args: argparse.Namespace,
     overall_pass: bool,
     norm_overall_pass: bool,
+    norm_prior_shape_pass: bool,
 ) -> dict:
     return {
         "config": {
@@ -2195,7 +2196,15 @@ def _build_payload(
             "strict": args.strict,
         },
         "overall_pass": overall_pass,
+        # ``normalized_overall_pass`` = full FK + closed-loop normalised
+        # parity verdict (matches ``norm_fk_ok and norm_p1_ok`` in the
+        # generator).  ``normalized_prior_shape_pass`` is the narrower
+        # "all 5 prior-shape gates PASS" verdict — FK normalised + q_step
+        # smoothness only, NOT closed-loop trackability.  Use the
+        # narrower one for "is the prior shape-matched to TB"; use the
+        # broader one for "is the full closed-loop comparison passing".
         "normalized_overall_pass": norm_overall_pass,
+        "normalized_prior_shape_pass": norm_prior_shape_pass,
     }
 
 
@@ -2370,6 +2379,11 @@ def main() -> int:
 
     overall_ok = geometry_ok and fk_ok and smooth_ok and p1_ok
     norm_overall_ok = norm_fk_ok and norm_p1_ok
+    # "Prior-shape" verdict = the 5 size-aware gates that bound prior
+    # quality (4 normalised P1A gates + q_step smoothness).  These are
+    # the gates the planner can move directly; closed-loop trackability
+    # is downstream and depends on actuator stack + balance feedback.
+    norm_prior_shape_ok = norm_fk_ok and smooth_ok
 
     payload = _build_payload(
         summary_wr=summary_wr,
@@ -2394,6 +2408,7 @@ def main() -> int:
         args=args,
         overall_pass=overall_ok,
         norm_overall_pass=norm_overall_ok,
+        norm_prior_shape_pass=norm_prior_shape_ok,
     )
 
     if args.out:

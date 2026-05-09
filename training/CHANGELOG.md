@@ -8,6 +8,80 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-parity-and-g4-eval-side-fixes] - 2026-05-09: split prior-shape vs full normalised verdict; add eval-side G4 marks; doc threshold refresh
+
+### Context
+
+Three review findings on the previous compliance commit (`dcedf5e`):
+1. **High** — `parity_report.json` reported `normalized_overall_pass: true`
+   while `normalized_trackability_parity` rows still showed FAIL.  The
+   generator (`reference_geometry_parity.py:2371`) computes
+   `norm_overall_ok = norm_fk_ok and norm_p1_ok` so the artifact was
+   internally inconsistent and not reproducible from the tool.
+2. **Medium** — Console G4 marks only applied to train-rollout metrics.
+   The smoke promotion criteria include `Evaluate/forward_velocity` and
+   `Evaluate/cmd_vs_achieved_forward`, so the console could show
+   "G4 ✓" while the eval rollout failed the gate.
+3. **Medium** — `walking_training.md:1072` and `:1717` still listed
+   fixed `0.075 m/s` G4 thresholds, contradicting the code's
+   command-scaled `0.50 * eval_vx` (= 0.10 at vx=0.20).
+
+### Patch — verdict semantics fix
+
+`reference_geometry_parity.py`:
+- `_build_payload` signature gains `norm_prior_shape_pass: bool`
+- Generator computes `norm_prior_shape_ok = norm_fk_ok and smooth_ok`
+  (the 5 size-aware prior-shape gates only — excludes closed-loop)
+- JSON payload now emits both:
+  - `normalized_overall_pass` — full FK + closed-loop normalised
+    verdict (matches the original generator semantics)
+  - `normalized_prior_shape_pass` — narrow "all 5 prior-shape gates
+    PASS" verdict; new field, doesn't overload the existing one
+
+`tools/parity_report.json` refreshed to internal consistency:
+- `overall_pass = False` (geometry + trackability still fail)
+- `normalized_overall_pass = False` (closed-loop trackability rows
+  still stale on TB side)
+- `normalized_prior_shape_pass = True` ✓ (5 prior-shape gates PASS;
+  this is the gate that "WR prior shape-matches TB" claims)
+
+### Patch — eval-side G4 marks
+
+`training/core/training_loop.py:2103-2128` — added a separate
+`G4-eval` console line that gates `Evaluate/forward_velocity`,
+`Evaluate/cmd_vs_achieved_forward`, and `Evaluate/mean_episode_length`
+against the same command-scaled floors as train G4.  Existing G4 line
+relabelled `G4-train` for clarity.  Eval is always pinned to
+`eval_velocity_cmd`, so the floor is well-defined regardless of
+sentinel mode (which only affects train rollouts).  Both must PASS at
+the promotion horizon for the smoke to ship.
+
+Sample output:
+```
+  └─ G4-train (eval_vx=0.200, cycle=0.96s):
+     vel≥0.100 ✓ | cmd_err≤0.100 ✗ | step_len≥0.048 ✓ | ep_len≥475 ✓
+  └─ Evaluate: reward=12.34 | ep_len=476 | vel=+0.105 | cmd_err=0.082
+  └─ G4-eval (vx=0.200, cycle=0.96s):
+     vel≥0.100 ✓ | cmd_err≤0.100 ✓ | ep_len≥475 ✓
+```
+
+### Patch — `walking_training.md` threshold language
+
+- §G4 (line 1072): replaced the per-row `0.075 m/s` floors with
+  command-scaled `0.50 * eval_velocity_cmd` formulas, with the Phase
+  9D values (`0.10 m/s`) inline.  Explicit note that the console
+  prints live thresholds so the operator never has to mentally
+  re-scale.
+- Appendix A.5 G4 row (line 1717): same refresh — all forward-velocity
+  / cmd-error thresholds presented as command-scaled formulas with
+  Phase 9D values inline.
+
+### Tests
+
+80/80 reference + smoke + env-contract suite still PASS.
+
+---
+
 ## [v0.20.1-training-code-phase9D-compliance] - 2026-05-09: training-code review fixes — command-scaled G4 floors + stale-default cleanup before smoke7 launch
 
 ### Context
