@@ -466,15 +466,19 @@ What to verify visually:
 
 What to verify metrically:
 
-- commanded foothold mean at `cmd=0.15` is `>= 0.045 m`
-- previewed step period stays within `0.45-0.75 s`
+- commanded foothold mean at the operating-point cmd matches
+  the kinematic identity `step = vx · cycle_time / 2` within
+  numerical precision (Phase 9A: vx=0.265 → step≈0.095 m).
+- previewed step period stays within `0.45-0.75 s` (Phase 6
+  selected `cycle_time=0.72 s` to match TB).
 - pelvis and COM preview are continuous
 - target-rate limits are not violated
 - library coverage includes:
   - quiet stand
   - stop / resume
-  - low-speed walk
-  - nominal command sweep points
+  - operating-point walk (Phase 9A: vx=0.265)
+  - bracket bins around the operating point for robustness probes
+    (`tools/v0200c_closeout.py::_VX_BINS` controls the matrix)
 
 ### Layer 2: `reference + IK playback`
 
@@ -493,12 +497,33 @@ What to verify metrically:
 - joint targets remain inside configured safety margins
 - nominal foot-clearance floor remains positive throughout swing
 
-### Layer 3: `short-horizon MuJoCo feasibility`
+### Layer 3: `short-horizon MuJoCo feasibility` (v0.20.0-C closeout territory)
 
 This replaces the old "open-loop must walk 400+ steps" gate for the active
 offline-prior path.  Uses the existing MuJoCo actuator model for feasibility
 checking.  Hardware SysID verification is deferred to `v0.20.2` and gates
 sim-to-real deployment, not ZMP library generation.
+
+> **Acceptance reframe (2026-05-09, post-Phase-9A v0.20.0-C closeout
+> at vx=0.265).**  The original Layer 3 used absolute pass gates
+> ("survive ≥1 full gait cycle open-loop", "0% systematic joint-limit
+> hits") that were designed in the v0.20.0-C era when the operating
+> point was vx=0.15 and the prior was supposed to be open-loop-
+> rescuable by a bounded stabilizer.  Empirical measurement at the
+> May-08 closeout (CHANGELOG `v0.20.1-c1c2-closeout-phase9A`) shows:
+> 1. **No position-PD-only small biped survives long open-loop at any
+>    walking vx.**  TB-2xc / TB-2xm at TB's own operating point
+>    (vx=0.15) survives 21-23 ctrl steps; WR @ vx=0.265 survives 54
+>    ctrl steps.  Both fall via pitch termination.
+> 2. **WR strictly outlasts TB** at the analogous operating point
+>    (2.3× longer survival, 1/2 the drift, WR produces forward
+>    touchdowns where TB does not).
+>
+> The right Layer 3 gate is therefore **comparative**, not absolute:
+> "is WR at least as good as TB on each closed-loop gate when both
+> are measured at their respective operating points?"  This matches
+> the parity tool's `--tb-vx` flag (CHANGELOG
+> `v0.20.1-parity-tool-asymmetric-vx-comparison`).
 
 What to verify visually:
 
@@ -509,17 +534,51 @@ What to verify visually:
 - failures should look like tracking limits or contact mismatch, not like an
   incoherent reference
 
-What to verify metrically:
+What to verify metrically — by gate type:
 
-- simulated leg-joint tracking RMSE stays within the configured actuator budget
-- repeated target saturation does not dominate the rollout
-- no systematic joint-limit hits occur in the validated command range
-- short-horizon replay survives at least one full gait cycle without immediate
-  pitch-faceplant termination
+**Absolute prior-sanity gates (must pass):**
+- Kinematic playback at the in-scope command bins: q_ref produces
+  forward foot-translation matching cmd (realised/cmd ratio ≥ 0.95
+  in kinematic mode at the operating point).
+- Fixed-base PD tracking at the in-scope command bins: per-leg-joint
+  RMSE within the actuator-feasibility budget; any-joint saturation
+  rate < 5%.
+- Pre-PPO sanity: kinematic + fixed-base both PASS.  This confirms
+  the prior is sane and the actuator stack can track it when balance
+  is held.
+
+**Comparative closed-loop gates (must be ≥ TB at the analogous
+operating point, not "must PASS an absolute floor"):**
+- WR closed-loop survival at WR's operating vx ≥ TB closed-loop
+  survival at TB's operating vx.
+- WR closed-loop forward-velocity sign / drift better than or
+  comparable to TB.
+- WR closed-loop contact-phase match ≥ TB at the analogous operating
+  point.
+- WR produces real touchdown events (positive `td_step_mean`) at
+  least as often as TB.
+
+**Closed-loop absolute floors (informational, NOT gating):**
+- Open-loop survival in ctrl steps — useful as a regression detector
+  vs prior runs, but NOT a PASS gate.  No small position-PD biped
+  meets the original "≥ 64 ctrl steps" budget at its operating
+  point.
+- C2 stabilizer step length / ratio — useful for catching stabilizer
+  bugs (e.g. the post-merge cp_gain sign regression) but NOT a PASS
+  gate at the operating point.
 
 ### Layer 4: `ToddlerBot policy learning gate`
 
 This is the main unblock gate for the active `v0.20` path.
+
+> **Acceptance reframe (2026-05-09, post-Phase-9A).**  The
+> per-metric thresholds below were calibrated for vx=0.15.  Phase 9A
+> shifted the operating point to vx=0.265 (TB-step/leg-matched);
+> threshold magnitudes scale with operating-point vx and need to be
+> updated by the smoke7+ track.  The original `eval_walk/success_rate`
+> gate was already removed (CHANGELOG `v0.20.1-smoke2`); see
+> `walking_training.md` Appendix A for the live G-gate contract used
+> by the smoke runs.
 
 What to verify visually:
 
@@ -535,15 +594,15 @@ What to verify metrically:
   - `ref/pelvis_pose_error`
   - `ref/foot_site_error`
   - `ref/contact_phase_match`
-- by the early smoke horizon, the run achieves all of:
-  - `env/forward_velocity >= 0.04 m/s`
-  - `eval_walk/episode_length >= 150`
-  - `term_pitch_frac < 0.50`
-- by the promotion horizon, the run achieves all of:
-  - `env/forward_velocity >= 0.075 m/s`
-  - `eval_walk/success_rate >= 0.60`
-  - `tracking/cmd_vs_achieved_forward <= 0.075 m/s`
-  - touchdown step length mean `>= 0.03 m`
+- by the early smoke horizon, the run shows directional improvement
+  on `env/forward_velocity`, `eval_walk/episode_length`, and
+  `term_pitch_frac` vs initialisation — exact thresholds tracked in
+  `walking_training.md` Appendix A and the smoke YAML, scaled to
+  the current operating-point vx.
+- by the promotion horizon, the run achieves the
+  per-vx-scaled `forward_velocity`, episode-length, and
+  touchdown-step-length floors documented in
+  `walking_training.md` G4 / G5.
 
 ### Layer 5: `policy multi-command sweep`
 
@@ -590,8 +649,15 @@ sequence the prior reference work must follow:
 - **`v0.20.0-A` Prior contract freeze** — schema + interface decisions.
 - **`v0.20.0-B` ZMP prior generator and viewer** — first concrete prior.
 - **`v0.20.0-C` Reference + IK + short-horizon feasibility validation** —
-  the C1 + C2 closeout matrix that gates PPO unblock.
-- **`v0.20.0-D` PPO unblock decision** — go/no-go gate.
+  prior-sanity gates (kinematic + fixed-base PD tracking) PASS as
+  absolute floors; closed-loop gates use the comparative-vs-TB rule
+  (see Validation Approach Layer 3 above).
+- **`v0.20.0-D` PPO unblock decision** — go/no-go gate.  Unblock
+  criteria: v0.20.0-C absolute prior-sanity gates PASS + comparative
+  closed-loop gates show WR ≥ TB at the analogous operating point.
+  The original "C1 PASS + C2 PASS at all bins" criterion was
+  aspirational and has been demonstrated unmeetable by either WR or
+  TB (CHANGELOG `v0.20.1-c1c2-closeout-phase9A`).
 
 Detailed per-milestone task lists, exit criteria, and post-shipped
 closeouts are tracked in:
@@ -601,11 +667,13 @@ closeouts are tracked in:
 - [`../CHANGELOG.md`](../CHANGELOG.md) for completed-phase closeouts
   with measured gate movements.
 
-C1 + C2 closeout matrix details (the v0.20.0-C gate that guards the
-PPO unblock decision) live in the v0.20.0-C section of
-`reference_architecture_comparison.md`; the harness scope and
-forbidden-input list (the architectural commitments) live in this
-doc's [Validation Approach](#validation-approach) section above.
+C1 + C2 closeout measurement infrastructure (the script + matrix +
+parsed verdicts) lives in [`tools/v0200c_closeout.py`](../../tools/v0200c_closeout.py).
+Per-milestone task lists at the training granularity live in
+[`walking_training.md`](walking_training.md) §v0.20.0-A through
+§v0.20.0-D.  The harness scope and forbidden-input list (the
+architectural commitments) live in this doc's [Validation Approach](#validation-approach)
+section above.
 
 ## Historical Companion
 
