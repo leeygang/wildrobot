@@ -96,9 +96,16 @@ def _stage_export(stage_dir: Path) -> Path:
 
 
 def _run_post_process(xml_path: Path, post_process) -> None:
-    """Run the production post_process pipeline on xml_path (in-place)."""
+    """Run the production post_process pipeline on xml_path (in-place).
+
+    Mirrors `post_process.main()`. Step ordering must match production so the
+    post-processed body names this helper inspects (e.g., `left_upper_leg`,
+    `left_fore_arm`) match what production emits — `_override_sizes_to_legacy`
+    keys off `PARENT_BODY_TO_MESH`, which uses the canonical names.
+    """
     xml_str = str(xml_path)
     post_process.inject_additional_xml(xml_str)
+    post_process.rename_legs_and_arms_to_semantic_names(xml_str)
     post_process.add_collision_names(xml_str)
     post_process.validate_foot_geoms(xml_str)
     post_process.ensure_root_body_pose(xml_str)
