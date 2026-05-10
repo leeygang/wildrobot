@@ -159,6 +159,39 @@ def test_keyframes_load():
         assert kid >= 0, f"keyframe '{name}' not found in MJCF"
 
 
+def test_home_and_walk_start_keep_distinct_semantics():
+    """``home`` remains standing; ``walk_start`` remains the walking pose."""
+    model = mujoco.MjModel.from_xml_path("assets/v2/scene_flat_terrain.xml")
+    home_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+    walk_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "walk_start")
+    assert home_id >= 0
+    assert walk_id >= 0
+
+    assert not np.allclose(model.key_qpos[home_id], model.key_qpos[walk_id], atol=1e-6)
+
+    def _actuator_key_qpos(key_id: int, actuator_name: str) -> float:
+        act_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name
+        )
+        assert act_id >= 0, actuator_name
+        joint_id = int(model.actuator_trnid[act_id, 0])
+        qpos_adr = int(model.jnt_qposadr[joint_id])
+        return float(model.key_qpos[key_id, qpos_adr])
+
+    home_knees = [
+        abs(_actuator_key_qpos(home_id, "left_knee_pitch")),
+        abs(_actuator_key_qpos(home_id, "right_knee_pitch")),
+    ]
+    walk_knees = [
+        abs(_actuator_key_qpos(walk_id, "left_knee_pitch")),
+        abs(_actuator_key_qpos(walk_id, "right_knee_pitch")),
+    ]
+
+    assert max(home_knees) < 0.10
+    assert min(walk_knees) > 0.30
+    assert model.key_qpos[home_id, 2] > model.key_qpos[walk_id, 2] + 0.005
+
+
 def main() -> int:
     model, data, mapper, act_to_qpos, L_geoms, R_geoms = _setup()
     gen = ZMPWalkGenerator()

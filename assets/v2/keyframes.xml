@@ -13,18 +13,18 @@
                        Pelvis tilts 3.48° forward (was 2.27° round-6)
                        — the CAD update shifted equilibrium.
 
-       "walk_start"  — round-8 walking-pose equilibrium (legs bent,
-                       knees ≈ 0.55 rad, pelvis_z = 0.4567 m, pitched
-                       -0.046 rad).  Used by the v0.20.0-C viewer so
-                       the standing-to-walking ramp is essentially a
-                       no-op.  Paired with the IK geometry constants
+       "walk_start"  — q_ref-derived walking-pose equilibrium (legs bent,
+                       knees ≈ 0.49 rad, pelvis_z = 0.4602 m, pitched
+                       -0.010 rad).  Used by the v0.20.0-C viewer and
+                       walking probes so the standing-to-walking ramp is
+                       essentially a no-op.  Paired with the IK geometry constants
                        in control/zmp/zmp_walk.py (upper_leg = 0.193,
                        lower_leg = 0.180, ankle_to_ground = 0.061,
                        pelvis_to_hip = 0.034).  If you change the IK
                        geometry OR re-export from Onshape, this
-                       keyframe must be re-derived.  Verified: same
-                       2500+500 step settle → pelvis drift ≤ 0.04 mm,
-                       max|vlin| ≤ 3e-5 m/s.
+                       keyframe must be re-derived.  Re-derived against
+                       current ZMPWalkConfig after Phase 9D + Phase 8
+                       retry by settling q_ref[0] with ctrl=q_ref[0].
 
        Re-derive procedure (when CAD or IK geometry changes): see
        the snippet in this file's git history for the exact one-liner
@@ -33,7 +33,7 @@
        data.qpos).  Round-8 was produced by that procedure. -->
     <keyframe>
         <key name="home"
-            qpos="-0.00336445 -0.000131717 0.460235 0.999946 -5.79014e-05 -0.0103598 0.000344922 0.223094 -0.00042335 0.489531 -0.245616 0.000244046 -0.223542 -0.000311294 0.491143 -0.245165 -0.00193645 0.00301686 -0.00010678 0.0181409 -2.60502e-06 5.14517e-06 0.000243405 -0.000444513 0.00354958 -5.66149e-06 -1.04251e-05 0.000244514"
+            qpos="-0.0182591 -0.00101464 0.470941 0.999539 -0.000242699 -0.0303666 0.000198908 -0.00353823 -0.00233714 0.0361851 0.0206246 0.00163984 0.0032372 -0.00352585 0.0369592 0.0217894 0.000593509 -0.00292642 0.00411677 0.01759 -2.5285e-05 4.37092e-06 0.000730754 -0.00373764 0.00487821 -2.76155e-05 -3.98205e-05 0.000735891"
         />
         <key name="walk_start"
             qpos="-0.00336445 -0.000131717 0.460235 0.999946 -5.79014e-05 -0.0103598 0.000344922 0.223094 -0.00042335 0.489531 -0.245616 0.000244046 -0.223542 -0.000311294 0.491143 -0.245165 -0.00193645 0.00301686 -0.00010678 0.0181409 -2.60502e-06 5.14517e-06 0.000243405 -0.000444513 0.00354958 -5.66149e-06 -1.04251e-05 0.000244514"
