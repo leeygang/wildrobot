@@ -478,6 +478,21 @@ class EnvConfig(Freezable):
     min_feet_y_dist: float = 0.07
     max_feet_y_dist: float = 0.13
 
+    # Per-joint weights for the ``penalty_pose`` reward (Phase 2 of
+    # walking_training.md Appendix B).  Mirrors TB walk.gin:120-124's
+    # RewardsConfig.pose_weights = [0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]
+    # for left_hip_pitch, left_hip_roll, left_hip_yaw, left_knee_pitch,
+    # left_ankle_roll, left_ankle_pitch (mirrored on right).  Map for WR:
+    #   - hip_pitch / knee_pitch → 0.01 (light; main propulsion DOFs)
+    #   - hip_roll              → 1.0  (medium)
+    #   - ankle_pitch / ankle_roll → 5.0 (heavy; drift-prone)
+    # WR has no hip_yaw; arms / waist / wrist get 0.0 by default (smoke
+    # uses leg-only penalty pose, matching TB's action_parts=['leg']).
+    # Joints absent from this dict default to ``penalty_pose_weight_default``.
+    # Empty dict ⇒ uniform default weight on all actuators.
+    penalty_pose_weights_per_joint: Dict[str, float] = field(default_factory=dict)
+    penalty_pose_weight_default: float = 0.0
+
 
 # =============================================================================
 # PPO Config
@@ -783,6 +798,37 @@ class RewardWeightsConfig(Freezable):
     feet_distance: float = 0.0
     torso_pitch_soft: float = 0.0
     torso_roll_soft: float = 0.0
+
+    # =========================================================================
+    # v0.20.1 TB-active alignment Phase 2 (walking_training.md Appendix B.2)
+    # =========================================================================
+    # Three reward terms that close the gap to TB's active walk recipe
+    # (toddlerbot/locomotion/walk.gin:110-131).  All defaults are 0.0 so
+    # existing configs are unaffected; the v0.20.1 smoke YAML enables them.
+    #
+    #   ref_feet_z_track    — dense per-step world-z error for both feet vs
+    #                         the ZMP prior's foot-z trajectory.  Substitute
+    #                         for TB feet_phase (walk_env.py:631-695); WR uses
+    #                         the prior's actual foot-z at each step instead
+    #                         of TB's phase-derived expected height.  α is
+    #                         in numerator-α form: r = exp(-α * (Δz_L^2 +
+    #                         Δz_R^2)).  Default α = 1/0.0007 ≈ 1428.6 maps
+    #                         to TB feet_phase_tracking_sigma=0.0007
+    #                         (mjx_config.py:133-135).
+    #   penalty_pose        — per-joint weighted (q_actual - q_ref)^2 sum.
+    #                         Mirrors TB _reward_penalty_pose with
+    #                         RewardsConfig.pose_weights (walk.gin:120-124),
+    #                         heavy weighting on hip_yaw / ankle_roll to
+    #                         suppress drift.  Per-joint vector lives in
+    #                         EnvConfig.penalty_pose_weights_per_joint.
+    #   penalty_feet_ori    — anti-tippy-toe via projected gravity in foot
+    #                         frame (mirror walk_env.py:697-735).  When the
+    #                         foot is flat, world gravity rotated into foot
+    #                         frame is [0, 0, -1]; deviation indicates tilt.
+    ref_feet_z_track: float = 0.0
+    ref_feet_z_track_alpha: float = 1428.6  # = 1 / TB σ=0.0007
+    penalty_pose: float = 0.0
+    penalty_feet_ori: float = 0.0
 
 
 @dataclass

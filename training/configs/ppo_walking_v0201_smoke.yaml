@@ -76,6 +76,29 @@ env:
   max_feet_y_dist: 0.13
 
   # ============================================================
+  # v0.20.1 TB-active alignment Phase 2: per-joint penalty_pose weights
+  # ============================================================
+  # Mirror toddlerbot/locomotion/walk.gin:120-124 pose_weights, mapped
+  # to WR's joint set.  TB's pattern is: light on the main propulsion
+  # joints (hip_pitch, knee_pitch ≈ 0.01), medium on hip_roll (1.0),
+  # heavy on the drift-prone joints (ankle_pitch, ankle_roll ≈ 5.0).
+  # WR has no hip_yaw (TB has it heavy at 5.0; not applicable here).
+  # Arms / waist / wrist default to 0 since TB's action_parts=['leg']
+  # only — extending pose-anchor coverage to arms is a v0.20.x+1 lever.
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # ============================================================
   # smoke7: TB-aligned multi-cmd curriculum (anti-shuffle lever #1)
   # ============================================================
   # Smoke3-6-prep3 evidence falsified the reward-only fix space for
@@ -415,6 +438,36 @@ reward_weights:
   feet_distance: 1.0
   torso_pitch_soft: 0.5
   torso_roll_soft: 0.5
+  # ============================================================
+  # v0.20.1 TB-active alignment Phase 2 (walking_training.md App. B.2)
+  # ============================================================
+  # Three reward terms that close the gap to TB walk.gin:110-131:
+  #
+  # ref_feet_z_track (highest-impact gap): substitute for TB feet_phase
+  # (walk_env.py:631-695).  WR uses the prior's actual foot-z at each
+  # step instead of TB's phase-derived expected height.  Weight 5.0
+  # picks the lower end of TB's feet_phase=7.5 (walk.gin:128) — start
+  # conservative since this is WR's first dense per-step foot-height
+  # reward (the imitation block's previous coverage was per-frame but
+  # not specifically z-axis).  α defaults to 1428.6 (= 1/0.0007, TB
+  # feet_phase_tracking_sigma) in RewardWeightsConfig; pinned here for
+  # documentability.  Direct addressee of the v0.20.1-smoke1 shuffle
+  # exploit (step_length 0.022 m vs 0.030 m gate).
+  ref_feet_z_track: 5.0
+  ref_feet_z_track_alpha: 1428.6
+  # penalty_pose: per-joint deviation-from-q_ref penalty.  TB weight 0.5
+  # (walk.gin:120).  Per-joint vector below mirrors TB pose_weights
+  # (walk.gin:121-124) mapped to WR's joint set:
+  #   - hip_pitch / knee_pitch       → 0.01 (light — main propulsion)
+  #   - hip_roll                     → 1.0  (medium)
+  #   - ankle_pitch / ankle_roll     → 5.0  (heavy — drift-prone)
+  #   - arms / waist / wrist         → 0.0  (TB uses leg-only by default;
+  #                                          walk.gin:17 ActionConfig.action_parts=['leg'])
+  penalty_pose: 0.5
+  # penalty_feet_ori: anti-tippy-toe via projected gravity in foot frame.
+  # TB weight 5.0 (walk.gin:129).  Penalizes foot rotation away from
+  # flat (deviation of foot-frame gravity from [0, 0, -1]).
+  penalty_feet_ori: 5.0
   # ToddlerBot-aligned slip penalty (walk.gin: feet_slip = 0.05).
   # Replaces the v0.20.1 default-0 stance-side slip penalty.  Pitch_rate
   # remains a 0-default M1 hook (only promoted on the M1 "balance issue"

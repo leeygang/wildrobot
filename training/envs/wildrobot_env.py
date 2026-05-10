@@ -236,6 +236,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         self._load_model()
         self._init_residual_scale()
+        self._init_pose_weights()
+        self._init_foot_body_ids()
         self._init_offline_service()
 
         print("WildRobotEnv (v0.20.1 v3-only) initialized:")
@@ -433,6 +435,51 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._g5_residual_idx = jp.asarray(
             [actuator_names_list.index(n) for n in g5_joint_names], dtype=jp.int32
         )
+
+    # --------------------------------------------------------------- pose_weights
+
+    def _init_pose_weights(self) -> None:
+        """Per-joint weights for the ``penalty_pose`` reward (Phase 2 of
+        walking_training.md Appendix B).
+
+        Mirrors ToddlerBot's per-joint pose_weights vector
+        (toddlerbot/locomotion/walk.gin:120-124).  Keyed by actuator name
+        from the YAML ``env.penalty_pose_weights_per_joint`` dict; joints
+        absent from the dict get ``env.penalty_pose_weight_default``.
+        Shape matches the actuator order so the reward computes as
+        ``sum(weights * (q_actual - q_ref)**2)`` directly.
+        """
+        per_joint_overrides = dict(
+            getattr(self._config.env, "penalty_pose_weights_per_joint", {}) or {}
+        )
+        scalar_default = float(
+            getattr(self._config.env, "penalty_pose_weight_default", 0.0)
+        )
+        per_joint_arr = np.array(
+            [
+                float(per_joint_overrides.get(name, scalar_default))
+                for name in self._policy_spec.robot.actuator_names
+            ],
+            dtype=np.float32,
+        )
+        self._pose_weights_per_joint = jp.asarray(per_joint_arr, dtype=jp.float32)
+
+    # ---------------------------------------------------------- foot body ids
+
+    def _init_foot_body_ids(self) -> None:
+        """Cache left/right foot MJ body IDs for ``penalty_feet_ori`` reward
+        (Phase 2 of walking_training.md Appendix B).
+
+        Mirror ToddlerBot's ``self.feet_link_ids`` lookup
+        (toddlerbot/locomotion/walk_env.py:717-718).  We read directly from
+        ``data.xquat[body_id]`` instead of going through cal because the
+        reward path is hot and we already have ``data`` in scope.
+        """
+        foot_specs = self._cal.foot_specs
+        left_id = next(s.body_id for s in foot_specs if s.name == "left_foot")
+        right_id = next(s.body_id for s in foot_specs if s.name == "right_foot")
+        self._left_foot_body_id = int(left_id)
+        self._right_foot_body_id = int(right_id)
 
     # -------------------------------------------------- offline reference svc
 
@@ -1004,6 +1051,69 @@ class WildRobotEnv(mjx_env.MjxEnv):
             + jp.exp(-jp.abs(roll_max_clip) * 100.0)
         )
 
+        # ============================================================
+        # v0.20.1 TB-active alignment Phase 2 (walking_training.md App. B)
+        # ============================================================
+
+        # ---- ref_feet_z_track ---------------------------------------
+        # Dense per-step world-z error for both feet vs the ZMP prior's
+        # foot-z trajectory.  Substitute for TB feet_phase
+        # (walk_env.py:631-695); WR uses the prior's actual foot-z at
+        # each step instead of TB's phase-derived expected height.
+        # Form: r = exp(-α * (Δz_L^2 + Δz_R^2)).  Default α = 1428.6
+        # mirrors TB feet_phase_tracking_sigma=0.0007.
+        feet_z_err_l = left_foot_pos[2] - win["left_foot_pos"][2]
+        feet_z_err_r = right_foot_pos[2] - win["right_foot_pos"][2]
+        feet_z_err_sq = feet_z_err_l * feet_z_err_l + feet_z_err_r * feet_z_err_r
+        r_feet_z_track = jp.exp(
+            -jp.float32(weights.ref_feet_z_track_alpha) * feet_z_err_sq
+        )
+
+        # ---- penalty_pose -------------------------------------------
+        # Per-joint weighted (q_actual - q_ref)^2 sum.  Mirrors TB
+        # _reward_penalty_pose with RewardsConfig.pose_weights
+        # (walk.gin:120-124), heavy on hip_yaw / ankle_roll for drift
+        # suppression (WR has no hip_yaw; weights configured per-joint
+        # in env.penalty_pose_weights_per_joint).  q_err already
+        # computed above for ref_q_track.
+        penalty_pose = jp.sum(self._pose_weights_per_joint * q_err * q_err)
+
+        # ---- penalty_feet_ori (anti-tippy-toe) ----------------------
+        # Penalize foot rotation away from flat using projected gravity
+        # in foot frame.  Mirrors TB walk_env.py:697-735: when foot is
+        # flat, world gravity rotated into foot frame is [0, 0, -1];
+        # deviation indicates tilt.  Penalty = sum of (z+1)^2 + x^2 +
+        # y^2 across both feet.
+        gravity_world = jp.array([0.0, 0.0, -1.0], dtype=jp.float32)
+        # data.xquat is wxyz; rotate_vec_by_quat expects xyzw.  Inverse
+        # rotation = conjugate of unit quaternion.
+        left_foot_quat_wxyz = data.xquat[self._left_foot_body_id]
+        right_foot_quat_wxyz = data.xquat[self._right_foot_body_id]
+        left_xyzw = jp.concatenate(
+            [left_foot_quat_wxyz[1:], left_foot_quat_wxyz[:1]]
+        ).astype(jp.float32)
+        right_xyzw = jp.concatenate(
+            [right_foot_quat_wxyz[1:], right_foot_quat_wxyz[:1]]
+        ).astype(jp.float32)
+        left_xyzw = jax_frames.normalize_quat_xyzw(left_xyzw)
+        right_xyzw = jax_frames.normalize_quat_xyzw(right_xyzw)
+        left_inv = jp.array(
+            [-left_xyzw[0], -left_xyzw[1], -left_xyzw[2], left_xyzw[3]],
+            dtype=jp.float32,
+        )
+        right_inv = jp.array(
+            [-right_xyzw[0], -right_xyzw[1], -right_xyzw[2], right_xyzw[3]],
+            dtype=jp.float32,
+        )
+        left_grav_foot = jax_frames.rotate_vec_by_quat(left_inv, gravity_world)
+        right_grav_foot = jax_frames.rotate_vec_by_quat(right_inv, gravity_world)
+        # Deviation from [0, 0, -1] in foot frame.
+        left_dev = left_grav_foot - gravity_world
+        right_dev = right_grav_foot - gravity_world
+        penalty_feet_ori = jp.sum(left_dev * left_dev) + jp.sum(
+            right_dev * right_dev
+        )
+
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
@@ -1028,6 +1138,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_feet_distance=r_feet_distance.astype(jp.float32),
             r_torso_pitch_soft=r_torso_pitch_soft.astype(jp.float32),
             r_torso_roll_soft=r_torso_roll_soft.astype(jp.float32),
+            # v0.20.1 TB-active alignment Phase 2 (Appendix B):
+            r_feet_z_track=r_feet_z_track.astype(jp.float32),
+            penalty_pose=penalty_pose.astype(jp.float32),
+            penalty_feet_ori=penalty_feet_ori.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
             q_track_rmse=q_track_rmse.astype(jp.float32),
             body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
@@ -1103,6 +1217,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * terms["r_torso_pitch_soft"],
             torso_roll_soft=jp.float32(w.torso_roll_soft)
             * terms["r_torso_roll_soft"],
+            # v0.20.1 TB-active alignment Phase 2 (Appendix B).  Defaults
+            # are 0 so existing v0.19.x / v0.20.0 configs are unaffected.
+            ref_feet_z_track=jp.float32(w.ref_feet_z_track)
+            * terms["r_feet_z_track"],
+            penalty_pose=jp.float32(w.penalty_pose) * terms["penalty_pose"],
+            penalty_feet_ori=jp.float32(w.penalty_feet_ori)
+            * terms["penalty_feet_ori"],
         )
         # Apply the * dt rescale uniformly so the per-term contributions
         # logged at reward/* are exactly what each term contributes to
@@ -1878,6 +1999,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/feet_air_time"] = reward_contrib["feet_air_time"]
         terminal_metrics_dict["reward/feet_clearance"] = reward_contrib["feet_clearance"]
         terminal_metrics_dict["reward/feet_distance"] = reward_contrib["feet_distance"]
+        # v0.20.1 TB-active alignment Phase 2 (Appendix B):
+        terminal_metrics_dict["reward/ref_feet_z_track"] = reward_contrib[
+            "ref_feet_z_track"
+        ]
+        terminal_metrics_dict["reward/penalty_pose"] = reward_contrib["penalty_pose"]
+        terminal_metrics_dict["reward/penalty_feet_ori"] = reward_contrib[
+            "penalty_feet_ori"
+        ]
         terminal_metrics_dict["reward/torso_pitch_soft"] = reward_contrib[
             "torso_pitch_soft"
         ]

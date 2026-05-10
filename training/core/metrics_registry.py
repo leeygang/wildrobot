@@ -1496,6 +1496,34 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Soft roll band penalty (replaces hard roll term)",
     ),
+    # =========================================================================
+    # v0.20.1 TB-active alignment Phase 2 (walking_training.md Appendix B):
+    # closes the gap to TB walk.gin:110-131 active recipe.
+    # =========================================================================
+    MetricSpec(
+        name="reward/ref_feet_z_track",
+        reducer=Reducer.MEAN,
+        description=(
+            "Dense per-step world-z error vs ZMP prior foot-z trajectory: "
+            "exp(-α * (Δz_L^2 + Δz_R^2)).  Substitute for TB feet_phase."
+        ),
+    ),
+    MetricSpec(
+        name="reward/penalty_pose",
+        reducer=Reducer.MEAN,
+        description=(
+            "Per-joint weighted (q_actual - q_ref)^2 sum.  Mirrors TB "
+            "_reward_penalty_pose with hip_yaw / ankle_roll heavy weights."
+        ),
+    ),
+    MetricSpec(
+        name="reward/penalty_feet_ori",
+        reducer=Reducer.MEAN,
+        description=(
+            "Anti-tippy-toe via projected gravity in foot frame.  Mirrors "
+            "TB _reward_penalty_feet_ori (walk_env.py:697-735)."
+        ),
+    ),
     MetricSpec(
         name="ref/q_track_err_rmse",
         reducer=Reducer.MEAN,
