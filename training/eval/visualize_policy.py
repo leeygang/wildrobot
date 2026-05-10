@@ -57,6 +57,7 @@ from training.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
+from training.eval.v6_eval_adapter import V6EvalAdapter, V6_LAYOUT_ID
 from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from training.algos.ppo.ppo_core import create_networks, sample_actions
@@ -365,7 +366,26 @@ def main():
     obs_dim = policy_spec.model.obs_dim
     action_dim = policy_spec.model.action_dim
 
-    print(f"Native MuJoCo: obs_dim={obs_dim}, action_dim={action_dim}")
+    # v0.20.1 v6 contract adapter: handles proprio_history rolling, offline
+    # reference window lookup, and residual action composition so the v6
+    # native-MuJoCo viewer matches what training saw.  Older obs layouts
+    # (v3, v4) keep the legacy numpy obs / half-span action paths below.
+    is_v6 = (policy_spec.observation.layout_id == V6_LAYOUT_ID)
+    v6_adapter = (
+        V6EvalAdapter(
+            training_cfg=training_cfg,
+            mj_model=mj_model,
+            policy_spec=policy_spec,
+            signals_adapter=signals_adapter,
+            action_dim=int(action_dim),
+        )
+        if is_v6
+        else None
+    )
+
+    print(f"Native MuJoCo: obs_dim={obs_dim}, action_dim={action_dim}, "
+          f"layout={policy_spec.observation.layout_id}"
+          + (" (v6 adapter active)" if is_v6 else ""))
 
     # Create PPO networks with same architecture as training
     policy_hidden = tuple(training_cfg.networks.actor.hidden_sizes)
@@ -440,15 +460,26 @@ def main():
     # Note: Joint addresses now handled by CAL (get_joint_positions/velocities)
 
     # Track previous action (training parity).
-    # In training, the initial observation's action slice is the default pose action,
-    # not zeros. Using zeros can destabilize early steps due to action-filter history
-    # and observation mismatch.
+    # Legacy v3/v4 use the default-pose policy action so the half-span
+    # action-filter history starts at the standing pose.  v6 uses the
+    # residual contract: ``q_target = q_ref + clip(action) * scale``,
+    # so prev_action = 0 means "no residual" and target_q == q_ref at
+    # step 0 (matches env's _make_initial_state, see wildrobot_env.py).
     default_ctrl = np.array(cal.get_ctrl_for_default_pose(), dtype=np.float32)
     default_policy_action = np.array(
         NumpyCalibOps.ctrl_to_policy_action(spec=policy_spec, ctrl_rad=default_ctrl),
         dtype=np.float32,
     )
-    prev_action = default_policy_action.copy()
+    def _initial_prev_action() -> np.ndarray:
+        # v6 residual contract starts with zero residual; legacy (v3/v4)
+        # uses the default-pose half-span action.  Use this helper
+        # everywhere the loop resets prev_action so the two layouts
+        # don't diverge on episode reset.
+        if is_v6:
+            return np.zeros(int(action_dim), dtype=np.float32)
+        return default_policy_action.copy()
+
+    prev_action = _initial_prev_action()
 
     clock_stride_period_steps = int(training_cfg.env.clock_stride_period_steps)
 
@@ -466,7 +497,19 @@ def main():
         )
 
     def get_observation(mj_data, velocity_cmd, prev_action_in, step_count):
-        """Compute observation via policy_contract (hardware-aligned)."""
+        """Compute observation via policy_contract (hardware-aligned).
+
+        v6 (wr_obs_v6_offline_ref_history): delegates to V6EvalAdapter,
+        which builds the proprio_history + reference window the v0.20.1
+        contract requires.  v3/v4 use the legacy numpy obs path.
+        """
+        if v6_adapter is not None:
+            return v6_adapter.compute_obs(
+                mj_data=mj_data,
+                prev_action=np.asarray(prev_action_in, dtype=np.float32),
+                velocity_cmd=float(velocity_cmd),
+            )
+
         signals = signals_adapter.read(mj_data)
         gait_clock = None
         if policy_spec.observation.layout_id == "wr_obs_v3":
@@ -486,7 +529,25 @@ def main():
     print(f"Action filter: enabled={use_action_filter}, alpha={action_filter_alpha}")
 
     def apply_action(mj_data, action, prev_action_for_filter):
-        """Apply action to MuJoCo model via policy_contract semantics."""
+        """Apply action to MuJoCo model via policy_contract semantics.
+
+        v6: residual composition q_target = clip(q_ref + clip(action) *
+        scale_per_joint, joint_range), then write ctrl in MJ order.
+        ``filtered_action`` returned for caller is ``np.clip(action, -1, 1)``
+        (the residual command actually applied) so the prev_action update
+        and the post-step diagnostic match what the env logs.
+
+        Legacy (v3/v4): half-span action filtering + ctrl_to_action.
+        """
+        if v6_adapter is not None:
+            action_np = np.asarray(action, dtype=np.float32)
+            v6_adapter.apply_action(mj_data, action_np)
+            # Residual contract: prev_action carries the clipped residual
+            # command, not a position-space action.  This is what the env
+            # stores in WildRobotInfo.prev_action and what the obs's
+            # prev_action slot expects on the NEXT step.
+            return np.clip(action_np, -1.0, 1.0)
+
         action_np = np.array(action)
         state = PolicyState(prev_action=np.asarray(prev_action_for_filter, dtype=np.float32))
         filtered_action, _ = postprocess_action(
@@ -502,6 +563,12 @@ def main():
         """Step physics simulation for one control step."""
         for _ in range(n_substeps):
             mujoco.mj_step(mj_model, mj_data)
+        # v6 contract: roll proprio_history (drop oldest, append the
+        # bundle compute_obs() built for THIS step) and advance the
+        # offline-trajectory index.  Keep this AFTER the physics step so
+        # ``compute_obs`` of the NEXT step sees an up-to-date buffer.
+        if v6_adapter is not None:
+            v6_adapter.post_step()
 
     rng_env = np.random.default_rng()
 
@@ -534,6 +601,11 @@ def main():
         # Use CAL to get default pose ctrl (physical joint angles from keyframe)
         mj_data.ctrl[:] = np.array(cal.get_ctrl_for_default_pose())
         mujoco.mj_forward(mj_model, mj_data)
+        # v6: rewind the proprio_history buffer + offline trajectory index
+        # so the next compute_obs() sees a fresh episode (env's
+        # _make_initial_state mirror).
+        if v6_adapter is not None:
+            v6_adapter.reset()
 
     def check_termination(mj_data, step_count):
         """Check if episode should terminate (training parity)."""
@@ -584,7 +656,7 @@ def main():
 
     apply_reset_noise = not args.no_reset_noise and not args.demo
     reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
-    prev_action = default_policy_action.copy()
+    prev_action = _initial_prev_action()
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
     left_hip_pitch_idx, right_hip_pitch_idx = cal._robot_config.get_hip_pitch_indices()
@@ -856,7 +928,7 @@ def main():
                     velocity_cmd = sample_velocity_cmd()
                 reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                 push_schedule = sample_push_schedule()
-                prev_action = default_policy_action.copy()
+                prev_action = _initial_prev_action()
                 prev_root_pos = None
                 prev_root_quat = None
                 episode_start_pos = mj_data.qpos[0:3].copy()
@@ -1039,7 +1111,7 @@ def main():
                             velocity_cmd = sample_velocity_cmd()
                         reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
                         push_schedule = sample_push_schedule()
-                        prev_action = default_policy_action.copy()
+                        prev_action = _initial_prev_action()
                         prev_root_pos = None
                         prev_root_quat = None
                         episode_start_pos = mj_data.qpos[0:3].copy()
