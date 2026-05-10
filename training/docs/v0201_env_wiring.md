@@ -36,7 +36,7 @@ a new action contract.
 - **`_residual_q_scale`** (line 1758): scalar, configurable via
   `loc_ref_residual_scale`.  Currently 0.18 (v0.19.5c default) which gives
   ~±0.18·half_span ≈ ±0.13 rad on a typical leg joint — too small for the
-  G1 smoke spec.  See §4 for the change.
+  smoke residual-bounds spec (was `G1`).  See §4 for the change.
 - **`_joint_half_spans`** (line 1916): `0.5 * (joint_range_maxs - joint_range_mins)` —
   per-joint span used as the residual scale base.  Reused.
 - **`build_observation`** (line 5378): already takes a set of `loc_ref_*` fields
@@ -77,11 +77,12 @@ Three new fields on `WildRobotInfo` (or one composite dict to minimize churn):
 Reset writes `loc_ref_offline_step_idx = 0`.  Step increments and clamps via
 the service.
 
-## 4. G1 residual bounds
+## 4. Smoke residual bounds (was `G1`)
 
 The current `_residual_q_scale = 0.18` is a single scalar applied to all joints'
-half-span.  For G1 (`±0.50 rad` on leg joints, `±0.20 rad` on others) we need
-either (a) a per-joint scale array, or (b) a two-tier scalar split.
+half-span.  For the smoke residual-bounds spec (`±0.50 rad` on leg joints,
+`±0.20 rad` on others) we need either (a) a per-joint scale array, or (b) a
+two-tier scalar split.
 
 **Decision: per-joint scale array.**  Cleanest, doesn't add new config primitives,
 and matches how `_joint_half_spans` is already shaped.  Specifically:
@@ -104,14 +105,14 @@ and matches how `_joint_half_spans` is already shaped.  Specifically:
     right_ankle_pitch: 0.50
   ```
   These are scaled internally by `_joint_half_spans`, so the actual rad bound
-  is `scale * half_span`.  Spec says G1 wants `±0.50 rad` directly, NOT
+  is `scale * half_span`.  Spec says the smoke residual bound wants `±0.50 rad` directly, NOT
   `±0.50·half_span`.  See §4.1 below.
 
 ### 4.1 Scale interpretation: half-span vs absolute
 
 The existing v2 code multiplies `policy_action × scale × half_span`.  For
 joints with `half_span > 1.0 rad` (most legs), `scale=0.50` gives `>0.5 rad`
-of residual authority — over-shoots the G1 spec.  For joints with
+of residual authority — over-shoots the smoke residual-bounds spec.  For joints with
 `half_span < 1.0 rad`, it under-shoots.
 
 **Decision: introduce a v3-only `loc_ref_residual_mode` enum**:
@@ -120,7 +121,7 @@ of residual authority — over-shoots the G1 spec.  For joints with
 - `mode = "absolute"` (v3 default; `target_q = nominal_q_ref + clip(action, -1, 1) * scale`)
 
 In absolute mode the per-joint `scale` value IS the rad bound directly.  This
-matches G1's spec verbatim and removes a confusing layer of indirection.
+matches the smoke residual-bounds spec verbatim and removes a confusing layer of indirection.
 
 The v0.20.1 smoke YAML uses `loc_ref_residual_mode: absolute`.  v1/v2
 configurations stay on the existing implicit `half_span` mode (no behavior
@@ -157,7 +158,7 @@ env:
 |---|---|---|
 | `loc_ref_q_ref`           | `[n_joints]` | `window.q_ref` |
 | `loc_ref_pelvis_pos`      | `[3]`        | `window.pelvis_pos` |
-| `loc_ref_pelvis_vel`      | `[3]`        | `window.pelvis_vel` (finite-diff per G2) |
+| `loc_ref_pelvis_vel`      | `[3]`        | `window.pelvis_vel` (finite-diff per ref-velocity-sourcing convention, was `G2`) |
 | `loc_ref_left_foot_pos`   | `[3]`        | `window.left_foot_pos` |
 | `loc_ref_right_foot_pos`  | `[3]`        | `window.right_foot_pos` |
 | `loc_ref_left_foot_vel`   | `[3]`        | `window.left_foot_vel` (finite-diff) |

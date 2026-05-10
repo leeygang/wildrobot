@@ -147,12 +147,13 @@ env:
   # Action filtering — alpha=0.0 keeps the smoke baseline clean (no
   # filter dynamics), but with the v0.20.1 residual-only filter
   # contract (env applies lowpass_v1 to the policy residual command,
-  # not to the composed q_target) ANY alpha value satisfies G6: when
-  # the policy outputs zero, the filtered residual stays zero, so
-  # target_q == q_ref exactly.  See tests/test_v0201_env_zero_action.py
+  # not to the composed q_target) ANY alpha value satisfies the
+  # zero-residual invariant (was `G6 invariant`): when the policy
+  # outputs zero, the filtered residual stays zero, so target_q ==
+  # q_ref exactly.  See tests/test_v0201_env_zero_action.py
   # test_zero_action_residual_metric_stays_zero_for_50_steps for the
   # invariant.  alpha can be lifted to v0.20.2's hardware-realism
-  # value without re-checking G6.
+  # value without re-checking it.
   action_filter_alpha: 0.0
 
   # ---- v0.20.1 v3 offline reference + v6 obs (proprio history) ----
@@ -174,13 +175,13 @@ env:
   # default bin from the generator's 0.05-step grid.
   loc_ref_offline_command_vx: 0.20
 
-  # ---- Residual bounds (G1) ----
+  # ---- Smoke residual bounds (was `G1`) ----
   # Absolute mode: residual_delta_q = clip(action) * scale (rad).
   # ToddlerBot-aligned (walking_training.md Appendix A.6): leg residual
   # tightened from ±0.50 → ±0.25 rad to match ToddlerBot's uniform
   # action_scale = 0.25.  The looser ±0.50 was added to compensate
   # for the prior failing to deliver forward push at vx=0.15 (per the
-  # earlier G1 commentary), but the v0.20.0-D unblock requires the
+  # earlier residual-bounds commentary), but the v0.20.0-D unblock requires the
   # prior to already be rescuable — relying on residual authority to
   # paper over a weak prior is exactly the G5 anti-exploit failure
   # mode.  If the smoke shows the bound is the binding constraint
@@ -350,7 +351,8 @@ reward_weights:
   # on phase-related rewards (walking_training.md Appendix A.3).
   #   lin_vel_z (TB 1.0): vertical body velocity tracking.  Reference is
   #     finite-diff of prior pelvis_pos[2] across consecutive frames
-  #     (Appendix A.3 G2 — keeps the ReferenceLibrary schema narrow).  Per-
+  #     (Appendix A.3 §"Reference velocity sourcing", was `G2` —
+  #     keeps the ReferenceLibrary schema narrow).  Per-
   #     frame phase-correlated gradient from body bobbing during each step.
   #   ang_vel_xy (TB 2.0): body roll/pitch angular velocity.  Reference is
   #     zero (yaw-stationary prior with no pitch/roll oscillation).  Per-
@@ -364,7 +366,8 @@ reward_weights:
   # to enable the legacy Gaussian at weight 0.5:
   #   1. Doc/code mismatch on the Gaussian kernel formula (docs say
   #      exp(-x^2/sigma^2), code uses exp(-x^2/(2*sigma^2))).
-  #   2. The graduation policy in walking_training.md G3 says re-enable
+  #   2. The graduation policy in walking_training.md §"Contact-phase
+  #      reward formula" (was `G3`) says re-enable
   #      first at 0.02, then 0.10 once the contact-alignment probe passes
   #      the 0.90 bar.  Setting weight 0.5 jumped 25x past the documented
   #      re-entry without re-running the probe.

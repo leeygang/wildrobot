@@ -98,7 +98,8 @@ def create_networks(
         preprocess_observations_fn: Optional observation preprocessing.
             If None, uses Brax's identity preprocessor.
         activation: Hidden-layer activation name ("elu", "silu", ...).
-            v0.20.1 spec (walking_training.md G6) calls for "elu".
+            v0.20.1 spec (walking_training.md §"Smoke policy
+            initialisation", was `G6`) calls for "elu".
             Brax's default is "silu".
 
     Returns:

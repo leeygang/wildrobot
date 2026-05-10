@@ -533,8 +533,9 @@ def start_training(
         # v0.20.1 v3-only env treats `action` as a bounded residual on top
         # of the offline reference (target_q = q_ref + clip(action) * scale).
         # iter-0 must therefore output zero so the rollout starts from
-        # bare-q_ref replay — this is the G6 contract in
-        # walking_training.md (v0.20.1 §) and what the pre-smoke wiring
+        # bare-q_ref replay — this is the zero-residual invariant
+        # (was `G6 contract`) in walking_training.md (v0.20.1 §
+        # "Smoke policy initialisation") and what the pre-smoke wiring
         # test (tests/test_v0201_env_zero_action.py) verifies.
         # The legacy bias toward default_joint_qpos was only correct for
         # the v0.19.5c standing path where action = absolute pose; under

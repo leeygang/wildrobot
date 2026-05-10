@@ -130,19 +130,20 @@ class EnvConfig(Freezable):
     # loc_ref_residual_mode (see below).
     loc_ref_residual_scale: float = 0.18
 
-    # v0.20.1 G1 / §4.1 — residual interpretation mode.
+    # v0.20.1 smoke residual bounds (was `G1`) / §4.1 — residual
+    # interpretation mode.
     #   "absolute"  - v3 default; effective delta_q =
     #                 action * loc_ref_residual_scale (the scale value
     #                 is the rad bound directly).  When set, the
     #                 per-joint override map below replaces the scalar
-    #                 per the smoke G1 spec (legs ±0.25 rad, others
-    #                 ±0.20 rad).
+    #                 per the smoke residual-bounds spec (legs ±0.25
+    #                 rad, others ±0.20 rad).
     #   "half_span" - legacy interpretation (action * scale *
     #                 half_span); kept available so a future
     #                 broader-authority policy can opt in without
     #                 redefining the residual contract.
     loc_ref_residual_mode: str = "absolute"
-    # v0.20.1 G1 — optional per-joint residual scale override (joint
+    # v0.20.1 smoke residual bounds (was `G1`) — optional per-joint residual scale override (joint
     # name -> rad bound).  Only consulted when
     # loc_ref_residual_mode == "absolute".  Joints not in the map
     # fall back to the scalar loc_ref_residual_scale.
@@ -715,7 +716,8 @@ class RewardWeightsConfig(Freezable):
     # are 0 so existing v0.19.5c configs are untouched; the v0.20.1 smoke YAML
     # sets them to the DeepMimic-style ratios cited in v0201_env_wiring.md.
     # See training/docs/walking_training.md (v0.20.1 Reward §) for the term
-    # list and walking_training.md G3 for the contact-match definition.
+    # list and walking_training.md §"Contact-phase reward formula" (was `G3`)
+    # for the contact-match definition.
     ref_q_track: float = 0.0
     ref_body_quat_track: float = 0.0
     torso_pos_xy: float = 0.0

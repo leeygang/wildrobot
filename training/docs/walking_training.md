@@ -865,25 +865,33 @@ Smoke contract:
   - this higher-authority residual is a smoke-stage debugging compromise, not
     the final intended contract
 
-### G-gate categorisation (2026-05-09)
+### Smoke contract — gates vs commitments (2026-05-09)
 
-The historical `G1`-`G7` labels are kept for cross-doc / CHANGELOG
-continuity, but they're not all "gates" in the PASS/FAIL sense.  The
-TB cross-check (`grep -rn "success_rate" toddlerbot/locomotion/` →
-zero hits; checkpoint selection at
+Only **two** items in this section are PASS/FAIL gates: **G4** (eval
+floors) and **G5** (anti-exploit).  Everything else is configuration,
+implementation choice, or a pre-smoke baseline measurement — calling
+them "gates" was overclaim.  The TB cross-check
+(`grep -rn "success_rate" toddlerbot/locomotion/` → zero hits;
+checkpoint selection at
 `toddlerbot/locomotion/train_mjx.py:849-865` is purely
-`best_episode_reward = max(...)`) shows TB has **no** eval-floor or
-anti-exploit gates.  Most of WR's `G*` items are configuration
-commitments and implementation choices added because WR's prior +
-residual architecture creates failure modes (v0.19.5 lean-back / move-
-less exploits) that TB doesn't face.  Categorisation:
+`best_episode_reward = max(...)`) confirms TB has **no** eval-floor
+or anti-exploit gates either.  WR's G4/G5 are quantitative defences
+added because WR's prior + residual architecture creates failure
+modes (v0.19.5 lean-back / move-less exploits) that TB doesn't face.
 
-| Category | Members | Role |
+This section uses descriptive names below (not the historical `G*`
+abbreviations).  Old `G*` IDs survive in CHANGELOG history and a
+handful of code comments; the table below maps them for searchability.
+
+| Item | Type | Old ID |
 |---|---|---|
-| **Promotion gates** (PASS/FAIL at promotion horizon) | G4, G5 | Quantitative go/no-go for shipping the smoke checkpoint. |
-| **Smoke configuration commitments** | G1, G3, G6 | Frozen smoke-stage config (residual bounds, reward-term spec, policy init) — not pass/fail; YAML / code settings. |
-| **Implementation choices** | G2 | Env-side design decision (finite-diff velocity refs); not pass/fail. |
-| **Pre-smoke baselines** | G7 | Open-loop measurement to detect regressions vs the smoke run. |
+| **G4 — eval-rollout floors** | promotion gate (PASS/FAIL) | `G4` |
+| **G5 — anti-exploit residual + ratio** | promotion gate (PASS/FAIL) | `G5` |
+| Smoke residual bounds | config commitment | (was `G1`) |
+| Reference velocity sourcing | implementation choice | (was `G2`) |
+| Contact-phase reward formula | config commitment | (was `G3`) |
+| Smoke policy initialisation | config commitment | (was `G6`) |
+| Pre-smoke open-loop baseline | baseline measurement | (was `G7`) |
 
 **Body-size note:** TB's thresholds (`healthy_z_range`,
 `swing_height`, `min/max_feet_y_dist`, reward sigmas) are all
@@ -902,9 +910,10 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
 
 ---
 
-  - **G1 [config commitment] — concrete starting bounds for the smoke**
-    (per-joint clip on `delta_q_policy`, applied symmetrically; tighten
-    if anti-exploit metric G5 trips):
+  - **Smoke residual bounds** (config commitment; was `G1`) —
+    concrete starting bounds for the smoke (per-joint clip on
+    `delta_q_policy`, applied symmetrically; tighten if anti-exploit
+    metric G5 trips):
     - leg joints (hip pitch / hip roll / knee / ankle pitch / ankle roll):
       `±0.25 rad`
     - all other joints: `±0.20 rad`
@@ -926,7 +935,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
     - `ref/lin_vel_z` (smoke6 onward — TB-aligned vertical body velocity
       tracking.  Continuous phase signal.  Actual rotated to true
       body-local via `inv(root_quat)`; reference computed from
-      finite-diff of prior `pelvis_pos[2]` per Appendix A.3 G2.)
+      finite-diff of prior `pelvis_pos[2]` per Appendix A.3 §"Reference velocity sourcing".)
     - `ref/ang_vel_xy` (smoke6 onward — TB-aligned body roll/pitch
       angular velocity.  Continuous phase signal.  Reference is zero
       because the yaw-stationary prior has no pitch/roll oscillation —
@@ -944,7 +953,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
     - `survival`
   - secondary terms:
     - `cmd/forward_velocity_track`
-    - `ref/contact_phase_match` (diagnostic-only for the first smoke; see G3)
+    - `ref/contact_phase_match` (diagnostic-only for the first smoke; see §"Contact-phase reward formula")
   - regularizers:
     - `action_rate`
     - `torque`
@@ -954,7 +963,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
   - compute body / site / velocity tracking in torso-relative or root-relative
     coordinates where applicable
   - do not reuse the `v0.19.x` task-space reward family for this smoke
-  - **G2 [implementation choice] — reference velocity fields**:
+  - **Reference velocity sourcing** (implementation choice; was `G2`):
     - the offline `ReferenceLibrary` schema currently stores only positions
       (`pelvis_pos`, `com_pos`, `left_foot_pos`, `right_foot_pos`); body
       and site linear / angular velocities are not stored
@@ -979,8 +988,8 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
       directly with better fidelity than finite-diff, or if the smoke
       shows velocity-tracking reward gradients are noisy at the
       finite-diff numerical-derivative quality
-  - **G3 [config commitment] — `ref/contact_phase_match` definition**
-    (smoke6 onward):
+  - **Contact-phase reward formula** (config commitment; was `G3`) —
+    `ref/contact_phase_match` definition (smoke6 onward):
     - boolean equality count per foot, matching ToddlerBot's
       `_reward_feet_contact` (`toddlerbot/locomotion/mjx_env.py:2484-2486`)
       exactly:
@@ -1031,15 +1040,17 @@ Pre-smoke checks:
   replay index
 - reference horizon never overruns the trajectory length
 - reward logs expose the primary `ref/*` tracking metrics from iteration 1
-- if the contact-alignment probe fails the G3 bar, the smoke YAML must set
+- if the contact-alignment probe fails the contact-phase reward bar, the smoke YAML must set
   `reward_weights.ref_contact_match = 0.0` before launch; do not carry a
   known-noisy contact term into the first PPO run
-- **G7 [pre-smoke baseline] — prior-vs-body sanity at the smoke command**:
+- **Pre-smoke open-loop baseline** (baseline measurement; was `G7`) —
+  prior-vs-body sanity at the smoke command:
   - **Note on TB alignment:** TB has no analog because TB has no
-    separate prior to baseline against (the policy IS the gait).  G7
-    is a WR-specific pre-smoke measurement that pins the open-loop
-    bare-q_ref behaviour as a regression baseline — if a future smoke
-    collapses below these numbers, something *upstream of PPO* broke.
+    separate prior to baseline against (the policy IS the gait).
+    This baseline is a WR-specific pre-smoke measurement that pins
+    the open-loop bare-q_ref behaviour as a regression check — if a
+    future smoke collapses below these numbers, something *upstream
+    of PPO* broke.
   - run `tools/v0200c_per_frame_probe.py --horizon 200` (default
     `--vx 0.20` post Phase 9D — TB-step/leg-matched operating point at
     the WR-pendulum-scaled cycle_time=0.96 s) and record the
@@ -1083,7 +1094,7 @@ Metric validation:
   - `ref/site_track`
   - `ref/body_lin_vel_track`
   - `ref/body_ang_vel_track`
-  - `ref/contact_phase_match` (diagnostic in the first smoke unless G3 probe
+  - `ref/contact_phase_match` (diagnostic in the first smoke unless contact-phase probe
     passes; do not require it to improve when the term is intentionally at
     zero weight)
 - **G4 [promotion gate] — early-horizon gate (informational only)
@@ -1194,7 +1205,8 @@ Metric validation:
   - if either bound is violated at the promotion horizon, the smoke fails
     even if the forward-velocity gate passes — explicitly to prevent a
     false-positive caused by a residual-driven exploit gait
-- **G6 [config commitment] — policy init details**:
+- **Smoke policy initialisation** (config commitment; was `G6`) —
+  policy init details + zero-residual invariant:
   - actor: hidden `[256, 256, 128]`, ELU
   - critic: same shape, ELU
   - `log_std_init = -1.0` (matches v0.19.5c; not changing exploration
@@ -1252,7 +1264,7 @@ M2 compute budget), the next action depends on which gate failed:
 - `forward_velocity` reaches the gate BUT G5 fails (residual magnitude
   too large or realized/commanded ratio out of band)
   → **action-authority leak**: the policy is doing the propulsion, not
-    the prior.  Action: tighten the G1 residual bound (start with -50%),
+    the prior.  Action: tighten the smoke residual bound (start with -50%),
     rerun.  If still failing, the prior is too weak to be a residual
     target — return to prior surgery, not reward surgery.
 - `forward_velocity` reaches the gate, G5 passes, BUT
@@ -1461,7 +1473,7 @@ Pre-smoke checks (all completed in smoke7-prep1):
 - ✅ YAML loader audit: all DR + cmd_* keys read by
   `_parse_env_config` (training_config.py:480-504).
 - ✅ Round-trip test extended to assert smoke7 critical env settings.
-- ✅ G6 invariant: 7/7 pass with smoke7 YAML.
+- ✅ Zero-residual invariant (was `G6 invariant`): 7/7 pass with smoke7 YAML.
 - ✅ Eval-cmd override behaviorally verified: `reset_for_eval` pins
   cmd to the configured eval command across all seeds; training reset
   samples within the configured `[min_velocity, max_velocity]` range
@@ -1708,7 +1720,7 @@ ToddlerBot file/line so future drift is reviewable.
 | `min_height` / `max_height` | 0.30 / 0.70 (`yaml:56`) | `healthy_z_range = [0.2, 1.0]` (`mjx_config.py:103`) | keep WR (tight v2 robot) |
 | `max_pitch` / `max_roll` term | 0.8 rad each, **active** (`wildrobot_env.py:891`) | **none** — only height terminates (`mjx_env.py:1029`) | **change** — relax to height-only via `use_relaxed_termination: true` |
 | `action_delay_steps` | 0 (`yaml:146`) | `n_steps_delay = 1` (`mjx_config.py:96`) | **change** — set to 1 |
-| `action_filter_alpha` | 0.0 | active exp filter | keep WR=0 for the smoke (G6 invariant); revisit at v0.20.2 |
+| `action_filter_alpha` | 0.0 | active exp filter | keep WR=0 for the smoke (zero-residual invariant); revisit at v0.20.2 |
 | `contact_threshold_force` | 1.0 N | 1.0 N (`mjx_config.py:95`) | match |
 | Frame stack (history) | `PROPRIO_HISTORY_FRAMES = 3` (`env_info.py:47`) | `frame_stack = 15`, `c_frame_stack = 15` (`mjx_config.py:74`) | **change** — bump to 15 |
 
@@ -1758,7 +1770,7 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `torso_roll` (soft, gate `[-0.1, 0.1]`) | 0.5 | — | **add 0.5** |
 | `torso_pitch` (soft, gate `[-0.2, 0.2]`) | 0.5 | — | **add 0.5** |
 | `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0 | 0.30 | 5.0 |
-| `lin_vel_z` | 1.0 | — | **smoke6: 1.0** (vertical body bobbing — TB-aligned continuous phase signal; actual rotated to true body-local via `inv(root_quat)` matching TB; ref is finite-diff of prior `pelvis_pos[2]` per A.3 G2 — equals body-local for our yaw-stationary prior since pelvis quat is identity throughout) |
+| `lin_vel_z` | 1.0 | — | **smoke6: 1.0** (vertical body bobbing — TB-aligned continuous phase signal; actual rotated to true body-local via `inv(root_quat)` matching TB; ref is finite-diff of prior `pelvis_pos[2]` per Appendix A.3 §"Reference velocity sourcing" — equals body-local for our yaw-stationary prior since pelvis quat is identity throughout) |
 | `ang_vel_xy` | 2.0 | — | **smoke6: 2.0** (body roll/pitch rate — TB-aligned continuous phase signal; ref is zero for yaw-stationary prior; actual is `gyro_rad_s[:2]` which is already body-frame in MuJoCo, no rotation needed) |
 | `ang_vel_z` | 5.0 | — | defer (smoke has no yaw cmd) |
 | `feet_contact` ↔ `ref_contact_match` | 1.0 (boolean) | 0.0 (Gaussian, gated through smoke5) | **smoke6: 1.0 boolean** (TB form `sum(stance_mask == ref_stance_mask)` ∈ {0,1,2}; smoke3-5 used WR-specific Gaussian with σ=0.5 + doc/code mismatch on the kernel formula; switching to TB form resolves both and aligns strictly with TB) |
@@ -1854,5 +1866,5 @@ Commit-by-commit:
 After landing, the open-loop pre-smoke probe
 (`tools/v0201_contact_alignment_probe.py`) and the env zero-action
 test (`tests/test_v0201_env_zero_action.py`) must still pass — the
-G6 invariant (zero residual ⇒ `target_q == q_ref`) is unchanged by
+Zero-residual invariant (was `G6 invariant`: zero residual ⇒ `target_q == q_ref`) is unchanged by
 this audit.

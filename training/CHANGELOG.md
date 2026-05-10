@@ -8,6 +8,97 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-retire-non-gate-G-ids] - 2026-05-09: rename G1/G2/G3/G6/G7 to descriptive names; "gate" terminology now only applies to G4/G5
+
+### Context
+
+The previous commit (`cd002ff`) categorised the `G1`-`G7` set into
+"promotion gates" (G4, G5) vs "config commitments / implementation
+choices / pre-smoke baselines" (G1, G2, G3, G6, G7) but kept all `G*`
+labels.  Follow-up: drop the `G*` framing entirely from the non-gate
+items so "gate" terminology only applies where there's an actual
+PASS/FAIL.
+
+### Patch — descriptive renames
+
+| Old `G*` ID | New name | Type |
+|---|---|---|
+| G1 | **Smoke residual bounds** | config commitment |
+| G2 | **Reference velocity sourcing** | implementation choice |
+| G3 | **Contact-phase reward formula** | config commitment |
+| G6 | **Smoke policy initialisation** + **zero-residual invariant** (the runtime contract) | config commitment |
+| G7 | **Pre-smoke open-loop baseline** | baseline measurement |
+
+`G4` and `G5` retain their IDs and "gate" terminology — they are the
+only PASS/FAIL gates in the smoke contract.
+
+### Files touched
+
+**Doc renames:**
+- `training/docs/walking_training.md` — section headers refactored;
+  inline cross-references updated (`Appendix A.3 G2` →
+  `Appendix A.3 §"Reference velocity sourcing"`; `G3 probe` →
+  `contact-phase probe`; `G6 invariant` → `zero-residual invariant`;
+  etc.).  Smoke contract preamble rewritten with the descriptive-name
+  table for searchability.
+- `training/docs/reference_parity_scorecard.md` — required-gates list
+  rewritten so only `G4` / `G5` are "gates"; `G6` becomes
+  "zero-residual invariant"; `G7` becomes "pre-smoke open-loop
+  baseline".
+- `training/docs/v0201_env_wiring.md` — §4 retitled to
+  "Smoke residual bounds (was `G1`)"; inline `G1`/`G2` refs renamed.
+- `training/docs/reference_architecture_comparison.md` — `G4/G5/G6/G7
+  policy contract` → smoke-contract enumeration with the new names.
+
+**Code comment renames** (no behaviour change):
+- `training/algos/ppo/ppo_core.py` — `G6` → `Smoke policy
+  initialisation (was G6)`.
+- `training/core/training_loop.py` — same rename for the activation +
+  log_std_init comments.
+- `training/train.py` — `G6 contract` → `zero-residual invariant
+  (was G6 contract)`.
+- `training/envs/wildrobot_env.py` — 6 spots renamed (G6 contract,
+  G6 invariant, A.3 G2 → descriptive forms with `(was G*)` aliases).
+- `training/configs/ppo_walking_v0201_smoke.yaml` — 4 spots renamed
+  (G6 → zero-residual invariant; G1 → smoke residual bounds; A.3 G2
+  → reference velocity sourcing; G3 → contact-phase reward formula).
+- `training/configs/training_config.py` /
+  `training/configs/training_runtime_config.py` — `G1 spec` →
+  `smoke residual-bounds spec (was G1)`; `G3` → `Contact-phase
+  reward formula (was G3)`.
+- `tools/phase6_wr_probe.py` — `G4/G7` → "G4 promotion gate +
+  pre-smoke open-loop baseline (was G7)".
+
+**CHANGELOG history is left untouched** — old entries continue to
+reference `G1`-`G7` as written; the rename is forward-going.  Every
+new mention of the renamed items uses the descriptive form with a
+`(was G*)` parenthetical for searchability.
+
+### Why this matters
+
+Three operational consequences:
+1. **Operator clarity at smoke launch:** the doc now says "two gates,
+   five commitments/baselines" instead of "seven gates" — readers
+   no longer wonder "why is G2 a gate that I have to pass?".
+2. **Honest TB framing:** TB has zero gates; calling 5 of WR's 7
+   `G*` items "gates" was overclaim that the TB cross-check
+   (CHANGELOG `v0.20.1-gate-categorisation-and-tb-cross-check`)
+   surfaced.  Renaming makes the WR-specific extension status
+   visible in the name itself.
+3. **Future-proofs against re-litigation:** the descriptive-name
+   table at the top of the smoke-contract section gives future
+   reviewers the WR-vs-TB framing without needing to re-derive it.
+
+### Tests
+
+60/60 PASS on the regression set
+(`test_v0200a_contract`, `test_v0200c_geometry`,
+`test_phase10_diagnostic`, `test_v0201_env_zero_action`,
+`test_config_load_smoke6`, `test_smoke7_eval_cmd_behavior`).
+Doc-and-comment-only commit; no behaviour change.
+
+---
+
 ## [v0.20.1-gate-categorisation-and-tb-cross-check] - 2026-05-09: rename "G-gates" honestly (only G4/G5 are gates); 6 TB-alignment doc corrections
 
 ### Context

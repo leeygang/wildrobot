@@ -199,24 +199,31 @@ Interpretation:
 After P0-P2 are acceptable, WildRobot must still satisfy its own policy-side
 contract from `training/docs/walking_training.md`.
 
-Required gates:
+Required smoke contract items (only the first two are PASS/FAIL gates;
+the others are configuration commitments / pre-smoke baselines — see
+walking_training.md §"Smoke contract — gates vs commitments"):
 
-- `G4`: promotion-horizon walking gate
-- `G5`: anti-exploit residual bound
-- `G6`: zero residual implies `target_q == q_ref`
-- `G7`: trained policy beats bare-`q_ref` replay
+- **G4** (gate): promotion-horizon eval-rollout floors
+- **G5** (gate): anti-exploit residual bound + eval vx/cmd ratio
+- **Smoke policy initialisation** (config commitment, was `G6`):
+  zero residual implies `target_q == q_ref` (the zero-residual
+  invariant verified by `tests/test_v0201_env_zero_action.py`)
+- **Pre-smoke open-loop baseline** (baseline measurement, was `G7`):
+  trained policy beats bare-`q_ref` replay
 
 Pass criteria:
 
 - pass `G4`
 - do not violate `G5`
-- pass `G6`
-- pass `G7`
+- zero-residual invariant holds (tested invariant, not a per-iter gate)
+- trained policy beats the pre-smoke open-loop baseline
 
 Interpretation:
 
-- `G4/G6/G7` confirm the reference works in the actual WR training stack
-- `G5` confirms PPO is correcting the prior rather than replacing it
+- The two gates (G4, G5) are the operator-facing PASS/FAIL.
+- The invariant + baseline confirm the reference stack works and
+  that PPO is actually improving over the bare prior.
+- G5 confirms PPO is correcting the prior rather than replacing it.
 
 ## Gate Classification and Honest Reading (2026-04-26)
 
@@ -390,7 +397,9 @@ read against the gate categorisation above:
    fwd_per_cmd; drift_per_leg with H5 active)
 7. WildRobot's P1 D-gates either clear or are exempted via active H6
    (composite gauge)
-8. WildRobot passes `G4`, `G6`, and `G7` without violating `G5`
+8. WildRobot passes `G4`, satisfies the zero-residual invariant
+   (was `G6`), beats the pre-smoke open-loop baseline (was `G7`),
+   and does not violate `G5`
 
 Category C gates (kinematic identities), Category S (sentinels), and
 Category U (real metrics currently unstable in zero-residual replay)

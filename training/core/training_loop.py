@@ -876,7 +876,8 @@ def train(
     rng, init_rng, env_rng = jax.random.split(rng, 3)
 
     # Create networks.  Brax's make_ppo_networks takes a single shared
-    # activation; the v0.20.1 spec (walking_training.md G6) uses ELU for
+    # activation; the v0.20.1 spec (walking_training.md §"Smoke policy
+    # initialisation", was `G6`) uses ELU for
     # both actor and critic, so we require them to match in the YAML
     # rather than silently picking one.
     actor_activation = str(config.networks.actor.activation).lower()
@@ -898,7 +899,8 @@ def train(
 
     # Initialize network parameters.  policy_init_std is exp(log_std_init)
     # so the actor's softplus-parameterized scale starts at the spec's
-    # exploration pressure (G6: walking_training.md v0.20.1 §, log_std_init
+    # exploration pressure (smoke policy init spec, was `G6`:
+    # walking_training.md v0.20.1 §, log_std_init
     # = -1.0 → std ≈ 0.368).  Without this thread the scale would default
     # to 0.10 (~ log_std=-2.30) regardless of the YAML.
     policy_init_std = float(jnp.exp(jnp.float32(config.networks.actor.log_std_init)))
