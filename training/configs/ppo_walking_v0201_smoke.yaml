@@ -272,6 +272,22 @@ env:
   domain_rand_frictionloss_scale_range: [0.8, 1.2]
   domain_rand_joint_offset_rad: 0.03
 
+  # ============================================================
+  # v0.20.1 TB-active alignment Phase 3 (walking_training.md App. B.2):
+  # TB-style smooth backlash — closes a sim2real critical DR gap.
+  # ============================================================
+  # Per-joint episode-constant deadband sampled in [low, high] rad,
+  # applied at obs time as
+  #     motor_pos += 0.5 * backlash * tanh(qfrc_actuator / activation)
+  # Mirrors toddlerbot/locomotion/mjx_config.py:209-210 and
+  # mjx_env.py:2073-2080.  Range [0.02, 0.10] rad ≈ [1.1°, 5.7°]
+  # matches TB's hobby-servo deadband distribution; activation 0.1 Nm
+  # is the saturation torque at which the lash is fully engaged.
+  # When the policy's torque demand crosses zero, the observed joint
+  # position flips by ±backlash (the gear sliding through the deadband).
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
   # ToddlerBot uses n_steps_delay = 1 (toddlerbot/locomotion/mjx_config.py:96).
   # One-step action delay matches the closed-loop dynamics PPO will face
   # on hardware and forces smoother policies in sim.  The action-delay
@@ -307,6 +323,17 @@ ppo:
   max_grad_norm: 0.5
 
   log_interval: 10
+
+  # v0.20.1 TB-active alignment Phase 3 (walking_training.md App. B.2):
+  # Asymmetric actor-critic with TB-style privileged obs.  Critic head
+  # consumes motor_pos_error + base lin_vel + actuator_force + ref_stance
+  # in addition to lin_vel/ang_vel/contacts (PRIVILEGED_OBS_DIM=52).
+  # Mirrors TB's num_single_privileged_obs=151 architecture
+  # (toddlerbot/locomotion/mjx_config.py:86, walk.gin:25-28).  Sample-
+  # efficiency win for locomotion PPO (Pinto et al. 2017 "Asymmetric
+  # Actor Critic"), especially valuable given WR's 50× compute gap vs
+  # TB's published 1e9-step training (Appendix B.3).
+  critic_privileged_enabled: true
 
   # Deterministic eval rollout — ToddlerBot-style ``Evaluate/*`` block
   # (training/docs/walking_training.md v0.20.1 §, replaces the broken

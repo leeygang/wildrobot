@@ -478,6 +478,20 @@ class EnvConfig(Freezable):
     min_feet_y_dist: float = 0.07
     max_feet_y_dist: float = 0.13
 
+    # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
+    # backlash domain randomization.  Per-joint deadband magnitude
+    # sampled uniformly per episode in [low, high] rad, applied at obs
+    # time as ``motor_pos += 0.5 * backlash * tanh(qfrc_actuator /
+    # activation)`` (mirrors toddlerbot/locomotion/mjx_env.py:2073-
+    # 2080).  Defaults disable backlash entirely so existing configs
+    # are unaffected; smoke yaml enables [0.02, 0.10] / activation 0.1
+    # to mirror TB ``DomainRandConfig.backlash_range`` /
+    # ``backlash_activation`` (mjx_config.py:209-210).
+    domain_rand_backlash_range: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
+    domain_rand_backlash_activation: float = 0.1
+
     # Per-joint weights for the ``penalty_pose`` reward (Phase 2 of
     # walking_training.md Appendix B).  Mirrors TB walk.gin:120-124's
     # RewardsConfig.pose_weights = [0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]

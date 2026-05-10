@@ -40,7 +40,24 @@ from training.envs.disturbance import DisturbanceSchedule
 # ``EnvConfig.imu_max_latency_steps``).
 IMU_MAX_LATENCY = 4
 IMU_HIST_LEN = IMU_MAX_LATENCY + 1
-PRIVILEGED_OBS_DIM = 12
+# Privileged critic obs (sim-only fields the actor doesn't see).
+# v0.20.1 TB-active alignment Phase 3 (walking_training.md Appendix B.2):
+# bumped 12 → 52 to mirror TB's privileged obs content
+# (toddlerbot/locomotion/mjx_config.py:86 num_single_privileged_obs):
+# motor_pos_error + lin_vel + actuator_force + ref_stance.
+# Layout (52 dims):
+#   [0:3]   root linear velocity (heading-frame)
+#   [3:6]   root angular velocity (heading-frame)
+#   [6:8]   per-foot aggregated contact force (left, right)
+#   [8:29]  motor_pos_error  = q_actual - nominal_q_ref  (21 actuators)
+#   [29:50] data.actuator_force                          (21 actuators)
+#   [50:52] ref_stance       = win["contact_mask"]       (left, right)
+# Pre-Phase-3 layout was 12 dims (lin_vel + ang_vel + contacts + 4-dim
+# zero pad).  Bumping invalidates the value-network params from the
+# 12-dim-pad checkpoints, but those were trained with
+# critic_privileged_enabled=False (asymmetric path was unused), so
+# there is no migration burden — only the actor params transfer.
+PRIVILEGED_OBS_DIM = 52
 
 # v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
 # rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
@@ -131,6 +148,11 @@ try:
         domain_rand_kp_scales: jnp.ndarray            # (action_size,)
         domain_rand_frictionloss_scales: jnp.ndarray  # (action_size,)
         domain_rand_joint_offsets: jnp.ndarray        # (action_size,)
+        # Phase 3 of walking_training.md Appendix B.2: per-joint TB-style
+        # smooth backlash deadband magnitude.  Episode-constant.  Applied
+        # at obs time as motor_pos += 0.5 * backlash * tanh(qfrc_actuator
+        # / backlash_activation).  See domain_randomize.apply_backlash_to_joint_pos.
+        domain_rand_backlash: jnp.ndarray             # (action_size,)
 
         # v0.20.1 wr_obs_v6 actor proprio history.  Stores the most
         # recent ``PROPRIO_HISTORY_FRAMES`` past proprio bundles
@@ -209,6 +231,7 @@ except ImportError:
         domain_rand_kp_scales: jnp.ndarray
         domain_rand_frictionloss_scales: jnp.ndarray
         domain_rand_joint_offsets: jnp.ndarray
+        domain_rand_backlash: jnp.ndarray
         proprio_history: jnp.ndarray
         feet_air_time: jnp.ndarray
         feet_air_dist: jnp.ndarray
@@ -270,6 +293,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "domain_rand_kp_scales": (action_size,),
         "domain_rand_frictionloss_scales": (action_size,),
         "domain_rand_joint_offsets": (action_size,),
+        "domain_rand_backlash": (action_size,),
         # proprio_bundle = 3 (gyro) + 4 (foot_switches) + 3*action_size
         "proprio_history": (
             PROPRIO_HISTORY_FRAMES,

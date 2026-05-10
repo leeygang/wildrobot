@@ -62,6 +62,7 @@ from training.envs.disturbance import (
     sample_push_schedule,
 )
 from training.envs.domain_randomize import (
+    apply_backlash_to_joint_pos,
     nominal_domain_rand_params,
     sample_domain_rand_params,
 )
@@ -539,6 +540,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 self._config.env.domain_rand_frictionloss_scale_range
             ),
             joint_offset_rad=float(self._config.env.domain_rand_joint_offset_rad),
+            backlash_range=tuple(
+                getattr(self._config.env, "domain_rand_backlash_range", (0.0, 0.0))
+            ),
         )
 
     def _get_randomized_mjx_model(self, dr_params: Dict[str, jax.Array]) -> mjx.Model:
@@ -749,21 +753,44 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
     def _get_privileged_critic_obs(
-        self, data: mjx.Data, root_vel_h
+        self,
+        data: mjx.Data,
+        root_vel_h,
+        nominal_q_ref: jax.Array,
+        ref_contact_mask: jax.Array,
     ) -> jax.Array:
-        """Privileged critic obs: linear vel + angular vel + per-foot contact
-        forces.  Sim-only fields the actor doesn't see (asymmetric
-        actor-critic)."""
+        """Privileged critic obs (asymmetric actor-critic, Phase 3 of
+        walking_training.md Appendix B.2).
+
+        Mirrors TB's privileged obs payload
+        (toddlerbot/locomotion/mjx_config.py:86, walk.gin:25-28):
+            motor_pos_error + lin_vel + actuator_force + ref_stance.
+
+        Layout (PRIVILEGED_OBS_DIM=52):
+            [0:3]   lin_vel (heading-frame)
+            [3:6]   ang_vel (heading-frame)
+            [6:8]   per-foot aggregated contact force (left, right)
+            [8:29]  motor_pos_error = q_actual - nominal_q_ref
+            [29:50] data.actuator_force
+            [50:52] ref_stance = win["contact_mask"] (left, right)
+
+        Args:
+            data: mjx Data.
+            root_vel_h: root velocity in heading-frame.
+            nominal_q_ref: current frame's q_ref (action_size,).
+            ref_contact_mask: prior's contact mask (2,) [left, right].
+        """
         lin = root_vel_h.linear.astype(jp.float32)
         ang = root_vel_h.angular.astype(jp.float32)
         left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
         contacts = jp.stack([left_force, right_force]).astype(jp.float32)
-        # Pad / shape to PRIVILEGED_OBS_DIM so the trainer's allocator matches.
-        head = jp.concatenate([lin, ang, contacts])
-        if head.shape[0] >= PRIVILEGED_OBS_DIM:
-            return head[:PRIVILEGED_OBS_DIM]
-        pad = jp.zeros(PRIVILEGED_OBS_DIM - head.shape[0], dtype=jp.float32)
-        return jp.concatenate([head, pad])
+        q_actual = data.qpos[self._actuator_qpos_addrs]
+        motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
+        actuator_force = data.actuator_force.astype(jp.float32)
+        ref_stance = ref_contact_mask.astype(jp.float32)
+        return jp.concatenate(
+            [lin, ang, contacts, motor_pos_error, actuator_force, ref_stance]
+        )
 
     # ----------------------------------------------------------- reward terms
 
@@ -1420,6 +1447,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         signals_override, imu_quat_hist, imu_gyro_hist, _ = _apply_imu_noise_and_delay(
             signals_raw, imu_init_rng, self._config, None, None
         )
+        # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
+        # backlash applied to the policy's observed joint positions.
+        # No-op when backlash is all zeros (DR disabled or range==(0,0)).
+        signals_override = signals_override.replace(
+            joint_pos_rad=apply_backlash_to_joint_pos(
+                signals_override.joint_pos_rad,
+                data.qfrc_actuator[self._actuator_dof_addrs].astype(jp.float32),
+                dr_params["backlash"],
+                float(
+                    getattr(
+                        self._config.env, "domain_rand_backlash_activation", 0.1
+                    )
+                ),
+            )
+        )
 
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
@@ -1435,7 +1477,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ).astype(jp.float32)
 
         v4_compat = self._v4_compat_channels_from_window(win0, prev_history=None)
-        critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
+        critic_obs = self._get_privileged_critic_obs(
+            data,
+            root_vel_h,
+            nominal_q_ref=q_ref0,
+            ref_contact_mask=win0["contact_mask"],
+        )
 
         # v6 actor proprio history.  Zero-filled at reset per the
         # WildRobotInfo schema contract (env_info.py): the buffer
@@ -1492,6 +1539,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_kp_scales=dr_params["kp_scales"],
             domain_rand_frictionloss_scales=dr_params["frictionloss_scales"],
             domain_rand_joint_offsets=dr_params["joint_offsets"],
+            domain_rand_backlash=dr_params["backlash"],
             proprio_history=proprio_history_init,
             # ToddlerBot-aligned per-foot air-time / clearance bookkeeping
             # (env_info.WildRobotInfo).  At reset both feet are assumed
@@ -1684,6 +1732,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         signals_override, imu_quat_hist, imu_gyro_hist, _ = _apply_imu_noise_and_delay(
             signals_raw, rng_imu, self._config, wr.imu_quat_hist, wr.imu_gyro_hist
         )
+        # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
+        # backlash applied to the policy's observed joint positions.
+        # No-op when wr.domain_rand_backlash is all zeros.
+        signals_override = signals_override.replace(
+            joint_pos_rad=apply_backlash_to_joint_pos(
+                signals_override.joint_pos_rad,
+                data.qfrc_actuator[self._actuator_dof_addrs].astype(jp.float32),
+                wr.domain_rand_backlash,
+                float(
+                    getattr(
+                        self._config.env, "domain_rand_backlash_activation", 0.1
+                    )
+                ),
+            )
+        )
 
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
@@ -1795,7 +1858,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         v4_compat = self._v4_compat_channels_from_window(
             win, prev_history=wr.loc_ref_history
         )
-        critic_obs = self._get_privileged_critic_obs(data, root_vel_h)
+        critic_obs = self._get_privileged_critic_obs(
+            data,
+            root_vel_h,
+            nominal_q_ref=nominal_q_ref,
+            ref_contact_mask=win["contact_mask"],
+        )
 
         # v6 actor proprio history (env_info.py schema): the buffer
         # holds PAST bundles only, never the current frame (which is
