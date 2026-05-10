@@ -303,14 +303,20 @@ ppo:
 # Networks
 # =============================================================================
 networks:
+  # First hidden 256 → 512 to match ToddlerBot's PPOConfig
+  # policy_hidden_layer_sizes / value_hidden_layer_sizes = (512, 256, 128)
+  # (toddlerbot/locomotion/ppo_config.py:19-20).  WR observation is
+  # *richer* than TB's (preview added on top of proprio + 15-frame
+  # history), so halving TB's first hidden was a capacity asymmetry with
+  # no documented rationale (walking_training.md Appendix B row 12).
   actor:
-    hidden_sizes: [256, 256, 128]
+    hidden_sizes: [512, 256, 128]
     activation: elu
     log_std_init: -1.0
     min_log_std: -5.0
     max_log_std: 2.0
   critic:
-    hidden_sizes: [256, 256, 128]
+    hidden_sizes: [512, 256, 128]
     activation: elu
 
 # =============================================================================
@@ -337,14 +343,22 @@ networks:
 # Gaussian's "structured noise" risk.  TB-aligned form does not need
 # the wrapper.
 reward_weights:
-  # ToddlerBot-aligned scales (walking_training.md Appendix A.3).
-  # Imitation block scaled to ToddlerBot's motor_pos / torso_quat /
-  # torso_pos_xy / lin_vel_xy weights.  Survival uses strict ToddlerBot
-  # semantics (_reward_survival = -done): 0 while alive, -alive_w*dt on
-  # the terminal step.
-  alive: 10.0
+  # ToddlerBot-aligned scales — Phase 1 of the v0.20.1 TB-active alignment
+  # audit (training/docs/walking_training.md Appendix B).  Earlier values
+  # were aligned to the commented-out ZMP variant of TB walk.gin (lines
+  # 56-108); the active TB recipe is walk.gin:110-131.
+  #
+  # alive 10.0 → 1.0: TB-active uses RewardScales.alive = 1.0
+  # (walk.gin:127), not the commented RewardScales.survival = 10.0
+  # (walk.gin:69).  Survival uses strict ToddlerBot semantics
+  # (_reward_survival = -done; wildrobot_env.py:1080): 0 while alive,
+  # -alive_w*dt on the terminal step.  The 10× drop removes "survive at
+  # all costs" pressure (the v0.19.5b lean-back exploit enabler).
+  alive: 1.0
   ref_q_track: 5.0
-  ref_body_quat_track: 5.0
+  # ref_body_quat_track 5.0 → 2.5: TB-active is torso_quat = 2.5
+  # (walk.gin:117), not the commented torso_quat = 5.0 (walk.gin:56).
+  ref_body_quat_track: 2.5
   torso_pos_xy: 2.0
   # v0.20.2 smoke6: TB-aligned continuous phase signals (walk.gin).  Together
   # with re-enabled ref_contact_match below, these close the TB-vs-WR delta
@@ -378,7 +392,13 @@ reward_weights:
   # concern is over-cautious — gradient flows through the policy's
   # continuous joint targets to the foot trajectory.
   ref_contact_match: 1.0
-  cmd_forward_velocity_track: 5.0
+  # cmd_forward_velocity_track 5.0 → 2.0: TB-active is lin_vel_xy = 2.0
+  # (walk.gin:111), not the commented lin_vel_xy = 5.0 (walk.gin:59).
+  # Lower weight reduces lean-and-skate overshoot pressure.  Note: TB
+  # tracking_sigma=1000 is much wider than WR's α=200; if smoke shows
+  # the cmd-tracking signal is too weak after the weight halving, the
+  # next lever is to lower cmd_forward_velocity_alpha (separate change).
+  cmd_forward_velocity_track: 2.0
   action_rate: -1.0
   torque: -0.001
   joint_velocity: -0.0005

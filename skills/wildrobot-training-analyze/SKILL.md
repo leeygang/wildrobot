@@ -177,34 +177,63 @@ Call these out explicitly:
 
 Always do this comparison when reviewing a v0.20.x walking run. Source: `~/projects/toddlerbot/toddlerbot/locomotion/`.
 
-| Concern | WildRobot v0.20.1 | ToddlerBot | Aligned? |
+**CRITICAL — read `walk.gin` carefully.** TB's `walk.gin` has TWO reward
+recipes: a commented-out ZMP variant (`walk.gin:55-108`) and the
+**active prior-free recipe** (`walk.gin:110-131`).  WR's design is
+prior-guided imitation-residual (its own paradigm), so most rows
+below intentionally diverge — the table cites TB's *active* recipe
+so the divergences are visible, not hidden.  See
+`training/docs/walking_training.md` Appendix B for the full audit
+this table summarizes.
+
+| Concern | WildRobot v0.20.1 | ToddlerBot (active) | Aligned? |
 |---|---|---|---|
-| Eval namespace | `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/<term>` | `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/<term>` (`train_mjx.py:385-410`) | ✅ |
+| Eval namespace | `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/<term>` | same (`train_mjx.py:385-410`) | ✅ |
 | `success_rate` concept | none for walking | none anywhere | ✅ |
 | Termination | height-only (`use_relaxed_termination: true`) | height-only (`mjx_env.py:1029`) | ✅ |
-| Frame stack | `PROPRIO_HISTORY_FRAMES=15` | `c_frame_stack=15` (`mjx_config.py:74`) | ✅ |
-| Action delay | `action_delay_steps: 1` | `n_steps_delay=1` (`mjx_config.py:96`) | ✅ |
-| Action contract | `q = q_ref + clip(action) · 0.25` (legs) | `q = default_q + action · 0.25` (`walk_env.py`) | ✅ |
-| `motor_pos` ↔ `ref_q_track` | 5.0 | 5.0 (`walk.gin:22`) | ✅ |
-| `torso_quat` ↔ `ref_body_quat_track` | 5.0 | 5.0 (`walk.gin:15`) | ✅ |
-| `lin_vel_xy` ↔ `cmd_forward_velocity_track` | 5.0, α=200 | 5.0, α=200 (`walk.gin:18`, `mjx_config.py:106`) | ✅ |
-| `feet_air_time` | 500.0 | 500.0 (`walk.gin:29`) | ✅ |
-| `feet_clearance` | 1.0 | 1.0 (`walk.gin:32`) | ✅ |
-| `feet_distance` | 1.0, range [0.07, 0.13] | 1.0, [0.07, 0.13] (`walk.gin:30`, `mjx_config.py:108`) | ✅ |
-| `torso_pitch/roll_soft` | 0.5/0.5 | 0.5/0.5 (`walk.gin:16-17`) | ✅ |
-| `feet_slip` ↔ `slip` | 0.05 | 0.05 (`walk.gin:31`) | ✅ |
-| `survival` ↔ `alive` | 10.0, `-done` semantics | 10.0, `-done` (`walk.gin:28`, `mjx_env.py:1897-1914`) | ✅ |
+| Frame stack | `PROPRIO_HISTORY_FRAMES=15` | `c_frame_stack=15` (`mjx_config.py:84`) | ✅ |
+| Action delay | `action_delay_steps: 1` | `n_steps_delay=1` (`mjx_config.py:105`) | ✅ |
+| Action contract | `q = q_ref + clip(action) · 0.25` (legs) | `q = default_q + action · 0.25` (`mjx_config.py:103`) | ⚠️ paradigm diff (residual vs direct); both bounded ±0.25 |
 | Reward integration | `sum(...) * dt` | `sum(...) * dt` (`mjx_env.py:1048`) | ✅ |
-| `action_rate` | -1.0 (× neg-MSE-equivalent) | 1.0 × neg-MSE (`walk.gin:25`) | ✅ |
-| `torso_pos_xy` reward | not used | 2.0 (`walk.gin:14`) | ⚠️ deferred (covered by ref/feet+pelvis tracking) |
-| `lin_vel_z`, `ang_vel_xy`, `ang_vel_z` | not used | 1.0 / 2.0 / 5.0 | ⚠️ deferred |
-| `ref_feet_pos_track` α | 30 (smoke override) | n/a (no feet-pos imitation; uses feet_distance + air_time + clearance instead) | ⚠️ WildRobot-specific addition; α=30 documented (sum-sqr in world frame at iter-1 ≈ 0.048 m² → α=30 gives r≈0.24); v0.20.2 plan: switch to body-frame Euclidean and restore α=200 |
-| `ref_contact_match` | 0.5 sigma Gaussian, weight 0 (gated) | feet_contact 1.0 (boolean) | ⚠️ WildRobot-specific Gaussian; gate until contact-alignment probe passes |
-| Multi-command sampling | `cmd_resample_steps: 0` (smoke single-point) | `resample_time=3.0s` (`walk.gin`) | ⏸ deferred to v0.20.4 |
-| Domain randomization | OFF in smoke | ON by default | ⏸ deferred to v0.20.2 |
-| G4 / G5 / G7 gates | WildRobot-specific | n/a | ⚠️ acceptance criteria are WildRobot-specific (we have no equivalent eval ladder); kept |
+| Network hidden_sizes | (512, 256, 128) | (512, 256, 128) (`ppo_config.py:19-20`) | ✅ (after v0.20.1 alignment sweep) |
+| `survival`/`alive` weight | 1.0 (after sweep), `-done` semantics | 1.0 (`walk.gin:127`), `-done` (`walk_env.py`) | ✅ (after sweep) |
+| `cmd_forward_velocity_track` ↔ `lin_vel_xy` weight | 2.0 (after sweep) | 2.0 (`walk.gin:111`) | ✅ (after sweep) |
+| `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=200 | σ=1000 (`walk.gin:112`) | ⚠️ WR tighter; defer reform until smoke result |
+| `ref_body_quat_track` ↔ `torso_quat` | 2.5 (after sweep) | 2.5 (`walk.gin:117`) | ✅ (after sweep) |
+| `ref_q_track` (joint imitation) | 5.0, α=1 | 0 in active (was 5.0 in commented `walk.gin:63`) | ⚠️ WR-specific imitation block (no TB-active analog) |
+| `torso_pos_xy` | 2.0, α=90 smoke | 0 in active (was 1.0 in commented) | ⚠️ WR-specific imitation |
+| `lin_vel_z` | 1.0 | 0 in active | ⚠️ WR mirrors commented `walk.gin:60`; defer |
+| `ang_vel_xy` (tracking) ↔ `penalty_ang_vel_xy` (penalty) | 2.0 tracking | 1.0 penalty (`walk.gin:115`) | ⚠️ form mismatch; defer |
+| `feet_air_time` | 500.0 | 0 in active (replaced by `feet_phase` in active) | ⚠️ WR-specific (TB-active does not use this) |
+| `feet_clearance` | 1.0 | 0 in active (replaced by `feet_phase`) | ⚠️ WR-specific |
+| `feet_distance` | 1.0, [0.07, 0.13] | 0 in active; TB uses `penalty_close_feet_xy = 10.0` with `close_feet_threshold = 0.06` (`walk.gin:125-126`) | ⚠️ different formula |
+| **`feet_phase` / `ref_feet_z_track`** (dense per-step swing-height tracker) | not present (Phase 2 plan) | 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | ❌ **highest-impact reward gap** — likely cause of v0.20.1-smoke1 shuffle exploit |
+| **`penalty_pose`** (per-joint default anchor) | not present (Phase 2 plan) | 0.5 with weights `[0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]` (`walk.gin:120-124`) | ❌ missing |
+| **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | not present (Phase 2 plan) | 5.0 (`walk.gin:129`, `walk_env.py:697-735`) | ❌ missing |
+| `feet_slip` / `slip` | 0.05 | 0 in active (was 0.05 in commented) | ⚠️ WR mirrors commented; defer |
+| `torso_pitch_soft` / `torso_roll_soft` | 0.5 / 0.5 | 0 in active; TB uses `penalty_ang_vel_xy = 1.0` for posture damping | ⚠️ different form |
+| `action_rate` ↔ `penalty_action_rate` | -1.0 × pos-MSE | 2.0 × neg-MSE (`walk.gin:119`) | ⚠️ sign convention diff; verify magnitude equivalence |
+| `ref_contact_match` | 1.0 boolean | 0 in active (was `feet_contact = 1.0` in commented) | ⚠️ WR-specific (boolean form retained from TB-historical) |
+| `torque` / `joint_velocity` | -0.001 / -0.0005 | 0 in active | ⚠️ WR-specific light regularizers |
+| Asymmetric critic (privileged obs) | not used (Phase 3 plan) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ❌ missing |
+| Backlash DR | not present (Phase 3 plan) | activation 0.1, range [0.02, 0.1] rad (`mjx_config.py:209-210`) | ❌ missing — sim2real critical |
+| kd / damping / armature / tau_max DR family | not present | TB has all (`mjx_config.py:222-235`) | ⚠️ defer |
+| Multi-command sampling | `cmd_resample_steps: 150` (= 3.0 s) | `resample_time=3.0s` (`mjx_config.py:194`) | ✅ |
+| Command space | 1-D linear vx ∈ [0, 0.30] | 8-D (`walk.gin:42-51`) | ⚠️ smoke restricts to 1D; v0.20.4 plan to extend |
+| **Compute** (total env steps) | 1024×128×150 ≈ 2e7 | 4096×20×~12200 ≈ 1e9 (`walk.gin:2`) | ❌ **50× shorter** — smoke validates recipe; M3 long run needed for terminal-perf parity |
+| **PPO learning_rate** | 3e-4 | 3e-5 (`ppo_config.py:39`) | ⚠️ WR 10× higher (compensating for compute gap) |
+| **PPO entropy_coef** | 0.01 | 5e-4 (`ppo_config.py:40`) | ⚠️ WR 20× higher |
+| `gamma` / `discounting` | 0.99 | 0.97 (`ppo_config.py:34`) | ⚠️ WR longer effective horizon (matches longer episodes) |
+| G4 / G5 / G7 gates | WildRobot-specific | n/a | ⚠️ acceptance criteria are WildRobot-specific |
 
-When a run violates the contract on a row marked ✅, surface it as a bug. When it diverges on a ⚠️ row, confirm the rationale is current; if not, flag as drift.
+Symbol meaning:
+- ✅ aligned to TB-active.
+- ⚠️ intentional divergence with documented rationale; confirm rationale is current.
+- ❌ missing TB-active term that closes a known WR failure mode (or compute gap that blocks parity); flag as a parity risk.
+
+When a run violates the contract on a ✅ row, surface it as a bug.
+When it diverges on a ⚠️ row, confirm the rationale is current; if not, flag as drift.
+When it lands on a ❌ row, that's a known parity gap — link to `walking_training.md` Appendix B.2 for the phased fix plan.
 
 ### Walking interpretation rules
 
