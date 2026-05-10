@@ -205,10 +205,10 @@ walking_training.md §"Smoke contract — gates vs commitments"):
 
 - **G4** (gate): promotion-horizon eval-rollout floors
 - **G5** (gate): anti-exploit residual bound + eval vx/cmd ratio
-- **Smoke policy initialisation** (config commitment, was `G6`):
+- **Smoke policy initialisation** (config commitment):
   zero residual implies `target_q == q_ref` (the zero-residual
   invariant verified by `tests/test_v0201_env_zero_action.py`)
-- **Pre-smoke open-loop baseline** (baseline measurement, was `G7`):
+- **Pre-smoke open-loop baseline** (baseline measurement):
   trained policy beats bare-`q_ref` replay
 
 Pass criteria:
@@ -397,8 +397,7 @@ read against the gate categorisation above:
    fwd_per_cmd; drift_per_leg with H5 active)
 7. WildRobot's P1 D-gates either clear or are exempted via active H6
    (composite gauge)
-8. WildRobot passes `G4`, satisfies the zero-residual invariant
-   (was `G6`), beats the pre-smoke open-loop baseline (was `G7`),
+8. WildRobot passes `G4`, satisfies the zero-residual invariant, beats the pre-smoke open-loop baseline,
    and does not violate `G5`
 
 Category C gates (kinematic identities), Category S (sentinels), and

@@ -145,7 +145,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_enabled=bool(env.get("loc_ref_enabled", False)),
         loc_ref_version=str(env.get("loc_ref_version", "v3_offline_library")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
-        # v0.20.1 smoke residual bounds (was `G1`) / §4.1 —
+        # v0.20.1 smoke residual bounds / §4.1 —
         # residual mode + per-joint override.
         loc_ref_residual_mode=str(env.get("loc_ref_residual_mode", "absolute")),
         loc_ref_residual_scale_per_joint=dict(

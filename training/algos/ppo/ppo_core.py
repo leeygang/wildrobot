@@ -99,7 +99,7 @@ def create_networks(
             If None, uses Brax's identity preprocessor.
         activation: Hidden-layer activation name ("elu", "silu", ...).
             v0.20.1 spec (walking_training.md §"Smoke policy
-            initialisation", was `G6`) calls for "elu".
+            initialisation") calls for "elu".
             Brax's default is "silu".
 
     Returns:

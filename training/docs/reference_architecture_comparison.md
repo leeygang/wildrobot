@@ -71,8 +71,7 @@ Acceptance uses two lenses:
 This means a WR change should be credited only when it improves the
 load-bearing parity gaps under the normalised view, while not regressing the
 absolute floor or violating WR's own promotion gates (`G4`, `G5`),
-zero-residual invariant (was `G6`), or pre-smoke open-loop baseline
-(was `G7`) — see `walking_training.md` §"Smoke contract — gates vs
+zero-residual invariant, or pre-smoke open-loop baseline — see `walking_training.md` §"Smoke contract — gates vs
 commitments" for the full contract.
 
 ### Current Criteria Challenge (2026-05-09, post Phase 9D)
@@ -752,8 +751,7 @@ Code changes:
    - synthesises foot-centre ``site_pos`` from heel + toe geom
      midpoints (WR's MJCF lacks explicit ``left/right_foot_center``
      sites; this matches the parity tool's existing convention).
-   Velocities are finite-diff (ref-velocity-sourcing convention,
-   was `G2`); angular velocity uses
+   Velocities are finite-diff (ref-velocity-sourcing convention); angular velocity uses
    the small-angle ``2 · (q1·conj(q0))[xyz] / dt`` approximation with
    per-body double-cover sign alignment.  Both
    ``_generate_at_step_length`` and ``_generate_standing`` now run
@@ -2123,8 +2121,8 @@ WR is on par with or better than TB when **all** of the following are true:
 3. **WR clears the shared `P0` gate and is not materially weaker on the
    full geometry matrix.** No P0 metric is exemptable.
 4. **WR satisfies its own smoke contract** (promotion gates `G4` +
-   `G5`, zero-residual invariant — was `G6`, pre-smoke open-loop
-   baseline — was `G7`).
+   `G5`, zero-residual invariant, pre-smoke open-loop
+   baseline).
 
 If a future WR change improves PPO but does not improve the parity
 scorecard at the architecture layer, it should not be claimed as

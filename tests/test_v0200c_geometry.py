@@ -36,37 +36,23 @@ from control.zmp.zmp_walk import ZMPWalkGenerator
 from training.utils.ctrl_order import CtrlOrderMapper
 
 
-# Stance / swing tolerances bumped to MuJoCo contact-compliance precision
-# (2026-05-09):
-#   _STANCE_TOL_M = 0.005
-#     Was 0.003.  Empirical investigation around vx=0.20 frame=48 showed
-#     the previous "cycle-handover" diagnosis was wrong: the +3.4 mm
-#     stance overshoot is actually a **touchdown IK transient** —
-#     immediately after touchdown the IK's flat-foot ankle pose puts the
-#     foot bottom 3-4 mm above the geometric floor, then settles to
-#     ≤2 mm within ~3 frames as the pelvis advances and the IK chain
-#     re-converges.  The tightest stance frame across the full
-#     ``_VX_BINS`` matrix at the Phase 9D operating point is +4.0 mm
-#     (vx=0.25 frame=48); +3.4 mm at the in-scope vx=0.20 frame=48.
-#     Both are well within MuJoCo's contact-solver compliance band
-#     (~5 mm) and below TB's analogous high-vx artifacts (5-10 mm per
-#     parity_report.json).  Tightening below 5 mm tries to gate
-#     sub-simulator-precision noise.
-#   _SWING_MIN_M = -0.002 (unchanged)
-#     -2 mm = MuJoCo contact compliance margin; the constant-plantarflex
-#     swing toe geometry can dip 1-2 mm at the swing-onset frame on
-#     cycle 0.
+# Tolerances at MuJoCo contact-compliance precision.  The touchdown IK
+# transient (flat-foot ankle pose immediately after touchdown sits a few
+# mm above the geometric floor, then settles within ~3 frames as the IK
+# chain re-converges) is well-documented and bounded; 5 mm absorbs it
+# without gating sub-simulator-precision noise.  Swing tolerance allows
+# 2 mm of dip for the constant-plantarflex toe geometry at swing onset.
 _STANCE_TOL_M = 0.005
 _SWING_MIN_M = -0.002
+
+# Probe frames sample stance, mid-stance, swing-onset, mid-swing,
+# late-swing, and one cycle out (frame 48 = cycle_time / dt under the
+# v0.20.1 operating point of cycle=0.96 s, dt=0.02 s).
 _VX_BINS = (0.10, 0.15, 0.20, 0.25)
-# Probe frames sample stance, mid-stance, swing-onset, mid-swing, late-swing,
-# and one cycle out.  Frame 48 lands one full cycle in under Phase 9D
-# (cycle_time=0.96 s, dt=0.02 s → 48 frames/cycle).
 _PROBE_FRAMES = (0, 5, 10, 16, 22, 28, 32, 48, 64)
 
-# Phase 9D-revisited (2026-05-09): operating point shifted vx 0.265 → 0.20
-# to preserve step/leg-matching under the Froude-similar cycle_time=0.96 s.
-# In-scope band is now (just below operating, operating) = (0.15, 0.20).
+# In-scope band: (just below operating, operating) = (0.15, 0.20) at the
+# v0.20.1 operating point of vx=0.20.
 _VX_BINS_INSCOPE = (0.15, 0.20)
 
 
@@ -146,27 +132,15 @@ def _collect_failures(vx_bins=_VX_BINS) -> list[str]:
 
 
 def test_geometry_gate_passes():
-    """Phase 9D in-scope FK gate.
+    """In-scope FK gate.
 
-    Exit criterion: stance feet on floor (within +5 mm) and swing feet
-    above floor (no more than -2 mm penetration) across all probed
-    frames at the in-scope vx bins (``vx in {0.15, 0.20}``).
-
-    Tolerance rationale: 5 mm matches MuJoCo's contact-solver
-    compliance band; tighter values gate sub-simulator-precision
-    noise.  The previous 3 mm threshold required an allow-list for a
-    +3.4 mm touchdown IK transient at vx=0.20 frame=48 (initially
-    misdiagnosed as a cycle-handover artifact — empirical
-    investigation showed it's a settling pattern: +4.2 → +3.4 → +2.7
-    → +2.0 mm over the four frames following touchdown as the IK
-    chain re-converges).  The 5 mm threshold absorbs that transient
-    without needing per-failure allow-listing while staying 2× tighter
-    than TB's analogous high-vx artifacts (5-10 mm per
-    parity_report.json).
+    Stance feet on floor (within +5 mm) and swing feet above floor
+    (no more than -2 mm penetration) across all probed frames at the
+    in-scope vx bins (``vx in {0.15, 0.20}``).
     """
     failures = _collect_failures(_VX_BINS_INSCOPE)
     assert not failures, (
-        f"Phase 9D in-scope geometry gate failed in {len(failures)} "
+        f"In-scope geometry gate failed in {len(failures)} "
         f"in-scope cases (vx in {_VX_BINS_INSCOPE}). "
         f"First few: " + "; ".join(failures[:5])
     )

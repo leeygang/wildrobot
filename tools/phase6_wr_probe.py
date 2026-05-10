@@ -14,8 +14,7 @@ Explicit non-goals:
 - Does NOT re-judge the doc's "on par or better" decision rule
   (``training/docs/reference_architecture_comparison.md`` § "What 'On Par
   or Better' Means").  That rule requires P0 + normalised P1A + P2 + P1 +
-  the smoke contract (G4 promotion gate + pre-smoke open-loop baseline,
-  was `G7`) all to pass; this probe covers only the first three layers.
+  the smoke contract (G4 promotion gate + pre-smoke open-loop baseline) all to pass; this probe covers only the first three layers.
 
 For convenience the probe loads the **cached** TB numbers from
 ``tools/parity_report.json`` (commit ``c1b815d`` baseline, TB-side

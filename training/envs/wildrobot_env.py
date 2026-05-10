@@ -593,7 +593,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         clipped to the joint range.  Returns
         ``(target_q_rad, residual_delta_q_rad)``.
 
-        zero-residual invariant (was `G6 contract`): with ``policy_action == 0`` (and the filter's
+        zero-residual invariant: with ``policy_action == 0`` (and the filter's
         ``prev_action == 0``, set up by ``_make_initial_state``),
         ``residual_delta_q == 0`` and ``target_q == q_ref`` exactly,
         independent of ``action_filter_alpha``.  The legacy path
@@ -912,7 +912,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Reference: the prior is yaw-stationary with identity quaternion
         # throughout, so the prior's body-local lin_vel_z is identical to the
         # world finite-diff of pelvis_pos[2].  Computed on-the-fly per
-        # Appendix A.3 §"Reference velocity sourcing" (was `G2`) (keeps the ReferenceLibrary schema narrow).  At the
+        # Appendix A.3 §"Reference velocity sourcing" (keeps the ReferenceLibrary schema narrow).  At the
         # prior's ~32 ctrl-step gait cycle, vertical pelvis bobbing is small
         # (~1-2 cm amplitude) so ref_lin_vel_z is small per-step (~0.10 m/s
         # peak); a well-balanced upright policy will track it tightly.
@@ -1239,7 +1239,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # _reward_alive (mjx_env.py:2766-2782 returns constant 1.0)
             # × RewardScales.alive = 1.0 (walk.gin:127).  See the
             # docstring above for the v0.19.5b exploit caveat (only
-            # fired at the now-retired alive=10 weight).
+            # fired at the alive=10 weight).
             alive=alive_w,
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
@@ -1457,7 +1457,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         # Filter / pending-action init: zero in policy [-1, 1] space.
         # The filter operates on the residual; iter-0 policy hasn't
-        # acted, so prev_residual_command = 0.  This is what makes the zero-residual invariant (was `G6`)
+        # acted, so prev_residual_command = 0.  This is what makes the zero-residual invariant
         # hold: filtered_action = α·0 + (1-α)·action stays 0 for any
         # alpha when action == 0.  The legacy default_action was
         # ctrl_to_policy_action(q_ref0); under the new compose path
@@ -1703,13 +1703,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         prev_win = self._lookup_offline_window(prev_step_idx)
         prev_ref_pelvis_z = prev_win["pelvis_pos"][2].astype(jp.float32)
 
-        # zero-residual invariant (was `G6 contract`): filter the residual ONLY (in policy [-1, 1] space).
+        # zero-residual invariant: filter the residual ONLY (in policy [-1, 1] space).
         # ``pending_action`` carries last step's filtered residual command;
         # at reset it is zero (see ``_make_initial_state``), so iter-0 with
         # ``action == 0`` keeps ``filtered_action == 0`` and the composed
         # target_q is exactly q_ref, independent of action_filter_alpha.
         # The legacy path filtered the composed target in policy-space,
-        # which low-passed q_ref over time and broke the zero-residual invariant (was `G6`) for any alpha > 0.
+        # which low-passed q_ref over time and broke the zero-residual invariant for any alpha > 0.
         policy_state = PolicyState(prev_action=pending_action)
         filtered_action, policy_state = postprocess_action(
             spec=self._policy_spec,

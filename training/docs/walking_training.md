@@ -443,15 +443,14 @@ Expected additions:
 - `v0.19.3b` established the root blocker:
   - nominal-only probe with zero residual still pitch-fails early
   - `q_ref` is not dynamically viable under the full v0.19.5 env
-    (formerly `M3 env`)
 - `v0.19.3c` and `v0.19.3d` improved semantics and braking diagnostics, but
   did not materially improve the nominal-only probe gate
 - `v0.19.3e` added support-first local clamping for swing-x and pelvis pitch:
   - clamp is active
   - survival still does not improve
   - PPO must remain paused
-- `v0.19.4` complete: nominal reference validation (formerly `M2.5`) and
-  walking reference achieved (formerly `M3.0-A/B`).  Ctrl ordering bug
+- `v0.19.4` complete: nominal reference validation and
+  walking reference achieved.  Ctrl ordering bug
   found and fixed.
   DCM COM trajectory implemented.  Nominal walking: 461 steps, 15 gait
   cycles, forward speed +0.038 m/s at cmd=0.15.
@@ -867,33 +866,26 @@ Smoke contract:
   - this higher-authority residual is a smoke-stage debugging compromise, not
     the final intended contract
 
-### Smoke contract — gates vs commitments (2026-05-09)
+### Smoke contract — gates vs commitments
 
 Only **two** items in this section are PASS/FAIL gates: **G4** (eval
 floors) and **G5** (anti-exploit).  Everything else is configuration,
-implementation choice, or a pre-smoke baseline measurement — calling
-them "gates" was overclaim.  The TB cross-check
-(`grep -rn "success_rate" toddlerbot/locomotion/` → zero hits;
-checkpoint selection at
-`toddlerbot/locomotion/train_mjx.py:849-865` is purely
-`best_episode_reward = max(...)`) confirms TB has **no** eval-floor
-or anti-exploit gates either.  WR's G4/G5 are quantitative defences
-added because WR's prior + residual architecture creates failure
-modes (v0.19.5 lean-back / move-less exploits) that TB doesn't face.
+an implementation choice, or a pre-smoke baseline measurement.  TB
+itself has no eval-floor or anti-exploit gates (checkpoint selection
+at `toddlerbot/locomotion/train_mjx.py:849-865` is purely
+`best_episode_reward = max(...)`); WR's G4/G5 are quantitative
+defences added because WR's prior + residual architecture creates
+failure modes (lean-back / move-less exploits) that TB doesn't face.
 
-This section uses descriptive names below (not the historical `G*`
-abbreviations).  Old `G*` IDs survive in CHANGELOG history and a
-handful of code comments; the table below maps them for searchability.
-
-| Item | Type | Old ID |
-|---|---|---|
-| **G4 — eval-rollout floors** | promotion gate (PASS/FAIL) | `G4` |
-| **G5 — anti-exploit residual + ratio** | promotion gate (PASS/FAIL) | `G5` |
-| Smoke residual bounds | config commitment | (was `G1`) |
-| Reference velocity sourcing | implementation choice | (was `G2`) |
-| Contact-phase reward formula | config commitment | (was `G3`) |
-| Smoke policy initialisation | config commitment | (was `G6`) |
-| Pre-smoke open-loop baseline | baseline measurement | (was `G7`) |
+| Item | Type |
+|---|---|
+| **G4 — eval-rollout floors** | promotion gate (PASS/FAIL) |
+| **G5 — anti-exploit residual + ratio** | promotion gate (PASS/FAIL) |
+| Smoke residual bounds | config commitment |
+| Reference velocity sourcing | implementation choice |
+| Contact-phase reward formula | config commitment |
+| Smoke policy initialisation | config commitment |
+| Pre-smoke open-loop baseline | baseline measurement |
 
 **Body-size note:** TB's thresholds (`healthy_z_range`,
 `swing_height`, `min/max_feet_y_dist`, reward sigmas) are all
@@ -912,7 +904,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
 
 ---
 
-  - **Smoke residual bounds** (config commitment; was `G1`) —
+  - **Smoke residual bounds** (config commitment) —
     concrete starting bounds for the smoke (per-joint clip on
     `delta_q_policy`, applied symmetrically; tighten if anti-exploit
     metric G5 trips):
@@ -965,7 +957,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
   - compute body / site / velocity tracking in torso-relative or root-relative
     coordinates where applicable
   - do not reuse the `v0.19.x` task-space reward family for this smoke
-  - **Reference velocity sourcing** (implementation choice; was `G2`):
+  - **Reference velocity sourcing** (implementation choice):
     - the offline `ReferenceLibrary` schema currently stores only positions
       (`pelvis_pos`, `com_pos`, `left_foot_pos`, `right_foot_pos`); body
       and site linear / angular velocities are not stored
@@ -990,7 +982,7 @@ bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
       directly with better fidelity than finite-diff, or if the smoke
       shows velocity-tracking reward gradients are noisy at the
       finite-diff numerical-derivative quality
-  - **Contact-phase reward formula** (config commitment; was `G3`) —
+  - **Contact-phase reward formula** (config commitment) —
     `ref/contact_phase_match` definition (smoke6 onward):
     - boolean equality count per foot, matching ToddlerBot's
       `_reward_feet_contact` (`toddlerbot/locomotion/mjx_env.py:2484-2486`)
@@ -1045,7 +1037,7 @@ Pre-smoke checks:
 - if the contact-alignment probe fails the contact-phase reward bar, the smoke YAML must set
   `reward_weights.ref_contact_match = 0.0` before launch; do not carry a
   known-noisy contact term into the first PPO run
-- **Pre-smoke open-loop baseline** (baseline measurement; was `G7`) —
+- **Pre-smoke open-loop baseline** (baseline measurement) —
   prior-vs-body sanity at the smoke command:
   - **Note on TB alignment:** TB has no analog because TB has no
     separate prior to baseline against (the policy IS the gait).
@@ -1207,7 +1199,7 @@ Metric validation:
   - if either bound is violated at the promotion horizon, the smoke fails
     even if the forward-velocity gate passes — explicitly to prevent a
     false-positive caused by a residual-driven exploit gait
-- **Smoke policy initialisation** (config commitment; was `G6`) —
+- **Smoke policy initialisation** (config commitment) —
   policy init details + zero-residual invariant:
   - actor: hidden `[256, 256, 128]`, ELU
   - critic: same shape, ELU
@@ -1238,7 +1230,7 @@ Post-smoke policy direction:
 - the offline prior asset, reference-tracking reward family, and observation
   interface should be reusable in that upgrade
 
-### Naming hierarchy (M-labels retired 2026-05-09)
+### Naming hierarchy
 
 The training plan uses three nested coordinate systems; they're **not
 parallel**, each level zooms in on the previous:
@@ -1249,23 +1241,7 @@ parallel**, each level zooms in on the previous:
 | Milestone | `v0.20.<N>` (with `-A/-B/-C/-D` for v0.20.0) | A delivered capability within the release |
 | Run | `v0.20.<N>-smoke<K>` | A specific PPO training attempt within a milestone |
 
-Historical `M0`–`M3` stage labels are retired in favour of v0.20.x:
-
-| Old M-label | New label | What it meant |
-|---|---|---|
-| `M0` / `M1` (compute) | v0.19.0–0.19.2 (history) | early standing-only / digital twin |
-| `M1` (fail-mode tree) | v0.20.1 fail-mode tree | diagnostic decision tree for smoke failures |
-| `M2` (compute cap) | v0.20.1 smoke compute cap (~20M env steps) | smoke-run compute budget |
-| `M2.5` | v0.20.0-C nominal validation | nominal-only validation |
-| `M3` (env / reward) | v0.19.5 (history) | failed pre-pivot PPO env |
-| `M3` (long-run plan) | v0.20.2 long-run | TB-on-par compute (~1B env steps) |
-
-So **v0.20.1 = M1+M2** (reward family + smoke-compute training);
-**v0.20.2 = M3** (TB-on-par compute + SysID hardening).  CHANGELOG
-history retains `M*` labels as written; forward-going references use
-v0.20.x exclusively.
-
-### v0.20.1 smoke compute cap (was `M2 compute budget`)
+### v0.20.1 smoke compute cap
 
 - single bounded smoke run: ~20M env steps (150 PPO iterations at
   `num_envs=1024 × rollout_steps=128` = 1024 × 128 × 150 ≈ 1.97×10⁷
@@ -1279,7 +1255,7 @@ v0.20.x exclusively.
 - single seed for the smoke; if it passes, multi-seed validation belongs
   to the v0.20.2 long-run, not this one
 
-### v0.20.1 fail-mode tree (was `M1 fail-mode tree`)
+### v0.20.1 fail-mode tree
 
 If the smoke fails (does not meet the promotion-horizon gates within the
 v0.20.1 smoke compute cap), the next action depends on which gate failed:
@@ -1327,7 +1303,7 @@ v0.20.1 smoke compute cap), the next action depends on which gate failed:
   resample + zero_chance + DR), not a stride-amplitude reward.  Promote
   the next deferred TB curriculum mechanism (smoke7 below).
 
-### Shuffle-exploit context (the missing TB lever; was `M1` shuffle-exploit context):
+### Shuffle-exploit context (the missing TB lever shuffle-exploit context):
 
 The shuffle exploit is the dominant single-point failure mode through
 smoke6.  It is structural to single-point training without
@@ -1502,7 +1478,7 @@ Pre-smoke checks (all completed in smoke7-prep1):
 - ✅ YAML loader audit: all DR + cmd_* keys read by
   `_parse_env_config` (training_config.py:480-504).
 - ✅ Round-trip test extended to assert smoke7 critical env settings.
-- ✅ Zero-residual invariant (was `G6 invariant`): 7/7 pass with smoke7 YAML.
+- ✅ Zero-residual invariant: 7/7 pass with smoke7 YAML.
 - ✅ Eval-cmd override behaviorally verified: `reset_for_eval` pins
   cmd to the configured eval command across all seeds; training reset
   samples within the configured `[min_velocity, max_velocity]` range
@@ -1895,7 +1871,7 @@ Commit-by-commit:
 After landing, the open-loop pre-smoke probe
 (`tools/v0201_contact_alignment_probe.py`) and the env zero-action
 test (`tests/test_v0201_env_zero_action.py`) must still pass — the
-Zero-residual invariant (was `G6 invariant`: zero residual ⇒ `target_q == q_ref`) is unchanged by
+Zero-residual invariant is unchanged by
 this audit.
 
 ---
@@ -1941,7 +1917,7 @@ blocking parity**.
 | **PPO** | max_grad_norm | 0.5 | 1.0 | (b) WR 2× more aggressive clipping (paired with higher LR). |
 | **PPO** | value_loss_coef | 0.5 (`yaml:280`) | brax default 0.5 | ✅ assumed. |
 | **PPO** | normalize_observation | unclear | False (`ppo_config.py:38`) | Verify in `training/algos/ppo/`. |
-| **Network** | actor & critic hidden_sizes | **(512, 256, 128)** ✓ FIXED (`yaml:307,313`) | (512, 256, 128) (`ppo_config.py:19-20`) | ✅ Fix landed in this sweep (was 256/256/128 — capacity asymmetry vs TB despite richer WR obs). |
+| **Network** | actor & critic hidden_sizes | **(512, 256, 128)** ✓ FIXED (`yaml:307,313`) | (512, 256, 128) (`ppo_config.py:19-20`) | ✅ Fix landed in this sweep. |
 | **Network** | activation | elu | elu | ✅ |
 | **Network** | log_std_init / init_noise_std | -1.0 → std≈0.37 (`yaml:309`) | log(0.5) ≈ -0.69 → std≈0.5 | (a) Bounded-residual contract: prior is policy at init, narrow exploration. |
 | **Network** | distribution / std type | normal log | normal log | ✅ |
@@ -1953,10 +1929,10 @@ blocking parity**.
 | **Action** | n_steps_delay | 1 (`yaml:257`) | 1 | ✅ |
 | **Action** | lowpass filter α | 0.0 (`yaml:157`) | n/a | (a) Residual-only filter contract. |
 | **Reward** | `alive` weight + semantics | **1.0, dense per-step** ✓ FIXED (`yaml:345`, `wildrobot_env.py:1186-1230`) | 1.0 (`walk.gin:127`); `_reward_alive` returns constant 1.0 (`mjx_env.py:2766-2782`) | ✅ Phase 1c landed.  Was 10.0 with `-done` semantics (mirrored commented walk.gin:69).  Now matches TB-active dense form (+alive_w per surviving step) at TB-active weight 1.0.  At weight 1.0 the dense bonus is small relative to the imitation block and does not recreate the v0.19.5b lean-back exploit, which fired only at the older alive=10. |
-| **Reward** | `cmd_forward_velocity_track` weight | **2.0** ✓ FIXED (`yaml:381`) | 2.0 (`walk.gin:111`) | ✅ Fix landed (was 5.0; aligned to commented `walk.gin:59`). |
+| **Reward** | `cmd_forward_velocity_track` weight | **2.0** ✓ FIXED (`yaml:381`) | 2.0 (`walk.gin:111`) | ✅ Fix landed. |
 | **Reward** | `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=200 (`yaml:412`) | σ=1000 (`walk.gin:112`) | (b) TB tolerates ~3× the cmd error before reward halves.  Defer adjustment until smoke shows whether the weight halving alone is enough. |
 | **Reward** | `ref_q_track` (joint imitation) | 5.0, α=1 (`yaml:346`) | not present in active | (a) WR-specific imitation block (no TB analog in active). |
-| **Reward** | `ref_body_quat_track` ↔ `torso_quat` | **2.5** ✓ FIXED (`yaml:347`) | 2.5 (`walk.gin:117`) | ✅ Fix landed (was 5.0; aligned to commented `walk.gin:56`). |
+| **Reward** | `ref_body_quat_track` ↔ `torso_quat` | **2.5** ✓ FIXED (`yaml:347`) | 2.5 (`walk.gin:117`) | ✅ Fix landed. |
 | **Reward** | `torso_pos_xy` | 2.0, α=90 smoke (`yaml:348,419`) | 0 in active | (a) WR-specific imitation. |
 | **Reward** | `lin_vel_z` | 1.0 (`yaml:360`) | 0 in active | (b) Mirrors commented `walk.gin:60`.  Defer drop until smoke shows it doesn't help bobbing tracking. |
 | **Reward** | `ang_vel_xy` (tracking) vs `penalty_ang_vel_xy` (penalty) | 2.0 tracking (`yaml:361`) | 1.0 penalty (`walk.gin:115`) | (b) Form mismatch.  Defer reform; the tracking-form (vs zero) is functionally close to the penalty-form. |
@@ -1966,7 +1942,7 @@ blocking parity**.
 | **Reward** | **`ref_feet_z_track`** (dense per-step swing-height tracker) | **5.0**, α=1428.6 ✓ FIXED (`yaml:413-414`) | TB `feet_phase` 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | ✅ Phase 2 landed.  WR uses prior foot-z directly (vs TB phase-derived expected-z); α=1/0.0007=1428.6 mirrors TB σ.  Direct addressee of v0.20.1-smoke1 shuffle exploit (step_length 0.022 m vs 0.030 m gate). |
 | **Reward** | **`penalty_pose`** (per-joint default anchor) | **-0.5** ✓ FIXED (`yaml:430`); per-joint weights mirror TB (`yaml:env.penalty_pose_weights_per_joint`) | TB `+0.5` × `_reward_penalty_pose` returning negative sum (`walk.gin:120-124`, `mjx_env.py:2707`) | ✅ Phase 2 landed.  Sign convention diff: WR uses negative yaml weight × positive raw error (matches WR action_rate / torque pattern); TB uses positive scale × negative function value.  Magnitudes equal. |
 | **Reward** | **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | **-5.0** ✓ FIXED (`yaml:436`) | TB `+5.0` × `_reward_penalty_feet_ori` returning negative tilt (`walk.gin:129`, `walk_env.py:697-735`) | ✅ Phase 2 landed.  Same sign-convention rationale as penalty_pose.  Magnitudes equal. |
-| **Reward** | `feet_slip` ↔ `slip` | 0.05 (`yaml:402`) | 0 in active (was 0.05 commented at `walk.gin:72`) | (b) Defer drop until evidence smoke doesn't need it. |
+| **Reward** | `feet_slip` ↔ `slip` | 0.05 (`yaml:402`) | 0 in active | (b) Defer drop until evidence smoke doesn't need it. |
 | **Reward** | `torso_pitch_soft` / `torso_roll_soft` (band penalty) | 0.5 / 0.5 (`yaml:396-397`) | 0 in active; TB uses `penalty_ang_vel_xy=1.0` for posture damping | (b) Defer; band-penalty form is benign. |
 | **Reward** | `action_rate` ↔ `penalty_action_rate` | -1.0 (`yaml:382`) | 2.0 (`walk.gin:119`) | (a) Sign convention diff; magnitudes both = sum-of-squared-action-changes.  Verify numerical equivalence. |
 | **Reward** | `torque` | -0.001 (`yaml:383`) | 0 in active | (a) WR keeps as light regularizer. |

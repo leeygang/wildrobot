@@ -534,7 +534,7 @@ def start_training(
         # of the offline reference (target_q = q_ref + clip(action) * scale).
         # iter-0 must therefore output zero so the rollout starts from
         # bare-q_ref replay — this is the zero-residual invariant
-        # (was `G6 contract`) in walking_training.md (v0.20.1 §
+        # in walking_training.md (v0.20.1 §
         # "Smoke policy initialisation") and what the pre-smoke wiring
         # test (tests/test_v0201_env_zero_action.py) verifies.
         # The legacy bias toward default_joint_qpos was only correct for

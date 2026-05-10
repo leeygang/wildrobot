@@ -171,7 +171,7 @@ env:
   # filter dynamics), but with the v0.20.1 residual-only filter
   # contract (env applies lowpass_v1 to the policy residual command,
   # not to the composed q_target) ANY alpha value satisfies the
-  # zero-residual invariant (was `G6 invariant`): when the policy
+  # zero-residual invariant: when the policy
   # outputs zero, the filtered residual stays zero, so target_q ==
   # q_ref exactly.  See tests/test_v0201_env_zero_action.py
   # test_zero_action_residual_metric_stays_zero_for_50_steps for the
@@ -198,7 +198,7 @@ env:
   # default bin from the generator's 0.05-step grid.
   loc_ref_offline_command_vx: 0.20
 
-  # ---- Smoke residual bounds (was `G1`) ----
+  # ---- Smoke residual bounds ----
   # Absolute mode: residual_delta_q = clip(action) * scale (rad).
   # ToddlerBot-aligned (walking_training.md Appendix A.6): leg residual
   # tightened from ±0.50 → ±0.25 rad to match ToddlerBot's uniform
@@ -416,7 +416,7 @@ reward_weights:
   # (= 1.0 × 0.02 × 500), small vs the imitation block's ~50/episode
   # post-dt contribution at peak (e.g. ref_q_track=5.0 × dt × 500), so
   # it does not recreate the v0.19.5b lean-back exploit (which fired
-  # only at the now-retired alive=10 weight).
+  # only at the alive=10 weight).
   alive: 1.0
   ref_q_track: 5.0
   # ref_body_quat_track 5.0 → 2.5: TB-active is torso_quat = 2.5
@@ -428,7 +428,7 @@ reward_weights:
   # on phase-related rewards (walking_training.md Appendix A.3).
   #   lin_vel_z (TB 1.0): vertical body velocity tracking.  Reference is
   #     finite-diff of prior pelvis_pos[2] across consecutive frames
-  #     (Appendix A.3 §"Reference velocity sourcing", was `G2` —
+  #     (Appendix A.3 §"Reference velocity sourcing" —
   #     keeps the ReferenceLibrary schema narrow).  Per-
   #     frame phase-correlated gradient from body bobbing during each step.
   #   ang_vel_xy (TB 2.0): body roll/pitch angular velocity.  Reference is
@@ -444,7 +444,7 @@ reward_weights:
   #   1. Doc/code mismatch on the Gaussian kernel formula (docs say
   #      exp(-x^2/sigma^2), code uses exp(-x^2/(2*sigma^2))).
   #   2. The graduation policy in walking_training.md §"Contact-phase
-  #      reward formula" (was `G3`) says re-enable
+  #      reward formula" says re-enable
   #      first at 0.02, then 0.10 once the contact-alignment probe passes
   #      the 0.90 bar.  Setting weight 0.5 jumped 25x past the documented
   #      re-entry without re-running the probe.

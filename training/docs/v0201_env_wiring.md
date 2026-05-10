@@ -36,7 +36,7 @@ a new action contract.
 - **`_residual_q_scale`** (line 1758): scalar, configurable via
   `loc_ref_residual_scale`.  Currently 0.18 (v0.19.5c default) which gives
   ~±0.18·half_span ≈ ±0.13 rad on a typical leg joint — too small for the
-  smoke residual-bounds spec (was `G1`).  See §4 for the change.
+  smoke residual-bounds spec.  See §4 for the change.
 - **`_joint_half_spans`** (line 1916): `0.5 * (joint_range_maxs - joint_range_mins)` —
   per-joint span used as the residual scale base.  Reused.
 - **`build_observation`** (line 5378): already takes a set of `loc_ref_*` fields
@@ -77,7 +77,7 @@ Three new fields on `WildRobotInfo` (or one composite dict to minimize churn):
 Reset writes `loc_ref_offline_step_idx = 0`.  Step increments and clamps via
 the service.
 
-## 4. Smoke residual bounds (was `G1`)
+## 4. Smoke residual bounds
 
 The current `_residual_q_scale = 0.18` is a single scalar applied to all joints'
 half-span.  For the smoke residual-bounds spec (`±0.50 rad` on leg joints,
@@ -158,7 +158,7 @@ env:
 |---|---|---|
 | `loc_ref_q_ref`           | `[n_joints]` | `window.q_ref` |
 | `loc_ref_pelvis_pos`      | `[3]`        | `window.pelvis_pos` |
-| `loc_ref_pelvis_vel`      | `[3]`        | `window.pelvis_vel` (finite-diff per ref-velocity-sourcing convention, was `G2`) |
+| `loc_ref_pelvis_vel`      | `[3]`        | `window.pelvis_vel` (finite-diff per ref-velocity-sourcing convention) |
 | `loc_ref_left_foot_pos`   | `[3]`        | `window.left_foot_pos` |
 | `loc_ref_right_foot_pos`  | `[3]`        | `window.right_foot_pos` |
 | `loc_ref_left_foot_vel`   | `[3]`        | `window.left_foot_vel` (finite-diff) |
