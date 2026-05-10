@@ -14,10 +14,10 @@
 #   - mujoco_playground g1 joystick (tracking_sigma=0.25 form)
 #   - loco-mujoco MimicReward (numerator-α form)
 #
-# Compute budget: M2 cap ≈ 20M env steps (1024 envs × 128 rollout_steps
-# × 150 iterations = 1.97e7 policy decisions).  An earlier revision
-# of walking_training.md mis-stated this as 5M; the 150-iter cap is the
-# authoritative budget.
+# Compute budget: v0.20.1 smoke compute cap ≈ 20M env steps (1024 envs
+# × 128 rollout_steps × 150 iterations = 1.97e7 policy decisions).  An
+# earlier revision of walking_training.md mis-stated this as 5M; the
+# 150-iter cap is the authoritative budget.
 #
 # Usage:
 #   uv run python training/train.py \
@@ -296,12 +296,12 @@ env:
   action_delay_steps: 1
 
 # =============================================================================
-# PPO — sized to the M2 ~20M env-step compute budget
+# PPO — sized to the v0.20.1 smoke ~20M env-step compute cap
 # =============================================================================
 # 1024 envs * 128 rollout * 150 iter = 1.97e7 policy decisions
 # (each policy decision = one ctrl_dt = n_substeps physics steps;
-# the env-step count for M2 is the policy-decision count, not the
-# inner physics-step count).
+# the env-step count for the smoke is the policy-decision count, not
+# the inner physics-step count).
 ppo:
   num_envs: 1024
   rollout_steps: 128
@@ -519,7 +519,8 @@ reward_weights:
   penalty_feet_ori: -5.0
   # ToddlerBot-aligned slip penalty (walk.gin: feet_slip = 0.05).
   # Replaces the v0.20.1 default-0 stance-side slip penalty.  Pitch_rate
-  # remains a 0-default M1 hook (only promoted on the M1 "balance issue"
+  # remains a 0-default fail-mode-tree hook (only promoted on the
+  # fail-mode tree's "balance issue"
   # branch) — the soft pitch reward above already shapes posture.
   slip: 0.05
   pitch_rate: 0.0

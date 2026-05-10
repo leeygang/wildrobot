@@ -8,6 +8,93 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-retire-M-stage-labels] - 2026-05-09: collapse M-stages into v0.20.x; document the v0.20.x / smoke<K> nesting
+
+### Context
+
+The training plan was using **three parallel coordinate systems** for
+the same things:
+- `v0.20.x` (release version)
+- `smoke<K>` (PPO run identifier)
+- `M0`–`M3` (compute / capability stages from the v0.19.x curriculum)
+
+These overlapped: e.g., `v0.20.1` smoke7's compute budget was called
+"M2 cap"; the diagnostic decision tree was called "M1 fail-mode tree";
+the post-smoke long-run plan was called "M3 long-run plan".  Three
+names for the same level created confusion.
+
+### Patch — nested hierarchy
+
+Adopted a single nested coordinate system (no parallel naming):
+
+| Level | Identifier | What it tracks |
+|---|---|---|
+| Release | `v0.20.x` | Frozen code/asset/contract version |
+| Milestone | `v0.20.<N>` (with `-A/-B/-C/-D` for v0.20.0) | A delivered capability within the release |
+| Run | `v0.20.<N>-smoke<K>` | A specific PPO training attempt within a milestone |
+
+Headline mapping: **v0.20.1 = M1 + M2** (reward family + smoke-compute
+training); **v0.20.2 = M3** (TB-on-par compute + SysID hardening).
+
+### Patch — M-label retirement (forward-going)
+
+`training/docs/walking_training.md`:
+- Added a "Naming hierarchy" section documenting the three levels +
+  the M→v0.20.x mapping table for searchability
+- Renamed two section headers:
+  - `M2 — compute budget cap` → `v0.20.1 smoke compute cap (was M2 compute budget)`
+  - `M1 — failure-mode decision tree` → `v0.20.1 fail-mode tree (was M1 fail-mode tree)`
+- Renamed a third header:
+  - `M1 — shuffle-exploit context` → `Shuffle-exploit context (the missing TB lever; was M1 shuffle-exploit context)`
+- Inline rename of 13 active M-references via word-boundary regex pass:
+  `M2 cap → v0.20.1 smoke compute cap`,
+  `M1 fail-mode tree → v0.20.1 fail-mode tree`,
+  `M1 hook → fail-mode-tree hook`,
+  `M3 long run → v0.20.2 long-run`,
+  `M3 milestone → v0.20.2 milestone`,
+  `M3 config → v0.20.2 config`,
+  `M3 fail-mode tree (TBD) → v0.20.2 fail-mode tree (TBD)`,
+  `until M3 is run → until the v0.20.2 long-run is run`,
+  etc.
+- v0.19.x history references annotated with `(formerly M2.5)` /
+  `(formerly M3.0-A/B)` etc. so the historical narrative still maps
+  cleanly to its M-stage context.
+
+`training/configs/ppo_walking_v0201_smoke.yaml`:
+- Header comment: `M2 cap → v0.20.1 smoke compute cap`
+- PPO section title: `sized to the M2 ~20M env-step compute budget →
+  sized to the v0.20.1 smoke ~20M env-step compute cap`
+- Reward weights comment: `M1 hook → fail-mode-tree hook`
+
+### Left untouched
+
+- **CHANGELOG history** — entries from before the rename retain `M*`
+  labels as written.  The historical narrative is preserved.
+- **Apple `M2 GPU` reference** in walking_training.md B.3 — that's
+  hardware, not a stage label.
+- **Deprecated v0.14.x M3 metric descriptions** in
+  `training/core/metrics_registry.py` and
+  `training/core/experiment_tracking.py` — they describe what those
+  legacy metrics meant in their original context; renaming would
+  obscure historical meaning.
+- **Test names** like `test_smoke7_eval_cmd_behavior.py` — external
+  CI references; not worth the churn.
+
+### Why this matters
+
+The console output already used the nested form (`v0.20.1-smoke7`,
+`G4-train`, `G5-eval`); the docs now match.  Future readers see one
+coordinate system instead of three, and the headline `v0.20.1 = M1+M2`
+mapping makes it clear that the M-stages aren't a separate work
+stream — they're the v0.20.x version's deliverables.
+
+### Tests
+
+52/52 PASS on the regression set.  Doc + YAML comment changes only;
+no behaviour change.
+
+---
+
 ## [v0.20.1-retire-non-gate-G-ids] - 2026-05-09: rename G1/G2/G3/G6/G7 to descriptive names; "gate" terminology now only applies to G4/G5
 
 ### Context

@@ -442,15 +442,17 @@ Expected additions:
     viable stepping prior
 - `v0.19.3b` established the root blocker:
   - nominal-only probe with zero residual still pitch-fails early
-  - `q_ref` is not dynamically viable under the full M3 env
+  - `q_ref` is not dynamically viable under the full v0.19.5 env
+    (formerly `M3 env`)
 - `v0.19.3c` and `v0.19.3d` improved semantics and braking diagnostics, but
   did not materially improve the nominal-only probe gate
 - `v0.19.3e` added support-first local clamping for swing-x and pelvis pitch:
   - clamp is active
   - survival still does not improve
   - PPO must remain paused
-- `v0.19.4` complete: nominal reference validation (M2.5) and walking
-  reference achieved (M3.0-A/B).  Ctrl ordering bug found and fixed.
+- `v0.19.4` complete: nominal reference validation (formerly `M2.5`) and
+  walking reference achieved (formerly `M3.0-A/B`).  Ctrl ordering bug
+  found and fixed.
   DCM COM trajectory implemented.  Nominal walking: 461 steps, 15 gait
   cycles, forward speed +0.038 m/s at cmd=0.15.
 - `v0.19.5` attempted but handoff was premature (April 13-14):
@@ -1236,7 +1238,34 @@ Post-smoke policy direction:
 - the offline prior asset, reference-tracking reward family, and observation
   interface should be reusable in that upgrade
 
-**M2 — compute budget cap**:
+### Naming hierarchy (M-labels retired 2026-05-09)
+
+The training plan uses three nested coordinate systems; they're **not
+parallel**, each level zooms in on the previous:
+
+| Level | Identifier | What it tracks |
+|---|---|---|
+| Release | `v0.20.x` | Frozen code/asset/contract version |
+| Milestone | `v0.20.<N>` (with `-A/-B/-C/-D` for v0.20.0) | A delivered capability within the release |
+| Run | `v0.20.<N>-smoke<K>` | A specific PPO training attempt within a milestone |
+
+Historical `M0`–`M3` stage labels are retired in favour of v0.20.x:
+
+| Old M-label | New label | What it meant |
+|---|---|---|
+| `M0` / `M1` (compute) | v0.19.0–0.19.2 (history) | early standing-only / digital twin |
+| `M1` (fail-mode tree) | v0.20.1 fail-mode tree | diagnostic decision tree for smoke failures |
+| `M2` (compute cap) | v0.20.1 smoke compute cap (~20M env steps) | smoke-run compute budget |
+| `M2.5` | v0.20.0-C nominal validation | nominal-only validation |
+| `M3` (env / reward) | v0.19.5 (history) | failed pre-pivot PPO env |
+| `M3` (long-run plan) | v0.20.2 long-run | TB-on-par compute (~1B env steps) |
+
+So **v0.20.1 = M1+M2** (reward family + smoke-compute training);
+**v0.20.2 = M3** (TB-on-par compute + SysID hardening).  CHANGELOG
+history retains `M*` labels as written; forward-going references use
+v0.20.x exclusively.
+
+### v0.20.1 smoke compute cap (was `M2 compute budget`)
 
 - single bounded smoke run: ~20M env steps (150 PPO iterations at
   `num_envs=1024 × rollout_steps=128` = 1024 × 128 × 150 ≈ 1.97×10⁷
@@ -1248,12 +1277,12 @@ Post-smoke policy direction:
   smoke is considered failed (do not extend the run hoping it converges
   later — prefer to come back to the prior or contract design)
 - single seed for the smoke; if it passes, multi-seed validation belongs
-  to the next milestone, not this one
+  to the v0.20.2 long-run, not this one
 
-**M1 — failure-mode decision tree**:
+### v0.20.1 fail-mode tree (was `M1 fail-mode tree`)
 
 If the smoke fails (does not meet the promotion-horizon gates within the
-M2 compute budget), the next action depends on which gate failed:
+v0.20.1 smoke compute cap), the next action depends on which gate failed:
 
 - `env/forward_velocity` flat near zero AND `episode_length` short
   → **prior issue**: the LQR prior is not producing executable forward
@@ -1298,7 +1327,7 @@ M2 compute budget), the next action depends on which gate failed:
   resample + zero_chance + DR), not a stride-amplitude reward.  Promote
   the next deferred TB curriculum mechanism (smoke7 below).
 
-**M1 — shuffle-exploit context (the missing TB lever)**:
+### Shuffle-exploit context (the missing TB lever; was `M1` shuffle-exploit context):
 
 The shuffle exploit is the dominant single-point failure mode through
 smoke6.  It is structural to single-point training without
@@ -1453,7 +1482,7 @@ Why DR + command pressure jointly (Option C) and not isolated:
 - Per the probe results, the cadence-ceiling story is wrong; multi-cmd
   alone has weak a-priori support.
 - DR alone would test "is robustness pressure load-bearing for shuffle?"
-  cleanly, but the M1 fail-mode tree has no precedent for which
+  cleanly, but the v0.20.1 fail-mode tree has no precedent for which
   TB-inspired knob is load-bearing.
 - Per CLAUDE.md "follow ToddlerBot before WR-specific design", TB enables
   both by default — Option C is the closest to TB's actual recipe.
@@ -1498,7 +1527,7 @@ Decision rule after smoke7:
     under the closed-loop dynamics PPO actually faces).
   - (b) smoke compute budget exhausted before convergence — TB trains
     on 2× the episode length (1000 vs 500) and broader command range;
-    extend M2 cap to ~300 iters and rerun before declaring failure.
+    extend the v0.20.1 smoke compute cap to ~300 iters and rerun before declaring failure.
 - **mixed signal at intermediate stride (0.030-0.050)** → smoke7 is on
   the right track but needs more compute or true command-conditioned
   q_ref lookup before declaring the prior blocked.
@@ -1512,7 +1541,7 @@ What we will NOT do in smoke7:
 - not widen the residual bound past ±0.25 rad (G5 has ample headroom:
   smoke6-prep3 residuals 0.097 vs 0.20 cap).
 - not relax G5.
-- not extend the M2 compute budget yet (judge first at the standard
+- not extend the v0.20.1 smoke compute budget yet (judge first at the standard
   150 iters; if intermediate result, then extend).
 
 ### `v0.20.2` SysID verification + command breadth + transfer hardening
@@ -1777,7 +1806,7 @@ from `training/configs/ppo_walking_v0201_smoke.yaml:240-258` and
 | `feet_air_time` | 500.0 | — | **add 500.0** (cmd-gated) |
 | `feet_clearance` | 1.0 | — | **add 1.0** (cmd-gated) |
 | `feet_distance` (`min=0.07`, `max=0.13`) | 1.0 | — | **add 1.0** |
-| `feet_slip` ↔ `slip` | 0.05 | 0.0 (M1 hook) | **add 0.05** |
+| `feet_slip` ↔ `slip` | 0.05 | 0.0 (fail-mode-tree hook) | **add 0.05** |
 | `survival` ↔ `alive` | 10.0 (`-1 * done`, paid `-10 * dt` on the terminating step) | 0.05 (positive only) | **change to 10.0** with strict ToddlerBot `-done` semantics (no dense per-step bonus) |
 | `motor_torque` ↔ `torque` | 0.1 (× neg-MSE) | -0.001 (× sum-sq) | keep — different scaling but similar effective penalty |
 | `energy` | 0.01 | — | defer |
@@ -1899,10 +1928,10 @@ blocking parity**.
 
 | Area | Field / Config | WR | TB (active) | Notes |
 |---|---|---|---|---|
-| **Compute** | total env steps | 1024×128×150 ≈ **1.97e7** (`yaml:17,266-269`) | 4096×20×~12200 ≈ **1.0e9** (`walk.gin:2`, `ppo_config.py:32,42`) | **(c) Blocks parity by 50×.** Smoke is "recipe works", not TB-terminal-performance.  Plan an M3 long run before claiming parity (see B.3). |
-| **PPO** | num_envs | 1024 | 4096 | (a) GPU/M2 cap. |
+| **Compute** | total env steps | 1024×128×150 ≈ **1.97e7** (`yaml:17,266-269`) | 4096×20×~12200 ≈ **1.0e9** (`walk.gin:2`, `ppo_config.py:32,42`) | **(c) Blocks parity by 50×.** Smoke is "recipe works", not TB-terminal-performance.  Plan a v0.20.2 long-run before claiming parity (see B.3). |
+| **PPO** | num_envs | 1024 | 4096 | (a) GPU + smoke compute cap. |
 | **PPO** | rollout_steps / unroll_length | 128 | 20 | (a) By design. Per-batch size comparable (4096 WR vs 5120 TB). |
-| **PPO** | learning_rate | 3e-4 | 3e-5 | **(c) WR 10× higher.** Compensates for compute gap; revisit when M3 lands. |
+| **PPO** | learning_rate | 3e-4 | 3e-5 | **(c) WR 10× higher.** Compensates for compute gap; revisit when v0.20.2 lands. |
 | **PPO** | entropy_coef | 0.01 | 5e-4 | **(c) WR 20× higher.** Combined with `log_std_init=-1.0` less aggressive than headline; drop toward 1e-3 if smoke shows excessive residual exploration. |
 | **PPO** | gamma / discounting | 0.99 | 0.97 | (a) WR 500-step episodes vs TB 1000; longer effective horizon for imitation feedback. |
 | **PPO** | gae_lambda | 0.95 | 0.95 | ✅ |
@@ -1979,7 +2008,7 @@ the bug-fix follow-up are landed.
 5. This appendix added to walking_training.md (B.1).
 6. Analyze skill `Comparing to ToddlerBot` table corrected
    (`~/.claude/skills/wildrobot-training-analyze/SKILL.md`).
-7. M3 long-run plan added (B.3).
+7. v0.20.2 long-run plan added (B.3).
 
 **Phase 1c — alive semantics (bug-fix follow-up):**
 
@@ -2051,17 +2080,17 @@ yet randomize them.  Low priority — backlash is the load-bearing
 sim2real noise; the [0.9, 1.1] ranges on actuator gains are second-
 order.  Add as part of a future hardware-bringup milestone.
 
-### B.3 M3 long-run plan — getting to TB-on-par compute
+### B.3 v0.20.2 long-run plan — getting to TB-on-par compute
 
-The smoke compute (M2 cap, ~2e7 env steps) is **50× shorter** than
+The smoke compute (v0.20.1 smoke compute cap, ~2e7 env steps) is **50× shorter** than
 TB's published walk run (~1e9 env steps per `walk.gin:2`).  Even
 with the prior+residual sample-efficiency win, the smoke cannot
 reach TB-terminal performance — the smoke's purpose is to validate
 the recipe, not to match TB's terminal numbers.
 
-**M3 milestone (post-smoke):** plan a long-run config at ≥1e8 env
+**v0.20.2 milestone (post-smoke):** plan a long-run config at ≥1e8 env
 steps (10× the smoke, still 10× short of TB's 1e9 — proportional to
-the prior+residual sample-efficiency expectation).  The M3 config
+the prior+residual sample-efficiency expectation).  The v0.20.2 config
 should:
 
 1. Inherit from the smoke yaml with all Phase 1/2/3 fixes landed.
@@ -2071,7 +2100,7 @@ should:
    `training/CHANGELOG.md`.
 5. Decision criterion: forward_velocity within 50% of TB-active's
    published vx and per-foot stride length within 30%.  If the
-   ratio worsens at higher compute, the M3 fail-mode tree (TBD)
+   ratio worsens at higher compute, the v0.20.2 fail-mode tree (TBD)
    takes over.
 
-Do not claim "WR walking is on par with TB" until M3 is run.
+Do not claim "WR walking is on par with TB" until the v0.20.2 long-run is run.
