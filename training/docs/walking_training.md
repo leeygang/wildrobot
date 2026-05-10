@@ -1989,10 +1989,11 @@ one-shot `-done` form WR previously used (which mirrored the
 commented-out `walk.gin:69 _reward_survival` ZMP variant).  Phase 1
 lowered the weight to 1.0; Phase 1c switches the form so the
 implementation actually matches TB-active.  At weight 1.0 the dense
-bonus is small relative to the imitation block (~10/episode vs
-~1250/episode imitation) and does not recreate the v0.19.5b
-lean-back exploit (which fired only at the older alive=10).
-Touches `wildrobot_env.py:_aggregate_reward`.
+bonus accumulates to +10/episode at the 500-step horizon (= 1.0 ×
+0.02 × 500), small vs the imitation block's ~50/episode peak post-dt
+contribution (e.g. ref_q_track=5.0 × dt × 500), and does not
+recreate the v0.19.5b lean-back exploit (which fired only at the
+older alive=10 weight).  Touches `wildrobot_env.py:_aggregate_reward`.
 
 **Phase 2 — env reward additions (commit `7df62b0`):**
 

@@ -1193,23 +1193,31 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``alive`` is a **dense per-step bonus** matching TB-active
         ``_reward_alive`` (toddlerbot/locomotion/mjx_env.py:2766-2782
         ``return jnp.float32(1.0)`` constant per step) at weight
-        ``RewardScales.alive = 1.0`` (walk.gin:127).  PPO sees
-        ``+alive_w * dt = +0.02`` per surviving step (over a 500-step
-        horizon: total +10.0); on the terminating step the env returns
-        ``done=True`` and PPO does not collect a reward for that step.
+        ``RewardScales.alive = 1.0`` (walk.gin:127).  Every step —
+        including the terminating step — adds ``+alive_w * dt = +0.02``
+        to the reward; episode totals scale linearly with episode
+        length.
+
+        Examples (alive_w = 1.0, ctrl_dt = 0.02):
+          - healthy 500-step rollout:        +0.02 * 500 = +10.0
+          - early termination at step 100:   +0.02 * 100 = +2.0
+
+        Penalty for early termination is implicit: a long episode
+        accumulates more alive bonus than a short one.  No explicit
+        ``-done`` term.
 
         WR previously used ``-alive_w * terminated`` (-done semantics)
         with ``alive=10``, which mirrored the *commented-out* TB
         ZMP variant (walk.gin:69 ``RewardScales.survival = 10.0`` +
         ``_reward_survival = -done``).  TB-active alignment Phase 1
         (walking_training.md Appendix B) lowered the weight to 1.0;
-        Phase 1c (this commit) switches to dense per-step semantics so
-        the implementation actually matches TB-active.  At weight 1.0
-        the dense bonus is small relative to the imitation block (~50
-        per ep at ctrl_dt=0.02 for a healthy 500-step rollout vs
-        ref_q_track ~5*0.5 = 2.5 per step → 1250 per ep) and does not
-        recreate the v0.19.5b lean-back exploit, which fired only at
-        the older alive=10 weight.
+        Phase 1c switched to dense per-step semantics so the
+        implementation actually matches TB-active.  At weight 1.0 the
+        per-episode alive total (+10 over 500 steps) is small relative
+        to the imitation block (e.g. ref_q_track at peak ≈ +5 * 1.0 =
+        +5/step → +2500 per ep weighted, or × dt ≈ +50 per ep
+        contribution) and does not recreate the v0.19.5b lean-back
+        exploit, which fired only at the older alive=10 weight.
 
         ``* dt`` matches ``mjx_env.py:1048``
         (``reward = sum(reward_dict.values()) * self.dt``).  This is
