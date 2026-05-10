@@ -40,6 +40,7 @@ import numpy as np
 import pytest
 
 from assets.robot_config import load_robot_config
+from policy_contract.calib import NumpyCalibOps
 from policy_contract.spec import PROPRIO_HISTORY_FRAMES
 from training.configs.training_config import load_training_config
 from training.eval.v6_eval_adapter import V6_LAYOUT_ID, V6EvalAdapter
@@ -202,29 +203,94 @@ def test_post_physics_bundle_uses_post_signals_and_applied_action(
     smoke_setup,
 ) -> None:
     """post_physics must build the bundle from POST-physics signals
-    (read after mj_step) and the action APPLIED this step (not raw).
+    (read after mj_step) and the action APPLIED this step, then roll it
+    into ``pending_history`` (NOT ``proprio_history`` — the lag fix
+    moved the write target to the pending buffer).
 
-    Catches the pre-step bundle bug this commit fixes (history was being
-    rolled with PRE-step data + the wrong prev_action slot).
+    Drives TWO iterations so iter 2's ``applied`` is the filtered raw
+    from iter 1 — non-zero — and the bundle's prev_action slot is a
+    meaningful check.  (Iter 1's applied is always zero under
+    action_delay_steps=1; reading the slot then would pass vacuously.)
+
+    Catches the pre-step bundle bug from commit 1a467c1 (history was
+    rolled with PRE-step data + wrong prev_action slot) AND the wrong-
+    buffer bug had the test inspected proprio_history[-1] (where post_
+    physics no longer writes since the lag fix in 49be22e).
     """
     s = smoke_setup
+    if not s["adapter"]._action_delay_enabled:
+        pytest.skip("test assumes 1-step delay; smoke yaml has it on")
     a = s["adapter"]
     a.reset()
-    raw = 0.3 * np.ones(s["action_dim"], dtype=np.float32)
-    applied = a.apply_action(s["mj_data"], raw)
-    # Step physics so post-signals differ from pre-signals.
-    for _ in range(int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)):
+    n = s["action_dim"]
+    n_substeps = int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)
+
+    # ---- Iter 1: applied = pending = zeros (delay).  Drive the cycle
+    # so iter 2's apply_action sees a non-zero pending_action (=
+    # filtered_iter1).  We don't inspect iter 1's bundle here — its
+    # applied is zero, so the prev_action slot would be all-zero and
+    # not prove anything.
+    raw_iter1 = 0.3 * np.ones(n, dtype=np.float32)
+    applied_iter1 = a.apply_action(s["mj_data"], raw_iter1)
+    np.testing.assert_array_equal(
+        applied_iter1, np.zeros(n, dtype=np.float32),
+        err_msg="iter 1 applied must be zero under 1-step delay (precondition)",
+    )
+    for _ in range(n_substeps):
         mujoco.mj_step(s["mj_model"], s["mj_data"])
     a.post_physics(s["mj_data"])
-    # Newest slot (-1) of proprio_history is the bundle just rolled.
-    bundle_newest = a._state.proprio_history[-1]
-    # Bundle's prev_action slice is the last 21 entries.
-    n = s["action_dim"]
+    # After iter 1's compute_obs would normally promote pending_history
+    # → proprio_history; the assertion below targets iter 2's
+    # post_physics output which writes to pending_history again, so the
+    # promotion in between doesn't change what we check.
+    a.compute_obs(s["mj_data"], velocity_cmd=0.20)
+
+    # ---- Iter 2: applied = pending = filtered_iter1 = raw_iter1 (alpha=0).
+    # Now the bundle's prev_action slot will be a meaningful non-zero
+    # value, so checking it actually proves the bundle uses applied
+    # (not raw, not zeros).
+    raw_iter2 = -0.6 * np.ones(n, dtype=np.float32)
+    applied_iter2 = a.apply_action(s["mj_data"], raw_iter2)
+    np.testing.assert_array_equal(
+        applied_iter2, raw_iter1,
+        err_msg=("iter 2 applied must equal filtered_iter1 (= raw_iter1 with "
+                 "alpha=0); precondition for the bundle prev_action check"),
+    )
+    assert not np.allclose(applied_iter2, 0.0), (
+        "applied_iter2 must be non-zero so the prev_action slot check is "
+        "non-vacuous"
+    )
+
+    for _ in range(n_substeps):
+        mujoco.mj_step(s["mj_model"], s["mj_data"])
+    a.post_physics(s["mj_data"])
+
+    # post_physics writes the rolled history into pending_history (lag
+    # fix 49be22e).  Inspect THAT buffer's newest slot.
+    bundle_newest = a._state.pending_history[-1]
     bundle_prev_action = bundle_newest[-n:]
     np.testing.assert_array_equal(
-        bundle_prev_action, applied,
-        err_msg="bundle prev_action slot must equal last_applied_action "
-                "(env line 1906); not raw_action / not zeros",
+        bundle_prev_action, applied_iter2,
+        err_msg=("bundle prev_action slot must equal last_applied_action "
+                 "(env line 1906); not raw_iter2, not zeros"),
+    )
+
+    # Also pin POST-vs-PRE physics: the bundle's joint_pos_norm slice
+    # (offset 7..7+n in the bundle, since layout = gyro(3) + sw(4) +
+    # joint_pos(n) + joint_vel(n) + prev_action(n)) must reflect the
+    # POST-physics joint state, not the pre-step state.  Sanity-check
+    # by confirming joint_pos_norm corresponds to the *current* mj_data
+    # qpos (which is post-physics at this point).
+    expected_joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
+        spec=s["policy_spec"],
+        joint_pos_rad=a._signals_adapter.read(s["mj_data"]).joint_pos_rad,
+    ).astype(np.float32)
+    bundle_joint_pos = bundle_newest[7 : 7 + n]
+    np.testing.assert_allclose(
+        bundle_joint_pos, expected_joint_pos_norm, atol=1e-6,
+        err_msg=("bundle joint_pos_norm slot must reflect POST-physics qpos; "
+                 "if this fails, post_physics is reading mj_data BEFORE "
+                 "the physics step or signals_adapter is misconfigured"),
     )
 
 
