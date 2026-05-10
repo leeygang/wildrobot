@@ -864,16 +864,58 @@ Smoke contract:
     especially on the leg joints
   - this higher-authority residual is a smoke-stage debugging compromise, not
     the final intended contract
-  - **G1 — concrete starting bounds for the smoke** (per-joint clip on
-    `delta_q_policy`, applied symmetrically; tighten if anti-exploit metric
-    G5 trips):
+
+### G-gate categorisation (2026-05-09)
+
+The historical `G1`-`G7` labels are kept for cross-doc / CHANGELOG
+continuity, but they're not all "gates" in the PASS/FAIL sense.  The
+TB cross-check (`grep -rn "success_rate" toddlerbot/locomotion/` →
+zero hits; checkpoint selection at
+`toddlerbot/locomotion/train_mjx.py:849-865` is purely
+`best_episode_reward = max(...)`) shows TB has **no** eval-floor or
+anti-exploit gates.  Most of WR's `G*` items are configuration
+commitments and implementation choices added because WR's prior +
+residual architecture creates failure modes (v0.19.5 lean-back / move-
+less exploits) that TB doesn't face.  Categorisation:
+
+| Category | Members | Role |
+|---|---|---|
+| **Promotion gates** (PASS/FAIL at promotion horizon) | G4, G5 | Quantitative go/no-go for shipping the smoke checkpoint. |
+| **Smoke configuration commitments** | G1, G3, G6 | Frozen smoke-stage config (residual bounds, reward-term spec, policy init) — not pass/fail; YAML / code settings. |
+| **Implementation choices** | G2 | Env-side design decision (finite-diff velocity refs); not pass/fail. |
+| **Pre-smoke baselines** | G7 | Open-loop measurement to detect regressions vs the smoke run. |
+
+**Body-size note:** TB's thresholds (`healthy_z_range`,
+`swing_height`, `min/max_feet_y_dist`, reward sigmas) are all
+**absolute meters / radians silently tuned to TB's body**.  Reusing
+TB's absolute `forward_velocity ≥ 0.075 m/s` floor on WR's 1.77×
+larger leg would falsely pass weak policies (0.075 m/s would be only
+~25% of WR's vx=0.30 max command vs ~50% of TB's vx=0.15).  WR's
+**command-scaled G4 floors** (`0.50 × eval_velocity_cmd`) and
+**cycle-scaled step floor** (`0.50 × vx × cycle / 2`) are the
+correct generalisation: they preserve the *fraction-tracked*
+semantics that TB's body-tuned reward shaping implicitly enforces.
+This divergence from TB's literal numbers is consistent with the
+"follows ToddlerBot" principle when TB's defaults are silently body-
+bound (analogous to the Phase 9D cycle_time scaling — see CHANGELOG
+`v0.20.1-phase9D-cycle-time-scaling`).
+
+---
+
+  - **G1 [config commitment] — concrete starting bounds for the smoke**
+    (per-joint clip on `delta_q_policy`, applied symmetrically; tighten
+    if anti-exploit metric G5 trips):
     - leg joints (hip pitch / hip roll / knee / ankle pitch / ankle roll):
       `±0.25 rad`
     - all other joints: `±0.20 rad`
-    - rationale: post-ToddlerBot alignment, residual authority must stay a
-      correction layer.  ToddlerBot uses action scale 0.25; matching that
-      scale keeps G5 meaningful and prevents PPO from owning propulsion that
-      the prior should own.  The old ±0.50 smoke debug bound is retired.
+    - rationale: ToddlerBot uses a uniform `action_scale = 0.25`
+      (`toddlerbot/locomotion/mjx_config.py:103`) across all action
+      joints.  WR matches the leg side at `±0.25` for direct
+      comparability and tightens non-leg joints to `±0.20` as a
+      WR-specific safety extension (the leg residual is what
+      can plausibly own propulsion; non-leg joints are
+      stabilisation only and don't need the same headroom).  The
+      old `±0.50` smoke debug bound is retired.
 - Reward:
   - use an imitation-dominant ToddlerBot-like reward family
   - primary terms:
@@ -912,7 +954,7 @@ Smoke contract:
   - compute body / site / velocity tracking in torso-relative or root-relative
     coordinates where applicable
   - do not reuse the `v0.19.x` task-space reward family for this smoke
-  - **G2 — reference velocity fields**:
+  - **G2 [implementation choice] — reference velocity fields**:
     - the offline `ReferenceLibrary` schema currently stores only positions
       (`pelvis_pos`, `com_pos`, `left_foot_pos`, `right_foot_pos`); body
       and site linear / angular velocities are not stored
@@ -923,20 +965,25 @@ Smoke contract:
       schema before we know the velocity-tracking reward is actually
       pulling its weight; finite-diff velocity is good enough for a
       stable Gaussian-shaped tracking reward at our `dt = 0.02 s`
-    - **NOT a "matches ToddlerBot" decision**: ToddlerBot's library
-      generator (``toddlerbot/algorithms/zmp_walk.py:174``,
-      ``mujoco_replay``) records ``body_lin_vel`` and ``body_ang_vel``
-      from the kinematic forward step explicitly; we are choosing
-      finite-diff because we don't currently run that mujoco_replay
-      step and don't want the schema growth right now.  This is a
-      WildRobot-specific simplification, not a ToddlerBot inheritance.
+    - **NOT a "matches ToddlerBot" decision**: ToddlerBot stores
+      `body_lin_vel` and `body_ang_vel` directly inside `state_ref`
+      (`toddlerbot/locomotion/mjx_env.py:1178-1179`, consumed by
+      `_reward_body_lin_vel` at `mjx_env.py:2996` and
+      `_reward_body_ang_vel` at `mjx_env.py:3047`; recorded by
+      `toddlerbot/tools/edit_keyframe_python.py` during MuJoCo
+      replay).  WR uses finite-diff because we don't currently run
+      that replay step and don't want the schema growth right now.
+      This is a WildRobot-specific simplification, not a ToddlerBot
+      inheritance.
     - revisit if a future prior generator (ALIP, etc.) emits velocity
       directly with better fidelity than finite-diff, or if the smoke
       shows velocity-tracking reward gradients are noisy at the
       finite-diff numerical-derivative quality
-  - **G3 — `ref/contact_phase_match` definition** (smoke6 onward):
+  - **G3 [config commitment] — `ref/contact_phase_match` definition**
+    (smoke6 onward):
     - boolean equality count per foot, matching ToddlerBot's
-      `_reward_feet_contact` exactly:
+      `_reward_feet_contact` (`toddlerbot/locomotion/mjx_env.py:2484-2486`)
+      exactly:
       - `r = sum(stance_mask == ref_stance_mask)` ∈ `{0, 1, 2}`
       - `cmd_contact ∈ {0, 1}` from `traj.contact_mask`
       - `actual_contact ∈ {0, 1}` from MuJoCo foot-floor contact
@@ -987,7 +1034,12 @@ Pre-smoke checks:
 - if the contact-alignment probe fails the G3 bar, the smoke YAML must set
   `reward_weights.ref_contact_match = 0.0` before launch; do not carry a
   known-noisy contact term into the first PPO run
-- **G7 — prior-vs-body sanity at the smoke command**:
+- **G7 [pre-smoke baseline] — prior-vs-body sanity at the smoke command**:
+  - **Note on TB alignment:** TB has no analog because TB has no
+    separate prior to baseline against (the policy IS the gait).  G7
+    is a WR-specific pre-smoke measurement that pins the open-loop
+    bare-q_ref behaviour as a regression baseline — if a future smoke
+    collapses below these numbers, something *upstream of PPO* broke.
   - run `tools/v0200c_per_frame_probe.py --horizon 200` (default
     `--vx 0.20` post Phase 9D — TB-step/leg-matched operating point at
     the WR-pendulum-scaled cycle_time=0.96 s) and record the
@@ -1034,7 +1086,17 @@ Metric validation:
   - `ref/contact_phase_match` (diagnostic in the first smoke unless G3 probe
     passes; do not require it to improve when the term is intentionally at
     zero weight)
-- **G4 — early-horizon gate (informational only)**:
+- **G4 [promotion gate] — early-horizon gate (informational only)
+  + promotion-horizon floors (hard gate)**:
+  - **Note on TB alignment:** TB has *no* eval-floor gates (checkpoint
+    selection is purely `best_episode_reward` at
+    `toddlerbot/locomotion/train_mjx.py:849-865`).  G4 is a WR-specific
+    quantitative extension added because WR's prior + residual
+    architecture creates exploit risks TB doesn't face — false-
+    positive promotion (shipping a broken policy) is more costly than
+    false-negative (missing one viable run).  The command-scaling of
+    G4 floors (vs TB's body-tuned absolutes) is the size-aware
+    correction documented in the body-size note above.
   - the current Phase 9D bare-q_ref baseline at `vx=0.20` falls by pitch
     at step ~55 over a 200-step deterministic run.  PPO is being asked
     to keep the body upright and track the prior; the historical
@@ -1102,7 +1164,19 @@ Metric validation:
     preserves step length while scaling cycle and vx.)  The old
     absolute `0.030 m` floor is too weak at any post-shuffle operating
     point because it is only ~32% of the nominal prior step.
-- **G5 — anti-exploit metric (hard gate)**:
+- **G5 [promotion gate] — anti-exploit metric (hard gate)**:
+  - **Note on TB alignment:** TB has no anti-exploit gate at all; the
+    only WR-equivalent in TB is the constant `action_scale = 0.25`
+    clamp applied uniformly inside the env
+    (`toddlerbot/locomotion/mjx_env.py:1545`).  TB doesn't need an
+    anti-exploit gate because TB has no separate prior — the policy
+    output IS the gait, so there's no propulsion-replacement failure
+    mode.  WR's prior + residual architecture has this failure mode
+    (v0.19.5 lean-back / move-less exploits); G5 is the explicit
+    defence.  With the prior now shape-matched to TB
+    (`normalized_prior_shape_pass = True`) and `action_scale = 0.25`
+    clipped, the exploit risk is structurally bounded — G5 functions
+    as **insurance** rather than as an expected-firing gate.
   - to reject the "policy invents propulsion the prior should own" failure
     mode, log and gate on:
     - median absolute residual on hip-pitch + knee + ankle-roll channels:
@@ -1120,7 +1194,7 @@ Metric validation:
   - if either bound is violated at the promotion horizon, the smoke fails
     even if the forward-velocity gate passes — explicitly to prevent a
     false-positive caused by a residual-driven exploit gait
-- **G6 — policy init details**:
+- **G6 [config commitment] — policy init details**:
   - actor: hidden `[256, 256, 128]`, ELU
   - critic: same shape, ELU
   - `log_std_init = -1.0` (matches v0.19.5c; not changing exploration
@@ -1128,6 +1202,18 @@ Metric validation:
   - residual head zero-initialized so the iter-0 policy is exactly
     bare-q_ref replay (this is what the pre-smoke "zero-action policy
     reproduces nominal q_ref" check verifies)
+  - **Intentional divergences from TB** (not bugs, document for
+    future reviewers): TB uses actor/critic `(512, 256, 128)` ELU
+    (`toddlerbot/locomotion/ppo_config.py:19-20`) and
+    `init_noise_std = 0.5` ≈ `log_std_init = -0.69`
+    (`ppo_config.py:28`).  WR's smaller `[256, 256, 128]` MLP is a
+    capacity choice tied to the residual-only role (residual is a
+    correction layer, not a full-policy generator).  WR's tighter
+    `log_std_init = -1.0` (≈ std 0.37 vs TB's 0.5) reduces early-
+    iter exploration to keep G5 residuals inside the ±0.20 rad
+    band; can be loosened in v0.20.2+ once smoke7 passes.  TB has no
+    "residual head zero-init" concept because TB has no prior to add
+    a residual to.
 
 Post-smoke policy direction:
 

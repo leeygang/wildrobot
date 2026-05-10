@@ -8,6 +8,124 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-gate-categorisation-and-tb-cross-check] - 2026-05-09: rename "G-gates" honestly (only G4/G5 are gates); 6 TB-alignment doc corrections
+
+### Context
+
+Cross-checked WR's `G1`-`G7` gate set against ToddlerBot's actual
+training code (`/Users/ygli/projects/ToddlerBot/toddlerbot/locomotion/`).
+Two findings:
+
+1. **TB has no formal promotion gates.**  Checkpoint selection is
+   purely `best_episode_reward = max(...)` at
+   `toddlerbot/locomotion/train_mjx.py:849-865`.  No forward-velocity
+   floors, no episode-length floors, no anti-exploit gates, no
+   `success_rate` concept (`grep -rn "success_rate"
+   toddlerbot/locomotion/` → 0 hits, confirming WR's smoke2 removal).
+   Most of WR's `G*` items are **WR-specific extensions**, not TB
+   inheritances — added because WR's prior + residual architecture
+   creates failure modes (v0.19.5 lean-back / move-less exploits) that
+   TB doesn't face.
+
+2. **WR's doc overclaimed TB inheritance** in 6 places (G1, G2, G3,
+   G4, G5, G6).  Specifics in patch summary below.
+
+### Patch — categorisation preamble + per-gate tags
+
+`training/docs/walking_training.md`:
+- Added a **G-gate categorisation** preamble before G1 splitting the
+  `G1`-`G7` set into four categories with a clear table:
+
+  | Category | Members | Role |
+  |---|---|---|
+  | **Promotion gates** (PASS/FAIL) | G4, G5 | Quantitative go/no-go |
+  | **Smoke configuration commitments** | G1, G3, G6 | Frozen YAML / code settings |
+  | **Implementation choices** | G2 | Env design decision |
+  | **Pre-smoke baselines** | G7 | Open-loop regression baseline |
+
+  The IDs (`G1`-`G7`) are kept for cross-doc / CHANGELOG / code
+  continuity, but the framing now matches what they actually do.
+
+- Added a **body-size note** in the same preamble: TB's thresholds
+  (`healthy_z_range`, `swing_height`, `min/max_feet_y_dist`, reward
+  sigmas) are absolute meters silently tuned to TB's body.  WR's
+  command-scaled G4 floors and cycle-scaled step floor are the
+  correct generalisation to WR's 1.77× longer leg / 1.33× longer
+  cycle (analogous to the Phase 9D cycle_time scaling).  Reusing
+  TB's literal numbers would falsely pass weak policies.
+
+- Each gate's prose now opens with a `[category]` tag for readers
+  scanning the doc:
+
+  - G1 [config commitment]
+  - G2 [implementation choice]
+  - G3 [config commitment]
+  - G4 [promotion gate]
+  - G5 [promotion gate]
+  - G6 [config commitment]
+  - G7 [pre-smoke baseline]
+
+### Patch — 6 TB-alignment corrections
+
+1. **G1**: Replaced "ToddlerBot uses action scale 0.25; matching that
+   scale" with the precise statement that TB uses a **uniform**
+   `action_scale = 0.25` across ALL action joints
+   (`mjx_config.py:103`); WR matches the leg side at `±0.25` and
+   tightens non-leg joints to `±0.20` as a **WR-specific safety
+   extension**, not a TB inheritance.
+
+2. **G2**: Tightened TB file:line citation to the actual storage
+   location: `state_ref` at `mjx_env.py:1178-1179`, consumed by
+   `_reward_body_lin_vel` at `mjx_env.py:2996` and
+   `_reward_body_ang_vel` at `mjx_env.py:3047`; recorded by
+   `toddlerbot/tools/edit_keyframe_python.py`.  Old reference was to
+   `algorithms/zmp_walk.py:174` (less precise).
+
+3. **G3**: Added missing `mjx_env.py:2484-2486` citation for TB's
+   `_reward_feet_contact`.
+
+4. **G4** + **G5**: Each gets a "Note on TB alignment" preamble
+   explaining that TB has no eval-floor / anti-exploit gates, and
+   that WR's gates are quantitative defences against the v0.19.5
+   exploit modes that TB's architecture (no separate prior) doesn't
+   face.  G5's preamble adds the post-Phase-9D framing: "with the
+   prior shape-matched and `action_scale = 0.25` clipped, exploit
+   risk is structurally bounded — G5 functions as **insurance**
+   rather than as an expected-firing gate."
+
+5. **G6**: Added explicit note on intentional divergences from TB:
+   - WR `[256, 256, 128]` MLP vs TB `(512, 256, 128)`
+     (`ppo_config.py:19-20`) — capacity choice tied to residual-only
+     role
+   - WR `log_std_init = -1.0` (≈ std 0.37) vs TB
+     `init_noise_std = 0.5` (`ppo_config.py:28`) — tighter early-iter
+     exploration to keep G5 residuals inside ±0.20 rad
+   - "residual head zero-init" has no TB analog because TB has no
+     prior
+
+6. **G7**: Added "Note on TB alignment" — TB has no analog because
+   TB has no separate prior; G7 is a WR-specific pre-smoke
+   regression baseline.
+
+### Why this matters for smoke7
+
+Two operational consequences:
+- **Operator clarity at smoke launch**: console output already
+  distinguishes `G4-train` / `G4-eval` / `G5-train` / `G5-eval`
+  (commits `54cbcf7`, `1f19958`).  The doc now matches: G4 + G5 are
+  the only PASS/FAIL marks the operator should look at.
+- **Pruning candidates for v0.20.2+**: G5 in particular may be
+  retired-or-loosened once smoke7 demonstrates the prior + residual
+  + bounded-action_scale stack is empirically exploit-resistant.
+  Tracked, not actioned.
+
+### Tests
+
+52/52 PASS on the regression set.  Doc-only commit, no code path
+changes.
+
+---
+
 ## [v0.20.1-g5-eval-sentinel-fix] - 2026-05-09: split raw_eval_vx from g4_floor_vx so sentinel-mode G5-eval `n/a` branch is reachable
 
 ### Context
