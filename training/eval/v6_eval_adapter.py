@@ -10,26 +10,51 @@ The v0.20.1 PPO recipe uses the
   - the offline reference window (q_ref, pelvis pos/vel, per-foot pos/vel,
     contact mask)
   - a flat past-proprio stack of ``PROPRIO_HISTORY_FRAMES`` frames of
-    ``(gyro, foot_switches, joint_pos_norm, joint_vel_norm, prev_action)``
+    ``(gyro, foot_switches, joint_pos_norm, joint_vel_norm, applied_action)``
 
-and consumes a residual action: ``q_target = clip(q_ref + clip(action) *
-scale_per_joint, joint_min, joint_max)``.
+and consumes a residual action with optional 1-step delay + filter:
 
-This adapter mirrors the env's per-step semantics
-(``training/envs/wildrobot_env.py:_compute_proprio_bundle``,
-``_v4_compat_channels_from_window``, ``_compose_target_q_from_residual``,
-``_to_mj_ctrl``, ``_roll_proprio_history``) for the native-MuJoCo viewer
-path, so visualize_policy.py can run a v6 checkpoint without re-implementing
+    filtered  = lowpass(prev_filtered, raw_action)        # alpha=0 ⇒ no-op
+    applied   = prev_filtered if delay else filtered      # 1-step delay
+    target_q  = clip(q_ref[step_idx + 1] + applied * scale, joint_range)
+
+Notice three subtleties that earlier adapter revisions got wrong:
+
+1. ``applied`` (not ``raw_action``) is the value that lands in the obs's
+   ``prev_action`` slot AND in the rolled proprio bundle's prev_action
+   slot.  The bundle's other channels come from POST-physics signals.
+2. The control reference advances BEFORE the lookup: at env step N the
+   target uses ``q_ref[step_idx + 1]``, not ``q_ref[step_idx]``.
+3. The proprio history obs uses the PRE-roll buffer (zeros at step 1),
+   and the POST-physics bundle is rolled in *after* the obs is built so
+   it shows up at step 2.
+
+This adapter mirrors env's per-step semantics exactly:
+
+  - ``training/envs/wildrobot_env.py:_compute_proprio_bundle``
+  - ``training/envs/wildrobot_env.py:_v4_compat_channels_from_window``
+  - ``training/envs/wildrobot_env.py:_compose_target_q_from_residual``
+  - ``training/envs/wildrobot_env.py:_to_mj_ctrl``
+  - ``training/envs/wildrobot_env.py:_roll_proprio_history``
+  - ``training/envs/wildrobot_env.py.step`` lines 1682-1727 (delay/filter)
+
+so visualize_policy.py can run a v6 checkpoint without re-implementing
 each piece inline.
 
-Why not drive WildRobotEnv directly: the native viewer's interactive
-controls (pause / reset / camera) and fast native-MuJoCo stepping are worth
-preserving.  This adapter keeps the viewer architecture intact and treats
-v6 as a contract-aware eval shim — see walking_training.md Appendix B
-(post-Plan-A note).
+Lifecycle (per visualizer iteration; mirrors env.step end-to-end):
+
+    adapter.reset()                           # once at episode start
+    obs = adapter.compute_obs(mj_data, velocity_cmd)  # uses step_idx
+    action_raw = policy(obs)
+    adapter.apply_action(mj_data, action_raw) # advances step_idx,
+                                              # writes ctrl
+    step_physics(mj_model, mj_data, n_substeps)
+    adapter.post_physics(mj_data)             # builds bundle from POST
+                                              # signals, rolls history
+    # next iteration: compute_obs reads the NEW step_idx + rolled history
 
 Single source of truth for the schema is the env; if the contract changes,
-update both env and adapter together (``test_v6_eval_adapter_parity`` is the
+update both env and adapter together (``test_v6_eval_adapter.py`` is the
 guard).
 """
 
@@ -42,6 +67,7 @@ import mujoco
 import numpy as np
 
 from policy_contract.calib import NumpyCalibOps
+from policy_contract.numpy.action import postprocess_action
 from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
@@ -54,33 +80,16 @@ V6_LAYOUT_ID = "wr_obs_v6_offline_ref_history"
 class V6AdapterState:
     """Per-episode mutable state held by V6EvalAdapter."""
     proprio_history: np.ndarray  # (PROPRIO_HISTORY_FRAMES, bundle_size); oldest first
-    prev_phase_sin_cos: Optional[np.ndarray]  # (2,) or None at reset
-    step_idx: int  # offline-trajectory frame index, clamped at n_steps - 1
+    loc_ref_history: Optional[np.ndarray]  # (4,) rolled phase_sin_cos; None at reset
+    step_idx: int  # offline-trajectory frame for the CURRENT obs (next ctrl uses step_idx + 1)
+    pending_action: np.ndarray  # (action_dim,) last-filtered value; also "applied" when delay enabled
+    last_applied_action: np.ndarray  # (action_dim,) action that was applied to physics this step
 
 
 class V6EvalAdapter:
     """Native-MuJoCo eval adapter for ``wr_obs_v6_offline_ref_history``.
 
-    Lifecycle (per control step in the viewer loop):
-
-        1. ``obs = adapter.compute_obs(mj_data, prev_action, velocity_cmd)``
-           — uses the *pre-roll* history (the buffer at the start of this
-           step, holding the past PROPRIO_HISTORY_FRAMES bundles, oldest
-           first) and the offline reference window at ``step_idx``.
-        2. ``action = policy(obs)`` — caller's responsibility.
-        3. ``adapter.apply_action(mj_data, action)`` — composes
-           ``q_target = clip(q_ref + clip(action) * scale, joint_range)``
-           and writes ``mj_data.ctrl`` in MJ actuator order.
-        4. ``mj_step(...)`` ×n_substeps — caller's responsibility.
-        5. ``adapter.post_step()`` — rolls the proprio buffer (drop oldest,
-           append the bundle that produced *this* step's obs) and advances
-           ``step_idx`` (clamped at end-of-trajectory).
-
-    Reset: call ``adapter.reset()`` after ``mj_resetData`` /
-    ``mj_resetDataKeyframe`` to zero the buffers and rewind the trajectory
-    index.  Pair with ``prev_action = np.zeros(action_dim)`` (the residual
-    contract starts with no residual; env mirrors this in
-    ``_make_initial_state``).
+    See module docstring for the lifecycle and parity rationale.
     """
 
     def __init__(
@@ -104,23 +113,21 @@ class V6EvalAdapter:
         self._action_dim = int(action_dim)
 
         self._bundle_size = 3 + 4 + 3 * self._action_dim  # gyro + sw + 3*N
+
+        # Action delay flag: env supports {0, 1}; v0.20.1 smoke uses 1.
+        delay_steps = int(getattr(self._cfg.env, "action_delay_steps", 0))
+        if delay_steps not in (0, 1):
+            raise ValueError(
+                f"V6EvalAdapter supports action_delay_steps in {{0, 1}}, "
+                f"got {delay_steps}"
+            )
+        self._action_delay_enabled = (delay_steps == 1)
+
         self._init_offline_service()
         self._init_residual_scale()
         self._init_joint_ranges()
         self._init_ctrl_mapper()
-
-        self._state = V6AdapterState(
-            proprio_history=np.zeros(
-                (PROPRIO_HISTORY_FRAMES, self._bundle_size), dtype=np.float32
-            ),
-            prev_phase_sin_cos=None,
-            step_idx=0,
-        )
-        # Bundle produced at the most recent compute_obs() call; rolled in
-        # post_step().  Initialised to zeros so the first post_step() before
-        # any compute_obs() is a no-op.
-        self._pending_bundle: Optional[np.ndarray] = None
-        self._pending_phase_sin_cos: Optional[np.ndarray] = None
+        self.reset()
 
     # ------------------------------------------------------------------ init
 
@@ -141,8 +148,6 @@ class V6EvalAdapter:
         self._n_steps = int(self._service.n_steps)
 
     def _init_residual_scale(self) -> None:
-        """Mirror env's _init_residual_scale: per-joint scale array in
-        policy actuator order."""
         per_joint = dict(
             getattr(self._cfg.env, "loc_ref_residual_scale_per_joint", {}) or {}
         )
@@ -156,19 +161,15 @@ class V6EvalAdapter:
         )
 
     def _init_joint_ranges(self) -> None:
-        """Joint position min/max in policy actuator order."""
         actuator_names = list(self._policy_spec.robot.actuator_names)
-        joint_qpos_addrs: list[int] = []
         joint_ranges: list[tuple[float, float]] = []
         for name in actuator_names:
             act_id = mujoco.mj_name2id(
                 self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name
             )
             joint_id = int(self._mj_model.actuator_trnid[act_id][0])
-            joint_qpos_addrs.append(int(self._mj_model.jnt_qposadr[joint_id]))
             jrange = self._mj_model.jnt_range[joint_id]
             joint_ranges.append((float(jrange[0]), float(jrange[1])))
-        self._joint_qpos_addrs = np.asarray(joint_qpos_addrs, dtype=np.int32)
         self._joint_min = np.array([r[0] for r in joint_ranges], dtype=np.float32)
         self._joint_max = np.array([r[1] for r in joint_ranges], dtype=np.float32)
 
@@ -188,32 +189,39 @@ class V6EvalAdapter:
         return int(self._state.step_idx)
 
     def reset(self) -> None:
-        """Re-zero per-episode state.  Caller should set
-        ``prev_action = np.zeros(action_dim)`` to match env's
-        residual-contract reset."""
+        """Re-zero per-episode state.  Mirrors env's ``_make_initial_state``:
+        proprio_history zero-filled, pending_action and last_applied_action
+        zero (so iter-1 with action=0 keeps target_q == q_ref exactly)."""
         self._state = V6AdapterState(
             proprio_history=np.zeros(
                 (PROPRIO_HISTORY_FRAMES, self._bundle_size), dtype=np.float32
             ),
-            prev_phase_sin_cos=None,
+            loc_ref_history=None,
             step_idx=0,
+            pending_action=np.zeros(self._action_dim, dtype=np.float32),
+            last_applied_action=np.zeros(self._action_dim, dtype=np.float32),
         )
-        self._pending_bundle = None
-        self._pending_phase_sin_cos = None
 
     def compute_obs(
         self,
         mj_data: mujoco.MjData,
-        prev_action: np.ndarray,
         velocity_cmd: float,
     ) -> np.ndarray:
-        """Build the v6 observation.  Stores the current proprio bundle and
-        phase for ``post_step()`` to roll into the history."""
+        """Build the v6 obs at the current ``step_idx``.
+
+        Mirrors env's ``_get_obs`` call from ``step()``:
+          - obs's prev_action slot = ``last_applied_action`` (the action
+            that was applied THIS step, written by ``apply_action`` and
+            picked up by the bundle / current proprio prev_action slot).
+          - proprio_history slot is the PRE-roll buffer (zeros at iter 1
+            because ``post_physics`` of iter 1 hasn't run yet).
+          - v4_compat["history"] is computed from the previous
+            ``loc_ref_history``, then stored as the new
+            ``loc_ref_history`` for the next obs (env's wr.loc_ref_history).
+        """
         signals = self._signals_adapter.read(mj_data)
         win = self._service.lookup_np(self._state.step_idx)
 
-        # v4-compat derived channels (mirror env's
-        # _v4_compat_channels_from_window).
         phase_sin_cos = np.array(
             [float(win.phase_sin), float(win.phase_cos)], dtype=np.float32
         )
@@ -232,37 +240,28 @@ class V6EvalAdapter:
         pelvis_targets = np.array(
             [float(win.pelvis_pos[2]), 0.0, 0.0], dtype=np.float32
         )
-        if self._state.prev_phase_sin_cos is None:
+
+        # v4_compat history: env's _v4_compat_channels_from_window uses
+        # tile(phase_sc, 2) when prev_history is None (reset path) and
+        # concat([phase_sc, prev_history[:2]]) otherwise.  After this
+        # step's compute_obs, store v4_compat["history"] as the NEW
+        # loc_ref_history for the next compute_obs.
+        prev_loc_ref_history = self._state.loc_ref_history
+        if prev_loc_ref_history is None:
             history_4 = np.tile(phase_sin_cos, 2).astype(np.float32)
         else:
             history_4 = np.concatenate(
-                [phase_sin_cos, self._state.prev_phase_sin_cos[:2]]
+                [phase_sin_cos, prev_loc_ref_history[:2]]
             ).astype(np.float32)
 
-        # Proprio bundle for THIS step's signals + the action that produced
-        # this state.  Stored as _pending_bundle and rolled in post_step().
-        joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
-            spec=self._policy_spec, joint_pos_rad=signals.joint_pos_rad
-        ).astype(np.float32)
-        joint_vel_norm = NumpyCalibOps.normalize_joint_vel(
-            spec=self._policy_spec, joint_vel_rad_s=signals.joint_vel_rad_s
-        ).astype(np.float32)
-        bundle = np.concatenate(
-            [
-                np.asarray(signals.gyro_rad_s, dtype=np.float32),
-                np.asarray(signals.foot_switches, dtype=np.float32),
-                joint_pos_norm,
-                joint_vel_norm,
-                np.asarray(prev_action, dtype=np.float32),
-            ]
+        # PolicyState.prev_action for the obs's prev_action slot is the
+        # action APPLIED this step (env: PolicyState(prev_action=action)
+        # where action == applied_action).  At reset, last_applied_action
+        # is zeros.
+        policy_state = PolicyState(
+            prev_action=np.asarray(self._state.last_applied_action, dtype=np.float32)
         )
-        self._pending_bundle = bundle
-        self._pending_phase_sin_cos = phase_sin_cos
-
-        # Build the obs with the PRE-roll history (env contract).
-        flat_history = self._state.proprio_history.reshape(-1)
-        policy_state = PolicyState(prev_action=np.asarray(prev_action, dtype=np.float32))
-        return build_observation(
+        obs = build_observation(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
@@ -284,48 +283,100 @@ class V6EvalAdapter:
             loc_ref_left_foot_vel=np.asarray(win.left_foot_vel, dtype=np.float32),
             loc_ref_right_foot_vel=np.asarray(win.right_foot_vel, dtype=np.float32),
             loc_ref_contact_mask=np.asarray(win.contact_mask, dtype=np.float32),
-            proprio_history=flat_history,
+            proprio_history=self._state.proprio_history.reshape(-1),
         )
+
+        # Update for next compute_obs.
+        self._state.loc_ref_history = history_4
+        return obs
 
     def apply_action(
         self,
         mj_data: mujoco.MjData,
-        action: np.ndarray,
+        raw_action: np.ndarray,
     ) -> np.ndarray:
-        """Compose target_q via the residual contract and write
-        ``mj_data.ctrl`` in MJ order.
+        """Filter, delay, advance step_idx, compose target_q, write ctrl.
 
-        Returns ``target_q`` (rad, policy actuator order) for diagnostics.
+        Mirrors env.step lines 1682-1727 exactly:
+
+            policy_state = PolicyState(prev_action=pending_action)
+            filtered, _ = postprocess_action(spec, policy_state, raw_action)
+            applied = pending_action if delay else filtered
+            next_step_idx = clip(step_idx + 1, n - 1)
+            q_ref = service.lookup_np(next_step_idx).q_ref
+            target_q = clip(q_ref + clip(applied) * scale, joint_range)
+            ctrl_mj = ctrl_mapper.to_mj_np(target_q)
+            mj_data.ctrl[:] = ctrl_mj
+            new pending_action = filtered
+            new last_applied_action = applied
+
+        Returns ``applied_action`` for callers that want it; the adapter
+        also stores it on ``self._state.last_applied_action`` so the next
+        ``compute_obs`` and ``post_physics`` use the correct value.
         """
+        raw = np.asarray(raw_action, dtype=np.float32)
+
+        # Filter (alpha=0 ⇒ no-op; lowpass_v1 otherwise).  Filter input
+        # is pending_action (= last filtered), NOT last_applied_action,
+        # per env line 1713.
+        filtered, _ = postprocess_action(
+            spec=self._policy_spec,
+            state=PolicyState(prev_action=self._state.pending_action),
+            action_raw=raw,
+        )
+        filtered = np.asarray(filtered, dtype=np.float32)
+
+        # 1-step delay: applied = previous filtered (= pending_action).
+        # No delay: applied = current filtered.
+        if self._action_delay_enabled:
+            applied = self._state.pending_action.copy()
+        else:
+            applied = filtered.copy()
+
+        # Advance step_idx.  Env clamps at n_steps - 1 (lookup beyond is
+        # an absorbing-boundary frame).
+        self._state.step_idx = min(self._state.step_idx + 1, self._n_steps - 1)
+
         win = self._service.lookup_np(self._state.step_idx)
         q_ref = np.asarray(win.q_ref, dtype=np.float32)
-        clipped = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        clipped = np.clip(applied, -1.0, 1.0)
         residual = clipped * self._scale_per_joint
         target_q = np.clip(
             q_ref + residual, self._joint_min, self._joint_max
         ).astype(np.float32)
         ctrl_mj = self._ctrl_mapper.to_mj_np(target_q)
         mj_data.ctrl[:] = np.asarray(ctrl_mj, dtype=np.float32)
-        return target_q
 
-    def post_step(self) -> None:
-        """Roll proprio_history (drop oldest, append the bundle that
-        produced *this* step's obs) and advance the trajectory index.
+        # Save for next iteration.
+        self._state.pending_action = filtered
+        self._state.last_applied_action = applied
+        return applied
 
-        No-op if compute_obs() hasn't been called yet (defensive — the
-        viewer may sync once before the first policy step).
+    def post_physics(self, mj_data: mujoco.MjData) -> None:
+        """Read POST-physics signals, build the per-step bundle, roll the
+        proprio_history.
+
+        Mirrors env.step lines 1893-1908: bundle uses POST-step signals
+        and the action APPLIED this step (``last_applied_action``).  The
+        rolled buffer becomes the "past" for the NEXT compute_obs.
         """
-        if self._pending_bundle is not None:
-            history = self._state.proprio_history
-            new_history = np.concatenate(
-                [history[1:], self._pending_bundle[None, :]], axis=0
-            )
-            self._state.proprio_history = new_history.astype(np.float32)
-        if self._pending_phase_sin_cos is not None:
-            self._state.prev_phase_sin_cos = self._pending_phase_sin_cos.copy()
-        # Clamp at end-of-trajectory (matches env's
-        # RuntimeReferenceService.lookup_np semantics: trajectory ends
-        # are absorbing boundary frames).
-        self._state.step_idx = min(self._state.step_idx + 1, self._n_steps - 1)
-        self._pending_bundle = None
-        self._pending_phase_sin_cos = None
+        signals_post = self._signals_adapter.read(mj_data)
+        joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
+            spec=self._policy_spec, joint_pos_rad=signals_post.joint_pos_rad
+        ).astype(np.float32)
+        joint_vel_norm = NumpyCalibOps.normalize_joint_vel(
+            spec=self._policy_spec, joint_vel_rad_s=signals_post.joint_vel_rad_s
+        ).astype(np.float32)
+        bundle = np.concatenate(
+            [
+                np.asarray(signals_post.gyro_rad_s, dtype=np.float32),
+                np.asarray(signals_post.foot_switches, dtype=np.float32),
+                joint_pos_norm,
+                joint_vel_norm,
+                np.asarray(self._state.last_applied_action, dtype=np.float32),
+            ]
+        )
+        history = self._state.proprio_history
+        self._state.proprio_history = np.concatenate(
+            [history[1:], bundle[None, :]], axis=0
+        ).astype(np.float32)

@@ -500,13 +500,16 @@ def main():
         """Compute observation via policy_contract (hardware-aligned).
 
         v6 (wr_obs_v6_offline_ref_history): delegates to V6EvalAdapter,
-        which builds the proprio_history + reference window the v0.20.1
-        contract requires.  v3/v4 use the legacy numpy obs path.
+        which manages action delay + filter + proprio history + reference
+        window internally.  ``prev_action_in`` is ignored for v6 — the
+        adapter's own ``last_applied_action`` lands in the obs's
+        prev_action slot to match env semantics (env line 1714).
+        v3/v4 use the legacy numpy obs path with caller-supplied
+        prev_action_in for the half-span filter.
         """
         if v6_adapter is not None:
             return v6_adapter.compute_obs(
                 mj_data=mj_data,
-                prev_action=np.asarray(prev_action_in, dtype=np.float32),
                 velocity_cmd=float(velocity_cmd),
             )
 
@@ -540,13 +543,15 @@ def main():
         Legacy (v3/v4): half-span action filtering + ctrl_to_action.
         """
         if v6_adapter is not None:
-            action_np = np.asarray(action, dtype=np.float32)
-            v6_adapter.apply_action(mj_data, action_np)
-            # Residual contract: prev_action carries the clipped residual
-            # command, not a position-space action.  This is what the env
-            # stores in WildRobotInfo.prev_action and what the obs's
-            # prev_action slot expects on the NEXT step.
-            return np.clip(action_np, -1.0, 1.0)
+            # Adapter handles filter + 1-step delay + step_idx advance +
+            # residual compose + ctrl write.  Returns the action that was
+            # actually applied this step (env line 1719: applied =
+            # pending_action if delay else filtered).  Caller's prev_action
+            # tracking is unused for v6 — the adapter's internal state is
+            # the source of truth for the next obs's prev_action slot.
+            return v6_adapter.apply_action(
+                mj_data, np.asarray(action, dtype=np.float32)
+            )
 
         action_np = np.array(action)
         state = PolicyState(prev_action=np.asarray(prev_action_for_filter, dtype=np.float32))
@@ -563,12 +568,14 @@ def main():
         """Step physics simulation for one control step."""
         for _ in range(n_substeps):
             mujoco.mj_step(mj_model, mj_data)
-        # v6 contract: roll proprio_history (drop oldest, append the
-        # bundle compute_obs() built for THIS step) and advance the
-        # offline-trajectory index.  Keep this AFTER the physics step so
-        # ``compute_obs`` of the NEXT step sees an up-to-date buffer.
+        # v6 contract: build the per-step proprio bundle from POST-physics
+        # signals + last_applied_action (env line 1905), and roll it into
+        # the proprio_history.  The bundle that lands in slot -1 here is
+        # what the NEXT compute_obs reads as the most-recent past frame.
+        # step_idx is NOT advanced here — apply_action already advanced
+        # it before composing the target (env line 1686).
         if v6_adapter is not None:
-            v6_adapter.post_step()
+            v6_adapter.post_physics(mj_data)
 
     rng_env = np.random.default_rng()
 

@@ -1,27 +1,33 @@
 """Parity smoke for V6EvalAdapter — keeps the native-MuJoCo viewer's
-v6 obs builder honest against the env's JAX/MJX obs builder.
+v6 obs / action / history paths honest against the env's JAX/MJX
+implementation.
 
 Why this guard exists: pre-Plan-A visualize_policy.py reimplemented the
 obs / action / ref-preview / proprio-history paths in NumPy alongside
 the JAX env.  Each v0.20.x contract change required matching visualizer
 patches, and they eventually drifted to broken on
 ``wr_obs_v6_offline_ref_history`` (proprio_history was simply not
-threaded, plus the residual action contract was missing).
+threaded; plus the residual action contract, action delay, and POST-
+physics bundle assembly were missing).
 
 Plan A added training/eval/v6_eval_adapter.py to host the v6 logic in
-one place.  These tests pin:
+one place.  These tests pin the env-aligned semantics:
 
   - obs_dim parity at step 0 (catches schema drift).
-  - residual action contract at zero action (target_q == q_ref).
-  - proprio history rolling cadence (newest slot fills with the bundle
-    compute_obs() built for THIS step; oldest slot drops).
-  - reference-window indexing (step_idx advances and clamps at
-    end-of-trajectory).
-
-For the deeper "adapter obs == env obs at step 0" numerical-parity
-test, see test_v6_eval_adapter_env_parity below; the adapter obs and the
-env obs should agree to single-precision tolerance on the same initial
-state.
+  - reset puts step_idx=0, pending_action=zeros, last_applied_action=
+    zeros, proprio_history=zeros, loc_ref_history=None.
+  - apply_action advances step_idx BEFORE the q_ref lookup so iter 1
+    targets q_ref[1], not q_ref[0] (env line 1686).
+  - apply_action with action_delay_steps=1 applies pending_action
+    (zeros at iter 1) regardless of raw_action; the new pending_action
+    becomes the filtered raw_action for next step (env line 1719).
+  - post_physics builds the bundle from POST-physics signals + the
+    action APPLIED this step, and rolls it into history (env lines
+    1905-1908).
+  - obs at iter 1 (after iter-1 apply+physics+post_physics) sees the
+    rolled history with bundle in slot -1.
+  - adapter / env parity on the deterministic obs slice (ref window +
+    proprio_history zeros at reset) matches.
 """
 
 from __future__ import annotations
@@ -48,14 +54,19 @@ SMOKE_YAML = (
 
 @pytest.fixture(scope="function")
 def smoke_setup():
-    """Build the (cfg, mj_model, mj_data, adapter, action_dim) fixture once."""
+    """Build the (cfg, mj_model, mj_data, adapter, action_dim) fixture.
+
+    Function-scoped so each test gets a fresh adapter; the adapter holds
+    per-episode state (proprio_history, step_idx, pending_action) that
+    would otherwise leak across tests.
+    """
     cfg = load_training_config(str(SMOKE_YAML))
     robot_cfg_path = cfg.env.robot_config_path
     if not Path(robot_cfg_path).is_absolute():
         robot_cfg_path = PROJECT_ROOT / robot_cfg_path
     robot_cfg = load_robot_config(str(robot_cfg_path))
 
-    # Disable DR + no push so the test is deterministic.
+    # Disable DR + push so the parity test is deterministic.
     cfg.env.domain_randomization_enabled = False
     cfg.env.push_enabled = False
     cfg.freeze()
@@ -98,114 +109,180 @@ def smoke_setup():
 
 
 def test_obs_dim_matches_policy_spec(smoke_setup) -> None:
-    """The v6 obs vector size must match the policy spec.
-
-    Catches: contract drift where the env / adapter / spec disagree on the
-    obs layout (most common cause: someone bumps PROPRIO_HISTORY_FRAMES
-    or adds a ref-preview channel without updating both sides).
-    """
     s = smoke_setup
     assert s["policy_spec"].observation.layout_id == V6_LAYOUT_ID
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
-    obs = s["adapter"].compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
+    obs = s["adapter"].compute_obs(s["mj_data"], velocity_cmd=0.20)
     assert obs.shape == (s["policy_spec"].model.obs_dim,)
     assert obs.dtype == np.float32
 
 
-def test_residual_zero_action_yields_q_ref(smoke_setup) -> None:
-    """Zero residual must produce ``target_q == q_ref`` exactly.
+def test_reset_state_matches_env_initial_conditions(smoke_setup) -> None:
+    """Reset must put the adapter in the env's _make_initial_state shape:
+    proprio_history zeros, loc_ref_history None, step_idx 0,
+    pending_action and last_applied_action zeros."""
+    s = smoke_setup
+    a = s["adapter"]
+    a.reset()
+    assert a.step_idx == 0
+    assert a._state.loc_ref_history is None
+    np.testing.assert_array_equal(
+        a._state.pending_action,
+        np.zeros(s["action_dim"], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        a._state.last_applied_action,
+        np.zeros(s["action_dim"], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        a._state.proprio_history,
+        np.zeros((PROPRIO_HISTORY_FRAMES, a._bundle_size), dtype=np.float32),
+    )
 
-    This is the env's "zero-residual invariant"
-    (test_v0201_env_zero_action.py).  If the visualizer's residual path
-    drifts from the env's, the policy will see different ctrl than what
-    training saw at the same q_ref.
+
+def test_apply_action_advances_step_idx_before_q_ref_lookup(smoke_setup) -> None:
+    """At iter 1, the residual target must use q_ref[1], not q_ref[0]
+    (env line 1686: ``next_step_idx = wr.loc_ref_offline_step_idx + 1``).
+
+    Catches the off-by-one this commit fixes.
     """
     s = smoke_setup
-    s["adapter"].reset()
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
-    # compute_obs() must run first so step_idx is consistent.
-    s["adapter"].compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
-    target_q = s["adapter"].apply_action(
-        s["mj_data"], np.zeros(s["action_dim"], dtype=np.float32)
-    )
-    q_ref = np.asarray(
-        s["adapter"]._service.lookup_np(0).q_ref, dtype=np.float32
-    )
-    np.testing.assert_allclose(target_q, q_ref, atol=0.0)
+    a = s["adapter"]
+    a.reset()
+    assert a.step_idx == 0
+
+    # Force a non-zero raw_action so applied != q_ref-only and we can
+    # check the lookup index unambiguously.  With delay=1, applied is
+    # still pending_action=zeros, so target_q == q_ref at the new index.
+    raw = 0.5 * np.ones(s["action_dim"], dtype=np.float32)
+    a.apply_action(s["mj_data"], raw)
+    assert a.step_idx == 1, "step_idx must be 1 after first apply_action"
+
+    expected_q_ref = np.asarray(a._service.lookup_np(1).q_ref, dtype=np.float32)
+    # Read the ctrl back out via the inverse permutation by building the
+    # adapter's expected target and comparing through the same mapper.
+    actual_ctrl = np.asarray(s["mj_data"].ctrl, dtype=np.float32)
+    expected_ctrl = a._ctrl_mapper.to_mj_np(expected_q_ref)
+    np.testing.assert_allclose(actual_ctrl, expected_ctrl, atol=1e-6,
+        err_msg="apply_action must compose target_q from q_ref[step_idx + 1]")
 
 
-def test_proprio_history_rolls_in_post_step(smoke_setup) -> None:
-    """post_step() must roll the buffer: drop oldest, append the bundle
-    that produced THIS step's obs.
+def test_apply_action_with_delay_uses_pending_not_raw(smoke_setup) -> None:
+    """With action_delay_steps=1 (smoke yaml), iter 1's applied action
+    must be ``pending_action`` (zeros at reset), not the raw action.
+    iter 2 then applies what was filtered at iter 1.
 
-    Catches: forgotten post_step() call in the viewer loop, or wrong
-    roll direction (newest in slot 0 instead of slot -1, etc.).
+    Catches the missing pending_action / filter pipeline this commit fixes.
     """
     s = smoke_setup
-    adapter = s["adapter"]
-    adapter.reset()
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
-
-    # At reset, history is all zeros.
+    if not s["adapter"]._action_delay_enabled:
+        pytest.skip("smoke yaml has action_delay_steps != 1; can't test delay")
+    a = s["adapter"]
+    a.reset()
+    raw_iter1 = 0.5 * np.ones(s["action_dim"], dtype=np.float32)
+    applied_iter1 = a.apply_action(s["mj_data"], raw_iter1)
     np.testing.assert_array_equal(
-        adapter._state.proprio_history,
-        np.zeros((PROPRIO_HISTORY_FRAMES, adapter._bundle_size), dtype=np.float32),
+        applied_iter1, np.zeros(s["action_dim"], dtype=np.float32),
+        err_msg="iter 1 applied must be pending=zeros under 1-step delay",
+    )
+    # pending_action now holds filtered_iter1 (= raw_iter1 with alpha=0).
+    np.testing.assert_array_equal(
+        a._state.pending_action, raw_iter1.astype(np.float32),
+        err_msg="pending_action must equal filtered_iter1 after iter 1",
     )
 
-    # Step 1: compute_obs builds a bundle (non-zero gyro + joint pos).
-    _ = adapter.compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
-    bundle_step1 = adapter._pending_bundle.copy()
-    adapter.post_step()
-    # Newest slot must equal bundle_step1; second-newest still zeros.
+    raw_iter2 = -0.25 * np.ones(s["action_dim"], dtype=np.float32)
+    applied_iter2 = a.apply_action(s["mj_data"], raw_iter2)
     np.testing.assert_array_equal(
-        adapter._state.proprio_history[-1], bundle_step1
-    )
-    np.testing.assert_array_equal(
-        adapter._state.proprio_history[-2],
-        np.zeros(adapter._bundle_size, dtype=np.float32),
+        applied_iter2, raw_iter1.astype(np.float32),
+        err_msg="iter 2 applied must be the filtered raw from iter 1",
     )
 
 
-def test_step_idx_advances_and_clamps(smoke_setup) -> None:
-    """step_idx must advance by 1 per post_step() and clamp at n_steps - 1
-    so end-of-trajectory doesn't crash."""
+def test_post_physics_bundle_uses_post_signals_and_applied_action(
+    smoke_setup,
+) -> None:
+    """post_physics must build the bundle from POST-physics signals
+    (read after mj_step) and the action APPLIED this step (not raw).
+
+    Catches the pre-step bundle bug this commit fixes (history was being
+    rolled with PRE-step data + the wrong prev_action slot).
+    """
     s = smoke_setup
-    adapter = s["adapter"]
-    adapter.reset()
-    assert adapter.step_idx == 0
-
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
-    for expected in (1, 2, 3):
-        adapter.compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
-        adapter.post_step()
-        assert adapter.step_idx == expected
-
-    # Force-fast-forward past end-of-trajectory.
-    n = adapter.n_steps
-    adapter._state.step_idx = n - 1
-    adapter.compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
-    adapter.post_step()
-    assert adapter.step_idx == n - 1, "step_idx must clamp at n_steps - 1"
-
-
-def test_reset_clears_history_and_step_idx(smoke_setup) -> None:
-    s = smoke_setup
-    adapter = s["adapter"]
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
-
-    # Drive the adapter past zero state.
-    adapter.compute_obs(s["mj_data"], prev_action, velocity_cmd=0.20)
-    adapter.post_step()
-    assert adapter.step_idx == 1
-    assert adapter._state.proprio_history.any()
-
-    adapter.reset()
-    assert adapter.step_idx == 0
+    a = s["adapter"]
+    a.reset()
+    raw = 0.3 * np.ones(s["action_dim"], dtype=np.float32)
+    applied = a.apply_action(s["mj_data"], raw)
+    # Step physics so post-signals differ from pre-signals.
+    for _ in range(int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)):
+        mujoco.mj_step(s["mj_model"], s["mj_data"])
+    a.post_physics(s["mj_data"])
+    # Newest slot (-1) of proprio_history is the bundle just rolled.
+    bundle_newest = a._state.proprio_history[-1]
+    # Bundle's prev_action slice is the last 21 entries.
+    n = s["action_dim"]
+    bundle_prev_action = bundle_newest[-n:]
     np.testing.assert_array_equal(
-        adapter._state.proprio_history,
-        np.zeros((PROPRIO_HISTORY_FRAMES, adapter._bundle_size), dtype=np.float32),
+        bundle_prev_action, applied,
+        err_msg="bundle prev_action slot must equal last_applied_action "
+                "(env line 1906); not raw_action / not zeros",
     )
-    assert adapter._state.prev_phase_sin_cos is None
+
+
+def test_proprio_history_rolls_after_post_physics_only(smoke_setup) -> None:
+    """Iter 1's obs sees PRE-roll history (zeros).  Iter 2's obs sees
+    history with iter-1's bundle in slot -1, after post_physics has run.
+
+    Catches the wrong-timing roll bug this commit fixes (history was
+    rolled before iter 2's obs read it, so iter 1's obs already saw the
+    just-built bundle).
+    """
+    s = smoke_setup
+    a = s["adapter"]
+    a.reset()
+
+    # Iter 1 obs.  Must be all-zero proprio history.
+    obs_iter1 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
+    layout = s["policy_spec"].observation.layout
+    cursor = 0
+    name_to_offset = {}
+    for f in layout:
+        name_to_offset[f.name] = (cursor, cursor + f.size)
+        cursor += f.size
+    hist_start, hist_end = name_to_offset["proprio_history"]
+    np.testing.assert_array_equal(
+        obs_iter1[hist_start:hist_end],
+        np.zeros(hist_end - hist_start, dtype=np.float32),
+        err_msg="iter 1 obs proprio_history slice must be zeros",
+    )
+
+    # Apply, step, post_physics.
+    raw = 0.1 * np.ones(s["action_dim"], dtype=np.float32)
+    a.apply_action(s["mj_data"], raw)
+    for _ in range(int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)):
+        mujoco.mj_step(s["mj_model"], s["mj_data"])
+    a.post_physics(s["mj_data"])
+
+    # Iter 2 obs.  Now history slot -1 has iter-1's bundle; older slots
+    # still zeros.
+    obs_iter2 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
+    flat_hist = obs_iter2[hist_start:hist_end].reshape(
+        PROPRIO_HISTORY_FRAMES, a._bundle_size
+    )
+    assert flat_hist[-1].any(), "iter 2 obs history slot -1 must be non-zero"
+    np.testing.assert_array_equal(
+        flat_hist[-2],
+        np.zeros(a._bundle_size, dtype=np.float32),
+        err_msg="iter 2 obs history slot -2 must still be zeros",
+    )
+
+
+def test_step_idx_clamps_at_end_of_trajectory(smoke_setup) -> None:
+    s = smoke_setup
+    a = s["adapter"]
+    a.reset()
+    a._state.step_idx = a.n_steps - 1
+    a.apply_action(s["mj_data"], np.zeros(s["action_dim"], dtype=np.float32))
+    assert a.step_idx == a.n_steps - 1, "step_idx must clamp at n_steps - 1"
 
 
 def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
@@ -229,17 +306,12 @@ def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
     proprio_history must be all zeros at step 0 in both implementations
     (env_info.py contract: "buffer holds PAST bundles only, never the
     current frame; zero-filled at reset").
-
-    Schema offsets are derived from the policy_spec layout; if the layout
-    changes (e.g. a ref-preview channel is added), this test breaks
-    loudly with the new offsets and an "expected vs got" diff.
     """
     from training.envs.wildrobot_env import WildRobotEnv
 
     s = smoke_setup
     cfg = s["cfg"]
 
-    # Build env from the SAME cfg the adapter uses.
     env = WildRobotEnv(config=cfg)
     rng = jax.random.PRNGKey(0)
     env_state = env.reset_for_eval(rng)
@@ -257,22 +329,17 @@ def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
 
     adapter = s["adapter"]
     adapter.reset()
-    prev_action = np.zeros(s["action_dim"], dtype=np.float32)
     adapter_obs = adapter.compute_obs(
-        mj_data, prev_action, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
     )
 
     assert adapter_obs.shape == env_obs.shape, (
         f"obs shape mismatch: adapter {adapter_obs.shape} vs env {env_obs.shape}"
     )
 
-    # Reference-window slice.  Compute offsets from the layout to stay
-    # robust against future channel additions: skip the v4 base
-    # (gravity..velocity_cmd) and the v4-compat block, and start at
-    # loc_ref_q_ref.  End just before proprio_history.
     layout = s["policy_spec"].observation.layout
-    name_to_offset = {}
     cursor = 0
+    name_to_offset = {}
     for f in layout:
         name_to_offset[f.name] = (cursor, cursor + f.size)
         cursor += f.size
@@ -289,12 +356,9 @@ def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
         pytest.fail(
             f"reference-window obs slice [{ref_start}:{ref_end}] disagrees "
             f"in {int((ref_diff > 1e-5).sum())} indices "
-            f"(max={float(ref_diff.max()):.4e}).  First few: {details}.  "
-            "Likely cause: adapter / env disagree on ZMP library lookup or "
-            "v6 ref-preview channel layout."
+            f"(max={float(ref_diff.max()):.4e}).  First few: {details}"
         )
 
-    # Proprio history slice must be exactly zero on both at reset.
     hist_start, hist_end = name_to_offset["proprio_history"]
     np.testing.assert_array_equal(
         adapter_obs[hist_start:hist_end],
