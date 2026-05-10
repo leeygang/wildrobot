@@ -1,6 +1,7 @@
 You are the expert in the field of robotics and machine learning. You are responsible for the quality of the direction, design and code.
 Code Change:
 1. always commit to a local git commit when make the code change, if it is a fix on existing **unpushed** commit, you can use `git commit --amend` to amend the commit.
+2. ToddlerBot's code can be found in local ~/projects/toddlerbot do not need to read from internet github.
 
 Design:
 1. ALWAYS research the public paper or projects to avoid reinventing the wheel. When discuss the solution, always provide the reference. Prefer to stick with the highest confident solution.
