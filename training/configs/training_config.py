@@ -512,6 +512,19 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         torso_roll_soft_max_rad=float(env.get("torso_roll_soft_max_rad", 0.1)),
         min_feet_y_dist=float(env.get("min_feet_y_dist", 0.07)),
         max_feet_y_dist=float(env.get("max_feet_y_dist", 0.13)),
+        # v0.20.1 TB-active alignment Phase 2/3 (walking_training.md Appendix B).
+        penalty_pose_weights_per_joint=dict(
+            env.get("penalty_pose_weights_per_joint", {}) or {}
+        ),
+        penalty_pose_weight_default=float(
+            env.get("penalty_pose_weight_default", 0.0)
+        ),
+        domain_rand_backlash_range=env.get(
+            "domain_rand_backlash_range", [0.0, 0.0]
+        ),
+        domain_rand_backlash_activation=float(
+            env.get("domain_rand_backlash_activation", 0.1)
+        ),
     )
 
 
@@ -716,6 +729,11 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         feet_distance=rewards.get("feet_distance", 0.0),
         torso_pitch_soft=rewards.get("torso_pitch_soft", 0.0),
         torso_roll_soft=rewards.get("torso_roll_soft", 0.0),
+        # v0.20.1 TB-active alignment Phase 2 (walking_training.md Appendix B).
+        ref_feet_z_track=rewards.get("ref_feet_z_track", 0.0),
+        ref_feet_z_track_alpha=rewards.get("ref_feet_z_track_alpha", 1428.6),
+        penalty_pose=rewards.get("penalty_pose", 0.0),
+        penalty_feet_ori=rewards.get("penalty_feet_ori", 0.0),
     )
 
 

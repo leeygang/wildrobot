@@ -1190,14 +1190,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         per-term values; return total + the dt-scaled per-term
         contributions used for logging.
 
-        ``alive`` is a one-shot **negative-on-done** penalty mirroring
-        ToddlerBot ``_reward_survival = -done`` at weight 10
-        (toddlerbot/locomotion/mjx_env.py:1897-1914 + walk.gin
-        ``RewardScales.survival = 10.0``).  PRE-fix this term paid a
-        dense +alive_w bonus every surviving step, which biased PPO
-        toward any long-lived behavior independently of the imitation
-        objective.  Now: 0 while alive, ``-alive_w * dt`` on the
-        terminating step (after the global ``* dt`` scaling below).
+        ``alive`` is a **dense per-step bonus** matching TB-active
+        ``_reward_alive`` (toddlerbot/locomotion/mjx_env.py:2766-2782
+        ``return jnp.float32(1.0)`` constant per step) at weight
+        ``RewardScales.alive = 1.0`` (walk.gin:127).  PPO sees
+        ``+alive_w * dt = +0.02`` per surviving step (over a 500-step
+        horizon: total +10.0); on the terminating step the env returns
+        ``done=True`` and PPO does not collect a reward for that step.
+
+        WR previously used ``-alive_w * terminated`` (-done semantics)
+        with ``alive=10``, which mirrored the *commented-out* TB
+        ZMP variant (walk.gin:69 ``RewardScales.survival = 10.0`` +
+        ``_reward_survival = -done``).  TB-active alignment Phase 1
+        (walking_training.md Appendix B) lowered the weight to 1.0;
+        Phase 1c (this commit) switches to dense per-step semantics so
+        the implementation actually matches TB-active.  At weight 1.0
+        the dense bonus is small relative to the imitation block (~50
+        per ep at ctrl_dt=0.02 for a healthy 500-step rollout vs
+        ref_q_track ~5*0.5 = 2.5 per step → 1250 per ep) and does not
+        recreate the v0.19.5b lean-back exploit, which fired only at
+        the older alive=10 weight.
 
         ``* dt`` matches ``mjx_env.py:1048``
         (``reward = sum(reward_dict.values()) * self.dt``).  This is
@@ -1215,10 +1227,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Pre-dt weighted contributions (ToddlerBot's
         # ``state.info["rewards"]`` stores these unscaled values).
         pre_dt = dict(
-            # ToddlerBot semantics: -alive_w on the terminal step, 0
-            # while alive.  Matches ``_reward_survival = -done`` *
-            # ``RewardScales.survival = 10`` at weight 10 in walk.gin.
-            alive=-alive_w * terminated,
+            # TB-active semantics: dense +alive_w per step.  Matches
+            # _reward_alive (mjx_env.py:2766-2782 returns constant 1.0)
+            # × RewardScales.alive = 1.0 (walk.gin:127).  See the
+            # docstring above for the v0.19.5b exploit caveat (only
+            # fired at the now-retired alive=10 weight).
+            alive=alive_w,
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],

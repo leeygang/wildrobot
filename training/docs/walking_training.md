@@ -1916,14 +1916,14 @@ blocking parity**.
 | **Network** | activation | elu | elu | ✅ |
 | **Network** | log_std_init / init_noise_std | -1.0 → std≈0.37 (`yaml:309`) | log(0.5) ≈ -0.69 → std≈0.5 | (a) Bounded-residual contract: prior is policy at init, narrow exploration. |
 | **Network** | distribution / std type | normal log | normal log | ✅ |
-| **Network** | asymmetric actor-critic (privileged critic) | not used | yes — privileged obs include motor_pos_error, lin_vel, actuator_force, stance, ref_stance (`mjx_config.py:86`, `walk.gin:25-28`) | **(c) Plan to wire (Phase 3).** Sample-efficiency win, especially valuable given the 50× compute gap. |
+| **Network** | asymmetric actor-critic (privileged critic) | **enabled** ✓ FIXED (`yaml:ppo.critic_privileged_enabled`); critic obs = lin_vel + ang_vel + contacts + motor_pos_error + actuator_force + ref_stance (52 dims) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ✅ Phase 3 landed.  WR critic obs is a TB-aligned subset (52 vs TB 151; remaining gap is push/orientation noise channels covered by WR env_info instead). |
 | **Obs** | paradigm | preview-conditioned + 15-frame history (`yaml:159-167`) | sin/cos phase + 15-frame `c_frame_stack` | (a) WR has explicit ZMP prior; TB does not. |
 | **Obs** | frame stack | 15 | 15 | ✅ |
 | **Action** | contract | `q = q_ref + clip(action) · scale` (`yaml:190-209`) | `q = default_q + action · 0.25` | (a) Bounded residual vs direct. |
 | **Action** | action_scale | 0.20-0.25 per-joint | 0.25 uniform | ✅ approximately. |
 | **Action** | n_steps_delay | 1 (`yaml:257`) | 1 | ✅ |
 | **Action** | lowpass filter α | 0.0 (`yaml:157`) | n/a | (a) Residual-only filter contract. |
-| **Reward** | `alive` weight | **1.0** ✓ FIXED (`yaml:345`) | 1.0 (`walk.gin:127`) | ✅ Fix landed (was 10.0; aligned to commented `walk.gin:69`).  Verified `-done` semantics (`wildrobot_env.py:1080`). |
+| **Reward** | `alive` weight + semantics | **1.0, dense per-step** ✓ FIXED (`yaml:345`, `wildrobot_env.py:1186-1230`) | 1.0 (`walk.gin:127`); `_reward_alive` returns constant 1.0 (`mjx_env.py:2766-2782`) | ✅ Phase 1c landed.  Was 10.0 with `-done` semantics (mirrored commented walk.gin:69).  Now matches TB-active dense form (+alive_w per surviving step) at TB-active weight 1.0.  At weight 1.0 the dense bonus is small relative to the imitation block and does not recreate the v0.19.5b lean-back exploit, which fired only at the older alive=10. |
 | **Reward** | `cmd_forward_velocity_track` weight | **2.0** ✓ FIXED (`yaml:381`) | 2.0 (`walk.gin:111`) | ✅ Fix landed (was 5.0; aligned to commented `walk.gin:59`). |
 | **Reward** | `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=200 (`yaml:412`) | σ=1000 (`walk.gin:112`) | (b) TB tolerates ~3× the cmd error before reward halves.  Defer adjustment until smoke shows whether the weight halving alone is enough. |
 | **Reward** | `ref_q_track` (joint imitation) | 5.0, α=1 (`yaml:346`) | not present in active | (a) WR-specific imitation block (no TB analog in active). |
@@ -1934,9 +1934,9 @@ blocking parity**.
 | **Reward** | `feet_air_time` | 500.0 (`yaml:393`) | 0 in active (replaced by `feet_phase`) | (a) WR-specific (the replacement is reward #1 below). |
 | **Reward** | `feet_clearance` | 1.0 (`yaml:394`) | 0 in active (replaced by `feet_phase`) | (a) WR-specific. |
 | **Reward** | `feet_distance` | 1.0, [0.07, 0.13] (`yaml:395`) | 0 in active; TB uses `penalty_close_feet_xy = 10.0` with `close_feet_threshold = 0.06` (`walk.gin:125-126`) | (b) Different formula; defer reform. |
-| **Reward** | **`feet_phase` / `ref_feet_z_track`** (dense per-step swing-height tracker) | not present (planned Phase 2) | 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | **(c) Highest-impact reward gap.**  Documented v0.20.1-smoke1 shuffle exploit (step_length 0.022 m vs 0.030 m gate) is consistent with this term being missing.  Phase 2 plan: add `ref_feet_z_track` against the ZMP prior's foot-z trajectory, weight 5-10. |
-| **Reward** | **`penalty_pose`** (per-joint default anchor) | not present (planned Phase 2) | 0.5 with weights `[0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]` (`walk.gin:120-124`) | **(c) Suspect missing.**  Heavy weighting on hip_yaw/ankle_roll suppresses drift. Phase 2 plan: add per-joint deviation-from-q_ref penalty. |
-| **Reward** | **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | not present (planned Phase 2) | 5.0 (`walk.gin:129`, `walk_env.py:697-735`) | **(c) Suspect missing.**  Without this PPO can adopt foot-tilt exploits. |
+| **Reward** | **`ref_feet_z_track`** (dense per-step swing-height tracker) | **5.0**, α=1428.6 ✓ FIXED (`yaml:413-414`) | TB `feet_phase` 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | ✅ Phase 2 landed.  WR uses prior foot-z directly (vs TB phase-derived expected-z); α=1/0.0007=1428.6 mirrors TB σ.  Direct addressee of v0.20.1-smoke1 shuffle exploit (step_length 0.022 m vs 0.030 m gate). |
+| **Reward** | **`penalty_pose`** (per-joint default anchor) | **-0.5** ✓ FIXED (`yaml:430`); per-joint weights mirror TB (`yaml:env.penalty_pose_weights_per_joint`) | TB `+0.5` × `_reward_penalty_pose` returning negative sum (`walk.gin:120-124`, `mjx_env.py:2707`) | ✅ Phase 2 landed.  Sign convention diff: WR uses negative yaml weight × positive raw error (matches WR action_rate / torque pattern); TB uses positive scale × negative function value.  Magnitudes equal. |
+| **Reward** | **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | **-5.0** ✓ FIXED (`yaml:436`) | TB `+5.0` × `_reward_penalty_feet_ori` returning negative tilt (`walk.gin:129`, `walk_env.py:697-735`) | ✅ Phase 2 landed.  Same sign-convention rationale as penalty_pose.  Magnitudes equal. |
 | **Reward** | `feet_slip` ↔ `slip` | 0.05 (`yaml:402`) | 0 in active (was 0.05 commented at `walk.gin:72`) | (b) Defer drop until evidence smoke doesn't need it. |
 | **Reward** | `torso_pitch_soft` / `torso_roll_soft` (band penalty) | 0.5 / 0.5 (`yaml:396-397`) | 0 in active; TB uses `penalty_ang_vel_xy=1.0` for posture damping | (b) Defer; band-penalty form is benign. |
 | **Reward** | `action_rate` ↔ `penalty_action_rate` | -1.0 (`yaml:382`) | 2.0 (`walk.gin:119`) | (a) Sign convention diff; magnitudes both = sum-of-squared-action-changes.  Verify numerical equivalence. |
@@ -1949,7 +1949,7 @@ blocking parity**.
 | **DR** | kp range | [0.9, 1.1] (`yaml:248`) | [0.9, 1.1] (`mjx_config.py:228`) | ✅ |
 | **DR** | mass range | mult [0.9, 1.1] (`yaml:247`) | additive ±0.2 kg (`mjx_config.py:225`) | (a) Documented in yaml. |
 | **DR** | kd / damping / armature / tau_max family | not present | TB has all (`mjx_config.py:222-235`) | (b) Plan to add (low-priority Phase 3). |
-| **DR** | **backlash** | not present (planned Phase 3) | activation 0.1, range [0.02, 0.1] rad (`mjx_config.py:209-210`) | **(c) Critical for sim2real on hobby servos.** |
+| **DR** | **backlash** | **range [0.02, 0.10] rad, activation 0.1 Nm** ✓ FIXED (`yaml:env.domain_rand_backlash_range`) | activation 0.1, range [0.02, 0.1] rad (`mjx_config.py:209-210`) | ✅ Phase 3 landed.  TB-form smooth backlash: `motor_pos += 0.5 * backlash * tanh(qfrc_actuator / activation)` applied at obs time (mirror `mjx_env.py:2073-2080`). |
 | **DR** | add_push | False (`yaml:219`) | False default (`mjx_config.py:207`) | ✅ |
 | **DR** | add_head_pose | n/a | True (`walk.gin:134`) | (a) WR has no head DOF. |
 | **DR** | imu noise (gyro / quat) | additive Gaussian (`yaml:230-231`) | OU process with bias-walk RW (`mjx_config.py:255-264`) | (a) WR-specific simpler form. |
@@ -1967,10 +1967,10 @@ blocking parity**.
 ### B.2 Phased fix plan
 
 The audit triggered 8 fixes.  They are grouped by risk into three
-phases so smoke regressions are diagnosable.  Phase 1 fixes are
-landed; Phase 2 / 3 are tracked here for the next iterations.
+phases so smoke regressions are diagnosable.  All three phases plus
+the bug-fix follow-up are landed.
 
-**Phase 1 — landed in the alignment sweep (yaml + docs only):**
+**Phase 1 — yaml + docs (commit `6b66d73`):**
 
 1. `alive` weight 10.0 → 1.0 (`yaml:345`).
 2. `cmd_forward_velocity_track` weight 5.0 → 2.0 (`yaml:381`).
@@ -1981,32 +1981,74 @@ landed; Phase 2 / 3 are tracked here for the next iterations.
    (`~/.claude/skills/wildrobot-training-analyze/SKILL.md`).
 7. M3 long-run plan added (B.3).
 
-**Phase 2 — env reward additions** (`training/envs/wildrobot_env.py`,
-`training/configs/training_runtime_config.py:RewardWeightsConfig`,
-`training/envs/env_info.py` metrics):
+**Phase 1c — alive semantics (bug-fix follow-up):**
 
-1. `ref_feet_z_track` (or port TB `feet_phase`): dense per-step
-   foot-z error against the ZMP prior's foot trajectory, weight
-   5-10, σ ≈ 0.0007.  Highest-ROI item — directly addresses the
-   v0.20.1-smoke1 shuffle exploit.
-2. `penalty_pose`: per-joint deviation-from-q_ref penalty, weight
-   0.5, per-joint vector matching TB's hip_yaw/ankle_roll heavy
-   weighting (`walk.gin:120-124`).
-3. `penalty_feet_ori`: projected gravity in foot frame, weight 5.0
-   (mirror `walk_env.py:697-735`).
+`alive` is now a dense per-step bonus (`+alive_w * dt` per surviving
+step, mirror `_reward_alive` in `mjx_env.py:2766-2782`), not the
+one-shot `-done` form WR previously used (which mirrored the
+commented-out `walk.gin:69 _reward_survival` ZMP variant).  Phase 1
+lowered the weight to 1.0; Phase 1c switches the form so the
+implementation actually matches TB-active.  At weight 1.0 the dense
+bonus is small relative to the imitation block (~10/episode vs
+~1250/episode imitation) and does not recreate the v0.19.5b
+lean-back exploit (which fired only at the older alive=10).
+Touches `wildrobot_env.py:_aggregate_reward`.
 
-**Phase 3 — deeper changes** (PPO algo + DR):
+**Phase 2 — env reward additions (commit `7df62b0`):**
 
-1. Asymmetric critic: feed privileged obs (motor_pos_error, base
-   lin_vel, actuator_force, ref_stance) to the critic head only.
-   Touches `training/algos/ppo/ppo_core.py` and the env_info
-   plumbing in `training/envs/wildrobot_env.py`.
-2. Backlash domain randomization: hysteretic actuator state with
-   activation 0.1, range [0.02, 0.1] rad
-   (mirror `mjx_config.py:209-210`).  Requires actuator-model
-   integration, not just a reset-time random offset.
-3. Optional: add the kd / damping / armature / tau_max DR family
-   (`mjx_config.py:222-235`).
+1. `ref_feet_z_track` — dense per-step foot-z error vs the ZMP
+   prior's foot trajectory.  Weight **5.0**, α=1428.6 (= 1/0.0007
+   mirroring TB `feet_phase_tracking_sigma`).  Substitute for TB
+   `feet_phase` (`walk_env.py:631-695`) — WR uses the prior's
+   actual foot-z at each step instead of TB's phase-derived
+   expected height.  Direct addressee of v0.20.1-smoke1 shuffle
+   exploit (step_length 0.022 m vs 0.030 m gate).
+2. `penalty_pose` — per-joint weighted (q_actual - q_ref)^2 sum.
+   Weight **-0.5** (negative-yaml convention; magnitude matches TB
+   walk.gin:120 since TB uses positive scale × `_reward_penalty_pose`
+   returning negative sum, `mjx_env.py:2707`).  Per-joint vector
+   mirrors TB pattern: hip_pitch / knee_pitch=0.01, hip_roll=1.0,
+   ankle_pitch / ankle_roll=5.0; arms / waist / wrist=0.
+3. `penalty_feet_ori` — anti-tippy-toe via projected gravity in
+   foot frame.  Weight **-5.0** (same sign convention as
+   penalty_pose; magnitude matches TB walk.gin:129).  Mirror
+   `walk_env.py:697-735`.
+
+**Phase 3 — PPO algo + DR (commit `85e42c0`):**
+
+1. Asymmetric critic: privileged obs payload bumped from 12 dims
+   (lin_vel + ang_vel + contacts + 4-dim zero pad) to **52 dims**
+   (lin_vel + ang_vel + contacts + motor_pos_error + actuator_force
+   + ref_stance).  Mirror TB `num_single_privileged_obs=151`
+   (`mjx_config.py:86`, `walk.gin:25-28`).  Yaml flips
+   `ppo.critic_privileged_enabled=true`.  Sample-efficiency win
+   for locomotion PPO (Pinto et al. 2017 "Asymmetric Actor Critic"),
+   especially valuable given the 50× compute gap.
+2. Backlash domain randomization: TB-form smooth backlash —
+   `motor_pos += 0.5 * backlash * tanh(qfrc_actuator / activation)`
+   applied at obs time.  Per-joint sample range **[0.02, 0.10] rad**,
+   activation **0.1 Nm** (mirror `mjx_config.py:209-210`,
+   `mjx_env.py:2073-2080`).  Sim2real-critical noise model for
+   hobby servos.
+
+**Phase 3b — loader fix (bug-fix follow-up):**
+
+The smoke yaml's Phase 2 / Phase 3 reward weights and DR ranges
+were not being parsed by `training/configs/training_config.py` —
+`_parse_reward_weights_config` and `_parse_env_config` stopped at
+the pre-Phase-2 fields.  Without parser entries, the smoke would
+load dataclass defaults (0.0 / empty) and silently disable every
+Phase 2 / Phase 3 fix.  Loader now parses `ref_feet_z_track`,
+`ref_feet_z_track_alpha`, `penalty_pose`, `penalty_feet_ori`,
+`penalty_pose_weights_per_joint`, `penalty_pose_weight_default`,
+`domain_rand_backlash_range`, and `domain_rand_backlash_activation`.
+
+**Optional — kd / damping / armature / tau_max DR family** (deferred):
+TB randomizes these in `mjx_config.py:222-235` ([0.8, 1.2] for
+damping/armature, [0.9, 1.1] for kd / tau_max family).  WR doesn't
+yet randomize them.  Low priority — backlash is the load-bearing
+sim2real noise; the [0.9, 1.1] ranges on actuator gains are second-
+order.  Add as part of a future hardware-bringup milestone.
 
 ### B.3 M3 long-run plan — getting to TB-on-par compute
 

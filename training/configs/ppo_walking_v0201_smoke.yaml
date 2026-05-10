@@ -398,12 +398,15 @@ reward_weights:
   # were aligned to the commented-out ZMP variant of TB walk.gin (lines
   # 56-108); the active TB recipe is walk.gin:110-131.
   #
-  # alive 10.0 → 1.0: TB-active uses RewardScales.alive = 1.0
-  # (walk.gin:127), not the commented RewardScales.survival = 10.0
-  # (walk.gin:69).  Survival uses strict ToddlerBot semantics
-  # (_reward_survival = -done; wildrobot_env.py:1080): 0 while alive,
-  # -alive_w*dt on the terminal step.  The 10× drop removes "survive at
-  # all costs" pressure (the v0.19.5b lean-back exploit enabler).
+  # alive 10.0 → 1.0 + semantics flip to dense per-step (Phase 1c of
+  # walking_training.md Appendix B): TB-active uses RewardScales.alive
+  # = 1.0 (walk.gin:127) with _reward_alive returning constant 1.0
+  # every step (mjx_env.py:2766-2782).  The 10× drop AND the dense-form
+  # switch together align WR with TB-active.  Pre-Phase-1 WR mirrored
+  # the commented-out walk.gin:69 ZMP variant (_reward_survival = -done
+  # at weight 10), which biased PPO toward survival behavior.  At
+  # weight 1.0 the dense bonus is ~10/episode (small vs imitation block
+  # ~1250/episode) so it does not recreate the v0.19.5b exploit.
   alive: 1.0
   ref_q_track: 5.0
   # ref_body_quat_track 5.0 → 2.5: TB-active is torso_quat = 2.5
@@ -490,11 +493,20 @@ reward_weights:
   #   - ankle_pitch / ankle_roll     → 5.0  (heavy — drift-prone)
   #   - arms / waist / wrist         → 0.0  (TB uses leg-only by default;
   #                                          walk.gin:17 ActionConfig.action_parts=['leg'])
-  penalty_pose: 0.5
+  # Sign convention: WR follows the regularizer pattern (negative yaml
+  # weight × positive raw squared-error → negative reward contribution),
+  # same as action_rate / torque / joint_velocity above.  TB-active
+  # walk.gin uses positive scale +0.5 because its _reward_penalty_pose
+  # function returns a NEGATIVE value (toddlerbot/locomotion/mjx_env.py:2707
+  # `_reward_penalty_pose returns -sum(...)`); product is negative either
+  # way.  Magnitude (|0.5|) matches TB exactly.
+  penalty_pose: -0.5
   # penalty_feet_ori: anti-tippy-toe via projected gravity in foot frame.
-  # TB weight 5.0 (walk.gin:129).  Penalizes foot rotation away from
-  # flat (deviation of foot-frame gravity from [0, 0, -1]).
-  penalty_feet_ori: 5.0
+  # TB weight 5.0 (walk.gin:129).  Same sign-convention rationale as
+  # penalty_pose: WR uses negative yaml weight, TB uses positive scale
+  # × negative function value (walk_env.py:735); product is negative
+  # in both.  Magnitude (|5.0|) matches TB exactly.
+  penalty_feet_ori: -5.0
   # ToddlerBot-aligned slip penalty (walk.gin: feet_slip = 0.05).
   # Replaces the v0.20.1 default-0 stance-side slip penalty.  Pitch_rate
   # remains a 0-default M1 hook (only promoted on the M1 "balance issue"
