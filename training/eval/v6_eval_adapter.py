@@ -78,8 +78,27 @@ V6_LAYOUT_ID = "wr_obs_v6_offline_ref_history"
 
 @dataclass
 class V6AdapterState:
-    """Per-episode mutable state held by V6EvalAdapter."""
-    proprio_history: np.ndarray  # (PROPRIO_HISTORY_FRAMES, bundle_size); oldest first
+    """Per-episode mutable state held by V6EvalAdapter.
+
+    proprio_history vs pending_history (Strategy A — see compute_obs /
+    post_physics docstrings):
+
+    - ``proprio_history`` is what the CURRENT compute_obs reads.  Mirror
+      of env's ``wr.proprio_history`` at the start of env.step (i.e.,
+      pre-roll for the obs being built).
+    - ``pending_history`` is the post-roll buffer that the previous
+      post_physics produced.  It only becomes the new ``proprio_history``
+      AFTER the current compute_obs returns.  Mirror of env's
+      ``new_wr.proprio_history`` (post-roll), which env stores in the
+      returned state.info but doesn't put into the returned state.obs.
+
+    This lag is load-bearing: PPO at iteration N+1 sees ``state_N.obs``
+    which uses ``state_{N-1}.info.wr.proprio_history`` (= pre-roll at
+    step N).  The bundle rolled at the end of step N first becomes
+    visible in obs at step N+2.
+    """
+    proprio_history: np.ndarray  # (PROPRIO_HISTORY_FRAMES, bundle_size); used by compute_obs
+    pending_history: np.ndarray  # (PROPRIO_HISTORY_FRAMES, bundle_size); promoted at end of compute_obs
     loc_ref_history: Optional[np.ndarray]  # (4,) rolled phase_sin_cos; None at reset
     step_idx: int  # offline-trajectory frame for the CURRENT obs (next ctrl uses step_idx + 1)
     pending_action: np.ndarray  # (action_dim,) last-filtered value; also "applied" when delay enabled
@@ -191,11 +210,18 @@ class V6EvalAdapter:
     def reset(self) -> None:
         """Re-zero per-episode state.  Mirrors env's ``_make_initial_state``:
         proprio_history zero-filled, pending_action and last_applied_action
-        zero (so iter-1 with action=0 keeps target_q == q_ref exactly)."""
+        zero (so iter-1 with action=0 keeps target_q == q_ref exactly).
+
+        Both ``proprio_history`` and ``pending_history`` start as zeros so
+        the first two compute_obs() calls (= reset's obs and the obs
+        returned by env.step iter 1) both see zero history — matching env.
+        """
+        zeros_history = np.zeros(
+            (PROPRIO_HISTORY_FRAMES, self._bundle_size), dtype=np.float32
+        )
         self._state = V6AdapterState(
-            proprio_history=np.zeros(
-                (PROPRIO_HISTORY_FRAMES, self._bundle_size), dtype=np.float32
-            ),
+            proprio_history=zeros_history.copy(),
+            pending_history=zeros_history.copy(),
             loc_ref_history=None,
             step_idx=0,
             pending_action=np.zeros(self._action_dim, dtype=np.float32),
@@ -288,6 +314,16 @@ class V6EvalAdapter:
 
         # Update for next compute_obs.
         self._state.loc_ref_history = history_4
+        # Strategy A promote: pending_history was set by the most recent
+        # post_physics().  After this compute_obs has READ the current
+        # proprio_history (= pre-roll for THIS obs), promote pending into
+        # proprio_history so the NEXT compute_obs reads it.  This matches
+        # env's flow: state.obs at iter N uses pre-roll history;
+        # state.info.wr.proprio_history (post-roll) is what the next step's
+        # obs reads as ITS pre-roll.  Idempotent if compute_obs is called
+        # twice without an intervening post_physics (pending_history is
+        # unchanged in that case).
+        self._state.proprio_history = self._state.pending_history
         return obs
 
     def apply_action(
@@ -353,12 +389,27 @@ class V6EvalAdapter:
         return applied
 
     def post_physics(self, mj_data: mujoco.MjData) -> None:
-        """Read POST-physics signals, build the per-step bundle, roll the
-        proprio_history.
+        """Read POST-physics signals, build the per-step bundle, roll into
+        ``pending_history`` (NOT into ``proprio_history``).
 
         Mirrors env.step lines 1893-1908: bundle uses POST-step signals
         and the action APPLIED this step (``last_applied_action``).  The
-        rolled buffer becomes the "past" for the NEXT compute_obs.
+        rolled buffer becomes ``pending_history``; the next compute_obs
+        will return its obs using the OLD ``proprio_history`` and THEN
+        promote ``pending_history`` into ``proprio_history`` for the
+        compute_obs after that.
+
+        This 1-iteration lag is the key fix: env's wr.proprio_history
+        update at the END of step N becomes visible in obs only at
+        step N+2's returned state.obs.  Without the lag, the visualizer's
+        compute_obs at iter N+1 would see bundle_N immediately, while
+        env's iter N+1 returned obs would still see pre-roll (= pre-bundle_N)
+        history.  Pinned by ``test_proprio_history_lags_one_iteration``.
+
+        Roll input is ``proprio_history`` (the value compute_obs at this
+        iteration just read), not ``pending_history``.  This matches env:
+        roll input = wr.proprio_history at start of step = obs's pre-roll
+        view = same value compute_obs read.
         """
         signals_post = self._signals_adapter.read(mj_data)
         joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
@@ -377,6 +428,6 @@ class V6EvalAdapter:
             ]
         )
         history = self._state.proprio_history
-        self._state.proprio_history = np.concatenate(
+        self._state.pending_history = np.concatenate(
             [history[1:], bundle[None, :]], axis=0
         ).astype(np.float32)

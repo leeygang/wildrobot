@@ -228,20 +228,33 @@ def test_post_physics_bundle_uses_post_signals_and_applied_action(
     )
 
 
-def test_proprio_history_rolls_after_post_physics_only(smoke_setup) -> None:
-    """Iter 1's obs sees PRE-roll history (zeros).  Iter 2's obs sees
-    history with iter-1's bundle in slot -1, after post_physics has run.
+def test_proprio_history_lags_one_iteration(smoke_setup) -> None:
+    """Bundle rolled at end of iter N's post_physics must FIRST appear in
+    the obs returned by compute_obs at iter N+2 (not iter N+1).
 
-    Catches the wrong-timing roll bug this commit fixes (history was
-    rolled before iter 2's obs read it, so iter 1's obs already saw the
-    just-built bundle).
+    Why one extra iteration of lag: env.step at iter N stores the rolled
+    history in ``new_wr.proprio_history`` but explicitly returns its obs
+    using the PRE-roll ``wr.proprio_history`` (env line 1979).  PPO at
+    iter N+1 acts on env.step iter N's RETURNED obs → sees PRE-roll
+    history → bundle_N is NOT visible yet.  Bundle_N is only consumed by
+    env.step iter N+1's roll input, becoming the pre-roll for iter N+2's
+    returned obs.
+
+    Mapped to visualizer iterations:
+      - iter 1 obs (= reset obs): zero history.
+      - iter 2 obs (= env.step iter 1 returned obs): zero history.
+      - iter 3 obs (= env.step iter 2 returned obs): bundle_1 in slot -1.
+
+    The previous version of this test pinned the WRONG behavior
+    (asserting iter 2 obs sees bundle_1 in slot -1) — because the
+    adapter was promoting the rolled history into compute_obs's view
+    one iteration too early.  This rewrite pins the correct env-aligned
+    behavior.
     """
     s = smoke_setup
     a = s["adapter"]
     a.reset()
 
-    # Iter 1 obs.  Must be all-zero proprio history.
-    obs_iter1 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
     layout = s["policy_spec"].observation.layout
     cursor = 0
     name_to_offset = {}
@@ -249,30 +262,56 @@ def test_proprio_history_rolls_after_post_physics_only(smoke_setup) -> None:
         name_to_offset[f.name] = (cursor, cursor + f.size)
         cursor += f.size
     hist_start, hist_end = name_to_offset["proprio_history"]
-    np.testing.assert_array_equal(
-        obs_iter1[hist_start:hist_end],
-        np.zeros(hist_end - hist_start, dtype=np.float32),
-        err_msg="iter 1 obs proprio_history slice must be zeros",
-    )
+    n_substeps = int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)
 
-    # Apply, step, post_physics.
-    raw = 0.1 * np.ones(s["action_dim"], dtype=np.float32)
-    a.apply_action(s["mj_data"], raw)
-    for _ in range(int(s["cfg"].env.ctrl_dt / s["cfg"].env.sim_dt)):
+    def obs_history_view(obs_vec: np.ndarray) -> np.ndarray:
+        return obs_vec[hist_start:hist_end].reshape(
+            PROPRIO_HISTORY_FRAMES, a._bundle_size
+        )
+
+    # ---- iter 1 (reset obs): zero history.
+    obs_iter1 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
+    np.testing.assert_array_equal(
+        obs_history_view(obs_iter1),
+        np.zeros((PROPRIO_HISTORY_FRAMES, a._bundle_size), dtype=np.float32),
+        err_msg="iter 1 obs proprio_history must be zeros (reset state)",
+    )
+    # Apply iter 1's action, physics, post_physics.
+    raw_iter1 = 0.1 * np.ones(s["action_dim"], dtype=np.float32)
+    a.apply_action(s["mj_data"], raw_iter1)
+    for _ in range(n_substeps):
         mujoco.mj_step(s["mj_model"], s["mj_data"])
     a.post_physics(s["mj_data"])
 
-    # Iter 2 obs.  Now history slot -1 has iter-1's bundle; older slots
-    # still zeros.
+    # ---- iter 2 obs: STILL zero history (one-iteration lag).
     obs_iter2 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
-    flat_hist = obs_iter2[hist_start:hist_end].reshape(
-        PROPRIO_HISTORY_FRAMES, a._bundle_size
-    )
-    assert flat_hist[-1].any(), "iter 2 obs history slot -1 must be non-zero"
     np.testing.assert_array_equal(
-        flat_hist[-2],
+        obs_history_view(obs_iter2),
+        np.zeros((PROPRIO_HISTORY_FRAMES, a._bundle_size), dtype=np.float32),
+        err_msg=(
+            "iter 2 obs proprio_history must STILL be zeros — env's iter 1 "
+            "returned obs uses pre-roll history; the bundle rolled at iter 1's "
+            "post_physics is only visible in env's iter 2 returned obs (= "
+            "visualizer iter 3 compute_obs)"
+        ),
+    )
+    # Apply iter 2's action, physics, post_physics.
+    raw_iter2 = -0.05 * np.ones(s["action_dim"], dtype=np.float32)
+    a.apply_action(s["mj_data"], raw_iter2)
+    for _ in range(n_substeps):
+        mujoco.mj_step(s["mj_model"], s["mj_data"])
+    a.post_physics(s["mj_data"])
+
+    # ---- iter 3 obs: bundle_1 in slot -1 (FIRST appearance).
+    obs_iter3 = a.compute_obs(s["mj_data"], velocity_cmd=0.20)
+    hist3 = obs_history_view(obs_iter3)
+    assert hist3[-1].any(), (
+        "iter 3 obs history slot -1 must be non-zero (bundle_1 first visible)"
+    )
+    np.testing.assert_array_equal(
+        hist3[-2],
         np.zeros(a._bundle_size, dtype=np.float32),
-        err_msg="iter 2 obs history slot -2 must still be zeros",
+        err_msg="iter 3 obs history slot -2 must still be zeros (bundle_2 not visible yet)",
     )
 
 
@@ -370,3 +409,117 @@ def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
         np.zeros(hist_end - hist_start, dtype=np.float32),
         err_msg="env proprio_history must be zero at step 0",
     )
+
+
+def test_adapter_obs_history_matches_env_for_three_steps(smoke_setup) -> None:
+    """End-to-end: drive both env and adapter for 3 steps with the same
+    zero actions and confirm the adapter's compute_obs proprio_history
+    SLOT pattern (which frames are zero vs populated) tracks env's
+    returned state.obs proprio_history at every iteration.
+
+    This is the load-bearing test that catches the proprio_history
+    timing class of bug.  Earlier revisions had compute_obs reading
+    history one iteration too early (rolled bundle visible immediately
+    after post_physics, instead of one extra iteration later).  This
+    test pins iteration N's obs against env's state_{N-1}.obs for N in
+    {1, 2, 3, 4} so any future re-introduction of the lag bug fails
+    here loudly.
+
+    Compares only the SLOT-OCCUPANCY pattern (per-frame "is this slot
+    all zeros?"), not exact bundle values.  Numerical values within a
+    bundle differ between adapter and env because env applies IMU noise
+    + backlash to its bundle's gyro / joint_pos slices and the adapter
+    uses raw post-physics signals (same rationale as
+    test_v6_eval_adapter_env_parity_deterministic_slice).  The
+    occupancy pattern is the timing-sensitive part this test exists to
+    pin.
+    """
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    s = smoke_setup
+    cfg = s["cfg"]
+
+    env = WildRobotEnv(config=cfg)
+    rng = jax.random.PRNGKey(0)
+    env_state = env.reset_for_eval(rng)
+
+    mj_model = s["mj_model"]
+    mj_data = mujoco.MjData(mj_model)
+    if mj_model.nkey > 0:
+        mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
+    else:
+        mujoco.mj_resetData(mj_model, mj_data)
+    # Sync env's qpos / qvel into native MJ data so signals match
+    # bit-for-bit at iteration 1 (and approximately thereafter, modulo
+    # tiny solver differences between mjx and native mujoco).
+    mj_data.qpos[:] = np.asarray(env_state.data.qpos)
+    mj_data.qvel[:] = np.asarray(env_state.data.qvel)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    adapter = s["adapter"]
+    adapter.reset()
+
+    layout = s["policy_spec"].observation.layout
+    cursor = 0
+    name_to_offset = {}
+    for f in layout:
+        name_to_offset[f.name] = (cursor, cursor + f.size)
+        cursor += f.size
+    hist_start, hist_end = name_to_offset["proprio_history"]
+    n_substeps = int(cfg.env.ctrl_dt / cfg.env.sim_dt)
+
+    def slot_occupancy(obs_vec) -> np.ndarray:
+        """Per-frame mask: True if that frame slot has any non-zero value."""
+        history = np.asarray(obs_vec[hist_start:hist_end]).reshape(
+            PROPRIO_HISTORY_FRAMES, adapter._bundle_size
+        )
+        return np.any(history != 0.0, axis=1)
+
+    # ---- iter 1: both at reset; both must show all-zero history.
+    adapter_obs = adapter.compute_obs(
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+    )
+    np.testing.assert_array_equal(
+        slot_occupancy(adapter_obs),
+        slot_occupancy(env_state.obs),
+        err_msg="iter 1: adapter and env proprio_history must both be all-zero",
+    )
+
+    zeros_action = np.zeros(s["action_dim"], dtype=np.float32)
+    for iter_idx in (2, 3, 4):
+        # Step env forward.
+        env_state = env.step(
+            env_state,
+            jax.numpy.zeros(s["action_dim"], dtype=jax.numpy.float32),
+            disable_cmd_resample=True,
+        )
+        # Step adapter forward.
+        adapter.apply_action(mj_data, zeros_action)
+        for _ in range(n_substeps):
+            mujoco.mj_step(mj_model, mj_data)
+        adapter.post_physics(mj_data)
+        # Re-sync mj_data qpos/qvel from env to keep slot-occupancy
+        # deterministic across many steps (mjx and native mj_step diverge
+        # numerically over time; this test only cares about timing).
+        mj_data.qpos[:] = np.asarray(env_state.data.qpos)
+        mj_data.qvel[:] = np.asarray(env_state.data.qvel)
+        mujoco.mj_forward(mj_model, mj_data)
+
+        adapter_obs = adapter.compute_obs(
+            mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+        )
+        adapter_occ = slot_occupancy(adapter_obs)
+        env_occ = slot_occupancy(env_state.obs)
+        np.testing.assert_array_equal(
+            adapter_occ,
+            env_occ,
+            err_msg=(
+                f"iter {iter_idx}: adapter and env proprio_history slot "
+                "occupancy must agree.  Most likely cause: adapter is "
+                "promoting the rolled bundle into compute_obs's view at the "
+                "wrong time (one iteration too early or too late).  See test "
+                "docstring for the env contract.\n"
+                f"  adapter occupancy (oldest -> newest): {adapter_occ.tolist()}\n"
+                f"  env     occupancy (oldest -> newest): {env_occ.tolist()}"
+            ),
+        )
