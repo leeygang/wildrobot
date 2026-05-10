@@ -1578,9 +1578,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         roll_init, pitch_init, _ = root_pose.euler_angles()
-        # Reset reward = 0 under ToddlerBot survival semantics (alive
-        # only pays -w on the terminating step; reset is not a
-        # terminating step so total reward at iter-0 is 0).
+        # Reset reward = 0 by RL convention: reset returns the initial
+        # observation; PPO collects the first reward at step 1 (after
+        # the first env.step call).  Even with dense alive semantics
+        # (Phase 1c switched alive to TB-active +alive_w per step), the
+        # first +alive_w accrues on step 1, not at reset.  Mirrors TB
+        # mjx_env reset path.
         reset_reward = jp.float32(0.0)
         contact_thresh = self._config.env.contact_threshold_force
         left_switch_init = (left_force > contact_thresh).astype(jp.float32)

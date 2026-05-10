@@ -147,27 +147,46 @@ def test_env_round_trip(smoke_yaml_raw, smoke_cfg) -> None:
         pytest.fail(msg)
 
 
-def test_smoke6_critical_weights_nonzero(smoke_cfg) -> None:
-    """Pin the specific weights smoke6 needed.
+def test_smoke7_critical_reward_weights(smoke_cfg) -> None:
+    """Pin the smoke7 / TB-active reward weights.
 
     Hard-coded so the test is robust against future YAML refactors that
-    might rename keys: smoke6+ requires these reward weights to be
-    nonzero in the smoke config.  If a future smoke deliberately zeros
-    one, update this test alongside the YAML change.
+    might rename keys.  The expected values reflect the v0.20.1
+    TB-active alignment sweep (walking_training.md Appendix B):
+      - Phase 1 lowered alive 10→1, cmd_forward 5→2, ref_body_quat 5→2.5
+        (those were aligned to the commented-out walk.gin ZMP variant;
+        TB-active values are 1.0 / 2.0 / 2.5 in walk.gin:111-127).
+      - Phase 2 added ref_feet_z_track (+5.0, dense per-step foot-z),
+        penalty_pose (-0.5, per-joint anchor with WR negative-yaml
+        convention), penalty_feet_ori (-5.0, anti-tippy-toe).
+    If a future smoke deliberately changes one, update this test
+    alongside the YAML change.
     """
     rw = smoke_cfg.reward_weights
     expected = {
+        # Imitation block (TB-active aligned at the magnitudes here).
         "ref_q_track": 5.0,
-        "ref_body_quat_track": 5.0,
+        "ref_body_quat_track": 2.5,        # Phase 1: 5.0 → 2.5 (walk.gin:117).
         "torso_pos_xy": 2.0,
         "ref_contact_match": 1.0,
         "lin_vel_z": 1.0,
         "ang_vel_xy": 2.0,
-        "cmd_forward_velocity_track": 5.0,
+        # Phase 2 — dense foot-z tracker (TB feet_phase substitute).
+        "ref_feet_z_track": 5.0,
+        # Task block.
+        "cmd_forward_velocity_track": 2.0, # Phase 1: 5.0 → 2.0 (walk.gin:111).
+        # TB shaping family.
         "feet_air_time": 500.0,
         "feet_clearance": 1.0,
         "feet_distance": 1.0,
-        "alive": 10.0,
+        # Phase 2 — anti-exploit penalties (negative yaml weight × positive
+        # raw squared-error, WR convention; magnitudes match TB walk.gin
+        # 0.5 / 5.0 since TB uses +scale × negative function value).
+        "penalty_pose": -0.5,
+        "penalty_feet_ori": -5.0,
+        # Survival — Phase 1c switched to dense per-step at TB-active
+        # weight 1.0 (was 10.0 with -done semantics).
+        "alive": 1.0,
     }
     failures: list[str] = []
     for key, expected_value in expected.items():
@@ -176,8 +195,9 @@ def test_smoke6_critical_weights_nonzero(smoke_cfg) -> None:
             failures.append(f"{key}: expected {expected_value}, got {actual}")
     if failures:
         pytest.fail(
-            "smoke6 critical reward weights mismatch — either the YAML or "
-            "the loader has drifted from the documented smoke6 contract:\n  "
+            "smoke7 critical reward weights mismatch — either the YAML or "
+            "the loader has drifted from the documented smoke7 / TB-active "
+            "contract:\n  "
             + "\n  ".join(failures)
         )
 
@@ -224,6 +244,13 @@ def test_smoke7_critical_env_settings(smoke_cfg) -> None:
         "push_enabled": False,
         # action_delay_steps unchanged from smoke6 (TB n_steps_delay=1)
         "action_delay_steps": 1,
+        # Phase 3 (walking_training.md Appendix B.2): TB-form smooth
+        # backlash DR (mjx_config.py:209-210, mjx_env.py:2073-2080).
+        "domain_rand_backlash_range": [0.02, 0.10],
+        "domain_rand_backlash_activation": 0.1,
+        # Phase 2: per-joint penalty_pose vector default (scalar fallback
+        # when a joint isn't listed in penalty_pose_weights_per_joint).
+        "penalty_pose_weight_default": 0.0,
     }
     failures: list[str] = []
     for key, expected_value in expected.items():

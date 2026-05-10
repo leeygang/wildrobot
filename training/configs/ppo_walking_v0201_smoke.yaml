@@ -372,12 +372,19 @@ networks:
 # =============================================================================
 # Reward Weights — v0.20.1 imitation-dominant residual family
 # =============================================================================
-# Imitation block aligned to ToddlerBot's active tracking terms:
-#   motor_pos / torso_quat / torso_pos_xy = 5.0 / 5.0 / 2.0
-# Task block (separate; mujoco_playground convention): cmd_forward_velocity_track.
-# Regularizers: ToddlerBot walk.gin scales (action_rate -0.01, torque -0.001,
-# joint_vel -0.0005).  Alive follows strict ToddlerBot survival semantics:
-# 0 while alive, -alive_w*dt on the terminal step.
+# Imitation block aligned to TB-active (post-Phase-1 sweep, see
+# walking_training.md Appendix B):
+#   ref_q_track / ref_body_quat_track / torso_pos_xy = 5.0 / 2.5 / 2.0.
+#   ref_body_quat_track was 5.0 pre-sweep (mirrored commented walk.gin:56);
+#   TB-active is 2.5 (walk.gin:117).
+# Task block: cmd_forward_velocity_track = 2.0 (TB walk.gin:111;
+# was 5.0 pre-sweep, mirrored commented walk.gin:59).
+# Regularizers: ToddlerBot walk.gin scales (action_rate -1.0, torque -0.001,
+# joint_vel -0.0005).
+# Alive: dense per-step bonus matching TB-active _reward_alive
+# (mjx_env.py:2766-2782, returns constant 1.0) at TB weight 1.0
+# (walk.gin:127).  Was -done semantics with weight 10.0 pre-sweep
+# (mirrored commented walk.gin:69 _reward_survival ZMP variant).
 #
 # Sigmas/alphas use the dataclass defaults (training_runtime_config.py:
 # RewardWeightsConfig v0.20.1 block) — pinned here only when overriding.
