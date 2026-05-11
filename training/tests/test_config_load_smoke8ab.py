@@ -185,14 +185,16 @@ def test_smoke8b_imitation_rewards_disabled(smoke8b_cfg) -> None:
 
 
 def test_smoke8b_tb_active_rewards_present(smoke8b_cfg) -> None:
-    """Track B: keep TB walk.gin's active reward block at TB magnitudes.
-    Mapping documented in smoke8b.yaml header.
+    """Track B: keep TB walk.gin's active reward block at TB magnitudes
+    for terms with FAITHFUL WR equivalents.  Mapping documented in
+    smoke8b.yaml header.
 
-    Audit revision: feet_distance and ref_feet_z_track DISABLED here
-    (set to 0).  WR's implementations are not faithful TB analogs
-    (positive band reward vs binary close-feet penalty;
-    ZMP-imitation vs phase-derived foot height).  Implementing true
-    TB-equivalent terms is a smoke9 candidate.
+    Audit revisions: feet_distance, ref_feet_z_track, ang_vel_xy, and
+    penalty_feet_ori DISABLED (set to 0) — WR's implementations are
+    not faithful TB analogs.  Implementing true TB-equivalent env
+    rewards is a smoke9 candidate.
+
+    What remains active: 5 reward terms that ARE faithful to TB.
     """
     rw = smoke8b_cfg.reward_weights
     expected = {
@@ -203,16 +205,13 @@ def test_smoke8b_tb_active_rewards_present(smoke8b_cfg) -> None:
         # ref_body_quat_track: TB torso_quat = 2.5 (target IS identity quat,
         # geodesic angle, alpha=20 default = TB rot_tracking_sigma)
         "ref_body_quat_track": 2.5,
-        # ang_vel_xy: TB penalty_ang_vel_xy = 1.0
-        "ang_vel_xy": 1.0,
-        # action_rate: TB penalty_action_rate = 2.0 (sign convention diff)
+        # action_rate: TB penalty_action_rate = 2.0 (sign convention diff;
+        # final contribution -2.0 × sum(Δaction²) in both)
         "action_rate": -2.0,
         # penalty_pose: TB walk.gin = 0.5 (sign convention diff).
         # See test_smoke8b_penalty_pose_anchor_is_home for the critical
         # env flag that makes this term TB-aligned (anchor home, not q_ref).
         "penalty_pose": -0.5,
-        # penalty_feet_ori: TB = 5.0 (sign convention diff)
-        "penalty_feet_ori": -5.0,
     }
     failures = []
     for key, expected_value in expected.items():
@@ -264,34 +263,65 @@ def test_smoke8b_penalty_pose_anchor_is_home(smoke8b_cfg) -> None:
     )
 
 
-def test_smoke8b_non_tb_aligned_foot_rewards_disabled(smoke8b_cfg) -> None:
-    """feet_distance and ref_feet_z_track are NOT faithful TB analogs:
+def test_smoke8b_non_tb_aligned_rewards_disabled(smoke8b_cfg) -> None:
+    """Reward terms whose WR implementation is NOT a faithful TB analog
+    must be disabled (weight=0) in smoke8b.  All four caught across two
+    rounds of code review:
+
+    Round 1:
     - feet_distance (env:1063) = positive smooth band reward over
       [min_y, max_y].  TB penalty_close_feet_xy (mjx_env.py:2710) =
       binary -1.0 when distance < threshold, no upper bound.
     - ref_feet_z_track (env:1125) tracks ZMP-prior foot-z.  TB
       feet_phase (walk_env.py:631) is phase-derived expected height,
-      command-gated.  Different mechanisms.
+      command-gated.
 
-    Disabled in smoke8b until WR implements true TB-equivalent terms
-    (smoke9 candidate).  Setting these to nonzero in smoke8b would
-    silently re-introduce non-TB reward semantics.
+    Round 2:
+    - ang_vel_xy (env:991-998) = exp(-alpha * (rate_x² + rate_y²)),
+      positive Gaussian bounded in [0, 1].  TB penalty_ang_vel_xy
+      (mjx_env.py:2398-2415) = -(rate_x² + rate_y²), unbounded
+      negative quadratic.  Different gradient profile.
+    - penalty_feet_ori (env:1175-1207) = sum((g_local - [0,0,-1])²)
+      across all 3 axes for both feet, quadratic in tilt.  TB
+      (walk_env.py:697-736) = -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R),
+      linear in tilt magnitude (lateral components only).  Different
+      gradient at small tilt.
+
+    Setting any of these to nonzero in smoke8b would silently
+    re-introduce non-TB reward semantics — the whole point of smoke8b
+    is to exercise only TB-faithful reward terms.
     """
     rw = smoke8b_cfg.reward_weights
+    must_be_zero = {
+        # Round 1
+        "feet_distance": (
+            rw.feet_distance,
+            "WR implementation is positive band reward; TB "
+            "penalty_close_feet_xy is binary close-feet penalty",
+        ),
+        "ref_feet_z_track": (
+            rw.ref_feet_z_track,
+            "WR implementation is ZMP-imitation; TB feet_phase is "
+            "phase-derived expected foot height",
+        ),
+        # Round 2
+        "ang_vel_xy": (
+            rw.ang_vel_xy,
+            "WR implementation is positive Gaussian (max 1.0); TB "
+            "penalty_ang_vel_xy is unbounded negative quadratic",
+        ),
+        "penalty_feet_ori": (
+            rw.penalty_feet_ori,
+            "WR implementation is quadratic full-3-axis deviation; TB "
+            "is linear L2 norm of (gx, gy) only",
+        ),
+    }
     failures = []
-    if rw.feet_distance != 0.0:
-        failures.append(
-            f"  feet_distance = {rw.feet_distance}; must be 0 in smoke8b "
-            f"(WR implementation is shape-wrong vs TB penalty_close_feet_xy)"
-        )
-    if rw.ref_feet_z_track != 0.0:
-        failures.append(
-            f"  ref_feet_z_track = {rw.ref_feet_z_track}; must be 0 in "
-            f"smoke8b (WR implementation is ZMP-imitation, not TB's "
-            f"phase-derived feet_phase)"
-        )
+    for key, (value, reason) in must_be_zero.items():
+        if value != 0.0:
+            failures.append(f"  {key} = {value}; must be 0 ({reason})")
     if failures:
         pytest.fail(
-            "smoke8b: foot rewards without faithful TB equivalents "
-            "must be disabled (set to 0):\n" + "\n".join(failures)
+            "smoke8b: rewards without faithful TB equivalents must be "
+            "disabled (set to 0):\n" + "\n".join(failures)
         )

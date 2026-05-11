@@ -5,10 +5,13 @@
 # to WR's body.  See smoke8a for "Track A only" (TB hyperparams + WR's
 # imitation rewards retained).
 #
-# Audit-driven revision (CHANGELOG [v0.20.1-smoke8b-audit-fixes]):
+# Audit-driven revisions (CHANGELOG [v0.20.1-smoke8b-audit-fixes]
+# and [v0.20.1-smoke8b-audit-fixes-round2]):
 #
-# Earlier draft of smoke8b had four substantive misalignments flagged
-# in code review.  This revision corrects all four:
+# Two rounds of code review found six misalignments where WR rewards
+# labeled as "TB-equivalent" were not.  This file applies all corrections.
+#
+# Round 1 — four bugs flagged:
 #
 # 1. cmd_forward_velocity_alpha: 0.001 → 1000.  TB and WR both use the
 #    SAME formula `exp(-sigma * err²)` (multiplicative); my earlier
@@ -39,13 +42,36 @@
 #    and is NOT an imitation reward.  Disabled in smoke8b until WR
 #    implements a phase-derived feet_phase (see TODO in CHANGELOG).
 #
-# Net effect: smoke8b's active reward set drops from 9 to 5 terms.
-# This is intentionally minimal — only terms with a faithful TB
-# equivalent already implemented in WR's env.  The smoke result will
-# tell us whether 5 reward signals + the obs-side phase clock are
-# enough for PPO to learn walking from random init within the smoke
-# compute budget.  If not, the next iteration adds true feet_phase
-# and penalty_close_feet_xy implementations (smoke9).
+# Round 2 — two more bugs flagged:
+#
+# 5. ang_vel_xy: → 0 (DISABLED).  WR's ang_vel_xy is a positive
+#    Gaussian `exp(-alpha * (rate_x² + rate_y²))` (env line 991-998),
+#    bounded in [0, 1] and maximized when rates are zero.  TB's
+#    penalty_ang_vel_xy is `-(rate_x² + rate_y²)` (mjx_env.py:2398-2415),
+#    unbounded negative quadratic.  Same direction (penalize ang vel),
+#    different gradient profile and reward magnitude — TB is unbounded
+#    bad below; WR caps at -weight when rates are large.
+#
+# 6. penalty_feet_ori: → 0 (DISABLED).  WR computes
+#    `sum((g_local - [0,0,-1])²)` for both feet (env line 1175-1207),
+#    quadratic in tilt.  TB computes
+#    `-(sqrt(gx²+gy²)_left + sqrt(gx²+gy²)_right)`
+#    (walk_env.py:697-736), linear in tilt magnitude (only the lateral
+#    components, not z).  Same direction, different gradient at small
+#    tilt (TB's L1-norm has nonzero gradient near zero; WR's quadratic
+#    has zero gradient near zero).
+#
+# Net effect: smoke8b's active reward set is 5 implemented TB-equivalent
+# terms.  This is intentionally minimal — only terms whose WR
+# implementation is a FAITHFUL TB analog (same formula direction,
+# magnitude, and gradient profile).  Reviewer audit found that several
+# WR rewards labeled as "TB-equivalent" actually have meaningfully
+# different formulas; those are now disabled with smoke9 TODOs.
+#
+# The smoke result will tell us whether 5 reward signals + the obs-side
+# phase clock are enough for PPO to learn walking from random init
+# within the smoke compute budget.  If not, the next iteration
+# implements the deferred TB rewards in WR's env (smoke9).
 #
 # What's still in vs out (vs TB walk.gin:110-131 active block):
 #
@@ -58,19 +84,29 @@
 #                                     |   (target IS identity quat,
 #                                     |    geodesic angle, alpha=20
 #                                     |    matches TB rot_tracking_sigma)
-#   penalty_ang_vel_xy = 1.0          | ang_vel_xy: 1.0            ✓
 #   penalty_action_rate = 2.0         | action_rate: -2.0          ✓
+#                                     |   (sign convention diff;
+#                                     |    final contribution identical)
 #   penalty_pose = 0.5 + per-joint    | penalty_pose: -0.5
 #     weights, anchored to default    |   anchor: home (TB-aligned) ✓
-#   penalty_feet_ori = 5.0            | penalty_feet_ori: -5.0     ✓
-#   ang_vel_z = 1.5 (sigma=4)         | (no WR equivalent — yaw
-#                                     |  cmd-tracking deferred; WR
-#                                     |  doesn't sample yaw cmds)
-#   penalty_close_feet_xy = 10.0      | DISABLED — needs new env reward
-#                                     |  (WR feet_distance is shape-wrong)
-#   feet_phase = 7.5 (swing_height,   | DISABLED — needs new env reward
-#     sigma=0.0007)                   |  (WR ref_feet_z_track is
-#                                     |   ZMP-imitation, not phase-derived)
+#   ----------------------------------+----------------------------------
+#   penalty_ang_vel_xy = 1.0          | DISABLED — WR is positive
+#                                     |  Gaussian (max 1.0); TB is
+#                                     |  unbounded negative quadratic.
+#                                     |  Different gradient profile.
+#   penalty_feet_ori = 5.0            | DISABLED — WR is quadratic full
+#                                     |  3-axis deviation; TB is linear
+#                                     |  L2 norm of (gx, gy) only.
+#                                     |  Different gradients at small tilt.
+#   penalty_close_feet_xy = 10.0      | DISABLED — WR feet_distance is
+#                                     |  positive band reward; TB is
+#                                     |  binary -1.0 close-feet penalty.
+#   feet_phase = 7.5 (swing_height,   | DISABLED — WR ref_feet_z_track
+#     sigma=0.0007)                   |  is ZMP-imitation; TB is
+#                                     |  phase-derived expected height.
+#   ang_vel_z = 1.5 (sigma=4)         | DISABLED — no WR yaw-tracking
+#                                     |  reward; WR doesn't sample yaw
+#                                     |  cmds either, so consistent gap.
 #
 # Reward terms ALWAYS DISABLED in smoke8b (no TB equivalent in active
 # walk.gin block):
@@ -259,28 +295,41 @@ reward_weights:
   # ref_body_quat_track measures geodesic angle vs identity)
   ref_body_quat_track: 2.5
   # WR ref_body_quat_alpha defaults to 20.0 = TB rot_tracking_sigma ✓
-  # TB penalty_ang_vel_xy = 1.0
-  ang_vel_xy: 1.0
-  # TB penalty_action_rate = 2.0 (sign convention diff)
+  # TB penalty_action_rate = 2.0 (sign convention diff).
+  # TB returns -sum(Δaction²) with positive scale 2.0; WR computes
+  # +sum(Δaction²) with negative weight -2.0.  Final contribution:
+  # -2.0 × sum(Δaction²) in both — functionally equivalent.
   action_rate: -2.0
   # TB penalty_pose = 0.5 with per-joint weights (in env section above).
   # env.loc_ref_penalty_pose_anchor: home above ⟹ TB-aligned anchor.
   penalty_pose: -0.5
-  # TB penalty_feet_ori = 5.0 (anti-tippy-toe via projected gravity)
-  penalty_feet_ori: -5.0
 
   # ---- TB rewards NOT implemented in WR — disabled with TODO ----
+  # All terms below are disabled (weight=0) because WR's existing
+  # implementations are not faithful TB analogs.  Each is a smoke9
+  # candidate for true TB-equivalent env reward implementation.
+  #
+  # TB penalty_ang_vel_xy = 1.0 needs -sum(roll_rate² + pitch_rate²)
+  # (mjx_env.py:2398-2415).  WR's ang_vel_xy is exp(-alpha *
+  # rate²) — positive Gaussian (env:991-998), max value 1.0, drops as
+  # rate increases.  TB's is unbounded negative quadratic.  Different
+  # gradient profile and reward magnitude across the operating range.
+  ang_vel_xy: 0.0
+  # TB penalty_feet_ori = 5.0 needs -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R)
+  # (walk_env.py:697-736), linear in tilt magnitude.  WR's
+  # penalty_feet_ori is sum((g_local - [0,0,-1])²) for both feet
+  # (env:1175-1207), quadratic in tilt.  Same direction, different
+  # gradients at small tilt.
+  penalty_feet_ori: 0.0
   # TB penalty_close_feet_xy = 10.0 needs a binary -1.0 penalty when
   # lateral foot distance < close_feet_threshold (mjx_env.py:2710).
   # WR's feet_distance is a positive smooth band reward over
   # [min_y, max_y] (wildrobot_env.py:1063) — different shape entirely.
-  # Disabled here; implement a true penalty_close_feet_xy in smoke9.
   feet_distance: 0.0
   # TB feet_phase = 7.5 needs phase-derived expected foot height
   # (walk_env.py:631).  WR's ref_feet_z_track tracks the ZMP-prior
   # foot-z trajectory (wildrobot_env.py:1125-1136) — still
-  # imitation-reference, not phase-derived.  Disabled here; implement
-  # phase-derived feet_phase in smoke9.
+  # imitation-reference, not phase-derived.
   ref_feet_z_track: 0.0
   ref_feet_z_track_alpha: 1428.6  # held at smoke7 default; weight=0 disables term
 

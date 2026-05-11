@@ -8,6 +8,103 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke8b-audit-fixes-round2] - 2026-05-10: 2 more reviewer-flagged misalignments — disable ang_vel_xy + penalty_feet_ori
+
+### Context — second-round code review
+
+After the round-1 audit fixes (`16585af`), a second review found two
+more WR rewards labeled as "TB-equivalent" in smoke8b that have
+materially different formulas:
+
+**P1: `ang_vel_xy: 1.0` is a positive Gaussian, not TB's negative quadratic.**
+
+WR (`wildrobot_env.py:991-998`):
+```python
+r_ang_vel_xy = jp.exp(-alpha * (gyro[0]² + gyro[1]²))
+```
+Positive Gaussian, bounded in `[0, 1]`, max value 1.0 when ang vel is zero.
+
+TB (`mjx_env.py:2398-2415`):
+```python
+return -jnp.sum(jnp.square(ang_vel_local[:2]))
+```
+Unbounded negative quadratic. At `rate²=2` (a meaningful walk
+angular vel), TB gives `-2.0`; WR's exp(-α·2) gives e.g. exp(-2)≈0.13
+at α=1. Same direction (penalize ang vel) but very different
+magnitudes and gradient profiles across the operating range.
+
+**P2: `penalty_feet_ori: -5.0` is quadratic full-3-axis, not TB's linear L2 lateral.**
+
+WR (`wildrobot_env.py:1175-1207`):
+```python
+left_dev  = left_grav_foot  - [0, 0, -1]
+right_dev = right_grav_foot - [0, 0, -1]
+penalty = sum(left_dev²) + sum(right_dev²)   # all 3 axes, quadratic
+```
+
+TB (`walk_env.py:697-736`):
+```python
+left_tilt  = sqrt(left_gravity[:2]² )   # only x,y, then sqrt
+right_tilt = sqrt(right_gravity[:2]²)
+return -(left_tilt + right_tilt)        # linear in tilt magnitude
+```
+
+For small tilt (gz ≈ -1, gx,gy ≈ 0):
+- WR: `gx² + gy² + (gz+1)² ≈ gx² + gy²` (quadratic)
+- TB: `sqrt(gx² + gy²)` (linear)
+
+So at small tilt, WR has zero gradient (quadratic well bottom); TB
+has nonzero gradient (linear cusp).  Reward signal differs near the
+upright operating point — exactly where it matters.
+
+### Patch — disable both with smoke9 TODOs
+
+Consistent with round-1 P2 pattern (disable until WR implements true
+TB-equivalent env reward).  Smoke8b's active reward set drops from 7
+to 5 implemented TB-equivalent terms:
+
+1. `alive: 1.0` (TB equivalent)
+2. `cmd_forward_velocity_track: 2.0` + `alpha: 1000.0` (TB lin_vel_xy)
+3. `ref_body_quat_track: 2.5` (target IS identity quat, geodesic
+   angle, alpha=20 = TB rot_tracking_sigma — TB torso_quat
+   equivalent)
+4. `action_rate: -2.0` (sign convention diff; final contribution
+   `-2.0 × sum(Δaction²)` matches TB exactly)
+5. `penalty_pose: -0.5` with `loc_ref_penalty_pose_anchor: home`
+   (TB-aligned via the round-1 env flag)
+
+### Reward terms now deferred to smoke9 (5 total, expanded list)
+
+| TB walk.gin term | WR gap | Suggested smoke9 implementation |
+|---|---|---|
+| `penalty_close_feet_xy = 10.0` | WR feet_distance is positive band | Add `_reward_penalty_close_feet_xy`: binary -1.0 when `lat_dist < threshold`, no upper bound |
+| `feet_phase = 7.5` | WR ref_feet_z_track is ZMP-imitation | Add `_reward_feet_phase`: phase-derived expected height + cmd-gating |
+| `penalty_ang_vel_xy = 1.0` (NEW) | WR ang_vel_xy is positive Gaussian | Add `_reward_penalty_ang_vel_xy`: `-sum(gyro_xy²)`, unbounded negative |
+| `penalty_feet_ori = 5.0` (NEW) | WR penalty_feet_ori is quadratic 3-axis | Replace formula: `-(L2_norm(g_local[:2])_L + L2_norm(g_local[:2])_R)`, linear in tilt |
+| `ang_vel_z = 1.5` | No WR yaw-tracking reward | Add `_reward_ang_vel_z` (only relevant if smoke9 samples yaw cmds) |
+
+### Tests
+
+- `test_smoke8b_tb_active_rewards_present`: removed `ang_vel_xy` and
+  `penalty_feet_ori` from expected values (now disabled).
+- `test_smoke8b_non_tb_aligned_foot_rewards_disabled` renamed to
+  `test_smoke8b_non_tb_aligned_rewards_disabled`, expanded to cover
+  all 4 disabled terms with reasons.
+- 14/14 contract tests pass.
+
+### Commits
+
+- `d7245b0` — smoke8a/8b creation
+- `16585af` — round-1 audit fixes (4 bugs)
+- follow-on commit — round-2 audit fixes (this entry, 2 more)
+
+### Reference
+
+- `toddlerbot/locomotion/mjx_env.py:2398` — TB penalty_ang_vel_xy
+- `toddlerbot/locomotion/walk_env.py:697` — TB penalty_feet_ori
+
+---
+
 ## [v0.20.1-smoke8b-audit-fixes] - 2026-05-10: correct 4 reviewer-flagged TB-alignment bugs in smoke8b
 
 ### Context — code review findings
