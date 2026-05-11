@@ -1,0 +1,267 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 8a — Track A: PPO hyperparams aligned to TB
+# =============================================================================
+# Identical to smoke8.yaml EXCEPT for the PPO hyperparameter block, which
+# was previously misattributed.
+#
+# What changed (vs smoke8):
+#
+# Smoke7/8 yamls claimed "Learning rate / entropy match the ToddlerBot
+# walk.gin defaults (3e-4 / 0.01)".  This is wrong.  TB's actual
+# defaults from `toddlerbot/locomotion/ppo_config.py`:
+#
+#   learning_rate = 3e-5            (not 3e-4)
+#   entropy_cost  = 5e-4            (not 0.01)
+#   num_envs      = 4096            (not 1024)
+#   unroll_length = 20              (not 128 rollout_steps)
+#   num_minibatches = 16            (not 32)
+#   discounting   = 0.97            (not 0.99 gamma)
+#   max_grad_norm = 1.0             (not 0.5)
+#   init_noise_std = 0.5            (not exp(-1.0)=0.37 log_std_init)
+#
+# The 3e-4 / 0.01 values smoke7 cited come from the generic
+# g1 / mujoco_playground PPO baselines, NOT from TB.  Smoke8a corrects
+# this so the PPO recipe actually matches TB's published defaults.
+#
+# Compute budget preserved.  smoke7/8 used 1024×128×150 = 19,660,800
+# transitions.  smoke8a uses 4096×20×240 = 19,660,800 (byte-identical
+# total) but with TB's per-iter recipe shape (more envs, shorter
+# rollouts, more iters).
+#
+# Reward family unchanged from smoke8.  This is the "TB-shape PPO with
+# WR's existing imitation reward block" variant.  See smoke8b for the
+# full TB-pure recipe (Track A + Track B = strip imitation block too).
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke8a.yaml --verify
+#
+# See also:
+#   - training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit]
+#   - toddlerbot/locomotion/ppo_config.py (TB PPO defaults)
+#   - toddlerbot/locomotion/walk.gin (TB walk recipe)
+#   - training/configs/ppo_walking_v0201_smoke.yaml (smoke7 baseline)
+#   - training/configs/ppo_walking_v0201_smoke8.yaml (smoke8 baseline,
+#     home-base architecture introduced; misattributed hyperparams)
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke8a (TB hyperparams + WR rewards, vx=0.20)"
+
+seed: 42
+
+# =============================================================================
+# Environment — identical to smoke8 (TB-aligned home-base residual)
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  min_velocity: 0.0
+  max_velocity: 0.30
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  eval_velocity_cmd: 0.20
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+  loc_ref_offline_command_vx: 0.20
+
+  # smoke8 architecture: home-pose residual base
+  loc_ref_residual_base: home
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — TB-aligned hyperparameter block (Track A fix)
+# =============================================================================
+# Compute budget: 4096 envs × 20 rollout × 240 iter = 19,660,800
+# transitions = byte-identical to smoke7/8's 1024 × 128 × 150 budget.
+# Per-iter shape now matches TB (toddlerbot/locomotion/ppo_config.py).
+ppo:
+  # TB ppo_config.py: num_envs = 4096
+  num_envs: 4096
+  # TB ppo_config.py: unroll_length = 20
+  rollout_steps: 20
+  # Preserves total = 19.66M transitions.  Matches smoke7/8 compute cap.
+  iterations: 240
+
+  # TB ppo_config.py: learning_rate = 3e-5 (NOT 3e-4 as smoke7/8 claimed)
+  learning_rate: 3.0e-5
+  # TB ppo_config.py: discounting = 0.97 (NOT 0.99)
+  gamma: 0.97
+  # TB ppo_config.py: gae_lambda = 0.95 (already aligned)
+  gae_lambda: 0.95
+
+  # TB ppo_config.py: clipping_epsilon = 0.2 (already aligned)
+  clip_epsilon: 0.2
+  # TB ppo_config.py: entropy_cost = 5e-4 (NOT 0.01)
+  entropy_coef: 5.0e-4
+  # No TB equivalent (TB uses separate value loss); 0.5 is a reasonable
+  # generic; keep until we audit TB's value-loss weighting in detail.
+  value_loss_coef: 0.5
+
+  # TB ppo_config.py: num_updates_per_batch = 4 (already aligned)
+  epochs: 4
+  # TB ppo_config.py: num_minibatches = 16 (NOT 32)
+  num_minibatches: 16
+  # TB ppo_config.py: max_grad_norm = 1.0 (NOT 0.5)
+  max_grad_norm: 1.0
+
+  log_interval: 10
+
+  # TB walk.gin uses asymmetric AC by setting num_single_privileged_obs.
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke7/8 (already TB-aligned)
+# =============================================================================
+networks:
+  actor:
+    # TB ppo_config.py: policy_hidden_layer_sizes = (512, 256, 128)
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    # TB ppo_config.py: init_noise_std = 0.5 → log(0.5) = -0.6931
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — UNCHANGED from smoke8 (Track A only; rewards are Track B)
+# =============================================================================
+# This block intentionally keeps WR's imitation reward family.  See
+# smoke8b.yaml for the Track B variant that strips it for full TB
+# alignment (TB walk.gin uses task + posture + foot_phase only — no
+# imitation rewards).
+reward_weights:
+  alive: 1.0
+  ref_q_track: 5.0
+  ref_body_quat_track: 2.5
+  torso_pos_xy: 2.0
+  lin_vel_z: 1.0
+  ang_vel_xy: 2.0
+  ref_contact_match: 1.0
+  cmd_forward_velocity_track: 2.0
+  action_rate: -1.0
+  torque: -0.001
+  joint_velocity: -0.0005
+  feet_air_time: 500.0
+  feet_clearance: 1.0
+  feet_distance: 1.0
+  torso_pitch_soft: 0.5
+  torso_roll_soft: 0.5
+  ref_feet_z_track: 5.0
+  ref_feet_z_track_alpha: 1428.6
+  penalty_pose: -0.5
+  penalty_feet_ori: -5.0
+  slip: 0.05
+  pitch_rate: 0.0
+  cmd_forward_velocity_alpha: 200.0
+  torso_pos_xy_alpha: 90.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke8a, tb_aligned_ppo, home_base]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

@@ -8,6 +8,125 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke8ab-tb-alignment-audit] - 2026-05-10: full TB-alignment audit; create smoke8a (Track A: TB hyperparams) + smoke8b (Track A + B: TB-pure rewards)
+
+### Context — audit findings
+
+User asked for a comprehensive review of smoke8 against TB to ensure
+alignment.  Audited each training surface (env, PPO hyperparams,
+networks, rewards, commands, DR, termination, compute) against TB's
+canonical recipe (`toddlerbot/locomotion/walk.gin` + `ppo_config.py`
++ `mjx_config.py` defaults).  Two categories of misalignment emerged:
+
+**Track A — PPO hyperparameter misattribution.** The smoke7/8 yamls
+claim `learning_rate: 3e-4` and `entropy_coef: 0.01` are "ToddlerBot
+walk.gin defaults".  This is wrong — these are generic
+g1/mujoco_playground PPO baselines.  TB's actual defaults from
+`toddlerbot/locomotion/ppo_config.py`:
+
+| Param | smoke7/8 (cited as TB) | TB actual | Δ |
+|---|---|---|---|
+| `learning_rate` | 3e-4 | **3e-5** | 10× higher in WR |
+| `entropy_coef` | 0.01 | **5e-4** | 20× higher in WR |
+| `num_envs` | 1024 | **4096** | 4× lower in WR |
+| `unroll_length` (rollout) | 128 | **20** | 6.4× longer in WR |
+| `num_minibatches` | 32 | **16** | 2× more in WR |
+| `discounting` (gamma) | 0.99 | **0.97** | longer credit horizon in WR |
+| `max_grad_norm` | 0.5 | **1.0** | 2× tighter in WR |
+| `init_noise_std` | exp(-1.0)=0.37 | **0.5** | less initial exploration in WR |
+
+**Track B — reward family divergence.** TB walk.gin's *active* reward
+block (lines 110-131) has 9 terms — NO imitation rewards, NO
+`feet_air_time`/`feet_clearance` (replaced by `feet_phase`).  WR
+smoke8 has ~20 terms including a full DeepMimic-style imitation block
+(`ref_q_track`, `ref_body_quat_track`, `ref_feet_z_track`,
+`ref_contact_match`, `torso_pos_xy`).  The imitation block was a
+deliberate WR hedge for the 50× compute gap (smoke 20M vs TB 1B), but
+it's not part of TB's actual recipe.
+
+Tracking-sigma asymmetry: TB `lin_vel_tracking_sigma=1000` (very
+loose) vs WR `cmd_forward_velocity_alpha=200` (effective sigma=0.005,
+~450× tighter).  WR's velocity tracking is far stricter than TB's.
+
+### Patch — two yaml variants
+
+Rather than mutate smoke8 in place (it's already documented as the
+home-base architecture introduction), add two new yamls so the user
+can A/B them:
+
+- **`ppo_walking_v0201_smoke8a.yaml`** — Track A only.  TB-aligned
+  PPO hyperparams (corrects the misattribution).  Reward family
+  unchanged from smoke8.  "TB-shape PPO with WR's existing imitation
+  reward block."
+- **`ppo_walking_v0201_smoke8b.yaml`** — Track A + Track B.  Same
+  TB-aligned PPO as smoke8a, plus reward family stripped to TB
+  walk.gin:110-131's active block (imitation rewards zeroed out,
+  `cmd_forward_velocity_alpha` loosened from 200 to 0.001 to match
+  TB's sigma=1000, `min_feet_y_dist` tightened from 0.07 to 0.06 to
+  match TB's `close_feet_threshold`).  "True TB clone, scaled to WR
+  body."
+
+Compute budget preserved across all three smokes: 19,660,800
+transitions.  smoke7/8 used 1024 × 128 × 150; smoke8a/b use
+4096 × 20 × 240 (TB per-iter shape, same total).
+
+`ref_feet_z_track` is kept in both as the structural analog of TB's
+`feet_phase` (both reward foot-z tracking via `exp(-α × Δz²)` with
+α=1428.6 = 1/0.0007 matching TB's `feet_phase_tracking_sigma`).  The
+reference z differs: WR uses ZMP-prior foot-z, TB uses phase-derived
+expected height — but the reward shape is identical.
+
+`ref_body_quat_track` is also kept in smoke8b at TB's torso_quat
+weight (2.5).  The reference orientation (yaw-stationary identity)
+is what TB's `torso_quat` reward also uses — same target, slightly
+different label.
+
+### Tests
+
+`training/tests/test_config_load_smoke8ab.py` (13 tests):
+- smoke8a residual_base, PPO hyperparams (8 fields), compute budget,
+  log_std_init, reward family unchanged.
+- smoke8b residual_base, inherited Track A hyperparams, imitation
+  rewards disabled (10 weights == 0), TB-active rewards present
+  (9 weights at TB magnitudes), tracking sigma loosened, close-feet
+  threshold tightened.
+
+These tests fail loud at config-load time (sub-second) on any
+regression; they don't require running the env or burning compute.
+
+### Known caveats
+
+- **WR home pose is straight-legged** (`knee_pitch ≈ +2°`) vs TB's
+  pre-bent crouch (`-22°`).  With ±0.25 rad scale, WR has ~half TB's
+  knee-flex authority around home.  If smoke8a/b stall on stride
+  amplitude, the next lever is to re-derive the home keyframe with
+  TB-style pre-bend, NOT to widen the residual scale.
+- **No `ang_vel_z` reward in WR** for cmd-tracking heading (TB has
+  `ang_vel_z=1.5` for yaw cmd-tracking).  WR doesn't sample yaw
+  commands either, so this gap is consistent — but if we extend
+  smoke9 to include yaw, this needs an env-side reward addition.
+- **Sim timestep**: WR uses 0.002 s with 10 substeps; TB uses 0.005
+  with 4 substeps.  Same ctrl_dt (0.020); WR is 2.5× higher physics
+  fidelity but slower simulation.  Not a training-recipe issue but
+  worth flagging.
+- **Domain randomization scope**: TB randomizes the full motor model
+  (kp, kd, kd_min, tau_max, tau_brake_max, tau_q_dot_max, q_dot_max,
+  q_dot_tau_max, passive_active_ratio, plus damping/armature).  WR
+  randomizes friction, frictionloss, kp, mass, joint_offset,
+  backlash.  Less coverage on the motor side; expand if smoke8a/b
+  pass and we want sim2real-grade hardening.
+
+### Reference
+
+- `toddlerbot/locomotion/walk.gin:110-131` — TB active reward block
+- `toddlerbot/locomotion/ppo_config.py:14-46` — TB PPO defaults
+- `toddlerbot/locomotion/mjx_config.py:75-247` — TB env defaults
+- `training/configs/ppo_walking_v0201_smoke8.yaml` — smoke8 baseline
+  (home-base architecture, misattributed PPO hyperparams left in
+  place for repro of the original audit)
+
+---
+
 ## [v0.20.1-smoke8-tb-aligned-home-base-residual] - 2026-05-10: switch action-path base from `q_ref(t)` to `home_q_rad`; mirror TB's PPO architecture
 
 ### Context — smoke7 baseline (kept as comparison reference)

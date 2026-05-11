@@ -1,0 +1,295 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 8b — Track A + B: full TB-pure recipe
+# =============================================================================
+# Identical to smoke8a EXCEPT for the reward family, which is stripped
+# down to TB walk.gin's active reward set (no imitation block).
+#
+# What changed (vs smoke8a):
+#
+# Smoke8a kept WR's DeepMimic-style imitation reward block (ref_q_track,
+# ref_body_quat_track, ref_contact_match, torso_pos_xy, ref_feet_z_track).
+# TB walk.gin's active recipe does NOT use any of these — TB walks with
+# task + posture + a single foot-tracking reward + regularizers.  The
+# audit (training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit])
+# called this out as the largest reward-family divergence.
+#
+# Smoke8b strips the imitation block to test the cleanest possible TB
+# alignment.  Exact mapping from TB walk.gin:110-131 to WR weights:
+#
+# TB walk.gin                            -> WR smoke8b
+#   alive = 1.0                          -> alive: 1.0
+#   lin_vel_xy = 2.0 (sigma=1000)        -> cmd_forward_velocity_track: 2.0
+#                                           cmd_forward_velocity_alpha: 0.001
+#   torso_quat = 2.5                     -> ref_body_quat_track: 2.5
+#                                           (kept; reference is yaw-stationary
+#                                           prior, equivalent to TB's identity
+#                                           torso quat target)
+#   ang_vel_z = 1.5 (sigma=4)            -> (deferred — no direct WR equivalent)
+#   penalty_ang_vel_xy = 1.0             -> ang_vel_xy: 1.0
+#   penalty_action_rate = 2.0            -> action_rate: -2.0
+#   penalty_pose = 0.5 (per-joint)       -> penalty_pose: -0.5 (same per-joint
+#                                           weights, opposite sign convention)
+#   penalty_close_feet_xy = 10.0         -> feet_distance: 10.0
+#       (close_feet_threshold = 0.06)        (min_feet_y_dist: 0.06)
+#   feet_phase = 7.5 (sigma=0.0007)      -> ref_feet_z_track: 7.5
+#       (swing_height = 0.04)                (alpha: 1428.6 = 1/0.0007)
+#   penalty_feet_ori = 5.0               -> penalty_feet_ori: -5.0
+#
+# Reward terms in smoke8a that are zeroed in smoke8b (no TB equivalent
+# in walk.gin's active block):
+#   ref_q_track          (imitation; TB doesn't track joint angles directly)
+#   ref_contact_match    (imitation; no TB equivalent)
+#   torso_pos_xy         (TB has it commented out — path-integration is
+#                         the cmd-tracking term in TB)
+#   lin_vel_z            (TB has it commented out)
+#   feet_air_time        (TB has it commented out — replaced by feet_phase)
+#   feet_clearance       (TB has it commented out — replaced by feet_phase)
+#   torso_pitch_soft     (TB doesn't have a soft posture penalty;
+#                         penalty_pose handles posture)
+#   torso_roll_soft      (same)
+#   torque               (TB has motor_torque commented out)
+#   joint_velocity       (no TB equivalent in active recipe)
+#   slip                 (TB has feet_slip commented out;  set 0 here for
+#                         strictness — re-enable on M1 balance-issue branch)
+#
+# Note on ref_body_quat_track: kept under "TB-pure" because the
+# reference orientation (identity / yaw-stationary) IS what TB's
+# torso_quat reward also uses.  Same target, slightly different label.
+#
+# Note on q_ref still being computed: even with imitation rewards
+# disabled, the ZMP planner still runs and q_ref is still in the
+# observation (phase + foot trajectory) so the policy has a clock and
+# foot timing template.  This is a meaningful difference vs a fully
+# blind PPO run; we keep it because TB also has phase signal in obs
+# (sin/cos of t/cycle_time).
+#
+# Compute budget: same as smoke8a (4096 × 20 × 240 = 19.66M).
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke8b.yaml --verify
+#
+# See also:
+#   - training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit]
+#   - toddlerbot/locomotion/walk.gin (TB active reward block lines 110-131)
+#   - training/configs/ppo_walking_v0201_smoke8a.yaml (Track A only —
+#     keeps imitation block; this file removes it)
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke8b (TB hyperparams + TB-pure rewards, vx=0.20)"
+
+seed: 42
+
+# =============================================================================
+# Environment — same as smoke8a except feet_distance band uses TB threshold
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  # TB close_feet_threshold = 0.06 (walk.gin:125).  WR uses min_feet_y_dist
+  # as the lower bound of a band penalty.  Tighten to TB's value.
+  min_feet_y_dist: 0.06
+  max_feet_y_dist: 0.13
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  min_velocity: 0.0
+  max_velocity: 0.30
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  eval_velocity_cmd: 0.20
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+  loc_ref_offline_command_vx: 0.20
+
+  # smoke8 architecture: home-pose residual base
+  loc_ref_residual_base: home
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — same Track A hyperparams as smoke8a (TB-aligned)
+# =============================================================================
+ppo:
+  num_envs: 4096
+  rollout_steps: 20
+  iterations: 240
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke8a (TB-aligned)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — TB walk.gin:110-131 active block (Track B fix)
+# =============================================================================
+# Imitation rewards explicitly set to 0.  Other terms tuned to TB
+# magnitudes.  See header for full TB-walk.gin → WR mapping.
+reward_weights:
+  # ---- TB active task + posture rewards ----
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  # TB lin_vel_tracking_sigma = 1000 → WR alpha = 1/1000 = 0.001
+  cmd_forward_velocity_alpha: 0.001
+  # TB torso_quat = 2.5 (yaw-stationary identity target)
+  ref_body_quat_track: 2.5
+  # TB penalty_ang_vel_xy = 1.0
+  ang_vel_xy: 1.0
+  # TB penalty_action_rate = 2.0 (positive scale × negative function);
+  # WR sign convention is negative weight × positive squared sum.
+  action_rate: -2.0
+  # TB penalty_pose = 0.5 with per-joint weights (in env section above)
+  penalty_pose: -0.5
+  # TB penalty_close_feet_xy = 10.0; WR's feet_distance band penalty
+  # is the closest analog (close_feet_threshold matched in env section).
+  feet_distance: 10.0
+  # TB feet_phase = 7.5 (swing_height = 0.04, sigma = 0.0007); WR's
+  # ref_feet_z_track is the structural analog (foot-z tracking via
+  # exp(-α * Δz²)) with α = 1/sigma = 1428.6.
+  ref_feet_z_track: 7.5
+  ref_feet_z_track_alpha: 1428.6
+  # TB penalty_feet_ori = 5.0 (anti-tippy-toe via projected gravity)
+  penalty_feet_ori: -5.0
+
+  # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0  # held at smoke7 default; weight=0 disables term
+
+  # ---- Stab / shaping rewards TB doesn't have in active block ----
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke8b, tb_aligned_full, home_base, no_imitation]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
