@@ -298,6 +298,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
+        # smoke8 — residual base selector.  See
+        # training_runtime_config.LocomotionEnvConfig.loc_ref_residual_base
+        # for the contract.  Cached as a string here; the JAX home-pose
+        # tensor (_home_q_rad) is constructed below, after the joint-range
+        # arrays it depends on.
+        self._residual_base_mode = str(
+            getattr(self._config.env, "loc_ref_residual_base", "q_ref")
+        ).lower()
+        if self._residual_base_mode not in ("q_ref", "home"):
+            raise ValueError(
+                f"env.loc_ref_residual_base must be 'q_ref' or 'home'; "
+                f"got {self._residual_base_mode!r}"
+            )
+
         home_ctrl_list = clamp_home_ctrl(
             home_ctrl=get_home_ctrl_from_mj_model(
                 mj_model=self._mj_model,
@@ -338,6 +352,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dtype=jp.float32,
         )
         self._joint_half_spans = 0.5 * (self._joint_range_maxs - self._joint_range_mins)
+
+        # smoke8 — pre-clip the cached home pose to the joint range.  The
+        # raw default-pose ctrl can sit a few µrad outside the limit on
+        # some joints (calibration round-off); the residual compose
+        # clips on every step anyway, so pre-clipping makes the cached
+        # value byte-equal to what gets written under zero residual.
+        self._home_q_rad = jp.clip(
+            jp.asarray(self._default_joint_qpos, dtype=jp.float32),
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        )
 
         # Joint qpos / dof addrs in PolicySpec actuator order.
         actuator_qpos_addrs: List[int] = []
@@ -585,7 +610,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         policy_action: jax.Array,
         nominal_q_ref: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        """Absolute-mode residual compose: ``target_q = clip(q_ref + clip(a) * scale)``.
+        """Absolute-mode residual compose: ``target_q = clip(base_q + clip(a) * scale)``.
 
         ``policy_action`` is the residual command in PolicySpec [-1, 1]
         space (post-filter, post-delay).  Scaling is per-joint
@@ -593,19 +618,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         clipped to the joint range.  Returns
         ``(target_q_rad, residual_delta_q_rad)``.
 
+        Base selector (``env.loc_ref_residual_base``):
+          - ``"q_ref"`` (smoke7 default): ``base_q = nominal_q_ref(t)``.
+            PPO is anchored to the time-varying ZMP-derived trajectory.
+          - ``"home"`` (smoke8, TB-aligned): ``base_q = home_q_rad`` —
+            the constant default-pose ctrl.  Mirrors TB's
+            ``motor_target_legs = default_action + scale * action`` where
+            ``default_action`` is the home pose set ONCE at reset
+            (toddlerbot/locomotion/mjx_env.py:1543-1546).  ``nominal_q_ref``
+            still flows into reward terms (ref_q_track etc.) — only the
+            action-path base changes.
+
         zero-residual invariant: with ``policy_action == 0`` (and the filter's
         ``prev_action == 0``, set up by ``_make_initial_state``),
-        ``residual_delta_q == 0`` and ``target_q == q_ref`` exactly,
+        ``residual_delta_q == 0`` and ``target_q == base_q`` exactly,
         independent of ``action_filter_alpha``.  The legacy path
         filtered the composed target in policy-action space, so iter-0
-        bare-q_ref replay only held when ``alpha == 0``.
+        bare-base replay only held when ``alpha == 0``.
         """
         residual_delta_q = (
             jp.clip(jp.asarray(policy_action, dtype=jp.float32), -1.0, 1.0)
             * self._residual_q_scale_per_joint
         )
+        if self._residual_base_mode == "home":
+            base_q = self._home_q_rad
+        else:
+            base_q = jp.asarray(nominal_q_ref, dtype=jp.float32)
         target_q = jp.clip(
-            jp.asarray(nominal_q_ref, dtype=jp.float32) + residual_delta_q,
+            base_q + residual_delta_q,
             self._joint_range_mins,
             self._joint_range_maxs,
         ).astype(jp.float32)
@@ -1441,14 +1481,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qvel = jp.zeros(self._mj_model.nv)
         randomized_model = self._get_randomized_mjx_model(dr_params)
 
-        # Seed ctrl with the offline trajectory's frame-0 q_ref.  Under
-        # the residual-only filter contract (zero-residual invariant,
-        # was `G6`) the policy's residual
-        # command starts at zero, so the composed target on iter-0 is
-        # exactly q_ref0 — matching the ctrl we set here.
+        # Seed ctrl with the iter-0 base pose.  Under the residual-only
+        # filter contract (zero-residual invariant, was `G6`) the policy's
+        # residual command starts at zero, so the composed target on
+        # iter-0 is exactly base_q.  base_q is q_ref0 under the smoke7
+        # default and home_q_rad under smoke8 (loc_ref_residual_base="home").
         win0 = self._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
         q_ref0 = win0["q_ref"].astype(jp.float32)
-        ctrl_init = q_ref0
+        if self._residual_base_mode == "home":
+            ctrl_init = self._home_q_rad
+        else:
+            ctrl_init = q_ref0
         data = mjx.make_data(randomized_model)
         data = data.replace(
             qpos=qpos, qvel=qvel, ctrl=self._to_mj_ctrl(ctrl_init)

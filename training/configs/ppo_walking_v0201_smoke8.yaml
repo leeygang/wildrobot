@@ -1,0 +1,272 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 8 — TB-aligned residual-base architecture
+# =============================================================================
+# Identical to ppo_walking_v0201_smoke.yaml (smoke7) EXCEPT for the
+# action-path base.  See env.loc_ref_residual_base below.
+#
+# Why smoke8 is a separate contract:
+#
+# Smoke7 (offline-run-20260509_205444-i27lbhrh) failed every promotion
+# floor (mean_episode_length 29.3 vs 475 floor; cmd_vs_achieved 1.8x
+# over the 0.5x-vx ceiling; step_length 0.011 vs 0.030 floor).  The
+# diagnosis (see /tmp/smoke7_i27lbhrh_analysis.md) traced the failure
+# to a fundamental architectural mismatch with TB:
+#
+#   - WR smoke7 action path: motor_target = q_ref(t) + clip(action) * scale
+#     PPO is anchored to the time-varying ZMP-derived q_ref(t) with only
+#     +-0.25 rad of headroom.  Cross-check confirmed both WR's and TB's
+#     ZMP priors are open-loop unstable in physics (WR falls in 53 ctrl
+#     steps; TB falls in 39 ctrl steps under TB's own MotorController),
+#     so anchoring to an unstable q_ref(t) puts PPO in a basin no policy
+#     can escape inside the smoke compute budget.
+#
+#   - TB action path (toddlerbot/locomotion/mjx_env.py:1543-1546):
+#     motor_target_legs = default_action + action_scale * delayed_action
+#     where default_action is the home pose set ONCE at reset.  The ZMP
+#     reference still exists but only as a tracking-reward target —
+#     never as a hard action constraint.  PPO has full +-0.25 rad of
+#     authority around a STABLE home pose and is free to invent any gait
+#     that earns the tracking rewards.
+#
+# Smoke8 promotes WR's plumbing to TB's pattern by setting
+# env.loc_ref_residual_base: home (smoke7's default is "q_ref").  All
+# reward terms (ref_q_track, ref_feet_z_track, ref_contact_match, etc.)
+# continue to receive q_ref via the offline-window lookup — only the
+# action-path base changes.
+#
+# Compute budget: same as smoke7 (1024 envs * 128 rollout * 150 iter
+# = 1.97e7 policy decisions).  Holding compute constant lets the ep_len
+# / cmd_tracking metrics make a clean smoke7-vs-smoke8 architectural
+# comparison.
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke8.yaml --verify
+#
+# See also:
+#   - /tmp/smoke7_i27lbhrh_analysis.md   smoke7 failure analysis
+#   - /tmp/tb_bare_prior_replay_v2.py    TB bare-prior replay (39-step fall)
+#   - training/docs/v0201_env_wiring.md  env design
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke8 (vx=0.20, TB-aligned home-base residual)"
+
+seed: 42
+
+# =============================================================================
+# Environment — TB-aligned home-pose residual base
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  # Health / termination — same as smoke7
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
+
+  # Per-joint penalty_pose weights — same as smoke7
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # Multi-cmd curriculum — same as smoke7
+  min_velocity: 0.0
+  max_velocity: 0.30
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  eval_velocity_cmd: 0.20
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  # ---- v3 offline reference + v6 obs ----
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+  loc_ref_offline_command_vx: 0.20
+
+  # ---- Smoke8 — TB-aligned residual base ----
+  # smoke7 default: "q_ref" (anchor to time-varying ZMP trajectory).
+  # smoke8: "home" (anchor to constant default-pose, TB-style).
+  # The composed target_q is then home_q_rad + clip(action) * scale,
+  # mirroring TB's motor_target_legs = default_action + action_scale *
+  # delayed_action (mjx_env.py:1543-1546).  q_ref still flows into all
+  # reward terms via the offline-window lookup; only the action-path
+  # base changes.
+  loc_ref_residual_base: home
+
+  # Residual scale unchanged from smoke7 (TB-aligned +-0.25 rad on legs).
+  # Note: the per-joint scale now applies around the home pose, not the
+  # q_ref(t) trajectory — meaning PPO has +-0.25 rad of leg authority
+  # AROUND HOME, not around a moving reference.  This is exactly TB's
+  # action_scale=0.25 contract (mjx_config.py:103).
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  # ---- Domain randomization — same as smoke7 ----
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — same compute budget as smoke7
+# =============================================================================
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 150
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke7
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — same as smoke7
+# =============================================================================
+# Rationale unchanged: q_ref still flows through the offline window into
+# every reward term that uses it (ref_q_track, ref_body_quat_track,
+# ref_feet_z_track, ref_contact_match, torso_pos_xy, lin_vel_z,
+# ang_vel_xy, penalty_pose).  The TB-aligned home-base residual changes
+# only the ACTION path; the REWARD path is identical.  This isolates the
+# architectural variable (action-path base) for clean smoke7-vs-smoke8
+# comparison.
+reward_weights:
+  alive: 1.0
+  ref_q_track: 5.0
+  ref_body_quat_track: 2.5
+  torso_pos_xy: 2.0
+  lin_vel_z: 1.0
+  ang_vel_xy: 2.0
+  ref_contact_match: 1.0
+  cmd_forward_velocity_track: 2.0
+  action_rate: -1.0
+  torque: -0.001
+  joint_velocity: -0.0005
+  feet_air_time: 500.0
+  feet_clearance: 1.0
+  feet_distance: 1.0
+  torso_pitch_soft: 0.5
+  torso_roll_soft: 0.5
+  ref_feet_z_track: 5.0
+  ref_feet_z_track_alpha: 1428.6
+  penalty_pose: -0.5
+  penalty_feet_ori: -5.0
+  slip: 0.05
+  pitch_rate: 0.0
+  cmd_forward_velocity_alpha: 200.0
+  torso_pos_xy_alpha: 90.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke8, tb_aligned_home_base]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

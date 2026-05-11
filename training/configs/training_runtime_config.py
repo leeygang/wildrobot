@@ -149,6 +149,26 @@ class EnvConfig(Freezable):
     # fall back to the scalar loc_ref_residual_scale.
     loc_ref_residual_scale_per_joint: Dict[str, float] = field(default_factory=dict)
 
+    # v0.20.1 smoke8 — residual base selector.
+    #   "q_ref" - smoke7 default; target_q = q_ref(t) + residual.  PPO is
+    #             anchored to the time-varying ZMP-derived trajectory.
+    #             When the prior is not open-loop stable (the v0.20.1
+    #             reality at vx=0.20), PPO has only ±scale rad of
+    #             headroom around an unstable path and cannot escape it
+    #             — see smoke7 i27lbhrh failure analysis (29-step ep_len,
+    #             roll runaway).
+    #   "home"  - TB-aligned; target_q = home_pose + residual.  Mirrors
+    #             toddlerbot/locomotion/mjx_env.py:1543-1546 where
+    #             motor_target_legs = default_action + scale * action and
+    #             default_action is set ONCE at reset to the first frame's
+    #             motor_pos (the home pose).  ZMP/q_ref still flows
+    #             through window lookup and feeds tracking rewards
+    #             (ref_q_track, ref_feet_z_track, etc.) — only the
+    #             action-path base changes.  PPO has full ±scale rad of
+    #             authority around a stable home pose, free to invent
+    #             whatever gait earns tracking reward, exactly as TB does.
+    loc_ref_residual_base: str = "q_ref"
+
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
     # disk; otherwise the env builds an explicit one-bin library for

@@ -151,6 +151,8 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_residual_scale_per_joint=dict(
             env.get("loc_ref_residual_scale_per_joint", {})
         ),
+        # v0.20.1 smoke8 — residual base selector.  See dataclass docstring.
+        loc_ref_residual_base=str(env.get("loc_ref_residual_base", "q_ref")),
         # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
         loc_ref_offline_library_path=(
             None if env.get("loc_ref_offline_library_path") in (None, "")

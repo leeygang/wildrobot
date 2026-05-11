@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 _SMOKE_CFG = Path("training/configs/ppo_walking_v0201_smoke.yaml")
+_SMOKE8_CFG = Path("training/configs/ppo_walking_v0201_smoke8.yaml")
 if not _SMOKE_CFG.exists():
     pytest.skip(
         f"{_SMOKE_CFG.name} not found (v0.20.1 task #49)",
@@ -37,6 +38,20 @@ from training.envs.wildrobot_env import WildRobotEnv
 def env() -> WildRobotEnv:
     load_robot_config("assets/v2/mujoco_robot_config.json")
     cfg = load_training_config(str(_SMOKE_CFG))
+    cfg.freeze()
+    return WildRobotEnv(cfg)
+
+
+@pytest.fixture(scope="module")
+def env_home_base() -> WildRobotEnv:
+    """Smoke8 env: TB-aligned home-pose residual base.
+
+    Skips if the smoke8 yaml hasn't been added to the repo yet.
+    """
+    if not _SMOKE8_CFG.exists():
+        pytest.skip(f"{_SMOKE8_CFG.name} not found (smoke8 not added)")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    cfg = load_training_config(str(_SMOKE8_CFG))
     cfg.freeze()
     return WildRobotEnv(cfg)
 
@@ -430,5 +445,149 @@ def test_v6_proprio_history_does_not_duplicate_current_frame(
             "current step's post-step proprio.  A mismatch means the "
             "history is being rolled with the current bundle BEFORE "
             "the obs is built — duplicating the current frame."
+        ),
+    )
+
+
+# =============================================================================
+# Smoke8 (TB-aligned home-base residual) invariants
+# =============================================================================
+# These tests pin the `loc_ref_residual_base: home` contract: the action
+# path uses target_q = home_q_rad + scale * action while q_ref still
+# flows through the offline window into reward terms.  They are the
+# home-base analogues of tests #1, #2, #5 above.
+
+
+def test_smoke8_residual_base_flag_threaded(env_home_base: WildRobotEnv) -> None:
+    """The yaml flag must propagate end-to-end: the env's cached
+    `_residual_base_mode` must be exactly 'home' under smoke8.  Catches
+    config-loader regressions where the field defaults to 'q_ref' even
+    when the yaml asks for 'home'."""
+    assert env_home_base._residual_base_mode == "home", (
+        f"smoke8 env._residual_base_mode={env_home_base._residual_base_mode!r}; "
+        "yaml sets loc_ref_residual_base: home — flag did not propagate."
+    )
+    # Home pose should be a valid joint vector.
+    assert env_home_base._home_q_rad.shape == (env_home_base.action_size,)
+    assert np.all(np.isfinite(np.asarray(env_home_base._home_q_rad)))
+
+
+def test_smoke8_zero_action_target_q_equals_home(env_home_base: WildRobotEnv) -> None:
+    """Smoke8 G6-equivalent at the compose layer: with zero residual,
+    target_q == home_q_rad EXACTLY (within float32 round-off), even at
+    frames where q_ref(t) is moving.  This is the invariant that
+    differs from smoke7 — under home base, the action path is decoupled
+    from the moving ZMP trajectory."""
+    zero_action = jp.zeros(env_home_base.action_size, dtype=jp.float32)
+    home = np.asarray(env_home_base._home_q_rad).astype(np.float32)
+    # Sample steps where q_ref is moving (the prior advances each step).
+    for step_idx in (0, 5, 10, 20, 30, 49):
+        win = env_home_base._lookup_offline_window(jp.asarray(step_idx, dtype=jp.int32))
+        nominal_q_ref = win["q_ref"].astype(jp.float32)
+        target_q, _ = env_home_base._compose_target_q_from_residual(
+            policy_action=zero_action,
+            nominal_q_ref=nominal_q_ref,
+        )
+        np.testing.assert_allclose(
+            np.asarray(target_q),
+            home,
+            atol=1e-5,
+            err_msg=(
+                f"smoke8: target_q != home at step {step_idx}; "
+                "home-base contract violated"
+            ),
+        )
+
+
+def test_smoke8_target_q_decoupled_from_q_ref(env_home_base: WildRobotEnv) -> None:
+    """Sanity: the home base must NOT equal q_ref(t) at any moving frame
+    — otherwise the test above would coincidentally pass under smoke7's
+    q_ref base too.  Asserts q_ref drifts away from home over the first
+    50 steps so the decoupling test has actual signal to detect."""
+    home = np.asarray(env_home_base._home_q_rad).astype(np.float32)
+    max_drift = 0.0
+    for step_idx in range(50):
+        win = env_home_base._lookup_offline_window(jp.asarray(step_idx, dtype=jp.int32))
+        q_ref = np.asarray(win["q_ref"]).astype(np.float32)
+        max_drift = max(max_drift, float(np.max(np.abs(q_ref - home))))
+    assert max_drift > 0.05, (
+        f"q_ref stayed within {max_drift:.4f} rad of home over 50 steps; "
+        "the home-vs-q_ref decoupling test cannot detect a regression "
+        "if the two are effectively identical.  Pick later sample frames "
+        "or adjust the assertion."
+    )
+
+
+def test_smoke8_zero_action_applied_target_q_equals_home_under_full_step(
+    env_home_base: WildRobotEnv,
+) -> None:
+    """End-to-end: zero policy_action under the full step pipeline
+    (residual compose + filter + delay + ctrl write) must produce
+    applied_target_q == home_q_rad — even at moving-trajectory frames.
+    Mirrors test #5 above for the home-base contract."""
+    reset_fn = jax.jit(env_home_base.reset)
+    step_fn = jax.jit(env_home_base.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env_home_base.action_size, dtype=jp.float32)
+    perm = np.asarray(env_home_base._ctrl_mapper.policy_to_mj_order_jax)
+    home = np.asarray(env_home_base._home_q_rad).astype(np.float32)
+
+    # Advance to a step where q_ref is moving (so the test would catch
+    # any residual pull from q_ref into the action path).
+    found_moving_frame = False
+    for _ in range(20):
+        state = step_fn(state, zero_action)
+        if int(state.done) > 0:
+            pytest.skip("env terminated before reaching moving-trajectory frame")
+        step_idx = int(state.info[WR_INFO_KEY].loc_ref_offline_step_idx)
+        prev_q = np.asarray(env_home_base._lookup_offline_window(
+            jp.asarray(step_idx - 1, dtype=jp.int32))["q_ref"]).astype(np.float32)
+        curr_q = np.asarray(env_home_base._lookup_offline_window(
+            jp.asarray(step_idx, dtype=jp.int32))["q_ref"]).astype(np.float32)
+        if float(np.max(np.abs(curr_q - prev_q))) > 1e-3:
+            found_moving_frame = True
+            break
+    assert found_moving_frame, "did not reach moving q_ref frame within 20 steps"
+
+    ctrl_mj = np.asarray(state.data.ctrl).astype(np.float32)
+    applied_target_q = ctrl_mj[perm]
+    np.testing.assert_allclose(
+        applied_target_q,
+        home,
+        atol=1e-5,
+        err_msg=(
+            f"smoke8 home-base violation at step_idx={step_idx}: "
+            "zero action through the full step pipeline produced "
+            "applied_target_q != home_q_rad.  Either the flag is not "
+            "wired through reset's ctrl_init, or the step path is "
+            "still using q_ref as the residual base."
+        ),
+    )
+
+
+def test_smoke8_q_ref_still_flows_to_info(env_home_base: WildRobotEnv) -> None:
+    """Reward terms (ref_q_track etc.) depend on nominal_q_ref via the
+    offline window.  Even though the action path no longer consumes
+    q_ref, the env must still surface q_ref in WildRobotInfo for the
+    reward computation.  Catches an over-aggressive refactor that
+    drops q_ref from info entirely under the home-base mode."""
+    reset_fn = jax.jit(env_home_base.reset)
+    step_fn = jax.jit(env_home_base.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env_home_base.action_size, dtype=jp.float32)
+    state = step_fn(state, zero_action)
+    if int(state.done) > 0:
+        pytest.skip("env terminated before step 1; cannot probe info")
+    step_idx = int(state.info[WR_INFO_KEY].loc_ref_offline_step_idx)
+    expected = np.asarray(env_home_base._lookup_offline_window(
+        jp.asarray(step_idx, dtype=jp.int32))["q_ref"]).astype(np.float32)
+    actual = np.asarray(state.info[WR_INFO_KEY].nominal_q_ref).astype(np.float32)
+    np.testing.assert_allclose(
+        actual,
+        expected,
+        atol=1e-5,
+        err_msg=(
+            "smoke8: WildRobotInfo.nominal_q_ref out of sync with offline "
+            "window — reward terms that consume q_ref will see stale data"
         ),
     )
