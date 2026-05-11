@@ -96,8 +96,21 @@ def maybe_get_home_ctrl_from_training_config(
     training_cfg: Any,
     robot_cfg: Any,
 ) -> Optional[List[float]]:
+    """Populate ``policy_spec.robot.home_ctrl_rad`` when the runtime
+    needs it.  Two triggers:
+
+    1. ``action_mapping_id == "pos_target_home_v1"`` — the action
+       calibration ops use home_ctrl as the centering reference.
+    2. ``loc_ref_residual_base == "home"`` (smoke8) — V6EvalAdapter
+       needs the home pose to compose target_q under home base.  Without
+       this, native-MuJoCo eval of a smoke8 checkpoint silently falls
+       back to q_ref base, applying the smoke7 control contract.
+    """
     mapping_id = str(getattr(training_cfg.env, "action_mapping_id", "pos_target_rad_v1"))
-    if mapping_id != "pos_target_home_v1":
+    residual_base = str(
+        getattr(training_cfg.env, "loc_ref_residual_base", "q_ref")
+    ).lower()
+    if mapping_id != "pos_target_home_v1" and residual_base != "home":
         return None
 
     actuator_names = [str(item["name"]) for item in robot_cfg.actuated_joints]

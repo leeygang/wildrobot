@@ -565,6 +565,44 @@ def test_smoke8_zero_action_applied_target_q_equals_home_under_full_step(
     )
 
 
+def test_smoke8_residual_metric_is_zero_under_zero_action(
+    env_home_base: WildRobotEnv,
+) -> None:
+    """Critical G5/anti-exploit gate contract under home base.
+
+    The metric ``tracking/residual_q_abs_max`` must measure the policy's
+    displacement from the active base (= clip(action) * scale), NOT
+    abs(applied_target_q - q_ref).  Under home base the latter is
+    abs(home + delta - q_ref(t)) which has a non-zero baseline equal to
+    the q_ref drift away from home — that would corrupt G5 gates and
+    fire false residual-cap violations under bare zero-action play.
+
+    Smoke7 hid this confusion because under q_ref base
+    abs(target - q_ref) == abs(delta) by construction.  Smoke8 surfaces
+    it; this test pins the contract."""
+    reset_fn = jax.jit(env_home_base.reset)
+    step_fn = jax.jit(env_home_base.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env_home_base.action_size, dtype=jp.float32)
+    metric_idx = METRIC_INDEX["tracking/residual_q_abs_max"]
+
+    max_seen = 0.0
+    for _ in range(50):
+        state = step_fn(state, zero_action)
+        if int(state.done) > 0:
+            pytest.skip("env terminated before 50-step horizon")
+        max_seen = max(max_seen, float(state.metrics[METRICS_VEC_KEY][metric_idx]))
+
+    assert max_seen <= 1e-5, (
+        f"smoke8 home base: tracking/residual_q_abs_max peaked at "
+        f"{max_seen:.3e} over 50 zero-action steps; G5 contract requires "
+        f"<= 1e-5.  Likely cause: metric is computed as "
+        f"abs(applied_target_q - q_ref) instead of abs(residual_delta), "
+        f"which collapses to delta under q_ref base but logs the "
+        f"home-vs-q_ref drift under home base."
+    )
+
+
 def test_smoke8_q_ref_still_flows_to_info(env_home_base: WildRobotEnv) -> None:
     """Reward terms (ref_q_track etc.) depend on nominal_q_ref via the
     offline window.  Even though the action path no longer consumes

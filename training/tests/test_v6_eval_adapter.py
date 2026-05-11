@@ -589,3 +589,135 @@ def test_adapter_obs_history_matches_env_for_three_steps(smoke_setup) -> None:
                 f"  env     occupancy (oldest -> newest): {env_occ.tolist()}"
             ),
         )
+
+
+# =============================================================================
+# Smoke8 (TB-aligned home-base residual) parity
+# =============================================================================
+# These tests guard the adapter's home-base contract: smoke8 checkpoints
+# eval'd via visualize_policy.py must compose target_q with the same
+# base the env used during training.  Without these the adapter
+# silently falls back to q_ref base for ANY checkpoint, masking the
+# smoke8 architectural change at eval time.
+
+SMOKE8_YAML = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke8.yaml"
+)
+
+
+@pytest.fixture(scope="function")
+def smoke8_setup():
+    """smoke_setup analog for smoke8 (env.loc_ref_residual_base: home).
+
+    Skipped if the smoke8 yaml hasn't been added to the repo yet.
+    """
+    if not SMOKE8_YAML.exists():
+        pytest.skip(f"{SMOKE8_YAML.name} not found (smoke8 not added)")
+    cfg = load_training_config(str(SMOKE8_YAML))
+    robot_cfg_path = cfg.env.robot_config_path
+    if not Path(robot_cfg_path).is_absolute():
+        robot_cfg_path = PROJECT_ROOT / robot_cfg_path
+    robot_cfg = load_robot_config(str(robot_cfg_path))
+
+    cfg.env.domain_randomization_enabled = False
+    cfg.env.push_enabled = False
+    cfg.freeze()
+
+    scene_path = cfg.env.scene_xml_path
+    if not Path(scene_path).is_absolute():
+        scene_path = str(PROJECT_ROOT / scene_path)
+    mj_model = mujoco.MjModel.from_xml_path(str(scene_path))
+    mj_data = mujoco.MjData(mj_model)
+    if mj_model.nkey > 0:
+        mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
+    else:
+        mujoco.mj_resetData(mj_model, mj_data)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    policy_spec = build_policy_spec_from_training_config(
+        training_cfg=cfg, robot_cfg=robot_cfg, action_filter_alpha=0.0
+    )
+    sig = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        policy_spec=policy_spec,
+        foot_switch_threshold=cfg.env.foot_switch_threshold,
+    )
+    adapter = V6EvalAdapter(
+        training_cfg=cfg,
+        mj_model=mj_model,
+        policy_spec=policy_spec,
+        signals_adapter=sig,
+        action_dim=int(policy_spec.model.action_dim),
+    )
+    return {
+        "cfg": cfg,
+        "mj_model": mj_model,
+        "mj_data": mj_data,
+        "adapter": adapter,
+        "policy_spec": policy_spec,
+        "action_dim": int(policy_spec.model.action_dim),
+    }
+
+
+def test_smoke8_adapter_residual_base_flag_threaded(smoke8_setup) -> None:
+    """The adapter must read env.loc_ref_residual_base at init.  Catches
+    a silent fallback to q_ref base when the yaml asks for home — which
+    would mean visualize_policy.py applies the smoke7 control contract
+    to a smoke8 checkpoint.
+    """
+    s = smoke8_setup
+    assert s["adapter"]._residual_base_mode == "home", (
+        f"adapter._residual_base_mode = "
+        f"{s['adapter']._residual_base_mode!r}; smoke8 yaml sets "
+        "loc_ref_residual_base: home — flag not threaded into adapter."
+    )
+
+
+def test_smoke8_adapter_zero_action_writes_home_ctrl(smoke8_setup) -> None:
+    """Under home base + zero raw action, apply_action must write
+    home_q_rad to mj_data.ctrl (modulo PolicySpec→MJ ctrl-order
+    permutation).  This is the adapter's analog of the env's
+    ``test_smoke8_zero_action_applied_target_q_equals_home_under_full_step``.
+
+    With action_delay_steps=1 the very first apply_action sees
+    pending_action=zeros (filter zero in, zero out), so applied=zeros
+    and the composed target should be exactly home — independent of the
+    raw action passed in.  We pass raw=0.5*ones to make the assertion
+    sharper: if the adapter were silently using q_ref as base, the
+    output would not be byte-equal to home.
+    """
+    s = smoke8_setup
+    a = s["adapter"]
+    a.reset()
+
+    raw = 0.5 * np.ones(s["action_dim"], dtype=np.float32)
+    a.apply_action(s["mj_data"], raw)
+
+    # apply_action delayed mode: applied = pending_action = zeros, so
+    # residual_delta = 0 and target_q = home (regardless of raw).
+    home = a._home_q_rad
+    expected_ctrl = a._ctrl_mapper.to_mj_np(home)
+    actual_ctrl = np.asarray(s["mj_data"].ctrl, dtype=np.float32)
+    np.testing.assert_allclose(
+        actual_ctrl, expected_ctrl, atol=1e-5,
+        err_msg=(
+            "smoke8 adapter: zero applied-action under home base must "
+            "write home_q_rad to ctrl.  If actual_ctrl looks like "
+            "q_ref[1] instead, the adapter is using the wrong residual "
+            "base — visualize_policy.py would silently apply smoke7 "
+            "semantics to a smoke8 checkpoint."
+        ),
+    )
+
+
+def test_smoke7_adapter_residual_base_default_q_ref(smoke_setup) -> None:
+    """Smoke7 yaml (loc_ref_residual_base unset → defaults to 'q_ref')
+    must NOT regress to home base.  Catches an over-aggressive default
+    flip when extending the flag."""
+    s = smoke_setup
+    assert s["adapter"]._residual_base_mode == "q_ref", (
+        f"smoke7 adapter._residual_base_mode = "
+        f"{s['adapter']._residual_base_mode!r}; expected 'q_ref' (the "
+        "back-compat default).  Did the dataclass default flip?"
+    )

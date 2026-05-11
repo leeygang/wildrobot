@@ -1763,7 +1763,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action if self._action_delay_enabled else filtered_action
         )
 
-        applied_target_q, _residual_delta = self._compose_target_q_from_residual(
+        applied_target_q, applied_residual_delta = self._compose_target_q_from_residual(
             policy_action=applied_action,
             nominal_q_ref=nominal_q_ref,
         )
@@ -2040,11 +2040,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # zero under the placeholder-alive contract; Task #49 fills them
         # in with the imitation reward family.
         #
-        # Residual is measured against what the env *actually applied*
-        # (post action-filter and post action-delay), not the raw policy
-        # action.  Otherwise tracking/residual_q_abs_* would lie when
-        # action_filter_alpha > 0 or action_delay_steps == 1.
-        residual_q_abs = jp.abs(applied_target_q - nominal_q_ref)
+        # Residual is the policy's actual displacement from the active
+        # base — captured directly from _compose_target_q_from_residual,
+        # which returns clip(applied_action) * scale_per_joint regardless
+        # of base mode.  This is post action-filter and post action-delay
+        # because applied_action already reflects both.
+        #
+        # smoke7 used (applied_target_q - nominal_q_ref) which was
+        # equivalent only because the base WAS q_ref(t) — the difference
+        # collapsed to the residual delta.  Under smoke8 (home base) that
+        # form would log abs(home + delta - q_ref) instead of abs(delta),
+        # poisoning the G5 anti-exploit gates with a chronic non-zero
+        # baseline (q_ref drifts away from home over the cycle).  Use
+        # the compose function's returned delta instead — it's the same
+        # quantity in both modes by construction.
+        residual_q_abs = jp.abs(applied_residual_delta)
         terminal_metrics_dict = get_initial_env_metrics_jax(
             velocity_cmd=velocity_cmd,
             height=root_pose.height,

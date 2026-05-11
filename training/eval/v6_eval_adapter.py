@@ -142,9 +142,25 @@ class V6EvalAdapter:
             )
         self._action_delay_enabled = (delay_steps == 1)
 
+        # smoke8 — residual base selector.  Mirrors WildRobotEnv.__init__
+        # so native-MuJoCo eval composes target_q with the same base the
+        # training env used (q_ref(t) for smoke7, home for smoke8).
+        # Without this branch the adapter silently falls back to q_ref
+        # base regardless of the cfg, and a smoke8 checkpoint gets eval'd
+        # under the wrong control contract.
+        self._residual_base_mode = str(
+            getattr(self._cfg.env, "loc_ref_residual_base", "q_ref")
+        ).lower()
+        if self._residual_base_mode not in ("q_ref", "home"):
+            raise ValueError(
+                f"V6EvalAdapter: env.loc_ref_residual_base must be "
+                f"'q_ref' or 'home'; got {self._residual_base_mode!r}"
+            )
+
         self._init_offline_service()
         self._init_residual_scale()
         self._init_joint_ranges()
+        self._init_home_q_rad()
         self._init_ctrl_mapper()
         self.reset()
 
@@ -191,6 +207,41 @@ class V6EvalAdapter:
             joint_ranges.append((float(jrange[0]), float(jrange[1])))
         self._joint_min = np.array([r[0] for r in joint_ranges], dtype=np.float32)
         self._joint_max = np.array([r[1] for r in joint_ranges], dtype=np.float32)
+
+    def _init_home_q_rad(self) -> None:
+        """Cache the home-pose ctrl values, pre-clipped to joint range.
+
+        Mirrors WildRobotEnv._home_q_rad construction.  The env builds
+        ``_home_q_rad = clip(_cal.get_ctrl_for_default_pose(), j_min,
+        j_max)``; the equivalent for the adapter (which doesn't have
+        the calibration layer) is the policy spec's ``home_ctrl_rad``,
+        which the env populated from MJCF's home keyframe via
+        ``get_home_ctrl_from_mj_model + clamp_home_ctrl``.  Both sources
+        derive from MJCF key_qpos[0]; pre-clipping makes them
+        byte-identical at the zero-action invariant (test
+        ``test_smoke8_eval_adapter_zero_action_matches_env_home``).
+        """
+        if self._policy_spec.robot.home_ctrl_rad is None:
+            # Hard-fail under home base mode: there's no fallback that
+            # would silently produce the right control contract.
+            if self._residual_base_mode == "home":
+                raise ValueError(
+                    "V6EvalAdapter: env.loc_ref_residual_base='home' but "
+                    "policy_spec.robot.home_ctrl_rad is None.  The env "
+                    "must build the spec with home_ctrl_rad set; "
+                    "check WildRobotEnv.__init__ + build_policy_spec."
+                )
+            # In q_ref mode we never read this; use a safe placeholder.
+            self._home_q_rad = np.zeros(
+                len(self._policy_spec.robot.actuator_names), dtype=np.float32
+            )
+            return
+        home_rad = np.asarray(
+            self._policy_spec.robot.home_ctrl_rad, dtype=np.float32
+        )
+        self._home_q_rad = np.clip(
+            home_rad, self._joint_min, self._joint_max
+        ).astype(np.float32)
 
     def _init_ctrl_mapper(self) -> None:
         self._ctrl_mapper = CtrlOrderMapper(
@@ -377,8 +428,17 @@ class V6EvalAdapter:
         q_ref = np.asarray(win.q_ref, dtype=np.float32)
         clipped = np.clip(applied, -1.0, 1.0)
         residual = clipped * self._scale_per_joint
+        # smoke8 — base selector mirrors WildRobotEnv._compose_target_q
+        # _from_residual.  Without this branch a smoke8 checkpoint would
+        # be eval'd with the smoke7 control contract (wrong base), which
+        # would silently corrupt visualize_policy.py and any native-MuJoCo
+        # eval downstream of v6_eval_adapter.
+        if self._residual_base_mode == "home":
+            base_q = self._home_q_rad
+        else:
+            base_q = q_ref
         target_q = np.clip(
-            q_ref + residual, self._joint_min, self._joint_max
+            base_q + residual, self._joint_min, self._joint_max
         ).astype(np.float32)
         ctrl_mj = self._ctrl_mapper.to_mj_np(target_q)
         mj_data.ctrl[:] = np.asarray(ctrl_mj, dtype=np.float32)

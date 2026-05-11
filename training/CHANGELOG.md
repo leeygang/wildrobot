@@ -8,6 +8,138 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke8-tb-aligned-home-base-residual] - 2026-05-10: switch action-path base from `q_ref(t)` to `home_q_rad`; mirror TB's PPO architecture
+
+### Context — smoke7 baseline (kept as comparison reference)
+
+`offline-run-20260509_205444-i27lbhrh` (smoke7) failed every promotion
+floor:
+
+| Metric | smoke7 result | Promotion floor | Verdict |
+|---|---|---|---|
+| `mean_episode_length` | 29.3 ctrl steps | ≥ 475 (95% of 500) | FAIL (16× under) |
+| `cmd_vs_achieved_forward` | 0.180 m/s | ≤ 0.10 (0.5×eval_vx) | FAIL (1.8× over) |
+| `step_length_touchdown_event_m` | 0.011 m | ≥ 0.030 | FAIL (2.7× under) |
+| `forward_velocity_cmd_ratio` | 0.540 | ∈ [0.6, 1.5] | FAIL (just under) |
+
+PPO regressed vs the bare q_ref prior (29 ctrl-step survival vs 53
+under zero residual), ruling out "compute budget exhausted" as the
+cause.  The diagnostic chain (`/tmp/smoke7_i27lbhrh_analysis.md` +
+`/tmp/tb_bare_prior_replay_v2.py`) traced the failure to an
+architectural mismatch with TB:
+
+- **WR smoke7 action path**:
+  `motor_target = q_ref(t) + clip(action) × scale_per_joint`.
+  PPO is anchored to a time-varying ZMP-derived trajectory that is
+  itself open-loop unstable in physics (WR bare prior falls in 53
+  ctrl steps; **TB bare prior falls in 39 ctrl steps under TB's own
+  MotorController** — both priors are equally unstable).  PPO has only
+  ±0.25 rad of headroom around an unstable path and cannot escape it
+  inside the smoke compute budget.
+- **TB action path**
+  (`toddlerbot/locomotion/mjx_env.py:1543-1546`):
+  `motor_target_legs = default_action + action_scale × delayed_action`
+  where `default_action` is the home pose set ONCE at reset
+  (`mjx_env.py:1221`).  ZMP enters only as a tracking-reward target,
+  never as a hard action constraint.  PPO has full ±0.25 rad of
+  authority around a STABLE home pose.
+
+### Patch — `env.loc_ref_residual_base: "q_ref" | "home"` flag
+
+Promote WR's plumbing to TB's pattern by adding a config flag.
+Default `"q_ref"` preserves smoke7 byte-for-byte; smoke8 sets `"home"`.
+
+- `training/configs/training_runtime_config.py`: dataclass field +
+  contract docstring.
+- `training/configs/training_config.py`: yaml→dataclass parser entry.
+- `training/envs/wildrobot_env.py`:
+  - cache `_residual_base_mode` (str) and `_home_q_rad` (jp.array,
+    pre-clipped to joint range) at init.
+  - `_compose_target_q_from_residual` branches on the flag to choose
+    `home_q_rad` vs `nominal_q_ref` as the base.
+  - reset's `ctrl_init` matches the chosen base (so iter-0 with
+    action=0 produces the same physics state as steady-state zero
+    residual).
+  - **G5 metric correction** — `tracking/residual_q_abs_*` and the per-
+    joint G5 gates now use `applied_residual_delta` (returned by
+    compose) instead of `abs(applied_target_q - nominal_q_ref)`.  The
+    old form collapsed to `abs(delta)` only under q_ref base; under
+    home base it would log `abs(home + delta - q_ref(t))`, poisoning
+    the G5 anti-exploit gates with a chronic non-zero baseline.
+- `training/eval/v6_eval_adapter.py`: mirror the env branch — read the
+  flag at init, cache home_q clipped to joint range, branch in
+  `apply_action`.  Without this, native-MuJoCo eval (visualize_policy.py
+  + downstream) would silently apply the smoke7 control contract to
+  smoke8 checkpoints.
+
+### Reward family — unchanged from smoke7
+
+`q_ref(t)` still flows through the offline window into all six
+ZMP-derived reward terms (`ref_q_track`, `ref_feet_z_track`,
+`ref_body_quat_track`, `ref_contact_match`, `torso_pos_xy`,
+`lin_vel_z`).  Only the action-path base changes; the reward path
+is identical.  This isolates the architectural variable for a clean
+smoke7-vs-smoke8 comparison.
+
+### Bare-policy probe — pre-training stability evidence
+
+Before any PPO training, ran action=0 through both smoke7 and smoke8
+envs (200-step horizon, otherwise-identical config):
+
+| | smoke7 (q_ref base) | smoke8 (home base) |
+|---|---|---|
+| Step 30 | pelvis_z=0.459, roll=+0.278 (16°) | pelvis_z=0.469, roll=-0.004 (0.2°) |
+| Step 50 | pelvis_z=0.343, roll=+0.909 (52°), falling | pelvis_z=0.470, roll=-0.003, stable |
+| Step 100 | terminated | pelvis_z=0.470, roll=-0.002, stable |
+| Step 190 | terminated | pelvis_z=0.470, roll=-0.002, stable |
+| Outcome | TERMINATED at step 53 (1.06 s, height_low after roll runaway) | SURVIVED 190+ steps (no drift, no termination) |
+
+Smoke8 provides the stable starting point PPO needs.  With action=0
+the robot stands at home pose; the steady-state pitch of -0.10 rad
+(5.7°) is the static balance point of the home-pose IK that PPO will
+learn to lift out of using its ±0.25 rad residual authority.
+
+### Tests
+
+`tests/test_v0201_env_zero_action.py` extended with 6 home-base
+invariant tests (config flag threading, `target_q == home` under zero
+residual at moving-trajectory frames, residual metric == 0 under zero
+action — pinning the G5 metric fix, `q_ref` still surfaced for reward
+consumption).
+
+`training/tests/test_v6_eval_adapter.py` extended with 3 adapter
+parity tests (smoke8 flag threaded, smoke8 zero-action writes home
+to ctrl, smoke7 default still maps to q_ref).
+
+### Known caveats — flagged for next iteration if smoke8 stalls
+
+WR's home keyframe has nearly straight legs (`knee_pitch ≈ +2°`),
+while TB's home is pre-bent (`knee = -22°`).  With ±0.25 rad budget,
+WR has roughly half TB's knee-flex authority for swing-leg ground
+clearance.  Sufficient for slow shuffle gait at vx=0.20 in principle,
+but if smoke8 stalls on `step_length_touchdown_event_m ≥ 0.030 m`
+the next lever is to re-derive the home keyframe with TB-style
+pre-bend (~0.3 rad knee crouch) — NOT to widen the residual scale.
+
+### Commits
+
+- `b0e4b98` — env flag + smoke8 yaml + zero-action invariant tests
+- follow-on commit — G5 metric fix, eval adapter parity, this entry
+
+### Reference
+
+- `/tmp/smoke7_i27lbhrh_analysis.md` — smoke7 failure analysis
+- `/tmp/tb_bare_prior_replay_v2.py` — TB bare-prior 39-step fall under
+  TB's own MotorController
+- `/tmp/probe_smoke8_bare.py` — smoke7-vs-smoke8 bare-policy probe
+- `toddlerbot/locomotion/mjx_env.py:1543-1546` — TB action path WR
+  alignment mirrors
+- `toddlerbot/locomotion/mjx_env.py:1221` — TB default_action source
+- ToddlerBot CoRL 2025: https://proceedings.mlr.press/v305/shi25a.html
+- DeepMimic (imitation + task reward framing): Peng et al. 2018
+
+---
+
 ## [v0.20.1-stance-tol-mujoco-precision] - 2026-05-09: bump `_STANCE_TOL_M` 3 → 5 mm (MuJoCo contact-compliance); retire allow-list; correct misdiagnosis
 
 ### Context
