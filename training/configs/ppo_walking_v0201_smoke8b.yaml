@@ -1,67 +1,82 @@
 # =============================================================================
-# WildRobot v0.20.1 PPO Smoke 8b — Track A + B: full TB-pure recipe
+# WildRobot v0.20.1 PPO Smoke 8b — Track A + B: TB-aligned reward family
 # =============================================================================
-# Identical to smoke8a EXCEPT for the reward family, which is stripped
-# down to TB walk.gin's active reward set (no imitation block).
+# Goal: faithful TB walk.gin clone (action path + PPO + rewards), scaled
+# to WR's body.  See smoke8a for "Track A only" (TB hyperparams + WR's
+# imitation rewards retained).
 #
-# What changed (vs smoke8a):
+# Audit-driven revision (CHANGELOG [v0.20.1-smoke8b-audit-fixes]):
 #
-# Smoke8a kept WR's DeepMimic-style imitation reward block (ref_q_track,
-# ref_body_quat_track, ref_contact_match, torso_pos_xy, ref_feet_z_track).
-# TB walk.gin's active recipe does NOT use any of these — TB walks with
-# task + posture + a single foot-tracking reward + regularizers.  The
-# audit (training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit])
-# called this out as the largest reward-family divergence.
+# Earlier draft of smoke8b had four substantive misalignments flagged
+# in code review.  This revision corrects all four:
 #
-# Smoke8b strips the imitation block to test the cleanest possible TB
-# alignment.  Exact mapping from TB walk.gin:110-131 to WR weights:
+# 1. cmd_forward_velocity_alpha: 0.001 → 1000.  TB and WR both use the
+#    SAME formula `exp(-sigma * err²)` (multiplicative); my earlier
+#    "TB sigma=1000 means exp(-err²/1000)" was wrong.  TB's sigma=1000
+#    is TIGHT tracking, not loose.  TB-equivalent alpha = 1000.  See
+#    `toddlerbot/locomotion/mjx_env.py:2346` and
+#    `training/envs/wildrobot_env.py:1014`.
 #
-# TB walk.gin                            -> WR smoke8b
-#   alive = 1.0                          -> alive: 1.0
-#   lin_vel_xy = 2.0 (sigma=1000)        -> cmd_forward_velocity_track: 2.0
-#                                           cmd_forward_velocity_alpha: 0.001
-#   torso_quat = 2.5                     -> ref_body_quat_track: 2.5
-#                                           (kept; reference is yaw-stationary
-#                                           prior, equivalent to TB's identity
-#                                           torso quat target)
-#   ang_vel_z = 1.5 (sigma=4)            -> (deferred — no direct WR equivalent)
-#   penalty_ang_vel_xy = 1.0             -> ang_vel_xy: 1.0
-#   penalty_action_rate = 2.0            -> action_rate: -2.0
-#   penalty_pose = 0.5 (per-joint)       -> penalty_pose: -0.5 (same per-joint
-#                                           weights, opposite sign convention)
-#   penalty_close_feet_xy = 10.0         -> feet_distance: 10.0
-#       (close_feet_threshold = 0.06)        (min_feet_y_dist: 0.06)
-#   feet_phase = 7.5 (sigma=0.0007)      -> ref_feet_z_track: 7.5
-#       (swing_height = 0.04)                (alpha: 1428.6 = 1/0.0007)
-#   penalty_feet_ori = 5.0               -> penalty_feet_ori: -5.0
+# 2. penalty_pose: kept active at -0.5, but env.loc_ref_penalty_pose_anchor
+#    is now "home" (vs default "q_ref").  WR's penalty_pose was secretly
+#    a joint-imitation penalty even when ref_q_track was disabled,
+#    because q_err = q_actual - q_ref(t).  TB's penalty_pose
+#    (mjx_env.py:2700-2703) anchors to default_motor_pos = constant
+#    home pose.  Smoke8b now matches TB exactly via the new env flag.
 #
-# Reward terms in smoke8a that are zeroed in smoke8b (no TB equivalent
-# in walk.gin's active block):
-#   ref_q_track          (imitation; TB doesn't track joint angles directly)
-#   ref_contact_match    (imitation; no TB equivalent)
-#   torso_pos_xy         (TB has it commented out — path-integration is
-#                         the cmd-tracking term in TB)
-#   lin_vel_z            (TB has it commented out)
-#   feet_air_time        (TB has it commented out — replaced by feet_phase)
-#   feet_clearance       (TB has it commented out — replaced by feet_phase)
-#   torso_pitch_soft     (TB doesn't have a soft posture penalty;
-#                         penalty_pose handles posture)
-#   torso_roll_soft      (same)
-#   torque               (TB has motor_torque commented out)
-#   joint_velocity       (no TB equivalent in active recipe)
-#   slip                 (TB has feet_slip commented out;  set 0 here for
-#                         strictness — re-enable on M1 balance-issue branch)
+# 3. feet_distance: → 0 (DISABLED).  WR's feet_distance is a positive
+#    smooth band reward over [min_y, max_y] (env line 1063).  TB's
+#    penalty_close_feet_xy (mjx_env.py:2710) is a binary -1.0 penalty
+#    when lateral foot distance < threshold, with NO upper-bound term.
+#    Different reward shape entirely.  Disabled in smoke8b until WR
+#    implements a true penalty_close_feet_xy term (see TODO in
+#    CHANGELOG; smoke9 candidate).
 #
-# Note on ref_body_quat_track: kept under "TB-pure" because the
-# reference orientation (identity / yaw-stationary) IS what TB's
-# torso_quat reward also uses.  Same target, slightly different label.
+# 4. ref_feet_z_track: → 0 (DISABLED).  WR's ref_feet_z_track tracks
+#    the ZMP-prior foot-z trajectory (env line 1125-1136) — still
+#    reference-imitation.  TB's feet_phase (walk_env.py:631) computes
+#    expected foot height from cycle phase, gates on command magnitude,
+#    and is NOT an imitation reward.  Disabled in smoke8b until WR
+#    implements a phase-derived feet_phase (see TODO in CHANGELOG).
 #
-# Note on q_ref still being computed: even with imitation rewards
-# disabled, the ZMP planner still runs and q_ref is still in the
-# observation (phase + foot trajectory) so the policy has a clock and
-# foot timing template.  This is a meaningful difference vs a fully
-# blind PPO run; we keep it because TB also has phase signal in obs
-# (sin/cos of t/cycle_time).
+# Net effect: smoke8b's active reward set drops from 9 to 5 terms.
+# This is intentionally minimal — only terms with a faithful TB
+# equivalent already implemented in WR's env.  The smoke result will
+# tell us whether 5 reward signals + the obs-side phase clock are
+# enough for PPO to learn walking from random init within the smoke
+# compute budget.  If not, the next iteration adds true feet_phase
+# and penalty_close_feet_xy implementations (smoke9).
+#
+# What's still in vs out (vs TB walk.gin:110-131 active block):
+#
+#   TB walk.gin term                  | smoke8b
+#   ----------------------------------+----------------------------------
+#   alive = 1.0                       | alive: 1.0                 ✓
+#   lin_vel_xy = 2.0 (sigma=1000)     | cmd_forward_velocity_track: 2.0
+#                                     |   alpha: 1000              ✓
+#   torso_quat = 2.5                  | ref_body_quat_track: 2.5
+#                                     |   (target IS identity quat,
+#                                     |    geodesic angle, alpha=20
+#                                     |    matches TB rot_tracking_sigma)
+#   penalty_ang_vel_xy = 1.0          | ang_vel_xy: 1.0            ✓
+#   penalty_action_rate = 2.0         | action_rate: -2.0          ✓
+#   penalty_pose = 0.5 + per-joint    | penalty_pose: -0.5
+#     weights, anchored to default    |   anchor: home (TB-aligned) ✓
+#   penalty_feet_ori = 5.0            | penalty_feet_ori: -5.0     ✓
+#   ang_vel_z = 1.5 (sigma=4)         | (no WR equivalent — yaw
+#                                     |  cmd-tracking deferred; WR
+#                                     |  doesn't sample yaw cmds)
+#   penalty_close_feet_xy = 10.0      | DISABLED — needs new env reward
+#                                     |  (WR feet_distance is shape-wrong)
+#   feet_phase = 7.5 (swing_height,   | DISABLED — needs new env reward
+#     sigma=0.0007)                   |  (WR ref_feet_z_track is
+#                                     |   ZMP-imitation, not phase-derived)
+#
+# Reward terms ALWAYS DISABLED in smoke8b (no TB equivalent in active
+# walk.gin block):
+#   ref_q_track, ref_contact_match, torso_pos_xy, lin_vel_z,
+#   feet_air_time, feet_clearance, torso_pitch_soft, torso_roll_soft,
+#   torque, joint_velocity, slip, pitch_rate
 #
 # Compute budget: same as smoke8a (4096 × 20 × 240 = 19.66M).
 #
@@ -70,10 +85,13 @@
 #     --config training/configs/ppo_walking_v0201_smoke8b.yaml --verify
 #
 # See also:
-#   - training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit]
-#   - toddlerbot/locomotion/walk.gin (TB active reward block lines 110-131)
-#   - training/configs/ppo_walking_v0201_smoke8a.yaml (Track A only —
-#     keeps imitation block; this file removes it)
+#   - training/CHANGELOG.md [v0.20.1-smoke8b-audit-fixes] (this revision)
+#   - training/CHANGELOG.md [v0.20.1-smoke8ab-tb-alignment-audit] (origin)
+#   - toddlerbot/locomotion/walk.gin:110-131 (TB active reward block)
+#   - toddlerbot/locomotion/mjx_env.py:2346 (TB lin_vel_xy reward)
+#   - toddlerbot/locomotion/mjx_env.py:2696 (TB penalty_pose, home-anchored)
+#   - toddlerbot/locomotion/mjx_env.py:2710 (TB penalty_close_feet_xy)
+#   - toddlerbot/locomotion/walk_env.py:631 (TB feet_phase)
 # =============================================================================
 version: "0.20.1"
 version_name: "v0.20.1 PPO smoke8b (TB hyperparams + TB-pure rewards, vx=0.20)"
@@ -81,7 +99,7 @@ version_name: "v0.20.1 PPO smoke8b (TB hyperparams + TB-pure rewards, vx=0.20)"
 seed: 42
 
 # =============================================================================
-# Environment — same as smoke8a except feet_distance band uses TB threshold
+# Environment — same as smoke8a + penalty_pose anchor=home (TB-aligned)
 # =============================================================================
 env:
   assets_root: assets/v2
@@ -103,11 +121,15 @@ env:
   torso_pitch_soft_max_rad: 0.2
   torso_roll_soft_min_rad: -0.1
   torso_roll_soft_max_rad: 0.1
-  # TB close_feet_threshold = 0.06 (walk.gin:125).  WR uses min_feet_y_dist
-  # as the lower bound of a band penalty.  Tighten to TB's value.
-  min_feet_y_dist: 0.06
+  # Held at WR defaults — feet_distance is DISABLED in smoke8b so the
+  # band thresholds don't matter.  Re-tightening to TB's
+  # close_feet_threshold = 0.06 will happen when WR implements a true
+  # penalty_close_feet_xy term (smoke9 candidate).
+  min_feet_y_dist: 0.07
   max_feet_y_dist: 0.13
 
+  # Per-joint pose weights — these are CONSUMED by penalty_pose.
+  # Weights match TB walk.gin:120-124 pattern.
   penalty_pose_weight_default: 0.0
   penalty_pose_weights_per_joint:
     left_hip_pitch: 0.01
@@ -140,6 +162,11 @@ env:
 
   # smoke8 architecture: home-pose residual base
   loc_ref_residual_base: home
+
+  # smoke8b: penalty_pose anchors to home (TB-aligned), NOT q_ref(t).
+  # Without this, penalty_pose would be a hidden joint-imitation penalty
+  # even with ref_q_track=0.  See TB mjx_env.py:2700-2703.
+  loc_ref_penalty_pose_anchor: home
 
   loc_ref_residual_mode: absolute
   loc_ref_residual_scale: 0.20
@@ -216,35 +243,46 @@ networks:
     activation: elu
 
 # =============================================================================
-# Reward Weights — TB walk.gin:110-131 active block (Track B fix)
+# Reward Weights — TB walk.gin:110-131 mapping (Track B, audit-corrected)
 # =============================================================================
-# Imitation rewards explicitly set to 0.  Other terms tuned to TB
-# magnitudes.  See header for full TB-walk.gin → WR mapping.
+# 5 active terms with faithful TB equivalents already implemented in WR.
+# Two TB terms (penalty_close_feet_xy, feet_phase) deferred to smoke9
+# pending env reward-function additions.  See header for full mapping.
 reward_weights:
-  # ---- TB active task + posture rewards ----
+  # ---- TB active task + posture rewards (5 implemented) ----
   alive: 1.0
   cmd_forward_velocity_track: 2.0
-  # TB lin_vel_tracking_sigma = 1000 → WR alpha = 1/1000 = 0.001
-  cmd_forward_velocity_alpha: 0.001
-  # TB torso_quat = 2.5 (yaw-stationary identity target)
+  # TB lin_vel_tracking_sigma = 1000.  TB and WR formulas are both
+  # exp(-sigma * err²) — multiplicative.  TB-equivalent alpha = 1000.
+  cmd_forward_velocity_alpha: 1000.0
+  # TB torso_quat = 2.5 (yaw-stationary identity target; WR's
+  # ref_body_quat_track measures geodesic angle vs identity)
   ref_body_quat_track: 2.5
+  # WR ref_body_quat_alpha defaults to 20.0 = TB rot_tracking_sigma ✓
   # TB penalty_ang_vel_xy = 1.0
   ang_vel_xy: 1.0
-  # TB penalty_action_rate = 2.0 (positive scale × negative function);
-  # WR sign convention is negative weight × positive squared sum.
+  # TB penalty_action_rate = 2.0 (sign convention diff)
   action_rate: -2.0
-  # TB penalty_pose = 0.5 with per-joint weights (in env section above)
+  # TB penalty_pose = 0.5 with per-joint weights (in env section above).
+  # env.loc_ref_penalty_pose_anchor: home above ⟹ TB-aligned anchor.
   penalty_pose: -0.5
-  # TB penalty_close_feet_xy = 10.0; WR's feet_distance band penalty
-  # is the closest analog (close_feet_threshold matched in env section).
-  feet_distance: 10.0
-  # TB feet_phase = 7.5 (swing_height = 0.04, sigma = 0.0007); WR's
-  # ref_feet_z_track is the structural analog (foot-z tracking via
-  # exp(-α * Δz²)) with α = 1/sigma = 1428.6.
-  ref_feet_z_track: 7.5
-  ref_feet_z_track_alpha: 1428.6
   # TB penalty_feet_ori = 5.0 (anti-tippy-toe via projected gravity)
   penalty_feet_ori: -5.0
+
+  # ---- TB rewards NOT implemented in WR — disabled with TODO ----
+  # TB penalty_close_feet_xy = 10.0 needs a binary -1.0 penalty when
+  # lateral foot distance < close_feet_threshold (mjx_env.py:2710).
+  # WR's feet_distance is a positive smooth band reward over
+  # [min_y, max_y] (wildrobot_env.py:1063) — different shape entirely.
+  # Disabled here; implement a true penalty_close_feet_xy in smoke9.
+  feet_distance: 0.0
+  # TB feet_phase = 7.5 needs phase-derived expected foot height
+  # (walk_env.py:631).  WR's ref_feet_z_track tracks the ZMP-prior
+  # foot-z trajectory (wildrobot_env.py:1125-1136) — still
+  # imitation-reference, not phase-derived.  Disabled here; implement
+  # phase-derived feet_phase in smoke9.
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6  # held at smoke7 default; weight=0 disables term
 
   # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
   ref_q_track: 0.0

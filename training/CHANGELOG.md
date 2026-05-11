@@ -8,6 +8,140 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke8b-audit-fixes] - 2026-05-10: correct 4 reviewer-flagged TB-alignment bugs in smoke8b
+
+### Context — code review findings
+
+Reviewer audit of the original smoke8b yaml (commit `d7245b0`) found
+four substantive misalignments that would have made it train under
+the wrong reward semantics, NOT a faithful TB clone:
+
+**P1: `cmd_forward_velocity_alpha = 0.001` was inverted.**
+
+I assumed TB's `lin_vel_tracking_sigma=1000` meant `exp(-err²/sigma)`
+(division), giving alpha=1/sigma=0.001.  TB actually uses
+`exp(-sigma * err²)` (multiplication, see
+`toddlerbot/locomotion/mjx_env.py:2346`).  WR uses the same
+multiplicative form (`wildrobot_env.py:1014`).  TB-equivalent
+alpha = TB sigma = **1000**, not 0.001.
+
+Impact had this shipped: at 0.1 m/s velocity error,
+- TB sigma=1000 → reward ≈ exp(-10) ≈ 4.5e-5 (tight, strong gradient)
+- alpha=0.001 → reward ≈ exp(-1e-5) ≈ 0.99999 (basically flat,
+  zero gradient)
+
+The smoke would have given PPO essentially no velocity-tracking
+signal.  Six orders of magnitude wrong.
+
+**P1: `penalty_pose` was secretly a hidden joint-imitation reward.**
+
+WR's `penalty_pose` (`wildrobot_env.py:1140`) computes
+`q_err = q_actual - q_ref(t)` — i.e. it penalizes deviation from the
+moving ZMP trajectory.  TB's `penalty_pose` (`mjx_env.py:2700`) uses
+`q_actual - default_motor_pos` — anchored to the constant home pose.
+
+Setting `ref_q_track=0` in smoke8b disabled the explicit imitation
+reward, but `penalty_pose=-0.5` was still a joint-imitation penalty
+under the hood.  Required new env flag to anchor to home.
+
+**P2: `feet_distance: 10.0` is not TB's `penalty_close_feet_xy`.**
+
+WR's `feet_distance` (`wildrobot_env.py:1063`) is a positive smooth
+band reward over `[min_feet_y_dist, max_feet_y_dist]` — rewards
+being IN the band.  TB's `penalty_close_feet_xy`
+(`mjx_env.py:2710`) is a binary `-1.0` penalty when lateral foot
+distance falls below a threshold, with no upper-bound term.
+Different mechanism entirely.
+
+**P2: `ref_feet_z_track: 7.5` is not TB's `feet_phase`.**
+
+WR's `ref_feet_z_track` (`wildrobot_env.py:1125`) tracks the ZMP
+prior's foot-z trajectory — still reference-imitation.  TB's
+`feet_phase` (`walk_env.py:631`) computes expected foot height from
+cycle phase, gates on command magnitude, applies a height bonus —
+NOT an imitation reward.
+
+### Patch — env code change + smoke8b yaml correction
+
+**Env code change (small, scoped):**
+
+Added `env.loc_ref_penalty_pose_anchor: "q_ref" | "home"` flag.
+Default `"q_ref"` preserves smoke7/8/8a behavior byte-for-byte.
+When `"home"`, `penalty_pose` computes `q_err = q_actual - home_q_rad`
+(constant home anchor, TB-aligned).
+
+- `training/configs/training_runtime_config.py`: dataclass field +
+  contract docstring
+- `training/configs/training_config.py`: yaml→dataclass parser entry
+- `training/envs/wildrobot_env.py`:
+  - cache `_penalty_pose_anchor_mode` at init (validates against
+    `{"q_ref", "home"}`)
+  - branch `q_err_pp` in penalty_pose computation block
+
+**smoke8b yaml corrections:**
+
+- `cmd_forward_velocity_alpha: 0.001 → 1000.0` (P1 sigma fix)
+- `loc_ref_penalty_pose_anchor: home` (new flag, TB-aligned)
+- `feet_distance: 10.0 → 0.0` (P2: WR implementation is shape-wrong)
+- `ref_feet_z_track: 7.5 → 0.0` (P2: WR implementation is imitation-based)
+- `min_feet_y_dist: 0.06 → 0.07` (reverted; band thresholds don't matter
+  with `feet_distance=0`; will tighten when smoke9 implements true
+  `penalty_close_feet_xy`)
+
+Net effect: smoke8b's active reward set drops from 9 to 5 implemented
+TB-equivalent terms.  This is intentionally minimal — only terms with
+a faithful TB analog already implemented in WR's env.
+
+### Active reward terms in corrected smoke8b
+
+| TB walk.gin term | smoke8b mapping |
+|---|---|
+| `alive = 1.0` | `alive: 1.0` ✓ |
+| `lin_vel_xy = 2.0 (sigma=1000)` | `cmd_forward_velocity_track: 2.0` + `cmd_forward_velocity_alpha: 1000.0` ✓ |
+| `torso_quat = 2.5` | `ref_body_quat_track: 2.5` (geodesic angle vs identity, alpha=20 default = TB rot_tracking_sigma) ✓ |
+| `penalty_ang_vel_xy = 1.0` | `ang_vel_xy: 1.0` ✓ |
+| `penalty_action_rate = 2.0` | `action_rate: -2.0` ✓ (sign convention) |
+| `penalty_pose = 0.5 + per-joint, anchored to default` | `penalty_pose: -0.5` + per-joint weights + `loc_ref_penalty_pose_anchor: home` ✓ |
+| `penalty_feet_ori = 5.0` | `penalty_feet_ori: -5.0` ✓ (sign convention) |
+
+### TB rewards deferred to smoke9 (not implemented in WR)
+
+| TB term | Why deferred |
+|---|---|
+| `penalty_close_feet_xy = 10.0` | Needs new env reward: binary `-1.0` when `lateral_foot_dist < threshold` (no upper bound).  WR's `feet_distance` is shape-wrong. |
+| `feet_phase = 7.5` | Needs new env reward: phase-derived expected foot height (`walk_env.py:631`).  WR's `ref_feet_z_track` is ZMP-imitation. |
+| `ang_vel_z = 1.5` | No WR equivalent for yaw cmd-tracking; WR doesn't sample yaw commands either, so consistent gap.  Add for smoke9 if extending to yaw cmds. |
+
+### Tests
+
+- 14 contract tests in `test_config_load_smoke8ab.py` updated:
+  - `test_smoke8b_tracking_sigma_matches_tb` now asserts `alpha=1000.0`
+  - new `test_smoke8b_penalty_pose_anchor_is_home`
+  - new `test_smoke8b_non_tb_aligned_foot_rewards_disabled`
+  - `test_smoke8b_close_feet_threshold_matches_tb` removed (band
+    threshold doesn't matter when `feet_distance=0`)
+  - `test_smoke8b_tb_active_rewards_present` updated mapping
+- 14 env tests in `test_v0201_env_zero_action.py` still pass (the
+  anchor flag defaults to "q_ref", preserving smoke7/8 byte-for-byte)
+
+### Commits
+
+- `d7245b0` — original smoke8a/8b creation (with the 4 bugs above)
+- follow-on commit — this audit fix
+
+### Reference
+
+- `toddlerbot/locomotion/mjx_env.py:2346` — TB lin_vel_xy reward
+  (multiplicative sigma)
+- `toddlerbot/locomotion/mjx_env.py:2696-2707` — TB penalty_pose
+  (anchored to default_motor_pos)
+- `toddlerbot/locomotion/mjx_env.py:2710` — TB penalty_close_feet_xy
+  (binary close-feet penalty)
+- `toddlerbot/locomotion/walk_env.py:631` — TB feet_phase
+  (phase-derived expected height)
+
+---
+
 ## [v0.20.1-smoke8ab-tb-alignment-audit] - 2026-05-10: full TB-alignment audit; create smoke8a (Track A: TB hyperparams) + smoke8b (Track A + B: TB-pure rewards)
 
 ### Context — audit findings

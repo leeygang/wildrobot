@@ -187,6 +187,12 @@ def test_smoke8b_imitation_rewards_disabled(smoke8b_cfg) -> None:
 def test_smoke8b_tb_active_rewards_present(smoke8b_cfg) -> None:
     """Track B: keep TB walk.gin's active reward block at TB magnitudes.
     Mapping documented in smoke8b.yaml header.
+
+    Audit revision: feet_distance and ref_feet_z_track DISABLED here
+    (set to 0).  WR's implementations are not faithful TB analogs
+    (positive band reward vs binary close-feet penalty;
+    ZMP-imitation vs phase-derived foot height).  Implementing true
+    TB-equivalent terms is a smoke9 candidate.
     """
     rw = smoke8b_cfg.reward_weights
     expected = {
@@ -194,18 +200,17 @@ def test_smoke8b_tb_active_rewards_present(smoke8b_cfg) -> None:
         "alive": 1.0,
         # cmd_forward_velocity_track: TB lin_vel_xy = 2.0
         "cmd_forward_velocity_track": 2.0,
-        # ref_body_quat_track: TB torso_quat = 2.5
+        # ref_body_quat_track: TB torso_quat = 2.5 (target IS identity quat,
+        # geodesic angle, alpha=20 default = TB rot_tracking_sigma)
         "ref_body_quat_track": 2.5,
         # ang_vel_xy: TB penalty_ang_vel_xy = 1.0
         "ang_vel_xy": 1.0,
         # action_rate: TB penalty_action_rate = 2.0 (sign convention diff)
         "action_rate": -2.0,
-        # penalty_pose: TB walk.gin = 0.5 (sign convention diff)
+        # penalty_pose: TB walk.gin = 0.5 (sign convention diff).
+        # See test_smoke8b_penalty_pose_anchor_is_home for the critical
+        # env flag that makes this term TB-aligned (anchor home, not q_ref).
         "penalty_pose": -0.5,
-        # feet_distance: TB penalty_close_feet_xy = 10.0
-        "feet_distance": 10.0,
-        # ref_feet_z_track: TB feet_phase = 7.5
-        "ref_feet_z_track": 7.5,
         # penalty_feet_ori: TB = 5.0 (sign convention diff)
         "penalty_feet_ori": -5.0,
     }
@@ -222,28 +227,71 @@ def test_smoke8b_tb_active_rewards_present(smoke8b_cfg) -> None:
 
 
 def test_smoke8b_tracking_sigma_matches_tb(smoke8b_cfg) -> None:
-    """TB lin_vel_tracking_sigma = 1000 ⇒ exp(-err²/1000).
-    WR formula: exp(-alpha * err²) ⇒ alpha = 1/sigma = 0.001.
+    """TB lin_vel_xy reward (mjx_env.py:2346) is
+    ``exp(-self.lin_vel_tracking_sigma * error**2)`` — multiplicative.
+    WR's formula (wildrobot_env.py:1014) is
+    ``exp(-cmd_forward_velocity_alpha * err²)`` — same form.
+    So TB-equivalent alpha = TB sigma = 1000.
 
-    smoke7/8 used alpha=200 (effective sigma=1/200=0.005), which is
-    ~450× tighter than TB.  smoke8b loosens to TB's 0.001.
+    smoke7/8 used alpha=200 (~5× looser than TB).  An earlier draft
+    of smoke8b set alpha=0.001 based on inverted dimensional
+    reasoning; this test pins the corrected value.
     """
     rw = smoke8b_cfg.reward_weights
-    assert rw.cmd_forward_velocity_alpha == 0.001, (
+    assert rw.cmd_forward_velocity_alpha == 1000.0, (
         f"smoke8b cmd_forward_velocity_alpha = "
-        f"{rw.cmd_forward_velocity_alpha}; expected 0.001 "
-        f"(= 1 / TB lin_vel_tracking_sigma=1000).  smoke7/8 used 200, "
-        f"which was ~450× tighter than TB."
+        f"{rw.cmd_forward_velocity_alpha}; expected 1000.0 "
+        f"(= TB lin_vel_tracking_sigma).  Both TB and WR use "
+        f"exp(-sigma * err²) — multiplicative — so alpha=sigma."
     )
 
 
-def test_smoke8b_close_feet_threshold_matches_tb(smoke8b_cfg) -> None:
-    """TB close_feet_threshold = 0.06 (walk.gin:125).  smoke7/8 used
-    min_feet_y_dist = 0.07 (which sets the lower bound of WR's
-    feet_distance band penalty).  smoke8b tightens to TB's 0.06.
+def test_smoke8b_penalty_pose_anchor_is_home(smoke8b_cfg) -> None:
+    """TB penalty_pose (mjx_env.py:2700-2703) anchors to default_motor_pos
+    (constant home), NOT to the moving reference.  WR's default
+    behavior is q_err = q_actual - q_ref(t) — that's a hidden
+    joint-imitation penalty even when ref_q_track is disabled.
+
+    smoke8b sets env.loc_ref_penalty_pose_anchor: home so the penalty
+    matches TB exactly (q_err = q_actual - home_q_rad).
     """
-    assert smoke8b_cfg.env.min_feet_y_dist == 0.06, (
-        f"smoke8b env.min_feet_y_dist = "
-        f"{smoke8b_cfg.env.min_feet_y_dist}; expected 0.06 (TB "
-        f"close_feet_threshold)."
+    assert smoke8b_cfg.env.loc_ref_penalty_pose_anchor == "home", (
+        f"smoke8b env.loc_ref_penalty_pose_anchor = "
+        f"{smoke8b_cfg.env.loc_ref_penalty_pose_anchor!r}; expected "
+        f"'home'.  Without this flag, penalty_pose is a hidden "
+        f"joint-imitation term against the ZMP trajectory — not "
+        f"TB-aligned even with ref_q_track=0."
     )
+
+
+def test_smoke8b_non_tb_aligned_foot_rewards_disabled(smoke8b_cfg) -> None:
+    """feet_distance and ref_feet_z_track are NOT faithful TB analogs:
+    - feet_distance (env:1063) = positive smooth band reward over
+      [min_y, max_y].  TB penalty_close_feet_xy (mjx_env.py:2710) =
+      binary -1.0 when distance < threshold, no upper bound.
+    - ref_feet_z_track (env:1125) tracks ZMP-prior foot-z.  TB
+      feet_phase (walk_env.py:631) is phase-derived expected height,
+      command-gated.  Different mechanisms.
+
+    Disabled in smoke8b until WR implements true TB-equivalent terms
+    (smoke9 candidate).  Setting these to nonzero in smoke8b would
+    silently re-introduce non-TB reward semantics.
+    """
+    rw = smoke8b_cfg.reward_weights
+    failures = []
+    if rw.feet_distance != 0.0:
+        failures.append(
+            f"  feet_distance = {rw.feet_distance}; must be 0 in smoke8b "
+            f"(WR implementation is shape-wrong vs TB penalty_close_feet_xy)"
+        )
+    if rw.ref_feet_z_track != 0.0:
+        failures.append(
+            f"  ref_feet_z_track = {rw.ref_feet_z_track}; must be 0 in "
+            f"smoke8b (WR implementation is ZMP-imitation, not TB's "
+            f"phase-derived feet_phase)"
+        )
+    if failures:
+        pytest.fail(
+            "smoke8b: foot rewards without faithful TB equivalents "
+            "must be disabled (set to 0):\n" + "\n".join(failures)
+        )

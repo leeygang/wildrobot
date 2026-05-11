@@ -311,6 +311,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"env.loc_ref_residual_base must be 'q_ref' or 'home'; "
                 f"got {self._residual_base_mode!r}"
             )
+        # smoke8b — penalty_pose anchor selector.  See
+        # training_runtime_config.LocomotionEnvConfig.loc_ref_penalty_pose_anchor
+        # for the contract.
+        self._penalty_pose_anchor_mode = str(
+            getattr(self._config.env, "loc_ref_penalty_pose_anchor", "q_ref")
+        ).lower()
+        if self._penalty_pose_anchor_mode not in ("q_ref", "home"):
+            raise ValueError(
+                f"env.loc_ref_penalty_pose_anchor must be 'q_ref' or 'home'; "
+                f"got {self._penalty_pose_anchor_mode!r}"
+            )
 
         home_ctrl_list = clamp_home_ctrl(
             home_ctrl=get_home_ctrl_from_mj_model(
@@ -1137,13 +1148,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # ---- penalty_pose -------------------------------------------
-        # Per-joint weighted (q_actual - q_ref)^2 sum.  Mirrors TB
-        # _reward_penalty_pose with RewardsConfig.pose_weights
-        # (walk.gin:120-124), heavy on hip_yaw / ankle_roll for drift
-        # suppression (WR has no hip_yaw; weights configured per-joint
-        # in env.penalty_pose_weights_per_joint).  q_err already
-        # computed above for ref_q_track.
-        penalty_pose = jp.sum(self._pose_weights_per_joint * q_err * q_err)
+        # Per-joint weighted (q_actual - anchor)^2 sum.  Mirrors TB
+        # _reward_penalty_pose (mjx_env.py:2696-2707) which uses
+        # default_motor_pos as the anchor — i.e. the constant home pose,
+        # NOT the time-varying reference.
+        #
+        # Anchor is selected by env.loc_ref_penalty_pose_anchor:
+        #   "q_ref" (default, smoke7/8/8a): q_err = q_actual - q_ref(t).
+        #     This is reference-imitation: the policy is rewarded for
+        #     matching the moving ZMP trajectory.  Useful when the
+        #     imitation reward family is active (smoke7/8/8a).  NOTE
+        #     that this differs from TB even when ref_q_track is
+        #     disabled — it's a hidden joint-imitation term.
+        #   "home" (smoke8b): q_err_pp = q_actual - home_q_rad.  Matches
+        #     TB exactly: penalizes deviation from the static crouch
+        #     pose, NOT from the gait reference.  Required for honest
+        #     "TB-pure" reward semantics in smoke8b.
+        if self._penalty_pose_anchor_mode == "home":
+            q_err_pp = q_actual - self._home_q_rad
+        else:
+            q_err_pp = q_err
+        penalty_pose = jp.sum(self._pose_weights_per_joint * q_err_pp * q_err_pp)
 
         # ---- penalty_feet_ori (anti-tippy-toe) ----------------------
         # Penalize foot rotation away from flat using projected gravity

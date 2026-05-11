@@ -169,6 +169,18 @@ class EnvConfig(Freezable):
     #             whatever gait earns tracking reward, exactly as TB does.
     loc_ref_residual_base: str = "q_ref"
 
+    # v0.20.1 smoke8b — penalty_pose anchor selector.
+    #   "q_ref" - smoke7/8/8a default; q_err = q_actual - q_ref(t).  This
+    #             is reference-imitation: penalizes the actual joint angles
+    #             for deviating from the time-varying ZMP trajectory.
+    #   "home"  - TB-aligned (toddlerbot/locomotion/mjx_env.py:2696-2707);
+    #             q_err = q_actual - home_q_rad.  Penalizes deviation from
+    #             the constant default pose, NOT from the moving reference.
+    #             Required for honest "TB-pure" reward semantics — under
+    #             "q_ref" anchor, penalty_pose is a hidden joint-imitation
+    #             reward even when ref_q_track is disabled.
+    loc_ref_penalty_pose_anchor: str = "q_ref"
+
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
     # disk; otherwise the env builds an explicit one-bin library for
