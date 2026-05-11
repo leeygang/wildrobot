@@ -33,16 +33,17 @@ def test_smoke9_loads(smoke9_cfg) -> None:
 
 def test_smoke9_inherits_smoke8b_architecture(smoke9_cfg) -> None:
     """Smoke9 keeps smoke8b's architectural choices: home-base residual,
-    home-anchored penalty_pose, TB-aligned PPO hyperparams.  Only the
-    reward family expands."""
+    home-anchored penalty_pose, TB-compatible 12GB-safe PPO shape.
+    Only the reward family expands."""
     env = smoke9_cfg.env
     assert env.loc_ref_residual_base == "home"
     assert env.loc_ref_penalty_pose_anchor == "home"
     ppo = smoke9_cfg.ppo
     assert ppo.learning_rate == 3.0e-5
     assert ppo.entropy_coef == 5.0e-4
-    assert ppo.num_envs == 4096
+    assert ppo.num_envs == 2048
     assert ppo.rollout_steps == 20
+    assert ppo.iterations == 480
     assert ppo.gamma == 0.97
     assert ppo.max_grad_norm == 1.0
 
@@ -141,7 +142,7 @@ def test_smoke9_imitation_and_extras_disabled(smoke9_cfg) -> None:
 
 
 def test_smoke9_compute_budget_preserved(smoke9_cfg) -> None:
-    """Same compute as smoke7/8/8a/8b: 4096 × 20 × 240 = 19,660,800."""
+    """Same compute as smoke7/8/8a/8b: 2048 × 20 × 480 = 19,660,800."""
     ppo = smoke9_cfg.ppo
     total = ppo.num_envs * ppo.rollout_steps * ppo.iterations
     assert total == 19_660_800, (

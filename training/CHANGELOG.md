@@ -149,7 +149,11 @@ near upright), smoke9 has the same reward landscape TB walks with.
 
 ### Compute budget
 
-Same as smoke7/8/8a/8b: 4096 × 20 × 240 = 19,660,800 transitions.
+Same as smoke8a/8b after the 12GB-safe reshape:
+2048 × 20 × 480 = 19,660,800 transitions.  TB's exact 4096-env batch
+width remains the reference, but smoke9 uses 2048 envs locally to avoid
+the known RTX 5070 12GB XLA compile headroom problem while preserving
+TB's short rollout and optimizer hyperparameters.
 
 ### Commits
 
@@ -167,6 +171,146 @@ Same as smoke7/8/8a/8b: 4096 × 20 × 240 = 19,660,800 transitions.
 - `toddlerbot/locomotion/walk_env.py:583` — _expected_foot_height
 - `toddlerbot/locomotion/walk_env.py:631` — feet_phase
 - `toddlerbot/locomotion/walk_env.py:697` — penalty_feet_ori
+
+---
+
+## [v0.20.1-smoke8a-partial-stop] - 2026-05-11: pause smoke8a at 73% after stable backward-fall failure
+
+### Run
+
+- W&B: `training/wandb/offline-run-20260510_220222-ecgt6dvr`
+- Checkpoints: `training/checkpoints/ppo_walking_v0201_smoke8a_v00201_20260510_220226-ecgt6dvr`
+- Last checkpoint: `checkpoint_350_14336000.pkl`
+- Progress: `350 / 480` iterations, `14,336,000 / 19,660,800`
+  transitions (`72.9%`)
+- Action taken: paused the live process after checkpoint 350.  `SIGINT`
+  did not interrupt the JAX loop; `SIGTERM` stopped the process group.
+
+### Result
+
+Smoke8a is a clear fail and was stopped early.  The run moved from a
+longer initial unstable rollout to a stable bad attractor by about
+iteration 100, then stayed there through iteration 350:
+
+| Iter | Eval len | Eval vx | Eval cmd error | Eval reward | G4 step len |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 281.8 | -0.032 | 0.232 | -112.6 | -0.0001 |
+| 100 | 32.7 | -0.663 | 0.863 | -72.5 | -0.0107 |
+| 200 | 30.3 | -0.662 | 0.862 | -50.6 | -0.0121 |
+| 300 | 29.5 | -0.648 | 0.848 | -45.5 | -0.0113 |
+| 350 | 29.4 | -0.659 | 0.859 | -43.6 | -0.0113 |
+
+G4/G5 at iter 350:
+
+| Gate | Value | Requirement | Status |
+|---|---:|---:|---|
+| `Evaluate/forward_velocity` | -0.659 m/s | >= 0.075 | FAIL |
+| `Evaluate/mean_episode_length` | 29.4 | >= 475 | FAIL |
+| `Evaluate/cmd_vs_achieved_forward` | 0.859 m/s | <= 0.075 | FAIL |
+| `tracking/step_length_touchdown_event_m` | -0.0113 m | >= 0.030 | FAIL |
+| `tracking/forward_velocity_cmd_ratio` | -227.3 | 0.6..1.5 | FAIL |
+| `tracking/residual_q_abs_max` | 0.204 rad | diagnostic | near cap |
+
+Termination/stability:
+
+- `term_height_low_frac = 1.0`: all train rollouts terminate by low
+  height.
+- `eval_clean/done_env_frac = 1.0`: no eval rollouts truncate at the
+  horizon.
+- `eval_clean/term_height_low_frac = 1.0`: eval also dies by height.
+- `term_pitch_frac` remains high; posture is not recovering.
+
+### Diagnosis
+
+This is not a late-learning case.  From iter 100 onward the policy is
+consistently moving backward at about `-0.65 m/s`, falls in about 30
+steps, and does not improve the G4 metrics.  Continuing the remaining
+27% of compute would mostly burn GPU time.
+
+Code/config confirmation:
+
+- Actual run config used the intended 12GB-safe smoke8a PPO shape:
+  `num_envs: 2048`, `rollout_steps: 20`, `iterations: 480`,
+  `learning_rate: 3e-5`, `entropy_coef: 5e-4`, `gamma: 0.97`,
+  `num_minibatches: 16`.
+- Actual run config used the smoke8 home-base residual action:
+  `loc_ref_residual_base: home`.
+- Smoke8a still uses WR's imitation-heavy reward block:
+  `ref_q_track: 5.0`, `feet_air_time: 500.0`,
+  `cmd_forward_velocity_alpha: 200.0`, and
+  `loc_ref_penalty_pose_anchor: q_ref`.
+
+ToddlerBot comparison:
+
+- PPO optimizer/rollout settings match ToddlerBot except for the
+  deliberate 12GB-safe `num_envs: 2048` instead of TB's `4096`.
+- Smoke8a reward family intentionally does not match TB active
+  `walk.gin`: it keeps WR imitation rewards and sparse foot rewards.
+- Smoke9 is the better next run for the TB-alignment question because
+  it uses the same home action base and PPO shape, but replaces the WR
+  imitation block with TB-faithful walk rewards.
+
+### Decision
+
+Do not resume smoke8a.  Launch smoke9 next instead of spending more
+compute on smoke8a or smoke8b's known-incomplete reward set.
+
+---
+
+## [v0.20.1-smoke8ab-12gb-safe-shape] - 2026-05-10: update smoke8a/8b PPO batch shape for local GPU compile
+
+### Context — exact TB batch width overcompiled locally
+
+Smoke8a/8b originally used the exact TB PPO batch shape:
+
+```text
+4096 envs × 20 rollout × 240 iterations = 19,660,800 transitions
+```
+
+On the local RTX 5070 12GB GPU, XLA's `jit_train_iteration` compile
+for that shape emitted rematerialization warnings and a slow-compile
+alarm:
+
+- HLO memory only reduced from ~6.21GiB to ~6.14GiB, still above the
+  reported 5.34GiB floor.
+- Runtime GPU allocation during compile was observed around ~8.6GiB,
+  leaving too little headroom on a 12GB card.
+
+This is a hardware fit issue, not a reward or environment change.
+
+### Patch — preserve transitions, halve env batch width
+
+Update both TB-compatible smoke configs:
+
+| Config | Before | After | Total transitions |
+|---|---:|---:|---:|
+| `ppo_walking_v0201_smoke8a.yaml` | `4096 × 20 × 240` | `2048 × 20 × 480` | `19,660,800` |
+| `ppo_walking_v0201_smoke8b.yaml` | `4096 × 20 × 240` | `2048 × 20 × 480` | `19,660,800` |
+
+The following TB-aligned PPO choices remain unchanged:
+
+- `rollout_steps: 20`
+- `learning_rate: 3.0e-5`
+- `entropy_coef: 5.0e-4`
+- `gamma: 0.97`
+- `gae_lambda: 0.95`
+- `num_minibatches: 16`
+- `max_grad_norm: 1.0`
+- `log_std_init: -0.693147`
+
+The only intentional departure from TB's exact PPO shape is
+`num_envs: 2048` instead of `4096`, with `iterations` doubled to keep
+the smoke compute budget identical.
+
+### Tests
+
+Updated `training/tests/test_config_load_smoke8ab.py` to pin the new
+12GB-safe contract:
+
+- smoke8a/smoke8b `num_envs == 2048`
+- smoke8a/smoke8b `rollout_steps == 20`
+- smoke8a/smoke8b `iterations == 480`
+- total transitions remain exactly `19,660,800`
 
 ---
 

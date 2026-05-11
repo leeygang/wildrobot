@@ -3,9 +3,10 @@
 Smoke8a and smoke8b are TB-alignment variants of smoke8.  These tests
 pin the specific differences each variant promised:
 
-  - smoke8a (Track A): TB-aligned PPO hyperparameters (learning_rate,
-    entropy, num_envs, etc.) corrected from smoke7/8's misattributed
-    values.  Reward family unchanged from smoke8.
+  - smoke8a (Track A): TB-compatible PPO hyperparameters (learning_rate,
+    entropy, rollout length, minibatches, etc.) corrected from smoke7/8's
+    misattributed values.  num_envs is halved from TB for local 12GB GPU
+    compile feasibility while total transitions are preserved.
   - smoke8b (Track A + B): smoke8a + TB-pure reward family (imitation
     block zeroed out, only TB walk.gin's active rewards remain).
 
@@ -53,16 +54,18 @@ def test_smoke8a_residual_base_home(smoke8a_cfg) -> None:
     assert smoke8a_cfg.env.loc_ref_residual_base == "home"
 
 
-def test_smoke8a_ppo_hyperparams_match_tb(smoke8a_cfg) -> None:
-    """Track A correction: PPO hyperparams must match TB's
-    ``toddlerbot/locomotion/ppo_config.py`` defaults, NOT smoke7/8's
-    misattributed g1/mujoco_playground baselines.
+def test_smoke8a_ppo_hyperparams_match_tb_compatible_shape(smoke8a_cfg) -> None:
+    """Track A correction: PPO optimizer/rollout hyperparams must match
+    TB's ``toddlerbot/locomotion/ppo_config.py`` defaults, except
+    ``num_envs`` is intentionally halved from 4096 to 2048 for local
+    RTX 5070 12GB compile feasibility.  ``iterations`` is doubled so
+    the total smoke transition budget remains unchanged.
     """
     ppo = smoke8a_cfg.ppo
     expected = {
-        "num_envs": 4096,
+        "num_envs": 2048,
         "rollout_steps": 20,
-        "iterations": 240,
+        "iterations": 480,
         "learning_rate": 3.0e-5,
         "gamma": 0.97,
         "gae_lambda": 0.95,
@@ -79,18 +82,19 @@ def test_smoke8a_ppo_hyperparams_match_tb(smoke8a_cfg) -> None:
             failures.append(f"  ppo.{key}: expected {expected_value}, got {actual}")
     if failures:
         pytest.fail(
-            "smoke8a PPO hyperparams must match TB defaults "
-            "(toddlerbot/locomotion/ppo_config.py).  Smoke7/8 cited "
-            "these as 'TB defaults' but used g1/mujoco_playground "
-            "values; smoke8a corrects this.\n" + "\n".join(failures)
+            "smoke8a PPO hyperparams must match the TB-compatible "
+            "12GB-safe contract: TB optimizer values and rollout_steps=20, "
+            "with num_envs=2048 / iterations=480 to preserve the smoke "
+            "transition budget without compiling TB's full 4096-env batch.\n"
+            + "\n".join(failures)
         )
 
 
 def test_smoke8a_compute_budget_preserved(smoke8a_cfg) -> None:
-    """Track A reshapes per-iter (more envs, shorter rollout, more
-    iters) while preserving the total smoke compute budget.
+    """Track A reshapes per-iter (more envs than smoke8, shorter rollout,
+    more iters) while preserving the total smoke compute budget.
     Smoke7/8 = 1024 × 128 × 150 = 19,660,800 transitions.
-    Smoke8a  = 4096 × 20  × 240 = 19,660,800 transitions.
+    Smoke8a  = 2048 × 20  × 480 = 19,660,800 transitions.
     """
     ppo = smoke8a_cfg.ppo
     total = ppo.num_envs * ppo.rollout_steps * ppo.iterations
@@ -146,12 +150,13 @@ def test_smoke8b_residual_base_home(smoke8b_cfg) -> None:
 
 
 def test_smoke8b_ppo_hyperparams_match_tb(smoke8b_cfg) -> None:
-    """Smoke8b inherits Track A's TB-aligned PPO hyperparams."""
+    """Smoke8b inherits Track A's TB-compatible 12GB-safe PPO shape."""
     ppo = smoke8b_cfg.ppo
     assert ppo.learning_rate == 3.0e-5
     assert ppo.entropy_coef == 5.0e-4
-    assert ppo.num_envs == 4096
+    assert ppo.num_envs == 2048
     assert ppo.rollout_steps == 20
+    assert ppo.iterations == 480
     assert ppo.num_minibatches == 16
     assert ppo.gamma == 0.97
     assert ppo.max_grad_norm == 1.0

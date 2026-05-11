@@ -12,7 +12,8 @@
 #
 #   learning_rate = 3e-5            (not 3e-4)
 #   entropy_cost  = 5e-4            (not 0.01)
-#   num_envs      = 4096            (not 1024)
+#   num_envs      = 4096            (not 1024; smoke8a uses 2048 on
+#                                    local 12GB GPUs, see below)
 #   unroll_length = 20              (not 128 rollout_steps)
 #   num_minibatches = 16            (not 32)
 #   discounting   = 0.97            (not 0.99 gamma)
@@ -24,9 +25,11 @@
 # this so the PPO recipe actually matches TB's published defaults.
 #
 # Compute budget preserved.  smoke7/8 used 1024×128×150 = 19,660,800
-# transitions.  smoke8a uses 4096×20×240 = 19,660,800 (byte-identical
-# total) but with TB's per-iter recipe shape (more envs, shorter
-# rollouts, more iters).
+# transitions.  TB's exact 4096×20 per-iteration shape overcompiled on
+# the local RTX 5070 12GB GPU (XLA jit_train_iteration peak >6GiB HLO,
+# ~8.6GiB runtime allocation during compile), so smoke8a uses
+# 2048×20×480 = 19,660,800.  This keeps TB's short unroll and optimizer
+# hyperparams while halving the batch width for feasible local compile.
 #
 # Reward family unchanged from smoke8.  This is the "TB-shape PPO with
 # WR's existing imitation reward block" variant.  See smoke8b for the
@@ -140,16 +143,17 @@ env:
 # =============================================================================
 # PPO — TB-aligned hyperparameter block (Track A fix)
 # =============================================================================
-# Compute budget: 4096 envs × 20 rollout × 240 iter = 19,660,800
+# Compute budget: 2048 envs × 20 rollout × 480 iter = 19,660,800
 # transitions = byte-identical to smoke7/8's 1024 × 128 × 150 budget.
-# Per-iter shape now matches TB (toddlerbot/locomotion/ppo_config.py).
+# Rollout/minibatch/optimizer hyperparams match TB; num_envs is halved
+# from TB's 4096 for local 12GB GPU compile feasibility.
 ppo:
-  # TB ppo_config.py: num_envs = 4096
-  num_envs: 4096
+  # TB ppo_config.py: num_envs = 4096.  Use 2048 for local 12GB GPU compile.
+  num_envs: 2048
   # TB ppo_config.py: unroll_length = 20
   rollout_steps: 20
   # Preserves total = 19.66M transitions.  Matches smoke7/8 compute cap.
-  iterations: 240
+  iterations: 480
 
   # TB ppo_config.py: learning_rate = 3e-5 (NOT 3e-4 as smoke7/8 claimed)
   learning_rate: 3.0e-5

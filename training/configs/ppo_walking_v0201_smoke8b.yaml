@@ -114,7 +114,10 @@
 #   feet_air_time, feet_clearance, torso_pitch_soft, torso_roll_soft,
 #   torque, joint_velocity, slip, pitch_rate
 #
-# Compute budget: same as smoke8a (4096 × 20 × 240 = 19.66M).
+# Compute budget: same as smoke8a (2048 × 20 × 480 = 19.66M).
+# TB uses 4096 envs, but that exact batch width overcompiled on the
+# local RTX 5070 12GB GPU.  Smoke8b keeps TB's short unroll and
+# optimizer hyperparams while halving env count and doubling iterations.
 #
 # Usage:
 #   uv run python training/train.py \
@@ -234,12 +237,13 @@ env:
   action_delay_steps: 1
 
 # =============================================================================
-# PPO — same Track A hyperparams as smoke8a (TB-aligned)
+# PPO — same Track A hyperparams as smoke8a (TB-compatible, 12GB-safe)
 # =============================================================================
 ppo:
-  num_envs: 4096
+  # TB ppo_config.py: num_envs = 4096.  Use 2048 for local 12GB GPU compile.
+  num_envs: 2048
   rollout_steps: 20
-  iterations: 240
+  iterations: 480
 
   learning_rate: 3.0e-5
   gamma: 0.97
