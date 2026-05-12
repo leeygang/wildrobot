@@ -131,6 +131,80 @@ offline ref aligned, smoke9 architecture inherited unchanged, all
 
 ---
 
+## [v0.20.1-smoke9-progress-58bv3zzm] - 2026-05-12: paused at 23% after backward-fall convergence
+
+### Run
+
+- W&B offline run:
+  `training/wandb/offline-run-20260512_124221-58bv3zzm`
+- Checkpoints:
+  `training/checkpoints/ppo_walking_v0201_smoke9_v00201_20260512_124225-58bv3zzm`
+- Latest checkpoint inspected: `checkpoint_110_4505600.pkl`
+- Progress: 110 / 480 iterations, 4.51M / 19.66M transitions (22.9%)
+
+### Verdict
+
+Paused the run after inspection.  Smoke9 has entered the same
+backward-fall attractor as smoke8a, but earlier in training.  It is not
+a slow positive trend:
+evaluation episode length degraded from 266 steps at iter 1 to ~35
+steps by iter 110, while achieved forward velocity moved strongly
+negative against a positive forward command.
+
+Latest eval metrics at iter 110:
+
+| Metric | Value | Gate / interpretation |
+|---|---:|---|
+| `Evaluate/mean_episode_length` | 35.56 | fail; G4 gate is >= 475 |
+| `Evaluate/forward_velocity` | -0.605 m/s | fail; walking backward |
+| `Evaluate/cmd_vs_achieved_forward` | 0.805 m/s | fail; G4 gate is <= 0.075 |
+| `Evaluate/forward_velocity_cmd_ratio` | -3.02 | fail; opposite command direction |
+| `Evaluate/step_length_touchdown_event_m` | -0.0073 m | fail; no useful forward stepping |
+| `eval_clean/term_height_low_frac` | ~1.0 | height-collapse termination dominates |
+
+Training-side metrics agree with eval: `env/forward_velocity=-0.593`,
+`env/velocity_cmd=0.116`, `tracking/forward_velocity_cmd_ratio=-199`,
+and `term_height_low_frac=1.0`.
+
+### ToddlerBot / code comparison
+
+The smoke9 config is using the intended TB-aligned switches:
+
+- `loc_ref_residual_base: home`
+- `loc_ref_penalty_pose_anchor: home`
+- `loc_ref_penalty_ang_vel_xy_form: tb_neg_squared`
+- `loc_ref_penalty_feet_ori_form: tb_linear_lateral`
+- `penalty_close_feet_xy`, `feet_phase`, `penalty_feet_ori`,
+  `ang_vel_xy`, `penalty_pose`, `action_rate`, `torso_quat`, alive,
+  and forward velocity tracking enabled at the intended smoke9
+  magnitudes.
+
+This matches the planned TB `walk.gin` reward family except yaw
+tracking (`ang_vel_z`), which remains intentionally deferred because WR
+does not sample yaw commands in this smoke.
+
+### Metrics gap found
+
+The active smoke9 reward terms are not all logged individually.  The
+latest `metrics.jsonl` line contains `reward/total=-0.142`, but does
+not expose `reward/feet_phase`, `reward/penalty_close_feet_xy`,
+`reward/penalty_pose`, or `reward/penalty_feet_ori`.  The visible
+contributors sum to only about `-0.04`, leaving roughly `-0.10` of
+hidden active reward contribution.
+
+Before the next run, fix reward-term logging so every active smoke9
+term appears in W&B/metrics.  This is required to distinguish whether
+the failure is caused by the TB gait-shaping terms, the forward
+velocity gradient, the home-pose anchor, or a dynamics/reset issue.
+
+### Next action
+
+Do not spend the remaining 15M transitions on this run.  Fix the
+metrics first; then analyze one short smoke9 retry with full reward
+attribution before changing reward design.
+
+---
+
 ## [v0.20.1-smoke9-feet-phase-baseline-fix] - 2026-05-11: feet_phase baseline correction + direct numeric reward tests
 
 ### Context — reviewer-flagged regression in smoke9's feet_phase
