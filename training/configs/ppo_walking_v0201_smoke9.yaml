@@ -1,0 +1,320 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 9 — full TB walk.gin recipe (no deferrals)
+# =============================================================================
+# Goal: faithful TB walk.gin clone of all 9 active reward terms
+# (walk.gin:110-131), implemented with TB-equivalent env reward formulas.
+# Same architecture and PPO hyperparams as smoke8b; differs only in the
+# reward family.
+#
+# Why this exists: smoke8b's audit found 4 WR rewards labeled
+# "TB-equivalent" that have meaningfully different formulas
+# (penalty_close_feet_xy, feet_phase, penalty_ang_vel_xy,
+# penalty_feet_ori).  Smoke8b disabled them as smoke9 TODOs.
+# Smoke9 IMPLEMENTS the missing pieces in WR's env (commit
+# [v0.20.1-smoke9-tb-faithful-rewards]) and enables them at TB
+# magnitudes.
+#
+# Smoke8a (committed `d7245b0`) trained 35 iterations with the
+# imitation reward block + WR's existing reward family and converged
+# to a "tip backward and flail for feet_air_time" exploit
+# (cmd_ratio=-3.3, ep_len=30 at iter 35).  Diagnosis: the dominant
+# positive reward (feet_air_time=500.0) was being maximized by
+# falling instead of walking.  Smoke9 removes that exploit by
+# replacing feet_air_time with TB's feet_phase (which only rewards
+# foot height when it MATCHES the cycle phase, not just any air time).
+#
+# Active reward set — full TB walk.gin:110-131 mapping:
+#
+#   TB walk.gin term                  | smoke9 mapping
+#   ----------------------------------+---------------------------------
+#   alive = 1.0                       | alive: 1.0
+#   lin_vel_xy = 2.0 (sigma=1000)     | cmd_forward_velocity_track: 2.0
+#                                     |   alpha: 1000.0
+#   torso_quat = 2.5                  | ref_body_quat_track: 2.5
+#                                     |   (geodesic vs identity, alpha=20
+#                                     |    matches TB rot_tracking_sigma)
+#   penalty_ang_vel_xy = 1.0          | ang_vel_xy: 1.0  +
+#                                     |   loc_ref_penalty_ang_vel_xy_form:
+#                                     |     tb_neg_squared
+#                                     |   (env emits -sum(rate²); positive
+#                                     |    yaml weight matches TB sign
+#                                     |    convention)
+#   penalty_action_rate = 2.0         | action_rate: -2.0
+#                                     |   (sign convention diff; final
+#                                     |    contribution -2.0 * sum(Δ²))
+#   penalty_pose = 0.5 + per-joint    | penalty_pose: -0.5 + per-joint
+#     anchored to default_motor_pos   |   loc_ref_penalty_pose_anchor: home
+#   penalty_close_feet_xy = 10.0      | penalty_close_feet_xy: 10.0
+#     (close_feet_threshold = 0.06)   |   close_feet_threshold: 0.06
+#                                     |   (env emits binary -1.0 when
+#                                     |    lateral foot dist < threshold,
+#                                     |    perpendicular to base forward)
+#   feet_phase = 7.5                  | feet_phase: 7.5
+#     (swing_height = 0.04,           |   feet_phase_alpha: 1428.6
+#      sigma = 0.0007)                |   feet_phase_swing_height: 0.04
+#                                     |   (env emits exp(-α·Δz²)·(1+max_z/h)
+#                                     |    bonus, cmd-gated, phase-derived
+#                                     |    expected z via cubic Bézier)
+#   penalty_feet_ori = 5.0            | penalty_feet_ori: 5.0  +
+#                                     |   loc_ref_penalty_feet_ori_form:
+#                                     |     tb_linear_lateral
+#                                     |   (env emits
+#                                     |    -(sqrt(gx²+gy²)_L +
+#                                     |      sqrt(gx²+gy²)_R); positive
+#                                     |    yaml weight matches TB)
+#   ang_vel_z = 1.5 (sigma=4)         | (still not implemented; WR doesn't
+#                                     |  sample yaw cmds in smoke either,
+#                                     |  so consistent gap.  Add for smoke10
+#                                     |  if extending to yaw cmds.)
+#
+# Reward terms always DISABLED in smoke9 (no TB equivalent in active
+# walk.gin block):
+#   ref_q_track, ref_contact_match, ref_feet_z_track, torso_pos_xy,
+#   lin_vel_z, feet_air_time, feet_clearance, feet_distance,
+#   torso_pitch_soft, torso_roll_soft, torque, joint_velocity, slip,
+#   pitch_rate
+#
+# NOTE on penalty_feet_ori weight sign: under
+# loc_ref_penalty_feet_ori_form: tb_linear_lateral the env returns a
+# NEGATIVE value already (-(sqrt(...) + sqrt(...))).  Yaml weight
+# should be POSITIVE 5.0 to match TB walk.gin (which has
+# RewardScales.penalty_feet_ori = 5.0).  Same convention as
+# penalty_pose under home anchor.
+#
+# Compute budget: same as smoke8a/8b (4096 × 20 × 240 = 19.66M).
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke9.yaml --verify
+#
+# See also:
+#   - training/CHANGELOG.md [v0.20.1-smoke9-tb-faithful-rewards]
+#   - toddlerbot/locomotion/walk.gin:110-131 (TB active reward block)
+#   - toddlerbot/locomotion/mjx_env.py:2398, :2660, :2696, :2709 (TB rewards)
+#   - toddlerbot/locomotion/walk_env.py:631, :697 (TB feet_phase / feet_ori)
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke9 (full TB walk.gin recipe, vx=0.20)"
+
+seed: 42
+
+# =============================================================================
+# Environment — smoke8b + TB-faithful reward form selectors
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  # close_feet_threshold (smoke9 active gate) is set below; min/max_feet_y_dist
+  # only matters for feet_distance which is disabled.
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
+
+  # Per-joint pose weights for penalty_pose (same as TB walk.gin:120-124).
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  min_velocity: 0.0
+  max_velocity: 0.30
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  eval_velocity_cmd: 0.20
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+  loc_ref_offline_command_vx: 0.20
+
+  # smoke8 architecture: home-pose residual base
+  loc_ref_residual_base: home
+  # smoke8b: penalty_pose anchored to home
+  loc_ref_penalty_pose_anchor: home
+  # smoke9 form flags: TB-faithful reward formulas
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  # smoke9: TB close_feet_threshold (walk.gin:125)
+  close_feet_threshold: 0.06
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — same Track A hyperparams as smoke8a/8b (TB-aligned)
+# =============================================================================
+ppo:
+  num_envs: 4096
+  rollout_steps: 20
+  iterations: 240
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke8a/8b (TB-aligned)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — full TB walk.gin:110-131 active block
+# =============================================================================
+reward_weights:
+  # ---- TB active reward block (8 implemented) ----
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 1000.0
+  ref_body_quat_track: 2.5
+  # TB penalty_ang_vel_xy = 1.0; with form=tb_neg_squared the env
+  # emits -sum(rate²), so the yaml weight is POSITIVE.
+  ang_vel_xy: 1.0
+  # TB penalty_action_rate = 2.0 (final contribution -2.0 × sum(Δ²))
+  action_rate: -2.0
+  # TB penalty_pose = 0.5 with per-joint weights, anchored to home
+  penalty_pose: -0.5
+  # TB penalty_close_feet_xy = 10.0 (env emits binary -1.0 when too close)
+  penalty_close_feet_xy: 10.0
+  # TB feet_phase = 7.5; alpha = 1/0.0007 ≈ 1428.6 = TB
+  # feet_phase_tracking_sigma; swing_height = 0.04 (TB walk.gin:130)
+  feet_phase: 7.5
+  feet_phase_alpha: 1428.6
+  feet_phase_swing_height: 0.04
+  # TB penalty_feet_ori = 5.0; with form=tb_linear_lateral the env
+  # emits -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R), positive yaml weight.
+  penalty_feet_ori: 5.0
+
+  # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6  # held at default; weight=0 disables term
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0  # held at default; weight=0 disables term
+
+  # ---- Stab / shaping rewards TB doesn't have in active block ----
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke9, tb_full_recipe, home_base, no_imitation]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

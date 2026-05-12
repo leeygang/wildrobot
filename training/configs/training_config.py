@@ -157,6 +157,15 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_penalty_pose_anchor=str(
             env.get("loc_ref_penalty_pose_anchor", "q_ref")
         ),
+        # v0.20.1 smoke9 — formula selectors + TB threshold.  See dataclass
+        # docstrings for the contract.
+        loc_ref_penalty_ang_vel_xy_form=str(
+            env.get("loc_ref_penalty_ang_vel_xy_form", "gaussian")
+        ),
+        loc_ref_penalty_feet_ori_form=str(
+            env.get("loc_ref_penalty_feet_ori_form", "wr_quad_3axis")
+        ),
+        close_feet_threshold=float(env.get("close_feet_threshold", 0.06)),
         # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
         loc_ref_offline_library_path=(
             None if env.get("loc_ref_offline_library_path") in (None, "")
@@ -740,6 +749,11 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         ref_feet_z_track_alpha=rewards.get("ref_feet_z_track_alpha", 1428.6),
         penalty_pose=rewards.get("penalty_pose", 0.0),
         penalty_feet_ori=rewards.get("penalty_feet_ori", 0.0),
+        # v0.20.1 smoke9 — TB walk.gin reward terms.
+        penalty_close_feet_xy=rewards.get("penalty_close_feet_xy", 0.0),
+        feet_phase=rewards.get("feet_phase", 0.0),
+        feet_phase_alpha=rewards.get("feet_phase_alpha", 1428.6),
+        feet_phase_swing_height=rewards.get("feet_phase_swing_height", 0.04),
     )
 
 

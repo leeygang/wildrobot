@@ -322,6 +322,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"env.loc_ref_penalty_pose_anchor must be 'q_ref' or 'home'; "
                 f"got {self._penalty_pose_anchor_mode!r}"
             )
+        # smoke9 — TB-faithful reward formula selectors.
+        self._penalty_ang_vel_xy_form = str(
+            getattr(self._config.env, "loc_ref_penalty_ang_vel_xy_form", "gaussian")
+        ).lower()
+        if self._penalty_ang_vel_xy_form not in ("gaussian", "tb_neg_squared"):
+            raise ValueError(
+                f"env.loc_ref_penalty_ang_vel_xy_form must be 'gaussian' or "
+                f"'tb_neg_squared'; got {self._penalty_ang_vel_xy_form!r}"
+            )
+        self._penalty_feet_ori_form = str(
+            getattr(self._config.env, "loc_ref_penalty_feet_ori_form", "wr_quad_3axis")
+        ).lower()
+        if self._penalty_feet_ori_form not in ("wr_quad_3axis", "tb_linear_lateral"):
+            raise ValueError(
+                f"env.loc_ref_penalty_feet_ori_form must be 'wr_quad_3axis' or "
+                f"'tb_linear_lateral'; got {self._penalty_feet_ori_form!r}"
+            )
+        self._close_feet_threshold = jp.float32(
+            getattr(self._config.env, "close_feet_threshold", 0.06)
+        )
 
         home_ctrl_list = clamp_home_ctrl(
             home_ctrl=get_home_ctrl_from_mj_model(
@@ -991,9 +1011,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ang_vel_xy_sq_sum = (
             gyro_rad_s[0] * gyro_rad_s[0] + gyro_rad_s[1] * gyro_rad_s[1]
         )
-        r_ang_vel_xy = jp.exp(
-            -jp.float32(weights.ang_vel_xy_alpha) * ang_vel_xy_sq_sum
-        )
+        # smoke9 — TB-faithful penalty form selector.
+        #   "gaussian"       : exp(-alpha * sum_sq) ∈ [0, 1] (smoke7/8/8a/8b).
+        #   "tb_neg_squared" : -sum_sq, unbounded negative (TB walk.gin).
+        # When using "tb_neg_squared", the yaml weight should be POSITIVE
+        # (TB walk.gin sets RewardScales.penalty_ang_vel_xy = 1.0), since
+        # the function value is already negative.
+        if self._penalty_ang_vel_xy_form == "tb_neg_squared":
+            r_ang_vel_xy = -ang_vel_xy_sq_sum
+        else:
+            r_ang_vel_xy = jp.exp(
+                -jp.float32(weights.ang_vel_xy_alpha) * ang_vel_xy_sq_sum
+            )
 
         # ---- ref/contact_match (TB boolean equality count, smoke6 onward) ----
         # Match ToddlerBot _reward_feet_contact (toddlerbot/locomotion/mjx_env
@@ -1199,12 +1228,104 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         left_grav_foot = jax_frames.rotate_vec_by_quat(left_inv, gravity_world)
         right_grav_foot = jax_frames.rotate_vec_by_quat(right_inv, gravity_world)
-        # Deviation from [0, 0, -1] in foot frame.
-        left_dev = left_grav_foot - gravity_world
-        right_dev = right_grav_foot - gravity_world
-        penalty_feet_ori = jp.sum(left_dev * left_dev) + jp.sum(
-            right_dev * right_dev
+        # smoke9 — TB-faithful penalty form selector.
+        #   "wr_quad_3axis"     : sum((g_local - [0,0,-1])²) for both feet
+        #                         (smoke7/8/8a/8b — quadratic full 3-axis)
+        #   "tb_linear_lateral" : -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R)
+        #                         (TB walk_env.py:697-736 — linear in
+        #                         lateral tilt magnitude only).  Note the
+        #                         function value is already negative; yaml
+        #                         weight should be POSITIVE under this form.
+        if self._penalty_feet_ori_form == "tb_linear_lateral":
+            left_tilt = jp.sqrt(
+                left_grav_foot[0] * left_grav_foot[0]
+                + left_grav_foot[1] * left_grav_foot[1]
+                + jp.float32(1e-8)
+            )
+            right_tilt = jp.sqrt(
+                right_grav_foot[0] * right_grav_foot[0]
+                + right_grav_foot[1] * right_grav_foot[1]
+                + jp.float32(1e-8)
+            )
+            penalty_feet_ori = -(left_tilt + right_tilt)
+        else:
+            left_dev = left_grav_foot - gravity_world
+            right_dev = right_grav_foot - gravity_world
+            penalty_feet_ori = jp.sum(left_dev * left_dev) + jp.sum(
+                right_dev * right_dev
+            )
+
+        # ---- penalty_close_feet_xy (smoke9, TB walk.gin) -------------
+        # Binary -1.0 when lateral foot distance (perpendicular to base
+        # forward direction) < env.close_feet_threshold; 0.0 otherwise.
+        # Mirrors TB _reward_penalty_close_feet_xy (mjx_env.py:2709-2745).
+        # Always computed; weight=0 disables contribution to the total.
+        base_quat_wxyz = root_pose.orientation  # [w, x, y, z]
+        # Convert wxyz → xyzw, get base yaw via forward = R · [1,0,0].
+        base_xyzw = jp.concatenate(
+            [base_quat_wxyz[1:], base_quat_wxyz[:1]]
+        ).astype(jp.float32)
+        base_xyzw = jax_frames.normalize_quat_xyzw(base_xyzw)
+        base_forward = jax_frames.rotate_vec_by_quat(
+            base_xyzw, jp.array([1.0, 0.0, 0.0], dtype=jp.float32)
         )
+        base_yaw = jp.arctan2(base_forward[1], base_forward[0])
+        feet_diff = left_foot_pos[:2] - right_foot_pos[:2]
+        feet_lateral_dist = jp.abs(
+            jp.cos(base_yaw) * feet_diff[1] - jp.sin(base_yaw) * feet_diff[0]
+        )
+        too_close = feet_lateral_dist < self._close_feet_threshold
+        r_close_feet_xy = jp.where(too_close, jp.float32(-1.0), jp.float32(0.0))
+
+        # ---- feet_phase (smoke9, TB walk.gin / walk_env.py:631-695) --
+        # Phase-derived expected swing-foot height; reward = exp(-Δz²/σ)
+        # × (1 + max_expected_z / swing_height).  Standing (||cmd|| ≈ 0)
+        # ⇒ expected = 0 for both feet (encourage feet on ground).
+        # Phase angle from win["phase_sin"]/win["phase_cos"] in [0, 2π].
+        is_standing = jp.abs(velocity_cmd) < jp.float32(1e-6)
+        phase_sin = win["phase_sin"]
+        phase_cos = win["phase_cos"]
+        phase_angle = jp.arctan2(phase_sin, phase_cos)
+        phase_angle = jp.mod(phase_angle + 2.0 * jp.pi, 2.0 * jp.pi)
+        swing_height = jp.float32(weights.feet_phase_swing_height)
+
+        def _expected_foot_z(phase: jax.Array, is_left: bool) -> jax.Array:
+            # Left swings during [0, π], right during [π, 2π].
+            if is_left:
+                in_swing = phase < jp.pi
+                swing_progress = phase / jp.pi
+            else:
+                in_swing = phase >= jp.pi
+                swing_progress = (phase - jp.pi) / jp.pi
+            # Cubic-Bézier (smoothstep) rise/fall: 3x² - 2x³.
+            # First half: rise 0 → swing_height (param 2*progress)
+            # Second half: fall swing_height → 0 (param 2*progress - 1)
+            x_rise = 2.0 * swing_progress
+            x_fall = 2.0 * swing_progress - 1.0
+            bezier_rise = x_rise * x_rise * (3.0 - 2.0 * x_rise)
+            bezier_fall = x_fall * x_fall * (3.0 - 2.0 * x_fall)
+            rise_val = swing_height * bezier_rise
+            fall_val = swing_height * (1.0 - bezier_fall)
+            swing_z = jp.where(swing_progress <= 0.5, rise_val, fall_val)
+            return jp.where(in_swing, swing_z, jp.float32(0.0))
+
+        expected_z_left_walk = _expected_foot_z(phase_angle, is_left=True)
+        expected_z_right_walk = _expected_foot_z(phase_angle, is_left=False)
+        expected_z_left = jp.where(is_standing, jp.float32(0.0), expected_z_left_walk)
+        expected_z_right = jp.where(is_standing, jp.float32(0.0), expected_z_right_walk)
+        err_l = left_foot_pos[2] - expected_z_left
+        err_r = right_foot_pos[2] - expected_z_right
+        feet_phase_err_sq = err_l * err_l + err_r * err_r
+        feet_phase_base = jp.exp(
+            -jp.float32(weights.feet_phase_alpha) * feet_phase_err_sq
+        )
+        max_expected = jp.maximum(expected_z_left, expected_z_right)
+        # Bonus multiplier: 1.0x at zero expected (standing), 2.0x at peak
+        # swing_height (TB rewards lifting feet harder against gravity).
+        height_bonus = 1.0 + max_expected / jp.maximum(
+            swing_height, jp.float32(1e-6)
+        )
+        r_feet_phase = feet_phase_base * height_bonus
 
         return dict(
             r_q_track=r_q_track,
@@ -1234,6 +1355,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_feet_z_track=r_feet_z_track.astype(jp.float32),
             penalty_pose=penalty_pose.astype(jp.float32),
             penalty_feet_ori=penalty_feet_ori.astype(jp.float32),
+            # v0.20.1 smoke9 — TB walk.gin reward terms.
+            r_close_feet_xy=r_close_feet_xy.astype(jp.float32),
+            r_feet_phase=r_feet_phase.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
             q_track_rmse=q_track_rmse.astype(jp.float32),
             body_quat_err_deg=(body_quat_angle * (180.0 / jp.pi)).astype(jp.float32),
@@ -1338,6 +1462,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             penalty_pose=jp.float32(w.penalty_pose) * terms["penalty_pose"],
             penalty_feet_ori=jp.float32(w.penalty_feet_ori)
             * terms["penalty_feet_ori"],
+            # v0.20.1 smoke9 — TB walk.gin reward terms.  Defaults 0 so
+            # existing smokes are unaffected.
+            penalty_close_feet_xy=jp.float32(w.penalty_close_feet_xy)
+            * terms["r_close_feet_xy"],
+            feet_phase=jp.float32(w.feet_phase) * terms["r_feet_phase"],
         )
         # Apply the * dt rescale uniformly so the per-term contributions
         # logged at reward/* are exactly what each term contributes to
@@ -2178,6 +2307,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/penalty_feet_ori"] = reward_contrib[
             "penalty_feet_ori"
         ]
+        # v0.20.1 smoke9 — TB walk.gin reward terms.
+        terminal_metrics_dict["reward/penalty_close_feet_xy"] = reward_contrib[
+            "penalty_close_feet_xy"
+        ]
+        terminal_metrics_dict["reward/feet_phase"] = reward_contrib["feet_phase"]
         terminal_metrics_dict["reward/torso_pitch_soft"] = reward_contrib[
             "torso_pitch_soft"
         ]

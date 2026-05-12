@@ -8,6 +8,168 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9-tb-faithful-rewards] - 2026-05-11: implement 4 deferred TB rewards in env; smoke9 = full TB walk.gin recipe
+
+### Context — smoke8a result + smoke8b deferral list
+
+Smoke8a (commit `d7245b0`, run `ecgt6dvr`, 35 iters of 480) failed
+the same way as smoke7 — converged to ep_len=30 with PPO walking
+**backwards** at -0.66 m/s (cmd_ratio=-3.3).  Diagnosis
+(see `/tmp/smoke8a_analysis`): the dominant positive reward was
+`feet_air_time=500.0`, which PPO maximized by tipping backwards and
+flailing legs (any position with feet airborne earns full reward,
+regardless of whether the gait is correct).
+
+Iter-0 random policy + home base survived **282 ctrl steps** —
+confirming the home-base architecture works.  Failure was the
+reward family, specifically `feet_air_time` providing the wrong
+gradient.
+
+Smoke8b (commit `d7245b0` later patched by `16585af` + `3bc0495`)
+removed the imitation block and disabled 4 WR rewards whose
+implementations weren't TB-faithful.  Resulting active reward set
+was 5 terms — likely too sparse for PPO to discover gait alternation.
+
+### Patch — implement the 4 TB-faithful rewards in WR's env
+
+**Env code (~150 lines, all in `wildrobot_env.py`):**
+
+1. **`penalty_close_feet_xy`** (binary -1.0 below threshold).  Mirrors
+   TB `_reward_penalty_close_feet_xy` (`mjx_env.py:2709-2745`).
+   Computes lateral foot distance perpendicular to base forward
+   direction, returns -1.0 when below `env.close_feet_threshold`.
+   Always computed; weight=0 disables contribution.
+
+2. **`feet_phase`** (TB-faithful phase-derived foot height tracking).
+   Mirrors TB `_reward_feet_phase` (`walk_env.py:631-695`).  Uses the
+   offline-window phase signal to compute expected swing-foot z via
+   cubic-Bézier rise/fall (left swings during phase ∈ [0, π], right
+   during [π, 2π]).  When `||cmd|| ≈ 0`, expected z = 0 for both feet
+   (encourages standing).  Reward = `exp(-α·Δz²)·(1 + max_z/h)` —
+   the height bonus rewards lifting feet harder against gravity.
+
+3. **`penalty_ang_vel_xy` form switch**.  New env flag
+   `loc_ref_penalty_ang_vel_xy_form: "gaussian" | "tb_neg_squared"`.
+   Default `"gaussian"` preserves smoke7/8/8a/8b behavior (positive
+   Gaussian reward).  `"tb_neg_squared"` returns `-sum(rate²)` —
+   matching TB `_reward_penalty_ang_vel_xy` (`mjx_env.py:2398-2415`).
+
+4. **`penalty_feet_ori` form switch**.  New env flag
+   `loc_ref_penalty_feet_ori_form: "wr_quad_3axis" | "tb_linear_lateral"`.
+   Default `"wr_quad_3axis"` preserves WR's quadratic 3-axis deviation.
+   `"tb_linear_lateral"` returns `-(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R)`
+   — matching TB `_reward_penalty_feet_ori` (`walk_env.py:697-736`).
+   Linear in tilt magnitude, lateral components only.
+
+Both form flags default to the historical (non-TB) value so smoke7/8/8a/8b
+and any other downstream config is byte-for-byte unchanged.
+
+**New config fields** (`training_runtime_config.py` + `training_config.py`):
+
+```python
+LocomotionEnvConfig:
+  loc_ref_penalty_ang_vel_xy_form: str = "gaussian"
+  loc_ref_penalty_feet_ori_form: str = "wr_quad_3axis"
+  close_feet_threshold: float = 0.06
+
+RewardWeightsConfig:
+  penalty_close_feet_xy: float = 0.0
+  feet_phase: float = 0.0
+  feet_phase_alpha: float = 1428.6     # = 1 / TB σ=0.0007
+  feet_phase_swing_height: float = 0.04  # TB walk.gin:130
+```
+
+**New yaml**: `ppo_walking_v0201_smoke9.yaml`.  Inherits smoke8b's
+architecture + PPO + penalty_pose anchor.  Sets the 2 form flags to
+TB; enables `penalty_close_feet_xy=10.0`, `feet_phase=7.5`,
+`ang_vel_xy=1.0`, `penalty_feet_ori=5.0` (POSITIVE under
+`tb_linear_lateral` form, since the env returns negative values
+already).
+
+### Active reward set — full TB walk.gin:110-131 mapping
+
+| TB walk.gin | smoke9 |
+|---|---|
+| `alive = 1.0` | `alive: 1.0` ✓ |
+| `lin_vel_xy = 2.0` (sigma=1000) | `cmd_forward_velocity_track: 2.0` + `alpha: 1000.0` ✓ |
+| `torso_quat = 2.5` | `ref_body_quat_track: 2.5` (geodesic vs identity, alpha=20=TB rot_tracking_sigma) ✓ |
+| `penalty_ang_vel_xy = 1.0` | `ang_vel_xy: 1.0` + `loc_ref_penalty_ang_vel_xy_form: tb_neg_squared` ✓ |
+| `penalty_action_rate = 2.0` | `action_rate: -2.0` (sign-equivalent) ✓ |
+| `penalty_pose = 0.5` + per-joint, anchored to default | `penalty_pose: -0.5` + per-joint + `loc_ref_penalty_pose_anchor: home` ✓ |
+| `penalty_close_feet_xy = 10.0` (threshold 0.06) | `penalty_close_feet_xy: 10.0` + `close_feet_threshold: 0.06` ✓ |
+| `feet_phase = 7.5` (swing_height=0.04, sigma=0.0007) | `feet_phase: 7.5` + `feet_phase_alpha: 1428.6` + `feet_phase_swing_height: 0.04` ✓ |
+| `penalty_feet_ori = 5.0` | `penalty_feet_ori: 5.0` + `loc_ref_penalty_feet_ori_form: tb_linear_lateral` ✓ |
+| `ang_vel_z = 1.5` (sigma=4) | (still not implemented; consistent with no-yaw-cmd sampling) |
+
+8 of 9 TB walk.gin active rewards implemented.  `ang_vel_z` deferred
+(consistent gap — no yaw cmd sampling in smoke).
+
+### Tests
+
+- `training/tests/test_config_load_smoke9.py` (7 contract tests):
+  smoke9 architecture inheritance, form flags set to TB, all 8
+  TB-active rewards at TB magnitudes, 14-term disabled list, compute
+  budget preserved, smoke7 default form flags unchanged.
+- `tests/test_v0201_env_rewards_tb.py` (8 numeric/back-compat tests):
+  env caches the form flags correctly; pure-Python reference port of
+  TB's `_expected_foot_height` cubic Bézier; left/right complementary
+  swing windows; smoke7 doesn't enable smoke9 rewards.
+- 28 existing env / smoke8ab tests still pass (env code change is
+  back-compat).
+
+### What changed in WR's env (faithful TB analogs)
+
+| Term | smoke7/8/8a/8b | smoke9 |
+|---|---|---|
+| `ang_vel_xy` | `exp(-α(rate_x² + rate_y²))` (positive Gaussian, [0,1]) | `-(rate_x² + rate_y²)` (TB unbounded negative) |
+| `penalty_feet_ori` | `sum((g_local - [0,0,-1])²)` for both feet (quadratic 3-axis) | `-(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R)` (TB linear lateral) |
+| `penalty_close_feet_xy` | not implemented | binary `-1.0` when `lat_dist < threshold` (TB) |
+| `feet_phase` | not implemented (`ref_feet_z_track` was the closest, but ZMP-based) | phase-derived expected z + cubic Bézier + cmd-gating + height bonus (TB) |
+
+### Why smoke9 should walk where smoke7/8a couldn't
+
+Smoke7 had `feet_air_time=500.0` as the dominant positive reward.
+PPO learned to maximize air time by FALLING (ep_len=30, walking
+backward at -0.66 m/s).  Smoke9's `feet_phase=7.5` only rewards
+foot height when it MATCHES the cycle phase:
+
+- Right swing window (phase ∈ [π, 2π]): right foot expected up.
+  Gradient says "lift right foot now."  Lifting LEFT foot during
+  right's swing earns no reward (left's expected z = 0 here).
+- Standing (||cmd|| ≈ 0): both expected z = 0.  Lifting either foot
+  PENALIZES.  Encourages standing still when no cmd.
+- Walking forward at vx=0.20: both feet must alternate up/down
+  in sync with the cycle to earn reward.
+
+This is the gait-shaping signal smoke7/8a/8b lacked.
+
+Combined with `penalty_close_feet_xy` (no leg crossing) and
+TB-faithful `penalty_feet_ori` (anti-tippy-toe with linear gradient
+near upright), smoke9 has the same reward landscape TB walks with.
+
+### Compute budget
+
+Same as smoke7/8/8a/8b: 4096 × 20 × 240 = 19,660,800 transitions.
+
+### Commits
+
+- `d7245b0` — smoke8a/8b creation
+- `16585af` — smoke8b round-1 audit fixes (4 bugs)
+- `3bc0495` — smoke8b round-2 audit fixes (2 more bugs)
+- follow-on commit — smoke9 (this entry)
+
+### Reference
+
+- `toddlerbot/locomotion/walk.gin:110-131` — TB active reward block
+- `toddlerbot/locomotion/mjx_env.py:2398` — penalty_ang_vel_xy
+- `toddlerbot/locomotion/mjx_env.py:2696` — penalty_pose
+- `toddlerbot/locomotion/mjx_env.py:2709` — penalty_close_feet_xy
+- `toddlerbot/locomotion/walk_env.py:583` — _expected_foot_height
+- `toddlerbot/locomotion/walk_env.py:631` — feet_phase
+- `toddlerbot/locomotion/walk_env.py:697` — penalty_feet_ori
+
+---
+
 ## [v0.20.1-smoke8b-audit-fixes-round2] - 2026-05-10: 2 more reviewer-flagged misalignments — disable ang_vel_xy + penalty_feet_ori
 
 ### Context — second-round code review

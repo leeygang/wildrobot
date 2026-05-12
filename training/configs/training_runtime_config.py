@@ -181,6 +181,35 @@ class EnvConfig(Freezable):
     #             reward even when ref_q_track is disabled.
     loc_ref_penalty_pose_anchor: str = "q_ref"
 
+    # v0.20.1 smoke9 — penalty_ang_vel_xy formula selector.
+    #   "gaussian"        - smoke7/8/8a/8b default; ang_vel_xy reward is
+    #                       exp(-alpha * (rate_x² + rate_y²)) — positive
+    #                       Gaussian bounded in [0, 1].
+    #   "tb_neg_squared"  - TB-aligned (mjx_env.py:2398-2415);
+    #                       -sum(rate_x² + rate_y²) — unbounded negative
+    #                       quadratic.  Required for honest TB reward
+    #                       semantics; the Gaussian form caps at -weight
+    #                       even at large angular velocities.
+    loc_ref_penalty_ang_vel_xy_form: str = "gaussian"
+
+    # v0.20.1 smoke9 — penalty_feet_ori formula selector.
+    #   "wr_quad_3axis"     - smoke7/8/8a/8b default; sum((g_local -
+    #                         [0,0,-1])²) for both feet across all 3 axes.
+    #                         Quadratic in tilt; zero gradient at zero tilt.
+    #   "tb_linear_lateral" - TB-aligned (walk_env.py:697-736);
+    #                         -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R) — linear
+    #                         L2 norm of LATERAL gravity components only.
+    #                         Nonzero gradient at small tilt (linear cusp at
+    #                         zero), only penalizes lateral lean (not z drop).
+    loc_ref_penalty_feet_ori_form: str = "wr_quad_3axis"
+
+    # v0.20.1 smoke9 — TB penalty_close_feet_xy threshold (m).
+    # Lateral foot distance (perpendicular to base forward direction)
+    # below this triggers a binary -1.0 penalty.  Mirrors TB
+    # close_feet_threshold (walk.gin:125, default 0.06 m).  Only consulted
+    # when reward_weights.penalty_close_feet_xy != 0.
+    close_feet_threshold: float = 0.06
+
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
     # disk; otherwise the env builds an explicit one-bin library for
@@ -875,6 +904,31 @@ class RewardWeightsConfig(Freezable):
     ref_feet_z_track_alpha: float = 1428.6  # = 1 / TB σ=0.0007
     penalty_pose: float = 0.0
     penalty_feet_ori: float = 0.0
+
+    # v0.20.1 smoke9 — TB walk.gin reward terms previously missing in WR.
+    #   penalty_close_feet_xy — binary -1.0 when lateral foot distance
+    #     (perpendicular to base forward) < env.close_feet_threshold.
+    #     Mirrors TB _reward_penalty_close_feet_xy (mjx_env.py:2709-2745).
+    #     TB walk.gin sets RewardScales.penalty_close_feet_xy = 10.0.
+    #   feet_phase — TB-aligned dense per-step swing-foot height tracking.
+    #     Expected foot z is phase-derived via cubic-Bézier rise/fall over
+    #     each foot's swing window (left swings during phase ∈ [0, π],
+    #     right during [π, 2π]).  When ||cmd|| ≈ 0 the expected z is 0
+    #     for both feet (encourages standing).  Reward formula:
+    #         exp(-Δz_total² / sigma) × (1 + max_expected_z / swing_height)
+    #     where the multiplier rewards lifting feet harder against gravity.
+    #     Mirrors TB _reward_feet_phase (walk_env.py:631-695).  TB
+    #     walk.gin: feet_phase = 7.5, swing_height = 0.04,
+    #     feet_phase_tracking_sigma = 0.0007.
+    penalty_close_feet_xy: float = 0.0
+    feet_phase: float = 0.0
+    # Inverse of TB feet_phase_tracking_sigma (1 / 0.0007 ≈ 1428.6).  WR
+    # convention is exp(-alpha * err²) — same as cmd_forward_velocity_alpha.
+    feet_phase_alpha: float = 1428.6
+    # Maximum swing-foot height for feet_phase (m).  TB swing_height = 0.04
+    # for the active recipe (walk.gin:130).  Smaller for our smaller foot
+    # lift profile.
+    feet_phase_swing_height: float = 0.04
 
 
 @dataclass
