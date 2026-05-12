@@ -8,6 +8,108 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9-feet-phase-baseline-fix] - 2026-05-11: feet_phase baseline correction + direct numeric reward tests
+
+### Context — reviewer-flagged regression in smoke9's feet_phase
+
+Round-3 code review found two issues with the smoke9 patch (`de7ab77`):
+
+**P1 (CRITICAL): `feet_phase` used foot body-origin z, not sole z.**
+
+WR's `CAL.get_foot_positions()` returns `data.xpos[foot_body_id]` —
+the foot body origin, not the foot center / sole.  At WR home pose,
+the foot body origin sits **~0.034 m above the floor** (the visible
+foot mesh extends down from the body origin).
+
+The original smoke9 implementation (`de7ab77`) used:
+```python
+err_l = left_foot_pos[2] - expected_z_left
+```
+where `expected_z_left ∈ [0, 0.04]` (0 = grounded, 0.04 = swing
+apex).  At home pose with the foot correctly grounded, this gives
+`err = 0.034` and reward:
+```
+exp(-1428.6 × 2 × 0.034²) ≈ 0.037
+```
+So **PPO is rewarded only ~3.7% of max even when standing
+correctly grounded**.  The gradient pushes the foot body origin
+DOWN toward the geometric floor — i.e. tries to clip the foot mesh
+through the ground.  This would have broken smoke9's main gait
+signal.
+
+TB sidesteps this by using
+`pipeline_state.site_xpos["left_foot_center"][2]`
+(`walk_env.py:660-664`) — a foot-center site explicitly placed at
+the sole.
+
+**P2: Numeric tests didn't actually exercise the env reward formula.**
+
+The `tests/test_v0201_env_rewards_tb.py` file claimed to probe the
+env's rewards but actually only checked cached flag values + a
+pure-Python helper.  The tests would not have caught the body-origin
+bug above because they never invoked the env's actual reward
+computation.
+
+### Patch
+
+**Env code (P1 fix):**
+
+- Extracted `_feet_phase_reward` as a `@staticmethod` on `WildRobotEnv`
+  with explicit input contract: `left_foot_z_rel` and
+  `right_foot_z_rel` MUST be heights ABOVE the per-foot grounded
+  baseline (so 0.0 = grounded, swing_height = peak swing apex).
+- The env's call site now subtracts `feet_height_init` (captured at
+  reset and stored in `WildRobotInfo`) before invoking the helper:
+  ```python
+  left_foot_z_rel = left_foot_pos[2] - feet_height_init[0]
+  right_foot_z_rel = right_foot_pos[2] - feet_height_init[1]
+  ```
+- Added `feet_height_init: jax.Array` to `_compute_reward_terms`
+  signature; threaded from `wr.feet_height_init` at the call site.
+
+This is the "minimal WR fix" the reviewer suggested.  The
+"TB-faithful fix" (add foot_center sites to MJCF) is deferred —
+the baseline-relative form is mathematically equivalent for a flat
+floor and avoids touching the asset / collision pipeline.
+
+**Tests (P2 fix):**
+
+`tests/test_v0201_env_rewards_tb.py` extended with **6 new direct
+numeric tests** that invoke the env's actual `_feet_phase_reward`
+helper:
+
+1. `test_feet_phase_standing_grounded_max_reward` — standing + both
+   feet at baseline (z_rel = 0) ⇒ reward = 1.0 (max).
+2. `test_feet_phase_walking_grounded_during_own_swing_low` — walking
+   + foot stays grounded during its own swing window ⇒ low reward
+   (pulls PPO toward the lift).
+3. `test_feet_phase_walking_lifted_during_own_swing_high` — perfect
+   swing tracking (foot at apex during own swing) ⇒ reward = 2.0
+   (max with height bonus).
+4. `test_feet_phase_standing_lifted_penalized` — standing + lifted
+   foot ⇒ reward ≈ 0.10 (10× lower than standing+grounded).
+5. `test_feet_phase_baseline_correction_protects_against_body_origin_bug`
+   — REGRESSION TEST: invokes the helper with raw body-origin z (the
+   bug case, gives ~0.037) AND with baseline-relative z (the correct
+   case, gives 1.0).  Both must pass for the helper itself to be
+   correct; the env's call-site baseline subtraction is what
+   distinguishes correct from buggy behavior.
+6. `test_feet_phase_left_swing_active_right_grounded_tracks` —
+   correct foot lift > wrong foot lift at the same phase.
+
+### Tests
+
+- `tests/test_v0201_env_rewards_tb.py`: 14/14 pass (8 prior + 6 new).
+- `training/tests/test_config_load_smoke9.py`: 7/7 pass.
+- `tests/test_v0201_env_zero_action.py` + adapter parity: 28/28 pass.
+
+### Reference
+
+- `toddlerbot/locomotion/walk_env.py:660-664` — TB feet_phase uses
+  `site_xpos["foot_center"]` (sole position, not body origin)
+
+---
+
 ## [v0.20.1-smoke9-tb-faithful-rewards] - 2026-05-11: implement 4 deferred TB rewards in env; smoke9 = full TB walk.gin recipe
 
 ### Context — smoke8a result + smoke8b deferral list

@@ -682,6 +682,82 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ).astype(jp.float32)
         return target_q, residual_delta_q
 
+    # ------------------------------------------------------ feet_phase helper
+
+    @staticmethod
+    def _feet_phase_reward(
+        *,
+        left_foot_z_rel: jax.Array,
+        right_foot_z_rel: jax.Array,
+        phase_sin: jax.Array,
+        phase_cos: jax.Array,
+        is_standing: jax.Array,
+        swing_height: jax.Array,
+        alpha: jax.Array,
+    ) -> jax.Array:
+        """TB-faithful phase-derived foot-height tracking reward (smoke9).
+
+        Mirrors TB ``_reward_feet_phase`` (walk_env.py:631-695) including
+        the height bonus that rewards lifting feet against gravity.
+
+        Inputs ``left_foot_z_rel`` / ``right_foot_z_rel`` MUST be heights
+        relative to each foot's grounded baseline (so 0.0 = grounded,
+        ``swing_height`` = peak swing apex).  WR's foot body-origin z is
+        ~0.034 m even when the foot is correctly on the floor, so the
+        caller is responsible for subtracting the per-foot baseline
+        (``feet_height_init`` from ``WildRobotInfo``).
+
+        Phase angle from ``arctan2(phase_sin, phase_cos)`` mapped to
+        ``[0, 2π]``.  Left foot expected to swing during phase ∈ [0, π]
+        and stay grounded during [π, 2π]; right foot is the complement.
+        Within each foot's swing window, expected z follows a cubic
+        Bézier rise-then-fall (``3x² - 2x³``) peaking at the midpoint.
+
+        When ``is_standing`` is true (zero command), expected z is 0
+        for both feet — encourages standing still on a zero command.
+
+        Reward: ``exp(-alpha * (Δz_left² + Δz_right²)) ×
+                  (1 + max_expected / swing_height)``
+
+        Pure function, no env state.  Used both in the per-step env
+        reward path and in the unit tests.  Keeping the implementation
+        pure makes the formula directly testable without constructing
+        an env or stepping physics.
+        """
+        phase_angle = jp.arctan2(phase_sin, phase_cos)
+        phase_angle = jp.mod(phase_angle + 2.0 * jp.pi, 2.0 * jp.pi)
+
+        def _expected_foot_z(phase: jax.Array, is_left: bool) -> jax.Array:
+            if is_left:
+                in_swing = phase < jp.pi
+                swing_progress = phase / jp.pi
+            else:
+                in_swing = phase >= jp.pi
+                swing_progress = (phase - jp.pi) / jp.pi
+            x_rise = 2.0 * swing_progress
+            x_fall = 2.0 * swing_progress - 1.0
+            bezier_rise = x_rise * x_rise * (3.0 - 2.0 * x_rise)
+            bezier_fall = x_fall * x_fall * (3.0 - 2.0 * x_fall)
+            rise_val = swing_height * bezier_rise
+            fall_val = swing_height * (1.0 - bezier_fall)
+            swing_z = jp.where(swing_progress <= 0.5, rise_val, fall_val)
+            return jp.where(in_swing, swing_z, jp.float32(0.0))
+
+        expected_z_left_walk = _expected_foot_z(phase_angle, is_left=True)
+        expected_z_right_walk = _expected_foot_z(phase_angle, is_left=False)
+        expected_z_left = jp.where(is_standing, jp.float32(0.0), expected_z_left_walk)
+        expected_z_right = jp.where(is_standing, jp.float32(0.0), expected_z_right_walk)
+
+        err_l = left_foot_z_rel - expected_z_left
+        err_r = right_foot_z_rel - expected_z_right
+        err_sq = err_l * err_l + err_r * err_r
+        base = jp.exp(-alpha * err_sq)
+        max_expected = jp.maximum(expected_z_left, expected_z_right)
+        height_bonus = 1.0 + max_expected / jp.maximum(
+            swing_height, jp.float32(1e-6)
+        )
+        return base * height_bonus
+
     # --------------------------------------------------- offline window helpers
 
     def _lookup_offline_window(self, step_idx: jax.Array) -> Dict[str, jax.Array]:
@@ -894,6 +970,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         stance_mask: jax.Array,
         left_foot_pos: jax.Array,
         right_foot_pos: jax.Array,
+        feet_height_init: jax.Array,
     ) -> Dict[str, jax.Array]:
         """v0.20.1 imitation-dominant reward family.
 
@@ -1278,54 +1355,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
         r_close_feet_xy = jp.where(too_close, jp.float32(-1.0), jp.float32(0.0))
 
         # ---- feet_phase (smoke9, TB walk.gin / walk_env.py:631-695) --
-        # Phase-derived expected swing-foot height; reward = exp(-Δz²/σ)
-        # × (1 + max_expected_z / swing_height).  Standing (||cmd|| ≈ 0)
-        # ⇒ expected = 0 for both feet (encourage feet on ground).
-        # Phase angle from win["phase_sin"]/win["phase_cos"] in [0, 2π].
+        # WR's CAL.get_foot_positions() returns body-origin z, NOT sole z
+        # (TB uses site_xpos["foot_center"]).  At home pose the foot
+        # body origin sits ~0.034 m above the floor.  Subtracting the
+        # per-foot reset baseline (feet_height_init) makes the input to
+        # _feet_phase_reward "height ABOVE ground baseline", which is
+        # the quantity TB's expected_foot_height curve was designed for
+        # (0 = grounded, swing_height = peak swing apex).
+        #
+        # Per-step baseline could drift if the floor isn't flat under
+        # the robot, but for the smoke (flat floor) feet_height_init at
+        # reset is a sound zero.  Per-leg, so any small left/right
+        # asymmetry at home is absorbed.
+        left_foot_z_rel = left_foot_pos[2] - feet_height_init[0]
+        right_foot_z_rel = right_foot_pos[2] - feet_height_init[1]
         is_standing = jp.abs(velocity_cmd) < jp.float32(1e-6)
-        phase_sin = win["phase_sin"]
-        phase_cos = win["phase_cos"]
-        phase_angle = jp.arctan2(phase_sin, phase_cos)
-        phase_angle = jp.mod(phase_angle + 2.0 * jp.pi, 2.0 * jp.pi)
-        swing_height = jp.float32(weights.feet_phase_swing_height)
-
-        def _expected_foot_z(phase: jax.Array, is_left: bool) -> jax.Array:
-            # Left swings during [0, π], right during [π, 2π].
-            if is_left:
-                in_swing = phase < jp.pi
-                swing_progress = phase / jp.pi
-            else:
-                in_swing = phase >= jp.pi
-                swing_progress = (phase - jp.pi) / jp.pi
-            # Cubic-Bézier (smoothstep) rise/fall: 3x² - 2x³.
-            # First half: rise 0 → swing_height (param 2*progress)
-            # Second half: fall swing_height → 0 (param 2*progress - 1)
-            x_rise = 2.0 * swing_progress
-            x_fall = 2.0 * swing_progress - 1.0
-            bezier_rise = x_rise * x_rise * (3.0 - 2.0 * x_rise)
-            bezier_fall = x_fall * x_fall * (3.0 - 2.0 * x_fall)
-            rise_val = swing_height * bezier_rise
-            fall_val = swing_height * (1.0 - bezier_fall)
-            swing_z = jp.where(swing_progress <= 0.5, rise_val, fall_val)
-            return jp.where(in_swing, swing_z, jp.float32(0.0))
-
-        expected_z_left_walk = _expected_foot_z(phase_angle, is_left=True)
-        expected_z_right_walk = _expected_foot_z(phase_angle, is_left=False)
-        expected_z_left = jp.where(is_standing, jp.float32(0.0), expected_z_left_walk)
-        expected_z_right = jp.where(is_standing, jp.float32(0.0), expected_z_right_walk)
-        err_l = left_foot_pos[2] - expected_z_left
-        err_r = right_foot_pos[2] - expected_z_right
-        feet_phase_err_sq = err_l * err_l + err_r * err_r
-        feet_phase_base = jp.exp(
-            -jp.float32(weights.feet_phase_alpha) * feet_phase_err_sq
+        r_feet_phase = self._feet_phase_reward(
+            left_foot_z_rel=left_foot_z_rel,
+            right_foot_z_rel=right_foot_z_rel,
+            phase_sin=win["phase_sin"],
+            phase_cos=win["phase_cos"],
+            is_standing=is_standing,
+            swing_height=jp.float32(weights.feet_phase_swing_height),
+            alpha=jp.float32(weights.feet_phase_alpha),
         )
-        max_expected = jp.maximum(expected_z_left, expected_z_right)
-        # Bonus multiplier: 1.0x at zero expected (standing), 2.0x at peak
-        # swing_height (TB rewards lifting feet harder against gravity).
-        height_bonus = 1.0 + max_expected / jp.maximum(
-            swing_height, jp.float32(1e-6)
-        )
-        r_feet_phase = feet_phase_base * height_bonus
 
         return dict(
             r_q_track=r_q_track,
@@ -2068,6 +2121,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             stance_mask=stance_mask,
             left_foot_pos=left_foot_pos,
             right_foot_pos=right_foot_pos,
+            feet_height_init=wr.feet_height_init,
         )
         reward_contrib = self._aggregate_reward(reward_terms, terminated)
         reward = reward_contrib["total"]

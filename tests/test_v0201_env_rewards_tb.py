@@ -171,7 +171,198 @@ def test_feet_phase_left_right_swing_complementary() -> None:
 
 
 # -----------------------------------------------------------------------------
-# 5. Default reward-weight values
+# 5. Direct numeric tests of WildRobotEnv._feet_phase_reward
+# -----------------------------------------------------------------------------
+# These probe the env's actual JAX implementation, NOT just a Python
+# port.  Inputs are baseline-relative foot z (so 0.0 = grounded), which
+# is the contract the env enforces by subtracting feet_height_init
+# before calling the helper.  A regression that reverts to body-origin
+# z (the bug the reviewer flagged) would fail these tests because at
+# WR's home pose foot body-origin z ≈ 0.034 m ≠ 0 and the helper would
+# return ~0.037 even when the foot is correctly grounded.
+
+
+def _call_feet_phase(
+    env: WildRobotEnv,
+    *,
+    left_z_rel: float,
+    right_z_rel: float,
+    phase: float,
+    is_standing: bool,
+    swing_height: float = 0.04,
+    alpha: float = 1428.6,
+) -> float:
+    """Convenience wrapper that converts a phase angle to (sin, cos)
+    and invokes the env's static helper.  Returns a Python float."""
+    return float(
+        env._feet_phase_reward(
+            left_foot_z_rel=jp.float32(left_z_rel),
+            right_foot_z_rel=jp.float32(right_z_rel),
+            phase_sin=jp.float32(math.sin(phase)),
+            phase_cos=jp.float32(math.cos(phase)),
+            is_standing=jp.bool_(is_standing),
+            swing_height=jp.float32(swing_height),
+            alpha=jp.float32(alpha),
+        )
+    )
+
+
+def test_feet_phase_standing_grounded_max_reward(smoke9_env) -> None:
+    """Standing (||cmd|| ≈ 0) + both feet at baseline (z_rel = 0) ⇒
+    expected z = 0 for both, error = 0, base reward = exp(0) = 1.0,
+    bonus = 1 + 0/h = 1.0 → reward = 1.0 (max)."""
+    r = _call_feet_phase(
+        smoke9_env, left_z_rel=0.0, right_z_rel=0.0,
+        phase=0.0, is_standing=True,
+    )
+    assert r == pytest.approx(1.0, abs=1e-5), (
+        f"standing + grounded both feet must give max reward 1.0; got {r}"
+    )
+
+
+def test_feet_phase_walking_grounded_during_own_swing_low(smoke9_env) -> None:
+    """Walking + LEFT foot stays on ground during left's swing window
+    (phase=π/2 expects left at apex h=0.04).  Error is the full
+    swing_height; base reward = exp(-1428.6 * 0.04²) = exp(-2.286)
+    ≈ 0.102; bonus = 1 + h/h = 2.0; reward ≈ 0.204.
+
+    This is what the reviewer's flagged bug would produce at home pose:
+    foot at body-origin z stays "low" (close to baseline) during swing,
+    and PPO sees a small reward — but with the baseline correction the
+    starting state IS grounded (z_rel = 0), so this test exercises
+    PPO's incentive to LIFT the foot when its swing is commanded."""
+    r = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.0,         # foot stays grounded
+        right_z_rel=0.0,
+        phase=math.pi / 2.0,    # left's swing apex commanded
+        is_standing=False,
+    )
+    expected_base = math.exp(-1428.6 * 0.04 ** 2)
+    expected = expected_base * 2.0  # bonus = 2.0 at peak swing
+    assert r == pytest.approx(expected, abs=1e-3), (
+        f"left grounded during left's swing apex: expected ≈{expected:.4f}, got {r}"
+    )
+    # Sanity: must be much smaller than the "left foot at apex" case (below).
+    assert r < 0.5
+
+
+def test_feet_phase_walking_lifted_during_own_swing_high(smoke9_env) -> None:
+    """Walking + LEFT foot at swing apex during left's swing window
+    (phase=π/2, z_rel = swing_height = 0.04) ⇒ left error = 0,
+    right error = 0 (right grounded during left's swing).  Base
+    reward = exp(0) = 1.0, bonus = 1 + 0.04/0.04 = 2.0, total = 2.0.
+
+    This is the strongest signal the policy can earn — cmd-aligned
+    swing.  PPO is incentivized to track this."""
+    r = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.04,        # left at swing apex
+        right_z_rel=0.0,        # right grounded
+        phase=math.pi / 2.0,    # left's swing apex commanded
+        is_standing=False,
+    )
+    assert r == pytest.approx(2.0, abs=1e-4), (
+        f"perfect swing tracking + height bonus must give 2.0; got {r}"
+    )
+
+
+def test_feet_phase_standing_lifted_penalized(smoke9_env) -> None:
+    """Standing (cmd ≈ 0) + lifting the left foot to swing_height ⇒
+    expected z = 0 for both feet (standing override), so left error =
+    0.04.  Base reward = exp(-1428.6 × 0.04²) ≈ 0.102.  Bonus = 1.0
+    (no expected swing).  Total ≈ 0.102.
+
+    This penalizes a "lift feet to fake walking" exploit on zero cmd."""
+    r = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.04,        # left lifted
+        right_z_rel=0.0,
+        phase=math.pi / 2.0,    # phase is non-zero but standing override fires
+        is_standing=True,
+    )
+    expected = math.exp(-1428.6 * 0.04 ** 2) * 1.0  # bonus = 1.0 standing
+    assert r == pytest.approx(expected, abs=1e-4), (
+        f"standing + lifted foot should give base reward ~{expected:.4f}; "
+        f"got {r}"
+    )
+    # Confirm: standing+lifted (~0.10) << standing+grounded (1.0)
+    assert r < 0.2
+
+
+def test_feet_phase_baseline_correction_protects_against_body_origin_bug(
+    smoke9_env,
+) -> None:
+    """REGRESSION TEST for the reviewer-flagged bug: WR foot body-origin
+    z ≈ 0.034 m at home pose.  If the env passes raw foot_pos[2]
+    (without subtracting feet_height_init) into _feet_phase_reward,
+    a correctly grounded foot would be treated as 0.034 m above the
+    expected 0 and earn:
+        exp(-1428.6 * 2 * 0.034²) ≈ exp(-3.30) ≈ 0.037
+    instead of the correct max reward 1.0.
+
+    This test fails loud if a future refactor reverts the baseline
+    subtraction in the env's call site.  We invoke the helper with
+    unconverted body-origin z (0.034) for both feet and assert the
+    reward is the BAD value, then with the correctly-converted
+    baseline-relative z (0.0) and assert the reward is 1.0.  Both
+    pass means the helper itself is fine; the env's call-site
+    correction (left_foot_pos[2] - feet_height_init[0]) is what
+    distinguishes correct from buggy behavior.
+    """
+    # Helper invoked with raw body-origin z (the bug case): low reward.
+    r_bug = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.034, right_z_rel=0.034,  # what raw body-origin z gives
+        phase=0.0, is_standing=True,
+    )
+    expected_bug = math.exp(-1428.6 * 2 * 0.034 ** 2)
+    assert r_bug == pytest.approx(expected_bug, abs=1e-3), (
+        f"body-origin z input should give ~{expected_bug:.4f}; got {r_bug}"
+    )
+    assert r_bug < 0.05, (
+        "body-origin z must give a small reward (~0.037); else this "
+        "test isn't actually exercising the bug case"
+    )
+
+    # Helper invoked with baseline-relative z (the correct case): max.
+    r_ok = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.0, right_z_rel=0.0,
+        phase=0.0, is_standing=True,
+    )
+    assert r_ok == pytest.approx(1.0, abs=1e-5)
+
+
+def test_feet_phase_left_swing_active_right_grounded_tracks(smoke9_env) -> None:
+    """At phase ∈ [0, π] left should be in swing (expected z > 0) and
+    right should be grounded (expected z = 0).  If the policy tracks
+    perfectly (left at apex during left's apex, right at 0), reward is
+    high.  If the policy mistakes which foot to lift (right at apex
+    during LEFT's swing), reward should drop sharply due to non-zero
+    error on both feet."""
+    # Correct pairing
+    r_correct = _call_feet_phase(
+        smoke9_env, left_z_rel=0.04, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    # Wrong-foot-lift
+    r_wrong = _call_feet_phase(
+        smoke9_env, left_z_rel=0.0, right_z_rel=0.04,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    assert r_correct > r_wrong, (
+        f"correct foot lift ({r_correct:.4f}) must reward more than "
+        f"wrong foot lift ({r_wrong:.4f})"
+    )
+    assert r_correct == pytest.approx(2.0, abs=1e-4)
+    # Wrong-foot has BOTH errors at swing_height: 2 * 0.04² in the exp.
+    expected_wrong_base = math.exp(-1428.6 * 2 * 0.04 ** 2)
+    assert r_wrong == pytest.approx(expected_wrong_base * 2.0, abs=1e-3)
+
+
+# -----------------------------------------------------------------------------
+# 6. Default reward-weight values
 # -----------------------------------------------------------------------------
 
 
