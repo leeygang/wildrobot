@@ -1525,6 +1525,27 @@ METRIC_SPECS: List[MetricSpec] = [
         ),
     ),
     MetricSpec(
+        name="reward/penalty_close_feet_xy",
+        reducer=Reducer.MEAN,
+        description=(
+            "Binary -1.0 when lateral foot distance (perpendicular to base "
+            "forward) < env.close_feet_threshold.  Mirrors TB "
+            "_reward_penalty_close_feet_xy (mjx_env.py:2709-2745).  Active "
+            "in smoke9."
+        ),
+    ),
+    MetricSpec(
+        name="reward/feet_phase",
+        reducer=Reducer.MEAN,
+        description=(
+            "TB-faithful phase-derived foot-height tracking.  Inputs are "
+            "baseline-relative (caller subtracts feet_height_init from "
+            "foot body-origin z, since WR foot body z != sole z).  "
+            "Mirrors TB _reward_feet_phase (walk_env.py:631-695).  Active "
+            "in smoke9."
+        ),
+    ),
+    MetricSpec(
         name="ref/q_track_err_rmse",
         reducer=Reducer.MEAN,
         log_prefix="ref",

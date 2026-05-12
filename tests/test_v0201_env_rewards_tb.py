@@ -380,3 +380,85 @@ def test_smoke7_does_not_enable_smoke9_rewards() -> None:
     assert rw.feet_phase == 0.0, (
         f"smoke7 feet_phase = {rw.feet_phase}; must default to 0."
     )
+
+
+# -----------------------------------------------------------------------------
+# 7. Integration test for the feet_phase CALL SITE
+# -----------------------------------------------------------------------------
+# The helper-only tests above don't exercise the env's call-site
+# baseline subtraction (`left_foot_pos[2] - feet_height_init[0]`).
+# A future regression that drops the subtraction would silently
+# re-introduce the body-origin bug while passing all the helper tests.
+# This integration test runs env.reset + env.step under smoke9 and
+# reads the actually-logged reward/feet_phase metric, so the call-site
+# wiring is exercised end-to-end.
+
+
+def test_feet_phase_metric_reflects_baseline_correction(smoke9_env) -> None:
+    """End-to-end test of the feet_phase call site under smoke9.
+
+    Reset → step(action=0); read state.metrics["reward/feet_phase"].
+    Expected value at iter 1 with the baseline correction:
+      ~0.15 per step (= 7.5 weight × 0.02 dt × ~1.0 base reward)
+
+    Without the baseline correction (the body-origin bug, fixed in
+    `86dc0ae`), the same state would report ~0.04 per step (= 7.5 ×
+    0.02 × ~0.27 reward, where 0.27 = exp(-1428.6 × 2 × 0.034²)).
+    The two regimes differ by ~4×, which is well above any noise from
+    the small physics drift over a single 20 ms step.
+    """
+    from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
+
+    reset_fn = jax.jit(smoke9_env.reset_for_eval)
+    step_fn = jax.jit(smoke9_env.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(smoke9_env.action_size, dtype=jp.float32)
+    state = step_fn(state, zero_action)
+
+    # State must not have terminated on iter 1 — if it did, the metric
+    # snapshot is unreliable.
+    assert int(state.done) == 0, "env terminated on iter 1; cannot probe"
+
+    feet_phase_idx = METRIC_INDEX["reward/feet_phase"]
+    feet_phase_contrib = float(state.metrics[METRICS_VEC_KEY][feet_phase_idx])
+
+    # Baseline-corrected lower bound.  At iter 1 the phase has barely
+    # advanced (Δphase ≈ 0.26 rad over 20 ms at cycle=0.96), so
+    # expected_z is small (~3 mm) and a correctly grounded foot
+    # (z_rel ≈ 0) gives reward ≈ 0.99 with bonus ≈ 1.07 → ~1.06.
+    # Per-step contribution = 7.5 × 0.02 × 1.06 ≈ 0.16.
+    #
+    # The bug case would give ~0.04; we set the lower threshold at
+    # 0.10 to leave a clean margin while accepting some physics jitter.
+    assert feet_phase_contrib > 0.10, (
+        f"reward/feet_phase = {feet_phase_contrib:.4f}; expected > 0.10 "
+        f"(baseline-corrected reward ≈ 0.16 per step).  A value < 0.10 "
+        f"indicates the call site is using raw foot_pos[2] instead of "
+        f"foot_pos[2] - feet_height_init[i] — the body-origin bug "
+        f"reviewer flagged in the smoke9 patch."
+    )
+    # Upper bound sanity: contribution can't exceed weight × dt × bonus_max
+    # = 7.5 × 0.02 × 2.0 = 0.30 (perfect swing tracking with full bonus).
+    assert feet_phase_contrib < 0.30, (
+        f"reward/feet_phase = {feet_phase_contrib:.4f}; exceeds the "
+        f"theoretical max contribution (0.30 = 7.5×0.02×2.0).  Likely "
+        f"a metric registration / weight bug."
+    )
+
+
+def test_feet_phase_metric_is_registered_and_logged(smoke9_env) -> None:
+    """Catches the silent-drop bug where reward/feet_phase is written
+    to terminal_metrics_dict but missing from METRIC_INDEX (and so
+    never reaches the metrics vector — value defaults to 0).
+    """
+    from training.core.metrics_registry import METRIC_INDEX
+
+    assert "reward/feet_phase" in METRIC_INDEX, (
+        "reward/feet_phase is not in METRIC_INDEX.  build_metrics_vec "
+        "silently drops unregistered keys, so the smoke9 metric would "
+        "always log 0.0.  Add a MetricSpec to metrics_registry.py."
+    )
+    assert "reward/penalty_close_feet_xy" in METRIC_INDEX, (
+        "reward/penalty_close_feet_xy is not in METRIC_INDEX.  Same "
+        "silent-drop bug as above.  Add a MetricSpec."
+    )
