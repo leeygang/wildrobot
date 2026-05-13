@@ -110,6 +110,18 @@ REWARD_TERM_KEYS = [
     "reward/ang_vel_xy",
     "reward/ref_contact_match",
     "reward/cmd_forward_velocity_track",
+    # v0.20.1 TB-active alignment Phase 2 (Appendix B).  These were
+    # written to terminal_metrics_dict by the env from the smoke8b
+    # round-1 audit fix onward (commit 16585af) but absent from this
+    # allow-list — silently dropped by the wandb dispatcher.  Visible
+    # in smoke9b only after this commit.
+    "reward/penalty_pose",
+    "reward/penalty_feet_ori",
+    "reward/ref_feet_z_track",
+    # v0.20.1 smoke9 — TB walk.gin reward terms (commit de7ab77).
+    # Same silent-drop bug — registered + env-writing but missing here.
+    "reward/penalty_close_feet_xy",
+    "reward/feet_phase",
 ]
 
 

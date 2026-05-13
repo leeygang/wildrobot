@@ -8,6 +8,101 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-reward-term-keys-coverage] - 2026-05-12: fix REWARD_TERM_KEYS allow-list silent-drop bug; smoke7-9b were missing 5 visible rewards
+
+### Context — smoke9b verify (run `4fqq52f9`) exposed the bug
+
+The smoke9b 50-iter verify launched with all my smoke9 commits pulled.
+`reward/cmd_forward_velocity_track` rose 2.5× vs smoke9 (vx narrowing
+worked at the gradient layer).  But four reward keys were **completely
+absent** from the metrics file:
+
+- `reward/feet_phase`
+- `reward/penalty_close_feet_xy`
+- `reward/penalty_pose`
+- `reward/penalty_feet_ori`
+
+Initial diagnosis assumed metric-registry drift; after re-checking, all
+four ARE registered (`METRIC_INDEX[reward/feet_phase] = 246`).  The
+real bug was one layer further out.
+
+### The bug — third silent-drop pattern
+
+`training/core/experiment_tracking.py:54` defines `REWARD_TERM_KEYS` —
+a hardcoded allow-list of which reward keys the wandb dispatcher
+forwards.  Anything not in the list is silently dropped.  Five keys
+the env writes were missing:
+
+```
+reward/penalty_pose          (missing since smoke8b round-1, commit 16585af)
+reward/penalty_feet_ori      (missing since smoke8b round-1)
+reward/ref_feet_z_track      (missing since smoke7 — never logged)
+reward/penalty_close_feet_xy (missing since smoke9, commit de7ab77)
+reward/feet_phase            (missing since smoke9)
+```
+
+This is the THIRD silent-drop pattern in the metrics pipeline:
+
+| Layer | Drop mechanism | Caught by |
+|---|---|---|
+| 1. `terminal_metrics_dict` write | Env doesn't write the key | Manual env audit (smoke9 commit) |
+| 2. `METRIC_INDEX` registry | `build_metrics_vec.get(name, zeros)` defaults to 0 | `c4f8f2a` registry fix |
+| 3. **`REWARD_TERM_KEYS` allow-list** | `build_wandb_metrics` only forwards listed keys | this commit |
+
+All three layers must agree for a reward to reach wandb.  Drift between
+them is silent — the reward IS active in PPO's loss, but invisible.
+
+### Impact on prior smokes
+
+`reward/penalty_pose` (weight -0.5) and `reward/penalty_feet_ori`
+(weight -5.0 / +5.0) have been ACTIVE in PPO's loss across smoke7,
+smoke8, smoke8a, smoke8b, smoke9, and smoke9b — but their per-term
+contributions were never visible.  Smoke7's reward decomposition we
+used to diagnose the "feet_air_time exploit" was missing these two
+heavy-weighted terms.  Smoke9's "going backward at -0.6 m/s" diagnosis
+was missing the FOUR heaviest TB-faithful terms (penalty_pose,
+penalty_feet_ori, feet_phase, penalty_close_feet_xy).
+
+We diagnosed training failures for several runs without seeing the
+load-bearing reward signals.  The diagnoses still pointed in the right
+direction, but we were blind to whether penalty_pose was actively
+fighting the gait — which it likely IS for smoke9b given WR's
+straight-leg home pose.
+
+### Patch
+
+- `training/core/experiment_tracking.py`: add 5 missing keys to
+  `REWARD_TERM_KEYS` (penalty_pose, penalty_feet_ori, ref_feet_z_track,
+  penalty_close_feet_xy, feet_phase).
+- `training/tests/test_reward_term_keys_coverage.py` (NEW, 3 tests):
+  parses `wildrobot_env.py` for every `terminal_metrics_dict["reward/X"]`
+  write, asserts each is in `REWARD_TERM_KEYS`.  Pins smoke9 keys
+  explicitly.  Fails loud on any future drift.
+
+### Tests
+
+- `training/tests/test_reward_term_keys_coverage.py`: 3/3 pass.
+- `training/tests/test_config_load_smoke9.py`: 14/14 pass.
+
+### Next — re-run smoke9b 50-iter verify
+
+With this commit pulled on the training machine, the same smoke9b yaml
++ `--iterations 50` should now log:
+
+- `reward/feet_phase` (expected ~0.10-0.20 per step at random init)
+- `reward/penalty_close_feet_xy` (mostly 0, occasional -0.2 if feet cross)
+- `reward/penalty_pose` (likely **dominant negative** ~-0.10 to -0.30
+  if straight-leg home is fighting the gait)
+- `reward/penalty_feet_ori` (small magnitude under TB linear form)
+- `reward/ref_feet_z_track` (0 — disabled by smoke9, but visible now)
+
+If `reward/penalty_pose` is the dominant negative (≥ |action_rate|),
+that confirms the WR home-pose mismatch hypothesis and the next fix
+is (B) home-keyframe re-derivation or (C) lower per-joint weights on
+propulsion joints.
+
+---
+
 ## [v0.20.1-smoke9b-tb-vx-range-fix] - 2026-05-12: narrow vx training range to TB's [-0.1, 0.1] so cmd_forward_velocity_track has gradient
 
 ### Context — smoke9 result (run `58bv3zzm`, 12 iters of 480)
