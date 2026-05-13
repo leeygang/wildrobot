@@ -366,6 +366,87 @@ def test_feet_phase_left_swing_active_right_grounded_tracks(smoke9_env) -> None:
 # -----------------------------------------------------------------------------
 
 
+# -----------------------------------------------------------------------------
+# 8. penalty_feet_ori baseline correction (smoke9b round-2 audit)
+# -----------------------------------------------------------------------------
+# WR's MJCF foot body has a 90° rotation built in (onshape mate convention),
+# so foot body z-axis is forward-pointing, not sole-up.  Without baseline
+# correction, TB's `sqrt(gx² + gy²)` formula returns 1.0 per foot at home
+# pose (constant ~-0.20/step penalty regardless of actual tilt).  Fix:
+# subtract the home-pose g-in-foot baseline before computing tilt magnitude.
+
+
+def test_foot_ori_baseline_cached_at_init(smoke9_env) -> None:
+    """The two baseline arrays must exist after env init.  Each is a
+    3-vector representing gravity in the foot body frame at home pose."""
+    assert hasattr(smoke9_env, "_foot_ori_baseline_left")
+    assert hasattr(smoke9_env, "_foot_ori_baseline_right")
+    L = np.asarray(smoke9_env._foot_ori_baseline_left)
+    R = np.asarray(smoke9_env._foot_ori_baseline_right)
+    assert L.shape == (3,)
+    assert R.shape == (3,)
+    # Each baseline should be a unit vector (gravity has unit magnitude).
+    assert abs(np.linalg.norm(L) - 1.0) < 1e-3
+    assert abs(np.linalg.norm(R) - 1.0) < 1e-3
+
+
+def test_foot_ori_baseline_matches_wr_mjcf_convention(smoke9_env) -> None:
+    """WR foot body has 90° rotation: at home pose, gravity expressed
+    in foot frame is along the BODY X-axis (sole-up direction in the
+    body frame), not the body Z-axis.  Verify the cached baselines
+    reflect this:
+      LEFT  baseline ≈ [+1, 0, 0]  (foot body x = sole-up)
+      RIGHT baseline ≈ [-1, 0, 0]  (mirrored)
+
+    If a future MJCF re-export changes the foot body convention so
+    body z-axis becomes sole-up (TB-style), these baselines would shift
+    to ≈ [0, 0, -1] and TB's original `sqrt(gx² + gy²)` formula would
+    work directly — but the baseline-subtracted form would still give
+    0 at home, so this test would also need updating.
+    """
+    L = np.asarray(smoke9_env._foot_ori_baseline_left)
+    R = np.asarray(smoke9_env._foot_ori_baseline_right)
+    # Allow some tolerance for the MJCF's near-but-not-exactly-90° quat.
+    # The probe showed L ≈ [+1.0, 0, 0.002], R ≈ [-1.0, 0, 0].
+    assert abs(L[0] - 1.0) < 0.01, f"LEFT baseline x={L[0]}, expected ~+1.0"
+    assert abs(R[0] + 1.0) < 0.01, f"RIGHT baseline x={R[0]}, expected ~-1.0"
+
+
+def test_penalty_feet_ori_zero_at_home_after_baseline_fix(smoke9_env) -> None:
+    """End-to-end: at iter 1 with zero policy_action (robot near home),
+    `reward/penalty_feet_ori` magnitude should be SMALL (close to 0),
+    not ~-0.20 like the smoke9b run before the baseline fix.
+
+    Pre-fix: -0.20/step (constant 90° MJCF baseline tilt)
+    Post-fix: ~0 at home; grows as PPO actually tilts the foot.
+
+    Pass threshold: |contribution| < 0.05 per step at iter 1 (the
+    feet may have drifted slightly during the 20-substep physics roll;
+    full zero requires identity action AND zero foot motion).
+    """
+    from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
+
+    reset_fn = jax.jit(smoke9_env.reset_for_eval)
+    step_fn = jax.jit(smoke9_env.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(smoke9_env.action_size, dtype=jp.float32)
+    state = step_fn(state, zero_action)
+    if int(state.done) > 0:
+        pytest.skip("env terminated on iter 1; cannot probe")
+
+    feet_ori_idx = METRIC_INDEX["reward/penalty_feet_ori"]
+    contrib = float(state.metrics[METRICS_VEC_KEY][feet_ori_idx])
+
+    assert abs(contrib) < 0.05, (
+        f"reward/penalty_feet_ori = {contrib:+.4f} at iter 1; expected "
+        f"|contrib| < 0.05 after baseline correction.  Pre-fix value "
+        f"was ~-0.20 (constant 90° MJCF rotation overwhelming actual "
+        f"foot tilt signal).  If this fails: either the baseline "
+        f"subtraction in _compute_reward_terms regressed, or the env "
+        f"code at the call site was refactored away."
+    )
+
+
 def test_smoke7_does_not_enable_smoke9_rewards() -> None:
     """Smoke7's yaml predates smoke9's reward additions.  Loaded config
     must have penalty_close_feet_xy and feet_phase at 0 (the dataclass

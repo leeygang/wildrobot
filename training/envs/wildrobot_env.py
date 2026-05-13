@@ -531,12 +531,59 @@ class WildRobotEnv(mjx_env.MjxEnv):
         (toddlerbot/locomotion/walk_env.py:717-718).  We read directly from
         ``data.xquat[body_id]`` instead of going through cal because the
         reward path is hot and we already have ``data`` in scope.
+
+        Also caches the home-pose foot orientation baseline under
+        ``loc_ref_penalty_feet_ori_form: tb_linear_lateral``.  WR's foot
+        body z-axis is NOT aligned with sole-up at home — the onshape
+        export (assets/v2/onshape_export/wildrobot.xml:104) applies a
+        90° quat to the foot body so its local z-axis matches the
+        ankle_roll joint axis, which is along the parent's forward
+        direction.  TB's MJCF doesn't have this rotation (its foot body
+        is identity-rotated).
+
+        TB's `_reward_penalty_feet_ori` formula assumes the foot body
+        z-axis IS sole-up: it computes `sqrt(gx² + gy²)` of gravity in
+        foot frame and gets 0 at flat foot.  Under WR's convention,
+        gravity in foot frame at home is `[+1, 0, 0]` (left) or
+        `[-1, 0, 0]` (right) — `sqrt(gx² + gy²) = 1.0` per foot, a
+        constant ~-0.20/step penalty regardless of actual foot tilt.
+
+        Fix: cache `g_home_local = R_foot_home.inv() @ [0, 0, -1]` per
+        foot at init, then in the reward compute the magnitude of
+        `g_local - g_home_local`.  Generalizes the TB form to any
+        MJCF foot-body convention; reduces to TB's exact formula when
+        `g_home_local = [0, 0, -1]`.
         """
         foot_specs = self._cal.foot_specs
         left_id = next(s.body_id for s in foot_specs if s.name == "left_foot")
         right_id = next(s.body_id for s in foot_specs if s.name == "right_foot")
         self._left_foot_body_id = int(left_id)
         self._right_foot_body_id = int(right_id)
+
+        # Compute home-pose foot orientation baseline.  Use mj_forward on
+        # a temporary MjData with the home keyframe qpos so we read the
+        # actual world-frame foot rotation at home.
+        tmp_data = mujoco.MjData(self._mj_model)
+        tmp_data.qpos[:] = np.asarray(self._init_qpos)
+        tmp_data.qvel[:] = 0.0
+        mujoco.mj_forward(self._mj_model, tmp_data)
+        gravity_world = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+
+        def _g_in_foot_frame(body_id: int) -> np.ndarray:
+            quat_wxyz = tmp_data.xquat[body_id]
+            qw, qx, qy, qz = float(quat_wxyz[0]), float(quat_wxyz[1]), float(quat_wxyz[2]), float(quat_wxyz[3])
+            # Inverse quat (conjugate for unit quat).  Apply to gravity_world.
+            iw, ix, iy, iz = qw, -qx, -qy, -qz
+            qv = np.array([ix, iy, iz])
+            t = 2.0 * np.cross(qv, gravity_world)
+            return gravity_world + iw * t + np.cross(qv, t)
+
+        self._foot_ori_baseline_left = jp.asarray(
+            _g_in_foot_frame(self._left_foot_body_id), dtype=jp.float32
+        )
+        self._foot_ori_baseline_right = jp.asarray(
+            _g_in_foot_frame(self._right_foot_body_id), dtype=jp.float32
+        )
 
     # -------------------------------------------------- offline reference svc
 
@@ -1308,22 +1355,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # smoke9 — TB-faithful penalty form selector.
         #   "wr_quad_3axis"     : sum((g_local - [0,0,-1])²) for both feet
         #                         (smoke7/8/8a/8b — quadratic full 3-axis)
-        #   "tb_linear_lateral" : -(sqrt(gx²+gy²)_L + sqrt(gx²+gy²)_R)
+        #   "tb_linear_lateral" : ||g_local - g_home_local|| per foot
         #                         (TB walk_env.py:697-736 — linear in
-        #                         lateral tilt magnitude only).  Note the
+        #                         tilt-from-home magnitude).  Note the
         #                         function value is already negative; yaml
         #                         weight should be POSITIVE under this form.
+        #
+        # smoke9b-foot-ori-baseline-fix: TB's original formula
+        # `sqrt(gx² + gy²)` assumes foot body z-axis = sole-up at home
+        # (so g_local = [0,0,-1] at flat foot, sqrt(0+0) = 0).  WR's
+        # foot body has a 90° rotation built into the MJCF
+        # (assets/v2/onshape_export/wildrobot.xml:104) — body z-axis
+        # is the joint axis (forward), not sole-up.  At WR home,
+        # g_local = [+1,0,0] (left) / [-1,0,0] (right), sqrt = 1.0
+        # per foot — a constant ~-0.20/step penalty regardless of
+        # actual foot tilt, completely overwhelming the +0.13/step
+        # feet_phase gradient.  Smoke9b run 4fqq52f9 confirmed this.
+        #
+        # Generalized form: penalize the magnitude of the deviation of
+        # current g_local from the cached home baseline g_home_local.
+        # Reduces to TB's exact formula when g_home_local = [0, 0, -1]
+        # (because then ||g - [0,0,-1]|| ≈ sqrt(gx² + gy²) for small
+        # tilts where gz ≈ -1).  Independent of foot-body-frame
+        # convention.
         if self._penalty_feet_ori_form == "tb_linear_lateral":
-            left_tilt = jp.sqrt(
-                left_grav_foot[0] * left_grav_foot[0]
-                + left_grav_foot[1] * left_grav_foot[1]
-                + jp.float32(1e-8)
-            )
-            right_tilt = jp.sqrt(
-                right_grav_foot[0] * right_grav_foot[0]
-                + right_grav_foot[1] * right_grav_foot[1]
-                + jp.float32(1e-8)
-            )
+            left_dev = left_grav_foot - self._foot_ori_baseline_left
+            right_dev = right_grav_foot - self._foot_ori_baseline_right
+            left_tilt = jp.sqrt(jp.sum(left_dev * left_dev) + jp.float32(1e-8))
+            right_tilt = jp.sqrt(jp.sum(right_dev * right_dev) + jp.float32(1e-8))
             penalty_feet_ori = -(left_tilt + right_tilt)
         else:
             left_dev = left_grav_foot - gravity_world

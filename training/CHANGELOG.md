@@ -8,6 +8,161 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9b-foot-ori-baseline-fix] - 2026-05-12: fix penalty_feet_ori MJCF-convention bug; baseline-subtract g_local from home
+
+### Context — smoke9b verify (run `x8tr9h8f`) exposed the bug
+
+After fixing the REWARD_TERM_KEYS silent-drop bug (`a3ae1bf`), the
+20-iter smoke9b verify revealed all reward magnitudes for the first
+time.  Iter 1 breakdown:
+
+| Term | per-step contrib | Notes |
+|---|---|---|
+| `feet_phase` | **+0.130** | TB gait timing reward firing strongly |
+| `alive` | +0.020 | Constant |
+| `ref_body_quat_track` | +0.030 | Body upright |
+| `cmd_forward_velocity_track` | +0.005 | Tiny (alpha=1000 still tight) |
+| `penalty_pose` | -0.0006 | Essentially zero — straight-leg home is NOT fighting gait |
+| `penalty_close_feet_xy` | 0 | No leg crossing |
+| `ang_vel_xy` (TB neg-squared) | -0.021 | Small |
+| `action_rate` | -0.286 | Random policy noisy |
+| `penalty_feet_ori` (TB linear) | **-0.200** | **DOMINANT NEGATIVE — bigger than feet_phase positive** |
+| **total** | -0.324 | Net negative; PPO has no learning gradient toward gait |
+
+`feet_phase=+0.130` was the gait-timing signal we hoped would emerge.
+`penalty_feet_ori=-0.200` overwhelmed it — and the value was constant
+regardless of what PPO did (foot tilt magnitude wasn't actually
+changing).  PPO had no way to escape the net-negative reward.
+
+### Diagnosis: WR foot body has 90° MJCF rotation; TB form assumes sole-up=z
+
+A MuJoCo probe on the WR home keyframe revealed:
+
+```
+LEFT  body_quat:   [w=0.001, x=0.708, y=0.001, z=-0.707]
+                   → R_foot.inv() @ [0,0,-1] = [+1.000, +0.000, +0.002]
+RIGHT body_quat:   [w=0.707, x=0.001, y=-0.707, z=0.001]
+                   → R_foot.inv() @ [0,0,-1] = [-1.000, +0.000, -0.000]
+```
+
+**The WR foot body z-axis is forward-pointing, not sole-up.**  The
+90° rotation comes from the **raw onshape export**
+(`assets/v2/onshape_export/wildrobot.xml:104`) — onshape_to_robot
+v1.7.9 oriented the foot body's local frame so its z-axis matches
+the ankle_roll joint axis (the mate connector's z-axis in CAD).
+This is a normal CAD-to-MJCF convention choice, NOT a bug.
+
+TB's MJCF has the foot body at identity rotation (its onshape mate
+was set up differently).
+
+Side-by-side:
+
+| | TB | WR |
+|---|---|---|
+| Foot body | `quat="1 0 0 0"` (identity) | `quat="0.5 -0.5 -0.5 0.5"` (90°) |
+| ankle_roll joint axis | `(1, 0, 0)` (body-x = forward) | `(0, 0, 1)` (body-z, rotated to forward) |
+| Gravity in foot frame at home | `[0, 0, -1]` (sole-up = body-z) | `[+1, 0, 0]` left / `[-1, 0, 0]` right |
+| TB's `sqrt(gx²+gy²)` formula | 0.0 (correct: flat foot) | **1.0 per foot (constant baseline tilt!)** |
+
+TB's `_reward_penalty_feet_ori` (`walk_env.py:697-736`) implicitly
+assumes the foot body z-axis IS sole-up — only valid for TB's
+MJCF convention.  Under WR's convention, the formula returns `1.0`
+per foot at home, scaling to a constant `5.0 × -2.0 × 0.02 = -0.20`
+per-step penalty regardless of actual foot tilt.
+
+### Why we don't fix the MJCF instead
+
+Modifying the foot body quat to `"1 0 0 0"` (TB-faithful) would cascade
+through:
+- ankle_roll joint axis (would need to flip from `(0,0,1)` to `(1,0,0)`)
+- foot mesh visual `<geom mesh=...>` placements (assume current body frame)
+- IK solver in `control/zmp/zmp_walk.py` (relies on current foot frame)
+- All collision geom positions
+- `feet_height_init` baseline (already calibrated)
+
+That's high-risk for fixing a single reward.  The reward function is
+the right place to absorb the convention difference.
+
+### Patch — generalize the TB form to any MJCF foot convention
+
+**Same baseline-subtraction pattern as the round-1 `feet_phase` fix.**
+
+At `WildRobotEnv._init_foot_body_ids`:
+- Spawn a temp `MjData`, set `qpos = self._init_qpos` (home keyframe), `mj_forward`.
+- Read `R_foot_home_*` from `data.xquat`.
+- Compute `_foot_ori_baseline_<side> = R_foot_home.inv() @ [0,0,-1]`.
+- Cache as `jp.float32` arrays (3-vectors).
+
+At the `tb_linear_lateral` formula in `_compute_reward_terms`:
+```python
+# OLD (TB's exact form, broken under WR convention):
+left_tilt = sqrt(left_grav_foot[0]² + left_grav_foot[1]²)
+# = 1.0 at WR home, 0.0 at TB home
+
+# NEW (baseline-subtracted, MJCF-convention-independent):
+left_dev  = left_grav_foot - self._foot_ori_baseline_left
+left_tilt = ||left_dev||                # 0 at home, grows with rotation deviation
+```
+
+**Backward-compatibility with TB's intent:** for TB's convention,
+`g_home_local = [0, 0, -1]` and the deviation magnitude is
+`sqrt(δx² + δy² + δgz²)`.  For small tilts where δgz ≈ 0, this
+reduces to `sqrt(δx² + δy²)` — TB's exact formula.  So the
+generalization is mathematically equivalent at TB's home pose AND
+correct for any other foot body convention.
+
+### Tests
+
+`tests/test_v0201_env_rewards_tb.py` extended with 3 new tests:
+
+1. `test_foot_ori_baseline_cached_at_init` — env init populates two
+   3-vector baselines; each is unit norm.
+2. `test_foot_ori_baseline_matches_wr_mjcf_convention` — pins the
+   actual values for WR (~[+1,0,0] left, ~[-1,0,0] right).  If a
+   future MJCF re-export changes the convention, this test fires
+   loud so the next maintainer knows the baselines need re-checking.
+3. `test_penalty_feet_ori_zero_at_home_after_baseline_fix` —
+   end-to-end: reset + step(action=0) on smoke9 env, assert
+   `reward/penalty_feet_ori` magnitude < 0.05 (vs the pre-fix
+   constant ~-0.20).  Catches any regression at the call site that
+   stops using the baseline.
+
+### Tests pass
+
+- `tests/test_v0201_env_rewards_tb.py`: 19/19 pass (16 prior + 3 new).
+- All other env / smoke9 / smoke9b regression tests still green.
+
+### Expected impact on smoke9b
+
+Pre-fix iter-1 reward decomposition: total = -0.324
+Post-fix iter-1 expected: `penalty_feet_ori` drops from -0.200 to
+~0; `total` becomes ~-0.124 (still negative due to action_rate, but
+much closer to zero).
+
+`feet_phase`'s +0.130 gait-timing reward is no longer overwhelmed
+by the constant-baseline penalty.  Once PPO smooths actions
+(reduces `action_rate` from -0.286 toward -0.04 like in smoke9a's
+trajectory), `feet_phase + alive + ref_body_quat_track` should
+become the dominant signal, and PPO has incentive to discover gait
+alternation.
+
+If smoke9b STILL fails after this fix, the next levers are
+(a) loosen `cmd_forward_velocity_alpha` from 1000 to ~50 to give
+PPO an early velocity gradient, OR (b) re-derive the home keyframe
+with TB-style pre-bend (the original "WR home pose hypothesis"
+that turned out NOT to be the dominant issue this round but may
+matter once these other terms come online).
+
+### Reference
+
+- `assets/v2/onshape_export/wildrobot.xml:104` — raw onshape export
+  with the 90° quat
+- `toddlerbot/locomotion/walk_env.py:697-736` — TB's original formula
+- `/tmp/probe_foot_ori_baseline.py` — diagnostic probe used to
+  confirm the convention difference
+
+---
+
 ## [v0.20.1-reward-term-keys-coverage] - 2026-05-12: fix REWARD_TERM_KEYS allow-list silent-drop bug; smoke7-9b were missing 5 visible rewards
 
 ### Context — smoke9b verify (run `4fqq52f9`) exposed the bug
