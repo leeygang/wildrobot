@@ -8,6 +8,129 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9b-tb-vx-range-fix] - 2026-05-12: narrow vx training range to TB's [-0.1, 0.1] so cmd_forward_velocity_track has gradient
+
+### Context — smoke9 result (run `58bv3zzm`, 12 iters of 480)
+
+Smoke9 implemented all 8 TB-faithful walk.gin rewards (commit
+`c4f8f2a`).  The architecture worked at iter 0 (random policy +
+home base survived 266 ctrl steps).  But by iter 5, PPO converged
+to walking BACKWARD at -0.61 m/s with cmd=+0.20 (cmd_ratio = -3.0)
+— the same parking failure as smoke7/8a.  Different from smoke8a:
+`roll_frac` dropped from 0.75 to 0.0 (TB ang_vel_xy + penalty_pose
+home anchor stabilized roll), but `pitch_frac` stayed high (2.3-5.0)
+and the body kept tipping forward/backward.
+
+### Diagnosis: TB's tight reward shape × WR's wide vx range = no learning signal
+
+`cmd_forward_velocity_track` had effectively zero gradient at the
+velocity errors smoke9 saw.  Reward formula:
+`weight × exp(-alpha × err²)` with `alpha=1000` (TB-faithful).
+
+| Velocity error | exp(-1000·err²) reward |
+|---|---|
+| 0.005 m/s (TB's converged regime) | 0.975 |
+| 0.05 m/s | 0.082 |
+| 0.10 m/s | **4.5e-5** (essentially zero) |
+| 0.20 m/s (WR random policy) | exp(-40) ≈ 0 |
+| 0.60 m/s (smoke9 actual) | exp(-360) ≈ 0 |
+
+**TB walks because TB samples vx ∈ [-0.1, 0.1].**  Random-policy TB
+starts at err ≤ 0.10 m/s where the reward is small but TB's other
+rewards (alive, posture, feet_phase) provide enough early gradient
+to nudge the policy into the basin.  Once err drops below 0.05 m/s,
+TB's tight sigma becomes a strong attractor pulling to precise
+tracking.
+
+**WR samples vx ∈ [0, 0.30] / pins eval to 0.20.**  Random-policy
+WR has err ≈ 0.20 → reward = exp(-40) = 0 — exactly zero gradient.
+PPO's only positive reward is `alive=+0.020`; the dominant negative
+is `action_rate` (which PPO can only minimize by smoothing actions
+that don't go anywhere useful).  Result: PPO drifts backward and
+the body falls.
+
+The `cmd_forward_velocity_track` metric in smoke9's logs confirms:
+0.0004 per step (essentially noise floor) throughout training.
+
+### Patch — narrow WR's vx range to match TB exactly
+
+`ppo_walking_v0201_smoke9b.yaml` is identical to smoke9 except:
+
+| Field | smoke9 | smoke9b | Justification |
+|---|---|---|---|
+| `min_velocity` | 0.0 | **-0.1** | TB walk.gin:48 lower bound |
+| `max_velocity` | 0.30 | **0.10** | TB walk.gin:48 upper bound |
+| `eval_velocity_cmd` | 0.20 | **0.10** | Eval at top of TB band |
+| `loc_ref_offline_command_vx` | 0.20 | **0.10** | Aligns offline ref bin with operating point |
+
+All other smoke9 settings (architecture, PPO hyperparams, reward
+family, form flags) unchanged.  This isolates the training-distribution
+fix as a single-variable experiment vs smoke9.
+
+Trade-off: WR walks at 0.10 m/s instead of 0.20 m/s.  Slower target
+but TB-aligned and matches the bare-prior-stable point we already
+validated.  G4 promotion gate becomes
+`cmd_vs_achieved_forward ≤ 0.05` (= 0.5 × 0.10 m/s).
+
+### Short-verify procedure
+
+A 50-iter smoke9b takes ~5-10 minutes on RTX 5070 12GB and is enough
+to validate the fix landed correctly:
+
+```
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0201_smoke9b.yaml \
+  --iterations 50
+```
+
+Pass criteria for the short verify:
+1. `reward/feet_phase` is logged at non-zero magnitudes (verifies
+   the metric registry fix from `c4f8f2a` is in effect — smoke9
+   was missing this metric entirely).
+2. `reward/cmd_forward_velocity_track` > 0.001 by iter 5 (verifies
+   the gradient is now non-zero at the new vx range).
+3. `Evaluate/forward_velocity` trends toward +0.10 (not -0.6 like
+   smoke9).
+4. `Evaluate/mean_episode_length` stays > 100 by iter 30 (vs smoke9's
+   collapse to 30 by iter 5).
+
+If all four pass, launch the full smoke9b (drop the `--iterations 50`
+override).  If 1 or 2 fails, the env / metric pipeline still has a
+gap.  If 3 or 4 fails, there's another issue beyond the vx range
+mismatch (next lever: WR home pose has straight legs vs TB's
+pre-bent crouch).
+
+### Why we didn't loosen `cmd_forward_velocity_alpha` instead
+
+Considered as Fix 2(b): keep wide vx range, drop alpha to ~50.
+Rejected because:
+- Reward becomes "soft" everywhere — no sharp cliff to force
+  precise convergence.  PPO can park at err≈0.10 earning ~60% of
+  max reward.  G4 gate at 0.075 m/s is in the flat region of the
+  alpha=50 reward landscape.
+- Departs from TB's reward shape after spending four review rounds
+  making the env strictly TB-faithful.
+- Doesn't address the root cause (training distribution mismatch);
+  just papers over it with a wider tolerance.
+
+Smoke9b's narrow-vx fix preserves TB's exact reward shape and
+addresses the root cause directly.
+
+### Tests
+
+`training/tests/test_config_load_smoke9.py` extended with 7 new
+smoke9b contract tests (vx range matches TB, eval pinned to 0.10,
+offline ref aligned, smoke9 architecture inherited unchanged, all
+8 TB rewards still at TB magnitudes, compute budget preserved).
+14/14 pass.
+
+### Reference
+
+- `toddlerbot/locomotion/walk.gin:42-51` — TB CommandsConfig
+- run `58bv3zzm` — smoke9 result that motivated this fix
+
+---
+
 ## [v0.20.1-smoke9-feet-phase-baseline-fix] - 2026-05-11: feet_phase baseline correction + direct numeric reward tests
 
 ### Context — reviewer-flagged regression in smoke9's feet_phase

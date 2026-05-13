@@ -173,3 +173,107 @@ def test_smoke7_default_form_flags_unchanged() -> None:
         "smoke7 must keep the historical quadratic feet_ori form; "
         f"got {env.loc_ref_penalty_feet_ori_form!r}."
     )
+
+
+# =============================================================================
+# Smoke9b — TB-aligned + TB-matched vx range
+# =============================================================================
+# Smoke9 (run `58bv3zzm`) failed because cmd_forward_velocity_track had
+# zero gradient at WR's vx range (random policy too far from cmd basin
+# for TB's tight alpha=1000).  Smoke9b narrows vx to TB's [-0.1, 0.1]
+# so the random policy starts inside the basin.  These tests pin the
+# specific vx changes to prevent silent regression.
+
+_SMOKE9B = Path("training/configs/ppo_walking_v0201_smoke9b.yaml")
+
+
+@pytest.fixture(scope="module")
+def smoke9b_cfg():
+    if not _SMOKE9B.exists():
+        pytest.skip(f"{_SMOKE9B.name} not found")
+    return load_training_config(str(_SMOKE9B))
+
+
+def test_smoke9b_loads(smoke9b_cfg) -> None:
+    assert smoke9b_cfg is not None
+
+
+def test_smoke9b_vx_range_matches_tb(smoke9b_cfg) -> None:
+    """TB walk.gin:48 sets command_range[5] = [-0.1, 0.1] for vx.
+    Smoke9b matches this exactly so random-policy WR starts at err
+    ≤ 0.10 m/s, where TB's tight alpha=1000 reward is non-zero
+    (exp(-10) = 4.5e-5; small but PPO can build on it).
+
+    Smoke7/8/8a/8b/9 used [0, 0.30] which put random policy at
+    err ≈ 0.20 — exp(-40) = 0, no gradient, smoke9 failed.
+    """
+    env = smoke9b_cfg.env
+    assert env.min_velocity == -0.1, (
+        f"smoke9b min_velocity = {env.min_velocity}; expected -0.1 "
+        f"(TB walk.gin:48 command_range[5][0])."
+    )
+    assert env.max_velocity == 0.1, (
+        f"smoke9b max_velocity = {env.max_velocity}; expected 0.1 "
+        f"(TB walk.gin:48 command_range[5][1])."
+    )
+
+
+def test_smoke9b_eval_velocity_matches_max_tb_band(smoke9b_cfg) -> None:
+    """Eval pinned to 0.10 (top of the TB-aligned vx range).  G4
+    promotion gate becomes |achieved - 0.10| ≤ 0.05 (= 0.5 × 0.10).
+    """
+    assert smoke9b_cfg.env.eval_velocity_cmd == 0.10, (
+        f"smoke9b eval_velocity_cmd = {smoke9b_cfg.env.eval_velocity_cmd}; "
+        f"expected 0.10."
+    )
+
+
+def test_smoke9b_offline_command_vx_aligned(smoke9b_cfg) -> None:
+    """Offline reference trajectory built for vx=0.10.  Phase clock +
+    feet_phase expected-z curves are vx-independent (cycle period set
+    by ZMPWalkConfig.cycle_time_s, not by speed), but aligning the
+    library bin makes obs / diagnostics match the operating point."""
+    assert smoke9b_cfg.env.loc_ref_offline_command_vx == 0.10, (
+        f"smoke9b loc_ref_offline_command_vx = "
+        f"{smoke9b_cfg.env.loc_ref_offline_command_vx}; expected 0.10 "
+        f"(matches eval_velocity_cmd)."
+    )
+
+
+def test_smoke9b_inherits_smoke9_architecture(smoke9b_cfg) -> None:
+    """Everything smoke9 had stays identical — only the vx block changes.
+    Catches accidental regression of any TB-faithful smoke9 setting.
+    """
+    env = smoke9b_cfg.env
+    assert env.loc_ref_residual_base == "home"
+    assert env.loc_ref_penalty_pose_anchor == "home"
+    assert env.loc_ref_penalty_ang_vel_xy_form == "tb_neg_squared"
+    assert env.loc_ref_penalty_feet_ori_form == "tb_linear_lateral"
+    assert env.close_feet_threshold == 0.06
+    ppo = smoke9b_cfg.ppo
+    assert ppo.learning_rate == 3.0e-5
+    assert ppo.entropy_coef == 5.0e-4
+    assert ppo.num_envs == 2048
+    assert ppo.gamma == 0.97
+
+
+def test_smoke9b_full_tb_active_rewards_present(smoke9b_cfg) -> None:
+    """Same TB walk.gin:110-131 active block as smoke9, at the same
+    magnitudes.  Only the training distribution changes."""
+    rw = smoke9b_cfg.reward_weights
+    assert rw.alive == 1.0
+    assert rw.cmd_forward_velocity_track == 2.0
+    assert rw.cmd_forward_velocity_alpha == 1000.0
+    assert rw.ref_body_quat_track == 2.5
+    assert rw.ang_vel_xy == 1.0
+    assert rw.action_rate == -2.0
+    assert rw.penalty_pose == -0.5
+    assert rw.penalty_close_feet_xy == 10.0
+    assert rw.feet_phase == 7.5
+    assert rw.penalty_feet_ori == 5.0
+
+
+def test_smoke9b_compute_budget_preserved(smoke9b_cfg) -> None:
+    """Same compute as smoke9: 2048 × 20 × 480 = 19,660,800."""
+    ppo = smoke9b_cfg.ppo
+    assert ppo.num_envs * ppo.rollout_steps * ppo.iterations == 19_660_800
