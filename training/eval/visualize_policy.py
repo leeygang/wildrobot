@@ -588,6 +588,14 @@ def main():
 
     def reset_robot(mj_model, mj_data, apply_noise=True):
         """Reset robot to initial state (training parity)."""
+        if v6_adapter is not None:
+            v6_adapter.reset_native_mj_state(
+                mj_data,
+                apply_noise=bool(apply_noise),
+                rng=rng_env,
+            )
+            return
+
         if mj_model.nkey > 0:
             mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
         else:

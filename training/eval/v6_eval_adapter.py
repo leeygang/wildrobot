@@ -16,7 +16,7 @@ and consumes a residual action with optional 1-step delay + filter:
 
     filtered  = lowpass(prev_filtered, raw_action)        # alpha=0 ⇒ no-op
     applied   = prev_filtered if delay else filtered      # 1-step delay
-    target_q  = clip(q_ref[step_idx + 1] + applied * scale, joint_range)
+    target_q  = clip(base_q(step_idx + 1) + applied * scale, joint_range)
 
 Notice three subtleties that earlier adapter revisions got wrong:
 
@@ -157,6 +157,14 @@ class V6EvalAdapter:
                 f"V6EvalAdapter: env.loc_ref_residual_base must be "
                 f"'q_ref', 'home', or 'ref_init'; got {self._residual_base_mode!r}"
             )
+        self._reset_base_mode = str(
+            getattr(self._cfg.env, "loc_ref_reset_base", "home")
+        ).lower()
+        if self._reset_base_mode not in ("home", "ref_init"):
+            raise ValueError(
+                f"V6EvalAdapter: env.loc_ref_reset_base must be "
+                f"'home' or 'ref_init'; got {self._reset_base_mode!r}"
+            )
 
         self._init_offline_service()
         self._init_residual_scale()
@@ -200,6 +208,7 @@ class V6EvalAdapter:
     def _init_joint_ranges(self) -> None:
         actuator_names = list(self._policy_spec.robot.actuator_names)
         joint_ranges: list[tuple[float, float]] = []
+        actuator_qpos_addrs: list[int] = []
         for name in actuator_names:
             act_id = mujoco.mj_name2id(
                 self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name
@@ -207,8 +216,10 @@ class V6EvalAdapter:
             joint_id = int(self._mj_model.actuator_trnid[act_id][0])
             jrange = self._mj_model.jnt_range[joint_id]
             joint_ranges.append((float(jrange[0]), float(jrange[1])))
+            actuator_qpos_addrs.append(int(self._mj_model.jnt_qposadr[joint_id]))
         self._joint_min = np.array([r[0] for r in joint_ranges], dtype=np.float32)
         self._joint_max = np.array([r[1] for r in joint_ranges], dtype=np.float32)
+        self._actuator_qpos_addrs = np.asarray(actuator_qpos_addrs, dtype=np.int32)
 
     def _init_home_q_rad(self) -> None:
         """Cache the home-pose ctrl values, pre-clipped to joint range.
@@ -224,19 +235,16 @@ class V6EvalAdapter:
         ``test_smoke8_eval_adapter_zero_action_matches_env_home``).
         """
         if self._policy_spec.robot.home_ctrl_rad is None:
-            # Hard-fail under home base mode: there's no fallback that
-            # would silently produce the right control contract.
-            if self._residual_base_mode == "home":
-                raise ValueError(
-                    "V6EvalAdapter: env.loc_ref_residual_base='home' but "
-                    "policy_spec.robot.home_ctrl_rad is None.  The env "
-                    "must build the spec with home_ctrl_rad set; "
-                    "check WildRobotEnv.__init__ + build_policy_spec."
-                )
-            # In q_ref mode we never read this; use a safe placeholder.
-            self._home_q_rad = np.zeros(
-                len(self._policy_spec.robot.actuator_names), dtype=np.float32
+            qpos0 = (
+                self._mj_model.key_qpos[0]
+                if self._mj_model.nkey > 0
+                else self._mj_model.qpos0
             )
+            self._home_q_rad = np.clip(
+                np.asarray(qpos0[self._actuator_qpos_addrs], dtype=np.float32),
+                self._joint_min,
+                self._joint_max,
+            ).astype(np.float32)
             return
         home_rad = np.asarray(
             self._policy_spec.robot.home_ctrl_rad, dtype=np.float32
@@ -268,10 +276,67 @@ class V6EvalAdapter:
     def step_idx(self) -> int:
         return int(self._state.step_idx)
 
+    def _reset_joint_qpos_policy_order(
+        self, *, apply_noise: bool, rng: Optional[np.random.Generator]
+    ) -> np.ndarray:
+        """Return actuator-joint qpos in policy order for reset.
+
+        Mirrors env.reset:
+        - loc_ref_reset_base == "ref_init": exact ref_init_q, no reset noise.
+        - loc_ref_reset_base == "home": home pose with optional +/-0.05 rad
+          reset noise (visualizer parity behavior).
+        """
+        if self._reset_base_mode == "ref_init":
+            return self._ref_init_q_rad.copy()
+
+        joint_q = self._home_q_rad.copy()
+        if apply_noise:
+            if rng is None:
+                raise ValueError("rng is required when apply_noise=True")
+            noise = rng.uniform(-0.05, 0.05, size=self._action_dim).astype(np.float32)
+            joint_q = np.clip(joint_q + noise, self._joint_min, self._joint_max)
+        return joint_q.astype(np.float32)
+
+    def _ctrl_init_policy_order(self) -> np.ndarray:
+        if self._residual_base_mode == "home":
+            return self._home_q_rad.copy()
+        # q_ref and ref_init both use the frame-0 offline reference.
+        return self._ref_init_q_rad.copy()
+
+    def reset_native_mj_state(
+        self,
+        mj_data: mujoco.MjData,
+        *,
+        apply_noise: bool,
+        rng: Optional[np.random.Generator],
+    ) -> None:
+        """Reset native MuJoCo state with env-aligned v6 reset semantics."""
+        if self._mj_model.nkey > 0:
+            mujoco.mj_resetDataKeyframe(self._mj_model, mj_data, 0)
+            qpos = self._mj_model.key_qpos[0].copy()
+        else:
+            mujoco.mj_resetData(self._mj_model, mj_data)
+            qpos = self._mj_model.qpos0.copy()
+
+        joint_qpos = self._reset_joint_qpos_policy_order(
+            apply_noise=apply_noise,
+            rng=rng,
+        )
+        qpos[self._actuator_qpos_addrs] = joint_qpos
+        mj_data.qpos[:] = qpos
+        mj_data.qvel[:] = 0.0
+        if hasattr(mj_data, "xfrc_applied"):
+            mj_data.xfrc_applied[:] = 0.0
+
+        ctrl_init = self._ctrl_init_policy_order()
+        mj_data.ctrl[:] = self._ctrl_mapper.to_mj_np(ctrl_init)
+        mujoco.mj_forward(self._mj_model, mj_data)
+        self.reset()
+
     def reset(self) -> None:
         """Re-zero per-episode state.  Mirrors env's ``_make_initial_state``:
         proprio_history zero-filled, pending_action and last_applied_action
-        zero (so iter-1 with action=0 keeps target_q == q_ref exactly).
+        zero (so iter-1 with action=0 keeps target_q == base_q exactly).
 
         Both ``proprio_history`` and ``pending_history`` start as zeros so
         the first two compute_obs() calls (= reset's obs and the obs

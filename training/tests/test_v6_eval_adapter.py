@@ -603,6 +603,9 @@ def test_adapter_obs_history_matches_env_for_three_steps(smoke_setup) -> None:
 SMOKE8_YAML = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke8.yaml"
 )
+SMOKE9C_YAML = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke9c.yaml"
+)
 
 
 @pytest.fixture(scope="function")
@@ -721,3 +724,127 @@ def test_smoke7_adapter_residual_base_default_q_ref(smoke_setup) -> None:
         f"{s['adapter']._residual_base_mode!r}; expected 'q_ref' (the "
         "back-compat default).  Did the dataclass default flip?"
     )
+
+
+# =============================================================================
+# Smoke9c (TB ref-init basin) reset parity
+# =============================================================================
+
+
+@pytest.fixture(scope="function")
+def smoke9c_setup():
+    if not SMOKE9C_YAML.exists():
+        pytest.skip(f"{SMOKE9C_YAML.name} not found")
+    cfg = load_training_config(str(SMOKE9C_YAML))
+    robot_cfg_path = cfg.env.robot_config_path
+    if not Path(robot_cfg_path).is_absolute():
+        robot_cfg_path = PROJECT_ROOT / robot_cfg_path
+    robot_cfg = load_robot_config(str(robot_cfg_path))
+
+    # Keep reset parity deterministic for the first-obs joint-state contract.
+    cfg.env.domain_randomization_enabled = False
+    cfg.env.push_enabled = False
+    cfg.freeze()
+
+    scene_path = cfg.env.scene_xml_path
+    if not Path(scene_path).is_absolute():
+        scene_path = str(PROJECT_ROOT / scene_path)
+    mj_model = mujoco.MjModel.from_xml_path(str(scene_path))
+    mj_data = mujoco.MjData(mj_model)
+    if mj_model.nkey > 0:
+        mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
+    else:
+        mujoco.mj_resetData(mj_model, mj_data)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    policy_spec = build_policy_spec_from_training_config(
+        training_cfg=cfg, robot_cfg=robot_cfg, action_filter_alpha=0.0
+    )
+    sig = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        policy_spec=policy_spec,
+        foot_switch_threshold=cfg.env.foot_switch_threshold,
+    )
+    adapter = V6EvalAdapter(
+        training_cfg=cfg,
+        mj_model=mj_model,
+        policy_spec=policy_spec,
+        signals_adapter=sig,
+        action_dim=int(policy_spec.model.action_dim),
+    )
+    return {
+        "cfg": cfg,
+        "mj_model": mj_model,
+        "mj_data": mj_data,
+        "adapter": adapter,
+        "policy_spec": policy_spec,
+        "action_dim": int(policy_spec.model.action_dim),
+    }
+
+
+def test_smoke9c_adapter_reset_modes_threaded(smoke9c_setup) -> None:
+    s = smoke9c_setup
+    assert s["adapter"]._residual_base_mode == "ref_init"
+    assert s["adapter"]._reset_base_mode == "ref_init"
+
+
+def test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state(
+    smoke9c_setup,
+) -> None:
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    s = smoke9c_setup
+    cfg = s["cfg"]
+    adapter = s["adapter"]
+    mj_data = s["mj_data"]
+
+    env = WildRobotEnv(config=cfg)
+    env_state = env.reset_for_eval(jax.random.PRNGKey(0))
+    env_obs = np.asarray(env_state.obs)
+
+    adapter.reset_native_mj_state(
+        mj_data,
+        apply_noise=True,  # Must be ignored under loc_ref_reset_base=ref_init.
+        rng=np.random.default_rng(0),
+    )
+    native_obs = adapter.compute_obs(
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+    )
+
+    env_q = np.asarray(env_state.data.qpos[env._actuator_qpos_addrs], dtype=np.float32)
+    native_q = np.asarray(mj_data.qpos[adapter._actuator_qpos_addrs], dtype=np.float32)
+    np.testing.assert_allclose(
+        native_q,
+        env_q,
+        atol=1e-5,
+        err_msg="smoke9c native reset actuator qpos must match env.reset_for_eval",
+    )
+    np.testing.assert_allclose(native_q, adapter._ref_init_q_rad, atol=1e-5)
+
+    expected_ctrl = adapter._ctrl_mapper.to_mj_np(adapter._ref_init_q_rad)
+    np.testing.assert_allclose(
+        np.asarray(mj_data.ctrl, dtype=np.float32),
+        expected_ctrl,
+        atol=1e-5,
+        err_msg="smoke9c native reset ctrl must be ref_init in MJ order",
+    )
+
+    layout = s["policy_spec"].observation.layout
+    cursor = 0
+    name_to_offset = {}
+    for f in layout:
+        name_to_offset[f.name] = (cursor, cursor + f.size)
+        cursor += f.size
+
+    for field_name in ("joint_pos_normalized", "joint_vel_normalized"):
+        start, end = name_to_offset[field_name]
+        np.testing.assert_allclose(
+            native_obs[start:end],
+            env_obs[start:end],
+            atol=1e-5,
+            err_msg=(
+                f"smoke9c first obs {field_name} slice must match "
+                "env.reset_for_eval under ref_init reset parity"
+            ),
+        )

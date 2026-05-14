@@ -8,6 +8,31 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9c-native-eval-reset-parity] - 2026-05-13: make native MuJoCo reset honor ref-init basin
+
+### Issue
+
+Smoke9c training reset (`WildRobotEnv.reset`) honors
+`loc_ref_reset_base: ref_init` by setting actuator-joint qpos to
+frame-0 reference, but native MuJoCo eval (`visualize_policy.py`)
+reset still started from keyframe/home (+ optional noise) and
+default-pose ctrl.
+
+### Fix
+
+- Extended `V6EvalAdapter` with reset-base awareness:
+  - parses `env.loc_ref_reset_base`
+  - adds `reset_native_mj_state(...)` to apply env-aligned native reset
+  - for `loc_ref_reset_base == "ref_init"`, reset joint noise is
+    suppressed and actuator-joint qpos is set to `_ref_init_q_rad`
+  - ctrl init now follows training residual-base semantics
+    (`home` -> home ctrl, otherwise frame-0 ref-init ctrl)
+- Updated `training/eval/visualize_policy.py` reset path to delegate v6
+  resets to `V6EvalAdapter.reset_native_mj_state(...)`.
+- Added smoke9c parity tests in `training/tests/test_v6_eval_adapter.py`
+  to ensure native reset qpos/ctrl and first-obs joint-state slices match
+  `WildRobotEnv.reset_for_eval()`.
+
 ## [v0.20.1-smoke9c-ref-init-basin-setup] - 2026-05-13: add TB-style ref-init residual/reset basin experiment
 
 ### What changed
