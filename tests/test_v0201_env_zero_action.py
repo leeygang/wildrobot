@@ -21,6 +21,8 @@ import pytest
 
 _SMOKE_CFG = Path("training/configs/ppo_walking_v0201_smoke.yaml")
 _SMOKE8_CFG = Path("training/configs/ppo_walking_v0201_smoke8.yaml")
+_SMOKE9B_CFG = Path("training/configs/ppo_walking_v0201_smoke9b.yaml")
+_SMOKE9C_CFG = Path("training/configs/ppo_walking_v0201_smoke9c.yaml")
 if not _SMOKE_CFG.exists():
     pytest.skip(
         f"{_SMOKE_CFG.name} not found (v0.20.1 task #49)",
@@ -52,6 +54,26 @@ def env_home_base() -> WildRobotEnv:
         pytest.skip(f"{_SMOKE8_CFG.name} not found (smoke8 not added)")
     load_robot_config("assets/v2/mujoco_robot_config.json")
     cfg = load_training_config(str(_SMOKE8_CFG))
+    cfg.freeze()
+    return WildRobotEnv(cfg)
+
+
+@pytest.fixture(scope="module")
+def env_smoke9b_home_base() -> WildRobotEnv:
+    if not _SMOKE9B_CFG.exists():
+        pytest.skip(f"{_SMOKE9B_CFG.name} not found")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    cfg = load_training_config(str(_SMOKE9B_CFG))
+    cfg.freeze()
+    return WildRobotEnv(cfg)
+
+
+@pytest.fixture(scope="module")
+def env_smoke9c_ref_init_base() -> WildRobotEnv:
+    if not _SMOKE9C_CFG.exists():
+        pytest.skip(f"{_SMOKE9C_CFG.name} not found")
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    cfg = load_training_config(str(_SMOKE9C_CFG))
     cfg.freeze()
     return WildRobotEnv(cfg)
 
@@ -627,5 +649,137 @@ def test_smoke8_q_ref_still_flows_to_info(env_home_base: WildRobotEnv) -> None:
         err_msg=(
             "smoke8: WildRobotInfo.nominal_q_ref out of sync with offline "
             "window — reward terms that consume q_ref will see stale data"
+        ),
+    )
+
+
+# =============================================================================
+# Smoke9b / Smoke9c base + reset contracts
+# =============================================================================
+
+
+def test_smoke9b_zero_action_still_targets_home(
+    env_smoke9b_home_base: WildRobotEnv,
+) -> None:
+    zero_action = jp.zeros(env_smoke9b_home_base.action_size, dtype=jp.float32)
+    home = np.asarray(env_smoke9b_home_base._home_q_rad).astype(np.float32)
+    for step_idx in (0, 10, 30):
+        win = env_smoke9b_home_base._lookup_offline_window(
+            jp.asarray(step_idx, dtype=jp.int32)
+        )
+        target_q, _ = env_smoke9b_home_base._compose_target_q_from_residual(
+            policy_action=zero_action,
+            nominal_q_ref=win["q_ref"].astype(jp.float32),
+        )
+        np.testing.assert_allclose(np.asarray(target_q), home, atol=1e-5)
+
+
+def test_smoke9c_ref_init_modes_threaded(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    assert env_smoke9c_ref_init_base._residual_base_mode == "ref_init"
+    assert env_smoke9c_ref_init_base._reset_base_mode == "ref_init"
+
+
+def test_smoke9c_zero_action_targets_constant_ref_init_not_moving_q_ref(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    zero_action = jp.zeros(env_smoke9c_ref_init_base.action_size, dtype=jp.float32)
+    ref_init = np.asarray(env_smoke9c_ref_init_base._ref_init_q_rad).astype(np.float32)
+    home = np.asarray(env_smoke9c_ref_init_base._home_q_rad).astype(np.float32)
+
+    max_q_ref_drift = 0.0
+    for step_idx in (0, 5, 10, 20, 30, 49):
+        win = env_smoke9c_ref_init_base._lookup_offline_window(
+            jp.asarray(step_idx, dtype=jp.int32)
+        )
+        nominal_q_ref = np.asarray(win["q_ref"]).astype(np.float32)
+        target_q, _ = env_smoke9c_ref_init_base._compose_target_q_from_residual(
+            policy_action=zero_action,
+            nominal_q_ref=win["q_ref"].astype(jp.float32),
+        )
+        np.testing.assert_allclose(np.asarray(target_q), ref_init, atol=1e-5)
+        max_q_ref_drift = max(
+            max_q_ref_drift, float(np.max(np.abs(nominal_q_ref - ref_init)))
+        )
+
+    assert max_q_ref_drift > 1e-3, (
+        "q_ref(t) did not drift away from ref_init over sampled frames; "
+        "cannot verify the constant-base contract against moving q_ref."
+    )
+    # In the expected smoke9c setup ref_init differs from home; if this
+    # asset happens to make them numerically equal, skip the non-home check.
+    if float(np.max(np.abs(ref_init - home))) <= 1e-4:
+        pytest.skip("ref_init and home are numerically equal in this asset")
+
+
+def test_smoke9c_reset_qpos_and_ctrl_match_ref_init(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    reset_fn = jax.jit(env_smoke9c_ref_init_base.reset)
+    state = reset_fn(jax.random.PRNGKey(0))
+    ref_init = np.asarray(env_smoke9c_ref_init_base._ref_init_q_rad).astype(np.float32)
+
+    reset_q = np.asarray(
+        state.data.qpos[env_smoke9c_ref_init_base._actuator_qpos_addrs]
+    ).astype(np.float32)
+    np.testing.assert_allclose(
+        reset_q,
+        ref_init,
+        atol=1e-5,
+        err_msg="smoke9c reset actuator qpos must match ref_init_q",
+    )
+
+    perm = np.asarray(env_smoke9c_ref_init_base._ctrl_mapper.policy_to_mj_order_jax)
+    applied_target_q = np.asarray(state.data.ctrl).astype(np.float32)[perm]
+    np.testing.assert_allclose(
+        applied_target_q,
+        ref_init,
+        atol=1e-5,
+        err_msg="smoke9c reset ctrl init must match ref_init_q",
+    )
+
+
+def test_smoke9c_zero_action_applied_target_q_equals_ref_init_under_full_step(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    reset_fn = jax.jit(env_smoke9c_ref_init_base.reset)
+    step_fn = jax.jit(env_smoke9c_ref_init_base.step)
+    state = reset_fn(jax.random.PRNGKey(0))
+    zero_action = jp.zeros(env_smoke9c_ref_init_base.action_size, dtype=jp.float32)
+    perm = np.asarray(env_smoke9c_ref_init_base._ctrl_mapper.policy_to_mj_order_jax)
+    ref_init = np.asarray(env_smoke9c_ref_init_base._ref_init_q_rad).astype(np.float32)
+
+    found_moving_frame = False
+    for _ in range(20):
+        state = step_fn(state, zero_action)
+        if int(state.done) > 0:
+            pytest.skip("env terminated before reaching moving-trajectory frame")
+        step_idx = int(state.info[WR_INFO_KEY].loc_ref_offline_step_idx)
+        prev_q = np.asarray(
+            env_smoke9c_ref_init_base._lookup_offline_window(
+                jp.asarray(step_idx - 1, dtype=jp.int32)
+            )["q_ref"]
+        ).astype(np.float32)
+        curr_q = np.asarray(
+            env_smoke9c_ref_init_base._lookup_offline_window(
+                jp.asarray(step_idx, dtype=jp.int32)
+            )["q_ref"]
+        ).astype(np.float32)
+        if float(np.max(np.abs(curr_q - prev_q))) > 1e-3:
+            found_moving_frame = True
+            break
+    assert found_moving_frame, "did not reach moving q_ref frame within 20 steps"
+
+    ctrl_mj = np.asarray(state.data.ctrl).astype(np.float32)
+    applied_target_q = ctrl_mj[perm]
+    np.testing.assert_allclose(
+        applied_target_q,
+        ref_init,
+        atol=1e-5,
+        err_msg=(
+            f"smoke9c ref-init violation at step_idx={step_idx}: "
+            "zero action through the full step pipeline produced "
+            "applied_target_q != ref_init_q."
         ),
     )

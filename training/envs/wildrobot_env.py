@@ -4,8 +4,8 @@ Single-file ``mjx_env.MjxEnv`` for the v0.20.1 PPO smoke
 (``training/configs/ppo_walking_v0201_smoke.yaml``).  The actor sees
 the offline ``ReferenceLibrary`` window plus a 15-frame past-proprio
 stack (``wr_obs_v6_offline_ref_history`` layout) and emits a bounded
-residual on top of the library's ``q_ref``; the env composes
-``q_target = q_ref + clip(action) * scale_per_joint`` (absolute
+residual on top of a configured base pose; the env composes
+``q_target = base_q + clip(action) * scale_per_joint`` (absolute
 mode), runs MJX physics, and emits the imitation-dominant reward.
 
 Design refs:
@@ -306,10 +306,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._residual_base_mode = str(
             getattr(self._config.env, "loc_ref_residual_base", "q_ref")
         ).lower()
-        if self._residual_base_mode not in ("q_ref", "home"):
+        if self._residual_base_mode not in ("q_ref", "home", "ref_init"):
             raise ValueError(
-                f"env.loc_ref_residual_base must be 'q_ref' or 'home'; "
+                f"env.loc_ref_residual_base must be 'q_ref', 'home', or "
+                f"'ref_init'; "
                 f"got {self._residual_base_mode!r}"
+            )
+        # smoke9c — reset base selector.
+        self._reset_base_mode = str(
+            getattr(self._config.env, "loc_ref_reset_base", "home")
+        ).lower()
+        if self._reset_base_mode not in ("home", "ref_init"):
+            raise ValueError(
+                f"env.loc_ref_reset_base must be 'home' or 'ref_init'; "
+                f"got {self._reset_base_mode!r}"
             )
         # smoke8b — penalty_pose anchor selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_penalty_pose_anchor
@@ -615,6 +625,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._offline_service = RuntimeReferenceService(traj, n_anchor=2)
         self._offline_jax_arrays = self._offline_service.to_jax_arrays()
         self._offline_n_steps = int(self._offline_service.n_steps)
+        win0 = self._offline_service.lookup_np(0)
+        self._ref_init_q_rad = jp.clip(
+            jp.asarray(win0.q_ref, dtype=jp.float32),
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        )
 
         if self._config.env.max_episode_steps > self._offline_n_steps:
             raise ValueError(
@@ -706,6 +722,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (toddlerbot/locomotion/mjx_env.py:1543-1546).  ``nominal_q_ref``
             still flows into reward terms (ref_q_track etc.) — only the
             action-path base changes.
+          - ``"ref_init"`` (smoke9c): ``base_q = ref_init_q`` where
+            ``ref_init_q`` is the offline frame-0 reference joint pose.
+            Constant over time (does not follow q_ref(t)).
 
         zero-residual invariant: with ``policy_action == 0`` (and the filter's
         ``prev_action == 0``, set up by ``_make_initial_state``),
@@ -720,6 +739,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         if self._residual_base_mode == "home":
             base_q = self._home_q_rad
+        elif self._residual_base_mode == "ref_init":
+            base_q = self._ref_init_q_rad
         else:
             base_q = jp.asarray(nominal_q_ref, dtype=jp.float32)
         target_q = jp.clip(
@@ -1644,15 +1665,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         dr_params = self._sample_domain_rand_params(key_dr)
 
-        # Always start from MJCF keyframe (v3 doesn't use support-posture B).
-        joint_noise = jax.random.uniform(
-            key_qnoise, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
-        )
-        joint_qpos = jp.clip(
-            self._default_joint_qpos + joint_noise + dr_params["joint_offsets"],
-            self._joint_range_mins,
-            self._joint_range_maxs,
-        )
+        if self._reset_base_mode == "ref_init":
+            joint_qpos = self._ref_init_q_rad
+        else:
+            # Historical reset behavior: default pose + randomization.
+            joint_noise = jax.random.uniform(
+                key_qnoise, shape=self._default_joint_qpos.shape, minval=-0.05, maxval=0.05
+            )
+            joint_qpos = jp.clip(
+                self._default_joint_qpos + joint_noise + dr_params["joint_offsets"],
+                self._joint_range_mins,
+                self._joint_range_maxs,
+            )
         qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
         push_schedule = sample_push_schedule(
@@ -1750,12 +1774,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Seed ctrl with the iter-0 base pose.  Under the residual-only
         # filter contract (zero-residual invariant, was `G6`) the policy's
         # residual command starts at zero, so the composed target on
-        # iter-0 is exactly base_q.  base_q is q_ref0 under the smoke7
-        # default and home_q_rad under smoke8 (loc_ref_residual_base="home").
+        # iter-0 is exactly base_q.  base_q is q_ref0 under smoke7,
+        # home_q_rad under smoke8 (loc_ref_residual_base="home"), and
+        # ref_init_q under smoke9c (loc_ref_residual_base="ref_init").
         win0 = self._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
         q_ref0 = win0["q_ref"].astype(jp.float32)
         if self._residual_base_mode == "home":
             ctrl_init = self._home_q_rad
+        elif self._residual_base_mode == "ref_init":
+            ctrl_init = self._ref_init_q_rad
         else:
             ctrl_init = q_ref0
         data = mjx.make_data(randomized_model)
@@ -1982,7 +2009,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             2. lookup the offline window at the new step_idx
             3. filter raw policy_action (residual command in [-1, 1])
             4. optional 1-step action delay
-            5. compose target_q = clip(q_ref + filtered_residual * scale)
+            5. compose target_q = clip(base_q + filtered_residual * scale)
             6. set ctrl + push xfrc; scan mjx.step n_substeps times
             7. v5 obs from the new data + window
             8. termination + imitation reward

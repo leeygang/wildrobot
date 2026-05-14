@@ -1,0 +1,313 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 9c — TB vx range + ref-init basin
+# =============================================================================
+# Identical to smoke9 EXCEPT for the velocity command sampling /
+# evaluation range, which is narrowed from WR's historical [0, 0.30] /
+# eval=0.20 to TB's exact [-0.1, 0.1] / eval=0.10.
+#
+# Why this exists — smoke9 result (run `58bv3zzm`, 12 iters of 480):
+#
+# Smoke9 implemented all 8 TB-faithful walk.gin rewards (commit
+# `c4f8f2a`).  Bare-prior architecture worked (iter 0: ep_len = 266
+# ctrl steps).  But by iter 5, PPO converged to walking BACKWARD at
+# 0.6 m/s (cmd is +0.20, ratio = -3.0) — same parking failure as
+# smoke7/8a.  Diagnosis (CHANGELOG [v0.20.1-smoke9b-tb-vx-range-fix]):
+#
+# `cmd_forward_velocity_track` had effectively zero gradient at the
+# velocity errors smoke9 actually saw:
+#
+#   reward = weight × exp(-alpha × err²) with alpha=1000 (TB)
+#
+#   err=0.005 m/s: exp(-0.025) = 0.975 (strong signal — TB's converged regime)
+#   err=0.05  m/s: exp(-2.5)   = 0.082 (modest signal)
+#   err=0.10  m/s: exp(-10)    = 4.5e-5 (essentially zero)
+#   err=0.20  m/s (random):    exp(-40) ≈ 0
+#   err=0.60  m/s (smoke9):    exp(-360) ≈ 0
+#
+# TB walks because TB samples vx ∈ [-0.1, 0.1].  Random-policy TB
+# starts at err ≤ 0.10 m/s — exp(-10) = 4.5e-5 is small but TB's
+# other rewards (alive, posture, feet_phase) dominate while the
+# policy slowly improves.  Once err < 0.05 m/s, the TB-tight reward
+# becomes a strong attractor pulling the policy to precise tracking.
+#
+# WR samples vx ∈ [0, 0.30] / pins eval to 0.20.  Random-policy WR
+# starts at err ≈ 0.20 m/s where exp(-40) is exactly zero.  PPO has
+# NO velocity-tracking signal.  The only positive reward gradient is
+# `alive=+0.020`; the dominant negative is `action_rate` (which PPO
+# can only minimize by producing smooth actions that don't go
+# anywhere).  Result: PPO drifts backward and falls.
+#
+# Fix: narrow WR's training distribution to TB's exact range so the
+# random policy starts inside the basin where TB's reward shape
+# actually has a usable gradient.
+#
+# What changed (vs smoke9):
+#
+#   min_velocity:                0.0   →  -0.1   (matches TB walk.gin:48)
+#   max_velocity:                0.30  →   0.10  (matches TB walk.gin:48)
+#   eval_velocity_cmd:           0.20  →   0.10  (eval at the
+#                                                 max-feasible TB-aligned vx)
+#   loc_ref_offline_command_vx:  0.20  →   0.10  (offline reference
+#                                                 trajectory aligned with
+#                                                 the new operating point)
+#
+# Trade-off: WR walks at 0.10 m/s instead of 0.20 m/s.  Slower target
+# but TB-aligned and matches the bare-prior-stable point we already
+# validated.  G4 promotion gate becomes
+# `cmd_vs_achieved_forward ≤ 0.05` (= 0.5 × 0.10).
+#
+# Compute budget: same as smoke9 (2048 × 20 × 480 = 19,660,800
+# transitions on the 12GB-safe shape).
+#
+# Short verify run (recommended before full smoke):
+#
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke9c.yaml \
+#     --iterations 50
+#
+# At ~5-10 minutes on RTX 5070, 50 iters is enough to verify:
+#   - reward/feet_phase logged at non-zero magnitudes (Fix 1)
+#   - reward/cmd_forward_velocity_track > 0.001 (the gradient-presence test)
+#   - eval_v moving toward +0.10 (not -0.6 like smoke9)
+#   - mean_episode_length staying > 100 (vs smoke9's collapse to 30 by iter 5)
+#
+# Full run:
+#
+#   uv run python training/train.py \
+#     --config training/configs/ppo_walking_v0201_smoke9c.yaml
+#
+# See also:
+#   - training/CHANGELOG.md [v0.20.1-smoke9b-tb-vx-range-fix]
+#   - training/CHANGELOG.md [v0.20.1-smoke9-feet-phase-baseline-fix]
+#   - toddlerbot/locomotion/walk.gin:42-51 (TB CommandsConfig.command_range)
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke9c (TB recipe + TB vx range + ref-init basin)"
+
+seed: 42
+
+# =============================================================================
+# Environment — smoke9b + TB-style ref-init basin
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.07
+  max_feet_y_dist: 0.13
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # smoke9b — TB-matched velocity command range.
+  # TB walk.gin:48 sets command_range[5] = [-0.1, 0.1] for vx (forward).
+  # Eval pinned to 0.10 (max of the TB band).  Random policy starts at
+  # err ≤ 0.10 m/s where TB's tight reward (alpha=1000) gives a small
+  # but non-zero gradient that dominant signals (alive, feet_phase)
+  # can build on.
+  min_velocity: -0.1
+  max_velocity: 0.1
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.05
+  eval_velocity_cmd: 0.10
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v6_offline_ref_history
+  # smoke9c — offline reference trajectory aligned with TB vx operating point.
+  # Phase clock + feet_phase expected-z curves are vx-independent (cycle
+  # period is set by cycle_time_s, not by speed), so this realignment
+  # is mostly for log/diagnostic consistency.
+  loc_ref_offline_command_vx: 0.10
+
+  # smoke9c architecture: constant frame-0 reference residual base
+  loc_ref_residual_base: ref_init
+  # smoke9c reset/init: actuator qpos seeded from frame-0 reference
+  loc_ref_reset_base: ref_init
+  # smoke8b: penalty_pose anchored to home
+  loc_ref_penalty_pose_anchor: home
+  # smoke9 form flags: TB-faithful reward formulas
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  # smoke9: TB close_feet_threshold (walk.gin:125)
+  close_feet_threshold: 0.06
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — same Track A hyperparams as smoke9 (TB-aligned, 12GB-safe)
+# =============================================================================
+ppo:
+  num_envs: 2048
+  rollout_steps: 20
+  iterations: 480
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: true
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke9 (TB-aligned)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — same as smoke9 (full TB walk.gin:110-131 active block)
+# =============================================================================
+reward_weights:
+  # ---- TB active reward block (8 implemented) ----
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  # TB lin_vel_tracking_sigma = 1000.  With smoke9b's TB-matched vx
+  # range ([-0.1, 0.1]), random-policy err ≤ 0.10 gives reward
+  # exp(-10) = 4.5e-5 — small but PPO's other rewards (alive,
+  # feet_phase, penalty_pose) provide the early gradient while the
+  # policy slowly improves into the basin where this reward dominates.
+  cmd_forward_velocity_alpha: 1000.0
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 1428.6
+  feet_phase_swing_height: 0.04
+  penalty_feet_ori: 5.0
+
+  # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6  # held at default; weight=0 disables term
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0  # held at default; weight=0 disables term
+
+  # ---- Stab / shaping rewards TB doesn't have in active block ----
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke9c, tb_full_recipe, tb_ref_init_basin, tb_vx_range]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

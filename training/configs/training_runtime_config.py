@@ -167,7 +167,17 @@ class EnvConfig(Freezable):
     #             action-path base changes.  PPO has full ±scale rad of
     #             authority around a stable home pose, free to invent
     #             whatever gait earns tracking reward, exactly as TB does.
+    #   "ref_init" - smoke9c initial-basin probe; target_q =
+    #                ref_init_q + residual where ref_init_q is offline
+    #                frame-0 q_ref for the configured command bin.
+    #                Constant over time (does NOT follow q_ref(t)).
     loc_ref_residual_base: str = "q_ref"
+
+    # Reset/init base selector for actuator-joint qpos.
+    #   "home"     - historical reset: default pose + noise + DR offsets.
+    #   "ref_init" - smoke9c: actuator joints start exactly at offline
+    #                frame-0 q_ref for the configured command bin.
+    loc_ref_reset_base: str = "home"
 
     # v0.20.1 smoke8b — penalty_pose anchor selector.
     #   "q_ref" - smoke7/8/8a default; q_err = q_actual - q_ref(t).  This

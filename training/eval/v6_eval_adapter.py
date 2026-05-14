@@ -142,24 +142,26 @@ class V6EvalAdapter:
             )
         self._action_delay_enabled = (delay_steps == 1)
 
-        # smoke8 — residual base selector.  Mirrors WildRobotEnv.__init__
+        # smoke8/smoke9c — residual base selector.  Mirrors WildRobotEnv.__init__
         # so native-MuJoCo eval composes target_q with the same base the
-        # training env used (q_ref(t) for smoke7, home for smoke8).
+        # training env used (q_ref(t) for smoke7, home for smoke8,
+        # ref_init for smoke9c).
         # Without this branch the adapter silently falls back to q_ref
-        # base regardless of the cfg, and a smoke8 checkpoint gets eval'd
+        # base regardless of the cfg, and a home/ref_init-base checkpoint gets eval'd
         # under the wrong control contract.
         self._residual_base_mode = str(
             getattr(self._cfg.env, "loc_ref_residual_base", "q_ref")
         ).lower()
-        if self._residual_base_mode not in ("q_ref", "home"):
+        if self._residual_base_mode not in ("q_ref", "home", "ref_init"):
             raise ValueError(
                 f"V6EvalAdapter: env.loc_ref_residual_base must be "
-                f"'q_ref' or 'home'; got {self._residual_base_mode!r}"
+                f"'q_ref', 'home', or 'ref_init'; got {self._residual_base_mode!r}"
             )
 
         self._init_offline_service()
         self._init_residual_scale()
         self._init_joint_ranges()
+        self._init_ref_init_q_rad()
         self._init_home_q_rad()
         self._init_ctrl_mapper()
         self.reset()
@@ -241,6 +243,14 @@ class V6EvalAdapter:
         )
         self._home_q_rad = np.clip(
             home_rad, self._joint_min, self._joint_max
+        ).astype(np.float32)
+
+    def _init_ref_init_q_rad(self) -> None:
+        win0 = self._service.lookup_np(0)
+        self._ref_init_q_rad = np.clip(
+            np.asarray(win0.q_ref, dtype=np.float32),
+            self._joint_min,
+            self._joint_max,
         ).astype(np.float32)
 
     def _init_ctrl_mapper(self) -> None:
@@ -435,6 +445,8 @@ class V6EvalAdapter:
         # eval downstream of v6_eval_adapter.
         if self._residual_base_mode == "home":
             base_q = self._home_q_rad
+        elif self._residual_base_mode == "ref_init":
+            base_q = self._ref_init_q_rad
         else:
             base_q = q_ref
         target_q = np.clip(

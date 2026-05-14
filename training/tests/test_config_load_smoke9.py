@@ -246,6 +246,7 @@ def test_smoke9b_inherits_smoke9_architecture(smoke9b_cfg) -> None:
     """
     env = smoke9b_cfg.env
     assert env.loc_ref_residual_base == "home"
+    assert env.loc_ref_reset_base == "home"
     assert env.loc_ref_penalty_pose_anchor == "home"
     assert env.loc_ref_penalty_ang_vel_xy_form == "tb_neg_squared"
     assert env.loc_ref_penalty_feet_ori_form == "tb_linear_lateral"
@@ -276,4 +277,55 @@ def test_smoke9b_full_tb_active_rewards_present(smoke9b_cfg) -> None:
 def test_smoke9b_compute_budget_preserved(smoke9b_cfg) -> None:
     """Same compute as smoke9: 2048 × 20 × 480 = 19,660,800."""
     ppo = smoke9b_cfg.ppo
+    assert ppo.num_envs * ppo.rollout_steps * ppo.iterations == 19_660_800
+
+
+# =============================================================================
+# Smoke9c — TB-aligned rewards + TB vx range + ref-init basin
+# =============================================================================
+
+_SMOKE9C = Path("training/configs/ppo_walking_v0201_smoke9c.yaml")
+
+
+@pytest.fixture(scope="module")
+def smoke9c_cfg():
+    if not _SMOKE9C.exists():
+        pytest.skip(f"{_SMOKE9C.name} not found")
+    return load_training_config(str(_SMOKE9C))
+
+
+def test_smoke9c_loads(smoke9c_cfg) -> None:
+    assert smoke9c_cfg is not None
+
+
+def test_smoke9c_keeps_tb_vx_range_and_eval_point(smoke9c_cfg) -> None:
+    env = smoke9c_cfg.env
+    assert env.min_velocity == -0.1
+    assert env.max_velocity == 0.1
+    assert env.eval_velocity_cmd == 0.10
+    assert env.loc_ref_offline_command_vx == 0.10
+
+
+def test_smoke9c_uses_ref_init_bases(smoke9c_cfg) -> None:
+    env = smoke9c_cfg.env
+    assert env.loc_ref_residual_base == "ref_init"
+    assert env.loc_ref_reset_base == "ref_init"
+    assert env.loc_ref_penalty_pose_anchor == "home"
+
+
+def test_smoke9c_keeps_tb_active_reward_weights(smoke9c_cfg) -> None:
+    rw = smoke9c_cfg.reward_weights
+    assert rw.cmd_forward_velocity_alpha == 1000.0
+    assert rw.cmd_forward_velocity_track == 2.0
+    assert rw.feet_phase == 7.5
+    assert rw.penalty_feet_ori == 5.0
+    assert rw.penalty_pose == -0.5
+    assert rw.penalty_close_feet_xy == 10.0
+
+
+def test_smoke9c_compute_budget_preserved(smoke9c_cfg) -> None:
+    ppo = smoke9c_cfg.ppo
+    assert ppo.num_envs == 2048
+    assert ppo.rollout_steps == 20
+    assert ppo.iterations == 480
     assert ppo.num_envs * ppo.rollout_steps * ppo.iterations == 19_660_800

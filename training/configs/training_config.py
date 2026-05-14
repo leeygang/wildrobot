@@ -153,6 +153,7 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ),
         # v0.20.1 smoke8 — residual base selector.  See dataclass docstring.
         loc_ref_residual_base=str(env.get("loc_ref_residual_base", "q_ref")),
+        loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
         # v0.20.1 smoke8b — penalty_pose anchor selector.  See dataclass docstring.
         loc_ref_penalty_pose_anchor=str(
             env.get("loc_ref_penalty_pose_anchor", "q_ref")

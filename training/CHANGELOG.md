@@ -8,6 +8,43 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9c-ref-init-basin-setup] - 2026-05-13: add TB-style ref-init residual/reset basin experiment
+
+### What changed
+
+- Added new env selectors:
+  - `env.loc_ref_residual_base: "q_ref" | "home" | "ref_init"`
+  - `env.loc_ref_reset_base: "home" | "ref_init"`
+- Implemented `ref_init` behavior in `WildRobotEnv`:
+  - constant action base from offline frame-0 `q_ref`
+  - reset actuator-joint `qpos` = frame-0 `q_ref` when reset base is `ref_init`
+  - reset `ctrl` init = frame-0 `q_ref` when residual base is `ref_init`
+- Added `training/configs/ppo_walking_v0201_smoke9c.yaml` as a smoke9b variant:
+  - keeps TB reward constants and `cmd_forward_velocity_alpha = 1000`
+  - keeps TB vx range (`[-0.1, 0.1]`) and eval cmd (`0.10`)
+  - switches only basin selectors to `loc_ref_residual_base: ref_init` and
+    `loc_ref_reset_base: ref_init`
+- Extended focused tests:
+  - config contract tests for smoke9c in `training/tests/test_config_load_smoke9.py`
+  - zero-action/base/reset contracts for smoke9c in `tests/test_v0201_env_zero_action.py`
+
+### ToddlerBot alignment reference
+
+- TB reset uses reference `qpos` from `state_ref`:
+  `toddlerbot/locomotion/mjx_env.py:907-911`
+- TB default residual base uses first-frame motor pose:
+  `toddlerbot/locomotion/mjx_env.py:1221-1227`
+- TB action target is residual around that constant default:
+  `toddlerbot/locomotion/mjx_env.py:1543-1546`
+
+### Verify command for this setup
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0201_smoke9c.yaml \
+  --iterations 20
+```
+
 ## [v0.20.1-smoke9b-verify-kjdwc97t] - 2026-05-13: foot-ori fix confirmed; still fails on dead forward-velocity gradient
 
 ### Run
