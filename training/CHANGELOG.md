@@ -8,6 +8,98 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9b-verify-kjdwc97t] - 2026-05-13: foot-ori fix confirmed; still fails on dead forward-velocity gradient
+
+### Run
+
+- W&B offline run:
+  `training/wandb/offline-run-20260512_221201-kjdwc97t`
+- Checkpoints:
+  `training/checkpoints/ppo_walking_v0201_smoke9b_v00201_20260512_221205-kjdwc97t`
+- Config: `training/configs/ppo_walking_v0201_smoke9b.yaml`
+- Scope: 20-iteration short verify, 2048 envs x 20 rollout = 819,200
+  transitions.
+
+### Verdict
+
+The prior foot-orientation fix is correct, but smoke9b still fails the
+short-verify learning criteria.  Do not launch the full 480-iteration
+run from this config unchanged.
+
+The intended fixed signal is visible immediately:
+
+| Term | pre-fix run `x8tr9h8f` iter 1 | fixed run `kjdwc97t` iter 1 |
+|---|---:|---:|
+| `reward/penalty_feet_ori` | -0.1999 | -0.0106 |
+| `reward/feet_phase` | +0.1298 | +0.1298 |
+| `reward/total` | -0.3244 | -0.1352 |
+
+So the false constant foot-orientation penalty was removed.  The
+remaining failure is not that bug.
+
+### Progress
+
+| Metric | iter 1 | iter 10 | iter 20 |
+|---|---:|---:|---:|
+| `Evaluate/mean_episode_length` | 244.1 | 107.2 | 79.0 |
+| `Evaluate/forward_velocity` | -0.045 | -0.131 | -0.246 |
+| `Evaluate/cmd_vs_achieved_forward` | 0.145 | 0.231 | 0.346 |
+| `Evaluate/cmd_forward_velocity_track` | 0.00190 | 0.00116 | 0.00033 |
+| `term_height_low_frac` | 0.0 | 1.0 | 1.0 |
+| `term_pitch_frac` | 0.0 | 4.60 | 3.94 |
+| `reward/action_rate` | -0.286 | -0.281 | -0.237 |
+| `reward/feet_phase` | +0.130 | +0.095 | +0.102 |
+| `reward/penalty_feet_ori` | -0.0106 | -0.0442 | -0.0377 |
+
+G4 is a clear fail at iter 20:
+
+- Eval forward velocity is backward (`-0.246 m/s`) rather than
+  `>= +0.075 m/s`.
+- Eval episode length is 79, far below the 475-step promotion horizon.
+- Eval command error is 0.346 m/s.  For smoke9b's `eval_velocity_cmd=0.10`,
+  the stricter practical target is <= 0.05 m/s.
+- Train touchdown step length is still negative
+  (`tracking/step_length_touchdown_event_m=-0.0036 m`).
+
+G5 residual magnitudes are still within bounds, so this is not a
+residual-saturation exploit.  The policy is underusing the residual
+while falling backward.
+
+### ToddlerBot comparison
+
+Smoke9b still matches TB's active `walk.gin` recipe on the implemented
+terms: vx command range `[-0.1, 0.1]`, `lin_vel_xy`/forward tracking
+weight 2.0 with sigma/alpha 1000, `torso_quat=2.5`,
+`penalty_ang_vel_xy=1.0`, `penalty_action_rate=2.0`,
+`penalty_pose=0.5`, `penalty_close_feet_xy=10.0`, `feet_phase=7.5`,
+and `penalty_feet_ori=5.0`.  WR still intentionally omits TB's yaw
+tracking term because this smoke samples no yaw command.
+
+The key difference exposed by this run is empirical, not config drift:
+TB's alpha=1000 velocity tracker is too narrow for WR once the initial
+policy falls outside the small basin.  At iter 20 the eval command error
+is 0.346 m/s, making `exp(-1000 * err^2)` effectively zero; the logged
+`Evaluate/cmd_forward_velocity_track` has fallen to 0.00033.  PPO is
+therefore dominated by action-rate smoothing and posture/fall dynamics,
+not by a usable forward-tracking gradient.
+
+### Next action
+
+Create the next smoke as a single-variable relaxation of the velocity
+tracker, not another geometry fix:
+
+- Keep smoke9b architecture, TB command range, reward set, and the
+  foot-orientation baseline fix.
+- Lower `cmd_forward_velocity_alpha` from 1000 to a value that gives
+  non-zero gradient at the observed early error.  A first conservative
+  probe is alpha 50: at 0.10 m/s error reward scale is `exp(-0.5)=0.61`,
+  at 0.20 m/s it is `exp(-2)=0.14`, and at 0.35 m/s it is
+  `exp(-6.125)=0.002`.
+- Run the same 20-iteration verify and require eval velocity to move
+  toward `+0.10`, not backward, before launching a full smoke.
+
+---
+
 ## [v0.20.1-smoke9b-foot-ori-baseline-fix] - 2026-05-12: fix penalty_feet_ori MJCF-convention bug; baseline-subtract g_local from home
 
 ### Context — smoke9b verify (run `x8tr9h8f`) exposed the bug
