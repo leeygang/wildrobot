@@ -8,6 +8,114 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9c-verify-akdu6zn0] - 2026-05-14: ref-init fixes stability, but short verify stays in standing basin
+
+### Run
+
+- W&B offline run:
+  `training/wandb/offline-run-20260514_080210-akdu6zn0`
+- Checkpoints:
+  `training/checkpoints/ppo_walking_v0201_smoke9c_v00201_20260514_080213-akdu6zn0`
+- Config: `training/configs/ppo_walking_v0201_smoke9c.yaml`
+- Scope: 20-iteration short verify, 2048 envs x 20 rollout =
+  819,200 transitions, 55.8 minutes.
+
+### Verdict
+
+Smoke9c achieved the intended ref-init stability improvement, but does not
+yet learn forward walking in the 20-iteration verify.  Do not launch the
+full 480-iteration run unchanged until the command/reward basin issue below
+is isolated.
+
+Compared with smoke9b `kjdwc97t`, the failure mode changed in the desired
+direction:
+
+| Metric | smoke9b iter 20 | smoke9c iter 20 |
+|---|---:|---:|
+| `Evaluate/mean_episode_length` | 79.0 | 500.0 |
+| `Evaluate/forward_velocity` | -0.246 | +0.002 |
+| `Evaluate/cmd_vs_achieved_forward` | 0.346 | 0.098 |
+| `reward/penalty_feet_ori` | -0.0377 | -0.0212 |
+| `reward/feet_phase` | +0.1019 | +0.1044 |
+
+So the ref-init basin prevents the smoke9b backward/falling collapse, but
+the deterministic eval policy is effectively standing still.
+
+### Progress
+
+| Metric | iter 1 | iter 10 | iter 20 |
+|---|---:|---:|---:|
+| `Evaluate/mean_reward` | 47.48 | 51.60 | 48.60 |
+| `Evaluate/mean_episode_length` | 500.0 | 500.0 | 500.0 |
+| `Evaluate/forward_velocity` | 0.0020 | 0.0023 | 0.0021 |
+| `Evaluate/cmd_vs_achieved_forward` | 0.0993 | 0.0994 | 0.0984 |
+| `Evaluate/forward_velocity_cmd_ratio` | 0.020 | 0.023 | 0.021 |
+| `Evaluate/step_length_touchdown_event_m` | 0.0003 | -0.0001 | 0.0003 |
+| `env/episode_length` | 0.0 | 170.0 | 229.9 |
+| `env/forward_velocity` | 0.006 | -0.063 | -0.038 |
+| `reward/total` | -0.157 | -0.189 | -0.129 |
+| `reward/cmd_forward_velocity_track` | +0.0089 | +0.0064 | +0.0074 |
+| `reward/feet_phase` | +0.0967 | +0.1060 | +0.1044 |
+| `reward/action_rate` | -0.2830 | -0.2798 | -0.2293 |
+| `reward/ref_body_quat_track` | +0.0361 | +0.0138 | +0.0147 |
+| `reward/penalty_feet_ori` | -0.0099 | -0.0245 | -0.0212 |
+
+G4 fails at iter 20:
+
+- Eval forward velocity is `0.002 m/s`, far below `>= 0.075`.
+- Eval episode length passes at 500/500.
+- Eval command error is `0.098`, above `<= 0.075`.
+- Eval step length is effectively zero (`0.0003 m`), far below
+  `>= 0.030`.
+
+G5 does not show the old residual-driven exploit:
+
+- Train residual hip/knee means remain below 0.20 rad:
+  hip L/R `0.104/0.095`, knee L/R `0.076/0.087`.
+- The eval velocity ratio is the real failure (`0.021`): the policy is not
+  using the allowed residual authority to make forward progress.
+
+### ToddlerBot comparison and diagnosis
+
+Confirmed code alignment:
+
+- TB first-frame default action:
+  `toddlerbot/locomotion/mjx_env.py:1221-1227`
+- TB residual target:
+  `toddlerbot/locomotion/mjx_env.py:1543-1546`
+- TB active reward constants:
+  `toddlerbot/locomotion/walk.gin:111-131`
+- WR smoke9c matches the constant ref-init residual/reset base and uses
+  `cmd_forward_velocity_alpha: 1000.0`, `feet_phase: 7.5`,
+  `penalty_pose: -0.5`, `penalty_feet_ori: 5.0`,
+  `penalty_close_feet_xy: 10.0`.
+
+Key remaining mismatch for this short smoke: WR's one-axis command sampler
+with `min_velocity=-0.1`, `max_velocity=0.1`, `cmd_zero_chance=0.2`, and
+`cmd_deadzone=0.05` snaps roughly 60% of train commands to exact zero:
+`0.2 + 0.8 * P(|Uniform(-0.1, 0.1)| < 0.05) = 0.6`.
+TB's walk sampler (`walk_env.py:256-321`) uses the same zero chance and
+deadzone constants, but samples a full 3-D walk command from an ellipse
+rather than this one-axis snap-to-zero distribution.  In the WR short
+verify, the stable-standing solution is rewarded on most train rollouts,
+while eval asks for fixed `+0.10 m/s`.
+
+### Next step
+
+Pause smoke9c.  Before lowering `cmd_forward_velocity_alpha`, run a focused
+smoke9d diagnostic that keeps the smoke9c ref-init architecture and TB
+reward constants but removes the command-distribution ambiguity for the
+short verify:
+
+- set train `min_velocity = max_velocity = eval_velocity_cmd = 0.10`
+- set `cmd_zero_chance = 0.0`
+- set `cmd_deadzone = 0.0`
+- keep `cmd_forward_velocity_alpha = 1000.0`
+
+If smoke9d still stands still, the issue is not the one-axis command
+curriculum; inspect velocity reward gradient/action exploration and
+critic/privileged-observation gaps next.
+
 ## [v0.20.1-smoke9c-native-eval-reset-parity] - 2026-05-13: make native MuJoCo reset honor ref-init basin
 
 ### Issue
