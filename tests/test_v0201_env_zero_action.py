@@ -13,6 +13,7 @@ reproduce bare-q_ref replay; the residual head is zero-initialized).
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jp
@@ -783,3 +784,110 @@ def test_smoke9c_zero_action_applied_target_q_equals_ref_init_under_full_step(
             "applied_target_q != ref_init_q."
         ),
     )
+
+
+def _sampler_only_env(
+    *,
+    min_velocity: float,
+    max_velocity: float,
+    cmd_zero_chance: float,
+    cmd_deadzone: float,
+) -> WildRobotEnv:
+    """Build a minimal env stub for unit-testing `_sample_velocity_cmd`."""
+    env = WildRobotEnv.__new__(WildRobotEnv)
+    env._config = SimpleNamespace(
+        env=SimpleNamespace(
+            min_velocity=float(min_velocity),
+            max_velocity=float(max_velocity),
+            cmd_zero_chance=float(cmd_zero_chance),
+            cmd_deadzone=float(cmd_deadzone),
+        )
+    )
+    return env
+
+
+def _sample_scalar_cmds(env: WildRobotEnv, *, seed: int, count: int) -> np.ndarray:
+    keys = jax.random.split(jax.random.PRNGKey(seed), count)
+    sampler = jax.jit(jax.vmap(env._sample_velocity_cmd))
+    return np.asarray(sampler(keys), dtype=np.float32)
+
+
+def test_scalar_sampler_nonzero_branch_stays_outside_deadzone() -> None:
+    deadzone = 0.0666666667
+    env = _sampler_only_env(
+        min_velocity=-0.1333333333,
+        max_velocity=0.1333333333,
+        cmd_zero_chance=0.0,
+        cmd_deadzone=deadzone,
+    )
+    cmds = _sample_scalar_cmds(env, seed=0, count=256)
+    assert np.all(np.abs(cmds) >= deadzone), (
+        "nonzero branch produced commands inside the deadzone"
+    )
+    assert np.all(cmds != 0.0), "nonzero branch produced exact zero command"
+
+
+def test_scalar_sampler_explicit_zero_branch_returns_exact_zero() -> None:
+    env = _sampler_only_env(
+        min_velocity=-0.1333333333,
+        max_velocity=0.1333333333,
+        cmd_zero_chance=1.0,
+        cmd_deadzone=0.0666666667,
+    )
+    cmds = _sample_scalar_cmds(env, seed=1, count=64)
+    assert np.all(cmds == 0.0), "cmd_zero_chance branch must return exact zero"
+
+
+def test_scalar_sampler_fixed_command_behavior_is_preserved() -> None:
+    env_fixed_walk = _sampler_only_env(
+        min_velocity=0.08,
+        max_velocity=0.08,
+        cmd_zero_chance=0.0,
+        cmd_deadzone=0.05,
+    )
+    assert float(env_fixed_walk._sample_velocity_cmd(jax.random.PRNGKey(2))) == pytest.approx(0.08)
+
+    env_fixed_in_deadzone = _sampler_only_env(
+        min_velocity=0.04,
+        max_velocity=0.04,
+        cmd_zero_chance=0.0,
+        cmd_deadzone=0.05,
+    )
+    assert float(env_fixed_in_deadzone._sample_velocity_cmd(jax.random.PRNGKey(3))) == pytest.approx(0.0)
+
+    env_fixed_zeroed = _sampler_only_env(
+        min_velocity=0.08,
+        max_velocity=0.08,
+        cmd_zero_chance=1.0,
+        cmd_deadzone=0.0,
+    )
+    assert float(env_fixed_zeroed._sample_velocity_cmd(jax.random.PRNGKey(4))) == pytest.approx(0.0)
+
+
+def test_scalar_sampler_smoke9c_zero_mix_is_not_old_sixty_percent() -> None:
+    env = _sampler_only_env(
+        min_velocity=-0.1333333333,
+        max_velocity=0.1333333333,
+        cmd_zero_chance=0.2,
+        cmd_deadzone=0.0666666667,
+    )
+    cmds = _sample_scalar_cmds(env, seed=5, count=1024)
+    zero_ratio = float(np.mean(cmds == 0.0))
+    assert abs(zero_ratio - 0.2) <= 0.05, (
+        f"zero-command ratio drifted from explicit zero branch: got {zero_ratio:.3f}"
+    )
+    assert zero_ratio <= 0.30, (
+        f"zero-command ratio regressed toward old deadzone-mixing bug: got {zero_ratio:.3f}"
+    )
+
+
+def test_scalar_sampler_handles_asymmetric_ranges_without_symmetry_assumption() -> None:
+    env = _sampler_only_env(
+        min_velocity=0.02,
+        max_velocity=0.12,
+        cmd_zero_chance=0.0,
+        cmd_deadzone=0.05,
+    )
+    cmds = _sample_scalar_cmds(env, seed=6, count=128)
+    assert np.all(cmds >= 0.05)
+    assert np.all(cmds <= 0.12)

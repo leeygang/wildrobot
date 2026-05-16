@@ -281,7 +281,7 @@ def test_smoke9b_compute_budget_preserved(smoke9b_cfg) -> None:
 
 
 # =============================================================================
-# Smoke9c — TB-aligned rewards + TB vx range + ref-init basin
+# Smoke9c — TB-aligned rewards + WR size-normalized TB curriculum + ref-init
 # =============================================================================
 
 _SMOKE9C = Path("training/configs/ppo_walking_v0201_smoke9c.yaml")
@@ -298,12 +298,13 @@ def test_smoke9c_loads(smoke9c_cfg) -> None:
     assert smoke9c_cfg is not None
 
 
-def test_smoke9c_keeps_tb_vx_range_and_eval_point(smoke9c_cfg) -> None:
+def test_smoke9c_uses_wr_size_normalized_tb_curriculum(smoke9c_cfg) -> None:
     env = smoke9c_cfg.env
-    assert env.min_velocity == -0.1
-    assert env.max_velocity == 0.1
-    assert env.eval_velocity_cmd == 0.10
-    assert env.loc_ref_offline_command_vx == 0.10
+    assert env.min_velocity == -0.1333333333
+    assert env.max_velocity == 0.1333333333
+    assert env.cmd_deadzone == 0.0666666667
+    assert env.eval_velocity_cmd == 0.1333333333
+    assert env.loc_ref_offline_command_vx == 0.1333333333
 
 
 def test_smoke9c_uses_ref_init_bases(smoke9c_cfg) -> None:
@@ -313,9 +314,9 @@ def test_smoke9c_uses_ref_init_bases(smoke9c_cfg) -> None:
     assert env.loc_ref_penalty_pose_anchor == "home"
 
 
-def test_smoke9c_keeps_tb_active_reward_weights(smoke9c_cfg) -> None:
+def test_smoke9c_keeps_tb_active_reward_weights_with_normalized_alpha(smoke9c_cfg) -> None:
     rw = smoke9c_cfg.reward_weights
-    assert rw.cmd_forward_velocity_alpha == 1000.0
+    assert rw.cmd_forward_velocity_alpha == 562.5
     assert rw.cmd_forward_velocity_track == 2.0
     assert rw.feet_phase == 7.5
     assert rw.penalty_feet_ori == 5.0

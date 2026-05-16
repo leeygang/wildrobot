@@ -1724,37 +1724,94 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # ----------------------------------------------------- cmd resampling
 
     def _sample_velocity_cmd(self, rng: jax.Array) -> jax.Array:
-        """ToddlerBot-style multi-command sampler (`_sample_command`,
-        `walk_env.py:140-226`).  Returns a scalar forward-velocity
-        command in m/s.
+        """Scalar forward-velocity command sampler (m/s).
 
         Behavior:
-          - draw uniform on ``[min_velocity, max_velocity]``
-          - with probability ``cmd_zero_chance`` zero it (stand-still)
-          - apply ``cmd_deadzone``: any |cmd| below the deadzone snaps
-            to 0 (matches ToddlerBot's deadzone[0] for vx)
-        ``cmd_turn_chance`` is reserved for the v0.20.4 yaw upgrade
-        and is ignored on the single-axis cmd path.
+          - with probability ``cmd_zero_chance``, return exact 0
+          - otherwise sample a nonzero walking command outside
+            ``[-cmd_deadzone, +cmd_deadzone]``.
 
-        Degenerate range (min == max) collapses to a deterministic
-        constant, so the v0.20.1 smoke (vx pinned at 0.15) sees no
-        change in behavior even when this sampler runs.
+        For asymmetric ranges, the nonzero branch samples from the valid
+        negative/positive intervals weighted by interval length (no
+        symmetry assumption).  Degenerate fixed-command configs
+        (``min_velocity == max_velocity``) keep the historical behavior:
+        fixed value, then deadzone snap.  If no value exists outside the
+        deadzone for a non-degenerate range, the method falls back to the
+        historical uniform+deadzone behavior.
+        ``cmd_turn_chance`` remains reserved for the v0.20.4 yaw path.
         """
-        rng, k_vel, k_zero = jax.random.split(rng, 3)
-        cmd = jax.random.uniform(
-            k_vel,
-            shape=(),
-            minval=self._config.env.min_velocity,
-            maxval=self._config.env.max_velocity,
-        )
-        zero_chance = jp.float32(self._config.env.cmd_zero_chance)
-        cmd = jp.where(
-            jax.random.uniform(k_zero, shape=()) < zero_chance,
-            jp.float32(0.0),
-            cmd,
-        )
+        rng, k_zero, k_branch, k_neg, k_pos, k_fallback = jax.random.split(rng, 6)
+        min_velocity = jp.float32(self._config.env.min_velocity)
+        max_velocity = jp.float32(self._config.env.max_velocity)
         deadzone = jp.float32(self._config.env.cmd_deadzone)
-        cmd = jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+        zero_chance = jp.float32(self._config.env.cmd_zero_chance)
+
+        def _sample_fixed_cmd() -> jax.Array:
+            cmd = min_velocity
+            return jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+
+        def _sample_historical_fallback() -> jax.Array:
+            cmd = jax.random.uniform(
+                k_fallback,
+                shape=(),
+                minval=min_velocity,
+                maxval=max_velocity,
+            )
+            return jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+
+        def _sample_nonzero_interval() -> jax.Array:
+            neg_lo = min_velocity
+            neg_hi = jp.minimum(max_velocity, -deadzone)
+            pos_lo = jp.maximum(min_velocity, deadzone)
+            pos_hi = max_velocity
+
+            neg_len = jp.maximum(neg_hi - neg_lo, jp.float32(0.0))
+            pos_len = jp.maximum(pos_hi - pos_lo, jp.float32(0.0))
+            total_len = neg_len + pos_len
+
+            def _sample_neg() -> jax.Array:
+                return jax.random.uniform(k_neg, shape=(), minval=neg_lo, maxval=neg_hi)
+
+            def _sample_pos() -> jax.Array:
+                return jax.random.uniform(k_pos, shape=(), minval=pos_lo, maxval=pos_hi)
+
+            def _sample_valid() -> jax.Array:
+                return jax.lax.cond(
+                    neg_len <= jp.float32(0.0),
+                    lambda _: _sample_pos(),
+                    lambda _: jax.lax.cond(
+                        pos_len <= jp.float32(0.0),
+                        lambda __: _sample_neg(),
+                        lambda __: jax.lax.cond(
+                            jax.random.uniform(k_branch, shape=()) < (neg_len / total_len),
+                            lambda ___: _sample_neg(),
+                            lambda ___: _sample_pos(),
+                            operand=None,
+                        ),
+                        operand=None,
+                    ),
+                    operand=None,
+                )
+
+            return jax.lax.cond(
+                total_len > jp.float32(0.0),
+                lambda _: _sample_valid(),
+                lambda _: _sample_historical_fallback(),
+                operand=None,
+            )
+
+        nonzero_cmd = jax.lax.cond(
+            min_velocity == max_velocity,
+            lambda _: _sample_fixed_cmd(),
+            lambda _: _sample_nonzero_interval(),
+            operand=None,
+        )
+        cmd = jax.lax.cond(
+            jax.random.uniform(k_zero, shape=()) < zero_chance,
+            lambda _: jp.float32(0.0),
+            lambda _: nonzero_cmd,
+            operand=None,
+        )
         return cmd.astype(jp.float32)
 
     def _make_initial_state(

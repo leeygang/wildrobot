@@ -8,6 +8,56 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke9c-normalized-curriculum-sampler-fix] - 2026-05-16: repair scalar sampler and move smoke9c to WR size-normalized TB bootstrap
+
+### Diagnosis (run `roqjc4lq`)
+
+- Run: `training/wandb/offline-run-20260515_203700-roqjc4lq`
+- At iter `350` / `14.336M` transitions the policy is stable standing, not gait:
+  - `Evaluate/forward_velocity ~= 0.002 m/s`
+  - `Evaluate/cmd_vs_achieved_forward ~= 0.098`
+  - `Evaluate/step_length_touchdown_event_m ~= 0`
+- Root cause in WR scalar command sampler:
+  - sampler drew uniform vx on `[-0.1, 0.1]`
+  - then applied `cmd_zero_chance = 0.2`
+  - then deadzoned `|vx| < 0.05 -> 0`
+  - effective zero-command rate became `0.2 + 0.8 * 0.5 = 0.60`
+
+### ToddlerBot comparison
+
+- TB uses the same explicit zero chance (`20%`) but its nonzero walk-command
+  branch samples outside the deadzone (no extra deadzone-induced zero inflation):
+  - `~/projects/toddlerbot/toddlerbot/locomotion/walk.gin:42-51`
+  - `~/projects/toddlerbot/toddlerbot/locomotion/walk_env.py:256-321`
+
+### Fix
+
+- Repaired `WildRobotEnv._sample_velocity_cmd` so exact zero comes from the
+  explicit zero branch; nonzero branch samples outside deadzone, with asymmetric
+  range handling and preserved fixed-command behavior for `min == max`.
+- Updated smoke9c curriculum to WR size-normalized TB bootstrap (Phase 9D scale):
+  - scale factor `s = 0.20 / 0.15 = 4/3`
+  - `min/max_velocity = ±0.1333333333`
+  - `cmd_deadzone = 0.0666666667`
+  - `eval_velocity_cmd = 0.1333333333`
+  - `loc_ref_offline_command_vx = 0.1333333333`
+- Scaled velocity-tracking alpha to preserve the same normalized basin:
+  - `cmd_forward_velocity_alpha = 1000 / s^2 = 562.5`
+  - basin check: `exp(-1000 * 0.10^2) == exp(-562.5 * 0.1333333333^2)`
+
+### References for normalization rationale
+
+- Hof (1996), *Scaling gait data to body size* (body-size normalization)
+- Bengio et al. (ICML 2009), *Curriculum Learning* (staged task progression)
+- WR Phase 9D normalization baseline:
+  `training/docs/reference_architecture_comparison.md`
+
+### Recommendation
+
+1. Rerun smoke9c with this sampler + normalized curriculum fix.
+2. Keep higher-speed continuation toward `0.20 m/s` (and any later `0.26 m/s`
+   product target) as separate follow-up work.
+
 ## [toddlerbot-walk-reference-g71kx337] - 2026-05-15: full TB run shows 20-iter WR verify is too short to judge gait learning
 
 ### Run
