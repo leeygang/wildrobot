@@ -78,6 +78,36 @@ This resolves the smoke9c interpretation:
   the TB-style setup is insufficient" was too strong.  The 20-iter verify
   should remain a stability test, not a gait-learning test.
 
+First-20-interval parity check at the same `819,200` transitions:
+
+- TB logs reward-term episode sums before its final `* dt`; WR logs
+  integrated per-step reward contributions.  After converting TB terms to
+  WR units (`episode_sum / episode_length * 0.02`), the main shared terms
+  agree in sign and order of magnitude.
+
+| Term at matched transition count | TB converted | smoke9c iter 20 |
+|---|---:|---:|
+| `alive` | `+0.0200` | `+0.0200` |
+| `lin_vel_xy` / `cmd_forward_velocity_track` | `+0.0009` | `+0.0074` |
+| `torso_quat` / `ref_body_quat_track` | `+0.0178` | `+0.0147` |
+| `penalty_action_rate` / `action_rate` | `-0.2305` | `-0.2293` |
+| `penalty_pose` | `-0.0042` | `-0.0056` |
+| `feet_phase` | `+0.1118` | `+0.1044` |
+| `penalty_feet_ori` | `-0.0383` | `-0.0212` |
+
+- TB has one intentional extra active term, yaw tracking
+  (`ang_vel_z`, converted `+0.0115` at interval 20); WR still omits it
+  because these smokes sample no yaw command.
+- smoke9c is **not** missing early forward-reward signal: its converted
+  forward-tracking contribution is larger than TB's at the matched point.
+- smoke9c is also easier to keep alive early:
+  TB train episode length is `48.14` at interval 20, while smoke9c train
+  episode length is `229.89` and deterministic eval is `500/500`.  That is
+  consistent with smoke9c's deliberate `ref_init` basin, not a regression.
+- Remaining non-parity is architectural, not an implementation bug:
+  smoke9c uses WR's 1-D vx sampler and `500`-step eval horizon, while TB
+  uses the 3-D elliptical walk-command sampler and `1000`-step episodes.
+
 ### Next action
 
 Run smoke9c longer before inventing smoke9d:
