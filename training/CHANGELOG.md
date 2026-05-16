@@ -123,6 +123,10 @@ Run smoke9c longer before inventing smoke9d:
 
 ## [v0.20.1-smoke9c-verify-akdu6zn0] - 2026-05-14: ref-init fixes stability, but short verify stays in standing basin
 
+> Superseded by `[toddlerbot-walk-reference-g71kx337]` above: after the
+> full TB reference run, this 20-iteration result should be read as a
+> stability verify only, not as evidence to pause smoke9c or invent smoke9d.
+
 ### Run
 
 - W&B offline run:

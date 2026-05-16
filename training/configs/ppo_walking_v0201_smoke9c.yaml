@@ -59,17 +59,23 @@
 # Compute budget: same as smoke9 (2048 × 20 × 480 = 19,660,800
 # transitions on the 12GB-safe shape).
 #
-# Short verify run (recommended before full smoke):
+# Short verify run already completed:
 #
 #   uv run python training/train.py \
 #     --config training/configs/ppo_walking_v0201_smoke9c.yaml \
-#     --iterations 50
+#     --iterations 20
 #
-# At ~5-10 minutes on RTX 5070, 50 iters is enough to verify:
+# The 20-iter run verified the intended `ref_init` basin behavior:
 #   - reward/feet_phase logged at non-zero magnitudes (Fix 1)
 #   - reward/cmd_forward_velocity_track > 0.001 (the gradient-presence test)
-#   - eval_v moving toward +0.10 (not -0.6 like smoke9)
-#   - mean_episode_length staying > 100 (vs smoke9's collapse to 30 by iter 5)
+#   - deterministic eval stayed upright for 500/500 steps
+#   - the smoke9b backward/fall collapse disappeared
+#
+# The later full ToddlerBot reference run showed that 20 iterations /
+# 0.819M transitions are far too early to judge gait learning: TB itself
+# only reaches positive reward near 9.91M transitions and long-horizon
+# walking near 29.49M transitions.  Treat short runs as stability checks,
+# not as a reason to change the TB-aligned reward width or command range.
 #
 # Full run:
 #
