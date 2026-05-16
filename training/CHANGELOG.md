@@ -8,6 +8,89 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [toddlerbot-walk-reference-g71kx337] - 2026-05-15: full TB run shows 20-iter WR verify is too short to judge gait learning
+
+### Run
+
+- ToddlerBot result dir:
+  `~/projects/toddlerbot/results/toddlerbot_2xc_walk_brax_20260515_114507`
+- ToddlerBot W&B offline run:
+  `~/projects/toddlerbot/wandb/offline-run-20260515_114507-g71kx337`
+- Command:
+  `WANDB_MODE=offline train_mjx.py --env walk --brax --gin-config "PPOConfig.num_envs=2048; PPOConfig.batch_size=128"`
+- Scope: `1_001_594_880` transitions, `2048` envs, TB active
+  `walk.gin` reward recipe.  This is a hardware-scaled reference run:
+  TB's default `4096` envs exceeded the RTX 5070 12 GB memory budget.
+
+### Verdict
+
+TB reaches the walking basin with its own active recipe, but not on a
+20-iteration / sub-1M-transition horizon.  The run gives us a better time
+scale for interpreting WR smoke9c:
+
+| TB milestone | Transition count |
+|---|---:|
+| Reward first becomes positive | `9.91M` |
+| Mean episode length first exceeds `900` | `29.49M` |
+| Strong stable-walking regime visible | `~50-100M` |
+| Best finite mean reward before numerical failure | `244.62` at `224.22M` |
+
+Concrete samples from the finite part of the run:
+
+| Step | Mean reward | Mean ep len | `lin_vel_xy` sum | `feet_phase` sum |
+|---:|---:|---:|---:|---:|
+| `10.12M` | `0.22` | `50.13` | `1.47` | `365.83` |
+| `20.23M` | `74.12` | `687.53` | `51.13` | `5251.63` |
+| `30.35M` | `140.26` | `903.69` | `66.99` | `8067.97` |
+| `50.59M` | `185.77` | `941.91` | `81.73` | `8821.36` |
+| `101.17M` | `219.50` | `965.57` | `140.89` | `9223.95` |
+| `224.22M` | `244.62` | `998.29` | `212.24` | `9622.77` |
+
+The run later becomes numerically invalid:
+
+- At `232.69M`, `penalty_action_rate` explodes to
+  `-1.05e26`, KL becomes `6.62e20`, and the value loss becomes `inf`.
+- From `233.47M` onward the logged policy/reward terms are `nan`.
+- Therefore `model_232693760` and later checkpoints are not usable.
+  The last clearly healthy checkpoint family is before that blow-up;
+  `model_212459520` is the conservative finite checkpoint and
+  `model_222576640` is still finite but already close to the unstable region.
+
+### ToddlerBot comparison and implication for WR
+
+Confirmed local TB source of truth:
+
+- TB active reward recipe:
+  `~/projects/toddlerbot/toddlerbot/locomotion/walk.gin:111-131`
+- TB 3-D walk-command sampler with elliptical nonzero walk commands:
+  `~/projects/toddlerbot/toddlerbot/locomotion/walk_env.py:256-321`
+- TB residual action target around the constant first-frame default:
+  `~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py:1543-1546`
+
+This resolves the smoke9c interpretation:
+
+- smoke9c's `0.819M`-transition verify showed that `ref_init` fixes the
+  reset basin collapse; it did **not** run long enough to test whether the
+  TB-style reward recipe can discover walking.
+- TB itself is still near the low-reward short-episode regime at `~10M`
+  transitions and only crosses the long-horizon walking regime near `30M`.
+- So the prior conclusion "smoke9c stands still at 20 iterations, therefore
+  the TB-style setup is insufficient" was too strong.  The 20-iter verify
+  should remain a stability test, not a gait-learning test.
+
+### Next action
+
+Run smoke9c longer before inventing smoke9d:
+
+1. Keep the smoke9c ref-init architecture, TB reward constants, and
+   `cmd_forward_velocity_alpha = 1000`.
+2. Run at least the existing smoke compute budget (`~19.66M` transitions);
+   this reaches the TB region where reward has turned positive but is still
+   before TB's `>900` episode-length milestone.
+3. If smoke9c is still standing at `~20M`, extend once to `~30M` or run the
+   fixed-command diagnostic only then.  TB's own curve says `0.819M` is too
+   early to justify changing the reward width or command sampler.
+
 ## [v0.20.1-smoke9c-verify-akdu6zn0] - 2026-05-14: ref-init fixes stability, but short verify stays in standing basin
 
 ### Run
