@@ -2030,6 +2030,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
             root_vel_h.linear[0] - velocity_cmd
         ).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
+            jp.abs(velocity_cmd) > jp.float32(1e-6)
+        ).astype(jp.float32)
         # G5 anti-exploit metrics — zeros at reset (no residual yet).
         metrics_dict["tracking/residual_hip_pitch_left_abs"] = jp.float32(0.0)
         metrics_dict["tracking/residual_hip_pitch_right_abs"] = jp.float32(0.0)
@@ -2450,6 +2454,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # ``<= 0.075 m/s`` per walking_training.md v0.20.1 §.
         terminal_metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
             forward_velocity - velocity_cmd
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(
+            jp.float32
+        )
+        terminal_metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
+            jp.abs(velocity_cmd) > jp.float32(1e-6)
         ).astype(jp.float32)
         # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
         # Per-joint |residual_delta_q| for hip_pitch L+R, knee L+R, and

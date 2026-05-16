@@ -786,6 +786,11 @@ def test_smoke9c_zero_action_applied_target_q_equals_ref_init_under_full_step(
     )
 
 
+def test_command_distribution_metrics_are_registered() -> None:
+    assert "tracking/velocity_cmd_abs" in METRIC_INDEX
+    assert "tracking/velocity_cmd_nonzero_frac" in METRIC_INDEX
+
+
 def _sampler_only_env(
     *,
     min_velocity: float,

@@ -8,6 +8,32 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-symmetric-cmd-console-metrics] - 2026-05-16: replace misleading train-line cmd ratio with command-distribution signals
+
+Smoke9c's WR-normalized sampler is symmetric in `vx`, so the old train console
+line became misleading:
+
+- `cmd=<signed mean>` stays near zero by construction even when `80%` of samples
+  are valid nonzero walking commands.
+- `ratio=<mean vx/cmd>` is diagnostic-only under sampled commands and becomes
+  especially unreadable when positive/negative commands are mixed.
+
+Fix:
+
+- Added `tracking/velocity_cmd_abs` and
+  `tracking/velocity_cmd_nonzero_frac`.
+- Replaced the live train line:
+  - old: `vel=... (cmd=... ratio=...)`
+  - new: `vel=... | cmd_mean=... | |cmd|=... | cmd_nonzero=...`
+- Kept eval-side G5 ratio unchanged; eval is still pinned to one positive
+  command and remains the promotion ratio gate.
+
+Expected smoke9c-normalized live values:
+
+- `cmd_mean ~= 0`
+- `|cmd| ~= 0.08 m/s`
+- `cmd_nonzero ~= 80%`
+
 ## [v0.20.1-smoke9c-normalized-curriculum-sampler-fix] - 2026-05-16: repair scalar sampler and move smoke9c to WR size-normalized TB bootstrap
 
 ### Diagnosis (run `roqjc4lq`)

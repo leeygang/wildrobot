@@ -1699,6 +1699,21 @@ METRIC_SPECS: List[MetricSpec] = [
             "Per-event mean = value / touchdown_rate_right."
         ),
     ),
+    MetricSpec(
+        name="tracking/velocity_cmd_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Mean absolute forward-velocity command magnitude (m/s); "
+            "remains meaningful under symmetric +/- command sampling."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/velocity_cmd_nonzero_frac",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Fraction of sampled commands with |vx_cmd| > 1e-6.",
+    ),
 ]
 
 # =============================================================================

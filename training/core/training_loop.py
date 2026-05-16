@@ -1956,6 +1956,8 @@ def train(
 
             fwd = _g("forward_velocity")
             cmd_vx = _g("velocity_command")
+            cmd_abs = _g("tracking/velocity_cmd_abs")
+            cmd_nonzero = _g("tracking/velocity_cmd_nonzero_frac")
             cmd_err = _g("tracking/cmd_vs_achieved_forward")
             step_len = _g("tracking/step_length_touchdown_event_m")
             vx_cmd_ratio = _g("tracking/forward_velocity_cmd_ratio")
@@ -2042,7 +2044,10 @@ def train(
 
             # Train-rollout walking signals.
             print(
-                f"  └─ vel={fwd:+5.3f} (cmd={cmd_vx:+5.3f} ratio={vx_cmd_ratio:5.2f}) | "
+                f"  └─ vel={fwd:+5.3f} | "
+                f"cmd_mean={cmd_vx:+5.3f} | "
+                f"|cmd|={cmd_abs:.3f} | "
+                f"cmd_nonzero={cmd_nonzero:4.0%} | "
                 f"cmd_err={cmd_err:.3f} | step_len={step_len:+.4f} | "
                 f"h={_g('height'):.2f}m"
             )
