@@ -17,7 +17,7 @@ Result Analysis:
 4. the analysis result and proposal has to include ToddlerBot comparision, code confirm, the result and proposal should be explicit instead of hand waving.
 
 Result:
-1. Update the training result to CHANGELOG.md, if the CHANGELOG.md file is too big, you can create a new CHANGELOG.md file and link it in README.md.
+1. Update the training result to CHANGELOG.md after confirming with me, if the CHANGELOG.md file is too big, you can create a new CHANGELOG.md file and link it in README.md.
 
 follow the following principles for code change:
 The Four Principles in Detail
