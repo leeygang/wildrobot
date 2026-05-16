@@ -1731,6 +1731,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
           - otherwise sample a nonzero walking command outside
             ``[-cmd_deadzone, +cmd_deadzone]``.
 
+        This is a WR scalar analog for TB-style command diversity, not an
+        exact copy of TB's vector walk sampler.  TB keeps the walk vector
+        nonzero, while this scalar path enforces nonzero ``|vx| >= deadzone``
+        to avoid the old scalar deadzone-collapse inflation of zero commands.
+
         For asymmetric ranges, the nonzero branch samples from the valid
         negative/positive intervals weighted by interval length (no
         symmetry assumption).  Degenerate fixed-command configs

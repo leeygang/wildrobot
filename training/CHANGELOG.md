@@ -25,16 +25,19 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ### ToddlerBot comparison
 
-- TB uses the same explicit zero chance (`20%`) but its nonzero walk-command
-  branch samples outside the deadzone (no extra deadzone-induced zero inflation):
+- TB uses the same explicit zero chance (`20%`) and keeps the walk command
+  vector nonzero without a post-sample scalar deadzone collapse:
   - `~/projects/toddlerbot/toddlerbot/locomotion/walk.gin:42-51`
   - `~/projects/toddlerbot/toddlerbot/locomotion/walk_env.py:256-321`
+- TB's vector sampling does not guarantee the vx component stays outside a scalar
+  deadzone at every heading; the WR fix below is a scalar analog choice.
 
 ### Fix
 
 - Repaired `WildRobotEnv._sample_velocity_cmd` so exact zero comes from the
-  explicit zero branch; nonzero branch samples outside deadzone, with asymmetric
-  range handling and preserved fixed-command behavior for `min == max`.
+  explicit zero branch; WR's scalar nonzero branch samples vx outside deadzone
+  (scalar analog), with asymmetric range handling and preserved fixed-command
+  behavior for `min == max`.
 - Updated smoke9c curriculum to WR size-normalized TB bootstrap (Phase 9D scale):
   - scale factor `s = 0.20 / 0.15 = 4/3`
   - `min/max_velocity = ±0.1333333333`
