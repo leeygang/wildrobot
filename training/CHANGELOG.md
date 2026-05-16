@@ -34,6 +34,20 @@ Expected smoke9c-normalized live values:
 - `|cmd| ~= 0.08 m/s`
 - `cmd_nonzero ~= 80%`
 
+## [v0.20.1-console-signal-trim] - 2026-05-16: keep routine training output focused on operator decisions
+
+Trimmed the per-iteration walking console block to keep only the signals needed
+to decide whether to continue, pause, or inspect a run:
+
+- kept rollout status, train motion, command-distribution summary, compact train
+  gate state, eval summary, eval gate state, termination alerts, and PPO anomaly
+  alerts;
+- removed always-on per-joint residual spam, train-side `vx/cmd` ratio text, and
+  always-on reference-error detail from the routine path;
+- retained per-joint residual detail only when `res_max > 0.20`;
+- fixed a real omission: `G4-eval` now includes the already-computed eval
+  step-length gate instead of silently leaving that promotion criterion out.
+
 ## [v0.20.1-smoke9c-normalized-curriculum-sampler-fix] - 2026-05-16: repair scalar sampler and move smoke9c to WR size-normalized TB bootstrap
 
 ### Diagnosis (run `roqjc4lq`)

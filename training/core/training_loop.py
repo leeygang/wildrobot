@@ -1954,13 +1954,15 @@ def train(
             def _mark(ok: bool) -> str:
                 return "\u2713" if ok else "\u2717"
 
+            def _gate_marks(*checks: tuple[str, bool]) -> str:
+                return " ".join(f"{name}{_mark(ok)}" for name, ok in checks)
+
             fwd = _g("forward_velocity")
             cmd_vx = _g("velocity_command")
             cmd_abs = _g("tracking/velocity_cmd_abs")
             cmd_nonzero = _g("tracking/velocity_cmd_nonzero_frac")
             cmd_err = _g("tracking/cmd_vs_achieved_forward")
             step_len = _g("tracking/step_length_touchdown_event_m")
-            vx_cmd_ratio = _g("tracking/forward_velocity_cmd_ratio")
             ep_len = float(metrics.episode_length)
             res_hpL = _g("tracking/residual_hip_pitch_left_abs")
             res_hpR = _g("tracking/residual_hip_pitch_right_abs")
@@ -1974,10 +1976,6 @@ def train(
             res_arR = _g("tracking/residual_ankle_roll_right_abs")
             res_max = max(res_hpL, res_hpR, res_knL, res_knR, res_arL, res_arR)
             term_h_low = _g("term_height_low_frac")
-            ref_q_rmse = _g("ref/q_track_err_rmse")
-            ref_quat_deg = _g("ref/body_quat_err_deg")
-            ref_feet_l2 = _g("ref/feet_pos_err_l2")
-            ref_contact = _g("ref/contact_phase_match")
 
             # G4 / G5 floors are pulled directly from
             # walking_training.md v0.20.1 §.  ``ep_len`` G4 floor is 95% of
@@ -2023,7 +2021,6 @@ def train(
             g4_step_len_ok = step_len >= g4_step_len_floor
             g4_ep_len_ok = ep_len >= 0.95 * max_ep
             g5_residual_ok = res_max <= 0.20
-            g5_ratio_ok = 0.6 <= vx_cmd_ratio <= 1.5
 
             # Main line.  Reward + ep_len + throughput.  ``success`` deleted
             # — it was the truncation-based env/success_rate which is always
@@ -2052,44 +2049,23 @@ def train(
                 f"h={_g('height'):.2f}m"
             )
 
-            # G4 promotion-horizon gate (pass/fail per iter).
+            # Train gates: keep the routine line compact.  Residual
+            # magnitudes are the train-side G5 signal; the train-rollout
+            # vx/cmd ratio is diagnostic-only under sampled commands and
+            # intentionally omitted from the human-facing line.
             print(
-                f"  └─ G4-train (eval_vx={g4_floor_vx:.3f}, cycle={cycle_time_s:.2f}s): "
-                f"vel\u2265{g4_vel_floor:.3f} {_mark(g4_vel_ok)} | "
-                f"cmd_err\u2264{g4_cmd_err_ceiling:.3f} {_mark(g4_cmd_err_ok)} | "
-                f"step_len\u2265{g4_step_len_floor:.3f} {_mark(g4_step_len_ok)} | "
-                f"ep_len\u2265{int(0.95 * max_ep)} {_mark(g4_ep_len_ok)}"
+                f"  └─ gates: "
+                f"G4-train[{_gate_marks(('v', g4_vel_ok), ('err', g4_cmd_err_ok), ('step', g4_step_len_ok), ('L', g4_ep_len_ok))}] | "
+                f"res_max={res_max:.2f}\u22640.20 {_mark(g5_residual_ok)}"
             )
 
-            # G5 anti-exploit gate (pass/fail per iter).
-            # Train-side: residual magnitudes are the authoritative
-            # promotion gate (env emits g5_residual_ok over both train +
-            # eval terminal metrics).  The train-rollout vx/cmd ratio is
-            # **diagnostic only** under the smoke7 multi-cmd curriculum:
-            # sampled near-zero commands (zero_chance + deadzone) make
-            # the train mean numerically unstable.  The promotion ratio
-            # gate uses the pinned eval rollout — see the G5-eval line
-            # in the Evaluate/* block below.
-            print(
-                f"  └─ G5-train: "
-                f"|\u0394q|hipL/R={res_hpL:.2f}/{res_hpR:.2f} "
-                f"kneeL/R={res_knL:.2f}/{res_knR:.2f} "
-                f"ankle_rollL/R={res_arL:.2f}/{res_arR:.2f} "
-                f"\u22640.20 {_mark(g5_residual_ok)} | "
-                f"vx/cmd\u2208[0.6,1.5] {_mark(g5_ratio_ok)} (diagnostic \u2014 "
-                f"promotion ratio is on eval, see G5-eval below)"
-            )
-
-            # Imitation diagnostics — surfaces dead-gradient (large
-            # ref_*_err_* alongside near-zero reward/ref_*_track) and gait
-            # drift (ref/contact_phase_match falling).
-            print(
-                f"  └─ ref: "
-                f"q_rmse={ref_q_rmse:.3f} | "
-                f"quat={ref_quat_deg:5.1f}\u00b0 | "
-                f"feet_l2={ref_feet_l2:.2f} | "
-                f"contact={ref_contact:.2f}"
-            )
+            if not g5_residual_ok:
+                print(
+                    f"  └─ residual detail: "
+                    f"hipL/R={res_hpL:.2f}/{res_hpR:.2f} "
+                    f"kneeL/R={res_knL:.2f}/{res_knR:.2f} "
+                    f"ankle_rollL/R={res_arL:.2f}/{res_arR:.2f}"
+                )
 
             # Termination flag — under relaxed termination only h_low
             # actually terminates; pitch / roll are soft-band penalties so
@@ -2131,6 +2107,7 @@ def train(
                 eval_L = _g("Evaluate/mean_episode_length")
                 eval_v = _g("Evaluate/forward_velocity")
                 eval_e = _g("Evaluate/cmd_vs_achieved_forward")
+                eval_step_len = _g("Evaluate/step_length_touchdown_event_m")
                 # Same command-scaled floors as train G4 (single source
                 # of truth: ``eval_velocity_cmd`` + cycle_time_s).
                 # Eval is always pinned to eval_velocity_cmd, so the
@@ -2138,6 +2115,7 @@ def train(
                 # mode (which only affects train rollouts).
                 eval_g4_vel_ok = eval_v >= g4_vel_floor
                 eval_g4_cmd_err_ok = eval_e <= g4_cmd_err_ceiling
+                eval_g4_step_len_ok = eval_step_len >= g4_step_len_floor
                 eval_g4_ep_len_ok = eval_L >= 0.95 * max_ep
                 # G5 ratio gate (walking_training.md Phase 9D):
                 # ``0.6 ≤ Evaluate/forward_velocity / eval_velocity_cmd
@@ -2168,22 +2146,13 @@ def train(
                     f"  └─ Evaluate: reward={eval_r:>7.2f} | "
                     f"ep_len={eval_L:>5.0f} | "
                     f"vel={eval_v:+5.3f} | "
-                    f"cmd_err={eval_e:.3f}"
+                    f"cmd_err={eval_e:.3f} | "
+                    f"step_len={eval_step_len:+.4f}"
                 )
                 print(
-                    f"  └─ G4-eval (vx={g4_floor_vx:.3f}, cycle={cycle_time_s:.2f}s): "
-                    f"vel≥{g4_vel_floor:.3f} {_mark(eval_g4_vel_ok)} | "
-                    f"cmd_err≤{g4_cmd_err_ceiling:.3f} {_mark(eval_g4_cmd_err_ok)} | "
-                    f"ep_len≥{int(0.95 * max_ep)} {_mark(eval_g4_ep_len_ok)}"
-                )
-                # G5-eval anti-exploit ratio (the smoke promotion gate
-                # per walking_training.md Phase 9D).  Residual-magnitude
-                # G5 (``g5_residual_ok``) is computed once over both
-                # train + eval terminal metrics in the env (see
-                # wildrobot_env.py:1827-1841); the ratio is the only
-                # piece that splits train/eval.
-                print(
-                    f"  └─ G5-eval (promotion gate): {eval_ratio_str}"
+                    f"  └─ eval gates: "
+                    f"G4[{_gate_marks(('v', eval_g4_vel_ok), ('err', eval_g4_cmd_err_ok), ('step', eval_g4_step_len_ok), ('L', eval_g4_ep_len_ok))}] | "
+                    f"G5[{eval_ratio_str}]"
                 )
 
             if callback is not None:
