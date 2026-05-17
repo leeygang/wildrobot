@@ -46,6 +46,24 @@ def _get_training_height(model: mujoco.MjModel, data: mujoco.MjData) -> float:
     return float(data.qpos[qpos_addr + 2])
 
 
+def _ctrl_from_qpos(model: mujoco.MjModel, qpos) -> "list[float]":
+    """Build the position-actuator ctrl vector that holds the given qpos.
+
+    For every actuator, look up the joint it drives and read that joint's
+    qpos slot.  Mirrors the pattern in ``assets/resettle_keyframes.py`` and
+    ``assets/derive_walk_ready_home.py``: without this, the viewer would
+    step physics with ``ctrl=0`` (drive every joint to angle 0), and the
+    robot would visibly extend its legs to a straight-leg pose regardless
+    of the initial keyframe — masking the actual home pose on screen.
+    """
+    out: list[float] = []
+    for aid in range(model.nu):
+        jid = int(model.actuator_trnid[aid, 0])
+        qaddr = int(model.jnt_qposadr[jid])
+        out.append(float(qpos[qaddr]))
+    return out
+
+
 def _format_qpos(qpos: list[float] | tuple[float, ...] | object) -> str:
     return " ".join(f"{float(value):.8g}" for value in qpos)
 
@@ -206,6 +224,13 @@ def main() -> int:
             mujoco.mj_resetData(model, data)
     else:
         mujoco.mj_resetData(model, data)
+    # Pin position-actuator ctrl to the initial qpos so the per-frame
+    # ``mj_step`` in the viewer loop below holds the chosen init pose
+    # under PD control.  Without this, ctrl stays at zero and the
+    # actuators drive every joint to angle 0 — the home keyframe pose
+    # is visible for one frame and then physics extends the legs to a
+    # straight-leg ctrl=0 settled state, regardless of the keyframe.
+    data.ctrl[:] = _ctrl_from_qpos(model, data.qpos)
     mujoco.mj_forward(model, data)
     print(f"[render_models] viewer initial pose: --init={args.init}")
     _print_home_from_model(model, data, scene_path)
