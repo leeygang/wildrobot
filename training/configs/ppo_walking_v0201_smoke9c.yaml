@@ -152,7 +152,7 @@ ppo:
   critic_privileged_enabled: true
 
   eval:
-    enabled: true
+    enabled: false
     interval: 10
     num_envs: 64
     num_steps: 500
