@@ -7,7 +7,7 @@ Design:
 1. ALWAYS research the public paper or projects to avoid reinventing the wheel. When discuss the solution, always provide the reference. Prefer to stick with the highest confident solution.
 2. make the metrics accurate as the first step when analyzing the data.
 3. keep the design simple
-4. current design and implementations follows ToddlerBot(projects/ToddlerBot), if we have our own design or implementation, we should have explicit rationale.
+4. current design and implementations follows ToddlerBot(projects/ToddlerBot), if we have our own design or implementation, we should have explicit rationale. When design/implementation has to do with robot size, please reflect to WR's size ratio with TB, speed, and timing also needs to normalize.
 
 Result Analysis:
 1. When analyze training result, always check with the code from both wildrobot and Toddlerbot as source of truth instead of only reading the doc.
