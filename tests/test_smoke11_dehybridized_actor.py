@@ -290,6 +290,37 @@ def test_smoke11_zero_action_still_targets_home_q_rad() -> None:
         )
 
 
+def test_smoke11_jit_reset_traces_under_perturbation_enabled() -> None:
+    """Regression: smoke11 (and smoke10) reset must trace cleanly under
+    ``jax.jit``.
+
+    Pre-fix, ``_reset_perturbation_enabled()`` called
+    ``float(self._reset_torso_*_range[0])`` on a JAX array.  That
+    worked outside jit (concrete value) but failed inside
+    ``jax.jit(env.step)``'s reset-cond branch with
+    ConcretizationTypeError the first time an env terminated during
+    training.  Direct ``env.reset(rng)`` calls did not catch it
+    because the Python ``if`` short-circuits on the concrete value.
+
+    This test traces ``env.reset`` under jit (matching the
+    training_loop's jit'd step path) so any future regression that
+    re-introduces a ``float(tracer)`` call inside the reset body
+    fails here, not after a multi-hour training run.
+    """
+    env = _maybe_build_env(_SMOKE11_CFG)
+    # Pin: this config really does have non-degenerate perturbation
+    # ranges, so the Python-level gate must take the "include the
+    # subgraph" branch (the path that previously hit float(tracer)).
+    assert env._reset_perturbation_enabled() is True, (
+        "smoke11 reset_torso_*_range is degenerate; this regression "
+        "test only exercises the failing path when the gate is True."
+    )
+    reset_jit = jax.jit(env.reset)
+    state = reset_jit(jax.random.PRNGKey(0))
+    obs_array = state.obs["state"] if isinstance(state.obs, dict) else state.obs
+    assert np.asarray(obs_array).shape == (env.observation_size,)
+
+
 # -----------------------------------------------------------------------------
 # 5. privileged critic obs unaffected
 # -----------------------------------------------------------------------------

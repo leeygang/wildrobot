@@ -497,6 +497,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
             raise ValueError(
                 "reset_torso_pitch_range[0] must be <= reset_torso_pitch_range[1]."
             )
+        # Two storage forms intentionally kept side by side:
+        #   - ``_reset_torso_*_range_py`` is the static Python tuple
+        #     used by ``_reset_perturbation_enabled`` to decide at
+        #     trace time whether to include the perturbation branch
+        #     in the graph (the ``if perturb_pose and
+        #     self._reset_perturbation_enabled():`` site is a Python
+        #     ``if``, not a ``jax.lax.cond``, so the gate must return
+        #     a Python ``bool``).  Before this split the gate called
+        #     ``float(self._reset_torso_*_range[0])`` on a JAX array
+        #     element; that worked outside jit (concrete value) but
+        #     raised ConcretizationTypeError when ``env.step`` was
+        #     jit'd and the reset body was traced inside the
+        #     ``done -> _do_reset`` cond branch — i.e. during real
+        #     training, the first time an env terminated.
+        #   - ``_reset_torso_*_range`` (jax.Array) is what
+        #     ``_apply_reset_perturbation`` feeds to
+        #     ``jax.random.uniform(minval=..., maxval=...)`` inside
+        #     the jit'd body; jp arrays are fine there.
+        self._reset_torso_roll_range_py: tuple[float, float] = (
+            float(reset_roll_range[0]),
+            float(reset_roll_range[1]),
+        )
+        self._reset_torso_pitch_range_py: tuple[float, float] = (
+            float(reset_pitch_range[0]),
+            float(reset_pitch_range[1]),
+        )
         self._reset_torso_roll_range = jp.asarray(
             reset_roll_range, dtype=jp.float32
         )
@@ -1751,10 +1777,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         the documented "true no-op" contract and avoids carrying the
         extra perturbation subgraph into quiet-reset configs.
         """
-        roll_lo = float(self._reset_torso_roll_range[0])
-        roll_hi = float(self._reset_torso_roll_range[1])
-        pitch_lo = float(self._reset_torso_pitch_range[0])
-        pitch_hi = float(self._reset_torso_pitch_range[1])
+        # Use the Python-tuple copy of the config range here, NOT the
+        # JAX array.  Under ``jax.jit(env.step)`` the reset body is
+        # traced inside the ``done -> _do_reset`` cond branch; indexing
+        # the JAX array gives a tracer, and ``float(tracer)`` raises
+        # ConcretizationTypeError.  The Python tuple is captured from
+        # the config at env init and is safe to read at trace time.
+        roll_lo, roll_hi = self._reset_torso_roll_range_py
+        pitch_lo, pitch_hi = self._reset_torso_pitch_range_py
         return (roll_lo != roll_hi) or (pitch_lo != pitch_hi)
 
     def reset(self, rng: jax.Array, perturb_pose: bool = True) -> WildRobotEnvState:
