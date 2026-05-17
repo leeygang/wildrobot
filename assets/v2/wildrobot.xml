@@ -168,14 +168,14 @@
                 <geom type="mesh" class="visual" pos="-0.1346 -0 0.220451" quat="0.707107 0 0 0.707107" mesh="wrist_conn" material="wrist_conn_material" />
                 <geom type="mesh" class="visual" pos="-0.134157 -8e-05 0.21985" quat="0.707107 0 -0 0.707107" mesh="wrist_palm_sevo_conn" material="wrist_palm_sevo_conn_material" />
                 <geom type="mesh" class="visual" pos="0.135143 -8e-05 0.21985" quat="0.707107 -0 0 -0.707107" mesh="finger" material="finger_material" />
-                <geom type="mesh" class="collision" pos="0.135143 -8e-05 0.21985" quat="0.707107 -0 0 -0.707107" mesh="finger" material="finger_material" />
+                <geom type="capsule" class="collision" fromto="0.000543 -0.018654 -0.139520 0.000543 -0.035031 -0.076616" size="0.02382" />
                 <geom type="mesh" class="visual" pos="-0.134057 -8e-05 0.21985" quat="0.707107 0 0 0.707107" mesh="palm_servo_bracket" material="palm_servo_bracket_material" />
                 <body name="right_finger" pos="0.0273432 0.0101536 -0.0336025" quat="0.706814 -0.00041245 -0.707399 -0.000412109">
                   <joint axis="0 0 1" name="right_wrist_pitch" type="hinge" range="-1.6942867051658594e-05 0.08724951973266482" class="htd45hServo" />
                   <inertial pos="-0.0453686 0.0176525 0.024244" mass="0.0292438" fullinertia="1.03039e-05 4.10734e-05 4.11698e-05 2.37519e-06 -1.91089e-07 7.4351e-08" />
                   <geom type="mesh" class="visual" pos="0.251664 -0.0320517 0.1587" quat="0.52133 0.52133 0.477719 0.477719" mesh="finger_servo_bracket" material="finger_servo_bracket_material" />
                   <geom type="mesh" class="visual" pos="0.251664 -0.0320517 0.1587" quat="0.52133 0.52133 0.477719 0.477719" mesh="finger" material="finger_material" />
-                  <geom type="mesh" class="collision" pos="0.251664 -0.0320517 0.1587" quat="0.52133 0.52133 0.477719 0.477719" mesh="finger" material="finger_material" />
+                  <geom type="capsule" class="collision" fromto="-0.104720 0.017766 0.024100 -0.040629 0.028600 0.024100" size="0.02382" />
                 </body>
               </body>
             </body>
@@ -214,14 +214,14 @@
                 <geom type="mesh" class="visual" pos="-0.1346 -7.037e-09 0.220451" quat="0.707107 -0 -0 0.707107" mesh="wrist_conn" material="wrist_conn_material" />
                 <geom type="mesh" class="visual" pos="-0.134157 -8.0007e-05 0.21985" quat="0.707107 -0 0 0.707107" mesh="wrist_palm_sevo_conn" material="wrist_palm_sevo_conn_material" />
                 <geom type="mesh" class="visual" pos="0.135143 -7.99929e-05 0.21985" quat="0.707107 -0 -0 -0.707107" mesh="finger" material="finger_material" />
-                <geom type="mesh" class="collision" pos="0.135143 -7.99929e-05 0.21985" quat="0.707107 -0 -0 -0.707107" mesh="finger" material="finger_material" />
+                <geom type="capsule" class="collision" fromto="0.000543 -0.018654 -0.139520 0.000543 -0.035031 -0.076616" size="0.02382" />
                 <geom type="mesh" class="visual" pos="-0.134057 -8.0007e-05 0.21985" quat="0.707107 -0 0 0.707107" mesh="palm_servo_bracket" material="palm_servo_bracket_material" />
                 <body name="left_finger" pos="0.0273432 0.0101536 -0.0336025" quat="0.706814 -0.000412432 -0.707399 -0.000412091">
                   <joint axis="0 0 1" name="left_wrist_pitch" type="hinge" range="-4.4522745002856245e-06 0.08726201032521619" class="htd45hServo" />
                   <inertial pos="-0.0453684 0.0176531 0.024244" mass="0.0292438" fullinertia="1.0304e-05 4.10733e-05 4.11698e-05 2.37558e-06 -1.91088e-07 7.4353e-08" />
                   <geom type="mesh" class="visual" pos="0.251664 -0.0320548 0.1587" quat="0.521333 0.521333 0.477716 0.477716" mesh="finger_servo_bracket" material="finger_servo_bracket_material" />
                   <geom type="mesh" class="visual" pos="0.251664 -0.0320548 0.1587" quat="0.521333 0.521333 0.477716 0.477716" mesh="finger" material="finger_material" />
-                  <geom type="mesh" class="collision" pos="0.251664 -0.0320548 0.1587" quat="0.521333 0.521333 0.477716 0.477716" mesh="finger" material="finger_material" />
+                  <geom type="capsule" class="collision" fromto="-0.104720 0.017768 0.024100 -0.040628 0.028601 0.024100" size="0.02382" />
                 </body>
               </body>
             </body>

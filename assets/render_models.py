@@ -166,6 +166,78 @@ def _print_home_joint_table(model: mujoco.MjModel, home_qpos: list[float]) -> No
         print(f"{name} | {home_deg:.6f} | {rmin_deg:.6f}..{rmax_deg:.6f}")
 
 
+def _print_collision_capsules(
+    model: mujoco.MjModel, data: mujoco.MjData
+) -> None:
+    """Print dimensions + world endpoints for every collision-class capsule.
+
+    For each capsule, also list visual mesh geoms attached to the same body
+    so a mis-placed primitive proxy (e.g. a finger capsule that doesn't sit
+    inside its visual finger mesh) is immediately visible by comparing the
+    capsule's world endpoints to the visual mesh's world center.
+    """
+    # Index visual mesh geoms by body for the alignment hint.
+    visual_meshes_by_body: dict[int, list[tuple[int, str, list[float]]]] = {}
+    for gid in range(model.ngeom):
+        if int(model.geom_type[gid]) != int(mujoco.mjtGeom.mjGEOM_MESH):
+            continue
+        if int(model.geom_contype[gid]) != 0 or int(model.geom_conaffinity[gid]) != 0:
+            continue  # collision-participating meshes aren't "visual"
+        bid = int(model.geom_bodyid[gid])
+        mesh_id = int(model.geom_dataid[gid])
+        mesh_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or "?"
+        visual_meshes_by_body.setdefault(bid, []).append(
+            (gid, mesh_name, data.geom_xpos[gid].tolist())
+        )
+
+    print("[render_models] collision capsules (--show-capsule):")
+    any_found = False
+    for gid in range(model.ngeom):
+        if int(model.geom_type[gid]) != int(mujoco.mjtGeom.mjGEOM_CAPSULE):
+            continue
+        if int(model.geom_contype[gid]) == 0 and int(model.geom_conaffinity[gid]) == 0:
+            continue
+        any_found = True
+        bid = int(model.geom_bodyid[gid])
+        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or "?"
+        gname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+        radius = float(model.geom_size[gid, 0])
+        half_len = float(model.geom_size[gid, 1])
+        # Capsule axis is the geom's local +Z = third column of geom_xmat.
+        center = data.geom_xpos[gid]
+        z_axis = data.geom_xmat[gid].reshape(3, 3)[:, 2]
+        cap0 = center - half_len * z_axis
+        cap1 = center + half_len * z_axis
+        # Local (body-frame) pos/quat the MJCF wrote, for cross-check
+        # against `fromto=` values in the XML.
+        lpos = model.geom_pos[gid]
+        lquat = model.geom_quat[gid]
+        print(f"  gid={gid} body={body!r} name={gname!r}")
+        print(
+            f"    radius={radius:.5f}  half_len={half_len:.5f}  "
+            f"end_to_end={2 * (half_len + radius):.5f}"
+        )
+        print(
+            f"    world center = ({center[0]:+.4f}, {center[1]:+.4f}, {center[2]:+.4f})"
+        )
+        print(f"    world cap0   = ({cap0[0]:+.4f}, {cap0[1]:+.4f}, {cap0[2]:+.4f})")
+        print(f"    world cap1   = ({cap1[0]:+.4f}, {cap1[1]:+.4f}, {cap1[2]:+.4f})")
+        print(
+            f"    body-frame pos  = ({lpos[0]:+.4f}, {lpos[1]:+.4f}, {lpos[2]:+.4f})"
+        )
+        print(
+            f"    body-frame quat = ({lquat[0]:+.4f}, {lquat[1]:+.4f}, "
+            f"{lquat[2]:+.4f}, {lquat[3]:+.4f})"
+        )
+        for vid, vname, vpos in visual_meshes_by_body.get(bid, []):
+            print(
+                f"    visual mesh on same body: gid={vid} mesh={vname!r} "
+                f"world_pos=({vpos[0]:+.4f}, {vpos[1]:+.4f}, {vpos[2]:+.4f})"
+            )
+    if not any_found:
+        print("  (no collision capsules found)")
+
+
 def _print_home_from_model(
     model: mujoco.MjModel, data: mujoco.MjData, scene_path: Path
 ) -> None:
@@ -220,6 +292,18 @@ def main() -> int:
             "so you can compare against the unmodified asset."
         ),
     )
+    parser.add_argument(
+        "--show-capsule",
+        "--show_capsule",
+        dest="show_capsule",
+        action="store_true",
+        help=(
+            "Print dimensions + world-frame endpoints of every collision-class "
+            "capsule geom, alongside any visual mesh geoms on the same body, "
+            "so a mis-placed primitive proxy (e.g. a finger capsule that "
+            "doesn't sit inside the visual finger mesh) is immediately visible."
+        ),
+    )
     args = parser.parse_args()
 
     scene_path = _resolve_scene_file(args.scene_file)
@@ -246,6 +330,8 @@ def main() -> int:
     mujoco.mj_forward(model, data)
     print(f"[render_models] viewer initial pose: --init={args.init}")
     _print_home_from_model(model, data, scene_path)
+    if args.show_capsule:
+        _print_collision_capsules(model, data)
 
     def on_key(keycode: int) -> None:
         if keycode == ord("H"):

@@ -617,13 +617,18 @@ def _replace_collision_with_box(xml_file: str, mesh_name_filter) -> int:
     return replaced
 
 
-def replace_upper_leg_collision_with_capsule(xml_file: str) -> None:
-    """Replace upper_leg mesh collision geoms with OBB-derived capsule geoms.
+def _replace_collision_with_capsule(xml_file: str, mesh_name_filter) -> int:
+    """Replace `<geom mesh=X class='collision'>` with OBB-derived capsule primitives.
 
     The capsule's central axis is aligned with the mesh's longest OBB extent.
     Radius is the larger of the two perpendicular OBB half-extents; half_length
     is the long-axis half-extent minus the radius (capsule end caps add 2*radius
     to the total enclosed length).
+
+    Args:
+        mesh_name_filter: callable(mesh_name: str) -> bool selecting which meshes to replace.
+
+    Returns: count of geoms replaced.
     """
     tree = ET.parse(xml_file)
     root = tree.getroot()
@@ -631,10 +636,11 @@ def replace_upper_leg_collision_with_capsule(xml_file: str) -> None:
     obb_cache: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
     replaced = 0
+    last_size_per_mesh: Dict[str, Tuple[float, float]] = {}
     for geom in root.findall(".//geom[@class='collision']"):
-        if geom.get("mesh") != "upper_leg":
-            continue
         mesh_name = geom.get("mesh") or ""
+        if not mesh_name_filter(mesh_name):
+            continue
         if mesh_name not in obb_cache:
             stl_path = _resolve_mesh_stl_path(root, mesh_name, base_dir)
             obb_cache[mesh_name] = _compute_obb(stl_path)
@@ -667,12 +673,44 @@ def replace_upper_leg_collision_with_capsule(xml_file: str) -> None:
         geom.attrib.pop("mesh", None)
         geom.attrib.pop("material", None)
         replaced += 1
+        last_size_per_mesh[mesh_name] = (radius, half_length)
 
     if replaced > 0:
         ET.indent(tree, space="  ", level=0)
         tree.write(xml_file)
+        for mesh_name, (radius, half_length) in last_size_per_mesh.items():
+            print(
+                f"  - {mesh_name}: capsule radius={radius:.6f} half_length={half_length:.6f}"
+            )
+    return replaced
+
+
+def replace_upper_leg_collision_with_capsule(xml_file: str) -> None:
+    """Replace upper_leg mesh collision geoms with OBB-derived capsule primitives."""
+    replaced = _replace_collision_with_capsule(
+        xml_file, mesh_name_filter=lambda name: name == "upper_leg"
+    )
+    if replaced > 0:
         print(
             f"Replaced upper_leg collision meshes with capsules: {replaced} geoms"
+        )
+
+
+def replace_finger_collision_with_capsule(xml_file: str) -> None:
+    """Replace finger mesh collision geoms with OBB-derived capsule primitives.
+
+    Rationale: the raw `finger.stl` has a coplanar face with >20 vertices that
+    trips MJX's convex-hull quality warning and pays a real narrow-phase cost
+    for collisions that don't matter to flat-ground locomotion.  A capsule
+    proxy keeps "fingertip can touch something" semantics (for future grasping
+    work) while making collision queries cheap and silencing the MJX warning.
+    """
+    replaced = _replace_collision_with_capsule(
+        xml_file, mesh_name_filter=lambda name: name == "finger"
+    )
+    if replaced > 0:
+        print(
+            f"Replaced finger collision meshes with capsules: {replaced} geoms"
         )
 
 
@@ -1319,6 +1357,7 @@ def main() -> None:
     merge_default_blocks(xml_file)
     fix_collision_default_geom(xml_file)
     replace_upper_leg_collision_with_capsule(xml_file)
+    replace_finger_collision_with_capsule(xml_file)
     replace_forearm_collision_with_box(xml_file)
     replace_htd_45h_collision_with_box(xml_file)
     replace_upper_leg_servo_connect_collision_with_box(xml_file)
