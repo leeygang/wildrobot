@@ -2,7 +2,7 @@
 # WildRobot v0.20.1 PPO Smoke 10 — post-home-migration TB-style fixed-home anchor
 # =============================================================================
 # This run is the immediate follow-up to the 2026-05-17 ``home`` keyframe
-# migration (commits a015d6b + 7532bc5): ``home`` is now the locomotion-ready
+# migration (commits a015d6b + 3f9ef17): ``home`` is now the locomotion-ready
 # phase-neutral crouched pose derived from the WR walking prior, repo-wide.
 # smoke10 tests whether moving the action-path basin from ``ref_init`` to
 # this new ``home`` removes the residual-control mismatch flagged in
@@ -163,7 +163,7 @@ env:
 
   # smoke10 architecture: TB-style constant home-pose residual base
   # (post-home-migration `home` is the locomotion-ready crouched pose
-  # derived from the WR walking prior; see commits a015d6b / 7532bc5).
+  # derived from the WR walking prior; see commits a015d6b / 3f9ef17).
   # This is the ONLY material change vs smoke9c — every other env /
   # reward / PPO field is byte-equal.
   loc_ref_residual_base: home

@@ -45,6 +45,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCENE_XML = _REPO_ROOT / "assets" / "v2" / "scene_flat_terrain.xml"
 _SMOKE9C_CFG = _REPO_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke9c.yaml"
 _SMOKE8_CFG = _REPO_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke8.yaml"
+_STANDING_V0173A_CFG = _REPO_ROOT / "training" / "configs" / "ppo_standing_v0173a.yaml"
 
 
 LEG_JOINTS = (
@@ -442,5 +443,89 @@ def test_export_bundle_home_loader_matches_env_home_q_rad() -> None:
             "export bundle home_ctrl_rad disagrees with env._home_q_rad — "
             "deployed bundles would centre on a different pose than "
             "training."
+        ),
+    )
+
+
+def test_standing_config_home_consumer_path_reflects_new_home() -> None:
+    """Close the §1.1 'no obvious regression in standing/runtime home
+    consumers' check on the standing side.
+
+    The standing env itself can't be built (its ``actor_obs_layout_id``
+    was retired by the v3 env rewrite), but the home-consumer pipeline
+    that the standing recipe relies on — ``build_policy_spec_from_
+    training_config`` + ``pos_target_home_v1`` action mapping — does
+    still run end-to-end.  This test pins that with the new
+    locomotion-ready keyframe:
+
+      1. the standing config still produces a valid PolicySpec,
+      2. ``spec.robot.home_ctrl_rad`` is the new locomotion-ready home
+         (knees > 0.30 rad and within MJCF joint ranges, per slot), and
+      3. ``action=0`` through ``NumpyCalibOps.action_to_ctrl`` exactly
+         reproduces ``home_ctrl_rad`` (TB-equivalent ``default_action``
+         contract on the standing pipeline).
+
+    Note: this is a "pipeline doesn't regress" gate, not a "standing
+    recipe still works" gate.  The standing recipe SEMANTICS change
+    with the home migration (``action=0`` now commands the crouched
+    locomotion-ready pose, not the previous near-straight standing
+    pose); that is a future training-recipe decision flagged in
+    ``training/docs/tmp_next_training_interventions.md`` §1.1, not a
+    regression.
+    """
+    if not _STANDING_V0173A_CFG.exists():
+        pytest.skip(f"{_STANDING_V0173A_CFG.name} not found")
+    try:
+        from assets.robot_config import load_robot_config, get_robot_config
+        from policy_contract.calib import NumpyCalibOps
+        from training.configs.training_config import load_training_config
+        from training.policy_spec_utils import (
+            build_policy_spec_from_training_config,
+        )
+    except Exception as exc:  # pragma: no cover - import gate
+        pytest.skip(f"standing pipeline deps unavailable: {exc}")
+
+    load_robot_config(str(_REPO_ROOT / "assets/v2/mujoco_robot_config.json"))
+    cfg = load_training_config(str(_STANDING_V0173A_CFG))
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg, robot_cfg=get_robot_config(),
+    )
+
+    # (1) Standing config still threads through the pipeline.
+    assert spec.action.mapping_id == "pos_target_home_v1"
+    assert spec.robot.home_ctrl_rad is not None
+
+    home_ctrl = np.asarray(spec.robot.home_ctrl_rad, dtype=np.float64)
+    actuator_names = list(spec.robot.actuator_names)
+    assert home_ctrl.shape == (len(actuator_names),)
+    assert np.all(np.isfinite(home_ctrl))
+
+    # (2) Locomotion-ready + within MJCF joint ranges.
+    by_name = dict(zip(actuator_names, home_ctrl))
+    assert by_name["left_knee_pitch"] > 0.30, (
+        f"standing home_ctrl_rad left_knee_pitch="
+        f"{by_name['left_knee_pitch']:+.4f} <= 0.30 — migration did not "
+        "propagate to the standing home-consumer path."
+    )
+    assert by_name["right_knee_pitch"] > 0.30
+    for name, v in by_name.items():
+        lo, hi = _mjcf_joint_range(name)
+        assert lo - 1e-6 <= v <= hi + 1e-6, (
+            f"standing home_ctrl_rad {name}={v:+.4f} outside MJCF "
+            f"range [{lo:+.4f}, {hi:+.4f}]."
+        )
+
+    # (3) action=0 -> ctrl == home_ctrl_rad (default_action contract).
+    zero_action = np.zeros(home_ctrl.shape, dtype=np.float32)
+    ctrl = np.asarray(
+        NumpyCalibOps.action_to_ctrl(spec=spec, action=zero_action),
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(
+        ctrl, home_ctrl, atol=1e-6,
+        err_msg=(
+            "standing pos_target_home_v1: action=0 did not map to "
+            "home_ctrl_rad — the default_action contract is broken on "
+            "the standing pipeline."
         ),
     )
