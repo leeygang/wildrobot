@@ -37,6 +37,8 @@ import functools
 import json
 import os
 import pickle
+import platform
+import subprocess
 import sys
 import time
 from dataclasses import fields, is_dataclass
@@ -242,6 +244,100 @@ def eval_step_kwargs(env_cfg) -> dict:
     if is_eval_cmd_pinned(env_cfg):
         return {"disable_cmd_resample": True}
     return {}
+
+
+def _query_visible_gpus() -> list[tuple[str, str]]:
+    """Return visible GPU rows as ``(name, display_active)`` tuples.
+
+    Uses ``nvidia-smi`` so the guard can run before any JAX CUDA context
+    is created.  Fail-open: if the query is unavailable or malformed,
+    return an empty list and leave the config unchanged.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,display_active",
+                "--format=csv,noheader",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ):
+        return []
+
+    rows: list[tuple[str, str]] = []
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",", 1)]
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], parts[1]))
+    return rows
+
+
+def maybe_apply_desktop_gpu_num_env_guard(training_cfg, args) -> bool:
+    """Cap ``ppo.num_envs`` on watchdog-prone single-GeForce Linux hosts.
+
+    NVIDIA documents that single-GPU CUDA+X systems should either keep
+    kernels short, disable X, or use a second GPU.  Our local smoke runs
+    are often executed on a single GeForce desktop GPU, so a large
+    ``num_envs`` can produce long fused JAX kernels and hit
+    ``CUDA_ERROR_LAUNCH_TIMEOUT``.  To keep fresh local runs from dying
+    late in training, clamp to a conservative local cap unless the user
+    explicitly overrides ``--num-envs`` or disables the guard via
+    ``WR_DISABLE_DESKTOP_GPU_NUM_ENVS_GUARD=1``.
+    """
+    if platform.system() != "Linux":
+        return False
+    if os.environ.get("WR_DISABLE_DESKTOP_GPU_NUM_ENVS_GUARD") == "1":
+        return False
+    if args.num_envs is not None:
+        return False
+
+    env_cap = int(os.environ.get("WR_DESKTOP_GPU_NUM_ENVS_CAP", "1024"))
+    if training_cfg.ppo.num_envs <= env_cap:
+        return False
+
+    gpu_rows = _query_visible_gpus()
+    if len(gpu_rows) != 1:
+        return False
+
+    gpu_name, display_active = gpu_rows[0]
+    if "geforce" not in gpu_name.lower():
+        return False
+
+    original_num_envs = int(training_cfg.ppo.num_envs)
+    training_cfg.ppo.num_envs = env_cap
+    if training_cfg.ppo.eval.num_envs > env_cap:
+        training_cfg.ppo.eval.num_envs = env_cap
+
+    print("=" * 60)
+    print("Desktop GPU num_envs guard applied")
+    print(
+        f"  GPU: {gpu_name} (display_active={display_active})"
+    )
+    print(
+        f"  num_envs: {original_num_envs} -> {env_cap}"
+    )
+    print(
+        "  Reason: single GeForce Linux host; clamping local JAX batch width "
+        "to reduce CUDA launch-timeout risk."
+    )
+    print(
+        "  Override: pass --num-envs explicitly or set "
+        "WR_DISABLE_DESKTOP_GPU_NUM_ENVS_GUARD=1"
+    )
+    print("=" * 60)
+    return True
 
 
 def make_eval_env_fns(env, training_cfg, eval_num_envs: int):
@@ -658,6 +754,7 @@ def main():
 
     # Apply CLI overrides (highest priority - overrides both config and quick_verify)
     override_config_with_cli(training_cfg, args)
+    maybe_apply_desktop_gpu_num_env_guard(training_cfg, args)
 
     # Freeze config after all overrides are applied
     training_cfg.freeze()
