@@ -28,6 +28,13 @@ Current observed failure signature:
 
 ### 1. Highest-confidence fix
 
+> **Status (2026-05-17)**: §1.1 (home pose promotion) landed in commits
+> `a015d6b` + `7532bc5`.  §1.2 (smoke10 config — TB-style fixed-home
+> branch with smoke9c reward/PPO/cmd kept identical) lands in this
+> commit as `training/configs/ppo_walking_v0201_smoke10.yaml`.  Run
+> smoke10 next; the trajectory comparison + decision on §2.x escalation
+> follows.
+
 #### 1.1 Promote a locomotion-ready crouched `home` pose and rerun the TB-style fixed-home branch
 
 Reasoning:

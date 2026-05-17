@@ -406,3 +406,132 @@ def test_smoke9c_reset_perturbation_enabled(smoke9c_cfg) -> None:
         f"{list(env.reset_torso_pitch_range)}; expected [-0.1, 0.1] "
         f"(matches TB DomainRandConfig.torso_pitch_range)."
     )
+
+
+# =============================================================================
+# Smoke10 — post-home-migration TB-style fixed-home anchor
+# =============================================================================
+# smoke10 is the immediate follow-up to the 2026-05-17 ``home`` keyframe
+# migration.  Discipline (tracking note §1.2): change ONLY the nominal
+# action anchor; every other env / reward / PPO field must remain
+# byte-equal to smoke9c.  The tests below pin both halves: (1) the basin
+# flags really did flip, (2) nothing else regressed.
+
+_SMOKE10 = Path("training/configs/ppo_walking_v0201_smoke10.yaml")
+
+
+@pytest.fixture(scope="module")
+def smoke10_cfg():
+    if not _SMOKE10.exists():
+        pytest.skip(f"{_SMOKE10.name} not found")
+    return load_training_config(str(_SMOKE10))
+
+
+def test_smoke10_loads(smoke10_cfg) -> None:
+    assert smoke10_cfg is not None
+
+
+def test_smoke10_flips_basin_to_home(smoke10_cfg) -> None:
+    """The one material delta vs smoke9c: residual + reset bases are now
+    ``home`` (post-home-migration TB-style fixed-home anchor)."""
+    env = smoke10_cfg.env
+    assert env.loc_ref_residual_base == "home", (
+        f"smoke10 loc_ref_residual_base = {env.loc_ref_residual_base}; "
+        "expected 'home' (the whole point of smoke10)."
+    )
+    assert env.loc_ref_reset_base == "home", (
+        f"smoke10 loc_ref_reset_base = {env.loc_ref_reset_base}; "
+        "expected 'home' (post-home-migration reset anchor)."
+    )
+    # Penalty-pose anchor was already `home` in smoke9c — verify it
+    # stays there (semantics unchanged across the basin flip).
+    assert env.loc_ref_penalty_pose_anchor == "home"
+
+
+def test_smoke10_command_curriculum_inherited_from_smoke9c(smoke10_cfg) -> None:
+    """smoke10 must inherit smoke9c's WR size-normalized command block
+    verbatim.  Discipline: do not change command distribution in the
+    same run as the basin flip."""
+    env = smoke10_cfg.env
+    assert env.min_velocity == -0.1333333333
+    assert env.max_velocity == 0.1333333333
+    assert env.cmd_deadzone == 0.0666666667
+    assert env.eval_velocity_cmd == 0.1333333333
+    assert env.loc_ref_offline_command_vx == 0.1333333333
+
+
+def test_smoke10_reward_block_inherited_from_smoke9c(smoke10_cfg) -> None:
+    """smoke10 must keep smoke9c's TB-active reward weights + the
+    WR-normalized alpha / feet_phase basin.  Catches accidental
+    reward-formula coupling with the basin flip."""
+    rw = smoke10_cfg.reward_weights
+    assert rw.cmd_forward_velocity_track == 2.0
+    assert rw.cmd_forward_velocity_alpha == 562.5
+    assert rw.ref_body_quat_track == 2.5
+    assert rw.ang_vel_xy == 1.0
+    assert rw.action_rate == -2.0
+    assert rw.penalty_pose == -0.5
+    assert rw.penalty_close_feet_xy == 10.0
+    assert rw.feet_phase == 7.5
+    assert rw.feet_phase_alpha == pytest.approx(914.304, abs=1e-2)
+    assert rw.feet_phase_swing_height == pytest.approx(0.05, abs=1e-6)
+    assert rw.penalty_feet_ori == 5.0
+    # Imitation terms stay disabled (TB doesn't use them).
+    assert rw.ref_q_track == 0.0
+    assert rw.ref_contact_match == 0.0
+    assert rw.ref_feet_z_track == 0.0
+
+
+def test_smoke10_form_flags_and_spatial_thresholds_inherited(smoke10_cfg) -> None:
+    """TB-faithful reward formula selectors + WR-normalized spatial
+    geometry (close_feet_threshold, min/max_feet_y_dist) must carry
+    over byte-equal from smoke9c."""
+    env = smoke10_cfg.env
+    assert env.loc_ref_penalty_ang_vel_xy_form == "tb_neg_squared"
+    assert env.loc_ref_penalty_feet_ori_form == "tb_linear_lateral"
+    assert env.close_feet_threshold == pytest.approx(0.146, abs=5e-4)
+    assert env.min_feet_y_dist == pytest.approx(0.171, abs=5e-4)
+    assert env.max_feet_y_dist == pytest.approx(0.317, abs=5e-4)
+
+
+def test_smoke10_residual_scale_inherited(smoke10_cfg) -> None:
+    """Per-joint residual authority is unchanged — the action anchor
+    moves but the per-joint scale window does not.  Catches any
+    coupled "rescue knob" change at the residual layer."""
+    env = smoke10_cfg.env
+    assert env.loc_ref_residual_mode == "absolute"
+    assert env.loc_ref_residual_scale == 0.20
+    per_joint = dict(env.loc_ref_residual_scale_per_joint)
+    for joint in (
+        "left_hip_pitch", "right_hip_pitch",
+        "left_hip_roll", "right_hip_roll",
+        "left_knee_pitch", "right_knee_pitch",
+        "left_ankle_pitch", "right_ankle_pitch",
+        "left_ankle_roll", "right_ankle_roll",
+    ):
+        assert per_joint[joint] == 0.25, (
+            f"smoke10 residual_scale_per_joint[{joint}] = "
+            f"{per_joint[joint]}; expected 0.25 (smoke9c value)."
+        )
+
+
+def test_smoke10_reset_perturbation_preserved(smoke10_cfg) -> None:
+    """Tracking note §2.3: keep reset perturbation, do not revert.
+    smoke10 must carry smoke9c's TB-style torso roll/pitch perturbation
+    intact — the basin flip is orthogonal to the perturbation signal."""
+    env = smoke10_cfg.env
+    assert list(env.reset_torso_roll_range) == [-0.1, 0.1]
+    assert list(env.reset_torso_pitch_range) == [-0.1, 0.1]
+
+
+def test_smoke10_ppo_and_compute_budget_inherited(smoke10_cfg) -> None:
+    """PPO hyperparameters + compute budget must match smoke9c.
+    Discipline: do not co-tune PPO with the basin flip."""
+    ppo = smoke10_cfg.ppo
+    assert ppo.num_envs == 2048
+    assert ppo.rollout_steps == 20
+    assert ppo.iterations == 480
+    assert ppo.learning_rate == 3.0e-5
+    assert ppo.entropy_coef == 5.0e-4
+    assert ppo.gamma == 0.97
+    assert ppo.num_envs * ppo.rollout_steps * ppo.iterations == 19_660_800

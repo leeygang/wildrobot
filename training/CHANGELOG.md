@@ -8,6 +8,43 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke10-fixed-home-basin] - 2026-05-17: add smoke10 config — post-home-migration TB-style fixed-home anchor
+
+Adds `training/configs/ppo_walking_v0201_smoke10.yaml`, the follow-up to
+the 2026-05-17 `home` keyframe migration (commits a015d6b + 7532bc5).
+smoke10 tests whether moving the action-path basin from `ref_init` to
+the newly locomotion-ready `home` removes the residual-control mismatch
+flagged in
+`training/docs/tmp_next_training_interventions.md` §1.1.
+
+Discipline (tracking note §1.2): the only material delta vs smoke9c is
+the two basin flags —
+
+- `loc_ref_residual_base: ref_init -> home`
+- `loc_ref_reset_base:     ref_init -> home`
+
+Every other env / reward / PPO field is byte-equal to smoke9c.
+`loc_ref_penalty_pose_anchor` was already `home` in smoke9c, so
+penalty-pose semantics are unchanged.  Because the new `home` keyframe
+is co-located with `ref_init_q` within ~25 mrad on the knee slots and
+~1 mrad elsewhere (settling drift from the home derivation), the
+smoke10 reset *physical* state is byte-near-equal to smoke9c's — the
+policy basin moves but the initial physical pose does not jump.
+
+Pinning:
+
+- 8 new test cases in `training/tests/test_config_load_smoke9.py`
+  cover the basin flip + the inheritance discipline (command
+  curriculum, reward block, form flags, residual scale, reset
+  perturbation, PPO / compute budget all match smoke9c).
+- End-to-end env build verified: `_residual_base_mode == 'home'`,
+  `_reset_base_mode == 'home'`, and zero-action through
+  `_compose_target_q_from_residual` hits `_home_q_rad` exactly at
+  every offline-cycle step (TB `default_action` contract).
+
+No training results yet — this commit only lands the config + tests.
+Results will be added in the next entry after the smoke10 run.
+
 ## [v0.20.1-symmetric-cmd-console-metrics] - 2026-05-16: replace misleading train-line cmd ratio with command-distribution signals
 
 Smoke9c's WR-normalized sampler is symmetric in `vx`, so the old train console
