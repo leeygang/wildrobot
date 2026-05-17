@@ -80,15 +80,17 @@
 #                 in this config but normalized now so future activation
 #                 doesn't re-introduce TB-literal meters on WR).
 #
-# Reset perturbation (new in this pass):
+# Reset perturbation (carried from smoke10/smoke9c; do NOT revert per
+# tmp_next_training_interventions.md §2.3):
 #   reset_torso_{roll,pitch}_range: [-0.1, 0.1] rad each.  Mirrors TB's
 #   bipedal DomainRandConfig defaults (mjx_config.py:211-212) and the
 #   leg-pitch partition in TB mjx_env.py:954-1053.  Perturbs only the
-#   physical reset qpos (not the ref_init ctrl base), so zero policy
-#   action still composes to the constant ref_init control target.
-#   This breaks the stand-still attractor without changing the reset
-#   center: the policy must take active corrective actions to return
-#   to ref_init, removing the "do nothing and survive 500 steps" basin.
+#   physical reset qpos (not the home ctrl base), so zero policy
+#   action still composes to the constant home control target
+#   (``_home_q_rad`` under loc_ref_residual_base=home).  This breaks
+#   the stand-still attractor without changing the reset center: the
+#   policy must take active corrective actions to return to home,
+#   removing the "do nothing and survive 500 steps" basin.
 #
 # Scope boundary:
 # - this config is the normalized bootstrap run
@@ -130,13 +132,17 @@ env:
   min_feet_y_dist: 0.171
   max_feet_y_dist: 0.317
 
-  # TB-style reset-time pose perturbation on the ref_init basin.
-  # Mirrors TB ``DomainRandConfig.torso_pitch_range`` / ``torso_roll_range``
+  # TB-style reset-time pose perturbation on the home basin (smoke11
+  # inherits this from smoke10's home/home flip; original wording from
+  # smoke9c referenced the ref_init basin and is intentionally rewritten
+  # here to match the current architecture).  Mirrors TB
+  # ``DomainRandConfig.torso_pitch_range`` / ``torso_roll_range``
   # (toddlerbot/locomotion/mjx_config.py:211-212 bipedal defaults
   # ``[-0.1, 0.1]`` rad each) and the partitioned-leg-pitch reset logic in
   # TB ``mjx_env.py:954-1053``.  Perturbs only the initial physical qpos;
-  # the ref_init ctrl base is untouched so zero policy action still
-  # composes to the same constant control target (zero-residual invariant).
+  # the home ctrl base is untouched so zero policy action still composes
+  # to the same constant control target (``_home_q_rad``, zero-residual
+  # invariant under ``loc_ref_residual_base=home``).
   reset_torso_roll_range: [-0.1, 0.1]
   reset_torso_pitch_range: [-0.1, 0.1]
 
@@ -153,8 +159,10 @@ env:
     left_ankle_roll: 5.0
     right_ankle_roll: 5.0
 
-  # smoke9c normalized bootstrap — command curriculum scaled by s=4/3
-  # from TB to WR size units (Phase 9D parity baseline).
+  # Command curriculum: WR size-normalized TB bootstrap scaled by
+  # s=4/3 from TB to WR size units (Phase 9D parity baseline).  This
+  # block originated in smoke9c and is inherited byte-equal through
+  # smoke10 into smoke11.
   min_velocity: -0.1333333333
   max_velocity: 0.1333333333
   cmd_resample_steps: 150
@@ -169,21 +177,25 @@ env:
   action_filter_alpha: 0.0
 
   loc_ref_version: v3_offline_library
-  # smoke11 de-hybridization: TB-aligned actor obs (phase + proprio +
-  # history); all other loc_ref_* channels leave the actor pipeline and
-  # remain only in the privileged critic + reward terms.
+  # smoke11 de-hybridization (this commit): TB-aligned actor obs
+  # (phase + proprio + history); all other loc_ref_* channels leave
+  # the actor pipeline and remain only in the privileged critic +
+  # reward terms.  See the header for the full channel diff vs v6.
   actor_obs_layout_id: wr_obs_v7_phase_proprio
-  # smoke9c normalized bootstrap — offline reference command is aligned
-  # with the normalized eval cmd for consistent diagnostics.
+  # Offline reference command aligned with the normalized eval cmd
+  # for consistent diagnostics (inherited from smoke9c via smoke10).
   loc_ref_offline_command_vx: 0.1333333333
 
-  # smoke10 architecture: TB-style constant home-pose residual base
-  # (post-home-migration `home` is the locomotion-ready crouched pose
-  # derived from the WR walking prior; see commits a015d6b / 3f9ef17).
-  # This is the ONLY material change vs smoke9c — every other env /
-  # reward / PPO field is byte-equal.
+  # Home/home basin (TB-style constant home-pose residual + reset).
+  # Inherited from smoke10 (commit f7fa889); post-home-migration
+  # `home` is the locomotion-ready crouched pose derived from the WR
+  # walking prior (commits a015d6b / 3f9ef17).  smoke11 has TWO
+  # material deltas vs smoke9c: this basin flip AND the
+  # ``actor_obs_layout_id`` change above; smoke10 only had the basin
+  # flip.
   loc_ref_residual_base: home
-  # smoke10 reset/init: actuator qpos seeded from the new home keyframe
+  # Reset/init: actuator qpos seeded from the home keyframe (inherited
+  # from smoke10).
   loc_ref_reset_base: home
   # smoke8b: penalty_pose anchored to home (unchanged from smoke9c —
   # it already pointed at home before the basin flip).
