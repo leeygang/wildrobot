@@ -166,13 +166,29 @@ def _print_home_from_model(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render MuJoCo scene and print home keyframe.")
+    parser = argparse.ArgumentParser(
+        description="Render MuJoCo scene and print home keyframe.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--scene-file",
         "--scne-file",
         dest="scene_file",
         default=str(_default_scene_file()),
         help="Path to scene XML (default: assets/v2/scene_flat_terrain.xml).",
+    )
+    parser.add_argument(
+        "--init",
+        dest="init",
+        choices=("home", "mjcf"),
+        default="home",
+        help=(
+            "Initial pose for the viewer. "
+            "'home' resets MjData to the `home` keyframe in keyframes.xml "
+            "(locomotion-ready pose used as PPO's nominal action); "
+            "'mjcf' uses the MJCF default qpos0 (model's straight-leg/zero pose) "
+            "so you can compare against the unmodified asset."
+        ),
     )
     args = parser.parse_args()
 
@@ -181,7 +197,17 @@ def main() -> int:
         raise FileNotFoundError(f"scene file not found: {scene_path}")
     model = mujoco.MjModel.from_xml_path(str(scene_path))
     data = mujoco.MjData(model)
+    if args.init == "home":
+        home_key_id = _find_home_key_id(model)
+        if home_key_id >= 0:
+            mujoco.mj_resetDataKeyframe(model, data, home_key_id)
+        else:
+            print("[render_models] no home keyframe found; falling back to MJCF qpos0")
+            mujoco.mj_resetData(model, data)
+    else:
+        mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
+    print(f"[render_models] viewer initial pose: --init={args.init}")
     _print_home_from_model(model, data, scene_path)
 
     def on_key(keycode: int) -> None:
