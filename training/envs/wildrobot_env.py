@@ -1736,6 +1736,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     # ------------------------------------------------------------------ reset
 
+    def _reset_perturbation_enabled(self) -> bool:
+        """Return True iff reset-time torso perturbation is active.
+
+        The configured ranges are env constants, so this Python-side
+        guard is safe to evaluate before tracing ``reset``.  Keeping the
+        zero-range case out of ``_apply_reset_perturbation`` preserves
+        the documented "true no-op" contract and avoids carrying the
+        extra perturbation subgraph into quiet-reset configs.
+        """
+        roll_lo = float(self._reset_torso_roll_range[0])
+        roll_hi = float(self._reset_torso_roll_range[1])
+        pitch_lo = float(self._reset_torso_pitch_range[0])
+        pitch_hi = float(self._reset_torso_pitch_range[1])
+        return (roll_lo != roll_hi) or (pitch_lo != pitch_hi)
+
     def reset(self, rng: jax.Array, perturb_pose: bool = True) -> WildRobotEnvState:
         """Sample velocity_cmd / push schedule / DR params; build initial
         WildRobotInfo at offline step 0.
@@ -1790,7 +1805,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # quiet ref_init reset).  Applied to all reset modes for
         # consistency; under ``home`` the perturbation is layered on top
         # of the historical joint_noise above.
-        if perturb_pose:
+        if perturb_pose and self._reset_perturbation_enabled():
             qpos = self._apply_reset_perturbation(key_pert, qpos)
 
         push_schedule = sample_push_schedule(

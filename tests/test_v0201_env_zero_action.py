@@ -777,6 +777,36 @@ def test_smoke9c_reset_qpos_matches_ref_init_when_perturbation_disabled(
         env._reset_torso_pitch_range = saved_pitch
 
 
+def test_smoke9c_zero_ranges_skip_reset_perturbation_call(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero-width perturbation ranges must bypass the perturbation helper.
+
+    Equality-vs-baseline tests already prove the quiet reset semantics.
+    This regression test pins the stronger contract: the zero-range case
+    should not even trace or execute ``_apply_reset_perturbation``.
+    """
+    env = env_smoke9c_ref_init_base
+    saved_roll = env._reset_torso_roll_range
+    saved_pitch = env._reset_torso_pitch_range
+    try:
+        env._reset_torso_roll_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+        env._reset_torso_pitch_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+
+        def _should_not_run(*_args, **_kwargs):
+            raise AssertionError(
+                "_apply_reset_perturbation should not run when both "
+                "reset_torso_* ranges are zero-width."
+            )
+
+        monkeypatch.setattr(env, "_apply_reset_perturbation", _should_not_run)
+        _ = env.reset(jax.random.PRNGKey(0))
+    finally:
+        env._reset_torso_roll_range = saved_roll
+        env._reset_torso_pitch_range = saved_pitch
+
+
 def test_smoke9c_reset_perturbation_changes_qpos_when_enabled(
     env_smoke9c_ref_init_base: WildRobotEnv,
 ) -> None:
