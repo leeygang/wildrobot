@@ -187,6 +187,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Render MuJoCo scene and print home keyframe.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        # Suppress the auto-added -h/--help so we can register a single
+        # help action with -h / --h / --help as explicit aliases.
+        # Without --h being explicit, it would still work today via
+        # argparse prefix matching, but a future ``--height`` /
+        # ``--hide`` flag would make ``--h`` silently ambiguous.
+        add_help=False,
+    )
+    parser.add_argument(
+        "-h", "--h", "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Show this help message and exit.",
     )
     parser.add_argument(
         "--scene-file",
