@@ -1,16 +1,23 @@
 <mujoco>
   <!-- Two named keyframes (locomotion-ready home migration, 2026-05-17):
 
-       "home"        — locomotion-ready, phase-neutral nominal pose
+       "home"        — locomotion-ready nominal pose
                        (knees ≈ 0.49 rad, hip_pitch ≈ ±0.222 rad,
                        ankle_pitch ≈ -0.248 rad, pelvis_z ≈ 0.460 m).
-                       Derived by averaging mirror-symmetric double-
-                       support frames of the WR walking prior at
-                       vx=0.1333 m/s and settling the result.  This
-                       aligns WR with ToddlerBot's `home`-as-default-
-                       action contract: `home` is the constant base
-                       PPO residuals on top of, not a separate near-
-                       straight standing pose.  See
+                       Derived by averaging the 8 mirror-symmetric
+                       from-rest initial DSP frames of the WR walking
+                       prior at vx=0.1333 m/s, then settling.  In
+                       practice this is the planner's intended initial
+                       standing pose at the trajectory's phase origin
+                       — the only mirror-symmetric DSP window in the
+                       1104-frame trajectory.  Aligns WR with ToddlerBot's
+                       `home`-as-default-action contract: `home` is the
+                       constant base PPO residuals on top of, not a
+                       separate near-straight standing pose.
+                       Repo-wide semantic change (2026-05-17): runtime
+                       calibrate.py go-home, standing configs, and
+                       policy-export bundles now reference this
+                       locomotion-ready pose.  See
                        `assets/derive_walk_ready_home.py` for the exact
                        derivation + settling procedure; re-run that
                        script whenever the IK geometry, walking config,
@@ -28,7 +35,7 @@
                        sim_dt steps. -->
     <keyframe>
         <key name="home"
-            qpos="0.00334452 -0.000410987 0.460272 0.999954 -5.53362e-05 -0.00952792 0.000621042 0.221289 -0.000686951 0.488909 -0.248439 0.000485132 -0.221849 -0.000561528 0.490533 -0.24789 -0.00170573 0.00329397 0.00018508 0.0192083 -2.5897e-06 1.0851e-05 0.000485021 -0.000935575 0.00376767 -4.69368e-06 -2.03364e-05 0.000487266"
+            qpos="0.00334452 -0.000410987 0.460272 0.999954 -5.53362e-05 -0.00952792 0.000621042 0.221289 -0.000686951 0.488909 -0.248439 0.000485132 -0.221849 -0.000561528 0.490533 -0.24789 -0.00170573 0.00329397 0.00018508 0.0192083 0 1.0851e-05 0.000485021 -0.000935575 0.00376767 -1.14509e-06 -2.03364e-05 0.000487266"
         />
         <key name="walk_start"
             qpos="-0.00336445 -0.000131717 0.460235 0.999946 -5.79014e-05 -0.0103598 0.000344922 0.223094 -0.00042335 0.489531 -0.245616 0.000244046 -0.223542 -0.000311294 0.491143 -0.245165 -0.00193645 0.00301686 -0.00010678 0.0181409 -2.60502e-06 5.14517e-06 0.000243405 -0.000444513 0.00354958 -5.66149e-06 -1.04251e-05 0.000244514"

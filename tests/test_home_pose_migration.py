@@ -17,6 +17,20 @@ module are the contract for that meaning:
      even though both poses are now near each other numerically).
   5. The envelope-coverage report runs without error (informational
      gate, not numeric assertion).
+  6. Non-walking consumers (runtime calibrate ``--scene-xml`` /
+     ``--keyframes-xml`` home loaders, and the policy-export bundle
+     home loader) return valid joint vectors within MJCF limits with
+     the new locomotion-ready home.  These pin the "repo-wide
+     semantic change" surface called out in the migration commit.
+
+Standing-recipe note: ``training/configs/ppo_standing_v0173a.yaml``
+is pre-existing incompatible with the current v3 env layout (it
+requests ``actor_obs_layout_id: wr_obs_v2``, which the env rejected
+during the v3 rewrite), so we cannot exercise ``WildRobotEnv`` with
+the standing config.  The home migration is observable at the
+runtime/export surfaces tested below; any future standing recipe will
+need to retrain against the new ``home`` (action=0 now centers on the
+locomotion-ready crouch).
 """
 from __future__ import annotations
 
@@ -236,13 +250,11 @@ def test_ref_init_q_distinct_from_home_yet_close() -> None:
     ref_init = np.asarray(env._ref_init_q_rad).astype(np.float64)
     home = np.asarray(env._home_q_rad).astype(np.float64)
 
-    # The two arrays must not point at the same buffer (distinct sources).
-    assert ref_init is not home
-
-    # And the recorded values must not be byte-equal: ref_init is raw
+    # The recorded values must not be byte-equal: ref_init is raw
     # q_ref(0) (no physics), home is the settled keyframe — they differ
     # by the post-settle drift on the knees/ankles (~25 mrad / ~6 mrad
-    # from the derivation output).
+    # from the derivation output).  This is the substantive check that
+    # the two source paths really do differ in what they read.
     assert not np.array_equal(ref_init, home), (
         "_ref_init_q_rad and _home_q_rad are byte-equal — the two "
         "concepts have collapsed.  ref_init is the offline frame-0 "
@@ -286,3 +298,149 @@ def test_envelope_report_runs_without_error() -> None:
         q_ref, derived, joint_order, RESIDUAL_SCALE_PER_LEG_JOINT_RAD,
     )
     assert lines and all("home=" in line for line in lines)
+
+
+def test_derivation_selector_uses_from_rest_initial_dsp() -> None:
+    """Pin the derivation's actual scope: at the current ZMPWalkGenerator
+    output the selector accepts ONLY the 8 from-rest initial DSP frames
+    of the trajectory (cycle 0, indices 0..7).  Every later DSP window
+    is structurally asymmetric on hip_pitch / ankle_pitch by ~0.176 rad
+    and gets rejected by ``DSP_SYMMETRY_TOL_RAD``.
+
+    This is the honest scope of the derivation — if the planner's phase
+    origin changes (e.g. it stops starting from a static DSP) this
+    test will catch the regression in the derivation contract.
+    """
+    import sys
+    sys.path.insert(0, str(_REPO_ROOT))
+    from assets.derive_walk_ready_home import (
+        DERIVATION_VX,
+        DSP_SYMMETRY_TOL_RAD,
+        _load_walking_q_ref,
+        _select_phase_neutral_dsp_frames,
+    )
+
+    q_ref, contact_mask, joint_order = _load_walking_q_ref(DERIVATION_VX)
+    selected = _select_phase_neutral_dsp_frames(
+        q_ref, contact_mask, joint_order, sym_tol=DSP_SYMMETRY_TOL_RAD,
+    )
+    selected_idx = np.where(selected)[0].tolist()
+    assert selected_idx == list(range(8)), (
+        f"selector picked {selected_idx}; expected exactly [0..7] "
+        "(the trajectory's from-rest initial DSP).  If the planner's "
+        "phase origin changed, update the derivation strategy."
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6. Non-walking sanity: runtime calibrate.py + policy-export bundle home
+#    loaders return valid joint vectors within MJCF limits with the new home.
+# -----------------------------------------------------------------------------
+
+
+def _actuator_names() -> list[str]:
+    model = mujoco.MjModel.from_xml_path(str(_SCENE_XML))
+    return [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+        for i in range(model.nu)
+    ]
+
+
+def _mjcf_joint_range(actuator_name: str) -> tuple[float, float]:
+    model = mujoco.MjModel.from_xml_path(str(_SCENE_XML))
+    aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
+    jid = int(model.actuator_trnid[aid, 0])
+    return float(model.jnt_range[jid, 0]), float(model.jnt_range[jid, 1])
+
+
+def test_runtime_calibrate_scene_loader_returns_valid_home() -> None:
+    """``runtime/scripts/calibrate.py`` --scene-xml flow loads the home
+    pose via ``load_home_from_scene``.  With the new locomotion-ready
+    keyframe this must (a) return one float per actuator, (b) be the
+    new crouched pose (knees > 0.30 rad), and (c) stay inside the
+    MJCF joint ranges so a real --go-home will not over-drive a
+    servo.  This is the sanity gate for the hardware path called out
+    in the migration commit."""
+    import sys
+    sys.path.insert(0, str(_REPO_ROOT))
+    from runtime.scripts.calibrate import load_home_from_scene
+
+    actuator_names = _actuator_names()
+    home_ctrl = load_home_from_scene(_SCENE_XML, actuator_names)
+
+    assert len(home_ctrl) == len(actuator_names)
+    for name, v in zip(actuator_names, home_ctrl):
+        assert np.isfinite(v), f"{name} home value not finite: {v}"
+        lo, hi = _mjcf_joint_range(name)
+        assert lo - 1e-6 <= v <= hi + 1e-6, (
+            f"--go-home would drive {name}={v:+.4f} outside MJCF "
+            f"range [{lo:+.4f}, {hi:+.4f}] — refusing."
+        )
+
+    by_name = dict(zip(actuator_names, home_ctrl))
+    assert by_name["left_knee_pitch"] > 0.30, (
+        f"runtime home knee_pitch={by_name['left_knee_pitch']:+.4f} not "
+        "locomotion-ready — migration did not propagate to the runtime path."
+    )
+
+
+def test_runtime_calibrate_keyframes_xml_loader_returns_valid_home() -> None:
+    """The other runtime path — ``--keyframes-xml`` — reads
+    ``qpos[7:7+joint_count]`` directly from keyframes.xml.  Verifies
+    that the new home keyframe still has 7+21 qpos values and that the
+    21 joint-slot values are all finite + within the union of MJCF
+    joint ranges.  (Note: the ordering this loader returns is
+    qpos-address order, not actuator order — a pre-existing concern
+    of that loader, unrelated to the home migration.)
+    """
+    import sys
+    sys.path.insert(0, str(_REPO_ROOT))
+    from runtime.scripts.calibrate import load_home_from_keyframes_xml
+
+    keyframes_xml = _REPO_ROOT / "assets" / "v2" / "keyframes.xml"
+    values = load_home_from_keyframes_xml(keyframes_xml, joint_count=21)
+    assert len(values) == 21
+    assert all(np.isfinite(v) for v in values)
+
+    # Compare against the per-qpos-address pose recorded in the home
+    # keyframe — the loader must be returning exactly qpos[7:28] of the
+    # `home` entry.
+    model = mujoco.MjModel.from_xml_path(str(_SCENE_XML))
+    home_qpos = _key_qpos(model, "home")
+    np.testing.assert_allclose(np.asarray(values), home_qpos[7:28], atol=1e-6)
+
+
+def test_export_bundle_home_loader_matches_env_home_q_rad() -> None:
+    """``training.exports.export_policy_bundle._get_home_ctrl_from_mjcf``
+    is the canonical path that bakes ``home_ctrl_rad`` into a deployed
+    bundle's ``policy_spec.json`` (consumed downstream by the runtime
+    inference path).  Verify the exported value tracks the new
+    locomotion-ready ``_home_q_rad`` from the env: if these ever
+    diverge a deployed policy would centre its actions on a stale
+    pose."""
+    import sys
+    sys.path.insert(0, str(_REPO_ROOT))
+    from training.exports.export_policy_bundle import _get_home_ctrl_from_mjcf
+
+    env = _maybe_build_env(_SMOKE9C_CFG)
+    actuator_names = list(env._policy_spec.robot.actuator_names)
+    home_from_export = np.asarray(
+        _get_home_ctrl_from_mjcf(_SMOKE9C_CFG, actuator_names),
+        dtype=np.float64,
+    )
+    home_from_env = np.asarray(env._home_q_rad, dtype=np.float64)
+    # Tolerance: 1e-4 rad (~0.006°).  Pre-existing JSON-vs-MJCF range
+    # mismatch on the near-zero wrist/elbow slots can produce up to
+    # ~1 µrad of clamp differential between the env (clips to MJCF
+    # jnt_range) and the export bundle (clips to robot_config.json
+    # range_min/max).  1e-4 stays well below servo precision but is
+    # tight enough to catch any real divergence (knee/hip differences
+    # would be > 1 mrad).
+    np.testing.assert_allclose(
+        home_from_export, home_from_env, atol=1e-4,
+        err_msg=(
+            "export bundle home_ctrl_rad disagrees with env._home_q_rad — "
+            "deployed bundles would centre on a different pose than "
+            "training."
+        ),
+    )

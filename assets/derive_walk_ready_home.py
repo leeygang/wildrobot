@@ -25,18 +25,27 @@ Derivation
 1.  Build the offline walking reference library at the smoke9c operating
     point (``vx = 0.1333333333 m/s``).  The library is produced by
     ``control.zmp.zmp_walk.ZMPWalkGenerator``; a single ctrl cycle is
-    48 frames (cycle_time = 0.96 s, dt = 0.02 s).
+    48 frames (cycle_time = 0.96 s, dt = 0.02 s), 1104 frames total.
 
-2.  Select all frames that are simultaneously
-        - in double-support (``contact_mask == [1, 1]``),
-        - mirror-symmetric in physical joint terms
-          (``|left_hip_pitch + right_hip_pitch| < tol``,
-           ``|left_ankle_pitch - right_ankle_pitch| < tol``, ...).
-    These are the natural phase-neutral frames: both feet planted, both
-    legs in identical sagittal flexion.  Across each 48-step cycle the
-    early DSP window (frames 0..~7) satisfies the symmetry criterion;
-    the mid-cycle DSP window (frames 24..31) is the COM-shifting
-    transition and is asymmetric.
+2.  Select all double-support frames whose physical joint configuration
+    is mirror-symmetric within ``DSP_SYMMETRY_TOL_RAD``
+    (``|left_hip_pitch + right_hip_pitch| < tol`` etc.).
+
+    **Important honesty note**: at the current ZMPWalkGenerator output
+    the only mirror-symmetric DSP window in the entire 1104-frame
+    trajectory is the FROM-REST initial DSP at frames [0..7].  Every
+    later DSP is either the mid-cycle COM-shift (frames 24..31, 72..79,
+    ...) or the cross-cycle landing-pad transition (frames 48..55,
+    96..103, ...); both are structurally asymmetric on hip_pitch /
+    ankle_pitch by ≈0.176 rad (the gait is in steady-state forward
+    locomotion, so the legs are mid-stride during DSP).  In practice
+    this script averages the 8 from-rest initialization frames, NOT
+    a cycle-invariant set of windows.  This is acceptable for the
+    migration goal — frames [0..7] are the planner's intended initial
+    standing pose — but it means the derived ``home`` is tied to the
+    trajectory's phase origin.  If the prior's phase origin changes
+    (e.g. the planner no longer starts from a static DSP), the
+    derivation would need to be reworked.
 
 3.  Average ``q_ref`` across the selected frames, then enforce exact
     L/R sign-mirror symmetry for paired leg joints (drops sub-mrad
@@ -179,6 +188,10 @@ def _select_phase_neutral_dsp_frames(
       - hip_pitch is opposite-sign in raw joint coords (axes mirrored in MJCF),
       - knee_pitch + ankle_pitch share sign across L/R.
     A frame is accepted iff every paired difference is within ``sym_tol`` rad.
+
+    Caveat: at the current ZMPWalkGenerator output the only window of the
+    trajectory that survives this test is the from-rest initial DSP
+    (frames [0..7]).  See the module docstring for the full discussion.
     """
     name_to_col = {name: i for i, name in enumerate(joint_order)}
 
@@ -378,7 +391,15 @@ def _settle(
 ) -> Tuple[np.ndarray, float, float, float]:
     """Same settling loop as assets/resettle_keyframes.py — run with
     ctrl pinned to the initial joint values; return final qpos, pelvis Δxy,
-    max |qvel|, final pelvis_z."""
+    max |qvel|, final pelvis_z.
+
+    The settled qpos is clipped to MJCF joint ranges before being returned
+    so the written keyframe is byte-equal to what the env's per-joint
+    range clip produces (a few µrad of settling drift can otherwise push
+    near-zero slots like ``left_elbow_pitch`` a hair outside their MJCF
+    range, leaving the runtime ``load_home_from_scene`` path one cycle
+    out of sync with the env's ``_home_q_rad``).
+    """
     data = mujoco.MjData(model)
     data.qpos[:] = initial_qpos
     data.qvel[:] = 0.0
@@ -398,6 +419,16 @@ def _settle(
     pelvis_dxy = float(np.linalg.norm(final_qpos[0:2] - initial_pelvis[0:2]))
     max_qvel = float(np.max(np.abs(data.qvel)))
     pelvis_z = float(final_qpos[2])
+
+    # Clip actuated-joint qpos slots to MJCF joint ranges (the freejoint
+    # qpos[0:7] has no limited range and is left untouched).
+    for aid in range(model.nu):
+        aname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, aid)
+        qaddr = qaddr_map[aname]
+        jid = int(model.actuator_trnid[aid, 0])
+        lo = float(model.jnt_range[jid, 0])
+        hi = float(model.jnt_range[jid, 1])
+        final_qpos[qaddr] = float(min(max(final_qpos[qaddr], lo), hi))
     return final_qpos, pelvis_dxy, max_qvel, pelvis_z
 
 
