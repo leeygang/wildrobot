@@ -2097,7 +2097,7 @@ repo state at the home pose):
 | metric | TB | WR | WR / TB |
 |---|---|---|---|
 | foot-body lateral spacing (close_feet / feet_distance source) | 0.074 m | 0.18056 m | **2.44** |
-| hip-to-ankle vertical (TB ``config.json:hip_to_ankle_pitch_z`` vs WR home-pose ``left_hip_pitch.xanchor.z − left_ankle_pitch.xanchor.z`` = 0.4374 − 0.0656) | 0.2115 m | 0.372 m | **1.76** |
+| hip-to-ankle vertical (TB ``descriptions/toddlerbot_2xc/robot.yml:10 hip_to_ankle_pitch_z`` vs WR rest-pose ``left_hip_pitch.xanchor.z − left_ankle_pitch.xanchor.z`` = 0.4464 − 0.0743) | 0.2115 m | 0.372 m | **1.76** |
 | operating forward speed (Phase 9D parity) | 0.15 m/s | 0.20 m/s | **1.33** |
 
 The 1.33 speed ratio (the basis for the ``8f44c74``
