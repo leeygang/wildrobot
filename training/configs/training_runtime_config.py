@@ -213,12 +213,22 @@ class EnvConfig(Freezable):
     #                         zero), only penalizes lateral lean (not z drop).
     loc_ref_penalty_feet_ori_form: str = "wr_quad_3axis"
 
-    # v0.20.1 smoke9 — TB penalty_close_feet_xy threshold (m).
-    # Lateral foot distance (perpendicular to base forward direction)
-    # below this triggers a binary -1.0 penalty.  Mirrors TB
-    # close_feet_threshold (walk.gin:125, default 0.06 m).  Only consulted
-    # when reward_weights.penalty_close_feet_xy != 0.
-    close_feet_threshold: float = 0.06
+    # v0.20.1 smoke9 — TB penalty_close_feet_xy threshold (m), normalized
+    # to WR body size.  Lateral foot distance (perpendicular to base
+    # forward direction) below this triggers a binary -1.0 penalty.
+    # Mirrors TB _reward_penalty_close_feet_xy (mjx_env.py:2709-2745) and
+    # TB ``close_feet_threshold`` (walk.gin:125 = 0.06 m at TB nominal
+    # stance width 0.074 m).  WR uses the SAME OBJECT each reward
+    # consumes:
+    #   - TB feet body lateral positions at home (``feet_link_ids`` →
+    #     ``*_ankle_roll_link``):  spacing = 0.074 m
+    #   - WR feet body lateral positions at home (CAL.get_foot_positions
+    #     normalize=False → ``left_foot`` / ``right_foot`` bodies):
+    #     spacing = 0.18056 m
+    # Preserved fraction = 0.06 / 0.074 ≈ 0.8108 → WR threshold =
+    #   0.8108 × 0.18056 ≈ 0.146 m
+    # Only consulted when reward_weights.penalty_close_feet_xy != 0.
+    close_feet_threshold: float = 0.146
 
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
@@ -546,8 +556,41 @@ class EnvConfig(Freezable):
     # Feet geometry gates for the ``feet_distance`` reward
     # (mjx_config.py:108-109).  Lateral foot spacing in body frame; the
     # reward is exp(-100 * |dist - bound|) penalty outside the band.
-    min_feet_y_dist: float = 0.07
-    max_feet_y_dist: float = 0.13
+    # Normalized to WR body size from TB literals (walk.gin defaults
+    # 0.07 / 0.13 at TB nominal stance width 0.074 m):
+    #   min = (0.07 / 0.074) × 0.18056 ≈ 0.171 m
+    #   max = (0.13 / 0.074) × 0.18056 ≈ 0.317 m
+    # ``feet_distance`` is inactive in smoke9c (weight 0); these defaults
+    # are normalized now so a future activation does not silently
+    # reintroduce TB-literal meters on the WR morphology.
+    min_feet_y_dist: float = 0.171
+    max_feet_y_dist: float = 0.317
+
+    # v0.20.1 smoke9c follow-up — TB-style reset-time pose perturbation
+    # for the ``ref_init`` reset basin.  Mirrors TB's
+    # ``DomainRandConfig.torso_pitch_range`` / ``torso_roll_range``
+    # (~/projects/toddlerbot/toddlerbot/locomotion/mjx_config.py:211-212
+    # default ``[-0.1, 0.1]`` rad) and the partitioned-leg-pitch reset
+    # logic in TB ``mjx_env.py:954-1053``.  When ``loc_ref_reset_base ==
+    # "ref_init"``, ``reset()`` samples a torso roll / pitch in these
+    # ranges, decomposes the |pitch| magnitude across hip-pitch /
+    # knee-pitch / ankle-pitch joints (TB partition), updates the root
+    # quat by composing the torso roll-pitch rotation, and ADDS the
+    # signed joint deltas to ``_ref_init_q_rad`` for the physical qpos
+    # only.  The CONTROL base (``_ref_init_q_rad``) is untouched, so
+    # zero policy action still composes to the same constant ref_init
+    # ctrl base (the zero-residual invariant).
+    #
+    # Defaults are 0.0 to preserve the historical "quiet" ref_init
+    # behavior for any non-smoke9c config that doesn't override them.
+    # smoke9c yaml explicitly enables ``[-0.1, 0.1]`` to break the
+    # standstill basin without changing the reset center.
+    reset_torso_roll_range: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
+    reset_torso_pitch_range: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
 
     # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
     # backlash domain randomization.  Per-joint deadband magnitude
@@ -932,13 +975,31 @@ class RewardWeightsConfig(Freezable):
     #     feet_phase_tracking_sigma = 0.0007.
     penalty_close_feet_xy: float = 0.0
     feet_phase: float = 0.0
-    # Inverse of TB feet_phase_tracking_sigma (1 / 0.0007 ≈ 1428.6).  WR
-    # convention is exp(-alpha * err²) — same as cmd_forward_velocity_alpha.
-    feet_phase_alpha: float = 1428.6
-    # Maximum swing-foot height for feet_phase (m).  TB swing_height = 0.04
-    # for the active recipe (walk.gin:130).  Smaller for our smaller foot
-    # lift profile.
-    feet_phase_swing_height: float = 0.04
+    # feet_phase reward landscape is invariant under the dimensionless
+    # group ``alpha * swing_height²``.  TB walk.gin uses 0.04 m swing
+    # (≈19% of TB hip-to-ankle vertical, 0.04 / 0.2115; TB config.json
+    # ``hip_to_ankle_pitch_z = 0.2115``).
+    #
+    # WR's swing target is set from the repo's validated WR ZMP prior
+    # (control/zmp/zmp_walk.py:134 ``foot_step_height_m = 0.05``), NOT
+    # from a strict body-size rescale of TB's 0.04 m.  A pure
+    # characteristic-length rescale (Hof 1996) of TB's 0.04 m using WR
+    # vs TB hip-to-ankle vertical would give ~0.07-0.08 m on WR; the
+    # 0.05 m choice is therefore a deliberate prior-aligned compromise
+    # — explicit deviation from strict size-scaling, kept here so the
+    # PPO swing target stays consistent with the deployed ZMP prior.
+    # Alpha is then rescaled to PRESERVE THE SHAPE of the Gaussian
+    # basin once the target scale is set:
+    #   alpha_wr = alpha_tb × (swing_tb / swing_wr)²
+    #            = 1428.6 × (0.04 / 0.05)² = 914.304
+    # so the dimensionless group ``alpha × swing_height² ≈ 2.286`` is
+    # unchanged (a flat-foot policy earns the same baseline reward in
+    # both regimes; a perfectly-tracking policy earns the same peak).
+    # Followup if WR validation later prefers strict size scaling:
+    # bump ``swing_height`` to the body-scaled value and rescale alpha
+    # by the same rule.
+    feet_phase_alpha: float = 914.304
+    feet_phase_swing_height: float = 0.05
 
 
 @dataclass

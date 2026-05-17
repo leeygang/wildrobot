@@ -349,8 +349,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"env.loc_ref_penalty_feet_ori_form must be 'wr_quad_3axis' or "
                 f"'tb_linear_lateral'; got {self._penalty_feet_ori_form!r}"
             )
+        # Default reflects the WR-normalized value
+        # (LocomotionEnvConfig.close_feet_threshold = 0.146).  Only fires
+        # if the env is constructed outside TrainingConfig.
         self._close_feet_threshold = jp.float32(
-            getattr(self._config.env, "close_feet_threshold", 0.06)
+            getattr(self._config.env, "close_feet_threshold", 0.146)
         )
 
         home_ctrl_list = clamp_home_ctrl(
@@ -415,6 +418,85 @@ class WildRobotEnv(mjx_env.MjxEnv):
             actuator_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
         self._actuator_qpos_addrs = jp.asarray(actuator_qpos_addrs, dtype=jp.int32)
         self._actuator_dof_addrs = jp.asarray(actuator_dof_addrs, dtype=jp.int32)
+
+        # smoke9c follow-up — leg-pitch actuator addrs + signs for TB-style
+        # reset-time torso-pitch perturbation.  TB
+        # (``toddlerbot/locomotion/mjx_env.py:671-674``) partitions
+        # ``|torso_pitch|`` across hip-pitch / knee-pitch / ankle-pitch
+        # joints with the mirror-symmetric sign pattern
+        # ``[-1, +1, -1, +1, -1, +1]`` for [L-hip, L-knee, L-ankle,
+        # R-hip, R-knee, R-ankle].  WR uses the same structured
+        # decomposition; the sign pattern keeps both legs perturbed in a
+        # mirror-symmetric way (left and right hips, knees, ankles tilt
+        # in opposite directions about the lateral axis).  WR-specific
+        # deviation from TB: we don't compute the ``torso_z_delta``
+        # geometric compensation (TB ``mjx_env.py:1034-1041`` uses
+        # robot config offsets WR doesn't expose); the perturbation
+        # ranges are small (TB default ±0.1 rad) so physics settles
+        # the residual in a few sim steps.
+        leg_pitch_joint_names = [
+            "left_hip_pitch",
+            "left_knee_pitch",
+            "left_ankle_pitch",
+            "right_hip_pitch",
+            "right_knee_pitch",
+            "right_ankle_pitch",
+        ]
+        leg_pitch_qpos_addrs: List[int] = []
+        leg_pitch_range_mins: List[float] = []
+        leg_pitch_range_maxs: List[float] = []
+        for jname in leg_pitch_joint_names:
+            jid = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jname)
+            if jid < 0:
+                raise ValueError(
+                    f"Leg-pitch joint '{jname}' not found in MJCF; required "
+                    f"by smoke9c reset perturbation."
+                )
+            leg_pitch_qpos_addrs.append(int(self._mj_model.jnt_qposadr[jid]))
+            jr = self._mj_model.jnt_range[jid]
+            leg_pitch_range_mins.append(float(jr[0]))
+            leg_pitch_range_maxs.append(float(jr[1]))
+        self._leg_pitch_qpos_addrs = jp.asarray(
+            leg_pitch_qpos_addrs, dtype=jp.int32
+        )
+        self._leg_pitch_joint_mins = jp.asarray(
+            leg_pitch_range_mins, dtype=jp.float32
+        )
+        self._leg_pitch_joint_maxs = jp.asarray(
+            leg_pitch_range_maxs, dtype=jp.float32
+        )
+        # Mirror-symmetric TB sign pattern (mjx_env.py:674).
+        self._leg_pitch_joint_signs = jp.asarray(
+            [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0], dtype=jp.float32
+        )
+
+        # Reset-perturbation ranges (rad).  Default [0.0, 0.0] preserves
+        # the historical quiet ref_init reset.
+        reset_roll_range = list(
+            getattr(self._config.env, "reset_torso_roll_range", [0.0, 0.0])
+        )
+        reset_pitch_range = list(
+            getattr(self._config.env, "reset_torso_pitch_range", [0.0, 0.0])
+        )
+        if len(reset_roll_range) != 2 or len(reset_pitch_range) != 2:
+            raise ValueError(
+                "reset_torso_roll_range and reset_torso_pitch_range must be "
+                "two-element [low, high] lists."
+            )
+        if reset_roll_range[0] > reset_roll_range[1]:
+            raise ValueError(
+                "reset_torso_roll_range[0] must be <= reset_torso_roll_range[1]."
+            )
+        if reset_pitch_range[0] > reset_pitch_range[1]:
+            raise ValueError(
+                "reset_torso_pitch_range[0] must be <= reset_torso_pitch_range[1]."
+            )
+        self._reset_torso_roll_range = jp.asarray(
+            reset_roll_range, dtype=jp.float32
+        )
+        self._reset_torso_pitch_range = jp.asarray(
+            reset_pitch_range, dtype=jp.float32
+        )
 
         # PolicySpec → MJ ctrl-order bridge.  Use this for ALL ctrl writes.
         # Touch the JAX permutation eagerly so its lazy-init doesn't leak a
@@ -1654,11 +1736,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     # ------------------------------------------------------------------ reset
 
-    def reset(self, rng: jax.Array) -> WildRobotEnvState:
+    def reset(self, rng: jax.Array, perturb_pose: bool = True) -> WildRobotEnvState:
         """Sample velocity_cmd / push schedule / DR params; build initial
-        WildRobotInfo at offline step 0."""
-        rng, key_vel, key_qnoise, key_push, key_dr, key_imu, key_cmd = (
-            jax.random.split(rng, 7)
+        WildRobotInfo at offline step 0.
+
+        smoke9c reset-perturbation (TB-aligned, see
+        ``toddlerbot/locomotion/mjx_env.py:954-1053``): under the
+        ``ref_init`` reset base, the initial physical qpos is perturbed
+        by sampled torso roll / pitch in
+        ``env.reset_torso_{roll,pitch}_range`` (rad).  Roll and the
+        |pitch| magnitude get a structured decomposition across the leg
+        pitch chain (hip / knee / ankle, mirror-symmetric), and the root
+        quat is updated by composing the [roll, pitch, 0] Euler
+        rotation.  The CONTROL base (``_ref_init_q_rad``) is untouched,
+        so a zero policy action still composes to the same constant
+        ref_init control target (the zero-residual invariant).  Default
+        ranges are [0.0, 0.0] which reproduces the historical quiet
+        ref_init reset exactly.
+
+        ``perturb_pose`` (default True): when False, the reset
+        perturbation is skipped regardless of the configured ranges.
+        ``reset_for_eval`` passes ``perturb_pose=False`` so eval-side
+        rollouts stay deterministic (G4/G5 promotion thresholds and the
+        v6 eval-adapter native-reset parity both require a noise-free
+        eval reset).
+        """
+        rng, key_vel, key_qnoise, key_push, key_dr, key_imu, key_cmd, key_pert = (
+            jax.random.split(rng, 8)
         )
 
         velocity_cmd = self._sample_velocity_cmd(key_vel)
@@ -1679,6 +1783,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
         qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
+        # smoke9c follow-up — TB-style reset-time pose perturbation.  Only
+        # active when the configured ranges are non-degenerate AND
+        # ``perturb_pose`` is True (default).  Default ranges of
+        # [0.0, 0.0] short-circuit to a no-op (preserves the historical
+        # quiet ref_init reset).  Applied to all reset modes for
+        # consistency; under ``home`` the perturbation is layered on top
+        # of the historical joint_noise above.
+        if perturb_pose:
+            qpos = self._apply_reset_perturbation(key_pert, qpos)
+
         push_schedule = sample_push_schedule(
             key_push, self._config.env, self._push_body_ids
         )
@@ -1692,6 +1806,145 @@ class WildRobotEnv(mjx_env.MjxEnv):
             imu_init_rng=key_imu,
             cmd_rng=key_cmd,
         )
+
+    # ----------------------------------------------------- reset perturbation
+
+    def _apply_reset_perturbation(
+        self, rng: jax.Array, qpos: jax.Array
+    ) -> jax.Array:
+        """TB-style reset-time torso roll / pitch perturbation.
+
+        Mirrors TB ``mjx_env.py:954-1053``:
+          - sample ``torso_roll`` uniform in ``reset_torso_roll_range``
+          - sample ``torso_pitch`` uniform in ``reset_torso_pitch_range``
+          - partition ``|torso_pitch|`` into three nonnegative parts that
+            sum to ``|torso_pitch|`` (hip-pitch + knee-pitch + ankle-pitch)
+          - apply signed deltas to each leg via the mirror-symmetric TB
+            sign pattern (``self._leg_pitch_joint_signs``)
+          - rotate the root quat by composing ``R_xyz(roll, pitch, 0)``
+            onto the existing root quat
+
+        WR-specific deviations from TB (documented):
+          - WR has no waist actuator; ``torso_roll`` only affects the
+            root quat (TB also writes it into a waist joint).
+          - WR has no arm-pose-range perturbation here.
+          - WR does not compute the geometric ``torso_z_delta``
+            compensation (TB uses ``robot.config['robot']`` offsets WR
+            doesn't expose); the ranges are small (TB default ±0.1 rad)
+            so the residual is settled by physics in a few sim steps.
+
+        The CONTROL targets and ``_ref_init_q_rad`` are UNTOUCHED here;
+        we only modify the initial physical ``qpos`` (joint positions +
+        root quat).  Zero policy action still composes to the constant
+        ``ref_init`` ctrl base.
+        """
+        rng_roll, rng_pitch, rng_hip, rng_knee = jax.random.split(rng, 4)
+
+        roll_lo = self._reset_torso_roll_range[0]
+        roll_hi = self._reset_torso_roll_range[1]
+        pitch_lo = self._reset_torso_pitch_range[0]
+        pitch_hi = self._reset_torso_pitch_range[1]
+
+        torso_roll = jax.random.uniform(
+            rng_roll, shape=(), minval=roll_lo, maxval=roll_hi
+        ).astype(jp.float32)
+        torso_pitch = jax.random.uniform(
+            rng_pitch, shape=(), minval=pitch_lo, maxval=pitch_hi
+        ).astype(jp.float32)
+
+        # Partition |torso_pitch| into hip / knee / ankle nonnegative
+        # parts summing to |torso_pitch|.  Matches TB
+        # ``mjx_env.py:977-988``.
+        pitch_abs = jp.abs(torso_pitch)
+        hip_delta = jax.random.uniform(
+            rng_hip, shape=(), minval=0.0, maxval=pitch_abs
+        ).astype(jp.float32)
+        knee_max = jp.maximum(pitch_abs - hip_delta, jp.float32(0.0))
+        knee_delta = jax.random.uniform(
+            rng_knee, shape=(), minval=0.0, maxval=knee_max
+        ).astype(jp.float32)
+        ankle_delta = jp.maximum(
+            pitch_abs - hip_delta - knee_delta, jp.float32(0.0)
+        )
+
+        # Per-leg delta vector [hip, knee, ankle, hip, knee, ankle].
+        leg_pitch_mag = jp.stack(
+            [hip_delta, knee_delta, ankle_delta,
+             hip_delta, knee_delta, ankle_delta]
+        ).astype(jp.float32)
+        leg_pitch_signed = (
+            leg_pitch_mag * self._leg_pitch_joint_signs * jp.sign(torso_pitch)
+        ).astype(jp.float32)
+
+        # Joint clip: each perturbed joint must stay in its kinematic
+        # range.  Pull the per-joint range slice for the 6 leg-pitch
+        # qpos addrs using gather (joint_range_mins / maxs are stored
+        # in actuator order; we need them in mj_jnt_qposadr order).
+        leg_pitch_qpos_curr = qpos[self._leg_pitch_qpos_addrs]
+        leg_pitch_qpos_new = leg_pitch_qpos_curr + leg_pitch_signed
+        # Use MJ joint ranges directly (parsed once on init below).
+        leg_pitch_qpos_new = jp.clip(
+            leg_pitch_qpos_new,
+            self._leg_pitch_joint_mins,
+            self._leg_pitch_joint_maxs,
+        )
+        qpos = qpos.at[self._leg_pitch_qpos_addrs].set(leg_pitch_qpos_new)
+
+        # Compose root-quat update: R_xyz(roll, pitch, 0) * R_curr.
+        # MJCF root quat is stored as [w, x, y, z] at qpos[3:7].  Use
+        # jax_frames helpers (xyzw convention) for the multiplication.
+        root_wxyz = qpos[3:7]
+        root_xyzw = jp.concatenate([root_wxyz[1:], root_wxyz[:1]]).astype(jp.float32)
+        delta_xyzw = self._euler_xyz_to_quat_xyzw(
+            torso_roll, torso_pitch, jp.float32(0.0)
+        )
+        new_xyzw = self._quat_mul_xyzw(delta_xyzw, root_xyzw)
+        new_xyzw = jax_frames.normalize_quat_xyzw(new_xyzw)
+        new_wxyz = jp.concatenate([new_xyzw[3:], new_xyzw[:3]]).astype(jp.float32)
+        qpos = qpos.at[3:7].set(new_wxyz)
+
+        return qpos
+
+    @staticmethod
+    def _euler_xyz_to_quat_xyzw(
+        roll: jax.Array, pitch: jax.Array, yaw: jax.Array
+    ) -> jax.Array:
+        """Convert XYZ-Euler (roll, pitch, yaw) to quaternion [x, y, z, w].
+
+        Matches scipy.spatial.transform.Rotation.from_euler('xyz', ...)
+        (intrinsic xyz).  Used by the reset perturbation to mirror TB's
+        ``R.from_euler('xyz', [roll, pitch, 0])`` composition
+        (``mjx_env.py:1044``).
+
+        Intrinsic 'xyz' is equivalent (in quaternion-product form) to
+        ``q_z(yaw) ⊗ q_y(pitch) ⊗ q_x(roll)`` with Hamilton product on
+        [x, y, z, w].  Verified against scipy: for
+        (roll, pitch, yaw) = (0.1, 0.1, 0), this returns z ≈ -0.0025
+        (sign matches scipy 'xyz').  Earlier draft implemented the
+        ``q_x ⊗ q_y ⊗ q_z`` extrinsic ('XYZ') ordering, which gave
+        z = +0.0025 and so applied a different rotation than TB
+        whenever ROLL AND PITCH WERE BOTH NONZERO — fixed here.
+        """
+        cr = jp.cos(roll * 0.5); sr = jp.sin(roll * 0.5)
+        cp = jp.cos(pitch * 0.5); sp = jp.sin(pitch * 0.5)
+        cy = jp.cos(yaw * 0.5); sy = jp.sin(yaw * 0.5)
+        # Expanded from q = q_z(yaw) ⊗ q_y(pitch) ⊗ q_x(roll).
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        w = cr * cp * cy + sr * sp * sy
+        return jp.stack([x, y, z, w]).astype(jp.float32)
+
+    @staticmethod
+    def _quat_mul_xyzw(q1: jax.Array, q2: jax.Array) -> jax.Array:
+        """Hamilton product q1 * q2 with quaternions in [x, y, z, w]."""
+        x1, y1, z1, w1 = q1[0], q1[1], q1[2], q1[3]
+        x2, y2, z2, w2 = q2[0], q2[1], q2[2], q2[3]
+        x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        return jp.stack([x, y, z, w]).astype(jp.float32)
 
     def reset_for_eval(self, rng: jax.Array) -> WildRobotEnvState:
         """Eval-only reset that honors ``env.eval_velocity_cmd`` override.
@@ -1710,9 +1963,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         loop so mid-episode resample doesn't re-randomize the cmd.
 
         When ``eval_velocity_cmd < 0`` (the sentinel default), this is
-        identical to ``reset(rng)`` (no override).
+        identical to ``reset(rng, perturb_pose=False)`` (no cmd override,
+        no pose perturbation).
+
+        Always disables the smoke9c reset-time pose perturbation so eval
+        rollouts stay deterministic.  G4/G5 promotion thresholds are
+        defined at the pinned eval cmd with a clean ref_init pose; the
+        v6 eval adapter's native-MJ reset also expects this contract for
+        sim-to-real parity (``test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state``).
+        Training-side ``reset`` keeps perturbation enabled by default.
         """
-        state = self.reset(rng)
+        state = self.reset(rng, perturb_pose=False)
         eval_cmd = jp.float32(self._config.env.eval_velocity_cmd)
         wr = state.info[WR_INFO_KEY]
         new_cmd = jp.where(eval_cmd >= jp.float32(0.0), eval_cmd, wr.velocity_cmd)

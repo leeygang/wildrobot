@@ -2,7 +2,10 @@
 # WildRobot v0.20.1 PPO Smoke 9c — WR size-normalized TB bootstrap + ref-init
 # =============================================================================
 # This run keeps smoke9c's ref-init basin and TB-faithful reward family, but
-# uses a WR size-normalized command curriculum (not raw TB m/s matching).
+# uses a WR size-normalized command curriculum (not raw TB m/s matching) AND
+# WR-size-normalized spatial reward parameters (feet_phase, lateral-foot
+# geometry).  See ``training/docs/walking_training.md`` ("Reward
+# normalization audit — smoke9c spatial pass") for the per-term table.
 #
 # Scale factor from Phase 9D WR/TB comparison:
 #   s = WR_operating_speed / TB_operating_speed = 0.20 / 0.15 = 4/3
@@ -16,6 +19,37 @@
 #   TB alpha = 1000
 #   WR alpha = 1000 / s^2 = 562.5
 #   exp(-1000 * 0.10^2) == exp(-562.5 * 0.1333333333^2)
+#
+# Spatial reward changes (new in this pass):
+#   feet_phase:   swing_height 0.04 -> 0.05 m, alpha 1428.6 -> 914.304.
+#                 0.05 m is the WR PRIOR-ALIGNED target (matches
+#                 control/zmp/zmp_walk.py:134 foot_step_height_m), NOT a
+#                 strict Hof-1996 characteristic-length rescale of TB
+#                 0.04 m (which would put WR closer to ~0.07-0.08 m).
+#                 Alpha is rescaled by (0.04/0.05)^2 to keep the
+#                 dimensionless Gaussian basin alpha * swing_height^2 =
+#                 2.286 INVARIANT under the target change, so the reward
+#                 shape (flat-foot baseline, peak-tracking reward) stays
+#                 calibrated.  This is an explicit deviation from strict
+#                 size-normalization, kept consistent with the deployed
+#                 WR prior.
+#   close_feet_threshold: 0.06 -> 0.146 m  (TB fraction-of-stance applied
+#                 to WR stance: TB foot-body lateral spacing 0.074 m at
+#                 home pose -> WR 0.18056 m at home pose; ratio 2.44x).
+#   min/max_feet_y_dist:  0.07/0.13 -> 0.171/0.317 m  (same
+#                 fraction-of-stance rule; ``feet_distance`` is inactive
+#                 in this config but normalized now so future activation
+#                 doesn't re-introduce TB-literal meters on WR).
+#
+# Reset perturbation (new in this pass):
+#   reset_torso_{roll,pitch}_range: [-0.1, 0.1] rad each.  Mirrors TB's
+#   bipedal DomainRandConfig defaults (mjx_config.py:211-212) and the
+#   leg-pitch partition in TB mjx_env.py:954-1053.  Perturbs only the
+#   physical reset qpos (not the ref_init ctrl base), so zero policy
+#   action still composes to the constant ref_init control target.
+#   This breaks the stand-still attractor without changing the reset
+#   center: the policy must take active corrective actions to return
+#   to ref_init, removing the "do nothing and survive 500 steps" basin.
 #
 # Scope boundary:
 # - this config is the normalized bootstrap run
@@ -50,8 +84,22 @@ env:
   torso_pitch_soft_max_rad: 0.2
   torso_roll_soft_min_rad: -0.1
   torso_roll_soft_max_rad: 0.1
-  min_feet_y_dist: 0.07
-  max_feet_y_dist: 0.13
+  # WR-normalized from TB literals 0.07 / 0.13 (walk.gin defaults at TB
+  # stance width 0.074 m).  Fraction-of-stance preserved on WR's 0.18056 m
+  # stance.  feet_distance is inactive in smoke9c (weight 0); normalized
+  # now so a future activation doesn't re-introduce TB-literal meters.
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  # TB-style reset-time pose perturbation on the ref_init basin.
+  # Mirrors TB ``DomainRandConfig.torso_pitch_range`` / ``torso_roll_range``
+  # (toddlerbot/locomotion/mjx_config.py:211-212 bipedal defaults
+  # ``[-0.1, 0.1]`` rad each) and the partitioned-leg-pitch reset logic in
+  # TB ``mjx_env.py:954-1053``.  Perturbs only the initial physical qpos;
+  # the ref_init ctrl base is untouched so zero policy action still
+  # composes to the same constant control target (zero-residual invariant).
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
 
   penalty_pose_weight_default: 0.0
   penalty_pose_weights_per_joint:
@@ -96,8 +144,10 @@ env:
   # smoke9 form flags: TB-faithful reward formulas
   loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
   loc_ref_penalty_feet_ori_form: tb_linear_lateral
-  # smoke9: TB close_feet_threshold (walk.gin:125)
-  close_feet_threshold: 0.06
+  # WR-normalized from TB literal 0.06 (walk.gin:125) at TB stance 0.074 m.
+  # Fraction-of-stance preserved on WR's 0.18056 m stance =>
+  #   threshold = 0.06 / 0.074 * 0.18056 = 0.146 m
+  close_feet_threshold: 0.146
 
   loc_ref_residual_mode: absolute
   loc_ref_residual_scale: 0.20
@@ -190,8 +240,17 @@ reward_weights:
   penalty_pose: -0.5
   penalty_close_feet_xy: 10.0
   feet_phase: 7.5
-  feet_phase_alpha: 1428.6
-  feet_phase_swing_height: 0.04
+  # feet_phase swing target = 0.05 m, set from the WR-validated ZMP
+  # prior (control/zmp/zmp_walk.py:134 foot_step_height_m), NOT from a
+  # strict body-size rescale of TB 0.04 m.  This is an explicit
+  # deviation from Hof-1996 characteristic-length normalization; see
+  # the smoke9c header for the rationale.  Alpha is rescaled by
+  # (0.04/0.05)^2 to preserve the dimensionless Gaussian basin
+  # ``alpha * swing_height^2 = 2.286`` so the reward shape stays
+  # calibrated (flat-foot baseline and peak-tracking reward unchanged):
+  #   alpha_wr = 1428.6 * (0.04 / 0.05)^2 = 914.304
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
   penalty_feet_ori: 5.0
 
   # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
@@ -226,7 +285,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke9c, tb_full_recipe, tb_ref_init_basin, wr_size_normalized_tb_bootstrap]
+  tags: [ppo, v0.20.1, smoke9c, tb_full_recipe, tb_ref_init_basin, wr_size_normalized_tb_bootstrap, spatial_normalized, reset_perturb_tb]
 
 video:
   enabled: false

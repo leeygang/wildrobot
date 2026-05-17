@@ -714,22 +714,19 @@ def test_smoke9c_zero_action_targets_constant_ref_init_not_moving_q_ref(
         pytest.skip("ref_init and home are numerically equal in this asset")
 
 
-def test_smoke9c_reset_qpos_and_ctrl_match_ref_init(
+def test_smoke9c_reset_ctrl_matches_ref_init(
     env_smoke9c_ref_init_base: WildRobotEnv,
 ) -> None:
+    """Reset CTRL (action target) must always equal ref_init_q_rad,
+    independent of any reset-time pose perturbation.  This is the
+    zero-residual invariant: a zero policy action composes to the
+    constant ref_init control base.  The perturbation introduced in the
+    smoke9c spatial-normalization pass only touches the initial
+    physical qpos, never the ctrl base.
+    """
     reset_fn = jax.jit(env_smoke9c_ref_init_base.reset)
     state = reset_fn(jax.random.PRNGKey(0))
     ref_init = np.asarray(env_smoke9c_ref_init_base._ref_init_q_rad).astype(np.float32)
-
-    reset_q = np.asarray(
-        state.data.qpos[env_smoke9c_ref_init_base._actuator_qpos_addrs]
-    ).astype(np.float32)
-    np.testing.assert_allclose(
-        reset_q,
-        ref_init,
-        atol=1e-5,
-        err_msg="smoke9c reset actuator qpos must match ref_init_q",
-    )
 
     perm = np.asarray(env_smoke9c_ref_init_base._ctrl_mapper.policy_to_mj_order_jax)
     applied_target_q = np.asarray(state.data.ctrl).astype(np.float32)[perm]
@@ -737,8 +734,214 @@ def test_smoke9c_reset_qpos_and_ctrl_match_ref_init(
         applied_target_q,
         ref_init,
         atol=1e-5,
-        err_msg="smoke9c reset ctrl init must match ref_init_q",
+        err_msg=(
+            "smoke9c reset ctrl init must match ref_init_q regardless "
+            "of reset perturbation."
+        ),
     )
+
+
+def test_smoke9c_reset_qpos_matches_ref_init_when_perturbation_disabled(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    """With reset perturbation ranges zeroed out, the reset reproduces
+    the historical quiet ref_init behavior exactly: qpos[actuator_addrs]
+    == ref_init_q_rad and root quat is the keyframe quat.  This pins
+    the no-op contract: ``reset_torso_{roll,pitch}_range = [0, 0]``
+    must be a true no-op.
+    """
+    env = env_smoke9c_ref_init_base
+    saved_roll = env._reset_torso_roll_range
+    saved_pitch = env._reset_torso_pitch_range
+    try:
+        env._reset_torso_roll_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+        env._reset_torso_pitch_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+        # Don't jit — fresh closure each call so the zero ranges take effect.
+        for seed in (0, 1, 7, 42):
+            state = env.reset(jax.random.PRNGKey(seed))
+            ref_init = np.asarray(env._ref_init_q_rad).astype(np.float32)
+            reset_q = np.asarray(
+                state.data.qpos[env._actuator_qpos_addrs]
+            ).astype(np.float32)
+            np.testing.assert_allclose(
+                reset_q,
+                ref_init,
+                atol=1e-6,
+                err_msg=(
+                    f"seed={seed}: zero-range perturbation must reproduce "
+                    f"ref_init qpos exactly."
+                ),
+            )
+    finally:
+        env._reset_torso_roll_range = saved_roll
+        env._reset_torso_pitch_range = saved_pitch
+
+
+def test_smoke9c_reset_perturbation_changes_qpos_when_enabled(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    """With smoke9c's default non-zero perturbation ranges, the reset
+    qpos is NOT always identical to ref_init_q_rad.  Across a handful
+    of seeds, at least some leg-pitch joints and/or the root quat must
+    differ from the quiet baseline by a measurable amount.
+    """
+    env = env_smoke9c_ref_init_base
+    # Sanity: smoke9c yaml enables the perturbation.
+    assert float(env._reset_torso_pitch_range[1]) > 0.0
+    assert float(env._reset_torso_roll_range[1]) > 0.0
+
+    ref_init = np.asarray(env._ref_init_q_rad).astype(np.float32)
+    leg_pitch_addrs = np.asarray(env._leg_pitch_qpos_addrs)
+    # Get the unperturbed root quat by sampling with the perturbation
+    # off (locally) — that gives the keyframe root quat that the
+    # perturbation rotates around.
+    saved_roll = env._reset_torso_roll_range
+    saved_pitch = env._reset_torso_pitch_range
+    env._reset_torso_roll_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+    env._reset_torso_pitch_range = jp.asarray([0.0, 0.0], dtype=jp.float32)
+    quiet_state = env.reset(jax.random.PRNGKey(0))
+    quiet_quat = np.asarray(quiet_state.data.qpos[3:7])
+    env._reset_torso_roll_range = saved_roll
+    env._reset_torso_pitch_range = saved_pitch
+
+    leg_pitch_deltas = []
+    quat_deltas = []
+    for seed in (100, 200, 300, 400, 500):
+        state = env.reset(jax.random.PRNGKey(seed))
+        reset_q = np.asarray(
+            state.data.qpos[env._actuator_qpos_addrs]
+        ).astype(np.float32)
+        leg_pitch_qpos = np.asarray(state.data.qpos[leg_pitch_addrs])
+        # Compare leg-pitch qpos at MJ addrs against ref_init_q lookup at
+        # the matching actuator positions.  Use ctrl mapping: the
+        # actuator order maps to qpos addrs via _actuator_qpos_addrs.
+        ref_init_qpos_full = np.zeros_like(state.data.qpos)
+        # Just check leg-pitch qpos deviates from quiet baseline.
+        quiet_leg_qpos = np.asarray(quiet_state.data.qpos[leg_pitch_addrs])
+        leg_pitch_delta = float(np.max(np.abs(leg_pitch_qpos - quiet_leg_qpos)))
+        quat_delta = float(
+            np.max(np.abs(np.asarray(state.data.qpos[3:7]) - quiet_quat))
+        )
+        leg_pitch_deltas.append(leg_pitch_delta)
+        quat_deltas.append(quat_delta)
+
+    # At least one seed must produce a meaningful leg-pitch perturbation.
+    assert max(leg_pitch_deltas) > 1e-3, (
+        f"reset perturbation produced near-zero leg-pitch deltas "
+        f"across all probed seeds: {leg_pitch_deltas}.  Perturbation "
+        f"appears inactive when it should be enabled."
+    )
+    # And at least one seed must produce a non-trivial root-quat update.
+    assert max(quat_deltas) > 1e-3, (
+        f"reset perturbation produced near-zero root-quat deltas "
+        f"across all probed seeds: {quat_deltas}.  Torso roll/pitch "
+        f"updates appear to be missing from the qpos[3:7] write."
+    )
+
+
+def test_smoke9c_reset_perturbation_only_touches_leg_pitch_joints(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    """Structured perturbation contract: torso-pitch decomposition must
+    touch ONLY the 6 leg-pitch actuator qpos addrs.  Non-pitch actuator
+    qpos addrs (arms, waist yaw, hip rolls, ankle rolls) must equal
+    their ref_init values exactly.  Anything else is iid noise, which
+    the prompt explicitly forbids.
+    """
+    env = env_smoke9c_ref_init_base
+    ref_init = np.asarray(env._ref_init_q_rad).astype(np.float32)
+    leg_pitch_set = set(int(a) for a in np.asarray(env._leg_pitch_qpos_addrs))
+    # Build mapping actuator index → mj qpos addr.
+    actuator_qpos_addrs = np.asarray(env._actuator_qpos_addrs)
+    non_pitch_mask = np.array(
+        [int(a) not in leg_pitch_set for a in actuator_qpos_addrs]
+    )
+
+    for seed in (1, 2, 3, 4):
+        state = env.reset(jax.random.PRNGKey(seed))
+        reset_actuator_q = np.asarray(
+            state.data.qpos[env._actuator_qpos_addrs]
+        ).astype(np.float32)
+        non_pitch_q = reset_actuator_q[non_pitch_mask]
+        non_pitch_ref = ref_init[non_pitch_mask]
+        np.testing.assert_allclose(
+            non_pitch_q,
+            non_pitch_ref,
+            atol=1e-6,
+            err_msg=(
+                f"seed={seed}: non-pitch actuators were perturbed.  Reset "
+                f"perturbation must only touch leg-pitch joints (hip / knee "
+                f"/ ankle pitch L+R) and the root quat."
+            ),
+        )
+
+
+def test_smoke9c_euler_xyz_quat_matches_scipy() -> None:
+    """``_euler_xyz_to_quat_xyzw`` must match scipy intrinsic 'xyz'
+    Euler-to-quat conversion (the convention TB uses at
+    ``toddlerbot/locomotion/mjx_env.py:1044``
+    ``R.from_euler('xyz', [roll, pitch, 0])``).
+
+    An earlier draft of this helper implemented the EXTRINSIC 'XYZ'
+    quaternion ordering by mistake; whenever roll AND pitch were both
+    nonzero, the resulting torso rotation had the wrong sign on the
+    z (yaw) component (z = +sin²(θ/2) instead of −sin²(θ/2) for
+    roll=pitch=θ), which would silently apply a different torso
+    rotation than TB.  This test pins the correct convention so a
+    future regression in the helper can't sneak through.
+    """
+    from scipy.spatial.transform import Rotation as R  # local import
+
+    cases = [
+        (0.1, 0.1, 0.0),    # both nonzero — the case the previous bug hit
+        (0.1, 0.0, 0.0),    # pure roll
+        (0.0, 0.1, 0.0),    # pure pitch
+        (-0.05, 0.08, 0.0), # asymmetric magnitudes
+        (0.07, -0.06, 0.0), # opposite signs
+        (-0.1, -0.1, 0.0),  # both negative
+        (0.05, 0.03, 0.02), # with non-zero yaw too
+    ]
+    for r, p, y in cases:
+        mine = np.asarray(
+            WildRobotEnv._euler_xyz_to_quat_xyzw(
+                jp.float32(r), jp.float32(p), jp.float32(y)
+            )
+        )
+        scipy_xyzw = R.from_euler("xyz", [r, p, y]).as_quat()
+        np.testing.assert_allclose(
+            mine,
+            scipy_xyzw,
+            atol=1e-6,
+            err_msg=(
+                f"euler({r}, {p}, {y}) → quat mismatch with scipy "
+                f"'xyz' (intrinsic): mine={mine}, scipy={scipy_xyzw}.  "
+                f"Pin lost — see test docstring for the previous bug."
+            ),
+        )
+
+
+def test_smoke9c_reset_perturbation_respects_joint_limits(
+    env_smoke9c_ref_init_base: WildRobotEnv,
+) -> None:
+    """Even with maximum perturbation in the range, leg-pitch qpos must
+    stay inside the kinematic joint limits.  Probe a wide sweep of
+    seeds; every output must satisfy ``mins <= qpos <= maxs``.
+    """
+    env = env_smoke9c_ref_init_base
+    leg_pitch_addrs = np.asarray(env._leg_pitch_qpos_addrs)
+    mins = np.asarray(env._leg_pitch_joint_mins)
+    maxs = np.asarray(env._leg_pitch_joint_maxs)
+    for seed in range(32):
+        state = env.reset(jax.random.PRNGKey(7000 + seed))
+        leg_pitch_qpos = np.asarray(state.data.qpos[leg_pitch_addrs])
+        assert np.all(leg_pitch_qpos >= mins - 1e-6), (
+            f"seed={seed}: leg-pitch qpos {leg_pitch_qpos} fell below "
+            f"min limits {mins}."
+        )
+        assert np.all(leg_pitch_qpos <= maxs + 1e-6), (
+            f"seed={seed}: leg-pitch qpos {leg_pitch_qpos} exceeded "
+            f"max limits {maxs}."
+        )
 
 
 def test_smoke9c_zero_action_applied_target_q_equals_ref_init_under_full_step(

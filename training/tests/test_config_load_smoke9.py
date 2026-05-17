@@ -330,3 +330,79 @@ def test_smoke9c_compute_budget_preserved(smoke9c_cfg) -> None:
     assert ppo.rollout_steps == 20
     assert ppo.iterations == 480
     assert ppo.num_envs * ppo.rollout_steps * ppo.iterations == 19_660_800
+
+
+def test_smoke9c_spatial_normalization_thresholds(smoke9c_cfg) -> None:
+    """smoke9c follow-up: lateral-foot geometry thresholds copied from
+    TB literal meters are body-bound; the spatial-normalization pass
+    rescales them by the TB→WR stance-width fraction (TB 0.074 m → WR
+    0.18056 m).  Pin the derived values so a future yaml edit can't
+    silently regress one back to TB meters.
+    """
+    env = smoke9c_cfg.env
+    # close_feet_threshold: TB 0.06 / 0.074 * 0.18056 ≈ 0.146
+    assert env.close_feet_threshold == pytest.approx(0.146, abs=5e-4), (
+        f"smoke9c close_feet_threshold = {env.close_feet_threshold}; "
+        f"expected 0.146 (WR-normalized from TB 0.06 m)."
+    )
+    # min_feet_y_dist: TB 0.07 / 0.074 * 0.18056 ≈ 0.171
+    assert env.min_feet_y_dist == pytest.approx(0.171, abs=5e-4), (
+        f"smoke9c min_feet_y_dist = {env.min_feet_y_dist}; "
+        f"expected 0.171 (WR-normalized from TB 0.07 m).  "
+        f"feet_distance is inactive but defaults are normalized to "
+        f"prevent silent reactivation with TB meters."
+    )
+    # max_feet_y_dist: TB 0.13 / 0.074 * 0.18056 ≈ 0.317
+    assert env.max_feet_y_dist == pytest.approx(0.317, abs=5e-4), (
+        f"smoke9c max_feet_y_dist = {env.max_feet_y_dist}; "
+        f"expected 0.317 (WR-normalized from TB 0.13 m)."
+    )
+
+
+def test_smoke9c_feet_phase_normalized_basin_preserved(smoke9c_cfg) -> None:
+    """smoke9c follow-up: feet_phase swing target = 0.05 m taken from
+    the WR-validated ZMP prior (control/zmp/zmp_walk.py:134
+    foot_step_height_m) — NOT a strict Hof-1996 body-size rescale of
+    TB's 0.04 m (which would give ~0.07-0.08 m on WR; see Appendix C
+    in walking_training.md for the explicit deviation rationale).
+    ``alpha`` is rescaled by (0.04/0.05)² so the dimensionless basin
+    ``alpha * swing_height² ≈ 2.286`` is preserved, which keeps the
+    Gaussian reward SHAPE invariant under the target change (flat-foot
+    baseline + peak-tracking reward stay calibrated).
+    """
+    rw = smoke9c_cfg.reward_weights
+    assert rw.feet_phase_swing_height == pytest.approx(0.05, abs=1e-6), (
+        f"smoke9c feet_phase_swing_height = {rw.feet_phase_swing_height}; "
+        f"expected 0.05 m (WR ZMP prior foot_step_height_m)."
+    )
+    assert rw.feet_phase_alpha == pytest.approx(914.304, abs=1e-2), (
+        f"smoke9c feet_phase_alpha = {rw.feet_phase_alpha}; "
+        f"expected 914.304 = 1428.6 * (0.04/0.05)² (preserves "
+        f"alpha * swing_height² = 2.286)."
+    )
+    # Dimensionless basin invariant.
+    tb_basin = 1428.6 * 0.04 * 0.04
+    wr_basin = rw.feet_phase_alpha * rw.feet_phase_swing_height ** 2
+    assert wr_basin == pytest.approx(tb_basin, rel=5e-3), (
+        f"feet_phase normalized basin shifted: tb={tb_basin:.4f}, "
+        f"wr={wr_basin:.4f}.  Hof (1996) body-size normalization "
+        f"requires alpha * swing_height² be invariant."
+    )
+
+
+def test_smoke9c_reset_perturbation_enabled(smoke9c_cfg) -> None:
+    """smoke9c follow-up: TB-style reset-time torso roll / pitch
+    perturbation is enabled.  Default ranges should mirror TB's bipedal
+    DomainRandConfig (mjx_config.py:211-212 ``[-0.1, 0.1]`` rad each).
+    """
+    env = smoke9c_cfg.env
+    assert list(env.reset_torso_roll_range) == [-0.1, 0.1], (
+        f"smoke9c reset_torso_roll_range = "
+        f"{list(env.reset_torso_roll_range)}; expected [-0.1, 0.1] "
+        f"(matches TB DomainRandConfig.torso_roll_range)."
+    )
+    assert list(env.reset_torso_pitch_range) == [-0.1, 0.1], (
+        f"smoke9c reset_torso_pitch_range = "
+        f"{list(env.reset_torso_pitch_range)}; expected [-0.1, 0.1] "
+        f"(matches TB DomainRandConfig.torso_pitch_range)."
+    )
