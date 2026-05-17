@@ -1911,19 +1911,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ) -> jax.Array:
         """Convert XYZ-Euler (roll, pitch, yaw) to quaternion [x, y, z, w].
 
-        Matches scipy.spatial.transform.Rotation.from_euler('xyz', ...)
-        (intrinsic xyz).  Used by the reset perturbation to mirror TB's
+        Matches ``scipy.spatial.transform.Rotation.from_euler('xyz', ...)``
+        — that is, scipy's **lowercase 'xyz' = EXTRINSIC** convention
+        (rotations about FIXED world axes in the order roll-x, pitch-y,
+        yaw-z).  scipy uppercase 'XYZ' would be intrinsic and gives the
+        opposite sign on the z-component when both roll and pitch are
+        nonzero.  Used by the reset perturbation to mirror TB's
         ``R.from_euler('xyz', [roll, pitch, 0])`` composition
-        (``mjx_env.py:1044``).
+        (``mjx_env.py:1044``), which is also extrinsic.
 
-        Intrinsic 'xyz' is equivalent (in quaternion-product form) to
-        ``q_z(yaw) ⊗ q_y(pitch) ⊗ q_x(roll)`` with Hamilton product on
-        [x, y, z, w].  Verified against scipy: for
-        (roll, pitch, yaw) = (0.1, 0.1, 0), this returns z ≈ -0.0025
-        (sign matches scipy 'xyz').  Earlier draft implemented the
-        ``q_x ⊗ q_y ⊗ q_z`` extrinsic ('XYZ') ordering, which gave
-        z = +0.0025 and so applied a different rotation than TB
-        whenever ROLL AND PITCH WERE BOTH NONZERO — fixed here.
+        Extrinsic 'xyz' as a Hamilton product on [x, y, z, w] is
+        ``q_z(yaw) ⊗ q_y(pitch) ⊗ q_x(roll)`` (the last-applied fixed-
+        axis rotation is leftmost in the product).  Verified against
+        scipy: for (roll, pitch, yaw) = (0.1, 0.1, 0), this returns
+        z ≈ -0.0025 (sign matches scipy lowercase 'xyz').  Earlier
+        draft implemented ``q_x ⊗ q_y ⊗ q_z`` (which is *intrinsic*
+        XYZ in scipy's naming), giving z = +0.0025 and so applying a
+        different rotation than TB whenever ROLL AND PITCH WERE BOTH
+        NONZERO — fixed.
         """
         cr = jp.cos(roll * 0.5); sr = jp.sin(roll * 0.5)
         cp = jp.cos(pitch * 0.5); sp = jp.sin(pitch * 0.5)

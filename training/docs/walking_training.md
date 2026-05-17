@@ -2097,7 +2097,7 @@ repo state at the home pose):
 | metric | TB | WR | WR / TB |
 |---|---|---|---|
 | foot-body lateral spacing (close_feet / feet_distance source) | 0.074 m | 0.18056 m | **2.44** |
-| hip-to-ankle vertical (TB ``config.json:hip_to_ankle_pitch_z`` vs WR home-pose ``left_hip → left_foot`` Z) | 0.2115 m | 0.403 m | **1.91** |
+| hip-to-ankle vertical (TB ``config.json:hip_to_ankle_pitch_z`` vs WR home-pose ``left_hip_pitch.xanchor.z − left_ankle_pitch.xanchor.z`` = 0.4374 − 0.0656) | 0.2115 m | 0.372 m | **1.76** |
 | operating forward speed (Phase 9D parity) | 0.15 m/s | 0.20 m/s | **1.33** |
 
 The 1.33 speed ratio (the basis for the ``8f44c74``
@@ -2130,7 +2130,7 @@ control-rate audit and are intentionally out of scope.
 | `action_rate` | `-sum(Δaction²)` per step | Time-scale sensitive (per-step Δ ∝ 1/T) | `defer` | Same reason as `ang_vel_xy`. |
 | `penalty_pose` | Per-joint quadratic deviation from anchor (rad²), weighted | None — joint angles are dimensionless | `keep` | Per-joint pose weights (`penalty_pose_weights_per_joint`) are angular; anchored to `home`. Mirrors TB walk.gin:120-124. |
 | `penalty_close_feet_xy` | Binary -1 when lateral foot dist < threshold (m) | **Yes** — meters scale with stance width | **`rescale now`** | TB literal 0.06 m at TB stance **0.074 m** → WR-equivalent at WR stance **0.18056 m**: `0.06 × (0.18056 / 0.074) ≈ 0.146 m`.  Preserves TB fraction-of-stance (≈ 81 % of stance width on both robots).  See `training/envs/wildrobot_env.py:1415-1435` (WR reward) and `~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py:2709-2745` (TB reward); both consume the same lateral-foot-body distance projection at the home pose. |
-| `feet_phase` | `exp(-α · Σ Δz²) × (1 + max_expected_z / swing_height)` | **Yes** — meters in Δz, swing_height, and the dimensionless basin `α · swing_height²` | **`rescale now`** (prior-aligned, NOT strict size-normalization — see rationale) | TB target `swing_height = 0.04 m` is body-bound (≈ 19 % of TB hip-to-ankle vertical 0.2115 m from `config.json`).  WR's swing target in this pass is set to **0.05 m**, taken from the WR-validated ZMP prior (`control/zmp/zmp_walk.py:134 foot_step_height_m`), **NOT** from a strict characteristic-length rescale of TB's 0.04 m.  A pure Hof (1996) body-size rescale using WR hip-to-ankle (~0.40 m at home, ~1.91× TB) would put WR closer to ~0.07-0.08 m — kept consistent with the deployed WR prior instead.  Alpha is rescaled to **preserve the shape** of the Gaussian basin under the target change: `α_wr = 1428.6 × (0.04 / 0.05)² = 914.304` keeps `α · swing_height² = 2.286` invariant, so the flat-foot baseline and peak-tracking reward stay calibrated.  Follow-up if validation later prefers strict size-scaling: bump `swing_height` and rescale alpha by the same rule. |
+| `feet_phase` | `exp(-α · Σ Δz²) × (1 + max_expected_z / swing_height)` | **Yes** — meters in Δz, swing_height, and the dimensionless basin `α · swing_height²` | **`rescale now`** (prior-aligned, NOT strict size-normalization — see rationale) | TB target `swing_height = 0.04 m` is body-bound (≈ 19 % of TB hip-to-ankle vertical 0.2115 m from `config.json`).  WR's swing target in this pass is set to **0.05 m**, taken from the WR-validated ZMP prior (`control/zmp/zmp_walk.py:134 foot_step_height_m`), **NOT** from a strict characteristic-length rescale of TB's 0.04 m.  A pure Hof (1996) body-size rescale using the repo-measured WR hip-to-ankle (0.372 m at home, **1.76× TB**) would put WR closer to ~0.07 m — kept consistent with the deployed WR prior instead.  Alpha is rescaled to **preserve the shape** of the Gaussian basin under the target change: `α_wr = 1428.6 × (0.04 / 0.05)² = 914.304` keeps `α · swing_height² = 2.286` invariant, so the flat-foot baseline and peak-tracking reward stay calibrated.  Follow-up if validation later prefers strict size-scaling: bump `swing_height` and rescale alpha by the same rule. |
 | `penalty_feet_ori` | `-(\|g_lateral\|_L + \|g_lateral\|_R)` (TB `tb_linear_lateral` form), dimensionless | None — gravity components in foot-local frame are dimensionless | `keep` | Gravity vector is a unit vector; lateral components ∈ [-1, 1] are scale-invariant.  WR-specific MJCF 90° foot rotation is handled by the per-foot baseline cache (`wildrobot_env.py:_init_foot_body_ids`); the reward itself doesn't need WR-vs-TB rescaling. |
 
 ### C.2 Inactive-but-configured lateral-band thresholds
@@ -2171,7 +2171,8 @@ on the first iters.  See
 - same mirror-symmetric leg-pitch sign pattern
   `[-1, +1, -1, +1, -1, +1]`
 - same root-quat composition `R_xyz(roll, pitch, 0) · R_current`
-  (verified against scipy intrinsic 'xyz' — see
+  (extrinsic XYZ — scipy's lowercase `'xyz'` convention, matching
+  TB at `mjx_env.py:1044`; verified by
   `test_smoke9c_euler_xyz_quat_matches_scipy`)
 
 **WR-specific deviations from TB (explicit, not parity):**

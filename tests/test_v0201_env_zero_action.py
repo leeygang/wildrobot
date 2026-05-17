@@ -877,18 +877,20 @@ def test_smoke9c_reset_perturbation_only_touches_leg_pitch_joints(
 
 
 def test_smoke9c_euler_xyz_quat_matches_scipy() -> None:
-    """``_euler_xyz_to_quat_xyzw`` must match scipy intrinsic 'xyz'
-    Euler-to-quat conversion (the convention TB uses at
+    """``_euler_xyz_to_quat_xyzw`` must match scipy's lowercase
+    ``'xyz'`` convention — which scipy defines as **EXTRINSIC**
+    (rotations about FIXED world axes), the convention TB uses at
     ``toddlerbot/locomotion/mjx_env.py:1044``
-    ``R.from_euler('xyz', [roll, pitch, 0])``).
+    ``R.from_euler('xyz', [roll, pitch, 0])``.
 
-    An earlier draft of this helper implemented the EXTRINSIC 'XYZ'
-    quaternion ordering by mistake; whenever roll AND pitch were both
-    nonzero, the resulting torso rotation had the wrong sign on the
-    z (yaw) component (z = +sin²(θ/2) instead of −sin²(θ/2) for
-    roll=pitch=θ), which would silently apply a different torso
-    rotation than TB.  This test pins the correct convention so a
-    future regression in the helper can't sneak through.
+    scipy's uppercase ``'XYZ'`` is the intrinsic (body-axis) variant
+    and yields the OPPOSITE sign on z when roll and pitch are both
+    nonzero.  An earlier draft of the helper implemented the
+    intrinsic ``q_x ⊗ q_y ⊗ q_z`` ordering by mistake, giving
+    z = +sin²(θ/2) instead of −sin²(θ/2) for roll=pitch=θ, and so
+    applied a different torso rotation than TB whenever roll AND
+    pitch were both nonzero.  This test pins the correct extrinsic
+    convention so a future regression can't sneak through.
     """
     from scipy.spatial.transform import Rotation as R  # local import
 
