@@ -43,6 +43,7 @@ def build_observation_from_components(
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v6_offline_ref_history",
+        "wr_obs_v7_phase_proprio",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
@@ -169,6 +170,16 @@ def build_observation_from_components(
                 "wr_obs_v6_offline_ref_history requires proprio_history; "
                 "got None.  Env must roll a per-step proprio buffer and "
                 "pass it through build_observation."
+            )
+        parts.append(np.asarray(proprio_history, dtype=np.float32).reshape(-1))
+    if spec.observation.layout_id == "wr_obs_v7_phase_proprio":
+        # smoke11 de-hybridized actor — see policy_contract/jax/obs.py
+        # for the matching JAX branch.  Order locked by
+        # policy_contract/spec_builder.py.
+        parts.append(phase)
+        if proprio_history is None:
+            raise ValueError(
+                "wr_obs_v7_phase_proprio requires proprio_history; got None."
             )
         parts.append(np.asarray(proprio_history, dtype=np.float32).reshape(-1))
     parts.append(np.zeros((1,), dtype=np.float32))

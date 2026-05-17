@@ -46,6 +46,7 @@ def build_observation_from_components(
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v6_offline_ref_history",
+        "wr_obs_v7_phase_proprio",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
@@ -174,6 +175,19 @@ def build_observation_from_components(
                 "wr_obs_v6_offline_ref_history requires proprio_history; "
                 "got None.  Env must roll a per-step proprio buffer and "
                 "pass it through build_observation."
+            )
+        parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
+    if spec.observation.layout_id == "wr_obs_v7_phase_proprio":
+        # smoke11 de-hybridized actor: TB-aligned proprio + command +
+        # 2-dim phase clock + proprio_history.  All other loc_ref_*
+        # kwargs passed by the env are intentionally ignored here so
+        # the env's build_observation call site can stay layout-
+        # agnostic (it always populates every reference channel; the
+        # layout decides what reaches the actor).
+        parts.append(phase)
+        if proprio_history is None:
+            raise ValueError(
+                "wr_obs_v7_phase_proprio requires proprio_history; got None."
             )
         parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
     parts.append(jnp.zeros((1,), dtype=jnp.float32))

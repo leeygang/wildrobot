@@ -222,13 +222,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
 
         layout_id = str(self._config.env.actor_obs_layout_id)
-        if layout_id != "wr_obs_v6_offline_ref_history":
+        if layout_id not in (
+            "wr_obs_v6_offline_ref_history",
+            "wr_obs_v7_phase_proprio",
+        ):
             raise ValueError(
-                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id="
-                "'wr_obs_v6_offline_ref_history'.  v5 was deprecated along "
-                "with the high-confidence prep (proprio history is now "
-                "always wired); older layouts depended on v1/v2 reference "
-                "state and were removed by the v3 rewrite."
+                "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
+                "{'wr_obs_v6_offline_ref_history', 'wr_obs_v7_phase_proprio'}.  "
+                "v5 was deprecated along with the high-confidence prep "
+                "(proprio history is now always wired); v7 (smoke11) drops "
+                "every reference-trajectory channel from the actor obs except "
+                "the 2-dim gait phase clock — see policy_contract/spec.py "
+                "SUPPORTED_LAYOUT_IDS.  Older layouts depended on v1/v2 "
+                "reference state and were removed by the v3 rewrite."
             )
 
         if not self._config.env.scene_xml_path:

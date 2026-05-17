@@ -159,6 +159,40 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
             ObsFieldSpec(name="loc_ref_history", size=4, units="recent_phase_sin_cos"),
             ObsFieldSpec(name="padding", size=1, units="unused"),
         ]
+    if layout_id == "wr_obs_v7_phase_proprio":
+        # smoke11 (post-home-migration de-hybridization).  Mirrors
+        # ToddlerBot's default ``use_phase_signal=True`` actor obs
+        # (walk.gin :: num_single_obs = 84 = 2(phase) + 3(cmd) +
+        # 30(motor_pos) + 30(motor_vel) + 12(last_act) + 3(ang_vel) +
+        # 4(quat)).  WR substitutes:
+        #   - ``gravity_local`` (3) for TB's ``torso_quat`` (4) — same
+        #     information; gravity-in-body is the WR convention.
+        #   - per-joint normalized pos/vel for TB's delta-from-default
+        #     scaled pos/vel — same role, different normalization.
+        #   - 4-dim ``foot_switches`` for the WR contact contract.
+        # The only remaining reference-derived channel is the 2-dim
+        # ``loc_ref_phase_sin_cos`` gait clock, kept because TB does the
+        # same and the actor needs an internal periodic time signal.
+        # ``proprio_history`` is the WR signal-engineering addition
+        # (lin_vel is privileged-only on WR, so the actor estimates
+        # base velocity from short-horizon kinematic stacking).
+        proprio_bundle = 3 + 4 + 3 * action_dim
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="loc_ref_phase_sin_cos", size=2, units="sin_cos_phase"),
+            ObsFieldSpec(
+                name="proprio_history",
+                size=PROPRIO_HISTORY_FRAMES * proprio_bundle,
+                units="stacked_proprio_oldest_to_newest",
+            ),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
     if layout_id == "wr_obs_v6_offline_ref_history":
         # v0.20.1 — the active locomotion contract.  Channels:
         #   - v4 base (gravity, gyro, joint pos/vel, foot switches,

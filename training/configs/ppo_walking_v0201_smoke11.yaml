@@ -1,0 +1,352 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 11 — de-hybridized actor (TB-aligned phase+proprio)
+# =============================================================================
+# Built on smoke10 (post-home-migration fixed-home basin).  smoke11 takes
+# one further step toward ToddlerBot's architecture: it drops every
+# reference-trajectory channel from the actor observation EXCEPT the
+# 2-dim gait phase clock.  This matches TB's default
+# ``ObsConfig.use_phase_signal=True`` actor obs
+# (``toddlerbot/locomotion/walk.gin:24-28``,
+# ``toddlerbot/locomotion/mjx_env.py:2102-2124``):
+#
+#   TB actor obs = phase(2) + cmd(3) + motor_pos(30) + motor_vel(30) +
+#                  last_act(12) + ang_vel(3) + quat(4) = 84 dims
+#
+# WR's corresponding ``wr_obs_v7_phase_proprio`` layout is:
+#
+#   gravity_local(3) + angvel_heading_local(3) +
+#   joint_pos_normalized(21) + joint_vel_normalized(21) +
+#   foot_switches(4) + prev_action(21) + velocity_cmd(1) +
+#   loc_ref_phase_sin_cos(2) + proprio_history(15 × 70) + padding(1)
+#
+# Channels DROPPED from the smoke10 ``wr_obs_v6_offline_ref_history``
+# actor obs (kept available to the privileged critic and to reward
+# terms — only removed from the ACTOR input):
+#   loc_ref_stance_foot, loc_ref_next_foothold, loc_ref_swing_pos,
+#   loc_ref_swing_vel, loc_ref_pelvis_targets, loc_ref_history,
+#   loc_ref_q_ref, loc_ref_pelvis_pos, loc_ref_pelvis_vel,
+#   loc_ref_left_foot_pos, loc_ref_right_foot_pos,
+#   loc_ref_left_foot_vel, loc_ref_right_foot_vel,
+#   loc_ref_contact_mask.
+#
+# Why this is the right step:
+#  - smoke10's hybrid actor (fixed-home action anchor + reference-rich
+#    obs) preserved a control basin that is not TB-aligned and that
+#    smoke9c-style runs reached without learning to walk.
+#  - Removing the reference scaffold from the actor input forces the
+#    policy to learn a periodic gait from the TB-aligned signals
+#    (gravity + ang_vel + joint state + phase clock + command) instead
+#    of leaning on q_ref / pelvis / foot state at inference time.
+#  - The privileged critic + reward terms still see the reference, so
+#    the prior remains load-bearing where it actually helps.
+#
+# Carry-overs from smoke10 (kept byte-equal): home keyframe + basin
+# flags, command curriculum, TB-faithful reward block + alphas,
+# residual scale window, TB-style reset perturbation, PPO hyper-
+# parameters, compute budget.  The only diff vs smoke10 is the
+# one-line ``actor_obs_layout_id`` flip.
+#
+# Scale factor from Phase 9D WR/TB comparison:
+#   s = WR_operating_speed / TB_operating_speed = 0.20 / 0.15 = 4/3
+#
+# Size-normalized curriculum mapping from TB bootstrap:
+#   TB range [-0.10, +0.10]     -> WR [-0.1333333333, +0.1333333333]
+#   TB deadzone 0.05            -> WR  0.0666666667
+#   TB eval/offline cmd +0.10   -> WR +0.1333333333
+#
+# To preserve the same normalized velocity-tracking reward basin:
+#   TB alpha = 1000
+#   WR alpha = 1000 / s^2 = 562.5
+#   exp(-1000 * 0.10^2) == exp(-562.5 * 0.1333333333^2)
+#
+# Spatial reward changes (new in this pass):
+#   feet_phase:   swing_height 0.04 -> 0.05 m, alpha 1428.6 -> 914.304.
+#                 0.05 m is the WR PRIOR-ALIGNED target (matches
+#                 control/zmp/zmp_walk.py:134 foot_step_height_m), NOT a
+#                 strict Hof-1996 characteristic-length rescale of TB
+#                 0.04 m (which would put WR closer to ~0.07-0.08 m).
+#                 Alpha is rescaled by (0.04/0.05)^2 to keep the
+#                 dimensionless Gaussian basin alpha * swing_height^2 =
+#                 2.286 INVARIANT under the target change, so the reward
+#                 shape (flat-foot baseline, peak-tracking reward) stays
+#                 calibrated.  This is an explicit deviation from strict
+#                 size-normalization, kept consistent with the deployed
+#                 WR prior.
+#   close_feet_threshold: 0.06 -> 0.146 m  (TB fraction-of-stance applied
+#                 to WR stance: TB foot-body lateral spacing 0.074 m at
+#                 home pose -> WR 0.18056 m at home pose; ratio 2.44x).
+#   min/max_feet_y_dist:  0.07/0.13 -> 0.171/0.317 m  (same
+#                 fraction-of-stance rule; ``feet_distance`` is inactive
+#                 in this config but normalized now so future activation
+#                 doesn't re-introduce TB-literal meters on WR).
+#
+# Reset perturbation (new in this pass):
+#   reset_torso_{roll,pitch}_range: [-0.1, 0.1] rad each.  Mirrors TB's
+#   bipedal DomainRandConfig defaults (mjx_config.py:211-212) and the
+#   leg-pitch partition in TB mjx_env.py:954-1053.  Perturbs only the
+#   physical reset qpos (not the ref_init ctrl base), so zero policy
+#   action still composes to the constant ref_init control target.
+#   This breaks the stand-still attractor without changing the reset
+#   center: the policy must take active corrective actions to return
+#   to ref_init, removing the "do nothing and survive 500 steps" basin.
+#
+# Scope boundary:
+# - this config is the normalized bootstrap run
+# - later continuation toward WR's 0.20 m/s operating point (and any
+#   higher product target such as 0.26 m/s) is separate work.
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke11 (de-hybridized actor: phase+proprio only)"
+
+seed: 42
+
+# =============================================================================
+# Environment — smoke11 de-hybridized actor obs over smoke10 baseline
+# =============================================================================
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  # WR-normalized from TB literals 0.07 / 0.13 (walk.gin defaults at TB
+  # stance width 0.074 m).  Fraction-of-stance preserved on WR's 0.18056 m
+  # stance.  feet_distance is inactive in smoke9c (weight 0); normalized
+  # now so a future activation doesn't re-introduce TB-literal meters.
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  # TB-style reset-time pose perturbation on the ref_init basin.
+  # Mirrors TB ``DomainRandConfig.torso_pitch_range`` / ``torso_roll_range``
+  # (toddlerbot/locomotion/mjx_config.py:211-212 bipedal defaults
+  # ``[-0.1, 0.1]`` rad each) and the partitioned-leg-pitch reset logic in
+  # TB ``mjx_env.py:954-1053``.  Perturbs only the initial physical qpos;
+  # the ref_init ctrl base is untouched so zero policy action still
+  # composes to the same constant control target (zero-residual invariant).
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # smoke9c normalized bootstrap — command curriculum scaled by s=4/3
+  # from TB to WR size units (Phase 9D parity baseline).
+  min_velocity: -0.1333333333
+  max_velocity: 0.1333333333
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.2
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.0666666667
+  eval_velocity_cmd: 0.1333333333
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  # smoke11 de-hybridization: TB-aligned actor obs (phase + proprio +
+  # history); all other loc_ref_* channels leave the actor pipeline and
+  # remain only in the privileged critic + reward terms.
+  actor_obs_layout_id: wr_obs_v7_phase_proprio
+  # smoke9c normalized bootstrap — offline reference command is aligned
+  # with the normalized eval cmd for consistent diagnostics.
+  loc_ref_offline_command_vx: 0.1333333333
+
+  # smoke10 architecture: TB-style constant home-pose residual base
+  # (post-home-migration `home` is the locomotion-ready crouched pose
+  # derived from the WR walking prior; see commits a015d6b / 3f9ef17).
+  # This is the ONLY material change vs smoke9c — every other env /
+  # reward / PPO field is byte-equal.
+  loc_ref_residual_base: home
+  # smoke10 reset/init: actuator qpos seeded from the new home keyframe
+  loc_ref_reset_base: home
+  # smoke8b: penalty_pose anchored to home (unchanged from smoke9c —
+  # it already pointed at home before the basin flip).
+  loc_ref_penalty_pose_anchor: home
+  # smoke9 form flags: TB-faithful reward formulas
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  # WR-normalized from TB literal 0.06 (walk.gin:125) at TB stance 0.074 m.
+  # Fraction-of-stance preserved on WR's 0.18056 m stance =>
+  #   threshold = 0.06 / 0.074 * 0.18056 = 0.146 m
+  close_feet_threshold: 0.146
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.20
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 0.25
+    right_hip_roll: 0.25
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 0.25
+    right_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+# =============================================================================
+# PPO — same Track A hyperparams as smoke9 (TB-aligned, 12GB-safe)
+# =============================================================================
+ppo:
+  num_envs: 2048
+  rollout_steps: 20
+  iterations: 480
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: false
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+
+# =============================================================================
+# Networks — same as smoke9 (TB-aligned)
+# =============================================================================
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — same as smoke9 (full TB walk.gin:110-131 active block)
+# =============================================================================
+reward_weights:
+  # ---- TB active reward block (8 implemented) ----
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  # Preserve the same normalized tracking basin after scaling cmd by s=4/3:
+  # alpha_wr = alpha_tb / s^2 = 1000 / (4/3)^2 = 562.5
+  # so exp(-alpha_tb * 0.10^2) == exp(-alpha_wr * 0.1333333333^2).
+  cmd_forward_velocity_alpha: 562.5
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  # feet_phase swing target = 0.05 m, set from the WR-validated ZMP
+  # prior (control/zmp/zmp_walk.py:134 foot_step_height_m), NOT from a
+  # strict body-size rescale of TB 0.04 m.  This is an explicit
+  # deviation from Hof-1996 characteristic-length normalization; see
+  # the smoke9c header for the rationale.  Alpha is rescaled by
+  # (0.04/0.05)^2 to preserve the dimensionless Gaussian basin
+  # ``alpha * swing_height^2 = 2.286`` so the reward shape stays
+  # calibrated (flat-foot baseline and peak-tracking reward unchanged):
+  #   alpha_wr = 1428.6 * (0.04 / 0.05)^2 = 914.304
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+
+  # ---- Imitation rewards: explicitly DISABLED (TB doesn't use them) ----
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6  # held at default; weight=0 disables term
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0  # held at default; weight=0 disables term
+
+  # ---- Stab / shaping rewards TB doesn't have in active block ----
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke11, tb_full_recipe, tb_home_basin, de_hybridized_actor, wr_obs_v7_phase_proprio, wr_size_normalized_tb_bootstrap, spatial_normalized, reset_perturb_tb]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000

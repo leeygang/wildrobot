@@ -36,10 +36,23 @@ Current observed failure signature:
 > config — TB-style fixed-home branch with smoke9c reward/PPO/cmd
 > kept identical) landed as
 > `training/configs/ppo_walking_v0201_smoke10.yaml` in `f7fa889`.
-> Run smoke10 next; the trajectory comparison + decision on §2.x
-> escalation follows.  CHANGELOG.md will be updated once smoke10
-> results are confirmed (per AGENTS.md rule on training-result
-> changelog entries).
+>
+> **smoke11 follow-up (de-hybridized actor)**: per the user's
+> direction to prioritize getting walking to work over single-variable
+> attribution, the actor obs has been de-hybridized in a new branch
+> instead of running smoke10 first.  `wr_obs_v7_phase_proprio` drops
+> every reference-trajectory channel from the actor input except the
+> 2-dim gait phase clock (matching TB's default
+> `ObsConfig.use_phase_signal=True` actor obs in
+> `toddlerbot/locomotion/walk.gin:24-28`).  All other knobs (reward
+> weights, command curriculum, residual scale, reset perturbation,
+> PPO, compute budget) inherit byte-equal from smoke10.  Reference
+> machinery remains load-bearing in the privileged critic and reward
+> terms.  Config:
+> `training/configs/ppo_walking_v0201_smoke11.yaml`.  Run smoke11
+> next; CHANGELOG.md will be updated once smoke11 results are
+> confirmed (per AGENTS.md rule on training-result changelog
+> entries).
 
 #### 1.1 Promote a locomotion-ready crouched `home` pose and rerun the TB-style fixed-home branch
 

@@ -18,6 +18,17 @@ SUPPORTED_LAYOUT_IDS = {
     # along with the deprecation.  See spec_builder.py and
     # training/docs/v0201_env_wiring.md §5.
     "wr_obs_v6_offline_ref_history",
+    # v0.20.1 smoke11 (post-home-migration de-hybridization): drops
+    # every reference-trajectory channel from the actor obs EXCEPT
+    # the 2-dim ``loc_ref_phase_sin_cos`` gait clock — matching
+    # ToddlerBot's default ``ObsConfig.use_phase_signal=True`` actor
+    # contract (toddlerbot/locomotion/walk.gin:24-28).  q_ref,
+    # pelvis/foot pos+vel, contact_mask, swing/stance/foothold/
+    # pelvis_targets/history all leave the actor pipeline; they
+    # remain available to the privileged critic and to reward
+    # terms.  Proprio history kept as a WR-specific signal-
+    # engineering choice (lin_vel is privileged-only on WR).
+    "wr_obs_v7_phase_proprio",
 }
 # Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
 # channels that benefit from history (joint_pos + joint_vel + gyro +
@@ -395,6 +406,36 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
         if got != expected:
             raise ValueError(
                 "observation.layout mismatch for layout_id='wr_obs_v4':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v7_phase_proprio":
+        # TB-aligned actor: gravity + angvel + joint_pos + joint_vel +
+        # foot_switches + prev_action + velocity_cmd + 2-dim phase clock +
+        # proprio_history.  No q_ref / pelvis / foot / contact_mask /
+        # stance / next_foothold / swing / pelvis_targets / loc_ref_history.
+        proprio_bundle = (
+            3  # angvel
+            + 4  # foot_switches
+            + 3 * int(model.action_dim)  # joint_pos + joint_vel + prev_action
+        )
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("proprio_history", PROPRIO_HISTORY_FRAMES * proprio_bundle),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v7_phase_proprio':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )
