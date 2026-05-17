@@ -166,7 +166,10 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_penalty_feet_ori_form=str(
             env.get("loc_ref_penalty_feet_ori_form", "wr_quad_3axis")
         ),
-        close_feet_threshold=float(env.get("close_feet_threshold", 0.06)),
+        # WR-normalized default 0.146 m (see LocomotionEnvConfig docstring
+        # for the TB derivation: TB 0.06 m at TB stance 0.074 m →
+        # 0.06/0.074 fraction × WR stance 0.18056 m ≈ 0.146 m).
+        close_feet_threshold=float(env.get("close_feet_threshold", 0.146)),
         # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
         loc_ref_offline_library_path=(
             None if env.get("loc_ref_offline_library_path") in (None, "")
@@ -526,8 +529,22 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         torso_pitch_soft_max_rad=float(env.get("torso_pitch_soft_max_rad", 0.2)),
         torso_roll_soft_min_rad=float(env.get("torso_roll_soft_min_rad", -0.1)),
         torso_roll_soft_max_rad=float(env.get("torso_roll_soft_max_rad", 0.1)),
-        min_feet_y_dist=float(env.get("min_feet_y_dist", 0.07)),
-        max_feet_y_dist=float(env.get("max_feet_y_dist", 0.13)),
+        # WR-normalized defaults from TB 0.07/0.13 m at TB stance 0.074 m
+        # (see LocomotionEnvConfig docstring).  feet_distance is inactive in
+        # smoke9c; defaults normalized so a future activation doesn't
+        # reintroduce TB-literal meters on WR.
+        min_feet_y_dist=float(env.get("min_feet_y_dist", 0.171)),
+        max_feet_y_dist=float(env.get("max_feet_y_dist", 0.317)),
+        # v0.20.1 smoke9c follow-up — TB-style reset-time perturbation
+        # ranges for the ``ref_init`` reset basin.  See LocomotionEnvConfig
+        # docstring for the derivation; default [0.0, 0.0] preserves the
+        # historical quiet ref_init reset for non-smoke9c configs.
+        reset_torso_roll_range=env.get(
+            "reset_torso_roll_range", [0.0, 0.0]
+        ),
+        reset_torso_pitch_range=env.get(
+            "reset_torso_pitch_range", [0.0, 0.0]
+        ),
         # v0.20.1 TB-active alignment Phase 2/3 (walking_training.md Appendix B).
         penalty_pose_weights_per_joint=dict(
             env.get("penalty_pose_weights_per_joint", {}) or {}
@@ -753,8 +770,16 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         # v0.20.1 smoke9 — TB walk.gin reward terms.
         penalty_close_feet_xy=rewards.get("penalty_close_feet_xy", 0.0),
         feet_phase=rewards.get("feet_phase", 0.0),
-        feet_phase_alpha=rewards.get("feet_phase_alpha", 1428.6),
-        feet_phase_swing_height=rewards.get("feet_phase_swing_height", 0.04),
+        # feet_phase WR target = 0.05 m, set from the WR-validated ZMP
+        # prior (control/zmp/zmp_walk.py:134 foot_step_height_m).  NOT
+        # a strict Hof-1996 characteristic-length rescale of TB 0.04 m
+        # (which would put WR closer to ~0.07-0.08 m); explicit
+        # deviation kept consistent with the deployed WR prior.  Alpha
+        # is rescaled by (0.04/0.05)² so the dimensionless basin
+        # ``alpha × swing_height² = 2.286`` is preserved (reward shape
+        # invariant under the target change).
+        feet_phase_alpha=rewards.get("feet_phase_alpha", 914.304),
+        feet_phase_swing_height=rewards.get("feet_phase_swing_height", 0.05),
     )
 
 

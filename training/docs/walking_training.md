@@ -2080,3 +2080,123 @@ should:
    takes over.
 
 Do not claim "WR walking is on par with TB" until the v0.20.2 long-run is run.
+
+---
+
+## Appendix C — Reward normalization audit (smoke9c spatial pass)
+
+**Status:** captured 2026-05-16 during the smoke9c spatial-rescale
+pass, after the 10.24 M-transition `86x1b1wr` review confirmed that
+WR was tracking TB-literal `swing_height = 0.04 m` and TB-literal
+lateral-foot thresholds on a robot with materially larger body
+dimensions than TB.
+
+**Measured WR vs TB scale factors** (used by this pass, all from local
+repo state at the home pose):
+
+| metric | TB | WR | WR / TB |
+|---|---|---|---|
+| foot-body lateral spacing (close_feet / feet_distance source) | 0.074 m | 0.18056 m | **2.44** |
+| hip-to-ankle vertical (TB ``descriptions/toddlerbot_2xc/robot.yml:10 hip_to_ankle_pitch_z`` vs WR rest-pose ``left_hip_pitch.xanchor.z − left_ankle_pitch.xanchor.z`` = 0.4464 − 0.0743) | 0.2115 m | 0.372 m | **1.76** |
+| operating forward speed (Phase 9D parity) | 0.15 m/s | 0.20 m/s | **1.33** |
+
+The 1.33 speed ratio (the basis for the ``8f44c74``
+``cmd_forward_velocity_alpha`` rescale to 562.5) is a DIFFERENT scale
+factor from the 2.44 stance-width ratio used to rescale
+``close_feet_threshold`` / ``min/max_feet_y_dist`` in this pass.  Both
+are repo-measured; do not conflate them.
+
+**Scope:** every reward term that is ACTIVE in the smoke9c yaml
+(`training/configs/ppo_walking_v0201_smoke9c.yaml`) at the time of
+this audit.  Time-scale-sensitive terms (`ang_vel_xy`, `action_rate`)
+are explicitly `defer` here — they need a separate cycle-time /
+control-rate audit and are intentionally out of scope.
+
+**Decision values** (one of):
+- `keep`: term is dimensionally invariant or already rescaled; no
+  numeric change required.
+- `rescale now`: changed in the smoke9c yaml in this pass.
+- `defer`: needs a follow-up audit (typically time-scale dependence,
+  or an unfinished body-size normalization tradeoff).
+
+### C.1 Per-term decision table
+
+| Term | Role / units | Size sensitivity | Decision | Rationale |
+|---|---|---|---|---|
+| `alive` | Dense per-step bonus (+1 × dt), dimensionless | None | `keep` | Constant per-step; no body-size or speed dependence.  Mirrors TB `_reward_alive` (mjx_env.py:2766-2782). |
+| `cmd_forward_velocity_track` | exp(-α · err²) over vx error (m/s) | Yes — vx scales with body size (Froude / Hof 1996) | `keep` (already normalized in `8f44c74`) | WR cmd range scaled `s = 4/3` from TB (`±0.1 → ±0.1333`); `α` scaled `1/s² = 9/16` (1000 → 562.5) so `exp(-1000·0.10²) == exp(-562.5·0.1333²)`. Normalized basin preserved. |
+| `ref_body_quat_track` | exp(-α · err²) over body-quat tracking err (rad) | None — angular error is dimensionless / size-invariant | `keep` | Body orientation tracking is morphology-independent. TB sigma matches WR sigma directly. |
+| `ang_vel_xy` | `-sum(ω_xy²)` (TB `tb_neg_squared` form), rad²/s² | Time-scale sensitive (ω ∝ 1/T) | `defer` | Needs cycle-time / control-rate audit pass; out of scope for this spatial-normalization pass. |
+| `action_rate` | `-sum(Δaction²)` per step | Time-scale sensitive (per-step Δ ∝ 1/T) | `defer` | Same reason as `ang_vel_xy`. |
+| `penalty_pose` | Per-joint quadratic deviation from anchor (rad²), weighted | None — joint angles are dimensionless | `keep` | Per-joint pose weights (`penalty_pose_weights_per_joint`) are angular; anchored to `home`. Mirrors TB walk.gin:120-124. |
+| `penalty_close_feet_xy` | Binary -1 when lateral foot dist < threshold (m) | **Yes** — meters scale with stance width | **`rescale now`** | TB literal 0.06 m at TB stance **0.074 m** → WR-equivalent at WR stance **0.18056 m**: `0.06 × (0.18056 / 0.074) ≈ 0.146 m`.  Preserves TB fraction-of-stance (≈ 81 % of stance width on both robots).  See `training/envs/wildrobot_env.py:1415-1435` (WR reward) and `~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py:2709-2745` (TB reward); both consume the same lateral-foot-body distance projection at the home pose. |
+| `feet_phase` | `exp(-α · Σ Δz²) × (1 + max_expected_z / swing_height)` | **Yes** — meters in Δz, swing_height, and the dimensionless basin `α · swing_height²` | **`rescale now`** (prior-aligned, NOT strict size-normalization — see rationale) | TB target `swing_height = 0.04 m` is body-bound (≈ 19 % of TB hip-to-ankle vertical 0.2115 m from `config.json`).  WR's swing target in this pass is set to **0.05 m**, taken from the WR-validated ZMP prior (`control/zmp/zmp_walk.py:134 foot_step_height_m`), **NOT** from a strict characteristic-length rescale of TB's 0.04 m.  A pure Hof (1996) body-size rescale using the repo-measured WR hip-to-ankle (0.372 m at home, **1.76× TB**) would put WR closer to ~0.07 m — kept consistent with the deployed WR prior instead.  Alpha is rescaled to **preserve the shape** of the Gaussian basin under the target change: `α_wr = 1428.6 × (0.04 / 0.05)² = 914.304` keeps `α · swing_height² = 2.286` invariant, so the flat-foot baseline and peak-tracking reward stay calibrated.  Follow-up if validation later prefers strict size-scaling: bump `swing_height` and rescale alpha by the same rule. |
+| `penalty_feet_ori` | `-(\|g_lateral\|_L + \|g_lateral\|_R)` (TB `tb_linear_lateral` form), dimensionless | None — gravity components in foot-local frame are dimensionless | `keep` | Gravity vector is a unit vector; lateral components ∈ [-1, 1] are scale-invariant.  WR-specific MJCF 90° foot rotation is handled by the per-foot baseline cache (`wildrobot_env.py:_init_foot_body_ids`); the reward itself doesn't need WR-vs-TB rescaling. |
+
+### C.2 Inactive-but-configured lateral-band thresholds
+
+`min_feet_y_dist` and `max_feet_y_dist` (used by the `feet_distance`
+reward) are **inactive in smoke9c** (`reward_weights.feet_distance =
+0.0`) but their config / dataclass defaults were still TB literals
+(`0.07 m` and `0.13 m`).  Those are body-bound for the same reason as
+`close_feet_threshold` and would silently re-introduce TB-on-WR
+mismatch if `feet_distance` is ever re-activated without re-auditing.
+
+The same fraction-of-stance rule is applied now (defensively):
+
+| Threshold | TB literal | TB fraction (÷ 0.074) | WR-normalized (× 0.18056) |
+|---|---|---|---|
+| `min_feet_y_dist` | 0.07 | 0.9459 | **0.171 m** |
+| `max_feet_y_dist` | 0.13 | 1.7568 | **0.317 m** |
+
+These are written into both the smoke9c yaml and the shared dataclass
+defaults in `training/configs/training_runtime_config.py` /
+`training/configs/training_config.py`, so any future config that does
+NOT explicitly override them will inherit WR-normalized values rather
+than silently falling back to TB literal meters.
+
+### C.3 Reset-perturbation companion change (not a reward)
+
+The same pass also activated **TB-style** (not "TB-identical")
+reset-time pose perturbation under the `ref_init` reset basin
+(`env.reset_torso_{roll,pitch}_range = [-0.1, 0.1]`).  This is not a
+reward-normalization change — it's the mechanism that prevents the
+quiet `ref_init` basin from re-attracting PPO into pure stand-still
+on the first iters.  See
+`training/envs/wildrobot_env.py:_apply_reset_perturbation`.
+
+**Match with TB** (`toddlerbot/locomotion/mjx_env.py:954-1053`):
+- same partition rule (uniform |torso_pitch| split across
+  hip-pitch + knee-pitch + ankle-pitch summing to |pitch|)
+- same mirror-symmetric leg-pitch sign pattern
+  `[-1, +1, -1, +1, -1, +1]`
+- same root-quat composition `R_xyz(roll, pitch, 0) · R_current`
+  (extrinsic XYZ — scipy's lowercase `'xyz'` convention, matching
+  TB at `mjx_env.py:1044`; verified by
+  `test_smoke9c_euler_xyz_quat_matches_scipy`)
+
+**WR-specific deviations from TB (explicit, not parity):**
+- WR has no waist actuator; `torso_roll` only updates the root quat
+  here (TB also writes it into a waist joint).
+- WR has no `arm_joint_pos_range` perturbation (TB's arm IK is
+  applied through the waist/arm chain).
+- WR does NOT implement TB's geometric `torso_z_delta` root-height
+  compensation (TB `mjx_env.py:1034-1041` uses
+  `robot.config['robot']` offsets WR doesn't currently expose).
+  The perturbation magnitude is small (TB-default ±0.1 rad) so
+  physics settles the residual in a few sim steps; if a future
+  larger range or higher control rate exposes this as a problem,
+  add the explicit `torso_z_delta` then.
+- **Eval-side perturbation is DISABLED.**  TB applies perturbation
+  to all resets when `add_domain_rand=True`; WR disables it under
+  `reset_for_eval(rng)` (via the new `perturb_pose=False` argument)
+  so eval rollouts stay deterministic for the G4/G5 promotion
+  thresholds AND for the v6 eval-adapter native-MJ reset parity
+  test.  This is a WR-specific choice (G4/G5 are defined at a
+  pinned eval cmd with a clean reference pose).
+
+**Zero-residual invariant preserved:** the perturbation only touches
+the initial physical `qpos` (leg-pitch joints + root quat), never
+the control base — a zero policy action still composes to the
+constant `ref_init` ctrl target, matching the smoke9c residual
+architecture.
