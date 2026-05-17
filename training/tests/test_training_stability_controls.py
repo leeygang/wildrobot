@@ -1,6 +1,7 @@
 from training.configs.training_config import load_training_config_from_dict
 from training.core.training_loop import (
     _effective_ppo_epochs,
+    _format_hhmmss,
     _is_eval_better,
     _linear_schedule_factor,
     _should_trigger_rollback,
@@ -28,6 +29,14 @@ def test_eval_comparison_tie_breaks_on_episode_length():
 def test_should_trigger_rollback_uses_success_drop_threshold():
     assert _should_trigger_rollback(0.70, 0.80, 0.05)
     assert not _should_trigger_rollback(0.76, 0.80, 0.05)
+
+
+def test_format_hhmmss_formats_elapsed_time():
+    assert _format_hhmmss(0) == "00:00:00"
+    assert _format_hhmmss(59) == "00:00:59"
+    assert _format_hhmmss(60) == "00:01:00"
+    assert _format_hhmmss(3661) == "01:01:01"
+    assert _format_hhmmss(-2) == "00:00:00"
 
 
 def test_parse_new_ppo_stability_fields():

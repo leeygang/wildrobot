@@ -97,6 +97,14 @@ def _linear_schedule_factor(progress: float, end_factor: float) -> float:
     return 1.0 + (float(end_factor) - 1.0) * clamped
 
 
+def _format_hhmmss(seconds: float) -> str:
+    """Format elapsed seconds as ``HH:MM:SS``."""
+    total_seconds = max(0, int(seconds))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def _effective_ppo_epochs(
     base_epochs: int,
     previous_approx_kl: float,
@@ -2025,8 +2033,9 @@ def train(
             # Main line.  Reward + ep_len + throughput.  ``success`` deleted
             # — it was the truncation-based env/success_rate which is always
             # 0 for v0.20.1 walking.
+            iter_elapsed = _format_hhmmss(time.time() - start_time)
             main_line = (
-                f"#{iteration:<4} Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
+                f"#{iteration:<4} [{iter_elapsed}] Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
                 f"reward={float(metrics.episode_reward):>8.2f} | "
                 f"ep_len={ep_len:>5.0f} | "
                 f"steps/s={steps_per_sec:>8.0f}"
