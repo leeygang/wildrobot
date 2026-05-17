@@ -2035,10 +2035,10 @@ def train(
             # 0 for v0.20.1 walking.
             iter_elapsed = _format_hhmmss(time.time() - start_time)
             main_line = (
-                f"#{iteration:<4} [{iter_elapsed}] Steps: {total_steps:>10} ({progress_pct:>5.1f}%): "
-                f"reward={float(metrics.episode_reward):>8.2f} | "
-                f"ep_len={ep_len:>5.0f} | "
-                f"steps/s={steps_per_sec:>8.0f}"
+                f"#{iteration:<4} [{iter_elapsed}] Steps: {total_steps:>11,} ({progress_pct:>5.1f}%): "
+                f"reward={float(metrics.episode_reward):.2f} | "
+                f"ep_len={ep_len:.0f} | "
+                f"steps/s={steps_per_sec:,.0f}"
             )
 
             YELLOW = "\x1b[33m"
