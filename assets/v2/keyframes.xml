@@ -1,39 +1,34 @@
 <mujoco>
-  <!-- Two named keyframes:
+  <!-- Two named keyframes (locomotion-ready home migration, 2026-05-17):
 
-       "home"        — neutral standing pose (legs near-straight,
-                       knees ≈ 0.036 rad).  Consumed by the runtime
-                       (calibration, policy spec, export bundle) and
-                       by anything that wants the robot in a clean
-                       upright pose.  Round-8 settled equilibrium
-                       (2026-05-06, post-CAD upper_leg mate fix):
-                       2500 sim_dt steps (5 s) with ctrl=qpos, then
-                       500 steps drift check → pelvis drift ≤ 0.01 mm,
-                       max|vlin| ≤ 1e-5 m/s, z stable at 0.4709 m.
-                       Pelvis tilts 3.48° forward (was 2.27° round-6)
-                       — the CAD update shifted equilibrium.
+       "home"        — locomotion-ready, phase-neutral nominal pose
+                       (knees ≈ 0.49 rad, hip_pitch ≈ ±0.222 rad,
+                       ankle_pitch ≈ -0.248 rad, pelvis_z ≈ 0.460 m).
+                       Derived by averaging mirror-symmetric double-
+                       support frames of the WR walking prior at
+                       vx=0.1333 m/s and settling the result.  This
+                       aligns WR with ToddlerBot's `home`-as-default-
+                       action contract: `home` is the constant base
+                       PPO residuals on top of, not a separate near-
+                       straight standing pose.  See
+                       `assets/derive_walk_ready_home.py` for the exact
+                       derivation + settling procedure; re-run that
+                       script whenever the IK geometry, walking config,
+                       or operating-point vx changes.
 
-       "walk_start"  — q_ref-derived walking-pose equilibrium (legs bent,
-                       knees ≈ 0.49 rad, pelvis_z = 0.4602 m, pitched
-                       -0.010 rad).  Used by the v0.20.0-C viewer and
-                       walking probes so the standing-to-walking ramp is
-                       essentially a no-op.  Paired with the IK geometry constants
-                       in control/zmp/zmp_walk.py (upper_leg = 0.193,
-                       lower_leg = 0.180, ankle_to_ground = 0.061,
-                       pelvis_to_hip = 0.034).  If you change the IK
-                       geometry OR re-export from Onshape, this
-                       keyframe must be re-derived.  Re-derived against
-                       current ZMPWalkConfig after Phase 9D + Phase 8
-                       retry by settling q_ref[0] with ctrl=q_ref[0].
-
-       Re-derive procedure (when CAD or IK geometry changes): see
-       the snippet in this file's git history for the exact one-liner
-       (load model, reset to keyframe, set ctrl=qpos for each
-       actuator, step 2500 sim_dt then drift-check 500 more, dump
-       data.qpos).  Round-8 was produced by that procedure. -->
+       "walk_start"  — kept for back-compat with the v0.20.0-C viewer
+                       (`training/eval/view_zmp_in_mujoco.py`), the
+                       geometry-parity tools, and the standing-to-
+                       walking ramp probes.  After the home-pose
+                       migration `walk_start` is functionally
+                       co-located with `home` (both are settled
+                       q_ref[0] equilibria, within ~2 mrad of each
+                       other).  Re-derive procedure is unchanged:
+                       settle q_ref[0] with ctrl=q_ref[0] for ~2500
+                       sim_dt steps. -->
     <keyframe>
         <key name="home"
-            qpos="-0.0182591 -0.00101464 0.470941 0.999539 -0.000242699 -0.0303666 0.000198908 -0.00353823 -0.00233714 0.0361851 0.0206246 0.00163984 0.0032372 -0.00352585 0.0369592 0.0217894 0.000593509 -0.00292642 0.00411677 0.01759 -2.5285e-05 4.37092e-06 0.000730754 -0.00373764 0.00487821 -2.76155e-05 -3.98205e-05 0.000735891"
+            qpos="0.00334452 -0.000410987 0.460272 0.999954 -5.53362e-05 -0.00952792 0.000621042 0.221289 -0.000686951 0.488909 -0.248439 0.000485132 -0.221849 -0.000561528 0.490533 -0.24789 -0.00170573 0.00329397 0.00018508 0.0192083 -2.5897e-06 1.0851e-05 0.000485021 -0.000935575 0.00376767 -4.69368e-06 -2.03364e-05 0.000487266"
         />
         <key name="walk_start"
             qpos="-0.00336445 -0.000131717 0.460235 0.999946 -5.79014e-05 -0.0103598 0.000344922 0.223094 -0.00042335 0.489531 -0.245616 0.000244046 -0.223542 -0.000311294 0.491143 -0.245165 -0.00193645 0.00301686 -0.00010678 0.0181409 -2.60502e-06 5.14517e-06 0.000243405 -0.000444513 0.00354958 -5.66149e-06 -1.04251e-05 0.000244514"

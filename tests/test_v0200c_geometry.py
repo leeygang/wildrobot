@@ -159,15 +159,25 @@ def test_keyframes_load():
         assert kid >= 0, f"keyframe '{name}' not found in MJCF"
 
 
-def test_home_and_walk_start_keep_distinct_semantics():
-    """``home`` remains standing; ``walk_start`` remains the walking pose."""
+def test_home_and_walk_start_locomotion_ready():
+    """Post-migration: both ``home`` and ``walk_start`` are locomotion-ready
+    crouched poses (knees > 0.30 rad) and are co-located within a few mrad.
+
+    Before the home-pose migration (2026-05-17) ``home`` was a near-straight
+    standing pose (knees ≈ 0.036 rad) and ``walk_start`` was a separate
+    walking-ready pose (knees ≈ 0.49 rad).  After the migration ``home``
+    is derived from the WR walking prior and is functionally the same
+    locomotion-ready stance as ``walk_start``; the two keyframes are kept
+    side-by-side only so the existing v0.20.0-C viewer / parity tools
+    that read ``walk_start`` by name keep working.  See
+    ``assets/derive_walk_ready_home.py`` and the ``keyframes.xml`` header
+    comment for the derivation contract.
+    """
     model = mujoco.MjModel.from_xml_path("assets/v2/scene_flat_terrain.xml")
     home_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
     walk_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "walk_start")
     assert home_id >= 0
     assert walk_id >= 0
-
-    assert not np.allclose(model.key_qpos[home_id], model.key_qpos[walk_id], atol=1e-6)
 
     def _actuator_key_qpos(key_id: int, actuator_name: str) -> float:
         act_id = mujoco.mj_name2id(
@@ -179,17 +189,39 @@ def test_home_and_walk_start_keep_distinct_semantics():
         return float(model.key_qpos[key_id, qpos_adr])
 
     home_knees = [
-        abs(_actuator_key_qpos(home_id, "left_knee_pitch")),
-        abs(_actuator_key_qpos(home_id, "right_knee_pitch")),
+        _actuator_key_qpos(home_id, "left_knee_pitch"),
+        _actuator_key_qpos(home_id, "right_knee_pitch"),
     ]
     walk_knees = [
-        abs(_actuator_key_qpos(walk_id, "left_knee_pitch")),
-        abs(_actuator_key_qpos(walk_id, "right_knee_pitch")),
+        _actuator_key_qpos(walk_id, "left_knee_pitch"),
+        _actuator_key_qpos(walk_id, "right_knee_pitch"),
     ]
 
-    assert max(home_knees) < 0.10
+    # Both keyframes are locomotion-ready: knees clearly bent.
+    assert min(home_knees) > 0.30, (
+        f"home knees {home_knees} below 0.30 rad — home is no longer "
+        "locomotion-ready.  Re-run assets/derive_walk_ready_home.py."
+    )
     assert min(walk_knees) > 0.30
-    assert model.key_qpos[home_id, 2] > model.key_qpos[walk_id, 2] + 0.005
+
+    # Co-located: every actuated leg-joint slot agrees within 1e-2 rad
+    # (residual difference is sub-servo-precision; both come from the
+    # same q_ref[0]-derived settled equilibrium).
+    leg_joints = (
+        "left_hip_pitch", "left_hip_roll", "left_knee_pitch",
+        "left_ankle_pitch", "left_ankle_roll",
+        "right_hip_pitch", "right_hip_roll", "right_knee_pitch",
+        "right_ankle_pitch", "right_ankle_roll",
+    )
+    for j in leg_joints:
+        delta = abs(_actuator_key_qpos(home_id, j) - _actuator_key_qpos(walk_id, j))
+        assert delta < 1e-2, (
+            f"home and walk_start disagree on {j} by {delta:.4f} rad — "
+            "expected co-location after the home migration."
+        )
+
+    # Pelvis heights also agree (same settled equilibrium).
+    assert abs(model.key_qpos[home_id, 2] - model.key_qpos[walk_id, 2]) < 5e-3
 
 
 def main() -> int:
