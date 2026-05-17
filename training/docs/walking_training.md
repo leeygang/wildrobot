@@ -244,13 +244,19 @@ remain removable at deployment.
 
 The first locomotion action contract should be:
 
-- policy outputs bounded residual joint deltas around nominal `q_ref`
+- policy outputs bounded residual joint deltas around a bounded base pose
+- the env selects that base via `loc_ref_residual_base`
 
-Form:
+Forms used in the live code:
 
 ```text
-q_target = q_ref_from_library + delta_q_policy
+smoke7:  q_target = q_ref_from_library(t) + delta_q_policy
+smoke8:  q_target = home_q + delta_q_policy
+smoke9c: q_target = ref_init_q + delta_q_policy
 ```
+
+The current env implementation is in
+`training/envs/wildrobot_env.py::_compose_target_q_from_residual`.
 
 This is an explicit architectural decision, not an inherited default.
 
@@ -1824,7 +1830,7 @@ Both projects use the DeepMimic-style numerator-α form
 
 | Item | WR pre-alignment | ToddlerBot | Decision |
 |---|---|---|---|
-| Form | `q = q_ref + clip(action) · scale_per_joint` | `q = default_q + action · 0.25` | semantically similar |
+| Form | `q = base_q + clip(action) · scale_per_joint`, where `base_q ∈ {q_ref(t), home_q, ref_init_q}` and smoke9c uses `ref_init_q` | `q = default_q + action · 0.25` | semantically similar |
 | Leg `action_scale` | ±0.50 rad | ±0.25 rad | **change** — clip legs to ±0.25 rad to match ToddlerBot and reduce G5 trip risk.  Post v20 ankle_roll merge: the leg list is `{hip_pitch, hip_roll, knee, ankle_pitch, ankle_roll}` × L/R (10 joints).  ankle_roll uses ±0.25 to match the rest of the leg chain; range margin is the same as ankle_pitch (±0.25 / ±π/4 ≈ 32%) so headroom is identical. |
 | Other-joint scale | ±0.20 rad | ±0.25 rad | keep ±0.20 (close enough; conservative) |
 
@@ -1924,7 +1930,7 @@ blocking parity**.
 | **Network** | asymmetric actor-critic (privileged critic) | **enabled** ✓ FIXED (`yaml:ppo.critic_privileged_enabled`); critic obs = lin_vel + ang_vel + contacts + motor_pos_error + actuator_force + ref_stance (52 dims) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ✅ Phase 3 landed.  WR critic obs is a TB-aligned subset (52 vs TB 151; remaining gap is push/orientation noise channels covered by WR env_info instead). |
 | **Obs** | paradigm | preview-conditioned + 15-frame history (`yaml:159-167`) | sin/cos phase + 15-frame `c_frame_stack` | (a) WR has explicit ZMP prior; TB does not. |
 | **Obs** | frame stack | 15 | 15 | ✅ |
-| **Action** | contract | `q = q_ref + clip(action) · scale` (`yaml:190-209`) | `q = default_q + action · 0.25` | (a) Bounded residual vs direct. |
+| **Action** | contract | `q = base_q + clip(action) · scale`; smoke7=`q_ref(t)`, smoke8=`home_q`, smoke9c=`ref_init_q` (`wildrobot_env.py::_compose_target_q_from_residual`, `yaml:139-147,190-209`) | `q = default_q + action · 0.25` | (a) Bounded residual vs direct. |
 | **Action** | action_scale | 0.20-0.25 per-joint | 0.25 uniform | ✅ approximately. |
 | **Action** | n_steps_delay | 1 (`yaml:257`) | 1 | ✅ |
 | **Action** | lowpass filter α | 0.0 (`yaml:157`) | n/a | (a) Residual-only filter contract. |

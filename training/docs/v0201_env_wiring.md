@@ -47,6 +47,17 @@ a new action contract.
   q_ref is already smooth (validated by the FK gate), so this becomes a no-op
   for v3.  Plumb a v3-bypass flag rather than removing.
 
+Update note (2026-05-17):
+
+- The live env has since generalized the residual base selector in
+  `training/envs/wildrobot_env.py::_compose_target_q_from_residual`.
+- Current supported bases are:
+  - `q_ref(t)` for the original smoke7 contract
+  - `home_q` for smoke8's TB-aligned direct-base probe
+  - `ref_init_q` for smoke9c's constant frame-0 basin probe
+- So the statement above remains historically correct for the initial
+  v0.20.1 v3 contract, but it is no longer the only active residual form.
+
 ## 2. What we replace
 
 **Replace** the parametric reference computation pipeline:
