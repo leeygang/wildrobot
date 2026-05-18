@@ -89,15 +89,20 @@ def test_build_wandb_metrics_emits_reward_per_step_when_present(
     fake_iteration_metrics,
 ) -> None:
     """Fix for 2026-05-18 metric-correctness blocker #1: when the train
-    aggregator writes ``reward_per_step`` / ``rollout_reward_sum`` into
-    ``env_metrics``, ``create_training_metrics_from_iteration`` must
-    forward them so ``topline/reward_per_step`` and ``env/reward_per_step``
-    log as the true per-step reward, not the legacy 0.0 fallback.
+    aggregator writes ``reward_per_step`` into ``env_metrics``,
+    ``create_training_metrics_from_iteration`` must forward it so
+    ``topline/reward_per_step`` and ``env/reward_per_step`` log as the
+    true per-step reward, not the legacy 0.0 fallback.
+
+    ``rollout_reward_sum`` is intentionally NOT forwarded through
+    ``extra`` — it is currently bit-identical to ``episode_reward``,
+    which ``create_training_metrics`` already mirrors into
+    ``topline/rollout_reward_sum`` and ``env/rollout_reward_sum``.  This
+    test pins that mirroring so a future divergence becomes visible.
     """
     from training.core.experiment_tracking import build_wandb_metrics
 
     fake_iteration_metrics.env_metrics["reward_per_step"] = 0.0473
-    fake_iteration_metrics.env_metrics["rollout_reward_sum"] = 0.91
 
     m, _missing = build_wandb_metrics(
         iteration=1,
@@ -107,11 +112,14 @@ def test_build_wandb_metrics_emits_reward_per_step_when_present(
     )
     assert m["topline/reward_per_step"] == pytest.approx(0.0473)
     assert m["env/reward_per_step"] == pytest.approx(0.0473)
-    # The truthful rollout-sum name must reflect the forwarded value
-    # rather than the deprecated episode_reward fallback.
+    # The truthful rollout-sum name mirrors the deprecated
+    # ``episode_reward`` alias (same quantity today).
     assert m["topline/rollout_reward_sum"] == pytest.approx(
         fake_iteration_metrics.episode_reward
-    ), "topline/rollout_reward_sum mirrors episode_reward (kept as alias)"
+    )
+    assert m["env/rollout_reward_sum"] == pytest.approx(
+        fake_iteration_metrics.episode_reward
+    )
 
 
 def test_build_wandb_metrics_reward_per_step_defaults_to_zero_without_forwarding() -> None:
@@ -140,7 +148,7 @@ def test_build_wandb_metrics_reward_per_step_defaults_to_zero_without_forwarding
             "tracking/vel_error": 0.05,
             "tracking/max_torque": 1.5,
             "height": 0.46,
-            # deliberately no reward_per_step or rollout_reward_sum
+            # deliberately no reward_per_step
         },
     )
     m, _ = build_wandb_metrics(iteration=1, metrics=obj, steps_per_sec=100.0, reward_terms=[])
