@@ -100,6 +100,35 @@ Current observed failure signature:
 > Run smoke12 next; CHANGELOG.md will be updated once smoke12
 > results are confirmed (per AGENTS.md rule on training-result
 > changelog entries).
+>
+> **smoke12 result + smoke12b fix**: smoke12's ongoing run
+> (offline-run-20260517_183319-f60p9me9) collapsed into a
+> backward-stepping gait by iter 10: forward_velocity ≈ -0.35 m/s,
+> step_length_event ≈ -1 mm, ep_len ≈ 54/500,
+> term_height_low_frac = 100%.  Iter-0 (random policy, before any
+> PPO learning) already showed forward_velocity ≈ -0.14 m/s,
+> confirming the bias was in the CURRICULUM rather than env physics.
+> Root cause: smoke12 inherited the symmetric ``[-0.1333, +0.1333]``
+> cmd range from smoke9c→smoke11.  With ``cmd_zero_chance: 0.0``
+> every episode demanded nonzero motion and ~50% of episodes asked
+> for backward motion; combined with smoke12's widened residual,
+> halved action_rate, and baseline-subtract feet_phase, PPO had a
+> clean gradient to learn a backward-stepping gait — and locked
+> into it.
+>
+> smoke12b is a surgical config fix:
+> `training/configs/ppo_walking_v0201_smoke12b.yaml`.  Only delta vs
+> smoke12 is the cmd range: ``min_velocity: 0.08, max_velocity:
+> 0.1333333333`` (strictly forward).  Every other smoke12 knob
+> (widened residual, cmd_zero_chance=0, action_rate=-1.0,
+> feet_phase baseline-subtract + standing hard-zero, basin, obs,
+> reset perturbation, PPO) is byte-equal.  6 new tests in
+> `tests/test_smoke12b_forward_only_cmd.py` pin the forward-only
+> range, the sampler never producing negative cmds, the byte-equal
+> inheritance from smoke12, and the home-basin zero-action invariant.
+>
+> Stop smoke12 (already collapsing).  Run smoke12b next; CHANGELOG.md
+> still gated on confirmed results per AGENTS.md.
 
 #### 1.1 Promote a locomotion-ready crouched `home` pose and rerun the TB-style fixed-home branch
 
