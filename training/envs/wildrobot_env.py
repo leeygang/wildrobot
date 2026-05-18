@@ -355,6 +355,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"env.loc_ref_penalty_feet_ori_form must be 'wr_quad_3axis' or "
                 f"'tb_linear_lateral'; got {self._penalty_feet_ori_form!r}"
             )
+        # smoke12 — feet_phase standing-branch selector (Python bool,
+        # passed straight to ``_feet_phase_reward`` to pick the standing
+        # graph at trace time).  False (default) preserves the pre-smoke12
+        # standing payout (~1.0 at grounded, falls off with lift); True
+        # is the smoke12 bootstrap (standing returns 0).  The walking
+        # branch is always the smoke12 baseline-subtract form regardless.
+        self._feet_phase_zero_on_standing = bool(
+            getattr(self._config.env, "loc_ref_feet_phase_zero_on_standing", False)
+        )
         # Default reflects the WR-normalized value
         # (LocomotionEnvConfig.close_feet_threshold = 0.146).  Only fires
         # if the env is constructed outside TrainingConfig.
@@ -876,8 +885,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         is_standing: jax.Array,
         swing_height: jax.Array,
         alpha: jax.Array,
+        zero_on_standing: bool = False,
     ) -> jax.Array:
-        """Phase-derived foot-height tracking reward, basin-break form (smoke12).
+        """Phase-derived foot-height tracking reward.
+
+        Walking branch (||cmd|| > 0) — smoke12 basin-break form:
+
+            walking_reward = max(0, raw - flat_foot_baseline)
 
         Earlier history: smoke9 introduced a TB-faithful copy of TB's
         ``_reward_feet_phase`` (walk_env.py:631-695): the raw formula
@@ -889,29 +903,48 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``7.5 × 0.727 × dt ≈ 0.109``, which matched smoke11's late
         ``reward/feet_phase ≈ 0.1088``.  PPO collected gait reward
         while doing essentially no locomotion — the quiet-standstill
-        basin.
+        basin.  smoke12 (2026-05-17) subtracts the flat-foot baseline
+        at the same phase + clamps at 0, so flat-foot walking pays
+        zero and only real swing tracking pays positive.  This walking
+        branch is the smoke12 default and is NOT gated by
+        ``zero_on_standing`` — the basin-break fix is permanent.
 
-        smoke12 (2026-05-17) breaks that basin by subtracting the
-        flat-foot baseline at the same phase + clamping at 0:
+        Standing branch (||cmd|| ≈ 0) — configurable:
 
-            walking_reward = max(0, raw - flat_baseline)
-            standing       = 0   (zero-command bootstrap doesn't reward
-                                  "feet on the ground")
+          - ``zero_on_standing=False`` (default; pre-smoke12 behavior):
+            standing returns the raw expected-z=0 reward
+            ``exp(-α·(lz²+rz²)) × 1.0`` (no swing bonus since no swing
+            is commanded).  Pays ~1.0 when both feet are at baseline
+            and falls off as feet lift.  Appropriate when zero-command
+            standing is a valid mode that should be rewarded for
+            keeping feet planted.
+
+          - ``zero_on_standing=True`` (smoke12 bootstrap):
+            standing returns 0 unconditionally.  Use in bootstrap
+            branches that pin ``cmd_zero_chance: 0.0`` so the standing
+            branch is unreachable anyway, AND that explicitly do not
+            want feet_phase paying anything on any residual ||cmd||≈0
+            episode.  smoke12 sets this via
+            ``env.loc_ref_feet_phase_zero_on_standing: true``.
 
         Target behavior:
-          - walking command + flat feet  -> 0 (no exploit)
-          - walking command + real swing -> positive (decreasing in lift error)
-          - standing (||cmd|| ≈ 0)       -> 0 (bootstrap removes the
-                                              "stand still and survive"
-                                              feet_phase contribution;
-                                              smoke12 also pins
-                                              ``cmd_zero_chance: 0.0``
-                                              so this branch is rarely hit)
+          - walking command + flat feet         -> 0 (no exploit)
+          - walking command + real swing        -> positive (decreasing
+                                                   in lift error)
+          - standing + grounded, default        -> 1.0 (max)
+          - standing + grounded, zero_on_standing -> 0
+          - standing + lifted,   default        -> small (~base reward
+                                                   at err=lift)
+          - standing + lifted,   zero_on_standing -> 0
 
-        Pure function, no env state.  Inputs are baseline-relative
-        foot z (so 0.0 = grounded, ``swing_height`` = peak swing apex);
-        the env caller subtracts ``feet_height_init`` to convert from
-        WR's ~0.034 m foot body-origin baseline.
+        Pure function, no env state.  ``zero_on_standing`` is a Python
+        bool: static at trace time, decides which standing-branch graph
+        to compile.  ``is_standing`` is a JAX bool: runtime per-step.
+
+        Inputs are baseline-relative foot z (so 0.0 = grounded,
+        ``swing_height`` = peak swing apex); the env caller subtracts
+        ``feet_height_init`` to convert from WR's ~0.034 m foot
+        body-origin baseline.
         """
         phase_angle = jp.arctan2(phase_sin, phase_cos)
         phase_angle = jp.mod(phase_angle + 2.0 * jp.pi, 2.0 * jp.pi)
@@ -958,11 +991,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         flat_baseline = _raw(jp.float32(0.0), jp.float32(0.0))
         walking_reward = jp.maximum(jp.float32(0.0), raw - flat_baseline)
 
-        # Standing (||cmd|| ≈ 0): smoke12 bootstrap returns 0 unconditionally.
-        # Old behavior (return max raw at flat feet) is intentionally dropped —
-        # under cmd_zero_chance=0 this branch should be unreachable on the
-        # smoke12 training distribution anyway.
-        return jp.where(is_standing, jp.float32(0.0), walking_reward)
+        # Standing branch is configurable; see docstring.  Note that
+        # under standing, the ``expected_z_*`` values above are 0 for
+        # both feet (via the ``jp.where(is_standing, 0.0, ...)`` clamp),
+        # so ``raw`` already equals the pre-smoke12 standing reward
+        # (``exp(-α·(lz²+rz²)) × 1.0``).  We just need to pick which
+        # value to surface on the standing branch.
+        if zero_on_standing:
+            standing_reward = jp.float32(0.0)
+        else:
+            standing_reward = raw
+        return jp.where(is_standing, standing_reward, walking_reward)
 
     # --------------------------------------------------- offline window helpers
 
@@ -1596,6 +1635,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             is_standing=is_standing,
             swing_height=jp.float32(weights.feet_phase_swing_height),
             alpha=jp.float32(weights.feet_phase_alpha),
+            zero_on_standing=self._feet_phase_zero_on_standing,
         )
 
         return dict(

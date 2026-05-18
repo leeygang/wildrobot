@@ -213,6 +213,25 @@ class EnvConfig(Freezable):
     #                         zero), only penalizes lateral lean (not z drop).
     loc_ref_penalty_feet_ori_form: str = "wr_quad_3axis"
 
+    # v0.20.1 smoke12 — feet_phase standing-branch behavior.
+    #   False (default)  - standing returns the raw expected-z=0 reward
+    #                      (i.e. exp(-α·Δz²)·1.0 with bonus=1.0 since
+    #                      no swing is commanded).  Pre-smoke12 default;
+    #                      pays max ~1.0 when both feet are at baseline
+    #                      and falls off as feet lift.  Use when
+    #                      zero-command standing IS a valid mode and
+    #                      should be rewarded for keeping feet planted.
+    #   True (smoke12)   - standing returns 0 unconditionally.
+    #                      Use in bootstrap branches that pin
+    #                      ``cmd_zero_chance: 0.0`` so the standing
+    #                      branch is unreachable anyway, AND that
+    #                      explicitly do not want the feet_phase term
+    #                      paying anything during any residual
+    #                      ||cmd||≈0 episode.
+    # The walking branch (||cmd|| > 0) is always the smoke12
+    # baseline-subtract form; that fix is not gated by this flag.
+    loc_ref_feet_phase_zero_on_standing: bool = False
+
     # v0.20.1 smoke9 — TB penalty_close_feet_xy threshold (m), normalized
     # to WR body size.  Lateral foot distance (perpendicular to base
     # forward direction) below this triggers a binary -1.0 penalty.

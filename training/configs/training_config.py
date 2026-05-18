@@ -166,6 +166,13 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_penalty_feet_ori_form=str(
             env.get("loc_ref_penalty_feet_ori_form", "wr_quad_3axis")
         ),
+        # v0.20.1 smoke12 — feet_phase standing-branch selector.  False
+        # (default) preserves pre-smoke12 standing payout; True zeroes
+        # the standing branch (smoke12 bootstrap, paired with
+        # cmd_zero_chance=0).  See LocomotionEnvConfig docstring.
+        loc_ref_feet_phase_zero_on_standing=bool(
+            env.get("loc_ref_feet_phase_zero_on_standing", False)
+        ),
         # WR-normalized default 0.146 m (see LocomotionEnvConfig docstring
         # for the TB derivation: TB 0.06 m at TB stance 0.074 m →
         # 0.06/0.074 fraction × WR stance 0.18056 m ≈ 0.146 m).

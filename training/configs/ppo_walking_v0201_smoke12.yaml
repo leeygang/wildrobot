@@ -222,6 +222,16 @@ env:
   # smoke9 form flags: TB-faithful reward formulas
   loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
   loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  # smoke12 basin-break (delta #4 of the bootstrap stack): hard-zero the
+  # feet_phase standing branch.  Safe under this config because
+  # ``cmd_zero_chance: 0.0`` makes the standing branch unreachable on
+  # the smoke12 training distribution; the explicit flag keeps the
+  # behavior intentional rather than incidental and lets future
+  # branches (where cmd_zero_chance > 0 returns) re-enable the
+  # standing payout by setting this back to false.  The walking
+  # branch baseline-subtract fix is NOT gated by this flag; that is
+  # the permanent smoke12 default.
+  loc_ref_feet_phase_zero_on_standing: true
   # WR-normalized from TB literal 0.06 (walk.gin:125) at TB stance 0.074 m.
   # Fraction-of-stance preserved on WR's 0.18056 m stance =>
   #   threshold = 0.06 / 0.074 * 0.18056 = 0.146 m

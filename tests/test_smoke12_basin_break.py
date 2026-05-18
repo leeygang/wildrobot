@@ -110,8 +110,18 @@ def test_smoke12_action_rate_halved_vs_smoke11() -> None:
 # well as the cross-cutting one.
 
 
-def _call_helper(left_z, right_z, phase, is_standing, swing_h=0.05, alpha=914.304):
-    """Call the static helper at smoke12 production params."""
+def _call_helper(
+    left_z, right_z, phase, is_standing,
+    swing_h=0.05, alpha=914.304,
+    zero_on_standing=True,   # smoke12 production setting
+):
+    """Call the static helper at smoke12 production params.
+
+    Default ``zero_on_standing=True`` matches the smoke12 yaml
+    (``env.loc_ref_feet_phase_zero_on_standing: true``); override
+    when probing the standing branch under a future config that
+    re-enables the standing payout.
+    """
     from training.envs.wildrobot_env import WildRobotEnv
     return float(WildRobotEnv._feet_phase_reward(
         left_foot_z_rel=jp.float32(left_z),
@@ -121,6 +131,7 @@ def _call_helper(left_z, right_z, phase, is_standing, swing_h=0.05, alpha=914.30
         is_standing=jp.bool_(is_standing),
         swing_height=jp.float32(swing_h),
         alpha=jp.float32(alpha),
+        zero_on_standing=zero_on_standing,
     ))
 
 
@@ -154,17 +165,50 @@ def test_smoke12_feet_phase_perfect_swing_pays_positive() -> None:
     assert r > 1.5, f"perfect swing should give clear positive signal; got {r}"
 
 
-def test_smoke12_feet_phase_standing_returns_zero() -> None:
-    """smoke12 contract: standing (||cmd||≈0) always returns 0,
-    regardless of foot positions.  This branch should be unreachable
-    under smoke12's cmd_zero_chance=0 but the helper still hard-zeroes
-    it for back-compat with on-policy zero-cmd episodes."""
+def test_smoke12_feet_phase_standing_returns_zero_under_smoke12_flag() -> None:
+    """smoke12 contract: when the env is built with
+    ``loc_ref_feet_phase_zero_on_standing=true`` (smoke12 yaml),
+    the helper's standing branch returns 0 regardless of foot
+    positions.  This branch should be unreachable under smoke12's
+    ``cmd_zero_chance=0`` distribution, but we still pin the
+    behavior for any residual on-policy zero-cmd frame.
+
+    Default (``zero_on_standing=False``) preserves the pre-smoke12
+    standing payout — that branch is covered in
+    ``tests/test_v0201_env_rewards_tb.py``.
+    """
     for lz, rz in ((0.0, 0.0), (0.05, 0.0), (0.034, 0.034)):
-        r = _call_helper(lz, rz, math.pi / 2.0, True)
+        r = _call_helper(lz, rz, math.pi / 2.0, True, zero_on_standing=True)
         assert r == 0.0, (
-            f"standing + ({lz}, {rz}) returned {r}; expected 0 under "
-            "smoke12 hard-zero-on-standing."
+            f"standing + ({lz}, {rz}) with zero_on_standing=True returned "
+            f"{r}; expected 0 under the smoke12 bootstrap flag."
         )
+
+
+def test_smoke12_env_threads_zero_on_standing_flag() -> None:
+    """End-to-end: smoke12 yaml must set
+    ``loc_ref_feet_phase_zero_on_standing=true`` and the env must
+    cache it on ``_feet_phase_zero_on_standing``.  Without the flag
+    set in yaml the standing branch would fall back to the
+    pre-smoke12 payout (max ~1.0 at grounded), defeating the
+    basin-break intent if cmd_zero_chance is ever raised in a
+    future variant of this config without re-disabling the standing
+    payout.
+
+    Sibling pins: smoke11 and smoke9c MUST keep
+    ``_feet_phase_zero_on_standing=False`` so their standing
+    behavior is byte-equivalent to pre-smoke12 history.
+    """
+    env12 = _maybe_build_env(_SMOKE12_CFG)
+    assert env12._feet_phase_zero_on_standing is True, (
+        "smoke12 env: expected _feet_phase_zero_on_standing=True, got False. "
+        "Yaml flag missing or config loader regression."
+    )
+    env11 = _maybe_build_env(_SMOKE11_CFG)
+    assert env11._feet_phase_zero_on_standing is False, (
+        "smoke11 env: expected _feet_phase_zero_on_standing=False (default). "
+        "Default semantics drifted."
+    )
 
 
 # -----------------------------------------------------------------------------

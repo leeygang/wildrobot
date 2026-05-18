@@ -202,9 +202,15 @@ def _call_feet_phase(
     is_standing: bool,
     swing_height: float = 0.04,
     alpha: float = 1428.6,
+    zero_on_standing: bool = False,
 ) -> float:
     """Convenience wrapper that converts a phase angle to (sin, cos)
-    and invokes the env's static helper.  Returns a Python float."""
+    and invokes the env's static helper.  Returns a Python float.
+
+    ``zero_on_standing`` defaults to False (the helper's own default —
+    pre-smoke12 standing payout).  Pass ``True`` to exercise the
+    smoke12 bootstrap standing-zero branch.
+    """
     return float(
         env._feet_phase_reward(
             left_foot_z_rel=jp.float32(left_z_rel),
@@ -214,6 +220,7 @@ def _call_feet_phase(
             is_standing=jp.bool_(is_standing),
             swing_height=jp.float32(swing_height),
             alpha=jp.float32(alpha),
+            zero_on_standing=zero_on_standing,
         )
     )
 
@@ -232,29 +239,53 @@ def _call_feet_phase(
 # docstring as "was" for git-archaeology).
 
 
-def test_feet_phase_standing_returns_zero_regardless_of_feet(smoke9_env) -> None:
-    """Standing branch is hard-wired to 0 in the smoke12 formula.
-    smoke12 also pins ``cmd_zero_chance: 0.0`` so this branch should be
-    unreachable on the smoke12 training distribution; the helper still
-    exposes the case for back-compat and for the (rare) on-policy
-    zero-cmd episodes earlier configs admit.
+def test_feet_phase_standing_branch_is_configurable(smoke9_env) -> None:
+    """Standing-branch behavior is selected by ``zero_on_standing``
+    (Python bool, ``env.loc_ref_feet_phase_zero_on_standing`` in
+    config).  Two branches:
 
-    Was (pre-smoke12 raw formula):
-      standing + grounded   = 1.000
-      standing + lifted     = 0.102 (small base reward at err=swing_h)
+      - ``zero_on_standing=False`` (default; pre-smoke12 behavior):
+        standing returns ``exp(-α·(lz²+rz²)) × 1.0`` — pays max when
+        both feet are at baseline, falls off as feet lift.  Pays
+        ~1.0 at grounded, ~0.102 at lift=swing_h, ~0.037 at the
+        body-origin-bug input.
+
+      - ``zero_on_standing=True`` (smoke12 bootstrap):  standing
+        returns 0 unconditionally.  Used when ``cmd_zero_chance: 0.0``
+        makes the standing branch unreachable on the training
+        distribution and we want no residual feet_phase payout on any
+        ||cmd||≈0 frame.
+
+    Walking branch (||cmd|| > 0) is independent of this flag — it is
+    always the smoke12 baseline-subtract form (see the other tests
+    in this section for that contract).
     """
-    for left_z, right_z, label in (
-        (0.0, 0.0, "grounded"),
-        (0.04, 0.0, "left-lifted"),
-        (0.04, 0.04, "both-lifted"),
-        (0.034, 0.034, "body-origin-z (pre-baseline-correction bug input)"),
-    ):
-        r = _call_feet_phase(
+    cases = (
+        (0.0,   0.0,   1.0,                                "grounded"),
+        (0.04,  0.0,   math.exp(-1428.6 * 0.04 ** 2),      "left-lifted"),
+        (0.04,  0.04,  math.exp(-1428.6 * 2 * 0.04 ** 2),  "both-lifted"),
+        (0.034, 0.034, math.exp(-1428.6 * 2 * 0.034 ** 2), "body-origin-z (pre-correction bug input)"),
+    )
+    for left_z, right_z, expected_default, label in cases:
+        # Default (zero_on_standing=False): pre-smoke12 standing reward.
+        r_default = _call_feet_phase(
             smoke9_env, left_z_rel=left_z, right_z_rel=right_z,
             phase=math.pi / 2.0, is_standing=True,
+            zero_on_standing=False,
         )
-        assert r == 0.0, (
-            f"standing + {label}: expected 0.0 under smoke12 formula; got {r}"
+        assert r_default == pytest.approx(expected_default, abs=1e-3), (
+            f"standing + {label} with zero_on_standing=False: "
+            f"expected ≈{expected_default:.4f}, got {r_default:.4f}"
+        )
+        # smoke12 (zero_on_standing=True): hard zero regardless of feet.
+        r_smoke12 = _call_feet_phase(
+            smoke9_env, left_z_rel=left_z, right_z_rel=right_z,
+            phase=math.pi / 2.0, is_standing=True,
+            zero_on_standing=True,
+        )
+        assert r_smoke12 == 0.0, (
+            f"standing + {label} with zero_on_standing=True: "
+            f"expected exactly 0.0 (smoke12 bootstrap); got {r_smoke12}"
         )
 
 
