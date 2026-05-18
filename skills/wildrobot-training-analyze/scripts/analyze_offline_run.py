@@ -5,9 +5,28 @@ import argparse
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+# Make ``training.utils.reward_normalization`` reachable when the script is
+# invoked from any cwd.  The skill's canonical invocation is from the
+# repo root, but a defensive path bootstrap keeps stand-alone runs (e.g.
+# from /tmp during regression debugging) working without surprises.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from training.utils.reward_normalization import (  # noqa: E402
+    CANONICAL_UNIT as _REWARD_CANONICAL_UNIT,
+    RewardRow as _RewardRow,
+    TB_SOURCE_UNIT as _TB_SOURCE_UNIT,
+    WR_SOURCE_UNIT as _WR_SOURCE_UNIT,
+    format_reward_comparison as _format_reward_comparison,
+    tb_canonical_per_step as _tb_canonical_per_step,
+    wr_canonical_per_step as _wr_canonical_per_step,
+)
 
 
 @dataclass(frozen=True)
@@ -777,6 +796,95 @@ def _format_gate_transition(previous_gate: str, current_gate: str) -> str:
     return f"{previous_gate}->{current_gate}"
 
 
+def _normalize_tb_term_key(name: str) -> str:
+    """Strip an optional ``reward/`` prefix from a TB term name so the
+    WR keys (``reward/<X>``) and TB keys (``<X>``) can be cross-referenced.
+    """
+    return name[len("reward/"):] if name.startswith("reward/") else name
+
+
+def _build_tb_comparison_block(
+    *,
+    tb_comparison: Dict[str, Any],
+    wr_canonical_by_key: Dict[str, float],
+    reward_rows: List[Tuple[str, str]],
+) -> List[str]:
+    """Render the WR-vs-TB canonical-unit comparison table.
+
+    Both sides are printed in the same explicit unit so the comparison
+    cannot silently drift.  Source values are also shown for context.
+    """
+    dt = float(tb_comparison.get("dt", 0.0))
+    mean_ep_len = float(tb_comparison.get("mean_episode_length", 0.0))
+    tb_terms_raw = tb_comparison.get("terms", {}) or {}
+    if not isinstance(tb_terms_raw, dict):
+        raise ValueError(
+            "tb_comparison['terms'] must be a {term_name: mean_episode_value} mapping"
+        )
+    tb_source_by_short = {
+        _normalize_tb_term_key(str(k)): float(v) for k, v in tb_terms_raw.items()
+    }
+
+    block: List[str] = [
+        "",
+        "### WR vs TB reward-term comparison (canonical per-step unit)",
+        f"- Canonical unit: {_REWARD_CANONICAL_UNIT}",
+        f"- WR source unit: {_WR_SOURCE_UNIT}",
+        f"- TB source unit: {_TB_SOURCE_UNIT}",
+        f"- TB conversion: canonical = mean_episode_value / mean_episode_length * dt"
+        f"  (dt={dt:g}, mean_episode_length={mean_ep_len:g})",
+        "",
+        "| Term | WR canonical | TB source (Mean episode) | TB canonical |",
+        "|---|---:|---:|---:|",
+    ]
+
+    # Build label lookup from the WR reward-row table so the comparison
+    # rows reuse the same human-readable labels.
+    label_by_key = {key: label for label, key in reward_rows}
+    seen_short: set = set()
+
+    # Emit one row per reward-key that has a value on either side.
+    for label, key in reward_rows:
+        short = _normalize_tb_term_key(key)
+        wr_v = wr_canonical_by_key.get(key)
+        tb_src = tb_source_by_short.get(short)
+        if wr_v is None and tb_src is None:
+            continue
+        seen_short.add(short)
+        tb_can = (
+            _tb_canonical_per_step(tb_src, mean_ep_len, dt)
+            if tb_src is not None and mean_ep_len > 0 and dt > 0
+            else None
+        )
+        block.append(
+            "| {label} | {wr} | {tb_src} | {tb_can} |".format(
+                label=label,
+                wr=_format_f(wr_v, 4) if wr_v is not None else "n/a",
+                tb_src=_format_f(tb_src, 4) if tb_src is not None else "n/a",
+                tb_can=_format_f(tb_can, 4) if tb_can is not None else "n/a",
+            )
+        )
+
+    # TB-only terms (not in the WR row list).
+    extra = sorted(set(tb_source_by_short) - seen_short)
+    for short in extra:
+        tb_src = tb_source_by_short[short]
+        tb_can = (
+            _tb_canonical_per_step(tb_src, mean_ep_len, dt)
+            if mean_ep_len > 0 and dt > 0
+            else None
+        )
+        label = label_by_key.get(short, f"(TB-only) {short}")
+        block.append(
+            "| {label} | n/a | {tb_src} | {tb_can} |".format(
+                label=label,
+                tb_src=_format_f(tb_src, 4),
+                tb_can=_format_f(tb_can, 4) if tb_can is not None else "n/a",
+            )
+        )
+    return block
+
+
 def _changelog_block(
     *,
     version: str,
@@ -788,6 +896,7 @@ def _changelog_block(
     best_row: Dict[str, Any],
     walking: WalkingSummary,
     regression: Optional[RegressionSummary],
+    tb_comparison: Optional[Dict[str, Any]] = None,
 ) -> str:
     def g(key: str) -> Optional[float]:
         return _get_float(best_row, key)
@@ -878,6 +987,17 @@ def _changelog_block(
         # ToddlerBot-aligned terms appear in this row.  Surfaces dead
         # gradients (large ref/<X>_err_* paired with near-zero
         # reward/ref_<X>_track) at a glance.
+        #
+        # Reward-term unit contract: every reward/<term> value below is
+        # in the WR canonical per-step unit (weight × raw × dt mean over
+        # rollout).  Reads go through ``_wr_canonical_per_step`` to make
+        # the conversion path explicit even though it is numerically
+        # identity for WR.  See training/utils/reward_normalization.py
+        # for the cross-repo TB conversion used by --tb-comparison.
+        lines.append(
+            f"| _**Reward terms** — unit: {_REWARD_CANONICAL_UNIT}_ "
+            "| _(WR-canonical)_ |"
+        )
         v0201_reward_rows = [
             ("reward/ref_q_track (w=5.0)", "reward/ref_q_track"),
             ("ref/q_track_err_rmse", "ref/q_track_err_rmse"),
@@ -916,10 +1036,29 @@ def _changelog_block(
             ("reward/slip (w=0.05)", "reward/slip"),
             ("reward/action_rate (w=-1.0)", "reward/action_rate"),
         ]
+        wr_canonical_by_key: Dict[str, float] = {}
         for label, key in v0201_reward_rows:
             v = g(key)
             if v is not None:
-                lines.append(f"| {label} | {_format_f(v, 4)} |")
+                canonical = _wr_canonical_per_step(v)
+                wr_canonical_by_key[key] = canonical
+                lines.append(f"| {label} | {_format_f(canonical, 4)} |")
+
+        # Optional WR-vs-TB canonical-unit comparison.  Triggered by the
+        # --tb-comparison CLI flag in main(); ``tb_comparison`` is a
+        # parsed JSON of the shape:
+        #   {"dt": 0.02, "mean_episode_length": 50.7,
+        #    "terms": {"alive": 50.7, "feet_phase": 266.99, ...}}
+        # where each ``terms`` value is TB's printed ``Mean episode <X>``.
+        # TB values are converted to canonical per-step weighted post-dt
+        # via ``tb_canonical_per_step`` so a direct WR-vs-TB column
+        # comparison is meaningful.
+        if tb_comparison is not None:
+            lines += _build_tb_comparison_block(
+                tb_comparison=tb_comparison,
+                wr_canonical_by_key=wr_canonical_by_key,
+                reward_rows=v0201_reward_rows,
+            )
 
         # Per-foot stride / swing-time diagnostics (v0.20.1-smoke2).
         per_foot_rows = [
@@ -966,7 +1105,26 @@ def main() -> None:
     ap.add_argument("--wandb-root", type=Path, default=Path("training/wandb"))
     ap.add_argument("--checkpoints-root", type=Path, default=Path("training/checkpoints"))
     ap.add_argument("--min-iter", type=int, default=10)
+    ap.add_argument(
+        "--tb-comparison",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a JSON file with TB reward results to render "
+            "alongside WR in canonical per-step weighted post-dt units. "
+            'Expected shape: {"dt": 0.02, "mean_episode_length": 50.7, '
+            '"terms": {"alive": 50.7, "feet_phase": 266.99, ...}}. '
+            "Each ``terms`` value is TB's printed 'Mean episode <term>'. "
+            "See training/utils/reward_normalization.py for the conversion."
+        ),
+    )
     args = ap.parse_args()
+
+    tb_comparison = None
+    if args.tb_comparison is not None:
+        if not args.tb_comparison.exists():
+            ap.error(f"--tb-comparison file not found: {args.tb_comparison}")
+        tb_comparison = json.loads(args.tb_comparison.read_text())
 
     current = _load_run_analysis(
         args.run_dir,
@@ -1061,6 +1219,7 @@ def main() -> None:
             best_row=current.best_row,
             walking=current.walking,
             regression=regression,
+            tb_comparison=tb_comparison,
         )
     )
 

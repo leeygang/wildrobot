@@ -36,6 +36,17 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+# Canonical-unit normalization for reward/<term> emission.  The env writes
+# weight × raw × dt into env_metrics["reward/<X>"] every step
+# (training/envs/wildrobot_env.py:_aggregate_reward); routing the W&B
+# emission through wr_canonical_per_step() makes the canonical-unit
+# contract explicit at this boundary so future cross-repo comparisons
+# (see training/utils/reward_normalization.py) cannot silently drift.
+from training.utils.reward_normalization import (
+    CANONICAL_UNIT as _REWARD_TERM_CANONICAL_UNIT,
+    wr_canonical_per_step as _wr_canonical_per_step,
+)
+
 
 # =============================================================================
 # Exit Criteria Targets (Section 3.2.4)
@@ -1387,6 +1398,17 @@ def build_wandb_metrics(
 ) -> tuple[Dict[str, float], List[str]]:
     """Create W&B metrics dict and return missing reward terms.
 
+    Reward-term unit contract
+    -------------------------
+    Every ``reward/<term>`` value emitted here is in the canonical unit:
+    ``per-step weighted post-dt contribution = weight × raw × dt``.  This
+    matches what ``_aggregate_reward`` writes into ``env_metrics`` each
+    step (training/envs/wildrobot_env.py:1693-1751) reduced by
+    ``Reducer.MEAN`` over the (T, N) rollout.  Reads are routed through
+    ``wr_canonical_per_step`` so the conversion path is explicit (it is
+    numerically identity for WR — see ``training/utils/reward_normalization.py``
+    for the cross-repo conversion to TB's ``Mean episode <term>`` source unit).
+
     Args:
         iteration: Current training iteration
         metrics: IterationMetrics object from training loop
@@ -1408,7 +1430,12 @@ def build_wandb_metrics(
     reward_terms = reward_terms or REWARD_TERM_KEYS
     for term in reward_terms:
         if term in metrics.env_metrics:
-            wandb_metrics[term] = float(metrics.env_metrics[term])
+            # Identity for WR; the call site makes the canonical-unit
+            # contract part of the code path so it is pinned under test
+            # and visible to anyone reading the emitter.
+            wandb_metrics[term] = _wr_canonical_per_step(
+                float(metrics.env_metrics[term])
+            )
         else:
             missing_terms.append(term)
 
