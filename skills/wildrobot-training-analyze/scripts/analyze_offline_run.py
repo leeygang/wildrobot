@@ -479,13 +479,38 @@ def _classify_walking(
     else:
         success_mean = _mean(_collect_series(rows, "env/success_rate", min_iter=min_iter))
     term_low_mean = _mean(_collect_series(rows, "term_height_low_frac", min_iter=min_iter))
-    term_pitch_mean = _mean(_collect_series(rows, "term_pitch_frac", min_iter=min_iter))
     torque_sat_mean = _mean(_collect_series(rows, "debug/torque_sat_frac", min_iter=min_iter))
+
+    # 2026-05-18 metric-correctness sweep: ``term_pitch_frac`` now
+    # (correctly) reports the TRUE termination-cause fraction (∈ [0, 1],
+    # masked by dones).  Under ``use_relaxed_termination: true`` (the
+    # walking smokes), it is zero unless pitch happens to be violated
+    # at the same step as the height termination.  The historical
+    # per-step pitch-occupancy metric is now exported as
+    # ``soft_violation_pitch_frac`` and is unbounded — DO NOT use it as
+    # a termination signal.  Pre-sweep runs only have the OLD
+    # ``term_pitch_frac`` formula (per-step occupancy), so we read it
+    # for the diagnostic display but separately read the new soft key
+    # for the actual stability classifier.  The verdict ladder no
+    # longer uses pitch occupancy as a termination signal.
+    term_pitch_mean = _mean(_collect_series(rows, "term_pitch_frac", min_iter=min_iter))
+    soft_pitch_mean = _mean(
+        _collect_series(rows, "soft_violation_pitch_frac", min_iter=min_iter)
+    )
 
     fwd = forward_vel_mean or 0.0
     vel_err = velocity_error_mean if velocity_error_mean is not None else float("inf")
     success = success_mean or 0.0
-    term_pitch = term_pitch_mean or 0.0
+    # Use the soft-violation occupancy as a "pitch over soft limit"
+    # diagnostic; it's the only available signal that has any meaning
+    # under relaxed termination (real termination cause is 0 there).
+    # If a run is pre-sweep, ``soft_pitch_mean`` will be None and we
+    # fall back to the legacy ``term_pitch_mean`` (which under the OLD
+    # formula is the same per-step occupancy, just under the old name).
+    pitch_soft = (
+        soft_pitch_mean if soft_pitch_mean is not None else (term_pitch_mean or 0.0)
+    )
+    pitch_soft = pitch_soft or 0.0
     torque_sat = torque_sat_mean or 0.0
 
     # Walking-rate gates (m/s).  v0.20.1 smoke targets vx=0.15 — the legacy
@@ -498,7 +523,13 @@ def _classify_walking(
 
     # v0.20.1 verdict ladder (matches walking_training.md G4 + the
     # v0.19.5 / v0.20.1 failure-signature catalogue in SKILL.md).
-    if fwd < fwd_low and term_pitch >= 0.10:
+    # 2026-05-18 sweep: "posture exploit" used to be gated on
+    # term_pitch_frac >= 0.10, but that metric is now the TRUE
+    # termination-cause fraction (always ~0 under relaxed termination).
+    # Use the soft-violation occupancy instead — a high per-step
+    # pitch-occupancy with low forward vel is the actual signature of
+    # the v0.19.5 lean-back posture exploit.
+    if fwd < fwd_low and pitch_soft >= 0.10:
         verdict = "posture exploit"
     elif fwd < fwd_low and success >= 0.80:
         verdict = "standing local minimum"
@@ -516,7 +547,10 @@ def _classify_walking(
     else:
         tracking_status = "partial"
 
-    if success >= 0.90 and (term_low_mean or 0.0) < 0.05 and term_pitch < 0.05:
+    # Stability: don't use pitch_soft as a termination signal (it isn't
+    # one under relaxed termination).  Stability is about whether the
+    # robot completes the eval horizon without falling on height.
+    if success >= 0.90 and (term_low_mean or 0.0) < 0.05:
         stability = "good"
     elif success >= 0.70:
         stability = "acceptable"
@@ -907,8 +941,13 @@ def _changelog_block(
     train_L = _first_present(g("env/episode_length"), g("episode_length"))
 
     term_low = g("term_height_low_frac")
+    # 2026-05-18 metric-correctness sweep: term_pitch/roll_frac is now
+    # the TRUE termination-cause fraction; the historical per-step
+    # occupancy is exported as soft_violation_*_frac.  Show both.
     term_pitch = g("term_pitch_frac")
     term_roll = g("term_roll_frac")
+    soft_pitch = g("soft_violation_pitch_frac")
+    soft_roll = g("soft_violation_roll_frac")
     max_torque = _first_present(g("env/max_torque"), g("tracking/max_torque"))
     torque_sat = g("debug/torque_sat_frac")
     approx_kl = _first_present(g("ppo/approx_kl"), g("approx_kl"))
@@ -943,8 +982,10 @@ def _changelog_block(
         "| Signal | Value |",
         "|---|---:|",
         f"| term_height_low_frac | {_format_pct(term_low)} |",
-        f"| term_pitch_frac | {_format_pct(term_pitch)} |",
-        f"| term_roll_frac | {_format_pct(term_roll)} |",
+        f"| term_pitch_frac (true cause @ done) | {_format_pct(term_pitch)} |",
+        f"| term_roll_frac (true cause @ done) | {_format_pct(term_roll)} |",
+        f"| soft_violation_pitch_frac (per-step occupancy / done) | {_format_pct(soft_pitch)} |",
+        f"| soft_violation_roll_frac (per-step occupancy / done) | {_format_pct(soft_roll)} |",
         f"| tracking/max_torque | {_format_pct(max_torque)} |",
         f"| debug/torque_sat_frac | {_format_pct(torque_sat)} |",
         f"| ppo/approx_kl | {_format_f(approx_kl, 4)} |",
@@ -971,7 +1012,9 @@ def _changelog_block(
             ("Evaluate/forward_velocity (G4 ≥ 0.075)", "Evaluate/forward_velocity", 3, _format_f),
             ("Evaluate/mean_episode_length (G4 ≥ 475)", "Evaluate/mean_episode_length", 1, _format_f),
             ("Evaluate/cmd_vs_achieved_forward (G4 ≤ 0.075)", "Evaluate/cmd_vs_achieved_forward", 3, _format_f),
-            ("tracking/step_length_touchdown_event_m (G4 ≥ 0.030)", "tracking/step_length_touchdown_event_m", 4, _format_f),
+            ("tracking/step_length_touchdown_event_m (CARRY PROXY; G4 ≥ 0.030)", "tracking/step_length_touchdown_event_m", 4, _format_f),
+            ("tracking/step_length_left_event_m (exact event)", "tracking/step_length_left_event_m", 4, _format_f),
+            ("tracking/step_length_right_event_m (exact event)", "tracking/step_length_right_event_m", 4, _format_f),
             ("tracking/forward_velocity_cmd_ratio (G5 0.6..1.5)", "tracking/forward_velocity_cmd_ratio", 3, _format_f),
             ("tracking/residual_hip_pitch_left_abs (G5 ≤ 0.20)", "tracking/residual_hip_pitch_left_abs", 3, _format_f),
             ("tracking/residual_hip_pitch_right_abs (G5 ≤ 0.20)", "tracking/residual_hip_pitch_right_abs", 3, _format_f),

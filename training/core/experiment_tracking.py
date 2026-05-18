@@ -1522,7 +1522,20 @@ def create_training_metrics(
         # TOPLINE METRICS (Section 3.2.4 Exit Criteria)
         # These are the key metrics to track training progress
         # =====================================================================
-        "topline/episode_reward": episode_reward,  # Target: >350
+        # NOTE (2026-05-18 metric-correctness sweep): ``episode_reward`` is
+        # a MISLEADING legacy name — the value is the mean per-env SUM
+        # over the fixed ``rollout_steps`` window (T=20), NOT the per-
+        # completed-episode return.  Use ``topline/rollout_reward_sum``
+        # or ``topline/reward_per_step`` below for truthful naming.
+        # The original key is kept as a deprecated alias so existing
+        # dashboards keep working.
+        "topline/episode_reward": episode_reward,  # deprecated alias
+        "topline/rollout_reward_sum": episode_reward,
+        "topline/reward_per_step": (
+            float(extra_metrics.get("reward_per_step", 0.0))
+            if "reward_per_step" in extra_metrics
+            else 0.0
+        ),
         "topline/forward_velocity": forward_velocity,  # Target: 0.3-0.8 m/s
         "topline/avg_torque": avg_torque,  # Target: <2.8 Nm
         "topline/steps_per_sec": env_steps_per_sec,  # Performance metric
@@ -1540,7 +1553,14 @@ def create_training_metrics(
         "topline/max_torque": max_torque,  # Target: <0.8 (80% of limit)
         # =====================================================================
         # Environment metrics
+        # Deprecated alias — see comment under topline/episode_reward.
         "env/episode_reward": episode_reward,
+        "env/rollout_reward_sum": episode_reward,
+        "env/reward_per_step": (
+            float(extra_metrics.get("reward_per_step", 0.0))
+            if "reward_per_step" in extra_metrics
+            else 0.0
+        ),
         "env/episode_length": episode_length,
         "env/steps_per_sec": env_steps_per_sec,
         "env/forward_velocity": forward_velocity,

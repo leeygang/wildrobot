@@ -2863,10 +2863,55 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
             forward_velocity / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
         ).astype(jp.float32)
-        # G4 step-length-on-touchdown.  Carries the most recent value
-        # between events; rollout MEAN approximates the spec's
-        # "touchdown step length mean ≥ 0.03 m" gate.
+        # G4 step-length-on-touchdown.  CARRY PROXY: this slot holds the
+        # last-touchdown step length and is carried unchanged between
+        # touchdown events (so its rollout MEAN is dominated by the
+        # most-recent values, not by every event).  For an exact
+        # event-mean analysis, use the per-foot
+        # ``tracking/step_length_{left,right}_event_m`` series, which
+        # ARE pure event-time deltas.  This proxy is preserved here for
+        # the v0.20.1 G4 dashboard contract; analyzer / dashboards
+        # should flag it as a proxy, not as the exact event mean.
         terminal_metrics_dict["tracking/step_length_touchdown_event_m"] = new_step_length
+
+        # ---------------------------------------------------------------
+        # v0.20.1 metric-correctness sweep (2026-05-18): wire the
+        # debug/torque/action/velocity metrics that were previously
+        # always zero (registry-defaulted) so the W&B export reflects
+        # real per-step values instead of placeholders.  These are
+        # populated only here (the live step path); reset still
+        # initialises them to 0 in metrics_dict above.
+        # ---------------------------------------------------------------
+        terminal_metrics_dict["debug/forward_vel"] = forward_velocity
+        terminal_metrics_dict["debug/lateral_vel"] = root_vel_h.linear[1].astype(jp.float32)
+        terminal_metrics_dict["tracking/vel_error"] = jp.abs(
+            forward_velocity - velocity_cmd
+        ).astype(jp.float32)
+        # Action saturation diagnostics.  Both raw (pre-filter, pre-delay)
+        # and applied (post-filter, post-delay) variants — useful for
+        # spotting "policy commands wide deltas that the filter smooths
+        # back to safe range".
+        abs_applied = jp.abs(applied_action)
+        terminal_metrics_dict["debug/action_abs_max"] = jp.max(abs_applied).astype(jp.float32)
+        terminal_metrics_dict["debug/action_sat_frac"] = jp.mean(
+            (abs_applied > jp.float32(0.95)).astype(jp.float32)
+        )
+        abs_raw = jp.abs(action)
+        terminal_metrics_dict["debug/raw_action_abs_max"] = jp.max(abs_raw).astype(jp.float32)
+        terminal_metrics_dict["debug/raw_action_sat_frac"] = jp.mean(
+            (abs_raw > jp.float32(0.95)).astype(jp.float32)
+        )
+        # Torque diagnostics.  data.actuator_force is in Nm; CAL caches
+        # per-actuator force limits (from MJCF forcerange) so the
+        # normalised |τ| / limit is well-defined per joint.
+        torque_abs = jp.abs(data.actuator_force[self._cal._actuator_ids])
+        torque_ratio = torque_abs / (self._cal._force_limits + jp.float32(1e-6))
+        terminal_metrics_dict["tracking/avg_torque"] = jp.mean(torque_abs).astype(jp.float32)
+        terminal_metrics_dict["tracking/max_torque"] = jp.max(torque_ratio).astype(jp.float32)
+        terminal_metrics_dict["debug/torque_abs_max"] = jp.max(torque_ratio).astype(jp.float32)
+        terminal_metrics_dict["debug/torque_sat_frac"] = jp.mean(
+            (torque_ratio > jp.float32(0.95)).astype(jp.float32)
+        )
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

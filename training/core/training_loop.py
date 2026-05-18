@@ -468,8 +468,28 @@ def make_train_iteration_fn(
         # Aggregate all metrics from packed vector using registry reducers
         agg_metrics = aggregate_metrics(trajectory.metrics_vec, trajectory.dones)
 
-        # Episode metrics (computed from trajectory, not from metrics_vec)
-        episode_reward = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
+        # 2026-05-18 metric-correctness sweep: the prior name
+        # ``episode_reward`` was misleading.  ``jnp.sum(trajectory.
+        # task_rewards, axis=0)`` is the per-env SUM over the fixed
+        # ``rollout_steps`` window (T=20 by default), NOT the per-
+        # episode return — episodes span 500 steps and an env will
+        # often see only 1/25 of an episode per rollout chunk.
+        # Renamed to ``rollout_reward_sum``; ``reward_per_step`` is
+        # the more interpretable per-step mean.  The historical name
+        # ``episode_reward`` is kept as a deprecated alias in the
+        # W&B export so existing dashboards keep working, but the
+        # variable / parameter naming through training_loop and
+        # experiment_tracking uses the truthful name from this commit
+        # forward.
+        rollout_reward_sum = jnp.mean(jnp.sum(trajectory.task_rewards, axis=0))
+        rollout_steps_count = jnp.float32(trajectory.task_rewards.shape[0])
+        reward_per_step = jnp.where(
+            rollout_steps_count > 0,
+            rollout_reward_sum / rollout_steps_count,
+            jnp.float32(0.0),
+        )
+        # Legacy alias used by experiment_tracking + the print path.
+        episode_reward = rollout_reward_sum
         task_reward_mean = jnp.mean(trajectory.task_rewards)
 
         # v0.10.4: Episode length = mean step count of COMPLETED episodes only
@@ -494,28 +514,77 @@ def make_train_iteration_fn(
             0.0,
         )
 
-        # v0.10.2: Termination diagnostics - compute fraction of episodes ending due to each cause
-        # Access term/* metrics from aggregated dict and normalize by total done episodes
-        # Note: aggregate_metrics uses MEAN reducer, but we need SUM then normalize
-        # So we access the raw metrics_vec and compute manually
+        # v0.10.2: Termination diagnostics.
+        # ``term/<X>`` is set EVERY step where the threshold is violated
+        # (not only at the terminal step).  Two aggregates per cause:
+        #
+        #   ``soft_violation_<X>_frac`` = sum_steps(term/<X>) / total_done
+        #     Historical formula (was previously misnamed ``term_<X>_frac``).
+        #     Unbounded; measures "violation steps per termination event".
+        #     Under relaxed termination, pitch/roll never CAUSE termination
+        #     but the per-step flag still fires, so this ratio can exceed
+        #     1.0 (smoke12b late-iter ~1.1; smoke12 backward basin ~3.6).
+        #     Still useful as a diagnostic for "how often is the robot
+        #     above its pitch/roll soft limit".
+        #
+        #   ``term_<X>_frac`` = sum_steps(term/<X> * dones) / total_done
+        #     TRUE termination-cause-fraction: of all terminating episodes,
+        #     what fraction had this threshold violated at the terminal
+        #     step.  ∈ [0, 1].  Under strict termination this equals the
+        #     ``<X>``-termination fraction; under
+        #     ``use_relaxed_termination: true`` it is a co-occurrence
+        #     measure (height caused termination, pitch happened to also
+        #     be violated at the same step).  Either way, this is the
+        #     metric the analyzer / dashboards should treat as a
+        #     termination signal.
+        #
+        # ``term_height_low_frac`` and ``term_truncated_frac`` keep
+        # their classic semantics because height_low IS a real
+        # termination cause under both modes and truncation always is.
         term_idx_height_low = METRIC_INDEX["term/height_low"]
         term_idx_height_high = METRIC_INDEX["term/height_high"]
         term_idx_pitch = METRIC_INDEX["term/pitch"]
         term_idx_roll = METRIC_INDEX["term/roll"]
         term_idx_truncated = METRIC_INDEX["term/truncated"]
 
-        total_term_height_low = jnp.sum(trajectory.metrics_vec[..., term_idx_height_low])
-        total_term_height_high = jnp.sum(trajectory.metrics_vec[..., term_idx_height_high])
-        total_term_pitch = jnp.sum(trajectory.metrics_vec[..., term_idx_pitch])
-        total_term_roll = jnp.sum(trajectory.metrics_vec[..., term_idx_roll])
-        total_term_truncated = jnp.sum(trajectory.metrics_vec[..., term_idx_truncated])
+        per_step_pitch = trajectory.metrics_vec[..., term_idx_pitch]
+        per_step_roll = trajectory.metrics_vec[..., term_idx_roll]
+        per_step_height_low = trajectory.metrics_vec[..., term_idx_height_low]
+        per_step_height_high = trajectory.metrics_vec[..., term_idx_height_high]
+        per_step_truncated = trajectory.metrics_vec[..., term_idx_truncated]
 
-        # Normalize by total done episodes (fraction of terminations by cause)
+        total_term_height_low = jnp.sum(per_step_height_low)
+        total_term_height_high = jnp.sum(per_step_height_high)
+        total_term_pitch = jnp.sum(per_step_pitch)
+        total_term_roll = jnp.sum(per_step_roll)
+        total_term_truncated = jnp.sum(per_step_truncated)
+
+        # height_low / height_high / truncated are real termination
+        # causes — sum-per-step over a done episode reduces to
+        # "violation at terminal step or earlier", which under both
+        # termination modes equals "did this cause terminate the
+        # episode".  Keep classic naming.
         term_height_low_frac = jnp.where(total_done > 0, total_term_height_low / total_done, 0.0)
         term_height_high_frac = jnp.where(total_done > 0, total_term_height_high / total_done, 0.0)
-        term_pitch_frac = jnp.where(total_done > 0, total_term_pitch / total_done, 0.0)
-        term_roll_frac = jnp.where(total_done > 0, total_term_roll / total_done, 0.0)
         term_truncated_frac = jnp.where(total_done > 0, total_term_truncated / total_done, 0.0)
+
+        # Renamed: per-step occupancy / termination-event ratio (the
+        # historical ``term_pitch_frac`` / ``term_roll_frac`` formula).
+        # Unbounded under relaxed termination.
+        soft_violation_pitch_frac = jnp.where(
+            total_done > 0, total_term_pitch / total_done, 0.0
+        )
+        soft_violation_roll_frac = jnp.where(
+            total_done > 0, total_term_roll / total_done, 0.0
+        )
+        # New: true termination-cause fraction (∈ [0, 1]).  Masked by
+        # dones, so this only counts pitch/roll co-occurrence at
+        # terminal steps.  Zero under relaxed-termination + pitch-only
+        # violations because terminating steps only fire on height.
+        pitch_at_done = jnp.sum(per_step_pitch * trajectory.dones)
+        roll_at_done = jnp.sum(per_step_roll * trajectory.dones)
+        term_pitch_frac = jnp.where(total_done > 0, pitch_at_done / total_done, 0.0)
+        term_roll_frac = jnp.where(total_done > 0, roll_at_done / total_done, 0.0)
 
         # v0.11.4: Failure-mode debug metrics (condition on pitch terminations)
         def _masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
@@ -643,9 +712,25 @@ def make_train_iteration_fn(
         agg_metrics["success_rate"] = success_rate
         agg_metrics["term_height_low_frac"] = term_height_low_frac
         agg_metrics["term_height_high_frac"] = term_height_high_frac
+        # term_pitch_frac / term_roll_frac semantics changed in the
+        # 2026-05-18 metric-correctness sweep: they now report the TRUE
+        # termination-cause fraction (∈ [0, 1], masked by dones).  The
+        # previous formula (per-step pitch/roll occupancy divided by
+        # terminations) is now exported separately as
+        # soft_violation_<X>_frac and is unbounded under relaxed
+        # termination — keep it for diagnostic continuity but do NOT
+        # treat it as a termination signal.
         agg_metrics["term_pitch_frac"] = term_pitch_frac
         agg_metrics["term_roll_frac"] = term_roll_frac
+        agg_metrics["soft_violation_pitch_frac"] = soft_violation_pitch_frac
+        agg_metrics["soft_violation_roll_frac"] = soft_violation_roll_frac
         agg_metrics["term_truncated_frac"] = term_truncated_frac
+        # 2026-05-18 metric-correctness sweep: truthful names for the
+        # fixed-window reward statistic.  ``episode_reward`` is kept
+        # as a deprecated alias for back-compat (see the comment at
+        # ``rollout_reward_sum`` above).
+        agg_metrics["rollout_reward_sum"] = rollout_reward_sum
+        agg_metrics["reward_per_step"] = reward_per_step
         agg_metrics["ppo/epochs_used"] = epochs_used
         agg_metrics["ppo/early_stop_epoch"] = jnp.where(
             epochs_used < float(config.ppo.epochs),
@@ -1193,14 +1278,32 @@ def train(
                 jnp.sum(eval_rollout["metrics_vec"][..., term_idx_height_high]) / total_done,
                 0.0,
             )
+            # 2026-05-18 metric-correctness sweep: TRUE termination-cause
+            # fraction (masked by dones).  See the train-side block at
+            # ~line 525 for the rationale.  The old per-step-violation
+            # formula is preserved under the renamed
+            # ``soft_violation_*_frac`` keys below.
+            eval_pitch_per_step = eval_rollout["metrics_vec"][..., term_idx_pitch]
+            eval_roll_per_step = eval_rollout["metrics_vec"][..., term_idx_roll]
+            eval_dones = eval_rollout["done"]
             term_pitch_frac = jnp.where(
                 total_done > 0,
-                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_pitch]) / total_done,
+                jnp.sum(eval_pitch_per_step * eval_dones) / total_done,
                 0.0,
             )
             term_roll_frac = jnp.where(
                 total_done > 0,
-                jnp.sum(eval_rollout["metrics_vec"][..., term_idx_roll]) / total_done,
+                jnp.sum(eval_roll_per_step * eval_dones) / total_done,
+                0.0,
+            )
+            soft_violation_pitch_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_pitch_per_step) / total_done,
+                0.0,
+            )
+            soft_violation_roll_frac = jnp.where(
+                total_done > 0,
+                jnp.sum(eval_roll_per_step) / total_done,
                 0.0,
             )
             unnecessary_step_rate = jnp.mean(

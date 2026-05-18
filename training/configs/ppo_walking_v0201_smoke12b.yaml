@@ -7,20 +7,35 @@
 #     forward_velocity ≈ -0.35 m/s, step_length_event ≈ -1 mm,
 #     ep_len ≈ 54 / 500, term_height_low_frac = 100%.
 # Iter-0 (random policy, before any PPO learning) already showed
-# forward_velocity ≈ -0.14 m/s, confirming the bias was in the
-# CURRICULUM rather than in env physics.
+# forward_velocity ≈ -0.14 m/s.
 #
-# Root cause: smoke12 inherited the symmetric ``[-0.1333, +0.1333]``
-# bootstrap range from smoke9c→smoke11.  smoke12 set
-# ``cmd_zero_chance: 0.0`` so every episode demanded nonzero motion,
-# but ~50% of those episodes asked for BACKWARD motion (cmd < 0).
-# Combined with smoke12's widened residual + halved action_rate +
-# baseline-subtract feet_phase, PPO had a clean gradient to learn a
-# backward-stepping gait — and locked into it.
+# CORRECTION (post-smoke12b audit): the earlier version of this
+# header claimed iter-0 backward drift "confirmed the bias was in
+# the curriculum rather than env physics".  smoke12b itself
+# falsifies that: with strictly forward commands the smoke12b
+# iter-0 random policy STILL shows forward_velocity ≈ -0.142 m/s.
+# So curriculum is NOT the sole cause.  Smoke12's symmetric-cmd
+# range was a real bug (the policy could rationally learn to
+# track negative cmds), but a fresh-init policy drifts backward
+# under home + reset perturbation regardless of cmd sign.
+#
+# Root cause of the SMOKE12 collapse (this part is correct):
+# smoke12 inherited the symmetric ``[-0.1333, +0.1333]`` bootstrap
+# range from smoke9c→smoke11.  smoke12 set ``cmd_zero_chance: 0.0``
+# so every episode demanded nonzero motion, but ~50% of those
+# episodes asked for BACKWARD motion (cmd < 0).  Combined with
+# smoke12's widened residual + halved action_rate + baseline-subtract
+# feet_phase, PPO had a clean gradient to learn a backward-stepping
+# gait that satisfied those negative-cmd episodes.  Without
+# smoke12b's fix the backward gait was a stable attractor.
 #
 # smoke12b forces forward-only bootstrap by making the cmd range
 # strictly positive (``min_velocity: 0.08``, ``max_velocity:
-# 0.1333333333``).  Everything else from smoke12 is kept byte-equal:
+# 0.1333333333``).  Empirically (audit of
+# offline-run-20260517_214105-flpmlz1i): smoke12b ESCAPED the
+# backward basin around iter 32-36 (vx climbed from -0.32 to ~0)
+# and converged to a standing local minimum (vx ≈ +0.012,
+# ep_len 432).  Did not start walking forward by iter 480.  Everything else from smoke12 is kept byte-equal:
 #   - widened residual scales (loc_ref_residual_scale_per_joint)
 #   - feet_phase baseline-subtract walking branch + smoke12 standing
 #     hard-zero (loc_ref_feet_phase_zero_on_standing: true)
