@@ -1536,6 +1536,14 @@ def train(
                 term_height_high_frac,
                 term_pitch_frac,
                 term_roll_frac,
+                # 2026-05-18 metric-correctness sweep wiring: emit
+                # per-step pitch/roll occupancy on eval rollouts too
+                # (train-side already does at agg_metrics[...]
+                # ``soft_violation_*_frac``).  Required for train/eval
+                # parity so the analyzer can read the truthful
+                # soft-violation signal on the deterministic eval pass.
+                soft_violation_pitch_frac,
+                soft_violation_roll_frac,
                 done_env_frac,
                 trunc_env_frac,
                 survival_rate,
@@ -1710,7 +1718,7 @@ def train(
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
-            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction, eval_push_walking = (
+            eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_soft_violation_pitch, eval_push_soft_violation_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction, eval_push_walking = (
                 run_eval_push(
                     state.policy_params,
                     state.processor_params,
@@ -1718,7 +1726,7 @@ def train(
                 )
             )
             if eval_has_clean_pass:
-                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs, eval_clean_teacher_whole_body_active_frac, eval_clean_teacher_whole_body_active_during_clean_frac, eval_clean_teacher_whole_body_active_during_push_frac, eval_clean_teacher_recovery_height_target_mean, eval_clean_teacher_recovery_height_error, eval_clean_teacher_recovery_height_in_band_frac, eval_clean_teacher_com_velocity_target_mean, eval_clean_teacher_com_velocity_error, eval_clean_teacher_com_velocity_target_hit_frac, eval_clean_reward_teacher_recovery_height, eval_clean_reward_teacher_com_velocity_reduction, eval_clean_walking = (
+                eval_clean_reward, eval_clean_success, eval_clean_ep_len, eval_clean_term_h_low, eval_clean_term_h_high, eval_clean_term_pitch, eval_clean_term_roll, eval_clean_soft_violation_pitch, eval_clean_soft_violation_roll, eval_clean_done_env, eval_clean_trunc_env, eval_clean_survival_rate, eval_clean_survival_steps, eval_clean_reset_h_mean, eval_clean_reset_h_min, eval_clean_unnecessary_step_rate, eval_clean_recovery_completed, eval_clean_recovery_no_touchdown_frac, eval_clean_recovery_touchdown_then_fail_frac, eval_clean_recovery_touchdown_count, eval_clean_recovery_first_liftoff_latency, eval_clean_recovery_first_touchdown_latency, eval_clean_recovery_pitch_rate_reduction_10t, eval_clean_recovery_capture_error_reduction_10t, eval_clean_recovery_touchdown_to_term_steps, eval_clean_recovery_visible_step_rate, eval_clean_visible_step_rate_hard, eval_clean_recovery_min_height, eval_clean_recovery_max_knee_flex, eval_clean_recovery_first_step_dist_abs, eval_clean_teacher_whole_body_active_frac, eval_clean_teacher_whole_body_active_during_clean_frac, eval_clean_teacher_whole_body_active_during_push_frac, eval_clean_teacher_recovery_height_target_mean, eval_clean_teacher_recovery_height_error, eval_clean_teacher_recovery_height_in_band_frac, eval_clean_teacher_com_velocity_target_mean, eval_clean_teacher_com_velocity_error, eval_clean_teacher_com_velocity_target_hit_frac, eval_clean_reward_teacher_recovery_height, eval_clean_reward_teacher_com_velocity_reduction, eval_clean_walking = (
                     run_eval_clean(
                         state.policy_params,
                         state.processor_params,
@@ -1733,6 +1741,8 @@ def train(
                 eval_clean_term_h_high = eval_push_term_h_high
                 eval_clean_term_pitch = eval_push_term_pitch
                 eval_clean_term_roll = eval_push_term_roll
+                eval_clean_soft_violation_pitch = eval_push_soft_violation_pitch
+                eval_clean_soft_violation_roll = eval_push_soft_violation_roll
                 eval_clean_done_env = eval_push_done_env
                 eval_clean_trunc_env = eval_push_trunc_env
                 eval_clean_survival_rate = eval_push_survival_rate
@@ -1806,6 +1816,17 @@ def train(
                 "eval_push/term_height_high_frac": float(eval_push_term_h_high),
                 "eval_push/term_pitch_frac": float(eval_push_term_pitch),
                 "eval_push/term_roll_frac": float(eval_push_term_roll),
+                # 2026-05-18 metric-correctness sweep wiring: per-step
+                # pitch/roll occupancy mirror of train-side
+                # ``soft_violation_*_frac`` (unbounded under relaxed
+                # termination).  Required so the analyzer can read the
+                # truthful soft-violation signal on eval dashboards too.
+                "eval_push/soft_violation_pitch_frac": float(
+                    eval_push_soft_violation_pitch
+                ),
+                "eval_push/soft_violation_roll_frac": float(
+                    eval_push_soft_violation_roll
+                ),
                 "eval_push/done_env_frac": float(eval_push_done_env),
                 "eval_push/trunc_env_frac": float(eval_push_trunc_env),
                 "eval_push/survival_rate": eval_push_survival_rate_f,
@@ -1885,6 +1906,15 @@ def train(
                 "eval_clean/term_height_high_frac": float(eval_clean_term_h_high),
                 "eval_clean/term_pitch_frac": float(eval_clean_term_pitch),
                 "eval_clean/term_roll_frac": float(eval_clean_term_roll),
+                # 2026-05-18 metric-correctness sweep wiring: per-step
+                # pitch/roll occupancy on the clean eval pass (mirrors
+                # train-side ``soft_violation_*_frac``).
+                "eval_clean/soft_violation_pitch_frac": float(
+                    eval_clean_soft_violation_pitch
+                ),
+                "eval_clean/soft_violation_roll_frac": float(
+                    eval_clean_soft_violation_roll
+                ),
                 "eval_clean/done_env_frac": float(eval_clean_done_env),
                 "eval_clean/trunc_env_frac": float(eval_clean_trunc_env),
                 "eval_clean/survival_rate": float(eval_clean_survival_rate),

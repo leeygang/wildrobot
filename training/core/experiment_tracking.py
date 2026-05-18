@@ -1369,6 +1369,20 @@ def create_training_metrics_from_iteration(
         # Walking-meaningful tracking signal that replaces the broken
         # ``topline/velocity_error``: |achieved_vx - cmd_vx| over the rollout.
         extra["topline/cmd_vs_achieved_forward"] = float(cmd_vs_achieved)
+    # 2026-05-18 metric-correctness sweep wiring: the train aggregator
+    # writes ``reward_per_step`` (mean per-env per-step reward across the
+    # rollout) and ``rollout_reward_sum`` (mean per-env reward summed over
+    # the fixed window) into ``env_metrics``.  Forward them under their
+    # truthful names so ``create_training_metrics`` emits non-zero values
+    # for ``topline/reward_per_step`` and ``env/reward_per_step``.  Without
+    # this hop the values silently log as 0.0 even though the aggregator
+    # computed them correctly.
+    reward_per_step_v = metrics.env_metrics.get("reward_per_step")
+    if reward_per_step_v is not None:
+        extra["reward_per_step"] = float(reward_per_step_v)
+    rollout_reward_sum_v = metrics.env_metrics.get("rollout_reward_sum")
+    if rollout_reward_sum_v is not None:
+        extra["rollout_reward_sum"] = float(rollout_reward_sum_v)
     return create_training_metrics(
         iteration=iteration,
         episode_reward=float(metrics.episode_reward),
@@ -1446,6 +1460,14 @@ def build_wandb_metrics(
             key.startswith("debug/")
             or key.startswith("tracking/")
             or key.startswith("term_")
+            # 2026-05-18 metric-correctness sweep wiring: the train
+            # aggregator emits ``soft_violation_pitch_frac`` /
+            # ``soft_violation_roll_frac`` (per-step pitch/roll
+            # occupancy, unbounded under relaxed termination) alongside
+            # the truthful ``term_*_frac``.  Without this prefix branch
+            # the new metrics are computed but never reach W&B, so the
+            # analyzer cannot consume them on fresh runs.
+            or key.startswith("soft_violation_")
             or key.startswith("recovery/")
             or key.startswith("teacher/")
             or key.startswith("ppo/")

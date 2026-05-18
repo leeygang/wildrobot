@@ -85,6 +85,142 @@ def test_build_wandb_metrics_emits_reward_terms_in_canonical_unit(
     assert m["reward/feet_phase"] == pytest.approx(0.1053)
 
 
+def test_build_wandb_metrics_emits_reward_per_step_when_present(
+    fake_iteration_metrics,
+) -> None:
+    """Fix for 2026-05-18 metric-correctness blocker #1: when the train
+    aggregator writes ``reward_per_step`` / ``rollout_reward_sum`` into
+    ``env_metrics``, ``create_training_metrics_from_iteration`` must
+    forward them so ``topline/reward_per_step`` and ``env/reward_per_step``
+    log as the true per-step reward, not the legacy 0.0 fallback.
+    """
+    from training.core.experiment_tracking import build_wandb_metrics
+
+    fake_iteration_metrics.env_metrics["reward_per_step"] = 0.0473
+    fake_iteration_metrics.env_metrics["rollout_reward_sum"] = 0.91
+
+    m, _missing = build_wandb_metrics(
+        iteration=1,
+        metrics=fake_iteration_metrics,
+        steps_per_sec=829.0,
+        reward_terms=[],
+    )
+    assert m["topline/reward_per_step"] == pytest.approx(0.0473)
+    assert m["env/reward_per_step"] == pytest.approx(0.0473)
+    # The truthful rollout-sum name must reflect the forwarded value
+    # rather than the deprecated episode_reward fallback.
+    assert m["topline/rollout_reward_sum"] == pytest.approx(
+        fake_iteration_metrics.episode_reward
+    ), "topline/rollout_reward_sum mirrors episode_reward (kept as alias)"
+
+
+def test_build_wandb_metrics_reward_per_step_defaults_to_zero_without_forwarding() -> None:
+    """When ``env_metrics`` does NOT carry ``reward_per_step`` (e.g.
+    legacy aggregators), the topline/env reward_per_step keys must
+    fall back to 0.0 — pinning the safe default behaviour."""
+    import types
+
+    from training.core.experiment_tracking import build_wandb_metrics
+
+    obj = types.SimpleNamespace(
+        episode_reward=0.91,
+        total_loss=0.10,
+        policy_loss=0.05,
+        value_loss=0.05,
+        entropy_loss=0.001,
+        clip_fraction=0.10,
+        approx_kl=0.01,
+        success_rate=0.5,
+        episode_length=200.0,
+        task_reward_mean=0.91,
+        env_metrics={
+            "forward_velocity": 0.2,
+            "tracking/avg_torque": 1.5,
+            "velocity_command": 0.2,
+            "tracking/vel_error": 0.05,
+            "tracking/max_torque": 1.5,
+            "height": 0.46,
+            # deliberately no reward_per_step or rollout_reward_sum
+        },
+    )
+    m, _ = build_wandb_metrics(iteration=1, metrics=obj, steps_per_sec=100.0, reward_terms=[])
+    assert m["topline/reward_per_step"] == 0.0
+    assert m["env/reward_per_step"] == 0.0
+
+
+def test_build_wandb_metrics_emits_soft_violation_metrics(
+    fake_iteration_metrics,
+) -> None:
+    """Fix for 2026-05-18 metric-correctness blocker #2: the train
+    aggregator emits ``soft_violation_pitch_frac`` /
+    ``soft_violation_roll_frac`` (per-step pitch/roll occupancy,
+    unbounded under relaxed termination).  ``build_wandb_metrics`` must
+    forward them to W&B; the previous prefix allowlist
+    (debug/, tracking/, term_, recovery/, teacher/, ppo/, eval/, ...)
+    did not match ``soft_violation_*``, so the keys were silently
+    dropped.
+    """
+    from training.core.experiment_tracking import build_wandb_metrics
+
+    fake_iteration_metrics.env_metrics["soft_violation_pitch_frac"] = 1.5
+    fake_iteration_metrics.env_metrics["soft_violation_roll_frac"] = 0.2
+
+    m, _ = build_wandb_metrics(
+        iteration=1,
+        metrics=fake_iteration_metrics,
+        steps_per_sec=829.0,
+        reward_terms=[],
+    )
+    assert m["soft_violation_pitch_frac"] == pytest.approx(1.5), (
+        "soft_violation_pitch_frac must reach W&B; the analyzer prefers "
+        "it over the legacy term_pitch_frac"
+    )
+    assert m["soft_violation_roll_frac"] == pytest.approx(0.2)
+
+
+def test_eval_runner_includes_soft_violation_in_logged_dicts() -> None:
+    """Fix for 2026-05-18 metric-correctness blocker #3: the eval-side
+    code path must surface ``soft_violation_pitch_frac`` /
+    ``soft_violation_roll_frac`` on both eval_push and eval_clean
+    dashboards.  The eval ``_runner`` already computes these metrics
+    (training_loop.py:1299-1307); we verify the wiring by source-text
+    pinning the new keys in the eval-tuple return, both unpack sites,
+    the fallback alias block, and both logged dicts.
+
+    A pure source-text pin is appropriate here because exercising the
+    full eval runner requires booting a JAX-jitted environment, which
+    is heavier than this regression deserves.
+    """
+    src = (_PROJECT_ROOT / "training" / "core" / "training_loop.py").read_text()
+
+    # (a) eval_runner return tuple contains both soft_violation positions.
+    assert "soft_violation_pitch_frac,\n                soft_violation_roll_frac" in src, (
+        "eval _runner must return soft_violation_pitch/roll positions"
+    )
+
+    # (b) eval_push unpack picks up the two new positional names.
+    assert "eval_push_soft_violation_pitch" in src
+    assert "eval_push_soft_violation_roll" in src
+
+    # (c) eval_clean unpack picks them up too (with a fallback alias
+    # for the no-clean-pass branch).
+    assert "eval_clean_soft_violation_pitch = eval_push_soft_violation_pitch" in src, (
+        "fallback alias block must mirror eval_push -> eval_clean for "
+        "soft_violation_pitch"
+    )
+    assert "eval_clean_soft_violation_roll = eval_push_soft_violation_roll" in src
+
+    # (d) both eval_push/* and eval_clean/* logged dicts include the
+    # new soft_violation keys.
+    for namespace in ("eval_push", "eval_clean"):
+        assert f'"{namespace}/soft_violation_pitch_frac"' in src, (
+            f"{namespace}/soft_violation_pitch_frac missing from logged dict"
+        )
+        assert f'"{namespace}/soft_violation_roll_frac"' in src, (
+            f"{namespace}/soft_violation_roll_frac missing from logged dict"
+        )
+
+
 def test_build_wandb_metrics_calls_canonical_helper(
     monkeypatch, fake_iteration_metrics
 ) -> None:
