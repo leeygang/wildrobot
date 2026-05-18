@@ -24,11 +24,18 @@ import jax.numpy as jp
 import numpy as np
 import pytest
 
-_SMOKE9 = Path("training/configs/ppo_walking_v0201_smoke9.yaml")
+# smoke9.yaml was removed after smoke9c landed; use smoke9c as the
+# TB-faithful-form-flags fixture.  The form flags (tb_neg_squared /
+# tb_linear_lateral), the feet_phase formula structure, and the
+# _feet_phase_reward static helper are identical between smoke9 and
+# smoke9c.  smoke9c additionally rescales close_feet_threshold from
+# the TB literal 0.06 to WR-normalized 0.146 (smoke9c spatial pass);
+# the threshold test below reflects that.
+_SMOKE9C = Path("training/configs/ppo_walking_v0201_smoke9c.yaml")
 _SMOKE = Path("training/configs/ppo_walking_v0201_smoke.yaml")
-if not _SMOKE.exists() or not _SMOKE9.exists():
+if not _SMOKE.exists() or not _SMOKE9C.exists():
     pytest.skip(
-        "smoke / smoke9 yaml missing",
+        "smoke / smoke9c yaml missing",
         allow_module_level=True,
     )
 
@@ -39,9 +46,11 @@ from training.envs.wildrobot_env import WildRobotEnv
 
 @pytest.fixture(scope="module")
 def smoke9_env() -> WildRobotEnv:
-    """Construct a smoke9 env (TB-faithful form flags)."""
+    """Construct a smoke9c env (TB-faithful form flags).  Fixture name
+    kept as ``smoke9_env`` for git-blame continuity with the original
+    smoke9 tests; the underlying yaml is smoke9c."""
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    cfg = load_training_config(str(_SMOKE9))
+    cfg = load_training_config(str(_SMOKE9C))
     cfg.freeze()
     return WildRobotEnv(cfg)
 
@@ -89,12 +98,14 @@ def test_smoke7_penalty_feet_ori_form_is_wr_quad_3axis(smoke7_env) -> None:
 # -----------------------------------------------------------------------------
 
 
-def test_smoke9_close_feet_threshold_matches_tb(smoke9_env) -> None:
-    """TB walk.gin:125 close_feet_threshold = 0.06.  Use float32
-    tolerance — the env caches as jp.float32 so the value drifts ~1e-7
-    from the yaml's 0.06.  Anything tighter than ~1e-6 is sub-precision
-    noise."""
-    assert float(smoke9_env._close_feet_threshold) == pytest.approx(0.06, abs=1e-6)
+def test_smoke9_close_feet_threshold_matches_wr_normalized(smoke9_env) -> None:
+    """TB walk.gin:125 sets the TB literal close_feet_threshold = 0.06
+    at TB stance width 0.074 m.  smoke9c's spatial normalization pass
+    preserves the fraction-of-stance on WR's 0.18056 m stance:
+        threshold = 0.06 / 0.074 * 0.18056 ≈ 0.146
+    Use float32 tolerance — the env caches as jp.float32.
+    """
+    assert float(smoke9_env._close_feet_threshold) == pytest.approx(0.146, abs=5e-4)
 
 
 # -----------------------------------------------------------------------------
@@ -207,158 +218,179 @@ def _call_feet_phase(
     )
 
 
-def test_feet_phase_standing_grounded_max_reward(smoke9_env) -> None:
-    """Standing (||cmd|| ≈ 0) + both feet at baseline (z_rel = 0) ⇒
-    expected z = 0 for both, error = 0, base reward = exp(0) = 1.0,
-    bonus = 1 + 0/h = 1.0 → reward = 1.0 (max)."""
-    r = _call_feet_phase(
-        smoke9_env, left_z_rel=0.0, right_z_rel=0.0,
-        phase=0.0, is_standing=True,
-    )
-    assert r == pytest.approx(1.0, abs=1e-5), (
-        f"standing + grounded both feet must give max reward 1.0; got {r}"
-    )
+# -----------------------------------------------------------------------------
+# 5b. smoke12 basin-break formula (2026-05-17)
+# -----------------------------------------------------------------------------
+# The helper changed from the raw TB-style formula to:
+#
+#     walking_reward = max(0, raw - flat_foot_baseline)
+#     standing       = 0
+#
+# Rationale recorded in WildRobotEnv._feet_phase_reward docstring and in
+# training/configs/ppo_walking_v0201_smoke12.yaml header.  The tests
+# below pin the NEW values (the old numerics are recorded in each test
+# docstring as "was" for git-archaeology).
 
 
-def test_feet_phase_walking_grounded_during_own_swing_low(smoke9_env) -> None:
-    """Walking + LEFT foot stays on ground during left's swing window
-    (phase=π/2 expects left at apex h=0.04).  Error is the full
-    swing_height; base reward = exp(-1428.6 * 0.04²) = exp(-2.286)
-    ≈ 0.102; bonus = 1 + h/h = 2.0; reward ≈ 0.204.
+def test_feet_phase_standing_returns_zero_regardless_of_feet(smoke9_env) -> None:
+    """Standing branch is hard-wired to 0 in the smoke12 formula.
+    smoke12 also pins ``cmd_zero_chance: 0.0`` so this branch should be
+    unreachable on the smoke12 training distribution; the helper still
+    exposes the case for back-compat and for the (rare) on-policy
+    zero-cmd episodes earlier configs admit.
 
-    This is what the reviewer's flagged bug would produce at home pose:
-    foot at body-origin z stays "low" (close to baseline) during swing,
-    and PPO sees a small reward — but with the baseline correction the
-    starting state IS grounded (z_rel = 0), so this test exercises
-    PPO's incentive to LIFT the foot when its swing is commanded."""
-    r = _call_feet_phase(
-        smoke9_env,
-        left_z_rel=0.0,         # foot stays grounded
-        right_z_rel=0.0,
-        phase=math.pi / 2.0,    # left's swing apex commanded
-        is_standing=False,
-    )
-    expected_base = math.exp(-1428.6 * 0.04 ** 2)
-    expected = expected_base * 2.0  # bonus = 2.0 at peak swing
-    assert r == pytest.approx(expected, abs=1e-3), (
-        f"left grounded during left's swing apex: expected ≈{expected:.4f}, got {r}"
-    )
-    # Sanity: must be much smaller than the "left foot at apex" case (below).
-    assert r < 0.5
-
-
-def test_feet_phase_walking_lifted_during_own_swing_high(smoke9_env) -> None:
-    """Walking + LEFT foot at swing apex during left's swing window
-    (phase=π/2, z_rel = swing_height = 0.04) ⇒ left error = 0,
-    right error = 0 (right grounded during left's swing).  Base
-    reward = exp(0) = 1.0, bonus = 1 + 0.04/0.04 = 2.0, total = 2.0.
-
-    This is the strongest signal the policy can earn — cmd-aligned
-    swing.  PPO is incentivized to track this."""
-    r = _call_feet_phase(
-        smoke9_env,
-        left_z_rel=0.04,        # left at swing apex
-        right_z_rel=0.0,        # right grounded
-        phase=math.pi / 2.0,    # left's swing apex commanded
-        is_standing=False,
-    )
-    assert r == pytest.approx(2.0, abs=1e-4), (
-        f"perfect swing tracking + height bonus must give 2.0; got {r}"
-    )
-
-
-def test_feet_phase_standing_lifted_penalized(smoke9_env) -> None:
-    """Standing (cmd ≈ 0) + lifting the left foot to swing_height ⇒
-    expected z = 0 for both feet (standing override), so left error =
-    0.04.  Base reward = exp(-1428.6 × 0.04²) ≈ 0.102.  Bonus = 1.0
-    (no expected swing).  Total ≈ 0.102.
-
-    This penalizes a "lift feet to fake walking" exploit on zero cmd."""
-    r = _call_feet_phase(
-        smoke9_env,
-        left_z_rel=0.04,        # left lifted
-        right_z_rel=0.0,
-        phase=math.pi / 2.0,    # phase is non-zero but standing override fires
-        is_standing=True,
-    )
-    expected = math.exp(-1428.6 * 0.04 ** 2) * 1.0  # bonus = 1.0 standing
-    assert r == pytest.approx(expected, abs=1e-4), (
-        f"standing + lifted foot should give base reward ~{expected:.4f}; "
-        f"got {r}"
-    )
-    # Confirm: standing+lifted (~0.10) << standing+grounded (1.0)
-    assert r < 0.2
-
-
-def test_feet_phase_baseline_correction_protects_against_body_origin_bug(
-    smoke9_env,
-) -> None:
-    """REGRESSION TEST for the reviewer-flagged bug: WR foot body-origin
-    z ≈ 0.034 m at home pose.  If the env passes raw foot_pos[2]
-    (without subtracting feet_height_init) into _feet_phase_reward,
-    a correctly grounded foot would be treated as 0.034 m above the
-    expected 0 and earn:
-        exp(-1428.6 * 2 * 0.034²) ≈ exp(-3.30) ≈ 0.037
-    instead of the correct max reward 1.0.
-
-    This test fails loud if a future refactor reverts the baseline
-    subtraction in the env's call site.  We invoke the helper with
-    unconverted body-origin z (0.034) for both feet and assert the
-    reward is the BAD value, then with the correctly-converted
-    baseline-relative z (0.0) and assert the reward is 1.0.  Both
-    pass means the helper itself is fine; the env's call-site
-    correction (left_foot_pos[2] - feet_height_init[0]) is what
-    distinguishes correct from buggy behavior.
+    Was (pre-smoke12 raw formula):
+      standing + grounded   = 1.000
+      standing + lifted     = 0.102 (small base reward at err=swing_h)
     """
-    # Helper invoked with raw body-origin z (the bug case): low reward.
-    r_bug = _call_feet_phase(
+    for left_z, right_z, label in (
+        (0.0, 0.0, "grounded"),
+        (0.04, 0.0, "left-lifted"),
+        (0.04, 0.04, "both-lifted"),
+        (0.034, 0.034, "body-origin-z (pre-baseline-correction bug input)"),
+    ):
+        r = _call_feet_phase(
+            smoke9_env, left_z_rel=left_z, right_z_rel=right_z,
+            phase=math.pi / 2.0, is_standing=True,
+        )
+        assert r == 0.0, (
+            f"standing + {label}: expected 0.0 under smoke12 formula; got {r}"
+        )
+
+
+def test_feet_phase_walking_flat_feet_returns_zero(smoke9_env) -> None:
+    """The whole point of the smoke12 baseline subtraction: walking
+    command + both feet flat must give exactly 0, no matter what the
+    phase says.  Catches a regression that re-introduces the
+    flat-foot walking payout (which produced the smoke11 standstill
+    basin at ``reward/feet_phase ≈ 0.109``).
+
+    Was (pre-smoke12 raw formula):
+      walking + flat @ phase=π/2 = exp(-1428.6·0.04²)·2.0 ≈ 0.203
+    """
+    for phase in (0.0, math.pi / 4.0, math.pi / 2.0, math.pi, 3 * math.pi / 2.0):
+        r = _call_feet_phase(
+            smoke9_env, left_z_rel=0.0, right_z_rel=0.0,
+            phase=phase, is_standing=False,
+        )
+        assert r == 0.0, (
+            f"walking + flat feet @ phase={phase:.3f}: expected 0.0 under "
+            f"smoke12 baseline-subtract formula; got {r}"
+        )
+
+
+def test_feet_phase_walking_perfect_swing_pays_after_baseline(smoke9_env) -> None:
+    """Walking + LEFT foot at swing apex during left's swing window
+    still pays positive reward after the baseline subtraction.
+    Exact value: raw=2.0, baseline=exp(-1428.6·0.04²)·2.0≈0.2034,
+    reward=max(0, 2.0 − 0.2034)=1.7966.
+
+    Was (pre-smoke12 raw formula): 2.0
+    """
+    r = _call_feet_phase(
         smoke9_env,
-        left_z_rel=0.034, right_z_rel=0.034,  # what raw body-origin z gives
-        phase=0.0, is_standing=True,
+        left_z_rel=0.04, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
     )
-    expected_bug = math.exp(-1428.6 * 2 * 0.034 ** 2)
-    assert r_bug == pytest.approx(expected_bug, abs=1e-3), (
-        f"body-origin z input should give ~{expected_bug:.4f}; got {r_bug}"
+    raw = 2.0  # base=1.0, bonus=2.0
+    baseline = math.exp(-1428.6 * 0.04 ** 2) * 2.0
+    expected = max(0.0, raw - baseline)
+    assert r == pytest.approx(expected, abs=1e-3), (
+        f"perfect swing - flat baseline: expected ≈{expected:.4f}, got {r}"
     )
-    assert r_bug < 0.05, (
-        "body-origin z must give a small reward (~0.037); else this "
-        "test isn't actually exercising the bug case"
-    )
-
-    # Helper invoked with baseline-relative z (the correct case): max.
-    r_ok = _call_feet_phase(
-        smoke9_env,
-        left_z_rel=0.0, right_z_rel=0.0,
-        phase=0.0, is_standing=True,
-    )
-    assert r_ok == pytest.approx(1.0, abs=1e-5)
+    # Still the strongest signal the policy can earn (clear lead over flat).
+    assert r > 1.5
 
 
-def test_feet_phase_left_swing_active_right_grounded_tracks(smoke9_env) -> None:
-    """At phase ∈ [0, π] left should be in swing (expected z > 0) and
-    right should be grounded (expected z = 0).  If the policy tracks
-    perfectly (left at apex during left's apex, right at 0), reward is
-    high.  If the policy mistakes which foot to lift (right at apex
-    during LEFT's swing), reward should drop sharply due to non-zero
-    error on both feet."""
-    # Correct pairing
+def test_feet_phase_walking_partial_swing_pays_partial(smoke9_env) -> None:
+    """A 75%-of-target lift (3 cm vs 4 cm swing target) earns
+    something between 0 and the perfect-swing value — confirms the
+    gradient is smooth toward higher lift.  This is the "smoke12
+    encourages more lift" property; if a regression breaks it, the
+    policy loses signal to increase swing height during training.
+    """
+    r_full = _call_feet_phase(
+        smoke9_env, left_z_rel=0.04, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    r_partial = _call_feet_phase(
+        smoke9_env, left_z_rel=0.03, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    r_flat = _call_feet_phase(
+        smoke9_env, left_z_rel=0.0, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    assert r_flat == 0.0
+    assert r_full > r_partial > 0.0, (
+        f"smoke12 must reward partial swing between flat (0) and full "
+        f"({r_full:.4f}); got partial={r_partial:.4f}"
+    )
+
+
+def test_feet_phase_walking_wrong_foot_lift_clamps_to_zero(smoke9_env) -> None:
+    """Walking + lifting the WRONG foot (right at apex during LEFT's
+    swing window) ⇒ raw < baseline ⇒ ``max(0, ...)`` clamps to 0.
+    Confirms that under smoke12, a policy that lifts both feet (or the
+    wrong foot) at random earns nothing — only correct phase-aligned
+    lifts pay.
+
+    Was (pre-smoke12 raw formula): exp(-1428.6·2·0.04²)·2.0 ≈ 0.021
+    """
     r_correct = _call_feet_phase(
         smoke9_env, left_z_rel=0.04, right_z_rel=0.0,
         phase=math.pi / 2.0, is_standing=False,
     )
-    # Wrong-foot-lift
     r_wrong = _call_feet_phase(
         smoke9_env, left_z_rel=0.0, right_z_rel=0.04,
         phase=math.pi / 2.0, is_standing=False,
     )
-    assert r_correct > r_wrong, (
-        f"correct foot lift ({r_correct:.4f}) must reward more than "
-        f"wrong foot lift ({r_wrong:.4f})"
+    assert r_wrong == 0.0, (
+        f"wrong-foot lift during left's swing should clamp to 0 under "
+        f"smoke12 baseline-subtract; got {r_wrong}"
     )
-    assert r_correct == pytest.approx(2.0, abs=1e-4)
-    # Wrong-foot has BOTH errors at swing_height: 2 * 0.04² in the exp.
-    expected_wrong_base = math.exp(-1428.6 * 2 * 0.04 ** 2)
-    assert r_wrong == pytest.approx(expected_wrong_base * 2.0, abs=1e-3)
+    assert r_correct > 1.5  # correct lift still pays (see test above)
+
+
+def test_feet_phase_body_origin_bug_caller_still_needed(smoke9_env) -> None:
+    """Regression: the env's call-site MUST still subtract
+    ``feet_height_init`` before passing foot_pos[2] into the helper.
+    The body-origin z ≈ 0.034 m at home would otherwise be treated as
+    a small lift in the WALKING branch — and after smoke12's baseline
+    subtraction it doesn't clamp to zero (the bug input is "lifted"
+    relative to baseline, so raw > flat_baseline in some phases).
+    The standing branch is hard-zeroed by smoke12 so it no longer
+    distinguishes correct from buggy at standing; we exercise the
+    walking case here instead.
+
+    With body-origin z=0.034 fed into both feet at phase=π/2 (left's
+    swing apex h=0.04), the helper sees left_err=|0.034 - 0.04|=0.006,
+    right_err=0.034, so the apparent lift looks plausible — exactly the
+    buggy outcome the caller-side subtraction prevents.  We pin: raw
+    body-origin input must produce a numerically different reward
+    from the correctly-baseline-subtracted input (z_rel=0).
+    """
+    r_bug = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.034, right_z_rel=0.034,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    r_correct = _call_feet_phase(
+        smoke9_env,
+        left_z_rel=0.0, right_z_rel=0.0,
+        phase=math.pi / 2.0, is_standing=False,
+    )
+    # smoke12 contract: feet truly flat (z_rel=0,0) under walking gives 0.
+    assert r_correct == 0.0
+    # Body-origin input gives a NONZERO value because the helper sees
+    # "lifted" feet that aren't really lifted.  This is the bug surface
+    # the caller-side feet_height_init subtraction blocks.
+    assert r_bug != r_correct, (
+        "body-origin input (0.034, 0.034) and baseline-corrected input "
+        "(0.0, 0.0) must differ — otherwise the helper-side baseline "
+        "subtraction in smoke12 has accidentally masked the env-side "
+        "feet_height_init bug surface."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -475,18 +507,32 @@ def test_smoke7_does_not_enable_smoke9_rewards() -> None:
 # wiring is exercised end-to-end.
 
 
-def test_feet_phase_metric_reflects_baseline_correction(smoke9_env) -> None:
-    """End-to-end test of the feet_phase call site under smoke9.
+def test_feet_phase_metric_reflects_smoke12_basin_break(smoke9_env) -> None:
+    """End-to-end test of the feet_phase call site under the smoke12
+    baseline-subtract formula.
+
+    smoke12 contract (replaces the pre-smoke12 raw-formula contract):
+    walking command + nearly-flat feet should give a contribution
+    ≈ 0 (the whole point of the basin-break is to kill the smoke11
+    flat-foot exploit at ``reward/feet_phase ≈ 0.109``).
 
     Reset → step(action=0); read state.metrics["reward/feet_phase"].
-    Expected value at iter 1 with the baseline correction:
-      ~0.15 per step (= 7.5 weight × 0.02 dt × ~1.0 base reward)
+    At iter 1 the policy is at home pose with both feet planted, so
+    the helper sees walking + flat → 0 → contribution ≈ 7.5 × 0.02 ×
+    0 = 0.  Measured empirically at ≈ 5e-5 (essentially zero;
+    leftover from microscopic physics drift in 20 ms).
 
-    Without the baseline correction (the body-origin bug, fixed in
-    `86dc0ae`), the same state would report ~0.04 per step (= 7.5 ×
-    0.02 × ~0.27 reward, where 0.27 = exp(-1428.6 × 2 × 0.034²)).
-    The two regimes differ by ~4×, which is well above any noise from
-    the small physics drift over a single 20 ms step.
+    Pre-smoke12 raw formula reported ~0.16 per step for the same
+    state, because flat-foot walking paid ~1.0 raw reward.  If that
+    threshold returns this test fails loud — the basin-break was
+    reverted globally.
+
+    Note on the body-origin bug regression coverage: the helper-side
+    baseline subtraction in smoke12 changes both regimes (correct
+    callsite AND body-origin-bug callsite) to ~0 in this state, so
+    this test no longer separately catches a buggy callsite.  See
+    ``test_feet_phase_body_origin_bug_caller_still_needed`` above for
+    the surviving regression coverage of the caller-side bug surface.
     """
     from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 
@@ -496,34 +542,28 @@ def test_feet_phase_metric_reflects_baseline_correction(smoke9_env) -> None:
     zero_action = jp.zeros(smoke9_env.action_size, dtype=jp.float32)
     state = step_fn(state, zero_action)
 
-    # State must not have terminated on iter 1 — if it did, the metric
-    # snapshot is unreliable.
     assert int(state.done) == 0, "env terminated on iter 1; cannot probe"
 
     feet_phase_idx = METRIC_INDEX["reward/feet_phase"]
     feet_phase_contrib = float(state.metrics[METRICS_VEC_KEY][feet_phase_idx])
 
-    # Baseline-corrected lower bound.  At iter 1 the phase has barely
-    # advanced (Δphase ≈ 0.26 rad over 20 ms at cycle=0.96), so
-    # expected_z is small (~3 mm) and a correctly grounded foot
-    # (z_rel ≈ 0) gives reward ≈ 0.99 with bonus ≈ 1.07 → ~1.06.
-    # Per-step contribution = 7.5 × 0.02 × 1.06 ≈ 0.16.
-    #
-    # The bug case would give ~0.04; we set the lower threshold at
-    # 0.10 to leave a clean margin while accepting some physics jitter.
-    assert feet_phase_contrib > 0.10, (
-        f"reward/feet_phase = {feet_phase_contrib:.4f}; expected > 0.10 "
-        f"(baseline-corrected reward ≈ 0.16 per step).  A value < 0.10 "
-        f"indicates the call site is using raw foot_pos[2] instead of "
-        f"foot_pos[2] - feet_height_init[i] — the body-origin bug "
-        f"reviewer flagged in the smoke9 patch."
+    # smoke12 contract upper bound: at flat feet the contribution
+    # must be near 0.  We allow up to 0.05 to absorb physics drift
+    # and bonus from microscopic foot lift during the first ctrl step.
+    # If the pre-smoke12 raw formula is re-introduced globally this
+    # value snaps back to ~0.16, well above the 0.05 ceiling.
+    assert feet_phase_contrib < 0.05, (
+        f"reward/feet_phase = {feet_phase_contrib:.5f} at iter 1 with "
+        "flat feet; expected < 0.05 under the smoke12 baseline-subtract "
+        "formula.  Values ≥ 0.05 likely mean the pre-smoke12 raw "
+        "formula (which paid ~0.16 for this state) has been "
+        "re-introduced globally — the smoke11 standstill basin returns."
     )
-    # Upper bound sanity: contribution can't exceed weight × dt × bonus_max
-    # = 7.5 × 0.02 × 2.0 = 0.30 (perfect swing tracking with full bonus).
-    assert feet_phase_contrib < 0.30, (
-        f"reward/feet_phase = {feet_phase_contrib:.4f}; exceeds the "
-        f"theoretical max contribution (0.30 = 7.5×0.02×2.0).  Likely "
-        f"a metric registration / weight bug."
+    # Lower bound: a finite non-negative value.  Catches a NaN regression
+    # or accidental large negative penalty.
+    assert feet_phase_contrib >= 0.0, (
+        f"reward/feet_phase = {feet_phase_contrib} is negative; the "
+        "helper's max(0, ...) clamp was bypassed."
     )
 
 

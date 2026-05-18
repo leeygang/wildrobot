@@ -877,34 +877,41 @@ class WildRobotEnv(mjx_env.MjxEnv):
         swing_height: jax.Array,
         alpha: jax.Array,
     ) -> jax.Array:
-        """TB-faithful phase-derived foot-height tracking reward (smoke9).
+        """Phase-derived foot-height tracking reward, basin-break form (smoke12).
 
-        Mirrors TB ``_reward_feet_phase`` (walk_env.py:631-695) including
-        the height bonus that rewards lifting feet against gravity.
+        Earlier history: smoke9 introduced a TB-faithful copy of TB's
+        ``_reward_feet_phase`` (walk_env.py:631-695): the raw formula
+        ``exp(-alpha * (Δz_left² + Δz_right²)) × (1 + max_expected/swing_height)``.
+        smoke11's empirical result showed this still pays substantial
+        reward to a *flat-foot* policy during walking — measured at
+        WR's smoke11 params (swing_height=0.05, alpha=914.304) the
+        flat-foot walking baseline ≈ 0.727 raw, giving
+        ``7.5 × 0.727 × dt ≈ 0.109``, which matched smoke11's late
+        ``reward/feet_phase ≈ 0.1088``.  PPO collected gait reward
+        while doing essentially no locomotion — the quiet-standstill
+        basin.
 
-        Inputs ``left_foot_z_rel`` / ``right_foot_z_rel`` MUST be heights
-        relative to each foot's grounded baseline (so 0.0 = grounded,
-        ``swing_height`` = peak swing apex).  WR's foot body-origin z is
-        ~0.034 m even when the foot is correctly on the floor, so the
-        caller is responsible for subtracting the per-foot baseline
-        (``feet_height_init`` from ``WildRobotInfo``).
+        smoke12 (2026-05-17) breaks that basin by subtracting the
+        flat-foot baseline at the same phase + clamping at 0:
 
-        Phase angle from ``arctan2(phase_sin, phase_cos)`` mapped to
-        ``[0, 2π]``.  Left foot expected to swing during phase ∈ [0, π]
-        and stay grounded during [π, 2π]; right foot is the complement.
-        Within each foot's swing window, expected z follows a cubic
-        Bézier rise-then-fall (``3x² - 2x³``) peaking at the midpoint.
+            walking_reward = max(0, raw - flat_baseline)
+            standing       = 0   (zero-command bootstrap doesn't reward
+                                  "feet on the ground")
 
-        When ``is_standing`` is true (zero command), expected z is 0
-        for both feet — encourages standing still on a zero command.
+        Target behavior:
+          - walking command + flat feet  -> 0 (no exploit)
+          - walking command + real swing -> positive (decreasing in lift error)
+          - standing (||cmd|| ≈ 0)       -> 0 (bootstrap removes the
+                                              "stand still and survive"
+                                              feet_phase contribution;
+                                              smoke12 also pins
+                                              ``cmd_zero_chance: 0.0``
+                                              so this branch is rarely hit)
 
-        Reward: ``exp(-alpha * (Δz_left² + Δz_right²)) ×
-                  (1 + max_expected / swing_height)``
-
-        Pure function, no env state.  Used both in the per-step env
-        reward path and in the unit tests.  Keeping the implementation
-        pure makes the formula directly testable without constructing
-        an env or stepping physics.
+        Pure function, no env state.  Inputs are baseline-relative
+        foot z (so 0.0 = grounded, ``swing_height`` = peak swing apex);
+        the env caller subtracts ``feet_height_init`` to convert from
+        WR's ~0.034 m foot body-origin baseline.
         """
         phase_angle = jp.arctan2(phase_sin, phase_cos)
         phase_angle = jp.mod(phase_angle + 2.0 * jp.pi, 2.0 * jp.pi)
@@ -927,18 +934,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         expected_z_left_walk = _expected_foot_z(phase_angle, is_left=True)
         expected_z_right_walk = _expected_foot_z(phase_angle, is_left=False)
+        # Walking branch uses the phase-derived expected curve; standing
+        # branch sets both expecteds to 0 (used only as inputs to the
+        # raw computation — the standing case is clamped to 0 below).
         expected_z_left = jp.where(is_standing, jp.float32(0.0), expected_z_left_walk)
         expected_z_right = jp.where(is_standing, jp.float32(0.0), expected_z_right_walk)
 
-        err_l = left_foot_z_rel - expected_z_left
-        err_r = right_foot_z_rel - expected_z_right
-        err_sq = err_l * err_l + err_r * err_r
-        base = jp.exp(-alpha * err_sq)
-        max_expected = jp.maximum(expected_z_left, expected_z_right)
-        height_bonus = 1.0 + max_expected / jp.maximum(
-            swing_height, jp.float32(1e-6)
-        )
-        return base * height_bonus
+        inv_swing = jp.float32(1.0) / jp.maximum(swing_height, jp.float32(1e-6))
+
+        def _raw(lz: jax.Array, rz: jax.Array) -> jax.Array:
+            err_l = lz - expected_z_left
+            err_r = rz - expected_z_right
+            err_sq = err_l * err_l + err_r * err_r
+            base = jp.exp(-alpha * err_sq)
+            max_expected = jp.maximum(expected_z_left, expected_z_right)
+            height_bonus = 1.0 + max_expected * inv_swing
+            return base * height_bonus
+
+        raw = _raw(left_foot_z_rel, right_foot_z_rel)
+        # Flat-foot baseline at the same phase (and same standing flag).
+        # Subtracting this kills the "do nothing during walking" payout
+        # without changing the gradient toward actually lifting feet.
+        flat_baseline = _raw(jp.float32(0.0), jp.float32(0.0))
+        walking_reward = jp.maximum(jp.float32(0.0), raw - flat_baseline)
+
+        # Standing (||cmd|| ≈ 0): smoke12 bootstrap returns 0 unconditionally.
+        # Old behavior (return max raw at flat feet) is intentionally dropped —
+        # under cmd_zero_chance=0 this branch should be unreachable on the
+        # smoke12 training distribution anyway.
+        return jp.where(is_standing, jp.float32(0.0), walking_reward)
 
     # --------------------------------------------------- offline window helpers
 

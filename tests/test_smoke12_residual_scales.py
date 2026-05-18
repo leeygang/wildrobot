@@ -81,40 +81,66 @@ def test_smoke12_loads_and_inherits_smoke11_basin_and_obs() -> None:
 
 
 def test_smoke12_inherits_smoke11_curriculum_reward_ppo() -> None:
-    """smoke12's ONLY material delta vs smoke11 is the per-joint
-    residual scale block.  Everything else inherits byte-equal so a
-    smoke12 vs smoke11 outcome diff cleanly attributes to the residual
-    widening."""
+    """smoke12 has THREE intentional deltas vs smoke11 (per the
+    user-accepted multi-knob caveat in the smoke12 yaml header):
+        1. loc_ref_residual_scale_per_joint widened (this file's main
+           contract — pinned in the other tests in this module).
+        2. env.cmd_zero_chance: 0.2 -> 0.0   (basin-break: no
+           perfect-tracking standstill mode).
+        3. reward_weights.action_rate: -2.0 -> -1.0  (basin-break:
+           weaken "do less" pressure during bootstrap).
+
+    Every OTHER curriculum / reward / form / reset / PPO field must
+    still inherit byte-equal from smoke11 so the smoke12 vs smoke11
+    outcome diff stays attributable to the smoke12 multi-knob set,
+    not to drift.  The basin-break deltas themselves are pinned in
+    ``tests/test_smoke12_basin_break.py``.
+    """
     s11 = _load_cfg(_SMOKE11_CFG)
     s12 = _load_cfg(_SMOKE12_CFG)
 
-    # Curriculum.
+    # Curriculum: range / deadzone / eval cmd / offline_command_vx
+    # inherited byte-equal; cmd_zero_chance is the intentional delta.
     assert s12.env.min_velocity == s11.env.min_velocity
     assert s12.env.max_velocity == s11.env.max_velocity
     assert s12.env.cmd_deadzone == s11.env.cmd_deadzone
     assert s12.env.eval_velocity_cmd == s11.env.eval_velocity_cmd
     assert s12.env.loc_ref_offline_command_vx == s11.env.loc_ref_offline_command_vx
+    assert s12.env.cmd_zero_chance != s11.env.cmd_zero_chance, (
+        "smoke12 cmd_zero_chance should DIFFER from smoke11 (basin-break "
+        f"delta).  smoke11={s11.env.cmd_zero_chance}, "
+        f"smoke12={s12.env.cmd_zero_chance}."
+    )
 
-    # Reward block (full TB-active set; imitation kept disabled).
+    # Reward block: action_rate is the intentional delta; everything
+    # else (alpha, weights, form flags) inherited byte-equal.
     for field in (
         "alive", "cmd_forward_velocity_track", "cmd_forward_velocity_alpha",
-        "ref_body_quat_track", "ang_vel_xy", "action_rate", "penalty_pose",
+        "ref_body_quat_track", "ang_vel_xy", "penalty_pose",
         "penalty_close_feet_xy", "feet_phase", "feet_phase_alpha",
         "feet_phase_swing_height", "penalty_feet_ori",
         "ref_q_track", "ref_contact_match", "ref_feet_z_track",
     ):
-        assert getattr(s12.reward_weights, field) == getattr(s11.reward_weights, field)
+        assert getattr(s12.reward_weights, field) == getattr(s11.reward_weights, field), (
+            f"smoke12 reward_weights.{field} drifted from smoke11; only "
+            "action_rate is expected to change in the basin-break delta."
+        )
+    assert s12.reward_weights.action_rate != s11.reward_weights.action_rate, (
+        "smoke12 action_rate should DIFFER from smoke11 (basin-break "
+        f"delta).  smoke11={s11.reward_weights.action_rate}, "
+        f"smoke12={s12.reward_weights.action_rate}."
+    )
 
-    # Form flags + spatial thresholds.
+    # Form flags + spatial thresholds (unchanged).
     assert s12.env.loc_ref_penalty_ang_vel_xy_form == s11.env.loc_ref_penalty_ang_vel_xy_form
     assert s12.env.loc_ref_penalty_feet_ori_form == s11.env.loc_ref_penalty_feet_ori_form
     assert s12.env.close_feet_threshold == s11.env.close_feet_threshold
 
-    # Reset perturbation carries over.
+    # Reset perturbation carries over (unchanged).
     assert list(s12.env.reset_torso_roll_range) == list(s11.env.reset_torso_roll_range)
     assert list(s12.env.reset_torso_pitch_range) == list(s11.env.reset_torso_pitch_range)
 
-    # PPO + compute budget.
+    # PPO + compute budget (unchanged).
     assert s12.ppo.num_envs == s11.ppo.num_envs
     assert s12.ppo.rollout_steps == s11.ppo.rollout_steps
     assert s12.ppo.iterations == s11.ppo.iterations
