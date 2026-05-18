@@ -8,6 +8,144 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke12-smoke12b-gait-ledger] - 2026-05-18: smoke12 moves backward; smoke12b survives by extinguishing gait motion
+
+### Runs
+
+- smoke12:
+  `training/wandb/offline-run-20260517_183319-f60p9me9`
+  (`130` iterations, `5.3248M` transitions)
+- smoke12b:
+  `training/wandb/offline-run-20260517_214105-flpmlz1i`
+  (`480` iterations, `19.6608M` transitions)
+- ToddlerBot comparison run:
+  `~/projects/toddlerbot/results/toddlerbot_2xc_walk_brax_20260515_114507`
+
+### Verdict
+
+Smoke12 and smoke12b fail in different ways:
+
+- **smoke12** is dynamically active but learns the wrong motion:
+  short backward steps plus large backward body drift.
+- **smoke12b** fixes the forward-command curriculum bug, but does
+  **not** recover a walking basin.  It becomes much longer-lived by
+  quieting down; stride, touchdown cadence, and `feet_phase` all
+  collapse toward a low-motion local optimum.
+
+This is materially different from ToddlerBot at matched transition
+counts.  TB is still unstable early, but it already preserves a strong
+phase-aligned leg-motion program while it learns balance.
+
+### Code-confirmed comparison contract
+
+Source of truth checked before reading the runs:
+
+- WR gait/reward metrics:
+  `training/envs/wildrobot_env.py`
+- WR smoke12 / smoke12b configs:
+  `training/configs/ppo_walking_v0201_smoke12{,b}.yaml`
+- TB active gait reward:
+  `~/projects/toddlerbot/toddlerbot/locomotion/walk_env.py:631-695`
+- TB active reward constants:
+  `~/projects/toddlerbot/toddlerbot/locomotion/walk.gin:111-131`
+- TB logging semantics:
+  `~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py:1768`
+  and `train_mjx.py:417`
+
+Reward rows below use the canonical comparable unit:
+
+```text
+weighted post-dt per-step contribution = weight × raw_term × dt
+```
+
+WR already logs that unit directly.  TB logs mean-episode sums of
+weighted pre-dt terms, so the comparison converts TB by
+`episode_sum / mean_episode_length × dt`.
+
+### Physical gait ledger
+
+For WR, the stride and swing-time rows use the exact per-event series
+(`tracking/step_length_{left,right}_event_m` and
+`tracking/swing_air_time_{left,right}_event_s`) divided by touchdown
+rate, not the carried `step_length_touchdown_event_m` proxy.
+
+| Metric | smoke12 @ 5.3248M | TB @ 5.3248M | smoke12b @ 19.6608M | TB @ 19.6608M |
+|---|---:|---:|---:|---:|
+| Episode length | `52.34` | `49.32` | `457.92` | `654.30` |
+| Forward velocity | `-0.373 m/s` | n/a | `-0.011 m/s` | n/a |
+| Cmd tracking error | `0.421 m/s` | n/a | `0.129 m/s` | n/a |
+| Touchdown cadence L / R | `0.162 / 0.122` per step | n/a | `0.073 / 0.067` per step | n/a |
+| Swing time per touchdown L / R | `0.050 / 0.043 s` | n/a | `0.041 / 0.084 s` | n/a |
+| Step length per touchdown L / R | `-0.0066 / -0.0108 m` | n/a | `-0.0024 / -0.0029 m` | n/a |
+
+ToddlerBot's current result log does **not** expose forward velocity,
+touchdown cadence, swing time, or step length, so those TB cells stay
+blank deliberately.  Do not infer TB stride physics from reward logs
+alone.
+
+### Reward / stabilization ledger
+
+| Canonical reward term | smoke12 @ 5.3248M | TB @ 5.3248M | smoke12b @ 19.6608M | TB @ 19.6608M |
+|---|---:|---:|---:|---:|
+| `feet_phase` | `+0.0737` | `+0.1352` | `+0.0358` | `+0.1519` |
+| Effective `feet_phase` scalar | `0.49` | `0.90` | `0.24` | `1.01` |
+| `action_rate` / `penalty_action_rate` | `-0.0475` | `-0.1711` | `-0.0107` | `-0.0572` |
+| `penalty_feet_ori` | `-0.0495` | `-0.0282` | `-0.0153` | `-0.0157` |
+| `penalty_pose` | `-0.0024` | `-0.0124` | `-0.0012` | `-0.0053` |
+| body-orientation term | `+0.0153` | `+0.0221` | `+0.0196` | `+0.0104` |
+| roll/pitch angular-velocity term | `-0.0341` | `-0.0436` | `-0.0044` | `-0.0176` |
+
+The key comparison is structural:
+
+```text
+TB:       high feet_phase + meaningful action cost
+smoke12:  medium feet_phase + backward physical motion
+smoke12b: low feet_phase + near-zero action cost
+```
+
+The scalar row is intentionally called **effective**, not raw:
+smoke12/12b use WR's post-smoke12 baseline-subtracted
+`max(0, raw - flat_foot_baseline)` feet-phase form, while TB uses its
+original raw feet-phase formula.  It is still useful as "how much gait
+reward the policy is actually collecting," but not as a strict
+same-form error metric.
+
+TB has not stabilized yet at `5.3248M`, but its phase-height rhythm is
+already strongly rewarded (`feet_phase scalar ≈ 0.90`).  By
+`19.6608M`, TB both survives much longer and keeps that gait signal
+strong (`≈ 1.01`).  Smoke12b does the opposite: survival rises while
+gait reward, cadence, and stride all fall.  It is not a delayed
+TB-like trajectory; it is a different basin.
+
+### Interpretation
+
+- smoke12's command-sign bug was real: the inherited symmetric command
+  range made backward commands legal while `cmd_zero_chance=0`.
+  But smoke12b proves that this was not the whole story: with strictly
+  forward commands, the policy still converges toward nearly zero
+  forward motion.
+- The smoke12 `feet_phase` baseline-subtract fix removed the old
+  flat-foot reward exploit correctly.  The remaining failure is deeper:
+  once WR does not discover true swing, the optimizer can improve reward
+  by reducing motion, foot-orientation error, and angular velocity
+  instead of preserving gait.
+- TB's active recipe keeps movement alive early enough that it can pay a
+  substantial smoothness cost while balance is still poor.  WR smoke12b
+  does not; its lower `action_rate` cost is evidence of gait extinction,
+  not better locomotion.
+
+### Instrumentation gap before the next TB comparison
+
+Add TB-side logging for:
+
+- forward velocity,
+- `touchdown_rate_left/right`,
+- `swing_air_time_left/right_event_s`,
+- `step_length_left/right_event_m`.
+
+Until those exist, TB-vs-WR physics comparison must stay asymmetric:
+WR has direct event metrics; TB only has reward-side gait proxies.
+
 ## [v0.20.1-symmetric-cmd-console-metrics] - 2026-05-16: replace misleading train-line cmd ratio with command-distribution signals
 
 Smoke9c's WR-normalized sampler is symmetric in `vx`, so the old train console
