@@ -45,7 +45,6 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from assets.robot_config import get_robot_config
 from policy_contract.numpy.action import postprocess_action
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.obs import build_observation
@@ -57,7 +56,10 @@ from training.configs.training_config import (
     load_robot_config,
     load_training_config,
 )
-from training.eval.v6_eval_adapter import V6EvalAdapter, V6_LAYOUT_ID
+from training.eval.v6_eval_adapter import (
+    ADAPTER_LAYOUT_IDS,
+    V6EvalAdapter,
+)
 from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 from training.algos.ppo.ppo_core import create_networks, sample_actions
@@ -93,6 +95,56 @@ def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> P
             ),
         },
     )
+
+
+def _ensure_config_path_exists(
+    config_path: Path, *, user_passed_explicit: bool
+) -> None:
+    if config_path.exists():
+        return
+    source = "--config" if user_passed_explicit else "default config"
+    raise FileNotFoundError(
+        f"{source} not found: {config_path}\n"
+        "Pass a valid training YAML that matches the checkpoint contract."
+    )
+
+
+def _adapter_layout_enabled(layout_id: str) -> bool:
+    return str(layout_id) in ADAPTER_LAYOUT_IDS
+
+
+def _network_activation_name(training_cfg) -> str:
+    actor_activation = str(training_cfg.networks.actor.activation).lower()
+    critic_activation = str(training_cfg.networks.critic.activation).lower()
+    if actor_activation != critic_activation:
+        raise ValueError(
+            f"actor.activation ({actor_activation!r}) and "
+            f"critic.activation ({critic_activation!r}) must match."
+        )
+    return actor_activation
+
+
+def _is_terminated_from_pose(
+    *,
+    height: float,
+    roll_rad: float,
+    pitch_rad: float,
+    step_count: int,
+    training_cfg,
+) -> bool:
+    height_too_low = height < float(training_cfg.env.min_height)
+    height_too_high = height > float(training_cfg.env.max_height)
+    height_fail = height_too_low or height_too_high
+    pitch_fail = abs(pitch_rad) > float(training_cfg.env.max_pitch)
+    roll_fail = abs(roll_rad) > float(training_cfg.env.max_roll)
+    if bool(training_cfg.env.use_relaxed_termination):
+        terminated = height_fail
+    else:
+        terminated = height_fail or pitch_fail or roll_fail
+    truncated = (
+        step_count >= int(training_cfg.env.max_episode_steps)
+    ) and not terminated
+    return bool(terminated or truncated)
 
 
 def parse_args():
@@ -275,8 +327,7 @@ def main():
 
     # Load training config
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
-    from training.configs.cli_helpers import fail_if_config_missing
-    fail_if_config_missing(
+    _ensure_config_path_exists(
         config_path, user_passed_explicit=bool(args.config)
     )
     print(f"Loading config from: {config_path}")
@@ -370,8 +421,8 @@ def main():
     # reference window lookup, and residual action composition so the v6
     # native-MuJoCo viewer matches what training saw.  Older obs layouts
     # (v3, v4) keep the legacy numpy obs / half-span action paths below.
-    is_v6 = (policy_spec.observation.layout_id == V6_LAYOUT_ID)
-    v6_adapter = (
+    use_eval_adapter = _adapter_layout_enabled(policy_spec.observation.layout_id)
+    eval_adapter = (
         V6EvalAdapter(
             training_cfg=training_cfg,
             mj_model=mj_model,
@@ -379,23 +430,25 @@ def main():
             signals_adapter=signals_adapter,
             action_dim=int(action_dim),
         )
-        if is_v6
+        if use_eval_adapter
         else None
     )
 
     print(f"Native MuJoCo: obs_dim={obs_dim}, action_dim={action_dim}, "
           f"layout={policy_spec.observation.layout_id}"
-          + (" (v6 adapter active)" if is_v6 else ""))
+          + (" (native eval adapter active)" if use_eval_adapter else ""))
 
     # Create PPO networks with same architecture as training
     policy_hidden = tuple(training_cfg.networks.actor.hidden_sizes)
     value_hidden = tuple(training_cfg.networks.critic.hidden_sizes)
+    activation = _network_activation_name(training_cfg)
 
     ppo_network = create_networks(
         obs_dim=obs_dim,
         action_dim=action_dim,
         policy_hidden_dims=policy_hidden,
         value_hidden_dims=value_hidden,
+        activation=activation,
     )
 
     # Extract policy params from checkpoint
@@ -475,7 +528,7 @@ def main():
         # uses the default-pose half-span action.  Use this helper
         # everywhere the loop resets prev_action so the two layouts
         # don't diverge on episode reset.
-        if is_v6:
+        if use_eval_adapter:
             return np.zeros(int(action_dim), dtype=np.float32)
         return default_policy_action.copy()
 
@@ -507,8 +560,8 @@ def main():
         v3/v4 use the legacy numpy obs path with caller-supplied
         prev_action_in for the half-span filter.
         """
-        if v6_adapter is not None:
-            return v6_adapter.compute_obs(
+        if eval_adapter is not None:
+            return eval_adapter.compute_obs(
                 mj_data=mj_data,
                 velocity_cmd=float(velocity_cmd),
             )
@@ -542,14 +595,14 @@ def main():
 
         Legacy (v3/v4): half-span action filtering + ctrl_to_action.
         """
-        if v6_adapter is not None:
+        if eval_adapter is not None:
             # Adapter handles filter + 1-step delay + step_idx advance +
             # residual compose + ctrl write.  Returns the action that was
             # actually applied this step (env line 1719: applied =
             # pending_action if delay else filtered).  Caller's prev_action
             # tracking is unused for v6 — the adapter's internal state is
             # the source of truth for the next obs's prev_action slot.
-            return v6_adapter.apply_action(
+            return eval_adapter.apply_action(
                 mj_data, np.asarray(action, dtype=np.float32)
             )
 
@@ -574,8 +627,8 @@ def main():
         # what the NEXT compute_obs reads as the most-recent past frame.
         # step_idx is NOT advanced here — apply_action already advanced
         # it before composing the target (env line 1686).
-        if v6_adapter is not None:
-            v6_adapter.post_physics(mj_data)
+        if eval_adapter is not None:
+            eval_adapter.post_physics(mj_data)
 
     rng_env = np.random.default_rng()
 
@@ -588,8 +641,8 @@ def main():
 
     def reset_robot(mj_model, mj_data, apply_noise=True):
         """Reset robot to initial state (training parity)."""
-        if v6_adapter is not None:
-            v6_adapter.reset_native_mj_state(
+        if eval_adapter is not None:
+            eval_adapter.reset_native_mj_state(
                 mj_data,
                 apply_noise=bool(apply_noise),
                 rng=rng_env,
@@ -619,28 +672,25 @@ def main():
         # v6: rewind the proprio_history buffer + offline trajectory index
         # so the next compute_obs() sees a fresh episode (env's
         # _make_initial_state mirror).
-        if v6_adapter is not None:
-            v6_adapter.reset()
+        if eval_adapter is not None:
+            eval_adapter.reset()
 
     def check_termination(mj_data, step_count):
         """Check if episode should terminate (training parity)."""
-        height = mj_data.qpos[2]
-        height_too_low = height < training_cfg.env.min_height
-        height_too_high = height > training_cfg.env.max_height
-        # Use Pose3D factory pattern for Euler angle extraction
+        height = float(mj_data.qpos[2])
         pose = Pose3D.from_numpy(
             position=mj_data.qpos[0:3].copy(),
             orientation=mj_data.qpos[3:7].copy(),
             frame=CoordinateFrame.WORLD,
         )
         roll, pitch, _ = pose.euler_angles()
-        pitch_fail = abs(float(pitch)) > training_cfg.env.max_pitch
-        roll_fail = abs(float(roll)) > training_cfg.env.max_roll
-        terminated = height_too_low or height_too_high or pitch_fail or roll_fail
-        truncated = (
-            step_count >= training_cfg.env.max_episode_steps
-        ) and not terminated
-        return terminated or truncated
+        return _is_terminated_from_pose(
+            height=height,
+            roll_rad=float(roll),
+            pitch_rad=float(pitch),
+            step_count=step_count,
+            training_cfg=training_cfg,
+        )
 
     def get_yaw(mj_data):
         pose = Pose3D.from_numpy(
@@ -658,9 +708,13 @@ def main():
         args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
     )
     if args.demo and fixed_velocity is None:
-        fixed_velocity = (
-            training_cfg.env.min_velocity + training_cfg.env.max_velocity
-        ) / 2
+        eval_cmd = float(getattr(training_cfg.env, "eval_velocity_cmd", -1.0))
+        if eval_cmd >= 0.0:
+            fixed_velocity = eval_cmd
+        else:
+            fixed_velocity = (
+                training_cfg.env.min_velocity + training_cfg.env.max_velocity
+            ) / 2
 
     if fixed_velocity is not None:
         velocity_cmd = fixed_velocity

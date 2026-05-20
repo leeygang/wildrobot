@@ -1,14 +1,16 @@
-"""V6 eval adapter — native-MuJoCo runtime for the v0.20.1 wr_obs_v6
-observation contract.
+"""Native-MuJoCo eval adapter for the active v0.20.1 locomotion actor layouts.
 
-The v0.20.1 PPO recipe uses the
-``wr_obs_v6_offline_ref_history`` observation layout, which carries:
+The active v0.20.1 PPO recipes use one of two actor layouts:
 
-  - the v4 base channels (gravity, gyro, joint pos/vel, foot switches,
-    prev_action, velocity_cmd, gait phase / stance / foothold / swing /
-    pelvis / phase-history)
-  - the offline reference window (q_ref, pelvis pos/vel, per-foot pos/vel,
-    contact mask)
+  - ``wr_obs_v6_offline_ref_history``: full offline-ref actor channels
+  - ``wr_obs_v7_phase_proprio``: de-hybridized actor with only phase +
+    proprio history on top of the shared proprio base
+
+Both layouts still share the same native-MuJoCo runtime requirements:
+
+  - residual action composition around the configured base pose
+  - optional 1-step action delay + low-pass filter
+  - offline gait phase / reference service for step indexing
   - a flat past-proprio stack of ``PROPRIO_HISTORY_FRAMES`` frames of
     ``(gyro, foot_switches, joint_pos_norm, joint_vel_norm, applied_action)``
 
@@ -38,7 +40,7 @@ This adapter mirrors env's per-step semantics exactly:
   - ``training/envs/wildrobot_env.py:_roll_proprio_history``
   - ``training/envs/wildrobot_env.py.step`` lines 1682-1727 (delay/filter)
 
-so visualize_policy.py can run a v6 checkpoint without re-implementing
+so visualize_policy.py can run v6/v7 checkpoints without re-implementing
 each piece inline.
 
 Lifecycle (per visualizer iteration; mirrors env.step end-to-end):
@@ -74,6 +76,8 @@ from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
 from training.utils.ctrl_order import CtrlOrderMapper
 
 V6_LAYOUT_ID = "wr_obs_v6_offline_ref_history"
+V7_LAYOUT_ID = "wr_obs_v7_phase_proprio"
+ADAPTER_LAYOUT_IDS = frozenset({V6_LAYOUT_ID, V7_LAYOUT_ID})
 
 
 @dataclass
@@ -106,7 +110,7 @@ class V6AdapterState:
 
 
 class V6EvalAdapter:
-    """Native-MuJoCo eval adapter for ``wr_obs_v6_offline_ref_history``.
+    """Native-MuJoCo eval adapter for the active locomotion actor layouts.
 
     See module docstring for the lifecycle and parity rationale.
     """
@@ -120,10 +124,11 @@ class V6EvalAdapter:
         signals_adapter,
         action_dim: int,
     ) -> None:
-        if policy_spec.observation.layout_id != V6_LAYOUT_ID:
+        if policy_spec.observation.layout_id not in ADAPTER_LAYOUT_IDS:
             raise ValueError(
-                f"V6EvalAdapter expects layout_id={V6_LAYOUT_ID!r}, "
-                f"got {policy_spec.observation.layout_id!r}"
+                "V6EvalAdapter expects layout_id in "
+                f"{sorted(ADAPTER_LAYOUT_IDS)!r}, got "
+                f"{policy_spec.observation.layout_id!r}"
             )
         self._cfg = training_cfg
         self._mj_model = mj_model
