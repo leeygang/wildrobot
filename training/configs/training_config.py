@@ -601,6 +601,14 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
             num_steps=eval_cfg.get("num_steps", 0),
             deterministic=eval_cfg.get("deterministic", True),
             seed_offset=eval_cfg.get("seed_offset", 10_000),
+            promotion_enabled=eval_cfg.get("promotion_enabled", False),
+            promotion_window=eval_cfg.get("promotion_window", 5),
+            promotion_min_hits=eval_cfg.get("promotion_min_hits", 3),
+            promotion_num_envs=eval_cfg.get("promotion_num_envs", 8),
+            promotion_num_steps=eval_cfg.get("promotion_num_steps", 500),
+            promotion_checkpoint_label=eval_cfg.get(
+                "promotion_checkpoint_label", "eval_promoted"
+            ),
         ),
         rollback=PPORollbackConfig(
             enabled=rollback_cfg.get("enabled", False),

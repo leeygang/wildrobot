@@ -4,7 +4,10 @@ from training.core.training_loop import (
     _format_hhmmss,
     _is_eval_better,
     _linear_schedule_factor,
+    _promotion_eval_pass,
+    _promotion_window_trigger,
     _should_trigger_rollback,
+    _train_promotion_candidate_row_pass,
 )
 
 
@@ -39,6 +42,136 @@ def test_format_hhmmss_formats_elapsed_time():
     assert _format_hhmmss(-2) == "00:00:00"
 
 
+def _candidate_row(
+    *,
+    forward_velocity: float = 0.10,
+    cmd_err: float = 0.05,
+    step_length: float = 0.035,
+    cmd_ratio: float = 1.0,
+) -> dict:
+    return {
+        "forward_velocity": forward_velocity,
+        "tracking/cmd_vs_achieved_forward": cmd_err,
+        "tracking/step_length_touchdown_event_m": step_length,
+        "tracking/forward_velocity_cmd_ratio": cmd_ratio,
+    }
+
+
+def test_promotion_candidate_trigger_3_of_5_is_true() -> None:
+    rows = [
+        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(), 490.0),
+        _train_promotion_candidate_row_pass(_candidate_row(), 480.0),
+        _train_promotion_candidate_row_pass(_candidate_row(forward_velocity=0.03), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(cmd_err=0.20), 500.0),
+    ]
+    triggered, hits = _promotion_window_trigger(rows, window=5, min_hits=3)
+    assert hits == 3
+    assert triggered is True
+
+
+def test_promotion_candidate_trigger_2_of_5_is_false() -> None:
+    rows = [
+        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(forward_velocity=0.02), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(cmd_err=0.20), 500.0),
+        _train_promotion_candidate_row_pass(_candidate_row(step_length=0.010), 500.0),
+    ]
+    triggered, hits = _promotion_window_trigger(rows, window=5, min_hits=3)
+    assert hits == 2
+    assert triggered is False
+
+
+def test_promotion_candidate_ratio_outside_gate_is_false() -> None:
+    assert (
+        _train_promotion_candidate_row_pass(
+            _candidate_row(cmd_ratio=1.6),
+            500.0,
+        )
+        is False
+    )
+    assert (
+        _train_promotion_candidate_row_pass(
+            _candidate_row(cmd_ratio=0.5),
+            500.0,
+        )
+        is False
+    )
+
+
+def test_promotion_candidate_missing_metric_is_false() -> None:
+    row = _candidate_row()
+    row.pop("tracking/step_length_touchdown_event_m")
+    assert _train_promotion_candidate_row_pass(row, 500.0) is False
+
+
+def test_promotion_eval_pass_and_fail_cases() -> None:
+    is_pass, step_available = _promotion_eval_pass(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        }
+    )
+    assert step_available is True
+    assert is_pass is True
+
+    is_pass_vel, _ = _promotion_eval_pass(
+        {
+            "forward_velocity": 0.04,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        }
+    )
+    assert is_pass_vel is False
+
+    is_pass_ep_len, _ = _promotion_eval_pass(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 420.0,
+            "step_length_touchdown_event_m": 0.031,
+        }
+    )
+    assert is_pass_ep_len is False
+
+
+def test_promotion_eval_defaults_are_backward_compatible() -> None:
+    cfg = load_training_config_from_dict({"ppo": {"eval": {"enabled": False}}})
+    assert cfg.ppo.eval.enabled is False
+    assert cfg.ppo.eval.promotion_enabled is False
+    assert cfg.ppo.eval.promotion_window == 5
+    assert cfg.ppo.eval.promotion_min_hits == 3
+    assert cfg.ppo.eval.promotion_num_envs == 8
+    assert cfg.ppo.eval.promotion_num_steps == 500
+    assert cfg.ppo.eval.promotion_checkpoint_label == "eval_promoted"
+
+
+def test_promotion_eval_can_enable_without_periodic_eval() -> None:
+    cfg = load_training_config_from_dict(
+        {
+            "ppo": {
+                "eval": {
+                    "enabled": False,
+                    "promotion_enabled": True,
+                    "promotion_window": 5,
+                    "promotion_min_hits": 3,
+                    "promotion_num_envs": 8,
+                    "promotion_num_steps": 500,
+                    "promotion_checkpoint_label": "eval_promoted",
+                }
+            }
+        }
+    )
+    assert cfg.ppo.eval.enabled is False
+    assert cfg.ppo.eval.promotion_enabled is True
+    assert cfg.ppo.eval.promotion_num_envs == 8
+    assert cfg.ppo.eval.promotion_num_steps == 500
+
+
 def test_parse_new_ppo_stability_fields():
     cfg = load_training_config_from_dict(
         {
@@ -56,6 +189,12 @@ def test_parse_new_ppo_stability_fields():
                     "num_steps": 400,
                     "deterministic": True,
                     "seed_offset": 123,
+                    "promotion_enabled": True,
+                    "promotion_window": 7,
+                    "promotion_min_hits": 4,
+                    "promotion_num_envs": 12,
+                    "promotion_num_steps": 250,
+                    "promotion_checkpoint_label": "candidate_promoted",
                 },
                 "rollback": {
                     "enabled": True,
@@ -78,6 +217,12 @@ def test_parse_new_ppo_stability_fields():
     assert cfg.ppo.eval.num_envs == 32
     assert cfg.ppo.eval.num_steps == 400
     assert cfg.ppo.eval.seed_offset == 123
+    assert cfg.ppo.eval.promotion_enabled is True
+    assert cfg.ppo.eval.promotion_window == 7
+    assert cfg.ppo.eval.promotion_min_hits == 4
+    assert cfg.ppo.eval.promotion_num_envs == 12
+    assert cfg.ppo.eval.promotion_num_steps == 250
+    assert cfg.ppo.eval.promotion_checkpoint_label == "candidate_promoted"
     assert cfg.ppo.rollback.enabled
     assert cfg.ppo.rollback.patience == 3
     assert cfg.ppo.rollback.success_rate_drop_threshold == 0.07

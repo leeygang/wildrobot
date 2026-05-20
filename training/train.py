@@ -319,6 +319,8 @@ def maybe_apply_desktop_gpu_num_env_guard(training_cfg, args) -> bool:
     training_cfg.ppo.num_envs = env_cap
     if training_cfg.ppo.eval.num_envs > env_cap:
         training_cfg.ppo.eval.num_envs = env_cap
+    if getattr(training_cfg.ppo.eval, "promotion_num_envs", 0) > env_cap:
+        training_cfg.ppo.eval.promotion_num_envs = env_cap
 
     print("=" * 60)
     print("Desktop GPU num_envs guard applied")
@@ -522,6 +524,9 @@ def start_training(
         return jax.vmap(env.reset)(rngs)
 
     eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
+    promotion_eval_num_envs = (
+        training_cfg.ppo.eval.promotion_num_envs or eval_num_envs
+    )
 
     # v0.20.1-smoke7: eval-cmd override + resample suppression.
     # The decision rule (pinned vs sentinel) and the resulting step /
@@ -533,9 +538,19 @@ def start_training(
         batched_eval_clean_step_fn,
         batched_eval_reset_fn,
     ) = make_eval_env_fns(env, training_cfg, eval_num_envs)
+    (
+        batched_promotion_eval_step_fn,
+        batched_promotion_eval_clean_step_fn,
+        batched_promotion_eval_reset_fn,
+    ) = make_eval_env_fns(env, training_cfg, promotion_eval_num_envs)
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
+    promotion_enabled = bool(training_cfg.ppo.eval.promotion_enabled)
+    promotion_checkpoint_label = (
+        str(training_cfg.ppo.eval.promotion_checkpoint_label).strip()
+        or "eval_promoted"
+    )
 
     # Checkpoint management state (captured by callback closure)
     best_reward = {"value": float("-inf")}
@@ -606,6 +621,40 @@ def start_training(
                 checkpoint_dir=job_checkpoint_dir,
                 policy_spec=policy_spec_dict,
             )
+            if promotion_enabled:
+                promotion_triggered = (
+                    float(metrics.env_metrics.get("promotion_eval/triggered", 0.0)) > 0.5
+                )
+                promotion_passed = (
+                    float(metrics.env_metrics.get("promotion_eval/pass", 0.0)) > 0.5
+                )
+                if promotion_triggered and promotion_passed:
+                    promoted_dir = os.path.join(
+                        job_checkpoint_dir,
+                        promotion_checkpoint_label,
+                    )
+                    os.makedirs(promoted_dir, exist_ok=True)
+                    promoted_path = save_checkpoint_from_cpu(
+                        state_cpu=jax.device_get(state),
+                        config=training_cfg,
+                        iteration=iteration,
+                        total_steps=int(state.total_steps),
+                        checkpoint_dir=promoted_dir,
+                        is_best=False,
+                        metrics=metrics,
+                        policy_spec=policy_spec_dict,
+                    )
+                    print(f"  ⭐ Promoted checkpoint saved: {promoted_path}")
+                elif promotion_triggered:
+                    print(
+                        "  ⏭ Promotion candidate failed deterministic eval; "
+                        "not saved as promoted checkpoint"
+                    )
+                else:
+                    print(
+                        "  ⏭ Promotion eval skipped; train trigger not satisfied at this "
+                        "checkpoint boundary"
+                    )
 
     # Load checkpoint for resuming if provided
     resume_checkpoint = None
@@ -626,6 +675,9 @@ def start_training(
         eval_env_step_fn=batched_eval_step_fn,
         eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
+        promotion_eval_env_step_fn=batched_promotion_eval_step_fn,
+        promotion_eval_env_step_fn_no_push=batched_promotion_eval_clean_step_fn,
+        promotion_eval_env_reset_fn=batched_promotion_eval_reset_fn,
         # v0.20.1 v3-only env treats `action` as a bounded residual on top
         # of the offline reference (target_q = q_ref + clip(action) * scale).
         # iter-0 must therefore output zero so the rollout starts from

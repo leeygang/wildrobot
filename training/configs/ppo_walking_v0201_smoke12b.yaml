@@ -365,6 +365,12 @@ ppo:
     num_steps: 500
     deterministic: true
     seed_offset: 10000
+    promotion_enabled: true
+    promotion_window: 5
+    promotion_min_hits: 3
+    promotion_num_envs: 8
+    promotion_num_steps: 500
+    promotion_checkpoint_label: eval_promoted
 
 # =============================================================================
 # Networks — same as smoke9 (TB-aligned)

@@ -1478,6 +1478,7 @@ def build_wandb_metrics(
             or key.startswith("eval/")
             or key.startswith("eval_push/")
             or key.startswith("eval_clean/")
+            or key.startswith("promotion_eval/")
             or key.startswith("Evaluate/")  # ToddlerBot-style eval namespace
             or key.startswith("ref/")  # v0.20.1: imitation diagnostics
         ):

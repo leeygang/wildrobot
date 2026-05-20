@@ -689,6 +689,14 @@ class PPOEvalConfig(Freezable):
     num_steps: int = 0
     deterministic: bool = True
     seed_offset: int = 10_000
+    # Selective deterministic eval for checkpoint promotion candidates.
+    # Backward-compatible defaults keep this path disabled.
+    promotion_enabled: bool = False
+    promotion_window: int = 5
+    promotion_min_hits: int = 3
+    promotion_num_envs: int = 8
+    promotion_num_steps: int = 500
+    promotion_checkpoint_label: str = "eval_promoted"
 
 
 @dataclass
