@@ -188,17 +188,43 @@ def _promotion_eval_pass(eval_metrics: Dict[str, float]) -> Tuple[bool, bool]:
     forward_velocity = float(eval_metrics["forward_velocity"])
     cmd_vs_achieved = float(eval_metrics["cmd_vs_achieved_forward"])
     mean_episode_length = float(eval_metrics["mean_episode_length"])
+    eval_velocity_cmd = float(eval_metrics.get("eval_velocity_cmd", -1.0))
     step_length = eval_metrics.get("step_length_touchdown_event_m")
     step_metric_available = step_length is not None
     step_ok = True if step_length is None else float(step_length) >= 0.030
+    # Keep sentinel compatibility: only gate ratio when eval cmd is pinned.
+    ratio_ok = True
+    if eval_velocity_cmd > 0.0:
+        ratio = forward_velocity / eval_velocity_cmd
+        ratio_ok = 0.6 <= ratio <= 1.5
 
     is_pass = (
         forward_velocity >= 0.075
         and cmd_vs_achieved <= 0.075
         and mean_episode_length >= 475.0
         and step_ok
+        and ratio_ok
     )
     return is_pass, step_metric_available
+
+
+def _should_fire_callback(
+    iteration: int,
+    log_interval: int,
+    checkpoint_interval: int,
+) -> bool:
+    """Return whether callback should run this iteration.
+
+    Callback drives checkpoint management, so it must run on checkpoint
+    boundaries even when ``log_interval`` and ``checkpoint_interval`` differ.
+    """
+    if int(iteration) == 1:
+        return True
+    if int(log_interval) > 0 and int(iteration) % int(log_interval) == 0:
+        return True
+    if int(checkpoint_interval) > 0 and int(iteration) % int(checkpoint_interval) == 0:
+        return True
+    return False
 
 
 # =============================================================================
@@ -2247,6 +2273,9 @@ def train(
                         promotion_clean_walking["cmd_vs_achieved_forward"]
                     ),
                     "mean_episode_length": promotion_clean_ep_len,
+                    "eval_velocity_cmd": float(
+                        getattr(config.env, "eval_velocity_cmd", -1.0)
+                    ),
                     "step_length_touchdown_event_m": (
                         None
                         if promotion_step_len_v is None
@@ -2274,6 +2303,17 @@ def train(
                     promotion_eval_metrics["mean_episode_length"],
                     dtype=jnp.float32,
                 )
+                promotion_eval_vx_cmd = float(promotion_eval_metrics["eval_velocity_cmd"])
+                promotion_ratio = np.nan
+                if promotion_eval_vx_cmd > 0.0:
+                    promotion_ratio = (
+                        float(promotion_eval_metrics["forward_velocity"])
+                        / promotion_eval_vx_cmd
+                    )
+                env_metrics["promotion_eval/forward_velocity_cmd_ratio"] = jnp.asarray(
+                    promotion_ratio,
+                    dtype=jnp.float32,
+                )
                 env_metrics["promotion_eval/step_length_touchdown_event_m"] = jnp.asarray(
                     np.nan
                     if promotion_eval_metrics["step_length_touchdown_event_m"] is None
@@ -2290,12 +2330,16 @@ def train(
                     if promotion_eval_metrics["step_length_touchdown_event_m"] is None
                     else f"{promotion_eval_metrics['step_length_touchdown_event_m']:+.4f}"
                 )
+                ratio_text = "n/a"
+                if promotion_eval_vx_cmd > 0.0:
+                    ratio_text = f"{promotion_ratio:.2f}"
                 print(
                     f"  └─ promotion_eval metrics: "
                     f"vel={promotion_eval_metrics['forward_velocity']:+.3f} | "
                     f"cmd_err={promotion_eval_metrics['cmd_vs_achieved_forward']:.3f} | "
                     f"ep_len={promotion_eval_metrics['mean_episode_length']:.0f} | "
                     f"step_len={step_len_text} | "
+                    f"vx/cmd={ratio_text} | "
                     f"pass={'✓' if promotion_pass else '✗'}"
                 )
             else:
@@ -2305,7 +2349,8 @@ def train(
         steps_per_sec = (config.ppo.rollout_steps * config.ppo.num_envs) / iter_time
 
         # Logging
-        if iteration % config.ppo.log_interval == 0 or iteration == 1:
+        should_log_iteration = iteration % config.ppo.log_interval == 0 or iteration == 1
+        if should_log_iteration:
             total_steps = int(state.total_steps)
             progress_pct = (total_steps / total_expected_steps) * 100
 
@@ -2535,8 +2580,15 @@ def train(
                     f"G5[{eval_ratio_str}]"
                 )
 
-            if callback is not None:
-                callback(iteration, state, metrics, steps_per_sec)
+        if (
+            callback is not None
+            and _should_fire_callback(
+                iteration=iteration,
+                log_interval=config.ppo.log_interval,
+                checkpoint_interval=checkpoint_interval,
+            )
+        ):
+            callback(iteration, state, metrics, steps_per_sec)
 
     elapsed = time.time() - start_time
     print()

@@ -6,6 +6,7 @@ from training.core.training_loop import (
     _linear_schedule_factor,
     _promotion_eval_pass,
     _promotion_window_trigger,
+    _should_fire_callback,
     _should_trigger_rollback,
     _train_promotion_candidate_row_pass,
 )
@@ -137,6 +138,24 @@ def test_promotion_eval_pass_and_fail_cases() -> None:
         }
     )
     assert is_pass_ep_len is False
+
+    is_pass_ratio_fail, _ = _promotion_eval_pass(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "eval_velocity_cmd": 0.20,
+            "step_length_touchdown_event_m": 0.031,
+        }
+    )
+    assert is_pass_ratio_fail is False
+
+
+def test_should_fire_callback_covers_log_and_checkpoint_boundaries() -> None:
+    assert _should_fire_callback(iteration=1, log_interval=50, checkpoint_interval=200) is True
+    assert _should_fire_callback(iteration=10, log_interval=10, checkpoint_interval=100) is True
+    assert _should_fire_callback(iteration=20, log_interval=7, checkpoint_interval=10) is True
+    assert _should_fire_callback(iteration=9, log_interval=10, checkpoint_interval=20) is False
 
 
 def test_promotion_eval_defaults_are_backward_compatible() -> None:
