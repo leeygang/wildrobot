@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import functools
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -141,71 +141,6 @@ def _should_trigger_rollback(
 ) -> bool:
     """Return True when eval success-rate regressed enough to consider rollback."""
     return current_success_rate < (best_success_rate - threshold)
-
-
-def _train_promotion_candidate_row_pass(
-    env_metrics: Dict[str, Any],
-    episode_length: float,
-) -> bool:
-    """Cheap train-side prefilter gate for promotion-candidate eval."""
-    try:
-        forward_velocity = float(env_metrics["forward_velocity"])
-        cmd_vs_achieved = float(env_metrics["tracking/cmd_vs_achieved_forward"])
-        step_length = float(env_metrics["tracking/step_length_touchdown_event_m"])
-        cmd_ratio = float(env_metrics["tracking/forward_velocity_cmd_ratio"])
-    except (KeyError, TypeError, ValueError):
-        return False
-
-    return (
-        forward_velocity >= 0.075
-        and cmd_vs_achieved <= 0.075
-        and float(episode_length) >= 475.0
-        and step_length >= 0.030
-        and 0.6 <= cmd_ratio <= 1.5
-    )
-
-
-def _promotion_window_trigger(
-    recent_hits: List[bool],
-    window: int,
-    min_hits: int,
-) -> Tuple[bool, int]:
-    """Return (triggered, hit_count) from the latest promotion window."""
-    window = max(1, int(window))
-    min_hits = max(1, int(min_hits))
-    if len(recent_hits) < window:
-        return False, int(sum(1 for hit in recent_hits if hit))
-    hit_count = int(sum(1 for hit in recent_hits[-window:] if hit))
-    return hit_count >= min_hits, hit_count
-
-
-def _promotion_eval_pass(eval_metrics: Dict[str, float]) -> Tuple[bool, bool]:
-    """Promotion pass gate on deterministic eval metrics.
-
-    Returns:
-        (is_pass, step_metric_available)
-    """
-    forward_velocity = float(eval_metrics["forward_velocity"])
-    cmd_vs_achieved = float(eval_metrics["cmd_vs_achieved_forward"])
-    mean_episode_length = float(eval_metrics["mean_episode_length"])
-    eval_velocity_cmd = float(eval_metrics.get("eval_velocity_cmd", -1.0))
-    step_length = eval_metrics.get("step_length_touchdown_event_m")
-    step_metric_available = step_length is not None
-    step_ok = True if step_length is None else float(step_length) >= 0.030
-    # Keep sentinel compatibility: only gate ratio when eval cmd is pinned.
-    ratio_ok = True
-    if eval_velocity_cmd > 0.0:
-        ratio = forward_velocity / eval_velocity_cmd
-        ratio_ok = 0.6 <= ratio <= 1.5
-
-    is_pass = (
-        forward_velocity >= 0.075
-        and cmd_vs_achieved <= 0.075
-        and mean_episode_length >= 475.0
-        and step_ok
-        and ratio_ok
-    )
-    return is_pass, step_metric_available
 
 
 def _should_fire_callback(
@@ -1004,9 +939,6 @@ def train(
     eval_env_step_fn: Optional[Callable] = None,
     eval_env_step_fn_no_push: Optional[Callable] = None,
     eval_env_reset_fn: Optional[Callable] = None,
-    promotion_eval_env_step_fn: Optional[Callable] = None,
-    promotion_eval_env_step_fn_no_push: Optional[Callable] = None,
-    promotion_eval_env_reset_fn: Optional[Callable] = None,
     *,
     policy_init_action: Optional[jnp.ndarray] = None,
 ) -> TrainingState:
@@ -1019,8 +951,6 @@ def train(
         callback: Optional callback for logging/checkpointing
         resume_checkpoint: Optional checkpoint data to resume from (from load_checkpoint)
         eval_env_step_fn_no_push: Optional eval step fn with disturbances disabled
-        promotion_eval_env_step_fn_no_push: Optional promotion-eval step fn with
-            disturbances disabled
 
     Returns:
         Final training state
@@ -1189,22 +1119,6 @@ def train(
     use_eval_survival_metric = int(eval_steps) < int(config.env.max_episode_steps)
     eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
     checkpoint_interval = int(getattr(config.checkpoints, "interval", 0) or 0)
-
-    promotion_enabled = bool(getattr(config.ppo.eval, "promotion_enabled", False))
-    promotion_window = int(getattr(config.ppo.eval, "promotion_window", 5) or 5)
-    promotion_min_hits = int(getattr(config.ppo.eval, "promotion_min_hits", 3) or 3)
-    promotion_eval_steps = int(
-        getattr(config.ppo.eval, "promotion_num_steps", 0) or eval_steps
-    )
-    promotion_eval_active = promotion_enabled and checkpoint_interval > 0
-    promotion_eval_step_push_fn = promotion_eval_env_step_fn or eval_step_push_fn
-    promotion_eval_step_clean_fn = (
-        promotion_eval_env_step_fn_no_push or promotion_eval_step_push_fn
-    )
-    promotion_eval_reset_fn = promotion_eval_env_reset_fn or eval_reset_fn
-    promotion_eval_base_rng = jax.random.PRNGKey(
-        config.seed + config.ppo.eval.seed_offset + 1
-    )
 
     # Note: Training-time eval runs two passes for efficiency:
     # - eval_push: Uses training-configured push settings
@@ -1710,26 +1624,6 @@ def train(
         else run_eval_push
     )
 
-    run_promotion_eval_push = _make_eval_runner(
-        promotion_eval_step_push_fn,
-        promotion_eval_reset_fn,
-        int(promotion_eval_steps),
-        True,
-    )
-    promotion_eval_has_clean_pass = (
-        promotion_eval_step_clean_fn is not promotion_eval_step_push_fn
-    )
-    run_promotion_eval_clean = (
-        _make_eval_runner(
-            promotion_eval_step_clean_fn,
-            promotion_eval_reset_fn,
-            int(promotion_eval_steps),
-            True,
-        )
-        if promotion_eval_has_clean_pass
-        else run_promotion_eval_push
-    )
-
     if eval_enabled and use_eval_survival_metric:
         print(
             "WARNING: ppo.eval.num_steps < env.max_episode_steps. "
@@ -1754,10 +1648,6 @@ def train(
         # Eval compilation can be very expensive (full rollout scan + metrics), so
         # compile it lazily on first eval call instead of blocking startup.
         print("  eval runners will JIT-compile on first eval call")
-    if promotion_eval_active:
-        print(
-            "  promotion eval runner will JIT-compile on first promotion candidate"
-        )
     print("=" * 60)
 
     # Calculate target iteration (resume adds to checkpoint iteration)
@@ -1785,7 +1675,6 @@ def train(
     last_approx_kl = 0.0
     lr_backoff_scale = 1.0
     last_eval_metrics: Dict[str, float] = {}
-    promotion_recent_hits: List[bool] = []
     rollback_bad_count = 0
     best_eval = {
         "success_rate": -1.0,
@@ -1864,14 +1753,6 @@ def train(
         )
         env_metrics["ppo/entropy_coef"] = jnp.asarray(entropy_coef, dtype=jnp.float32)
         env_metrics["ppo/rollback_triggered"] = jnp.asarray(0.0, dtype=jnp.float32)
-
-        promotion_row_hit = _train_promotion_candidate_row_pass(
-            env_metrics=env_metrics,
-            episode_length=float(metrics.episode_length),
-        )
-        promotion_recent_hits.append(promotion_row_hit)
-        if len(promotion_recent_hits) > max(1, promotion_window):
-            promotion_recent_hits.pop(0)
 
         if eval_enabled and (iteration == 1 or iteration % config.ppo.eval.interval == 0):
             eval_push_reward, eval_push_success, eval_push_ep_len, eval_push_term_h_low, eval_push_term_h_high, eval_push_term_pitch, eval_push_term_roll, eval_push_soft_violation_pitch, eval_push_soft_violation_roll, eval_push_done_env, eval_push_trunc_env, eval_push_survival_rate, eval_push_survival_steps, eval_push_reset_h_mean, eval_push_reset_h_min, eval_push_unnecessary_step_rate, eval_push_recovery_completed, eval_push_recovery_no_touchdown_frac, eval_push_recovery_touchdown_then_fail_frac, eval_push_recovery_touchdown_count, eval_push_recovery_first_liftoff_latency, eval_push_recovery_first_touchdown_latency, eval_push_recovery_pitch_rate_reduction_10t, eval_push_recovery_capture_error_reduction_10t, eval_push_recovery_touchdown_to_term_steps, eval_push_recovery_visible_step_rate, eval_push_visible_step_rate_hard, eval_push_recovery_min_height, eval_push_recovery_max_knee_flex, eval_push_recovery_first_step_dist_abs, eval_push_teacher_whole_body_active_frac, eval_push_teacher_whole_body_active_during_clean_frac, eval_push_teacher_whole_body_active_during_push_frac, eval_push_teacher_recovery_height_target_mean, eval_push_teacher_recovery_height_error, eval_push_teacher_recovery_height_in_band_frac, eval_push_teacher_com_velocity_target_mean, eval_push_teacher_com_velocity_error, eval_push_teacher_com_velocity_target_hit_frac, eval_push_reward_teacher_recovery_height, eval_push_reward_teacher_com_velocity_reduction, eval_push_walking = (
@@ -2218,132 +2099,6 @@ def train(
                         f"  ↩ rollback at iter {iteration}: restored params from iter "
                         f"{best_eval['iteration']}, new_lr_scale={lr_backoff_scale:.4f}"
                     )
-
-        if (
-            promotion_eval_active
-            and checkpoint_interval > 0
-            and iteration % checkpoint_interval == 0
-        ):
-            promotion_triggered, promotion_window_hits = _promotion_window_trigger(
-                recent_hits=promotion_recent_hits,
-                window=promotion_window,
-                min_hits=promotion_min_hits,
-            )
-            env_metrics["promotion_eval/triggered"] = jnp.asarray(
-                1.0 if promotion_triggered else 0.0,
-                dtype=jnp.float32,
-            )
-            env_metrics["promotion_eval/window_hits"] = jnp.asarray(
-                float(promotion_window_hits),
-                dtype=jnp.float32,
-            )
-
-            print(
-                f"  └─ promotion_eval: trigger="
-                f"{'✓' if promotion_triggered else '✗'} "
-                f"(hits={promotion_window_hits}/{promotion_window}, "
-                f"min_hits={promotion_min_hits})"
-            )
-
-            if promotion_triggered:
-                promotion_push = run_promotion_eval_push(
-                    state.policy_params,
-                    state.processor_params,
-                    promotion_eval_base_rng,
-                )
-                promotion_clean = (
-                    run_promotion_eval_clean(
-                        state.policy_params,
-                        state.processor_params,
-                        promotion_eval_base_rng,
-                    )
-                    if promotion_eval_has_clean_pass
-                    else promotion_push
-                )
-                jax.block_until_ready(promotion_push[0])
-
-                promotion_clean_ep_len = float(promotion_clean[2])
-                promotion_clean_walking = promotion_clean[-1]
-                promotion_step_len_v = promotion_clean_walking.get(
-                    "step_length_touchdown_event_m"
-                )
-                promotion_eval_metrics = {
-                    "forward_velocity": float(promotion_clean_walking["forward_velocity"]),
-                    "cmd_vs_achieved_forward": float(
-                        promotion_clean_walking["cmd_vs_achieved_forward"]
-                    ),
-                    "mean_episode_length": promotion_clean_ep_len,
-                    "eval_velocity_cmd": float(
-                        getattr(config.env, "eval_velocity_cmd", -1.0)
-                    ),
-                    "step_length_touchdown_event_m": (
-                        None
-                        if promotion_step_len_v is None
-                        else float(promotion_step_len_v)
-                    ),
-                }
-                promotion_pass, promotion_step_available = _promotion_eval_pass(
-                    promotion_eval_metrics
-                )
-                if not promotion_step_available:
-                    print(
-                        "  ⚠ promotion_eval: deterministic step-length metric unavailable; "
-                        "using train-side step proxy only"
-                    )
-
-                env_metrics["promotion_eval/forward_velocity"] = jnp.asarray(
-                    promotion_eval_metrics["forward_velocity"],
-                    dtype=jnp.float32,
-                )
-                env_metrics["promotion_eval/cmd_vs_achieved_forward"] = jnp.asarray(
-                    promotion_eval_metrics["cmd_vs_achieved_forward"],
-                    dtype=jnp.float32,
-                )
-                env_metrics["promotion_eval/mean_episode_length"] = jnp.asarray(
-                    promotion_eval_metrics["mean_episode_length"],
-                    dtype=jnp.float32,
-                )
-                promotion_eval_vx_cmd = float(promotion_eval_metrics["eval_velocity_cmd"])
-                promotion_ratio = np.nan
-                if promotion_eval_vx_cmd > 0.0:
-                    promotion_ratio = (
-                        float(promotion_eval_metrics["forward_velocity"])
-                        / promotion_eval_vx_cmd
-                    )
-                env_metrics["promotion_eval/forward_velocity_cmd_ratio"] = jnp.asarray(
-                    promotion_ratio,
-                    dtype=jnp.float32,
-                )
-                env_metrics["promotion_eval/step_length_touchdown_event_m"] = jnp.asarray(
-                    np.nan
-                    if promotion_eval_metrics["step_length_touchdown_event_m"] is None
-                    else promotion_eval_metrics["step_length_touchdown_event_m"],
-                    dtype=jnp.float32,
-                )
-                env_metrics["promotion_eval/pass"] = jnp.asarray(
-                    1.0 if promotion_pass else 0.0,
-                    dtype=jnp.float32,
-                )
-
-                step_len_text = (
-                    "n/a"
-                    if promotion_eval_metrics["step_length_touchdown_event_m"] is None
-                    else f"{promotion_eval_metrics['step_length_touchdown_event_m']:+.4f}"
-                )
-                ratio_text = "n/a"
-                if promotion_eval_vx_cmd > 0.0:
-                    ratio_text = f"{promotion_ratio:.2f}"
-                print(
-                    f"  └─ promotion_eval metrics: "
-                    f"vel={promotion_eval_metrics['forward_velocity']:+.3f} | "
-                    f"cmd_err={promotion_eval_metrics['cmd_vs_achieved_forward']:.3f} | "
-                    f"ep_len={promotion_eval_metrics['mean_episode_length']:.0f} | "
-                    f"step_len={step_len_text} | "
-                    f"vx/cmd={ratio_text} | "
-                    f"pass={'✓' if promotion_pass else '✗'}"
-                )
-            else:
-                env_metrics["promotion_eval/pass"] = jnp.asarray(0.0, dtype=jnp.float32)
 
         iter_time = time.time() - iter_start
         steps_per_sec = (config.ppo.rollout_steps * config.ppo.num_envs) / iter_time

@@ -94,14 +94,33 @@ def save_checkpoint_from_cpu(
     # Store metrics if provided
     metrics_dict = None
     if metrics is not None:
+        env_metrics = metrics.env_metrics
+        cmd_err = (
+            float(env_metrics["tracking/cmd_vs_achieved_forward"])
+            if "tracking/cmd_vs_achieved_forward" in env_metrics
+            else None
+        )
+        step_len = (
+            float(env_metrics["tracking/step_length_touchdown_event_m"])
+            if "tracking/step_length_touchdown_event_m" in env_metrics
+            else None
+        )
+        cmd_ratio = (
+            float(env_metrics["tracking/forward_velocity_cmd_ratio"])
+            if "tracking/forward_velocity_cmd_ratio" in env_metrics
+            else None
+        )
         metrics_dict = {
             "episode_reward": float(metrics.episode_reward),
             "task_reward_mean": float(metrics.task_reward_mean),
-            "forward_velocity": float(metrics.env_metrics["forward_velocity"]),
-            "robot_height": float(metrics.env_metrics["height"]),
+            "forward_velocity": float(env_metrics["forward_velocity"]),
+            "robot_height": float(env_metrics["height"]),
             "episode_length": float(metrics.episode_length),
             "policy_loss": float(metrics.policy_loss),
             "value_loss": float(metrics.value_loss),
+            "tracking/cmd_vs_achieved_forward": cmd_err,
+            "tracking/step_length_touchdown_event_m": step_len,
+            "tracking/forward_velocity_cmd_ratio": cmd_ratio,
         }
 
     # state_cpu is already on CPU, no need for jax.device_get

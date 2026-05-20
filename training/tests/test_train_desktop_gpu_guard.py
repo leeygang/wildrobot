@@ -3,11 +3,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
-def _make_cfg(num_envs: int, eval_num_envs: int = 64):
+def _make_cfg(
+    num_envs: int,
+    eval_num_envs: int = 64,
+    post_training_num_envs: int = 8,
+):
     return SimpleNamespace(
         ppo=SimpleNamespace(
             num_envs=num_envs,
-            eval=SimpleNamespace(num_envs=eval_num_envs),
+            eval=SimpleNamespace(
+                num_envs=eval_num_envs,
+                post_training_num_envs=post_training_num_envs,
+            ),
         )
     )
 
@@ -19,7 +26,7 @@ def _make_args(num_envs=None):
 def test_desktop_gpu_guard_caps_single_geforce_linux(monkeypatch) -> None:
     from training import train
 
-    cfg = _make_cfg(num_envs=2048, eval_num_envs=1536)
+    cfg = _make_cfg(num_envs=2048, eval_num_envs=1536, post_training_num_envs=1200)
     args = _make_args(num_envs=None)
 
     monkeypatch.setattr(train.platform, "system", lambda: "Linux")
@@ -36,6 +43,7 @@ def test_desktop_gpu_guard_caps_single_geforce_linux(monkeypatch) -> None:
     assert changed is True
     assert cfg.ppo.num_envs == 1024
     assert cfg.ppo.eval.num_envs == 1024
+    assert cfg.ppo.eval.post_training_num_envs == 1024
 
 
 def test_desktop_gpu_guard_respects_cli_override(monkeypatch) -> None:

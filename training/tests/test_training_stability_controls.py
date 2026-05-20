@@ -1,14 +1,24 @@
-from training.configs.training_config import load_training_config_from_dict
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+
+from training.configs.training_config import (
+    load_training_config,
+    load_training_config_from_dict,
+)
+from training.core.post_training_eval import (
+    CheckpointMetricCandidate,
+    deterministic_eval_gate,
+    rank_checkpoint_candidates,
+)
 from training.core.training_loop import (
     _effective_ppo_epochs,
     _format_hhmmss,
     _is_eval_better,
     _linear_schedule_factor,
-    _promotion_eval_pass,
-    _promotion_window_trigger,
     _should_fire_callback,
     _should_trigger_rollback,
-    _train_promotion_candidate_row_pass,
 )
 
 
@@ -43,114 +53,6 @@ def test_format_hhmmss_formats_elapsed_time():
     assert _format_hhmmss(-2) == "00:00:00"
 
 
-def _candidate_row(
-    *,
-    forward_velocity: float = 0.10,
-    cmd_err: float = 0.05,
-    step_length: float = 0.035,
-    cmd_ratio: float = 1.0,
-) -> dict:
-    return {
-        "forward_velocity": forward_velocity,
-        "tracking/cmd_vs_achieved_forward": cmd_err,
-        "tracking/step_length_touchdown_event_m": step_length,
-        "tracking/forward_velocity_cmd_ratio": cmd_ratio,
-    }
-
-
-def test_promotion_candidate_trigger_3_of_5_is_true() -> None:
-    rows = [
-        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(), 490.0),
-        _train_promotion_candidate_row_pass(_candidate_row(), 480.0),
-        _train_promotion_candidate_row_pass(_candidate_row(forward_velocity=0.03), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(cmd_err=0.20), 500.0),
-    ]
-    triggered, hits = _promotion_window_trigger(rows, window=5, min_hits=3)
-    assert hits == 3
-    assert triggered is True
-
-
-def test_promotion_candidate_trigger_2_of_5_is_false() -> None:
-    rows = [
-        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(forward_velocity=0.02), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(cmd_err=0.20), 500.0),
-        _train_promotion_candidate_row_pass(_candidate_row(step_length=0.010), 500.0),
-    ]
-    triggered, hits = _promotion_window_trigger(rows, window=5, min_hits=3)
-    assert hits == 2
-    assert triggered is False
-
-
-def test_promotion_candidate_ratio_outside_gate_is_false() -> None:
-    assert (
-        _train_promotion_candidate_row_pass(
-            _candidate_row(cmd_ratio=1.6),
-            500.0,
-        )
-        is False
-    )
-    assert (
-        _train_promotion_candidate_row_pass(
-            _candidate_row(cmd_ratio=0.5),
-            500.0,
-        )
-        is False
-    )
-
-
-def test_promotion_candidate_missing_metric_is_false() -> None:
-    row = _candidate_row()
-    row.pop("tracking/step_length_touchdown_event_m")
-    assert _train_promotion_candidate_row_pass(row, 500.0) is False
-
-
-def test_promotion_eval_pass_and_fail_cases() -> None:
-    is_pass, step_available = _promotion_eval_pass(
-        {
-            "forward_velocity": 0.09,
-            "cmd_vs_achieved_forward": 0.04,
-            "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
-        }
-    )
-    assert step_available is True
-    assert is_pass is True
-
-    is_pass_vel, _ = _promotion_eval_pass(
-        {
-            "forward_velocity": 0.04,
-            "cmd_vs_achieved_forward": 0.04,
-            "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
-        }
-    )
-    assert is_pass_vel is False
-
-    is_pass_ep_len, _ = _promotion_eval_pass(
-        {
-            "forward_velocity": 0.09,
-            "cmd_vs_achieved_forward": 0.04,
-            "mean_episode_length": 420.0,
-            "step_length_touchdown_event_m": 0.031,
-        }
-    )
-    assert is_pass_ep_len is False
-
-    is_pass_ratio_fail, _ = _promotion_eval_pass(
-        {
-            "forward_velocity": 0.09,
-            "cmd_vs_achieved_forward": 0.04,
-            "mean_episode_length": 500.0,
-            "eval_velocity_cmd": 0.20,
-            "step_length_touchdown_event_m": 0.031,
-        }
-    )
-    assert is_pass_ratio_fail is False
-
-
 def test_should_fire_callback_covers_log_and_checkpoint_boundaries() -> None:
     assert _should_fire_callback(iteration=1, log_interval=50, checkpoint_interval=200) is True
     assert _should_fire_callback(iteration=10, log_interval=10, checkpoint_interval=100) is True
@@ -158,37 +60,247 @@ def test_should_fire_callback_covers_log_and_checkpoint_boundaries() -> None:
     assert _should_fire_callback(iteration=9, log_interval=10, checkpoint_interval=20) is False
 
 
-def test_promotion_eval_defaults_are_backward_compatible() -> None:
+def _candidate(
+    *,
+    path: str,
+    iteration: int,
+    reward: float,
+    forward_velocity: float | None = None,
+    cmd_err: float | None = None,
+    step_len: float | None = None,
+    ep_len: float | None = None,
+    cmd_ratio: float | None = None,
+) -> CheckpointMetricCandidate:
+    metrics: dict[str, float] = {"episode_reward": reward}
+    if forward_velocity is not None:
+        metrics["forward_velocity"] = forward_velocity
+    if cmd_err is not None:
+        metrics["tracking/cmd_vs_achieved_forward"] = cmd_err
+    if step_len is not None:
+        metrics["tracking/step_length_touchdown_event_m"] = step_len
+    if ep_len is not None:
+        metrics["episode_length"] = ep_len
+    if cmd_ratio is not None:
+        metrics["tracking/forward_velocity_cmd_ratio"] = cmd_ratio
+    return CheckpointMetricCandidate(
+        checkpoint_path=path,
+        iteration=iteration,
+        total_steps=iteration * 1000,
+        metrics=metrics,
+    )
+
+
+def test_rank_checkpoint_candidates_prefers_walking_over_high_reward_basin() -> None:
+    candidates = [
+        _candidate(
+            path="checkpoint_10.pkl",
+            iteration=10,
+            reward=380.0,  # high reward standing/basin exploit
+            forward_velocity=0.01,
+            cmd_err=0.12,
+            step_len=0.0002,
+            ep_len=500.0,
+            cmd_ratio=0.08,
+        ),
+        _candidate(
+            path="checkpoint_20.pkl",
+            iteration=20,
+            reward=220.0,
+            forward_velocity=0.11,
+            cmd_err=0.05,
+            step_len=0.034,
+            ep_len=500.0,
+            cmd_ratio=0.95,
+        ),
+        _candidate(
+            path="checkpoint_30.pkl",
+            iteration=30,
+            reward=210.0,
+            forward_velocity=0.10,
+            cmd_err=0.04,
+            step_len=0.033,
+            ep_len=498.0,
+            cmd_ratio=0.90,
+        ),
+        _candidate(
+            path="checkpoint_40.pkl",
+            iteration=40,
+            reward=205.0,
+            forward_velocity=0.09,
+            cmd_err=0.06,
+            step_len=0.031,
+            ep_len=490.0,
+            cmd_ratio=0.85,
+        ),
+    ]
+
+    ranked, used_filter_fallback = rank_checkpoint_candidates(candidates, top_k=3)
+    assert used_filter_fallback is False
+    ranked_paths = [c.checkpoint_path for c in ranked]
+    assert ranked_paths == ["checkpoint_20.pkl", "checkpoint_30.pkl", "checkpoint_40.pkl"]
+
+
+def test_rank_checkpoint_candidates_uses_reward_only_as_tiebreaker() -> None:
+    candidates = [
+        _candidate(
+            path="checkpoint_a.pkl",
+            iteration=100,
+            reward=180.0,
+            forward_velocity=0.10,
+            cmd_err=0.05,
+            step_len=0.032,
+            ep_len=500.0,
+            cmd_ratio=0.90,
+        ),
+        _candidate(
+            path="checkpoint_b.pkl",
+            iteration=110,
+            reward=280.0,
+            forward_velocity=0.10,
+            cmd_err=0.05,
+            step_len=0.032,
+            ep_len=500.0,
+            cmd_ratio=0.90,
+        ),
+    ]
+    ranked, used_filter_fallback = rank_checkpoint_candidates(candidates, top_k=2)
+    assert used_filter_fallback is False
+    assert ranked[0].checkpoint_path == "checkpoint_b.pkl"
+    assert ranked[1].checkpoint_path == "checkpoint_a.pkl"
+
+
+def test_rank_checkpoint_candidates_missing_metrics_falls_back_predictably() -> None:
+    candidates = [
+        _candidate(path="checkpoint_sparse_a.pkl", iteration=10, reward=120.0),
+        _candidate(path="checkpoint_sparse_b.pkl", iteration=20, reward=260.0),
+    ]
+    ranked, used_filter_fallback = rank_checkpoint_candidates(candidates, top_k=2)
+    assert used_filter_fallback is False
+    assert all(candidate.used_reward_fallback for candidate in ranked)
+    assert ranked[0].checkpoint_path == "checkpoint_sparse_b.pkl"
+
+
+def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
+    decision_pass = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision_pass.passed is True
+    assert decision_pass.step_metric_available is True
+    assert decision_pass.ratio_gate_applied is True
+
+    decision_vel_fail = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.04,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision_vel_fail.passed is False
+    assert decision_vel_fail.gates["forward_velocity"] is False
+
+    decision_cmd_fail = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.12,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision_cmd_fail.passed is False
+    assert decision_cmd_fail.gates["cmd_vs_achieved_forward"] is False
+
+    decision_step_fail = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.010,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision_step_fail.passed is False
+    assert decision_step_fail.gates["step_length_touchdown_event_m"] is False
+
+    decision_ratio_fail = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=0.20,
+    )
+    assert decision_ratio_fail.passed is False
+    assert decision_ratio_fail.gates["forward_velocity_cmd_ratio"] is False
+
+    decision_ratio_skipped = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=-1.0,
+    )
+    assert decision_ratio_skipped.passed is True
+    assert decision_ratio_skipped.ratio_gate_applied is False
+
+
+def test_post_training_eval_defaults_are_backward_compatible() -> None:
     cfg = load_training_config_from_dict({"ppo": {"eval": {"enabled": False}}})
     assert cfg.ppo.eval.enabled is False
-    assert cfg.ppo.eval.promotion_enabled is False
-    assert cfg.ppo.eval.promotion_window == 5
-    assert cfg.ppo.eval.promotion_min_hits == 3
-    assert cfg.ppo.eval.promotion_num_envs == 8
-    assert cfg.ppo.eval.promotion_num_steps == 500
-    assert cfg.ppo.eval.promotion_checkpoint_label == "eval_promoted"
+    assert cfg.ppo.eval.post_training_enabled is False
+    assert cfg.ppo.eval.post_training_top_k == 3
+    assert cfg.ppo.eval.post_training_num_envs == 8
+    assert cfg.ppo.eval.post_training_num_steps == 500
+    assert cfg.ppo.eval.post_training_checkpoint_label == "eval_promoted"
 
 
-def test_promotion_eval_can_enable_without_periodic_eval() -> None:
+def test_post_training_eval_can_enable_without_periodic_eval() -> None:
     cfg = load_training_config_from_dict(
         {
             "ppo": {
                 "eval": {
                     "enabled": False,
-                    "promotion_enabled": True,
-                    "promotion_window": 5,
-                    "promotion_min_hits": 3,
-                    "promotion_num_envs": 8,
-                    "promotion_num_steps": 500,
-                    "promotion_checkpoint_label": "eval_promoted",
+                    "post_training_enabled": True,
+                    "post_training_top_k": 3,
+                    "post_training_num_envs": 8,
+                    "post_training_num_steps": 500,
+                    "post_training_checkpoint_label": "eval_promoted",
                 }
             }
         }
     )
     assert cfg.ppo.eval.enabled is False
-    assert cfg.ppo.eval.promotion_enabled is True
-    assert cfg.ppo.eval.promotion_num_envs == 8
-    assert cfg.ppo.eval.promotion_num_steps == 500
+    assert cfg.ppo.eval.post_training_enabled is True
+    assert cfg.ppo.eval.post_training_top_k == 3
+    assert cfg.ppo.eval.post_training_num_envs == 8
+    assert cfg.ppo.eval.post_training_num_steps == 500
+
+
+def test_smoke12b_enables_post_training_without_periodic_eval() -> None:
+    smoke12b = (
+        Path(__file__).resolve().parents[2]
+        / "training"
+        / "configs"
+        / "ppo_walking_v0201_smoke12b.yaml"
+    )
+    cfg = load_training_config(str(smoke12b))
+    assert cfg.ppo.eval.enabled is False
+    assert cfg.ppo.eval.post_training_enabled is True
+    assert cfg.ppo.eval.post_training_top_k == 3
+    assert cfg.ppo.eval.post_training_num_envs == 8
+    assert cfg.ppo.eval.post_training_num_steps == 500
+    assert cfg.ppo.eval.post_training_checkpoint_label == "eval_promoted"
 
 
 def test_parse_new_ppo_stability_fields():
@@ -208,12 +320,11 @@ def test_parse_new_ppo_stability_fields():
                     "num_steps": 400,
                     "deterministic": True,
                     "seed_offset": 123,
-                    "promotion_enabled": True,
-                    "promotion_window": 7,
-                    "promotion_min_hits": 4,
-                    "promotion_num_envs": 12,
-                    "promotion_num_steps": 250,
-                    "promotion_checkpoint_label": "candidate_promoted",
+                    "post_training_enabled": True,
+                    "post_training_top_k": 5,
+                    "post_training_num_envs": 12,
+                    "post_training_num_steps": 250,
+                    "post_training_checkpoint_label": "candidate_promoted",
                 },
                 "rollback": {
                     "enabled": True,
@@ -236,13 +347,20 @@ def test_parse_new_ppo_stability_fields():
     assert cfg.ppo.eval.num_envs == 32
     assert cfg.ppo.eval.num_steps == 400
     assert cfg.ppo.eval.seed_offset == 123
-    assert cfg.ppo.eval.promotion_enabled is True
-    assert cfg.ppo.eval.promotion_window == 7
-    assert cfg.ppo.eval.promotion_min_hits == 4
-    assert cfg.ppo.eval.promotion_num_envs == 12
-    assert cfg.ppo.eval.promotion_num_steps == 250
-    assert cfg.ppo.eval.promotion_checkpoint_label == "candidate_promoted"
+    assert cfg.ppo.eval.post_training_enabled is True
+    assert cfg.ppo.eval.post_training_top_k == 5
+    assert cfg.ppo.eval.post_training_num_envs == 12
+    assert cfg.ppo.eval.post_training_num_steps == 250
+    assert cfg.ppo.eval.post_training_checkpoint_label == "candidate_promoted"
     assert cfg.ppo.rollback.enabled
     assert cfg.ppo.rollback.patience == 3
     assert cfg.ppo.rollback.success_rate_drop_threshold == 0.07
     assert cfg.ppo.rollback.lr_factor == 0.6
+
+
+def test_training_loop_has_no_online_promotion_eval_path() -> None:
+    from training.core import training_loop
+
+    train_source = inspect.getsource(training_loop.train)
+    assert "promotion_eval" not in train_source
+    assert "run_promotion_eval" not in train_source

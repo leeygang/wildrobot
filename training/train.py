@@ -38,13 +38,14 @@ import json
 import os
 import pickle
 import platform
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -75,13 +76,15 @@ from training.configs.realism import load_training_realism_profile
 
 # Import checkpoint management
 from training.core.checkpoint import (
-    get_top_checkpoints_by_reward,
+    list_checkpoints,
     load_checkpoint,
-    manage_checkpoints,
     print_top_checkpoints_summary,
-    save_checkpoint,
-    save_checkpoint_from_cpu,
     save_window_best_checkpoint,
+)
+from training.core.post_training_eval import (
+    CheckpointMetricCandidate,
+    deterministic_eval_gate,
+    rank_checkpoint_candidates,
 )
 
 # Import W&B tracker
@@ -96,6 +99,41 @@ from training.core.experiment_tracking import (
     WandbTracker,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed:  # NaN
+        return None
+    if parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def _load_metrics_jsonl_by_iteration(metrics_log_path: Optional[Path]) -> Dict[int, Dict[str, Any]]:
+    """Load metrics.jsonl rows keyed by progress/iteration when available."""
+    if metrics_log_path is None or not metrics_log_path.exists():
+        return {}
+    rows_by_iteration: Dict[int, Dict[str, Any]] = {}
+    for raw_line in metrics_log_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        iteration = row.get("progress/iteration")
+        try:
+            if iteration is None:
+                continue
+            rows_by_iteration[int(iteration)] = row
+        except (TypeError, ValueError):
+            continue
+    return rows_by_iteration
 
 
 def parse_args():
@@ -319,8 +357,8 @@ def maybe_apply_desktop_gpu_num_env_guard(training_cfg, args) -> bool:
     training_cfg.ppo.num_envs = env_cap
     if training_cfg.ppo.eval.num_envs > env_cap:
         training_cfg.ppo.eval.num_envs = env_cap
-    if getattr(training_cfg.ppo.eval, "promotion_num_envs", 0) > env_cap:
-        training_cfg.ppo.eval.promotion_num_envs = env_cap
+    if getattr(training_cfg.ppo.eval, "post_training_num_envs", 0) > env_cap:
+        training_cfg.ppo.eval.post_training_num_envs = env_cap
 
     print("=" * 60)
     print("Desktop GPU num_envs guard applied")
@@ -524,9 +562,6 @@ def start_training(
         return jax.vmap(env.reset)(rngs)
 
     eval_num_envs = training_cfg.ppo.eval.num_envs or training_cfg.ppo.num_envs
-    promotion_eval_num_envs = (
-        training_cfg.ppo.eval.promotion_num_envs or eval_num_envs
-    )
 
     # v0.20.1-smoke7: eval-cmd override + resample suppression.
     # The decision rule (pinned vs sentinel) and the resulting step /
@@ -538,17 +573,15 @@ def start_training(
         batched_eval_clean_step_fn,
         batched_eval_reset_fn,
     ) = make_eval_env_fns(env, training_cfg, eval_num_envs)
-    (
-        batched_promotion_eval_step_fn,
-        batched_promotion_eval_clean_step_fn,
-        batched_promotion_eval_reset_fn,
-    ) = make_eval_env_fns(env, training_cfg, promotion_eval_num_envs)
 
     # Get checkpoint settings from config
     checkpoint_interval = training_cfg.checkpoints.interval
-    promotion_enabled = bool(training_cfg.ppo.eval.promotion_enabled)
-    promotion_checkpoint_label = (
-        str(training_cfg.ppo.eval.promotion_checkpoint_label).strip()
+    post_training_eval_enabled = bool(training_cfg.ppo.eval.post_training_enabled)
+    post_training_top_k = int(training_cfg.ppo.eval.post_training_top_k or 3)
+    post_training_num_envs = int(training_cfg.ppo.eval.post_training_num_envs or 8)
+    post_training_num_steps = int(training_cfg.ppo.eval.post_training_num_steps or 500)
+    post_training_checkpoint_label = (
+        str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
         or "eval_promoted"
     )
 
@@ -621,40 +654,6 @@ def start_training(
                 checkpoint_dir=job_checkpoint_dir,
                 policy_spec=policy_spec_dict,
             )
-            if promotion_enabled:
-                promotion_triggered = (
-                    float(metrics.env_metrics.get("promotion_eval/triggered", 0.0)) > 0.5
-                )
-                promotion_passed = (
-                    float(metrics.env_metrics.get("promotion_eval/pass", 0.0)) > 0.5
-                )
-                if promotion_triggered and promotion_passed:
-                    promoted_dir = os.path.join(
-                        job_checkpoint_dir,
-                        promotion_checkpoint_label,
-                    )
-                    os.makedirs(promoted_dir, exist_ok=True)
-                    promoted_path = save_checkpoint_from_cpu(
-                        state_cpu=jax.device_get(state),
-                        config=training_cfg,
-                        iteration=iteration,
-                        total_steps=int(state.total_steps),
-                        checkpoint_dir=promoted_dir,
-                        is_best=False,
-                        metrics=metrics,
-                        policy_spec=policy_spec_dict,
-                    )
-                    print(f"  ⭐ Promoted checkpoint saved: {promoted_path}")
-                elif promotion_triggered:
-                    print(
-                        "  ⏭ Promotion candidate failed deterministic eval; "
-                        "not saved as promoted checkpoint"
-                    )
-                else:
-                    print(
-                        "  ⏭ Promotion eval skipped; train trigger not satisfied at this "
-                        "checkpoint boundary"
-                    )
 
     # Load checkpoint for resuming if provided
     resume_checkpoint = None
@@ -675,9 +674,6 @@ def start_training(
         eval_env_step_fn=batched_eval_step_fn,
         eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
-        promotion_eval_env_step_fn=batched_promotion_eval_step_fn,
-        promotion_eval_env_step_fn_no_push=batched_promotion_eval_clean_step_fn,
-        promotion_eval_env_reset_fn=batched_promotion_eval_reset_fn,
         # v0.20.1 v3-only env treats `action` as a bounded residual on top
         # of the offline reference (target_q = q_ref + clip(action) * scale).
         # iter-0 must therefore output zero so the rollout starts from
@@ -704,6 +700,365 @@ def start_training(
             checkpoint_dir=job_checkpoint_dir,
             policy_spec=policy_spec_dict,
         )
+
+    if post_training_eval_enabled:
+        print()
+        print("=" * 60)
+        print("Post-training top-K deterministic eval")
+        print("=" * 60)
+        checkpoint_rows = list_checkpoints(job_checkpoint_dir)
+        if not checkpoint_rows:
+            print("No checkpoints found for post-training evaluation.")
+        else:
+            metrics_rows_by_iteration = _load_metrics_jsonl_by_iteration(metrics_log_path)
+            metric_keys_for_ranking = (
+                "episode_reward",
+                "forward_velocity",
+                "episode_length",
+                "tracking/cmd_vs_achieved_forward",
+                "tracking/step_length_touchdown_event_m",
+                "tracking/forward_velocity_cmd_ratio",
+            )
+            raw_candidates: list[CheckpointMetricCandidate] = []
+            used_metrics_jsonl = False
+            for iter_num, filename in checkpoint_rows:
+                checkpoint_path = os.path.join(job_checkpoint_dir, filename)
+                ckpt_data = load_checkpoint(checkpoint_path)
+                merged_metrics = dict(ckpt_data.get("metrics", {}) or {})
+                metrics_row = metrics_rows_by_iteration.get(int(iter_num), {})
+                if metrics_row:
+                    used_metrics_jsonl = True
+                for key in metric_keys_for_ranking:
+                    if _safe_float(merged_metrics.get(key)) is not None:
+                        continue
+                    row_value = _safe_float(metrics_row.get(key))
+                    if row_value is not None:
+                        merged_metrics[key] = row_value
+                raw_candidates.append(
+                    CheckpointMetricCandidate(
+                        checkpoint_path=checkpoint_path,
+                        iteration=int(iter_num),
+                        total_steps=int(ckpt_data.get("total_steps", 0)),
+                        metrics=merged_metrics,
+                    )
+                )
+
+            ranked_candidates, ranking_filter_fallback = rank_checkpoint_candidates(
+                raw_candidates,
+                top_k=post_training_top_k,
+            )
+            if not ranked_candidates:
+                print("No candidate checkpoints available for post-training evaluation.")
+            else:
+                if ranking_filter_fallback:
+                    print(
+                        "  ⚠ train-side hard filters rejected all candidates; "
+                        "falling back to score-based ranking on available metrics/reward"
+                    )
+                if used_metrics_jsonl:
+                    print("  ✓ merged metrics.jsonl rows when checkpoint metrics were sparse")
+                if any(candidate.used_reward_fallback for candidate in ranked_candidates):
+                    print(
+                        "  ⚠ ranking used reward fallback for candidates with sparse "
+                        "walking metrics"
+                    )
+
+                def _fmt(value: Optional[float], spec: str) -> str:
+                    return "n/a" if value is None else format(float(value), spec)
+
+                print()
+                print("Post-training deterministic eval candidates:")
+                print(
+                    "rank  checkpoint                      train_score  train_vx  "
+                    "train_cmd_err  train_step_len  train_ep_len"
+                )
+                for rank, candidate in enumerate(ranked_candidates, 1):
+                    print(
+                        f"{rank:<5} "
+                        f"{Path(candidate.checkpoint_path).name:<30} "
+                        f"{candidate.train_score:>10.3f}  "
+                        f"{_fmt(candidate.train_forward_velocity, '.3f'):>8}  "
+                        f"{_fmt(candidate.train_cmd_err, '.3f'):>13}  "
+                        f"{_fmt(candidate.train_step_length, '.4f'):>14}  "
+                        f"{_fmt(candidate.train_episode_length, '.0f'):>12}"
+                    )
+
+                from training.algos.ppo.ppo_core import create_networks, sample_actions
+                from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
+                from training.envs.env_info import PRIVILEGED_OBS_DIM
+
+                actor_activation = str(training_cfg.networks.actor.activation).lower()
+                critic_activation = str(training_cfg.networks.critic.activation).lower()
+                if actor_activation != critic_activation:
+                    raise ValueError(
+                        f"actor.activation ({actor_activation!r}) and "
+                        f"critic.activation ({critic_activation!r}) must match."
+                    )
+                critic_obs_dim = (
+                    int(PRIVILEGED_OBS_DIM)
+                    if bool(training_cfg.ppo.critic_privileged_enabled)
+                    else int(policy_spec.model.obs_dim)
+                )
+                ppo_network = create_networks(
+                    obs_dim=int(policy_spec.model.obs_dim),
+                    action_dim=int(policy_spec.model.action_dim),
+                    policy_hidden_dims=training_cfg.networks.actor.hidden_sizes,
+                    value_hidden_dims=training_cfg.networks.critic.hidden_sizes,
+                    critic_obs_dim=critic_obs_dim,
+                    activation=actor_activation,
+                )
+                _, post_eval_clean_step_fn, post_eval_reset_fn = make_eval_env_fns(
+                    env,
+                    training_cfg,
+                    post_training_num_envs,
+                )
+
+                @jax.jit
+                def run_post_training_eval(
+                    policy_params: Any,
+                    processor_params: Any,
+                    eval_rng: jax.Array,
+                ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+                    eval_env_state = post_eval_reset_fn(eval_rng)
+
+                    def eval_step(carry, _):
+                        env_state, rng_state = carry
+                        rng_state, action_rng = jax.random.split(rng_state)
+                        action, _, _ = sample_actions(
+                            processor_params,
+                            policy_params,
+                            ppo_network,
+                            env_state.obs,
+                            action_rng,
+                            deterministic=True,
+                        )
+                        next_env_state = post_eval_clean_step_fn(env_state, action)
+                        step_data = {
+                            "reward": next_env_state.reward,
+                            "done": next_env_state.done,
+                            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                        }
+                        return (next_env_state, rng_state), step_data
+
+                    (_, _), rollout = jax.lax.scan(
+                        eval_step, (eval_env_state, eval_rng), None, length=post_training_num_steps
+                    )
+                    total_done = jnp.sum(rollout["done"])
+                    episode_lengths = (
+                        rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
+                        * rollout["done"]
+                    )
+                    mean_episode_length = jnp.where(
+                        total_done > 0.0,
+                        jnp.sum(episode_lengths) / total_done,
+                        0.0,
+                    )
+                    mean_episode_reward = jnp.mean(jnp.sum(rollout["reward"], axis=0))
+                    mean_forward_velocity = jnp.mean(
+                        rollout["metrics_vec"][..., METRIC_INDEX["forward_velocity"]]
+                    )
+                    mean_cmd_err = jnp.mean(
+                        rollout["metrics_vec"][
+                            ..., METRIC_INDEX["tracking/cmd_vs_achieved_forward"]
+                        ]
+                    )
+                    mean_step_len = jnp.mean(
+                        rollout["metrics_vec"][
+                            ..., METRIC_INDEX["tracking/step_length_touchdown_event_m"]
+                        ]
+                    )
+                    return (
+                        mean_episode_reward,
+                        mean_episode_length,
+                        mean_forward_velocity,
+                        mean_cmd_err,
+                        mean_step_len,
+                    )
+
+                post_eval_base_rng = jax.random.PRNGKey(
+                    training_cfg.seed + training_cfg.ppo.eval.seed_offset + 20_000
+                )
+                eval_velocity_cmd = float(training_cfg.env.eval_velocity_cmd)
+                eval_rows: list[dict[str, Any]] = []
+                for rank, candidate in enumerate(ranked_candidates, 1):
+                    ckpt_data = load_checkpoint(candidate.checkpoint_path)
+                    eval_rng = jax.random.fold_in(post_eval_base_rng, int(candidate.iteration))
+                    eval_reward, eval_ep_len, eval_vx, eval_cmd_err, eval_step_len = (
+                        run_post_training_eval(
+                            ckpt_data["policy_params"],
+                            ckpt_data.get("processor_params", ()),
+                            eval_rng,
+                        )
+                    )
+                    jax.block_until_ready(eval_reward)
+                    step_length_value = _safe_float(eval_step_len)
+                    eval_metrics = {
+                        "mean_reward": float(eval_reward),
+                        "mean_episode_length": float(eval_ep_len),
+                        "forward_velocity": float(eval_vx),
+                        "cmd_vs_achieved_forward": float(eval_cmd_err),
+                        "step_length_touchdown_event_m": step_length_value,
+                    }
+                    decision = deterministic_eval_gate(
+                        eval_metrics=eval_metrics,
+                        eval_velocity_cmd=eval_velocity_cmd,
+                    )
+                    eval_rows.append(
+                        {
+                            "rank": rank,
+                            "checkpoint_path": candidate.checkpoint_path,
+                            "checkpoint_name": Path(candidate.checkpoint_path).name,
+                            "train_score": candidate.train_score,
+                            "train_metrics": {
+                                "forward_velocity": candidate.train_forward_velocity,
+                                "cmd_vs_achieved_forward": candidate.train_cmd_err,
+                                "step_length_touchdown_event_m": candidate.train_step_length,
+                                "episode_length": candidate.train_episode_length,
+                                "forward_velocity_cmd_ratio": candidate.train_cmd_ratio,
+                            },
+                            "eval_metrics": eval_metrics,
+                            "eval_ratio": decision.forward_velocity_cmd_ratio,
+                            "passed": bool(decision.passed),
+                            "gates": dict(decision.gates),
+                            "fail_reasons": [
+                                key for key, ok in decision.gates.items() if not ok
+                            ],
+                            "step_metric_available": bool(decision.step_metric_available),
+                            "ratio_gate_applied": bool(decision.ratio_gate_applied),
+                        }
+                    )
+
+                print()
+                print("Deterministic eval results:")
+                print(
+                    "rank  checkpoint                      eval_vx  eval_cmd_err  "
+                    "eval_step_len  eval_ep_len  vx/cmd  pass"
+                )
+                for row in eval_rows:
+                    eval_metrics = row["eval_metrics"]
+                    ratio_text = (
+                        "n/a"
+                        if row["eval_ratio"] is None
+                        else format(float(row["eval_ratio"]), ".2f")
+                    )
+                    print(
+                        f"{row['rank']:<5} "
+                        f"{row['checkpoint_name']:<30} "
+                        f"{eval_metrics['forward_velocity']:>7.3f}  "
+                        f"{eval_metrics['cmd_vs_achieved_forward']:>12.3f}  "
+                        f"{_fmt(eval_metrics['step_length_touchdown_event_m'], '.4f'):>13}  "
+                        f"{eval_metrics['mean_episode_length']:>11.0f}  "
+                        f"{ratio_text:>6}  "
+                        f"{'✓' if row['passed'] else '✗'}"
+                    )
+
+                def _eval_select_score(row: dict[str, Any]) -> float:
+                    eval_metrics = row["eval_metrics"]
+                    step = (
+                        float(eval_metrics["step_length_touchdown_event_m"])
+                        if eval_metrics["step_length_touchdown_event_m"] is not None
+                        else 0.0
+                    )
+                    return (
+                        float(eval_metrics["forward_velocity"])
+                        - float(eval_metrics["cmd_vs_achieved_forward"])
+                        + step
+                        + float(eval_metrics["mean_episode_length"]) / 500.0
+                    )
+
+                passing_rows = [row for row in eval_rows if row["passed"]]
+                promoted_checkpoint_path: Optional[str] = None
+                selected_row: Optional[dict[str, Any]] = None
+                if passing_rows:
+                    selected_row = max(passing_rows, key=_eval_select_score)
+                    promoted_dir = os.path.join(
+                        job_checkpoint_dir,
+                        post_training_checkpoint_label,
+                    )
+                    os.makedirs(promoted_dir, exist_ok=True)
+                    promoted_checkpoint_path = os.path.join(
+                        promoted_dir,
+                        Path(selected_row["checkpoint_path"]).name,
+                    )
+                    shutil.copy2(selected_row["checkpoint_path"], promoted_checkpoint_path)
+                    print(f"  ⭐ Post-training promoted checkpoint: {promoted_checkpoint_path}")
+                else:
+                    print(
+                        "  ⏭ No checkpoint passed deterministic post-training gates; "
+                        "no promoted checkpoint written"
+                    )
+
+                summary_payload = {
+                    "selected_checkpoint_path": promoted_checkpoint_path,
+                    "selected_rank_before_eval": (
+                        None if selected_row is None else int(selected_row["rank"])
+                    ),
+                    "deterministic_eval_metrics": (
+                        None if selected_row is None else selected_row["eval_metrics"]
+                    ),
+                    "deterministic_eval_gates": (
+                        None if selected_row is None else selected_row["gates"]
+                    ),
+                    "top_k_candidates": [
+                        {
+                            "rank": row["rank"],
+                            "checkpoint_path": row["checkpoint_path"],
+                            "train_score": row["train_score"],
+                            "train_metrics": row["train_metrics"],
+                            "eval_metrics": row["eval_metrics"],
+                            "eval_ratio": row["eval_ratio"],
+                            "passed": row["passed"],
+                            "gates": row["gates"],
+                            "fail_reasons": row["fail_reasons"],
+                            "step_metric_available": row["step_metric_available"],
+                            "ratio_gate_applied": row["ratio_gate_applied"],
+                        }
+                        for row in eval_rows
+                    ],
+                }
+                run_summary_path = os.path.join(
+                    job_checkpoint_dir,
+                    "post_training_eval_summary.json",
+                )
+                with open(run_summary_path, "w", encoding="utf-8") as f:
+                    json.dump(summary_payload, f, indent=2, sort_keys=True)
+
+                if promoted_checkpoint_path is not None:
+                    promoted_summary_path = os.path.join(
+                        os.path.dirname(promoted_checkpoint_path),
+                        "summary.json",
+                    )
+                    with open(promoted_summary_path, "w", encoding="utf-8") as f:
+                        json.dump(summary_payload, f, indent=2, sort_keys=True)
+
+                if wandb_tracker is not None and eval_rows:
+                    best_eval_row = max(eval_rows, key=_eval_select_score)
+                    best_eval_metrics = best_eval_row["eval_metrics"]
+                    wandb_summary = {
+                        "post_training_eval/best_forward_velocity": float(
+                            best_eval_metrics["forward_velocity"]
+                        ),
+                        "post_training_eval/best_cmd_vs_achieved_forward": float(
+                            best_eval_metrics["cmd_vs_achieved_forward"]
+                        ),
+                        "post_training_eval/best_step_length_touchdown_event_m": (
+                            float(best_eval_metrics["step_length_touchdown_event_m"])
+                            if best_eval_metrics["step_length_touchdown_event_m"] is not None
+                            else float("nan")
+                        ),
+                        "post_training_eval/best_mean_episode_length": float(
+                            best_eval_metrics["mean_episode_length"]
+                        ),
+                        "post_training_eval/best_pass": (
+                            1.0 if promoted_checkpoint_path is not None else 0.0
+                        ),
+                        "post_training_eval/evaluated_count": float(len(eval_rows)),
+                    }
+                    wandb_tracker.log(wandb_summary, step=int(final_state.total_steps))
+                    if metrics_log_path is not None:
+                        with metrics_log_path.open("a", encoding="utf-8") as f:
+                            json.dump(wandb_summary, f, sort_keys=True)
+                            f.write("\n")
 
     # Print best checkpoints summary
     print_top_checkpoints_summary(job_checkpoint_dir)
