@@ -39,16 +39,35 @@
 #     velocity_cmd).  No offline-reference window channels in the
 #     actor stream.  Already clean for the TB-style direct branch.
 #
-#   Reset: home-anchored, TB-style perturbation
-#     loc_ref_reset_base: home and reset_torso_{roll,pitch}_range:
-#     [-0.1, 0.1] inherited from smoke12b.  Matches TB
-#     DomainRandConfig.torso_{pitch,roll}_range (mjx_config.py:211-212).
+#   Reset: home-anchored, with three layered perturbations
+#     loc_ref_reset_base: home is inherited from smoke12b.  The reset
+#     composition under that base (training env reset) is:
+#       (a) per-joint uniform noise in [-0.05, +0.05] rad on every
+#           controlled joint  — WR-specific, retained for sim2real
+#           robustness;
+#       (b) domain-randomization joint offsets sampled per-env from
+#           ``env.domain_rand_joint_offset_rad`` — also WR-specific;
+#       (c) TB-style torso pose perturbation: uniform roll/pitch in
+#           ``reset_torso_{roll,pitch}_range = [-0.1, 0.1]`` rad,
+#           partitioned across hip / knee / ankle pitch and composed
+#           into the root quat.  This row matches TB
+#           DomainRandConfig.torso_{pitch,roll}_range
+#           (mjx_config.py:211-212); the other two rows are kept on
+#           top of it.
+#     The native-MuJoCo eval adapter (V6EvalAdapter) mirrors (a) +
+#     (c) for visual/eval parity; (b) is part of the training-only
+#     DR loop and is not mirrored at eval.
 #
-#   Critic: privileged enabled (unchanged)
-#     The privileged critic obs uses some loc_ref signals
-#     (loc_ref_gait_phase_*, stance) — these are gait-clock
-#     derivatives, not imitation references, so they stay.  Actor
-#     remains clean.
+#   Critic: privileged enabled, cleaned of imitation refs
+#     critic_imitation_refs: false swaps the legacy
+#     ``motor_pos_error = q_actual - nominal_q_ref(t)`` for
+#     ``q_actual - home_q_rad`` (TB mjx_env.py:2060 default-pose
+#     anchor), and replaces ``ref_stance = win["contact_mask"]``
+#     with a phase-derived alternating stance from phase_sin_cos.
+#     Smoke7..smoke12b kept those two imitation channels on the
+#     critic even after smoke12b's actor reward stack was already
+#     TB-active; smoke13 closes the gap so the critic only scores
+#     "what the policy did" rather than "what the prior expected".
 #
 # Compute: matched to smoke12b's bootstrap budget (480 iters * 2048 envs *
 # 20 rollout_steps ≈ 19.7M env-steps) so smoke13 is a same-compute
@@ -91,10 +110,12 @@ env:
   min_feet_y_dist: 0.171
   max_feet_y_dist: 0.317
 
-  # TB-style reset perturbation (inherited from smoke12b).  Mirrors
+  # TB-style torso pose perturbation (inherited from smoke12b).  Mirrors
   # TB DomainRandConfig.torso_{pitch,roll}_range [-0.1, 0.1] rad
-  # (mjx_config.py:211-212) and breaks the stand-still attractor
-  # without changing the reset center.
+  # (mjx_config.py:211-212).  This is ONE of three reset perturbations
+  # applied under loc_ref_reset_base=home (see header for the full
+  # composition: per-joint noise + DR offsets + this torso rotation).
+  # The native-MuJoCo eval adapter mirrors this row for visual parity.
   reset_torso_roll_range: [-0.1, 0.1]
   reset_torso_pitch_range: [-0.1, 0.1]
 
@@ -141,12 +162,21 @@ env:
   loc_ref_offline_command_vx: 0.1333333333
 
   # =========================================================================
-  # KEY ARCHITECTURAL CHANGE (vs smoke12b)
+  # KEY ARCHITECTURAL CHANGES (vs smoke12b)
   # =========================================================================
   # Direct action: target_q = clip(home_q + clip(action) * scale,
   # joint_range).  Bypasses the loc_ref_residual_base switch entirely
   # in the env's _compose_target_q_from_residual.
   action_mode: direct
+  # Clean privileged critic obs: motor_pos_error is anchored to
+  # _home_q_rad (not nominal_q_ref(t)), and ref_stance is derived
+  # from the gait phase (not from win["contact_mask"]).  Removes the
+  # two imitation-reference channels the legacy critic carried —
+  # smoke7..smoke12b kept the critic anchored to the time-varying
+  # ZMP trajectory even though smoke12b's actor reward stack was
+  # already TB-active.  See env.critic_imitation_refs docstring for
+  # the contract.
+  critic_imitation_refs: false
   # loc_ref_residual_base is intentionally still set to home as a
   # back-compat sentinel; under action_mode=direct it is NOT
   # consulted.  Kept for any tool/test that still reads the field.

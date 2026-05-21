@@ -149,6 +149,29 @@ class EnvConfig(Freezable):
     # fall back to the scalar loc_ref_residual_scale.
     loc_ref_residual_scale_per_joint: Dict[str, float] = field(default_factory=dict)
 
+    # v0.20.1 smoke13 — privileged critic obs anchor selector.
+    #
+    #   True (default; smoke7..smoke12b path) — the legacy critic
+    #     obs uses ``motor_pos_error = q_actual - nominal_q_ref(t)``
+    #     (the time-varying ZMP trajectory) and ``ref_stance =
+    #     win["contact_mask"]`` (the prior's expected stance mask).
+    #     Both are imitation channels: they feed the critic an
+    #     externally-derived "what should be happening now" signal.
+    #
+    #   False (smoke13 TB-active critic) — replaces both imitation
+    #     references with phase-derived clean signals:
+    #         motor_pos_error = q_actual - home_q_rad     (TB-style;
+    #             matches mjx_env.py:2060 default-pose anchor)
+    #         ref_stance      = stance_from_phase(phase_sin_cos)
+    #             (derived from the gait clock alone, not from the
+    #             offline contact_mask).  Convention: alternating
+    #             single-support — sin > 0 -> right-stance,
+    #             sin <= 0 -> left-stance.
+    #     Keeps the critic free of "what the prior expects" so the
+    #     value function can only score "what the policy actually
+    #     does".
+    critic_imitation_refs: bool = True
+
     # v0.20.1 smoke13 — action contract selector.
     #
     #   "residual" (default; smoke7..smoke12b path) — the legacy

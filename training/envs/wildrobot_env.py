@@ -319,6 +319,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"got {self._action_mode!r}"
             )
 
+        # smoke13 — privileged critic obs anchor selector.  When False,
+        # ``_get_privileged_critic_obs`` swaps ``q_actual - nominal_q_ref``
+        # for ``q_actual - home_q_rad`` and derives ref_stance from the
+        # gait phase instead of the offline contact_mask, so the critic
+        # never sees an external imitation reference.  See dataclass
+        # docstring.
+        self._critic_imitation_refs = bool(
+            getattr(self._config.env, "critic_imitation_refs", True)
+        )
+
         # smoke8 — residual base selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_residual_base
         # for the contract.  Cached as a string here; the JAX home-pose
@@ -1173,6 +1183,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_vel_h,
         nominal_q_ref: jax.Array,
         ref_contact_mask: jax.Array,
+        phase_sin_cos: jax.Array,
     ) -> jax.Array:
         """Privileged critic obs (asymmetric actor-critic, Phase 3 of
         walking_training.md Appendix B.2).
@@ -1185,24 +1196,58 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [0:3]   lin_vel (heading-frame)
             [3:6]   ang_vel (heading-frame)
             [6:8]   per-foot aggregated contact force (left, right)
-            [8:29]  motor_pos_error = q_actual - nominal_q_ref
+            [8:29]  motor_pos_error
             [29:50] data.actuator_force
-            [50:52] ref_stance = win["contact_mask"] (left, right)
+            [50:52] ref_stance
+
+        The two reference channels depend on
+        ``env.critic_imitation_refs`` (see LocomotionEnvConfig docstring):
+
+          - True  (legacy / smoke7..smoke12b): ``motor_pos_error =
+            q_actual - nominal_q_ref`` and ``ref_stance =
+            ref_contact_mask`` from the offline window — both
+            externally-derived imitation channels.
+
+          - False (smoke13 TB-active critic):
+                motor_pos_error = q_actual - home_q_rad
+                ref_stance      = phase-derived alternating stance
+            so the critic never sees an external imitation reference.
 
         Args:
             data: mjx Data.
             root_vel_h: root velocity in heading-frame.
-            nominal_q_ref: current frame's q_ref (action_size,).
+            nominal_q_ref: current frame's q_ref (action_size,).  Only
+                read when critic_imitation_refs is True.
             ref_contact_mask: prior's contact mask (2,) [left, right].
+                Only read when critic_imitation_refs is True.
+            phase_sin_cos: current gait clock (2,).  Used to derive
+                ``ref_stance`` when critic_imitation_refs is False.
         """
         lin = root_vel_h.linear.astype(jp.float32)
         ang = root_vel_h.angular.astype(jp.float32)
         left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
         contacts = jp.stack([left_force, right_force]).astype(jp.float32)
         q_actual = data.qpos[self._actuator_qpos_addrs]
-        motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
         actuator_force = data.actuator_force.astype(jp.float32)
-        ref_stance = ref_contact_mask.astype(jp.float32)
+
+        if self._critic_imitation_refs:
+            motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
+            ref_stance = ref_contact_mask.astype(jp.float32)
+        else:
+            # smoke13 TB-active critic: home-anchored error +
+            # phase-derived alternating stance.  Mirrors TB
+            # mjx_env.py:2060 (motor_pos_delta vs default_motor_pos).
+            motor_pos_error = (q_actual - self._home_q_rad).astype(jp.float32)
+            phase_sin = phase_sin_cos[0].astype(jp.float32)
+            # Alternating single-support convention used by the WR
+            # gait clock (matches ``_lookup_offline_window`` stance_id
+            # = 0 / 1 around the sin(phase) zero-crossings):
+            #   sin(phase) >= 0  -> right foot in stance (left swing)
+            #   sin(phase) <  0  -> left foot in stance (right swing)
+            right_stance = (phase_sin >= jp.float32(0.0)).astype(jp.float32)
+            left_stance = jp.float32(1.0) - right_stance
+            ref_stance = jp.stack([left_stance, right_stance]).astype(jp.float32)
+
         return jp.concatenate(
             [lin, ang, contacts, motor_pos_error, actuator_force, ref_stance]
         )
@@ -2311,6 +2356,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_vel_h,
             nominal_q_ref=q_ref0,
             ref_contact_mask=win0["contact_mask"],
+            phase_sin_cos=v4_compat["phase_sin_cos"],
         )
 
         # v6 actor proprio history.  Zero-filled at reset per the
@@ -2700,6 +2746,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_vel_h,
             nominal_q_ref=nominal_q_ref,
             ref_contact_mask=win["contact_mask"],
+            phase_sin_cos=v4_compat["phase_sin_cos"],
         )
 
         # v6 actor proprio history (env_info.py schema): the buffer

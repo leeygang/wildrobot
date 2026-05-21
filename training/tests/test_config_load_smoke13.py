@@ -254,3 +254,141 @@ def test_smoke13_reset_and_penalty_pose_anchored_to_home(smoke13_cfg) -> None:
     env = smoke13_cfg.env
     assert env.loc_ref_reset_base == "home"
     assert env.loc_ref_penalty_pose_anchor == "home"
+
+
+# ---------------------------------------------------------------------------
+# Critic cleanup (review feedback #1): privileged obs under smoke13 must
+# be free of imitation references.  Pinned at both the config layer and
+# the env-runtime layer.
+# ---------------------------------------------------------------------------
+def test_smoke13_critic_imitation_refs_disabled(smoke13_cfg) -> None:
+    """``critic_imitation_refs: false`` must be set in smoke13 so the
+    critic doesn't quietly score the policy against an external
+    reference even though the actor reward stack is TB-active."""
+    assert smoke13_cfg.env.critic_imitation_refs is False
+
+
+def test_smoke13_critic_obs_independent_of_nominal_q_ref(smoke13_cfg) -> None:
+    """Under smoke13 ``_get_privileged_critic_obs`` must produce the
+    same value regardless of the ``nominal_q_ref`` and
+    ``ref_contact_mask`` arguments — pinning that the TB-active critic
+    path doesn't secretly read them."""
+    import jax
+    import jax.numpy as jp
+    from training.cal.specs import CoordinateFrame
+
+    env = _make_env(smoke13_cfg)
+    win0 = env._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
+
+    # Build a fake jitted single-step rollout to access internal
+    # primitives without spinning a full episode.  We only need:
+    # - a populated mjx.Data
+    # - root_vel_h
+    # - a phase_sin_cos
+    state = env.reset(jax.random.PRNGKey(0))
+    data = state.data
+    root_vel_h = env._cal.get_root_velocity(
+        data, frame=CoordinateFrame.HEADING_LOCAL
+    )
+    phase_sin_cos = jp.array([0.0, 1.0], dtype=jp.float32)
+
+    # Reference values from the legitimate window.
+    obs_default = env._get_privileged_critic_obs(
+        data,
+        root_vel_h,
+        nominal_q_ref=win0["q_ref"],
+        ref_contact_mask=win0["contact_mask"],
+        phase_sin_cos=phase_sin_cos,
+    )
+    # Adversarial fakes: same shape, completely different values.
+    fake_q_ref = jp.ones_like(win0["q_ref"]) * 999.0
+    fake_contact = jp.array([0.7, 0.3], dtype=jp.float32)
+    obs_adversarial = env._get_privileged_critic_obs(
+        data,
+        root_vel_h,
+        nominal_q_ref=fake_q_ref,
+        ref_contact_mask=fake_contact,
+        phase_sin_cos=phase_sin_cos,
+    )
+    np.testing.assert_allclose(
+        np.asarray(obs_default), np.asarray(obs_adversarial), atol=1e-6,
+        err_msg=(
+            "smoke13 critic obs leaked dependence on nominal_q_ref / "
+            "ref_contact_mask — critic_imitation_refs flag is not "
+            "short-circuiting the imitation branches in "
+            "_get_privileged_critic_obs."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reset parity (review feedback #2): the v6 eval adapter must mirror
+# training's torso pose perturbation when configured, so visualize_policy
+# / native-MuJoCo eval doesn't run easier than training.
+# ---------------------------------------------------------------------------
+def test_smoke13_adapter_reset_applies_torso_perturbation(smoke13_cfg) -> None:
+    """The training env applies a TB-style torso roll/pitch
+    perturbation under ``reset_torso_{roll,pitch}_range`` non-zero; the
+    v6 adapter previously only applied per-joint noise, leaving visual
+    eval and training reset distributions diverged.
+
+    Verify the adapter now (a) reports the perturbation is enabled when
+    smoke13 ranges are set, and (b) reset_native_mj_state with
+    apply_noise=True actually modifies the root quat away from the
+    keyframe identity."""
+    import mujoco
+    from training.eval.v6_eval_adapter import V6EvalAdapter
+    from training.policy_spec_utils import build_policy_spec_from_training_config
+    from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
+    from training.configs.training_config import load_robot_config
+
+    mj_model = mujoco.MjModel.from_xml_path(str(Path(smoke13_cfg.env.model_path)))
+    rcfg = load_robot_config(smoke13_cfg.env.robot_config_path)
+    spec = build_policy_spec_from_training_config(
+        training_cfg=smoke13_cfg, robot_cfg=rcfg, action_filter_alpha=0.0
+    )
+    sigA = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=rcfg,
+        policy_spec=spec,
+        foot_switch_threshold=smoke13_cfg.env.foot_switch_threshold,
+    )
+    adapter = V6EvalAdapter(
+        training_cfg=smoke13_cfg,
+        mj_model=mj_model,
+        policy_spec=spec,
+        signals_adapter=sigA,
+        action_dim=int(spec.model.action_dim),
+    )
+    assert adapter._reset_perturbation_enabled(), (
+        "smoke13 sets reset_torso_{roll,pitch}_range to [-0.1, 0.1]; "
+        "the adapter must report the perturbation enabled."
+    )
+
+    mj_data = mujoco.MjData(mj_model)
+    # Baseline (no perturbation): keyframe root quat.
+    adapter.reset_native_mj_state(mj_data, apply_noise=False, rng=None)
+    qpos_baseline = mj_data.qpos.copy()
+    root_quat_baseline = qpos_baseline[3:7].copy()
+    # Statistical check: run a handful of perturbed resets and
+    # verify the root quat or one of the perturbed leg-pitch
+    # joints moves on at least one of them.  Per-seed bit equality
+    # is intentionally not asserted (JAX vs numpy PRNGs differ).
+    rng = np.random.default_rng(42)
+    moved = False
+    leg_addrs = adapter._leg_pitch_qpos_addrs
+    for _ in range(5):
+        adapter.reset_native_mj_state(mj_data, apply_noise=True, rng=rng)
+        if not np.allclose(mj_data.qpos[3:7], root_quat_baseline, atol=1e-5):
+            moved = True
+            break
+        if leg_addrs.size > 0 and not np.allclose(
+            mj_data.qpos[leg_addrs], qpos_baseline[leg_addrs], atol=1e-5
+        ):
+            moved = True
+            break
+    assert moved, (
+        "Adapter reset did not modify root quat or leg-pitch qpos "
+        "across 5 resets — torso pose perturbation is not being "
+        "applied even though range is non-degenerate."
+    )

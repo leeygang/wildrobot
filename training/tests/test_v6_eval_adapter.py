@@ -807,6 +807,11 @@ def test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state(
         mj_data,
         apply_noise=True,  # Must be ignored under loc_ref_reset_base=ref_init.
         rng=np.random.default_rng(0),
+        # Mirror env.reset_for_eval semantics (perturb_pose=False).
+        # Without this, the adapter's smoke13 torso pose perturbation
+        # would fire and move leg-pitch joints off ref_init even though
+        # the env's eval reset path explicitly suppresses it.
+        perturb_pose=False,
     )
     native_obs = adapter.compute_obs(
         mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)

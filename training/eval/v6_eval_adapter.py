@@ -190,6 +190,7 @@ class V6EvalAdapter:
         self._init_ref_init_q_rad()
         self._init_home_q_rad()
         self._init_ctrl_mapper()
+        self._init_reset_perturbation()
         self.reset()
 
     # ------------------------------------------------------------------ init
@@ -284,6 +285,151 @@ class V6EvalAdapter:
             self._mj_model, list(self._policy_spec.robot.actuator_names)
         )
 
+    def _init_reset_perturbation(self) -> None:
+        """Cache leg-pitch metadata + reset perturbation ranges for the
+        numpy parity copy of ``WildRobotEnv._apply_reset_perturbation``.
+
+        Without this the visualizer / native-MuJoCo eval reset would
+        only see joint noise around home, while training reset
+        additionally rotates the torso by uniform roll/pitch in
+        ``env.reset_torso_{roll,pitch}_range`` and partitions the
+        pitch across hip/knee/ankle.  That parity gap silently makes
+        visual eval easier than training, especially under
+        ``loc_ref_reset_base=home``.
+        """
+        leg_pitch_joint_names = (
+            "left_hip_pitch",
+            "left_knee_pitch",
+            "left_ankle_pitch",
+            "right_hip_pitch",
+            "right_knee_pitch",
+            "right_ankle_pitch",
+        )
+        addrs: list[int] = []
+        mins: list[float] = []
+        maxs: list[float] = []
+        for jname in leg_pitch_joint_names:
+            jid = mujoco.mj_name2id(
+                self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jname
+            )
+            if jid < 0:
+                # Leg-pitch joint missing.  Disable the perturbation
+                # silently — the env raises here, but the adapter is
+                # used in some narrow contexts (legacy robot variants)
+                # where the perturbation is not needed.  Mark the
+                # ranges as zero so _apply_reset_perturbation_np is a
+                # no-op.
+                self._leg_pitch_qpos_addrs = np.zeros((0,), dtype=np.int32)
+                self._leg_pitch_joint_mins = np.zeros((0,), dtype=np.float32)
+                self._leg_pitch_joint_maxs = np.zeros((0,), dtype=np.float32)
+                self._reset_torso_roll_range = (0.0, 0.0)
+                self._reset_torso_pitch_range = (0.0, 0.0)
+                return
+            addrs.append(int(self._mj_model.jnt_qposadr[jid]))
+            jr = self._mj_model.jnt_range[jid]
+            mins.append(float(jr[0]))
+            maxs.append(float(jr[1]))
+        self._leg_pitch_qpos_addrs = np.asarray(addrs, dtype=np.int32)
+        self._leg_pitch_joint_mins = np.asarray(mins, dtype=np.float32)
+        self._leg_pitch_joint_maxs = np.asarray(maxs, dtype=np.float32)
+        # Mirror-symmetric TB sign pattern (env line 510).
+        self._leg_pitch_joint_signs = np.array(
+            [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0], dtype=np.float32
+        )
+
+        roll_range = list(
+            getattr(self._cfg.env, "reset_torso_roll_range", [0.0, 0.0])
+        )
+        pitch_range = list(
+            getattr(self._cfg.env, "reset_torso_pitch_range", [0.0, 0.0])
+        )
+        self._reset_torso_roll_range = (float(roll_range[0]), float(roll_range[1]))
+        self._reset_torso_pitch_range = (float(pitch_range[0]), float(pitch_range[1]))
+
+    def _reset_perturbation_enabled(self) -> bool:
+        return (
+            self._reset_torso_roll_range[1] > self._reset_torso_roll_range[0]
+            or self._reset_torso_pitch_range[1] > self._reset_torso_pitch_range[0]
+        )
+
+    def _apply_reset_perturbation_np(
+        self, qpos: np.ndarray, rng: np.random.Generator
+    ) -> np.ndarray:
+        """Numpy parity copy of ``WildRobotEnv._apply_reset_perturbation``.
+
+        Samples uniform torso roll/pitch in the configured ranges,
+        partitions ``|pitch|`` into hip/knee/ankle nonnegative parts
+        summing to it, applies signed deltas via the mirror-symmetric
+        leg-pitch sign pattern, and composes ``R_xyz(roll, pitch, 0)``
+        onto the root quat.  Statistical distribution matches the
+        training env reset; per-seed bit-equality is not asserted
+        because JAX and numpy PRNGs differ.
+        """
+        if self._leg_pitch_qpos_addrs.size == 0:
+            return qpos
+        roll_lo, roll_hi = self._reset_torso_roll_range
+        pitch_lo, pitch_hi = self._reset_torso_pitch_range
+
+        torso_roll = float(rng.uniform(roll_lo, roll_hi))
+        torso_pitch = float(rng.uniform(pitch_lo, pitch_hi))
+
+        # Partition |torso_pitch| across hip / knee / ankle.
+        pitch_abs = abs(torso_pitch)
+        hip_delta = float(rng.uniform(0.0, pitch_abs)) if pitch_abs > 0 else 0.0
+        knee_max = max(pitch_abs - hip_delta, 0.0)
+        knee_delta = float(rng.uniform(0.0, knee_max)) if knee_max > 0 else 0.0
+        ankle_delta = max(pitch_abs - hip_delta - knee_delta, 0.0)
+
+        leg_pitch_mag = np.array(
+            [hip_delta, knee_delta, ankle_delta,
+             hip_delta, knee_delta, ankle_delta],
+            dtype=np.float32,
+        )
+        sign_pitch = 1.0 if torso_pitch >= 0.0 else -1.0
+        leg_pitch_signed = leg_pitch_mag * self._leg_pitch_joint_signs * sign_pitch
+
+        qpos = qpos.copy()
+        leg_pitch_curr = qpos[self._leg_pitch_qpos_addrs]
+        leg_pitch_new = np.clip(
+            leg_pitch_curr + leg_pitch_signed,
+            self._leg_pitch_joint_mins,
+            self._leg_pitch_joint_maxs,
+        )
+        qpos[self._leg_pitch_qpos_addrs] = leg_pitch_new.astype(qpos.dtype)
+
+        # Compose R_xyz(roll, pitch, 0) onto the existing root quat.
+        # MJCF stores root qpos[3:7] as [w, x, y, z].
+        wx, ix, iy, iz = (
+            float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6])
+        )
+        # XYZ extrinsic Euler -> quaternion (matches env helper).
+        cr, sr = np.cos(torso_roll * 0.5), np.sin(torso_roll * 0.5)
+        cp, sp = np.cos(torso_pitch * 0.5), np.sin(torso_pitch * 0.5)
+        # R_xyz(roll, pitch, 0): q = q_x * q_y * q_z; with z=0 only q_x * q_y.
+        # q_x = (sr, 0, 0, cr); q_y = (0, sp, 0, cp); product (xyzw):
+        delta_x = sr * cp
+        delta_y = cr * sp
+        delta_z = -sr * sp
+        delta_w = cr * cp
+        # quat_mul(delta_xyzw, root_xyzw):
+        a, b, c, d = delta_x, delta_y, delta_z, delta_w
+        e, f, g, h = ix, iy, iz, wx
+        new_x = d * e + a * h + b * g - c * f
+        new_y = d * f - a * g + b * h + c * e
+        new_z = d * g + a * f - b * e + c * h
+        new_w = d * h - a * e - b * f - c * g
+        # Normalize.
+        norm = float(np.sqrt(new_x * new_x + new_y * new_y + new_z * new_z + new_w * new_w))
+        if norm > 1e-12:
+            new_x, new_y, new_z, new_w = (
+                new_x / norm, new_y / norm, new_z / norm, new_w / norm
+            )
+        qpos[3] = np.float32(new_w)
+        qpos[4] = np.float32(new_x)
+        qpos[5] = np.float32(new_y)
+        qpos[6] = np.float32(new_z)
+        return qpos
+
     # ------------------------------------------------------------ public API
 
     @property
@@ -331,8 +477,33 @@ class V6EvalAdapter:
         *,
         apply_noise: bool,
         rng: Optional[np.random.Generator],
+        perturb_pose: bool = True,
     ) -> None:
-        """Reset native MuJoCo state with env-aligned v6 reset semantics."""
+        """Reset native MuJoCo state with env-aligned reset semantics,
+        including the TB-style torso pose perturbation training applies
+        when ``env.reset_torso_{roll,pitch}_range`` is non-degenerate.
+
+        ``perturb_pose`` mirrors the training env's
+        ``WildRobotEnv.reset(rng, perturb_pose=...)`` argument:
+          - True (default; visualizer / native-MuJoCo eval that wants
+            to mirror training reset): applies torso roll/pitch
+            perturbation when ``apply_noise`` is also True and the
+            configured ranges are non-degenerate.
+          - False: skips the perturbation regardless of range/config.
+            Mirrors ``env.reset_for_eval`` which calls
+            ``env.reset(rng, perturb_pose=False)`` so eval-mode
+            rollouts stay deterministic on the torso side even when
+            joint noise is otherwise applied.
+
+        The training env reset was previously the *only* place where
+        the torso perturbation fired — the visualizer adapter omitted
+        it entirely, which made visual eval easier than training under
+        ``loc_ref_reset_base=home`` + non-zero torso ranges.  Default
+        ``perturb_pose=True`` closes that parity gap.
+
+        Statistical distribution matches training; per-seed bit
+        equality is not asserted (JAX vs numpy PRNG differ).
+        """
         if self._mj_model.nkey > 0:
             mujoco.mj_resetDataKeyframe(self._mj_model, mj_data, 0)
             qpos = self._mj_model.key_qpos[0].copy()
@@ -345,6 +516,22 @@ class V6EvalAdapter:
             rng=rng,
         )
         qpos[self._actuator_qpos_addrs] = joint_qpos
+
+        # Mirror training's torso pose perturbation when the caller
+        # opted into it (perturb_pose=True), randomness is on
+        # (apply_noise=True), and the configured ranges are
+        # non-degenerate.  perturb_pose=False matches
+        # env.reset_for_eval semantics (torso deterministic even if
+        # joint noise is otherwise applied).
+        if (
+            perturb_pose
+            and apply_noise
+            and self._reset_perturbation_enabled()
+        ):
+            if rng is None:
+                raise ValueError("rng is required when apply_noise=True")
+            qpos = self._apply_reset_perturbation_np(qpos, rng)
+
         mj_data.qpos[:] = qpos
         mj_data.qvel[:] = 0.0
         if hasattr(mj_data, "xfrc_applied"):
