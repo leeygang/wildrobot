@@ -83,6 +83,30 @@ touchdown cadence, swing time, or step length, so those TB cells stay
 blank deliberately.  Do not infer TB stride physics from reward logs
 alone.
 
+### TB kinematic design targets (reference for the n/a cells)
+
+The blank TB cells above can be bounded by kinematic identities from
+`walk.gin` (`cycle_time = 0.72`) and the TB design operating point
+`vx ≈ 0.10 m/s`.  These are *what TB would produce at convergence
+by construction*, not what the smoke12 / smoke12b WR runs produced.
+
+| Quantity | Identity | TB design | WR smoke12b cfg |
+|---|---|---:|---:|
+| cycle_time | (cfg) | `0.72 s` | `0.96 s` |
+| swing_height target | (cfg) | `0.04 m` | `0.05 m` |
+| step length per touchdown | `vx · T / 2` | `36 mm` | `64 mm` (if walking at cmd) |
+| swing time per event | `T / 2` | `360 ms` | `480 ms` (if walking at cmd) |
+| touchdown rate per foot | `2 · dt / T` | `0.056 / step` | `0.042 / step` |
+
+Corrected per-event reads on the WR runs (per-step metric ÷ touchdown
+rate; supersedes earlier prior analysis that confused per-step and
+per-event units):
+
+| Metric | smoke12b @ 19.7M | TB design | Ratio TB / WR |
+|---|---:|---:|---:|
+| swing time per touchdown event L | `41 ms` | `360 ms` | **8.7×** |
+| step length per touchdown event L | `-2.4 mm` | `+36 mm` | ~15× magnitude, opposite sign |
+
 ### Reward / stabilization ledger
 
 | Canonical reward term | smoke12 @ 5.3248M | TB @ 5.3248M | smoke12b @ 19.6608M | TB @ 19.6608M |
@@ -117,22 +141,57 @@ strong (`≈ 1.01`).  Smoke12b does the opposite: survival rises while
 gait reward, cadence, and stride all fall.  It is not a delayed
 TB-like trajectory; it is a different basin.
 
-### Interpretation
+### Per-episode reward totals (per-step × ep_len)
 
-- smoke12's command-sign bug was real: the inherited symmetric command
-  range made backward commands legal while `cmd_zero_chance=0`.
-  But smoke12b proves that this was not the whole story: with strictly
-  forward commands, the policy still converges toward nearly zero
-  forward motion.
-- The smoke12 `feet_phase` baseline-subtract fix removed the old
-  flat-foot reward exploit correctly.  The remaining failure is deeper:
-  once WR does not discover true swing, the optimizer can improve reward
-  by reducing motion, foot-orientation error, and angular velocity
-  instead of preserving gait.
-- TB's active recipe keeps movement alive early enough that it can pay a
-  substantial smoothness cost while balance is still poor.  WR smoke12b
-  does not; its lower `action_rate` cost is evidence of gait extinction,
-  not better locomotion.
+Cross-multiplies the per-step canonical values above with each run's
+mean episode length.  Highlights how much of smoke12b's larger
+per-episode return comes from *survival* vs from *gait*.
+
+| Term | smoke12 (×52) | smoke12b (×458) | TB @ 19.7M (×654) |
+|---|---:|---:|---:|
+| `feet_phase` | `+3.8` | `+16.4` | `+99.3` |
+| body-orientation term | `+0.8` | `+9.0` | `+6.8` |
+| `ang_vel_xy` (penalty) | `-1.8` | `-2.0` | `-11.5` |
+| `action_rate` (penalty) | `-2.5` | `-4.9` | `-37.4` |
+| `penalty_feet_ori` | `-2.6` | `-7.0` | `-10.3` |
+| `penalty_pose` | `-0.1` | `-0.5` | `-3.5` |
+| **Sum of shown terms** | `≈ -2.4` | `≈ +11.0` | `≈ +43.4` |
+
+`alive` and `cmd_forward_velocity_track` are excluded here because
+the matched-iter TB log doesn't expose them in the same canonical
+form; per-step both WR runs collect `alive = +0.020` (TB-active dense
+`+1.0 × dt`) → smoke12 contributes `+1.0/ep`, smoke12b `+9.2/ep`.
+That offset doesn't change the structural pattern: TB's per-episode
+*gait reward* (`feet_phase = +99`) is **~6× smoke12b's `+16` and
+~26× smoke12's `+4`**.
+
+### Action authority — widened residual is unused at smoke12b
+
+Smoke12 (basin-break commit) widened WR's per-joint residual cap to
+2.7× TB's default to cover the WR prior amplitude.  Smoke12b's
+converged policy *doesn't use it*: knee residual sits at 11–15% of
+the configured cap.  Authority is not the bottleneck here.
+
+| Metric | smoke12 @ 5.3M | smoke12b @ 19.7M | TB design |
+|---|---:|---:|---:|
+| residual cap configured, knee (rad) | `0.667` | `0.667` | `0.25` |
+| residual cap configured, hip_pitch | `0.353 / 0.387` | `0.353 / 0.387` | `0.25` |
+| residual_knee_left `|·|` (rad) | `0.20` | `0.11` | `≤ 0.20` (G5) |
+| residual_knee_right `|·|` (rad) | `0.18` | `0.15` | `≤ 0.20` (G5) |
+| residual_hip_pitch_left `|·|` | `0.18` | `0.15` | `≤ 0.20` (G5) |
+| residual_hip_pitch_right `|·|` | `0.19` | `0.14` | `≤ 0.20` (G5) |
+| `ppo/clip_fraction` | `0.33` | `0.41` | (n/a — not in TB log) |
+
+### Key findings
+
+| # | Finding | Evidence | Implication |
+|---|---|---|---|
+| 1 | smoke12 cmd-sign bug was real but not the sole cause | smoke12b forces positive-only commands yet iter-0 random policy still drifts at `vx ≈ -0.142 m/s` | The symmetric-cmd bug enabled the backward gait; physics + reset perturbation provided a backward bias even without the bug |
+| 2 | smoke12 baseline-subtract fix removed the old flat-foot exploit correctly | smoke12b walking + flat feet pays `feet_phase = 0` (was `0.73` raw under the old formula) | Confirmed working — the remaining failure is deeper than the flat-foot reward bug |
+| 3 | smoke12b extinguishes gait to maximize survival | touchdown 0.137 → 0.073, swing 41 ms vs TB 360 ms (8.7× short), `feet_phase` per step 0.065 → 0.036, action_rate cost halved | Reward shape rewards "less motion = less fall risk = more alive bonus"; PPO converges away from walking, not toward it |
+| 4 | Widened residual is not the bottleneck | smoke12b uses 11–15% of the 0.667-rad knee cap (TB default: 0.25) | Cutting cap back to TB's 0.25 would not change smoke12b behavior — authority is unused |
+| 5 | TB's gait-reward share is structurally larger | TB per-episode `feet_phase ≈ +99` vs smoke12b `≈ +16` (~6×); TB's `action_rate` cost `-37` vs smoke12b `-5` (~7×) | TB's active recipe keeps movement alive early enough to *pay* a substantial smoothness cost while balance is still poor; smoke12b's lower `action_rate` cost is evidence of gait extinction, not better locomotion |
+| 6 | Same-formula feet_phase comparison shows undermotion, not formula mismatch | TB α=1428.6 with swing=0.04 vs WR α=914.3 with swing=0.05 — both have similar dimensionless basin `α·swing² ≈ 2.29`; the gap is in *outputs* not *formula* | Tuning feet_phase α further alone won't close the gap; the policy isn't producing the foot trajectory that even the current α would reward fully |
 
 ### Instrumentation gap before the next TB comparison
 
