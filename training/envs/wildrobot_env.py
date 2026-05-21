@@ -304,6 +304,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         self._default_joint_qpos = self._cal.get_ctrl_for_default_pose()
 
+        # smoke13 — action contract selector.  See
+        # training_runtime_config.LocomotionEnvConfig.action_mode for the
+        # contract.  "direct" hard-anchors the action path on
+        # ``_home_q_rad`` and bypasses ``loc_ref_residual_base`` entirely
+        # (TB-active migration); "residual" keeps the legacy
+        # ``base_q`` switch alive for older configs.
+        self._action_mode = str(
+            getattr(self._config.env, "action_mode", "residual")
+        ).lower()
+        if self._action_mode not in ("residual", "direct"):
+            raise ValueError(
+                f"env.action_mode must be 'residual' or 'direct'; "
+                f"got {self._action_mode!r}"
+            )
+
         # smoke8 — residual base selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_residual_base
         # for the contract.  Cached as a string here; the JAX home-pose
@@ -860,7 +875,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.clip(jp.asarray(policy_action, dtype=jp.float32), -1.0, 1.0)
             * self._residual_q_scale_per_joint
         )
-        if self._residual_base_mode == "home":
+        # smoke13 direct mode: hard-anchor on home_q.  Bypass the
+        # residual_base switch entirely so the action path doesn't
+        # secretly depend on the offline ZMP window or any
+        # loc_ref_* signal.  Reward / phase / privileged-critic
+        # paths are decoupled — they can still read window data if
+        # their own config knobs select it.
+        if self._action_mode == "direct":
+            base_q = self._home_q_rad
+        elif self._residual_base_mode == "home":
             base_q = self._home_q_rad
         elif self._residual_base_mode == "ref_init":
             base_q = self._ref_init_q_rad
@@ -2222,7 +2245,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # ref_init_q under smoke9c (loc_ref_residual_base="ref_init").
         win0 = self._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
         q_ref0 = win0["q_ref"].astype(jp.float32)
-        if self._residual_base_mode == "home":
+        # smoke13 direct mode: ctrl_init = home_q (matches the
+        # action path's hard anchor); the residual_base switch is
+        # not consulted.
+        if self._action_mode == "direct":
+            ctrl_init = self._home_q_rad
+        elif self._residual_base_mode == "home":
             ctrl_init = self._home_q_rad
         elif self._residual_base_mode == "ref_init":
             ctrl_init = self._ref_init_q_rad

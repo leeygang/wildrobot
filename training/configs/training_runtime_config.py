@@ -149,6 +149,28 @@ class EnvConfig(Freezable):
     # fall back to the scalar loc_ref_residual_scale.
     loc_ref_residual_scale_per_joint: Dict[str, float] = field(default_factory=dict)
 
+    # v0.20.1 smoke13 — action contract selector.
+    #
+    #   "residual" (default; smoke7..smoke12b path) — the legacy
+    #     bounded-residual contract: ``target_q = clip(base_q +
+    #     clip(action) * scale, joint_range)`` where ``base_q`` is
+    #     chosen by ``loc_ref_residual_base`` (q_ref / home /
+    #     ref_init).  Kept the default so existing configs are
+    #     unchanged.
+    #
+    #   "direct" (smoke13; TB-active migration) — TB-style direct
+    #     action around the locomotion-ready default pose:
+    #         target_q = clip(home_q + clip(action) * scale, joint_range)
+    #     Hard-anchored to ``_home_q_rad``; ignores
+    #     ``loc_ref_residual_base`` entirely.  This removes the
+    #     action-anchor / reward-target split that the hybrid
+    #     branches still carry.  Mirrors TB
+    #     ``toddlerbot/locomotion/mjx_env.py:1543-1546``
+    #     (``action_target = default_action + action_scale *
+    #     delayed_action``).  The reward stack is decoupled — pick
+    #     reward weights independently.
+    action_mode: str = "residual"
+
     # v0.20.1 smoke8 — residual base selector.
     #   "q_ref" - smoke7 default; target_q = q_ref(t) + residual.  PPO is
     #             anchored to the time-varying ZMP-derived trajectory.

@@ -1,0 +1,318 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 13 — TB-style direct-policy walking migration
+# =============================================================================
+# Clean architectural migration off the hybrid bounded-residual recipe.
+# Replaces smoke12b's residual contract with a single canonical
+# locomotion-ready default pose anchor and a direct bounded action
+# around it, matching TB's active locomotion stack
+# (toddlerbot/locomotion/mjx_env.py:1543-1546:
+#   action_target = default_action + action_scale * delayed_action).
+#
+# Architectural decisions (delta vs smoke12b):
+#
+#   action_mode: direct
+#     Hard-anchors the action path on _home_q_rad.  Removes the
+#     loc_ref_residual_base = {q_ref, home, ref_init} switch from
+#     this branch — the env's _compose_target_q_from_residual
+#     bypasses it entirely under action_mode == "direct".  Reward
+#     and phase paths are independent.
+#
+#   loc_ref_residual_scale: 0.25 (scalar; TB-faithful)
+#     Replaces smoke12b's widened per-joint scales
+#     (knee 0.667 / hip_pitch ~0.38) with TB's scalar 0.25
+#     (mjx_config.py:103).  The widened cap was a smoke12 diagnostic
+#     for the residual branch; under direct-policy + TB-active
+#     rewards, exhaust the TB-faithful recipe first before
+#     re-widening.  If smoke13 stalls and the dominant failure mode
+#     is "action authority too tight on legs", a follow-up branch
+#     can re-introduce per-joint scaling with a documented rationale.
+#
+#   Reward stack: TB-active block ONLY (same weights as smoke12b)
+#     The smoke12b reward weights are already a clean copy of TB
+#     walk.gin:110-131.  Smoke13 keeps them byte-equal and explicitly
+#     zeros out every hybrid imitation term so a future change
+#     doesn't silently re-enable one.
+#
+#   Observation: wr_obs_v7_phase_proprio (unchanged)
+#     v7 carries phase(2) + proprio_history(1050) on top of the v3
+#     base (gravity + gyro + jpos + jvel + foot_switches + prev_action +
+#     velocity_cmd).  No offline-reference window channels in the
+#     actor stream.  Already clean for the TB-style direct branch.
+#
+#   Reset: home-anchored, TB-style perturbation
+#     loc_ref_reset_base: home and reset_torso_{roll,pitch}_range:
+#     [-0.1, 0.1] inherited from smoke12b.  Matches TB
+#     DomainRandConfig.torso_{pitch,roll}_range (mjx_config.py:211-212).
+#
+#   Critic: privileged enabled (unchanged)
+#     The privileged critic obs uses some loc_ref signals
+#     (loc_ref_gait_phase_*, stance) — these are gait-clock
+#     derivatives, not imitation references, so they stay.  Actor
+#     remains clean.
+#
+# Compute: matched to smoke12b's bootstrap budget (480 iters * 2048 envs *
+# 20 rollout_steps ≈ 19.7M env-steps) so smoke13 is a same-compute
+# A/B against smoke12b — answers "does the direct-policy contract
+# bootstrap walking better than the residual contract with the same
+# reward stack?"  TB-aligned PPO hyperparams (lr=3e-5, entropy 5e-4)
+# kept identical to smoke12b for the same reason.
+#
+# Bootstrap scope (unchanged from smoke12b):
+#   - forward-only cmd range [0.08, 0.1333] m/s
+#   - cmd_zero_chance: 0.0 (every episode demands forward motion)
+#   - eval_velocity_cmd: 0.1333 (top of training range)
+#   - no yaw/turn/backward (deferred to a future config)
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke13 (TB-style direct-policy walking migration)"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  # TB-style reset perturbation (inherited from smoke12b).  Mirrors
+  # TB DomainRandConfig.torso_{pitch,roll}_range [-0.1, 0.1] rad
+  # (mjx_config.py:211-212) and breaks the stand-still attractor
+  # without changing the reset center.
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  # TB-active penalty_pose per-joint weights (mirrors
+  # walk.gin:120-124 layout).  Anchored to home (see
+  # loc_ref_penalty_pose_anchor below).
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # Forward-only command range (smoke12b fix retained).
+  min_velocity: 0.08
+  max_velocity: 0.1333333333
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.0
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.0666666667
+  eval_velocity_cmd: 0.1333333333
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  # Clean actor observation: phase + proprio + proprio_history only
+  # (v3 base + 2 + 1050).  No offline-reference window channels in
+  # the actor stream.  Pin even though it's the v0.20.1 default so a
+  # future default flip doesn't silently leak hybrid channels.
+  actor_obs_layout_id: wr_obs_v7_phase_proprio
+  # Offline reference command used only to derive the gait clock
+  # (win["phase_sin"]) consumed by feet_phase and the actor's
+  # phase obs slot.  No imitation pull from this trajectory under
+  # action_mode=direct + TB-active rewards.
+  loc_ref_offline_command_vx: 0.1333333333
+
+  # =========================================================================
+  # KEY ARCHITECTURAL CHANGE (vs smoke12b)
+  # =========================================================================
+  # Direct action: target_q = clip(home_q + clip(action) * scale,
+  # joint_range).  Bypasses the loc_ref_residual_base switch entirely
+  # in the env's _compose_target_q_from_residual.
+  action_mode: direct
+  # loc_ref_residual_base is intentionally still set to home as a
+  # back-compat sentinel; under action_mode=direct it is NOT
+  # consulted.  Kept for any tool/test that still reads the field.
+  loc_ref_residual_base: home
+  loc_ref_reset_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  # Standing branch under cmd_zero_chance=0 is unreachable; gate
+  # is set for safety so any future cmd_zero re-enable doesn't
+  # silently re-pay feet_phase for standing still.
+  loc_ref_feet_phase_zero_on_standing: true
+  close_feet_threshold: 0.146
+
+  # TB-faithful scalar action scale (mjx_config.py:103, action_scale=0.25).
+  # No per-joint widening in smoke13: exhaust the TB-faithful
+  # recipe under direct mode before re-introducing residual-bounds
+  # widening.  Per-joint map intentionally empty so the scalar
+  # applies to every joint uniformly.
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.25
+  loc_ref_residual_scale_per_joint: {}
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+ppo:
+  num_envs: 2048
+  rollout_steps: 20
+  iterations: 480
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: false
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 3
+    post_training_num_envs: 8
+    post_training_num_steps: 500
+    post_training_checkpoint_label: eval_promoted
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — TB-active locomotion block only
+# Each retained term mirrors a specific TB-active row in walk.gin:110-131.
+# Each disabled term lists the rationale.
+# =============================================================================
+reward_weights:
+  # ---- TB-active block (walk.gin:110-131) ----
+  alive: 1.0                                # walk.gin:127
+  cmd_forward_velocity_track: 2.0           # walk.gin:111 (lin_vel_xy)
+  # alpha_wr = alpha_tb / s^2 = 1000 / (4/3)^2 = 562.5; preserves the
+  # normalized tracking basin under WR's 4/3 size scaling.
+  cmd_forward_velocity_alpha: 562.5
+  ref_body_quat_track: 2.5                  # walk.gin:117 (torso_quat;
+                                            # WR impl is upright-angle
+                                            # vs identity, not an
+                                            # imitation reference)
+  ang_vel_xy: 1.0                           # walk.gin:115 (penalty_ang_vel_xy)
+  # TB walk.gin:119 sets penalty_action_rate=2.0 (positive in TB's
+  # neg-MSE convention).  WR's sign convention is negative; -2.0 ==
+  # TB +2.0 in magnitude.  Smoke12b halved this to -1.0 during the
+  # residual-branch basin-break; under direct-policy we revert to
+  # the TB-faithful -2.0 because the architecture change is the
+  # exploration knob, not action_rate.
+  action_rate: -2.0
+  penalty_pose: -0.5                        # walk.gin:120
+  penalty_close_feet_xy: 10.0               # walk.gin:126
+  feet_phase: 7.5                           # walk.gin:128
+  # alpha_wr = 1428.6 * (0.04 / 0.05)^2 = 914.304; preserves the
+  # dimensionless Gaussian basin (alpha * swing_height^2 = 2.286)
+  # under WR's 0.05 m prior-aligned swing target.
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0                     # walk.gin:129
+
+  # ---- Hybrid / imitation reward terms — explicitly disabled ----
+  # These are not in TB's active block (walk.gin:110-131) — they
+  # come from the WR-specific imitation-residual architecture or
+  # from TB's commented-out ZMP variant (walk.gin:55-108).  Held at
+  # zero here so a future config rewrite cannot silently re-enable
+  # one without an explicit rationale comment.
+  ref_q_track: 0.0                          # joint-imitation; TB-active drops
+  ref_contact_match: 0.0                    # boolean contact-imitation
+  ref_feet_z_track: 0.0                     # foot-z imitation
+  ref_feet_z_track_alpha: 1428.6            # held; weight=0 disables
+  torso_pos_xy: 0.0                         # torso-XY imitation
+  torso_pos_xy_alpha: 90.0                  # held; weight=0 disables
+  lin_vel_z: 0.0                            # vertical-bobbing imitation
+  feet_air_time: 0.0                        # sparse; replaced by feet_phase
+  feet_clearance: 0.0                       # sparse; replaced by feet_phase
+  feet_distance: 0.0                        # superseded by penalty_close_feet_xy
+  torso_pitch_soft: 0.0                     # superseded by penalty_ang_vel_xy
+  torso_roll_soft: 0.0                      # superseded by penalty_ang_vel_xy
+  torque: 0.0                               # not in TB-active
+  joint_velocity: 0.0                       # not in TB-active
+  slip: 0.0                                 # not in TB-active
+  pitch_rate: 0.0                           # M1 diagnostic hook only
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke13, tb_style_direct_policy, action_mode_direct, tb_active_rewards, scalar_action_scale_0p25]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
