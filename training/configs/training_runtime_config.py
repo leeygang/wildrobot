@@ -151,25 +151,20 @@ class EnvConfig(Freezable):
 
     # v0.20.1 smoke13 — privileged critic obs anchor selector.
     #
-    #   True (default; smoke7..smoke12b path) — the legacy critic
-    #     obs uses ``motor_pos_error = q_actual - nominal_q_ref(t)``
-    #     (the time-varying ZMP trajectory) and ``ref_stance =
-    #     win["contact_mask"]`` (the prior's expected stance mask).
-    #     Both are imitation channels: they feed the critic an
-    #     externally-derived "what should be happening now" signal.
+    #   True (default; TB-parity asymmetric critic) — critic obs uses
+    #     ``motor_pos_error = q_actual - nominal_q_ref(t)`` and
+    #     ``ref_stance = win["contact_mask"]``.  This mirrors
+    #     ToddlerBot's privileged critic channels while keeping the
+    #     actor free of reference-window observations.
     #
-    #   False (smoke13 TB-active critic) — replaces both imitation
-    #     references with phase-derived clean signals:
-    #         motor_pos_error = q_actual - home_q_rad     (TB-style;
-    #             matches mjx_env.py:2060 default-pose anchor)
+    #   False (clean WR/dehybridized critic option) — replaces both
+    #     reference channels with phase/default-derived signals:
+    #         motor_pos_error = q_actual - home_q_rad
     #         ref_stance      = stance_from_phase(phase_sin_cos)
-    #             (derived from the gait clock alone, not from the
-    #             offline contact_mask).  Convention: alternating
-    #             single-support — sin > 0 -> right-stance,
-    #             sin <= 0 -> left-stance.
-    #     Keeps the critic free of "what the prior expects" so the
-    #     value function can only score "what the policy actually
-    #     does".
+    #             Convention: alternating single-support —
+    #             sin > 0 -> right-stance, sin <= 0 -> left-stance.
+    #     This is intentionally less TB-like and should be used only
+    #     with explicit rationale.
     critic_imitation_refs: bool = True
 
     # v0.20.1 smoke8 — residual base selector.

@@ -1180,15 +1180,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         The two reference channels depend on
         ``env.critic_imitation_refs`` (see LocomotionEnvConfig docstring):
 
-          - True  (legacy / smoke7..smoke12b): ``motor_pos_error =
-            q_actual - nominal_q_ref`` and ``ref_stance =
-            ref_contact_mask`` from the offline window — both
-            externally-derived imitation channels.
+          - True  (default / TB-parity asymmetric critic):
+                motor_pos_error = q_actual - nominal_q_ref
+                ref_stance      = ref_contact_mask
+            from the offline window.  This mirrors TB's privileged
+            critic path while the actor can remain phase+proprio only.
 
-          - False (smoke13 TB-active critic):
+          - False (clean WR/dehybridized critic option):
                 motor_pos_error = q_actual - home_q_rad
                 ref_stance      = phase-derived alternating stance
-            so the critic never sees an external imitation reference.
+            so the critic never sees an external reference.
 
         Args:
             data: mjx Data.
@@ -1211,9 +1212,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
             ref_stance = ref_contact_mask.astype(jp.float32)
         else:
-            # smoke13 TB-active critic: home-anchored error +
-            # phase-derived alternating stance.  Mirrors TB
-            # mjx_env.py:2060 (motor_pos_delta vs default_motor_pos).
+            # Clean WR/dehybridized critic option: home-anchored
+            # error + phase-derived alternating stance.
             motor_pos_error = (q_actual - self._home_q_rad).astype(jp.float32)
             phase_sin = phase_sin_cos[0].astype(jp.float32)
             # Alternating single-support convention used by the WR
