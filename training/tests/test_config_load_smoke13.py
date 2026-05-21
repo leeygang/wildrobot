@@ -392,3 +392,114 @@ def test_smoke13_adapter_reset_applies_torso_perturbation(smoke13_cfg) -> None:
         "across 5 resets — torso pose perturbation is not being "
         "applied even though range is non-degenerate."
     )
+
+
+def test_smoke13_adapter_reset_applies_dr_joint_offsets(smoke13_cfg) -> None:
+    """Mirror training's per-episode DR joint offsets (env line 1918:
+    ``default_joint_qpos + joint_noise + dr_params["joint_offsets"]``).
+
+    The adapter must (a) report DR enabled when the env config has it
+    on, and (b) under ``apply_noise=True, apply_dr=True`` the actuator
+    qpos distribution across resets must span beyond what per-joint
+    noise alone (±0.05 rad) would produce.  Verified by checking the
+    sample standard deviation across 64 resets per joint is materially
+    above the noise-only theoretical std (uniform[-0.05,0.05] -> 0.029
+    rad).  Joint noise + DR offset should approximately compose to
+    uniform[-(0.05+dr), +(0.05+dr)] in the small-perturbation limit —
+    std should grow by roughly ``(0.05+dr) / 0.05`` over noise-only.
+
+    Per-seed bit equality is intentionally not asserted (JAX vs numpy
+    PRNGs differ); only the marginal distribution is checked."""
+    import mujoco
+    from training.eval.v6_eval_adapter import V6EvalAdapter
+    from training.policy_spec_utils import build_policy_spec_from_training_config
+    from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
+    from training.configs.training_config import load_robot_config
+
+    mj_model = mujoco.MjModel.from_xml_path(str(Path(smoke13_cfg.env.model_path)))
+    rcfg = load_robot_config(smoke13_cfg.env.robot_config_path)
+    spec = build_policy_spec_from_training_config(
+        training_cfg=smoke13_cfg, robot_cfg=rcfg, action_filter_alpha=0.0
+    )
+    sigA = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=rcfg,
+        policy_spec=spec,
+        foot_switch_threshold=smoke13_cfg.env.foot_switch_threshold,
+    )
+    adapter = V6EvalAdapter(
+        training_cfg=smoke13_cfg,
+        mj_model=mj_model,
+        policy_spec=spec,
+        signals_adapter=sigA,
+        action_dim=int(spec.model.action_dim),
+    )
+    assert adapter._dr_enabled is True, (
+        "smoke13 enables domain_randomization_enabled; adapter must agree"
+    )
+    assert adapter._dr_joint_offset_rad > 0.0, (
+        "smoke13 sets domain_rand_joint_offset_rad > 0; adapter must "
+        "cache the same value"
+    )
+
+    mj_data = mujoco.MjData(mj_model)
+    # Baseline: turn DR off explicitly via the new apply_dr=False knob;
+    # also disable torso perturb to isolate joint noise alone.  Collect
+    # std across resets per actuator joint.
+    n_resets = 64
+    rng_noise_only = np.random.default_rng(123)
+    noise_only_q = np.empty((n_resets, adapter._action_dim), dtype=np.float32)
+    for i in range(n_resets):
+        adapter.reset_native_mj_state(
+            mj_data,
+            apply_noise=True,
+            rng=rng_noise_only,
+            perturb_pose=False,
+            apply_dr=False,
+        )
+        noise_only_q[i] = mj_data.qpos[adapter._actuator_qpos_addrs].astype(
+            np.float32
+        )
+
+    # With DR: apply both joint noise (±0.05) and DR offsets.
+    rng_with_dr = np.random.default_rng(123)
+    with_dr_q = np.empty((n_resets, adapter._action_dim), dtype=np.float32)
+    for i in range(n_resets):
+        adapter.reset_native_mj_state(
+            mj_data,
+            apply_noise=True,
+            rng=rng_with_dr,
+            perturb_pose=False,
+            apply_dr=True,
+        )
+        with_dr_q[i] = mj_data.qpos[adapter._actuator_qpos_addrs].astype(
+            np.float32
+        )
+
+    # Joint noise alone: uniform[-0.05, +0.05] -> theoretical std
+    # 0.05/sqrt(3) ≈ 0.0289.  Adding DR offset uniform[-dr, +dr]
+    # convolves to combined std sqrt(0.05² + dr²)/sqrt(3).  At
+    # smoke13's dr=0.03 the theoretical ratio is sqrt(0.05² + 0.03²)
+    # / 0.05 ≈ 1.166.  Use median across joints to avoid being
+    # skewed by any joint that clipped against its range.
+    noise_only_std = float(np.median(np.std(noise_only_q, axis=0)))
+    with_dr_std = float(np.median(np.std(with_dr_q, axis=0)))
+    assert with_dr_std > noise_only_std * 1.08, (
+        f"smoke13 adapter reset DR joint offsets not visible: with_dr "
+        f"std={with_dr_std:.4f} vs noise_only std={noise_only_std:.4f}.  "
+        "Expected DR offsets to widen the per-joint qpos distribution "
+        "at reset (env line 1918 parity).  Theoretical ratio at "
+        "dr=0.03 + noise=0.05 is ≈ 1.17; threshold 1.08 leaves room "
+        "for sample noise on 64 resets."
+    )
+
+    # Independent check: max excursion from the joint-noise-only base.
+    # Joint noise alone cannot move any joint more than 0.05 rad from
+    # home; with DR active the max excursion should exceed that.
+    home_q = adapter._home_q_rad
+    noise_only_max = float(np.max(np.abs(noise_only_q - home_q[None, :])))
+    with_dr_max = float(np.max(np.abs(with_dr_q - home_q[None, :])))
+    assert with_dr_max > noise_only_max, (
+        f"smoke13 adapter reset DR offsets did not widen max excursion: "
+        f"with_dr max={with_dr_max:.4f} vs noise_only max={noise_only_max:.4f}."
+    )

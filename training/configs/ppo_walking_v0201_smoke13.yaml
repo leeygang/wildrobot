@@ -54,9 +54,13 @@
 #           DomainRandConfig.torso_{pitch,roll}_range
 #           (mjx_config.py:211-212); the other two rows are kept on
 #           top of it.
-#     The native-MuJoCo eval adapter (V6EvalAdapter) mirrors (a) +
-#     (c) for visual/eval parity; (b) is part of the training-only
-#     DR loop and is not mirrored at eval.
+#     The native-MuJoCo eval adapter (V6EvalAdapter) mirrors all
+#     three rows (a), (b), and (c) so visual / native-MuJoCo eval
+#     rollouts see the same per-episode reset distribution training
+#     does.  Each can be opted out at the adapter call site
+#     (apply_noise=False suppresses (a) and (b); apply_dr=False
+#     suppresses (b); perturb_pose=False suppresses (c) — used by
+#     env.reset_for_eval mirroring tests).
 #
 #   Critic: privileged enabled, cleaned of imitation refs
 #     critic_imitation_refs: false swaps the legacy

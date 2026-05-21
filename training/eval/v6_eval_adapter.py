@@ -191,6 +191,7 @@ class V6EvalAdapter:
         self._init_home_q_rad()
         self._init_ctrl_mapper()
         self._init_reset_perturbation()
+        self._init_dr_joint_offsets()
         self.reset()
 
     # ------------------------------------------------------------------ init
@@ -284,6 +285,51 @@ class V6EvalAdapter:
         self._ctrl_mapper = CtrlOrderMapper(
             self._mj_model, list(self._policy_spec.robot.actuator_names)
         )
+
+    def _init_dr_joint_offsets(self) -> None:
+        """Cache the DR joint-offset half-range so the adapter reset can
+        mirror training's per-episode per-joint calibration error
+        (env line 1918: ``self._default_joint_qpos + joint_noise +
+        dr_params["joint_offsets"]``).
+
+        The training env samples ``joint_offsets`` uniformly in
+        ``[-env.domain_rand_joint_offset_rad, +env.domain_rand_joint_offset_rad]``
+        (training/envs/domain_randomize.py:59-61) only when
+        ``env.domain_randomization_enabled`` is True; we cache the same
+        gate so the adapter is a no-op when the env's DR loop is off.
+        """
+        self._dr_enabled = bool(
+            getattr(self._cfg.env, "domain_randomization_enabled", False)
+        )
+        self._dr_joint_offset_rad = float(
+            getattr(self._cfg.env, "domain_rand_joint_offset_rad", 0.0)
+        )
+
+    def _apply_dr_joint_offsets_np(
+        self, qpos: np.ndarray, rng: np.random.Generator
+    ) -> np.ndarray:
+        """Numpy parity copy of the env's per-episode DR joint-offset
+        application (env line 1918).
+
+        Samples uniform per-joint offsets in
+        ``[-dr_joint_offset_rad, +dr_joint_offset_rad]`` and adds them
+        into the actuator-joint qpos slots, then re-clips against the
+        joint range to match env's clipping.  Statistical distribution
+        matches training; per-seed bit equality is not asserted
+        (JAX vs numpy PRNGs differ).
+        """
+        if not self._dr_enabled or self._dr_joint_offset_rad <= 0.0:
+            return qpos
+        qpos = qpos.copy()
+        offsets = rng.uniform(
+            -self._dr_joint_offset_rad,
+            +self._dr_joint_offset_rad,
+            size=self._action_dim,
+        ).astype(np.float32)
+        joint_q = qpos[self._actuator_qpos_addrs].astype(np.float32) + offsets
+        joint_q = np.clip(joint_q, self._joint_min, self._joint_max)
+        qpos[self._actuator_qpos_addrs] = joint_q.astype(qpos.dtype)
+        return qpos
 
     def _init_reset_perturbation(self) -> None:
         """Cache leg-pitch metadata + reset perturbation ranges for the
@@ -478,10 +524,11 @@ class V6EvalAdapter:
         apply_noise: bool,
         rng: Optional[np.random.Generator],
         perturb_pose: bool = True,
+        apply_dr: bool = True,
     ) -> None:
-        """Reset native MuJoCo state with env-aligned reset semantics,
-        including the TB-style torso pose perturbation training applies
-        when ``env.reset_torso_{roll,pitch}_range`` is non-degenerate.
+        """Reset native MuJoCo state with env-aligned reset semantics:
+        per-joint reset noise, per-episode DR joint offsets, and the
+        TB-style torso pose perturbation.
 
         ``perturb_pose`` mirrors the training env's
         ``WildRobotEnv.reset(rng, perturb_pose=...)`` argument:
@@ -495,11 +542,23 @@ class V6EvalAdapter:
             rollouts stay deterministic on the torso side even when
             joint noise is otherwise applied.
 
+        ``apply_dr`` controls the per-episode DR joint-offset
+        application (env line 1918: ``default_joint_qpos + joint_noise
+        + dr_params["joint_offsets"]``):
+          - True (default; visualizer / native-MuJoCo eval that wants
+            to mirror training reset distribution): samples per-joint
+            offsets in ``[-domain_rand_joint_offset_rad, +rad]`` when
+            ``apply_noise`` is True AND
+            ``env.domain_randomization_enabled`` is True.
+          - False: skips the DR offset application even if otherwise
+            configured.  Use for strict no-DR demo runs.
+
         The training env reset was previously the *only* place where
-        the torso perturbation fired — the visualizer adapter omitted
-        it entirely, which made visual eval easier than training under
-        ``loc_ref_reset_base=home`` + non-zero torso ranges.  Default
-        ``perturb_pose=True`` closes that parity gap.
+        the torso perturbation and the DR offsets fired — the
+        visualizer adapter omitted both, which made visual eval easier
+        than training under ``loc_ref_reset_base=home`` + non-zero
+        torso ranges + DR enabled.  Defaults
+        ``perturb_pose=True``/``apply_dr=True`` close both parity gaps.
 
         Statistical distribution matches training; per-seed bit
         equality is not asserted (JAX vs numpy PRNG differ).
@@ -516,6 +575,26 @@ class V6EvalAdapter:
             rng=rng,
         )
         qpos[self._actuator_qpos_addrs] = joint_qpos
+
+        # Mirror training's per-episode DR joint offsets when caller
+        # opted in (apply_dr=True), randomness is on (apply_noise=True),
+        # the env's DR loop is enabled, and the reset base is "home"
+        # (env line 1909-1918: under ``loc_ref_reset_base=ref_init``
+        # the joint_qpos branch is exact ref_init with no joint noise
+        # and no DR offsets, so the adapter must not apply them
+        # either).  apply_dr=False bypasses the DR for strict no-DR
+        # demo runs even if the env config has DR on.  Applied before
+        # the torso perturbation so the final leg-pitch qpos sees
+        # both (matches training reset ordering at env line 1918 + 1932).
+        if (
+            apply_dr
+            and apply_noise
+            and self._dr_enabled
+            and self._reset_base_mode != "ref_init"
+        ):
+            if rng is None:
+                raise ValueError("rng is required when apply_noise=True")
+            qpos = self._apply_dr_joint_offsets_np(qpos, rng)
 
         # Mirror training's torso pose perturbation when the caller
         # opted into it (perturb_pose=True), randomness is on
