@@ -43,6 +43,18 @@ def _disable_cmd_resample_for_eval(env_cfg) -> bool:
     return float(env_cfg.eval_velocity_cmd) >= 0.0
 
 
+def _network_activation_name(training_cfg) -> str:
+    """Resolve the shared PPO activation and enforce actor/critic parity."""
+    actor_activation = str(training_cfg.networks.actor.activation).lower()
+    critic_activation = str(training_cfg.networks.critic.activation).lower()
+    if actor_activation != critic_activation:
+        raise ValueError(
+            f"actor.activation ({actor_activation!r}) and "
+            f"critic.activation ({critic_activation!r}) must match."
+        )
+    return actor_activation
+
+
 def _format_metric(value: float, fmt: str = ".3f") -> str:
     return format(float(value), fmt)
 
@@ -262,7 +274,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="training/configs/ppo_standing.yaml",
+        required=True,
         help="Path to training config YAML",
     )
     parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel envs")
@@ -342,12 +354,14 @@ def main() -> int:
 
     obs_dim = int(env_state.obs.shape[-1])
     action_dim = int(env.action_size)
+    activation = _network_activation_name(training_cfg)
 
     ppo_network = create_networks(
         obs_dim=obs_dim,
         action_dim=action_dim,
         policy_hidden_dims=tuple(training_cfg.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
+        activation=activation,
     )
 
     checkpoint = load_checkpoint(str(checkpoint_path))

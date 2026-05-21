@@ -12,6 +12,7 @@ from training.eval.visualize_policy import (
     _adapter_layout_enabled,
     _is_terminated_from_pose,
     _network_activation_name,
+    _validate_user_fixed_velocity_cmd,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
@@ -38,6 +39,15 @@ def test_visualizer_threads_actor_activation_from_training_config() -> None:
     cfg.networks.critic.activation = "silu"
     with pytest.raises(ValueError, match="must match"):
         _network_activation_name(cfg)
+
+
+def test_visualizer_rejects_out_of_range_fixed_velocity() -> None:
+    cfg = load_training_config(str(SMOKE12B_CFG))
+    assert _validate_user_fixed_velocity_cmd(cfg, 0.10) == pytest.approx(0.10)
+    with pytest.raises(ValueError, match="outside configured range"):
+        _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.min_velocity) - 1e-3)
+    with pytest.raises(ValueError, match="outside configured range"):
+        _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.max_velocity) + 1e-3)
 
 
 def test_visualizer_relaxed_termination_ignores_pitch_roll() -> None:
@@ -102,4 +112,3 @@ def test_visualizer_v7_layout_uses_native_eval_adapter_contract() -> None:
         velocity_cmd=float(cfg.env.eval_velocity_cmd),
     )
     assert obs.shape == (policy_spec.model.obs_dim,)
-

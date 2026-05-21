@@ -124,6 +124,20 @@ def _network_activation_name(training_cfg) -> str:
     return actor_activation
 
 
+def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd: float) -> float:
+    """Validate user-provided fixed velocity command is in training range."""
+    value = float(velocity_cmd)
+    min_velocity = float(training_cfg.env.min_velocity)
+    max_velocity = float(training_cfg.env.max_velocity)
+    if not (min_velocity <= value <= max_velocity):
+        raise ValueError(
+            "Fixed velocity command "
+            f"{value:.6f} is outside configured range "
+            f"[{min_velocity:.6f}, {max_velocity:.6f}]"
+        )
+    return value
+
+
 def _is_terminated_from_pose(
     *,
     height: float,
@@ -704,9 +718,10 @@ def main():
     def wrap_angle(angle):
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
-    fixed_velocity = (
+    user_fixed_velocity = (
         args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
     )
+    fixed_velocity = user_fixed_velocity
     if args.demo and fixed_velocity is None:
         eval_cmd = float(getattr(training_cfg.env, "eval_velocity_cmd", -1.0))
         if eval_cmd >= 0.0:
@@ -715,6 +730,11 @@ def main():
             fixed_velocity = (
                 training_cfg.env.min_velocity + training_cfg.env.max_velocity
             ) / 2
+
+    if user_fixed_velocity is not None:
+        fixed_velocity = _validate_user_fixed_velocity_cmd(
+            training_cfg, fixed_velocity
+        )
 
     if fixed_velocity is not None:
         velocity_cmd = fixed_velocity
