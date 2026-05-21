@@ -8,6 +8,172 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke12b-ot8zazo1-result] - 2026-05-20: gait emerges, but late checkpoints drift laterally and over-assign propulsion to one leg
+
+### Run
+
+- W&B offline run:
+  `training/wandb/offline-run-20260518_180320-ot8zazo1`
+- Checkpoints:
+  `training/checkpoints/training_config_v00201_20260518_180323-ot8zazo1`
+- Visual review checkpoint:
+  `checkpoint_2450_50176000.pkl`
+- Config verified from the checkpoint:
+  `min_velocity=0.08`, `max_velocity=0.1333333333`,
+  `eval_velocity_cmd=0.1333333333`,
+  `loc_ref_offline_command_vx=0.1333333333`,
+  `actor_obs_layout_id=wr_obs_v7_phase_proprio`,
+  `loc_ref_reset_base=home`, `loc_ref_residual_base=home`.
+
+### Verdict
+
+**Do not deploy this run yet.**  Smoke12b `ot8zazo1` is materially
+better than the earlier smoke12 / smoke12b runs: the policy now
+survives the full 500-step horizon and produces real forward stepping.
+But the late checkpoints are still **not** clean forward walking:
+
+- deterministic and stochastic visual eval both show large lateral drift
+  and yaw drift over a 10 s rollout,
+- the gait is visibly asymmetric (right-leg-dominant through mid-horizon,
+  then hard left-foot recovery contacts late),
+- and the late train metrics trade better forward velocity for G5
+  residual leakage on the knee chain.
+
+The result is **locomotion emerging, not deployable walking**.
+
+### Source-of-truth check
+
+Code verified before writing this result:
+
+- WR reward / tracking metrics:
+  `training/envs/wildrobot_env.py`
+- WR visualizer forward-speed semantics:
+  `training/eval/visualize_policy.py:get_forward_velocity`
+- WR late-run metrics:
+  `training/wandb/offline-run-20260518_180320-ot8zazo1/files/metrics.jsonl`
+- TB active walk reward:
+  `~/projects/toddlerbot/toddlerbot/locomotion/walk.gin:111-131`
+  and `walk_env.py:631-735`
+
+Important semantic note: WR's `forward_velocity` metric and the
+visualizer's `vel=` print are **heading-local x velocity**, not world-x
+displacement.  A policy can therefore look good on `forward_velocity`
+while still drifting laterally and yawing in world coordinates.  The
+visual review below is the check against that deploy gap.
+
+### Train metrics vs visual eval (checkpoint `2450_50176000.pkl`)
+
+The late-run train metrics and both visual rollouts are directionally
+consistent:
+
+- all three survive the full 500-step horizon,
+- all three show forward motion in the `~0.09-0.12 m/s` band,
+- both visual rollouts expose the same asymmetry that the train
+  per-foot event metrics already show.
+
+| Signal | Train rollout @ iter 2450 | Visual deterministic (`vx_cmd=0.1333`) | Visual stochastic (`vx_cmd=0.133`) |
+|---|---:|---:|---:|
+| Horizon survived | `500 / 500` | `500 / 500` | `500 / 500` |
+| Heading-local forward velocity | `0.0968 m/s` | snapshots `0.08-0.12 m/s` | snapshots `0.03-0.15 m/s` |
+| Cmd tracking error | `0.0306 m/s` | n/a | n/a |
+| Cmd ratio | `0.934` | n/a | n/a |
+| World-x drift after 10 s | n/a | `+0.817 m` | `+0.772 m` |
+| World-y drift after 10 s | n/a | `+0.352 m` | `+0.418 m` |
+| Yaw drift after 10 s | n/a | `+0.154 rad` | `+0.261 rad` |
+| Height at step 500 | no term-height fail | `0.450 m` | `0.450 m` |
+
+Interpretation:
+
+- **Consistency:** train rollout `forward_velocity` and visual `vel=`
+  match; the checkpoint really does step.
+- **Deploy gap:** the visual world-frame drift is large enough that the
+  run is not yet a straight walking controller, even though the local
+  forward-velocity metric looks acceptable.
+
+### Key gait behavior metrics (checkpoint `2450_50176000.pkl`)
+
+Per-foot event metrics below use the code-confirmed conversion from the
+logged per-step mean to per-touchdown mean:
+
+```text
+per-event value = logged metric / touchdown_rate
+```
+
+| Metric | Value | Read |
+|---|---:|---|
+| Touchdown rate L / R | `0.0334 / 0.0404` per step | right foot lands more often |
+| Swing air time per touchdown L / R | `158 ms / 395 ms` | large asymmetry |
+| Step length per touchdown L / R | `31 mm / 70 mm` | right foot owns most propulsion |
+| Carry proxy `tracking/step_length_touchdown_event_m` | `49.5 mm` | consistent with visible forward stepping |
+| `ref/contact_phase_match` | `0.306` | poor prior-phase alignment |
+| `ref/body_quat_err_deg` | `9.53°` | better than earlier smoke12b, still not clean |
+| `tracking/residual_hip_pitch_right_abs` | `0.198` | at cap |
+| `tracking/residual_knee_left_abs` | `0.214` | G5 fail |
+| `tracking/residual_knee_right_abs` | `0.210` | G5 fail |
+
+This table matches the visual contact pattern:
+
+- deterministic visual: right foot carries most of the mid-horizon
+  support load, left foot slaps late,
+- stochastic visual: same qualitative pattern, but with more lateral
+  wander and larger late impacts.
+
+### Late-run checkpoint tradeoff: `2260` vs `2450`
+
+The run does not improve monotonically toward a deployable gait; it
+improves forward motion by letting one side own more of the work.
+
+| Signal | `2260` | `2450` | Read |
+|---|---:|---:|---|
+| `env/forward_velocity` | `0.0658` | `0.0968` | improved |
+| `tracking/cmd_vs_achieved_forward` | `0.0514` | `0.0306` | improved |
+| Carry proxy step length | `34.3 mm` | `49.5 mm` | improved |
+| Swing time / touchdown L / R | `306 / 259 ms` | `158 / 395 ms` | became more asymmetric |
+| Step length / touchdown L / R | `38 / 31 mm` | `31 / 70 mm` | became more asymmetric |
+| `tracking/residual_knee_left_abs` | `0.217` | `0.214` | still over cap |
+| `tracking/residual_knee_right_abs` | `0.194` | `0.210` | crosses cap late |
+
+So the late improvement is real, but it comes with a structural cost:
+**the gait becomes less symmetric and more residual-driven on the knee
+chain.**
+
+### ToddlerBot comparison
+
+ToddlerBot's active walk recipe keeps the dense `feet_phase`,
+`penalty_pose`, and `penalty_feet_ori` family active
+(`walk.gin:119-129`, `walk_env.py:631-735`) and judges policy quality
+with deterministic evaluation.  WR now matches the existence of those
+terms, but this run is still unlike TB in one important behavioral way:
+
+- TB's intended phase program is symmetric half-cycle stepping.
+- WR `ot8zazo1` instead shows a **one-side-dominant residual gait**:
+  the right foot takes the longer swing and longer step, while the left
+  side increasingly behaves like a recovery/support side.
+
+That is the main reason this run still fails as a deploy candidate even
+though it finally moves forward.
+
+### Next step
+
+1. **Do not just train longer from this recipe and assume it will clean
+   itself up.**  By `2450` the run is already trading symmetry for
+   forward velocity.
+2. **Use deterministic pinned-vx post-training eval as the selection
+   authority**, not `env/episode_length` alone.  This run has no
+   meaningful `Evaluate/*` series, and the rollout proxy alone would not
+   catch the world-frame drift.
+3. **For the next training variant, keep the smoke12b basin-break
+   fixes, but pull residual ownership back toward a correction regime.**
+   The evidence here supports tightening the widened leg-pitch residual
+   authority, especially the knee chain, because gait has emerged and
+   the current failure is no longer “cannot move”; it is “moves by
+   over-assigning propulsion to one leg.”
+4. **Add deploy-facing eval metrics to the deterministic post-run
+   summary:** world-x progress, world-y drift, yaw drift, and per-foot
+   event symmetry.  Current train metrics are good enough to detect
+   gait emergence, but not sufficient by themselves to predict straight
+   deploy behavior.
+
 ## [v0.20.1-smoke12-smoke12b-gait-ledger] - 2026-05-18: smoke12 moves backward; smoke12b survives by extinguishing gait motion
 
 ### Runs
