@@ -1283,6 +1283,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         applied_action: jax.Array,
         prev_applied_action: jax.Array,
         forward_velocity: jax.Array,
+        lateral_velocity: jax.Array,
         prev_ref_pelvis_z: jax.Array,
         velocity_cmd: jax.Array,
         left_force: jax.Array,
@@ -1461,7 +1462,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # ---- cmd/forward_velocity_track --------------------------------------
         r_vx, cmd_velocity_xy_err, lateral_velocity_abs = self._cmd_forward_velocity_track_reward(
             forward_velocity=forward_velocity,
-            lateral_velocity=root_vel_h.linear[1].astype(jp.float32),
+            lateral_velocity=lateral_velocity,
             velocity_cmd=velocity_cmd,
             alpha=jp.float32(weights.cmd_forward_velocity_alpha),
             track_dim=self._cmd_velocity_track_dim,
@@ -2660,6 +2661,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
         roll_post, pitch_post, _yaw_post = root_pose.euler_angles()
         forward_velocity = root_vel_h.linear[0].astype(jp.float32)
+        lateral_velocity = root_vel_h.linear[1].astype(jp.float32)
         left_foot_pos, right_foot_pos = self._cal.get_foot_positions(
             data, normalize=False, frame=CoordinateFrame.WORLD
         )
@@ -2727,6 +2729,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             applied_action=applied_action,
             prev_applied_action=wr.prev_action,
             forward_velocity=forward_velocity,
+            lateral_velocity=lateral_velocity,
             # v0.20.2 smoke6: TB-aligned vertical body velocity reward
             # computes its actual vz inside _compute_reward_terms (rotates
             # data.qvel[0:3] by inv(root_quat) for true body-local).
