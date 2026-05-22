@@ -782,6 +782,7 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         lin_vel_z_alpha=rewards.get("lin_vel_z_alpha", 200.0),
         ang_vel_xy_alpha=rewards.get("ang_vel_xy_alpha", 0.5),
         cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
+        cmd_velocity_track_dim=int(rewards.get("cmd_velocity_track_dim", 1)),
         # ToddlerBot-aligned shaping additions (walking_training.md Appendix A.3).
         feet_air_time=rewards.get("feet_air_time", 0.0),
         feet_clearance=rewards.get("feet_clearance", 0.0),

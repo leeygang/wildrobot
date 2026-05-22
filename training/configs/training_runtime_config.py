@@ -940,6 +940,11 @@ class RewardWeightsConfig(Freezable):
     # reference it; the v3 env path does not read it.
     ref_contact_match_sigma: float = 0.5
     cmd_forward_velocity_alpha: float = 4.0
+    # cmd_forward_velocity_track reward dimensionality:
+    #   1 (default) - legacy scalar tracking on vx only.
+    #   2           - TB-style heading-local 2D tracking on (vx, vy),
+    #                 with vy_ref fixed to 0 in forward-only command smokes.
+    cmd_velocity_track_dim: int = 1
 
     # NOTE: ``slip`` and ``pitch_rate`` already exist above (legacy v0.19.5x
     # fields).  The v0.20.1 v3 env reuses those slots — see the M1 fail-

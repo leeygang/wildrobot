@@ -374,6 +374,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._feet_phase_zero_on_standing = bool(
             getattr(self._config.env, "loc_ref_feet_phase_zero_on_standing", False)
         )
+        # cmd-forward tracking dimensionality:
+        #   1 = legacy scalar vx-only tracking
+        #   2 = TB-style local-velocity tracking over (vx, vy_ref=0)
+        self._cmd_velocity_track_dim = int(
+            getattr(self._config.reward_weights, "cmd_velocity_track_dim", 1)
+        )
+        if self._cmd_velocity_track_dim not in (1, 2):
+            raise ValueError(
+                "reward_weights.cmd_velocity_track_dim must be 1 or 2; "
+                f"got {self._cmd_velocity_track_dim!r}"
+            )
         # Default reflects the WR-normalized value
         # (LocomotionEnvConfig.close_feet_threshold = 0.146).  Only fires
         # if the env is constructed outside TrainingConfig.
@@ -1013,6 +1024,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             standing_reward = raw
         return jp.where(is_standing, standing_reward, walking_reward)
 
+    @staticmethod
+    def _cmd_forward_velocity_track_reward(
+        *,
+        forward_velocity: jax.Array,
+        lateral_velocity: jax.Array,
+        velocity_cmd: jax.Array,
+        alpha: jax.Array,
+        track_dim: int,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Compute cmd_forward_velocity_track and its 2D diagnostics.
+
+        ``track_dim == 1`` preserves the historical scalar-vx reward:
+
+            exp(-alpha * (vx - cmd_vx)^2)
+
+        ``track_dim == 2`` switches to TB-style heading-local 2D tracking:
+
+            exp(-alpha * ((vx - cmd_vx)^2 + (vy - 0)^2))
+        """
+        vx_err = forward_velocity - velocity_cmd
+        vy_err = lateral_velocity
+        err_sq = vx_err * vx_err
+        if track_dim == 2:
+            err_sq = err_sq + vy_err * vy_err
+        elif track_dim != 1:
+            raise ValueError(f"track_dim must be 1 or 2; got {track_dim!r}")
+        reward = jp.exp(-alpha * err_sq).astype(jp.float32)
+        cmd_velocity_xy_err = jp.sqrt(vx_err * vx_err + vy_err * vy_err).astype(jp.float32)
+        lateral_velocity_abs = jp.abs(vy_err).astype(jp.float32)
+        return reward, cmd_velocity_xy_err, lateral_velocity_abs
+
     # --------------------------------------------------- offline window helpers
 
     def _lookup_offline_window(self, step_idx: jax.Array) -> Dict[str, jax.Array]:
@@ -1417,9 +1459,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         contact_phase_match_diag = 0.5 * r_contact
 
         # ---- cmd/forward_velocity_track --------------------------------------
-        vx_err = forward_velocity - velocity_cmd
-        r_vx = jp.exp(
-            -jp.float32(weights.cmd_forward_velocity_alpha) * vx_err * vx_err
+        r_vx, cmd_velocity_xy_err, lateral_velocity_abs = self._cmd_forward_velocity_track_reward(
+            forward_velocity=forward_velocity,
+            lateral_velocity=root_vel_h.linear[1].astype(jp.float32),
+            velocity_cmd=velocity_cmd,
+            alpha=jp.float32(weights.cmd_forward_velocity_alpha),
+            track_dim=self._cmd_velocity_track_dim,
         )
 
         # ---- regularizers (raw squared-sums; weights are negative) ----------
@@ -1726,6 +1771,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             lin_vel_z_err_m_s=jp.abs(lin_vel_z_err).astype(jp.float32),
             ang_vel_xy_err_rad_s=jp.sqrt(ang_vel_xy_sq_sum).astype(jp.float32),
             feet_distance_torso_m=feet_dist.astype(jp.float32),
+            cmd_velocity_xy_err=cmd_velocity_xy_err,
+            lateral_velocity_abs=lateral_velocity_abs,
         )
 
     def _aggregate_reward(
@@ -2457,6 +2504,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
             root_vel_h.linear[0] - velocity_cmd
         ).astype(jp.float32)
+        metrics_dict["tracking/cmd_velocity_xy_err"] = jp.sqrt(
+            (root_vel_h.linear[0] - velocity_cmd) * (root_vel_h.linear[0] - velocity_cmd)
+            + root_vel_h.linear[1] * root_vel_h.linear[1]
+        ).astype(jp.float32)
+        metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
+            root_vel_h.linear[1]
+        ).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
             jp.abs(velocity_cmd) > jp.float32(1e-6)
@@ -2883,6 +2937,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
             forward_velocity - velocity_cmd
         ).astype(jp.float32)
+        terminal_metrics_dict["tracking/cmd_velocity_xy_err"] = reward_terms[
+            "cmd_velocity_xy_err"
+        ]
+        terminal_metrics_dict["tracking/lateral_velocity_abs"] = reward_terms[
+            "lateral_velocity_abs"
+        ]
         terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(
             jp.float32
         )

@@ -1714,6 +1714,18 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="tracking",
         description="Fraction of sampled commands with |vx_cmd| > 1e-6.",
     ),
+    MetricSpec(
+        name="tracking/cmd_velocity_xy_err",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="sqrt((vx-cmd_vx)^2 + vy^2) in heading-local frame",
+    ),
+    MetricSpec(
+        name="tracking/lateral_velocity_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Absolute heading-local lateral velocity |vy| (m/s)",
+    ),
 ]
 
 # =============================================================================

@@ -222,6 +222,7 @@ _HYBRID_MUST_BE_ZERO = (
 
 def test_smoke13_reward_block_matches_tb_active(smoke13_cfg) -> None:
     w = smoke13_cfg.reward_weights
+    assert w.cmd_velocity_track_dim == 2
     for name, expected in _TB_ACTIVE_NONZERO.items():
         got = getattr(w, name)
         assert got == pytest.approx(expected), (

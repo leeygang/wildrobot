@@ -281,10 +281,15 @@ networks:
 reward_weights:
   # ---- TB-active block (walk.gin:110-131) ----
   alive: 1.0                                # walk.gin:127
-  cmd_forward_velocity_track: 2.0           # walk.gin:111 (lin_vel_xy)
+  # walk.gin:111 (lin_vel_xy): smoke13 tracks heading-local (vx, vy)
+  # against (cmd_vx, 0). Command sampling remains forward-only in this smoke.
+  cmd_forward_velocity_track: 2.0
   # alpha_wr = alpha_tb / s^2 = 1000 / (4/3)^2 = 562.5; preserves the
   # normalized tracking basin under WR's 4/3 size scaling.
   cmd_forward_velocity_alpha: 562.5
+  # smoke13 uses TB-style 2D local velocity tracking with vy_ref=0 to
+  # target lateral-drift failure without adding lateral/yaw commands.
+  cmd_velocity_track_dim: 2
   ref_body_quat_track: 2.5                  # walk.gin:117 (torso_quat;
                                             # WR impl is upright-angle
                                             # vs identity, not an
