@@ -1718,13 +1718,29 @@ METRIC_SPECS: List[MetricSpec] = [
         name="tracking/cmd_velocity_xy_err",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
-        description="sqrt((vx-cmd_vx)^2 + vy^2) in heading-local frame",
+        description=(
+            "Legacy diagnostic: sqrt((vx-cmd_vx)^2 + vy^2) in "
+            "heading-local frame.  Always actual-vs-commanded; "
+            "kept for back-comparison against pre-smoke13 runs."
+        ),
     ),
     MetricSpec(
         name="tracking/lateral_velocity_abs",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
         description="Absolute heading-local lateral velocity |vy| (m/s)",
+    ),
+    MetricSpec(
+        name="tracking/ref_velocity_xy_err",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in heading-local "
+            "frame, where (ref_vx, ref_vy) comes from the selected "
+            "cmd-conditioned reference's pelvis_vel[:2].  This is the "
+            "TB-style dim=2 velocity reward error "
+            "(mjx_env.py:2342-2346).  Zero under dim=1."
+        ),
     ),
 ]
 

@@ -278,6 +278,24 @@ class EnvConfig(Freezable):
     # representation per the design note's Q3.
     loc_ref_offline_library_path: Optional[str] = None
     loc_ref_offline_command_vx: float = 0.20  # Phase 9D operating point
+    # v0.20.1 smoke13 — command-conditioned reference lookup (TB parity).
+    #
+    #   False (default; smoke7..smoke12b path) — env builds ONE
+    #     reference trajectory at ``loc_ref_offline_command_vx`` and
+    #     uses it regardless of the per-episode sampled
+    #     ``velocity_cmd``.  Matches the historical behavior.
+    #
+    #   True (smoke13+) — env builds a small reference library
+    #     spanning the command range (vx values:
+    #     ``{min_velocity, max_velocity,
+    #     loc_ref_offline_command_vx}`` deduped) and selects the
+    #     nearest bin at each step using ``velocity_cmd``.  Mirrors
+    #     TB's ``motion_ref.get_state_ref(time, command, ...)``
+    #     pattern at toddlerbot/locomotion/mjx_env.py.  Required for
+    #     TB-style dim=2 velocity tracking so the reward compares
+    #     actual ``(vx, vy)`` to the cmd-matching reference's
+    #     pelvis velocity, not to ``(velocity_cmd, 0)``.
+    loc_ref_command_conditioned: bool = False
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
     loc_ref_walking_pelvis_height_m: float = 0.40

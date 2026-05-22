@@ -189,6 +189,12 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             # in training_runtime_config.py and the smoke YAML.
             env.get("loc_ref_offline_command_vx", 0.20)
         ),
+        # v0.20.1 smoke13 — command-conditioned reference lookup.  See
+        # LocomotionEnvConfig docstring; default false preserves legacy
+        # single-bin behavior.
+        loc_ref_command_conditioned=bool(
+            env.get("loc_ref_command_conditioned", False)
+        ),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",
             env.get("loc_ref_nominal_com_height_m", 0.40))),

@@ -17,15 +17,35 @@
 #     delayed_action) modulo the WR-specific per-joint scale map
 #     below.
 #
-#   loc_ref_residual_scale: 0.25 scalar baseline + per-joint
-#       {knee_pitch: 0.5, hip_pitch: 0.35}
-#     TB-scalar 0.25 baseline (mjx_config.py:103) on every joint;
-#     the per-joint map widens the two pitch chains that the WR
-#     prior demands more of (leg ≈ 1.85× TB leg → leg-pitch needs
-#     more headroom to express a 0.05 m swing).  This is narrower
-#     than smoke12b's widened {knee 0.667, hip 0.353/0.387} so
-#     smoke13 keeps the G5 anti-exploit gate (residual_p50 ≤ 0.20
-#     rad) inside the cap on knees too.
+#   loc_ref_residual_scale: smoke12b authority (RESTORED)
+#     Earlier smoke13 drafts narrowed knees to 0.5 / hip-pitch to
+#     0.35 and produced a failed run (height-low collapse +
+#     back-drive in offline-run-20260521_221534-29exm4g5).  Smoke12b
+#     was the first branch that broke the standing basin and
+#     visually walked, so smoke13 reverts the per-joint scale map
+#     to smoke12b values exactly (scalar 0.2 + knees 0.667/0.6657 +
+#     hip_pitch 0.353/0.387) and tests the command-conditioned
+#     reference + 2D tracking change in isolation.
+#
+#   loc_ref_command_conditioned: true (TB parity)
+#     Builds a small reference library spanning the command range
+#     [min_velocity, max_velocity] (plus loc_ref_offline_command_vx
+#     if distinct) and selects the nearest-vx bin per episode
+#     using the sampled velocity_cmd.  Mirrors TB's
+#     motion_ref.get_state_ref(time, command, ...) pattern
+#     (~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py).
+#     The fixed-bin behavior is preserved as default for older
+#     configs (loc_ref_command_conditioned defaults to false).
+#
+#   cmd_velocity_track_dim: 2 (TB-style 2D velocity tracking)
+#     Under dim=2 + command-conditioned, the velocity reward
+#     compares actual (vx, vy) in heading-local frame to the
+#     SELECTED reference's pelvis_vel[:2] rather than to
+#     (velocity_cmd, 0).  Matches TB walk_env reward at
+#     mjx_env.py:2342-2346.  Forward-only commands and yaw=0
+#     prior mean the reference's world pelvis_vel ≈ heading-local
+#     velocity, so frames align.  Dim=1 path is unchanged and
+#     still legacy: exp(-alpha * (vx - cmd_vx)^2) ignoring vy.
 #
 #   Reward stack: TB-active block ONLY (weights byte-equal to smoke12b)
 #     The smoke12b reward weights are already a clean copy of TB
@@ -80,10 +100,11 @@
 #
 # Compute: matched to smoke12b's bootstrap budget (480 iters * 2048 envs *
 # 20 rollout_steps ≈ 19.7M env-steps) so smoke13 is a same-compute
-# A/B against smoke12b — answers "does the simplified
-# scalar-0.25 + leg-pitch-widened residual recipe bootstrap walking
-# better than smoke12b's wider per-joint cap?"  TB-aligned PPO
-# hyperparams (lr=3e-5, entropy 5e-4) kept identical to smoke12b.
+# A/B against smoke12b — answers "does TB-style command-conditioned
+# reference + 2D velocity tracking bootstrap walking better than
+# smoke12b's fixed-reference 1D tracking, given the same residual
+# authority and reward stack?"  TB-aligned PPO hyperparams
+# (lr=3e-5, entropy 5e-4) kept identical to smoke12b.
 #
 # Bootstrap scope (unchanged from smoke12b):
 #   - forward-only cmd range [0.08, 0.1333] m/s
@@ -198,21 +219,43 @@ env:
   # reference because TB does the equivalent.
   critic_imitation_refs: true
 
-  # Scalar 0.25 baseline (TB mjx_config.py:103) + per-joint widening
-  # only on the leg-pitch chain.  WR's leg is ~1.85x TB's leg, so
-  # the pitch joints need more headroom to express a 0.05 m swing;
-  # roll / ankle / arm / waist joints stay at the TB-faithful 0.25
-  # because the prior doesn't demand more there.  Narrower than
-  # smoke12b's widened map (knee 0.667, hip 0.353/0.387) so the G5
-  # anti-exploit gate (residual_p50 ≤ 0.20 rad) stays interior to
-  # the cap on knees and hip-pitch both.
+  # Command-conditioned reference lookup (TB parity).  When true,
+  # the env builds a small reference library spanning the command
+  # range [min_velocity, max_velocity] (plus
+  # loc_ref_offline_command_vx if distinct) and selects the
+  # nearest-vx bin per episode using the sampled velocity_cmd.
+  # This is what TB does via motion_ref.get_state_ref(time,
+  # command, ...) — the prior's pelvis velocity follows the
+  # sampled command, so dim=2 cmd_forward_velocity_track can
+  # compare actual (vx, vy) to a meaningful reference instead of
+  # always comparing against the fixed 0.1333 m/s trajectory.
+  # Default false in older configs preserves the legacy
+  # single-bin behavior; smoke13 sets true.
+  loc_ref_command_conditioned: true
+
+  # Restored to smoke12b residual scales exactly.  Earlier smoke13
+  # drafts narrowed knees to 0.5 / hip-pitch to 0.35 and produced
+  # a failed run (height-low collapse + backward drive in
+  # offline-run-20260521_221534-29exm4g5).  Smoke12b was the first
+  # branch that broke the standing basin and visually walked, so
+  # smoke13 now keeps that authority and tests the
+  # command-conditioned reference + 2D tracking change in
+  # isolation.  Per-joint values generated by
+  # ``assets/derive_residual_scales.py --coverage 0.75``;
+  # re-run after regenerating the prior or home keyframe.
   loc_ref_residual_mode: absolute
-  loc_ref_residual_scale: 0.25
+  loc_ref_residual_scale: 0.2
   loc_ref_residual_scale_per_joint:
-    left_knee_pitch: 0.5
-    right_knee_pitch: 0.5
-    left_hip_pitch: 0.35
-    right_hip_pitch: 0.35
+    left_hip_pitch: 0.3534
+    left_hip_roll: 0.25
+    left_knee_pitch: 0.667
+    left_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_hip_pitch: 0.3867
+    right_hip_roll: 0.25
+    right_knee_pitch: 0.6657
+    right_ankle_pitch: 0.25
+    right_ankle_roll: 0.25
 
   push_enabled: false
   imu_gyro_noise_std: 0.05
@@ -347,7 +390,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke13, home_anchored_residual, tb_active_rewards, action_scale_0p25_leg_pitch_widened]
+  tags: [ppo, v0.20.1, smoke13, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim2]
 
 video:
   enabled: false

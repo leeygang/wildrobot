@@ -742,11 +742,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # -------------------------------------------------- offline reference svc
 
     def _init_offline_service(self) -> None:
-        """Build the runtime reference service + pre-staged JAX arrays.
+        """Build the runtime reference service(s) + pre-staged JAX arrays.
 
-        Threads the dict returned by ``service.to_jax_arrays()`` through
-        the JIT'd step (the env stores it as a plain attribute; JAX
-        treats the leaves as constants and folds the indexing).
+        Two modes:
+
+          - Legacy (loc_ref_command_conditioned=False; default for
+            smoke7..smoke12b): one trajectory at
+            ``loc_ref_offline_command_vx``.
+            ``self._offline_jax_arrays`` is the single-trajectory dict
+            from ``RuntimeReferenceService.to_jax_arrays()``.
+
+          - Command-conditioned (loc_ref_command_conditioned=True;
+            smoke13+): a small library spanning
+            ``{min_velocity, max_velocity, loc_ref_offline_command_vx}``
+            (deduped + sorted) with each field stacked along a leading
+            bin axis: ``(n_bins, n_steps, ...)``.  Per-step bin
+            selection at runtime uses nearest-vx against
+            ``self._offline_vx_grid`` (no interpolation —
+            ``RuntimeReferenceService.lookup_np`` and ``lookup_jax``
+            don't support it).  Mirrors TB
+            ``motion_ref.get_state_ref(time, command, ...)`` at
+            toddlerbot/locomotion/mjx_env.py.
+
+        Threads the dict through the JIT'd step (JAX treats the leaves
+        as constants and folds the indexing).  All bins are required
+        to have the same ``n_steps`` (the WR ZMP generator currently
+        produces fixed-length trajectories per vx, so this is a no-op
+        check today; pinned here so a future variable-length generator
+        fails loudly rather than silently shape-mismatching).
         """
         from control.references.runtime_reference_service import (
             RuntimeReferenceService,
@@ -758,17 +781,89 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # training_runtime_config.py is also 0.20), but kept defensive.
         offline_vx = float(getattr(self._config.env, "loc_ref_offline_command_vx", 0.20))
 
+        cmd_conditioned = bool(
+            getattr(self._config.env, "loc_ref_command_conditioned", False)
+        )
+
+        # Build the vx grid.  Legacy mode: just the single offline vx.
+        # Cmd-conditioned: dedupe {min_velocity, max_velocity, offline_vx}.
+        if cmd_conditioned:
+            min_vx = float(self._config.env.min_velocity)
+            max_vx = float(self._config.env.max_velocity)
+            vx_grid = sorted({
+                round(min_vx, 6),
+                round(max_vx, 6),
+                round(offline_vx, 6),
+            })
+        else:
+            vx_grid = [offline_vx]
+
         if offline_path:
             from control.references.reference_library import ReferenceLibrary
             lib = ReferenceLibrary.load(offline_path)
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
-            lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
+            lib = ZMPWalkGenerator().build_library_for_vx_values(list(vx_grid))
 
-        traj = lib.lookup(offline_vx)
-        self._offline_service = RuntimeReferenceService(traj, n_anchor=2)
-        self._offline_jax_arrays = self._offline_service.to_jax_arrays()
-        self._offline_n_steps = int(self._offline_service.n_steps)
+        # Build a service per bin (cheap: it just wraps the trajectory
+        # arrays).  Keep the legacy single-bin service as
+        # ``_offline_service`` because callers downstream of the env
+        # still use methods on it (``compute_command_integrated_path_state``,
+        # ``lookup_np`` for win0 readouts) that don't fit cleanly into
+        # the stacked representation.
+        per_bin_arrays: list[dict] = []
+        per_bin_services: list[RuntimeReferenceService] = []
+        n_steps_ref: int | None = None
+        for vx in vx_grid:
+            traj = lib.lookup(vx)
+            svc = RuntimeReferenceService(traj, n_anchor=2)
+            if n_steps_ref is None:
+                n_steps_ref = int(svc.n_steps)
+            elif int(svc.n_steps) != n_steps_ref:
+                raise ValueError(
+                    f"Command-conditioned reference: trajectory at vx={vx} "
+                    f"has n_steps={svc.n_steps}, expected {n_steps_ref}.  "
+                    "All bins must share the same length so the stacked "
+                    "lookup arrays are well-defined."
+                )
+            per_bin_arrays.append(svc.to_jax_arrays())
+            per_bin_services.append(svc)
+        # Pick the bin closest to the configured offline vx as the
+        # "primary" service (used by win0 readouts + path-state
+        # integration — those callers still operate on a single
+        # service object, not on the stacked arrays).
+        primary_idx = int(
+            min(
+                range(len(vx_grid)),
+                key=lambda i: abs(vx_grid[i] - offline_vx),
+            )
+        )
+        primary_service = per_bin_services[primary_idx]
+
+        # Assemble the JAX arrays the JIT'd step consumes.  Under
+        # cmd-conditioned mode each field gets a leading bin axis;
+        # under legacy mode the field shapes match the historical
+        # single-service layout exactly (no stacking).
+        if cmd_conditioned:
+            stacked: Dict[str, jax.Array] = {}
+            for key in per_bin_arrays[0].keys():
+                if key == "n_steps":
+                    stacked[key] = per_bin_arrays[0][key]
+                else:
+                    stacked[key] = jp.stack(
+                        [b[key] for b in per_bin_arrays], axis=0
+                    )
+            self._offline_jax_arrays = stacked
+            self._offline_vx_grid = jp.asarray(vx_grid, dtype=jp.float32)
+        else:
+            self._offline_jax_arrays = per_bin_arrays[0]
+            # Sentinel grid (single bin); _lookup_offline_window picks
+            # bin 0 unconditionally under legacy mode.
+            self._offline_vx_grid = jp.asarray(vx_grid, dtype=jp.float32)
+
+        self._offline_command_conditioned = cmd_conditioned
+        self._offline_service = primary_service
+        self._offline_n_steps = int(n_steps_ref)
         win0 = self._offline_service.lookup_np(0)
         self._ref_init_q_rad = jp.clip(
             jp.asarray(win0.q_ref, dtype=jp.float32),
@@ -1030,36 +1125,139 @@ class WildRobotEnv(mjx_env.MjxEnv):
         forward_velocity: jax.Array,
         lateral_velocity: jax.Array,
         velocity_cmd: jax.Array,
+        ref_forward_velocity: jax.Array,
+        ref_lateral_velocity: jax.Array,
         alpha: jax.Array,
         track_dim: int,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Compute cmd_forward_velocity_track and its 2D diagnostics.
 
         ``track_dim == 1`` preserves the historical scalar-vx reward:
 
-            exp(-alpha * (vx - cmd_vx)^2)
+            exp(-alpha * (vx_actual - velocity_cmd)^2)
 
-        ``track_dim == 2`` switches to TB-style heading-local 2D tracking:
+        ``track_dim == 2`` switches to TB-style heading-local 2D
+        tracking against the SELECTED reference trajectory's pelvis
+        velocity (toddlerbot/locomotion/mjx_env.py:2342-2346):
 
-            exp(-alpha * ((vx - cmd_vx)^2 + (vy - 0)^2))
-        """
-        vx_err = forward_velocity - velocity_cmd
-        vy_err = lateral_velocity
-        err_sq = vx_err * vx_err
-        if track_dim == 2:
-            err_sq = err_sq + vy_err * vy_err
-        elif track_dim != 1:
+            exp(-alpha * ((vx_actual - ref_vx)^2
+                        + (vy_actual - ref_vy)^2))
+
+        Under cmd-conditioned reference lookup the reference's pelvis
+        velocity follows the sampled ``velocity_cmd``, so the reward
+        gradient sees a meaningful target across the command range
+        rather than always tracking the single fixed offline_vx.
+
+        Frame note: ``forward_velocity`` and ``lateral_velocity`` are
+        in the actor's heading-local frame (CoordinateFrame.HEADING_LOCAL
+        in ``_compute_reward_terms``).  ``ref_forward_velocity`` and
+        ``ref_lateral_velocity`` come from
+        ``win["pelvis_vel"][:2]``, which the offline trajectory stores
+        in world frame; the prior holds yaw == 0 throughout, so for
+        forward-only commands the offline-prior's world frame and
+        heading-local frame coincide at the prior's heading.  Mismatch
+        between the actor's yaw and the prior's yaw is small in the
+        forward-only smoke13 setting; future configs that sample yaw
+        commands will need to project ref velocity through the actor's
+        yaw to keep frames aligned.
+
+        Returns ``(reward, cmd_velocity_xy_err, lateral_velocity_abs,
+        ref_velocity_xy_err)``.  ``cmd_velocity_xy_err`` is the legacy
+        "actual vs commanded" diagnostic (kept regardless of dim);
+        ``ref_velocity_xy_err`` is the dim=2 reward-target error
+        (zero under dim=1)."""
+        vx_err_cmd = forward_velocity - velocity_cmd
+        vx_err_ref = forward_velocity - ref_forward_velocity
+        vy_err_ref = lateral_velocity - ref_lateral_velocity
+        if track_dim == 1:
+            err_sq = vx_err_cmd * vx_err_cmd
+            ref_xy_err = jp.float32(0.0)
+        elif track_dim == 2:
+            err_sq = vx_err_ref * vx_err_ref + vy_err_ref * vy_err_ref
+            ref_xy_err = jp.sqrt(
+                vx_err_ref * vx_err_ref + vy_err_ref * vy_err_ref
+            ).astype(jp.float32)
+        else:
             raise ValueError(f"track_dim must be 1 or 2; got {track_dim!r}")
         reward = jp.exp(-alpha * err_sq).astype(jp.float32)
-        cmd_velocity_xy_err = jp.sqrt(vx_err * vx_err + vy_err * vy_err).astype(jp.float32)
-        lateral_velocity_abs = jp.abs(vy_err).astype(jp.float32)
-        return reward, cmd_velocity_xy_err, lateral_velocity_abs
+        # Legacy diagnostic: distance of actual (vx, vy) from
+        # (velocity_cmd, 0).  Kept under both dims so back-comparisons
+        # against pre-smoke13 runs stay meaningful.
+        cmd_velocity_xy_err = jp.sqrt(
+            vx_err_cmd * vx_err_cmd + lateral_velocity * lateral_velocity
+        ).astype(jp.float32)
+        lateral_velocity_abs = jp.abs(lateral_velocity).astype(jp.float32)
+        return reward, cmd_velocity_xy_err, lateral_velocity_abs, ref_xy_err
 
     # --------------------------------------------------- offline window helpers
 
-    def _lookup_offline_window(self, step_idx: jax.Array) -> Dict[str, jax.Array]:
-        """Pure JAX lookup into the pre-staged service arrays."""
-        return self._offline_service.lookup_jax(step_idx, self._offline_jax_arrays)
+    def _lookup_offline_window(
+        self,
+        step_idx: jax.Array,
+        velocity_cmd: Optional[jax.Array] = None,
+    ) -> Dict[str, jax.Array]:
+        """Pure JAX lookup into the pre-staged service arrays.
+
+        Under legacy mode (``loc_ref_command_conditioned=False``)
+        ``velocity_cmd`` is ignored and the single-bin
+        ``RuntimeReferenceService.lookup_jax`` path runs unchanged.
+
+        Under command-conditioned mode the stacked arrays have a
+        leading ``n_bins`` axis; ``bin_idx = argmin(|vx_grid -
+        velocity_cmd|)`` selects the nearest-vx bin per call and the
+        result has the same single-trajectory shape the legacy path
+        produces.  No interpolation between bins (the
+        ``RuntimeReferenceService`` lookup contract is nearest-frame,
+        and bin-to-bin trajectories aren't time-aligned to support
+        per-field linear blending cleanly).
+        """
+        if not self._offline_command_conditioned:
+            return self._offline_service.lookup_jax(
+                step_idx, self._offline_jax_arrays
+            )
+        if velocity_cmd is None:
+            # Command-conditioned mode without a cmd input: fall back
+            # to the bin closest to the configured offline_vx so
+            # legacy call sites (e.g. tests probing window[0]) stay
+            # deterministic.
+            bin_idx = jp.argmin(
+                jp.abs(self._offline_vx_grid
+                       - jp.float32(self._config.env.loc_ref_offline_command_vx))
+            ).astype(jp.int32)
+        else:
+            bin_idx = jp.argmin(
+                jp.abs(self._offline_vx_grid - jp.asarray(velocity_cmd, dtype=jp.float32))
+            ).astype(jp.int32)
+
+        n_steps = self._offline_jax_arrays["n_steps"]
+        n_anchor = self._offline_service.n_anchor
+        idx = jp.clip(step_idx, 0, n_steps - 1).astype(jp.int32)
+        future_offsets = jp.arange(1, n_anchor + 1, dtype=jp.int32)
+        future_idx = jp.clip(idx + future_offsets, 0, n_steps - 1)
+
+        a = self._offline_jax_arrays
+        return {
+            "q_ref":          a["q_ref"][bin_idx, idx],
+            "phase_sin":      a["phase_sin"][bin_idx, idx],
+            "phase_cos":      a["phase_cos"][bin_idx, idx],
+            "stance_foot_id": a["stance_foot_id"][bin_idx, idx],
+            "contact_mask":   a["contact_mask"][bin_idx, idx],
+            "pelvis_pos":     a["pelvis_pos"][bin_idx, idx],
+            "pelvis_vel":     a["pelvis_vel"][bin_idx, idx],
+            "left_foot_pos":  a["left_foot_pos"][bin_idx, idx],
+            "right_foot_pos": a["right_foot_pos"][bin_idx, idx],
+            "left_foot_vel":  a["left_foot_vel"][bin_idx, idx],
+            "right_foot_vel": a["right_foot_vel"][bin_idx, idx],
+            "body_pos":       a["body_pos"][bin_idx, idx],
+            "body_quat":      a["body_quat"][bin_idx, idx],
+            "body_lin_vel":   a["body_lin_vel"][bin_idx, idx],
+            "body_ang_vel":   a["body_ang_vel"][bin_idx, idx],
+            "site_pos":       a["site_pos"][bin_idx, idx],
+            "future_q_ref":            a["q_ref"][bin_idx][future_idx],
+            "future_phase_sin":        a["phase_sin"][bin_idx][future_idx],
+            "future_phase_cos":        a["phase_cos"][bin_idx][future_idx],
+            "future_contact_mask":     a["contact_mask"][bin_idx][future_idx],
+        }
 
     def _v4_compat_channels_from_window(
         self, win: Dict[str, jax.Array], prev_history: Optional[jax.Array]
@@ -1460,12 +1658,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
         contact_phase_match_diag = 0.5 * r_contact
 
         # ---- cmd/forward_velocity_track --------------------------------------
-        r_vx, cmd_velocity_xy_err, lateral_velocity_abs = self._cmd_forward_velocity_track_reward(
-            forward_velocity=forward_velocity,
-            lateral_velocity=lateral_velocity,
-            velocity_cmd=velocity_cmd,
-            alpha=jp.float32(weights.cmd_forward_velocity_alpha),
-            track_dim=self._cmd_velocity_track_dim,
+        # Under dim=2 (TB parity) the reward compares actual heading-local
+        # (vx, vy) to the selected reference's pelvis velocity instead of
+        # to (velocity_cmd, 0).  win["pelvis_vel"] comes from the
+        # cmd-conditioned bin under loc_ref_command_conditioned=true, so
+        # the target follows the sampled command.  Under dim=1 the ref
+        # velocity is ignored entirely (legacy scalar-vx tracking).
+        ref_pelvis_vel_xy = win["pelvis_vel"][:2].astype(jp.float32)
+        r_vx, cmd_velocity_xy_err, lateral_velocity_abs, ref_velocity_xy_err = (
+            self._cmd_forward_velocity_track_reward(
+                forward_velocity=forward_velocity,
+                lateral_velocity=lateral_velocity,
+                velocity_cmd=velocity_cmd,
+                ref_forward_velocity=ref_pelvis_vel_xy[0],
+                ref_lateral_velocity=ref_pelvis_vel_xy[1],
+                alpha=jp.float32(weights.cmd_forward_velocity_alpha),
+                track_dim=self._cmd_velocity_track_dim,
+            )
         )
 
         # ---- regularizers (raw squared-sums; weights are negative) ----------
@@ -1774,6 +1983,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             feet_distance_torso_m=feet_dist.astype(jp.float32),
             cmd_velocity_xy_err=cmd_velocity_xy_err,
             lateral_velocity_abs=lateral_velocity_abs,
+            ref_velocity_xy_err=ref_velocity_xy_err,
         )
 
     def _aggregate_reward(
@@ -2313,7 +2523,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # iter-0 is exactly base_q.  base_q is q_ref0 under smoke7,
         # home_q_rad under smoke8 (loc_ref_residual_base="home"), and
         # ref_init_q under smoke9c (loc_ref_residual_base="ref_init").
-        win0 = self._lookup_offline_window(jp.asarray(0, dtype=jp.int32))
+        # Under cmd-conditioned lookup, pick the bin matching this
+        # episode's sampled velocity_cmd (defaults to the configured
+        # offline_vx bin under legacy mode).
+        win0 = self._lookup_offline_window(
+            jp.asarray(0, dtype=jp.int32),
+            velocity_cmd=velocity_cmd,
+        )
         q_ref0 = win0["q_ref"].astype(jp.float32)
         if self._residual_base_mode == "home":
             ctrl_init = self._home_q_rad
@@ -2512,6 +2728,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
         ).astype(jp.float32)
+        # ref_velocity_xy_err = sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2)
+        # where ref_vx, ref_vy come from the cmd-conditioned reference
+        # window's pelvis velocity.  Zero at reset (root_vel_h is zero,
+        # win0 pelvis_vel is also zero by the trajectory's frame-0
+        # initialization), populated by the step-time reward path.
+        ref_pelvis_vel_xy0 = win0["pelvis_vel"][:2].astype(jp.float32)
+        metrics_dict["tracking/ref_velocity_xy_err"] = jp.sqrt(
+            (root_vel_h.linear[0] - ref_pelvis_vel_xy0[0]) ** 2
+            + (root_vel_h.linear[1] - ref_pelvis_vel_xy0[1]) ** 2
+        ).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
             jp.abs(velocity_cmd) > jp.float32(1e-6)
@@ -2568,7 +2794,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pending_action = wr.pending_action
 
         next_step_idx = (wr.loc_ref_offline_step_idx + 1).astype(jp.int32)
-        win = self._lookup_offline_window(next_step_idx)
+        # Both the current and prev windows are looked up at the
+        # episode's sampled velocity_cmd so the reference's pelvis
+        # velocity / contact mask / q_ref all match the command the
+        # actor is being asked to track.  Legacy mode ignores
+        # velocity_cmd and always returns the single bin.
+        win = self._lookup_offline_window(next_step_idx, velocity_cmd=velocity_cmd)
         nominal_q_ref = win["q_ref"].astype(jp.float32)
         t_since_reset_s = next_step_idx.astype(jp.float32) * jp.float32(self.dt)
         # Phase 4: keep planner pelvis_pos for diagnostics, but shift torso
@@ -2584,7 +2815,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Clamp at 0 so step 0's "previous" is itself (zero velocity for the
         # very first step; subsequent steps see real bobbing).
         prev_step_idx = jp.maximum(next_step_idx - 1, 0).astype(jp.int32)
-        prev_win = self._lookup_offline_window(prev_step_idx)
+        prev_win = self._lookup_offline_window(prev_step_idx, velocity_cmd=velocity_cmd)
         prev_ref_pelvis_z = prev_win["pelvis_pos"][2].astype(jp.float32)
 
         # zero-residual invariant: filter the residual ONLY (in policy [-1, 1] space).
@@ -2945,6 +3176,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["tracking/lateral_velocity_abs"] = reward_terms[
             "lateral_velocity_abs"
+        ]
+        terminal_metrics_dict["tracking/ref_velocity_xy_err"] = reward_terms[
+            "ref_velocity_xy_err"
         ]
         terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(
             jp.float32
