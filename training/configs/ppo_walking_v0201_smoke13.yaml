@@ -1,33 +1,33 @@
 # =============================================================================
-# WildRobot v0.20.1 PPO Smoke 13 — TB-style direct-policy walking migration
+# WildRobot v0.20.1 PPO Smoke 13 — home-anchored residual walking
 # =============================================================================
-# Clean architectural migration off the hybrid bounded-residual recipe.
-# Replaces smoke12b's residual contract with a single canonical
-# locomotion-ready default pose anchor and a direct bounded action
-# around it, matching TB's active locomotion stack
-# (toddlerbot/locomotion/mjx_env.py:1543-1546:
-#   action_target = default_action + action_scale * delayed_action).
+# Simplification of smoke12b toward single-base control.  Same env /
+# action contract family as smoke12b but pruned to one canonical
+# locomotion-ready anchor (`home`) with narrower per-joint scales
+# and the imitation/hybrid reward terms held off.  No new runtime
+# mode or anchor selector is introduced.
 #
 # Architectural decisions (delta vs smoke12b):
 #
-#   action_mode: direct
-#     Hard-anchors the action path on _home_q_rad.  Removes the
-#     loc_ref_residual_base = {q_ref, home, ref_init} switch from
-#     this branch — the env's _compose_target_q_from_residual
-#     bypasses it entirely under action_mode == "direct".  Reward
-#     and phase paths are independent.
+#   loc_ref_residual_base: home (unchanged from smoke12b)
+#     target_q = clip(home_q + clip(action) * scale, joint_range).
+#     This is the only action anchor in smoke13.  Mirrors TB's
+#     active locomotion contract (toddlerbot/locomotion/mjx_env.py
+#     :1543-1546: action_target = default_action + action_scale *
+#     delayed_action) modulo the WR-specific per-joint scale map
+#     below.
 #
-#   loc_ref_residual_scale: 0.25 (scalar; TB-faithful)
-#     Replaces smoke12b's widened per-joint scales
-#     (knee 0.667 / hip_pitch ~0.38) with TB's scalar 0.25
-#     (mjx_config.py:103).  The widened cap was a smoke12 diagnostic
-#     for the residual branch; under direct-policy + TB-active
-#     rewards, exhaust the TB-faithful recipe first before
-#     re-widening.  If smoke13 stalls and the dominant failure mode
-#     is "action authority too tight on legs", a follow-up branch
-#     can re-introduce per-joint scaling with a documented rationale.
+#   loc_ref_residual_scale: 0.25 scalar baseline + per-joint
+#       {knee_pitch: 0.5, hip_pitch: 0.35}
+#     TB-scalar 0.25 baseline (mjx_config.py:103) on every joint;
+#     the per-joint map widens the two pitch chains that the WR
+#     prior demands more of (leg ≈ 1.85× TB leg → leg-pitch needs
+#     more headroom to express a 0.05 m swing).  This is narrower
+#     than smoke12b's widened {knee 0.667, hip 0.353/0.387} so
+#     smoke13 keeps the G5 anti-exploit gate (residual_p50 ≤ 0.20
+#     rad) inside the cap on knees too.
 #
-#   Reward stack: TB-active block ONLY (same weights as smoke12b)
+#   Reward stack: TB-active block ONLY (weights byte-equal to smoke12b)
 #     The smoke12b reward weights are already a clean copy of TB
 #     walk.gin:110-131.  Smoke13 keeps them byte-equal and explicitly
 #     zeros out every hybrid imitation term so a future change
@@ -35,9 +35,9 @@
 #
 #   Observation: wr_obs_v7_phase_proprio (unchanged)
 #     v7 carries phase(2) + proprio_history(1050) on top of the v3
-#     base (gravity + gyro + jpos + jvel + foot_switches + prev_action +
-#     velocity_cmd).  No offline-reference window channels in the
-#     actor stream.  Already clean for the TB-style direct branch.
+#     base (gravity + gyro + jpos + jvel + foot_switches +
+#     prev_action + velocity_cmd).  No offline-reference window
+#     channels in the actor stream.
 #
 #   Reset: home-anchored, with three layered perturbations
 #     loc_ref_reset_base: home is inherited from smoke12b.  The reset
@@ -62,23 +62,28 @@
 #     suppresses (b); perturb_pose=False suppresses (c) — used by
 #     env.reset_for_eval mirroring tests).
 #
-#   Critic: privileged enabled, cleaned of imitation refs
-#     critic_imitation_refs: false swaps the legacy
-#     ``motor_pos_error = q_actual - nominal_q_ref(t)`` for
-#     ``q_actual - home_q_rad`` (TB mjx_env.py:2060 default-pose
-#     anchor), and replaces ``ref_stance = win["contact_mask"]``
-#     with a phase-derived alternating stance from phase_sin_cos.
-#     Smoke7..smoke12b kept those two imitation channels on the
-#     critic even after smoke12b's actor reward stack was already
-#     TB-active; smoke13 closes the gap so the critic only scores
-#     "what the policy did" rather than "what the prior expected".
+#   Critic: privileged enabled, TB-parity legacy imitation refs
+#     critic_imitation_refs: true keeps the legacy critic obs
+#     channels (motor_pos_error = q_actual - nominal_q_ref(t),
+#     ref_stance = win["contact_mask"]).  Smoke13's actor remains
+#     clean — the privileged critic is allowed to see the ZMP
+#     reference because TB does the equivalent in walk.gin:25-28.
+#     If a future branch wants a fully imitation-free critic, flip
+#     the env knob to false.
+#
+#   No `action_mode` runtime selector.  Earlier smoke13 drafts
+#     introduced an ``action_mode: direct`` flag that hard-anchored
+#     the action path on home regardless of ``loc_ref_residual_base``;
+#     that proved redundant once we accepted that smoke13 always
+#     sets ``loc_ref_residual_base: home``.  The single
+#     ``loc_ref_residual_base`` selector now carries the contract.
 #
 # Compute: matched to smoke12b's bootstrap budget (480 iters * 2048 envs *
 # 20 rollout_steps ≈ 19.7M env-steps) so smoke13 is a same-compute
-# A/B against smoke12b — answers "does the direct-policy contract
-# bootstrap walking better than the residual contract with the same
-# reward stack?"  TB-aligned PPO hyperparams (lr=3e-5, entropy 5e-4)
-# kept identical to smoke12b for the same reason.
+# A/B against smoke12b — answers "does the simplified
+# scalar-0.25 + leg-pitch-widened residual recipe bootstrap walking
+# better than smoke12b's wider per-joint cap?"  TB-aligned PPO
+# hyperparams (lr=3e-5, entropy 5e-4) kept identical to smoke12b.
 #
 # Bootstrap scope (unchanged from smoke12b):
 #   - forward-only cmd range [0.08, 0.1333] m/s
@@ -87,7 +92,7 @@
 #   - no yaw/turn/backward (deferred to a future config)
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke13 (TB-style direct-policy walking migration)"
+version_name: "v0.20.1 PPO smoke13 (home-anchored residual walking)"
 
 seed: 42
 
@@ -159,31 +164,21 @@ env:
   # the actor stream.  Pin even though it's the v0.20.1 default so a
   # future default flip doesn't silently leak hybrid channels.
   actor_obs_layout_id: wr_obs_v7_phase_proprio
-  # Offline reference command used only to derive the gait clock
+  # Offline reference command used to derive the gait clock
   # (win["phase_sin"]) consumed by feet_phase and the actor's
-  # phase obs slot.  No imitation pull from this trajectory under
-  # action_mode=direct + TB-active rewards.
+  # phase obs slot, and to populate the privileged critic's
+  # nominal_q_ref + contact_mask channels.  Actor obs has no
+  # imitation pull from this trajectory; action path is anchored
+  # on home, not on q_ref(t).
   loc_ref_offline_command_vx: 0.1333333333
 
   # =========================================================================
-  # KEY ARCHITECTURAL CHANGES (vs smoke12b)
+  # Action contract (home-anchored residual)
   # =========================================================================
-  # Direct action: target_q = clip(home_q + clip(action) * scale,
-  # joint_range).  Bypasses the loc_ref_residual_base switch entirely
-  # in the env's _compose_target_q_from_residual.
-  action_mode: direct
-  # Clean privileged critic obs: motor_pos_error is anchored to
-  # _home_q_rad (not nominal_q_ref(t)), and ref_stance is derived
-  # from the gait phase (not from win["contact_mask"]).  Removes the
-  # two imitation-reference channels the legacy critic carried —
-  # smoke7..smoke12b kept the critic anchored to the time-varying
-  # ZMP trajectory even though smoke12b's actor reward stack was
-  # already TB-active.  See env.critic_imitation_refs docstring for
-  # the contract.
-  critic_imitation_refs: false
-  # loc_ref_residual_base is intentionally still set to home as a
-  # back-compat sentinel; under action_mode=direct it is NOT
-  # consulted.  Kept for any tool/test that still reads the field.
+  # Single canonical anchor for action composition.  The env's
+  # _compose_target_q_from_residual computes
+  #     target_q = clip(home_q + clip(action) * scale_per_joint, joint_range)
+  # when loc_ref_residual_base == "home".  No runtime mode switch.
   loc_ref_residual_base: home
   loc_ref_reset_base: home
   loc_ref_penalty_pose_anchor: home
@@ -195,14 +190,29 @@ env:
   loc_ref_feet_phase_zero_on_standing: true
   close_feet_threshold: 0.146
 
-  # TB-faithful scalar action scale (mjx_config.py:103, action_scale=0.25).
-  # No per-joint widening in smoke13: exhaust the TB-faithful
-  # recipe under direct mode before re-introducing residual-bounds
-  # widening.  Per-joint map intentionally empty so the scalar
-  # applies to every joint uniformly.
+  # TB-parity privileged critic: ``motor_pos_error = q_actual -
+  # nominal_q_ref(t)`` and ``ref_stance = win["contact_mask"]``
+  # (mirrors TB walk.gin:25-28 critic payload).  Actor remains
+  # clean (wr_obs_v7_phase_proprio carries no offline-reference
+  # window channels); privileged critic is allowed to see the ZMP
+  # reference because TB does the equivalent.
+  critic_imitation_refs: true
+
+  # Scalar 0.25 baseline (TB mjx_config.py:103) + per-joint widening
+  # only on the leg-pitch chain.  WR's leg is ~1.85x TB's leg, so
+  # the pitch joints need more headroom to express a 0.05 m swing;
+  # roll / ankle / arm / waist joints stay at the TB-faithful 0.25
+  # because the prior doesn't demand more there.  Narrower than
+  # smoke12b's widened map (knee 0.667, hip 0.353/0.387) so the G5
+  # anti-exploit gate (residual_p50 ≤ 0.20 rad) stays interior to
+  # the cap on knees and hip-pitch both.
   loc_ref_residual_mode: absolute
   loc_ref_residual_scale: 0.25
-  loc_ref_residual_scale_per_joint: {}
+  loc_ref_residual_scale_per_joint:
+    left_knee_pitch: 0.5
+    right_knee_pitch: 0.5
+    left_hip_pitch: 0.35
+    right_hip_pitch: 0.35
 
   push_enabled: false
   imu_gyro_noise_std: 0.05
@@ -283,9 +293,9 @@ reward_weights:
   # TB walk.gin:119 sets penalty_action_rate=2.0 (positive in TB's
   # neg-MSE convention).  WR's sign convention is negative; -2.0 ==
   # TB +2.0 in magnitude.  Smoke12b halved this to -1.0 during the
-  # residual-branch basin-break; under direct-policy we revert to
-  # the TB-faithful -2.0 because the architecture change is the
-  # exploration knob, not action_rate.
+  # residual-branch basin-break; smoke13 reverts to the TB-faithful
+  # -2.0 because the simpler home-anchored scale recipe (narrower
+  # per-joint cap) is the smoothness knob, not action_rate.
   action_rate: -2.0
   penalty_pose: -0.5                        # walk.gin:120
   penalty_close_feet_xy: 10.0               # walk.gin:126
@@ -332,7 +342,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke13, tb_style_direct_policy, action_mode_direct, tb_active_rewards, scalar_action_scale_0p25]
+  tags: [ppo, v0.20.1, smoke13, home_anchored_residual, tb_active_rewards, action_scale_0p25_leg_pitch_widened]
 
 video:
   enabled: false

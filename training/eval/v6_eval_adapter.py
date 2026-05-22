@@ -147,19 +147,6 @@ class V6EvalAdapter:
             )
         self._action_delay_enabled = (delay_steps == 1)
 
-        # smoke13 — action contract selector.  Mirrors
-        # WildRobotEnv.__init__ so the eval adapter composes target_q
-        # with the same anchor the training env used.  In "direct"
-        # mode the residual_base switch below is not consulted.
-        self._action_mode = str(
-            getattr(self._cfg.env, "action_mode", "residual")
-        ).lower()
-        if self._action_mode not in ("residual", "direct"):
-            raise ValueError(
-                f"V6EvalAdapter: env.action_mode must be 'residual' or "
-                f"'direct'; got {self._action_mode!r}"
-            )
-
         # smoke8/smoke9c — residual base selector.  Mirrors WildRobotEnv.__init__
         # so native-MuJoCo eval composes target_q with the same base the
         # training env used (q_ref(t) for smoke7, home for smoke8,
@@ -508,10 +495,6 @@ class V6EvalAdapter:
         return joint_q.astype(np.float32)
 
     def _ctrl_init_policy_order(self) -> np.ndarray:
-        # smoke13 direct mode: ctrl_init = home_q (matches the
-        # action-path anchor).
-        if self._action_mode == "direct":
-            return self._home_q_rad.copy()
         if self._residual_base_mode == "home":
             return self._home_q_rad.copy()
         # q_ref and ref_init both use the frame-0 offline reference.
@@ -791,15 +774,7 @@ class V6EvalAdapter:
         q_ref = np.asarray(win.q_ref, dtype=np.float32)
         clipped = np.clip(applied, -1.0, 1.0)
         residual = clipped * self._scale_per_joint
-        # smoke13 direct mode mirrors WildRobotEnv._compose_target_q
-        # _from_residual: hard-anchor on home, bypass the
-        # residual_base switch.  Without this branch a smoke13
-        # checkpoint would be eval'd with whatever loc_ref_residual_base
-        # the config also still declares (kept as a sentinel for
-        # back-compat); under direct mode that field is NOT consulted.
-        if self._action_mode == "direct":
-            base_q = self._home_q_rad
-        elif self._residual_base_mode == "home":
+        if self._residual_base_mode == "home":
             base_q = self._home_q_rad
         elif self._residual_base_mode == "ref_init":
             base_q = self._ref_init_q_rad

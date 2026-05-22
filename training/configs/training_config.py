@@ -151,8 +151,6 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_residual_scale_per_joint=dict(
             env.get("loc_ref_residual_scale_per_joint", {})
         ),
-        # v0.20.1 smoke13 — action contract selector.  See dataclass docstring.
-        action_mode=str(env.get("action_mode", "residual")),
         # v0.20.1 smoke13 — privileged critic obs anchor selector.
         critic_imitation_refs=bool(env.get("critic_imitation_refs", True)),
         # v0.20.1 smoke8 — residual base selector.  See dataclass docstring.
