@@ -457,22 +457,19 @@ def test_smoke13_cmd_conditioned_lookup_selects_nearest_bin(smoke13_cfg) -> None
     )
 
 
-def test_smoke13_command_grid_uses_tb_interval(smoke13_cfg) -> None:
-    """Smoke13 builds the cmd-conditioned vx grid TB-style: np.arange
-    over [min_velocity, max_velocity] at
-    loc_ref_command_grid_interval spacing (TB default 0.05; mirrors
-    ZMPWalk.build_lookup_table at
-    toddlerbot/algorithms/zmp_walk.py:84), unioned with
-    loc_ref_offline_command_vx so the eval cmd snaps to its own bin
-    exactly.
+def test_smoke13_command_grid_uses_reward_sensitivity_interval(smoke13_cfg) -> None:
+    """Smoke13 builds the cmd-conditioned vx grid with a reward-sensitivity
+    interval, then unions loc_ref_offline_command_vx so the eval cmd
+    snaps to its own bin exactly.
 
-    For smoke13's range [0.08, 0.1333] at interval=0.05 this produces
-    {0.08, 0.13} from arange, and unioning offline_vx 0.1333 gives the
-    final grid {0.08, 0.13, 0.1333}."""
-    assert smoke13_cfg.env.loc_ref_command_grid_interval == pytest.approx(0.05)
+    TB's default lookup interval is 0.05 m/s, but smoke13's
+    cmd_velocity_track_alpha=562.5 makes a 0.02 m/s interval the
+    smallest simple grid that keeps worst-case nearest-bin mismatch
+    around <=0.01 m/s over the narrow [0.08, 0.1333] range."""
+    assert smoke13_cfg.env.loc_ref_command_grid_interval == pytest.approx(0.02)
     env = _make_env(smoke13_cfg)
     grid = np.asarray(env._offline_vx_grid)
-    expected = np.array([0.08, 0.13, 0.1333333333], dtype=np.float32)
+    expected = np.array([0.08, 0.10, 0.12, 0.1333333333], dtype=np.float32)
     np.testing.assert_allclose(grid, expected, atol=1e-5)
     # eval cmd must hit its own bin exactly so post-training
     # deterministic eval doesn't snap to the nearest arange step.
