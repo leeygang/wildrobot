@@ -1153,59 +1153,72 @@ class WildRobotEnv(mjx_env.MjxEnv):
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Compute cmd_forward_velocity_track and its 2D diagnostics.
 
-        ``track_dim == 1`` preserves the historical scalar-vx reward:
+        Reward semantics — TB parity
+        (toddlerbot/locomotion/mjx_env.py:_reward_lin_vel_xy, where the
+        target is ``info["state_ref"]["lin_vel"]`` and
+        ``integrate_path_state`` sets ``lin_vel = command_velocity``):
+        the velocity reward tracks COMMANDED velocity, not the
+        selected reference's finite-diff pelvis velocity.  The
+        cmd-conditioned reference lookup is used for gait shape /
+        timing (q_ref, contact_mask, critic / reference reward
+        terms) but MUST NOT drive the velocity reward target.
+
+        ``track_dim == 1`` (legacy scalar-vx target):
 
             exp(-alpha * (vx_actual - velocity_cmd)^2)
 
-        ``track_dim == 2`` switches to TB-style heading-local 2D
-        tracking against the SELECTED reference trajectory's pelvis
-        velocity (toddlerbot/locomotion/mjx_env.py:2342-2346):
+        ``track_dim == 2`` (TB-style 2D target):
 
-            exp(-alpha * ((vx_actual - ref_vx)^2
-                        + (vy_actual - ref_vy)^2))
+            exp(-alpha * ((vx_actual - velocity_cmd)^2
+                        + (vy_actual - vy_cmd)^2))
 
-        Under cmd-conditioned reference lookup the reference's pelvis
-        velocity follows the sampled ``velocity_cmd``, so the reward
-        gradient sees a meaningful target across the command range
-        rather than always tracking the single fixed offline_vx.
+        WR currently has no lateral command, so ``vy_cmd == 0`` and the
+        lateral axis penalizes lateral drift.
 
         Frame note: ``forward_velocity`` and ``lateral_velocity`` are
-        in the actor's heading-local frame (CoordinateFrame.HEADING_LOCAL
-        in ``_compute_reward_terms``).  ``ref_forward_velocity`` and
-        ``ref_lateral_velocity`` come from
-        ``win["pelvis_vel"][:2]``, which the offline trajectory stores
-        in world frame; the prior holds yaw == 0 throughout, so for
-        forward-only commands the offline-prior's world frame and
-        heading-local frame coincide at the prior's heading.  Mismatch
-        between the actor's yaw and the prior's yaw is small in the
-        forward-only smoke13 setting; future configs that sample yaw
-        commands will need to project ref velocity through the actor's
-        yaw to keep frames aligned.
+        in the actor's heading-local frame
+        (CoordinateFrame.HEADING_LOCAL in ``_compute_reward_terms``);
+        the command is forward-only in that frame.
+
+        ``ref_forward_velocity`` / ``ref_lateral_velocity`` are kept
+        as inputs for the ``ref_velocity_xy_err`` diagnostic only
+        (distance from actual (vx, vy) to the selected reference's
+        finite-diff pelvis velocity); they no longer enter the reward
+        under either dim.
 
         Returns ``(reward, cmd_velocity_xy_err, lateral_velocity_abs,
-        ref_velocity_xy_err)``.  ``cmd_velocity_xy_err`` is the legacy
-        "actual vs commanded" diagnostic (kept regardless of dim);
-        ``ref_velocity_xy_err`` is the dim=2 reward-target error
-        (zero under dim=1)."""
+        ref_velocity_xy_err)``.  ``cmd_velocity_xy_err`` is the
+        reward-target error under ``track_dim == 2`` (and the
+        legacy actual-vs-commanded diagnostic under ``track_dim ==
+        1``).  ``ref_velocity_xy_err`` is the actual-vs-selected-
+        reference diagnostic; non-zero under both dims when an
+        external reference is supplied."""
         vx_err_cmd = forward_velocity - velocity_cmd
+        # WR has no lateral command; vy_cmd = 0.
+        vy_err_cmd = lateral_velocity
         vx_err_ref = forward_velocity - ref_forward_velocity
         vy_err_ref = lateral_velocity - ref_lateral_velocity
         if track_dim == 1:
             err_sq = vx_err_cmd * vx_err_cmd
-            ref_xy_err = jp.float32(0.0)
         elif track_dim == 2:
-            err_sq = vx_err_ref * vx_err_ref + vy_err_ref * vy_err_ref
-            ref_xy_err = jp.sqrt(
-                vx_err_ref * vx_err_ref + vy_err_ref * vy_err_ref
-            ).astype(jp.float32)
+            err_sq = vx_err_cmd * vx_err_cmd + vy_err_cmd * vy_err_cmd
         else:
             raise ValueError(f"track_dim must be 1 or 2; got {track_dim!r}")
         reward = jp.exp(-alpha * err_sq).astype(jp.float32)
-        # Legacy diagnostic: distance of actual (vx, vy) from
-        # (velocity_cmd, 0).  Kept under both dims so back-comparisons
-        # against pre-smoke13 runs stay meaningful.
+        # ``cmd_velocity_xy_err`` — actual (vx, vy) vs (velocity_cmd, 0).
+        # Under ``track_dim == 2`` this IS the reward-target error;
+        # under ``track_dim == 1`` it is the legacy diagnostic
+        # (forward-only reward; lateral component is logged but not
+        # penalized by the reward).
         cmd_velocity_xy_err = jp.sqrt(
             vx_err_cmd * vx_err_cmd + lateral_velocity * lateral_velocity
+        ).astype(jp.float32)
+        # ``ref_velocity_xy_err`` — diagnostic-only distance of actual
+        # (vx, vy) from the selected reference's finite-diff pelvis
+        # velocity.  Useful to see how closely the actor tracks the
+        # bin's gait template, but NOT the reward target.
+        ref_xy_err = jp.sqrt(
+            vx_err_ref * vx_err_ref + vy_err_ref * vy_err_ref
         ).astype(jp.float32)
         lateral_velocity_abs = jp.abs(lateral_velocity).astype(jp.float32)
         return reward, cmd_velocity_xy_err, lateral_velocity_abs, ref_xy_err
@@ -1231,11 +1244,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``RuntimeReferenceService`` lookup contract is nearest-frame,
         and bin-to-bin trajectories aren't time-aligned to support
         per-field linear blending cleanly).
+
+        The returned dict always carries two diagnostic scalars:
+
+          - ``selected_vx``: the vx value of the selected reference
+            bin (the configured ``loc_ref_offline_command_vx`` under
+            legacy mode, or ``_offline_vx_grid[bin_idx]`` under
+            command-conditioned mode).
+          - ``cmd_bin_abs_err``: ``|selected_vx - velocity_cmd|`` when
+            ``velocity_cmd`` is supplied; zero otherwise (legacy mode
+            with no command input).  Quantifies how far the chosen
+            bin's vx is from the actual sampled command.
         """
         if not self._offline_command_conditioned:
-            return self._offline_service.lookup_jax(
+            base = self._offline_service.lookup_jax(
                 step_idx, self._offline_jax_arrays
             )
+            selected_vx = jp.float32(
+                self._config.env.loc_ref_offline_command_vx
+            )
+            if velocity_cmd is None:
+                cmd_bin_abs_err = jp.float32(0.0)
+            else:
+                cmd_bin_abs_err = jp.abs(
+                    selected_vx - jp.asarray(velocity_cmd, dtype=jp.float32)
+                ).astype(jp.float32)
+            base["selected_vx"] = selected_vx
+            base["cmd_bin_abs_err"] = cmd_bin_abs_err
+            return base
         if velocity_cmd is None:
             # Command-conditioned mode without a cmd input: fall back
             # to the bin closest to the configured offline_vx so
@@ -1257,6 +1293,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         future_idx = jp.clip(idx + future_offsets, 0, n_steps - 1)
 
         a = self._offline_jax_arrays
+        selected_vx = self._offline_vx_grid[bin_idx].astype(jp.float32)
+        if velocity_cmd is None:
+            cmd_bin_abs_err = jp.float32(0.0)
+        else:
+            cmd_bin_abs_err = jp.abs(
+                selected_vx - jp.asarray(velocity_cmd, dtype=jp.float32)
+            ).astype(jp.float32)
         return {
             "q_ref":          a["q_ref"][bin_idx, idx],
             "phase_sin":      a["phase_sin"][bin_idx, idx],
@@ -1278,6 +1321,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "future_phase_sin":        a["phase_sin"][bin_idx][future_idx],
             "future_phase_cos":        a["phase_cos"][bin_idx][future_idx],
             "future_contact_mask":     a["contact_mask"][bin_idx][future_idx],
+            "selected_vx":             selected_vx,
+            "cmd_bin_abs_err":         cmd_bin_abs_err,
         }
 
     def _v4_compat_channels_from_window(
@@ -1679,12 +1724,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         contact_phase_match_diag = 0.5 * r_contact
 
         # ---- cmd/forward_velocity_track --------------------------------------
-        # Under dim=2 (TB parity) the reward compares actual heading-local
-        # (vx, vy) to the selected reference's pelvis velocity instead of
-        # to (velocity_cmd, 0).  win["pelvis_vel"] comes from the
-        # cmd-conditioned bin under loc_ref_command_conditioned=true, so
-        # the target follows the sampled command.  Under dim=1 the ref
-        # velocity is ignored entirely (legacy scalar-vx tracking).
+        # TB parity: the velocity reward target is the COMMANDED
+        # velocity, not the selected reference's pelvis velocity.
+        # Under dim=2 the reward compares actual heading-local
+        # (vx, vy) to (velocity_cmd, 0) (WR has no lateral command);
+        # under dim=1 only the forward axis is penalized.  The
+        # cmd-conditioned reference selects the gait template (q_ref
+        # / contact_mask / critic refs), but its finite-diff pelvis
+        # velocity is exposed only as the ``ref_velocity_xy_err``
+        # diagnostic — it never drives the reward.  See
+        # toddlerbot/locomotion/mjx_env.py:_reward_lin_vel_xy +
+        # integrate_path_state in walk_zmp_ref.py.
         ref_pelvis_vel_xy = win["pelvis_vel"][:2].astype(jp.float32)
         r_vx, cmd_velocity_xy_err, lateral_velocity_abs, ref_velocity_xy_err = (
             self._cmd_forward_velocity_track_reward(
@@ -2005,6 +2055,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_velocity_xy_err=cmd_velocity_xy_err,
             lateral_velocity_abs=lateral_velocity_abs,
             ref_velocity_xy_err=ref_velocity_xy_err,
+            # Reference-bin selection diagnostics (cmd-conditioned mode
+            # picks the nearest-vx bin per call; legacy mode reports the
+            # configured single-bin vx with zero error when no cmd is
+            # supplied).  Quantifies the gait-template quantization
+            # error against the sampled velocity_cmd.
+            ref_selected_vx=win["selected_vx"].astype(jp.float32),
+            ref_cmd_bin_abs_err=win["cmd_bin_abs_err"].astype(jp.float32),
         )
 
     def _aggregate_reward(
@@ -2759,6 +2816,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (root_vel_h.linear[0] - ref_pelvis_vel_xy0[0]) ** 2
             + (root_vel_h.linear[1] - ref_pelvis_vel_xy0[1]) ** 2
         ).astype(jp.float32)
+        # Reference-bin selection diagnostics: ``win0`` was looked up
+        # at the sampled velocity_cmd so the bin / err here reflect
+        # the bin actually selected for this episode's reset frame.
+        metrics_dict["tracking/ref_selected_vx"] = win0["selected_vx"].astype(
+            jp.float32
+        )
+        metrics_dict["tracking/ref_cmd_bin_abs_err"] = win0[
+            "cmd_bin_abs_err"
+        ].astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
             jp.abs(velocity_cmd) > jp.float32(1e-6)
@@ -3200,6 +3266,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["tracking/ref_velocity_xy_err"] = reward_terms[
             "ref_velocity_xy_err"
+        ]
+        # Reference-bin selection diagnostics: which vx bin was picked
+        # this step and how far it is from the sampled velocity_cmd.
+        terminal_metrics_dict["tracking/ref_selected_vx"] = reward_terms[
+            "ref_selected_vx"
+        ]
+        terminal_metrics_dict["tracking/ref_cmd_bin_abs_err"] = reward_terms[
+            "ref_cmd_bin_abs_err"
         ]
         terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(
             jp.float32

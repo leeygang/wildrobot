@@ -1735,11 +1735,36 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="tracking",
         description=(
-            "sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in heading-local "
-            "frame, where (ref_vx, ref_vy) comes from the selected "
-            "cmd-conditioned reference's pelvis_vel[:2].  This is the "
-            "TB-style dim=2 velocity reward error "
-            "(mjx_env.py:2342-2346).  Zero under dim=1."
+            "Diagnostic-only: sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in "
+            "heading-local frame, where (ref_vx, ref_vy) comes from "
+            "the selected cmd-conditioned reference's pelvis_vel[:2] "
+            "(finite-diff'd off the offline trajectory).  Quantifies "
+            "how far the actor is from the chosen gait template's "
+            "pelvis motion.  NOT the velocity reward target — the "
+            "reward tracks commanded velocity per TB parity "
+            "(_reward_lin_vel_xy + integrate_path_state)."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/ref_selected_vx",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Selected reference-bin vx (m/s) — the vx value of the "
+            "cmd-conditioned reference bin chosen for this step.  "
+            "Under legacy single-bin mode it equals "
+            "loc_ref_offline_command_vx."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/ref_cmd_bin_abs_err",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "|ref_selected_vx - velocity_cmd| (m/s).  Quantifies "
+            "the nearest-bin quantization error against the actual "
+            "sampled command.  Zero in legacy mode when no command "
+            "input is passed."
         ),
     ),
 ]

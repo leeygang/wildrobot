@@ -321,17 +321,31 @@ ENV_METRICS_KEYS = {
     "tracking/max_torque": "Max normalized torque (0-1)",
     "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
     "tracking/cmd_velocity_xy_err": (
-        "Legacy diagnostic: sqrt((vx-cmd_vx)^2 + vy^2) in "
-        "heading-local frame.  Always actual-vs-commanded; "
-        "kept for back-comparison against pre-smoke13 runs."
+        "sqrt((vx-cmd_vx)^2 + vy^2) in heading-local frame "
+        "(actual vs commanded).  Under cmd_velocity_track_dim==2 "
+        "this is the velocity reward target error (TB parity); "
+        "under dim==1 it is the legacy diagnostic."
     ),
     "tracking/lateral_velocity_abs": "Absolute heading-local lateral velocity |vy|",
     "tracking/ref_velocity_xy_err": (
-        "sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in heading-local frame, "
-        "where (ref_vx, ref_vy) comes from the selected "
-        "cmd-conditioned reference's pelvis_vel[:2].  This is the "
-        "TB-style dim=2 velocity reward error (TB mjx_env.py:2342-2346).  "
-        "Zero under dim=1."
+        "Diagnostic-only sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in "
+        "heading-local frame, where (ref_vx, ref_vy) comes from the "
+        "selected cmd-conditioned reference's pelvis_vel[:2] (finite-"
+        "diff'd off the offline trajectory).  Tracks how far the "
+        "actor is from the gait template's pelvis motion; NOT the "
+        "velocity reward target — the reward tracks commanded "
+        "velocity (TB _reward_lin_vel_xy + integrate_path_state)."
+    ),
+    "tracking/ref_selected_vx": (
+        "Selected reference-bin vx (m/s) for the cmd-conditioned "
+        "lookup — equals loc_ref_offline_command_vx under legacy "
+        "single-bin mode, otherwise the nearest entry in the "
+        "_offline_vx_grid."
+    ),
+    "tracking/ref_cmd_bin_abs_err": (
+        "|ref_selected_vx - velocity_cmd| (m/s).  Nearest-bin "
+        "quantization error against the sampled command; bounded "
+        "above by half the grid interval under cmd-conditioned mode."
     ),
     "tracking/loc_ref_phase_progress": "Locomotion reference intra-step phase progress in [0, 1]",
     "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
@@ -577,6 +591,8 @@ def get_initial_env_metrics(
         "tracking/cmd_velocity_xy_err": 0.0,
         "tracking/lateral_velocity_abs": 0.0,
         "tracking/ref_velocity_xy_err": 0.0,
+        "tracking/ref_selected_vx": 0.0,
+        "tracking/ref_cmd_bin_abs_err": 0.0,
         "tracking/loc_ref_phase_progress": 0.0,
         "tracking/loc_ref_stance_foot": 0.0,
         "tracking/loc_ref_mode_id": 0.0,
@@ -760,6 +776,8 @@ def get_initial_env_metrics_jax(
         "tracking/cmd_velocity_xy_err": jp.zeros(()),
         "tracking/lateral_velocity_abs": jp.zeros(()),
         "tracking/ref_velocity_xy_err": jp.zeros(()),
+        "tracking/ref_selected_vx": jp.zeros(()),
+        "tracking/ref_cmd_bin_abs_err": jp.zeros(()),
         "tracking/loc_ref_phase_progress": jp.zeros(()),
         "tracking/loc_ref_stance_foot": jp.zeros(()),
         "tracking/loc_ref_mode_id": jp.zeros(()),

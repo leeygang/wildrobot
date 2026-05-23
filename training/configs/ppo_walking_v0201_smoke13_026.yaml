@@ -1,0 +1,265 @@
+# =============================================================================
+# WildRobot v0.20.1 PPO Smoke 13 — 0.26 m/s WR-scaled comparison config
+# =============================================================================
+# Derived from ppo_walking_v0201_smoke13.yaml.  The ONLY intentional
+# deltas vs smoke13 are the forward command range / eval / reference
+# vx (see Required Implementation §4 in
+# /tmp/smoke13_tb_velocity_reward_fix_prompt.md):
+#
+#   min_velocity: 0.08         -> 0.18
+#   max_velocity: 0.1333333    -> 0.26
+#   eval_velocity_cmd: 0.1333  -> 0.26
+#   loc_ref_offline_command_vx: 0.1333 -> 0.26
+#   loc_ref_command_grid_interval: 0.02 (unchanged)
+#
+# Purpose: compare WR against ToddlerBot at a WR-scaled target speed
+# (≈0.26 m/s ≈ TB's 0.20 m/s scaled by WR's 4/3 leg-length ratio)
+# while keeping TB-style command sampling over a RANGE — not a fixed
+# velocity.  Expected effective vx grid:
+#
+#   arange(0.18, 0.26 + 1e-6, 0.02) ∪ {0.26}
+#     = [0.18, 0.20, 0.22, 0.24, 0.26]
+#
+# All other knobs are byte-equal to smoke13: residual authority from
+# smoke12b, actor obs layout (wr_obs_v7_phase_proprio), critic
+# imitation refs, reward weights (with the in-code velocity-reward
+# fix landing in this same diff — see the prompt §1; the fix is a
+# pure code change to _cmd_forward_velocity_track_reward and does
+# NOT require a yaml flag here), PPO hyperparameters, action_rate,
+# feet_phase formula, termination config, and reset perturbation.
+# =============================================================================
+version: "0.20.1"
+version_name: "v0.20.1 PPO smoke13 — 0.26 m/s range (WR-scaled TB comparison)"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  # TB-style torso pose perturbation inherited from smoke12b/smoke13.
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  # TB-active penalty_pose per-joint weights (walk.gin:120-124 layout).
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # === Forward command range — the one intentional config delta. ===
+  # 0.26 m/s ≈ TB's 0.20 m/s scaled by WR's 4/3 leg-length ratio
+  # (ToddlerBot's effective walking-prior speed in the v0.20.x runs).
+  # Range [0.18, 0.26] keeps the TB-style command sampling pattern;
+  # cmd_zero_chance: 0.0 still forces every episode to demand forward
+  # motion.
+  min_velocity: 0.18
+  max_velocity: 0.26
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.0
+  cmd_turn_chance: 0.0
+  cmd_deadzone: 0.0666666667
+  eval_velocity_cmd: 0.26
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v7_phase_proprio
+  # Eval cmd anchor / single-bin fallback target.  The vx grid below
+  # unions this in so eval snaps to its own bin exactly.
+  loc_ref_offline_command_vx: 0.26
+
+  # ===== Action contract (home-anchored residual; unchanged) ============
+  loc_ref_residual_base: home
+  loc_ref_reset_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: true
+  close_feet_threshold: 0.146
+
+  # TB-parity privileged critic (motor_pos_error vs nominal_q_ref(t),
+  # ref_stance from win["contact_mask"]).  Actor stream stays clean.
+  critic_imitation_refs: true
+
+  # Command-conditioned reference lookup (TB parity).  Effective vx grid
+  # from arange(min, max + eps, interval) ∪ {offline_vx}:
+  #   [0.18, 0.20, 0.22, 0.24, 0.26]
+  # Grid interval 0.02 m/s keeps worst-case nearest-bin mismatch ≤
+  # 0.01 m/s, well inside the velocity reward's Gaussian basin at
+  # alpha=562.5.
+  loc_ref_command_conditioned: true
+  loc_ref_command_grid_interval: 0.02
+
+  # Residual authority — byte-equal to smoke12b / smoke13.
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.2
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.3534
+    left_hip_roll: 0.25
+    left_knee_pitch: 0.667
+    left_ankle_pitch: 0.25
+    left_ankle_roll: 0.25
+    right_hip_pitch: 0.3867
+    right_hip_roll: 0.25
+    right_knee_pitch: 0.6657
+    right_ankle_pitch: 0.25
+    right_ankle_roll: 0.25
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+ppo:
+  num_envs: 2048
+  rollout_steps: 20
+  iterations: 480
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: false
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 3
+    post_training_num_envs: 8
+    post_training_num_steps: 500
+    post_training_checkpoint_label: eval_promoted
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+# =============================================================================
+# Reward Weights — TB-active locomotion block only (byte-equal to smoke13).
+# The cmd_velocity_track_dim: 2 path now tracks COMMANDED velocity
+# (TB parity) under the in-code fix shipped with this config.  No
+# weight changes here.
+# =============================================================================
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 562.5
+  cmd_velocity_track_dim: 2
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.20.1, smoke13, smoke13_026, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim2, cmd_range_018_026]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
