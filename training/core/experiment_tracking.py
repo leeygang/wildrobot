@@ -320,8 +320,19 @@ ENV_METRICS_KEYS = {
     "tracking/vel_error": "Velocity tracking error |fwd - cmd|",
     "tracking/max_torque": "Max normalized torque (0-1)",
     "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
-    "tracking/cmd_velocity_xy_err": "sqrt((vx-cmd_vx)^2 + vy^2) in heading-local frame",
+    "tracking/cmd_velocity_xy_err": (
+        "Legacy diagnostic: sqrt((vx-cmd_vx)^2 + vy^2) in "
+        "heading-local frame.  Always actual-vs-commanded; "
+        "kept for back-comparison against pre-smoke13 runs."
+    ),
     "tracking/lateral_velocity_abs": "Absolute heading-local lateral velocity |vy|",
+    "tracking/ref_velocity_xy_err": (
+        "sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in heading-local frame, "
+        "where (ref_vx, ref_vy) comes from the selected "
+        "cmd-conditioned reference's pelvis_vel[:2].  This is the "
+        "TB-style dim=2 velocity reward error (TB mjx_env.py:2342-2346).  "
+        "Zero under dim=1."
+    ),
     "tracking/loc_ref_phase_progress": "Locomotion reference intra-step phase progress in [0, 1]",
     "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
     "tracking/loc_ref_mode_id": "Locomotion reference hybrid mode id",
@@ -565,6 +576,7 @@ def get_initial_env_metrics(
         "tracking/cmd_vs_achieved_forward": 0.0,
         "tracking/cmd_velocity_xy_err": 0.0,
         "tracking/lateral_velocity_abs": 0.0,
+        "tracking/ref_velocity_xy_err": 0.0,
         "tracking/loc_ref_phase_progress": 0.0,
         "tracking/loc_ref_stance_foot": 0.0,
         "tracking/loc_ref_mode_id": 0.0,
@@ -747,6 +759,7 @@ def get_initial_env_metrics_jax(
         "tracking/cmd_vs_achieved_forward": jp.zeros(()),
         "tracking/cmd_velocity_xy_err": jp.zeros(()),
         "tracking/lateral_velocity_abs": jp.zeros(()),
+        "tracking/ref_velocity_xy_err": jp.zeros(()),
         "tracking/loc_ref_phase_progress": jp.zeros(()),
         "tracking/loc_ref_stance_foot": jp.zeros(()),
         "tracking/loc_ref_mode_id": jp.zeros(()),
