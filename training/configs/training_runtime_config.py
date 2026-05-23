@@ -167,6 +167,28 @@ class EnvConfig(Freezable):
     #     with explicit rationale.
     critic_imitation_refs: bool = True
 
+    # v0.20.1 smoke14 — critic obs temporal stacking depth.
+    #
+    #   1 (default; smoke7..smoke13 path) — critic sees a single
+    #     PRIVILEGED_OBS_DIM-wide frame.  Matches the historical
+    #     behavior; preserves bit-equality for any existing config.
+    #
+    #   15 (TB-aligned; smoke14+) — critic sees the most recent N
+    #     frames of privileged obs stacked into one vector of length
+    #     N * PRIVILEGED_OBS_DIM.  Mirrors TB's
+    #     toddlerbot/locomotion/mjx_env.py:698 + 2166-2171 where
+    #     num_privileged_obs_history == c_frame_stack == 15.
+    #     Absorbs single-step discontinuities from cmd-conditioned
+    #     reference bin jumps (motor_pos_error, ref_stance) by
+    #     diluting any one-frame jump to 1/N of the stacked vector.
+    #
+    # The history buffer itself is always (PRIVILEGED_OBS_HISTORY_FRAMES,
+    # PRIVILEGED_OBS_DIM) so the env-state pytree shape is uniform
+    # across configs; this knob only controls how many of those frames
+    # the critic ACTUALLY sees on its obs vector each step.  Must be
+    # in [1, PRIVILEGED_OBS_HISTORY_FRAMES].
+    critic_obs_history_frames: int = 1
+
     # v0.20.1 smoke8 — residual base selector.
     #   "q_ref" - smoke7 default; target_q = q_ref(t) + residual.  PPO is
     #             anchored to the time-varying ZMP-derived trajectory.

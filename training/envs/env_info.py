@@ -72,6 +72,19 @@ PRIVILEGED_OBS_DIM = 52
 # burden.
 PROPRIO_HISTORY_FRAMES = 15
 
+# v0.20.1 smoke14 — TB-aligned critic obs temporal stacking depth.
+# Must equal ToddlerBot's c_frame_stack (mjx_config.py:84).  Kept
+# as a separate constant so the actor stacking
+# (PROPRIO_HISTORY_FRAMES) and critic stacking can evolve
+# independently if either side diverges from TB in the future.
+#
+# The env-state pytree always carries a buffer of this depth
+# regardless of how many frames the critic obs ACTUALLY exposes
+# (set by ``env.critic_obs_history_frames`` in [1, this value]).
+# That keeps the pytree shape uniform across configs so a single
+# JIT trace works for both legacy single-frame and stacked critics.
+PRIVILEGED_OBS_HISTORY_FRAMES = 15
+
 
 # Use flax.struct for JAX-compatible dataclass with pytree registration;
 # fall back to NamedTuple if flax is unavailable.
@@ -118,8 +131,17 @@ try:
         last_right_touchdown_x: jnp.ndarray  # ()
         last_step_length: jnp.ndarray        # ()
 
-        # Privileged critic obs (sim-only fields the actor doesn't see)
-        critic_obs: jnp.ndarray            # (PRIVILEGED_OBS_DIM,)
+        # Privileged critic obs (sim-only fields the actor doesn't see).
+        # Shape: (PRIVILEGED_OBS_DIM,) under legacy single-frame mode;
+        # (env.critic_obs_history_frames * PRIVILEGED_OBS_DIM,) under
+        # smoke14+ stacked mode.
+        critic_obs: jnp.ndarray
+        # Rolling buffer of the most recent PRIVILEGED_OBS_HISTORY_FRAMES
+        # single-frame critic observations (oldest at index 0, newest
+        # at the end).  Always shape
+        # (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM) regardless
+        # of how many of those frames are exposed on ``critic_obs``.
+        critic_obs_history: jnp.ndarray    # (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM)
 
         # v3 offline ReferenceLibrary playback state
         loc_ref_offline_step_idx: jnp.ndarray   # () int32 — increments by 1 per step
@@ -212,6 +234,7 @@ except ImportError:
         last_right_touchdown_x: jnp.ndarray
         last_step_length: jnp.ndarray
         critic_obs: jnp.ndarray
+        critic_obs_history: jnp.ndarray
         loc_ref_offline_step_idx: jnp.ndarray
         loc_ref_offline_command_id: jnp.ndarray
         loc_ref_stance_foot: jnp.ndarray
@@ -273,7 +296,15 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "last_left_touchdown_x": (),
         "last_right_touchdown_x": (),
         "last_step_length": (),
-        "critic_obs": (PRIVILEGED_OBS_DIM,),
+        # critic_obs shape varies with env.critic_obs_history_frames:
+        # (PRIVILEGED_OBS_DIM,) at depth 1, (N*PRIVILEGED_OBS_DIM,) at
+        # depth N>1.  Skip the strict shape check; the history buffer
+        # check below pins the underlying invariant.
+        "critic_obs": None,
+        "critic_obs_history": (
+            PRIVILEGED_OBS_HISTORY_FRAMES,
+            PRIVILEGED_OBS_DIM,
+        ),
         "loc_ref_offline_step_idx": (),
         "loc_ref_offline_command_id": (),
         "loc_ref_stance_foot": (),

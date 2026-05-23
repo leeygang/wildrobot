@@ -70,6 +70,7 @@ from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
     PRIVILEGED_OBS_DIM,
+    PRIVILEGED_OBS_HISTORY_FRAMES,
     PROPRIO_HISTORY_FRAMES,
     WR_INFO_KEY,
     WildRobotInfo,
@@ -313,6 +314,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._critic_imitation_refs = bool(
             getattr(self._config.env, "critic_imitation_refs", True)
         )
+
+        # smoke14 — critic obs temporal stacking depth.  Default 1
+        # preserves single-frame critic obs for pre-smoke14 configs;
+        # smoke14 sets 15 (TB c_frame_stack parity) so single-step
+        # discontinuities from cmd-conditioned reference bin jumps
+        # are diluted to 1/N of the stacked vector.  Validated to be
+        # in [1, PRIVILEGED_OBS_HISTORY_FRAMES] so the runtime slice
+        # never overruns the rolling buffer.
+        self._critic_obs_history_frames = int(
+            getattr(self._config.env, "critic_obs_history_frames", 1)
+        )
+        if not (
+            1 <= self._critic_obs_history_frames <= PRIVILEGED_OBS_HISTORY_FRAMES
+        ):
+            raise ValueError(
+                f"env.critic_obs_history_frames must be in "
+                f"[1, {PRIVILEGED_OBS_HISTORY_FRAMES}]; "
+                f"got {self._critic_obs_history_frames}"
+            )
 
         # smoke8 — residual base selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_residual_base
@@ -1535,6 +1555,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [lin, ang, contacts, motor_pos_error, actuator_force, ref_stance]
         )
 
+    # ------------------------------------------------- critic obs stacking
+    def _stack_critic_obs(self, history: jax.Array) -> jax.Array:
+        """Flatten the trailing N frames of ``history`` into a single
+        critic obs vector.  ``history`` has shape
+        ``(PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM)``; the
+        rolling buffer is oldest-first (index 0) → newest-last, matching
+        TB convention (mjx_env.py:2166-2171).
+
+        Under depth==1 we return the newest single frame (legacy
+        byte-equal path); under depth==N we take the last N frames and
+        flatten to length ``N * PRIVILEGED_OBS_DIM``."""
+        n = self._critic_obs_history_frames
+        if n == 1:
+            return history[-1].astype(jp.float32)
+        # Static slice bound: n is a Python int set at env init, so the
+        # slice traces cleanly under JIT.
+        return history[-n:].reshape(-1).astype(jp.float32)
+
+    @staticmethod
+    def _roll_critic_obs_history(
+        history: jax.Array, new_frame: jax.Array
+    ) -> jax.Array:
+        """Roll the oldest frame out and append ``new_frame`` at the
+        end.  Mirrors TB's
+        ``jnp.roll(privileged_obs_history, -privileged_obs_size).at[
+            -privileged_obs_size:].set(privileged_obs)``
+        but on the (frames, dim) shape rather than a flat vector."""
+        return jp.concatenate(
+            [history[1:], new_frame[None, :].astype(history.dtype)], axis=0
+        )
+
     # ----------------------------------------------------------- reward terms
 
     def _compute_reward_terms(
@@ -2665,13 +2716,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ).astype(jp.float32)
 
         v4_compat = self._v4_compat_channels_from_window(win0, prev_history=None)
-        critic_obs = self._get_privileged_critic_obs(
+        single_frame_critic_obs = self._get_privileged_critic_obs(
             data,
             root_vel_h,
             nominal_q_ref=q_ref0,
             ref_contact_mask=win0["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
         )
+        # smoke14 critic stacking — initialize the rolling buffer to
+        # all zeros (TB-style: zero-pad before the first step;
+        # toddlerbot/locomotion/mjx_env.py:1364-1365), then immediately
+        # write the reset frame into the newest slot so step 1 sees the
+        # actual reset state at the end of the history (older slots
+        # stay zero until subsequent steps roll them in).  Under
+        # depth==1 this collapses to the legacy single-frame critic
+        # obs path.
+        critic_obs_history = jp.zeros(
+            (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM),
+            dtype=jp.float32,
+        )
+        critic_obs_history = self._roll_critic_obs_history(
+            critic_obs_history, single_frame_critic_obs
+        )
+        critic_obs = self._stack_critic_obs(critic_obs_history)
 
         # v6 actor proprio history.  Zero-filled at reset per the
         # WildRobotInfo schema contract (env_info.py): the buffer
@@ -2707,6 +2774,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_right_touchdown_x=right_foot_pos[0].astype(jp.float32),
             last_step_length=jp.float32(0.0),
             critic_obs=critic_obs,
+            critic_obs_history=critic_obs_history,
             # v3 offline playback state — primary read/write fields.
             loc_ref_offline_step_idx=jp.zeros((), dtype=jp.int32),
             loc_ref_offline_command_id=jp.zeros((), dtype=jp.int32),
@@ -3088,13 +3156,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
         v4_compat = self._v4_compat_channels_from_window(
             win, prev_history=wr.loc_ref_history
         )
-        critic_obs = self._get_privileged_critic_obs(
+        single_frame_critic_obs = self._get_privileged_critic_obs(
             data,
             root_vel_h,
             nominal_q_ref=nominal_q_ref,
             ref_contact_mask=win["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
         )
+        # smoke14 critic stacking — roll the buffer and flatten the
+        # trailing N frames into the critic obs exposed to the algo.
+        # Under depth==1 (default for pre-smoke14 configs) this returns
+        # the single-frame critic obs byte-equal to the historical
+        # path.  Under depth==N, any single-step jump in the underlying
+        # frame (e.g. cmd-conditioned ref bin crossing) appears at
+        # only 1/N of the stacked vector — the older N-1 frames still
+        # carry pre-jump content.
+        new_critic_obs_history = self._roll_critic_obs_history(
+            wr.critic_obs_history, single_frame_critic_obs
+        )
+        critic_obs = self._stack_critic_obs(new_critic_obs_history)
 
         # v6 actor proprio history (env_info.py schema): the buffer
         # holds PAST bundles only, never the current frame (which is
@@ -3164,6 +3244,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_right_touchdown_x=new_last_right_touchdown_x,
             last_step_length=new_step_length,
             critic_obs=critic_obs,
+            critic_obs_history=new_critic_obs_history,
             loc_ref_offline_step_idx=next_step_idx,
             loc_ref_gait_phase_sin=v4_compat["phase_sin_cos"][0],
             loc_ref_gait_phase_cos=v4_compat["phase_sin_cos"][1],

@@ -966,7 +966,21 @@ def train(
     if bool(config.ppo.critic_privileged_enabled):
         from training.envs.env_info import PRIVILEGED_OBS_DIM
 
-        critic_obs_dim = PRIVILEGED_OBS_DIM
+        # smoke14 critic stacking: the env exposes
+        # ``critic_obs_history_frames * PRIVILEGED_OBS_DIM`` on
+        # ``state.info[WR_INFO_KEY].critic_obs`` (depth=1 collapses to
+        # the legacy single-frame width, byte-equal for any
+        # pre-smoke14 config).  The value head must accept the stacked
+        # dim, so multiply here.
+        critic_history_frames = int(
+            getattr(config.env, "critic_obs_history_frames", 1)
+        )
+        if critic_history_frames < 1:
+            raise ValueError(
+                "env.critic_obs_history_frames must be >= 1; "
+                f"got {critic_history_frames}"
+            )
+        critic_obs_dim = PRIVILEGED_OBS_DIM * critic_history_frames
     from policy_contract.spec import policy_spec_hash
 
     current_spec_hash = policy_spec_hash(spec)

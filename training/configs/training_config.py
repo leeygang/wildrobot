@@ -153,6 +153,10 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         ),
         # v0.20.1 smoke13 — privileged critic obs anchor selector.
         critic_imitation_refs=bool(env.get("critic_imitation_refs", True)),
+        # v0.20.1 smoke14 — critic obs temporal stacking depth.
+        # Default 1 preserves legacy single-frame critic obs for every
+        # pre-smoke14 config; smoke14 sets 15 to mirror TB c_frame_stack.
+        critic_obs_history_frames=int(env.get("critic_obs_history_frames", 1)),
         # v0.20.1 smoke8 — residual base selector.  See dataclass docstring.
         loc_ref_residual_base=str(env.get("loc_ref_residual_base", "q_ref")),
         loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
