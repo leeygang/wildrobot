@@ -1,13 +1,14 @@
 # =============================================================================
 # WildRobot v0.20.1 PPO Smoke 14 — combined 0.26-range + critic obs x15 run
 # =============================================================================
-# Smoke14 = smoke13_026 + critic obs temporal stacking.  Combines the
-# two TB-parity fixes that landed on top of the failed smoke13:
+# Smoke14 = smoke13_026 + critic obs temporal stacking + 1D velocity
+# reward.  Three TB-parity-adjacent fixes layered on top of the
+# failed smoke13:
 #
 #   1. Velocity-reward fix + WR-scaled 0.26 m/s command range
-#      (from smoke13_026 / commit c803e12 + 0e0a048):
-#        - cmd_velocity_track_dim=2 now tracks COMMANDED (vx_cmd, 0),
-#          not the selected reference's pelvis velocity (TB
+#      (inherited from smoke13_026 / commits c803e12 + 0e0a048):
+#        - In-code reward target switched from selected-reference
+#          pelvis velocity to COMMANDED velocity (TB
 #          _reward_lin_vel_xy parity).
 #        - Forward command range [0.18, 0.26] m/s; 5-bin
 #          cmd-conditioned grid {0.18, 0.20, 0.22, 0.24, 0.26}.
@@ -22,21 +23,33 @@
 #          discontinuity from a cmd-bin crossing (motor_pos_error,
 #          ref_stance) dilutes to 1/15 of the stacked vector.
 #
+#   3. cmd_velocity_track_dim: 1 (smoke14 delta vs smoke13_026)
+#        - Reverts the velocity reward from TB-parity 2D form
+#          (penalizing both vx and vy against (cmd_vx, 0)) to the
+#          legacy scalar-vx form (penalizing only vx).
+#        - WR has no lateral command, so dim=2 is effectively a
+#          standing-against-natural-sway penalty.  Dim=1 keeps the
+#          velocity reward focused on the forward objective while
+#          we evaluate the critic-stacking change at 0.26 m/s.
+#        - ``cmd_velocity_xy_err`` and ``ref_velocity_xy_err``
+#          are still logged as diagnostics.
+#
 # Rationale for combining instead of running smoke14 alone as a
 # critic-stacking isolation: the 0.26 + velocity-reward fix is the
 # load-bearing change for the TB comparison sequence.  Running smoke14
 # without the 0.26 range would only confirm critic stacking helps at
 # the original failed operating point, but would not advance the TB
 # comparison.  We accept the attribution cost (smoke14 deltas vs
-# smoke13 are 2-D instead of 1-D) to put both fixes in the same 30M
-# run.
+# smoke13_026 are 2-D: critic stacking + dim=1) to keep the 30M run
+# focused on the combined hypothesis.
 #
 # Backout plan if smoke14 doesn't recover smoke12b stability:
-#   - Drop critic_obs_history_frames: 15 and rerun → equivalent to
-#     smoke13_026 in isolation.
-#   - Or drop the cmd range / velocity-reward changes back to smoke13
+#   - Drop critic_obs_history_frames: 15 and flip dim back to 2
+#     → equivalent to smoke13_026 in isolation.
+#   - Drop the cmd range / velocity-reward changes back to smoke13
 #     defaults → equivalent to the critic-stacking-only smoke14
 #     described in /tmp/smoke14_critic_obs_stacking_prompt.md.
+#   - Flip dim back to 2 only → isolates the dim=1 effect.
 #
 # Compute budget: 750 iters * 2048 envs * 20 rollout_steps =
 # 30,720,000 env-steps (≈30.7M).  Matches smoke13_026.
@@ -45,7 +58,7 @@
 # /tmp/smoke13_tb_velocity_reward_fix_prompt.md.
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke14 (smoke13_026 + critic obs stacked x15, 30M)"
+version_name: "v0.20.1 PPO smoke14 (smoke13_026 + critic stack x15 + dim=1 vel, 30M)"
 
 seed: 42
 
@@ -220,7 +233,17 @@ reward_weights:
   alive: 1.0
   cmd_forward_velocity_track: 2.0
   cmd_forward_velocity_alpha: 562.5
-  cmd_velocity_track_dim: 2
+  # smoke14 — 1D scalar-vx velocity tracking (NOT the 2D TB form
+  # used in smoke13 / smoke13_026).  Reward becomes
+  #   exp(-alpha * (vx_actual - velocity_cmd)^2)
+  # ignoring lateral velocity entirely.  Rationale: WR has no
+  # lateral command (vy_cmd ≡ 0), so the dim=2 path effectively
+  # penalizes any vy whatsoever — including the natural sway of a
+  # bipedal gait — adding bootstrap pressure that's orthogonal to
+  # the forward-tracking objective.  Dim=1 keeps the reward signal
+  # narrower while we evaluate the critic-stacking change.
+  # ``cmd_velocity_xy_err`` is still logged as a diagnostic.
+  cmd_velocity_track_dim: 1
   ref_body_quat_track: 2.5
   ang_vel_xy: 1.0
   action_rate: -2.0
@@ -260,7 +283,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke14, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim2, cmd_range_018_026, critic_obs_stacked_15]
+  tags: [ppo, v0.20.1, smoke14, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim1, cmd_range_018_026, critic_obs_stacked_15]
 
 video:
   enabled: false

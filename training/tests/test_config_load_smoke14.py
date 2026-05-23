@@ -79,10 +79,36 @@ def test_critic_obs_history_frames_is_15(cfg14) -> None:
     assert cfg14.env.critic_obs_history_frames == 15
 
 
-def test_cmd_velocity_track_dim_is_2(cfg14) -> None:
-    """TB-parity 2D velocity reward (post c803e12 fix: target is
-    (velocity_cmd, 0), not the selected reference's pelvis vel)."""
-    assert cfg14.reward_weights.cmd_velocity_track_dim == 2
+def test_cmd_velocity_track_dim_is_1(cfg14) -> None:
+    """Smoke14 reverts to legacy scalar-vx tracking (dim=1).  WR has
+    no lateral command, so dim=2's vy penalty against vy_cmd=0 is
+    effectively a sway-suppression term orthogonal to the forward
+    objective.  Dim=1 keeps the velocity reward focused on vx
+    while the critic-stacking change is on trial."""
+    assert cfg14.reward_weights.cmd_velocity_track_dim == 1
+
+
+def test_smoke14_diverges_from_smoke13_026_only_on_critic_and_dim(cfg14) -> None:
+    """Pin the EXACT delta set between smoke14 and smoke13_026.
+    Anything else drifting is a config bug — those two configs are
+    A/B-paired and the attribution depends on a 2-D delta."""
+    if not _SMOKE13_026.exists():
+        pytest.skip(f"{_SMOKE13_026.name} not found")
+    cfg026 = load_training_config(str(_SMOKE13_026))
+    # smoke14-only deltas:
+    assert cfg14.env.critic_obs_history_frames == 15
+    assert cfg026.env.critic_obs_history_frames == 1
+    assert cfg14.reward_weights.cmd_velocity_track_dim == 1
+    assert cfg026.reward_weights.cmd_velocity_track_dim == 2
+    # Velocity range parity (the load-bearing inheritance):
+    assert cfg14.env.min_velocity == pytest.approx(cfg026.env.min_velocity)
+    assert cfg14.env.max_velocity == pytest.approx(cfg026.env.max_velocity)
+    assert cfg14.env.eval_velocity_cmd == pytest.approx(
+        cfg026.env.eval_velocity_cmd
+    )
+    assert cfg14.env.loc_ref_offline_command_vx == pytest.approx(
+        cfg026.env.loc_ref_offline_command_vx
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +158,10 @@ def test_actor_and_critic_inheritance(cfg14) -> None:
 # ---------------------------------------------------------------------------
 # Reward weights byte-equal to smoke13_026.
 # ---------------------------------------------------------------------------
-def test_reward_weights_byte_equal_to_smoke13_026(cfg14) -> None:
+def test_reward_weights_byte_equal_to_smoke13_026_except_dim(cfg14) -> None:
+    """All reward weights match smoke13_026 EXCEPT
+    cmd_velocity_track_dim (intentional smoke14 delta: 2 → 1).
+    Anything else drifting is a config bug."""
     if not _SMOKE13_026.exists():
         pytest.skip(f"{_SMOKE13_026.name} not found")
     cfg026 = load_training_config(str(_SMOKE13_026))
@@ -140,7 +169,7 @@ def test_reward_weights_byte_equal_to_smoke13_026(cfg14) -> None:
         "alive",
         "cmd_forward_velocity_track",
         "cmd_forward_velocity_alpha",
-        "cmd_velocity_track_dim",
+        # cmd_velocity_track_dim deliberately excluded — smoke14 delta.
         "ref_body_quat_track",
         "ang_vel_xy",
         "action_rate",
@@ -155,7 +184,8 @@ def test_reward_weights_byte_equal_to_smoke13_026(cfg14) -> None:
         want = getattr(cfg026.reward_weights, field)
         assert got == pytest.approx(want), (
             f"reward_weights.{field}={got} drifted from smoke13_026 ({want}); "
-            "smoke14 is only allowed to change critic stacking"
+            "smoke14 is only allowed to change critic stacking + "
+            "cmd_velocity_track_dim"
         )
     for field in (
         "ref_q_track",
