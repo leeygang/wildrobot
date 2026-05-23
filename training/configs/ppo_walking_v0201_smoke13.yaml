@@ -232,6 +232,14 @@ env:
   # Default false in older configs preserves the legacy
   # single-bin behavior; smoke13 sets true.
   loc_ref_command_conditioned: true
+  # TB-default grid spacing (toddlerbot/algorithms/zmp_walk.py:88
+  # interval=0.05).  At smoke13's narrow range [0.08, 0.1333] this
+  # gives {0.08, 0.13} from np.arange, unioned with
+  # loc_ref_offline_command_vx=0.1333 so the eval cmd hits its own
+  # bin exactly → final vx_grid {0.08, 0.13, 0.1333}.  Densify by
+  # lowering this value (e.g. 0.025) if mid-range cmd snapping
+  # (cmd=0.10 → 0.08) turns out to bias training.
+  loc_ref_command_grid_interval: 0.05
 
   # Restored to smoke12b residual scales exactly.  Earlier smoke13
   # drafts narrowed knees to 0.5 / hip-pitch to 0.35 and produced

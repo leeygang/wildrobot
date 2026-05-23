@@ -285,17 +285,31 @@ class EnvConfig(Freezable):
     #     uses it regardless of the per-episode sampled
     #     ``velocity_cmd``.  Matches the historical behavior.
     #
-    #   True (smoke13+) — env builds a small reference library
-    #     spanning the command range (vx values:
-    #     ``{min_velocity, max_velocity,
-    #     loc_ref_offline_command_vx}`` deduped) and selects the
-    #     nearest bin at each step using ``velocity_cmd``.  Mirrors
-    #     TB's ``motion_ref.get_state_ref(time, command, ...)``
-    #     pattern at toddlerbot/locomotion/mjx_env.py.  Required for
+    #   True (smoke13+) — env builds a small reference library by
+    #     sampling vx values at ``loc_ref_command_grid_interval``
+    #     spacing across ``[min_velocity, max_velocity]``, unioned
+    #     with ``loc_ref_offline_command_vx`` so the eval cmd hits
+    #     a bin exactly.  At runtime ``_lookup_offline_window``
+    #     selects the nearest bin via
+    #     ``argmin(|vx_grid - velocity_cmd|)``.  Mirrors TB's
+    #     ``WalkZMPReference.get_state_ref`` which does L2
+    #     nearest-neighbor on a discrete lookup table
+    #     (``toddlerbot/reference/walk_zmp_ref.py:138-140``) over a
+    #     grid built by ``ZMPWalk.build_lookup_table(interval=...)``
+    #     (``toddlerbot/algorithms/zmp_walk.py:84``).  Required for
     #     TB-style dim=2 velocity tracking so the reward compares
     #     actual ``(vx, vy)`` to the cmd-matching reference's
     #     pelvis velocity, not to ``(velocity_cmd, 0)``.
     loc_ref_command_conditioned: bool = False
+    # v0.20.1 smoke13 — grid spacing for the cmd-conditioned reference
+    # library.  Only consulted when ``loc_ref_command_conditioned`` is
+    # True.  TB's ``ZMPWalk.build_lookup_table`` defaults to
+    # ``interval=0.05`` (toddlerbot/algorithms/zmp_walk.py:88); we
+    # keep the same default so the WR grid density matches TB's at
+    # the same command range.  Narrowing this value densifies the
+    # grid (one extra trajectory built per added bin); widening
+    # collapses toward the legacy "endpoints-only" 2-bin layout.
+    loc_ref_command_grid_interval: float = 0.05
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
     loc_ref_walking_pelvis_height_m: float = 0.40

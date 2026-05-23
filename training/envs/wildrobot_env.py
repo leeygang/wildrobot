@@ -785,16 +785,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             getattr(self._config.env, "loc_ref_command_conditioned", False)
         )
 
-        # Build the vx grid.  Legacy mode: just the single offline vx.
-        # Cmd-conditioned: dedupe {min_velocity, max_velocity, offline_vx}.
+        # Build the vx grid.
+        #
+        # Legacy mode: single offline_vx bin (preserves smoke7..smoke12b).
+        #
+        # Cmd-conditioned mode: TB-style arange grid at
+        # ``loc_ref_command_grid_interval`` spacing (TB default 0.05
+        # m/s) across ``[min_velocity, max_velocity]``, plus
+        # ``loc_ref_offline_command_vx`` unioned in so the eval
+        # cmd (which is typically pinned at offline_vx) snaps to its
+        # own bin exactly instead of the nearest grid step.  Mirrors
+        # ``ZMPWalk.build_lookup_table(interval=...)`` from
+        # ``toddlerbot/algorithms/zmp_walk.py:84``.
         if cmd_conditioned:
             min_vx = float(self._config.env.min_velocity)
             max_vx = float(self._config.env.max_velocity)
+            interval = float(
+                getattr(self._config.env, "loc_ref_command_grid_interval", 0.05)
+            )
+            if interval <= 0.0:
+                raise ValueError(
+                    f"loc_ref_command_grid_interval must be positive; "
+                    f"got {interval!r}"
+                )
+            # np.arange with the (stop + tiny eps) idiom matches TB
+            # exactly (zmp_walk.py:110).
+            arange_vals = np.arange(
+                min_vx, max_vx + 1e-6, interval, dtype=np.float64
+            )
             vx_grid = sorted({
-                round(min_vx, 6),
-                round(max_vx, 6),
-                round(offline_vx, 6),
-            })
+                round(float(v), 6) for v in arange_vals
+            } | {round(offline_vx, 6)})
         else:
             vx_grid = [offline_vx]
 

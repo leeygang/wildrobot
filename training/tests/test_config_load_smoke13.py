@@ -457,6 +457,33 @@ def test_smoke13_cmd_conditioned_lookup_selects_nearest_bin(smoke13_cfg) -> None
     )
 
 
+def test_smoke13_command_grid_uses_tb_interval(smoke13_cfg) -> None:
+    """Smoke13 builds the cmd-conditioned vx grid TB-style: np.arange
+    over [min_velocity, max_velocity] at
+    loc_ref_command_grid_interval spacing (TB default 0.05; mirrors
+    ZMPWalk.build_lookup_table at
+    toddlerbot/algorithms/zmp_walk.py:84), unioned with
+    loc_ref_offline_command_vx so the eval cmd snaps to its own bin
+    exactly.
+
+    For smoke13's range [0.08, 0.1333] at interval=0.05 this produces
+    {0.08, 0.13} from arange, and unioning offline_vx 0.1333 gives the
+    final grid {0.08, 0.13, 0.1333}."""
+    assert smoke13_cfg.env.loc_ref_command_grid_interval == pytest.approx(0.05)
+    env = _make_env(smoke13_cfg)
+    grid = np.asarray(env._offline_vx_grid)
+    expected = np.array([0.08, 0.13, 0.1333333333], dtype=np.float32)
+    np.testing.assert_allclose(grid, expected, atol=1e-5)
+    # eval cmd must hit its own bin exactly so post-training
+    # deterministic eval doesn't snap to the nearest arange step.
+    eval_cmd = float(smoke13_cfg.env.eval_velocity_cmd)
+    nearest = float(grid[int(np.argmin(np.abs(grid - eval_cmd)))])
+    assert nearest == pytest.approx(eval_cmd, abs=1e-5), (
+        f"eval_velocity_cmd={eval_cmd} should hit its own bin "
+        f"exactly; got nearest={nearest}"
+    )
+
+
 def test_legacy_configs_default_to_single_bin_reference_lookup() -> None:
     """Older configs (smoke9, smoke12b) must NOT silently switch to
     command-conditioned lookup — the new flag defaults to false and

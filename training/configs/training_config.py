@@ -195,6 +195,10 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_command_conditioned=bool(
             env.get("loc_ref_command_conditioned", False)
         ),
+        # v0.20.1 smoke13 — grid spacing (TB default 0.05 m/s).
+        loc_ref_command_grid_interval=float(
+            env.get("loc_ref_command_grid_interval", 0.05)
+        ),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",
             env.get("loc_ref_nominal_com_height_m", 0.40))),
