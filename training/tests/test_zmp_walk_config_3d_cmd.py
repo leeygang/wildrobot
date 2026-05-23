@@ -1,0 +1,110 @@
+from __future__ import annotations
+import pytest
+from control.zmp.zmp_walk import ZMPWalkConfig, ZMPWalkGenerator
+
+
+def test_zmp_walk_config_has_rotation_radius_field() -> None:
+    cfg = ZMPWalkConfig()
+    assert cfg.rotation_radius_m == pytest.approx(0.10)
+
+
+def test_zmp_walk_config_accepts_rotation_radius_override() -> None:
+    cfg = ZMPWalkConfig(rotation_radius_m=0.15)
+    assert cfg.rotation_radius_m == pytest.approx(0.15)
+
+
+def test_generate_accepts_vy_and_yaw_rate_kwargs() -> None:
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.20, command_vy=0.05, command_yaw_rate=0.0)
+    assert traj.command_vx == pytest.approx(0.20)
+    assert traj.command_vy == pytest.approx(0.05)
+    assert traj.command_yaw_rate == pytest.approx(0.0)
+
+
+def test_generate_defaults_vy_and_yaw_to_zero() -> None:
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.20)
+    assert traj.command_vy == pytest.approx(0.0)
+    assert traj.command_yaw_rate == pytest.approx(0.0)
+
+
+def test_pure_lateral_command_does_not_short_circuit_to_standing() -> None:
+    """H1: generate(vx=0, vy=0.05) MUST produce a non-standing trajectory.
+    Under the old gate `abs(command_vx) < 1e-4`, this would return
+    `_generate_standing()` and the lateral footstep block would never run.
+    """
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.05, command_yaw_rate=0.0)
+    foot_y = traj.left_foot_pos[:, 1]
+    assert (foot_y.max() - foot_y.min()) > 0.001, (
+        "H1 fix missing: pure-lateral command short-circuited to standing."
+    )
+
+
+def test_pure_yaw_command_does_not_short_circuit_to_standing() -> None:
+    """H1: generate(vx=0, wz=0.10) MUST produce non-trivial yaw."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.10)
+    yaw = traj.pelvis_rpy[:, 2]
+    assert abs(yaw[-1] - yaw[0]) > 1e-3
+
+
+def test_negative_vy_flips_lateral_stride_sign() -> None:
+    """H1 follow-on: line 609 currently flips step_length on vx < 0 only.
+    Verify the equivalent per-axis sign flip works for vy < 0 too. Check
+    pelvis world-y rather than foot y because foot_pos is stored
+    COM-relative in WR (zmp_walk.py:1218-1220), so foot y does not flip
+    even when the underlying world motion does."""
+    gen = ZMPWalkGenerator()
+    traj_pos = gen.generate(command_vx=0.0, command_vy=+0.05)
+    traj_neg = gen.generate(command_vx=0.0, command_vy=-0.05)
+    assert traj_pos.pelvis_pos[-1, 1] * traj_neg.pelvis_pos[-1, 1] < 0
+
+
+def test_planner_produces_nonzero_lateral_foot_displacement_for_vy() -> None:
+    """Tightened from -final.md: now uses vx=0 (was vx=0.0001) since the
+    H1 gate fix lets a pure-lateral command through."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.05)
+    foot_y = traj.left_foot_pos[:, 1]
+    assert (foot_y.max() - foot_y.min()) > 0.005
+
+
+def test_planner_yaws_pelvis_for_nonzero_yaw_rate() -> None:
+    """Tightened: uses vx=vy=0 (was vy=0); requires the H1 gate fix."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.10)
+    yaw = traj.pelvis_rpy[:, 2]
+    assert abs(yaw[-1] - yaw[0]) > 1e-3
+
+
+def test_generated_trajectory_carries_all_three_cmd_axes() -> None:
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.20, command_vy=0.04, command_yaw_rate=0.0)
+    assert traj.command_vx == pytest.approx(0.20)
+    assert traj.command_vy == pytest.approx(0.04)
+    assert traj.command_yaw_rate == pytest.approx(0.0)
+
+
+def test_build_library_for_3d_values_yields_one_entry_per_grid_point() -> None:
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.0, 0.20],  # H2: include static bin
+        vy_values=[-0.05, 0.0, 0.05],
+        yaw_rate_values=[-0.10, 0.0, 0.10],
+    )
+    assert len(lib) == 2 * 3 * 3 == 18
+    assert (0.20, 0.0, 0.10) in lib
+    assert (0.0, 0.0, 0.0) in lib, "H2: must include the static-pose bin"
+
+
+def test_build_library_for_vx_values_still_builds_forward_only_library() -> None:
+    """P1.12 regression: the legacy 1D ``build_library_for_vx_values``
+    factory must continue to build a forward-only library after the
+    P1 (vx, vy, wz) widening landed.  This guards the existing v0.20.x
+    smoke / runtime paths that still call the 1D factory."""
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_vx_values([0.0, 0.20])
+    assert len(lib) == 2
+    assert (0.0, 0.0, 0.0) in lib
+    assert (0.20, 0.0, 0.0) in lib

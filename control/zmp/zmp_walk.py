@@ -133,6 +133,16 @@ class ZMPWalkConfig:
     # `v0.20.1-phase8-retry-foot-step-height-0.05`.
     foot_step_height_m: float = 0.05
     default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
+    # Rotation radius for pure-yaw walking (mirrors TB's
+    # ``rotation_radius`` in ``ZMPWalk.__init__``).  This is the radius
+    # of the arc on which the feet sweep when ``command_yaw_rate`` is
+    # non-zero but vx = vy = 0.  Larger radius -> bigger sagittal foot
+    # excursion per yaw radian (foot lever arm); smaller radius keeps
+    # the feet closer to the body but reduces the yaw torque arm.
+    # Derived as roughly stance_width-scale (TB uses 0.05; WR's longer
+    # legs give a larger feasible reach, so we start at 0.10 to keep the
+    # per-stride yaw at moderate magnitudes for the same |wz| command).
+    rotation_radius_m: float = 0.10
     min_walking_speed_mps: float = 0.06     # below this, use standing
 
     # Phase 12A (2026-05-08): soften the plantarflex up-cross /
@@ -576,8 +586,13 @@ class ZMPWalkGenerator:
         ang_vel[-1] = ang_vel[-2]
         return ang_vel
 
-    def generate(self, command_vx: float) -> ReferenceTrajectory:
-        """Generate one gait-cycle trajectory for the given forward speed.
+    def generate(
+        self,
+        command_vx: float,
+        command_vy: float = 0.0,
+        command_yaw_rate: float = 0.0,
+    ) -> ReferenceTrajectory:
+        """Generate one gait-cycle trajectory for the given velocity command.
 
         At low speeds, the cycle time is lengthened to maintain a minimum
         step length (normal-sized steps at lower cadence, not tiny shuffles
@@ -586,7 +601,9 @@ class ZMPWalkGenerator:
 
         Parameters
         ----------
-        command_vx : forward speed in m/s (0 = standing)
+        command_vx : forward speed in m/s (0 = standing on this axis)
+        command_vy : lateral speed in m/s (0 = no lateral stride)
+        command_yaw_rate : pelvis yaw rate in rad/s (0 = no turn)
 
         Returns
         -------
@@ -594,29 +611,56 @@ class ZMPWalkGenerator:
         """
         cfg = self.cfg
 
-        if abs(command_vx) < 1e-4:
-            return self._generate_standing()
+        # H1: 3-axis norm gate (was: `if abs(command_vx) < 1e-4`).  Pure-lateral
+        # and pure-turn commands must reach the per-direction footstep blocks
+        # below; only a fully-zero command returns the standing trajectory.
+        import math
+        cmd_norm = math.sqrt(
+            command_vx * command_vx
+            + command_vy * command_vy
+            + command_yaw_rate * command_yaw_rate
+        )
+        if cmd_norm < 1e-4:
+            return self._generate_standing(
+                command_vx=command_vx,
+                command_vy=command_vy,
+                command_yaw_rate=command_yaw_rate,
+            )
 
-        if abs(command_vx) < cfg.min_walking_speed_mps:
-            return self._generate_standing()
-
-        # Compute step length at the normal cadence
+        # Per-direction stride magnitudes (mirror the existing `abs_vx` /
+        # `step_length` block, but now per-axis).  The
+        # ``_generate_at_step_length`` function receives all three components
+        # signed; the sign-flip logic below ensures each per-axis step
+        # length carries the correct sign for its branch.
         abs_vx = abs(command_vx)
+        abs_vy = abs(command_vy)
+        abs_wz = abs(command_yaw_rate)
         half_cycle = cfg.cycle_time_s / 2.0
-        step_length = min(abs_vx * half_cycle, cfg.safe_max_step_length_m)
+        step_length_x = min(abs_vx * half_cycle, cfg.safe_max_step_length_m)
+        step_length_y = min(abs_vy * half_cycle, cfg.safe_max_step_length_m)
         cycle_time = cfg.cycle_time_s
 
+        # H1: per-axis sign flip (was: scalar `if command_vx < 0:
+        # step_length = -step_length`).
         if command_vx < 0:
-            step_length = -step_length
+            step_length_x = -step_length_x
+        if command_vy < 0:
+            step_length_y = -step_length_y
+        # command_yaw_rate sign is consumed directly by the arc-radius branch
+        # via ``r = np.sign(command_yaw_rate) * cfg.rotation_radius_m``.
 
         # Generate-validate-reduce loop
         for attempt in range(5):
             traj = self._generate_at_step_length(
-                command_vx, step_length, cycle_time_override=cycle_time)
+                command_vx, step_length_x, cycle_time_override=cycle_time,
+                command_vy=command_vy, command_yaw_rate=command_yaw_rate,
+                step_length_y=step_length_y,
+            )
             violations = self._count_joint_violations(traj)
             if violations == 0:
                 break
-            step_length *= 0.8
+            step_length_x *= 0.8
+            step_length_y *= 0.8
 
         return traj
 
@@ -682,6 +726,10 @@ class ZMPWalkGenerator:
     def _generate_at_step_length(
         self, command_vx: float, step_length: float,
         cycle_time_override: float | None = None,
+        *,
+        command_vy: float = 0.0,
+        command_yaw_rate: float = 0.0,
+        step_length_y: float = 0.0,
     ) -> ReferenceTrajectory:
         """Generate a multi-cycle monotonic walking trajectory.
 
@@ -734,7 +782,14 @@ class ZMPWalkGenerator:
         ss = cfg.single_double_ratio * ds
         T_half = ds + ss  # half-cycle time
         T_cycle = 2.0 * T_half
+        # P1.6: per-axis stride.  ``sl_x`` is the legacy sagittal stride
+        # (kept for back-compat with the rest of this function); ``sl_y``
+        # is the new lateral stride per half-cycle.  Mirrors TB's
+        # combined-translation branch (``zmp_walk.py:259-267``) where
+        # ``stride = command[:2] * total_time / (2 * num_cycles - 1)``.
         sl = step_length
+        sl_x = step_length
+        sl_y = step_length_y
         lat = cfg.default_stance_width_m
         dt = cfg.dt_s
 
@@ -779,12 +834,41 @@ class ZMPWalkGenerator:
         n_cycles = max(1, int(np.ceil(cfg.total_plan_time_s / cycle_time)))
         n_total = n_cycles * n_cycle
 
+        # P1.8: detect pure-rotation command (vx ≈ vy ≈ 0, |wz| > eps).
+        # Mirrors TB's ``zmp_walk.py:259-305`` three-branch dispatch
+        # (standing already handled in ``generate``; combined-translation
+        # is the default linear (sl_x, sl_y) schedule built below; pure
+        # rotation overrides the schedule with arc-radius footsteps).
+        _eps = 1e-6
+        is_pure_rotation = (
+            abs(command_vx) < _eps
+            and abs(command_vy) < _eps
+            and abs(command_yaw_rate) > _eps
+        )
+        # Yaw stride per step (radians).  Mirrors TB:270
+        # ``stride = command[2] * total_time / (2 * num_cycles - 1)``.
+        if is_pure_rotation:
+            yaw_stride = (
+                command_yaw_rate * cfg.total_plan_time_s / max(1, 2 * n_cycles - 1)
+            )
+            r_arc = float(np.sign(command_yaw_rate)) * cfg.rotation_radius_m
+        else:
+            yaw_stride = 0.0
+            r_arc = 0.0
+        foot_to_com_y = cfg.hip_lateral_offset_m
+
         # --- Build the ZMP schedule (matches ToddlerBot's pattern) ---
-        # Footsteps alternate left/right starting at the origin:
-        #   step 0: left  at (0,         +lat)
-        #   step 1: right at (sl,        -lat)
-        #   step 2: left  at (2·sl,      +lat)
-        #   step 3: right at (3·sl,      -lat)
+        # Footsteps alternate left/right starting at the origin.  With
+        # the per-axis (sl_x, sl_y) stride introduced in P1.6:
+        #   step 0: left  at (0,             +lat            )
+        #   step 1: right at (sl_x,          -lat + sl_y     )
+        #   step 2: left  at (2·sl_x,        +lat + 2·sl_y   )
+        #   step 3: right at (3·sl_x,        -lat + 3·sl_y   )
+        # P1.8: when ``is_pure_rotation`` is True, the schedule instead
+        # mirrors TB's arc-radius branch (``zmp_walk.py:269-305``):
+        #   angle_i = i * yaw_stride
+        #   x_i = r * sin(angle_i) ± foot_to_com_y * sin(angle_i)
+        #   y_i = r * (1 - cos(angle_i)) ± foot_to_com_y * cos(angle_i)
         # Phases alternate DS, SS, DS, SS ... starting with DS.  The
         # ZMP is at the previous stance foot during DS, transitions to
         # the next stance foot at SS start, and stays there during SS.
@@ -792,10 +876,30 @@ class ZMPWalkGenerator:
         # LQR sees a piecewise-constant ZMP within each phase.
         n_steps = 2 * n_cycles + 1  # +1 for the trailing duplicate
         footsteps: list[np.ndarray] = []
+        footstep_yaws: list[float] = []
         for i in range(n_steps):
-            x = i * sl
-            y = lat if (i % 2 == 0) else -lat
+            if is_pure_rotation:
+                angle_i = i * yaw_stride
+                is_left = (i % 2 == 0)
+                # TB:277-301 — left index uses (-foot_to_com_y * sin,
+                # +foot_to_com_y * cos); right uses (+foot_to_com_y * sin,
+                # -foot_to_com_y * cos).
+                sign = 1.0 if is_left else -1.0
+                x = (
+                    r_arc * np.sin(angle_i)
+                    - sign * foot_to_com_y * np.sin(angle_i)
+                )
+                y = (
+                    r_arc * (1.0 - np.cos(angle_i))
+                    + sign * foot_to_com_y * np.cos(angle_i)
+                )
+            else:
+                x = i * sl_x
+                y_stance = lat if (i % 2 == 0) else -lat
+                y = y_stance + i * sl_y
+                angle_i = 0.0
             footsteps.append(np.array([x, y], dtype=np.float64))
+            footstep_yaws.append(float(angle_i))
 
         # time_steps: [0, ds, ds+ss, 2ds+ss, ...] matching ToddlerBot
         time_list = [0.0, ds] + [ss, ds] * (len(footsteps) - 1)
@@ -840,21 +944,59 @@ class ZMPWalkGenerator:
         right_world = np.zeros((n_total, 3), dtype=np.float64)
         contact_out = np.zeros((n_total, 2), dtype=np.float64)
         stance_out = np.zeros(n_total, dtype=np.float64)
+        # P1.8: per-frame pelvis yaw (rad).  Zero outside pure-rotation;
+        # otherwise interpolates between the consecutive footstep angles
+        # over each swing/double-support phase.
+        pelvis_yaw_out = np.zeros(n_total, dtype=np.float64)
 
         for k in range(n_cycles):
-            cycle_offset = 2 * k * sl
+            cycle_offset = 2 * k * sl_x
+            # P1.6: per-axis lateral cycle offset, parallels ``cycle_offset``
+            # in sagittal x.  Foot y positions = stance offset (±lat) + the
+            # accumulated lateral stride.
+            cycle_offset_y = 2 * k * sl_y
 
-            # Right's start position in this cycle's phase A.
-            # Cycle 0: from rest (right at world x=0, half-step
-            # swing 0→sl).  Cycle k≥1: steady state (right at
-            # (2k-1)·sl from previous cycle's phase B, full 2·sl
-            # swing).
-            if k == 0:
-                right_a_start = 0.0
-                right_a_swing = sl
+            # P1.8: in pure-rotation mode, foot world positions come from
+            # the precomputed arc-radius ``footsteps`` array (one per
+            # alternating L/R placement).  For each cycle k:
+            #   left  step idx = 2*k       (phase A stance)
+            #   right step idx = 2*k + 1   (phase A swing -> phase B stance)
+            #   left  step idx = 2*k + 2   (phase B swing target -> next cycle stance)
+            if is_pure_rotation:
+                left_a_pos = footsteps[2 * k]            # (x, y)
+                right_a_target = footsteps[2 * k + 1]    # (x, y)  - right after phase A swing
+                left_b_target = footsteps[min(2 * k + 2, len(footsteps) - 1)]
+                left_a_yaw = footstep_yaws[2 * k]
+                right_target_yaw = footstep_yaws[2 * k + 1]
+                left_b_target_yaw = footstep_yaws[min(2 * k + 2, len(footstep_yaws) - 1)]
+                # In pure-rotation, the right foot's phase-A "start" is
+                # the previous right placement (footsteps[2*k - 1]), or
+                # the initial right (-foot_to_com_y) at cycle 0.
+                if k == 0:
+                    right_a_start_pos = np.array([0.0, -foot_to_com_y], dtype=np.float64)
+                    right_a_start_yaw = 0.0
+                else:
+                    right_a_start_pos = footsteps[2 * k - 1]
+                    right_a_start_yaw = footstep_yaws[2 * k - 1]
             else:
-                right_a_start = (2 * k - 1) * sl
-                right_a_swing = 2.0 * sl
+                # Right's start position in this cycle's phase A.
+                # Cycle 0: from rest (right at world x=0, half-step
+                # swing 0→sl).  Cycle k≥1: steady state (right at
+                # (2k-1)·sl from previous cycle's phase B, full 2·sl
+                # swing).
+                if k == 0:
+                    right_a_start_x = 0.0
+                    right_a_swing_x = sl_x
+                    right_a_start_y = -lat
+                    right_a_swing_y = sl_y
+                else:
+                    right_a_start_x = (2 * k - 1) * sl_x
+                    right_a_swing_x = 2.0 * sl_x
+                    right_a_start_y = -lat + (2 * k - 1) * sl_y
+                    right_a_swing_y = 2.0 * sl_y
+
+                # Left's static placement in phase A (left is in stance).
+                left_a_y = lat + cycle_offset_y
 
             # --- Phase A: left stance (ZMP at world x=cycle_offset) ---
             for i in range(n_half):
@@ -870,23 +1012,55 @@ class ZMPWalkGenerator:
                 com_world[idx, 0] = com_lqr[lqr_idx, 0]
                 com_world[idx, 1] = com_lqr[lqr_idx, 1]
 
-                left_world[idx] = [cycle_offset, lat, 0]
-                if i < n_ds:
-                    right_world[idx] = [right_a_start, -lat, 0]
-                    contact_out[idx] = [1, 1]
+                if is_pure_rotation:
+                    # Left stance at left_a_pos
+                    left_world[idx] = [left_a_pos[0], left_a_pos[1], 0]
+                    if i < n_ds:
+                        right_world[idx] = [right_a_start_pos[0], right_a_start_pos[1], 0]
+                        contact_out[idx] = [1, 1]
+                        pelvis_yaw_out[idx] = left_a_yaw
+                    else:
+                        i_swing = i - n_ds
+                        frac = i_swing / max(1, swing_window - 1)
+                        frac = min(frac, 1.0)
+                        swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
+                        right_world[idx] = [
+                            right_a_start_pos[0]
+                            + (right_a_target[0] - right_a_start_pos[0]) * frac,
+                            right_a_start_pos[1]
+                            + (right_a_target[1] - right_a_start_pos[1]) * frac,
+                            swing_z,
+                        ]
+                        contact_out[idx] = [1, 0]
+                        # Interpolate yaw linearly across the swing.
+                        pelvis_yaw_out[idx] = (
+                            right_a_start_yaw
+                            + (right_target_yaw - right_a_start_yaw) * frac
+                        )
                 else:
-                    i_swing = i - n_ds
-                    frac = i_swing / max(1, swing_window - 1)
-                    frac = min(frac, 1.0)
-                    swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
-                    right_world[idx] = [
-                        right_a_start + right_a_swing * frac, -lat, swing_z,
-                    ]
-                    contact_out[idx] = [1, 0]
+                    left_world[idx] = [cycle_offset, left_a_y, 0]
+                    if i < n_ds:
+                        right_world[idx] = [right_a_start_x, right_a_start_y, 0]
+                        contact_out[idx] = [1, 1]
+                    else:
+                        i_swing = i - n_ds
+                        frac = i_swing / max(1, swing_window - 1)
+                        frac = min(frac, 1.0)
+                        swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
+                        right_world[idx] = [
+                            right_a_start_x + right_a_swing_x * frac,
+                            right_a_start_y + right_a_swing_y * frac,
+                            swing_z,
+                        ]
+                        contact_out[idx] = [1, 0]
                 stance_out[idx] = 0  # left
 
             # --- Phase B: right stance (ZMP at world x=cycle_offset+sl) ---
             # Left always swings 2·sl (from cycle_offset to cycle_offset+2·sl).
+            if not is_pure_rotation:
+                right_b_y = -lat + (2 * k + 1) * sl_y
+                left_b_start_y = left_a_y
+                left_b_end_y = lat + (2 * k + 2) * sl_y
             for i in range(n_half):
                 t = i * dt
                 idx = k * n_cycle + n_half + i
@@ -896,19 +1070,46 @@ class ZMPWalkGenerator:
                 com_world[idx, 0] = com_lqr[lqr_idx, 0]
                 com_world[idx, 1] = com_lqr[lqr_idx, 1]
 
-                right_world[idx] = [cycle_offset + sl, -lat, 0]
-                if i < n_ds:
-                    left_world[idx] = [cycle_offset, lat, 0]
-                    contact_out[idx] = [1, 1]
+                if is_pure_rotation:
+                    # Right stance at right_a_target (= the foot just placed)
+                    right_world[idx] = [right_a_target[0], right_a_target[1], 0]
+                    if i < n_ds:
+                        left_world[idx] = [left_a_pos[0], left_a_pos[1], 0]
+                        contact_out[idx] = [1, 1]
+                        pelvis_yaw_out[idx] = right_target_yaw
+                    else:
+                        i_swing = i - n_ds
+                        frac = i_swing / max(1, swing_window - 1)
+                        frac = min(frac, 1.0)
+                        swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
+                        left_world[idx] = [
+                            left_a_pos[0]
+                            + (left_b_target[0] - left_a_pos[0]) * frac,
+                            left_a_pos[1]
+                            + (left_b_target[1] - left_a_pos[1]) * frac,
+                            swing_z,
+                        ]
+                        contact_out[idx] = [0, 1]
+                        pelvis_yaw_out[idx] = (
+                            left_a_yaw
+                            + (left_b_target_yaw - left_a_yaw) * frac
+                        )
                 else:
-                    i_swing = i - n_ds
-                    frac = i_swing / max(1, swing_window - 1)
-                    frac = min(frac, 1.0)
-                    swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
-                    left_world[idx] = [
-                        cycle_offset + 2 * sl * frac, lat, swing_z,
-                    ]
-                    contact_out[idx] = [0, 1]
+                    right_world[idx] = [cycle_offset + sl_x, right_b_y, 0]
+                    if i < n_ds:
+                        left_world[idx] = [cycle_offset, left_b_start_y, 0]
+                        contact_out[idx] = [1, 1]
+                    else:
+                        i_swing = i - n_ds
+                        frac = i_swing / max(1, swing_window - 1)
+                        frac = min(frac, 1.0)
+                        swing_z = float(swing_z_table[min(i_swing, swing_window - 1)])
+                        left_world[idx] = [
+                            cycle_offset + 2 * sl_x * frac,
+                            left_b_start_y + (left_b_end_y - left_b_start_y) * frac,
+                            swing_z,
+                        ]
+                        contact_out[idx] = [0, 1]
                 stance_out[idx] = 1  # right
 
         # --- Solve IK ---
@@ -1031,6 +1232,9 @@ class ZMPWalkGenerator:
         pelvis_pos[:, 1] = com_world[:, 1].astype(np.float32)
         pelvis_pos[:, 2] = cfg.com_height_m
         pelvis_rpy = np.zeros((n, 3), dtype=np.float32)
+        # P1.8: pelvis yaw tracks the per-frame pelvis_yaw_out built
+        # above; for non-rotation paths this is uniformly zero.
+        pelvis_rpy[:, 2] = pelvis_yaw_out.astype(np.float32)
 
         com_pos = pelvis_pos.copy()
         foot_rpy = np.zeros((n, 3), dtype=np.float32)
@@ -1042,6 +1246,8 @@ class ZMPWalkGenerator:
 
         return ReferenceTrajectory(
             command_vx=command_vx,
+            command_vy=command_vy,
+            command_yaw_rate=command_yaw_rate,
             dt=cfg.dt_s,
             cycle_time=cycle_time,  # gait period (per-cycle), not total duration
             q_ref=q_ref,
@@ -1065,7 +1271,13 @@ class ZMPWalkGenerator:
             generator_version="zmp_v0.20.0_multicycle",
         )
 
-    def _generate_standing(self) -> ReferenceTrajectory:
+    def _generate_standing(
+        self,
+        *,
+        command_vx: float = 0.0,
+        command_vy: float = 0.0,
+        command_yaw_rate: float = 0.0,
+    ) -> ReferenceTrajectory:
         """Generate a single-frame standing posture."""
         cfg = self.cfg
         n = 1
@@ -1097,7 +1309,9 @@ class ZMPWalkGenerator:
         )
 
         return ReferenceTrajectory(
-            command_vx=0.0,
+            command_vx=command_vx,
+            command_vy=command_vy,
+            command_yaw_rate=command_yaw_rate,
             dt=cfg.dt_s,
             cycle_time=cfg.dt_s,
             q_ref=q_ref,
@@ -1305,6 +1519,81 @@ class ZMPWalkGenerator:
             command_range_vx=range_vx,
             interval=float(interval),
         )
+
+    def build_library_for_3d_values(
+        self,
+        vx_values: Sequence[float],
+        vy_values: Sequence[float],
+        yaw_rate_values: Sequence[float],
+    ) -> ReferenceLibrary:
+        """Build a 3D-grid reference library indexed by (vx, vy, yaw_rate).
+
+        P1.10/P1.11: extends the legacy 1D ``build_library_for_vx_values``
+        factory to the v0.21.0 lateral+yaw command space.  Iterates the
+        full Cartesian product ``vx × vy × wz`` so every grid cell — including
+        the static-pose bin ``(0, 0, 0)`` and the pure-lateral / pure-turn
+        edges — has a stored trajectory the env can look up at runtime.
+
+        Note: every entry is generated as an independent call to
+        ``self.generate(...)`` so the per-axis ZMP planner is exercised
+        per cell.  At ``len(vx) * len(vy) * len(wz)`` total cells, this
+        is intentionally an offline factory; callers should persist the
+        resulting library to disk (see ``ReferenceLibrary.save``).
+        """
+        if not vx_values or not vy_values or not yaw_rate_values:
+            raise ValueError(
+                "build_library_for_3d_values requires non-empty vx, vy, "
+                "yaw_rate value lists."
+            )
+
+        vx_sorted = sorted({round(float(v), 4) for v in vx_values})
+        vy_sorted = sorted({round(float(v), 4) for v in vy_values})
+        wz_sorted = sorted({round(float(v), 4) for v in yaw_rate_values})
+
+        # Derive per-axis intervals from the sorted grids (min spacing).
+        def _interval(values: List[float]) -> float:
+            if len(values) >= 2:
+                diffs = np.diff(np.asarray(values, dtype=np.float64))
+                return float(np.min(diffs))
+            return 0.0
+
+        trajectories: List[ReferenceTrajectory] = []
+        for vx in vx_sorted:
+            for vy in vy_sorted:
+                for wz in wz_sorted:
+                    print(
+                        f"  Generating (vx={vx:+.3f}, vy={vy:+.3f}, "
+                        f"wz={wz:+.3f}) ...",
+                        end="",
+                        flush=True,
+                    )
+                    traj = self.generate(
+                        command_vx=float(vx),
+                        command_vy=float(vy),
+                        command_yaw_rate=float(wz),
+                    )
+                    issues = traj.validate()
+                    if issues:
+                        print(f" ISSUES: {issues}")
+                        traj.is_valid = False
+                        traj.validation_notes = "; ".join(issues)
+                    else:
+                        print(f" OK (steps={traj.n_steps})")
+                    trajectories.append(traj)
+
+        meta = ReferenceLibraryMeta(
+            generator="zmp_walk",
+            generator_version="0.21.0",
+            robot="wildrobot_v2",
+            dt=self.cfg.dt_s,
+            cycle_time=self.cfg.cycle_time_s,
+            n_joints=self._load_actuator_layout()["n_joints"],
+            command_range_vx=(float(vx_sorted[0]), float(vx_sorted[-1])),
+            command_range_vy=(float(vy_sorted[0]), float(vy_sorted[-1])),
+            command_range_yaw=(float(wz_sorted[0]), float(wz_sorted[-1])),
+            command_interval=_interval(vx_sorted),
+        )
+        return ReferenceLibrary(trajectories, meta)
 
     def _build_library_from_vx_values(
         self,
