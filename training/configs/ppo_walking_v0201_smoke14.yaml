@@ -1,52 +1,51 @@
 # =============================================================================
-# WildRobot v0.20.1 PPO Smoke 14 — smoke13 + critic obs temporal stacking
+# WildRobot v0.20.1 PPO Smoke 14 — combined 0.26-range + critic obs x15 run
 # =============================================================================
-# Isolation experiment: smoke13's only known regression vs smoke12b was
-# that the cmd-conditioned reference lookup added a single-step
-# discontinuity to the privileged critic's
-# ``motor_pos_error = q_actual - q_ref(t, cmd_bin)`` and
-# ``ref_stance = win["contact_mask"]`` channels.  At every per-episode
-# ``velocity_cmd`` resample that crossed a bin boundary (4-bin grid
-# [0.08, 0.10, 0.12, 0.1333] at the smoke13 interval=0.02; ~34% of
-# resamples cross under cmd_resample_steps=150), the critic obs
-# jumped without any corresponding actor / physics change, polluting
-# the value baseline and biasing PPO updates.  Run
-# ``offline-run-20260522_210536-4p73cif2`` failed accordingly:
-# height-low collapse at 100%, ep_len 54, vx -0.45 m/s at iter 480
-# while same-compute smoke12b reaches ep_len 458 and vx ≈ 0.
+# Smoke14 = smoke13_026 + critic obs temporal stacking.  Combines the
+# two TB-parity fixes that landed on top of the failed smoke13:
 #
-# ToddlerBot has the SAME potential discontinuity in its critic obs
-# (toddlerbot/locomotion/mjx_env.py:2126,2150,2154 — same
-# ``motor_pos_error`` + ``stance_mask``), but absorbs it by stacking
-# the privileged obs across ``c_frame_stack=15`` frames
-# (mjx_env.py:698 + 2166-2171).  WildRobot copied the actor stacking
-# (``PROPRIO_HISTORY_FRAMES = 15`` in env_info.py:73) but NOT the
-# critic stacking — PRIVILEGED_OBS_DIM was single-frame width.
+#   1. Velocity-reward fix + WR-scaled 0.26 m/s command range
+#      (from smoke13_026 / commit c803e12 + 0e0a048):
+#        - cmd_velocity_track_dim=2 now tracks COMMANDED (vx_cmd, 0),
+#          not the selected reference's pelvis velocity (TB
+#          _reward_lin_vel_xy parity).
+#        - Forward command range [0.18, 0.26] m/s; 5-bin
+#          cmd-conditioned grid {0.18, 0.20, 0.22, 0.24, 0.26}.
+#        - Compute extended to 30M env-steps.
 #
-# Smoke14 = smoke13 yaml verbatim + ``env.critic_obs_history_frames:
-# 15`` (the only delta).  No reward / actor / residual / PPO knob
-# changes — this isolates the critic-stacking hypothesis so the run
-# can be read cleanly against smoke13.  If smoke14 recovers
-# smoke12b's stability the discontinuity-dilution theory is
-# confirmed; if not we know to keep digging elsewhere.
+#   2. Critic obs temporal stacking x15
+#      (this branch's new code, commit bf7c439):
+#        - env.critic_obs_history_frames: 15 (TB c_frame_stack
+#          parity; mjx_env.py:698 + 2166-2171).
+#        - critic obs grows from 52 to 780; the value MLP receives
+#          the trailing 15 frames flattened.  Any single-step
+#          discontinuity from a cmd-bin crossing (motor_pos_error,
+#          ref_stance) dilutes to 1/15 of the stacked vector.
 #
-# Compute budget: same as smoke13 (480 * 2048 * 20 ≈ 19.7M env-steps)
-# so smoke13 → smoke14 is an A/B at matched compute.
+# Rationale for combining instead of running smoke14 alone as a
+# critic-stacking isolation: the 0.26 + velocity-reward fix is the
+# load-bearing change for the TB comparison sequence.  Running smoke14
+# without the 0.26 range would only confirm critic stacking helps at
+# the original failed operating point, but would not advance the TB
+# comparison.  We accept the attribution cost (smoke14 deltas vs
+# smoke13 are 2-D instead of 1-D) to put both fixes in the same 30M
+# run.
 #
-# Architectural decision — critic_obs_history_frames=15:
-#   The env always carries the full PRIVILEGED_OBS_HISTORY_FRAMES=15
-#   buffer regardless of the configured depth (uniform pytree shape
-#   across configs).  Setting the field to 15 exposes all of those
-#   frames flattened into the 780-dim critic obs vector that the
-#   value head consumes (`training/algos/ppo/ppo_core.py`
-#   ``create_networks`` already takes critic_obs_dim).  The legacy
-#   default ``1`` is byte-equal to pre-smoke14 behavior for
-#   smoke7..smoke13 configs.
+# Backout plan if smoke14 doesn't recover smoke12b stability:
+#   - Drop critic_obs_history_frames: 15 and rerun → equivalent to
+#     smoke13_026 in isolation.
+#   - Or drop the cmd range / velocity-reward changes back to smoke13
+#     defaults → equivalent to the critic-stacking-only smoke14
+#     described in /tmp/smoke14_critic_obs_stacking_prompt.md.
 #
-# Per /tmp/smoke14_critic_obs_stacking_prompt.md.
+# Compute budget: 750 iters * 2048 envs * 20 rollout_steps =
+# 30,720,000 env-steps (≈30.7M).  Matches smoke13_026.
+#
+# Per /tmp/smoke14_critic_obs_stacking_prompt.md +
+# /tmp/smoke13_tb_velocity_reward_fix_prompt.md.
 # =============================================================================
 version: "0.20.1"
-version_name: "v0.20.1 PPO smoke14 (smoke13 + critic obs stacked x15)"
+version_name: "v0.20.1 PPO smoke14 (smoke13_026 + critic obs stacked x15, 30M)"
 
 seed: 42
 
@@ -89,14 +88,17 @@ env:
     left_ankle_roll: 5.0
     right_ankle_roll: 5.0
 
-  # Forward-only command range identical to smoke13.
-  min_velocity: 0.08
-  max_velocity: 0.1333333333
+  # Forward command range identical to smoke13_026: WR-scaled 0.26
+  # m/s target ≈ TB's 0.20 m/s scaled by WR's 4/3 leg-length ratio.
+  # Effective vx grid (arange + offline union):
+  #   {0.18, 0.20, 0.22, 0.24, 0.26}
+  min_velocity: 0.18
+  max_velocity: 0.26
   cmd_resample_steps: 150
   cmd_zero_chance: 0.0
   cmd_turn_chance: 0.0
   cmd_deadzone: 0.0666666667
-  eval_velocity_cmd: 0.1333333333
+  eval_velocity_cmd: 0.26
 
   contact_threshold_force: 1.0
   foot_switch_threshold: 2.0
@@ -105,7 +107,9 @@ env:
 
   loc_ref_version: v3_offline_library
   actor_obs_layout_id: wr_obs_v7_phase_proprio
-  loc_ref_offline_command_vx: 0.1333333333
+  # Eval cmd anchor / single-bin fallback target.  Unioned into the
+  # cmd-conditioned grid so eval snaps to its own bin exactly.
+  loc_ref_offline_command_vx: 0.26
 
   loc_ref_residual_base: home
   loc_ref_reset_base: home
@@ -168,7 +172,10 @@ env:
 ppo:
   num_envs: 2048
   rollout_steps: 20
-  iterations: 480
+  # 30M run: 750 * 2048 * 20 = 30,720,000 env-steps (≈30.7M).
+  # Matches smoke13_026 so the smoke14 vs smoke13_026 comparison is
+  # at equal compute (the only delta is critic stacking).
+  iterations: 750
 
   learning_rate: 3.0e-5
   gamma: 0.97
@@ -253,7 +260,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.20.1, smoke14, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim2, critic_obs_stacked_15]
+  tags: [ppo, v0.20.1, smoke14, home_anchored_residual, tb_active_rewards, smoke12b_authority, cmd_conditioned_reference, vel_track_dim2, cmd_range_018_026, critic_obs_stacked_15]
 
 video:
   enabled: false
