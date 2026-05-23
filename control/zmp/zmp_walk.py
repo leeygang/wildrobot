@@ -1592,6 +1592,12 @@ class ZMPWalkGenerator:
             command_range_vy=(float(vy_sorted[0]), float(vy_sorted[-1])),
             command_range_yaw=(float(wz_sorted[0]), float(wz_sorted[-1])),
             command_interval=_interval(vx_sorted),
+            # H2 (P2.4): record the per-axis grids the factory iterated
+            # so downstream consumers (env command sampler, eval grid
+            # plots, parity tooling) can read them off ``lib.meta``
+            # instead of re-deriving from ``lib.command_keys``.
+            vy_grid=tuple(float(v) for v in vy_sorted),
+            yaw_rate_grid=tuple(float(v) for v in wz_sorted),
         )
         return ReferenceLibrary(trajectories, meta)
 

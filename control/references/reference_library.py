@@ -350,6 +350,18 @@ class ReferenceLibraryMeta:
     command_range_vy: Tuple[float, float] = (0.0, 0.0)
     command_range_yaw: Tuple[float, float] = (0.0, 0.0)
     command_interval: float = 0.05
+    # H2 (v0.21.0): canonical per-axis grids for the 3D library.  The
+    # canonical ``vx_grid`` MUST include 0.0 — the static bin — so the
+    # env can look it up like any other command cell.  The static
+    # trajectory itself is emitted by ``ZMPWalkGenerator._generate_standing``
+    # because ``generate(0, 0, 0)`` short-circuits there via the H1
+    # 3-axis norm gate (see ``ZMPWalkGenerator.generate`` ~line 614 — the
+    # ``cmd_norm < 1e-4`` branch).  ``vy_grid`` / ``yaw_rate_grid`` are
+    # the same lists ``build_library_for_3d_values`` iterated, recorded
+    # here so downstream consumers (env sampler, eval, plotting) don't
+    # have to re-derive them from ``self.command_keys``.
+    vy_grid: Tuple[float, ...] = field(default_factory=tuple)
+    yaw_rate_grid: Tuple[float, ...] = field(default_factory=tuple)
     created: str = ""
 
 
@@ -625,8 +637,19 @@ class ReferenceLibrary:
         src = Path(path)
         with open(src / "metadata.json") as f:
             meta_dict = json.load(f)
-        # Convert lists back to tuples for tuple fields
-        for k in ("command_range_vx", "command_range_vy", "command_range_yaw"):
+        # Convert lists back to tuples for tuple fields.  ``vy_grid`` /
+        # ``yaw_rate_grid`` were added in v0.21.0 (H2); ``save()`` writes
+        # them as JSON lists via ``asdict`` so they need the same
+        # list -> tuple round-trip as the command-range pairs.  Legacy
+        # libraries without these keys keep the dataclass default of
+        # an empty tuple.
+        for k in (
+            "command_range_vx",
+            "command_range_vy",
+            "command_range_yaw",
+            "vy_grid",
+            "yaw_rate_grid",
+        ):
             if k in meta_dict and isinstance(meta_dict[k], list):
                 meta_dict[k] = tuple(meta_dict[k])
         meta = ReferenceLibraryMeta(**meta_dict)
