@@ -1,16 +1,16 @@
 # =============================================================================
 # WildRobot v0.20.1 PPO Smoke 13 — 0.26 m/s WR-scaled comparison config
 # =============================================================================
-# Derived from ppo_walking_v0201_smoke13.yaml.  The ONLY intentional
-# deltas vs smoke13 are the forward command range / eval / reference
-# vx (see Required Implementation §4 in
-# /tmp/smoke13_tb_velocity_reward_fix_prompt.md):
+# Derived from ppo_walking_v0201_smoke13.yaml.  Intentional deltas vs
+# smoke13 (see /tmp/smoke13_tb_velocity_reward_fix_prompt.md §4):
 #
 #   min_velocity: 0.08         -> 0.18
 #   max_velocity: 0.1333333    -> 0.26
 #   eval_velocity_cmd: 0.1333  -> 0.26
 #   loc_ref_offline_command_vx: 0.1333 -> 0.26
 #   loc_ref_command_grid_interval: 0.02 (unchanged)
+#   ppo.iterations: 480 -> 750  (compute extended from ~19.7M to ~30.7M
+#                                env-steps for a longer WR↔TB run)
 #
 # Purpose: compare WR against ToddlerBot at a WR-scaled target speed
 # (≈0.26 m/s ≈ TB's 0.20 m/s scaled by WR's 4/3 leg-length ratio)
@@ -20,13 +20,22 @@
 #   arange(0.18, 0.26 + 1e-6, 0.02) ∪ {0.26}
 #     = [0.18, 0.20, 0.22, 0.24, 0.26]
 #
+# Compute: 750 iters * 2048 envs * 20 rollout_steps = 30,720,000
+# env-steps ≈ 30.7M.  Comfortably above the 30M budget; gives the
+# cmd-conditioned reference + TB-parity velocity reward time to
+# clear the bootstrap basin and stabilize in the 0.18-0.26 m/s
+# range without the same-compute constraint smoke13 had against
+# smoke12b.
+#
 # All other knobs are byte-equal to smoke13: residual authority from
 # smoke12b, actor obs layout (wr_obs_v7_phase_proprio), critic
 # imitation refs, reward weights (with the in-code velocity-reward
-# fix landing in this same diff — see the prompt §1; the fix is a
-# pure code change to _cmd_forward_velocity_track_reward and does
-# NOT require a yaml flag here), PPO hyperparameters, action_rate,
-# feet_phase formula, termination config, and reset perturbation.
+# fix from commit c803e12 — pure code change to
+# _cmd_forward_velocity_track_reward, no yaml flag needed),
+# learning_rate / gamma / gae_lambda / clip_epsilon / entropy_coef /
+# value_loss_coef / epochs / num_minibatches / max_grad_norm,
+# action_rate, feet_phase formula, termination config, and reset
+# perturbation.
 # =============================================================================
 version: "0.20.1"
 version_name: "v0.20.1 PPO smoke13 — 0.26 m/s range (WR-scaled TB comparison)"
@@ -154,7 +163,8 @@ env:
 ppo:
   num_envs: 2048
   rollout_steps: 20
-  iterations: 480
+  # 30M run: 750 * 2048 * 20 = 30,720,000 env-steps (≈30.7M).
+  iterations: 750
 
   learning_rate: 3.0e-5
   gamma: 0.97

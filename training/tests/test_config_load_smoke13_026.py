@@ -160,6 +160,9 @@ def test_reward_weights_byte_equal_to_smoke13(cfg026) -> None:
 
 
 def test_ppo_hyperparameters_match_smoke13(cfg026) -> None:
+    """Every PPO hyperparameter EXCEPT iterations must match smoke13.
+    iterations is the only intentional ppo delta — the 0.26 config
+    extends compute to ~30M env-steps for a longer comparison run."""
     if not _SMOKE13.exists():
         pytest.skip(f"{_SMOKE13.name} not found")
     cfg13 = load_training_config(str(_SMOKE13))
@@ -181,3 +184,23 @@ def test_ppo_hyperparameters_match_smoke13(cfg026) -> None:
         assert getattr(p, field) == pytest.approx(getattr(p13, field)), (
             f"ppo.{field} drifted from smoke13"
         )
+
+
+def test_iteration_budget_targets_30M_env_steps(cfg026) -> None:
+    """0.26 config is a 30M-step run: iterations * num_envs *
+    rollout_steps must be >=30M and within 5% of the 30M target so
+    a future iteration tweak can't silently undershoot or 2x the
+    budget."""
+    p = cfg026.ppo
+    env_steps = int(p.iterations) * int(p.num_envs) * int(p.rollout_steps)
+    target = 30_000_000
+    assert env_steps >= target, (
+        f"compute budget {env_steps:,} below 30M target"
+    )
+    assert env_steps <= int(target * 1.05), (
+        f"compute budget {env_steps:,} exceeds 30M target by >5% — "
+        "trim iterations"
+    )
+    # Pin the exact iteration count too so a refactor moving the
+    # arithmetic doesn't silently drift the run length.
+    assert p.iterations == 750
