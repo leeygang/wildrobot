@@ -42,8 +42,11 @@ def test_visualizer_threads_actor_activation_from_training_config() -> None:
 
 
 def test_visualizer_rejects_out_of_range_fixed_velocity() -> None:
+    # v0.21.0 P11: _validate_user_fixed_velocity_cmd now returns a (3,)
+    # ndarray (vx, vy, wz); scalar input broadcasts to vx-only.
     cfg = load_training_config(str(SMOKE12B_CFG))
-    assert _validate_user_fixed_velocity_cmd(cfg, 0.10) == pytest.approx(0.10)
+    out = _validate_user_fixed_velocity_cmd(cfg, 0.10)
+    assert tuple(out) == pytest.approx((0.10, 0.0, 0.0))
     with pytest.raises(ValueError, match="outside configured range"):
         _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.min_velocity) - 1e-3)
     with pytest.raises(ValueError, match="outside configured range"):

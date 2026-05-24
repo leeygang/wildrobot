@@ -77,7 +77,12 @@ from training.utils.ctrl_order import CtrlOrderMapper
 
 V6_LAYOUT_ID = "wr_obs_v6_offline_ref_history"
 V7_LAYOUT_ID = "wr_obs_v7_phase_proprio"
-ADAPTER_LAYOUT_IDS = frozenset({V6_LAYOUT_ID, V7_LAYOUT_ID})
+# v0.21.0 P11: v8 is a strict superset of v7 — the adapter handles v8 by
+# routing (vy, wz) through ``velocity_cmd_lateral_yaw`` at the obs build
+# site (compute_obs below).  Without v8 in the allow-list a v8-trained
+# checkpoint cannot be evaluated or visualized off-policy.
+V8_LAYOUT_ID = "wr_obs_v8_cmd3d"
+ADAPTER_LAYOUT_IDS = frozenset({V6_LAYOUT_ID, V7_LAYOUT_ID, V8_LAYOUT_ID})
 
 
 @dataclass
@@ -628,7 +633,7 @@ class V6EvalAdapter:
     def compute_obs(
         self,
         mj_data: mujoco.MjData,
-        velocity_cmd: float,
+        velocity_cmd: np.ndarray | float,
     ) -> np.ndarray:
         """Build the v6 obs at the current ``step_idx``.
 
@@ -684,11 +689,28 @@ class V6EvalAdapter:
         policy_state = PolicyState(
             prev_action=np.asarray(self._state.last_applied_action, dtype=np.float32)
         )
-        obs = build_observation(
+        # v0.21.0 P11: ``velocity_cmd`` can be a scalar (legacy v6/v7 path)
+        # or a (3,) [vx, vy, wz] vector (post-P3 env emission, v8 layout).
+        # Normalize to (3,) by broadcasting vx-only when given a scalar
+        # (H3 semantics — visualize_policy historically only exercises vx).
+        # The numpy obs builder slices index 0 for the shared scalar slot
+        # so v1-v7 layouts stay byte-identical; v8 additionally consumes
+        # the (vy, wz) tail via ``velocity_cmd_lateral_yaw``.
+        cmd_arr = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
+        if cmd_arr.size == 1:
+            cmd_arr = np.array(
+                [float(cmd_arr[0]), 0.0, 0.0], dtype=np.float32
+            )
+        elif cmd_arr.size != 3:
+            raise ValueError(
+                "V6EvalAdapter.compute_obs: velocity_cmd must be scalar or "
+                f"length-3 (vx, vy, wz); got size {cmd_arr.size}"
+            )
+        obs_kwargs: dict[str, object] = dict(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
-            velocity_cmd=np.array(velocity_cmd, dtype=np.float32),
+            velocity_cmd=cmd_arr,
             loc_ref_phase_sin_cos=phase_sin_cos,
             loc_ref_stance_foot=np.array(
                 [float(win.stance_foot_id)], dtype=np.float32
@@ -708,6 +730,12 @@ class V6EvalAdapter:
             loc_ref_contact_mask=np.asarray(win.contact_mask, dtype=np.float32),
             proprio_history=self._state.proprio_history.reshape(-1),
         )
+        # v0.21.0 P11: route (vy, wz) only when the policy spec is v8 —
+        # v6/v7 layouts ignore the kwarg, but passing it unconditionally
+        # would break the build_observation_from_components contract.
+        if self._policy_spec.observation.layout_id == "wr_obs_v8_cmd3d":
+            obs_kwargs["velocity_cmd_lateral_yaw"] = cmd_arr[1:]
+        obs = build_observation(**obs_kwargs)
 
         # Update for next compute_obs.
         self._state.loc_ref_history = history_4

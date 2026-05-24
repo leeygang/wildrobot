@@ -38,15 +38,33 @@ from training.core.rollout import TrajectoryBatch
 from training.envs.env_info import WR_INFO_KEY
 
 
-def _disable_cmd_resample_for_eval(env_cfg) -> bool:
-    """Match the training eval sentinel: non-negative eval cmd pins rollout cmd.
+def _eval_cmd_is_overridden(env_cfg) -> bool:
+    """v0.21.0 P11 (H3 + H4): eval override sentinel reads vx (index 0) only.
 
-    v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); sentinel
-    detection reads only the [0]th axis (vx).
+    ``eval_velocity_cmd`` post-P3 is a (vx, vy, wz) 3-tuple; the sentinel
+    rule is "negative vx => no override" so a YAML pinning
+    ``eval_velocity_cmd: [-1.0, 0.5, 0.0]`` still uses the sampled cmd at
+    eval time.  This helper is the single source of truth for the rule —
+    other eval entrypoints (``eval_ladder_v0170``, ``visualize_policy``)
+    should import this rather than re-implement.
     """
-    _ecv = env_cfg.eval_velocity_cmd
-    _vx = _ecv[0] if hasattr(_ecv, "__len__") else _ecv
-    return float(_vx) >= 0.0
+    cmd = env_cfg.eval_velocity_cmd
+    try:
+        vx0 = float(cmd[0])
+    except (TypeError, IndexError):
+        # Legacy scalar path (should not happen post-P3.4a).
+        vx0 = float(cmd)
+    return vx0 >= 0.0
+
+
+def _disable_cmd_resample_for_eval(env_cfg) -> bool:
+    """Back-compat alias for ``_eval_cmd_is_overridden``.
+
+    The training-time eval gate calls this name; older external scripts
+    may also import it.  Keep the alias so we don't break those while
+    new code uses the more descriptive helper.
+    """
+    return _eval_cmd_is_overridden(env_cfg)
 
 
 def _network_activation_name(training_cfg) -> str:

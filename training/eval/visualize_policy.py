@@ -124,18 +124,54 @@ def _network_activation_name(training_cfg) -> str:
     return actor_activation
 
 
-def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd: float) -> float:
-    """Validate user-provided fixed velocity command is in training range."""
-    value = float(velocity_cmd)
-    min_velocity = float(training_cfg.env.min_velocity)
-    max_velocity = float(training_cfg.env.max_velocity)
-    if not (min_velocity <= value <= max_velocity):
+def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd) -> np.ndarray:
+    """Validate user-provided fixed velocity command is in training range.
+
+    v0.21.0 P11 (H4): ``velocity_cmd`` may be either a scalar (legacy
+    visualize CLI) or a length-3 iterable ``(vx, vy, wz)``.  Scalar is
+    broadcast to vx-only per H3 (visualize historically only exercised
+    vx, so falling back to vy=wz=0 is the safe default).  Returns a
+    (3,) ``np.ndarray`` so downstream callers don't have to special-case.
+    """
+    arr = np.atleast_1d(np.asarray(velocity_cmd, dtype=np.float32)).reshape(-1)
+    if arr.size == 1:
+        vx, vy, wz = float(arr[0]), 0.0, 0.0
+    elif arr.size == 3:
+        vx, vy, wz = float(arr[0]), float(arr[1]), float(arr[2])
+    else:
+        raise ValueError(
+            "Fixed velocity command must be a scalar (vx) or length-3 "
+            f"(vx, vy, wz); got length {arr.size}"
+        )
+    env_cfg = training_cfg.env
+    min_velocity = float(env_cfg.min_velocity)
+    max_velocity = float(env_cfg.max_velocity)
+    if not (min_velocity <= vx <= max_velocity):
         raise ValueError(
             "Fixed velocity command "
-            f"{value:.6f} is outside configured range "
+            f"{vx:.6f} is outside configured range "
             f"[{min_velocity:.6f}, {max_velocity:.6f}]"
         )
-    return value
+    # vy / wz bounds only enforced when the cfg actually carries them
+    # (older YAMLs predate the 3D command range).  Missing fields are
+    # treated as "no constraint" so this stays back-compat.
+    min_vy = getattr(env_cfg, "min_velocity_y", None)
+    max_vy = getattr(env_cfg, "max_velocity_y", None)
+    if min_vy is not None and max_vy is not None:
+        if not (float(min_vy) <= vy <= float(max_vy)):
+            raise ValueError(
+                "Fixed velocity command "
+                f"vy={vy:.6f} is outside configured range "
+                f"[{float(min_vy):.6f}, {float(max_vy):.6f}]"
+            )
+    max_wz = getattr(env_cfg, "max_yaw_rate", None)
+    if max_wz is not None:
+        if abs(wz) > float(max_wz):
+            raise ValueError(
+                "Fixed velocity command "
+                f"wz={wz:.6f} exceeds |max_yaw_rate|={float(max_wz):.6f}"
+            )
+    return np.array([vx, vy, wz], dtype=np.float32)
 
 
 def _is_terminated_from_pose(
@@ -193,14 +229,23 @@ def parse_args():
     parser.add_argument(
         "--velocity-cmd",
         type=float,
+        nargs="+",
         default=None,
-        help="Fixed velocity command (default: random from config range)",
+        help=(
+            "Fixed velocity command (default: random from config range). "
+            "Pass one float for vx-only (legacy), or three floats "
+            "(vx vy wz) for v0.21.0 3-axis command."
+        ),
     )
     parser.add_argument(
         "--fixed-velocity",
         type=float,
+        nargs="+",
         default=None,
-        help="Alias for --velocity-cmd (fixed command for every episode)",
+        help=(
+            "Alias for --velocity-cmd (fixed command for every episode). "
+            "Accepts one float (vx-only) or three floats (vx vy wz)."
+        ),
     )
     parser.add_argument(
         "--no-reset-noise",
@@ -573,11 +618,18 @@ def main():
         prev_action slot to match env semantics (env line 1714).
         v3/v4 use the legacy numpy obs path with caller-supplied
         prev_action_in for the half-span filter.
+
+        v0.21.0 P11 (H4): ``velocity_cmd`` is always a (3,) [vx, vy, wz]
+        ``np.ndarray`` (normalized at the entrypoint via
+        ``_validate_user_fixed_velocity_cmd`` / ``sample_velocity_cmd``).
+        The v6 adapter ducktypes scalar vs (3,); legacy numpy path needs
+        to slice (vy, wz) for v8 layouts explicitly.
         """
+        cmd_arr = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
         if eval_adapter is not None:
             return eval_adapter.compute_obs(
                 mj_data=mj_data,
-                velocity_cmd=float(velocity_cmd),
+                velocity_cmd=cmd_arr,
             )
 
         signals = signals_adapter.read(mj_data)
@@ -585,13 +637,19 @@ def main():
         if policy_spec.observation.layout_id == "wr_obs_v3":
             gait_clock = get_gait_clock(step_count)
 
-        obs = build_observation(
+        obs_kwargs = dict(
             spec=policy_spec,
             state=PolicyState(prev_action=np.asarray(prev_action_in, dtype=np.float32)),
             signals=signals,
-            velocity_cmd=np.array(velocity_cmd, dtype=np.float32),
+            velocity_cmd=cmd_arr,
             gait_clock=gait_clock,
         )
+        if (
+            policy_spec.observation.layout_id == "wr_obs_v8_cmd3d"
+            and cmd_arr.size >= 3
+        ):
+            obs_kwargs["velocity_cmd_lateral_yaw"] = cmd_arr[1:3]
+        obs = build_observation(**obs_kwargs)
 
         return obs
 
@@ -646,12 +704,18 @@ def main():
 
     rng_env = np.random.default_rng()
 
-    def sample_velocity_cmd():
-        return float(
+    def sample_velocity_cmd() -> np.ndarray:
+        """v0.21.0 P11: return (3,) [vx, vy, wz] even though visualize
+        historically only sampled vx — keeps the rest of the pipeline
+        layout-agnostic (v8 needs the full 3-vec; v6/v7 ignore the tail
+        via the index-0 slice in build_observation_from_components).
+        """
+        vx = float(
             rng_env.uniform(
                 training_cfg.env.min_velocity, training_cfg.env.max_velocity
             )
         )
+        return np.array([vx, 0.0, 0.0], dtype=np.float32)
 
     def reset_robot(mj_model, mj_data, apply_noise=True):
         """Reset robot to initial state (training parity)."""
@@ -723,19 +787,28 @@ def main():
     )
     fixed_velocity = user_fixed_velocity
     if args.demo and fixed_velocity is None:
-        # H3 / P3.6: ``eval_velocity_cmd`` is the (vx, vy, wz) 3-tuple.
-        # The demo-mode override below is vx-only (visualize_policy plumbs
-        # a scalar ``velocity_cmd`` through ``sample_velocity_cmd`` /
-        # ``get_observation``); slice the vx axis here at the boundary
-        # to preserve back-compat without widening the rest of the file.
+        # v0.21.0 P11 (H3 / P3.6): ``eval_velocity_cmd`` is the
+        # (vx, vy, wz) 3-tuple.  Use the full 3-vec for v8; v6/v7 layouts
+        # ignore the tail (the numpy obs slot is sliced to index 0).
         _ecv = getattr(training_cfg.env, "eval_velocity_cmd", -1.0)
-        eval_cmd = float(_ecv[0] if hasattr(_ecv, "__len__") else _ecv)
-        if eval_cmd >= 0.0:
-            fixed_velocity = eval_cmd
+        _vx = _ecv[0] if hasattr(_ecv, "__len__") else _ecv
+        if float(_vx) >= 0.0:
+            if hasattr(_ecv, "__len__") and len(_ecv) >= 3:
+                fixed_velocity = np.array(
+                    [float(_ecv[0]), float(_ecv[1]), float(_ecv[2])],
+                    dtype=np.float32,
+                )
+            else:
+                fixed_velocity = np.array(
+                    [float(_vx), 0.0, 0.0], dtype=np.float32
+                )
         else:
-            fixed_velocity = (
+            mid_vx = (
                 training_cfg.env.min_velocity + training_cfg.env.max_velocity
             ) / 2
+            fixed_velocity = np.array(
+                [float(mid_vx), 0.0, 0.0], dtype=np.float32
+            )
 
     if user_fixed_velocity is not None:
         fixed_velocity = _validate_user_fixed_velocity_cmd(
@@ -743,11 +816,21 @@ def main():
         )
 
     if fixed_velocity is not None:
-        velocity_cmd = fixed_velocity
-        print(f"Fixed velocity command: {velocity_cmd:.2f} m/s")
+        velocity_cmd = np.asarray(fixed_velocity, dtype=np.float32)
+        if velocity_cmd.size == 1:
+            velocity_cmd = np.array(
+                [float(velocity_cmd[0]), 0.0, 0.0], dtype=np.float32
+            )
+        print(
+            f"Fixed velocity command: vx={velocity_cmd[0]:.2f} m/s, "
+            f"vy={velocity_cmd[1]:.2f} m/s, wz={velocity_cmd[2]:.2f} rad/s"
+        )
     else:
         velocity_cmd = sample_velocity_cmd()
-        print(f"Sampled velocity command: {velocity_cmd:.2f} m/s")
+        print(
+            f"Sampled velocity command: vx={velocity_cmd[0]:.2f} m/s, "
+            f"vy={velocity_cmd[1]:.2f} m/s, wz={velocity_cmd[2]:.2f} rad/s"
+        )
 
     apply_reset_noise = not args.no_reset_noise and not args.demo
     reset_robot(mj_model, mj_data, apply_noise=apply_reset_noise)
@@ -836,7 +919,18 @@ def main():
         f"  Velocity range: [{training_cfg.env.min_velocity:.2f}, {training_cfg.env.max_velocity:.2f}] m/s"
     )
     if args.velocity_cmd is not None:
-        print(f"  Fixed velocity cmd: {args.velocity_cmd:.2f} m/s")
+        # v0.21.0 P11: ``args.velocity_cmd`` is now a list (nargs='+'),
+        # either [vx] or [vx, vy, wz].
+        _vc = list(args.velocity_cmd)
+        if len(_vc) == 1:
+            print(f"  Fixed velocity cmd: vx={_vc[0]:.2f} m/s")
+        elif len(_vc) == 3:
+            print(
+                f"  Fixed velocity cmd: vx={_vc[0]:.2f} m/s, "
+                f"vy={_vc[1]:.2f} m/s, wz={_vc[2]:.2f} rad/s"
+            )
+        else:
+            print(f"  Fixed velocity cmd: {_vc}")
     print(f"  Control dt: {ctrl_dt}s ({1/ctrl_dt:.0f} Hz)")
     try:
         left_toe, left_heel, right_toe, right_heel = (
