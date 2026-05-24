@@ -604,6 +604,10 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         cmd_resample_steps=int(env.get("cmd_resample_steps", 0)),
         cmd_zero_chance=float(env.get("cmd_zero_chance", 0.0)),
         cmd_turn_chance=float(env.get("cmd_turn_chance", 0.0)),
+        # v0.21.0 P4-fix: gate the TB-branched 3D sampler behind an
+        # explicit YAML opt-in.  Default False keeps smoke14 / smoke12b /
+        # smoke7 on the v0.20.x scalar-vx sampler (forward-only).
+        cmd_sampler_3d_branched=bool(env.get("cmd_sampler_3d_branched", False)),
         # v0.21.0 H3 + NEW-4: per-axis (vx, vy, wz) deadzone / eval cmd.
         # Scalar YAML entries broadcast: cmd_deadzone symmetrically to
         # all axes, eval_velocity_cmd to (s, 0.0, 0.0) (vy / wz pin

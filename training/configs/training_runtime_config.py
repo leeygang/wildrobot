@@ -110,9 +110,11 @@ class EnvConfig(Freezable):
     max_velocity: float = 1.0
     # v0.21.0 P4: lateral (vy) and yaw-rate (wz) ranges for the
     # branched 3D command sampler (zero / pure-turn / ellipse-walk).
-    # Defaults of 0.0 preserve the v0.20.x scalar-vx behavior — the
-    # ellipse degenerates to the vx axis and the turn branch emits
-    # zero wz, so legacy YAML configs are byte-equivalent.
+    # These fields are ONLY consumed when ``cmd_sampler_3d_branched``
+    # (defined below in the v0.20.1 cmd block) is True; the default
+    # scalar-vx sampler ignores them and always emits (vx, 0, 0).
+    # Legacy YAML configs that don't set ``cmd_sampler_3d_branched``
+    # are byte-equivalent to their pre-P4 behavior.
     min_velocity_y: float = 0.0
     max_velocity_y: float = 0.0
     max_yaw_rate: float = 0.0
@@ -630,6 +632,16 @@ class EnvConfig(Freezable):
     cmd_resample_steps: int = 0
     cmd_zero_chance: float = 0.0  # P(resampled cmd == 0)
     cmd_turn_chance: float = 0.0  # P(resampled cmd == turn) — placeholder
+    # v0.21.0 P4-fix: gates the TB-style branched 3D command sampler.
+    # When False (default), _sample_velocity_cmd uses the v0.20.x scalar-vx
+    # sampler that returns (vx, 0, 0) with vx restricted to the
+    # forward-only interval [min_velocity, max_velocity] (modulo deadzone).
+    # When True, _sample_velocity_cmd uses the TB-mirrored branched sampler
+    # (zero / pure-turn / walk-ellipse) which legitimately produces negative
+    # vx when min_velocity > 0 — requires a bidirectional reference library
+    # (P5+ wiring).  The v0.21 smoke YAML (P8) sets this True; legacy YAML
+    # leaves it False so smoke14 / smoke12b / smoke7 are unaffected.
+    cmd_sampler_3d_branched: bool = False
     # v0.21.0 H3: per-axis deadzone for the (vx, vy, wz) command space.
     # Scalar YAML entries broadcast symmetrically to all three axes
     # (legacy behavior); explicit length-3 lists pin per-axis floors.

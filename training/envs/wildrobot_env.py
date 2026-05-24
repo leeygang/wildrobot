@@ -2652,7 +2652,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             [jp.float32(0.0), jp.float32(0.0), wz.astype(jp.float32)]
         )
 
-    def _sample_velocity_cmd(self, rng: jax.Array) -> jax.Array:
+    def _sample_velocity_cmd_v0_21_branched(self, rng: jax.Array) -> jax.Array:
         """Branched 3D command sampler — zero / pure-turn / ellipse-walk.
 
         Mirrors ToddlerBot's ``_sample_command`` glue
@@ -2664,11 +2664,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         * ``u < cmd_zero_chance + cmd_turn_chance``-> ``_sample_turn_command``
         * otherwise                                -> ``_sample_walk_command``
 
-        Returns a length-3 ``float32`` vector ``(vx, vy, wz)``.  When
-        ``cmd_zero_chance + cmd_turn_chance == 0`` the walk branch
-        dominates, recovering the v0.20.x scalar-vx behavior (with
-        ``vy = wz = 0`` when ``min_velocity_y == max_velocity_y == 0``
-        and ``max_yaw_rate == 0``).
+        Returns a length-3 ``float32`` vector ``(vx, vy, wz)``.  Unlike
+        the v0.20.x scalar-vx sampler, the TB walk-ellipse legitimately
+        produces NEGATIVE ``vx`` when ``min_velocity > 0`` via the
+        ``sin(theta)`` sign-flip + deadzone clamp (TB
+        ``walk_env.py:267-272``).  This is only well-defined when the
+        reference library has matching bidirectional coverage (P5+); use
+        the v0.20.x scalar sampler for forward-only legacy configs.
         """
         rng_2, rng_3, rng_4, rng_5, rng_6 = jax.random.split(rng, 5)
         u = jax.random.uniform(rng_2, ())
@@ -2685,6 +2687,139 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.where(u < zero_chance + turn_chance, turn_cmd, walk_cmd),
         )
         return cmd.astype(jp.float32)
+
+    def _sample_velocity_cmd_v0_20x_scalar(self, rng: jax.Array) -> jax.Array:
+        """Scalar forward-velocity command sampler (m/s), packed as (vx, 0, 0).
+
+        Pre-P4 v0.20.x sampler restored under the
+        ``cmd_sampler_3d_branched`` gate (P4-fix).  Returns a length-3
+        ``float32`` vector ``(vx, 0, 0)`` so callers see the same
+        3-vector contract introduced in P3.
+
+        Behavior:
+          - with probability ``cmd_zero_chance``, return exact 0
+          - otherwise sample a nonzero walking command outside
+            ``[-cmd_deadzone, +cmd_deadzone]``.
+
+        This is a WR scalar analog for TB-style command diversity, not an
+        exact copy of TB's vector walk sampler.  TB keeps the walk vector
+        nonzero, while this scalar path enforces nonzero ``|vx| >= deadzone``
+        to avoid the old scalar deadzone-collapse inflation of zero commands.
+
+        For asymmetric ranges, the nonzero branch samples from the valid
+        negative/positive intervals weighted by interval length (no
+        symmetry assumption).  Degenerate fixed-command configs
+        (``min_velocity == max_velocity``) keep the historical behavior:
+        fixed value, then deadzone snap.  If no value exists outside the
+        deadzone for a non-degenerate range, the method falls back to the
+        historical uniform+deadzone behavior.
+        ``cmd_turn_chance`` is ignored on this path (the v0.20.x sampler
+        never gated a turn branch; the branched sampler is the opt-in).
+        """
+        rng, k_zero, k_branch, k_neg, k_pos, k_fallback = jax.random.split(rng, 6)
+        min_velocity = jp.float32(self._config.env.min_velocity)
+        max_velocity = jp.float32(self._config.env.max_velocity)
+        # v0.21.0 P3: cmd_deadzone is a length-3 tuple; the scalar
+        # sampler pins vx only, so it reads the [0] axis.
+        deadzone = jp.float32(self._config.env.cmd_deadzone[0])
+        zero_chance = jp.float32(self._config.env.cmd_zero_chance)
+
+        def _sample_fixed_cmd() -> jax.Array:
+            cmd = min_velocity
+            return jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+
+        def _sample_historical_fallback() -> jax.Array:
+            cmd = jax.random.uniform(
+                k_fallback,
+                shape=(),
+                minval=min_velocity,
+                maxval=max_velocity,
+            )
+            return jp.where(jp.abs(cmd) < deadzone, jp.float32(0.0), cmd)
+
+        def _sample_nonzero_interval() -> jax.Array:
+            neg_lo = min_velocity
+            neg_hi = jp.minimum(max_velocity, -deadzone)
+            pos_lo = jp.maximum(min_velocity, deadzone)
+            pos_hi = max_velocity
+
+            neg_len = jp.maximum(neg_hi - neg_lo, jp.float32(0.0))
+            pos_len = jp.maximum(pos_hi - pos_lo, jp.float32(0.0))
+            total_len = neg_len + pos_len
+
+            def _sample_neg() -> jax.Array:
+                return jax.random.uniform(k_neg, shape=(), minval=neg_lo, maxval=neg_hi)
+
+            def _sample_pos() -> jax.Array:
+                return jax.random.uniform(k_pos, shape=(), minval=pos_lo, maxval=pos_hi)
+
+            def _sample_valid() -> jax.Array:
+                return jax.lax.cond(
+                    neg_len <= jp.float32(0.0),
+                    lambda _: _sample_pos(),
+                    lambda _: jax.lax.cond(
+                        pos_len <= jp.float32(0.0),
+                        lambda __: _sample_neg(),
+                        lambda __: jax.lax.cond(
+                            jax.random.uniform(k_branch, shape=()) < (neg_len / total_len),
+                            lambda ___: _sample_neg(),
+                            lambda ___: _sample_pos(),
+                            operand=None,
+                        ),
+                        operand=None,
+                    ),
+                    operand=None,
+                )
+
+            return jax.lax.cond(
+                total_len > jp.float32(0.0),
+                lambda _: _sample_valid(),
+                lambda _: _sample_historical_fallback(),
+                operand=None,
+            )
+
+        nonzero_cmd = jax.lax.cond(
+            min_velocity == max_velocity,
+            lambda _: _sample_fixed_cmd(),
+            lambda _: _sample_nonzero_interval(),
+            operand=None,
+        )
+        cmd = jax.lax.cond(
+            jax.random.uniform(k_zero, shape=()) < zero_chance,
+            lambda _: jp.float32(0.0),
+            lambda _: nonzero_cmd,
+            operand=None,
+        )
+        # Pack scalar vx into the (vx, vy, wz) contract from P3; vy / wz
+        # always pin to 0 on the scalar path.
+        cmd_vx = cmd.astype(jp.float32)
+        return jp.stack(
+            [cmd_vx, jp.float32(0.0), jp.float32(0.0)]
+        ).astype(jp.float32)
+
+    def _sample_velocity_cmd(self, rng: jax.Array) -> jax.Array:
+        """Sample a 3-vector velocity command ``(vx, vy, wz)``.
+
+        Dispatches between two implementations based on
+        ``EnvConfig.cmd_sampler_3d_branched``:
+
+        * ``False`` (default, v0.20.x compat): scalar-vx sampler returning
+          ``(vx, 0, 0)`` with vx in the forward-only ``[min_velocity,
+          max_velocity]`` interval (modulo deadzone).  Preserves smoke14 /
+          smoke12b / smoke7 baselines bit-for-bit.
+
+        * ``True`` (v0.21.0 opt-in): TB-mirrored branched 3D sampler
+          (zero / pure-turn / walk-ellipse).  Produces negative vx when
+          ``min_velocity > 0`` via TB's ``sin(theta)`` sign-flip, so
+          requires a bidirectional reference library (P5+).
+
+        ``cmd_sampler_3d_branched`` is a compile-time Python ``bool`` on
+        ``EnvConfig`` (not a traced JAX value), so the dispatch is a
+        plain Python ``if`` — only the selected branch is traced.
+        """
+        if self._config.env.cmd_sampler_3d_branched:
+            return self._sample_velocity_cmd_v0_21_branched(rng)
+        return self._sample_velocity_cmd_v0_20x_scalar(rng)
 
     def _make_initial_state(
         self,

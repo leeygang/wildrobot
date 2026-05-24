@@ -63,9 +63,16 @@ def _env_3d(
     Optional overrides for ``cmd_zero_chance`` / ``cmd_turn_chance``
     isolate individual branches in their dedicated tests.  When left as
     ``None`` the smoke14 defaults (both 0.0) are kept.
+
+    P4-fix: ``cmd_sampler_3d_branched=True`` opts in to the TB-mirrored
+    branched sampler.  Legacy YAML defaults to ``False`` (forward-only
+    scalar-vx sampler) so smoke14 / smoke12b / smoke7 are unchanged.
+    These tests EXERCISE the branched sampler, so the helper sets the
+    opt-in flag.
     """
     cfg = load_training_config(_BASE_YAML)
-    env_kwargs: dict[str, float] = dict(
+    env_kwargs: dict[str, object] = dict(
+        cmd_sampler_3d_branched=True,
         min_velocity_y=min_velocity_y,
         max_velocity_y=max_velocity_y,
         max_yaw_rate=max_yaw_rate,
@@ -147,3 +154,54 @@ def test_branch_marginal_distribution() -> None:
     assert abs(float(is_zero.mean()) - 0.20) < 0.03
     assert abs(float(is_turn.mean()) - 0.20) < 0.03
     assert abs(float(is_walk.mean()) - 0.60) < 0.03
+
+
+# -----------------------------------------------------------------------------
+# P4-fix: gating contract — opt-in flag picks between the v0.20.x scalar
+# sampler (default) and the TB-branched 3D sampler.
+# -----------------------------------------------------------------------------
+
+
+def test_default_sampler_is_v0_20x_scalar_for_smoke14() -> None:
+    """smoke14 baseline must produce vx in [min_velocity, max_velocity]
+    only (forward-only) when cmd_sampler_3d_branched is unset/False.
+    Reverts the P4 behavioral change for legacy configs."""
+    cfg = load_training_config(_BASE_YAML)
+    assert cfg.env.cmd_sampler_3d_branched is False
+    env = WildRobotEnv(cfg)
+    keys = jax.random.split(jax.random.PRNGKey(0), 4096)
+    cmds = jax.vmap(env._sample_velocity_cmd)(keys)
+    # vy and wz must be exactly zero on the scalar-vx path.
+    assert (jp.abs(cmds[:, 1]) < 1e-7).all()
+    assert (jp.abs(cmds[:, 2]) < 1e-7).all()
+    # vx must NOT go negative under positive-only config.
+    nonzero_vx = cmds[jp.abs(cmds[:, 0]) > 1e-7, 0]
+    assert (nonzero_vx >= 0.0).all(), (
+        f"v0.20.x scalar sampler produced negative vx: {nonzero_vx.min()}"
+    )
+
+
+def test_branched_sampler_opt_in_via_flag() -> None:
+    """Setting cmd_sampler_3d_branched=True activates the TB-mirrored
+    branched sampler.  With smoke14 + opt-in + the new vy/wz ranges,
+    the sampler can emit nonzero vy / wz."""
+    cfg = load_training_config(_BASE_YAML)
+    cfg = dataclasses.replace(
+        cfg,
+        env=dataclasses.replace(
+            cfg.env,
+            cmd_sampler_3d_branched=True,
+            min_velocity_y=-0.13,
+            max_velocity_y=0.13,
+            max_yaw_rate=0.25,
+            cmd_zero_chance=0.0,
+            cmd_turn_chance=1.0,  # pure-turn branch
+        ),
+    )
+    env = WildRobotEnv(cfg)
+    keys = jax.random.split(jax.random.PRNGKey(0), 256)
+    cmds = jax.vmap(env._sample_velocity_cmd)(keys)
+    # Pure-turn branch: vx == vy == 0, |wz| up to 0.25.
+    assert (jp.abs(cmds[:, 0]) < 1e-6).all()
+    assert (jp.abs(cmds[:, 1]) < 1e-6).all()
+    assert (jp.abs(cmds[:, 2]) > 1e-6).any()

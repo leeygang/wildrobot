@@ -170,25 +170,18 @@ def test_eval_cmd_sentinel_falls_back_to_sampled(env_sentinel) -> None:
         f"reset_for_eval is incorrectly pinning the cmd in sentinel mode."
     )
 
-    # Sanity: all sampled cmds must be inside the velocity envelope.
-    # v0.21.0 P4: the sampler is now the TB-style ellipse on (vx, vy)
-    # rather than a uniform draw on ``[min_velocity, max_velocity]``.
-    # Per TB ``walk_env.py:267-272`` the ``x_max = sin(theta) > 0 ?
-    # max_velocity : -min_velocity`` switch lets vx span ``[-|min_v|,
-    # |max_v|]`` even when both endpoints are non-negative (the
-    # deadzone-clamped lower bound expands the half-axis to deadzone
-    # when ``min_velocity == 0``).  The original assertion
-    # ``min_velocity <= cmd <= max_velocity`` only held for the
-    # v0.20.x scalar-vx sampler; this updated envelope assertion
-    # remains the right "in-range" sanity check under P4.
-    vx_envelope = max(
-        abs(float(env._config.env.min_velocity)),
-        abs(float(env._config.env.max_velocity)),
-    )
+    # Sanity: all sampled cmds must be in the configured range.
+    # smoke7 defaults to ``cmd_sampler_3d_branched=False`` (P4-fix),
+    # so the sampler is the v0.20.x scalar-vx path and ``cmd`` stays
+    # inside ``[min_velocity, max_velocity]`` (modulo deadzone snap
+    # to 0).  The pre-P4 inequality is the right "in-range" check.
     for seed_idx, cmd in enumerate(cmds):
-        assert -vx_envelope - EPS <= cmd <= vx_envelope + EPS, (
+        assert (
+            env._config.env.min_velocity <= cmd <= env._config.env.max_velocity
+        ), (
             f"Sampled eval cmd {cmd} from seed {seed_idx} is outside the "
-            f"velocity envelope [-{vx_envelope}, {vx_envelope}]."
+            f"configured range "
+            f"[{env._config.env.min_velocity}, {env._config.env.max_velocity}]."
         )
 
 

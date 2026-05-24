@@ -34,3 +34,11 @@ def test_env_config_defaults_vy_wz_to_zero() -> None:
     assert cfg.min_velocity_y == 0.0
     assert cfg.max_velocity_y == 0.0
     assert cfg.max_yaw_rate == 0.0
+
+
+def test_env_config_defaults_cmd_sampler_3d_branched_false() -> None:
+    """P4-fix: the TB-branched 3D sampler is opt-in.  Legacy YAML and
+    fresh ``EnvConfig`` instances must default to ``False`` so smoke14 /
+    smoke12b / smoke7 use the v0.20.x scalar-vx sampler (forward-only)."""
+    cfg = EnvConfig(min_velocity=0.18, max_velocity=0.26)
+    assert cfg.cmd_sampler_3d_branched is False
