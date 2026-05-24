@@ -1774,6 +1774,36 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Absolute heading-local lateral velocity |vy| (m/s)",
     ),
     MetricSpec(
+        name="tracking/lateral_velocity_signed_m_s",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "v0.21.0 — signed heading-local lateral velocity vy (m/s). "
+            "Required by the lateral cmd tracking pass criterion "
+            "(walking_training.md Appendix C v0.21.0+): the eval "
+            "probe at ``(vx_eval, vy_eval, 0)`` checks that the "
+            "rollout-mean of this metric matches the sign of "
+            "``vy_eval`` and reaches ``>= 0.5 * vy_eval``.  Logged "
+            "every step so per-probe eval can compute the signed "
+            "ratio without recomputing from raw state."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/ang_vel_z_signed_rad_s",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "v0.21.0 — signed body-frame yaw rate wz (rad/s). "
+            "Required by the yaw cmd tracking pass criterion "
+            "(walking_training.md Appendix C v0.21.0+): the eval "
+            "probe at ``(0, 0, wz_eval)`` checks that the rollout-"
+            "mean of this metric matches the sign of ``wz_eval`` "
+            "and reaches ``>= 0.5 * wz_eval``.  Logged every step "
+            "for per-probe eval; pairs with the abs-form "
+            "``tracking/yaw_rate_err`` already registered."
+        ),
+    ),
+    MetricSpec(
         name="tracking/ref_velocity_xy_err",
         reducer=Reducer.MEAN,
         log_prefix="tracking",

@@ -330,6 +330,16 @@ ENV_METRICS_KEYS = {
         "so the formula is byte-equivalent there)."
     ),
     "tracking/lateral_velocity_abs": "Absolute heading-local lateral velocity |vy|",
+    "tracking/lateral_velocity_signed_m_s": (
+        "v0.21.0 — signed heading-local lateral velocity vy.  "
+        "Required by the lateral cmd tracking pass criterion "
+        "(walking_training.md Appendix C)."
+    ),
+    "tracking/ang_vel_z_signed_rad_s": (
+        "v0.21.0 — signed body-frame yaw rate wz.  Required by "
+        "the yaw cmd tracking pass criterion (walking_training.md "
+        "Appendix C)."
+    ),
     "tracking/ref_velocity_xy_err": (
         "Diagnostic-only sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2) in "
         "heading-local frame, where (ref_vx, ref_vy) comes from the "
@@ -612,6 +622,8 @@ def get_initial_env_metrics(
         "tracking/cmd_vs_achieved_forward": 0.0,
         "tracking/cmd_velocity_xy_err": 0.0,
         "tracking/lateral_velocity_abs": 0.0,
+        "tracking/lateral_velocity_signed_m_s": 0.0,
+        "tracking/ang_vel_z_signed_rad_s": 0.0,
         "tracking/ref_velocity_xy_err": 0.0,
         "tracking/ref_selected_vx": 0.0,
         "tracking/ref_cmd_bin_abs_err": 0.0,
@@ -804,6 +816,8 @@ def get_initial_env_metrics_jax(
         "tracking/cmd_vs_achieved_forward": jp.zeros(()),
         "tracking/cmd_velocity_xy_err": jp.zeros(()),
         "tracking/lateral_velocity_abs": jp.zeros(()),
+        "tracking/lateral_velocity_signed_m_s": jp.zeros(()),
+        "tracking/ang_vel_z_signed_rad_s": jp.zeros(()),
         "tracking/ref_velocity_xy_err": jp.zeros(()),
         "tracking/ref_selected_vx": jp.zeros(()),
         "tracking/ref_cmd_bin_abs_err": jp.zeros(()),

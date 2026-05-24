@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -74,6 +74,124 @@ class DeterministicEvalDecision:
 LATERAL_VELOCITY_SOFT_CAP_MPS = 0.10
 YAW_DRIFT_SOFT_CAP_RAD = 0.40
 WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
+
+# walking_training.md Appendix C (v0.21.0+) lateral / yaw cmd
+# tracking pass-criterion thresholds.  Both require the SIGNED ratio
+# ``achieved / commanded`` to clear 0.5 at the probe cmd point, with
+# the signs matching.  Active only when the probe selects the
+# relevant axis (vy != 0 for lateral, wz != 0 for yaw).  Smoke1's
+# eval probes are configured per
+# ``training/configs/ppo_walking_v0210_smoke1_lateral_yaw.yaml``.
+LATERAL_YAW_PASS_RATIO_MIN = 0.5
+# Below this absolute cmd magnitude we skip the criterion entirely —
+# tiny commands sit within the cmd_deadzone region anyway, and
+# dividing by them inflates noise on the signed ratio.
+LATERAL_YAW_PROBE_MIN_CMD_ABS = 0.02
+
+
+@dataclass(frozen=True)
+class LateralYawPassDecision:
+    """Pass / fail result of a single Appendix C probe.
+
+    Each probe is either a pure-lateral cmd ``(vx, vy, 0)`` with
+    ``|vy| >= LATERAL_YAW_PROBE_MIN_CMD_ABS`` or a pure-yaw cmd
+    ``(0, 0, wz)`` with ``|wz| >= LATERAL_YAW_PROBE_MIN_CMD_ABS``.
+    The decision returns the signed achieved/commanded ratio along
+    the active axis and whether it clears the 0.5 floor with matching
+    sign.
+    """
+
+    axis: str  # "lateral" | "yaw" | "unknown"
+    cmd: Tuple[float, float, float]
+    achieved: Optional[float]
+    commanded: Optional[float]
+    signed_ratio: Optional[float]
+    passed: bool
+    skip_reason: Optional[str] = None
+
+
+def evaluate_lateral_yaw_pass_criterion(
+    probe_cmd: Tuple[float, float, float],
+    eval_metrics: Mapping[str, Any],
+) -> LateralYawPassDecision:
+    """Evaluate the v0.21.0+ Appendix C lateral / yaw pass criterion
+    for a single eval probe.
+
+    The probe axis is auto-detected from the cmd shape:
+
+      - Lateral if ``|vy| >= LATERAL_YAW_PROBE_MIN_CMD_ABS`` AND
+        ``|wz| < LATERAL_YAW_PROBE_MIN_CMD_ABS``.  Reads
+        ``eval_metrics["lateral_velocity_signed_m_s"]`` and compares
+        to ``probe_cmd[1]``.
+      - Yaw if ``|wz| >= LATERAL_YAW_PROBE_MIN_CMD_ABS`` AND
+        ``|vy| < LATERAL_YAW_PROBE_MIN_CMD_ABS``.  Reads
+        ``eval_metrics["ang_vel_z_signed_rad_s"]`` and compares to
+        ``probe_cmd[2]``.
+      - Otherwise marks the probe as ``"unknown"`` axis and skips
+        the criterion (mixed probes are not what Appendix C grades).
+
+    Pass when ``signed_ratio = achieved / commanded`` is
+    ``>= LATERAL_YAW_PASS_RATIO_MIN`` (0.5).  ``signed_ratio < 0``
+    (sign mismatch) fails by construction.  Missing eval metric reads
+    as a skip (legacy log back-compat), NOT a pass.
+    """
+    cmd_tuple = (
+        float(probe_cmd[0]),
+        float(probe_cmd[1]),
+        float(probe_cmd[2]),
+    )
+    vy_cmd = cmd_tuple[1]
+    wz_cmd = cmd_tuple[2]
+    lateral_active = abs(vy_cmd) >= LATERAL_YAW_PROBE_MIN_CMD_ABS
+    yaw_active = abs(wz_cmd) >= LATERAL_YAW_PROBE_MIN_CMD_ABS
+
+    if lateral_active and not yaw_active:
+        axis = "lateral"
+        achieved = _metric(eval_metrics, "lateral_velocity_signed_m_s")
+        commanded: float = vy_cmd
+    elif yaw_active and not lateral_active:
+        axis = "yaw"
+        achieved = _metric(eval_metrics, "ang_vel_z_signed_rad_s")
+        commanded = wz_cmd
+    else:
+        return LateralYawPassDecision(
+            axis="unknown",
+            cmd=cmd_tuple,
+            achieved=None,
+            commanded=None,
+            signed_ratio=None,
+            passed=False,
+            skip_reason=(
+                "probe is not a pure-lateral or pure-yaw cmd (Appendix C "
+                "criterion requires one axis isolated above "
+                f"|{LATERAL_YAW_PROBE_MIN_CMD_ABS}|)"
+            ),
+        )
+
+    if achieved is None:
+        return LateralYawPassDecision(
+            axis=axis,
+            cmd=cmd_tuple,
+            achieved=None,
+            commanded=commanded,
+            signed_ratio=None,
+            passed=False,
+            skip_reason=(
+                f"eval payload missing {axis}-axis signed metric "
+                "(legacy log; signed metrics added 2026-05-24)"
+            ),
+        )
+
+    ratio = float(achieved) / float(commanded)
+    return LateralYawPassDecision(
+        axis=axis,
+        cmd=cmd_tuple,
+        achieved=float(achieved),
+        commanded=commanded,
+        signed_ratio=ratio,
+        passed=(ratio >= LATERAL_YAW_PASS_RATIO_MIN),
+        skip_reason=None,
+    )
 
 
 def _safe_float(value: Any) -> Optional[float]:

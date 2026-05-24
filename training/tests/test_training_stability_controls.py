@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from training.configs.training_config import (
     load_training_config,
     load_training_config_from_dict,
@@ -534,3 +536,201 @@ def test_deterministic_eval_gate_soft_caps_are_documented() -> None:
     assert pte.LATERAL_VELOCITY_SOFT_CAP_MPS == 0.10
     assert pte.YAW_DRIFT_SOFT_CAP_RAD == 0.40
     assert pte.WORLD_Y_DRIFT_SOFT_CAP_M == 0.30
+
+
+# =============================================================================
+# v0.21.0 follow-up — Appendix C lateral / yaw cmd tracking pass criterion
+# =============================================================================
+
+
+def test_evaluate_lateral_yaw_pass_criterion_lateral_pass() -> None:
+    """Pure-lateral probe with achieved/commanded signed ratio ≥ 0.5
+    and matching sign clears the Appendix C lateral pass criterion."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.13, 0.0),
+        eval_metrics={
+            "lateral_velocity_signed_m_s": 0.075,  # ratio = 0.075/0.13 ≈ 0.58
+        },
+    )
+    assert decision.axis == "lateral"
+    assert decision.passed is True
+    assert decision.signed_ratio == pytest.approx(0.075 / 0.13, abs=1e-6)
+    assert decision.skip_reason is None
+
+
+def test_evaluate_lateral_yaw_pass_criterion_lateral_fail_sign_mismatch() -> None:
+    """Sign mismatch (robot drifts opposite to commanded vy) fails
+    the criterion regardless of magnitude."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.13, 0.0),
+        eval_metrics={
+            "lateral_velocity_signed_m_s": -0.10,  # negative cmd, positive achieved
+        },
+    )
+    assert decision.axis == "lateral"
+    assert decision.passed is False
+    assert decision.signed_ratio < 0.0
+
+
+def test_evaluate_lateral_yaw_pass_criterion_lateral_fail_undershoot() -> None:
+    """Right sign but below 0.5 ratio still fails."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.13, 0.0),
+        eval_metrics={
+            "lateral_velocity_signed_m_s": 0.05,  # ratio = 0.05/0.13 ≈ 0.38
+        },
+    )
+    assert decision.axis == "lateral"
+    assert decision.passed is False
+    assert 0.0 < decision.signed_ratio < 0.5
+
+
+def test_evaluate_lateral_yaw_pass_criterion_yaw_pass() -> None:
+    """Pure-yaw probe pass."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.0, 0.0, 0.25),
+        eval_metrics={
+            "ang_vel_z_signed_rad_s": 0.15,  # ratio = 0.6
+        },
+    )
+    assert decision.axis == "yaw"
+    assert decision.passed is True
+    assert decision.signed_ratio == pytest.approx(0.15 / 0.25, abs=1e-6)
+
+
+def test_evaluate_lateral_yaw_pass_criterion_mixed_probe_is_skipped() -> None:
+    """Mixed cmd (both vy and wz non-trivial) is not what Appendix C
+    grades — must be marked as ``unknown`` axis with a skip_reason
+    so the human reading the summary can tell the criterion didn't
+    apply (rather than silently passing or failing)."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.04, 0.10),  # smoke1's primary mixed eval cmd
+        eval_metrics={
+            "lateral_velocity_signed_m_s": 0.02,
+            "ang_vel_z_signed_rad_s": 0.05,
+        },
+    )
+    assert decision.axis == "unknown"
+    assert decision.passed is False
+    assert decision.skip_reason is not None
+    assert "pure-lateral" in decision.skip_reason
+
+
+def test_evaluate_lateral_yaw_pass_criterion_missing_metric_is_skipped() -> None:
+    """Legacy log back-compat — missing signed metric reads as a
+    skip (with reason), NOT a pass.  Old smoke14 logs predate the
+    signed metric registration; passing them in must not silently
+    promote a checkpoint."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.13, 0.0),
+        eval_metrics={},  # no signed metric
+    )
+    assert decision.axis == "lateral"
+    assert decision.passed is False
+    assert decision.skip_reason is not None
+    assert "signed metric" in decision.skip_reason
+
+
+def test_evaluate_lateral_yaw_pass_criterion_tiny_cmd_is_unknown() -> None:
+    """Sub-deadzone cmd magnitudes don't trigger either axis check —
+    dividing by a near-zero commanded value blows up the ratio."""
+    from training.core.post_training_eval import evaluate_lateral_yaw_pass_criterion
+
+    decision = evaluate_lateral_yaw_pass_criterion(
+        probe_cmd=(0.18, 0.001, 0.001),  # both below 0.02 cap
+        eval_metrics={"lateral_velocity_signed_m_s": 0.5},
+    )
+    assert decision.axis == "unknown"
+    assert decision.skip_reason is not None
+
+
+def test_lateral_yaw_pass_thresholds_are_documented_constants() -> None:
+    """Pin the Appendix C thresholds as module-level constants so a
+    future tightening is a visible diff and matches the doc."""
+    from training.core import post_training_eval as pte
+
+    assert pte.LATERAL_YAW_PASS_RATIO_MIN == 0.5
+    assert pte.LATERAL_YAW_PROBE_MIN_CMD_ABS == 0.02
+
+
+def test_eval_velocity_cmd_probes_default_is_empty() -> None:
+    """Smoke13/14 configs MUST not pick up any probes by default —
+    the probe loop only fires when an explicit YAML list is
+    supplied.  Default ``()`` keeps legacy behavior."""
+    from training.configs.training_runtime_config import EnvConfig
+
+    assert EnvConfig().eval_velocity_cmd_probes == ()
+
+
+def test_eval_velocity_cmd_probes_loader_accepts_list_of_lists() -> None:
+    """YAML form ``eval_velocity_cmd_probes: [[0.18, 0.13, 0.0],
+    [0.0, 0.0, 0.25]]`` loads to a tuple of (vx, vy, wz) tuples."""
+    from training.configs.training_config import _load_eval_velocity_cmd_probes
+
+    probes = _load_eval_velocity_cmd_probes(
+        [[0.18, 0.13, 0.0], [0.0, 0.0, 0.25]]
+    )
+    assert probes == ((0.18, 0.13, 0.0), (0.0, 0.0, 0.25))
+
+
+def test_eval_velocity_cmd_probes_loader_rejects_bad_entry() -> None:
+    """Length != 3 must raise at load time, not at post-training-eval
+    time (clearer error surface; failure-by-time-of-use is the trap
+    we're trying to avoid)."""
+    from training.configs.training_config import _load_eval_velocity_cmd_probes
+
+    with pytest.raises(ValueError, match="length-3"):
+        _load_eval_velocity_cmd_probes([[0.18, 0.13]])
+
+
+def test_signed_lateral_yaw_tracking_metrics_registered() -> None:
+    """Pin the v0.21.0 signed sibling metrics so the env emission +
+    aggregation path can compute Appendix C signed ratios."""
+    from training.core.metrics_registry import METRIC_SPEC_BY_NAME, Reducer
+
+    for name in (
+        "tracking/lateral_velocity_signed_m_s",
+        "tracking/ang_vel_z_signed_rad_s",
+    ):
+        spec = METRIC_SPEC_BY_NAME[name]
+        assert spec.reducer == Reducer.MEAN
+        # Description must mention Appendix C / v0.21.0 so a future
+        # reader can trace why the metric was added.
+        desc = spec.description.lower()
+        assert "appendix c" in desc or "v0.21" in desc
+
+
+def test_env_step_passes_heading_frame_rotations_to_lookup() -> None:
+    """v0.21.0 follow-up regression — the step-path lookup must pass
+    ``path_rot_wxyz`` + ``heading_rot_wxyz`` so the 3D lookup's
+    TB-style heading-frame correction actually fires.
+
+    Inline source check guards against a refactor silently dropping
+    the kwargs (only the 3D + smoke1 path actually exercises the
+    correction; 1D smokes won't catch a regression at runtime)."""
+    import inspect
+    from training.envs import wildrobot_env
+
+    src = inspect.getsource(wildrobot_env.WildRobotEnv.step)
+    assert "path_rot_wxyz=wr.path_state_path_rot" in src, (
+        "step must pass path_rot_wxyz=wr.path_state_path_rot to "
+        "_lookup_offline_window so the 3D heading-frame correction "
+        "activates"
+    )
+    assert "heading_rot_wxyz=state_root_quat" in src, (
+        "step must pass heading_rot_wxyz=state_root_quat to "
+        "_lookup_offline_window so the heading correction has the "
+        "actor's current orientation"
+    )

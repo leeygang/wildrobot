@@ -45,7 +45,7 @@ import time
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -817,6 +817,127 @@ def start_training(
                     post_training_num_envs,
                 )
 
+                def _build_rollout_aggregates(
+                    rollout: Dict[str, jnp.ndarray],
+                ) -> Dict[str, jnp.ndarray]:
+                    """Common metric aggregation for both the primary
+                    eval and the v0.21.0 probe rollouts.
+
+                    Factored out so the probe path (different reset
+                    closure) computes the same set of deploy metrics
+                    + the signed lateral / ang_vel_z means used by
+                    ``evaluate_lateral_yaw_pass_criterion``."""
+                    total_done = jnp.sum(rollout["done"])
+                    episode_lengths = (
+                        rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
+                        * rollout["done"]
+                    )
+                    mean_episode_length = jnp.where(
+                        total_done > 0.0,
+                        jnp.sum(episode_lengths) / total_done,
+                        0.0,
+                    )
+                    mean_episode_reward = jnp.mean(jnp.sum(rollout["reward"], axis=0))
+
+                    def _mean(name: str) -> jnp.ndarray:
+                        return jnp.mean(
+                            rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        )
+
+                    def _terminal_episode_mean(
+                        name: str, abs_aggregate: bool = False
+                    ) -> jnp.ndarray:
+                        raw = rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        if abs_aggregate:
+                            raw = jnp.abs(raw)
+                        return jnp.where(
+                            total_done > 0.0,
+                            jnp.sum(raw * rollout["done"]) / total_done,
+                            jnp.float32(0.0),
+                        )
+
+                    eps_touchdown = jnp.float32(1e-6)
+                    td_left = _mean("tracking/touchdown_rate_left")
+                    td_right = _mean("tracking/touchdown_rate_right")
+                    step_left_event = _mean("tracking/step_length_left_event_m")
+                    step_right_event = _mean("tracking/step_length_right_event_m")
+                    return {
+                        "mean_episode_reward": mean_episode_reward,
+                        "mean_episode_length": mean_episode_length,
+                        "forward_velocity": _mean("forward_velocity"),
+                        "cmd_vs_achieved_forward": _mean(
+                            "tracking/cmd_vs_achieved_forward"
+                        ),
+                        "step_length_touchdown_event_m": _mean(
+                            "tracking/step_length_touchdown_event_m"
+                        ),
+                        "lateral_velocity_abs": _mean(
+                            "tracking/lateral_velocity_abs"
+                        ),
+                        # v0.21.0 follow-up — signed siblings consumed
+                        # by ``evaluate_lateral_yaw_pass_criterion``.
+                        # Per-step MEAN over the rollout (not
+                        # per-episode-terminal): the pass criterion
+                        # wants average behavior across the rollout,
+                        # not the value at episode end.
+                        "lateral_velocity_signed_m_s": _mean(
+                            "tracking/lateral_velocity_signed_m_s"
+                        ),
+                        "ang_vel_z_signed_rad_s": _mean(
+                            "tracking/ang_vel_z_signed_rad_s"
+                        ),
+                        "world_x_progress_m": _terminal_episode_mean(
+                            "tracking/world_x_progress_m", abs_aggregate=False
+                        ),
+                        "world_y_drift_signed_m": _terminal_episode_mean(
+                            "tracking/world_y_drift_signed_m", abs_aggregate=False
+                        ),
+                        "world_y_drift_abs_m": _terminal_episode_mean(
+                            "tracking/world_y_drift_signed_m", abs_aggregate=True
+                        ),
+                        "yaw_drift_signed_rad": _terminal_episode_mean(
+                            "tracking/yaw_drift_signed_rad", abs_aggregate=False
+                        ),
+                        "yaw_drift_abs_rad": _terminal_episode_mean(
+                            "tracking/yaw_drift_signed_rad", abs_aggregate=True
+                        ),
+                        "touchdown_rate_left_count": td_left,
+                        "touchdown_rate_right_count": td_right,
+                        "step_length_left_event_m": step_left_event,
+                        "step_length_right_event_m": step_right_event,
+                        "step_length_left_per_touchdown_m": (
+                            step_left_event
+                            / jnp.maximum(td_left, eps_touchdown)
+                        ),
+                        "step_length_right_per_touchdown_m": (
+                            step_right_event
+                            / jnp.maximum(td_right, eps_touchdown)
+                        ),
+                    }
+
+                def _eval_scan_body(policy_params, processor_params):
+                    """Closure factory for the per-step scan body.
+                    Shared between primary and probe eval paths."""
+                    def eval_step(carry, _):
+                        env_state, rng_state = carry
+                        rng_state, action_rng = jax.random.split(rng_state)
+                        action, _, _ = sample_actions(
+                            processor_params,
+                            policy_params,
+                            ppo_network,
+                            env_state.obs,
+                            action_rng,
+                            deterministic=True,
+                        )
+                        next_env_state = post_eval_clean_step_fn(env_state, action)
+                        step_data = {
+                            "reward": next_env_state.reward,
+                            "done": next_env_state.done,
+                            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                        }
+                        return (next_env_state, rng_state), step_data
+                    return eval_step
+
                 @jax.jit
                 def run_post_training_eval(
                     policy_params: Any,
@@ -857,141 +978,50 @@ def start_training(
                     abs mean = 0.5 m).
                     """
                     eval_env_state = post_eval_reset_fn(eval_rng)
-
-                    def eval_step(carry, _):
-                        env_state, rng_state = carry
-                        rng_state, action_rng = jax.random.split(rng_state)
-                        action, _, _ = sample_actions(
-                            processor_params,
-                            policy_params,
-                            ppo_network,
-                            env_state.obs,
-                            action_rng,
-                            deterministic=True,
-                        )
-                        next_env_state = post_eval_clean_step_fn(env_state, action)
-                        step_data = {
-                            "reward": next_env_state.reward,
-                            "done": next_env_state.done,
-                            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
-                        }
-                        return (next_env_state, rng_state), step_data
-
                     (_, _), rollout = jax.lax.scan(
-                        eval_step, (eval_env_state, eval_rng), None, length=post_training_num_steps
+                        _eval_scan_body(policy_params, processor_params),
+                        (eval_env_state, eval_rng),
+                        None,
+                        length=post_training_num_steps,
                     )
-                    total_done = jnp.sum(rollout["done"])
-                    episode_lengths = (
-                        rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
-                        * rollout["done"]
+                    return _build_rollout_aggregates(rollout)
+
+                @jax.jit
+                def run_post_training_probe_eval(
+                    policy_params: Any,
+                    processor_params: Any,
+                    eval_rng: jax.Array,
+                    cmd_override: jax.Array,
+                ) -> Dict[str, jnp.ndarray]:
+                    """v0.21.0 follow-up — per-probe deterministic eval.
+
+                    Same rollout machinery as ``run_post_training_eval``
+                    but the reset uses ``env.reset_for_eval(rng,
+                    cmd_override=cmd_override)`` so the YAML-pinned
+                    ``eval_velocity_cmd`` is replaced by the probe's
+                    explicit (vx, vy, wz).  Steps use
+                    ``post_eval_clean_step_fn`` which already passes
+                    ``disable_cmd_resample=True``, so the override
+                    persists for the full rollout.
+
+                    Used to evaluate the
+                    walking_training.md Appendix C lateral / yaw cmd
+                    tracking pass criteria at pure-lateral and
+                    pure-yaw cmd points (smoke1's primary
+                    ``eval_velocity_cmd`` mixes axes and can't isolate
+                    either signal).
+                    """
+                    rngs = jax.random.split(eval_rng, post_training_num_envs)
+                    eval_env_state = jax.vmap(
+                        lambda r: env.reset_for_eval(r, cmd_override=cmd_override)
+                    )(rngs)
+                    (_, _), rollout = jax.lax.scan(
+                        _eval_scan_body(policy_params, processor_params),
+                        (eval_env_state, eval_rng),
+                        None,
+                        length=post_training_num_steps,
                     )
-                    mean_episode_length = jnp.where(
-                        total_done > 0.0,
-                        jnp.sum(episode_lengths) / total_done,
-                        0.0,
-                    )
-                    mean_episode_reward = jnp.mean(jnp.sum(rollout["reward"], axis=0))
-
-                    def _mean(name: str) -> jnp.ndarray:
-                        return jnp.mean(
-                            rollout["metrics_vec"][..., METRIC_INDEX[name]]
-                        )
-
-                    def _terminal_episode_mean(
-                        name: str, abs_aggregate: bool = False
-                    ) -> jnp.ndarray:
-                        """Per-episode terminal-step mean for cumulative
-                        deploy metrics like world drift.
-
-                        Auto-reset semantics: envs reset on done, then
-                        the next-episode metrics start populating from
-                        the new spawn.  Indexing the rollout's final
-                        slice would mix terminated and replacement
-                        episodes (and underreport drift on exactly
-                        the unstable policies this signal should
-                        catch).  Instead, sum ``metric * done`` over
-                        the rollout and divide by ``total_done`` —
-                        same pattern as ``mean_episode_length`` above
-                        — so every completed episode's terminal value
-                        contributes exactly once.  The env emits
-                        cumulative drift since the most-recent reset
-                        every step, so on the done step the value IS
-                        that episode's terminal drift.
-
-                        ``abs_aggregate=True`` applies abs BEFORE the
-                        cross-episode mean.  Required for soft-gate
-                        metrics where cross-env cancellation
-                        (+0.5/-0.5 = 0) would silently pass a bad
-                        policy.
-                        """
-                        raw = rollout["metrics_vec"][..., METRIC_INDEX[name]]
-                        if abs_aggregate:
-                            raw = jnp.abs(raw)
-                        return jnp.where(
-                            total_done > 0.0,
-                            jnp.sum(raw * rollout["done"]) / total_done,
-                            jnp.float32(0.0),
-                        )
-
-                    eps_touchdown = jnp.float32(1e-6)
-                    td_left = _mean("tracking/touchdown_rate_left")
-                    td_right = _mean("tracking/touchdown_rate_right")
-                    step_left_event = _mean("tracking/step_length_left_event_m")
-                    step_right_event = _mean("tracking/step_length_right_event_m")
-                    return {
-                        "mean_episode_reward": mean_episode_reward,
-                        "mean_episode_length": mean_episode_length,
-                        "forward_velocity": _mean("forward_velocity"),
-                        "cmd_vs_achieved_forward": _mean(
-                            "tracking/cmd_vs_achieved_forward"
-                        ),
-                        "step_length_touchdown_event_m": _mean(
-                            "tracking/step_length_touchdown_event_m"
-                        ),
-                        # smoke15 deploy-facing eval metrics.
-                        "lateral_velocity_abs": _mean(
-                            "tracking/lateral_velocity_abs"
-                        ),
-                        # World-x progress is meaningfully signed
-                        # (negative = robot walked backward) so we
-                        # keep the signed terminal-episode mean.
-                        "world_x_progress_m": _terminal_episode_mean(
-                            "tracking/world_x_progress_m", abs_aggregate=False
-                        ),
-                        # World-y drift / yaw drift expose BOTH the
-                        # signed terminal mean (diagnostic — tells
-                        # direction-of-bias if any) AND the per-episode
-                        # absolute mean (the gate value — invariant
-                        # under cross-env sign cancellation).  The
-                        # gate at ``deterministic_eval_gate`` reads
-                        # the ``_abs_*`` variant.
-                        "world_y_drift_signed_m": _terminal_episode_mean(
-                            "tracking/world_y_drift_signed_m", abs_aggregate=False
-                        ),
-                        "world_y_drift_abs_m": _terminal_episode_mean(
-                            "tracking/world_y_drift_signed_m", abs_aggregate=True
-                        ),
-                        "yaw_drift_signed_rad": _terminal_episode_mean(
-                            "tracking/yaw_drift_signed_rad", abs_aggregate=False
-                        ),
-                        "yaw_drift_abs_rad": _terminal_episode_mean(
-                            "tracking/yaw_drift_signed_rad", abs_aggregate=True
-                        ),
-                        "touchdown_rate_left_count": td_left,
-                        "touchdown_rate_right_count": td_right,
-                        "step_length_left_event_m": step_left_event,
-                        "step_length_right_event_m": step_right_event,
-                        # Per-touchdown stride length (guarded
-                        # divide-by-zero when foot never touches down).
-                        "step_length_left_per_touchdown_m": (
-                            step_left_event
-                            / jnp.maximum(td_left, eps_touchdown)
-                        ),
-                        "step_length_right_per_touchdown_m": (
-                            step_right_event
-                            / jnp.maximum(td_right, eps_touchdown)
-                        ),
-                    }
+                    return _build_rollout_aggregates(rollout)
 
                 post_eval_base_rng = jax.random.PRNGKey(
                     training_cfg.seed + training_cfg.ppo.eval.seed_offset + 20_000
@@ -1032,6 +1062,18 @@ def start_training(
                         # when the G4 forward gates pass.
                         "lateral_velocity_abs": float(
                             eval_result["lateral_velocity_abs"]
+                        ),
+                        # v0.21.0 follow-up — signed siblings for
+                        # ``evaluate_lateral_yaw_pass_criterion``.
+                        # On the primary eval these are present for
+                        # diagnostic purposes; the probe loop below
+                        # is what actually grades them against the
+                        # Appendix C pass criteria.
+                        "lateral_velocity_signed_m_s": float(
+                            eval_result["lateral_velocity_signed_m_s"]
+                        ),
+                        "ang_vel_z_signed_rad_s": float(
+                            eval_result["ang_vel_z_signed_rad_s"]
                         ),
                         "world_x_progress_m": float(
                             eval_result["world_x_progress_m"]
@@ -1106,6 +1148,119 @@ def start_training(
                             "ratio_gate_applied": bool(decision.ratio_gate_applied),
                         }
                     )
+
+                # v0.21.0 follow-up — per-probe deterministic eval for
+                # the Appendix C lateral / yaw cmd tracking pass
+                # criteria.  One extra rollout per (candidate, probe);
+                # each rollout reuses ``post_eval_clean_step_fn`` (which
+                # already disables mid-rollout cmd resample), so the
+                # probe cmd persists for the full ``post_training_num_steps``.
+                # Report-only: probes do NOT block primary promotion
+                # (still gated on the G4 forward set against the
+                # primary ``eval_velocity_cmd``).  Surfaced in the JSON
+                # summary so the smoke promotion decision can be made
+                # against the criteria the doc actually writes down.
+                probe_cmds: list[Tuple[float, float, float]] = list(
+                    getattr(training_cfg.env, "eval_velocity_cmd_probes", ())
+                )
+                if probe_cmds:
+                    print()
+                    print(
+                        f"Running {len(probe_cmds)} v0.21.0 lateral/yaw "
+                        f"probe eval(s) per top-{len(ranked_candidates)} "
+                        "candidate..."
+                    )
+                    from training.core.post_training_eval import (
+                        evaluate_lateral_yaw_pass_criterion,
+                    )
+
+                    for row in eval_rows:
+                        ckpt_data = load_checkpoint(row["checkpoint_path"])
+                        probe_results: list[dict[str, Any]] = []
+                        for probe_idx, probe_cmd in enumerate(probe_cmds):
+                            probe_rng = jax.random.fold_in(
+                                jax.random.fold_in(
+                                    post_eval_base_rng,
+                                    int(row["rank"]) * 1000,
+                                ),
+                                probe_idx,
+                            )
+                            probe_cmd_arr = jnp.asarray(
+                                probe_cmd, dtype=jnp.float32
+                            )
+                            probe_result = run_post_training_probe_eval(
+                                ckpt_data["policy_params"],
+                                ckpt_data.get("processor_params", ()),
+                                probe_rng,
+                                probe_cmd_arr,
+                            )
+                            jax.block_until_ready(
+                                probe_result["mean_episode_reward"]
+                            )
+                            probe_eval_metrics: Dict[str, Any] = {
+                                "lateral_velocity_signed_m_s": float(
+                                    probe_result["lateral_velocity_signed_m_s"]
+                                ),
+                                "ang_vel_z_signed_rad_s": float(
+                                    probe_result["ang_vel_z_signed_rad_s"]
+                                ),
+                                "lateral_velocity_abs": float(
+                                    probe_result["lateral_velocity_abs"]
+                                ),
+                                "forward_velocity": float(
+                                    probe_result["forward_velocity"]
+                                ),
+                                "mean_episode_length": float(
+                                    probe_result["mean_episode_length"]
+                                ),
+                                "mean_reward": float(
+                                    probe_result["mean_episode_reward"]
+                                ),
+                            }
+                            probe_decision = (
+                                evaluate_lateral_yaw_pass_criterion(
+                                    probe_cmd=probe_cmd,
+                                    eval_metrics=probe_eval_metrics,
+                                )
+                            )
+                            probe_results.append(
+                                {
+                                    "probe_index": probe_idx,
+                                    "probe_cmd": list(probe_cmd),
+                                    "axis": probe_decision.axis,
+                                    "achieved": probe_decision.achieved,
+                                    "commanded": probe_decision.commanded,
+                                    "signed_ratio": probe_decision.signed_ratio,
+                                    "passed": bool(probe_decision.passed),
+                                    "skip_reason": probe_decision.skip_reason,
+                                    "eval_metrics": probe_eval_metrics,
+                                }
+                            )
+                        row["lateral_yaw_probes"] = probe_results
+                        # One-line console summary per candidate so the
+                        # human launching the smoke can eyeball
+                        # pass/fail across the probes.
+                        probe_summary = ", ".join(
+                            (
+                                f"{p['axis']}@{p['probe_cmd']}={'✓' if p['passed'] else '✗'}"
+                                + (
+                                    f"({p['signed_ratio']:.2f})"
+                                    if p["signed_ratio"] is not None
+                                    else ""
+                                )
+                            )
+                            for p in probe_results
+                        )
+                        print(
+                            f"  rank {row['rank']} {row['checkpoint_name']}: "
+                            + probe_summary
+                        )
+                else:
+                    # Annotate the summary explicitly — silent absence
+                    # of probes is the smoke14 trap (selection looks
+                    # forward-only because it IS forward-only).
+                    for row in eval_rows:
+                        row["lateral_yaw_probes"] = []
 
                 print()
                 print("Deterministic eval results:")
@@ -1201,6 +1356,32 @@ def start_training(
                     # selection heuristics when present.
                     "no_passing_candidate_message": no_passing_message,
                     "deterministic_selection_is_authoritative": True,
+                    # v0.21.0 follow-up — record the probe configuration
+                    # at the top level so a reader can immediately tell
+                    # whether the smoke evaluated the Appendix C
+                    # lateral / yaw pass criteria.  Empty list +
+                    # ``lateral_yaw_probes_message`` makes the
+                    # not-evaluated outcome explicit.
+                    "eval_velocity_cmd_probes_configured": [
+                        list(p) for p in probe_cmds
+                    ],
+                    "lateral_yaw_probes_message": (
+                        "Lateral / yaw cmd tracking pass criteria "
+                        "(walking_training.md Appendix C) were NOT "
+                        "evaluated — no probes configured on "
+                        "env.eval_velocity_cmd_probes.  Promotion is "
+                        "forward-only; do not treat this checkpoint "
+                        "as lateral-ready or yaw-ready without "
+                        "running probes."
+                        if not probe_cmds
+                        else (
+                            f"Evaluated {len(probe_cmds)} Appendix C probe(s) "
+                            "per top-k candidate; see "
+                            "top_k_candidates[*].lateral_yaw_probes "
+                            "for per-probe pass/fail (>=0.5 signed ratio "
+                            "with matching sign)."
+                        )
+                    ),
                     "top_k_candidates": [
                         {
                             "rank": row["rank"],
@@ -1215,6 +1396,15 @@ def start_training(
                             # smoke15 deploy-facing report-only signals.
                             "soft_signals": row["soft_signals"],
                             "soft_fail_reasons": row["soft_fail_reasons"],
+                            # v0.21.0 follow-up — per-candidate
+                            # Appendix C lateral / yaw probe results.
+                            # Empty list when no probes are configured;
+                            # the summary metadata below records that
+                            # explicitly so a missing-probe outcome is
+                            # not silently mistaken for a pass.
+                            "lateral_yaw_probes": row.get(
+                                "lateral_yaw_probes", []
+                            ),
                             "step_metric_available": row["step_metric_available"],
                             "ratio_gate_applied": row["ratio_gate_applied"],
                         }

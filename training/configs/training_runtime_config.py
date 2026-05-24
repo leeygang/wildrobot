@@ -680,6 +680,35 @@ class EnvConfig(Freezable):
     # sentinel-detection in env code reads only the [0]th axis (vx).
     eval_velocity_cmd: Tuple[float, float, float] = (-1.0, 0.0, 0.0)
 
+    # v0.21.0 follow-up — extra deterministic post-training eval
+    # probes, one rollout per (vx, vy, wz) tuple.  Default ``[]``
+    # leaves the legacy single-eval-cmd flow unchanged.
+    #
+    # Use when the smoke's mixed primary ``eval_velocity_cmd`` (e.g.
+    # smoke1's ``(0.18, 0.04, 0.10)``) cannot isolate the
+    # walking_training.md Appendix C lateral / yaw pass criteria.
+    # The runbook calls for a pure-lateral probe at ``(vx, vy, 0)``
+    # with ``vy > 0`` AND a pure-yaw probe at ``(0, 0, wz)`` with
+    # ``wz > 0``; configure both as
+    #   eval_velocity_cmd_probes:
+    #     - [0.18, 0.13, 0.00]
+    #     - [0.00, 0.00, 0.25]
+    # and the post-training eval will run one extra rollout per probe
+    # (re-using the same top-k checkpoint set) and surface the signed
+    # ratios into ``post_training_eval_summary.json``.  Each probe
+    # entry is the absolute world / body-frame command — sign + axis
+    # selection determines which pass criterion is applied (see
+    # ``post_training_eval.evaluate_lateral_yaw_pass_criterion``).
+    #
+    # Probes are REPORT-ONLY: they do not block primary promotion,
+    # which still gates on the G4/G5 forward set against the
+    # primary ``eval_velocity_cmd``.  But the summary explicitly
+    # flags probe-level pass/fail so the smoke promotion decision
+    # can be made against the criteria the doc actually writes
+    # down.  Without probes configured, lateral / yaw tracking are
+    # not authoritatively evaluated and the summary records that.
+    eval_velocity_cmd_probes: Tuple[Tuple[float, float, float], ...] = ()
+
     # ToddlerBot soft-pitch / soft-roll behavior gates
     # (toddlerbot/locomotion/mjx_config.py:110-111).  When these
     # thresholds are paired with the corresponding ``torso_pitch_soft``

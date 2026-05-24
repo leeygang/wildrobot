@@ -2477,11 +2477,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             feet_distance_torso_m=feet_dist.astype(jp.float32),
             cmd_velocity_xy_err=cmd_velocity_xy_err,
             lateral_velocity_abs=lateral_velocity_abs,
+            # v0.21.0 follow-up — signed sibling for the lateral cmd
+            # tracking pass criterion (Appendix C).  Logged from the
+            # same heading-local lateral_velocity the abs metric
+            # consumes so sign / magnitude stay phase-matched.
+            lateral_velocity_signed_m_s=lateral_velocity.astype(jp.float32),
             ref_velocity_xy_err=ref_velocity_xy_err,
             # v0.21.0 P6.4: yaw-rate tracking diagnostic
             # (|ang_vel_z - velocity_cmd[2]|, rad/s).  Always
             # populated regardless of cmd_yaw_rate_track weight.
             yaw_rate_err=yaw_rate_err,
+            # v0.21.0 follow-up — signed sibling for the yaw cmd
+            # tracking pass criterion (Appendix C).  ``gyro_rad_s[2]``
+            # is the body-frame yaw rate; invariant to the heading-
+            # local rotation per the comment above ``r_yaw_rate_track``.
+            ang_vel_z_signed_rad_s=gyro_rad_s[2].astype(jp.float32),
             # Reference-bin selection diagnostics (cmd-conditioned mode
             # picks the nearest-vx bin per call; legacy mode reports the
             # configured single-bin vx with zero error when no cmd is
@@ -2879,8 +2889,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
         return jp.stack([x, y, z, w]).astype(jp.float32)
 
-    def reset_for_eval(self, rng: jax.Array) -> WildRobotEnvState:
-        """Eval-only reset that honors ``env.eval_velocity_cmd`` override.
+    def reset_for_eval(
+        self,
+        rng: jax.Array,
+        cmd_override: Optional[jax.Array] = None,
+    ) -> WildRobotEnvState:
+        """Eval-only reset that honors ``env.eval_velocity_cmd`` override
+        OR a per-call ``cmd_override``.
 
         v0.20.1-smoke7: when training enables multi-cmd sampling
         (cmd_resample_steps > 0, vx range [min, max]), the regular
@@ -2892,12 +2907,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
         rollouts run at a deterministic cmd point that's directly
         comparable to single-cmd smokes.
 
+        v0.21.0 follow-up: ``cmd_override`` (3-vec, optional) lets a
+        single env instance run multiple eval probes (e.g. lateral
+        / yaw pass criteria from walking_training.md Appendix C)
+        without rebuilding the env per probe.  When supplied, it
+        unconditionally replaces the YAML-pinned cmd; the override
+        wins regardless of whether ``eval_velocity_cmd`` is the
+        sentinel.  Pass ``None`` to keep the legacy behavior
+        (YAML-pinned ``eval_velocity_cmd``).
+
         Pair with ``step(..., disable_cmd_resample=True)`` in the eval
         loop so mid-episode resample doesn't re-randomize the cmd.
 
-        When ``eval_velocity_cmd < 0`` (the sentinel default), this is
-        identical to ``reset(rng, perturb_pose=False)`` (no cmd override,
-        no pose perturbation).
+        When ``eval_velocity_cmd < 0`` (the sentinel default) AND
+        ``cmd_override`` is ``None``, this is identical to
+        ``reset(rng, perturb_pose=False)`` (no cmd override, no pose
+        perturbation).
 
         Always disables the smoke9c reset-time pose perturbation so eval
         rollouts stay deterministic.  G4/G5 promotion thresholds are
@@ -2907,19 +2932,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Training-side ``reset`` keeps perturbation enabled by default.
         """
         state = self.reset(rng, perturb_pose=False)
-        # H3: sentinel applies to vx (index 0) only.  vy / wz default
-        # to 0.0; they are NOT a "use sampled cmd" signal.  A YAML
-        # writer who wants only vx overridden writes a scalar (legacy
-        # form, broadcasts to (vx, 0, 0)) or the explicit
-        # [vx, 0.0, 0.0] list.  Mixed-sign 3-vec configs (e.g.
-        # positive vx, negative vy) are still honored — the [0]th
-        # axis read intentionally does NOT do an ``all >= 0`` reduce.
-        eval_cmd = jp.asarray(
-            self._config.env.eval_velocity_cmd, dtype=jp.float32
-        )  # (3,)
-        use_override = eval_cmd[0] >= jp.float32(0.0)
         wr = state.info[WR_INFO_KEY]
-        new_cmd = jp.where(use_override, eval_cmd, wr.velocity_cmd)  # (3,)
+        if cmd_override is not None:
+            # v0.21.0 follow-up — explicit per-call override wins.
+            new_cmd = jp.asarray(cmd_override, dtype=jp.float32).reshape(3)
+        else:
+            # H3: sentinel applies to vx (index 0) only.  vy / wz
+            # default to 0.0; they are NOT a "use sampled cmd"
+            # signal.  A YAML writer who wants only vx overridden
+            # writes a scalar (legacy form, broadcasts to
+            # (vx, 0, 0)) or the explicit [vx, 0.0, 0.0] list.
+            # Mixed-sign 3-vec configs (e.g. positive vx, negative
+            # vy) are still honored — the [0]th axis read
+            # intentionally does NOT do an ``all >= 0`` reduce.
+            eval_cmd = jp.asarray(
+                self._config.env.eval_velocity_cmd, dtype=jp.float32
+            )  # (3,)
+            use_override = eval_cmd[0] >= jp.float32(0.0)
+            new_cmd = jp.where(use_override, eval_cmd, wr.velocity_cmd)
         new_wr = wr.replace(velocity_cmd=new_cmd.astype(jp.float32))
         new_info = dict(state.info)
         new_info[WR_INFO_KEY] = new_wr
@@ -3443,6 +3473,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
         ).astype(jp.float32)
+        # v0.21.0 follow-up — signed sibling for the lateral pass
+        # criterion (walking_training.md Appendix C).  Zero at reset
+        # (heading-local frame is stationary).
+        metrics_dict["tracking/lateral_velocity_signed_m_s"] = (
+            root_vel_h.linear[1].astype(jp.float32)
+        )
+        # v0.21.0 follow-up — signed body-frame yaw rate for the yaw
+        # pass criterion.  Zero at reset (no rotation yet); the step
+        # path reads ``gyro_rad_s[2]`` (raw IMU yaw rate).
+        metrics_dict["tracking/ang_vel_z_signed_rad_s"] = jp.float32(0.0)
         # smoke15 deploy metrics — world-frame drift since episode
         # spawn.  At reset the deltas are exactly zero (current pose
         # IS spawn pose).  Computed every step against
@@ -3552,12 +3592,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pending_action = wr.pending_action
 
         next_step_idx = (wr.loc_ref_offline_step_idx + 1).astype(jp.int32)
+        # v0.21.0 follow-up — wire the TB heading-frame correction at
+        # the actual lookup call sites so 3D mode picks the bin that
+        # matches the actor's CURRENT heading (TB
+        # ``walk_zmp_ref.py:132-137``).  ``wr.path_state_path_rot``
+        # is the prior step's path rotation (wxyz); the actor's
+        # current heading is the just-finished step's root quat
+        # (``state.data.qpos[3:7]``, wxyz).  Under combined cmd +
+        # yaw, the rotation aligns the cmd vector with the bin keys
+        # so the nearest-key argmin doesn't snap to a sideways bin
+        # when yaw has drifted.  In 1D mode (smoke13 / smoke14) the
+        # extra args are unused, so this is a no-op there.
+        #
+        # Auto-reset semantics: on done, ``state.info[WR_INFO_KEY]``
+        # carries the just-terminated episode's path_rot through the
+        # terminal-step path; the next-step lookup before auto-reset
+        # uses it correctly.  After auto-reset, env_info.path_state
+        # is reset to identity and the heading correction collapses.
+        state_root_quat = state.data.qpos[3:7].astype(jp.float32)
         # Both the current and prev windows are looked up at the
         # episode's sampled velocity_cmd so the reference's pelvis
         # velocity / contact mask / q_ref all match the command the
         # actor is being asked to track.  Legacy mode ignores
         # velocity_cmd and always returns the single bin.
-        win = self._lookup_offline_window(next_step_idx, velocity_cmd=velocity_cmd)
+        win = self._lookup_offline_window(
+            next_step_idx,
+            velocity_cmd=velocity_cmd,
+            path_rot_wxyz=wr.path_state_path_rot,
+            heading_rot_wxyz=state_root_quat,
+        )
         nominal_q_ref = win["q_ref"].astype(jp.float32)
         t_since_reset_s = next_step_idx.astype(jp.float32) * jp.float32(self.dt)
         # H7: use the incremental helper so cmd resampling at
@@ -3602,7 +3665,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Clamp at 0 so step 0's "previous" is itself (zero velocity for the
         # very first step; subsequent steps see real bobbing).
         prev_step_idx = jp.maximum(next_step_idx - 1, 0).astype(jp.int32)
-        prev_win = self._lookup_offline_window(prev_step_idx, velocity_cmd=velocity_cmd)
+        # Same heading-frame correction as the current-step window —
+        # finite-diff of pelvis_z is unaffected by the bin choice
+        # under yaw=0, but under combined cmd we want the prev-frame
+        # bin to track the same heading-corrected bin selection so
+        # the lin_vel_z error stays consistent across frames.
+        prev_win = self._lookup_offline_window(
+            prev_step_idx,
+            velocity_cmd=velocity_cmd,
+            path_rot_wxyz=wr.path_state_path_rot,
+            heading_rot_wxyz=state_root_quat,
+        )
         prev_ref_pelvis_z = prev_win["pelvis_pos"][2].astype(jp.float32)
 
         # zero-residual invariant: filter the residual ONLY (in policy [-1, 1] space).
@@ -3991,6 +4064,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/lateral_velocity_abs"] = reward_terms[
             "lateral_velocity_abs"
         ]
+        # v0.21.0 follow-up — signed sibling for the lateral pass
+        # criterion (Appendix C).
+        terminal_metrics_dict["tracking/lateral_velocity_signed_m_s"] = (
+            reward_terms["lateral_velocity_signed_m_s"]
+        )
         terminal_metrics_dict["tracking/ref_velocity_xy_err"] = reward_terms[
             "ref_velocity_xy_err"
         ]
@@ -4019,6 +4097,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.21.0 P6.4 (H5): body-frame yaw-rate error vs commanded wz.
         terminal_metrics_dict["tracking/yaw_rate_err"] = reward_terms[
             "yaw_rate_err"
+        ]
+        # v0.21.0 follow-up — signed sibling for the yaw pass
+        # criterion (Appendix C).  Logged from the same gyro[2] the
+        # abs metric / reward already consume.
+        terminal_metrics_dict["tracking/ang_vel_z_signed_rad_s"] = reward_terms[
+            "ang_vel_z_signed_rad_s"
         ]
         # Reference-bin selection diagnostics: which vx bin was picked
         # this step and how far it is from the sampled velocity_cmd.

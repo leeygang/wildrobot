@@ -153,6 +153,36 @@ def _load_three_axis(
     )
 
 
+def _load_eval_velocity_cmd_probes(
+    value: Any,
+) -> Tuple[Tuple[float, float, float], ...]:
+    """Coerce a YAML list of length-3 lists to a tuple of (vx, vy, wz)
+    tuples.  Returns ``()`` when ``value`` is ``None`` / missing.
+
+    Raises ``ValueError`` with the offending entry on any malformed
+    element so config typos fail at load time rather than at
+    post-training-eval time.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"eval_velocity_cmd_probes must be a list of length-3 lists "
+            f"(got {type(value).__name__}: {value!r})"
+        )
+    probes: list[Tuple[float, float, float]] = []
+    for i, entry in enumerate(value):
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(
+                f"eval_velocity_cmd_probes[{i}] must be a length-3 "
+                f"list (vx, vy, wz); got {entry!r}"
+            )
+        probes.append(
+            (float(entry[0]), float(entry[1]), float(entry[2]))
+        )
+    return tuple(probes)
+
+
 def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
@@ -635,6 +665,14 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             env.get("eval_velocity_cmd"),
             default_scalar=-1.0,
             scalar_broadcast_axis="vx_only",
+        ),
+        # v0.21.0 follow-up — extra post-training eval probes.  YAML
+        # form is a list of length-3 lists; each entry is a (vx, vy, wz)
+        # tuple.  Default ``()`` (no probes) preserves smoke13/14
+        # behavior.  Raises on malformed entries so a typo in the YAML
+        # surfaces at load time, not at post-training eval time.
+        eval_velocity_cmd_probes=_load_eval_velocity_cmd_probes(
+            env.get("eval_velocity_cmd_probes")
         ),
         torso_pitch_soft_min_rad=float(env.get("torso_pitch_soft_min_rad", -0.2)),
         torso_pitch_soft_max_rad=float(env.get("torso_pitch_soft_max_rad", 0.2)),

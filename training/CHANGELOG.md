@@ -8,6 +8,131 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-eval-lateral-yaw-pass + heading-correction-wiring] - 2026-05-24: authoritative lateral/yaw probes + wire TB heading-frame correction at call sites
+
+### Why
+
+Two review items raised against `v0.21.0-code-shipped`:
+
+1. **Medium** — post-training eval was forward-only.  Smoke1's
+   primary `eval_velocity_cmd` is a mixed point `(0.18, 0.04, 0.10)`
+   that can't isolate the lateral or yaw pass criteria defined in
+   `walking_training.md` Appendix C.  Selection still reduced to
+   `eval_velocity_cmd[0]` + vx-only ratio gate, so a smoke could
+   finish and call a checkpoint promoted without any automatic
+   pass/fail on the new criteria.
+2. **Low** — the TB heading-frame correction logic existed in
+   `_lookup_offline_window` (mirrors `walk_zmp_ref.py:132-137`) but
+   only activated when `path_rot_wxyz` + `heading_rot_wxyz` were
+   supplied.  Step + reset call sites never passed them, so 3D
+   bin selection ran without the heading correction — partial TB
+   parity at most.
+
+### Code changes
+
+**Issue 1 (Medium) — authoritative lateral / yaw pass criterion**
+
+- `training/core/metrics_registry.py` + `training/core/experiment_tracking.py`
+  - Register `tracking/lateral_velocity_signed_m_s` and
+    `tracking/ang_vel_z_signed_rad_s` (signed siblings of the
+    existing `_abs` / `yaw_rate_err` variants).  The Appendix C
+    pass criterion is sign-aware (`achieved / commanded` signed
+    ratio, >= 0.5 with matching sign), so the existing abs
+    metrics can't compute it.
+- `training/envs/wildrobot_env.py`
+  - Reset emits both signed metrics (zero — frame is stationary).
+  - `_compute_reward_terms` returns
+    `lateral_velocity_signed_m_s` + `ang_vel_z_signed_rad_s` from
+    the same `lateral_velocity` / `gyro_rad_s[2]` the abs / reward
+    terms consume (sign + magnitude phase-matched by construction).
+  - Step path writes both to `terminal_metrics_dict`.
+- `training/configs/training_runtime_config.py` + `training_config.py`
+  - New `EnvConfig.eval_velocity_cmd_probes: Tuple[Tuple[float,
+    float, float], ...]` (default `()`).  YAML form is a list of
+    length-3 lists; each entry is an extra deterministic eval
+    probe at `(vx, vy, wz)`.  Loader (`_load_eval_velocity_cmd_probes`)
+    rejects malformed entries at load time so config typos surface
+    early.
+- `training/envs/wildrobot_env.py::reset_for_eval`
+  - Gains optional `cmd_override: jax.Array` arg.  Unconditional
+    replacement of the YAML-pinned cmd when supplied; lets a
+    single env instance probe multiple cmd points without
+    rebuilding.  When `None` (default), preserves legacy
+    YAML-pinned behavior.
+- `training/core/post_training_eval.py`
+  - New `LateralYawPassDecision` dataclass + module constants
+    `LATERAL_YAW_PASS_RATIO_MIN = 0.5`,
+    `LATERAL_YAW_PROBE_MIN_CMD_ABS = 0.02`.
+  - New `evaluate_lateral_yaw_pass_criterion(probe_cmd,
+    eval_metrics)` — auto-detects axis from cmd shape, reads the
+    signed metric, computes `signed_ratio = achieved / commanded`,
+    returns pass/fail + skip_reason.  Mixed probes and missing
+    signed metrics fail with a skip_reason (NOT a silent pass).
+- `training/train.py`
+  - Factored `_build_rollout_aggregates(rollout)` +
+    `_eval_scan_body(...)` shared between primary and probe eval
+    (primary eval now also emits signed siblings into its
+    `eval_metrics`).
+  - New `run_post_training_probe_eval(policy, processor, rng,
+    cmd_override)` JIT'd alongside the primary eval.
+  - After the primary eval loop, iterate over
+    `env.eval_velocity_cmd_probes` and run one extra
+    deterministic rollout per (candidate, probe).  Per-probe
+    results carried as `row["lateral_yaw_probes"]` + surfaced in
+    `post_training_eval_summary.json` at both the per-candidate
+    level and as a top-level
+    `eval_velocity_cmd_probes_configured` /
+    `lateral_yaw_probes_message` pair.  Empty probes list is
+    recorded explicitly so a silent-absence outcome is impossible.
+
+**Issue 2 (Low) — wire TB heading-frame correction at call sites**
+
+- `training/envs/wildrobot_env.py::step`
+  - Both `_lookup_offline_window` calls (current win + prev_win)
+    now pass `path_rot_wxyz=wr.path_state_path_rot` (prior step's
+    path rotation, wxyz) + `heading_rot_wxyz=state.data.qpos[3:7]`
+    (actor's current root quat, wxyz).  The 3D bin selection
+    rotates the cmd into the path frame by the heading-error
+    rotation before the L2 nearest-key argmin — matches TB
+    `walk_zmp_ref.py:132-137`.
+  - Reset path unchanged: at spawn `heading == path == identity`
+    so the correction collapses; passing `None` keeps the
+    rotate-by-zero branch.
+  - 1D-mode smokes (smoke13 / smoke14) are unaffected — the new
+    kwargs are unused when `loc_ref_command_axes_3d=False`.
+
+### Tests (76 passed across the target battery)
+
+- `training/tests/test_training_stability_controls.py` — 11 new:
+  - `evaluate_lateral_yaw_pass_criterion` lateral pass /
+    sign-mismatch / undershoot / yaw pass / mixed-skip /
+    missing-metric-skip / tiny-cmd-skip.
+  - `lateral_yaw_pass_thresholds_are_documented_constants`.
+  - `eval_velocity_cmd_probes_default_is_empty`.
+  - `eval_velocity_cmd_probes_loader_accepts_list_of_lists`.
+  - `eval_velocity_cmd_probes_loader_rejects_bad_entry`.
+  - `signed_lateral_yaw_tracking_metrics_registered`.
+  - `env_step_passes_heading_frame_rotations_to_lookup`.
+- Existing smoke13/14/15 + critic-stacking + reward-normalization
+  tests all still pass.
+
+### Behavior surface
+
+- **No effect on smoke13 / smoke14** (or any pre-v0.21 config) —
+  probes default to `[]`, the signed metrics are added but not
+  consumed by any existing gate, the heading-frame correction
+  is a no-op in 1D-mode.
+- **Smoke1 (`ppo_walking_v0210_smoke1_lateral_yaw.yaml`)** now has
+  an authoritative path to evaluate the Appendix C criteria —
+  add `eval_velocity_cmd_probes:` to the YAML
+  (e.g. `[[0.18, 0.13, 0.0], [0.0, 0.0, 0.25]]`) and the
+  post-training eval will surface per-probe pass/fail in the
+  JSON summary.  Until the YAML is updated, the summary's
+  `lateral_yaw_probes_message` explicitly states the criteria
+  were NOT evaluated — no silent skip.
+
+---
+
 ## [v0.21.0-code-shipped] - 2026-05-24: lateral (vy) + yaw (wz) prior support landed; smoke1 not yet run
 
 ### Scope
