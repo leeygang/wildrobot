@@ -232,8 +232,15 @@ env:
   # nearest-key over (vx, vy, wz)).  Required for the new vy / wz
   # tracking rewards to read non-degenerate prior trajectories.
   loc_ref_command_axes_3d: true
-  loc_ref_offline_command_vy_grid: [-0.10, -0.05, 0.0, 0.05, 0.10]
-  loc_ref_offline_command_yaw_rate_grid: [-0.20, -0.10, 0.0, 0.10, 0.20]
+  # Grids LOCKED to v0210_lateral_yaw_prior_plan-final-r2.md (line 259):
+  # vy in +/-0.13 m/s, wz in +/-0.25 rad/s.  Must match the sampler's
+  # min/max_velocity_y / max_yaw_rate above (and the
+  # eval_velocity_cmd_probes below) — otherwise sampler-emitted cmds
+  # in the [grid_max, sampler_max] band silently snap to grid_max in
+  # the reference lookup, training the policy against a dishonest
+  # prior in the upper ~23% of the cmd range.
+  loc_ref_offline_command_vy_grid: [-0.13, -0.065, 0.0, 0.065, 0.13]
+  loc_ref_offline_command_yaw_rate_grid: [-0.25, -0.125, 0.0, 0.125, 0.25]
   # Note (vs spec): the v0.21 plan mentions a YAML knob
   # ``loc_ref_offline_command_vx_grid`` for explicitly listing the vx
   # bins.  That field is NOT wired in ``EnvConfig`` /

@@ -85,8 +85,11 @@ def test_smoke1_yaml_vy_and_wz_grids_present(cfg_smoke1) -> None:
     env = cfg_smoke1.env
     vy = tuple(env.loc_ref_offline_command_vy_grid)
     wz = tuple(env.loc_ref_offline_command_yaw_rate_grid)
-    assert vy == pytest.approx((-0.10, -0.05, 0.0, 0.05, 0.10))
-    assert wz == pytest.approx((-0.20, -0.10, 0.0, 0.10, 0.20))
+    # Plan-locked ranges (v0210_lateral_yaw_prior_plan-final-r2.md:259):
+    # vy in +/-0.13, wz in +/-0.25.  Must match the sampler's
+    # min/max_velocity_y / max_yaw_rate AND eval_velocity_cmd_probes.
+    assert vy == pytest.approx((-0.13, -0.065, 0.0, 0.065, 0.13))
+    assert wz == pytest.approx((-0.25, -0.125, 0.0, 0.125, 0.25))
 
 
 # ---------------------------------------------------------------------------
