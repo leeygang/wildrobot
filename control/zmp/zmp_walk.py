@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -1601,19 +1601,35 @@ class ZMPWalkGenerator:
         vy_values: Sequence[float],
         yaw_rate_values: Sequence[float],
     ) -> ReferenceLibrary:
-        """Build a 3D-grid reference library indexed by (vx, vy, yaw_rate).
+        """Build a TB-style 3-axis reference library.
 
-        P1.10/P1.11: extends the legacy 1D ``build_library_for_vx_values``
-        factory to the v0.21.0 lateral+yaw command space.  Iterates the
-        full Cartesian product ``vx × vy × wz`` so every grid cell — including
-        the static-pose bin ``(0, 0, 0)`` and the pure-lateral / pure-turn
-        edges — has a stored trajectory the env can look up at runtime.
+        Reviewer round-2 fix: ToddlerBot does NOT generate combined
+        translation+yaw trajectories.  The ZMP planner has a translation
+        branch (sl_x/sl_y schedule) and a pure-rotation branch (arc-radius
+        footsteps) but no combined branch — see ``_generate_at_step_length``
+        ``is_pure_rotation`` gate (~line 843) which requires
+        ``|vx|≈|vy|≈0`` before applying yaw.  Storing a mixed bin like
+        ``(0.20, 0.05, 0.20)`` would mislabel its metadata
+        (``command_yaw_rate=0.20``) while the underlying pelvis/foot yaw
+        trajectory is zero — silently dropped wz.
+
+        Mirror TB's structure:
+        * **Linear-walk bins**: full Cartesian over ``(vx, vy)`` with
+          ``wz=0``.
+        * **Pure-yaw bins**: ``(0, 0, wz)`` for each ``wz`` in the grid.
+        * **Dedup**: ``(0, 0, 0)`` appears in both — keep only one.
+
+        For the canonical v0.21.0 grid (4 vx × 5 vy × 5 wz):
+        ``20 linear + 5 pure-yaw - 1 dedup = 24 bins`` (down from 100).
+        A query ``(vx>0, vy>0, wz>0)`` is unreachable from the TB-style
+        command sampler (P4) because the sampler picks at most one of
+        ``{zero, pure-turn, walk(vx, vy)}`` per episode — never combined.
 
         Note: every entry is generated as an independent call to
         ``self.generate(...)`` so the per-axis ZMP planner is exercised
-        per cell.  At ``len(vx) * len(vy) * len(wz)`` total cells, this
-        is intentionally an offline factory; callers should persist the
-        resulting library to disk (see ``ReferenceLibrary.save``).
+        per cell.  This is intentionally an offline factory; callers
+        should persist the resulting library to disk
+        (see ``ReferenceLibrary.save``).
         """
         if not vx_values or not vy_values or not yaw_rate_values:
             raise ValueError(
@@ -1632,29 +1648,41 @@ class ZMPWalkGenerator:
                 return float(np.min(diffs))
             return 0.0
 
-        trajectories: List[ReferenceTrajectory] = []
+        trajectories: Dict[Tuple[float, float, float], ReferenceTrajectory] = {}
+
+        def _generate_and_store(vx: float, vy: float, wz: float) -> None:
+            key = (round(float(vx), 4), round(float(vy), 4), round(float(wz), 4))
+            if key in trajectories:
+                return  # dedup
+            print(
+                f"  Generating (vx={vx:+.3f}, vy={vy:+.3f}, "
+                f"wz={wz:+.3f}) ...",
+                end="",
+                flush=True,
+            )
+            traj = self.generate(
+                command_vx=float(vx),
+                command_vy=float(vy),
+                command_yaw_rate=float(wz),
+            )
+            issues = traj.validate()
+            if issues:
+                print(f" ISSUES: {issues}")
+                traj.is_valid = False
+                traj.validation_notes = "; ".join(issues)
+            else:
+                print(f" OK (steps={traj.n_steps})")
+            trajectories[key] = traj
+
+        # Linear-walk bins: full Cartesian over (vx, vy) with wz=0.
         for vx in vx_sorted:
             for vy in vy_sorted:
-                for wz in wz_sorted:
-                    print(
-                        f"  Generating (vx={vx:+.3f}, vy={vy:+.3f}, "
-                        f"wz={wz:+.3f}) ...",
-                        end="",
-                        flush=True,
-                    )
-                    traj = self.generate(
-                        command_vx=float(vx),
-                        command_vy=float(vy),
-                        command_yaw_rate=float(wz),
-                    )
-                    issues = traj.validate()
-                    if issues:
-                        print(f" ISSUES: {issues}")
-                        traj.is_valid = False
-                        traj.validation_notes = "; ".join(issues)
-                    else:
-                        print(f" OK (steps={traj.n_steps})")
-                    trajectories.append(traj)
+                _generate_and_store(vx, vy, 0.0)
+
+        # Pure-yaw bins: (0, 0, wz) only.  Dedups against (0, 0, 0)
+        # which is also a linear bin via the _generate_and_store guard.
+        for wz in wz_sorted:
+            _generate_and_store(0.0, 0.0, wz)
 
         meta = ReferenceLibraryMeta(
             generator="zmp_walk",
@@ -1674,7 +1702,7 @@ class ZMPWalkGenerator:
             vy_grid=tuple(float(v) for v in vy_sorted),
             yaw_rate_grid=tuple(float(v) for v in wz_sorted),
         )
-        return ReferenceLibrary(trajectories, meta)
+        return ReferenceLibrary(list(trajectories.values()), meta)
 
     def _build_library_from_vx_values(
         self,

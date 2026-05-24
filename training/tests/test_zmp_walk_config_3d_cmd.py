@@ -93,9 +93,80 @@ def test_build_library_for_3d_values_yields_one_entry_per_grid_point() -> None:
         vy_values=[-0.05, 0.0, 0.05],
         yaw_rate_values=[-0.10, 0.0, 0.10],
     )
-    assert len(lib) == 2 * 3 * 3 == 18
-    assert (0.20, 0.0, 0.10) in lib
+    # Reviewer fix (round 2): library is TB-style split commands, not full
+    # Cartesian.  Linear: 2 vx × 3 vy = 6.  Pure-yaw: 3 wz.
+    # Overlap on (0, 0, 0) → dedup 1.  Total = 8.
+    assert len(lib) == 8
+    assert (0.20, 0.0, 0.10) not in lib, "mixed translation+yaw bin forbidden"
+    assert (0.20, 0.0, 0.0) in lib, "linear-walk bin must exist"
+    assert (0.0, 0.0, 0.10) in lib, "pure-yaw bin must exist"
     assert (0.0, 0.0, 0.0) in lib, "H2: must include the static-pose bin"
+
+
+def test_library_factory_uses_tb_style_split_commands() -> None:
+    """Reviewer (round 2): library must NOT store mixed translation+yaw
+    bins because the planner only applies yaw in the pure-rotation branch
+    (vx≈vy≈0). A key like (0.20, 0.05, 0.20) would have command_yaw_rate
+    in metadata but zero actual yaw in the trajectory.
+
+    TB's approach: linear-walk bins (vx, vy, 0) + pure-yaw bins (0, 0, wz),
+    dedup (0, 0, 0).
+    """
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.0, 0.20],
+        vy_values=[-0.05, 0.0, 0.05],
+        yaw_rate_values=[-0.10, 0.0, 0.10],
+    )
+    # Linear: 2 vx × 3 vy = 6.  Pure-yaw: 3 wz.  Overlap on (0, 0, 0).
+    # Total = 6 + 3 - 1 = 8.
+    assert len(lib) == 8, (
+        f"expected 8 split-cmd bins (linear 2x3=6 + pure-yaw 3 - dedup 1), "
+        f"got {len(lib)}"
+    )
+    # Required bins present:
+    assert (0.0, 0.0, 0.0) in lib, "static bin missing"
+    assert (0.20, 0.05, 0.0) in lib, "linear-walk bin missing"
+    assert (0.0, 0.0, 0.10) in lib, "pure-yaw bin missing"
+    # Forbidden mixed bins absent:
+    assert (0.20, 0.05, 0.10) not in lib, (
+        "mixed translation+yaw bin must NOT exist (planner can't realize it)"
+    )
+    assert (0.20, 0.0, 0.10) not in lib, (
+        "mixed vx+yaw bin must NOT exist"
+    )
+
+
+def test_library_factory_no_stored_key_combines_translation_and_yaw() -> None:
+    """Invariant: for every stored key (vx, vy, wz), either translation is
+    zero (||vx, vy|| < eps) or yaw is zero (|wz| < eps).  Mixed keys would
+    be silently mislabeled."""
+    import math
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.0, 0.18, 0.22, 0.26],
+        vy_values=[-0.10, -0.05, 0.0, 0.05, 0.10],
+        yaw_rate_values=[-0.20, -0.10, 0.0, 0.10, 0.20],
+    )
+    eps = 1e-9
+    for key in lib._entries.keys():
+        vx, vy, wz = key
+        translation_magnitude = math.hypot(vx, vy)
+        assert translation_magnitude < eps or abs(wz) < eps, (
+            f"key {key} combines translation (||vx,vy||={translation_magnitude}) "
+            f"and yaw (|wz|={abs(wz)}); planner cannot realize this."
+        )
+
+
+def test_library_factory_canonical_grid_has_24_bins() -> None:
+    """v0.21.0 canonical grid: 4 vx × 5 vy + 5 wz - 1 dedup = 24 bins."""
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.0, 0.18, 0.22, 0.26],
+        vy_values=[-0.10, -0.05, 0.0, 0.05, 0.10],
+        yaw_rate_values=[-0.20, -0.10, 0.0, 0.10, 0.20],
+    )
+    assert len(lib) == 24
 
 
 def test_build_library_for_vx_values_still_builds_forward_only_library() -> None:
