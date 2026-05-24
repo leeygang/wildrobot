@@ -2247,3 +2247,33 @@ the initial physical `qpos` (leg-pitch joints + root quat), never
 the control base — a zero policy action still composes to the
 constant `ref_init` ctrl target, matching the smoke9c residual
 architecture.
+
+## Appendix C — v0.21.0 lateral + yaw gate definitions
+
+`v0.20.1` defined two promotion gates G4 (eval-rollout floors) and G5
+(anti-exploit residual + ratio).  Both are forward-axis only and stay
+unchanged at v0.21.0.  This appendix adds the lateral-axis gate (G6)
+and the yaw-axis gate (G7) introduced by the lateral + yaw prior
+rollout (see `training/docs/v0210_lateral_yaw_prior_plan-final-r2.md`),
+plus the v0.21.0 promotion criterion that wires G4/G5 (forward) and
+G6/G7 (lateral + yaw) together.
+
+### G6 — Lateral command tracking (v0.21.0+)
+
+Definition: at eval cmd `(vx_eval, vy_eval, 0)` with `vy_eval > 0`, the
+signed ratio `lateral_velocity / vy_eval` is >= 0.5 averaged over the
+last 100 eval steps, across >=3 seeds.
+
+### G7 — Yaw command tracking (v0.21.0+)
+
+Definition: at eval cmd `(0, 0, wz_eval)` with `wz_eval > 0`, the
+signed ratio `ang_vel_z / wz_eval` is >= 0.5 averaged over the last
+100 eval steps, across >=3 seeds.
+
+### Promotion criterion (v0.21.0)
+
+G4 + G5 (forward) MUST NOT regress beyond 10% relative to the
+v0.20.1-smoke14 baseline at `eval_velocity_cmd = (0.18, 0, 0)`.
+
+G6 + G7 MUST clear >=0.5 signed ratio on the first smoke before
+increasing vy / wz ranges or weights.
