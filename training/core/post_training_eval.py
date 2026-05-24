@@ -274,22 +274,33 @@ def deterministic_eval_gate(
     }
     passed = all(gates.values())
 
-    # Soft signals — report-only.  Missing metric => signal counted as
-    # OK (legacy gate behaviour preserved for old logs that don't have
-    # the smoke15 fields yet).
+    # Soft signals — report-only.  Read the per-episode-abs aggregated
+    # variants (``*_abs_*``) so cross-env sign cancellation cannot
+    # silently mask a bad policy where half the envs drift +0.5 and
+    # half drift -0.5 (mean ≈ 0 but every env is bad).  Backwards-
+    # compat: old eval payloads that carry only the signed variant
+    # fall back to ``abs(signed)`` to avoid breaking historical
+    # summaries, but the smoke15 train.py + training_loop.py paths
+    # always emit the ``*_abs_*`` variant so new runs use the
+    # invariant-correct value.  Missing entirely => signal OK.
     lateral = _metric(eval_metrics, "lateral_velocity_abs")
-    yaw_drift = _metric(eval_metrics, "yaw_drift_signed_rad")
-    world_y_drift = _metric(eval_metrics, "world_y_drift_signed_m")
+    yaw_drift_abs = _metric(
+        eval_metrics, "yaw_drift_abs_rad", "yaw_drift_signed_rad"
+    )
+    world_y_drift_abs = _metric(
+        eval_metrics, "world_y_drift_abs_m", "world_y_drift_signed_m"
+    )
     soft_signals: Dict[str, bool] = {
         "lateral_velocity_abs": (
             lateral is None or abs(float(lateral)) <= LATERAL_VELOCITY_SOFT_CAP_MPS
         ),
-        "yaw_drift_signed_rad": (
-            yaw_drift is None or abs(float(yaw_drift)) <= YAW_DRIFT_SOFT_CAP_RAD
+        "yaw_drift_abs_rad": (
+            yaw_drift_abs is None
+            or abs(float(yaw_drift_abs)) <= YAW_DRIFT_SOFT_CAP_RAD
         ),
-        "world_y_drift_signed_m": (
-            world_y_drift is None
-            or abs(float(world_y_drift)) <= WORLD_Y_DRIFT_SOFT_CAP_M
+        "world_y_drift_abs_m": (
+            world_y_drift_abs is None
+            or abs(float(world_y_drift_abs)) <= WORLD_Y_DRIFT_SOFT_CAP_M
         ),
     }
 

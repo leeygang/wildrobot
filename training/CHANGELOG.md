@@ -8,6 +8,84 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke15-deploy-metrics-aggregation-fix] - 2026-05-24: per-episode terminal + abs aggregation for world-drift eval
+
+### Why
+
+Two aggregation bugs in the smoke15-launch implementation
+flagged in review:
+
+1. **High — rollout-end vs episode-terminal.**  World-drift
+   metrics used `eval_rollout["metrics_vec"][-1, :, idx]` (the
+   rollout's last step).  Envs that auto-reset mid-rollout had
+   their drift index reading the REPLACEMENT episode's value
+   instead of the terminated episode's terminal drift —
+   systematically underreporting drift on exactly the unstable
+   policies the metric was supposed to catch.
+
+2. **Medium — cross-env sign cancellation.**  Signed drift was
+   averaged across envs first, then the gate took `abs()` of
+   that scalar.  Half the envs at +0.5 m and half at -0.5 m
+   averaged to ~0, so the soft gate passed even though every
+   env was bad.
+
+### Fix
+
+- `training/train.py::run_post_training_eval`
+  - New `_terminal_episode_mean(name, abs_aggregate=False)` helper
+    that does `sum(metric * done) / total_done` — same pattern as
+    `mean_episode_length`.  Every completed episode's terminal
+    value contributes exactly once.  Setting `abs_aggregate=True`
+    applies `abs()` BEFORE the cross-episode mean so cross-env
+    cancellation can't mask a bad policy.
+  - Emits BOTH variants for sign-ambiguous drift:
+    `world_y_drift_signed_m` (diagnostic — direction-of-bias) AND
+    `world_y_drift_abs_m` (gate value).  Same for yaw drift
+    (`yaw_drift_signed_rad` / `yaw_drift_abs_rad`).
+    `world_x_progress_m` is meaningfully signed (backward = bad
+    differently from forward) so it stays signed-only.
+- `training/core/training_loop.py` Evaluate/* block uses the same
+  `_terminal_episode_mean` pattern with `eval_total_done`-masked
+  aggregation.
+- `training/core/post_training_eval.py::deterministic_eval_gate`
+  - Reads `yaw_drift_abs_rad` / `world_y_drift_abs_m` from the
+    payload (no `abs()` in the gate — value is already
+    per-episode-abs aggregated).
+  - Falls back to `abs(signed_value)` when the payload has only
+    the legacy `_signed_*` key (back-compat for older logs;
+    still subject to cross-env cancellation, but new runs always
+    emit `_abs_*`).
+  - Soft-signals dict keys renamed: `yaw_drift_abs_rad` /
+    `world_y_drift_abs_m` (the gate value names).
+
+### Tests added / updated (112 passed)
+
+- `test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics`
+  → uses `*_abs_*` payload keys.
+- `test_deterministic_eval_gate_back_compat_signed_only_payload` —
+  new; pins the `abs(signed)` fallback for legacy data.
+- `test_soft_gate_uses_abs_aggregation_not_signed_mean` —
+  new Bug-2 regression; constructs a payload where the signed
+  mean is 0 but the per-episode-abs mean is 0.5; asserts the
+  gate FAILS.
+- `test_walking_eval_block_emits_smoke15_deploy_metrics` extended
+  to require both `*_signed_*` and `*_abs_*` keys.
+- `test_walking_eval_block_aggregates_drift_at_episode_terminal_not_rollout_end` —
+  new Bug-1 regression; inspects source to confirm done-mask
+  aggregation in both `training_loop.py` and `train.py`, and
+  that the buggy `_last_step_mean` helper is gone from both.
+
+### Compat note
+
+`Evaluate/world_y_drift_signed_m` and `Evaluate/yaw_drift_signed_rad`
+are still emitted (diagnostic — useful when investigating a
+single env's bias direction).  The new `_abs_*` variants are the
+authoritative gate values.  Old `post_training_eval_summary.json`
+files from before this fix carry only `_signed_*`; the gate's
+back-compat path keeps those readable.
+
+---
+
 ## [v0.20.1-smoke15-eval-authority-deploy-metrics] - 2026-05-24: make walking eval authoritative + add deploy-facing eval metrics
 
 ### Why

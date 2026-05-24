@@ -375,7 +375,12 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
     """Smoke15 — deterministic eval gate must expose
     ``soft_signals`` for the lateral / yaw / world-y deploy metrics.
     Healthy values clear the cap; pathological values trip the soft
-    flag (report-only — passed remains True if hard gates pass)."""
+    flag (report-only — passed remains True if hard gates pass).
+
+    Reads the ``*_abs_*`` per-episode-absolute-aggregated variants
+    (NOT ``*_signed_*``).  See
+    ``test_soft_gate_uses_abs_aggregation_not_signed_mean`` for the
+    cross-env sign-cancellation regression this fix prevents."""
     healthy = deterministic_eval_gate(
         {
             "forward_velocity": 0.09,
@@ -383,16 +388,16 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
             "mean_episode_length": 500.0,
             "step_length_touchdown_event_m": 0.031,
             "lateral_velocity_abs": 0.02,
-            "yaw_drift_signed_rad": 0.05,
-            "world_y_drift_signed_m": 0.02,
+            "yaw_drift_abs_rad": 0.05,
+            "world_y_drift_abs_m": 0.02,
         },
         eval_velocity_cmd=0.1333333333,
     )
     assert healthy.passed is True
     assert healthy.soft_signals == {
         "lateral_velocity_abs": True,
-        "yaw_drift_signed_rad": True,
-        "world_y_drift_signed_m": True,
+        "yaw_drift_abs_rad": True,
+        "world_y_drift_abs_m": True,
     }
 
     # Smoke14 tail values: lateral 0.20 m/s — well above the 0.10
@@ -406,8 +411,8 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
             "mean_episode_length": 500.0,
             "step_length_touchdown_event_m": 0.031,
             "lateral_velocity_abs": 0.20,
-            "yaw_drift_signed_rad": 0.60,
-            "world_y_drift_signed_m": 0.50,
+            "yaw_drift_abs_rad": 0.60,
+            "world_y_drift_abs_m": 0.50,
         },
         eval_velocity_cmd=0.1333333333,
     )
@@ -415,8 +420,8 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
         "soft signals must NOT block promotion; only hard G4 gates do"
     )
     assert pathological.soft_signals["lateral_velocity_abs"] is False
-    assert pathological.soft_signals["yaw_drift_signed_rad"] is False
-    assert pathological.soft_signals["world_y_drift_signed_m"] is False
+    assert pathological.soft_signals["yaw_drift_abs_rad"] is False
+    assert pathological.soft_signals["world_y_drift_abs_m"] is False
 
 
 def test_deterministic_eval_gate_soft_signals_default_ok_when_missing() -> None:
@@ -434,8 +439,65 @@ def test_deterministic_eval_gate_soft_signals_default_ok_when_missing() -> None:
     )
     assert decision.passed is True
     assert decision.soft_signals["lateral_velocity_abs"] is True
-    assert decision.soft_signals["yaw_drift_signed_rad"] is True
-    assert decision.soft_signals["world_y_drift_signed_m"] is True
+    assert decision.soft_signals["yaw_drift_abs_rad"] is True
+    assert decision.soft_signals["world_y_drift_abs_m"] is True
+
+
+def test_deterministic_eval_gate_back_compat_signed_only_payload() -> None:
+    """Legacy eval payloads carry only ``*_signed_*`` (no ``*_abs_*``).
+    The gate falls back to ``abs(signed)`` for those — better than
+    silently ignoring the signal even though cross-env cancellation
+    means it can still under-report.  New runs always emit
+    ``*_abs_*``, so the fallback fires only on historical data."""
+    decision = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+            # Signed-only — abs(0.60) > 0.40 and abs(0.50) > 0.30.
+            "yaw_drift_signed_rad": -0.60,
+            "world_y_drift_signed_m": -0.50,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision.soft_signals["yaw_drift_abs_rad"] is False
+    assert decision.soft_signals["world_y_drift_abs_m"] is False
+
+
+def test_soft_gate_uses_abs_aggregation_not_signed_mean() -> None:
+    """Regression for the Bug-2 sign-cancellation issue.  When half
+    the eval envs drift +0.5 m and half drift -0.5 m,
+    ``world_y_drift_signed_m`` averages to ~0 and would pass the
+    OLD ``abs(mean(signed))`` gate even though every env is bad.
+
+    Fix: per-episode abs aggregation BEFORE the cross-env mean —
+    the env path in ``run_post_training_eval`` and the
+    ``Evaluate/*`` block compute ``mean(|terminal_drift|)`` and
+    emit it as ``world_y_drift_abs_m`` / ``yaw_drift_abs_rad``.
+    Confirm the gate reads those and reports failure even when the
+    signed mean cancels to zero."""
+    decision = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+            # Signed means cancel to zero (would pass the OLD gate)…
+            "world_y_drift_signed_m": 0.0,
+            "yaw_drift_signed_rad": 0.0,
+            # …but the per-episode-abs aggregates are well above cap.
+            "world_y_drift_abs_m": 0.50,
+            "yaw_drift_abs_rad": 0.55,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision.soft_signals["world_y_drift_abs_m"] is False, (
+        "gate must read abs-aggregated value, not abs(mean(signed))"
+    )
+    assert decision.soft_signals["yaw_drift_abs_rad"] is False, (
+        "gate must read abs-aggregated value, not abs(mean(signed))"
+    )
 
 
 def test_walking_config_without_eval_raises_at_train_loop_startup() -> None:

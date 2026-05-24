@@ -869,12 +869,40 @@ def start_training(
                             rollout["metrics_vec"][..., METRIC_INDEX[name]]
                         )
 
-                    def _last_step_mean(name: str) -> jnp.ndarray:
-                        # Per-env final-step value averaged across envs;
-                        # used for cumulative drift metrics so the gate
-                        # sees "total drift" not "mean-since-spawn".
-                        return jnp.mean(
-                            rollout["metrics_vec"][-1, :, METRIC_INDEX[name]]
+                    def _terminal_episode_mean(
+                        name: str, abs_aggregate: bool = False
+                    ) -> jnp.ndarray:
+                        """Per-episode terminal-step mean for cumulative
+                        deploy metrics like world drift.
+
+                        Auto-reset semantics: envs reset on done, then
+                        the next-episode metrics start populating from
+                        the new spawn.  Indexing the rollout's final
+                        slice would mix terminated and replacement
+                        episodes (and underreport drift on exactly
+                        the unstable policies this signal should
+                        catch).  Instead, sum ``metric * done`` over
+                        the rollout and divide by ``total_done`` —
+                        same pattern as ``mean_episode_length`` above
+                        — so every completed episode's terminal value
+                        contributes exactly once.  The env emits
+                        cumulative drift since the most-recent reset
+                        every step, so on the done step the value IS
+                        that episode's terminal drift.
+
+                        ``abs_aggregate=True`` applies abs BEFORE the
+                        cross-episode mean.  Required for soft-gate
+                        metrics where cross-env cancellation
+                        (+0.5/-0.5 = 0) would silently pass a bad
+                        policy.
+                        """
+                        raw = rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        if abs_aggregate:
+                            raw = jnp.abs(raw)
+                        return jnp.where(
+                            total_done > 0.0,
+                            jnp.sum(raw * rollout["done"]) / total_done,
+                            jnp.float32(0.0),
                         )
 
                     eps_touchdown = jnp.float32(1e-6)
@@ -896,14 +924,30 @@ def start_training(
                         "lateral_velocity_abs": _mean(
                             "tracking/lateral_velocity_abs"
                         ),
-                        "world_x_progress_m": _last_step_mean(
-                            "tracking/world_x_progress_m"
+                        # World-x progress is meaningfully signed
+                        # (negative = robot walked backward) so we
+                        # keep the signed terminal-episode mean.
+                        "world_x_progress_m": _terminal_episode_mean(
+                            "tracking/world_x_progress_m", abs_aggregate=False
                         ),
-                        "world_y_drift_signed_m": _last_step_mean(
-                            "tracking/world_y_drift_signed_m"
+                        # World-y drift / yaw drift expose BOTH the
+                        # signed terminal mean (diagnostic — tells
+                        # direction-of-bias if any) AND the per-episode
+                        # absolute mean (the gate value — invariant
+                        # under cross-env sign cancellation).  The
+                        # gate at ``deterministic_eval_gate`` reads
+                        # the ``_abs_*`` variant.
+                        "world_y_drift_signed_m": _terminal_episode_mean(
+                            "tracking/world_y_drift_signed_m", abs_aggregate=False
                         ),
-                        "yaw_drift_signed_rad": _last_step_mean(
-                            "tracking/yaw_drift_signed_rad"
+                        "world_y_drift_abs_m": _terminal_episode_mean(
+                            "tracking/world_y_drift_signed_m", abs_aggregate=True
+                        ),
+                        "yaw_drift_signed_rad": _terminal_episode_mean(
+                            "tracking/yaw_drift_signed_rad", abs_aggregate=False
+                        ),
+                        "yaw_drift_abs_rad": _terminal_episode_mean(
+                            "tracking/yaw_drift_signed_rad", abs_aggregate=True
                         ),
                         "touchdown_rate_left_count": td_left,
                         "touchdown_rate_right_count": td_right,
@@ -964,8 +1008,18 @@ def start_training(
                         "world_y_drift_signed_m": float(
                             eval_result["world_y_drift_signed_m"]
                         ),
+                        # Cross-env-cancellation-safe abs aggregations
+                        # (per-episode |terminal drift| averaged over
+                        # completed episodes); the soft gate reads
+                        # these, not the signed variants.
+                        "world_y_drift_abs_m": float(
+                            eval_result["world_y_drift_abs_m"]
+                        ),
                         "yaw_drift_signed_rad": float(
                             eval_result["yaw_drift_signed_rad"]
+                        ),
+                        "yaw_drift_abs_rad": float(
+                            eval_result["yaw_drift_abs_rad"]
                         ),
                         "touchdown_rate_left_count": float(
                             eval_result["touchdown_rate_left_count"]

@@ -1623,26 +1623,46 @@ def train(
                 for key, idx in walking_idx.items()
             }
             # smoke15 deploy-facing world-drift metrics — the env emits
-            # cumulative drift since spawn at every step; we want the
-            # rollout-final value (total drift over the rollout) per
-            # env, then mean over envs.  Reading
-            # ``eval_rollout["metrics_vec"][-1, :, idx]`` gives the
-            # last-step value across all eval envs.
-            last_step_walking_idx = {
-                "world_x_progress_m": METRIC_INDEX[
-                    "tracking/world_x_progress_m"
-                ],
-                "world_y_drift_signed_m": METRIC_INDEX[
-                    "tracking/world_y_drift_signed_m"
-                ],
-                "yaw_drift_signed_rad": METRIC_INDEX[
-                    "tracking/yaw_drift_signed_rad"
-                ],
-            }
-            for key, idx in last_step_walking_idx.items():
-                walking_metrics[key] = jnp.mean(
-                    eval_rollout["metrics_vec"][-1, :, idx]
+            # cumulative drift since the most-recent reset every step;
+            # we want the per-episode TERMINAL value, NOT the rollout
+            # final-step value (those diverge for envs that
+            # auto-reset mid-rollout — the final-step value would
+            # come from a replacement episode).  Aggregate using
+            # ``sum(metric * done) / total_done`` — same pattern as
+            # mean_episode_length — so each completed episode's
+            # terminal drift contributes once.  Abs-aggregated
+            # variants (mean of |terminal drift|) avoid the cross-env
+            # sign-cancellation bug where +0.5/-0.5 averages to 0.
+            def _terminal_episode_mean(
+                name: str, *, abs_aggregate: bool = False
+            ) -> jnp.ndarray:
+                raw = eval_rollout["metrics_vec"][
+                    ..., METRIC_INDEX[name]
+                ]
+                if abs_aggregate:
+                    raw = jnp.abs(raw)
+                eval_total_done = jnp.sum(eval_rollout["done"])
+                return jnp.where(
+                    eval_total_done > 0.0,
+                    jnp.sum(raw * eval_rollout["done"]) / eval_total_done,
+                    jnp.float32(0.0),
                 )
+
+            walking_metrics["world_x_progress_m"] = _terminal_episode_mean(
+                "tracking/world_x_progress_m"
+            )
+            walking_metrics["world_y_drift_signed_m"] = _terminal_episode_mean(
+                "tracking/world_y_drift_signed_m"
+            )
+            walking_metrics["world_y_drift_abs_m"] = _terminal_episode_mean(
+                "tracking/world_y_drift_signed_m", abs_aggregate=True
+            )
+            walking_metrics["yaw_drift_signed_rad"] = _terminal_episode_mean(
+                "tracking/yaw_drift_signed_rad"
+            )
+            walking_metrics["yaw_drift_abs_rad"] = _terminal_episode_mean(
+                "tracking/yaw_drift_signed_rad", abs_aggregate=True
+            )
             # Derived per-touchdown stride length: event-weighted mean
             # step length divided by event rate.  Guarded against
             # divide-by-zero when a foot never touches down in the

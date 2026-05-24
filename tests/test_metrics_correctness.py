@@ -435,15 +435,20 @@ def test_walking_eval_block_emits_smoke15_deploy_metrics() -> None:
             f"training_loop.train walking_idx must include {name} so it "
             "lands in the Evaluate/* namespace for deploy reporting"
         )
-    # Last-step world-drift metrics.
+    # Per-episode terminal world-drift metrics — both signed
+    # (direction-of-bias diagnostic) and abs (gate value, invariant
+    # under cross-env sign cancellation).
     for name in (
         '"world_x_progress_m"',
         '"world_y_drift_signed_m"',
+        '"world_y_drift_abs_m"',
         '"yaw_drift_signed_rad"',
+        '"yaw_drift_abs_rad"',
     ):
         assert name in src, (
-            f"training_loop.train must emit {name} from the per-env "
-            "rollout-final value (not the rollout mean)"
+            f"training_loop.train must emit {name} aggregated over "
+            "per-episode terminal steps (sum(metric * done) / total_done), "
+            "with abs-variant for the gate"
         )
     # Per-touchdown stride derived metrics.
     for name in (
@@ -454,3 +459,40 @@ def test_walking_eval_block_emits_smoke15_deploy_metrics() -> None:
             f"training_loop.train must compute {name} = step_length_event "
             "/ touchdown_rate_count for deploy-facing per-touchdown stride"
         )
+
+
+def test_walking_eval_block_aggregates_drift_at_episode_terminal_not_rollout_end() -> None:
+    """Regression for Bug-1 (rollout-end vs episode-terminal).  The
+    smoke15-launch implementation used ``eval_rollout["metrics_vec"]
+    [-1, :, idx]`` which reads the rollout's final-step value per
+    env.  For envs that auto-reset mid-rollout, that value is from
+    the REPLACEMENT episode, not the terminated one — systematically
+    underreporting drift on exactly the unstable policies the
+    metric should catch.
+
+    Fix: done-mask-weighted aggregation
+    (``sum(metric * done) / total_done``) — same pattern as
+    ``mean_episode_length`` — so every completed episode contributes
+    its terminal-step value exactly once.  Inline source check
+    guards against a refactor silently reverting to the
+    rollout-final-step pattern."""
+    import inspect
+    from training.core import training_loop
+
+    src = inspect.getsource(training_loop.train)
+    assert "eval_total_done" in src and 'eval_rollout["done"]' in src, (
+        "Evaluate/* world-drift block must use done-mask aggregation"
+    )
+    # The old helper name must not reappear in either training_loop
+    # or train.py (the post-training eval path had the same bug).
+    assert "_last_step_mean" not in src, (
+        "Old _last_step_mean helper was the Bug-1 source — must not "
+        "reappear in training_loop"
+    )
+    from training import train as train_module
+
+    train_src = inspect.getsource(train_module)
+    assert "_last_step_mean" not in train_src, (
+        "Old _last_step_mean helper was the Bug-1 source — must not "
+        "reappear in train.py post-training eval"
+    )
