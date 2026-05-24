@@ -152,20 +152,28 @@ def test_smoke1_has_bumped_lateral_residual_scales_no_hip_yaw(
 
 # ---------------------------------------------------------------------------
 # End-to-end env construction: prove all four opt-in gates wire together
-# without runtime error.  This builds the 3D library (24 bins under the
-# {3 vx + force vx=0} × 5 vy + 5 wz - 1 dedup TB-split structure) so it's
-# not free — but it's the only way to catch a wiring regression that would
-# only manifest at training start.
+# without runtime error.  Builds the 3D library (25 bins: 4 vx × 5 vy
+# linear + 5 pure-yaw, no dedup because env vx grid excludes 0.0 — see
+# smoke1 YAML header block for the full math) so it's not free, but it's
+# the only way to catch a wiring regression that would only manifest at
+# training start.
 # ---------------------------------------------------------------------------
 def test_smoke1_env_init_succeeds(cfg_smoke1) -> None:
     from training.envs.wildrobot_env import WildRobotEnv
 
     env = WildRobotEnv(config=cfg_smoke1)
-    # Spot-check that the 3D library actually got built (stored cmd keys
-    # include both pure-yaw bins and a static (0, 0, 0) bin from the
-    # factory's force-union).
+    # Pin the actual library size: 4 vx (arange 0.18/0.22/0.26 ∪ 0.20)
+    # × 5 vy linear-walk bins + 5 pure-yaw bins = 25 stored trajectories.
+    # No dedup happens because the env's linear vx grid excludes 0.0
+    # (the meta.command_range_vx 0.0 force-union from P2.5c is
+    # metadata-only and does NOT inject a (0, 0, 0) linear bin).
     cmd_keys = list(env._offline_cmd_keys)
-    assert len(cmd_keys) > 0
+    assert len(cmd_keys) == 25, (
+        f"smoke1 library bin count regressed: expected 25 trajectories "
+        f"(20 linear + 5 pure-yaw, no dedup), got {len(cmd_keys)}.  "
+        "Either env._init_offline_service vx-union logic changed or "
+        "build_library_for_3d_values dedup semantics drifted."
+    )
     has_static = any(
         abs(k[0]) < 1e-9 and abs(k[1]) < 1e-9 and abs(k[2]) < 1e-9
         for k in cmd_keys

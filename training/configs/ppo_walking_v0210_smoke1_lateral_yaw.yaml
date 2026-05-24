@@ -42,13 +42,22 @@
 # wz grid:  {-0.20, -0.10, 0.0, 0.10, 0.20}   (5 bins; symmetric)
 #
 # Library shape under TB-split structure (control/zmp/zmp_walk.py:1598):
-#   * Linear-walk bins: ``vx_sorted × vy_sorted`` with wz=0 → 3 × 5 = 15
-#   * Pure-yaw bins:    ``(0, 0, wz)`` for each wz → 5 (factory force-
-#                       unions vx=0.0 even if not in vx_sorted)
-#   * Dedup:            (0, 0, 0) appears in both → keep one
-#   * Total:            15 + 5 - 1 = 19 trajectories
-# (The unconditional vx=0.0 force-union adds the (0, 0, 0) static bin
-# even though the derived vx grid starts at 0.18.)
+#   * Derived vx grid in env: arange(0.18, 0.26, 0.04) ∪ {0.20} =
+#                       {0.18, 0.20, 0.22, 0.26} → 4 vx (env unions
+#                       loc_ref_offline_command_vx=0.20 into the
+#                       arange-derived grid; see
+#                       training/envs/wildrobot_env.py:851).
+#   * Linear-walk bins: vx × vy with wz=0 → 4 × 5 = 20
+#                       (none has vx=0 because the env vx grid does
+#                       NOT include 0.0 — the meta.command_range_vx
+#                       0.0 force-union is metadata-only).
+#   * Pure-yaw bins:    (0, 0, wz) for each wz → 5
+#   * Dedup:            none — linear bins have no vx=0 entry so
+#                       (0, 0, 0) lives only in the pure-yaw branch.
+#   * Total:            20 + 5 = 25 trajectories.
+# The (0, 0, 0) static bin is the degenerate 1-step trajectory tiled
+# to walking horizon by _init_offline_service per P5 (handles zero-cmd
+# resets cleanly).
 #
 # -----------------------------------------------------------------------------
 # H6 — lateral residual scale bump (hip_roll + ankle_roll only)
@@ -180,10 +189,13 @@ env:
   critic_obs_history_frames: 15
 
   loc_ref_command_conditioned: true
-  # Spec: interval=0.04 over [0.18, 0.26] → vx grid {0.18, 0.22, 0.26}.
-  # (Smoke14 used 0.02 → 5 bins; smoke1 widens to 3 bins to keep the
-  # 3D library trajectory count bounded — total 15 linear + 5 yaw - 1
-  # dedup = 19 trajectories.)
+  # Spec: interval=0.04 over [0.18, 0.26] → arange gives
+  # {0.18, 0.22, 0.26}; env then unions ``loc_ref_offline_command_vx``
+  # (=0.20 below) so the effective env vx grid is
+  # {0.18, 0.20, 0.22, 0.26} = 4 vx values.  3D library size is then
+  # 4 vx × 5 vy + 5 pure-yaw = 25 trajectories (no dedup — see header
+  # block).  Bumping this interval shrinks the linear half of the
+  # library only.
   loc_ref_command_grid_interval: 0.04
 
   # v0.21.0 P5 — opt-in for 3D reference library lookup (heading-frame
@@ -257,7 +269,12 @@ ppo:
   critic_privileged_enabled: true
 
   eval:
-    enabled: false
+    # v0.21.0 smoke1 reviewer follow-up: enable training-time eval so
+    # the new mixed eval_velocity_cmd=[0.18, 0.04, 0.10] actually
+    # exercises the lateral/yaw tracking machinery and emits
+    # Evaluate/tracking/yaw_rate_err, Evaluate/tracking/cmd_velocity_xy_err
+    # etc. during training instead of only in the post-training pass.
+    enabled: true
     interval: 10
     num_envs: 64
     num_steps: 500
