@@ -25,6 +25,31 @@ Usage:
   # Custom library path
   uv run mjpython training/eval/view_zmp_in_mujoco.py \
       --library-path /tmp/zmp_ref_library --vx 0.15
+
+  # v0.21.0 lateral / yaw playback (requires a 3D-built library).
+  # First build the library to disk:
+  #   uv run python -c "
+  #   from control.zmp.zmp_walk import ZMPWalkGenerator
+  #   gen = ZMPWalkGenerator()
+  #   lib = gen.build_library_for_3d_values(
+  #       vx_values=[0.0, 0.18, 0.20, 0.22, 0.26],
+  #       vy_values=[-0.10, -0.05, 0.0, 0.05, 0.10],
+  #       yaw_rate_values=[-0.20, -0.10, 0.0, 0.10, 0.20],
+  #   )
+  #   lib.save('/tmp/v0210_lib')
+  #   "
+  #
+  # Then visualize a lateral-walk bin:
+  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #       --library-path /tmp/v0210_lib --vx 0.20 --vy 0.05
+  #
+  # Or a pure-yaw bin:
+  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #       --library-path /tmp/v0210_lib --vx 0.0 --vy 0.0 --yaw-rate 0.20
+  #
+  # Library is TB-split (linear (vx, vy, 0) + pure-yaw (0, 0, wz), dedup
+  # (0, 0, 0)), so mixed (vx>0, wz>0) queries snap per-axis to whichever
+  # single-axis bin is closest.
 """
 
 from __future__ import annotations
@@ -123,12 +148,19 @@ def run_viewer(
     sim_dt_factor: int = 1,
     c2_stabilizer: bool = False,
     seed: int | None = None,
+    vy: float = 0.0,
+    yaw_rate: float = 0.0,
 ) -> None:
     model, data = _load_model()
     actuator_names = _load_policy_spec()
     mapper = CtrlOrderMapper(model, actuator_names)
 
-    traj = lib.lookup(vx)
+    # v0.21.0 P11 visual-eval: ReferenceLibrary.lookup is 3D-aware.
+    # Library is TB-split (linear ``(vx, vy, 0)`` + pure-yaw ``(0, 0, wz)``),
+    # so mixed translation+yaw queries snap per-axis to whichever single-axis
+    # bin is closest.  See control/references/reference_library.py::lookup
+    # and control/zmp/zmp_walk.py::build_library_for_3d_values.
+    traj = lib.lookup(vx, vy=vy, yaw_rate=yaw_rate)
     n_steps = traj.n_steps
     if kinematic:
         mode_str = "kinematic"
@@ -138,9 +170,13 @@ def run_viewer(
         mode_str = "free-floating"
         if c2_stabilizer:
             mode_str += "+C2"
-    logger.log(f"Trajectory: vx={traj.command_vx:.3f}, n_steps={n_steps}, "
-               f"duration={n_steps * traj.dt:.2f}s, "
-               f"gait_cycle={traj.cycle_time:.3f}s")
+    logger.log(
+        f"Trajectory: queried (vx={vx:.3f}, vy={vy:.3f}, wz={yaw_rate:.3f}), "
+        f"matched key=(vx={traj.command_vx:.3f}, vy={traj.command_vy:.3f}, "
+        f"wz={traj.command_yaw_rate:.3f}), n_steps={n_steps}, "
+        f"duration={n_steps * traj.dt:.2f}s, "
+        f"gait_cycle={traj.cycle_time:.3f}s"
+    )
     horizon = min(horizon, n_steps)
     seed_str = f"seed={seed}" if seed is not None else "seed=n/a"
     logger.log(f"Viewer: horizon={horizon}, mode={mode_str}, {seed_str}")
@@ -725,6 +761,16 @@ def main():
                         help="Path to reference library (default: generate fresh)")
     parser.add_argument("--vx", type=float, default=0.20,
                         help="Forward speed command (default 0.20 = Phase 9D operating point, cycle_time=0.96 s)")
+    parser.add_argument("--vy", type=float, default=0.0,
+                        help="Lateral speed command in m/s (v0.21.0+; default 0.0 = no lateral). "
+                             "WR-scaled range: +-0.13 m/s. Library is TB-split, so a non-zero "
+                             "(vx, vy) with vx != 0 snaps to a linear-walk bin; a (0, 0, vy) "
+                             "query is not supported (no such bin exists).")
+    parser.add_argument("--yaw-rate", type=float, default=0.0, dest="yaw_rate",
+                        help="Yaw-rate command in rad/s (v0.21.0+; default 0.0 = no yaw). "
+                             "WR-scaled range: +-0.25 rad/s. Pure-yaw bins are at (0, 0, wz); "
+                             "a query with both vx>0 AND wz>0 snaps to whichever single-axis "
+                             "bin is closest under the TB-split library.")
     parser.add_argument("--headless", action="store_true",
                         help="Run headless with text output")
     parser.add_argument("--kinematic", action="store_true",
@@ -782,6 +828,8 @@ def main():
         sim_dt_factor=args.sim_dt_factor,
         c2_stabilizer=args.c2_stabilizer,
         seed=args.seed,
+        vy=args.vy,
+        yaw_rate=args.yaw_rate,
     )
 
     logger.log(f"\nLog saved to: {logger.file_path}")
