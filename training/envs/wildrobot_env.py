@@ -27,6 +27,7 @@ v0.20.1 smoke contract documented in ``walking_training.md``.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -850,48 +851,80 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # v0.21.0 P5 — TB-split 3D library: linear-walk
             # ``vx × vy`` (wz=0) plus pure-yaw ``(0, 0, wz)`` bins
             # with ``(0, 0, 0)`` dedup.  See ``build_library_for_3d_values``
-            # (control/zmp/zmp_walk.py).  ``vx_grid`` from the cmd-conditioned
-            # branch above feeds the linear-walk axis; vy / wz grids come
-            # from explicit YAML (fall back to ``[0.0]`` if omitted so the
-            # 3D mode degenerates to vx-only without crashing).
-            from control.zmp.zmp_walk import ZMPWalkGenerator
-            vy_grid_cfg = list(
-                getattr(
-                    self._config.env, "loc_ref_offline_command_vy_grid", ()
+            # (control/zmp/zmp_walk.py).
+            #
+            # When ``loc_ref_offline_library_path`` is set we LOAD from
+            # disk instead of rebuilding — the loading contract
+            # documented at training_runtime_config.py:302 must hold
+            # uniformly across 1D and 3D modes, and the 3D libraries are
+            # the larger of the two so the planner-skip win is more
+            # impactful here.
+            if offline_path:
+                from control.references.reference_library import ReferenceLibrary
+                lib = ReferenceLibrary.load(offline_path)
+                # NOTE: when loading from disk we trust the persisted
+                # library to be 3D-compatible (split-cmd or full-
+                # Cartesian) and use its actual stored trajectories.
+                # ``cmd_keys`` is driven off the library's stored
+                # trajectories rather than the YAML grids so the on-disk
+                # truth wins over any drift in the YAML between
+                # build-time and load-time.
+                stored_trajectories = list(lib._entries.values())
+                cmd_keys: list[tuple[float, float, float]] = [
+                    (
+                        float(traj.command_vx),
+                        float(traj.command_vy),
+                        float(traj.command_yaw_rate),
+                    )
+                    for traj in stored_trajectories
+                ]
+            else:
+                # ``vx_grid`` from the cmd-conditioned branch above feeds
+                # the linear-walk axis; vy / wz grids come from explicit
+                # YAML (fall back to ``[0.0]`` if omitted so the 3D mode
+                # degenerates to vx-only without crashing).
+                from control.zmp.zmp_walk import ZMPWalkGenerator
+                vy_grid_cfg = list(
+                    getattr(
+                        self._config.env, "loc_ref_offline_command_vy_grid", ()
+                    )
+                ) or [0.0]
+                wz_grid_cfg = list(
+                    getattr(
+                        self._config.env,
+                        "loc_ref_offline_command_yaw_rate_grid",
+                        (),
+                    )
+                ) or [0.0]
+                assert (
+                    len(vx_grid) > 0
+                    and len(vy_grid_cfg) > 0
+                    and len(wz_grid_cfg) > 0
                 )
-            ) or [0.0]
-            wz_grid_cfg = list(
-                getattr(
-                    self._config.env,
-                    "loc_ref_offline_command_yaw_rate_grid",
-                    (),
+                lib = ZMPWalkGenerator().build_library_for_3d_values(
+                    vx_values=list(vx_grid),
+                    vy_values=vy_grid_cfg,
+                    yaw_rate_values=wz_grid_cfg,
                 )
-            ) or [0.0]
-            assert len(vx_grid) > 0 and len(vy_grid_cfg) > 0 and len(wz_grid_cfg) > 0
-            lib = ZMPWalkGenerator().build_library_for_3d_values(
-                vx_values=list(vx_grid),
-                vy_values=vy_grid_cfg,
-                yaw_rate_values=wz_grid_cfg,
-            )
-            # Iterate trajectories in library insertion order so the
-            # stacked per-bin arrays' axis-0 index matches
-            # ``_offline_cmd_keys``.  ``build_library_for_3d_values``
-            # constructs its internal dict as: linear-walk bins
-            # (Cartesian over ``vx_sorted × vy_sorted`` with wz=0) then
-            # pure-yaw bins ``(0, 0, wz)`` with dedup against existing
-            # linear bins.  We DRIVE ``cmd_keys`` off the actual stored
-            # trajectories' ``command_key`` so dedup + force-unioned
-            # ``vx=0.0`` from the factory's round-2 fix are honored
-            # without re-deriving the rules here.
-            stored_trajectories = list(lib._entries.values())
-            cmd_keys: list[tuple[float, float, float]] = [
-                (
-                    float(traj.command_vx),
-                    float(traj.command_vy),
-                    float(traj.command_yaw_rate),
-                )
-                for traj in stored_trajectories
-            ]
+                # Iterate trajectories in library insertion order so the
+                # stacked per-bin arrays' axis-0 index matches
+                # ``_offline_cmd_keys``.  ``build_library_for_3d_values``
+                # constructs its internal dict as: linear-walk bins
+                # (Cartesian over ``vx_sorted × vy_sorted`` with wz=0)
+                # then pure-yaw bins ``(0, 0, wz)`` with dedup against
+                # existing linear bins.  We DRIVE ``cmd_keys`` off the
+                # actual stored trajectories' ``command_key`` so dedup +
+                # force-unioned ``vx=0.0`` from the factory's round-2
+                # fix are honored without re-deriving the rules here.
+                stored_trajectories = list(lib._entries.values())
+                cmd_keys = [
+                    (
+                        float(traj.command_vx),
+                        float(traj.command_vy),
+                        float(traj.command_yaw_rate),
+                    )
+                    for traj in stored_trajectories
+                ]
         elif offline_path:
             from control.references.reference_library import ReferenceLibrary
             lib = ReferenceLibrary.load(offline_path)
@@ -983,13 +1016,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Pick the bin closest to the configured offline vx as the
         # "primary" service (used by win0 readouts + path-state
         # integration — those callers still operate on a single
-        # service object, not on the stacked arrays).  Under 3D mode we
-        # minimize over the per-bin vx component of ``cmd_keys`` so the
-        # primary still tracks the configured offline_vx.
+        # service object, not on the stacked arrays).
+        #
+        # Selection is by L2 distance to the canonical straight-walk
+        # anchor ``(offline_vx, 0, 0)``.  Under 1D mode all keys live on
+        # ``(vx_i, 0, 0)`` so this collapses to the historical
+        # ``|vx_i - offline_vx|`` ordering.  Under 3D mode it correctly
+        # prefers the ``(offline_vx, 0, 0)`` straight-walk trajectory
+        # over a ``(offline_vx, vy, 0)`` lateral one or a ``(0, 0, wz)``
+        # pure-yaw bin — the previous vx-only argmin returned the FIRST
+        # vy-tied bin in library-insertion order, which under
+        # ``build_library_for_3d_values`` is ``(offline_vx, vy_min, 0)``
+        # not the straight-walk anchor (contaminating ``_ref_init_q_rad``
+        # via ``_offline_service.lookup_np(0)``).
+        anchor = (float(offline_vx), 0.0, 0.0)
         primary_idx = int(
             min(
                 range(len(cmd_keys)),
-                key=lambda i: abs(cmd_keys[i][0] - offline_vx),
+                key=lambda i: math.sqrt(
+                    (cmd_keys[i][0] - anchor[0]) ** 2
+                    + (cmd_keys[i][1] - anchor[1]) ** 2
+                    + (cmd_keys[i][2] - anchor[2]) ** 2
+                ),
             )
         )
         primary_service = per_bin_services[primary_idx]

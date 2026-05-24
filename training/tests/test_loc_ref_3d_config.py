@@ -198,3 +198,106 @@ def test_lookup_with_yawed_heading_picks_different_bin() -> None:
         float(win_yawed["selected_vy"]) != float(win_aligned["selected_vy"])
         or float(win_yawed["selected_vx"]) != float(win_aligned["selected_vx"])
     )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer bug fixes (post-P5)
+# ---------------------------------------------------------------------------
+
+
+def test_3d_primary_idx_selects_straight_walk_anchor_not_first_vx_tie() -> None:
+    """Reviewer bug #1: in 3D mode primary_idx must select the
+    (offline_vx, 0, 0) anchor — NOT the first vy-tied bin (e.g.
+    (offline_vx, vy_min, 0) under build_library_for_3d_values' sort
+    order).  primary_service feeds _ref_init_q_rad via
+    _offline_service.lookup_np(0) so a wrong anchor contaminates the
+    reset pose.
+    """
+    from training.configs.training_config import load_training_config
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    cfg = load_training_config("training/configs/ppo_walking_v0201_smoke14.yaml")
+    cfg = dataclasses.replace(
+        cfg,
+        env=dataclasses.replace(
+            cfg.env,
+            loc_ref_command_axes_3d=True,
+            loc_ref_offline_command_vy_grid=(-0.05, 0.0, 0.05),
+            loc_ref_offline_command_yaw_rate_grid=(-0.10, 0.0, 0.10),
+        ),
+    )
+    env = WildRobotEnv(cfg)
+    # ``RuntimeReferenceService.command_key`` is a (vx, vy, wz) tuple
+    # set from the underlying ReferenceTrajectory at construction.
+    primary_key = env._offline_service.command_key
+    offline_vx = float(cfg.env.loc_ref_offline_command_vx)
+    assert math.isclose(primary_key[0], offline_vx, abs_tol=1e-3), (
+        f"primary anchor vx={primary_key[0]} != offline_vx={offline_vx}"
+    )
+    assert math.isclose(primary_key[1], 0.0, abs_tol=1e-9), (
+        f"primary anchor vy={primary_key[1]} != 0; "
+        "P5 bound the wrong (vx, vy_min, 0) lateral bin instead of "
+        "(vx, 0, 0) straight-walk."
+    )
+    assert math.isclose(primary_key[2], 0.0, abs_tol=1e-9)
+
+
+def test_3d_mode_respects_loc_ref_offline_library_path(tmp_path) -> None:
+    """Reviewer bug #2: when loc_ref_offline_library_path is set AND
+    loc_ref_command_axes_3d=True, the env must load from disk, not
+    silently rebuild via ZMPWalkGenerator.build_library_for_3d_values.
+    """
+    from control.zmp.zmp_walk import ZMPWalkGenerator
+    from control.zmp import zmp_walk
+    from training.configs.training_config import load_training_config
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    # Build a tiny library on disk first.
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.18, 0.22, 0.26],
+        vy_values=[0.0],
+        yaw_rate_values=[0.0],
+    )
+    save_path = str(tmp_path / "tiny_3d_lib")
+    lib.save(save_path)
+
+    cfg = load_training_config("training/configs/ppo_walking_v0201_smoke14.yaml")
+    cfg = dataclasses.replace(
+        cfg,
+        env=dataclasses.replace(
+            cfg.env,
+            loc_ref_command_axes_3d=True,
+            loc_ref_offline_library_path=save_path,
+            loc_ref_offline_command_vy_grid=(0.0,),  # ignored because path is set
+            loc_ref_offline_command_yaw_rate_grid=(0.0,),
+        ),
+    )
+
+    # Spy on the planner — it MUST NOT be called by env init.  (The
+    # one-time on-disk build above happens BEFORE the spy is installed,
+    # so the spy only sees calls from WildRobotEnv.__init__.)
+    original_build = zmp_walk.ZMPWalkGenerator.build_library_for_3d_values
+    call_count = {"n": 0}
+
+    def spy(self, *args, **kwargs):
+        call_count["n"] += 1
+        return original_build(self, *args, **kwargs)
+
+    zmp_walk.ZMPWalkGenerator.build_library_for_3d_values = spy
+    try:
+        env = WildRobotEnv(cfg)
+    finally:
+        zmp_walk.ZMPWalkGenerator.build_library_for_3d_values = original_build
+
+    assert call_count["n"] == 0, (
+        f"3D mode unexpectedly rebuilt the library via "
+        f"build_library_for_3d_values ({call_count['n']} call(s)) instead "
+        f"of loading from loc_ref_offline_library_path={save_path}"
+    )
+    # And verify the loaded library has the bins from disk: the on-disk
+    # library has 3 linear bins (vx=0.18/0.22/0.26 with vy=0, wz=0) +
+    # 1 pure-yaw static bin (0, 0, 0) = 4 total.
+    assert int(env._offline_cmd_keys.shape[0]) >= 3, (
+        "loaded library should have >= 3 bins from the persisted file"
+    )
